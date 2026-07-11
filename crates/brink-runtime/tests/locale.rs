@@ -9,29 +9,28 @@ fn scope_id(hash: u64) -> DefinitionId {
     DefinitionId::new(DefinitionTag::Address, hash)
 }
 
-fn convert_and_link(
-    json_text: &str,
+fn compile_and_link(
+    ink_path: &str,
 ) -> (
     brink_format::StoryData,
     brink_runtime::Program,
     Vec<Vec<brink_format::LineEntry>>,
 ) {
-    let json_text = json_text.strip_prefix('\u{feff}').unwrap_or(json_text);
-    let story: brink_json::InkJson = serde_json::from_str(json_text).unwrap();
-    let data = brink_converter::convert(&story).unwrap();
+    let data = brink_compiler::compile_path(std::path::Path::new(ink_path))
+        .unwrap()
+        .data;
     let (program, line_tables) = brink_runtime::link(&data).unwrap();
     (data, program, line_tables)
 }
 
-fn i001_json() -> &'static str {
-    include_str!("../../../tests/tier1/basics/I001-minimal-story/story.ink.json")
-}
+const I001_INK: &str = "../../tests/tier1/basics/I001-minimal-story/story.ink";
 
 /// Build a `LocaleData` that replaces the first line in every scope with the given text.
 fn build_locale_replacing_first_line(
     data: &brink_format::StoryData,
     replacement: &str,
 ) -> LocaleData {
+    let base_checksum = data.source_checksum;
     let line_tables: Vec<LocaleScopeTable> = data
         .line_tables
         .iter()
@@ -63,13 +62,14 @@ fn build_locale_replacing_first_line(
 
     LocaleData {
         locale_tag: "es".to_string(),
-        base_checksum: 0, // matches Program's default source_checksum
+        base_checksum, // must match the compiled Program's source_checksum
         line_tables,
     }
 }
 
 /// Build a `LocaleData` covering all scopes identically (no text changes).
 fn build_identity_locale(data: &brink_format::StoryData) -> LocaleData {
+    let base_checksum = data.source_checksum;
     let line_tables: Vec<LocaleScopeTable> = data
         .line_tables
         .iter()
@@ -88,14 +88,14 @@ fn build_identity_locale(data: &brink_format::StoryData) -> LocaleData {
 
     LocaleData {
         locale_tag: "en".to_string(),
-        base_checksum: 0,
+        base_checksum,
         line_tables,
     }
 }
 
 #[test]
 fn overlay_replaces_scope() {
-    let (data, program, base_tables) = convert_and_link(i001_json());
+    let (data, program, base_tables) = compile_and_link(I001_INK);
     let locale = build_locale_replacing_first_line(&data, "[ES] Hola mundo\n");
     let line_tables = apply_locale(&program, &locale, &base_tables, LocaleMode::Overlay).unwrap();
 
@@ -110,7 +110,7 @@ fn overlay_replaces_scope() {
 
 #[test]
 fn overlay_preserves_untouched() {
-    let (data, program, base_tables) = convert_and_link(i001_json());
+    let (data, program, base_tables) = compile_and_link(I001_INK);
 
     // Only cover the first scope, leave others untouched
     assert!(
@@ -120,7 +120,7 @@ fn overlay_preserves_untouched() {
     let first_scope = &data.line_tables[0];
     let locale = LocaleData {
         locale_tag: "partial".to_string(),
-        base_checksum: 0,
+        base_checksum: data.source_checksum,
         line_tables: vec![LocaleScopeTable {
             scope_id: first_scope.scope_id,
             lines: first_scope
@@ -142,7 +142,7 @@ fn overlay_preserves_untouched() {
 
 #[test]
 fn strict_all_covered() {
-    let (data, program, base_tables) = convert_and_link(i001_json());
+    let (data, program, base_tables) = compile_and_link(I001_INK);
     let locale = build_identity_locale(&data);
     // Strict mode should succeed when all scopes are covered.
     apply_locale(&program, &locale, &base_tables, LocaleMode::Strict).unwrap();
@@ -150,7 +150,7 @@ fn strict_all_covered() {
 
 #[test]
 fn strict_missing_scope() {
-    let (data, program, base_tables) = convert_and_link(i001_json());
+    let (data, program, base_tables) = compile_and_link(I001_INK);
 
     // Build locale with an empty set of scopes — strict mode should fail
     // if the base has any scopes.
@@ -160,7 +160,7 @@ fn strict_missing_scope() {
 
     let locale = LocaleData {
         locale_tag: "partial".to_string(),
-        base_checksum: 0,
+        base_checksum: data.source_checksum,
         line_tables: vec![], // no scopes covered
     };
 
@@ -173,12 +173,14 @@ fn strict_missing_scope() {
 
 #[test]
 fn checksum_mismatch() {
-    let (_data, program, base_tables) = convert_and_link(i001_json());
+    let (data, program, base_tables) = compile_and_link(I001_INK);
 
-    // Program has source_checksum=0 (from link), locale has a different checksum.
+    // The program carries the compiled source checksum; the locale claims a
+    // different one.
+    let wrong = data.source_checksum ^ 0xDEAD_BEEF;
     let locale = LocaleData {
         locale_tag: "bad".to_string(),
-        base_checksum: 0xDEAD_BEEF, // doesn't match 0
+        base_checksum: wrong,
         line_tables: vec![],
     };
 
@@ -186,10 +188,8 @@ fn checksum_mismatch() {
     assert!(
         matches!(
             err,
-            RuntimeError::LocaleChecksumMismatch {
-                expected: 0,
-                actual: 0xDEAD_BEEF
-            }
+            RuntimeError::LocaleChecksumMismatch { expected, actual }
+                if expected == data.source_checksum && actual == wrong
         ),
         "expected LocaleChecksumMismatch, got {err:?}"
     );
@@ -197,13 +197,13 @@ fn checksum_mismatch() {
 
 #[test]
 fn scope_not_in_base() {
-    let (_data, program, base_tables) = convert_and_link(i001_json());
+    let (data, program, base_tables) = compile_and_link(I001_INK);
 
     // Use a scope_id that doesn't exist in the linked program
     let fake_scope = scope_id(0xFFFF_FFFF_FFFF);
     let locale = LocaleData {
         locale_tag: "bad".to_string(),
-        base_checksum: 0,
+        base_checksum: data.source_checksum,
         line_tables: vec![LocaleScopeTable {
             scope_id: fake_scope,
             lines: vec![],

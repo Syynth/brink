@@ -34,8 +34,6 @@ testing = []
 
 [dev-dependencies]
 brink-compiler = { path = "../brink-compiler" }
-brink-converter = { path = "../internal/brink-converter" }
-brink-json = { path = "../internal/brink-json" }
 serde_json.workspace = true
 divan.workspace = true
 

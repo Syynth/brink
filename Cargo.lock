@@ -2189,8 +2189,7 @@ name = "brink-format"
 version = "0.0.11"
 dependencies = [
  "bitflags 2.13.0",
- "brink-converter",
- "brink-json",
+ "brink-compiler",
  "insta",
  "pest",
  "pest_derive",
@@ -2222,9 +2221,8 @@ dependencies = [
 name = "brink-intl"
 version = "0.0.11"
 dependencies = [
- "brink-converter",
+ "brink-compiler",
  "brink-format",
- "brink-json",
  "brink-runtime",
  "icu_locale_core",
  "icu_plurals",
@@ -2288,9 +2286,7 @@ name = "brink-runtime"
 version = "0.0.11"
 dependencies = [
  "brink-compiler",
- "brink-converter",
  "brink-format",
- "brink-json",
  "divan",
  "serde",
  "serde_json",
@@ -2313,12 +2309,10 @@ dependencies = [
  "brink-analyzer",
  "brink-codegen-inkb",
  "brink-compiler",
- "brink-converter",
  "brink-db",
  "brink-driver",
  "brink-format",
  "brink-ir",
- "brink-json",
  "brink-runtime",
  "brink-syntax",
  "insta",

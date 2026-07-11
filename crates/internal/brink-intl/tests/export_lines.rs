@@ -1,18 +1,16 @@
 #![allow(clippy::unwrap_used)]
 
-use brink_json::InkJson;
-
-fn convert_story(json_text: &str) -> brink_format::StoryData {
-    let json_text = json_text.strip_prefix('\u{feff}').unwrap_or(json_text);
-    let story: InkJson = serde_json::from_str(json_text).unwrap();
-    brink_converter::convert(&story).unwrap()
+fn compile_story(src: &str) -> brink_format::StoryData {
+    // Fixed entry name keeps snapshots machine-independent.
+    brink_compiler::compile("story.ink", |_p| Ok(src.to_owned()))
+        .unwrap()
+        .data
 }
 
 #[test]
 fn snapshot_i001_minimal_story() {
-    let json_text =
-        include_str!("../../../../tests/tier1/basics/I001-minimal-story/story.ink.json");
-    let data = convert_story(json_text);
+    let src = include_str!("../../../../tests/tier1/basics/I001-minimal-story/story.ink");
+    let data = compile_story(src);
     let lines_json = brink_intl::export_lines(&data, 0);
     insta::assert_json_snapshot!(lines_json);
 }

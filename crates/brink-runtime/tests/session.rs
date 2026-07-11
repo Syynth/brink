@@ -1,8 +1,8 @@
 //! Integration tests for [`StorySession`]: the journaling, replayable session
 //! wrapper (#370 + #371 snapshots).
 //!
-//! Programs are built from the known-good `.ink.json` converter reference
-//! pipeline. Every stepping loop is bounded — VM tests must not hang.
+//! Programs are compiled from `.ink` fixtures with the brink compiler.
+//! Every stepping loop is bounded — VM tests must not hang.
 
 #![expect(
     clippy::unwrap_used,
@@ -16,31 +16,29 @@
 
 use std::path::Path;
 
-use brink_converter::convert;
 use brink_format::{ListValue, SaveState, Value};
-use brink_json::InkJson;
 use brink_runtime::{
     DotNetRng, EventKind, ExternalFnHandler, ExternalReplayMode, ExternalResult, FailReason, Line,
     Program, ReplayOutcome, ReplayWarning, SESSION_JOURNAL_CAP, SessionError, SessionJournal,
     StepOutcome, Story, StorySession, diff,
 };
 
-/// Link a program from a tier `.ink.json` fixture path (relative to the repo).
+/// Link a program from a tier `.ink` fixture path (relative to the repo),
+/// compiled with the brink compiler.
 fn link_fixture(rel: &str) -> (Program, Vec<Vec<brink_format::LineEntry>>) {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join(rel);
-    let json =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    let ink: InkJson = serde_json::from_str(&json).unwrap();
-    let data = convert(&ink).unwrap();
+    let data = brink_compiler::compile_path(&path)
+        .unwrap_or_else(|e| panic!("compile {}: {e}", path.display()))
+        .data;
     brink_runtime::link(&data).unwrap()
 }
 
-const CHOICE_STORY: &str = "tests/tier1/choices/I084-sticky-choices-stay-sticky/story.ink.json";
-const LIST_STORY: &str = "tests/tier2/lists/I067-list-save-load/story.ink.json";
-const EXTERNAL_STORY: &str = "tests/tier3/runtime/external-function-1-arg-v1/story.ink.json";
-const FUNCTION_STORY: &str = "tests/tier2/function/func-none/story.ink.json";
+const CHOICE_STORY: &str = "tests/tier1/choices/I084-sticky-choices-stay-sticky/story.ink";
+const LIST_STORY: &str = "tests/tier2/lists/I067-list-save-load/story.ink";
+const EXTERNAL_STORY: &str = "tests/tier3/runtime/external-function-1-arg-v1/story.ink";
+const FUNCTION_STORY: &str = "tests/tier2/function/func-none/story.ink";
 
 /// Bounded run of a session to its first choice set (or terminal). Returns the
 /// collected text.

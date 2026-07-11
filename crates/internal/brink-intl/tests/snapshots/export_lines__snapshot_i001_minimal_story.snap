@@ -13,7 +13,12 @@ expression: lines_json
         {
           "index": 0,
           "content": "Hello, world!",
-          "hash": "626e7681b4e2e7bc"
+          "hash": "626e7681b4e2e7bc",
+          "source": {
+            "file": "story.ink",
+            "range_start": 0,
+            "range_end": 14
+          }
         }
       ]
     }

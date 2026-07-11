@@ -126,11 +126,10 @@ fn audio_absent_not_in_json() {
 
 #[test]
 fn full_lines_json_roundtrip() {
-    let json_text =
-        include_str!("../../../../tests/tier1/basics/I001-minimal-story/story.ink.json");
-    let json_text = json_text.strip_prefix('\u{feff}').unwrap_or(json_text);
-    let story: brink_json::InkJson = serde_json::from_str(json_text).unwrap();
-    let data = brink_converter::convert(&story).unwrap();
+    let src = include_str!("../../../../tests/tier1/basics/I001-minimal-story/story.ink");
+    let data = brink_compiler::compile("story.ink", |_p| Ok(src.to_owned()))
+        .unwrap()
+        .data;
 
     let exported = brink_intl::export_lines(&data, 0x1234);
     let json_str = serde_json::to_string_pretty(&exported).unwrap();
