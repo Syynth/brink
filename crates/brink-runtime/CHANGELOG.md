@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.11](https://github.com/Syynth/brink/compare/brink-runtime-v0.0.10...brink-runtime-v0.0.11) - 2026-07-11
+
+### Other
+
+- Merge pull request #495 from Syynth/bronch/compiler-local-var-keyword-0fdbbc
+- seed ResolvedPolicy from compiled #@local scope bits ([#473](https://github.com/Syynth/brink/pull/473))
+
 ## [0.0.10](https://github.com/Syynth/brink/compare/brink-runtime-v0.0.9...brink-runtime-v0.0.10) - 2026-07-10
 
 ### Added
