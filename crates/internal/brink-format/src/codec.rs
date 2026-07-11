@@ -2,6 +2,9 @@
 //!
 //! Used by both the opcode codec and the `.inkb` binary format.
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use crate::id::DefinitionId;
 use crate::opcode::DecodeError;
 

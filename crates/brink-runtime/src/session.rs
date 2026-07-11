@@ -40,7 +40,13 @@
 //! this way never journal, matching the "journaling window" gate: only the
 //! session's own `advance` / `choose` / `resolve_external` frames record.
 
-use std::collections::BTreeMap;
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::collections::{BTreeMap, VecDeque};
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use core::cell::RefCell;
+use core::mem;
 
 use brink_format::{SaveState, Value};
 use serde::{Deserialize, Serialize};
@@ -520,14 +526,14 @@ pub enum SessionError {
 struct JournalingHandler<'a, H: ExternalFnHandler + ?Sized> {
     inner: &'a H,
     // Interior-mutability: the trait method is `&self`, but we need to append.
-    sink: std::cell::RefCell<&'a mut Vec<(String, Vec<Value>, Value)>>,
+    sink: RefCell<&'a mut Vec<(String, Vec<Value>, Value)>>,
 }
 
 impl<'a, H: ExternalFnHandler + ?Sized> JournalingHandler<'a, H> {
     fn new(inner: &'a H, sink: &'a mut Vec<(String, Vec<Value>, Value)>) -> Self {
         Self {
             inner,
-            sink: std::cell::RefCell::new(sink),
+            sink: RefCell::new(sink),
         }
     }
 }
@@ -549,7 +555,7 @@ impl<H: ExternalFnHandler + ?Sized> ExternalFnHandler for JournalingHandler<'_, 
 /// mismatch it falls through to the ink fallback body (never re-invokes).
 struct RecordedReplayHandler<'a> {
     // (name, args, result) queue, consumed front-to-back.
-    queue: std::cell::RefCell<&'a mut std::collections::VecDeque<(String, Vec<Value>, Value)>>,
+    queue: RefCell<&'a mut VecDeque<(String, Vec<Value>, Value)>>,
 }
 
 impl ExternalFnHandler for RecordedReplayHandler<'_> {
@@ -595,9 +601,9 @@ pub struct StorySession<R: StoryRng = FastRng> {
 /// and the source journal's checkpoint to carry over on completion.
 struct PendingReplay {
     /// `(original_source_index, event)` pairs not yet applied.
-    remaining: std::collections::VecDeque<(usize, JournalEvent)>,
+    remaining: VecDeque<(usize, JournalEvent)>,
     /// Recorded externals still unserved (`ExternalReplayMode::Recorded`).
-    ext_queue: std::collections::VecDeque<(String, Vec<Value>, Value)>,
+    ext_queue: VecDeque<(String, Vec<Value>, Value)>,
     mode: ExternalReplayMode,
     warnings: Vec<ReplayWarning>,
     /// The source journal's terminal checkpoint, applied to the rebuilt
@@ -643,7 +649,7 @@ impl<R: StoryRng> StorySession<R> {
         self.refresh_checkpoint();
         let checksum = self.journal.program_checksum;
         let seed = self.journal.seed;
-        std::mem::replace(&mut self.journal, SessionJournal::new(checksum, seed))
+        mem::replace(&mut self.journal, SessionJournal::new(checksum, seed))
     }
 
     /// **Escape hatch**: the wrapped story. Reads through here never touch the
@@ -1286,7 +1292,7 @@ impl<R: StoryRng> StorySession<R> {
         &mut self,
         mode: ExternalReplayMode,
         live_handler: Option<&dyn ExternalFnHandler>,
-        ext_queue: &mut std::collections::VecDeque<(String, Vec<Value>, Value)>,
+        ext_queue: &mut VecDeque<(String, Vec<Value>, Value)>,
     ) -> Result<(), StepPark> {
         let mut steps = 0usize;
         loop {
@@ -1297,7 +1303,7 @@ impl<R: StoryRng> StorySession<R> {
             let outcome = match mode {
                 ExternalReplayMode::Recorded => {
                     let h = RecordedReplayHandler {
-                        queue: std::cell::RefCell::new(ext_queue),
+                        queue: RefCell::new(ext_queue),
                     };
                     self.story.advance_with(&h)
                 }

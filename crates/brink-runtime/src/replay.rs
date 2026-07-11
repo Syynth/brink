@@ -14,7 +14,11 @@
 //! (the transcript is the durable artifact). They are plain data, so they can
 //! grow serialization later if a consumer ever needs to persist them.
 
-use std::cell::RefCell;
+use core::cell::RefCell;
+
+use alloc::borrow::ToOwned;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 use brink_format::Value;
 

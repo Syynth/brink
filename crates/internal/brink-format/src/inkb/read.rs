@@ -1,5 +1,8 @@
 //! Decoding (read) half of the `.inkb` binary format.
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use crate::codec::{crc32, read_def_id, read_i32, read_str, read_u8, read_u16, read_u32, read_u64};
 use crate::counting::CountingFlags;
 use crate::definition::{

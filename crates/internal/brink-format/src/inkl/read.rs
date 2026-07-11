@@ -1,5 +1,8 @@
 //! Decoding (read) half of the `.inkl` locale overlay format.
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use crate::codec::{read_def_id, read_str, read_u8, read_u16, read_u32};
 use crate::definition::{LocaleData, LocaleLineEntry, LocaleScopeTable};
 use crate::inkb::read::decode_line_content;

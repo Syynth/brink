@@ -1,5 +1,7 @@
 //! Encoding (write) half of the `.inkl` locale overlay format.
 
+use alloc::vec::Vec;
+
 use crate::codec::{write_def_id, write_str, write_u8, write_u16, write_u32};
 use crate::definition::LocaleData;
 use crate::inkb::write::encode_line_content;

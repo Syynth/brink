@@ -1,3 +1,6 @@
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use crate::definition::{
     AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, ListDef, ListItemDef,
     ScopeLineTable,

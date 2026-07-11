@@ -1,5 +1,11 @@
 //! Output buffer with glue handling and deferred line resolution.
 
+use core::mem;
+
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
+
 use brink_format::{
     LineContent, LineEntry, LinePart, PluralCategory, PluralResolver, SelectKey, Value,
 };
@@ -972,7 +978,7 @@ pub(crate) fn resolve_lines(
             OutputPart::Newline => {
                 if !after_glue {
                     let trimmed = current_text.trim().to_string();
-                    lines.push((trimmed, std::mem::take(&mut current_tags)));
+                    lines.push((trimmed, mem::take(&mut current_tags)));
                     current_text = String::new();
                 }
             }

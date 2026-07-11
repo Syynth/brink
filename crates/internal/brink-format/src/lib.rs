@@ -5,6 +5,14 @@
 //! `StoryData` container.
 //!
 //! `brink-runtime` depends ONLY on this crate — nothing else from brink.
+//!
+//! `no_std` + `alloc`: this crate builds without the standard library when
+//! the default `std` feature is disabled (see `docs/no-std-portability.md`).
+//! `inkt`/`inkt-write` (the `.inkt` text format, used by the intl pipeline)
+//! are not part of the `no_std` surface — `pest` is std-oriented.
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
 
 mod codec;
 mod counting;

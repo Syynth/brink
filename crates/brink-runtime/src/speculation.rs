@@ -26,8 +26,12 @@
 //! additive: the oracle corpus, which never constructs a `Speculation`,
 //! is unaffected.
 
-use std::marker::PhantomData;
-use std::sync::Arc;
+use core::marker::PhantomData;
+
+use alloc::borrow::ToOwned;
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use brink_format::Value;
 

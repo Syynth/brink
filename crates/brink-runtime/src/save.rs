@@ -44,6 +44,9 @@
 //! on `Program::containers`' container-index order — byte-identical save
 //! output is a hard requirement independent of container layout.
 
+use alloc::borrow::ToOwned;
+use alloc::vec::Vec;
+
 use brink_format::{CountingFlags, LoadReport, SAVE_FORMAT_VERSION, SaveState, VisitEntry};
 
 use crate::StoryRng;

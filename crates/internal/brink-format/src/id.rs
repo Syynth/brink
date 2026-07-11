@@ -1,5 +1,6 @@
 use core::fmt;
 
+use alloc::format;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Tag discriminant stored in the high byte of a [`DefinitionId`].

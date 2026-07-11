@@ -15,11 +15,15 @@
 //! stepping hot loop — the caller stacks it: e.g.
 //! `spec.advance(budget, &KindTieredHandler::new(&real_bindings, kinds, EvalContext::Watch, false))`.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use core::cell::RefCell;
+
+use alloc::borrow::ToOwned;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 use brink_format::Value;
 
+use crate::collections::Map as HashMap;
 use crate::story::{ExternalFnHandler, ExternalResult};
 
 /// The effect category a [`KindTieredHandler`] gates on. Plain data — the

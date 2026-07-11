@@ -1,11 +1,19 @@
 //! Per-instance mutable story state.
 
-use std::collections::HashMap;
-use std::marker::PhantomData;
-use std::sync::Arc;
+use core::marker::PhantomData;
+use core::ops::Range;
+
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
 
 use brink_format::{ChoiceFlags, DefinitionId, PluralResolver, Value};
 
+use crate::collections::Map as HashMap;
 use crate::error::RuntimeError;
 use crate::output::OutputBuffer;
 use crate::program::Program;
@@ -1836,10 +1844,7 @@ impl<R: StoryRng> Story<R> {
 
     /// Resolve a slice of the transcript against the current line tables.
     /// Returns `(text, tags)` tuples — one per line in the resolved output.
-    pub fn resolve_transcript_slice(
-        &self,
-        range: std::ops::Range<usize>,
-    ) -> Vec<(String, Vec<String>)> {
+    pub fn resolve_transcript_slice(&self, range: Range<usize>) -> Vec<(String, Vec<String>)> {
         let transcript = self.default.flow.output.transcript();
         let end = range.end.min(transcript.len());
         let start = range.start.min(end);
@@ -2625,7 +2630,7 @@ impl<R: StoryRng> Story<R> {
     /// **omitted** from the snapshot's path-keyed maps. The full id-keyed
     /// counts remain available via [`Story::save_state`].
     pub(crate) fn state_snapshot(&self) -> crate::session::StateSnapshot {
-        use std::collections::BTreeMap;
+        use alloc::collections::BTreeMap;
 
         use crate::debug::NameResolver;
         use crate::session::{SnapshotFrame, SnapshotList, StateSnapshot};
@@ -2715,7 +2720,7 @@ impl<R: StoryRng> Story<R> {
     /// value stack, output buffer, globals, and pending choices.
     #[cfg(feature = "testing")]
     pub fn debug_state(&self) -> String {
-        use std::fmt::Write;
+        use core::fmt::Write;
         let mut out = String::new();
         let flow = &self.default.flow;
         let ctx = &self.default_context;

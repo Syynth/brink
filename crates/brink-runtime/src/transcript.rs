@@ -20,7 +20,9 @@
 //!   [Part]*           encoded parts
 //! ```
 
-use std::sync::Arc;
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use brink_format::{DefinitionId, LineFlags, Value};
 

@@ -1,8 +1,12 @@
 //! Immutable linked program.
 
-use std::collections::HashMap;
+use alloc::borrow::ToOwned;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 use brink_format::{CountingFlags, DefinitionId, ListValue, NameId, Value};
+
+use crate::collections::Map as HashMap;
 
 /// A linked, ready-to-execute program.
 ///

@@ -8,10 +8,14 @@
 //!
 //! This is built on demand and is not on any hot path.
 
-use std::collections::HashMap;
+use alloc::borrow::ToOwned;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 use brink_format::{DefinitionId, Value};
 
+use crate::collections::Map as HashMap;
 use crate::program::Program;
 
 /// A structured, read-only snapshot of the runtime's current state.
