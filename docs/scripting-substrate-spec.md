@@ -71,6 +71,14 @@ salsa database:
 - The salsa dependency is confined to `brink-db` plus query definitions;
   `brink-syntax`/`brink-ir`/`brink-analyzer` export plain functions that
   queries call. A crate that defines no queries does not see salsa.
+- **All query APIs live in `brink-db`** — it is the one crate that knows
+  salsa exists; stage crates own the *how*, brink-db owns the *when*.
+  Consequence: brink-db moves up the dependency stack, gaining deps on
+  `brink-analyzer` and `brink-codegen-inkb` (today it sees only
+  syntax + ir), and every consumer — the `brink-compiler` driver, ide,
+  lsp, web — sits above brink-db and stops hand-wiring pipeline stages.
+  The wasm always-recompute fallback (§8) is likewise a brink-db feature
+  flag, invisible to consumers.
 
 ## 4. Query inventory (phase 0)
 
