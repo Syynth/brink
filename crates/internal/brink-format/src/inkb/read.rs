@@ -13,7 +13,7 @@ use crate::id::NameId;
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::opcode::DecodeError;
 use crate::story::StoryData;
-use crate::value::{ListValue, MapKey, OrderedMap, Value, ValueType};
+use crate::value::{ListValue, MAX_DECODE_DEPTH, MapKey, OrderedMap, Value, ValueType};
 
 use super::{
     CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HEADER_PREAMBLE, InkbIndex,
@@ -301,13 +301,6 @@ pub fn read_section_address_paths(
 }
 
 // ── Decode helpers (private) ────────────────────────────────────────────────
-
-/// Maximum nesting depth permitted when decoding `VAL_ARRAY`/`VAL_MAP`
-/// values. Generous for legitimate data but bounds worst-case recursion so a
-/// crafted file of nested single-element arrays (~5 bytes/level) cannot
-/// stack-overflow the reader (CLAUDE.md "guard against unbounded growth";
-/// issue #553).
-const MAX_DECODE_DEPTH: usize = 128;
 
 fn decode_global_var(buf: &[u8], off: &mut usize) -> Result<GlobalVarDef, DecodeError> {
     let id = read_def_id(buf, off)?;

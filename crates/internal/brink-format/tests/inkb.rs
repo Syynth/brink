@@ -3,13 +3,14 @@
 use std::path::Path;
 
 use brink_format::{
-    DecodeError, SectionKind, assemble_inkb, read_inkb, read_inkb_index, read_section_addresses,
-    read_section_containers, read_section_externals, read_section_line_tables,
-    read_section_list_defs, read_section_list_items, read_section_list_literals,
-    read_section_name_table, read_section_variables, write_inkb, write_section_address_paths,
-    write_section_addresses, write_section_containers, write_section_externals,
-    write_section_line_tables, write_section_list_defs, write_section_list_items,
-    write_section_list_literals, write_section_name_table, write_section_variables,
+    DecodeError, MAX_DECODE_DEPTH, SectionKind, assemble_inkb, read_inkb, read_inkb_index,
+    read_section_addresses, read_section_containers, read_section_externals,
+    read_section_line_tables, read_section_list_defs, read_section_list_items,
+    read_section_list_literals, read_section_name_table, read_section_variables, write_inkb,
+    write_section_address_paths, write_section_addresses, write_section_containers,
+    write_section_externals, write_section_line_tables, write_section_list_defs,
+    write_section_list_items, write_section_list_literals, write_section_name_table,
+    write_section_variables,
 };
 
 fn i001_data() -> brink_format::StoryData {
@@ -94,17 +95,17 @@ fn roundtrip_collection_valued_globals() {
     assert_eq!(data, recovered);
 }
 
-// ── Recursion-depth cap on VAL_ARRAY/VAL_MAP decode (#553) ──────────────────
+// ── Recursion-depth cap on VAL_ARRAY/VAL_MAP decode (#553, #561, #562) ──────
 //
 // `decode_value` recurses into itself for VAL_ARRAY/VAL_MAP children with no
 // depth limit. A crafted `.inkb` of nested single-element arrays (~5
 // bytes/level) can stack-overflow the reader. These tests hand-build a
-// `Value` nested exactly at, and one past, the reader's cap (128, matching
-// `MAX_DECODE_DEPTH` in `inkb/read.rs`) and prove the reader accepts the
-// former unchanged and rejects the latter with a proper `DecodeError`
-// instead of overflowing the stack.
-
-const MAX_DECODE_DEPTH: usize = 128;
+// `Value` nested exactly at, and one past, the reader's cap
+// (`brink_format::MAX_DECODE_DEPTH` — the single canonical definition shared
+// by every `decode_value` implementation, #561) and prove the reader accepts
+// the former unchanged and rejects the latter with a proper `DecodeError`
+// instead of overflowing the stack. Both the `VAL_ARRAY` recursion branch and
+// the parallel `VAL_MAP` branch are exercised at the boundary (#562).
 
 /// A `Value` wrapped in `depth` single-element arrays around a scalar leaf,
 /// matching the issue's "nested single-element arrays" shape.
@@ -113,6 +114,20 @@ fn nested_array(depth: usize) -> brink_format::Value {
     let mut v = Value::Int(42);
     for _ in 0..depth {
         v = Value::array(vec![v]);
+    }
+    v
+}
+
+/// A `Value` wrapped in `depth` single-entry maps around a scalar leaf —
+/// the `VAL_MAP` analogue of [`nested_array`], exercising the parallel map
+/// recursion branch in `decode_value` (#562).
+fn nested_map(depth: usize) -> brink_format::Value {
+    use brink_format::{MapKey, OrderedMap, Value};
+    let mut v = Value::Int(42);
+    for _ in 0..depth {
+        let mut map = OrderedMap::with_capacity(1);
+        map.insert(MapKey::Int(0), v);
+        v = Value::map(map);
     }
     v
 }
@@ -168,6 +183,34 @@ fn decode_value_rejects_deeply_crafted_nesting() {
     // guarded — doesn't hit unrelated recursion limits). The reader must
     // reject it promptly rather than recursing hundreds of frames deep.
     let value = nested_array(8 * MAX_DECODE_DEPTH);
+    let data = story_with_default_value(value);
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    assert!(matches!(
+        read_inkb(&buf),
+        Err(DecodeError::MaxDepthExceeded(MAX_DECODE_DEPTH))
+    ));
+}
+
+// ── #562: parallel VAL_MAP recursion branch at the boundary ────────────────
+
+#[test]
+fn decode_value_accepts_max_depth_map_nesting() {
+    let value = nested_map(MAX_DECODE_DEPTH);
+    let data = story_with_default_value(value.clone());
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let recovered = read_inkb(&buf).expect("map depth exactly at cap must decode");
+    assert_eq!(recovered.variables.last().unwrap().default_value, value);
+}
+
+#[test]
+fn decode_value_rejects_beyond_max_depth_map_nesting() {
+    let value = nested_map(MAX_DECODE_DEPTH + 1);
     let data = story_with_default_value(value);
 
     let mut buf = Vec::new();

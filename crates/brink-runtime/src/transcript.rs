@@ -24,7 +24,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use brink_format::{DefinitionId, LineFlags, MapKey, OrderedMap, Value};
+use brink_format::{DefinitionId, LineFlags, MAX_DECODE_DEPTH, MapKey, OrderedMap, Value};
 
 use crate::output::{OutputPart, resolve_lines};
 use crate::program::Program;
@@ -59,13 +59,6 @@ const VAL_FRAGMENT_REF: u8 = 0x08;
 // #525 can be a collection) into `OutputPart::ValueRef`.
 const VAL_ARRAY: u8 = 0x09;
 const VAL_MAP: u8 = 0x0A;
-
-/// Maximum nesting depth permitted when decoding `VAL_ARRAY`/`VAL_MAP`
-/// values, matching the `.inkb` reader's cap (`brink_format::inkb::read`).
-/// Generous for legitimate data but bounds worst-case recursion so a crafted
-/// transcript of nested single-element arrays cannot stack-overflow the
-/// reader (CLAUDE.md "guard against unbounded growth"; issue #553).
-const MAX_DECODE_DEPTH: usize = 128;
 
 // ── Error type ────────────────────────────────────────────────────────────
 
@@ -793,14 +786,18 @@ mod tests {
         ));
     }
 
-    // ── Recursion-depth cap on VAL_ARRAY/VAL_MAP decode (#553) ──────────────
+    // ── Recursion-depth cap on VAL_ARRAY/VAL_MAP decode (#553, #561, #562) ──
     //
     // `decode_value` recurses into itself for VAL_ARRAY/VAL_MAP children with
     // no depth limit. A crafted transcript of nested single-element arrays
     // (~5 bytes/level) can stack-overflow the reader. These tests hand-build
-    // a `Value` nested exactly at, and one past, `MAX_DECODE_DEPTH` and prove
-    // the reader accepts the former and rejects the latter with a proper
-    // decode error instead of overflowing the stack.
+    // a `Value` nested exactly at, and one past,
+    // `brink_format::MAX_DECODE_DEPTH` (the single canonical definition
+    // shared by every `decode_value` implementation, #561) and prove the
+    // reader accepts the former and rejects the latter with a proper decode
+    // error instead of overflowing the stack. Both the `VAL_ARRAY` recursion
+    // branch and the parallel `VAL_MAP` branch are exercised at the boundary
+    // (#562).
 
     /// A `Value` wrapped in `depth` single-element arrays around a scalar
     /// leaf, matching the issue's "nested single-element arrays" shape.
@@ -808,6 +805,21 @@ mod tests {
         let mut v = Value::Int(42);
         for _ in 0..depth {
             v = Value::array(vec![v]);
+        }
+        v
+    }
+
+    /// A `Value` wrapped in `depth` single-entry maps around a scalar leaf —
+    /// the `VAL_MAP` analogue of [`nested_array`], exercising the parallel
+    /// map recursion branch in `decode_value` (#562).
+    fn nested_map(depth: usize) -> Value {
+        use brink_format::{MapKey, OrderedMap};
+
+        let mut v = Value::Int(42);
+        for _ in 0..depth {
+            let mut map = OrderedMap::with_capacity(1);
+            map.insert(MapKey::Int(0), v);
+            v = Value::map(map);
         }
         v
     }
@@ -851,6 +863,37 @@ mod tests {
         // recursion limits). The reader must reject it promptly rather than
         // recursing hundreds of frames deep.
         let value = nested_array(8 * MAX_DECODE_DEPTH);
+        let parts = vec![OutputPart::ValueRef(value)];
+        let bytes = write_transcript(&parts, 0, &[]);
+
+        assert!(matches!(
+            read_transcript(&bytes),
+            Err(TranscriptError::MaxDepthExceeded(MAX_DECODE_DEPTH))
+        ));
+    }
+
+    // ── #562: parallel VAL_MAP recursion branch at the boundary ────────────
+
+    #[test]
+    fn decode_value_accepts_max_depth_map_nesting() {
+        // Exactly MAX_DECODE_DEPTH levels of map nesting must still decode
+        // cleanly — the cap must not clip legitimate (if unusual) data.
+        let value = nested_map(MAX_DECODE_DEPTH);
+        let parts = vec![OutputPart::ValueRef(value.clone())];
+        let bytes = write_transcript(&parts, 0, &[]);
+
+        let data = read_transcript(&bytes).expect("map depth exactly at cap must decode");
+        match &data.parts[0] {
+            OutputPart::ValueRef(v) => assert_eq!(*v, value),
+            other => unreachable!("expected ValueRef, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_value_rejects_beyond_max_depth_map_nesting() {
+        // One level past the cap must be rejected with a proper decode
+        // error, not a stack overflow.
+        let value = nested_map(MAX_DECODE_DEPTH + 1);
         let parts = vec![OutputPart::ValueRef(value)];
         let bytes = write_transcript(&parts, 0, &[]);
 
