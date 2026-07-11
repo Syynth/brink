@@ -23,5 +23,13 @@ salsa.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 
+[features]
+# Salsa memo-table/heap introspection (issue #529): an explicit opt-in so
+# ordinary consumers (brink-lsp, brink-ide, brink-web/wasm) never pull in
+# salsa's `salsa_unstable` surface or its extra compiled code. Only the
+# editor-session memory profiling harness
+# (brink-test-harness/src/bin/editor_session_bench.rs) enables it.
+memory-introspection = ["salsa/salsa_unstable"]
+
 [lints]
 workspace = true

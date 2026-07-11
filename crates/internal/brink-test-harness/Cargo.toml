@@ -18,6 +18,11 @@ brink-compiler = { workspace = true }
 brink-driver = { workspace = true }
 brink-ir = { workspace = true }
 brink-codegen-inkb = { workspace = true }
+# For the editor_session_bench bin (#529): drives ProjectDb directly and
+# reads its salsa memo-table snapshot. `memory-introspection` is brink-db's
+# explicit opt-in to salsa's `salsa_unstable` introspection surface (see that
+# crate's Cargo.toml) — no other consumer in the workspace enables it.
+brink-db = { workspace = true, features = ["memory-introspection"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

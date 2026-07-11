@@ -12,9 +12,13 @@
 
 mod db;
 mod include_graph;
+#[cfg(feature = "memory-introspection")]
+mod memory;
 mod queries;
 
 pub use brink_analyzer::Sig;
 pub use brink_ir::FileId;
 pub use db::{ProjectDb, compute_relative_path, resolve_include_path};
+#[cfg(feature = "memory-introspection")]
+pub use memory::{IngredientKind, IngredientMemory};
 pub use queries::{CompileProduct, FileDiagnostics, LirProduct, partition_diagnostics};

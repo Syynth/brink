@@ -2314,6 +2314,7 @@ dependencies = [
  "brink-codegen-inkb",
  "brink-compiler",
  "brink-converter",
+ "brink-db",
  "brink-driver",
  "brink-format",
  "brink-ir",
