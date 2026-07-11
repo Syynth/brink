@@ -35,5 +35,5 @@ overlay files that replace line content per scope, without touching bytecode.
 | Read the `.inkl` byte layout | [Reference › Binary Format](../reference/format.md) |
 
 The translation pipeline is always `.ink` → compile → `.inkb` →
-`export-xliff` → `.xlf`. Never feed inklecate `.ink.json` into the intl tooling
-(see [The Two Pipelines](../concepts/two-pipelines.md)).
+`export-xliff` → `.xlf`. Never feed inklecate `.ink.json` into the intl
+tooling — those files are kept only for oracle regeneration.

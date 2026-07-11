@@ -21,7 +21,6 @@
   - [XLIFF Workflow](./toolchain/localization/xliff.md)
   - [Plurals](./toolchain/localization/plurals.md)
 - [Concepts](./toolchain/concepts/index.md)
-  - [The Two Pipelines](./toolchain/concepts/two-pipelines.md)
   - [The Execution Model](./toolchain/concepts/execution-model.md)
   - [The State Model](./toolchain/concepts/state-model.md)
   - [Architecture & the Firewall](./toolchain/concepts/architecture.md)

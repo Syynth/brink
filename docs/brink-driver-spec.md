@@ -65,7 +65,7 @@ brink-lsp ──────→ Driver (wraps ProjectDb)
 ```
 TIER 3: brink-db       → brink-syntax, brink-ir  (no brink-analyzer)
 TIER 4: brink-driver   → brink-db, brink-analyzer, brink-ir
-TIER 5: brink-compiler → brink-driver, brink-codegen-inkb, brink-codegen-json
+TIER 5: brink-compiler → brink-driver, brink-codegen-inkb
          brink-ide     → brink-driver, brink-db, brink-syntax, brink-ir, brink-fmt
 ```
 
