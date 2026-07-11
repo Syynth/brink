@@ -48,7 +48,7 @@ dev = ["dep:brink-compiler", "dep:brink-syntax"]
 [dev-dependencies]
 # The `play_story` example uses the bevy umbrella crate for windowing,
 # UI, input, and the file_watcher feature that drives hot-reload.
-bevy = { version = "0.18.1", features = ["file_watcher"] }
+bevy = { version = "0.19.0", features = ["file_watcher"] }
 # Tests compile small inline ink stories to exercise the loader/replay
 # code paths. brink-compiler is also pulled in via the `dev` feature
 # in the regular dependency set, but adding it as a dev-dep means
