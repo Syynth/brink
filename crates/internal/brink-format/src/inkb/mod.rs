@@ -128,6 +128,20 @@ pub enum SectionKind {
     AddressPaths = 0x0A,
 }
 
+// Reserved v4 section kinds — numeric assignments frozen by the §9 one-bump
+// rule (`docs/format-v4-rfc.md` §2 "Sections"), emitted by nothing in 4.0.
+// Deliberately NOT `SectionKind` variants: `from_u8` has no match arm for
+// these, so the strict reader keeps rejecting them (`InvalidSectionKind`)
+// until each section's milestone lands and a real variant is added, the same
+// discipline the reserved v4 value tags (above) already follow.
+//   0x0B LiteralPool   — content-hash-deduplicated constant pool (T1a;
+//                        absorbs `ListLiterals` — `PushList` retires in favor
+//                        of `PushLiteral(idx)` when the collection opcodes land)
+//   0x0C StructShapes  — reserved, count always 0 in 4.0 (typed-dialect era)
+//   0x0D EffectRows    — reserved, count always 0 in 4.0, section-locally
+//                        versioned so T2 can define the row encoding without
+//                        another format bump
+
 impl SectionKind {
     pub(crate) fn from_u8(tag: u8) -> Result<Self, DecodeError> {
         match tag {
@@ -198,4 +212,28 @@ pub(crate) fn safe_capacity(
     let remaining = buf_len.saturating_sub(offset);
     let max_possible = remaining.checked_div(min_element_size).unwrap_or(remaining);
     count.min(max_possible)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reserved v4 sections (`LiteralPool` 0x0B, `StructShapes` 0x0C,
+    /// `EffectRows` 0x0D — `docs/format-v4-rfc.md` §2) are numbered but
+    /// deliberately not `SectionKind` variants — the strict reader must keep
+    /// rejecting every reserved tag until each section's milestone lands.
+    #[test]
+    fn from_u8_rejects_reserved_v4_sections() {
+        for tag in [0x0Bu8, 0x0C, 0x0D] {
+            let err = SectionKind::from_u8(tag).unwrap_err();
+            assert_eq!(err, DecodeError::InvalidSectionKind(tag));
+        }
+    }
+
+    #[test]
+    fn from_u8_accepts_all_current_sections() {
+        for tag in 0x01u8..=0x0A {
+            assert!(SectionKind::from_u8(tag).is_ok());
+        }
+    }
 }
