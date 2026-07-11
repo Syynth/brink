@@ -82,7 +82,7 @@ mod tests {
 
     fn empty_analysis() -> AnalysisResult {
         AnalysisResult {
-            index: brink_ir::SymbolIndex::default(),
+            index: std::sync::Arc::new(brink_ir::SymbolIndex::default()),
             resolutions: Vec::new(),
             diagnostics: Vec::new(),
             symbol_meta: std::collections::BTreeMap::new(),

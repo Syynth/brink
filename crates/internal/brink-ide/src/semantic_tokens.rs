@@ -500,7 +500,7 @@ mod tests {
 
     fn empty_analysis() -> AnalysisResult {
         AnalysisResult {
-            index: SymbolIndex::default(),
+            index: std::sync::Arc::new(SymbolIndex::default()),
             resolutions: Vec::new(),
             diagnostics: Vec::new(),
             symbol_meta: std::collections::BTreeMap::new(),
