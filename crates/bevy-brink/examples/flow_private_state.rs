@@ -17,14 +17,13 @@
 //! is untouched by Ashe's), but after Ashe raises the world-shared
 //! alarm, Brogan reacts to it immediately.
 
-// A demo prints its story with `println!` — the workspace denies bare
-// stdout in production code, but a runnable example is exactly where
-// plain `println!` is the point.
-#![allow(clippy::print_stdout)]
+// A demo prints its story with `println!` and asserts its own setup with
+// `expect` — the workspace denies both in production code, but a runnable
+// example is exactly where they're the point.
+#![allow(clippy::print_stdout, clippy::expect_used)]
 #![expect(
-    clippy::needless_pass_by_value,
     clippy::type_complexity,
-    reason = "bevy systems take Res/Query by value and have complex query tuples"
+    reason = "bevy systems have complex query tuples"
 )]
 
 use bevy::ecs::system::RunSystemOnce;
