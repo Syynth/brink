@@ -1,5 +1,3 @@
-use brink_converter::convert;
-use brink_json::InkJson;
 use brink_runtime::{DotNetRng, Line, Story};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -9,17 +7,14 @@ const MAX_CHOICES: usize = 5000;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let story_path = args.get(1).map_or("benchmarks/stories/hanoi-10/story.ink.json", |s| s.as_str());
+    let story_path = args.get(1).map_or("benchmarks/stories/hanoi-10/story.ink", |s| s.as_str());
 
-    let json_str = std::fs::read_to_string(story_path)
-        .unwrap_or_else(|e| panic!("failed to read {story_path}: {e}"));
-    let ink: InkJson = serde_json::from_str(&json_str)
-        .unwrap_or_else(|e| panic!("failed to parse JSON: {e}"));
-    let data = convert(&ink)
-        .unwrap_or_else(|e| panic!("failed to convert: {e}"));
+    let data = brink_compiler::compile_path(std::path::Path::new(story_path))
+        .unwrap_or_else(|e| panic!("failed to compile {story_path}: {e}"))
+        .data;
     let (program, line_tables) = brink_runtime::link(&data)
         .unwrap_or_else(|e| panic!("failed to link: {e}"));
-    let mut story = Story::<DotNetRng>::new(&program, line_tables);
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
     let mut rng = StdRng::seed_from_u64(SEED);
     let mut choice_count = 0;
 
@@ -30,7 +25,7 @@ fn main() {
         };
         let last = lines.last();
         match last {
-            Some(Line::Text { .. }) | Some(Line::End { .. }) | None => break,
+            Some(Line::Text { .. } | Line::Done { .. } | Line::End { .. }) | None => break,
             Some(Line::Choices { choices, .. }) => {
                 if choice_count >= MAX_CHOICES {
                     break;

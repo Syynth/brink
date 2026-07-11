@@ -1,6 +1,6 @@
 // brink internal-loop benchmark driver.
 //
-// Usage: brink-loop <story.ink.json> <input.txt> [--iterations N]
+// Usage: brink-loop <story.ink|story.inkb> <input.txt> [--iterations N]
 //
 // Runs the story N times in a single process, reporting total and average time.
 // Input file is 0-indexed (one choice index per line).
@@ -8,12 +8,10 @@
 
 use std::time::Instant;
 
-use brink_converter::convert;
-use brink_json::InkJson;
 use brink_runtime::{DotNetRng, Line, Story};
 
 fn run_once(
-    program: &brink_runtime::Program,
+    program: std::sync::Arc<brink_runtime::Program>,
     line_tables: Vec<Vec<brink_format::LineEntry>>,
     inputs: &[usize],
 ) {
@@ -27,7 +25,7 @@ fn run_once(
         };
         let last = lines.last();
         match last {
-            Some(Line::Text { .. }) | Some(Line::End { .. }) | None => break,
+            Some(Line::Text { .. } | Line::Done { .. } | Line::End { .. }) | None => break,
             Some(Line::Choices { choices, .. }) => {
                 if input_idx >= inputs.len() {
                     break;
@@ -44,7 +42,7 @@ fn run_once(
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
-        eprintln!("Usage: brink-loop <story.ink.json> <input.txt> [--iterations N]");
+        eprintln!("Usage: brink-loop <story.ink|story.inkb> <input.txt> [--iterations N]");
         std::process::exit(1);
     }
 
@@ -57,8 +55,6 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(1);
 
-    let json_str = std::fs::read_to_string(story_path)
-        .unwrap_or_else(|e| panic!("failed to read {story_path}: {e}"));
     let input_str = std::fs::read_to_string(input_path)
         .unwrap_or_else(|e| panic!("failed to read {input_path}: {e}"));
 
@@ -68,16 +64,23 @@ fn main() {
         .map(|l| l.trim().parse().unwrap_or_else(|e| panic!("bad input line {l:?}: {e}")))
         .collect();
 
-    let ink: InkJson = serde_json::from_str(&json_str)
-        .unwrap_or_else(|e| panic!("failed to parse JSON: {e}"));
-    let data = convert(&ink)
-        .unwrap_or_else(|e| panic!("failed to convert: {e}"));
+    let data = if story_path.ends_with(".inkb") {
+        let bytes = std::fs::read(story_path)
+            .unwrap_or_else(|e| panic!("failed to read {story_path}: {e}"));
+        brink_format::read_inkb(&bytes)
+            .unwrap_or_else(|e| panic!("failed to read inkb: {e}"))
+    } else {
+        brink_compiler::compile_path(std::path::Path::new(story_path))
+            .unwrap_or_else(|e| panic!("failed to compile {story_path}: {e}"))
+            .data
+    };
     let (program, line_tables) = brink_runtime::link(&data)
         .unwrap_or_else(|e| panic!("failed to link: {e}"));
+    let program = std::sync::Arc::new(program);
 
     let start = Instant::now();
     for _ in 0..iterations {
-        run_once(&program, line_tables.clone(), &inputs);
+        run_once(program.clone(), line_tables.clone(), &inputs);
     }
     let elapsed = start.elapsed();
 

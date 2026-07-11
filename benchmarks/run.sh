@@ -32,6 +32,14 @@ for scenario_toml in benchmarks/scenarios/*/scenario.toml; do
         echo "ERROR: story file not found: $story"
         continue
     fi
+
+    # brink consumes the .ink source directly (the .ink.json is inklecate
+    # output, kept for the other runtimes).
+    story_ink="${story%.ink.json}.ink"
+    if [[ ! -f "$story_ink" ]]; then
+        echo "ERROR: ink source not found: $story_ink"
+        continue
+    fi
     if [[ ! -f "$input" ]]; then
         echo "ERROR: input file not found: $input"
         continue
@@ -48,13 +56,13 @@ for scenario_toml in benchmarks/scenarios/*/scenario.toml; do
 
     # brink-cli (1-indexed input)
     if [[ -x "$BRINK_CLI" ]]; then
-        cmds+=("$BRINK_CLI play $story --input $input_1")
+        cmds+=("$BRINK_CLI play $story_ink --input $input_1")
         names+=("brink-cli")
     fi
 
     # brink-loop (0-indexed input, single iteration for hyperfine)
     if [[ -x "$BRINK_LOOP" ]]; then
-        cmds+=("$BRINK_LOOP $story $input")
+        cmds+=("$BRINK_LOOP $story_ink $input")
         names+=("brink-loop")
     fi
 
