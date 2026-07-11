@@ -11,7 +11,7 @@ brink is organized as a Cargo workspace with strict dependency rules. The centra
 | `brink-cli` | `crates/brink-cli/` | CLI tool: compile, convert, play, replay, ide, export-xliff, compile-locale, regenerate-xliff, fmt |
 | `brink-lsp` | `crates/brink-lsp/` | Language server for ink files |
 | `brink-web` | `crates/brink-web/` | WASM bindings for the IDE + runtime; powers the web playground |
-| `bevy-brink` | `crates/bevy-brink/` | Bevy 0.18 integration: plugin, assets, components, external-function bindings |
+| `bevy-brink` | `crates/bevy-brink/` | Bevy 0.19 integration: plugin, assets, components, external-function bindings |
 
 ## Internal crates
 

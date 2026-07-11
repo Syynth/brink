@@ -7,18 +7,18 @@ yanked = "deny"
 # Known-and-accepted informational advisories (re-evaluate on each bump). These
 # are all transitive (pulled in via bevy / wgpu) and not actual vulnerabilities:
 ignore = [
-    # `paste` is unmaintained but has no known vulnerability; pervasive transitive dep.
-    "RUSTSEC-2024-0436",
-    # `rand` unsoundness only triggers with a custom logger calling `rand::rng()`;
-    # we don't hit that path. Pulled in transitively (bevy, etc.).
-    "RUSTSEC-2026-0097",
     # `ttf-parser` is unmaintained but has no known vulnerability; transitive via the
     # bevy / wgpu font stack. Re-evaluate on the next dep bump.
     "RUSTSEC-2026-0192",
     # quick-xml < 0.41 quadratic run time on hostile XML (duplicate-attribute check /
     # namespace resolution). We only parse local XLIFF translation files, never
-    # attacker-controlled input. Remove both when quick-xml is bumped to >= 0.41
-    # (tracked follow-up; the 0.39 -> 0.41 migration has API churn).
+    # attacker-controlled input.
+    #
+    # Re-evaluated on the Bevy 0.19 bump (#416): our direct dep (xliff2 ->
+    # quick-xml) is already >= 0.41, but a transitive copy still comes in at
+    # 0.39.4 via wayland-scanner (bevy_winit -> winit ->
+    # smithay-client-toolkit -> wayland-scanner on Linux/Wayland targets), so
+    # this ignore stays until that chain bumps past 0.41 too.
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",
 ]

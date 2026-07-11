@@ -132,7 +132,7 @@ INSTA_UPDATE=always cargo test -p brink-test-harness --test oracle_snapshots
 | `brink-format` | `crates/internal/brink-format/` | Binary interface between compiler and runtime |
 | `brink-converter` | `crates/internal/brink-converter/` | Converts .ink.json → StoryData (reference pipeline) |
 | `brink-test-harness` | `crates/internal/brink-test-harness/` | Episode exploration, diffing, corpus tests |
-| `bevy-brink` | `crates/bevy-brink/` | Bevy 0.18 integration: plugin, assets, components, external-function bindings |
+| `bevy-brink` | `crates/bevy-brink/` | Bevy 0.19 integration: plugin, assets, components, external-function bindings |
 | `bevy-brink-derive` | `crates/internal/bevy-brink-derive/` | `#[derive(BrinkCommand)]` proc-macro for ink→engine command events |
 
 Per-area specs live in `docs/` (`compiler-spec.md`, `runtime-spec.md`, `format-spec.md`, `bevy-brink.md`, `intl-spec.md`, …).
