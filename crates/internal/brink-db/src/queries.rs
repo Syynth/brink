@@ -16,21 +16,30 @@
 //! Layer 3 (lowering/codegen, whole-project in this slice): [`lir_query`],
 //! [`story_data_query`], and the per-file [`diagnostics_query`].
 //!
-//! # The `resolution_index` cutoff seam (slice-A findings 1+2)
+//! # The `resolution_index` cutoff seam (slice-A findings 1+2, tightened by #517)
 //!
 //! The full [`SymbolIndex`] carries a `TextRange` per symbol, so nearly any
 //! edit shifts ranges and defeats `Eq`-cutoff on the index — dependents of
 //! `symbol_index` would re-run on every keystroke. [`resolution_index_query`]
 //! sits between the index and reference resolution: it is the full index with
-//! ranges *zeroed for every non-local symbol*. Resolution reads symbol ranges
-//! in exactly one place — `lookup_local_in_scope`'s closest-preceding pick,
-//! which only inspects `Param`/`Temp` symbols — so stripping the other ranges
-//! cannot change any resolution and the strip is behavior-neutral by
-//! construction (locked by `analysis_matches_monolithic_analyzer` tests and
-//! the oracle gate). Locals stay in the projection because cross-file
-//! duplicate scoped locals share a `DefinitionId` (finding 4): removing or
-//! re-keying them would change last-writer-wins resolution in duplicate-name
-//! projects, which is out of scope for a behavior-neutral slice.
+//! locals (`Param`/`Temp`) dropped and ranges zeroed for every remaining
+//! (declaration) symbol.
+//!
+//! Locals were originally kept in the projection (with real ranges) because
+//! `lookup_local_in_scope`'s closest-preceding pick was the one place
+//! resolution read symbol ranges. That left a gap (finding 1): a body edit
+//! that adds/removes a `~ temp` anywhere in the project changes a local's
+//! *identity*, not just its range, so `resolution_index_query`'s own output
+//! still differed and every file's `resolve` memo still re-ran. #517 closes
+//! the gap by having `resolve_query` read the declaring file's own
+//! `manifest.locals` instead of the merged index for local lookups (a knot's
+//! body lives in exactly one file, so this was always sufficient — see
+//! `brink_analyzer::resolve::lookup_local_in_scope`), which also fixes the
+//! finding-4 cross-file duplicate-`DefinitionId` aliasing: resolution no
+//! longer merges locals from different files, so it can no longer pick the
+//! wrong file's declaration. With locals gone, dropping the rest is
+//! behavior-neutral by construction (locked by the `query_equivalence` tests
+//! and the oracle gate).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -195,10 +204,21 @@ pub(crate) fn symbol_index_query(
     brink_analyzer::symbol_index(&manifest_refs)
 }
 
-/// The early-cutoff projection of the symbol index used by resolution: the
-/// full index with ranges zeroed for every non-local symbol (see module
-/// docs). Body/whitespace edits that only shift global declaration ranges
-/// backdate here, so every other file's `resolve` memo survives untouched.
+/// The early-cutoff projection of the symbol index used by resolution:
+/// declarations only (locals dropped entirely — issue #517), ranges zeroed
+/// for every remaining symbol (see module docs). Neither a body edit that
+/// shifts a global declaration's
+/// range nor one that adds/removes a `~ temp`/param anywhere in the project
+/// changes this output, so every file's `resolve` memo survives untouched.
+///
+/// Locals are dropped rather than range-zeroed like the rest: a `Param`/
+/// `Temp` entry's *identity* (not just its range) changes when a body edit
+/// adds or removes a local, so zeroing its range alone would not have
+/// stopped the churn (finding 1). Resolution never needs locals from this
+/// projection — [`resolve_query`] feeds `lookup_local_in_scope` the
+/// declaring file's own per-file `manifest.locals` instead (a knot's body
+/// lives in exactly one file, so cross-file local lookup was never
+/// semantically required — see `brink_analyzer::resolve::lookup_local_in_scope`).
 #[salsa::tracked(returns(ref))]
 pub(crate) fn resolution_index_query(
     db: &dyn salsa::Database,
@@ -206,16 +226,26 @@ pub(crate) fn resolution_index_query(
 ) -> Arc<SymbolIndex> {
     let (index, _diags) = symbol_index_query(db, project);
     let mut stripped: SymbolIndex = (**index).clone();
+    stripped
+        .symbols
+        .retain(|_, info| !matches!(info.kind, SymbolKind::Param | SymbolKind::Temp));
+    let live_ids: std::collections::HashSet<DefinitionId> =
+        stripped.symbols.keys().copied().collect();
+    stripped.by_name.retain(|_, ids| {
+        ids.retain(|id| live_ids.contains(id));
+        !ids.is_empty()
+    });
     for info in stripped.symbols.values_mut() {
-        if !matches!(info.kind, SymbolKind::Param | SymbolKind::Temp) {
-            info.range = rowan::TextRange::default();
-        }
+        info.range = rowan::TextRange::default();
     }
     Arc::new(stripped)
 }
 
 /// Resolve one file's references against the project-wide names. Thin
-/// wrapper over [`brink_analyzer::resolve`], fed the cutoff projection.
+/// wrapper over [`brink_analyzer::resolve`], fed the decls-only cutoff
+/// projection for globals and this file's own `manifest.locals` for
+/// param/temp lookups — the per-file dependency edge that lets a `~ temp`
+/// edit in file Y leave file X's memo untouched (issue #517).
 #[salsa::tracked(returns(ref))]
 pub(crate) fn resolve_query(
     db: &dyn salsa::Database,
@@ -227,18 +257,26 @@ pub(crate) fn resolve_query(
 }
 
 /// Interned key for [`signature_query`]. Keyed on the content-addressed
-/// [`DefinitionId`] alone: colliding ids (duplicate scoped locals across
-/// files, slice-A finding 4) map to a *single* index entry chosen
+/// [`DefinitionId`] alone: colliding ids among non-local declarations
+/// (duplicate names across files) map to a *single* index entry chosen
 /// deterministically by the merge, so the memo cannot diverge from what a
-/// non-memoized `signature(def)` call would return for the same id.
+/// non-memoized `signature(def)` call would return for the same id. Local
+/// (`Param`/`Temp`) ids no longer collide across files in a way that matters
+/// here — [`resolution_index_query`] drops locals entirely (issue #517).
 #[salsa::interned]
 pub(crate) struct DefKey<'db> {
     pub def: DefinitionId,
 }
 
-/// Per-declaration signature stub (spec §4 layer 2). Reads the range-stripped
-/// index projection — [`Sig`] carries no ranges, so this is output-identical
-/// to reading the full index while backdating across whitespace/body edits.
+/// Per-declaration signature stub (spec §4 layer 2). Reads the decls-only,
+/// range-stripped index projection — [`Sig`] carries no ranges, so this is
+/// output-identical to reading the full index for declarations, while
+/// backdating across whitespace/body edits. Locals are not addressable here
+/// (returns `None` for a `Param`/`Temp` [`DefinitionId`], issue #517):
+/// resolving one would require scanning every file's `manifest.locals` to
+/// find the declaring file, reintroducing the project-wide invalidation this
+/// projection exists to avoid. No consumer calls `signature` with a local id
+/// today (phase-0 stub, not yet wired to hover).
 #[salsa::tracked]
 pub(crate) fn signature_query<'db>(
     db: &'db dyn salsa::Database,

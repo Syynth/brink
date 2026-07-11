@@ -1,12 +1,18 @@
-//! Equivalence gates for the salsa query pipeline (phase 0 slice B).
+//! Equivalence gates for the salsa query pipeline (phase 0 slice B, locals
+//! split in #517).
 //!
 //! The query-composed pipeline must be *output-identical* to the monolithic
-//! analyzer path — including the range-stripped `resolution_index` cutoff
-//! seam, which is only legal because resolution never reads non-local
-//! declaration ranges. These tests pin that equivalence on fixtures chosen
-//! to poke the risky corners: locals (params/temps), duplicate names across
-//! files, cross-file duplicate scoped locals (the finding-4 collision case),
-//! and unresolved references.
+//! analyzer path — including the decls-only, range-stripped
+//! `resolution_index` cutoff seam, which is only legal because resolution
+//! never reads locals or non-local declaration ranges from the merged index
+//! (locals resolve from the declaring file's own `manifest.locals` instead —
+//! both the monolithic and query-composed paths go through the same
+//! `brink_analyzer::resolve_file`, so they cannot diverge from each other,
+//! even though the *values* resolution now returns changed for the
+//! finding-4 cross-file duplicate-scoped-locals case, see below). These
+//! tests pin that equivalence on fixtures chosen to poke the risky corners:
+//! locals (params/temps), duplicate names across files, cross-file duplicate
+//! scoped locals, and unresolved references.
 
 use brink_db::ProjectDb;
 use brink_ir::{FileId, HirFile, SymbolManifest};
@@ -65,10 +71,14 @@ fn analysis_matches_with_locals_and_shadowing() {
 
 #[test]
 fn analysis_matches_with_cross_file_duplicate_scoped_locals() {
-    // Finding 4: duplicate knots across files with same-named scoped locals
-    // share a `DefinitionId`. Resolution behavior in this pathological case
-    // (last-writer-wins, closest-preceding across files) must be preserved
-    // bit-for-bit by the query path.
+    // Finding 4 (fixed by #517): duplicate knots across files with
+    // same-named scoped locals share a `DefinitionId` in the *merged* index,
+    // but resolution no longer reads locals from the merged index — each
+    // file's own reference resolves against its own `manifest.locals`, so
+    // `a.ink`'s `t` and `b.ink`'s `t` each resolve within their own file
+    // regardless of the shared id. Both the monolithic and query-composed
+    // paths go through the same `resolve_file`, so they cannot diverge from
+    // each other even though the resolved values differ from pre-#517.
     assert_analysis_matches(&[
         (
             "a.ink",
@@ -96,19 +106,64 @@ fn signature_matches_direct_analyzer_call() {
         "VAR gold = 10\nCONST MAX = 99\n=== quest(hero, ref log) ===\nOnward.\n-> END\n",
     )]);
 
-    // Full-index reference computation.
+    // Full-index reference computation, restricted to declarations —
+    // `signature_query` reads the decls-only `resolution_index` (#517), so
+    // it has no local (`Param`/`Temp`) entries to compare against; those are
+    // covered by `signature_is_none_for_locals` below.
     let index = db.symbol_index();
     let inputs = db.analysis_inputs();
     let hir_refs: Vec<(FileId, &HirFile)> = inputs.iter().map(|(id, hir, _)| (*id, hir)).collect();
 
     let mut checked = 0;
     for def in index.symbols.keys() {
+        if matches!(
+            index.symbols.get(def).map(|info| info.kind),
+            Some(brink_ir::SymbolKind::Param | brink_ir::SymbolKind::Temp)
+        ) {
+            continue;
+        }
         let expected = brink_analyzer::signature(*def, &index, &hir_refs);
         let got = db.signature(*def);
         assert_eq!(got, expected, "signature mismatch for {def:?}");
         checked += 1;
     }
-    assert!(checked >= 5, "expected several definitions, got {checked}");
+    assert!(checked >= 3, "expected several declarations, got {checked}");
+}
+
+#[test]
+fn signature_is_none_for_locals() {
+    // #517: `resolution_index` (which `signature_query` reads) drops locals
+    // entirely, so `signature(def)` for a `Param`/`Temp` id is always `None`
+    // — not yet a regression, since no consumer calls `signature` with a
+    // local id today (see `resolve_query`'s own per-file locals lookup).
+    let db = db_with(&[(
+        "main.ink",
+        "=== quest(hero) ===\n~ temp step = 1\nOnward.\n-> END\n",
+    )]);
+
+    let index = db.symbol_index();
+    let local_defs: Vec<_> = index
+        .symbols
+        .iter()
+        .filter(|(_, info)| {
+            matches!(
+                info.kind,
+                brink_ir::SymbolKind::Param | brink_ir::SymbolKind::Temp
+            )
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    assert!(
+        local_defs.len() >= 2,
+        "expected a param and a temp def, got {local_defs:?}"
+    );
+    for def in local_defs {
+        assert_eq!(
+            db.signature(def),
+            None,
+            "expected no signature for local {def:?}"
+        );
+    }
 }
 
 #[test]
