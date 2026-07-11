@@ -1328,3 +1328,19 @@
 - **SCOPE:** architectural
 - **WHAT:** (1) The model (data-is-values / identity-is-names) and the sharing-unobservable invariant are standing law. (2) Maps: insertion-order iteration; v1 key domain {int, string, bool}. (3) Projections: indices snapshot at ref creation; invalidation is a turn-terminating fault; overlaps resolve by immediate write-through order. (4) Host boundary: snapshot-only contract + Handle tokens + load-time rehydration hook (bevy EntityMapper-based) — ratified WITH the snapshot-economics analysis: crossings are O(1) Arc bumps; retained-snapshot memory is bounded at (retained generations + 1), never accumulating history; Arc::ptr_eq is available to hosts as a change-detection hint (host-side only — never script-visible semantics); the wasm boundary serializes and is exempt from snapshot economics. (5) The compiler-guarantees contract (spec §9) is standing law. (6) Effects: direction ratified — inferred rows internally, declared/frozen at entry points via the #@ channel; detailed design gets its own round before implementation. (7) Cross-flow ref-captured #@local cells: late binding through the executing flow's scope view. (8) v1 ships ptr_eq only; collapsing/sweeps stay specified-optional. Tier-1 build ordering: format schema on paper → runtime value core (hand-assembled-bytecode testable, oracle-inert) → single format bump riding the runtime PR → compiler surface last.
 - **WHY:** Each follows from the ratified model and prior rulings; alternatives costed in docs/value-model-spec.md. The snapshot-economics discussion resolved the bevy memory/time concern (bounded divergence, lock-free parallel reads, free change detection); runtime-led ordering keeps every intermediate merge oracle-neutral by construction and validates the wire schema before it freezes.
+
+## Wasm-observable behavior changes require a @brink-lang/web changeset
+- **WHEN:** 2026-07-11
+- **PROJECT:** brink
+- **SYSTEM:** release process (crates ↔ npm trains)
+- **SCOPE:** moderate
+- **WHAT:** Any PR — including crates-only PRs — that changes behavior observable through the `@brink-lang/web` wasm surface (compileProject output, session APIs, diagnostics) must carry a `@brink-lang/web` patch changeset. Supersedes the implicit "crates-only PRs carry no changeset" convention (under which #527 shipped an observable change that would only reach npm on the next unrelated TS bump).
+- **WHY:** The 0.9.1 saga established that consumer latency on behavior fixes hurts; the changelog should tell consumers the truth about behavior, not only about TS diffs. Enforced via pump house rules + CLAUDE.md.
+
+## Structs: VERSION 4 reserves the surface; implementation rides the typed dialect
+- **WHEN:** 2026-07-11
+- **PROJECT:** brink
+- **SYSTEM:** language design / format (#397 Tier-1)
+- **SCOPE:** architectural
+- **WHAT:** Brink will have structs — closed-shape records (`Value::Record`: flat field array + interned shape id), distinct from open-keyed maps — but not in Tier-1. Maps ship first (they subsume structs functionally); structs arrive with the typed dialect, where they get field checking and compile-time field offsets. VERSION 4 reserves their format surface now (value tag, shapes section, field-op opcode space) per the one-bump rule.
+- **WHY:** All ratified value-model machinery (COW, serialization, collapsing, projections, sharing invariant) applies to records unchanged, so the only cost of "room for structs" is reserved identifiers — while retrofitting a value tag later would burn a format version. Positioning structs as the typed dialect's data-modeling story pairs them with the checker and the bevy derive boundary where they earn their keep.
