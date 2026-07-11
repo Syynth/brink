@@ -12,10 +12,82 @@ use brink_format::CountingFlags;
 
 use crate::FileId;
 use crate::hir;
+use crate::hir::visit::{self, HirVisitor};
 use crate::symbols::{ResolutionMap, SymbolIndex};
+use crate::{Diagnostic, DiagnosticCode, Expr, Stmt};
 
 use super::types as lir;
 use context::{LowerCtx, NameTable, ResolutionLookup, TempMap};
+
+/// Defensive backstop for `brink-analyzer`'s dialect gate (E051/E052).
+///
+/// `brink-syntax` always parses the full superset grammar and `brink-ir`
+/// always lowers it to HIR; whether T1b brink-extension constructs
+/// (`~ { … }` logic blocks, `#[…]`/`#{…}` sigil literals, postfix indexing)
+/// are *allowed* is decided by the dialect gate, which runs as an
+/// *analysis* diagnostic. Analysis diagnostics are suppressible
+/// (`// brink-disable-all` / line directives — see `crate::suppressions`),
+/// so "the gate already rejected this" is not provably true by the time
+/// `lower_to_program` runs: a suppressed gate lets a residual
+/// `LogicBlock`/`ArrayLiteral`/`MapLiteral`/`Index` HIR node flow in here.
+///
+/// Scan for that and refuse to lower rather than falling through to the
+/// `lower_stmt`/`lower_expr` fallback arms, which would otherwise silently
+/// drop the construct (`None`) or replace it with `Null` — a real data-loss
+/// bug, not just a `debug_assert!` that's a no-op in release builds. See
+/// #572 review.
+fn check_residual_extensions(files: &[(FileId, &hir::HirFile)]) -> Vec<Diagnostic> {
+    struct Guard<'a> {
+        file: FileId,
+        out: &'a mut Vec<Diagnostic>,
+    }
+
+    impl Guard<'_> {
+        fn flag(&mut self, range: rowan::TextRange, construct: &str) {
+            self.out.push(Diagnostic {
+                file: self.file,
+                range,
+                message: format!(
+                    "internal error: {construct} reached LIR lowering — the dialect gate \
+                     should have rejected it first (was it suppressed with \
+                     `// brink-disable-all` or a line directive?)"
+                ),
+                code: DiagnosticCode::E053,
+            });
+        }
+    }
+
+    impl HirVisitor for Guard<'_> {
+        fn visit_exprs(&self) -> bool {
+            true
+        }
+
+        fn enter_stmt(&mut self, stmt: &Stmt) {
+            if let Stmt::LogicBlock(lb) = stmt {
+                self.flag(lb.ptr.text_range(), "`~ { … }` multi-line logic block");
+            }
+        }
+
+        fn enter_expr(&mut self, expr: &Expr) {
+            match expr {
+                Expr::ArrayLiteral(a) => self.flag(a.ptr.text_range(), "`#[…]` array literal"),
+                Expr::MapLiteral(m) => self.flag(m.ptr.text_range(), "`#{…}` map literal"),
+                Expr::Index(i) => self.flag(i.ptr.text_range(), "postfix indexing `[…]`"),
+                _ => {}
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for &(file, hir_file) in files {
+        let mut guard = Guard {
+            file,
+            out: &mut out,
+        };
+        visit::visit(hir_file, &mut guard);
+    }
+    out
+}
 
 /// Lower analyzed HIR into a resolved LIR `Program`.
 ///
@@ -24,6 +96,11 @@ use context::{LowerCtx, NameTable, ResolutionLookup, TempMap};
 ///
 /// `file_paths` maps each `FileId` to its source file path for populating
 /// `SourceLocation` on recognized lines.
+///
+/// Returns `(None, diagnostics)` — never a corrupt or partial `Program` —
+/// when [`check_residual_extensions`] finds a T1b brink-extension HIR node
+/// that should have been rejected upstream by the dialect gate. Otherwise
+/// returns `(Some(program), warnings)`.
 #[expect(
     clippy::implicit_hasher,
     reason = "internal API, no need to generalize"
@@ -33,7 +110,12 @@ pub fn lower_to_program(
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
     file_paths: &HashMap<FileId, String>,
-) -> (lir::Program, Vec<crate::Diagnostic>) {
+) -> (Option<lir::Program>, Vec<crate::Diagnostic>) {
+    let residual = check_residual_extensions(files);
+    if !residual.is_empty() {
+        return (None, residual);
+    }
+
     // ── Step 0: Normalize HIR (pre-LIR regularization) ──────────
     let mut normalized: Vec<(FileId, hir::HirFile)> = files
         .iter()
@@ -79,14 +161,14 @@ pub fn lower_to_program(
     apply_counting_flags(&mut root, &globals);
 
     (
-        lir::Program {
+        Some(lir::Program {
             root,
             globals,
             lists,
             list_items,
             externals,
             name_table: names.into_entries(),
-        },
+        }),
         lir_diagnostics,
     )
 }

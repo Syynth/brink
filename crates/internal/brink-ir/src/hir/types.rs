@@ -921,6 +921,13 @@ pub enum DiagnosticCode {
     /// A brink-extension construct was used under the `brink` dialect, but
     /// T1b-1 lowers nothing to LIR yet (lands in T1b-2).
     E052,
+    /// Internal error: a T1b brink-extension HIR node (`LogicBlock`,
+    /// `ArrayLiteral`, `MapLiteral`, `Index`) reached LIR lowering. The
+    /// dialect gate (E051/E052) should have rejected it first, but that
+    /// gate is a suppressible analysis diagnostic — this is the
+    /// non-suppressible backstop that fires when the gate was suppressed
+    /// (e.g. `// brink-disable-all`).
+    E053,
 }
 
 impl DiagnosticCode {
@@ -980,6 +987,7 @@ impl DiagnosticCode {
             Self::E050 => "E050",
             Self::E051 => "E051",
             Self::E052 => "E052",
+            Self::E053 => "E053",
         }
     }
 
@@ -1039,6 +1047,9 @@ impl DiagnosticCode {
             Self::E050 => "directive does not take arguments",
             Self::E051 => "brink extension used under strict-ink dialect",
             Self::E052 => "brink extension not yet implemented (lands in T1b-2)",
+            Self::E053 => {
+                "internal: brink extension reached LIR lowering (dialect gate suppressed)"
+            }
         }
     }
 
@@ -1117,6 +1128,7 @@ impl DiagnosticCode {
             "E050" => Some(Self::E050),
             "E051" => Some(Self::E051),
             "E052" => Some(Self::E052),
+            "E053" => Some(Self::E053),
             _ => None,
         }
     }

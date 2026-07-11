@@ -431,16 +431,31 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
         .filter_map(|id| by_id.get(id).map(|f| (*id, f.path(db).clone())))
         .collect();
 
-    let (program, lir_warnings) =
+    let (program, lir_diagnostics) =
         brink_ir::lir::lower_to_program(&hir_refs, &analysis.index, &analysis.resolutions, &paths);
 
-    let mut warnings = warnings;
-    warnings.extend(lir_warnings);
-
-    LirProduct {
-        program: Some(Arc::new(program)),
-        errors,
-        warnings,
+    if let Some(program) = program {
+        let mut warnings = warnings;
+        warnings.extend(lir_diagnostics);
+        LirProduct {
+            program: Some(Arc::new(program)),
+            errors,
+            warnings,
+        }
+    } else {
+        // `lower_to_program` refused to lower: its residual-extension
+        // backstop fired (E053), meaning a T1b brink-extension HIR node
+        // reached LIR lowering despite the dialect gate — only possible if
+        // the gate's analysis diagnostic was suppressed. Surface it as a
+        // compile error; never return a corrupt or partial program. See
+        // #572 review.
+        let mut errors = errors;
+        errors.extend(lir_diagnostics);
+        LirProduct {
+            program: None,
+            errors,
+            warnings,
+        }
     }
 }
 

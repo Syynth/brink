@@ -26,3 +26,10 @@ is purely additive (`if`/`while`/`for`/`break`/`continue`/`in` are
 contextual keywords, recognized only at block-statement-start position
 inside a new `~ { … }` block — they remain ordinary identifiers everywhere
 else, so no existing knot/variable/function name is reserved).
+
+The dialect gate's diagnostics are analysis diagnostics, so they can be
+suppressed like any other (`// brink-disable-all` or a line directive). LIR
+lowering now defends against that case directly: if a suppressed gate lets
+extension syntax reach LIR lowering, compilation still fails with a new
+internal-error diagnostic (`E053`) instead of silently dropping the
+construct or corrupting the compiled output.

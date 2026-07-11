@@ -170,3 +170,34 @@ fn contextual_keyword_words_as_plain_identifiers_are_unaffected() {
         assert!(!out.data.containers.is_empty());
     }
 }
+
+// ── #572 review: a suppressed gate must not silently corrupt output ──
+//
+// E051/E052 are *analysis* diagnostics, and analysis diagnostics are
+// suppressible via `// brink-disable-all` (and per-line directives).
+// Suppressing the gate must not let extension syntax silently reach
+// codegen as dropped data (`~ { … }` vanishing) or corrupted data (`a[0]`
+// silently becoming `null`) — it must instead trip the non-suppressible
+// LIR-lowering backstop (E053) and still fail to compile.
+
+#[test]
+fn disable_all_does_not_let_a_logic_block_silently_vanish() {
+    let source = "// brink-disable-all\nHello\n~ {\ntemp x = 0\nx = x + 1\n}\nWorld\n";
+    let err = compile_mem_with_dialect(source, Dialect::StrictInk).unwrap_err();
+    let diags = diagnostics_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E053),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn disable_all_does_not_let_indexing_silently_become_null() {
+    let source = "// brink-disable-all\nVAR a = 5\n~ x = a[0]\nHello\n";
+    let err = compile_mem_with_dialect(source, Dialect::StrictInk).unwrap_err();
+    let diags = diagnostics_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E053),
+        "{diags:?}"
+    );
+}
