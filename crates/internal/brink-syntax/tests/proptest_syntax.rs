@@ -9,6 +9,13 @@ const KEYWORDS: &[&str] = &[
     "INCLUDE", "EXTERNAL", "VAR", "CONST", "LIST", "temp", "return", "ref", "true", "false", "not",
     "and", "or", "mod", "has", "hasnt", "else", "function", "stopping", "cycle", "shuffle", "once",
     "DONE", "END", "TODO",
+    // T1b contextual block keywords (docs/t1b-surface-spec.md §2) are soft —
+    // legal identifiers everywhere except at block-statement-start position.
+    // Excluded here purely so the generic `arb_ident()` generator used
+    // throughout this file doesn't occasionally land on the one position
+    // where they shadow, which would be a spurious property-test failure,
+    // not a parser bug.
+    "if", "while", "for", "break", "continue", "in",
 ];
 
 const NUM_CASES: u32 = 512;
@@ -68,7 +75,21 @@ fn arb_expr() -> impl Strategy<Value = String> {
             (inner.clone(), arb_infix_op(), inner.clone())
                 .prop_map(|(l, op, r)| format!("{l} {op} {r}")),
             // Function call
-            (arb_ident(), inner).prop_map(|(name, arg)| format!("{name}({arg})")),
+            (arb_ident(), inner.clone()).prop_map(|(name, arg)| format!("{name}({arg})")),
+            // T1b §3: array sigil literal `#[…]`
+            prop::collection::vec(inner.clone(), 0..=3)
+                .prop_map(|items| format!("#[{}]", items.join(", "))),
+            // T1b §3: map sigil literal `#{…}`
+            prop::collection::vec((arb_ident(), inner.clone()), 0..=3).prop_map(|entries| {
+                let body = entries
+                    .iter()
+                    .map(|(k, v)| format!("\"{k}\": {v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("#{{{body}}}")
+            }),
+            // T1b §4: postfix indexing `base[index]`
+            (inner.clone(), inner).prop_map(|(base, idx)| format!("{base}[{idx}]")),
         ]
     })
 }
@@ -181,7 +202,48 @@ fn arb_logic_line() -> impl Strategy<Value = String> {
         (arb_ident(), arb_expr()).prop_map(|(name, e)| format!("~ temp {name} = {e}\n")),
         // ~ x = expr
         (arb_ident(), arb_expr()).prop_map(|(name, e)| format!("~ {name} = {e}\n")),
+        // ~ x[idx] = expr — T1b §4 indexed assignment
+        (arb_ident(), arb_expr(), arb_expr())
+            .prop_map(|(name, idx, e)| format!("~ {name}[{idx}] = {e}\n")),
     ]
+}
+
+// ── T1b multi-line `~ { … }` block strategy (docs/t1b-surface-spec.md §2) ────
+
+/// One non-nesting statement inside a block body.
+fn arb_block_simple_stmt() -> impl Strategy<Value = String> {
+    prop_oneof![
+        (arb_ident(), arb_expr()).prop_map(|(name, e)| format!("temp {name} = {e}")),
+        (arb_ident(), arb_expr()).prop_map(|(name, e)| format!("{name} = {e}")),
+        (arb_ident(), arb_expr(), arb_expr())
+            .prop_map(|(name, idx, e)| format!("{name}[{idx}] = {e}")),
+        arb_expr().prop_map(|e| format!("return {e}")),
+        Just("return".to_string()),
+        Just("break".to_string()),
+        Just("continue".to_string()),
+        arb_ident().prop_map(|name| format!("{name}()")),
+    ]
+}
+
+/// One statement inside a block body — a simple statement, or one level of
+/// `if`/`if-else`/`while`/`for` wrapping a simple statement.
+fn arb_block_stmt() -> impl Strategy<Value = String> {
+    prop_oneof![
+        3 => arb_block_simple_stmt(),
+        1 => (arb_expr(), arb_block_simple_stmt())
+            .prop_map(|(cond, s)| format!("if {cond} {{\n{s}\n}}")),
+        1 => (arb_expr(), arb_block_simple_stmt(), arb_block_simple_stmt())
+            .prop_map(|(cond, s1, s2)| format!("if {cond} {{\n{s1}\n}} else {{\n{s2}\n}}")),
+        1 => (arb_expr(), arb_block_simple_stmt())
+            .prop_map(|(cond, s)| format!("while {cond} {{\n{s}\n}}")),
+        1 => (arb_ident(), arb_expr(), arb_block_simple_stmt())
+            .prop_map(|(var, iter, s)| format!("for {var} in {iter} {{\n{s}\n}}")),
+    ]
+}
+
+fn arb_block_logic_line() -> impl Strategy<Value = String> {
+    prop::collection::vec(arb_block_stmt(), 1..=4)
+        .prop_map(|stmts| format!("~ {{\n{}\n}}\n", stmts.join("\n")))
 }
 
 fn arb_content_with_inline() -> impl Strategy<Value = String> {
@@ -375,6 +437,12 @@ proptest! {
     }
 
     #[test]
+    fn block_logic_line_roundtrip(input in arb_block_logic_line()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
     fn content_with_inline_roundtrip(input in arb_content_with_inline()) {
         let parsed = parse(&input);
         prop_assert_eq!(parsed.syntax().text().to_string(), input);
@@ -468,6 +536,22 @@ proptest! {
 
     #[test]
     fn logic_line_no_errors(input in arb_logic_line()) {
+        let parsed = parse(&input);
+        let root = parsed.syntax();
+        prop_assert!(
+            !has_error_nodes(&root),
+            "ERROR node found in CST for input: {:?}\nTree:\n{:#?}",
+            input, root,
+        );
+        prop_assert!(
+            parsed.errors().is_empty(),
+            "parse errors for input: {:?}\nerrors: {:?}",
+            input, parsed.errors(),
+        );
+    }
+
+    #[test]
+    fn block_logic_line_no_errors(input in arb_block_logic_line()) {
         let parsed = parse(&input);
         let root = parsed.syntax();
         prop_assert!(

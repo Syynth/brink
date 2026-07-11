@@ -88,6 +88,24 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
         hir::Expr::Postfix(inner, op) => lir::Expr::Postfix(Box::new(lower_expr(inner, ctx)), *op),
 
         hir::Expr::Call(path, args) => lower_call(path, args, ctx),
+
+        // T1b brink-extension expressions (docs/t1b-surface-spec.md §3-4).
+        // Unreachable in practice: `brink-analyzer`'s dialect gate (E051/
+        // E052) always emits an error-severity diagnostic for these, and
+        // `lir_query` (brink-db) short-circuits before calling
+        // `lower_to_program` whenever any error diagnostic is present — see
+        // T1b-1. `lower_expr` has no diagnostic sink of its own (it's
+        // infallible by signature), so this mirrors the existing
+        // ICE-log-then-`Null` fallback used above for other
+        // shouldn't-happen-here cases (e.g. the unresolved-call branch in
+        // `lower_call`).
+        hir::Expr::ArrayLiteral(_) | hir::Expr::MapLiteral(_) | hir::Expr::Index(_) => {
+            tracing::error!(
+                "ICE: T1b brink-extension expression reached LIR lowering — \
+                 the dialect gate should have rejected it before this point"
+            );
+            lir::Expr::Null
+        }
     }
 }
 

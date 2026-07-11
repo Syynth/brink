@@ -256,6 +256,10 @@ fn stamp_stmt(
         }
 
         // These statement types never produce containers.
+        // T1b `~ { … }` blocks (docs/t1b-surface-spec.md §2): `BlockStmt` is
+        // a closed set with no variant for any weave concept, so nothing
+        // inside a logic block can ever need a synthetic LIR container —
+        // the seam rule enforces this by construction, not by a check here.
         hir::Stmt::Content(_)
         | hir::Stmt::Divert(_)
         | hir::Stmt::TunnelCall(_)
@@ -264,7 +268,8 @@ fn stamp_stmt(
         | hir::Stmt::Assignment(_)
         | hir::Stmt::Return(_)
         | hir::Stmt::ExprStmt(_)
-        | hir::Stmt::EndOfLine => {}
+        | hir::Stmt::EndOfLine
+        | hir::Stmt::LogicBlock(_) => {}
     }
 }
 

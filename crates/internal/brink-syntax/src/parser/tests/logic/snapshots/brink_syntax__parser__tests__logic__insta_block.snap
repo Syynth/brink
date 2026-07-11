@@ -1,0 +1,56 @@
+---
+source: crates/internal/brink-syntax/src/parser/tests/logic/mod.rs
+expression: "format!(\"{:#?}\", p.syntax())"
+---
+SOURCE_FILE@0..40
+  LOGIC_LINE@0..40
+    TILDE@0..1 "~"
+    WHITESPACE@1..2 " "
+    STMT_BLOCK@2..39
+      L_BRACE@2..3 "{"
+      NEWLINE@3..4 "\n"
+      TEMP_DECL@4..14
+        KW_TEMP@4..8 "temp"
+        WHITESPACE@8..9 " "
+        IDENTIFIER@9..10
+          IDENT@9..10 "x"
+        WHITESPACE@10..11 " "
+        EQ@11..12 "="
+        WHITESPACE@12..13 " "
+        INTEGER_LIT@13..14
+          INTEGER@13..14 "0"
+      NEWLINE@14..15 "\n"
+      IF_STMT@15..37
+        IDENT@15..17 "if"
+        WHITESPACE@17..18 " "
+        INFIX_EXPR@18..24
+          PATH@18..19
+            IDENT@18..19 "x"
+          WHITESPACE@19..20 " "
+          GT@20..21 ">"
+          WHITESPACE@21..22 " "
+          INTEGER_LIT@22..23
+            INTEGER@22..23 "0"
+          WHITESPACE@23..24 " "
+        STMT_BLOCK@24..37
+          L_BRACE@24..25 "{"
+          NEWLINE@25..26 "\n"
+          ASSIGNMENT@26..35
+            PATH@26..27
+              IDENT@26..27 "x"
+            WHITESPACE@27..28 " "
+            EQ@28..29 "="
+            WHITESPACE@29..30 " "
+            INFIX_EXPR@30..35
+              PATH@30..31
+                IDENT@30..31 "x"
+              WHITESPACE@31..32 " "
+              MINUS@32..33 "-"
+              WHITESPACE@33..34 " "
+              INTEGER_LIT@34..35
+                INTEGER@34..35 "1"
+          NEWLINE@35..36 "\n"
+          R_BRACE@36..37 "}"
+      NEWLINE@37..38 "\n"
+      R_BRACE@38..39 "}"
+    NEWLINE@39..40 "\n"

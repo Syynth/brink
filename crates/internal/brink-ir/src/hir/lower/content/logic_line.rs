@@ -1,11 +1,13 @@
-use brink_syntax::ast::{self, AstNode};
+use brink_syntax::ast::{self, AstNode, SyntaxNodePtr};
 
+use crate::hir::types::LogicBlock;
 use crate::{AssignOp, Assignment, DiagnosticCode, Expr, Return, Stmt, TempDecl};
 
 use super::super::context::{LowerScope, LowerSink, Lowered};
 use super::super::expr::LowerExpr;
 use super::super::helpers::{expr_contains_call, name_from_ident};
 use super::LowerBody;
+use super::logic_block::lower_stmt_block;
 
 /// Structured output from lowering a [`ast::LogicLine`].
 pub enum LogicLineOutput {
@@ -13,6 +15,10 @@ pub enum LogicLineOutput {
     TempDecl(TempDecl),
     Assignment(Assignment),
     ExprStmt(Expr),
+    /// `~ { … }` — a T1b multi-line logic block (docs/t1b-surface-spec.md
+    /// §2, brink extension). Never lowers past HIR — see
+    /// `brink_ir::hir::types::Stmt::LogicBlock`.
+    Block(LogicBlock),
 }
 
 impl LogicLineOutput {
@@ -23,7 +29,7 @@ impl LogicLineOutput {
             Self::ExprStmt(expr) => expr_contains_call(expr),
             Self::TempDecl(td) => td.value.as_ref().is_some_and(expr_contains_call),
             Self::Assignment(a) => expr_contains_call(&a.value),
-            Self::Return(_) => false,
+            Self::Return(_) | Self::Block(_) => false,
         }
     }
 
@@ -34,6 +40,7 @@ impl LogicLineOutput {
             Self::TempDecl(td) => Stmt::TempDecl(td),
             Self::Assignment(a) => Stmt::Assignment(a),
             Self::ExprStmt(e) => Stmt::ExprStmt(e),
+            Self::Block(lb) => Stmt::LogicBlock(lb),
         }
     }
 }
@@ -47,6 +54,14 @@ impl LowerBody for ast::LogicLine {
         sink: &mut impl LowerSink,
     ) -> Lowered<LogicLineOutput> {
         let range = self.syntax().text_range();
+
+        if let Some(block) = self.stmt_block() {
+            let stmts = lower_stmt_block(&block, scope, sink);
+            return Ok(LogicLineOutput::Block(LogicBlock {
+                ptr: SyntaxNodePtr::from_node(block.syntax()),
+                stmts,
+            }));
+        }
 
         if let Some(ret) = self.return_stmt() {
             let value = ret.value().and_then(|e| e.lower_expr(scope, sink).ok());

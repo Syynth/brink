@@ -37,6 +37,7 @@ impl IdeSnapshot {
             host_manifest: self.host_manifest.clone(),
             external_check: self.external_check,
             semantic_type_check: self.semantic_type_check,
+            ..AnalysisOptions::default()
         };
         brink_analyzer::analyze_with_options(&refs, &opts)
     }
@@ -314,6 +315,7 @@ impl IdeSession {
             host_manifest: self.host_manifest.clone(),
             external_check: self.external_check,
             semantic_type_check: self.semantic_type_check,
+            ..AnalysisOptions::default()
         }
     }
 

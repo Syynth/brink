@@ -225,7 +225,13 @@ fn walk_stmt_for_depth(
                 walk_block_for_depth(branch, depth + 1, line_starts, depth_map);
             }
         }
-        brink_ir::Stmt::ExprStmt(_) | brink_ir::Stmt::EndOfLine => {}
+        // T1b `~ { … }` blocks (docs/t1b-surface-spec.md §2, brink
+        // extension): not indentation-aware yet — `propagate_depth` inherits
+        // depth for these lines from surrounding context, same treatment as
+        // `ExprStmt`/`EndOfLine`. Pass-through is the ratified contract for
+        // T1b-1 (#569); smarter per-statement reindentation is future work.
+        brink_ir::Stmt::ExprStmt(_) | brink_ir::Stmt::EndOfLine | brink_ir::Stmt::LogicBlock(_) => {
+        }
     }
 }
 
@@ -244,6 +250,7 @@ fn stmt_start_line(stmt: &brink_ir::Stmt, line_starts: &[usize]) -> Option<usize
         brink_ir::Stmt::Conditional(c) => c.ptr.text_range(),
         brink_ir::Stmt::Sequence(s) => s.ptr.text_range(),
         brink_ir::Stmt::ExprStmt(_) | brink_ir::Stmt::EndOfLine => return None,
+        brink_ir::Stmt::LogicBlock(lb) => lb.ptr.text_range(),
     };
     let offset: usize = range.start().into();
     Some(line_for_offset(line_starts, offset))
@@ -323,8 +330,12 @@ fn propagate_depth(source: &str, line_starts: &[usize], depth_map: &mut [u32]) {
 enum LineKind {
     KnotHeader,
     StitchHeader,
-    Choice { depth: u32 },
-    Gather { depth: u32 },
+    Choice {
+        depth: u32,
+    },
+    Gather {
+        depth: u32,
+    },
     Logic,
     Content,
     Tag,
@@ -333,6 +344,16 @@ enum LineKind {
     Comment,
     BlockComment,
     Other,
+    /// A T1b `~ { … }` multi-line block (docs/t1b-surface-spec.md §2, brink
+    /// extension) — `start`/`end` on this line span the *whole* node
+    /// (through every nested `if`/`while`/`for` line, to the trailing
+    /// newline after the closing `}`), so rendering it is a byte-identical
+    /// pass-through. Not indentation-aware yet (ratified T1b-1 scope,
+    /// #569); every other line the block covers becomes [`LineKind::Skip`].
+    Verbatim,
+    /// A line already emitted as part of a preceding [`LineKind::Verbatim`]
+    /// span — renders nothing.
+    Skip,
 }
 
 #[derive(Debug)]
@@ -453,7 +474,13 @@ fn classify_node(node: &SyntaxNode, line_starts: &[usize], lines: &mut [Classifi
                 classify_node(&child, line_starts, lines);
             }
             SyntaxKind::LOGIC_LINE => {
-                if line_idx < lines.len() {
+                // T1b `~ { … }` multi-line blocks (docs/t1b-surface-spec.md
+                // §2, brink extension) span several physical lines and are
+                // not indentation-aware yet — pass them through verbatim
+                // (ratified T1b-1 scope, #569) rather than reformatting.
+                if child.children().any(|c| c.kind() == SyntaxKind::STMT_BLOCK) {
+                    mark_verbatim_span(&child, line_starts, lines);
+                } else if line_idx < lines.len() {
                     lines[line_idx].kind = LineKind::Logic;
                 }
             }
@@ -496,6 +523,28 @@ fn classify_node(node: &SyntaxNode, line_starts: &[usize], lines: &mut [Classifi
                 classify_node(&child, line_starts, lines);
             }
         }
+    }
+}
+
+/// Mark every physical line spanned by `node` (a T1b `~ { … }` multi-line
+/// block's `LOGIC_LINE`) as a verbatim pass-through: the first line's
+/// `start`/`end` are widened to cover the node's *entire* text range (through
+/// the trailing newline after the closing `}`, which the parser always
+/// includes in the `LOGIC_LINE` node), and every subsequent line spanned
+/// becomes [`LineKind::Skip`] so it renders nothing of its own.
+fn mark_verbatim_span(node: &SyntaxNode, line_starts: &[usize], lines: &mut [ClassifiedLine]) {
+    let range = node.text_range();
+    let start_line = line_for_offset(line_starts, range.start().into());
+    let end_line = line_for_offset(line_starts, range.end().into());
+    if start_line >= lines.len() {
+        return;
+    }
+    lines[start_line].kind = LineKind::Verbatim;
+    lines[start_line].start = range.start().into();
+    lines[start_line].end = range.end().into();
+    let last = end_line.min(lines.len() - 1);
+    for line in &mut lines[start_line + 1..=last] {
+        line.kind = LineKind::Skip;
     }
 }
 
@@ -578,6 +627,11 @@ fn render(source: &str, lines: &[ClassifiedLine], config: &FormatConfig) -> Stri
                 out.push('\n');
                 continue;
             }
+            // Already emitted as part of a preceding `Verbatim` span (T1b
+            // `~ { … }` block, docs/t1b-surface-spec.md §2) — nothing to do,
+            // and it must not reset `consecutive_blanks` or count as a line
+            // of its own.
+            LineKind::Skip => continue,
             _ => {}
         }
 
@@ -636,7 +690,13 @@ fn render(source: &str, lines: &[ClassifiedLine], config: &FormatConfig) -> Stri
                 out.push_str(raw.trim_end());
                 out.push('\n');
             }
-            LineKind::Blank | LineKind::BlockComment => unreachable!(),
+            // `raw` already spans the whole node through its own trailing
+            // newline (see `mark_verbatim_span`) — push it byte-for-byte,
+            // with no extra trim/indent/newline.
+            LineKind::Verbatim => {
+                out.push_str(raw);
+            }
+            LineKind::Blank | LineKind::BlockComment | LineKind::Skip => unreachable!(),
         }
     }
 
@@ -960,6 +1020,53 @@ mod tests {
         let first = fmt(input);
         let second = fmt(&first);
         assert_eq!(first, second, "formatting should be idempotent");
+    }
+
+    // ── T1b `~ { … }` blocks: verbatim pass-through (docs/t1b-surface-spec.md §2, #569) ──
+
+    #[test]
+    fn block_at_root_roundtrips_verbatim() {
+        let input = "~ {\ntemp x = 0\nif x > 0 {\nx = x - 1\n}\n}\n";
+        assert_eq!(fmt(input), input);
+    }
+
+    #[test]
+    fn block_with_while_and_for_roundtrips_verbatim() {
+        let input =
+            "~ {\nwhile x > 0 {\nx = x - 1\n}\nfor item in list {\ntotal = total + item\n}\n}\n";
+        assert_eq!(fmt(input), input);
+    }
+
+    #[test]
+    fn block_with_messy_original_spacing_is_untouched() {
+        // The formatter would normally trim/reindent lines like these — a
+        // verbatim block must preserve them exactly, unlike ordinary content.
+        let input = "~ {\n    temp x   =   0  \nif x > 0 {\n\tx = x - 1\n}\n}\n";
+        assert_eq!(fmt(input), input);
+    }
+
+    #[test]
+    fn block_inside_knot_roundtrips_verbatim() {
+        // Ordinary content lines inside a knot are still indented as usual
+        // (see `knot_body_indented`) — only the T1b block span itself is a
+        // byte-identical pass-through.
+        let input =
+            "=== start ===\nContent\n~ {\ntemp x = 0\nif x > 0 {\nx = x - 1\n}\n}\nMore content\n";
+        let expected = "=== start ===\n  Content\n~ {\ntemp x = 0\nif x > 0 {\nx = x - 1\n}\n}\n  More content\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn single_line_logic_line_still_reformatted() {
+        // Only the T1b multi-line block form is verbatim — ordinary `~` logic
+        // lines keep normal reformatting behavior.
+        assert_eq!(fmt("~   x = 5\n"), "~ x = 5\n");
+    }
+
+    #[test]
+    fn block_does_not_disturb_surrounding_lines() {
+        let input = "Before\n~ {\ntemp x = 0\n}\nAfter\n";
+        assert_eq!(fmt(input), input);
     }
 
     #[test]

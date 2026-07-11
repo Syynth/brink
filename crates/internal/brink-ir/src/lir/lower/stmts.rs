@@ -118,6 +118,21 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
         }
 
         hir::Stmt::EndOfLine => Some(lir::Stmt::EndOfLine),
+
+        // T1b `~ { … }` blocks (docs/t1b-surface-spec.md §2). Unreachable in
+        // practice: the dialect gate (E051/E052) always emits an error
+        // diagnostic for a `LogicBlock`, and `lir_query` short-circuits
+        // before lowering runs whenever an error diagnostic is present.
+        // Mirrors the ChoiceSet/LabeledBlock/Conditional/Sequence
+        // dispatch-bug guard just above.
+        hir::Stmt::LogicBlock(_) => {
+            debug_assert!(
+                false,
+                "T1b LogicBlock reached lower_stmt — the dialect gate should \
+                 have rejected it before this point"
+            );
+            None
+        }
     }
 }
 

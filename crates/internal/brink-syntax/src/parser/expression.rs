@@ -1,10 +1,11 @@
 use crate::SyntaxKind::{
-    self, AMP_AMP, BANG, BANG_EQ, BANG_QUESTION, BOOLEAN_LIT, CARET, COMMA, DIVERT,
-    DIVERT_TARGET_EXPR, DOT, EOF, EQ_EQ, FLOAT, FLOAT_LIT, FUNCTION_CALL, GT, GT_EQ, IDENT,
-    IDENTIFIER, INFIX_EXPR, INTEGER, INTEGER_LIT, KW_AND, KW_FALSE, KW_HAS, KW_HASNT, KW_MOD,
-    KW_NOT, KW_OR, KW_TRUE, L_BRACE, L_PAREN, LIST_EXPR, LT, LT_EQ, MINUS, MINUS_EQ, NEWLINE,
-    PAREN_EXPR, PERCENT, PIPE, PLUS, PLUS_EQ, POSTFIX_EXPR, PREFIX_EXPR, QUESTION, QUOTE, R_PAREN,
-    SLASH, STAR, STRING_LIT,
+    self, AMP_AMP, ARRAY_LITERAL, BANG, BANG_EQ, BANG_QUESTION, BOOLEAN_LIT, CARET, COLON, COMMA,
+    DIVERT, DIVERT_TARGET_EXPR, DOT, EOF, EQ_EQ, FLOAT, FLOAT_LIT, FUNCTION_CALL, GT, GT_EQ, HASH,
+    IDENT, IDENTIFIER, INDEX_EXPR, INFIX_EXPR, INTEGER, INTEGER_LIT, KW_AND, KW_FALSE, KW_HAS,
+    KW_HASNT, KW_MOD, KW_NOT, KW_OR, KW_TRUE, L_BRACE, L_BRACKET, L_PAREN, LIST_EXPR, LT, LT_EQ,
+    MAP_ENTRY, MAP_LITERAL, MINUS, MINUS_EQ, NEWLINE, PAREN_EXPR, PERCENT, PIPE, PLUS, PLUS_EQ,
+    POSTFIX_EXPR, PREFIX_EXPR, QUESTION, QUOTE, R_BRACE, R_BRACKET, R_PAREN, SLASH, STAR,
+    STRING_LIT,
 };
 
 use super::Parser;
@@ -102,6 +103,16 @@ fn expression_bp(p: &mut Parser<'_, '_>, min_bp: Prec) {
             p.start_node_at(checkpoint, POSTFIX_EXPR);
             p.bump(); // first -
             p.bump(); // second -
+            p.finish_node();
+            continue;
+        }
+
+        // Postfix indexing: `a[0]`, `m["k"]`, chained `grid[y][x]` (T1b §4).
+        // Follows any primary expression — no clash with choice-label
+        // brackets, which never immediately follow an expression here.
+        if p.current() == L_BRACKET {
+            p.start_node_at(checkpoint, INDEX_EXPR);
+            index_bracket(p);
             p.finish_node();
             continue;
         }
@@ -206,7 +217,147 @@ fn atom(p: &mut Parser<'_, '_>) -> bool {
             true
         }
 
+        // Sigil collection literals (T1b §3) — expression position only.
+        // Unambiguous: `#` never begins an expression in vanilla ink, and in
+        // prose position `#` is always claimed by `tag::tags` before
+        // expression parsing runs (docs/t1b-surface-spec.md §3).
+        HASH if p.nth(1) == L_BRACKET => {
+            array_literal(p);
+            true
+        }
+        HASH if p.nth(1) == L_BRACE => {
+            map_literal(p);
+            true
+        }
+
         _ => false,
+    }
+}
+
+/// `[ index ]` — one link of a postfix indexing chain (T1b §4): `a[0]`,
+/// chained `grid[y][x]`. Depth-guarded like [`paren_expr`] since nested
+/// index brackets recurse through `expression()`. `pub(crate)` so
+/// `logic::indexed_lvalue` can build the same `INDEX_EXPR` shape for
+/// indexed-assignment lvalues (`a[0] = v`).
+pub(crate) fn index_bracket(p: &mut Parser<'_, '_>) {
+    p.bump(); // [
+    if p.at_depth_limit() {
+        p.error("nesting depth limit exceeded".into());
+        skip_balanced(p, L_BRACKET, R_BRACKET);
+        return;
+    }
+    p.depth += 1;
+    p.skip_ws();
+    expression(p);
+    p.skip_ws();
+    p.expect(R_BRACKET);
+    p.depth -= 1;
+}
+
+/// `#[expr, expr, …]` — array sigil literal (T1b §3). Trailing comma and
+/// the empty form `#[]` are both accepted.
+fn array_literal(p: &mut Parser<'_, '_>) {
+    p.start_node(ARRAY_LITERAL);
+    p.bump(); // #
+    p.skip_ws();
+    p.bump_assert(L_BRACKET);
+    if p.at_depth_limit() {
+        p.error("nesting depth limit exceeded".into());
+        skip_balanced(p, L_BRACKET, R_BRACKET);
+        p.finish_node();
+        return;
+    }
+    p.depth += 1;
+    p.skip_ws();
+    if p.current() != R_BRACKET {
+        expression(p);
+        loop {
+            p.skip_ws();
+            if !p.eat(COMMA) {
+                break;
+            }
+            p.skip_ws();
+            if p.current() == R_BRACKET {
+                break; // trailing comma
+            }
+            expression(p);
+        }
+    }
+    p.skip_ws();
+    p.expect(R_BRACKET);
+    p.depth -= 1;
+    p.finish_node();
+}
+
+/// `#{key: expr, key: expr, …}` — map sigil literal (T1b §3). Trailing
+/// comma and the empty form `#{}` are both accepted. Key expressions are
+/// parsed generally here; the ratified key-domain restriction (int/string/
+/// bool) is an analyzer/runtime concern, not a grammar one.
+fn map_literal(p: &mut Parser<'_, '_>) {
+    p.start_node(MAP_LITERAL);
+    p.bump(); // #
+    p.skip_ws();
+    p.bump_assert(L_BRACE);
+    if p.at_depth_limit() {
+        p.error("nesting depth limit exceeded".into());
+        skip_balanced(p, L_BRACE, R_BRACE);
+        p.finish_node();
+        return;
+    }
+    p.depth += 1;
+    p.skip_ws();
+    if p.current() != R_BRACE {
+        map_entry(p);
+        loop {
+            p.skip_ws();
+            if !p.eat(COMMA) {
+                break;
+            }
+            p.skip_ws();
+            if p.current() == R_BRACE {
+                break; // trailing comma
+            }
+            map_entry(p);
+        }
+    }
+    p.skip_ws();
+    p.expect(R_BRACE);
+    p.depth -= 1;
+    p.finish_node();
+}
+
+/// `key : expr` — one entry of a map literal.
+fn map_entry(p: &mut Parser<'_, '_>) {
+    p.start_node(MAP_ENTRY);
+    expression(p);
+    p.skip_ws();
+    p.expect(COLON);
+    p.skip_ws();
+    expression(p);
+    p.finish_node();
+}
+
+/// Error recovery: skip tokens until the matching `close` (the `open` token
+/// has already been consumed) or EOF. Used when a depth-limited nested
+/// construct bails out early — mirrors [`paren_expr`]'s recovery loop.
+fn skip_balanced(p: &mut Parser<'_, '_>, open: SyntaxKind, close: SyntaxKind) {
+    let mut depth = 1u32;
+    while !p.at_eof() && depth > 0 {
+        let k = p.current();
+        if k == open {
+            depth += 1;
+            p.bump();
+        } else if k == close {
+            depth -= 1;
+            if depth > 0 {
+                p.bump();
+            }
+        } else {
+            p.bump();
+        }
+    }
+    if p.current() == close {
+        p.bump();
     }
 }
 

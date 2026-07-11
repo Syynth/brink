@@ -228,6 +228,37 @@ pub enum SyntaxKind {
     BOOLEAN_LIT,
     ERROR,
 
+    // ── T1b superset grammar (docs/t1b-surface-spec.md) ────────────
+    // Multi-line `~ { … }` logic blocks (§2). Parse-only in T1b-1 — every
+    // node below is dialect-gated at analysis and never reaches LIR.
+    /// `{ stmt* }` — a braced statement list. Used for the top-level
+    /// `~ { … }` block body and every nested `if`/`while`/`for` body.
+    STMT_BLOCK,
+    /// `if cond { … } (else …)?`. `if`/`else if` are contextual keywords
+    /// (plain `IDENT` tokens) — see `parser::logic`.
+    IF_STMT,
+    /// The `else` arm of an `IF_STMT`: either a nested `IF_STMT` (else-if)
+    /// or a bare `STMT_BLOCK` (else).
+    ELSE_CLAUSE,
+    /// `while cond { … }`.
+    WHILE_STMT,
+    /// `for name in expr { … }`.
+    FOR_STMT,
+    /// `break`.
+    BREAK_STMT,
+    /// `continue`.
+    CONTINUE_STMT,
+    /// A bare expression statement inside a block (function/external calls).
+    EXPR_STMT,
+    /// `#[expr, …]` — array sigil literal (§3). Expression position only.
+    ARRAY_LITERAL,
+    /// `#{key: expr, …}` — map sigil literal (§3). Expression position only.
+    MAP_LITERAL,
+    /// One `key: expr` pair inside a `MAP_LITERAL`.
+    MAP_ENTRY,
+    /// `base[index]` — postfix indexing, chainable (§4).
+    INDEX_EXPR,
+
     // Not a real kind — used only for `rowan::Language::kind_to_raw` bounds.
     #[doc(hidden)]
     __LAST,
