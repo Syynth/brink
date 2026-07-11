@@ -6,6 +6,19 @@ use serde::{Deserialize, Serialize};
 
 use crate::id::DefinitionId;
 
+/// Maximum nesting depth permitted when decoding `VAL_ARRAY`/`VAL_MAP`
+/// values. Generous for legitimate data but bounds worst-case recursion so a
+/// crafted file of nested single-element arrays (~5 bytes/level) cannot
+/// stack-overflow the reader (CLAUDE.md "guard against unbounded growth";
+/// issue #553).
+///
+/// This is the single canonical definition, shared by every `decode_value`
+/// implementation that recurses on collection values — the `.inkb` reader
+/// (`brink_format::inkb::read`) and the runtime transcript reader
+/// (`brink_runtime::transcript`) both reference this constant rather than
+/// each defining their own copy (issue #561).
+pub const MAX_DECODE_DEPTH: usize = 128;
+
 /// The runtime type of a [`Value`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ValueType {

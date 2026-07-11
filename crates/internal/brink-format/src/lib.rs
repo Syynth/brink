@@ -53,7 +53,7 @@ pub use line::{
 pub use opcode::{ChoiceFlags, DecodeError, Opcode, SequenceKind};
 pub use save::{LoadReport, SAVE_FORMAT_VERSION, SaveState, VisitEntry};
 pub use story::StoryData;
-pub use value::{ListValue, MapKey, OrderedMap, Value, ValueType};
+pub use value::{ListValue, MAX_DECODE_DEPTH, MapKey, OrderedMap, Value, ValueType};
 
 #[cfg(any(feature = "inkt", feature = "inkt-write"))]
 pub use inkt::write_inkt;
