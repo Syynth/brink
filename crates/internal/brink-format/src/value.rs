@@ -768,4 +768,94 @@ mod tests {
         assert_ne!(Value::array(vec![]), Value::map(OrderedMap::new()));
         assert_eq!(Value::Null, Value::Null);
     }
+
+    // ── Tree serialization (T1a-3 / #525) ──────────────────────────────────
+    //
+    // SaveState and the session journal serialize `Value` through its derived
+    // serde representation (BTreeMap<String, Value> globals; tagged event
+    // payloads). These tests lock the *tree* round-trip for the collection
+    // variants: an `Array`/`Map` serializes to a nested structure and comes
+    // back structurally equal, with insertion order and scalar key types
+    // preserved. Sharing is deliberately not preserved on the wire (spec §5) —
+    // a snapshot serializes as a plain tree.
+
+    /// Round-trip a value through `serde_json` and assert structural equality.
+    fn json_round_trip(v: &Value) -> Value {
+        let json = serde_json::to_string(v).expect("serialize");
+        serde_json::from_str(&json).expect("deserialize")
+    }
+
+    #[test]
+    fn scalar_serde_round_trip_unchanged() {
+        for v in [
+            Value::Int(-7),
+            Value::Float(1.5),
+            Value::Bool(true),
+            Value::String("hi".into()),
+            Value::Null,
+        ] {
+            assert_eq!(json_round_trip(&v), v);
+        }
+    }
+
+    #[test]
+    fn array_serde_round_trip_is_structural() {
+        let v = Value::array(vec![
+            Value::Int(1),
+            Value::String("two".into()),
+            Value::Bool(false),
+        ]);
+        let back = json_round_trip(&v);
+        assert_eq!(back, v);
+        assert_eq!(back.value_type(), ValueType::Array);
+    }
+
+    #[test]
+    fn map_serde_round_trip_preserves_order_and_key_types() {
+        // Mixed scalar key types and a deliberately non-sorted insertion order.
+        let m: OrderedMap = [
+            (MapKey::from("z"), Value::Int(1)),
+            (MapKey::from(10), Value::Int(2)),
+            (MapKey::from(true), Value::Int(3)),
+            (MapKey::from("a"), Value::Int(4)),
+        ]
+        .into_iter()
+        .collect();
+        let v = Value::map(m);
+        let back = json_round_trip(&v);
+        // Structural equality is order-sensitive, so this also proves the wire
+        // form preserved insertion order and each key's variant.
+        assert_eq!(back, v);
+        let back_map = back.as_map().expect("map");
+        let keys: Vec<&MapKey> = back_map.keys().collect();
+        assert_eq!(
+            keys,
+            vec![
+                &MapKey::from("z"),
+                &MapKey::from(10),
+                &MapKey::from(true),
+                &MapKey::from("a"),
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_collection_serde_round_trip() {
+        // An array of maps of arrays — the recursive tree case.
+        let inner_map: OrderedMap = [
+            (
+                MapKey::from("items"),
+                Value::array(vec![Value::Int(1), Value::Int(2)]),
+            ),
+            (MapKey::from("name"), Value::String("goblin".into())),
+        ]
+        .into_iter()
+        .collect();
+        let v = Value::array(vec![
+            Value::map(inner_map),
+            Value::array(vec![Value::map(OrderedMap::new())]),
+            Value::Null,
+        ]);
+        assert_eq!(json_round_trip(&v), v);
+    }
 }

@@ -494,10 +494,22 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
             write_u8(buf, VAL_FRAGMENT_REF);
             write_u32(buf, *idx);
         }
-        // TempPointer is runtime-only. Array/Map get their transcript tree
-        // encoding in T1a-3 (#525); no opcode emits a collection yet, so
-        // neither can appear in a serialized transcript in this version.
-        Value::TempPointer { .. } | Value::Null | Value::Array(_) | Value::Map(_) => {
+        // TempPointer is runtime-only.
+        Value::TempPointer { .. } | Value::Null => {
+            write_u8(buf, VAL_NULL);
+        }
+        // The binary transcript shares the `.inkb` VAL_* tag surface, so
+        // Array/Map gain their tree encoding with the format bump in T1a-4
+        // (#526), not with the serde-JSON state trees this step (#525) plumbs.
+        // No opcode emits a collection yet, so neither can appear in a
+        // serialized transcript in this version; fold to `VAL_NULL` for
+        // totality but trip a debug assertion so a future silent drop is loud.
+        Value::Array(_) | Value::Map(_) => {
+            debug_assert!(
+                false,
+                "collection value has no binary transcript encoding until #526 \
+                 (T1a-4); no opcode should have produced one in this version"
+            );
             write_u8(buf, VAL_NULL);
         }
     }
