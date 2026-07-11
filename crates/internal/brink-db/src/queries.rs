@@ -86,6 +86,11 @@ impl Default for BrinkDatabase {
                 .ingredient::<analysis_query>()
                 .ingredient::<diagnostics_query>()
                 // Layer 3.
+                .ingredient::<lir_index_query>()
+                .ingredient::<normalized_hir_query>()
+                .ingredient::<lir_decls_query>()
+                .ingredient::<lir_chunk_query>()
+                .ingredient::<lir_names_query>()
                 .ingredient::<lir_query>()
                 .ingredient::<story_data_query>()
                 .build(),
@@ -309,7 +314,161 @@ pub(crate) fn diagnostics_query(
     out
 }
 
-// ─── Layer 3: lowering / codegen (whole-project in slice B) ──────────
+// ─── Layer 3: lowering / codegen (per-file chunks, slice C) ──────────
+
+/// Fully range-stripped symbol-index projection for LIR lowering and
+/// container-ID stamping (spec §4 layer 3, slice C).
+///
+/// [`resolution_index_query`] keeps `Param`/`Temp` ranges because
+/// resolution's closest-preceding pick reads them. LIR lowering reads only
+/// `kind`/`id`/`name`/`params` (and `by_name`) — never a range — so this
+/// projection zeroes the local ranges too. Result: edits that only shift
+/// local declaration ranges backdate here, and every file's `lir_chunk`
+/// memo survives. Locked by the incremental fuzz harness and the
+/// `story_data_matches_monolithic_pipeline` equivalence test.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn lir_index_query(db: &dyn salsa::Database, project: ProjectInput) -> Arc<SymbolIndex> {
+    let index = resolution_index_query(db, project);
+    let mut stripped: SymbolIndex = (**index).clone();
+    for info in stripped.symbols.values_mut() {
+        info.range = rowan::TextRange::default();
+    }
+    Arc::new(stripped)
+}
+
+/// The compile file set in topological include order from the entry point
+/// (paste-before semantics), mirroring `Driver::lir_inputs`. Empty when no
+/// entry point is set.
+///
+/// A plain helper, not a tracked query: the computation is O(files) off the
+/// memoized (`Eq`-cutoff) `include_graph`, and every one-shot compile pays
+/// per-ingredient database-construction cost — measured at ~0.9 µs per
+/// ingredient — so cheap derivations stay functions.
+fn topo_source_files(db: &dyn salsa::Database, project: ProjectInput) -> Vec<SourceFile> {
+    let Some(entry) = project.entry(db) else {
+        return Vec::new();
+    };
+    let files = project.files(db);
+    let graph = include_graph_query(db, project);
+    let all_ids: Vec<FileId> = files.iter().map(|f| f.file_id(db)).collect();
+    let by_id: HashMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
+    graph
+        .topological_order(entry, &all_ids)
+        .iter()
+        .filter_map(|id| by_id.get(id).copied())
+        .collect()
+}
+
+/// Per-file normalized + container-ID-stamped HIR — the input to LIR
+/// lowering (steps 0+1, memoized per file). The stored `lowered` HIR stays
+/// pristine for the IDE; this is the regularized copy lowering consumes.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn normalized_hir_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+) -> HirFile {
+    let index = lir_index_query(db, project);
+    brink_ir::lir::normalize_and_stamp(file.file_id(db), &lowered_query(db, file).hir, index)
+}
+
+/// Declaration-derived program data (globals, lists, externals) plus the
+/// post-declaration name-table state that seeds the first file chunk, and
+/// the top-level `~ temp` slot map (root content shares one scope across
+/// every file, so it is inherently whole-project). One query for both:
+/// every chunk depends on both anyway, so splitting them buys no finer
+/// invalidation — only another per-database ingredient. Recomputes cheaply
+/// on any edit (declarations + root temp walk, no body lowering) and
+/// backdates when the results are unchanged — the usual case.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn lir_decls_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> (brink_ir::lir::DeclProduct, brink_ir::lir::TempMap) {
+    let index = lir_index_query(db, project);
+    let files = topo_source_files(db, project);
+    let hir_refs: Vec<(FileId, &HirFile)> = files
+        .iter()
+        .map(|f| (f.file_id(db), normalized_hir_query(db, project, *f)))
+        .collect();
+    let mut resolutions = ResolutionMap::new();
+    for f in &files {
+        let (file_map, _diags) = resolve_query(db, project, *f);
+        resolutions.extend(file_map.iter().cloned());
+    }
+    let lookup = brink_ir::lir::ResolutionLookup::build(&resolutions);
+    let decls = brink_ir::lir::collect_declarations(&hir_refs, index, &lookup);
+    let root_temps = brink_ir::lir::root_temp_map(&hir_refs);
+    (decls, root_temps)
+}
+
+/// Memo wrapper for one file's LIR chunk. `Arc` because the chunk holds LIR
+/// trees without `PartialEq` — identity is the only cheap equality proxy
+/// (same stance as [`LirProduct`]). Backdating is disabled via `no_eq` on
+/// [`lir_chunk_query`]; the inter-file cutoff seam is [`lir_names_query`].
+#[derive(Clone)]
+pub(crate) struct ChunkProduct(pub(crate) Arc<brink_ir::lir::FileChunk>);
+
+impl PartialEq for ChunkProduct {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// The name-table state after one file's chunk — the early-cutoff firewall
+/// between files. Body lowering only ever interns *new temp names*, so an
+/// edit that introduces none recomputes this to an equal value, salsa
+/// backdates, and every downstream file's chunk memo survives.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn lir_names_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+) -> Vec<String> {
+    lir_chunk_query(db, project, file).0.name_entries.clone()
+}
+
+/// One file's LIR chunk (its slice of container lowering): root statements,
+/// child containers, counting refs, and outgoing name-table state. Only
+/// ever pulled for files in [`lir_topo_query`] order, so the recursive
+/// `lir_names_query` dependency on the predecessor is always memoized
+/// (recursion depth stays O(1) when pulled in order).
+#[salsa::tracked(returns(ref), no_eq)]
+pub(crate) fn lir_chunk_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+) -> ChunkProduct {
+    let file_id = file.file_id(db);
+    let files = topo_source_files(db, project);
+    let pos = files.iter().position(|f| f.file_id(db) == file_id);
+    let names_in: &[String] = match pos {
+        // First file — seeded by declaration interning. (`None` cannot
+        // happen for files pulled via the topo order; the fallback keeps
+        // the query total.)
+        Some(0) | None => &lir_decls_query(db, project).0.name_entries,
+        Some(p) => match files.get(p - 1) {
+            Some(prev) => lir_names_query(db, project, *prev),
+            None => &lir_decls_query(db, project).0.name_entries,
+        },
+    };
+
+    let index = lir_index_query(db, project);
+    let normalized = normalized_hir_query(db, project, file);
+    let (file_resolutions, _diags) = resolve_query(db, project, file);
+    let lookup = brink_ir::lir::ResolutionLookup::build(file_resolutions);
+    let root_temps = &lir_decls_query(db, project).1;
+
+    ChunkProduct(Arc::new(brink_ir::lir::lower_file_chunk(
+        file_id,
+        normalized,
+        index,
+        &lookup,
+        file.path(db),
+        names_in,
+        root_temps,
+    )))
+}
 
 /// Outcome of the pipeline through LIR lowering, mirroring
 /// `brink-compiler`'s `compile_lir` stage sequence exactly.
@@ -378,23 +537,21 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
         };
     }
 
-    // LIR inputs in topological include order (paste-before semantics),
-    // mirroring `Driver::lir_inputs`.
-    let graph = include_graph_query(db, project);
-    let all_ids: Vec<FileId> = files.iter().map(|f| f.file_id(db)).collect();
-    let by_id: HashMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
-    let topo = graph.topological_order(entry, &all_ids);
-    let hir_refs: Vec<(FileId, &HirFile)> = topo
+    // LIR lowering: one memoized chunk per file in topological include
+    // order (paste-before semantics), assembled behind this query. Pulling
+    // chunks in topo order keeps the predecessor `lir_names` recursion
+    // memoized (slice C, #460).
+    let topo_files = topo_source_files(db, project);
+    let decls = lir_decls_query(db, project).0.clone();
+    let chunks: Vec<brink_ir::lir::FileChunk> = topo_files
         .iter()
-        .filter_map(|id| by_id.get(id).map(|f| (*id, &lowered_query(db, *f).hir)))
+        .map(|f| (*lir_chunk_query(db, project, *f).0).clone())
         .collect();
-    let paths: HashMap<FileId, String> = topo
-        .iter()
-        .filter_map(|id| by_id.get(id).map(|f| (*id, f.path(db).clone())))
-        .collect();
+    let name_table = chunks
+        .last()
+        .map_or_else(|| decls.name_entries.clone(), |c| c.name_entries.clone());
 
-    let (program, lir_warnings) =
-        brink_ir::lir::lower_to_program(&hir_refs, &analysis.index, &analysis.resolutions, &paths);
+    let (program, lir_warnings) = brink_ir::lir::assemble_program(decls, chunks, name_table);
 
     let mut warnings = warnings;
     warnings.extend(lir_warnings);

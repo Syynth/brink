@@ -15,9 +15,9 @@ use crate::hir;
 use crate::symbols::{ResolutionMap, SymbolIndex};
 
 use super::types as lir;
-use context::{LowerCtx, NameTable, ResolutionLookup};
+use context::{LowerCtx, NameTable};
 
-pub use context::TempMap;
+pub use context::{ResolutionLookup, TempMap};
 
 /// Lower analyzed HIR into a resolved LIR `Program`.
 ///
@@ -51,34 +51,34 @@ pub fn lower_to_program(
     let norm_refs: Vec<(FileId, &hir::HirFile)> =
         normalized.iter().map(|(id, h)| (*id, h)).collect();
 
-    // ── Step 2: Collect declarations (seeds the name table) ─────────
-    let decls = collect_declarations(&norm_refs, index, resolutions);
+    // Shared lookups, built once (the query path builds per-file ones).
+    let lookup = ResolutionLookup::build(resolutions);
 
-    // ── Step 3: Lower one chunk per file, chaining name-table state ──
+    // ── Step 2: Collect declarations (seeds the name table) ─────────
+    let decls = collect_declarations(&norm_refs, index, &lookup);
+
+    // ── Step 3: Lower one chunk per file, threading one name table ──
     let root_temps = root_temp_map(&norm_refs);
+    let mut names = NameTable::from_entries(&decls.name_entries);
     let mut chunks: Vec<FileChunk> = Vec::with_capacity(norm_refs.len());
     for &(file_id, hir_file) in &norm_refs {
-        let names_in: &[String] = chunks
-            .last()
-            .map_or(&decls.name_entries, |c| &c.name_entries);
         let path = file_paths
             .get(&file_id)
             .map(String::as_str)
             .unwrap_or_default();
-        let chunk = lower_file_chunk(
+        chunks.push(lower_file_chunk_into(
             file_id,
             hir_file,
             index,
-            resolutions,
+            &lookup,
             path,
-            names_in,
+            &mut names,
             &root_temps,
-        );
-        chunks.push(chunk);
+        ));
     }
 
     // ── Step 4: Assemble + counting flags ───────────────────────────
-    assemble_program(decls, chunks)
+    assemble_program(decls, chunks, names.into_entries())
 }
 
 // ─── Per-file decomposition seam (slice C, #460) ─────────────────────
@@ -117,7 +117,9 @@ pub struct FileChunk {
     /// Root-content child containers followed by this file's knots — in
     /// exactly the order the root container accumulates them.
     pub children: Vec<lir::Container>,
-    /// Name-table state after lowering this file.
+    /// Name-table state after lowering this file. Empty when produced by
+    /// the eager path, which threads one table and passes the final state
+    /// to [`assemble_program`] directly.
     pub name_entries: Vec<String>,
     /// Containers whose visit counts this file's bodies read.
     pub visit_refs: Vec<brink_format::DefinitionId>,
@@ -151,14 +153,13 @@ pub fn normalize_and_stamp(
 pub fn collect_declarations(
     files: &[(FileId, &hir::HirFile)],
     index: &SymbolIndex,
-    resolutions: &ResolutionMap,
+    resolutions: &ResolutionLookup,
 ) -> DeclProduct {
-    let resolutions = ResolutionLookup::build(resolutions);
     let mut names = NameTable::new();
     let mut diagnostics = Vec::new();
 
     let mut globals =
-        decls::collect_globals(files, index, &mut names, &resolutions, &mut diagnostics);
+        decls::collect_globals(files, index, &mut names, resolutions, &mut diagnostics);
     let (lists, list_items, list_globals) = decls::collect_lists(files, index, &mut names);
     globals.extend(list_globals);
     let externals = decls::collect_externals(files, index, &mut names);
@@ -187,20 +188,45 @@ pub fn root_temp_map(files: &[(FileId, &hir::HirFile)]) -> TempMap {
 ///
 /// `names_in` is the name-table state before this file: the previous chunk's
 /// `name_entries`, or [`DeclProduct::name_entries`] for the first file.
-/// `file_path` is this file's source path (for `SourceLocation` on
-/// recognized lines); `root_temps` comes from [`root_temp_map`].
+/// `resolutions` needs only this file's resolved references. `file_path` is
+/// this file's source path (for `SourceLocation` on recognized lines);
+/// `root_temps` comes from [`root_temp_map`].
 #[must_use]
 pub fn lower_file_chunk(
     file_id: FileId,
     hir_file: &hir::HirFile,
     index: &SymbolIndex,
-    resolutions: &ResolutionMap,
+    resolutions: &ResolutionLookup,
     file_path: &str,
     names_in: &[String],
     root_temps: &TempMap,
 ) -> FileChunk {
-    let resolutions = ResolutionLookup::build(resolutions);
     let mut names = NameTable::from_entries(names_in);
+    let mut chunk = lower_file_chunk_into(
+        file_id,
+        hir_file,
+        index,
+        resolutions,
+        file_path,
+        &mut names,
+        root_temps,
+    );
+    chunk.name_entries = names.into_entries();
+    chunk
+}
+
+/// [`lower_file_chunk`] against a caller-owned name table (`name_entries`
+/// left empty). The eager path threads one table through every file instead
+/// of rebuilding per-chunk state.
+fn lower_file_chunk_into(
+    file_id: FileId,
+    hir_file: &hir::HirFile,
+    index: &SymbolIndex,
+    resolutions: &ResolutionLookup,
+    file_path: &str,
+    names: &mut NameTable,
+    root_temps: &TempMap,
+) -> FileChunk {
     let mut ids = context::IdAllocator::new();
     let root_id = ids.alloc_address("");
     let file_paths: HashMap<FileId, String> =
@@ -212,10 +238,10 @@ pub fn lower_file_chunk(
     let (root_stmts, mut children) = {
         let mut ctx = make_ctx(
             file_id,
-            &resolutions,
+            resolutions,
             index,
             root_temps,
-            &mut names,
+            names,
             &mut ids,
             root_id,
             String::new(),
@@ -232,9 +258,9 @@ pub fn lower_file_chunk(
             file_id,
             hir_file,
             knot,
-            &resolutions,
+            resolutions,
             index,
-            &mut names,
+            names,
             &mut ids,
             root_id,
             &file_paths,
@@ -252,7 +278,7 @@ pub fn lower_file_chunk(
     FileChunk {
         root_stmts,
         children,
-        name_entries: names.into_entries(),
+        name_entries: Vec::new(),
         visit_refs,
         turns_refs,
     }
@@ -262,11 +288,14 @@ pub fn lower_file_chunk(
 ///
 /// Concatenates chunk bodies/children in file order, appends the implicit
 /// root `-> DONE`, and applies counting flags from the chunks' pre-collected
-/// visit/turn references plus global divert-target defaults.
+/// visit/turn references plus global divert-target defaults. `name_table`
+/// is the final name-table state: the last chunk's `name_entries` (or
+/// [`DeclProduct::name_entries`] when there are no files).
 #[must_use]
 pub fn assemble_program(
     decls: DeclProduct,
     chunks: Vec<FileChunk>,
+    name_table: Vec<String>,
 ) -> (lir::Program, Vec<crate::Diagnostic>) {
     let root_id = context::IdAllocator::new().alloc_address("");
 
@@ -274,14 +303,11 @@ pub fn assemble_program(
     let mut children = Vec::new();
     let mut visit_ids = Vec::new();
     let mut turns_ids = Vec::new();
-    let mut name_table = decls.name_entries;
     for chunk in chunks {
         body.extend(chunk.root_stmts);
         children.extend(chunk.children);
         visit_ids.extend(chunk.visit_refs);
         turns_ids.extend(chunk.turns_refs);
-        // Each chunk's state extends its predecessor's; the last is final.
-        name_table = chunk.name_entries;
     }
 
     // Implicit DONE at end of root
