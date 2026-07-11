@@ -291,6 +291,10 @@ pub enum DecodeError {
     BadInklMagic([u8; 4]),
     /// `.inkl` version is not supported.
     UnsupportedInklVersion(u8),
+    /// `VAL_ARRAY`/`VAL_MAP` nesting exceeded the decoder's recursion-depth
+    /// cap (see `MAX_DECODE_DEPTH`). Guards against crafted files of deeply
+    /// nested single-element collections stack-overflowing the reader.
+    MaxDepthExceeded(usize),
 }
 
 impl fmt::Display for DecodeError {
@@ -332,6 +336,9 @@ impl fmt::Display for DecodeError {
             }
             Self::BadInklMagic(m) => write!(f, "bad .inkl magic: {m:02x?}"),
             Self::UnsupportedInklVersion(v) => write!(f, "unsupported .inkl version: {v}"),
+            Self::MaxDepthExceeded(limit) => {
+                write!(f, "value nesting exceeded max decode depth ({limit})")
+            }
         }
     }
 }
