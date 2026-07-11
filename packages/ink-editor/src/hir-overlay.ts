@@ -31,7 +31,13 @@
  * transient failure.
  */
 
-import { StateField, type EditorState, type Extension, type Transaction } from "@codemirror/state";
+import {
+  StateEffect,
+  StateField,
+  type EditorState,
+  type Extension,
+  type Transaction,
+} from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
@@ -63,6 +69,23 @@ const emptyState: HirOverlayState = {
   marks: Decoration.none,
   lineDecos: Decoration.none,
 };
+
+/**
+ * Force the overlay to re-read `getHirProjection` without a doc change
+ * (#494). The StateField seeds at view creation — before the first async
+ * compile/analysis completes — and otherwise only recomputes on doc-changing
+ * transactions, so a passive load would keep the empty seed until the first
+ * edit. `DocumentSessions` dispatches this to every mounted view when a
+ * compile result is delivered; hosts with custom wiring can dispatch it (or
+ * call `refreshHirOverlay(view)`) from their own compile-complete signal.
+ * Mirrors `reclassifyEffect` / `refreshGutterMarkersEffect`.
+ */
+export const refreshHirOverlayEffect = StateEffect.define<void>();
+
+/** Convenience wrapper: dispatch `refreshHirOverlayEffect` on `view`. */
+export function refreshHirOverlay(view: EditorView): void {
+  view.dispatch({ effects: refreshHirOverlayEffect.of(undefined) });
+}
 
 /** Doc position of a (0-based line, UTF-16 col), or null when out of range. */
 function posOf(
@@ -140,10 +163,12 @@ function createOverlayField(options: HirOverlayOptions) {
       return fetchState(state.doc) ?? emptyState;
     },
     update(value, tr: Transaction) {
-      if (!tr.docChanged) return value;
+      const refresh = tr.effects.some((e) => e.is(refreshHirOverlayEffect));
+      if (!tr.docChanged && !refresh) return value;
       const fresh = fetchState(tr.newDoc);
       if (fresh) return fresh;
-      // R5: transient failure — keep last-good, remapped through the change.
+      // R5: transient failure — keep last-good, remapped through the change
+      // (a no-op remap for an effect-only transaction).
       return {
         projection: value.projection,
         marks: value.marks.map(tr.changes),

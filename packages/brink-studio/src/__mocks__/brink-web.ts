@@ -612,7 +612,7 @@ export class EditorSession {
 
   line_contexts_doc(_doc: number): string { return "[]"; }
   semantic_tokens_doc(_doc: number): string { return "[]"; }
-  hir_spans_doc(_doc: number): string { return '{"spans":[],"lines":[]}'; }
+  hir_spans_doc(_doc: number): string { return mockHirProjectionJson; }
   completions_doc(_doc: number, _offset: number): string { return "[]"; }
   hover_doc(_doc: number, _offset: number): string { return "null"; }
   goto_definition_doc(_doc: number, _offset: number): string { return "null"; }
@@ -649,6 +649,19 @@ export class EditorSession {
   format_document(): string { return '""'; }
   convert_element(_offset: number, _target: string): string { return "null"; }
   free(): void { /* no-op */ }
+}
+
+/**
+ * Test hook (#494): the projection `hir_spans_doc` returns. Defaults to the
+ * empty projection — mirroring a real session before its first
+ * compile/analysis completes. Tests set a populated projection to simulate
+ * analysis finishing, then reset in their afterEach.
+ */
+const EMPTY_HIR_PROJECTION = '{"spans":[],"lines":[]}';
+let mockHirProjectionJson = EMPTY_HIR_PROJECTION;
+
+export function setMockHirProjection(json: string | null): void {
+  mockHirProjectionJson = json ?? EMPTY_HIR_PROJECTION;
 }
 
 export function compile(_source: string): string {

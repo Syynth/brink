@@ -50,6 +50,7 @@ import {
   type FormGlyphMode,
 } from "./argument-widgets.js";
 import { DocHandle, syncAnnotation } from "./document-handle.js";
+import { refreshHirOverlay } from "./hir-overlay.js";
 import { elementTypeField, type LineInfo } from "./element-type.js";
 import { getHintsForElement, lineHasContent, buildContext } from "./transitions.js";
 import { convertLineToType as cmConvertLineToType } from "./convert.js";
@@ -1142,6 +1143,14 @@ export class DocumentSessions {
     // collapsed here.
     if (result === this.lastCompileDelivered) return;
     this.lastCompileDelivered = result;
+    // A compile/analysis completing is not a CM transaction, so the HIR
+    // overlay's StateField would keep its (possibly empty) seed until the
+    // next doc change (#494). Re-read the projection in every mounted view —
+    // the initial debounced compile after a passive load lands here, which
+    // is what makes the overlay paint without the user typing.
+    for (const slot of this.slots.values()) {
+      if (slot.view !== null) refreshHirOverlay(slot.view);
+    }
     this.callbacks.onCompileResult?.(result);
   }
 
