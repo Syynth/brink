@@ -1135,7 +1135,10 @@ fn value_to_js(v: &Value) -> JsValue {
         Value::Map(map) => {
             let obj = js_sys::Object::new();
             #[cfg(debug_assertions)]
-            warn_on_map_key_collisions(map.iter().map(|(k, _)| k));
+            {
+                warn_on_map_key_collisions(map.keys());
+                warn_on_map_key_reordering(map.keys());
+            }
             for (k, val) in map.iter() {
                 // `Reflect::set` on a fresh, extensible object cannot fail;
                 // discard the `Result` rather than unwrap it.
@@ -1147,38 +1150,17 @@ fn value_to_js(v: &Value) -> JsValue {
     }
 }
 
-/// Stringify a [`Value::Map`] key for the native-JS-object boundary. JS object
-/// keys are strings, so `int`/`bool` keys are rendered to their canonical
-/// string form (the lossy leg documented on [`value_to_js`]).
-fn map_key_to_js(key: &brink_format::MapKey) -> JsValue {
-    match key {
-        brink_format::MapKey::Int(n) => JsValue::from_str(&n.to_string()),
-        brink_format::MapKey::Str(s) => JsValue::from_str(s),
-        brink_format::MapKey::Bool(b) => JsValue::from_str(if *b { "true" } else { "false" }),
-    }
-}
-
-// ── map_key_to_js collision diagnostic (debug-only, #551) ─────────────
-//
-// `map_key_to_js` deliberately coerces every `MapKey` variant to a JS
-// property string (value-model-spec §8: `value_to_js`'s `Map` arm is the
-// lossy native leg; `value_to_typed_js` — the `eval_function` JSON boundary
-// — is the lossless one). That coercion means distinct keys can collide —
-// `MapKey::Int(1)` and `MapKey::Str("1")` both become `"1"` — and
-// `Reflect::set` then silently drops one entry. No behavior change is
-// wanted here: this is purely a debug-build visibility aid so the failure
-// mode is diagnosable once T1b makes colliding keys author-reachable.
-//
-// The detection (`map_key_collisions`) is plain Rust with no `JsValue`, so
-// it is unit-testable on the host without a JS runtime; only the reporting
-// wrapper (`warn_on_map_key_collisions`) touches `web_sys::console`.
-
 /// The JS-property-string a [`brink_format::MapKey`] coerces to at the
-/// `value_to_js` wasm boundary. Mirrors [`map_key_to_js`]'s coercion as
-/// plain Rust (no `JsValue`) so collisions in it are testable off wasm32.
-/// Kept as a separate, debug-only helper rather than reused by
-/// `map_key_to_js` itself, so the always-on marshaling path is untouched.
-#[cfg(debug_assertions)]
+/// `value_to_js` wasm boundary: `int`/`bool` keys render to their canonical
+/// string form, `string` keys pass through unchanged.
+///
+/// This is the **one coercion source** [`map_key_to_js`] (the always-on
+/// marshaling path) and the debug-only diagnostics below both derive from
+/// (#560 — a prior version duplicated this match in a debug-only twin,
+/// `map_key_coercion_string`, so nothing caught it drifting from the real
+/// coercion). Being plain Rust with no `JsValue`, it — and everything built
+/// on it — is unit-testable on the host without a JS runtime or wasm32
+/// target.
 fn map_key_coercion_string(key: &brink_format::MapKey) -> String {
     match key {
         brink_format::MapKey::Int(n) => n.to_string(),
@@ -1186,6 +1168,38 @@ fn map_key_coercion_string(key: &brink_format::MapKey) -> String {
         brink_format::MapKey::Bool(b) => if *b { "true" } else { "false" }.to_string(),
     }
 }
+
+/// Stringify a [`Value::Map`] key for the native-JS-object boundary (the
+/// lossy leg documented on [`value_to_js`]). Thin wrapper over
+/// [`map_key_coercion_string`] — see that function's doc for why it, not a
+/// second copy of this match, is the coercion source of truth.
+fn map_key_to_js(key: &brink_format::MapKey) -> JsValue {
+    JsValue::from_str(&map_key_coercion_string(key))
+}
+
+// ── map_key_to_js debug diagnostics (§8's two native-leg failure modes) ───
+//
+// `map_key_to_js` deliberately coerces every `MapKey` variant to a JS
+// property string (value-model-spec §8: `value_to_js`'s `Map` arm is the
+// lossy native leg; `value_to_typed_js` — the `eval_function` JSON boundary
+// — is the lossless one). Two distinct failure modes follow from that:
+//
+// 1. **Collision** (#551/#555): distinct keys can coerce to the same
+//    string — `MapKey::Int(1)` and `MapKey::Str("1")` both become `"1"` —
+//    and `Reflect::set` then silently drops one entry.
+// 2. **Reordering** (#559): even without collisions, a real JS engine
+//    enumerates an object's own "array index" property names (ECMA-262
+//    §6.1.7 — canonical non-negative integer strings below `2^32 - 1`) in
+//    ascending numeric order *before* any other string keys, regardless of
+//    `Reflect::set` call order. That silently reorders a map's author
+//    insertion order whenever an integer-like key is inserted somewhere
+//    other than first.
+//
+// Neither wants a behavior change: these are debug-build visibility aids so
+// the failure modes are diagnosable once T1b makes them author-reachable.
+// Detection is plain Rust with no `JsValue`, so it is unit-testable on the
+// host without a JS runtime; only the `warn_on_*` wrappers touch
+// `web_sys::console`.
 
 /// The coerced JS-property strings that more than one of `keys` maps to
 /// (via [`map_key_coercion_string`]), in first-collision order. Empty when
@@ -1219,11 +1233,80 @@ fn warn_on_map_key_collisions<'a>(keys: impl Iterator<Item = &'a brink_format::M
     }
 }
 
-/// Plain-Rust tests for the collision *detection* (no `JsValue`/`web_sys`, so
-/// these run under host `cargo test` — no wasm32 target needed).
+/// The `u32` array-index value of a coerced key string `s`, or `None` if `s`
+/// is not a JS "array index" property name (ECMA-262 §6.1.7): a canonical
+/// non-negative integer string — no leading zeros unless `s == "0"` — whose
+/// value is strictly below `2^32 - 1`. Such property names are the ones a
+/// real JS engine reorders ahead of other string keys during own-property
+/// enumeration (`Reflect::ownKeys`, `for...in`, `Object.keys`).
+#[cfg(debug_assertions)]
+fn js_array_index_value(s: &str) -> Option<u32> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if s.len() > 1 && s.starts_with('0') {
+        return None;
+    }
+    let n: u32 = s.parse().ok()?;
+    (n != u32::MAX).then_some(n)
+}
+
+/// If a real JS engine's own-property enumeration order for `keys` (coerced
+/// via [`map_key_coercion_string`]) would differ from the map's author
+/// insertion order, returns `Some((insertion_order, js_order))`. `None` if
+/// the map has no array-index keys out of place — insertion order already
+/// matches what JS would produce.
+#[cfg(debug_assertions)]
+fn map_key_reordering<'a>(
+    keys: impl Iterator<Item = &'a brink_format::MapKey>,
+) -> Option<(Vec<String>, Vec<String>)> {
+    let insertion_order: Vec<String> = keys.map(map_key_coercion_string).collect();
+    let mut index_keys: Vec<(u32, usize)> = Vec::new();
+    let mut string_keys: Vec<usize> = Vec::new();
+    for (i, s) in insertion_order.iter().enumerate() {
+        match js_array_index_value(s) {
+            Some(n) => index_keys.push((n, i)),
+            None => string_keys.push(i),
+        }
+    }
+    index_keys.sort_by_key(|&(n, _)| n);
+    let js_order: Vec<String> = index_keys
+        .into_iter()
+        .map(|(_, i)| i)
+        .chain(string_keys)
+        .map(|i| insertion_order[i].clone())
+        .collect();
+    (insertion_order != js_order).then_some((insertion_order, js_order))
+}
+
+/// Debug-only diagnostic: log a `console.warn` when JS's own-property
+/// enumeration order would reorder a map's coerced keys relative to its
+/// author insertion order — the integer-like-key-reordering failure mode
+/// this issue tracks. Purely observational; the caller's `Reflect::set`
+/// loop still runs unchanged (and `Reflect::set` call order does not
+/// actually control JS enumeration order — that is exactly the bug being
+/// diagnosed).
+#[cfg(debug_assertions)]
+fn warn_on_map_key_reordering<'a>(keys: impl Iterator<Item = &'a brink_format::MapKey>) {
+    if let Some((insertion_order, js_order)) = map_key_reordering(keys) {
+        web_sys::console::warn_1(&JsValue::from_str(&format!(
+            "brink: map key reordering at the wasm value_to_js boundary: JS objects \
+             enumerate integer-like keys in ascending numeric order before other keys, \
+             silently reordering this map's author insertion order {insertion_order:?} \
+             to {js_order:?} (value-model-spec §8; the lossless, order-preserving \
+             boundary is value_to_typed_js / eval_function's TypedValueJs result)"
+        )));
+    }
+}
+
+/// Plain-Rust tests for the debug diagnostics' *detection* logic (no
+/// `JsValue`/`web_sys`, so these run under host `cargo test` — no wasm32
+/// target needed).
 #[cfg(all(test, debug_assertions))]
-mod map_key_collision_tests {
-    use super::{map_key_coercion_string, map_key_collisions};
+mod map_key_diagnostic_tests {
+    use super::{
+        js_array_index_value, map_key_coercion_string, map_key_collisions, map_key_reordering,
+    };
     use brink_format::MapKey;
 
     #[test]
@@ -1275,6 +1358,76 @@ mod map_key_collision_tests {
         let mut collided = map_key_collisions(keys.iter());
         collided.sort();
         assert_eq!(collided, vec!["1".to_string(), "true".to_string()]);
+    }
+
+    #[test]
+    fn array_index_values_accept_canonical_non_negative_integers() {
+        assert_eq!(js_array_index_value("0"), Some(0));
+        assert_eq!(js_array_index_value("1"), Some(1));
+        assert_eq!(js_array_index_value("4294967293"), Some(4_294_967_293));
+    }
+
+    #[test]
+    fn array_index_values_reject_the_2_32_minus_1_boundary() {
+        // 2^32 - 1 is explicitly excluded by ECMA-262 §6.1.7.
+        assert_eq!(js_array_index_value("4294967295"), None);
+    }
+
+    #[test]
+    fn array_index_values_reject_leading_zeros_and_non_digits() {
+        assert_eq!(js_array_index_value("00"), None);
+        assert_eq!(js_array_index_value("01"), None);
+        assert_eq!(js_array_index_value("-1"), None);
+        assert_eq!(js_array_index_value("1.0"), None);
+        assert_eq!(js_array_index_value("abc"), None);
+        assert_eq!(js_array_index_value(""), None);
+    }
+
+    #[test]
+    fn no_reordering_for_string_only_keys_in_any_order() {
+        let keys = [MapKey::from("b"), MapKey::from("a"), MapKey::from("c")];
+        assert_eq!(map_key_reordering(keys.iter()), None);
+    }
+
+    #[test]
+    fn no_reordering_when_integer_like_keys_already_lead_in_ascending_order() {
+        let keys = [MapKey::from(0), MapKey::from(1), MapKey::from("z")];
+        assert_eq!(map_key_reordering(keys.iter()), None);
+    }
+
+    #[test]
+    fn detects_reordering_when_integer_like_key_inserted_after_a_string_key() {
+        // Author order: "z" then 0. JS enumerates array-index keys first,
+        // so "0" jumps ahead of "z".
+        let keys = [MapKey::from("z"), MapKey::from(0)];
+        assert_eq!(
+            map_key_reordering(keys.iter()),
+            Some((
+                vec!["z".to_string(), "0".to_string()],
+                vec!["0".to_string(), "z".to_string()],
+            ))
+        );
+    }
+
+    #[test]
+    fn detects_reordering_when_integer_like_keys_are_out_of_ascending_order() {
+        // Author inserted 2 before 1; JS still enumerates 1 before 2.
+        let keys = [MapKey::from(2), MapKey::from(1)];
+        assert_eq!(
+            map_key_reordering(keys.iter()),
+            Some((
+                vec!["2".to_string(), "1".to_string()],
+                vec!["1".to_string(), "2".to_string()],
+            ))
+        );
+    }
+
+    #[test]
+    fn non_canonical_integer_like_string_key_is_not_treated_as_array_index() {
+        // "007" is not a canonical array index (leading zero), so it stays
+        // a plain string key and does not get reordered ahead of "z".
+        let keys = [MapKey::from("z"), MapKey::from("007")];
+        assert_eq!(map_key_reordering(keys.iter()), None);
     }
 }
 
