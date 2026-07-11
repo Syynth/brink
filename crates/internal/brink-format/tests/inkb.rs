@@ -11,14 +11,19 @@ use brink_format::{
     write_section_line_tables, write_section_list_defs, write_section_list_items,
     write_section_list_literals, write_section_name_table, write_section_variables,
 };
-use brink_json::InkJson;
+
+fn i001_data() -> brink_format::StoryData {
+    // Compile from an in-memory string with a fixed entry name so the
+    // embedded source path (and thus snapshots) stay machine-independent.
+    let src = include_str!("../../../../tests/tier1/basics/I001-minimal-story/story.ink");
+    brink_compiler::compile("story.ink", |_p| Ok(src.to_owned()))
+        .unwrap()
+        .data
+}
 
 #[test]
 fn roundtrip_i001_minimal_story() {
-    let json_text =
-        include_str!("../../../../tests/tier1/basics/I001-minimal-story/story.ink.json");
-    let story: InkJson = serde_json::from_str(json_text).unwrap();
-    let data = brink_converter::convert(&story).unwrap();
+    let data = i001_data();
 
     let mut buf = Vec::new();
     write_inkb(&data, &mut buf);
@@ -30,10 +35,7 @@ fn roundtrip_i001_minimal_story() {
 
 #[test]
 fn snapshot_i001_inkb_bytes() {
-    let json_text =
-        include_str!("../../../../tests/tier1/basics/I001-minimal-story/story.ink.json");
-    let story: InkJson = serde_json::from_str(json_text).unwrap();
-    let data = brink_converter::convert(&story).unwrap();
+    let data = i001_data();
 
     let mut buf = Vec::new();
     write_inkb(&data, &mut buf);
@@ -75,17 +77,15 @@ fn format_hex(bytes: &[u8]) -> String {
     out
 }
 
-fn collect_ink_json_files(dir: &Path) -> Vec<std::path::PathBuf> {
+fn collect_story_ink_files(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
     if dir.is_dir() {
         for entry in std::fs::read_dir(dir).unwrap() {
             let entry = entry.unwrap();
             let path = entry.path();
             if path.is_dir() {
-                files.extend(collect_ink_json_files(&path));
-            } else if path.extension().is_some_and(|e| e == "json")
-                && path.to_str().is_some_and(|s| s.contains(".ink.json"))
-            {
+                files.extend(collect_story_ink_files(&path));
+            } else if path.file_name().is_some_and(|n| n == "story.ink") {
                 files.push(path);
             }
         }
@@ -106,25 +106,20 @@ fn inkb_roundtrip_corpus_smoke() {
         .unwrap()
         .join("tests");
 
-    let files = collect_ink_json_files(&tests_dir);
+    let files = collect_story_ink_files(&tests_dir);
     assert!(
         !files.is_empty(),
-        "no .ink.json files found in {tests_dir:?}"
+        "no story.ink files found in {tests_dir:?}"
     );
 
     let mut failures = Vec::new();
 
     for path in &files {
-        let json_text = std::fs::read_to_string(path).unwrap();
-        let json_text = json_text.strip_prefix('\u{feff}').unwrap_or(&json_text);
-
-        let Ok(story): Result<InkJson, _> = serde_json::from_str(json_text) else {
+        // Some corpus stories intentionally do not compile — skip those.
+        let Ok(output) = brink_compiler::compile_path(path) else {
             continue;
         };
-
-        let Ok(data) = brink_converter::convert(&story) else {
-            continue;
-        };
+        let data = output.data;
 
         let mut buf = Vec::new();
         write_inkb(&data, &mut buf);
@@ -155,10 +150,7 @@ fn inkb_roundtrip_corpus_smoke() {
 // ── New tests for sectioned header ──────────────────────────────────────────
 
 fn make_test_data() -> brink_format::StoryData {
-    let json_text =
-        include_str!("../../../../tests/tier1/basics/I001-minimal-story/story.ink.json");
-    let story: InkJson = serde_json::from_str(json_text).unwrap();
-    brink_converter::convert(&story).unwrap()
+    i001_data()
 }
 
 #[test]

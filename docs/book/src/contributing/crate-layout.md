@@ -22,11 +22,8 @@ brink is organized as a Cargo workspace with strict dependency rules. The centra
 | `brink-analyzer` | `crates/internal/brink-analyzer/` | Cross-file semantic analysis, symbol resolution |
 | `brink-driver` | `crates/internal/brink-driver/` | Pipeline orchestration: file discovery + cross-file analysis |
 | `brink-codegen-inkb` | `crates/internal/brink-codegen-inkb/` | Bytecode codegen: LIR to `StoryData` |
-| `brink-codegen-json` | `crates/internal/brink-codegen-json/` | JSON codegen: LIR to `.ink.json` (for diffing) |
 | `brink-format` | `crates/internal/brink-format/` | Binary interface between compiler and runtime |
 | `brink-db` | `crates/internal/brink-db/` | Incremental project database, file discovery |
-| `brink-json` | `crates/internal/brink-json/` | Parser for inklecate `.ink.json` output |
-| `brink-converter` | `crates/internal/brink-converter/` | Reference pipeline: `.ink.json` to `StoryData` |
 | `brink-fmt` | `crates/internal/brink-fmt/` | `.ink` source formatter (powers `brink fmt`) |
 | `brink-intl` | `crates/internal/brink-intl/` | Internationalization tooling: line export, XLIFF round-trip, `.inkl` compile, ICU plurals |
 | `xliff2` | `crates/internal/xliff2/` | General-purpose XLIFF 2.0 read/write library |

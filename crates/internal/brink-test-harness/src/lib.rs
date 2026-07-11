@@ -16,4 +16,4 @@ pub use diff::{EpisodeDiff, StepDiff, diff};
 pub use episode::*;
 pub use explorer::{ExploreConfig, explore};
 pub use oracle::{OracleDiff, OracleEpisode, diff_oracle, load_oracle_episodes};
-pub use runner::{RunConfig, record, record_from_ink_json, run_text, run_text_from_ink_json};
+pub use runner::{RunConfig, record, run_text};

@@ -10,8 +10,6 @@ publish = false
 [dependencies]
 brink-runtime = { workspace = true, features = ["testing"] }
 brink-format = { workspace = true, features = ["inkt"] }
-brink-converter = { workspace = true }
-brink-json = { workspace = true }
 brink-compiler = { workspace = true }
 # For the compile_bench bin (#498): stage-level timing through the production
 # driver's own seams (discover / analyze / diagnostics / LIR / codegen).

@@ -5,8 +5,6 @@ how-to. Read them once and the [guides](../embedding/index.md) and
 [reference](../reference/index.md) will make more sense; skip them and you can
 still get a story running, you just won't know *why*.
 
-- **[The Two Pipelines](./two-pipelines.md)** — why there's a native compiler
-  *and* a converter, and which one you want.
 - **[The Execution Model](./execution-model.md)** — how a compiled story runs:
   the `Program`/`Story` split, the step loop, `Line`, and choices. The shared
   foundation every client (raw Rust, Bevy, web) builds on.

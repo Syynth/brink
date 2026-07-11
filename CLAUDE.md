@@ -4,7 +4,7 @@
 
 A custom Ink language compiler, runtime, and studio in Rust. The compiler pipeline: `.ink` source → parse (`brink-syntax`) → HIR lower (`brink-ir::hir`) → analyze (`brink-analyzer`) → LIR lower (`brink-ir::lir`) → bytecode codegen (`brink-codegen-inkb`) → `StoryData` (`brink-format`) → link + execute (`brink-runtime`).
 
-A parallel **converter** pipeline exists: `.ink.json` (inklecate output) → parse (`brink-json`) → convert (`brink-converter`) → `StoryData`. This is the known-good reference — the converter produces correct `StoryData` from inklecate's output. The goal is to make the brink compiler produce identical behavior.
+A parallel **converter** pipeline (`.ink.json` → `brink-json` → `brink-converter` → `StoryData`) served as the known-good reference until it was retired (2026-07-11 ruling, #544). Correctness is anchored by the C# ink oracle; `.ink.json` files stay on disk only as inklecate output for oracle regeneration — nothing in-tree consumes them.
 
 ## Current state
 
@@ -43,7 +43,7 @@ These are standing values, not situational rules. They apply to all work on this
 When working on compiler bugs (making failing episodes pass), follow this process:
 
 1. **Run the corpus report** to identify highest-impact categories.
-2. **Sample 3–5 failing cases**, study the diagnostic dumps (`.ink` source, compiler `.inkt`, converter `.inkt`).
+2. **Sample 3–5 failing cases**, study the diagnostic dumps (`.ink` source, compiler `.inkt`, oracle episodes).
 3. **Root-cause the systematic issue** — trace to the exact pipeline layer.
 4. **Write failing tests** that prove the root cause before changing production code.
 5. **Enter plan mode** and present the RCA + tests + fix approach. Do not implement before plan approval.
@@ -53,13 +53,13 @@ When working on compiler bugs (making failing episodes pass), follow this proces
 ### What NOT to do
 
 - Do not patch symptoms. Find the root cause.
-- Do not cargo-cult the converter. Understand what it does; don't copy its structure.
+- Do not cargo-cult the reference C# implementation. Understand what it does; don't copy its structure.
 - Do not assume existing compiler code is correct. Every layer was written by agents and may contain fundamental misunderstandings.
 - Do not implement before plan mode for compiler fixes.
 
 Ratchet: `RATCHET_EPISODE_COUNT` in `crates/internal/brink-test-harness/tests/oracle_snapshots.rs`.
 
-Test cases: `tests/tier{1,2,3}/` — each has `story.ink`, `story.ink.json`, and `oracle/*.oracle.json` (golden episodes from the C# ink runtime).
+Test cases: `tests/tier{1,2,3}/` — each has `story.ink`, `story.ink.json` (inklecate output, kept only for oracle regeneration), and `oracle/*.oracle.json` (golden episodes from the C# ink runtime).
 
 ## Runtime public API
 
@@ -138,7 +138,6 @@ INSTA_UPDATE=always cargo test -p brink-test-harness --test oracle_snapshots
 | `brink-analyzer` | `crates/internal/brink-analyzer/` | Cross-file semantic analysis |
 | `brink-codegen-inkb` | `crates/internal/brink-codegen-inkb/` | Bytecode codegen: LIR → StoryData |
 | `brink-format` | `crates/internal/brink-format/` | Binary interface between compiler and runtime |
-| `brink-converter` | `crates/internal/brink-converter/` | Converts .ink.json → StoryData (reference pipeline) |
 | `brink-test-harness` | `crates/internal/brink-test-harness/` | Episode exploration, diffing, corpus tests |
 | `bevy-brink` | `crates/bevy-brink/` | Bevy 0.19 integration: plugin, assets, components, external-function bindings |
 | `bevy-brink-derive` | `crates/internal/bevy-brink-derive/` | `#[derive(BrinkCommand)]` proc-macro for ink→engine command events |
@@ -151,7 +150,7 @@ Per-area specs live in `docs/` (`compiler-spec.md`, `runtime-spec.md`, `format-s
 - **VM tests must not hang.** The runtime VM can infinite-loop on malformed bytecode. All VM tests and episode exploration use step limits. If a test hangs, it's a bug — do not increase timeouts, fix the root cause.
 - **Dependencies** use `dep.workspace = true`. Versions in root `Cargo.toml`.
 - **Lints:** `unsafe_code`, `unwrap_used`, `expect_used`, `panic`, `todo`, `print_stdout`, `print_stderr` are denied. Clippy pedantic is on. Tests are exempt via `clippy.toml`.
-- **Determinism matters.** Never iterate `HashMap` keys/values where order affects output. Sort or use `BTreeMap`. We've been burned by this — see converter list items, analyzer label lookup, db file ordering.
+- **Determinism matters.** Never iterate `HashMap` keys/values where order affects output. Sort or use `BTreeMap`. We've been burned by this — see analyzer label lookup, db file ordering, the retired converter's list items.
 - **Commit after every fix.** Do not accumulate changes. Each fix is one commit. This makes bisecting easy and keeps the history clean.
 - **Wasm-observable behavior needs a changeset.** Any PR (crates-only included) changing behavior observable through `@brink-lang/web` carries a `@brink-lang/web` patch changeset (decision 2026-07-11).
-- **Never use `.ink.json` in the translation workflow.** The translation pipeline is `.ink` → compile → `.inkb` → export-xliff → `.xlf`. The `.ink.json` files are inklecate output used only by the converter reference pipeline. They must never be used as input to `export-xliff`, `compile-locale`, or any other intl operation.
+- **Never use `.ink.json` in the translation workflow.** The translation pipeline is `.ink` → compile → `.inkb` → export-xliff → `.xlf`. The `.ink.json` files are inklecate output kept only for oracle regeneration. They must never be used as input to `export-xliff`, `compile-locale`, or any other intl operation.

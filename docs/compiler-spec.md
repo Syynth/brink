@@ -1,6 +1,6 @@
 # brink compiler specification
 
-`brink-compiler` turns `.ink` source text into `.inkb` bytecode through a multi-pass pipeline. It depends on `brink-driver` (pipeline orchestration), `brink-codegen-inkb` (bytecode emission), and `brink-codegen-json` (JSON emission). The driver in turn composes `brink-db` (incremental file caching), `brink-ir` (HIR and LIR lowering), and `brink-analyzer` (semantic analysis). See [format-spec](format-spec.md) for the types and file formats the compiler produces, [brink-driver-spec](brink-driver-spec.md) for the orchestration layer, and [brink-ide-spec](brink-ide-spec.md) for the IDE query layer.
+`brink-compiler` turns `.ink` source text into `.inkb` bytecode through a multi-pass pipeline. It depends on `brink-driver` (pipeline orchestration) and `brink-codegen-inkb` (bytecode emission). The driver in turn composes `brink-db` (incremental file caching), `brink-ir` (HIR and LIR lowering), and `brink-analyzer` (semantic analysis). See [format-spec](format-spec.md) for the types and file formats the compiler produces, [brink-driver-spec](brink-driver-spec.md) for the orchestration layer, and [brink-ide-spec](brink-ide-spec.md) for the IDE query layer.
 
 ## Compilation pipeline
 
@@ -16,9 +16,8 @@ Pass 5:  Codegen           (brink-codegen-inkb)           per-container → Stor
 
 `brink-driver` orchestrates passes 2–3 and diagnostic collection. `brink-db` caches pass 1 results per file with incremental knot-level re-lowering. The LSP and compiler both use `brink-driver` for orchestration; the LSP additionally uses `brink-ide` for interactive queries (goto-def, hover, completions, etc.). The compiler runs all 5 passes.
 
-Two backends consume the LIR:
+One backend consumes the LIR:
 - **Bytecode backend** (`brink-codegen-inkb`): linearizes to opcodes + line tables → `.inkb`
-- **JSON backend** (`brink-codegen-json`): serializes to `.ink.json` (inklecate-compatible)
 
 ### Pass 1: Parse + Lower (brink-syntax, brink-ir::hir)
 
@@ -308,7 +307,7 @@ EndChoice
 
 Translators localize each line independently with no structural coupling. This allows the target language to use completely different grammatical constructions for the choice prompt vs. the narrative output.
 
-**Low-level (dynamic text):** When choice text contains arbitrary logic that cannot be statically decomposed into a line table entry, `BeginStringEval`/`EndStringEval` captures evaluated text as a String and pushes it to the value stack. The choice target container handles output text directly. This path is also used by the ink.json converter, which does not have access to the original bracket syntax.
+**Low-level (dynamic text):** When choice text contains arbitrary logic that cannot be statically decomposed into a line table entry, `BeginStringEval`/`EndStringEval` captures evaluated text as a String and pushes it to the value stack. The choice target container handles output text directly. (The retired .ink.json converter pipeline also used this path — it had no access to the original bracket syntax.)
 
 ```
 BeginStringEval

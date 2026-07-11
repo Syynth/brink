@@ -49,12 +49,6 @@ pub struct CompileOutput {
     pub warnings: Vec<ResolvedDiagnostic>,
 }
 
-/// Successful LIR compilation output, including any non-fatal warnings.
-pub struct LirOutput {
-    pub program: brink_ir::lir::Program,
-    pub warnings: Vec<ResolvedDiagnostic>,
-}
-
 /// Compile an ink story from an entry-point file path.
 ///
 /// Reads files from disk, follows INCLUDEs, and runs the full compilation
@@ -74,7 +68,7 @@ pub fn compile<F>(entry: &str, read_file: F) -> Result<CompileOutput, CompileErr
 where
     F: FnMut(&str) -> Result<String, io::Error>,
 {
-    driver::compile(entry, read_file)
+    driver::compile_with_options(entry, read_file, AnalysisOptions::default())
 }
 
 /// Compile with explicit analysis options — e.g. a registered host-capability
@@ -90,22 +84,6 @@ where
     F: FnMut(&str) -> Result<String, io::Error>,
 {
     driver::compile_with_options(entry, read_file, options)
-}
-
-/// Compile an ink story to the ink.json format (same as inklecate output).
-///
-/// Useful for diffing brink's output against the reference compiler.
-pub fn compile_to_json<F>(entry: &str, read_file: F) -> Result<brink_json::InkJson, CompileError>
-where
-    F: FnMut(&str) -> Result<String, io::Error>,
-{
-    let lir_output = driver::compile_to_lir(entry, read_file)?;
-    Ok(brink_codegen_json::emit(&lir_output.program))
-}
-
-/// Compile ink source from a string to the ink.json format.
-pub fn compile_string_to_json(source: &str) -> Result<brink_json::InkJson, CompileError> {
-    compile_to_json("<string>", |_| Ok(source.to_string()))
 }
 
 /// Errors that can occur during compilation.

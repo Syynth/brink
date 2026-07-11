@@ -1,18 +1,36 @@
 //! Integration tests for brink-runtime.
 //!
-//! Converts ink.json, links, steps through with inputs, and compares output.
+//! Compiles `.ink` fixtures, links, steps through with inputs, and compares output.
 
-use brink_converter::convert;
-use brink_json::InkJson;
 use brink_runtime::{Choice, DotNetRng, Line, Story};
 
-/// Convert an ink.json string, link, and run to completion with the given choice inputs.
-/// Returns the full text output.
+/// Compile a `.ink` fixture (path relative to this crate) with the brink compiler.
 #[expect(clippy::unwrap_used)]
-fn run_story(ink_json: &str, inputs: &[usize]) -> String {
-    let ink: InkJson = serde_json::from_str(ink_json).unwrap();
-    let data = convert(&ink).unwrap();
-    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+fn compile_ink(path: &str) -> brink_format::StoryData {
+    brink_compiler::compile_path(std::path::Path::new(path))
+        .unwrap()
+        .data
+}
+
+/// Compile ink source from a string, link, and run to completion.
+#[expect(clippy::unwrap_used)]
+fn run_story_src(src: &str, inputs: &[usize]) -> String {
+    let data = brink_compiler::compile("main.ink", |_p| Ok(src.to_owned()))
+        .unwrap()
+        .data;
+    run_story_data(&data, inputs)
+}
+
+/// Compile a `.ink` fixture, link, and run to completion with the given choice inputs.
+/// Returns the full text output.
+fn run_story(ink_path: &str, inputs: &[usize]) -> String {
+    let data = compile_ink(ink_path);
+    run_story_data(&data, inputs)
+}
+
+#[expect(clippy::unwrap_used)]
+fn run_story_data(data: &brink_format::StoryData, inputs: &[usize]) -> String {
+    let (program, line_tables) = brink_runtime::link(data).unwrap();
     let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
     let mut output = String::new();
     let mut input_idx = 0;
@@ -44,11 +62,6 @@ fn run_story(ink_json: &str, inputs: &[usize]) -> String {
     }
 }
 
-#[expect(clippy::unwrap_used)]
-fn load_ink_json(path: &str) -> String {
-    std::fs::read_to_string(path).unwrap()
-}
-
 /// When a story presents choices via bytecode exhaustion (no explicit `Done`
 /// opcode), `step()` must return `Choices`, not `Done`. The I003 story diverts
 /// to a knot via goto (clearing the container stack), creates choices inside
@@ -56,9 +69,7 @@ fn load_ink_json(path: &str) -> String {
 /// `Done` opcode to yield at. The VM must still present the pending choices.
 #[test]
 fn choices_yielded_on_bytecode_exhaustion() {
-    let json = load_ink_json("../../tests/tier1/basics/I003-tunnel-to-death/story.ink.json");
-    let ink: InkJson = serde_json::from_str(&json).unwrap();
-    let data = convert(&ink).unwrap();
+    let data = compile_ink("../../tests/tier1/basics/I003-tunnel-to-death/story.ink");
     let (program, line_tables) = brink_runtime::link(&data).unwrap();
     let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
 
@@ -76,8 +87,8 @@ fn choices_yielded_on_bytecode_exhaustion() {
 
 #[test]
 fn test_i001_minimal_story() {
-    let json = load_ink_json("../../tests/tier1/basics/I001-minimal-story/story.ink.json");
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier1/basics/I001-minimal-story/story.ink";
+    let result = run_story(ink_path, &[]);
     assert_eq!(result.trim(), "Hello, world!");
 }
 
@@ -86,32 +97,11 @@ fn test_i001_minimal_story() {
 /// Without text capture, `out` hits a value stack underflow.
 #[test]
 fn function_call_captures_text_as_return_value() {
-    // Minimal ink.json: `{print_hello()}` where print_hello outputs "hello".
-    // Equivalent ink: `{print_hello()}`  /  `=== function print_hello` / `hello`
-    let json = r##"{
-        "inkVersion": 21,
-        "root": [
-            [
-                "ev",
-                { "f()": "print_hello" },
-                "out",
-                "/ev",
-                "\n",
-                ["done", { "#n": "g-0" }],
-                null
-            ],
-            "done",
-            {
-                "print_hello": [
-                    "^hello",
-                    "\n",
-                    null
-                ]
-            }
-        ],
-        "listDefs": {}
-    }"##;
-    let result = run_story(json, &[]);
+    let src = "{print_hello()}\n\
+         \n\
+         === function print_hello ===\n\
+         hello\n";
+    let result = run_story_src(src, &[]);
     assert_eq!(result.trim(), "hello");
 }
 
@@ -121,32 +111,11 @@ fn function_call_captures_text_as_return_value() {
 /// Expected: "Say hi please." not "Say hi\n please."
 #[test]
 fn function_text_capture_strips_trailing_newlines() {
-    let json = r##"{
-        "inkVersion": 21,
-        "root": [
-            [
-                "^Say ",
-                "ev",
-                { "f()": "greet" },
-                "out",
-                "/ev",
-                "^ please.",
-                "\n",
-                ["done", { "#n": "g-0" }],
-                null
-            ],
-            "done",
-            {
-                "greet": [
-                    "^hi",
-                    "\n",
-                    null
-                ]
-            }
-        ],
-        "listDefs": {}
-    }"##;
-    let result = run_story(json, &[]);
+    let src = "Say {greet()} please.\n\
+         \n\
+         === function greet ===\n\
+         hi\n";
+    let result = run_story_src(src, &[]);
     assert_eq!(result.trim(), "Say hi please.");
 }
 
@@ -156,10 +125,7 @@ fn function_text_capture_strips_trailing_newlines() {
 /// followed transparently.
 #[test]
 fn fallback_choice_auto_selected() {
-    let json =
-        load_ink_json("../../tests/tier1/choices/I077-fallback-choice-on-thread/story.ink.json");
-    let ink: InkJson = serde_json::from_str(&json).unwrap();
-    let data = convert(&ink).unwrap();
+    let data = compile_ink("../../tests/tier1/choices/I077-fallback-choice-on-thread/story.ink");
     let (program, line_tables) = brink_runtime::link(&data).unwrap();
     let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
 
@@ -181,10 +147,8 @@ fn fallback_choice_auto_selected() {
 /// and divert to B instead of returning to the caller.
 #[test]
 fn tunnel_onwards_divert_override() {
-    let json = load_ink_json(
-        "../../tests/tier1/diverts/I053-tunnel-onwards-divert-override/story.ink.json",
-    );
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier1/diverts/I053-tunnel-onwards-divert-override/story.ink";
+    let result = run_story(ink_path, &[]);
     assert_eq!(result.trim(), "This is A\nNow in B.");
 }
 
@@ -193,8 +157,8 @@ fn tunnel_onwards_divert_override() {
 /// control commands inside the `global decl` container.
 #[test]
 fn string_constant_global() {
-    let json = load_ink_json("../../tests/tier1/variables/string-constants/story.ink.json");
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier1/variables/string-constants/story.ink";
+    let result = run_story(ink_path, &[]);
     assert_eq!(result.trim(), "hi");
 }
 
@@ -203,8 +167,8 @@ fn string_constant_global() {
 /// which is a tunnel call where the target comes from variable `x`.
 #[test]
 fn variable_tunnel_call() {
-    let json = load_ink_json("../../tests/tier1/diverts/variable-tunnel/story.ink.json");
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier1/diverts/variable-tunnel/story.ink";
+    let result = run_story(ink_path, &[]);
     assert_eq!(result.trim(), "STUFF");
 }
 
@@ -213,12 +177,11 @@ fn variable_tunnel_call() {
 /// choice point will infinite-loop because exhausted choices keep appearing.
 #[test]
 fn once_only_choices_filtered_by_visit_count() {
-    let json = load_ink_json(
-        "../../tests/tier1/choices/I079-once-only-choices-can-link-back-to-self/story.ink.json",
-    );
+    let ink_path =
+        "../../tests/tier1/choices/I079-once-only-choices-can-link-back-to-self/story.ink";
     // Input: choose 0 twice (first choice both times). The story should
     // terminate after the fallback fires, not infinite loop.
-    let result = run_story(&json, &[0, 0]);
+    let result = run_story(ink_path, &[0, 0]);
     // Story should complete without panic/infinite loop.
     assert!(!result.is_empty() || result.is_empty()); // just assert it completes
 }
@@ -229,10 +192,8 @@ fn once_only_choices_filtered_by_visit_count() {
 /// without popping anything from the stack.
 #[test]
 fn once_only_choices_with_own_content() {
-    let json = load_ink_json(
-        "../../tests/tier1/choices/I089-once-only-choices-with-own-content/story.ink.json",
-    );
-    let result = run_story(&json, &[0, 0, 0]);
+    let ink_path = "../../tests/tier1/choices/I089-once-only-choices-with-own-content/story.ink";
+    let result = run_story(ink_path, &[0, 0, 0]);
     assert!(
         result.contains("first time"),
         "expected sequence output, got: {result:?}"
@@ -248,8 +209,8 @@ fn once_only_choices_with_own_content() {
 /// outputs `{x}` which must resolve to `1`, not empty.
 #[test]
 fn choice_thread_forking_preserves_temp() {
-    let json = load_ink_json("../../tests/tier1/choices/I083-choice-thread-forking/story.ink.json");
-    let result = run_story(&json, &[0]);
+    let ink_path = "../../tests/tier1/choices/I083-choice-thread-forking/story.ink";
+    let result = run_story(ink_path, &[0]);
     assert!(
         result.contains("Vaue of local var is: 1"),
         "expected temp var x=1 to be preserved through choice, got: {result:?}"
@@ -260,8 +221,8 @@ fn choice_thread_forking_preserves_temp() {
 /// return to the main flow where `CHOICE_COUNT()` outputs "2".
 #[test]
 fn thread_call_with_choice_count() {
-    let json = load_ink_json("../../tests/tier1/choices/I091-choice-count/story.ink.json");
-    let result = run_story(&json, &[0]);
+    let ink_path = "../../tests/tier1/choices/I091-choice-count/story.ink";
+    let result = run_story(ink_path, &[0]);
     assert!(
         result.starts_with('2'),
         "expected output to start with '2' from CHOICE_COUNT(), got: {result:?}"
@@ -277,9 +238,8 @@ fn thread_call_with_choice_count() {
 /// the reference ink test (`TestConditionalChoiceInWeave`) asserts this.
 #[test]
 fn conditional_choice_in_weave() {
-    let json =
-        load_ink_json("../../tests/tier1/choices/conditional-choice-in-weave/story.ink.json");
-    let result = run_story(&json, &[0]);
+    let ink_path = "../../tests/tier1/choices/conditional-choice-in-weave/story.ink";
+    let result = run_story(ink_path, &[0]);
     assert_eq!(result.trim(), "start\ngather should be seen\nresult");
 }
 
@@ -290,17 +250,16 @@ fn conditional_choice_in_weave() {
 /// `knot.stitch.0.0.c-0` (the numeric equivalent) would have worked.
 #[test]
 fn divert_to_weave_points() {
-    let json =
-        load_ink_json("../../tests/tier1/diverts/I063-divert-to-weave-points/story.ink.json");
-    let result = run_story(&json, &[0]);
+    let ink_path = "../../tests/tier1/diverts/I063-divert-to-weave-points/story.ink";
+    let result = run_story(ink_path, &[0]);
     let expected = "gather\ntest\nchoice content\ngather\nsecond time round";
     assert_eq!(result.trim(), expected);
 }
 
 #[test]
 fn test_simple_divert() {
-    let json = load_ink_json("../../tests/tier1/divert/simple-divert/story.ink.json");
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier1/divert/simple-divert/story.ink";
+    let result = run_story(ink_path, &[]);
     let expected = "We arrived into London at 9.45pm exactly.\nWe hurried home to Savile Row as fast as we could.";
     assert_eq!(result.trim(), expected);
 }
@@ -313,36 +272,14 @@ fn test_simple_divert() {
 /// Bug: `TunnelCall` handler doesn't increment `visit_counts`.
 #[test]
 fn tunnel_call_increments_visit_count() {
-    // Ink equivalent:
-    //   -> knot ->
-    //   -> knot ->
-    //   done
-    //   == knot ==
-    //   {knot}
-    //   ->->
-    let json = r##"{
-        "inkVersion": 21,
-        "root": [
-            [
-                {"->t->": "knot"},
-                {"->t->": "knot"},
-                "done",
-                null
-            ],
-            "done",
-            {
-                "knot": [
-                    "ev", {"CNT?": ".^"}, "out", "/ev",
-                    "\n",
-                    "ev", "void", "/ev",
-                    "->->",
-                    {"#f": 1}
-                ]
-            }
-        ],
-        "listDefs": {}
-    }"##;
-    let result = run_story(json, &[]);
+    let src = "-> knot ->\n\
+         -> knot ->\n\
+         -> DONE\n\
+         \n\
+         == knot ==\n\
+         {knot}\n\
+         ->->\n";
+    let result = run_story_src(src, &[]);
     assert_eq!(
         result, "1\n2\n",
         "tunnel calls should increment visit count: first call=1, second call=2"
@@ -355,38 +292,11 @@ fn tunnel_call_increments_visit_count() {
 /// Bug: `Call` handler doesn't increment `visit_counts`.
 #[test]
 fn function_call_increments_visit_count() {
-    // Ink equivalent:
-    //   {func()}
-    //   {func()}
-    //   === function func ===
-    //   ~ return func
-    //
-    // In ink.json, `{func()}` is: ev, f() func, out, /ev
-    // The function body: ev, CNT? .^, /ev, ~ret (return)
-    // CNT? pushes the visit count of func, which becomes the return value.
-    let json = r##"{
-        "inkVersion": 21,
-        "root": [
-            [
-                "ev", {"f()": "func"}, "out", "/ev",
-                "^ ",
-                "ev", {"f()": "func"}, "out", "/ev",
-                "\n",
-                ["done", {"#n": "g-0"}],
-                null
-            ],
-            "done",
-            {
-                "func": [
-                    "ev", {"CNT?": ".^"}, "/ev",
-                    "~ret",
-                    {"#f": 1}
-                ]
-            }
-        ],
-        "listDefs": {}
-    }"##;
-    let result = run_story(json, &[]);
+    let src = "{func()} {func()}\n\
+         \n\
+         === function func ===\n\
+         ~ return func\n";
+    let result = run_story_src(src, &[]);
     assert_eq!(
         result.trim(),
         "1 2",
@@ -402,54 +312,18 @@ fn function_call_increments_visit_count() {
 /// Bug: `goto_target` always increments, causing over-counting.
 #[test]
 fn goto_to_self_does_not_increment_visits_only() {
-    // Ink equivalent:
-    //   -> knot ->
-    //   done
-    //   == knot ==
-    //   ~ count++
-    //   {count} {knot}
-    //   {count < 3: -> knot}
-    //   ->->
-    //
-    // The knot has #f: 1 (VISITS only). Looping back with -> knot should
-    // NOT increment the visit count since the container is already on the stack.
-    let json = r##"{
-        "inkVersion": 21,
-        "root": [
-            [
-                {"->t->": "knot"},
-                "done",
-                null
-            ],
-            "done",
-            {
-                "knot": [
-                    "ev", {"VAR?": "count"}, 1, "+", {"VAR=": "count", "re": true}, "/ev",
-                    "ev", {"VAR?": "count"}, "out", "/ev",
-                    "^ ",
-                    "ev", {"CNT?": ".^"}, "out", "/ev",
-                    "\n",
-                    "ev", {"VAR?": "count"}, 3, "<", "/ev",
-                    [
-                        {"->": ".^.b", "c": true},
-                        {"b": [{"->": ".^.^.^"}, {"->": ".^.^.^.22"}, null]}
-                    ],
-                    "nop",
-                    "\n",
-                    "ev", "void", "/ev",
-                    "->->",
-                    {"#f": 1}
-                ],
-                "global decl": [
-                    "ev", 0, {"VAR=": "count"}, "/ev",
-                    "end",
-                    null
-                ]
-            }
-        ],
-        "listDefs": {}
-    }"##;
-    let result = run_story(json, &[]);
+    // The knot is VISITS-only. Looping back with -> knot should NOT
+    // increment the visit count since the container is already on the stack.
+    let src = "VAR count = 0\n\
+         -> knot ->\n\
+         -> DONE\n\
+         \n\
+         == knot ==\n\
+         ~ count = count + 1\n\
+         {count} {knot}\n\
+         {count < 3: -> knot}\n\
+         ->->\n";
+    let result = run_story_src(src, &[]);
     // count increments each iteration; visit count should stay at 1
     assert_eq!(
         result, "1 1\n2 1\n3 1\n",
@@ -465,58 +339,17 @@ fn goto_to_self_does_not_increment_visits_only() {
 /// but the semantics must be: increment because `COUNT_START_ONLY` + offset 0.
 #[test]
 fn gather_loop_increments_count_start_only() {
-    // Ink equivalent:
-    //   -> test ->
-    //   done
-    //   == test ==
-    //   - (loop)
-    //   ~ count++
-    //   {count} {loop}
-    //   {count < 3: -> loop}
-    //   ->->
-    let json = r##"{
-        "inkVersion": 21,
-        "root": [
-            [
-                {"->t->": "test"},
-                "done",
-                null
-            ],
-            "done",
-            {
-                "test": [
-                    [
-                        [
-                            "ev", {"VAR?": "count"}, 1, "+", {"VAR=": "count", "re": true}, "/ev",
-                            "ev", {"VAR?": "count"}, "out", "/ev",
-                            "^ ",
-                            "ev", {"CNT?": ".^"}, "out", "/ev",
-                            "\n",
-                            "ev", {"VAR?": "count"}, 3, "<", "/ev",
-                            [
-                                {"->": ".^.b", "c": true},
-                                {"b": [{"->": ".^.^.^"}, {"->": ".^.^.^.22"}, null]}
-                            ],
-                            "nop",
-                            "\n",
-                            "ev", "void", "/ev",
-                            "->->",
-                            {"#f": 5, "#n": "loop"}
-                        ],
-                        null
-                    ],
-                    null
-                ],
-                "global decl": [
-                    "ev", 0, {"VAR=": "count"}, "/ev",
-                    "end",
-                    null
-                ]
-            }
-        ],
-        "listDefs": {}
-    }"##;
-    let result = run_story(json, &[]);
+    let src = "VAR count = 0\n\
+         -> test ->\n\
+         -> DONE\n\
+         \n\
+         == test ==\n\
+         - (loop)\n\
+         ~ count = count + 1\n\
+         {count} {loop}\n\
+         {count < 3: -> loop}\n\
+         ->->\n";
+    let result = run_story_src(src, &[]);
     // Both count and visit count should increment each iteration
     assert_eq!(
         result, "1 1\n2 2\n3 3\n",
@@ -531,9 +364,8 @@ fn gather_loop_increments_count_start_only() {
 /// finishes ("Finishing thread.").
 #[test]
 fn knot_thread_interaction_2() {
-    let json =
-        load_ink_json("../../tests/tier1/knots/I098-knot-thread-interaction-2/story.ink.json");
-    let result = run_story(&json, &[0]);
+    let ink_path = "../../tests/tier1/knots/I098-knot-thread-interaction-2/story.ink";
+    let result = run_story(ink_path, &[0]);
     let expected = "\
 I\u{2019}m in a tunnel
 When should this get printed?
@@ -550,10 +382,8 @@ Finishing thread.\n";
 /// The VM previously stubbed this to always return -1.
 #[test]
 fn turns_since_with_variable_target() {
-    let json = load_ink_json(
-        "../../tests/tier1/variables/turns-since-with-variable-target/story.ink.json",
-    );
-    let result = run_story(&json, &[0]);
+    let ink_path = "../../tests/tier1/variables/turns-since-with-variable-target/story.ink";
+    let result = run_story(ink_path, &[0]);
     assert_eq!(
         result, "0\n0\n1\n",
         "TURNS_SINCE should return 0 on same turn, 1 after a choice"
@@ -564,9 +394,8 @@ fn turns_since_with_variable_target() {
 /// suppression for VISITS-only, and gather `COUNT_START_ONLY` behavior together.
 #[test]
 fn knot_stitch_gather_counts() {
-    let json =
-        load_ink_json("../../tests/tier1/knots/I128-knot-stitch-gather-counts/story.ink.json");
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier1/knots/I128-knot-stitch-gather-counts/story.ink";
+    let result = run_story(ink_path, &[]);
     let expected = "\
 1 1\n2 2\n3 3\n\
 1 1\n2 1\n3 1\n\
@@ -584,8 +413,8 @@ fn knot_stitch_gather_counts() {
 /// `ListIntersect`, and `Add` (list union via +).
 #[test]
 fn i071_list_basic_operations() {
-    let json = load_ink_json("../../tests/tier2/lists/I071-list-basic-operations/story.ink.json");
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier2/lists/I071-list-basic-operations/story.ink";
+    let result = run_story(ink_path, &[]);
     assert_eq!(result, "b, d\na, b, c, e\nb, c\n0\n1\n1\n");
 }
 
@@ -593,8 +422,8 @@ fn i071_list_basic_operations() {
 /// `LIST_VALUE`, `LIST_ALL`, `LIST_INVERT`, and subtract also tested.
 #[test]
 fn list_from_int_and_more_ops() {
-    let json = load_ink_json("../../tests/tier2/lists/more-list-operations/story.ink.json");
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier2/lists/more-list-operations/story.ink";
+    let result = run_story(ink_path, &[]);
     assert_eq!(result, "1\nl\nn\nl, m\nn\n");
 }
 
@@ -602,9 +431,8 @@ fn list_from_int_and_more_ops() {
 /// `LIST_ALL` can still enumerate all items from the original list def.
 #[test]
 fn empty_list_preserves_origins() {
-    let json =
-        load_ink_json("../../tests/tier2/lists/empty-list-origin-after-assignment/story.ink.json");
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier2/lists/empty-list-origin-after-assignment/story.ink";
+    let result = run_story(ink_path, &[]);
     assert_eq!(result, "a, b, c\n");
 }
 
@@ -613,8 +441,8 @@ fn empty_list_preserves_origins() {
 /// ordinal then origin name.
 #[test]
 fn list_range_and_ordering() {
-    let json = load_ink_json("../../tests/tier2/lists/list-range/story.ink.json");
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier2/lists/list-range/story.ink";
+    let result = run_story(ink_path, &[]);
     assert_eq!(
         result,
         "Pound, Pizza, Euro, Pasta, Dollar, Curry, Paella\n\
@@ -629,8 +457,8 @@ fn list_range_and_ordering() {
 /// single-item lists then expands to all items from their origins.
 #[test]
 fn list_item_variable_reference() {
-    let json = load_ink_json("../../tests/tier2/lists/list-all/story.ink.json");
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier2/lists/list-all/story.ink";
+    let result = run_story(ink_path, &[]);
     assert_eq!(result, "A, B\n");
 }
 
@@ -640,8 +468,8 @@ fn list_item_variable_reference() {
 /// explicit `origins` array is present in the ink.json.
 #[test]
 fn seed_random_and_list_literal_origins() {
-    let json = load_ink_json("../../tests/tier2/lists/more-list-operations2/story.ink.json");
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier2/lists/more-list-operations2/story.ink";
+    let result = run_story(ink_path, &[]);
     assert_eq!(
         result,
         "a1, b1, c1\n\
@@ -670,8 +498,8 @@ fn seed_random_and_list_literal_origins() {
 /// static `Call` to a non-existent container and execution goes haywire.
 #[test]
 fn function_variable_call() {
-    let json = load_ink_json("../../tests/tier2/lists/list-comparison/story.ink.json");
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier2/lists/list-comparison/story.ink";
+    let result = run_story(ink_path, &[]);
     assert_eq!(
         result,
         "Hey, my name is Philippe. What about yours?\n\
@@ -685,9 +513,8 @@ fn function_variable_call() {
 /// go back to val. After `inc(val)`, val should be 6 (was 5).
 #[test]
 fn variable_pointer_ref_from_knot() {
-    let json =
-        load_ink_json("../../tests/tier1/variables/variable-pointer-ref-from-knot/story.ink.json");
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier1/variables/variable-pointer-ref-from-knot/story.ink";
+    let result = run_story(ink_path, &[]);
     assert_eq!(
         result, "6\n",
         "ref parameter should increment val from 5 to 6"
@@ -698,8 +525,8 @@ fn variable_pointer_ref_from_knot() {
 /// matching the reference .NET runtime. Seed 100 → 4 dice rolls.
 #[test]
 fn rnd_func_deterministic_output() {
-    let json = load_ink_json("../../tests/tier2/function/rnd-func/story.ink.json");
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier2/function/rnd-func/story.ink";
+    let result = run_story(ink_path, &[]);
     assert_eq!(
         result,
         "Rolling dice 1: 6.\n\
@@ -713,9 +540,8 @@ fn rnd_func_deterministic_output() {
 /// preserves float semantics. `CEILING(1.2) / 3` → `0.6666667` (float division).
 #[test]
 fn ceiling_preserves_float_for_arithmetic() {
-    let json =
-        load_ink_json("../../tests/tier2/builtins/I026-floor-ceiling-and-casts/story.ink.json");
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier2/builtins/I026-floor-ceiling-and-casts/story.ink";
+    let result = run_story(ink_path, &[]);
     assert_eq!(result, "1\n1\n2\n0.6666667\n0\n1\n");
 }
 
@@ -723,9 +549,8 @@ fn ceiling_preserves_float_for_arithmetic() {
 /// `{true: a} <> b` should produce `a b`, not `a\nb`.
 #[test]
 fn glue_skips_whitespace_text_to_find_newline() {
-    let json =
-        load_ink_json("../../tests/tier2/logic/I095-multiline-logic-with-glue/story.ink.json");
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier2/logic/I095-multiline-logic-with-glue/story.ink";
+    let result = run_story(ink_path, &[]);
     assert_eq!(result, "a b\na b\n");
 }
 
@@ -733,24 +558,24 @@ fn glue_skips_whitespace_text_to_find_newline() {
 /// The fallback body's `temp=` opcodes expect args on the value stack.
 #[test]
 fn external_function_fallback_with_args() {
-    let json = load_ink_json("../../tests/tier3/runtime/external-function-1-arg-v1/story.ink.json");
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier3/runtime/external-function-1-arg-v1/story.ink";
+    let result = run_story(ink_path, &[]);
     assert_eq!(result, "The value is false.\n");
 }
 
 /// String `?` (contains) should do substring check, not list containment.
 #[test]
 fn string_contains_operator() {
-    let json = load_ink_json("../../tests/tier3/strings/I050-string-contains/story.ink.json");
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier3/strings/I050-string-contains/story.ink";
+    let result = run_story(ink_path, &[]);
     assert_eq!(result, "1\n0\n1\n1\n");
 }
 
 /// String == Int should coerce Int to String for comparison.
 #[test]
 fn string_int_equality_coercion() {
-    let json = load_ink_json("../../tests/tier3/strings/I052-string-type-coercion/story.ink.json");
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier3/strings/I052-string-type-coercion/story.ink";
+    let result = run_story(ink_path, &[]);
     assert_eq!(result, "same\ndifferent\n");
 }
 
@@ -759,8 +584,8 @@ fn string_int_equality_coercion() {
 /// branch's tag, but on a fresh visit there's no active capture to close.
 #[test]
 fn tags_in_sequence() {
-    let json = load_ink_json("../../tests/tier3/tags/tagsInSeq/story.ink.json");
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier3/tags/tagsInSeq/story.ink";
+    let result = run_story(ink_path, &[]);
     assert_eq!(result, "A red sequence.\nA white sequence.\n");
 }
 
@@ -790,9 +615,7 @@ fn tower_of_hanoi_step_sequence() {
         }
     }
 
-    let json = load_ink_json("../../tests/tier3/lists/tower-of-hanoi/story.ink.json");
-    let ink: InkJson = serde_json::from_str(&json).unwrap();
-    let data = convert(&ink).unwrap();
+    let data = compile_ink("../../tests/tier3/lists/tower-of-hanoi/story.ink");
     let (program, line_tables) = brink_runtime::link(&data).unwrap();
     let mut story =
         Story::<brink_runtime::DotNetRng>::new(std::sync::Arc::new(program), line_tables);
@@ -870,42 +693,20 @@ fn tower_of_hanoi_step_sequence() {
 /// variable name, visit counts by knot path, and a known status string.
 #[test]
 fn debug_snapshot_resolves_names_and_state() {
-    // Story with a global `count` and a knot `knot` (tunneled once, looped via
-    // goto-to-self). Mirrors `goto_to_self_does_not_increment_visits_only`.
-    let json = r##"{
-        "inkVersion": 21,
-        "root": [
-            [ {"->t->": "knot"}, "done", null ],
-            "done",
-            {
-                "knot": [
-                    "ev", {"VAR?": "count"}, 1, "+", {"VAR=": "count", "re": true}, "/ev",
-                    "ev", {"VAR?": "count"}, "out", "/ev",
-                    "^ ",
-                    "ev", {"CNT?": ".^"}, "out", "/ev",
-                    "\n",
-                    "ev", {"VAR?": "count"}, 3, "<", "/ev",
-                    [
-                        {"->": ".^.b", "c": true},
-                        {"b": [{"->": ".^.^.^"}, {"->": ".^.^.^.22"}, null]}
-                    ],
-                    "nop",
-                    "\n",
-                    "ev", "void", "/ev",
-                    "->->",
-                    {"#f": 1}
-                ],
-                "global decl": [
-                    "ev", 0, {"VAR=": "count"}, "/ev",
-                    "end",
-                    null
-                ]
-            }
-        ],
-        "listDefs": {}
-    }"##;
-    let ink: InkJson = serde_json::from_str(json).unwrap();
-    let data = convert(&ink).unwrap();
+    // Story with a global `count` and a knot `knot` (tunneled once, looping
+    // back to itself while `count < 3`).
+    let src = "VAR count = 0\n\
+         -> knot ->\n\
+         -> DONE\n\
+         \n\
+         == knot ==\n\
+         ~ count = count + 1\n\
+         {count} {knot}\n\
+         { count < 3: -> knot }\n\
+         ->->\n";
+    let data = brink_compiler::compile("main.ink", |_p| Ok(src.to_owned()))
+        .unwrap()
+        .data;
     let (program, line_tables) = brink_runtime::link(&data).unwrap();
     let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
     let _ = story.continue_maximally().unwrap();
@@ -952,7 +753,7 @@ fn debug_snapshot_resolves_names_and_state() {
 /// with the function-level fragment model.
 #[test]
 fn external_function_fallback_0_arg() {
-    let json = load_ink_json("../../tests/tier3/runtime/external-function-0-arg/story.ink.json");
-    let result = run_story(&json, &[]);
+    let ink_path = "../../tests/tier3/runtime/external-function-0-arg/story.ink";
+    let result = run_story(ink_path, &[]);
     assert_eq!(result, "The value is .\n");
 }

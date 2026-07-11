@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 use crate::episode::Episode;
 use crate::explorer::ExploreConfig;
 
-/// Recursively find directories containing `story.ink.json`.
+/// Recursively find directories containing `story.ink`.
 pub fn collect_test_cases(root: &Path) -> Vec<PathBuf> {
     let mut result = Vec::new();
-    collect_recursive(root, &mut result, |dir| dir.join("story.ink.json").exists());
+    collect_recursive(root, &mut result, |dir| dir.join("story.ink").exists());
     result.sort();
     result
 }
@@ -88,33 +88,6 @@ pub fn load_golden_episodes(case_dir: &Path) -> Result<Vec<Episode>, String> {
     Ok(episodes)
 }
 
-/// Explore a story from its `.ink.json` file via the converter pipeline.
-///
-/// Pipeline: parse JSON → convert → link → explore.
-pub fn explore_from_ink_json(
-    json_path: &Path,
-    config: &ExploreConfig,
-) -> Result<Vec<Episode>, String> {
-    let json_str = std::fs::read_to_string(json_path).map_err(|e| format!("read: {e}"))?;
-    let ink: brink_json::InkJson =
-        serde_json::from_str(&json_str).map_err(|e| format!("json: {e}"))?;
-    let data = brink_converter::convert(&ink).map_err(|e| format!("convert: {e}"))?;
-    let (program, line_tables) = brink_runtime::link(&data).map_err(|e| format!("link: {e}"))?;
-    Ok(crate::explore(
-        std::sync::Arc::new(program),
-        line_tables,
-        config,
-    ))
-}
-
-/// Convert a `.ink.json` file and return the [`StoryData`].
-pub fn convert_ink_json(json_path: &Path) -> Result<brink_format::StoryData, String> {
-    let json_str = std::fs::read_to_string(json_path).map_err(|e| format!("read: {e}"))?;
-    let ink: brink_json::InkJson =
-        serde_json::from_str(&json_str).map_err(|e| format!("json: {e}"))?;
-    brink_converter::convert(&ink).map_err(|e| format!("convert: {e}"))
-}
-
 /// Compile a `.ink` file with the brink compiler, link, and explore.
 ///
 /// Returns `Err` if compilation or linking fails.
@@ -141,51 +114,4 @@ pub fn compile_and_explore_from_ink(
         brink_runtime::link(&output.data).map_err(|e| format!("link: {e}"))?;
     let episodes = crate::explore(std::sync::Arc::new(program), line_tables, config);
     Ok((output.data, episodes))
-}
-
-/// Result of compiling `.ink` → JSON → roundtrip → convert → explore.
-pub struct JsonRoundtripResult {
-    /// Our compiler's JSON output (serialized string, for dumping on failure).
-    pub json_output: String,
-    /// The `StoryData` produced by the converter from our JSON.
-    pub story_data: brink_format::StoryData,
-    /// Episodes explored from that `StoryData`.
-    pub episodes: Vec<Episode>,
-}
-
-/// Compile a `.ink` file to JSON, serialize → deserialize (validating roundtrip),
-/// then convert → link → explore.
-///
-/// The serialize → deserialize step validates that the JSON serialization is correct,
-/// not just the in-memory `InkJson` struct.
-pub fn compile_json_roundtrip_and_explore(
-    ink_path: &Path,
-    config: &ExploreConfig,
-) -> Result<JsonRoundtripResult, String> {
-    // Compile .ink → InkJson
-    let ink_json = brink_compiler::compile_to_json(ink_path.to_string_lossy().as_ref(), |p| {
-        std::fs::read_to_string(p).map_err(|e| std::io::Error::new(e.kind(), format!("{p}: {e}")))
-    })
-    .map_err(|e| format!("compile: {e}"))?;
-
-    // Serialize to JSON string (kept for diagnostic dump)
-    let json_output =
-        serde_json::to_string_pretty(&ink_json).map_err(|e| format!("serialize: {e}"))?;
-
-    // Deserialize back (validates serialization roundtrip)
-    let roundtripped: brink_json::InkJson =
-        serde_json::from_str(&json_output).map_err(|e| format!("deserialize: {e}"))?;
-
-    // Convert → link → explore
-    let story_data =
-        brink_converter::convert(&roundtripped).map_err(|e| format!("convert: {e}"))?;
-    let (program, line_tables) =
-        brink_runtime::link(&story_data).map_err(|e| format!("link: {e}"))?;
-    let episodes = crate::explore(std::sync::Arc::new(program), line_tables, config);
-
-    Ok(JsonRoundtripResult {
-        json_output,
-        story_data,
-        episodes,
-    })
 }

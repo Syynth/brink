@@ -65,7 +65,7 @@ Each container has a primary address (tag `0x01`) plus a `ContainerDef` with:
   - Bit 1: `TURNS` — record which turn it was visited on
   - Bit 2: `COUNT_START_ONLY` — only count when entering at the start, not when re-entering mid-container
 - **Path hash** — `i32`, sum of char values from the container's ink path string. Used to seed the RNG for shuffle sequences.
-- **Param count** — `u8`, the number of parameters the container declares (a parameterized knot/stitch/function, e.g. `=== call(action, present) ===` has 2; `0` for the vast majority). The prologue binds them with that many leading `DeclareTemp`s. Lets the runtime arity-check a host-directed parameterized entry (`choose_path_string_with_args`) and `call_function`. The **converter** reference pipeline leaves this `0` (inklecate's JSON doesn't expose it); only the brink compiler populates the true count.
+- **Param count** — `u8`, the number of parameters the container declares (a parameterized knot/stitch/function, e.g. `=== call(action, present) ===` has 2; `0` for the vast majority). The prologue binds them with that many leading `DeclareTemp`s. Lets the runtime arity-check a host-directed parameterized entry (`choose_path_string_with_args`) and `call_function`. (Historical: `.inkb` files built by the retired converter reference pipeline left this `0` — inklecate's JSON didn't expose it.)
 - **Scope id** — `DefinitionId` of the lexical scope this container belongs to. For knots and stitches, `scope_id == id` (they ARE the scope). For gathers, choice targets, inline sequence wrappers, and other compiler-internal containers, `scope_id` is the enclosing knot or stitch. Used by the linker to associate containers with their scope's line table.
 
 ### Container hierarchy
@@ -98,7 +98,7 @@ Each variable definition has:
 
 `VAR` declarations are mutable globals. `CONST` declarations are immutable globals — they always exist in the format (visible, inspectable, debuggable). The compiler may inline CONST values as a build-time optimization controlled by a compiler flag, but the definition is always present. Attempting to `SetGlobal` on an immutable variable is a runtime error.
 
-Temporary variables (`temp`) have no format-level definition. They are call-frame-local — created by a `DeclareTemp` opcode during execution, stored in the current call frame's temp slot array, and discarded when the frame pops. Temp slot indices are assigned by the compiler/converter across the entire knot/function scope (including all child containers reached by flow entry), not per-container.
+Temporary variables (`temp`) have no format-level definition. They are call-frame-local — created by a `DeclareTemp` opcode during execution, stored in the current call frame's temp slot array, and discarded when the frame pops. Temp slot indices are assigned by the compiler across the entire knot/function scope (including all child containers reached by flow entry), not per-container.
 
 ### Bytecode instructions for variables
 
@@ -191,9 +191,9 @@ Int(i32) | Float(f32) | Bool(bool) | String(Rc<str>) | List(Rc<ListValue>) | Div
 
 `DivertTarget` holds a `DefinitionId` pointing to a container — used for variable divert targets (`VAR x = -> some_knot`).
 
-`VariablePointer(DefinitionId)` — a pointer to a global variable, used for `ref` parameters that target globals. The converter emits `PushVarPointer` to create these.
+`VariablePointer(DefinitionId)` — a pointer to a global variable, used for `ref` parameters that target globals. The compiler emits `PushVarPointer` to create these.
 
-`TempPointer { slot: u16, frame_depth: u16 }` — a runtime-only pointer to a temp variable in a specific call frame, used for `ref` parameters that target temps. The converter emits `PushTempPointer(slot)`, and the runtime resolves it to `TempPointer { slot, frame_depth: current_frame }` at execution time. `TempPointer` never appears in `.inkb` files — it exists only on the value stack and in call-frame temp slots during execution.
+`TempPointer { slot: u16, frame_depth: u16 }` — a runtime-only pointer to a temp variable in a specific call frame, used for `ref` parameters that target temps. The compiler emits `PushTempPointer(slot)`, and the runtime resolves it to `TempPointer { slot, frame_depth: current_frame }` at execution time. `TempPointer` never appears in `.inkb` files — it exists only on the value stack and in call-frame temp slots during execution.
 
 **Pointer semantics:** When a temp slot holds a `VariablePointer` or `TempPointer`, `SetTemp` writes through to the pointed-to location (global or target frame's temp) and `GetTemp` auto-dereferences to the pointed-to value. `GetTempRaw` pushes the raw value without dereferencing. `PushTempPointer` flattens double-indirection: if the temp already holds a pointer (`VariablePointer` or `TempPointer`), the existing pointer is pushed as-is rather than wrapping it in another `TempPointer`. This ensures nested ref passthrough (e.g., `fn_a(ref x)` calling `fn_b(ref x)`) works correctly.
 

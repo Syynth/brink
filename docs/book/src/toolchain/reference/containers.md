@@ -53,8 +53,9 @@ for one knot without touching its children's bytecode — see
 `=== call(action, present) ===`. The container's prologue binds them with that
 many leading `DeclareTemp`s, and the runtime uses the count to arity-check a
 host-directed entry (`choose_path_string_with_args`) or a `call_function`. It is
-`0` for the vast majority of containers, and the converter reference pipeline
-always leaves it `0`, because inklecate's JSON doesn't expose it.
+`0` for the vast majority of containers. (Historical: `.inkb` files built by
+the retired converter reference pipeline always left it `0`, because
+inklecate's JSON didn't expose it.)
 
 > `content_hash` is a free function in `brink-format` (`content_hash(&str) -> u64`),
 > used to derive `DefinitionId`s from ink paths. It is not a field on

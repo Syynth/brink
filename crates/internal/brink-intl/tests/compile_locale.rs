@@ -2,14 +2,14 @@
 
 use brink_format::{read_inkb_index, read_inkl, write_inkb};
 use brink_intl::{ContentJson, IntlError, LinesJson, compile_locale, export_lines};
-use brink_json::InkJson;
 
 fn make_base_data() -> brink_format::StoryData {
-    let json_text =
-        include_str!("../../../../tests/tier1/basics/I001-minimal-story/story.ink.json");
-    let json_text = json_text.strip_prefix('\u{feff}').unwrap_or(json_text);
-    let story: InkJson = serde_json::from_str(json_text).unwrap();
-    brink_converter::convert(&story).unwrap()
+    // Compile from an in-memory string with a fixed entry name so snapshots
+    // and checksums stay machine-independent.
+    let src = include_str!("../../../../tests/tier1/basics/I001-minimal-story/story.ink");
+    brink_compiler::compile("story.ink", |_p| Ok(src.to_owned()))
+        .unwrap()
+        .data
 }
 
 fn make_base_inkb() -> Vec<u8> {

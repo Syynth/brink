@@ -36,8 +36,7 @@ pest_derive = { workspace = true, optional = true }
 serde = { version = "1", default-features = false, features = ["alloc", "derive", "rc"] }
 
 [dev-dependencies]
-brink-converter = { path = "../brink-converter" }
-brink-json = { path = "../brink-json" }
+brink-compiler = { path = "../../brink-compiler" }
 insta = { workspace = true }
 proptest = { workspace = true }
 serde_json = { workspace = true }
