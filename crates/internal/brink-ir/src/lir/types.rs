@@ -35,7 +35,7 @@ pub struct Program {
 // ─── Definitions ─────────────────────────────────────────────────────
 
 /// A global variable or constant definition with its compile-time default.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct GlobalDef {
     pub id: DefinitionId,
     pub name: NameId,
@@ -47,7 +47,7 @@ pub struct GlobalDef {
 }
 
 /// A list definition.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct ListDef {
     pub id: DefinitionId,
     pub name: NameId,
@@ -56,7 +56,7 @@ pub struct ListDef {
 }
 
 /// A single list item, independently addressable by its `DefinitionId`.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct ListItemDef {
     pub id: DefinitionId,
     pub name: NameId,
@@ -66,7 +66,7 @@ pub struct ListItemDef {
 }
 
 /// An external function declaration.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct ExternalDef {
     pub id: DefinitionId,
     pub name: NameId,

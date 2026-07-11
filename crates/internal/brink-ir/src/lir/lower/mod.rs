@@ -15,7 +15,9 @@ use crate::hir;
 use crate::symbols::{ResolutionMap, SymbolIndex};
 
 use super::types as lir;
-use context::{LowerCtx, NameTable, ResolutionLookup, TempMap};
+use context::{LowerCtx, NameTable, ResolutionLookup};
+
+pub use context::TempMap;
 
 /// Lower analyzed HIR into a resolved LIR `Program`.
 ///
@@ -24,6 +26,13 @@ use context::{LowerCtx, NameTable, ResolutionLookup, TempMap};
 ///
 /// `file_paths` maps each `FileId` to its source file path for populating
 /// `SourceLocation` on recognized lines.
+///
+/// Composed from the per-file decomposition seam (slice C, #460):
+/// [`normalize_and_stamp`] → [`collect_declarations`] + [`root_temp_map`] →
+/// one [`lower_file_chunk`] per file (name-table state chained in file
+/// order) → [`assemble_program`]. The query pipeline in `brink-db` memoizes
+/// each piece per file; this function is the same pieces run eagerly, so the
+/// two paths cannot drift.
 #[expect(
     clippy::implicit_hasher,
     reason = "internal API, no need to generalize"
@@ -34,116 +43,245 @@ pub fn lower_to_program(
     resolutions: &ResolutionMap,
     file_paths: &HashMap<FileId, String>,
 ) -> (lir::Program, Vec<crate::Diagnostic>) {
-    // ── Step 0: Normalize HIR (pre-LIR regularization) ──────────
-    let mut normalized: Vec<(FileId, hir::HirFile)> = files
+    // ── Steps 0+1: per-file normalize + stamp ───────────────────────
+    let normalized: Vec<(FileId, hir::HirFile)> = files
         .iter()
-        .map(|(id, hir_file)| {
-            let mut h = (*hir_file).clone();
-            hir::normalize_file(&mut h);
-            (*id, h)
-        })
+        .map(|(id, hir_file)| (*id, normalize_and_stamp(*id, hir_file, index)))
         .collect();
+    let norm_refs: Vec<(FileId, &hir::HirFile)> =
+        normalized.iter().map(|(id, h)| (*id, h)).collect();
 
-    // ── Step 1: Stamp container IDs directly on HIR nodes ─────────
-    hir::stamp_container_ids(&mut normalized, index);
+    // ── Step 2: Collect declarations (seeds the name table) ─────────
+    let decls = collect_declarations(&norm_refs, index, resolutions);
 
-    let files: Vec<(FileId, &hir::HirFile)> = normalized.iter().map(|(id, h)| (*id, h)).collect();
-    let files = &files;
+    // ── Step 3: Lower one chunk per file, chaining name-table state ──
+    let root_temps = root_temp_map(&norm_refs);
+    let mut chunks: Vec<FileChunk> = Vec::with_capacity(norm_refs.len());
+    for &(file_id, hir_file) in &norm_refs {
+        let names_in: &[String] = chunks
+            .last()
+            .map_or(&decls.name_entries, |c| &c.name_entries);
+        let path = file_paths
+            .get(&file_id)
+            .map(String::as_str)
+            .unwrap_or_default();
+        let chunk = lower_file_chunk(
+            file_id,
+            hir_file,
+            index,
+            resolutions,
+            path,
+            names_in,
+            &root_temps,
+        );
+        chunks.push(chunk);
+    }
 
+    // ── Step 4: Assemble + counting flags ───────────────────────────
+    assemble_program(decls, chunks)
+}
+
+// ─── Per-file decomposition seam (slice C, #460) ─────────────────────
+
+/// Product of [`collect_declarations`]: everything in a `Program` that comes
+/// from declarations rather than container bodies, plus the name-table state
+/// after declaration interning (the seed for the first file chunk).
+#[derive(Clone, PartialEq)]
+pub struct DeclProduct {
+    /// VAR/CONST globals plus the implicit list globals, in collection order.
+    pub globals: Vec<lir::GlobalDef>,
+    /// LIST definitions.
+    pub lists: Vec<lir::ListDef>,
+    /// Individually addressable list items.
+    pub list_items: Vec<lir::ListItemDef>,
+    /// EXTERNAL declarations.
+    pub externals: Vec<lir::ExternalDef>,
+    /// Name-table entries after declaration interning.
+    pub name_entries: Vec<String>,
+    /// Diagnostics from constant evaluation (E030 etc.).
+    pub diagnostics: Vec<crate::Diagnostic>,
+}
+
+/// Per-file unit of container lowering: the file's contribution to the root
+/// container's body and children, plus the name-table state after lowering
+/// this file and the visit/turn counting references its bodies contain.
+///
+/// Chunks chain through the name table: `name_entries` extends the incoming
+/// state (`names_in` of [`lower_file_chunk`]) with names first interned by
+/// this file — body edits that introduce no new name leave it unchanged,
+/// which is the early-cutoff firewall between files in the query pipeline.
+#[derive(Clone)]
+pub struct FileChunk {
+    /// This file's top-level statements (root-container body contribution).
+    pub root_stmts: Vec<lir::Stmt>,
+    /// Root-content child containers followed by this file's knots — in
+    /// exactly the order the root container accumulates them.
+    pub children: Vec<lir::Container>,
+    /// Name-table state after lowering this file.
+    pub name_entries: Vec<String>,
+    /// Containers whose visit counts this file's bodies read.
+    pub visit_refs: Vec<brink_format::DefinitionId>,
+    /// Containers whose turn counts this file's bodies read.
+    pub turns_refs: Vec<brink_format::DefinitionId>,
+}
+
+/// Per-file normalize + container-ID stamp (steps 0+1 of lowering).
+///
+/// Pure function of one file's HIR and the symbol index — the stored HIR
+/// stays pristine; lowering works on this regularized copy.
+#[must_use]
+pub fn normalize_and_stamp(
+    file_id: FileId,
+    hir_file: &hir::HirFile,
+    index: &SymbolIndex,
+) -> hir::HirFile {
+    let mut h = hir_file.clone();
+    hir::normalize_file(&mut h);
+    hir::stamp_file(file_id, &mut h, index);
+    h
+}
+
+/// Collect declaration-derived program data (step 2 of lowering) from
+/// **normalized** files in include (paste) order.
+///
+/// Interns declaration names in the exact monolithic order — constants,
+/// variables, lists (name + items interleaved), externals — so the returned
+/// `name_entries` seeds body lowering identically to the single-pass flow.
+#[must_use]
+pub fn collect_declarations(
+    files: &[(FileId, &hir::HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+) -> DeclProduct {
     let resolutions = ResolutionLookup::build(resolutions);
     let mut names = NameTable::new();
-    let mut ids = context::IdAllocator::new();
-    let root_id = ids.alloc_address("");
+    let mut diagnostics = Vec::new();
 
-    // ── Step 2: Collect declarations ────────────────────────────────
-    let mut lir_diagnostics = Vec::new();
     let mut globals =
-        decls::collect_globals(files, index, &mut names, &resolutions, &mut lir_diagnostics);
+        decls::collect_globals(files, index, &mut names, &resolutions, &mut diagnostics);
     let (lists, list_items, list_globals) = decls::collect_lists(files, index, &mut names);
     globals.extend(list_globals);
     let externals = decls::collect_externals(files, index, &mut names);
 
-    // ── Step 3: Lower containers as a tree ──────────────────────────
-    let root = lower_root(
-        files,
-        &resolutions,
-        index,
-        &mut names,
-        root_id,
-        &mut ids,
-        file_paths,
-    );
-
-    // ── Step 4: Counting flags ──────────────────────────────────────
-    let mut root = root;
-    apply_counting_flags(&mut root, &globals);
-
-    (
-        lir::Program {
-            root,
-            globals,
-            lists,
-            list_items,
-            externals,
-            name_table: names.into_entries(),
-        },
-        lir_diagnostics,
-    )
+    DeclProduct {
+        globals,
+        lists,
+        list_items,
+        externals,
+        name_entries: names.into_entries(),
+        diagnostics,
+    }
 }
 
-// ─── Tree-building lowering ─────────────────────────────────────────
-
-fn lower_root(
-    files: &[(FileId, &hir::HirFile)],
-    resolutions: &ResolutionLookup,
-    index: &SymbolIndex,
-    names: &mut NameTable,
-    root_id: brink_format::DefinitionId,
-    ids: &mut context::IdAllocator,
-    file_paths: &HashMap<FileId, String>,
-) -> lir::Container {
-    let mut body = Vec::new();
-    let mut children = Vec::new();
-
-    // Allocate temp slots for root content (top-level ~ temp declarations).
+/// Allocate temp slots for root content (top-level `~ temp` declarations)
+/// across all **normalized** files. Root content shares one scope, so slot
+/// assignment is inherently cross-file — this is a deliberate whole-project
+/// input to every chunk (it only changes when top-level temps change).
+#[must_use]
+pub fn root_temp_map(files: &[(FileId, &hir::HirFile)]) -> TempMap {
     let root_blocks: Vec<&hir::Block> = files.iter().map(|(_, hir)| &hir.root_content).collect();
-    let temp_map = temps::alloc_temps(&[], &[], &root_blocks);
+    temps::alloc_temps(&[], &[], &root_blocks)
+}
 
-    for &(file_id, hir_file) in files {
+/// Lower one **normalized** file's containers (its slice of step 3).
+///
+/// `names_in` is the name-table state before this file: the previous chunk's
+/// `name_entries`, or [`DeclProduct::name_entries`] for the first file.
+/// `file_path` is this file's source path (for `SourceLocation` on
+/// recognized lines); `root_temps` comes from [`root_temp_map`].
+#[must_use]
+pub fn lower_file_chunk(
+    file_id: FileId,
+    hir_file: &hir::HirFile,
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+    file_path: &str,
+    names_in: &[String],
+    root_temps: &TempMap,
+) -> FileChunk {
+    let resolutions = ResolutionLookup::build(resolutions);
+    let mut names = NameTable::from_entries(names_in);
+    let mut ids = context::IdAllocator::new();
+    let root_id = ids.alloc_address("");
+    let file_paths: HashMap<FileId, String> =
+        std::iter::once((file_id, file_path.to_string())).collect();
+
+    // Root content statements + children (same sequence as the root loop).
+    let mut cc = 0;
+    let mut gc = 0;
+    let (root_stmts, mut children) = {
         let mut ctx = make_ctx(
             file_id,
-            resolutions,
+            &resolutions,
             index,
-            &temp_map,
-            names,
-            ids,
+            root_temps,
+            &mut names,
+            &mut ids,
             root_id,
             String::new(),
             &[],
-            file_paths,
+            &file_paths,
         );
-        let mut cc = 0;
-        let mut gc = 0;
         ctx.ids.reset_seq_counter();
-        let (stmts, mut block_children) =
-            lower_block_with_children(&hir_file.root_content, &mut ctx, &mut cc, &mut gc);
-        body.extend(stmts);
-        children.append(&mut block_children);
+        lower_block_with_children(&hir_file.root_content, &mut ctx, &mut cc, &mut gc)
+    };
 
-        // Add knots as children of root
-        for knot in &hir_file.knots {
-            children.push(lower_knot(
-                file_id,
-                hir_file,
-                knot,
-                resolutions,
-                index,
-                names,
-                ids,
-                root_id,
-                file_paths,
-            ));
-        }
+    // Knots as children of root.
+    for knot in &hir_file.knots {
+        children.push(lower_knot(
+            file_id,
+            hir_file,
+            knot,
+            &resolutions,
+            index,
+            &mut names,
+            &mut ids,
+            root_id,
+            &file_paths,
+        ));
+    }
+
+    // Counting references — collected here so assembly only unions.
+    let mut visit_refs = Vec::new();
+    let mut turns_refs = Vec::new();
+    collect_counting_refs(&root_stmts, &mut visit_refs, &mut turns_refs);
+    for child in &children {
+        collect_counting_refs_tree(child, &mut visit_refs, &mut turns_refs);
+    }
+
+    FileChunk {
+        root_stmts,
+        children,
+        name_entries: names.into_entries(),
+        visit_refs,
+        turns_refs,
+    }
+}
+
+/// Assemble a `Program` from declarations and per-file chunks (step 4).
+///
+/// Concatenates chunk bodies/children in file order, appends the implicit
+/// root `-> DONE`, and applies counting flags from the chunks' pre-collected
+/// visit/turn references plus global divert-target defaults.
+#[must_use]
+pub fn assemble_program(
+    decls: DeclProduct,
+    chunks: Vec<FileChunk>,
+) -> (lir::Program, Vec<crate::Diagnostic>) {
+    let root_id = context::IdAllocator::new().alloc_address("");
+
+    let mut body = Vec::new();
+    let mut children = Vec::new();
+    let mut visit_ids = Vec::new();
+    let mut turns_ids = Vec::new();
+    let mut name_table = decls.name_entries;
+    for chunk in chunks {
+        body.extend(chunk.root_stmts);
+        children.extend(chunk.children);
+        visit_ids.extend(chunk.visit_refs);
+        turns_ids.extend(chunk.turns_refs);
+        // Each chunk's state extends its predecessor's; the last is final.
+        name_table = chunk.name_entries;
     }
 
     // Implicit DONE at end of root
@@ -157,7 +295,7 @@ fn lower_root(
         }));
     }
 
-    lir::Container {
+    let mut root = lir::Container {
         id: root_id,
         name: None,
         kind: lir::ContainerKind::Root,
@@ -170,7 +308,29 @@ fn lower_root(
         inline: false,
         is_function: false,
         local: false,
+    };
+
+    // Global variable defaults holding divert targets (e.g. `VAR x = -> knot`)
+    // — the target could be reached via variable divert.
+    for g in &decls.globals {
+        if let lir::ConstValue::DivertTarget(id) = &g.default {
+            visit_ids.push(*id);
+            turns_ids.push(*id);
+        }
     }
+    apply_counting_flags_tree(&mut root, &visit_ids, &turns_ids, false);
+
+    (
+        lir::Program {
+            root,
+            globals: decls.globals,
+            lists: decls.lists,
+            list_items: decls.list_items,
+            externals: decls.externals,
+            name_table,
+        },
+        decls.diagnostics,
+    )
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -969,26 +1129,6 @@ fn lookup_container_id(index: &SymbolIndex, name: &str) -> Option<brink_format::
 }
 
 // ─── Counting flags ─────────────────────────────────────────────────
-
-fn apply_counting_flags(root: &mut lir::Container, globals: &[lir::GlobalDef]) {
-    let mut visit_ids = Vec::new();
-    let mut turns_ids = Vec::new();
-
-    // Collect phase: walk entire tree for explicit visit/turn refs
-    collect_counting_refs_tree(root, &mut visit_ids, &mut turns_ids);
-
-    // Also scan global variable defaults for DivertTarget values
-    // (e.g. `VAR x = -> knot` — the target could be reached via variable divert)
-    for g in globals {
-        if let lir::ConstValue::DivertTarget(id) = &g.default {
-            visit_ids.push(*id);
-            turns_ids.push(*id);
-        }
-    }
-
-    // Apply phase: walk entire tree
-    apply_counting_flags_tree(root, &visit_ids, &turns_ids, false);
-}
 
 fn collect_counting_refs_tree(
     container: &lir::Container,

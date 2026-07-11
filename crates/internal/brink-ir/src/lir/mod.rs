@@ -29,5 +29,8 @@
 pub mod lower;
 mod types;
 
-pub use lower::lower_to_program;
+pub use lower::{
+    DeclProduct, FileChunk, TempMap, assemble_program, collect_declarations, lower_file_chunk,
+    lower_to_program, normalize_and_stamp, root_temp_map,
+};
 pub use types::*;

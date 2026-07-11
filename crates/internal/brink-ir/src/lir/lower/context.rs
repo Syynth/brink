@@ -45,6 +45,25 @@ impl NameTable {
         }
     }
 
+    /// Rebuild a table from a previously-produced entry list (see
+    /// [`Self::into_entries`]). Interning picks up exactly where the source
+    /// table left off — the chaining primitive for per-file LIR chunks.
+    pub fn from_entries(entries: &[String]) -> Self {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "name table won't exceed u16::MAX"
+        )]
+        let map = entries
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.clone(), NameId(i as u16)))
+            .collect();
+        Self {
+            map,
+            entries: entries.to_vec(),
+        }
+    }
+
     pub fn intern(&mut self, name: &str) -> NameId {
         if let Some(&id) = self.map.get(name) {
             return id;
@@ -217,7 +236,7 @@ impl<'a> LowerCtx<'a> {
 // ─── Temp map ───────────────────────────────────────────────────────
 
 /// Per-scope temp variable slot assignments.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TempMap {
     slots: HashMap<String, u16>,
 }

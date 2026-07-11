@@ -23,41 +23,43 @@ use crate::symbols::{SymbolIndex, SymbolKind};
 /// and before LIR lowering.
 pub fn stamp_container_ids(files: &mut [(FileId, hir::HirFile)], index: &SymbolIndex) {
     for (file_id, hir_file) in files {
-        // Root content — scope is empty, counters start at 0.
+        stamp_file(*file_id, hir_file, index);
+    }
+}
+
+/// Stamp container IDs on a single HIR file.
+///
+/// The per-file unit of [`stamp_container_ids`] — stamping is purely
+/// file-local (all cross-file information comes through the `SymbolIndex`),
+/// which is what makes it memoizable per file in the query pipeline.
+pub fn stamp_file(file_id: FileId, hir_file: &mut hir::HirFile, index: &SymbolIndex) {
+    // Root content — scope is empty, counters start at 0.
+    let mut seq = 0;
+    stamp_block(&mut hir_file.root_content, file_id, "", "", index, &mut seq);
+
+    for knot in &mut hir_file.knots {
+        let knot_path = &knot.name.text;
         let mut seq = 0;
         stamp_block(
-            &mut hir_file.root_content,
-            *file_id,
-            "",
-            "",
+            &mut knot.body,
+            file_id,
+            knot_path,
+            knot_path,
             index,
             &mut seq,
         );
 
-        for knot in &mut hir_file.knots {
-            let knot_path = &knot.name.text;
+        for stitch in &mut knot.stitches {
+            let stitch_path = format!("{knot_path}.{}", stitch.name.text);
             let mut seq = 0;
             stamp_block(
-                &mut knot.body,
-                *file_id,
-                knot_path,
-                knot_path,
+                &mut stitch.body,
+                file_id,
+                &stitch_path,
+                &stitch_path,
                 index,
                 &mut seq,
             );
-
-            for stitch in &mut knot.stitches {
-                let stitch_path = format!("{knot_path}.{}", stitch.name.text);
-                let mut seq = 0;
-                stamp_block(
-                    &mut stitch.body,
-                    *file_id,
-                    &stitch_path,
-                    &stitch_path,
-                    index,
-                    &mut seq,
-                );
-            }
         }
     }
 }
