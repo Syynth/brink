@@ -43,10 +43,7 @@ fn assert_analysis_matches(files: &[(&str, &str)]) {
 #[test]
 fn analysis_matches_on_multi_file_project() {
     assert_analysis_matches(&[
-        (
-            "main.ink",
-            "INCLUDE lib.ink\nVAR gold = 10\n-> town\n",
-        ),
+        ("main.ink", "INCLUDE lib.ink\nVAR gold = 10\n-> town\n"),
         (
             "lib.ink",
             "=== town ===\nThe town square.\n* [Shop] -> shop\n* [Leave] -> END\n\n= shop\nYou browse. {gold} gold left.\n-> town\n",
@@ -87,10 +84,7 @@ fn analysis_matches_with_cross_file_duplicate_scoped_locals() {
 #[test]
 fn analysis_matches_with_unresolved_and_duplicates() {
     assert_analysis_matches(&[
-        (
-            "main.ink",
-            "VAR hp = 3\nVAR hp = 4\n-> nowhere\n",
-        ),
+        ("main.ink", "VAR hp = 3\nVAR hp = 4\n-> nowhere\n"),
         ("extra.ink", "=== spare ===\n-> also_nowhere\n"),
     ]);
 }
@@ -105,8 +99,7 @@ fn signature_matches_direct_analyzer_call() {
     // Full-index reference computation.
     let index = db.symbol_index();
     let inputs = db.analysis_inputs();
-    let hir_refs: Vec<(FileId, &HirFile)> =
-        inputs.iter().map(|(id, hir, _)| (*id, hir)).collect();
+    let hir_refs: Vec<(FileId, &HirFile)> = inputs.iter().map(|(id, hir, _)| (*id, hir)).collect();
 
     let mut checked = 0;
     for def in index.symbols.keys() {

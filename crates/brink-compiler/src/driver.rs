@@ -69,11 +69,7 @@ where
 {
     let (driver, _entry_id) = prepare_driver(entry, read_file, options)?;
 
-    let product = driver
-        .db()
-        .lir_product()
-        .cloned()
-        .unwrap_or_default();
+    let product = driver.db().lir_product().cloned().unwrap_or_default();
 
     let Some(program) = product.program else {
         let mut all = product.errors;
@@ -122,11 +118,7 @@ where
 {
     let (driver, _entry_id) = prepare_driver(entry, read_file, options)?;
 
-    let product = driver
-        .db()
-        .story_data()
-        .cloned()
-        .unwrap_or_default();
+    let product = driver.db().story_data().cloned().unwrap_or_default();
 
     let Some(story) = product.story else {
         let mut all = product.errors;

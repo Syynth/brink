@@ -113,7 +113,9 @@ impl ProjectDb {
     /// Set the analysis options (host manifest + external-check severity)
     /// used by the [`analysis`](Self::analysis) and downstream queries.
     pub fn set_analysis_options(&mut self, options: AnalysisOptions) {
-        self.project.set_analysis_options(&mut self.salsa).to(options);
+        self.project
+            .set_analysis_options(&mut self.salsa)
+            .to(options);
     }
 
     /// The analysis options currently registered with the database.

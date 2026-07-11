@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::io;
 
 pub use brink_analyzer::{AnalysisOptions, AnalysisResult};
-pub use brink_db::ProjectDb;
+pub use brink_db::{CompileProduct, LirProduct, ProjectDb};
 pub use brink_ir::FileId;
 pub use diagnostics::DiagnosticReport;
 pub use discover::DiscoverError;

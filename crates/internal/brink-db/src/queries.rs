@@ -382,8 +382,7 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
     // mirroring `Driver::lir_inputs`.
     let graph = include_graph_query(db, project);
     let all_ids: Vec<FileId> = files.iter().map(|f| f.file_id(db)).collect();
-    let by_id: HashMap<FileId, SourceFile> =
-        files.iter().map(|f| (f.file_id(db), *f)).collect();
+    let by_id: HashMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
     let topo = graph.topological_order(entry, &all_ids);
     let hir_refs: Vec<(FileId, &HirFile)> = topo
         .iter()
@@ -394,12 +393,8 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
         .filter_map(|id| by_id.get(id).map(|f| (*id, f.path(db).clone())))
         .collect();
 
-    let (program, lir_warnings) = brink_ir::lir::lower_to_program(
-        &hir_refs,
-        &analysis.index,
-        &analysis.resolutions,
-        &paths,
-    );
+    let (program, lir_warnings) =
+        brink_ir::lir::lower_to_program(&hir_refs, &analysis.index, &analysis.resolutions, &paths);
 
     let mut warnings = warnings;
     warnings.extend(lir_warnings);
