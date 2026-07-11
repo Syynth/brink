@@ -107,7 +107,13 @@ where
 /// registered host-capability manifest and its external-check severity, so
 /// manifest-driven diagnostics surface in the compile output.
 ///
-/// Batch compile = pull the `story_data` query (spec §5).
+/// Pulls the memoized `lir` query and emits codegen outside the db: emitting
+/// here produces the owned `StoryData` that `CompileOutput` needs directly,
+/// where pulling the `story_data` query would hand back an `Arc` whose
+/// contents must be deep-cloned out of the memo table (a measurable cold-
+/// compile cost for a one-shot batch build that will never reuse the memo).
+/// Long-lived consumers that want the memoized story pull
+/// `ProjectDb::story_data` instead; both run the identical `emit`.
 pub fn compile_with_options<F>(
     entry: &str,
     read_file: F,
@@ -118,16 +124,16 @@ where
 {
     let (driver, _entry_id) = prepare_driver(entry, read_file, options)?;
 
-    let product = driver.db().story_data().cloned().unwrap_or_default();
+    let product = driver.db().lir_product().cloned().unwrap_or_default();
 
-    let Some(story) = product.story else {
+    let Some(program) = product.program else {
         let mut all = product.errors;
         all.extend(product.warnings);
         return Err(CompileError::Diagnostics(resolve_diagnostics(&driver, all)));
     };
 
     Ok(CompileOutput {
-        data: std::sync::Arc::unwrap_or_clone(story),
+        data: brink_codegen_inkb::emit(&program),
         warnings: resolve_diagnostics(&driver, product.warnings),
     })
 }
