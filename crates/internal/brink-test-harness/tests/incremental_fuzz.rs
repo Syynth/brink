@@ -24,8 +24,9 @@ use std::path::{Path, PathBuf};
 
 use brink_driver::ProjectDb;
 
-/// Seeded edits applied to each project.
-const EDITS_PER_PROJECT: u64 = 16;
+/// Seeded edits applied to each project. Raised from 16 with the slice-C
+/// knot/VAR/decl edit ops so every op keeps meaningful coverage per project.
+const EDITS_PER_PROJECT: u64 = 24;
 
 /// Corpus-derived projects under `tests/` (workspace root), chosen to cover
 /// single-file, flat-include, and nested-include shapes.
@@ -96,6 +97,13 @@ fn load_project(dir: &Path) -> BTreeMap<String, String> {
 
 /// One seeded mutation of one file. Never creates or deletes `INCLUDE`
 /// lines, so the project file set is stable across the whole run.
+///
+/// Ops 6–8 stress the slice-C per-file LIR chunk granularity (#460):
+/// a `VAR` insert shifts the declaration-seeded name table under every
+/// chunk; a new knot changes one chunk's container set; a line inserted
+/// directly inside an existing knot is the "edit inside one knot" case —
+/// all other files' chunk memos must survive (or be recomputed to equal
+/// bytes), which the incremental == fresh assertion locks.
 fn mutate(rng: &mut Lcg, original: &str, current: &str, step: u64) -> String {
     let lines: Vec<&str> = current.lines().collect();
     // Line indices that are safe to touch (not INCLUDE).
@@ -106,7 +114,7 @@ fn mutate(rng: &mut Lcg, original: &str, current: &str, step: u64) -> String {
         return current.to_owned();
     }
 
-    let op = rng.pick(6);
+    let op = rng.pick(9);
     let at = safe[rng.pick(safe.len())];
     let mut out: Vec<String> = lines.iter().map(|&l| l.to_owned()).collect();
     match op {
@@ -128,7 +136,30 @@ fn mutate(rng: &mut Lcg, original: &str, current: &str, step: u64) -> String {
         3 => out[at] = format!("{}  ", out[at]),
         // Insert a temp declaration (locals-in-index exercise; may be
         // invalid at top level, which exercises the diagnostics path).
+        // Also the LIR name-table chain exercise: a *new* temp name grows
+        // the chunk's outgoing name state, invalidating downstream chunks.
         4 => out.insert(at, format!("~ temp fz_{step} = {}", rng.pick(9))),
+        // Insert a VAR at the top: the declaration set changes, shifting
+        // the decl-seeded name table (and NameIds) under every LIR chunk.
+        5 => out.insert(0, format!("VAR fzvar_{step} = {}", rng.pick(9))),
+        // Append a new knot: one chunk's container set changes.
+        6 => {
+            out.push(format!("=== fzknot_{step} ==="));
+            out.push(format!("Fuzz knot body, step {step}."));
+            out.push("-> DONE".to_owned());
+        }
+        // Insert a text line directly inside an existing knot (right after
+        // its header) — the canonical "edit inside one knot" case.
+        7 => {
+            let headers: Vec<usize> = (0..out.len())
+                .filter(|&i| out[i].trim_start().starts_with("=="))
+                .collect();
+            if let Some(&h) = headers.get(rng.pick(headers.len().max(1))) {
+                out.insert(h + 1, format!("In-knot fuzz line, step {step}."));
+            } else {
+                out.insert(at, format!("A fuzzed line, step {step}."));
+            }
+        }
         // Revert the file to its original content.
         _ => return original.to_owned(),
     }

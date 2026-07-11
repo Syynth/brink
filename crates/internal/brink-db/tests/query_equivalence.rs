@@ -143,6 +143,66 @@ fn story_data_incremental_equals_fresh() {
 }
 
 #[test]
+fn story_data_matches_monolithic_lowering() {
+    // Slice-C gate: the chunked query path (range-stripped `lir_index`
+    // projection, per-file resolutions, name-table chaining, assembly) must
+    // be byte-identical to the eager monolithic path (full-range index,
+    // whole-project resolutions, one threaded name table). The fixture pokes
+    // the risky corners: temps interned mid-body across two files (chain
+    // state), lists + externals (decl interning order), labels + weaves
+    // (stamped ids), a root-level temp (shared root scope), and label
+    // visit-count reads (counting-flag union).
+    let files = [
+        (
+            "main.ink",
+            "INCLUDE lib.ink\nLIST moods = calm, (tense)\nVAR gold = 10\nEXTERNAL beep(x)\n~ temp opening = 1\nRoot line {opening}.\n-> town\n",
+        ),
+        (
+            "lib.ink",
+            "=== town ===\n~ temp mood_now = tense\nYou are in town.\n* (shop_opt) [Shop] -> shop\n* [Wait]\n  {&one|two}\n- (waited) Waited {waited}.\n-> shop\n\n= shop\n~ gold = gold - 1\nShop: {gold} gold. Visited {shop_opt} times.\n{ shuffle:\n- A.\n- B.\n}\n-> END\n",
+        ),
+    ];
+    let db = db_with(&files);
+    let mut db = db;
+    let entry = db.set_entry("main.ink").expect("entry");
+    let product = db.story_data().expect("entry set").clone();
+    assert!(
+        product.story.is_some(),
+        "fixture must compile cleanly: {:?}",
+        product.errors
+    );
+
+    // Monolithic reference: full-range index + whole-project resolutions
+    // through the eager lower_to_program, then emit.
+    let analysis = monolithic_analysis(&db);
+    let inputs = db.analysis_inputs();
+    let hir_by_id: std::collections::HashMap<FileId, &HirFile> =
+        inputs.iter().map(|(id, hir, _)| (*id, hir)).collect();
+    let topo = db.file_ids_topo(entry);
+    let hir_refs: Vec<(FileId, &HirFile)> = topo
+        .iter()
+        .filter_map(|id| hir_by_id.get(id).map(|h| (*id, *h)))
+        .collect();
+    let paths: std::collections::HashMap<FileId, String> = topo
+        .iter()
+        .filter_map(|id| db.file_path(*id).map(|p| (*id, p.to_owned())))
+        .collect();
+    let (program, _warnings) =
+        brink_ir::lir::lower_to_program(&hir_refs, &analysis.index, &analysis.resolutions, &paths);
+    let expected = brink_codegen_inkb::emit(&program);
+
+    let story = product.story.expect("checked above");
+    let mut got_bytes = Vec::new();
+    let mut expected_bytes = Vec::new();
+    brink_format::write_inkb(&story, &mut got_bytes);
+    brink_format::write_inkb(&expected, &mut expected_bytes);
+    assert_eq!(
+        got_bytes, expected_bytes,
+        "chunked query pipeline diverged from monolithic lowering"
+    );
+}
+
+#[test]
 fn diagnostics_query_covers_lowering_and_analysis() {
     let mut db = ProjectDb::new();
     db.set_file("main.ink", "-> missing_knot\n".to_owned());
