@@ -12,6 +12,7 @@ mod signature;
 mod validate;
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 pub use brink_ir::FileId;
 pub use brink_ir::ResolutionMap;
@@ -40,7 +41,7 @@ pub struct AnalysisOptions {
 #[derive(Debug, Clone)]
 pub struct AnalysisResult {
     /// The unified symbol index.
-    pub index: SymbolIndex,
+    pub index: Arc<SymbolIndex>,
     /// Resolved references: maps source range → definition id.
     pub resolutions: ResolutionMap,
     /// Diagnostics produced during analysis (duplicate definitions, unresolved refs, etc.).
@@ -49,6 +50,20 @@ pub struct AnalysisResult {
     /// values), keyed by `DefinitionId`. Empty when no host manifest is
     /// registered and no inline `///` docs are present.
     pub symbol_meta: BTreeMap<DefinitionId, SymbolMeta>,
+}
+
+/// Build the project-wide declaration index from per-file symbol manifests.
+///
+/// Query-shaped seam for the scripting substrate (spec §4, layer 2 —
+/// `symbol_index()`): a pure function of the per-file manifests, returning
+/// the merged index plus indexing diagnostics (duplicate definitions,
+/// built-in shadowing). Declarations only — no body analysis happens here,
+/// though the index does include body-declared locals (params/temps), which
+/// hierarchical resolution needs.
+#[must_use]
+pub fn symbol_index(files: &[(FileId, &SymbolManifest)]) -> (Arc<SymbolIndex>, Vec<Diagnostic>) {
+    let (index, diagnostics) = manifest::merge_manifests(files);
+    (Arc::new(index), diagnostics)
 }
 
 /// Run cross-file semantic analysis with default options (no host manifest).
@@ -72,7 +87,7 @@ pub fn analyze_with_options(
 
     let hir_inputs: Vec<(FileId, &HirFile)> = files.iter().map(|&(id, hir, _)| (id, hir)).collect();
 
-    let (index, mut diagnostics) = manifest::merge_manifests(&manifest_inputs);
+    let (index, mut diagnostics) = symbol_index(&manifest_inputs);
     let (resolutions, resolve_diags) = resolve::resolve_refs(&index, &manifest_inputs);
     diagnostics.extend(resolve_diags);
     diagnostics.extend(validate::validate(&hir_inputs));

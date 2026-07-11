@@ -33,6 +33,60 @@ fn def_id(result: &brink_analyzer::AnalysisResult, kind: SymbolKind, name: &str)
         .id
 }
 
+// ─── symbol_index() ─────────────────────────────────────────────────
+
+const INDEX_SRC_A: &str = "\
+VAR gold = 10
+LIST mood = happy, (sad)
+=== hub ===
+Hello.
+= plaza
+-> DONE
+";
+
+const INDEX_SRC_B: &str = "\
+EXTERNAL beep(times)
+=== market(stock) ===
+~ temp haggle = 2
+{haggle} {stock}
+-> hub
+";
+
+#[test]
+fn symbol_index_is_deterministic_across_runs() {
+    let (_hir_a, man_a) = lower(FileId(0), INDEX_SRC_A);
+    let (_hir_b, man_b) = lower(FileId(1), INDEX_SRC_B);
+    let inputs = [(FileId(0), &man_a), (FileId(1), &man_b)];
+
+    let (index1, diags1) = brink_analyzer::symbol_index(&inputs);
+    let (index2, diags2) = brink_analyzer::symbol_index(&inputs);
+
+    // Content equality: same symbols under the same ids, same name buckets
+    // in the same order, same diagnostics in the same order.
+    let symbols1: std::collections::BTreeMap<_, _> = index1.symbols.iter().collect();
+    let symbols2: std::collections::BTreeMap<_, _> = index2.symbols.iter().collect();
+    assert_eq!(symbols1, symbols2);
+    let by_name1: std::collections::BTreeMap<_, _> = index1.by_name.iter().collect();
+    let by_name2: std::collections::BTreeMap<_, _> = index2.by_name.iter().collect();
+    assert_eq!(by_name1, by_name2);
+    assert_eq!(diags1, diags2);
+    assert!(!index1.symbols.is_empty(), "index has content");
+}
+
+#[test]
+fn symbol_index_matches_analyze_output() {
+    let (hir_a, man_a) = lower(FileId(0), INDEX_SRC_A);
+    let (hir_b, man_b) = lower(FileId(1), INDEX_SRC_B);
+
+    let (index, _diags) = brink_analyzer::symbol_index(&[(FileId(0), &man_a), (FileId(1), &man_b)]);
+    let result =
+        brink_analyzer::analyze(&[(FileId(0), &hir_a, &man_a), (FileId(1), &hir_b, &man_b)]);
+
+    let direct: std::collections::BTreeMap<_, _> = index.symbols.iter().collect();
+    let via_analyze: std::collections::BTreeMap<_, _> = result.index.symbols.iter().collect();
+    assert_eq!(direct, via_analyze);
+}
+
 // ─── signature(def) stub ────────────────────────────────────────────
 
 const SIG_SRC: &str = "\
