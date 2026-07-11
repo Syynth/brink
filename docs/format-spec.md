@@ -417,6 +417,27 @@ handles, projections, records — RFC §3) are named in the RFC but out of this
 reservation; each gets its own contiguous block, numbered when its own
 milestone lands.
 
+#### Sharing-discipline operations (`0xCA`–`0xCC`, reserved)
+
+Named in `docs/format-v4-rfc.md` §3 "Sharing discipline (T1a)"; semantics in
+`docs/value-model-spec.md` §6 and §9. Numeric assignments are frozen by the
+§9 one-bump rule, contiguous and adjacent to the collection block above. Not
+`Opcode` variants yet — there is no decode match arm for these bytes, so the
+strict reader rejects them (`UnknownOpcode`) until the T1a compiler surface
+begins emitting them.
+
+| Opcode | Description |
+|--------|-------------|
+| `0xCA` `TakeVar(slot)` | Move the value out of `slot`, leaving `Null` behind — the last-use elision target (value-model spec §9) |
+| `0xCB` `StoreVarIfNew` | Optional store-time keep-old-Arc cutoff: skip the write if the new value is structurally equal to the existing one (value-model spec §6) |
+| `0xCC` `EqVars(a, b)` | Fused compare of two variable slots (peephole over `LoadVar a; LoadVar b; Eq`), with optional ref-collapse on equality (value-model spec §6) |
+
+All three are optional peephole/sharing optimizations, never required for
+correctness — v1 ships with just the `ptr_eq` equality fast path (spec §6).
+Later Tier-1 opcode groups (functions, handles, projections, records — RFC
+§3) remain named in the RFC but out of this reservation; each gets its own
+contiguous block, numbered when its own milestone lands.
+
 #### String eval (`0xE0`–`0xE1`)
 
 | Opcode | Description |
