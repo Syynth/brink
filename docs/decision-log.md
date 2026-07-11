@@ -1295,3 +1295,12 @@
 - **SCOPE:** architectural
 - **WHAT:** The query-shaped pipeline restructuring builds on **salsa**, adopted at coarse granularity: inputs are file texts; queries are per-file/per-def functions returning the existing plain IR types behind `Arc` (`parse`, `hir`, `signature`, `resolve`, `lir`, `codegen`); the IRs themselves are NOT rewritten as tracked structs — the blast radius stays in the driver/analyzer orchestration. Early cutoff on `Eq` results provides the signature firewall automatically. A bespoke content-addressed memoization layer was considered and rejected.
 - **WHY:** (1) The failure-mode asymmetry: bespoke invalidation bugs are silent stale artifacts (wrong compiles in the editor); salsa bugs are over-invalidation (perf only) — for a correctness-identity project the framework-owned invalidation wins. (2) Salsa's result-backdating subsumes the hand-built signature-firewall design for free. (3) The product direction includes live per-keystroke semantic tooling (type checker, inference hovers) at studio scale — exactly what fine-grained tracking is proven for (rust-analyzer, Astral's ty, both also shipping salsa-in-wasm). (4) The "engine-agnostic interface, swap later" hedge is illusory — salsa owns function signatures, so bespoke-then-salsa would be a rewrite. Residual risks accepted: framework API churn (pinned; now stably stewarded), wasm size/compile-time cost (to be measured via #498).
+
+## Fine-grained salsa + IR rework is the eventual destination; coarse-grained is a stepping stone
+- **WHEN:** 2026-07-11
+- **PROJECT:** brink
+- **SYSTEM:** compiler architecture (#499 / #397)
+- **SCOPE:** architectural
+- **STATUS:** tentative
+- **WHAT:** The 2026-07-11 coarse-grained salsa ruling is phase-0 scope, not the end state. The expected long-term direction is fine-grained salsa integration — tracked structs, per-definition/field-level dependency granularity — including reworking the IRs (HIR/LIR) where that pays, as live semantic tooling grows. Phase-0 implication: query boundaries must not foreclose finer granularity — prefer def-keyed queries where cheap, keep per-def hashes in `hir`, and treat "IRs stay as-is" as a phase-0 constraint rather than a permanent principle.
+- **WHY:** The live-tooling product direction (type checker, per-keystroke semantics at studio scale) will eventually justify field-level tracking; acknowledging the destination now keeps phase-0 choices from ossifying the coarse shape and makes the later migration incremental instead of a second restructuring.

@@ -33,6 +33,13 @@ Per the 2026-07-11 ruling:
   **existing plain IR types behind `Arc`**. The IRs are *not* rewritten
   as salsa tracked structs; salsa's role is memoization + dependency
   tracking + early cutoff, mediated entirely at query boundaries.
+  **Trajectory note (tentative ruling, 2026-07-11):** "IRs stay as-is"
+  is a *phase-0 constraint, not a permanent principle* — the expected
+  long-term direction is fine-grained integration (tracked structs,
+  per-def/field-level granularity, IR rework where it pays) as live
+  semantic tooling grows. Phase-0 query boundaries must therefore not
+  foreclose finer granularity: prefer def-keyed queries where cheap,
+  and keep per-def hashes in `hir`.
 - **Early cutoff is the firewall.** Salsa backdates a dependent when a
   recomputed dependency is `Eq`-equal. The load-bearing instance: a body
   edit that doesn't change any *signature* re-lowers that body only —
@@ -175,3 +182,10 @@ kind plus its own `parse`/`hir` queries joining the existing
 (edit a script body; ink callers recompute only if a signature changed)
 falls out of the same cutoff mechanics. Neither requires revisiting this
 spec's structure; both were design inputs to it.
+
+Beyond that sits the tentative fine-grained destination (§2 trajectory
+note): migrating hot queries to tracked structs and per-def granularity,
+reworking the IRs where field-level dependencies pay for themselves.
+That migration is expected to be incremental — query by query, driven by
+measured needs of the live type checker — precisely because phase 0
+keeps the boundaries def-shaped.
