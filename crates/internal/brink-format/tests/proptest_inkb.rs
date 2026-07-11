@@ -142,23 +142,25 @@ fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ScopeLineT
         any::<u8>(),
         any::<bool>(),
     )
-        .prop_map(|(id, bytecode, counting_flags, lines, param_count, local)| {
-            let def = ContainerDef {
-                id,
-                scope_id: id,
-                name: None,
-                bytecode,
-                counting_flags,
-                path_hash: 0,
-                param_count,
-                local,
-            };
-            let lt = ScopeLineTable {
-                scope_id: id,
-                lines,
-            };
-            (def, lt)
-        })
+        .prop_map(
+            |(id, bytecode, counting_flags, lines, param_count, local)| {
+                let def = ContainerDef {
+                    id,
+                    scope_id: id,
+                    name: None,
+                    bytecode,
+                    counting_flags,
+                    path_hash: 0,
+                    param_count,
+                    local,
+                };
+                let lt = ScopeLineTable {
+                    scope_id: id,
+                    lines,
+                };
+                (def, lt)
+            },
+        )
 }
 
 fn arb_global_var() -> impl Strategy<Value = GlobalVarDef> {

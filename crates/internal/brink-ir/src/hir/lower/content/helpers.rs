@@ -1,9 +1,10 @@
 use brink_syntax::ast::{self, AstNode};
 
-use crate::{ContentPart, Tag};
+use crate::{ContentPart, DiagnosticCode, Tag};
 
 use super::super::conditional::lower_inline_logic_into_parts;
 use super::super::context::{LowerScope, LowerSink};
+use super::super::directive::parse_directive_tag;
 
 /// Lower the inline content children of a syntax node (`TEXT`, `GLUE`, `ESCAPE`,
 /// `INLINE_LOGIC`) into a `Vec` of `ContentPart`s.
@@ -53,13 +54,26 @@ pub fn lower_content_node_children(
 }
 
 /// Lower optional tags into a `Vec<Tag>`.
+///
+/// Directive tags (`#@…`) are never valid in inline/attached tag
+/// positions — they diagnose `E045` and are dropped, preserving the
+/// erasure guarantee (a directive never reaches runtime tag output).
 pub fn lower_tags(
     tags: Option<ast::Tags>,
     scope: &LowerScope,
     sink: &mut impl LowerSink,
 ) -> Vec<Tag> {
     tags.map_or_else(Vec::new, |t| {
-        t.tags().map(|tag| lower_tag(&tag, scope, sink)).collect()
+        t.tags()
+            .filter_map(|tag| {
+                if let Some(d) = parse_directive_tag(&tag) {
+                    sink.diagnose(d.range, DiagnosticCode::E045);
+                    None
+                } else {
+                    Some(lower_tag(&tag, scope, sink))
+                }
+            })
+            .collect()
     })
 }
 

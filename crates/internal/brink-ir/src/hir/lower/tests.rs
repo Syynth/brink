@@ -401,3 +401,184 @@ intro
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert!(manifest.docs.is_empty());
 }
+
+// ─── Directive annotations (`#@…`) ──────────────────────────────────
+
+/// Full-file lower returning the HIR too.
+fn lower_hir(source: &str) -> (HirFile, Vec<Diagnostic>) {
+    let parsed = parse(source);
+    let tree = parsed.tree();
+    let (hir, _manifest, diags) = crate::hir::lower(FileId(0), &tree);
+    (hir, diags)
+}
+
+/// Collect every tag string that survives into lowered content
+/// (blocks, recursively through knots/stitches).
+fn all_content_tags(hir: &HirFile) -> Vec<String> {
+    fn tags_in_block(block: &Block, out: &mut Vec<String>) {
+        for stmt in &block.stmts {
+            if let Stmt::Content(c) = stmt {
+                for tag in &c.tags {
+                    let mut text = String::new();
+                    for part in &tag.parts {
+                        if let ContentPart::Text(t) = part {
+                            text.push_str(t);
+                        }
+                    }
+                    out.push(text);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    tags_in_block(&hir.root_content, &mut out);
+    for knot in &hir.knots {
+        tags_in_block(&knot.body, &mut out);
+        for stitch in &knot.stitches {
+            tags_in_block(&stitch.body, &mut out);
+        }
+    }
+    out
+}
+
+fn codes(diags: &[Diagnostic]) -> Vec<DiagnosticCode> {
+    diags.iter().map(|d| d.code).collect()
+}
+
+#[test]
+fn local_directive_marks_var() {
+    let (hir, diags) = lower_hir("#@local\nVAR mood = 0\nhello\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.variables.len(), 1);
+    assert!(hir.variables[0].is_local);
+    // Erasure: the directive never becomes a content tag.
+    assert!(all_content_tags(&hir).is_empty());
+}
+
+#[test]
+fn plain_var_is_not_local() {
+    let (hir, diags) = lower_hir("VAR mood = 0\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(!hir.variables[0].is_local);
+}
+
+#[test]
+fn local_directive_marks_knot_from_top_of_body() {
+    let (hir, diags) = lower_hir("== guard ==\n#@local\nHalt!\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.knots.len(), 1);
+    assert!(hir.knots[0].is_local);
+    assert!(all_content_tags(&hir).is_empty());
+}
+
+#[test]
+fn local_directive_marks_stitch() {
+    let (hir, diags) = lower_hir("== guard ==\nHalt!\n= mood\n#@local\ngrumpy\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(!hir.knots[0].is_local);
+    assert!(hir.knots[0].stitches[0].is_local);
+}
+
+#[test]
+fn knot_directive_coexists_with_plain_knot_tags() {
+    let (hir, diags) = lower_hir("== guard ==\n# author: bob\n#@local\nHalt!\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(hir.knots[0].is_local);
+    // The plain tag line survives as content; the directive is erased.
+    assert_eq!(all_content_tags(&hir), vec!["author: bob".to_string()]);
+}
+
+#[test]
+fn unmarked_knot_is_not_local() {
+    let (hir, diags) = lower_hir("== guard ==\nHalt!\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(!hir.knots[0].is_local);
+}
+
+#[test]
+fn unknown_directive_is_e044() {
+    let (_hir, diags) = lower_hir("#@locale\nVAR mood = 0\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E044]);
+}
+
+#[test]
+fn directive_above_content_line_is_e045() {
+    let (hir, diags) = lower_hir("#@local\njust text\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E045]);
+    // Still erased — never a runtime tag.
+    assert!(all_content_tags(&hir).is_empty());
+}
+
+#[test]
+fn inline_directive_tag_is_e045() {
+    let (hir, diags) = lower_hir("some text #@local\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E045]);
+    assert!(all_content_tags(&hir).is_empty());
+}
+
+#[test]
+fn directive_mid_knot_body_is_e045() {
+    let (_hir, diags) = lower_hir("== guard ==\nHalt!\n#@local\nmore\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E045]);
+}
+
+#[test]
+fn dynamic_directive_is_e046() {
+    let (_hir, diags) = lower_hir("#@{x}\nVAR mood = 0\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E046]);
+}
+
+#[test]
+fn mixed_directive_and_plain_tags_is_e047() {
+    let (hir, diags) = lower_hir("#@local # art.png\nsome text\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E047]);
+    // The plain tag survives; the directive is erased.
+    assert_eq!(all_content_tags(&hir), vec!["art.png".to_string()]);
+}
+
+#[test]
+fn duplicate_local_directive_is_e048() {
+    let (hir, diags) = lower_hir("#@local\n#@local\nVAR mood = 0\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E048]);
+    // First one still applies.
+    assert!(hir.variables[0].is_local);
+}
+
+#[test]
+fn local_on_const_is_e049() {
+    let (_hir, diags) = lower_hir("#@local\nCONST max = 3\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E049]);
+}
+
+#[test]
+fn local_on_list_is_e049() {
+    let (_hir, diags) = lower_hir("#@local\nLIST moods = happy, sad\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E049]);
+}
+
+#[test]
+fn local_on_external_is_e049() {
+    let (_hir, diags) = lower_hir("#@local\nEXTERNAL ping(x)\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E049]);
+}
+
+#[test]
+fn local_with_args_is_e050() {
+    let (_hir, diags) = lower_hir("#@local(now)\nVAR mood = 0\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E050]);
+}
+
+#[test]
+fn directive_with_blank_line_still_attaches() {
+    let (hir, diags) = lower_hir("#@local\n\nVAR mood = 0\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(hir.variables[0].is_local);
+}
+
+#[test]
+fn plain_tag_lines_are_unaffected() {
+    let (hir, diags) = lower_hir("# above\nsome text # inline\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let tags = all_content_tags(&hir);
+    assert_eq!(tags.len(), 2, "both plain tags survive: {tags:?}");
+}

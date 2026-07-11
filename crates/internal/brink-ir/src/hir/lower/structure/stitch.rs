@@ -6,6 +6,7 @@ use crate::{Block, ContainerPtr, DiagnosticCode, Knot, ParamInfo, Stitch, Symbol
 
 use super::super::block::LowerBlock;
 use super::super::context::{LowerScope, LowerSink, Lowered};
+use super::super::directive::{DirectiveTarget, apply_scope_directives, leading_body_directives};
 use super::super::doc_comment::{DocPolicy, parse_doc_comment};
 use super::super::helpers::make_name;
 use super::knot::lower_knot_params;
@@ -68,6 +69,12 @@ pub(super) fn lower_top_level_stitch(
     });
     scope.current_knot = None;
 
+    // `#@local` directive line(s) in the leading tag-line run of the body.
+    let is_local = stitch.body().is_some_and(|b| {
+        let dirs = leading_body_directives(b.syntax());
+        apply_scope_directives(&dirs, DirectiveTarget::Stitch, sink)
+    });
+
     Ok(Knot {
         ptr: ContainerPtr::Stitch(AstPtr::new(stitch)),
         name,
@@ -75,6 +82,7 @@ pub(super) fn lower_top_level_stitch(
         params,
         body,
         stitches: Vec::new(),
+        is_local,
     })
 }
 
@@ -135,10 +143,17 @@ pub(super) fn lower_stitch(
     });
     scope.current_stitch = None;
 
+    // `#@local` directive line(s) in the leading tag-line run of the body.
+    let is_local = stitch.body().is_some_and(|b| {
+        let dirs = leading_body_directives(b.syntax());
+        apply_scope_directives(&dirs, DirectiveTarget::Stitch, sink)
+    });
+
     Ok(Stitch {
         ptr: AstPtr::new(stitch),
         name,
         params,
         body,
+        is_local,
     })
 }

@@ -226,6 +226,10 @@ fn is_scope_kind(kind: lir::ContainerKind) -> bool {
     )
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "single linear emit sequence; splitting would obscure the order"
+)]
 fn walk_container(
     container: &lir::Container,
     path: &str,
@@ -304,9 +308,8 @@ fn walk_container(
         // (`choose_path_string_with_args`) / `call_function`. Saturates — a
         // knot with >255 params is absurd and never legitimately occurs.
         param_count: u8::try_from(container.params.len()).unwrap_or(u8::MAX),
-        local: false,
+        local: container.local,
     };
-
     state.containers.push(def);
 
     // Primary address: every container is addressable by its own id.
@@ -399,7 +402,7 @@ fn build_globals(globals: &[lir::GlobalDef]) -> Vec<GlobalVarDef> {
             value_type: const_value_type(&g.default),
             default_value: const_to_value(&g.default),
             mutable: g.mutable,
-            local: false,
+            local: g.local,
         })
         .collect()
 }

@@ -3,6 +3,7 @@
 use brink_syntax::ast::{self, AstNode};
 
 use super::super::context::{LowerScope, LowerSink, Lowered};
+use super::super::directive::{DirectiveTarget, apply_scope_directives, directives_before};
 use super::super::doc_comment::{DocPolicy, parse_doc_comment};
 use super::super::helpers::name_from_ident;
 use super::DeclareSymbols;
@@ -55,6 +56,10 @@ impl DeclareSymbols for ast::ExternalDecl {
             reason = "external params won't exceed 255"
         )]
         let param_count = self.param_list().map_or(0, |pl| pl.params().count() as u8);
+
+        // Directives don't apply to EXTERNALs — diagnose any that attach.
+        let dirs = directives_before(self.syntax());
+        let _ = apply_scope_directives(&dirs, DirectiveTarget::External, sink);
 
         Ok(ExternalDecl {
             ptr: ast::AstPtr::new(self),

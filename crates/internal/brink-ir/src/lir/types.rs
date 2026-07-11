@@ -39,6 +39,9 @@ pub struct GlobalDef {
     pub name: NameId,
     pub mutable: bool,
     pub default: ConstValue,
+    /// Flow-private (`#@local`) scope default. Always `false` for CONSTs
+    /// and list globals.
+    pub local: bool,
 }
 
 /// A list definition.
@@ -95,6 +98,10 @@ pub enum ConstValue {
 ///
 /// Containers form a tree: the root contains knots, knots contain stitches
 /// and choice/gather children, etc. The `children` vec holds nested containers.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent structural flags, not a state machine"
+)]
 pub struct Container {
     pub id: DefinitionId,
     /// Local name of this container (e.g. `"order"` for stitch `tavern.order`).
@@ -126,6 +133,10 @@ pub struct Container {
     /// Used by codegen to decide whether inklecate's implicit stitch
     /// prefix (`.0`) should be inserted in container paths.
     pub is_function: bool,
+    /// Flow-private (`#@local`) scope default. Only ever `true` on
+    /// knot/stitch containers; interior containers stay `false` (subtree
+    /// coverage is resolved by the runtime).
+    pub local: bool,
 }
 
 /// What source construct this container originated from.

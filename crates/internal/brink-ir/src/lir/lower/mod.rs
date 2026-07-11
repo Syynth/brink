@@ -169,6 +169,7 @@ fn lower_root(
         labeled: false,
         inline: false,
         is_function: false,
+        local: false,
     }
 }
 
@@ -256,6 +257,7 @@ fn lower_knot(
         labeled: false,
         inline: false,
         is_function: knot.is_function,
+        local: knot.is_local,
     }
 }
 
@@ -308,6 +310,7 @@ fn lower_stitch(
         labeled: false,
         inline: false,
         is_function: false,
+        local: stitch.is_local,
     }
 }
 
@@ -428,6 +431,7 @@ fn lower_block_with_children(
                     labeled: labeled_flag,
                     inline: true,
                     is_function: false,
+                    local: false,
                 });
                 pos += 1;
             }
@@ -494,6 +498,7 @@ fn lower_block_with_children(
                             labeled: false,
                             inline: false,
                             is_function: false,
+                            local: false,
                         };
                         children.push(branch_container);
 
@@ -557,6 +562,7 @@ fn lower_block_with_children(
                             labeled: false,
                             inline: false,
                             is_function: false,
+                            local: false,
                         };
                         wrapper_children.push(branch_container);
 
@@ -581,6 +587,7 @@ fn lower_block_with_children(
                     labeled: false,
                     inline: false,
                     is_function: false,
+                    local: false,
                 };
                 children.push(wrapper);
 
@@ -673,6 +680,7 @@ fn build_continuation_container(
             labeled: false,
             inline: false,
             is_function: false,
+            local: false,
         };
     }
 
@@ -692,6 +700,7 @@ fn build_continuation_container(
         labeled,
         inline: false,
         is_function: false,
+        local: false,
     }
 }
 
@@ -865,6 +874,7 @@ fn lower_choice_with_child(
         labeled,
         inline: false,
         is_function: false,
+        local: false,
     };
 
     let lir_choice = lir::Choice {
