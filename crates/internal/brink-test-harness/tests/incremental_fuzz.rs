@@ -13,6 +13,17 @@
 //! a from-scratch discovery would not — that difference is pre-existing
 //! LSP-vs-compiler behavior, not what this harness tests).
 //!
+//! Remove/re-add churn (#536): some steps on multi-file projects tombstone
+//! a non-entry file (`remove_file`), pull `story_data()` with the file
+//! absent (exercising missing-INCLUDE resolution against a tombstoned
+//! input), then re-add the path with mutated content before the compare —
+//! so every comparison still sees the full file set. The re-added path must
+//! reuse its original `FileId` (durable path→id identity), which is exactly
+//! what keeps the incremental ids aligned with the fresh db's and lets the
+//! bit-identical assertion double as the tombstone-purity check: any stale
+//! memo surviving the remove/re-add round-trip diverges from the fresh
+//! compile.
+//!
 //! Bounded: `EDITS_PER_PROJECT` edits over a fixed project list; every step
 //! is a small-project compile, so the whole test stays well under the
 //! workspace's test-time budget and cannot hang (no loops without bounds).
@@ -160,6 +171,7 @@ fn story_bytes(product: &brink_driver::CompileProduct) -> Option<Vec<u8>> {
 #[test]
 fn incremental_story_data_equals_fresh_compile() {
     let root = workspace_root().join("tests");
+    let mut churn_steps = 0usize;
 
     for (p_idx, project) in PROJECTS.iter().enumerate() {
         let dir = root.join(project);
@@ -174,14 +186,49 @@ fn incremental_story_data_equals_fresh_compile() {
         }
         db.set_entry("story.ink").expect("story.ink present");
 
+        // Non-entry files are eligible for remove/re-add churn (#536); the
+        // entry must stay present so `story_data()` is always comparable.
+        let churnable: Vec<String> = paths
+            .iter()
+            .filter(|p| *p != "story.ink")
+            .cloned()
+            .collect();
+
         // Baseline: before any edit, incremental == fresh.
         let mut rng = Lcg::new(0x5EED_0501 + p_idx as u64);
         for step in 0..=EDITS_PER_PROJECT {
             if step > 0 {
-                let path = &paths[rng.pick(paths.len())];
-                let edited = mutate(&mut rng, &originals[path], &current[path], step);
-                current.insert(path.clone(), edited.clone());
-                db.update_file(path, edited);
+                let churn = !churnable.is_empty() && rng.pick(4) == 0;
+                if churn {
+                    churn_steps += 1;
+                    // Remove a file, pull the pipeline with it absent, then
+                    // re-add it (with fresh content) before the compare.
+                    let path = churnable[rng.pick(churnable.len())].clone();
+                    let id_before = db.file_id(&path);
+                    db.remove_file(&path);
+                    assert_eq!(
+                        db.file_id(&path),
+                        None,
+                        "{project}: removed file still visible"
+                    );
+                    // Exercise the query graph in the removed state — any
+                    // INCLUDE of this path must now miss. Output is not
+                    // compared here (the file set differs from `current`).
+                    let _ = db.story_data().expect("entry still set");
+                    let edited = mutate(&mut rng, &originals[&path], &current[&path], step);
+                    current.insert(path.clone(), edited.clone());
+                    let id_after = db.set_file(&path, edited);
+                    assert_eq!(
+                        Some(id_after),
+                        id_before,
+                        "{project}: re-added path must reuse its FileId (step {step})"
+                    );
+                } else {
+                    let path = &paths[rng.pick(paths.len())];
+                    let edited = mutate(&mut rng, &originals[path], &current[path], step);
+                    current.insert(path.clone(), edited.clone());
+                    db.update_file(path, edited);
+                }
             }
 
             let incremental = db.story_data().expect("entry set");
@@ -199,4 +246,13 @@ fn incremental_story_data_equals_fresh_compile() {
             );
         }
     }
+
+    // The remove/re-add coverage (#536) must actually run: the seeded
+    // driver hits the churn arm on the multi-file projects every time, and
+    // this assertion keeps that coverage from silently vanishing if the
+    // project list or edit mix changes.
+    assert!(
+        churn_steps > 0,
+        "no remove/re-add churn steps executed — #536 coverage lost"
+    );
 }
