@@ -55,6 +55,12 @@ tower-lsp = "0.20"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rowan = "0.16.1"
+# Query engine for the scripting substrate (#499 ruling, phase 0 slice B).
+# Pinned to the 0.27 line (0.x minors are breaking in cargo semantics, so this
+# is an effective pin); upgrades are deliberate PRs per the spec's churn risk.
+# default-features off: no rayon (single-threaded consumers incl. wasm), no
+# accumulators; `macros` only — the same lean set Astral's ty ships to wasm.
+salsa = { version = "0.27.2", default-features = false, features = ["macros"] }
 bitflags = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"

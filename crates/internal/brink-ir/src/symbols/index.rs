@@ -9,7 +9,7 @@ use crate::FileId;
 
 /// The unified symbol table produced by merging per-file manifests and
 /// resolving references.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SymbolIndex {
     /// All known definitions across all files.
     pub symbols: HashMap<DefinitionId, SymbolInfo>,

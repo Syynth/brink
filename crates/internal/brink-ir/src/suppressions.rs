@@ -15,7 +15,7 @@ use rowan::TextRange;
 use crate::{Diagnostic, DiagnosticCode, FileId};
 
 /// Parsed suppression/expectation directives for a single file.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Suppressions {
     /// `// brink-disable-all` found in this file.
     pub disable_all: bool,
@@ -26,7 +26,7 @@ pub struct Suppressions {
 }
 
 /// A per-line suppression or expectation directive.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LineDirective {
     /// Whether this is a `disable` or `expect` directive.
     pub kind: DirectiveKind,

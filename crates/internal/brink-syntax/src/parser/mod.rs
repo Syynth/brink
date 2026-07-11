@@ -15,6 +15,11 @@ use crate::lexer;
 use rowan::GreenNode;
 
 /// Result of parsing an Ink source file.
+///
+/// `PartialEq` compares the green tree structurally (rowan `GreenNode`
+/// equality is content-based) plus the error list — used by the salsa
+/// `parse` query in `brink-db` for early-cutoff backdating.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Parse {
     green: GreenNode,
     errors: Vec<ParseError>,
