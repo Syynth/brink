@@ -45,8 +45,8 @@ reused not reinvented.
 - **`LiteralPool` (new)**: content-hash-deduplicated constant values of
   any encodable tag, referenced by u32 index. **Absorbs `ListLiterals`**:
   in 4.0 the ListLiterals section is gone; `PushList(idx)` is retired in
-  favor of `PushLiteral(idx)` (converter migration is mechanical — its
-  list literals intern into the pool). Pool entries are loaded as Arc
+  favor of `PushLiteral(idx)`. (No converter migration exists — the
+  converter retires pre-V4.) Pool entries are loaded as Arc
   bumps at runtime; COW makes them unpoisonable.
 - **`StructShapes` (reserved)**: count always 0 in 4.0. Entry encoding
   specified: ShapeId, name NameId, u16 field count, field NameIds in
@@ -104,10 +104,9 @@ carried function values (closure in a map/record field) use
 
 ## 4. Compatibility & discipline
 
-- Reader stays strict (`version != 4` rejects). Converter output is
-  unchanged except mechanical ListLiterals→LiteralPool migration —
-  byte-diff of converter output is expected and verified equivalent by
-  the oracle corpus (behavior identical; the inkt dump normalizes).
+- Reader stays strict (`version != 4` rejects). The converter pipeline
+  is retired BEFORE this bump (decision 2026-07-11) — V4 has exactly one
+  producer (the brink compiler) and pays no double-implementation tax.
 - New opcodes are inert until each milestone's compiler work emits them
   — every intermediate merge stays oracle-neutral (roadmap ordering).
 - The `.inkt` text format grows matching atoms per tag/section, printed
