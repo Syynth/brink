@@ -66,6 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     bench_synthetic_cold(&project, &stats, runs)?;
     bench_synthetic_stages_cold(&project, runs);
     bench_synthetic_warm(&project, runs)?;
+    bench_synthetic_warm_query(&project, runs)?;
 
     Ok(())
 }
@@ -657,6 +658,60 @@ fn bench_synthetic_warm(project: &BTreeMap<String, String>, runs: usize) -> Resu
         "synthetic_warm.full_recompile",
         "update_file .. codegen (StoryData)",
         &full,
+    );
+    Ok(())
+}
+
+/// Warm path through the **query graph**: one persistent `ProjectDb`, and
+/// after each one-line edit the whole rebuild is a single memoized
+/// `story_data()` pull. Where `synthetic_warm.full_recompile` measures the
+/// hand-driven stage sequence (always recomputing LIR + codegen from
+/// scratch), this row measures what the salsa pipeline actually redoes —
+/// the number slice C (#460) targets.
+fn bench_synthetic_warm_query(
+    project: &BTreeMap<String, String>,
+    runs: usize,
+) -> Result<(), String> {
+    let mut driver = Driver::new();
+    driver
+        .discover("main.ink", read_from(project))
+        .map_err(|e| format!("warm query setup discovery failed: {e}"))?;
+    let mut db = driver.into_db();
+    db.set_entry("main.ink")
+        .ok_or_else(|| "warm query setup: main.ink missing after discovery".to_string())?;
+
+    // Untimed warm-up pull so the first timed iteration measures an
+    // incremental recompute, not the cold population of every memo.
+    let warmup = db
+        .story_data()
+        .ok_or_else(|| "warm query setup: no entry".to_string())?;
+    if warmup.story.is_none() {
+        return Err("warm query setup: synthetic project failed to compile".to_string());
+    }
+
+    let edit_path = format!("file_{EDIT_FILE:02}.ink");
+    let mut samples = Vec::with_capacity(runs);
+    let mut revision: u64 = 1000; // distinct from bench_synthetic_warm's edits
+    for _ in 0..runs {
+        revision += 1;
+        let edited = generate_file(EDIT_FILE, revision);
+
+        let start = Instant::now();
+        db.update_file(&edit_path, edited);
+        let product = db
+            .story_data()
+            .ok_or_else(|| "warm query pull: no entry".to_string())?;
+        if product.story.is_none() {
+            return Err("warm query pull: compile failed mid-benchmark".to_string());
+        }
+        std::hint::black_box(product);
+        samples.push(ms(start));
+    }
+
+    row(
+        "synthetic_warm.story_data_pull",
+        "update_file + story_data() query pull",
+        &samples,
     );
     Ok(())
 }
