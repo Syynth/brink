@@ -10,7 +10,13 @@ import {
 import { foldService, codeFolding, foldEffect, unfoldEffect } from "@codemirror/language";
 import type { EditorView, Command } from "@codemirror/view";
 import type { FoldKind, FoldRange } from "@brink/wasm-types";
-import { elementTypeField, dialectFacet, type LineInfo } from "./element-type.js";
+import {
+  elementTypeField,
+  dialectFacet,
+  ElementType,
+  type LineInfo,
+  type DialectGeometry,
+} from "./element-type.js";
 import { detectCast, type SourceLine } from "./dialect.js";
 
 export type { FoldKind } from "@brink/wasm-types";
@@ -452,39 +458,103 @@ function machineryLineSummary(trimmed: string): string | null {
   return null;
 }
 
-/** Scene summary for a narrative fold: first-line snippet + cast (via
- *  `detectCast`, the #366/#403 public extractor over the resolved dialect —
- *  never a raw read of `LineInfo.dialect.attrs`, so a custom dialect's
- *  speaker-carrying attr name flows through to the pill same as the at-cue
- *  preset's `speaker`) + line count.
+/** One run line reduced to its display snippet (dialect sigils stripped, see
+ *  `dialectStrippedSnippet`) plus whether that line's dialect match had any
+ *  hidden sigil spans — the signal `pickNarrativeSnippet` uses to tell a cue
+ *  line (`@Jackie:<>` — all sigil, `hiddenSpans` non-empty) from a content
+ *  line (chained `dialogue`, or unclassified prose — nothing to hide). */
+interface SnippetCandidate {
+  text: string;
+  hadHiddenSigils: boolean;
+}
+
+/** Strip a line's dialect sigils for display (#417 point 2): a dialect-
+ *  matched line's `contentSpan` is exactly the visible-content slice (e.g.
+ *  the bare speaker name for `@Jackie:<>`, sigils excluded) — the SAME
+ *  geometry `screenplay.ts`'s decorations hide, never a re-derived sniff.
+ *  Lines with no `contentSpan` (unclassified prose, or a pattern-less
+ *  chain-only kind like the at-cue preset's `dialogue` — already bare text,
+ *  nothing to strip) fall back to the raw trimmed line. */
+function dialectStrippedSnippet(text: string, geometry: DialectGeometry | undefined): string {
+  if (geometry?.contentSpan) {
+    const [start, end] = geometry.contentSpan;
+    return text.slice(start, end).trim();
+  }
+  return text.trim();
+}
+
+/** Pick the narrative pill's snippet (#417 point 2): the first CONTENT line,
+ *  skipping a leading CUE line (one whose dialect match hid sigils — e.g.
+ *  `@Jackie:<>`'s `@`/`:<>`) in favor of the first line after it that has no
+ *  sigils of its own (chained `dialogue`, a parenthetical's stage direction
+ *  still counts as "cue-like" and is skipped too). Falls back to the cue's
+ *  own stripped content (the cue NAME, e.g. `"Jackie"`) when the run has no
+ *  plain content line to show instead — never the cue's raw sigil text
+ *  either way, since every candidate is pre-stripped. Dialect-agnostic: the
+ *  signal is the match geometry (`hiddenSpans`), never a hardcoded kind
+ *  name. */
+function pickNarrativeSnippet(candidates: readonly SnippetCandidate[]): string | null {
+  const [first, ...rest] = candidates;
+  if (!first) return null;
+  if (first.hadHiddenSigils) {
+    const contentLine = rest.find((c) => !c.hadHiddenSigils && c.text !== "");
+    if (contentLine) return contentLine.text;
+  }
+  return first.text;
+}
+
+/** Whether `type` is a weave-TRANSITION line (the choice or gather line
+ *  itself, never its body/content) — the one structural kind that can now
+ *  appear inside a narrative `FoldRange`'s line span (#417 point 1: the
+ *  Rust side re-anchors a narrative run that IS a choice's body onto the
+ *  choice's own line, extending `start_line` to include it). That anchor
+ *  line must not pollute the scene summary's cast/snippet/count — it's the
+ *  fold's anchor, not narrative content. */
+function isWeaveTransitionLine(type: string | undefined): boolean {
+  return type === ElementType.Choice || type === ElementType.Gather;
+}
+
+/** Scene summary for a narrative fold: first-content-line snippet (#417
+ *  point 2, sigils stripped) + cast (via `detectCast`, the #366/#403 public
+ *  extractor over the resolved dialect — never a raw read of
+ *  `LineInfo.dialect.attrs`, so a custom dialect's speaker-carrying attr
+ *  name flows through to the pill same as the at-cue preset's `speaker`) +
+ *  line count.
  *
  *  Walks the fold's full line range (`start_line`..`end_line`), NOT the
  *  resolved CM6 fold's hidden `{from, to}` — see `buildMachinerySummary` for
- *  why the anchor line must be included. */
+ *  why the anchor line must be included — but skips a weave-transition
+ *  anchor line (#417 point 1) since that's the fold's re-anchor point, not
+ *  narrative content. */
 function buildNarrativeSummary(state: EditorState, range: FoldRange): PillSummary {
   const infos = state.field(elementTypeField, false);
   const dialect = state.facet(dialectFacet);
 
   const sourceLines: SourceLine[] = [];
-  let firstLine: string | null = null;
+  const candidates: SnippetCandidate[] = [];
   let lineCount = 0;
 
   for (let n = range.start_line + 1; n <= range.end_line + 1 && n <= state.doc.lines; n++) {
     const line = state.doc.line(n);
     const trimmed = line.text.trim();
     if (trimmed === "") continue;
-    lineCount++;
     const info: LineInfo | undefined = infos?.[n - 1];
+    if (isWeaveTransitionLine(info?.type)) continue;
+    lineCount++;
     sourceLines.push({
       index: n - 1,
       text: line.text,
       kind: info?.dialect?.kind ?? null,
       attrs: info?.dialect ? [...info.dialect.attrs] : [],
     });
-    if (firstLine === null) firstLine = trimmed;
+    candidates.push({
+      text: dialectStrippedSnippet(line.text, info?.dialect),
+      hadHiddenSigils: (info?.dialect?.hiddenSpans.length ?? 0) > 0,
+    });
   }
 
   const cast = dialect ? detectCast(sourceLines, dialect.raw()) : [];
+  const firstLine = pickNarrativeSnippet(candidates);
 
   return { items: [], moreCount: 0, lineCount, cast, firstLine };
 }
