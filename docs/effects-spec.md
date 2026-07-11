@@ -40,8 +40,13 @@ small `Eq` values — the signature-firewall economics apply.
 
 ## 4. The ECS join (bevy-brink)
 
-Manifest declares per-external ECS access (components/resources —
-vocabulary extends the existing host semantic types). Join:
+Frozen entry-point rows **ship in the compiled artifact** — the
+format's reserved `EffectRows` section (VERSION 4, section-locally
+versioned; this round defines its layout). Production hosts load
+`.inkb` with no compiler present, so rows-as-shipped-data is the same
+pattern as #473 scope bits / #474 metadata tags. Manifest declares
+per-external ECS access (components/resources — vocabulary extends the
+existing host semantic types). Join:
 entry point → row → union of externals' access sets + cell sets →
 a Bevy-legible access description. Consumers, ascending ambition:
 1. **Parallel flow scheduling** — access-disjoint batches advance
