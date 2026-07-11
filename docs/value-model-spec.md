@@ -205,7 +205,7 @@ collapse/compaction are invisible to all of the above. The only place
 resumability could have leaked — foreign identity inside values — is
 closed by §8's token design.
 
-## 11. Functions as values, closures — PROPOSED
+## 11. Functions as values, closures — RULED 2026-07-11 (cross-flow ref-capture binding still open)
 
 - **Function references**: symbolic tokens (`DefinitionId`, the divert-
   target move) — serializable, replayable, compared by token.
@@ -261,17 +261,16 @@ everywhere internally, **declared/frozen at flow entry points** via the
 `#@` channel, checked against inference, error on drift. Annotation =
 firewall, absence = inferred.
 
-## 11c. Error handling — OPEN (position sketch)
+## 11c. Error handling — RULED 2026-07-11
 
-Belongs to this round because it interlocks: "may fail" is an effect
-(§11b); dead handles (§8) and invalid projections (§7) need defined
-mid-callback behavior; the journal needs errors to be deterministic,
-recorded events (replays must fail identically). Starting position: no
-exceptions/unwinding — runtime errors are turn-terminating,
-diagnostic-carrying, host-surfaced events (ink lineage), over a
-substrate of total operations with defined failure values; a
-Result-shaped recoverable form is a later, demand-driven addition.
-To be argued, not yet proposed.
+v1: the script side is **infallible** — no exceptions, no unwinding, no
+in-language error values. Runtime faults (bad index, dead handle,
+invalid projection) are defined, deterministic outcomes: total
+operations with specified failure values where defined, otherwise
+turn-terminating diagnostic events surfaced to the host and recorded in
+the journal (replays fail identically). Result-shaped recoverable
+errors are a later, demand-driven addition that joins the effects
+system (§11b) without grammar changes.
 
 ## 12. Rulings needed (round checklist)
 
@@ -281,11 +280,12 @@ To be argued, not yet proposed.
 4. Host boundary contract + Handle design (§8) — including the
    rehydration hook's shape in bevy-brink.
 5. The compiler guarantees contract (§9) as standing law.
-6. Functions/closures (§11): ratify the val/ref env-row design +
-   the cross-flow `ref`-capture binding question.
+6. ~~Functions/closures (§11)~~ RULED 2026-07-11 — except the
+   cross-flow `ref`-capture binding question (late binding proposed).
 7. Effects (§11b): effect rows, the manifest join, and the
    declared-at-entry firewall.
-8. Error handling (§11c): the no-unwinding/turn-terminating position.
+8. ~~Error handling (§11c)~~ RULED 2026-07-11 (ink-side infallible;
+   host events).
 9. v1 scope line: which of §6's optimizations ship v1 (proposed:
    `ptr_eq` only) vs specified-for-later.
 

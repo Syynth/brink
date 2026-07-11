@@ -1304,3 +1304,19 @@
 - **STATUS:** tentative
 - **WHAT:** The 2026-07-11 coarse-grained salsa ruling is phase-0 scope, not the end state. The expected long-term direction is fine-grained salsa integration — tracked structs, per-definition/field-level dependency granularity — including reworking the IRs (HIR/LIR) where that pays, as live semantic tooling grows. Phase-0 implication: query boundaries must not foreclose finer granularity — prefer def-keyed queries where cheap, keep per-def hashes in `hir`, and treat "IRs stay as-is" as a phase-0 constraint rather than a permanent principle.
 - **WHY:** The live-tooling product direction (type checker, per-keystroke semantics at studio scale) will eventually justify field-level tracking; acknowledging the destination now keeps phase-0 choices from ossifying the coarse shape and makes the later migration incremental instead of a second restructuring.
+
+## Tier-1 closures: env rows of val/ref captures
+- **WHEN:** 2026-07-11
+- **PROJECT:** brink
+- **SYSTEM:** language design (#397 value-model round)
+- **SCOPE:** architectural
+- **WHAT:** Closures are values `{fn: DefinitionId token, env: row}`. Env entries are by-value snapshots (default) or explicit `ref` captures via capture-list syntax; `ref` captures are restricted to durable cells (compile error on temps). The env is analyzer-transparent (a typed row) but author-opaque (no reflection, indexing, or comparison). Effect-row variables bind at creation site, so every closure value carries a concrete effect row. Still open: cross-flow resolution of a ref-captured `#@local` cell (late binding through the executing flow's scope view proposed).
+- **WHY:** Live capture where intended without the upvalue problem — no heap-promoted cells or identity objects; env rows serialize symbolically so closures live in saves and the journal; creation-site binding keeps closures fully transparent to the effects system (host callbacks carry knowable ECS access sets); explicit `ref` matches ink's existing aliasing spelling.
+
+## Error handling v1: ink-side infallible; errors are host events
+- **WHEN:** 2026-07-11
+- **PROJECT:** brink
+- **SYSTEM:** language design / runtime (#397 value-model round)
+- **SCOPE:** architectural
+- **WHAT:** v1 treats the script side as infallible: no exceptions, no unwinding, no in-language error values. Runtime faults (bad index, dead handle, invalid projection) are defined, deterministic outcomes — total operations with specified failure values where defined, otherwise turn-terminating diagnostic events surfaced to the host and recorded in the journal (replays fail identically). Result-shaped recoverable errors are a later, demand-driven addition that can join the effects system without grammar changes.
+- **WHY:** Matches ink lineage; keeps journal/replay simple (errors are events, not control flow); hosts already own the player-facing error surface; "may fail" slots into effect rows later if recoverable errors ever arrive.
