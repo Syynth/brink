@@ -302,11 +302,18 @@ pub fn read_section_address_paths(
 
 // ── Decode helpers (private) ────────────────────────────────────────────────
 
+/// Maximum nesting depth permitted when decoding `VAL_ARRAY`/`VAL_MAP`
+/// values. Generous for legitimate data but bounds worst-case recursion so a
+/// crafted file of nested single-element arrays (~5 bytes/level) cannot
+/// stack-overflow the reader (CLAUDE.md "guard against unbounded growth";
+/// issue #553).
+const MAX_DECODE_DEPTH: usize = 128;
+
 fn decode_global_var(buf: &[u8], off: &mut usize) -> Result<GlobalVarDef, DecodeError> {
     let id = read_def_id(buf, off)?;
     let name = NameId(read_u16(buf, off)?);
     let value_type = decode_value_type(buf, off)?;
-    let default_value = decode_value(buf, off)?;
+    let default_value = decode_value(buf, off, 0)?;
     let mutable = read_u8(buf, off)? != 0;
     let local = read_u8(buf, off)? != 0;
     Ok(GlobalVarDef {
@@ -337,7 +344,10 @@ fn decode_value_type(buf: &[u8], off: &mut usize) -> Result<ValueType, DecodeErr
     }
 }
 
-fn decode_value(buf: &[u8], off: &mut usize) -> Result<Value, DecodeError> {
+fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, DecodeError> {
+    if depth > MAX_DECODE_DEPTH {
+        return Err(DecodeError::MaxDepthExceeded(MAX_DECODE_DEPTH));
+    }
     let tag = read_u8(buf, off)?;
     match tag {
         VAL_INT => Ok(Value::Int(read_i32(buf, off)?)),
@@ -374,7 +384,7 @@ fn decode_value(buf: &[u8], off: &mut usize) -> Result<Value, DecodeError> {
             // remaining bytes — cap the pre-allocation against crafted inputs.
             let mut items = Vec::with_capacity(safe_capacity(len, buf.len(), *off, 1));
             for _ in 0..len {
-                items.push(decode_value(buf, off)?);
+                items.push(decode_value(buf, off, depth + 1)?);
             }
             Ok(Value::array(items))
         }
@@ -383,7 +393,7 @@ fn decode_value(buf: &[u8], off: &mut usize) -> Result<Value, DecodeError> {
             let mut map = OrderedMap::with_capacity(safe_capacity(len, buf.len(), *off, 2));
             for _ in 0..len {
                 let key = decode_map_key(buf, off)?;
-                let val = decode_value(buf, off)?;
+                let val = decode_value(buf, off, depth + 1)?;
                 map.insert(key, val);
             }
             Ok(Value::map(map))

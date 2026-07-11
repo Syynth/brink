@@ -94,6 +94,91 @@ fn roundtrip_collection_valued_globals() {
     assert_eq!(data, recovered);
 }
 
+// ── Recursion-depth cap on VAL_ARRAY/VAL_MAP decode (#553) ──────────────────
+//
+// `decode_value` recurses into itself for VAL_ARRAY/VAL_MAP children with no
+// depth limit. A crafted `.inkb` of nested single-element arrays (~5
+// bytes/level) can stack-overflow the reader. These tests hand-build a
+// `Value` nested exactly at, and one past, the reader's cap (128, matching
+// `MAX_DECODE_DEPTH` in `inkb/read.rs`) and prove the reader accepts the
+// former unchanged and rejects the latter with a proper `DecodeError`
+// instead of overflowing the stack.
+
+const MAX_DECODE_DEPTH: usize = 128;
+
+/// A `Value` wrapped in `depth` single-element arrays around a scalar leaf,
+/// matching the issue's "nested single-element arrays" shape.
+fn nested_array(depth: usize) -> brink_format::Value {
+    use brink_format::Value;
+    let mut v = Value::Int(42);
+    for _ in 0..depth {
+        v = Value::array(vec![v]);
+    }
+    v
+}
+
+fn story_with_default_value(value: brink_format::Value) -> brink_format::StoryData {
+    use brink_format::{DefinitionId, DefinitionTag, GlobalVarDef, NameId, ValueType};
+
+    let mut data = i001_data();
+    let next_id = data.variables.len() as u64;
+    data.variables.push(GlobalVarDef {
+        id: DefinitionId::new(DefinitionTag::GlobalVar, next_id),
+        name: NameId(0),
+        value_type: ValueType::Array,
+        default_value: value,
+        mutable: true,
+        local: false,
+    });
+    data
+}
+
+#[test]
+fn decode_value_accepts_max_depth_nesting() {
+    let value = nested_array(MAX_DECODE_DEPTH);
+    let data = story_with_default_value(value.clone());
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let recovered = read_inkb(&buf).expect("depth exactly at cap must decode");
+    assert_eq!(recovered.variables.last().unwrap().default_value, value);
+}
+
+#[test]
+fn decode_value_rejects_beyond_max_depth() {
+    let value = nested_array(MAX_DECODE_DEPTH + 1);
+    let data = story_with_default_value(value);
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    assert!(matches!(
+        read_inkb(&buf),
+        Err(DecodeError::MaxDepthExceeded(MAX_DECODE_DEPTH))
+    ));
+}
+
+#[test]
+fn decode_value_rejects_deeply_crafted_nesting() {
+    // The actual attack scenario the issue describes: a much deeper chain
+    // than any legitimate story would produce (well beyond the cap, but
+    // shallow enough that constructing/encoding the fixture itself — which
+    // has no depth cap, by design; only the untrusted-input decode path is
+    // guarded — doesn't hit unrelated recursion limits). The reader must
+    // reject it promptly rather than recursing hundreds of frames deep.
+    let value = nested_array(8 * MAX_DECODE_DEPTH);
+    let data = story_with_default_value(value);
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    assert!(matches!(
+        read_inkb(&buf),
+        Err(DecodeError::MaxDepthExceeded(MAX_DECODE_DEPTH))
+    ));
+}
+
 // The strict reader rejects any version but 4 — a future v5 artifact is not
 // silently accepted (the version check runs ahead of the content checksum).
 #[test]
