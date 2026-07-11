@@ -1,8 +1,10 @@
 use brink_format::DefinitionId;
 use brink_ir::{
-    Diagnostic, DiagnosticCode, FileId, RefKind, ResolutionMap, ResolvedRef, SymbolIndex,
-    SymbolKind, SymbolManifest,
+    Diagnostic, DiagnosticCode, FileId, LocalSymbol, RefKind, ResolutionMap, ResolvedRef, Scope,
+    SymbolIndex, SymbolKind, SymbolManifest,
 };
+
+use crate::manifest::local_definition_id;
 
 /// Resolve all unresolved references across files.
 ///
@@ -32,6 +34,16 @@ pub fn resolve_refs(
 /// Reads only the symbol index and this file's own manifest — never another
 /// file's content. This is the per-file dependency seam the query pipeline
 /// relies on (substrate spec §4, layer 2 — `resolve(FileId)`).
+///
+/// Local (param/temp) lookups read `manifest.locals` — this file's own
+/// side table — rather than the project-wide index (issue #517): a knot's
+/// body lives in exactly one file, so a local can never legitimately be
+/// declared in one file and referenced from another. Scoping the lookup to
+/// this file's own locals both restores correct behavior for cross-file
+/// duplicate-scoped-locals (slice-A finding 4 — no more merged-index
+/// aliasing) and lets the project-wide `resolution_index` drop locals
+/// entirely, so a body edit that adds/removes a `~ temp` in file Y no
+/// longer invalidates file X's `resolve` memo.
 pub fn resolve_file(
     index: &SymbolIndex,
     file_id: FileId,
@@ -39,17 +51,18 @@ pub fn resolve_file(
 ) -> (ResolutionMap, Vec<Diagnostic>) {
     let mut map = ResolutionMap::new();
     let mut diagnostics = Vec::new();
+    let locals = &manifest.locals;
 
     for uref in &manifest.unresolved {
         match uref.kind {
             RefKind::Divert => {
-                resolve_divert(index, file_id, uref, &mut map, &mut diagnostics);
+                resolve_divert(index, locals, file_id, uref, &mut map, &mut diagnostics);
             }
             RefKind::Variable => {
-                resolve_variable(index, file_id, uref, &mut map, &mut diagnostics);
+                resolve_variable(index, locals, file_id, uref, &mut map, &mut diagnostics);
             }
             RefKind::Function => {
-                resolve_function(index, file_id, uref, &mut map, &mut diagnostics);
+                resolve_function(index, locals, file_id, uref, &mut map, &mut diagnostics);
             }
             RefKind::List => {
                 resolve_list_ref(index, file_id, uref, &mut map, &mut diagnostics);
@@ -62,12 +75,13 @@ pub fn resolve_file(
 
 fn resolve_divert(
     index: &SymbolIndex,
+    locals: &[LocalSymbol],
     file_id: FileId,
     uref: &brink_ir::UnresolvedRef,
     map: &mut ResolutionMap,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    if let Some(id) = lookup_divert(index, uref) {
+    if let Some(id) = lookup_divert(index, locals, uref) {
         map.push(ResolvedRef {
             file: file_id,
             range: uref.range,
@@ -83,7 +97,11 @@ fn resolve_divert(
     }
 }
 
-fn lookup_divert(index: &SymbolIndex, uref: &brink_ir::UnresolvedRef) -> Option<DefinitionId> {
+fn lookup_divert(
+    index: &SymbolIndex,
+    locals: &[LocalSymbol],
+    uref: &brink_ir::UnresolvedRef,
+) -> Option<DefinitionId> {
     let path = &uref.path;
 
     // Dotted path — try exact qualified lookup, then qualify with current knot
@@ -152,11 +170,12 @@ fn lookup_divert(index: &SymbolIndex, uref: &brink_ir::UnresolvedRef) -> Option<
     }
 
     // 7. Divert parameter in scope (`=== knot(-> x) ===` then `-> x`)
-    lookup_local_in_scope(index, path, &uref.scope)
+    lookup_local_in_scope(locals, path, &uref.scope)
 }
 
 fn resolve_variable(
     index: &SymbolIndex,
+    locals: &[LocalSymbol],
     file_id: FileId,
     uref: &brink_ir::UnresolvedRef,
     map: &mut ResolutionMap,
@@ -168,7 +187,7 @@ fn resolve_variable(
         return;
     }
 
-    match lookup_variable(index, uref) {
+    match lookup_variable(index, locals, uref) {
         VarResult::Found(id) => {
             map.push(ResolvedRef {
                 file: file_id,
@@ -197,11 +216,15 @@ enum VarResult {
 }
 
 /// Hierarchical variable lookup — returns the first match in priority order.
-fn lookup_variable(index: &SymbolIndex, uref: &brink_ir::UnresolvedRef) -> VarResult {
+fn lookup_variable(
+    index: &SymbolIndex,
+    locals: &[LocalSymbol],
+    uref: &brink_ir::UnresolvedRef,
+) -> VarResult {
     let path = &uref.path;
 
     // 1. Locals (params/temps) in scope — they shadow globals
-    if let Some(id) = lookup_local_in_scope(index, path, &uref.scope) {
+    if let Some(id) = lookup_local_in_scope(locals, path, &uref.scope) {
         return VarResult::Found(id);
     }
 
@@ -274,6 +297,7 @@ fn lookup_variable(index: &SymbolIndex, uref: &brink_ir::UnresolvedRef) -> VarRe
 
 fn resolve_function(
     index: &SymbolIndex,
+    locals: &[LocalSymbol],
     file_id: FileId,
     uref: &brink_ir::UnresolvedRef,
     map: &mut ResolutionMap,
@@ -329,7 +353,7 @@ fn resolve_function(
     }
 
     // Try locals (temps/params used as function names, e.g. `{storyletFunction(args)}`)
-    if let Some(id) = lookup_local_in_scope(index, path, &uref.scope) {
+    if let Some(id) = lookup_local_in_scope(locals, path, &uref.scope) {
         map.push(ResolvedRef {
             file: file_id,
             range: uref.range,
@@ -435,50 +459,47 @@ fn resolve_list_ref(
 
 // ─── Lookup helpers ─────────────────────────────────────────────────
 
-/// Look up a local variable (param or temp) by bare name within the given scope.
+/// Look up a local variable (param or temp) by bare name within the given
+/// scope, among *this file's own* locals (issue #517 — locals never resolve
+/// across files, since a knot's body lives in exactly one file).
 ///
 /// A local matches if its name equals the bare name AND its scope is compatible:
 /// same knot, and either same stitch or a knot-level param (stitch=None) which
 /// is visible in all stitches. When multiple candidates match (e.g. a param and
 /// a temp with the same name), picks the closest-preceding declaration.
 fn lookup_local_in_scope(
-    index: &SymbolIndex,
+    locals: &[LocalSymbol],
     bare_name: &str,
-    scope: &brink_ir::Scope,
+    scope: &Scope,
 ) -> Option<DefinitionId> {
-    let ids = index.by_name.get(bare_name)?;
-    let mut best: Option<(DefinitionId, rowan::TextRange)> = None;
+    let mut best: Option<&LocalSymbol> = None;
 
-    for &id in ids {
-        let info = index.symbols.get(&id)?;
-        if !matches!(info.kind, SymbolKind::Param | SymbolKind::Temp) {
+    for local in locals {
+        if local.name != bare_name {
             continue;
         }
-        let Some(sym_scope) = &info.scope else {
-            continue;
-        };
         // Knot must match
-        if sym_scope.knot != scope.knot {
+        if local.scope.knot != scope.knot {
             continue;
         }
         // A knot-level local (stitch=None) is visible in all stitches.
         // A stitch-level local is only visible in that stitch.
-        if sym_scope.stitch.is_some() && sym_scope.stitch != scope.stitch {
+        if local.scope.stitch.is_some() && local.scope.stitch != scope.stitch {
             continue;
         }
         // Pick closest-preceding by range start
-        match &best {
-            Some((_, prev_range)) if info.range.start() > prev_range.start() => {
-                best = Some((id, info.range));
+        match best {
+            Some(prev) if local.range.start() > prev.range.start() => {
+                best = Some(local);
             }
             None => {
-                best = Some((id, info.range));
+                best = Some(local);
             }
             _ => {}
         }
     }
 
-    best.map(|(id, _)| id)
+    best.map(|local| local_definition_id(&local.scope, &local.name, local.kind))
 }
 
 /// Ink built-in functions that are resolved at LIR lowering, not by the symbol index.
@@ -836,6 +857,59 @@ mod tests {
         // Inklecate permits duplicate definitions — we warn but don't error.
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code, DiagnosticCode::E022);
+    }
+
+    #[test]
+    fn cross_file_duplicate_knot_local_does_not_leak_across_files() {
+        // #517 (finding-4 fix): file B has a duplicate knot name (`dup`,
+        // warned E022) but does *not* declare its own `t`. Before the
+        // locals split, `lookup_local_in_scope` searched the merged index
+        // and would (wrongly) resolve B's reference against A's
+        // same-scoped `t`, since the lookup never checked which file a
+        // candidate came from. After the split, resolution reads only the
+        // referencing file's own `manifest.locals`, so B's reference to an
+        // undeclared `t` must fail to resolve instead of silently aliasing
+        // A's declaration.
+        let mut a = SymbolManifest::default();
+        a.knots.push(brink_ir::DeclaredSymbol {
+            name: "dup".to_string(),
+            range: range(0, 3),
+            params: Vec::new(),
+            detail: None,
+        });
+        a.locals.push(LocalSymbol {
+            name: "t".to_string(),
+            range: range(10, 1),
+            scope: Scope {
+                knot: Some("dup".to_string()),
+                stitch: None,
+            },
+            kind: SymbolKind::Temp,
+            param_detail: None,
+        });
+
+        let mut b = SymbolManifest::default();
+        b.knots.push(brink_ir::DeclaredSymbol {
+            name: "dup".to_string(),
+            range: range(100, 3),
+            params: Vec::new(),
+            detail: None,
+        }); // duplicate name -> E022, not indexed
+        b.unresolved
+            .push(uref("t", RefKind::Variable, Some("dup"), None));
+
+        let files = vec![(FileId(0), &a), (FileId(1), &b)];
+        let (index, merge_diags) = merge_manifests(&files);
+        assert_eq!(merge_diags.len(), 1, "duplicate knot should warn once");
+        assert_eq!(merge_diags[0].code, DiagnosticCode::E022);
+
+        let (resolutions, diags) = resolve_refs(&index, &files);
+        assert!(
+            resolutions.is_empty(),
+            "B's reference to an undeclared local must not resolve, got {resolutions:?}"
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::E025);
     }
 
     #[test]

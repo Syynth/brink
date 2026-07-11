@@ -3,7 +3,7 @@ use std::hash::{Hash, Hasher};
 
 use brink_format::{DefinitionId, DefinitionTag};
 use brink_ir::{
-    Diagnostic, DiagnosticCode, FileId, LocalSymbol, SymbolIndex, SymbolInfo, SymbolKind,
+    Diagnostic, DiagnosticCode, FileId, LocalSymbol, Scope, SymbolIndex, SymbolInfo, SymbolKind,
     SymbolManifest,
 };
 
@@ -163,17 +163,7 @@ fn insert_symbol(
 }
 
 fn insert_local(index: &mut SymbolIndex, file: FileId, local: &LocalSymbol) {
-    let tag = local.kind.definition_tag();
-    // Scope-qualify the hash so identically-named locals in different
-    // containers get distinct DefinitionIds.
-    let scope_prefix = match (&local.scope.knot, &local.scope.stitch) {
-        (Some(k), Some(s)) => format!("{k}.{s}."),
-        (Some(k), None) => format!("{k}."),
-        _ => String::new(),
-    };
-    let qualified = format!("{scope_prefix}{}", local.name);
-    let hash = hash_name(&qualified, tag);
-    let id = DefinitionId::new(tag, hash);
+    let id = local_definition_id(&local.scope, &local.name, local.kind);
 
     index.symbols.insert(
         id,
@@ -201,6 +191,33 @@ fn hash_name(name: &str, tag: DefinitionTag) -> u64 {
     tag.hash(&mut hasher);
     name.hash(&mut hasher);
     hasher.finish()
+}
+
+/// Compute the `DefinitionId` for a scoped local (param/temp).
+///
+/// Scope-qualifies the hash so identically-named locals in different
+/// containers get distinct ids: `knot.stitch.name`, `knot.name`, or bare
+/// `name` for an unscoped local. Shared between [`insert_local`] (project-wide
+/// merge, still used by `symbol_index`/hover/completion) and the per-file
+/// local lookup in `resolve.rs` (issue #517) so both derive the identical id
+/// for the same declaration.
+///
+/// Not file-qualified: two files that (pathologically) declare the same
+/// scope-qualified local name still collide on one `DefinitionId` in the
+/// *merged* index (slice-A finding 4, unchanged by this — a merged-index
+/// consumer, e.g. hover, can only show one). Per-file resolution
+/// (`resolve_file`) no longer goes through the merged index for locals, so
+/// the collision cannot leak into resolution correctness.
+pub(crate) fn local_definition_id(scope: &Scope, name: &str, kind: SymbolKind) -> DefinitionId {
+    let tag = kind.definition_tag();
+    let scope_prefix = match (&scope.knot, &scope.stitch) {
+        (Some(k), Some(s)) => format!("{k}.{s}."),
+        (Some(k), None) => format!("{k}."),
+        _ => String::new(),
+    };
+    let qualified = format!("{scope_prefix}{name}");
+    let hash = hash_name(&qualified, tag);
+    DefinitionId::new(tag, hash)
 }
 
 #[cfg(test)]
