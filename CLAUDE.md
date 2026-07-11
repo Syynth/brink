@@ -97,6 +97,14 @@ loop {
 - `advance()` → `StepOutcome::{ Line(Line), AwaitingExternal }` — like `step_single_line` but surfaces a deferred external (`ExternalResult::Pending`) cleanly instead of erroring, so a world-access binding can pause and be resolved out-of-band. `step_single_line` is the thin wrapper that maps `AwaitingExternal` back to an error.
 - `begin_function_eval` / `resume_function_eval` → `FunctionEval::{ Returned(Value), AwaitingExternal }` — evaluate an ink function from engine code without advancing the visible story (output isolated, transcript untouched), pausing/resuming on world-access externals. Plus `has_pending_external` / `pending_external_name` / `resolve_external` accessors.
 
+## Cloud / fresh-environment sessions
+
+On a fresh checkout (including cloud sessions with no local toolchain cache), run `scripts/setup-dev.sh` first. It installs/verifies rustup + the pinned toolchain (`rust-toolchain.toml`), `wasm-pack`, and `pnpm` (via corepack), mirroring the versions `.github/workflows/ci.yml` uses.
+
+- **Oracle regeneration is NOT needed.** The C# oracle (`tools/ink-oracle/`, `oracle/*.oracle.json`) requires `dotnet` and is only for producing new golden episodes. All `oracle.json` files consumed by tests are already checked in — do not install `dotnet` or run the oracle generator just to get the test suite working.
+- **Expect the first full `cargo build`/`cargo test --workspace` to take minutes.** The workspace includes the `bevy-brink` crate tree (Bevy + its dependency graph), which is the dominant cost of a cold build. Subsequent builds are incremental and much faster.
+- **The wasm gate (`crates/brink-web`, `@brink-lang/web`) needs `wasm-pack`.** `scripts/setup-dev.sh` installs it; without it, `wasm-pack build crates/brink-web --target web --out-dir www/pkg` (and anything depending on that output) will fail.
+
 ## Key commands
 
 ```sh
