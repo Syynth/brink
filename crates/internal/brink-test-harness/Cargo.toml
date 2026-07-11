@@ -13,15 +13,18 @@ brink-format = { workspace = true, features = ["inkt"] }
 brink-converter = { workspace = true }
 brink-json = { workspace = true }
 brink-compiler = { workspace = true }
+# For the compile_bench bin (#498): stage-level timing through the production
+# driver's own seams (discover / analyze / diagnostics / LIR / codegen).
+brink-driver = { workspace = true }
+brink-ir = { workspace = true }
+brink-codegen-inkb = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
 brink-syntax = { path = "../brink-syntax" }
-brink-ir = { path = "../brink-ir" }
 brink-analyzer = { path = "../brink-analyzer" }
-brink-codegen-inkb = { path = "../brink-codegen-inkb" }
 
 [lints]
 workspace = true
