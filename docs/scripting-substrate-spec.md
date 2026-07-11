@@ -109,9 +109,23 @@ Layer 3 — lowering/codegen (whole-project in slice B, split in slice C):
 
 | Query | Returns | Notes |
 |---|---|---|
-| `lir(def or project)` | `Arc<lir::…>` | slice B: one project query; slice C: per-container |
+| `lir_chunk(file)` | one file's containers + outgoing name-table state | slice C outcome: **per-file**, not per-container (see below) |
 | `story_data()` | `Arc<StoryData>` | batch compile = pull this one query |
 | `diagnostics(FileId)` | `Arc<[Diagnostic]>` | aggregates hir/resolve/validate per file |
+
+**Slice-C granularity ruling (2026-07-10, #460).** LIR lowering split
+per **file**, chained through the name table (body lowering only interns
+temp names; a `lir_names(file)` query is the `Eq`-cutoff firewall between
+files). Per-container was investigated and declined honestly: `NameId`
+assignment is a global first-use order, so any unit needs its
+predecessor's interning state — chaining that per file is O(files²)
+worst-case in cloned table state (fine at ≤hundreds of files), per knot
+it is O(knots²) (breaks the cold budget at studio scale). Bytecode
+emission stays whole-project: emitted bytes embed flat list-literal
+indices and continue the name table in DFS order, so per-scope emission
+needs a symbolic-ref + link phase — fine-grained-trajectory work (§9),
+not a behavior-neutral slice. `apply_counting_flags` (whole-tree, reads
+globals) splits into per-chunk collection + cheap assembly-time apply.
 
 The analyzer dissolves along these lines: `resolve.rs` → layer-2
 queries; `external_check::infer_value_meta` → `signature`;
