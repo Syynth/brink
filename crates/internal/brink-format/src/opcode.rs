@@ -120,6 +120,25 @@ const MAX: u8 = 0x96;
 // External fns
 const CALL_EXTERNAL: u8 = 0xA0;
 
+// Reserved v4 collection opcodes (`docs/format-v4-rfc.md` §3 "Collections
+// (T1a)") — numeric assignments frozen by the §9 one-bump rule, contiguous
+// and adjacent to the existing List ops block below so the T1a milestone
+// needs no renumbering. Deliberately NOT `Opcode` variants: there is no
+// match arm for these bytes in `Opcode::decode`, so the strict reader keeps
+// rejecting them (`UnknownOpcode`) until the T1a compiler surface begins
+// emitting them, the same discipline the reserved v4 value tags/sections
+// follow (`inkb/mod.rs`).
+//   0xBE ArrayNew(n)     0xBF MapNew(n)        0xC0 IndexGet
+//   0xC1 IndexSet        0xC2 Len              0xC3 MapGet
+//   0xC4 MapInsert       0xC5 MapRemove        0xC6 MapContains
+//   0xC7 Keys            0xC8 Values           0xC9 PushLiteral(u32)
+// `PushLiteral(u32)` absorbs `PushList`/`ListLiterals` (RFC §2): once the
+// `LiteralPool` section and this opcode land together, `PushList`/
+// `VAL_LIST`/`ListLiterals` retire. Sharing-discipline ops (`TakeVar`,
+// `StoreVarIfNew`, `EqVars`) and later Tier-1 groups (functions, handles,
+// projections, records) are named in the RFC but out of this reservation —
+// each gets its own contiguous block, numbered when its own issue lands.
+
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
 const LIST_NOT_CONTAINS: u8 = 0xB1;
@@ -1165,6 +1184,20 @@ mod tests {
         let mut offset = 0;
         let err = Opcode::decode(&buf, &mut offset).unwrap_err();
         assert_eq!(err, DecodeError::UnknownOpcode(0xFF));
+    }
+
+    /// Reserved v4 collection opcode block (`0xBE`-`0xC9`,
+    /// `docs/format-v4-rfc.md` §3 "Collections (T1a)") is numbered but
+    /// deliberately not wired into `Opcode` — the strict reader must keep
+    /// rejecting every byte in the block until the T1a milestone lands.
+    #[test]
+    fn decode_reserved_collection_opcodes_still_rejected() {
+        for disc in 0xBEu8..=0xC9u8 {
+            let buf = [disc];
+            let mut offset = 0;
+            let err = Opcode::decode(&buf, &mut offset).unwrap_err();
+            assert_eq!(err, DecodeError::UnknownOpcode(disc));
+        }
     }
 
     #[test]

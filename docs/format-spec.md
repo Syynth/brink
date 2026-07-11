@@ -388,6 +388,35 @@ The instruction set is organized into categories. Opcode byte values are defined
 
 Note: opcodes `0xB3` and `0xB4` are unassigned. List union and except are handled by `Add` and `Subtract` respectively, which are overloaded for list operands.
 
+#### Collection operations (`0xBE`–`0xC9`, reserved)
+
+Named in `docs/format-v4-rfc.md` §3 "Collections (T1a)"; numeric assignments
+are frozen by the §9 one-bump rule, contiguous and adjacent to List
+operations above. Not `Opcode` variants yet — there is no decode match arm
+for these bytes, so the strict reader rejects them (`UnknownOpcode`) until
+the T1a compiler surface begins emitting them.
+
+| Opcode | Description |
+|--------|-------------|
+| `0xBE` `ArrayNew(n)` | Pop `n` values, push a new array |
+| `0xBF` `MapNew(n)` | Pop `2n` values (key/value pairs), push a new map |
+| `0xC0` `IndexGet` | Pop index, pop collection, push element |
+| `0xC1` `IndexSet` | Pop value, pop index, pop collection, push updated collection |
+| `0xC2` `Len` | Pop collection, push length |
+| `0xC3` `MapGet` | Pop key, pop map, push value |
+| `0xC4` `MapInsert` | Pop value, pop key, pop map, push updated map |
+| `0xC5` `MapRemove` | Pop key, pop map, push updated map |
+| `0xC6` `MapContains` | Pop key, pop map, push whether map contains key |
+| `0xC7` `Keys` | Pop map, push array of keys |
+| `0xC8` `Values` | Pop map, push array of values |
+| `0xC9` `PushLiteral(u32)` | Push pooled literal by `LiteralPool` index; absorbs `PushList`/`ListLiterals` |
+
+Sharing-discipline ops (`TakeVar`, `StoreVarIfNew`, `EqVars` —
+`docs/value-model-spec.md` §6) and later Tier-1 opcode groups (functions,
+handles, projections, records — RFC §3) are named in the RFC but out of this
+reservation; each gets its own contiguous block, numbered when its own
+milestone lands.
+
 #### String eval (`0xE0`–`0xE1`)
 
 | Opcode | Description |
@@ -473,6 +502,18 @@ Each offset table entry (8 bytes):
 | `0x08` | Labels | Per entry: address `DefinitionId` + container `DefinitionId` + byte offset |
 | `0x09` | List literals | Per entry: `ListValue` (items + origins) |
 | `0x0A` | Address paths | Per entry: qualified-path hash → target `DefinitionId` |
+
+**Reserved v4 sections** — numeric assignments are frozen by the §9 one-bump
+rule (`docs/format-v4-rfc.md` §2 "Sections") but not `SectionKind` variants
+yet — the strict reader rejects an offset-table entry tagged with one of
+these (`InvalidSectionKind`) until each section's milestone lands and adds a
+real variant + `from_u8` arm, the same discipline the reserved v4 value tags
+below already follow. `0x0B` `LiteralPool` (T1a; content-hash-deduplicated
+constant pool, absorbs `List literals` — `PushList` retires in favor of
+`PushLiteral(idx)` when the collection opcodes land), `0x0C` `StructShapes`
+(reserved, count always 0 in 4.0), `0x0D` `EffectRows` (reserved, count
+always 0 in 4.0, section-locally versioned so T2 can define the row encoding
+without another format bump).
 
 #### Value type tags in `.inkb`
 
