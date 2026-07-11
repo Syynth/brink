@@ -87,6 +87,46 @@ fn symbol_index_matches_analyze_output() {
     assert_eq!(direct, via_analyze);
 }
 
+// ─── resolve(file) ──────────────────────────────────────────────────
+
+#[test]
+fn per_file_resolve_concatenation_matches_analyze() {
+    let (hir_a, man_a) = lower(FileId(0), INDEX_SRC_A);
+    let (hir_b, man_b) = lower(FileId(1), INDEX_SRC_B);
+    let (index, _) = brink_analyzer::symbol_index(&[(FileId(0), &man_a), (FileId(1), &man_b)]);
+
+    let (res_a, diags_a) = brink_analyzer::resolve(FileId(0), &man_a, &index);
+    let (res_b, diags_b) = brink_analyzer::resolve(FileId(1), &man_b, &index);
+    let mut concat = (*res_a).clone();
+    concat.extend((*res_b).clone());
+
+    let full = brink_analyzer::analyze(&[(FileId(0), &hir_a, &man_a), (FileId(1), &hir_b, &man_b)]);
+    assert_eq!(concat, full.resolutions, "per-file concat == whole-project");
+    assert!(diags_a.is_empty() && diags_b.is_empty(), "all refs resolve");
+}
+
+#[test]
+fn resolving_a_file_does_not_observe_other_files_bodies() {
+    // File A resolves against the index; file B's *body-only* content (its
+    // unresolved refs) must be invisible to A's resolution.
+    let (_hir_a, man_a) = lower(FileId(0), INDEX_SRC_A);
+    let (_hir_b, man_b) = lower(FileId(1), INDEX_SRC_B);
+
+    // Same declarations in B, different body references.
+    let (_hir_b2, man_b2) = lower(
+        FileId(1),
+        "EXTERNAL beep(times)\n=== market(stock) ===\n~ temp haggle = 2\n{gold} {mood}\n-> hub.plaza\n",
+    );
+
+    let (index1, _) = brink_analyzer::symbol_index(&[(FileId(0), &man_a), (FileId(1), &man_b)]);
+    let (index2, _) = brink_analyzer::symbol_index(&[(FileId(0), &man_a), (FileId(1), &man_b2)]);
+
+    let (res1, diags1) = brink_analyzer::resolve(FileId(0), &man_a, &index1);
+    let (res2, diags2) = brink_analyzer::resolve(FileId(0), &man_a, &index2);
+    assert_eq!(*res1, *res2, "file A's resolutions changed with B's body");
+    assert_eq!(diags1, diags2);
+}
+
 // ─── signature(def) stub ────────────────────────────────────────────
 
 const SIG_SRC: &str = "\

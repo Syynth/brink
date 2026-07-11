@@ -66,6 +66,22 @@ pub fn symbol_index(files: &[(FileId, &SymbolManifest)]) -> (Arc<SymbolIndex>, V
     (Arc::new(index), diagnostics)
 }
 
+/// Resolve one file's references against the project-wide symbol index.
+///
+/// Query-shaped seam for the scripting substrate (spec §4, layer 2 —
+/// `resolve(FileId)`): a pure function of the symbol index and this file's
+/// own manifest. It never reads another file's content, so a body edit in
+/// file B can only affect file A's resolutions by way of the shared index.
+#[must_use]
+pub fn resolve(
+    file: FileId,
+    manifest: &SymbolManifest,
+    index: &SymbolIndex,
+) -> (Arc<ResolutionMap>, Vec<Diagnostic>) {
+    let (map, diagnostics) = resolve::resolve_file(index, file, manifest);
+    (Arc::new(map), diagnostics)
+}
+
 /// Run cross-file semantic analysis with default options (no host manifest).
 ///
 /// Each entry is a `(FileId, HirFile, SymbolManifest)` tuple produced by
@@ -88,8 +104,12 @@ pub fn analyze_with_options(
     let hir_inputs: Vec<(FileId, &HirFile)> = files.iter().map(|&(id, hir, _)| (id, hir)).collect();
 
     let (index, mut diagnostics) = symbol_index(&manifest_inputs);
-    let (resolutions, resolve_diags) = resolve::resolve_refs(&index, &manifest_inputs);
-    diagnostics.extend(resolve_diags);
+    let mut resolutions = ResolutionMap::new();
+    for &(file_id, manifest) in &manifest_inputs {
+        let (file_map, file_diags) = resolve(file_id, manifest, &index);
+        resolutions.extend(Arc::unwrap_or_clone(file_map));
+        diagnostics.extend(file_diags);
+    }
     diagnostics.extend(validate::validate(&hir_inputs));
 
     // Host-manifest enrichment + checks (tooling/author-time only).

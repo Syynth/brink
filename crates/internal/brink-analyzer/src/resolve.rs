@@ -5,6 +5,12 @@ use brink_ir::{
 };
 
 /// Resolve all unresolved references across files.
+///
+/// Per-file concatenation of [`resolve_file`], preserving input file order.
+/// The production orchestrator (`analyze_with_options`) drives the per-file
+/// [`crate::resolve`] query directly; this whole-project wrapper survives as
+/// a test convenience.
+#[cfg(test)]
 pub fn resolve_refs(
     index: &SymbolIndex,
     files: &[(FileId, &SymbolManifest)],
@@ -13,20 +19,40 @@ pub fn resolve_refs(
     let mut diagnostics = Vec::new();
 
     for &(file_id, manifest) in files {
-        for uref in &manifest.unresolved {
-            match uref.kind {
-                RefKind::Divert => {
-                    resolve_divert(index, file_id, uref, &mut map, &mut diagnostics);
-                }
-                RefKind::Variable => {
-                    resolve_variable(index, file_id, uref, &mut map, &mut diagnostics);
-                }
-                RefKind::Function => {
-                    resolve_function(index, file_id, uref, &mut map, &mut diagnostics);
-                }
-                RefKind::List => {
-                    resolve_list_ref(index, file_id, uref, &mut map, &mut diagnostics);
-                }
+        let (file_map, file_diags) = resolve_file(index, file_id, manifest);
+        map.extend(file_map);
+        diagnostics.extend(file_diags);
+    }
+
+    (map, diagnostics)
+}
+
+/// Resolve one file's unresolved references against the project-wide index.
+///
+/// Reads only the symbol index and this file's own manifest — never another
+/// file's content. This is the per-file dependency seam the query pipeline
+/// relies on (substrate spec §4, layer 2 — `resolve(FileId)`).
+pub fn resolve_file(
+    index: &SymbolIndex,
+    file_id: FileId,
+    manifest: &SymbolManifest,
+) -> (ResolutionMap, Vec<Diagnostic>) {
+    let mut map = ResolutionMap::new();
+    let mut diagnostics = Vec::new();
+
+    for uref in &manifest.unresolved {
+        match uref.kind {
+            RefKind::Divert => {
+                resolve_divert(index, file_id, uref, &mut map, &mut diagnostics);
+            }
+            RefKind::Variable => {
+                resolve_variable(index, file_id, uref, &mut map, &mut diagnostics);
+            }
+            RefKind::Function => {
+                resolve_function(index, file_id, uref, &mut map, &mut diagnostics);
+            }
+            RefKind::List => {
+                resolve_list_ref(index, file_id, uref, &mut map, &mut diagnostics);
             }
         }
     }
