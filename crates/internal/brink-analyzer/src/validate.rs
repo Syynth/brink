@@ -372,6 +372,7 @@ mod tests {
                 container_id: None,
             },
             stitches: Vec::new(),
+            is_local: false,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -401,6 +402,7 @@ mod tests {
                 container_id: None,
             },
             stitches: Vec::new(),
+            is_local: false,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -432,6 +434,7 @@ mod tests {
                 container_id: None,
             },
             stitches: Vec::new(),
+            is_local: false,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -474,6 +477,7 @@ mod tests {
                 container_id: None,
             },
             stitches: Vec::new(),
+            is_local: false,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -511,6 +515,7 @@ mod tests {
                 container_id: None,
             },
             stitches: Vec::new(),
+            is_local: false,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -561,6 +566,7 @@ mod tests {
                 container_id: None,
             },
             stitches: Vec::new(),
+            is_local: false,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -613,6 +619,7 @@ mod tests {
                 container_id: None,
             },
             stitches: Vec::new(),
+            is_local: false,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -664,6 +671,7 @@ mod tests {
                 container_id: None,
             },
             stitches: Vec::new(),
+            is_local: false,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -725,6 +733,7 @@ mod tests {
                 container_id: None,
             },
             stitches: Vec::new(),
+            is_local: false,
         });
 
         let files = vec![(FileId(0), &hir)];
