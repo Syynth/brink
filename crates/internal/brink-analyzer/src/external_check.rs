@@ -17,7 +17,9 @@
 //! opaque (no `E040`) rather than hard-erroring, so ink that references host
 //! vocabulary (e.g. `actor_id`) still compiles host-free. Once a manifest is
 //! registered, checking is fully binding again — an unresolved name is a real
-//! `E040`. See issue #339.
+//! `E040`. See issue #339. A host that wants strict checking even without a
+//! manifest (e.g. to catch typo'd semantic-type tags) can raise the
+//! [`SemanticTypeDiagnosticSeverity`] lever to `Error`. See issue #532.
 
 use std::collections::BTreeMap;
 
@@ -37,6 +39,25 @@ pub enum ExternalCheckSeverity {
     Error,
     /// Suppress manifest-driven diagnostics (enrichment is still built).
     Off,
+}
+
+/// Severity policy for unknown-semantic-type diagnostics (`E040`), parallel to
+/// [`ExternalCheckSeverity`]. Configurable as a compiler/IDE flag; defaults to
+/// `Tolerant` — the #339/#527 default-tolerant path, where an unresolved
+/// semantic type is only diagnosed once a [`HostManifest`](brink_ir::HostManifest)
+/// is registered. Raising it to `Error` opts back into strict checking (`E040`
+/// fires for any unresolved type even with no manifest registered) — e.g. so a
+/// host can catch typo'd semantic-type tags before wiring up a full manifest
+/// (#532).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SemanticTypeDiagnosticSeverity {
+    /// Tolerate unknown semantic types when no manifest is registered —
+    /// opaque, no `E040` (default).
+    #[default]
+    Tolerant,
+    /// Always emit `E040` for an unresolved semantic type, even with no
+    /// manifest registered.
+    Error,
 }
 
 /// Per-symbol merged metadata (docs, types, values), surfaced to the IDE and
@@ -130,16 +151,18 @@ pub struct ResolvedType {
 /// diagnostics. The map is always returned; diagnostics are empty when the
 /// severity policy is `Off`.
 ///
-/// `has_manifest` gates unknown-semantic-type checking (`E040`): with no
-/// registered `HostManifest`, an unresolved type name is tolerated as opaque
-/// rather than diagnosed (#339).
+/// `check_unknown_types` gates unknown-semantic-type checking (`E040`):
+/// callers pass `true` when either a `HostManifest` is registered or the
+/// [`SemanticTypeDiagnosticSeverity`] lever is raised to `Error`; otherwise an
+/// unresolved type name is tolerated as opaque rather than diagnosed
+/// (#339/#532).
 pub fn analyze_externals(
     index: &SymbolIndex,
     inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
     types: &BTreeMap<String, SemanticTypeDef>,
     registered: &BTreeMap<String, &brink_ir::ManifestExternal>,
     severity: ExternalCheckSeverity,
-    has_manifest: bool,
+    check_unknown_types: bool,
 ) -> (BTreeMap<DefinitionId, SymbolMeta>, Vec<Diagnostic>) {
     let mut metas: BTreeMap<DefinitionId, SymbolMeta> = BTreeMap::new();
     let mut diags: Vec<Diagnostic> = Vec::new();
@@ -183,7 +206,8 @@ pub fn analyze_externals(
             let tref: Option<&TypeRef> = inline
                 .and_then(|d| d.params.iter().find(|(n, _)| n == &p.name).map(|(_, t)| t))
                 .or_else(|| reg.and_then(|r| r.params.get(i).map(|mp| &mp.ty)));
-            let ty = tref.and_then(|t| resolve_type(t, types, info, has_manifest, &mut diags));
+            let ty =
+                tref.and_then(|t| resolve_type(t, types, info, check_unknown_types, &mut diags));
             params.push(ResolvedParam {
                 name: p.name.clone(),
                 ty,
@@ -194,7 +218,7 @@ pub fn analyze_externals(
         let returns = inline
             .and_then(|d| d.returns.as_ref())
             .or_else(|| reg.map(|r| &r.returns))
-            .and_then(|t| resolve_type(t, types, info, has_manifest, &mut diags));
+            .and_then(|t| resolve_type(t, types, info, check_unknown_types, &mut diags));
         let kind = inline
             .and_then(|d| d.kind)
             .or_else(|| reg.map(|r| r.kind))
@@ -225,14 +249,15 @@ pub fn analyze_externals(
 /// Build doc/type enrichment for knots and stitches from their inline `///`
 /// docs. Signature tags (`@param` / `@returns`) resolve against the same
 /// semantic-type vocabulary as externals (E040 on unknown types, tolerated as
-/// opaque when `has_manifest` is `false` — #339), but unlike externals there
-/// are no call-site checks — callable metadata is presentational only.
+/// opaque when `check_unknown_types` is `false` — #339/#532), but unlike
+/// externals there are no call-site checks — callable metadata is
+/// presentational only.
 pub fn enrich_callables(
     index: &SymbolIndex,
     inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
     types: &BTreeMap<String, SemanticTypeDef>,
     severity: ExternalCheckSeverity,
-    has_manifest: bool,
+    check_unknown_types: bool,
 ) -> (BTreeMap<DefinitionId, SymbolMeta>, Vec<Diagnostic>) {
     let mut metas: BTreeMap<DefinitionId, SymbolMeta> = BTreeMap::new();
     let mut diags: Vec<Diagnostic> = Vec::new();
@@ -263,14 +288,16 @@ pub fn enrich_callables(
                     .map(|(_, t)| t);
                 ResolvedParam {
                     name: p.name.clone(),
-                    ty: tref.and_then(|t| resolve_type(t, types, info, has_manifest, &mut diags)),
+                    ty: tref.and_then(|t| {
+                        resolve_type(t, types, info, check_unknown_types, &mut diags)
+                    }),
                 }
             })
             .collect();
         let returns = inline
             .returns
             .as_ref()
-            .and_then(|t| resolve_type(t, types, info, has_manifest, &mut diags));
+            .and_then(|t| resolve_type(t, types, info, check_unknown_types, &mut diags));
 
         metas.insert(
             info.id,
@@ -439,7 +466,7 @@ fn path_display(path: &Path) -> String {
 }
 
 /// Resolve a [`TypeRef`] to a [`ResolvedType`], emitting E040 for an unknown
-/// semantic type — but only when `has_manifest` is `true`. With no manifest
+/// semantic type — but only when `check_unknown_types` is `true`. With no manifest
 /// registered, semantic types are opaque by default (host vocabulary can't be
 /// validated against nothing) so an unresolved name is silently accepted as
 /// `base: None` rather than diagnosed (#339). Returns `None` for an
@@ -448,7 +475,7 @@ fn resolve_type(
     t: &TypeRef,
     types: &BTreeMap<String, SemanticTypeDef>,
     info: &SymbolInfo,
-    has_manifest: bool,
+    check_unknown_types: bool,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<ResolvedType> {
     if t.is_unspecified() {
@@ -472,7 +499,7 @@ fn resolve_type(
             widget: def.widget.clone(),
         });
     }
-    if has_manifest {
+    if check_unknown_types {
         diags.push(Diagnostic {
             file: info.file,
             range: info.range,
