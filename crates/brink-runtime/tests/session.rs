@@ -19,8 +19,8 @@ use std::path::Path;
 use brink_format::{ListValue, SaveState, Value};
 use brink_runtime::{
     DotNetRng, EventKind, ExternalFnHandler, ExternalReplayMode, ExternalResult, FailReason, Line,
-    Program, ReplayOutcome, ReplayWarning, SESSION_JOURNAL_CAP, SessionError, SessionJournal,
-    StepOutcome, Story, StorySession, diff,
+    OutputPart, Program, ReplayOutcome, ReplayWarning, SESSION_JOURNAL_CAP, SessionError,
+    SessionJournal, StepOutcome, Story, StorySession, diff,
 };
 
 /// Link a program from a tier `.ink` fixture path (relative to the repo),
@@ -296,6 +296,81 @@ fn divergence_choice_out_of_range_truncates_and_parks() {
 }
 
 // ── Recorded vs live external modes ──────────────────────────────────────────
+
+/// Returns a collection from `externalFunction` — a world-query binding
+/// yielding a list of results is the motivating shape (value-model-spec §8).
+struct CollectionExternal;
+
+impl ExternalFnHandler for CollectionExternal {
+    fn call(&self, name: &str, _args: &[Value]) -> ExternalResult {
+        if name == "externalFunction" {
+            ExternalResult::Resolved(Value::array(vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+            ]))
+        } else {
+            ExternalResult::Fallback
+        }
+    }
+}
+
+/// End-to-end (#526 charter amendment #2): a binding returns a collection, an
+/// inline `{externalFunction(1)}` emits it (via `Opcode::EmitValue` →
+/// `OutputPart::ValueRef`), and the persisted transcript round-trips the
+/// collection through the v4 tree encoding. Bounded — VM tests must not hang.
+#[test]
+fn external_collection_survives_transcript_round_trip() {
+    let (program, tables) = link_fixture(EXTERNAL_STORY);
+    let program = std::sync::Arc::new(program);
+    let checksum = program.source_checksum();
+
+    let handler = CollectionExternal;
+    let mut session =
+        StorySession::<DotNetRng>::new(Story::new(std::sync::Arc::clone(&program), tables), None);
+    let mut steps = 0;
+    loop {
+        steps += 1;
+        assert!(steps < 1000, "step budget");
+        match session.advance_with(&handler).unwrap() {
+            StepOutcome::Line(l) if l.is_terminal() => break,
+            StepOutcome::Line(_) => {}
+            StepOutcome::AwaitingExternal => panic!("handler resolves inline"),
+        }
+    }
+
+    let story = session.story();
+    let parts = story.transcript();
+    let fragments = story.fragments();
+
+    // The inline `{externalFunction(1)}` is a template slot, so the emitted
+    // array lands as a `ValueRef` inside a captured fragment (not a top-level
+    // part). Scan both surfaces for it.
+    let expected = Value::array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+    let find_array = |ps: &[OutputPart], fs: &[brink_runtime::Fragment]| -> Option<Value> {
+        ps.iter()
+            .chain(fs.iter().flat_map(|f| f.parts.iter()))
+            .find_map(|p| match p {
+                OutputPart::ValueRef(v @ Value::Array(_)) => Some(v.clone()),
+                _ => None,
+            })
+    };
+    assert_eq!(
+        find_array(parts, fragments).as_ref(),
+        Some(&expected),
+        "the inline external return should be emitted as a ValueRef(Array)"
+    );
+
+    // Persist and reload: the collection survives the .brkt round-trip.
+    let bytes = brink_runtime::transcript::write_transcript(parts, checksum, fragments);
+    let data = brink_runtime::transcript::read_transcript(&bytes).unwrap();
+    assert_eq!(data.source_checksum, checksum);
+    assert_eq!(
+        find_array(&data.parts, &data.fragments),
+        Some(expected),
+        "the array must decode structurally after the transcript round-trip"
+    );
+}
 
 /// Returns a fixed int for `externalFunction`, counting invocations so a test
 /// can prove "recorded" replay does NOT re-invoke.

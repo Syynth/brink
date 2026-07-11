@@ -12,14 +12,14 @@ use crate::definition::{
 };
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::story::StoryData;
-use crate::value::{ListValue, Value, ValueType};
+use crate::value::{ListValue, MapKey, Value, ValueType};
 
 use super::{
     CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HEADER_PREAMBLE, KEY_CARDINAL,
     KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN, LINE_TEMPLATE, MAGIC, PART_LITERAL,
-    PART_SELECT, PART_SLOT, SECTION_COUNT, SECTION_ENTRY_SIZE, SectionKind, VAL_BOOL,
-    VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FRAGMENT_REF, VAL_INT, VAL_LIST, VAL_NULL, VAL_STRING,
-    VAL_VAR_POINTER, VERSION,
+    PART_SELECT, PART_SLOT, SECTION_COUNT, SECTION_ENTRY_SIZE, SectionKind, VAL_ARRAY, VAL_BOOL,
+    VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FRAGMENT_REF, VAL_INT, VAL_LIST, VAL_MAP, VAL_NULL,
+    VAL_STRING, VAL_VAR_POINTER, VERSION,
 };
 
 // ── Tier 1: Full story write ────────────────────────────────────────────────
@@ -255,19 +255,9 @@ fn encode_value_type(vt: ValueType, buf: &mut Vec<u8>) {
         // TempPointer is runtime-only and should never appear in .inkb files.
         ValueType::FragmentRef => VAL_FRAGMENT_REF,
         ValueType::TempPointer | ValueType::Null => VAL_NULL,
-        // `Array`/`Map` gain their `.inkb` literal-pool encoding in T1a-4
-        // (#526). No opcode emits a collection literal yet, so a var can never
-        // be declared with one of these types in this format version. Reaching
-        // here would be a silent data drop, so trip a debug assertion; release
-        // builds still fold to `VAL_NULL` to keep the writer total.
-        ValueType::Array | ValueType::Map => {
-            debug_assert!(
-                false,
-                "collection var type has no .inkb encoding until #526 (T1a-4); \
-                 no opcode should have produced one in this format version"
-            );
-            VAL_NULL
-        }
+        // Collection value types (v4, `docs/format-v4-rfc.md` §1).
+        ValueType::Array => VAL_ARRAY,
+        ValueType::Map => VAL_MAP,
     };
     write_u8(buf, tag);
 }
@@ -318,17 +308,44 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
         Value::TempPointer { .. } | Value::Null => {
             write_u8(buf, VAL_NULL);
         }
-        // Array/Map get their literal-pool encoding in T1a-4 (#526); no opcode
-        // emits a collection literal yet, so neither can reach this writer in
-        // this format version. Fold to `VAL_NULL` for totality, but trip a
-        // debug assertion so a future silent drop surfaces loudly.
-        Value::Array(_) | Value::Map(_) => {
-            debug_assert!(
-                false,
-                "collection value has no .inkb encoding until #526 (T1a-4); \
-                 no opcode should have produced one in this format version"
-            );
-            write_u8(buf, VAL_NULL);
+        // Collections encode as trees (v4, `docs/format-v4-rfc.md` §1): a length
+        // prefix then the recursively-encoded elements / key-value pairs. Arc
+        // sharing is deliberately not preserved on the wire (value-model-spec §5).
+        Value::Array(items) => {
+            write_u8(buf, VAL_ARRAY);
+            write_u32(buf, items.len() as u32);
+            for item in items.iter() {
+                encode_value(item, buf);
+            }
+        }
+        Value::Map(map) => {
+            write_u8(buf, VAL_MAP);
+            write_u32(buf, map.len() as u32);
+            // Insertion order is semantic (keys restricted to int/string/bool).
+            for (key, val) in map.iter() {
+                encode_map_key(key, buf);
+                encode_value(val, buf);
+            }
+        }
+    }
+}
+
+/// Encode a [`MapKey`] using the scalar `VAL_*` tag surface it maps onto
+/// (`int`/`string`/`bool` — the v1 key domain, `docs/value-model-spec.md` §4).
+/// Self-describing so the reader can reject a non-scalar key tag.
+fn encode_map_key(key: &MapKey, buf: &mut Vec<u8>) {
+    match key {
+        MapKey::Int(n) => {
+            write_u8(buf, VAL_INT);
+            write_i32(buf, *n);
+        }
+        MapKey::Str(s) => {
+            write_u8(buf, VAL_STRING);
+            write_str(buf, s);
+        }
+        MapKey::Bool(b) => {
+            write_u8(buf, VAL_BOOL);
+            write_u8(buf, u8::from(*b));
         }
     }
 }

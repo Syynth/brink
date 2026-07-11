@@ -10,6 +10,8 @@ The `.inkb` and `.inkl` formats carry a `(MAGIC, VERSION)` header; the reader **
 
 Today these are **regenerable build artifacts** — produced from `.ink` on every compile, never decoupled from the compiler that made them — so the policy is deliberately simple: **regenerate on mismatch; no multi-version readers.** Maintaining back-compat parsers for bytes nobody persists would be premature complexity.
 
+**`.inkb` version history:** v2 added `ContainerDef::param_count`; v3 added the `local` scope bit to variables and containers; **v4** added the collection value tags `Array`/`Map` (tree encoding) and froze the reserved Tier-1 value-tag/section/opcode surface in a single planned bump (the §9 one-bump rule of `docs/value-model-spec.md`; RFC `docs/format-v4-rfc.md`). Per that rule, the remaining Tier-1 milestones (function values, handles, projections) add data using encodings already specified at v4 and do **not** bump the version — the writer and reader evolve together within VERSION 4 as each milestone's compiler surface begins emitting the reserved tags.
+
 This is distinct from the **save format** (`SAVE_FORMAT_VERSION`, `save.rs`), which *is* durable — written by players and expected to survive runtime updates — and is therefore *tolerant* by design (`LoadReport` reports what it couldn't apply rather than failing). Program metadata such as container layout does not affect save compatibility: saves reference visit counts and variables by `DefinitionId`, not by container byte layout.
 
 **When to revisit:** the single-version policy holds until a compiled artifact is first **shipped or cached decoupled from its compiler** — e.g. a game bundles a prebuilt `.inkb` against an independently-updating runtime, or the studio persists compiled bytes across versions. At that point, prefer making sections **length-framed and append-only (TLV-style)** — new fields always appended, sections self-describing — so an older reader can skip what it doesn't recognize, rather than maintaining N full parsers. (The container section's length-prefixed bytecode is already partway there.) Make that call when the first durable consumer appears, not before.
@@ -441,7 +443,7 @@ Note: opcodes `0xB3` and `0xB4` are unassigned. List union and except are handle
 Offset  Size   Field
 ------  -----  ------
 0       4      Magic: b"INKB"
-4       2      Version: u16 LE (= 1)
+4       2      Version: u16 LE (= 4)
 6       1      Section count: u8 (N entries in offset table)
 7       1      Reserved: 0x00
 8       4      File size: u32 LE (total bytes)
@@ -470,19 +472,38 @@ Each offset table entry (8 bytes):
 | `0x07` | Line tables | Per scope: `DefinitionId` + line entries (content + source hash + slot info + audio ref + source location each). The `DefinitionId` here is the lexical scope (knot/stitch), not a container. |
 | `0x08` | Labels | Per entry: address `DefinitionId` + container `DefinitionId` + byte offset |
 | `0x09` | List literals | Per entry: `ListValue` (items + origins) |
+| `0x0A` | Address paths | Per entry: qualified-path hash → target `DefinitionId` |
 
 #### Value type tags in `.inkb`
 
-| Tag | Type |
-|-----|------|
-| `0x00` | Int |
-| `0x01` | Float |
-| `0x02` | Bool |
-| `0x03` | String |
-| `0x04` | List |
-| `0x05` | DivertTarget |
-| `0x06` | Null |
-| `0x07` | VariablePointer |
+| Tag | Type | Encoding |
+|-----|------|----------|
+| `0x00` | Int | `i32` LE |
+| `0x01` | Float | `f32` LE |
+| `0x02` | Bool | `u8` (0/1) |
+| `0x03` | String | length-prefixed UTF-8 |
+| `0x04` | List | item `DefinitionId`s + origin `DefinitionId`s |
+| `0x05` | DivertTarget | `DefinitionId` |
+| `0x06` | Null | (none) |
+| `0x07` | VariablePointer | `DefinitionId` |
+| `0x08` | FragmentRef | `u32` fragment index |
+| `0x09` | Array | `u32` len, then that many recursively-encoded values (v4) |
+| `0x0A` | Map | `u32` len, then that many `(key, value)` pairs **in insertion order** (v4) |
+
+**v4 collections** (`Array`/`Map`) use a plain tree encoding — a length prefix
+followed by recursively-encoded children. `Arc` sharing is **not** preserved on
+the wire (`docs/value-model-spec.md` §5); a snapshot serializes as a plain
+nested tree. Map keys are restricted to the scalar domain `int`/`string`/`bool`
+and are written with the corresponding scalar tag (`0x00`/`0x03`/`0x02`); the
+strict reader rejects any other key tag. Insertion order is semantic. The same
+tag surface is shared by the runtime transcript (`.brkt`) value encoding.
+
+**Reserved v4 value tags** — numeric assignments are frozen by the §9 one-bump
+rule but emitted by nothing in 4.0 (each is materialized when its Tier-1
+milestone lands, still under VERSION 4). The strict reader rejects them until
+then. `0x0B` `FnRef` (T1c), `0x0C` `Closure` (T1c), `0x0D` `Handle` (T1d),
+`0x0E` `Projection` (T1e), `0x0F` `Record` (reserved, typed-dialect era). See
+`docs/format-v4-rfc.md` §1 for their encodings.
 
 `TempPointer` is never serialized — it is runtime-only. During `.inkb` encoding, a `TempPointer` value is written as `Null`.
 

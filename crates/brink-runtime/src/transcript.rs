@@ -24,7 +24,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use brink_format::{DefinitionId, LineFlags, Value};
+use brink_format::{DefinitionId, LineFlags, MapKey, OrderedMap, Value};
 
 use crate::output::{OutputPart, resolve_lines};
 use crate::program::Program;
@@ -53,6 +53,12 @@ const VAL_LIST: u8 = 0x04;
 const VAL_DIVERT_TARGET: u8 = 0x05;
 const VAL_NULL: u8 = 0x06;
 const VAL_FRAGMENT_REF: u8 = 0x08;
+// v4 collection tags — shared numeric surface with the `.inkb` format
+// (`docs/format-v4-rfc.md` §1). Reachable today via `Opcode::EmitValue`, which
+// pushes any popped stack value (including a binding/external return that since
+// #525 can be a collection) into `OutputPart::ValueRef`.
+const VAL_ARRAY: u8 = 0x09;
+const VAL_MAP: u8 = 0x0A;
 
 // ── Error type ────────────────────────────────────────────────────────────
 
@@ -498,19 +504,43 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
         Value::TempPointer { .. } | Value::Null => {
             write_u8(buf, VAL_NULL);
         }
-        // The binary transcript shares the `.inkb` VAL_* tag surface, so
-        // Array/Map gain their tree encoding with the format bump in T1a-4
-        // (#526), not with the serde-JSON state trees this step (#525) plumbs.
-        // No opcode emits a collection yet, so neither can appear in a
-        // serialized transcript in this version; fold to `VAL_NULL` for
-        // totality but trip a debug assertion so a future silent drop is loud.
-        Value::Array(_) | Value::Map(_) => {
-            debug_assert!(
-                false,
-                "collection value has no binary transcript encoding until #526 \
-                 (T1a-4); no opcode should have produced one in this version"
-            );
-            write_u8(buf, VAL_NULL);
+        // Collections encode as trees (v4, `docs/format-v4-rfc.md` §1): a length
+        // prefix then the recursively-encoded elements / key-value pairs. Arc
+        // sharing is not preserved on the wire (value-model-spec §5).
+        Value::Array(items) => {
+            write_u8(buf, VAL_ARRAY);
+            write_u32(buf, items.len() as u32);
+            for item in items.iter() {
+                encode_value(item, buf);
+            }
+        }
+        Value::Map(map) => {
+            write_u8(buf, VAL_MAP);
+            write_u32(buf, map.len() as u32);
+            for (key, val) in map.iter() {
+                encode_map_key(key, buf);
+                encode_value(val, buf);
+            }
+        }
+    }
+}
+
+/// Encode a [`MapKey`] using the scalar `VAL_*` tag surface (`int`/`string`/
+/// `bool` — the v1 key domain). Self-describing so the reader rejects a
+/// non-scalar key tag.
+fn encode_map_key(key: &MapKey, buf: &mut Vec<u8>) {
+    match key {
+        MapKey::Int(n) => {
+            write_u8(buf, VAL_INT);
+            write_i32(buf, *n);
+        }
+        MapKey::Str(s) => {
+            write_u8(buf, VAL_STRING);
+            write_str(buf, s);
+        }
+        MapKey::Bool(b) => {
+            write_u8(buf, VAL_BOOL);
+            write_u8(buf, u8::from(*b));
         }
     }
 }
@@ -550,6 +580,37 @@ fn decode_value(buf: &[u8], off: &mut usize) -> Result<Value, TranscriptError> {
         }
         VAL_FRAGMENT_REF => Ok(Value::FragmentRef(read_u32(buf, off)?)),
         VAL_NULL => Ok(Value::Null),
+        VAL_ARRAY => {
+            let len = read_u32(buf, off)? as usize;
+            let mut items = Vec::with_capacity(len.min(buf.len().saturating_sub(*off)));
+            for _ in 0..len {
+                items.push(decode_value(buf, off)?);
+            }
+            Ok(Value::array(items))
+        }
+        VAL_MAP => {
+            let len = read_u32(buf, off)? as usize;
+            let mut map = OrderedMap::with_capacity(len.min(buf.len().saturating_sub(*off)));
+            for _ in 0..len {
+                let key = decode_map_key(buf, off)?;
+                let val = decode_value(buf, off)?;
+                map.insert(key, val);
+            }
+            Ok(Value::map(map))
+        }
+        _ => Err(TranscriptError::InvalidValueTag(tag)),
+    }
+}
+
+/// Decode a [`MapKey`] written by `encode_map_key`: a scalar `VAL_*` tag then
+/// its payload. Any other tag is rejected — only `int`/`string`/`bool` keys are
+/// permitted (`docs/value-model-spec.md` §4).
+fn decode_map_key(buf: &[u8], off: &mut usize) -> Result<MapKey, TranscriptError> {
+    let tag = read_u8(buf, off)?;
+    match tag {
+        VAL_INT => Ok(MapKey::Int(read_i32(buf, off)?)),
+        VAL_STRING => Ok(MapKey::Str(Arc::from(read_str(buf, off)?.as_str()))),
+        VAL_BOOL => Ok(MapKey::Bool(read_u8(buf, off)? != 0)),
         _ => Err(TranscriptError::InvalidValueTag(tag)),
     }
 }
@@ -608,6 +669,50 @@ mod tests {
         assert!(matches!(&data.parts[2], OutputPart::Newline));
         assert!(matches!(&data.parts[3], OutputPart::Tag(s) if s == "tag1"));
         assert!(matches!(&data.parts[4], OutputPart::Glue));
+    }
+
+    // A collection reaches the transcript through `Opcode::EmitValue`, which
+    // pops any stack value — including a binding/external return that since #525
+    // can be an `Array`/`Map` — into `OutputPart::ValueRef`. This locks the v4
+    // tree encoding of that part: structural equality, insertion order, scalar
+    // key types, and nesting all survive the `.brkt` round-trip (#526).
+    #[test]
+    fn round_trip_value_ref_collections() {
+        use brink_format::{MapKey, OrderedMap};
+
+        let map: OrderedMap = [
+            (MapKey::from("name"), Value::String(Arc::from("goblin"))),
+            (
+                MapKey::from(1),
+                Value::array(vec![Value::Int(10), Value::Int(20)]),
+            ),
+            (MapKey::from(true), Value::Bool(false)),
+        ]
+        .into_iter()
+        .collect();
+        let array = Value::array(vec![
+            Value::Int(1),
+            Value::String(Arc::from("two")),
+            Value::map(map.clone()),
+            Value::Null,
+        ]);
+
+        let parts = vec![
+            OutputPart::ValueRef(array.clone()),
+            OutputPart::ValueRef(Value::map(map.clone())),
+        ];
+        let bytes = write_transcript(&parts, 42, &[]);
+        let data = read_transcript(&bytes).unwrap();
+
+        assert_eq!(data.parts.len(), 2);
+        match &data.parts[0] {
+            OutputPart::ValueRef(v) => assert_eq!(*v, array),
+            other => unreachable!("expected ValueRef(array), got {other:?}"),
+        }
+        match &data.parts[1] {
+            OutputPart::ValueRef(v) => assert_eq!(*v, Value::map(map)),
+            other => unreachable!("expected ValueRef(map), got {other:?}"),
+        }
     }
 
     #[test]
