@@ -37,6 +37,12 @@ pub struct Program {
     pub(crate) list_def_map: HashMap<DefinitionId, usize>,
     /// External function metadata keyed by the external function's `DefinitionId`.
     pub(crate) external_fns: HashMap<DefinitionId, ExternalFnEntry>,
+    /// Compiled flow-private scope defaults for knots/stitches: the
+    /// `(path, id)` of every scope container the compiler marked
+    /// `#@local`, sorted by path so knots seed before their stitches.
+    /// The base layer of `WorldPolicy` resolution
+    /// (`docs/directive-annotations-spec.md`).
+    pub(crate) local_scope_defaults: Vec<(String, DefinitionId)>,
 }
 
 pub(crate) struct LinkedContainer {
@@ -55,6 +61,8 @@ pub(crate) struct GlobalSlot {
     pub id: DefinitionId,
     pub name: NameId,
     pub default: Value,
+    /// Compiled flow-private (`#@local`) scope default for this global.
+    pub local: bool,
 }
 
 /// Runtime metadata for a list item.
@@ -239,6 +247,25 @@ impl Program {
             .map(|slot| self.name(slot.name))
     }
 
+    // ── Compiled scope defaults (`#@local` — directive-annotations spec) ────
+
+    /// Whether the compiler marked anything flow-private. When `false`
+    /// (all existing unannotated ink), policy resolution keeps its
+    /// all-`World` fast path.
+    pub(crate) fn has_local_defaults(&self) -> bool {
+        !self.local_scope_defaults.is_empty() || self.globals.iter().any(|g| g.local)
+    }
+
+    /// Compiled flow-private default for a global slot.
+    pub(crate) fn global_is_local(&self, idx: u32) -> bool {
+        self.globals.get(idx as usize).is_some_and(|g| g.local)
+    }
+
+    /// Compiled flow-private knot/stitch defaults, sorted by path.
+    pub(crate) fn local_scope_defaults(&self) -> &[(String, DefinitionId)] {
+        &self.local_scope_defaults
+    }
+
     /// Number of global variable slots.
     #[expect(clippy::cast_possible_truncation, reason = "global count fits in u32")]
     pub fn global_count(&self) -> u32 {
@@ -384,6 +411,7 @@ mod find_address_tests {
             list_defs: Vec::new(),
             list_def_map: HashMap::new(),
             external_fns: HashMap::new(),
+            local_scope_defaults: Vec::new(),
         }
     }
 

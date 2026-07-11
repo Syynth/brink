@@ -50,7 +50,9 @@ pub(crate) const MAGIC: &[u8; 4] = b"INKB";
 /// On-the-wire format version. Bumped on any byte-layout change; the reader
 /// hard-rejects an unrecognized version (see `docs/format-spec.md` § Versioning).
 /// v2 added `ContainerDef::param_count` to the Containers section.
-pub(crate) const VERSION: u16 = 2;
+/// v3 added the `local` scope bit to `GlobalVarDef` (Variables section) and
+/// `ContainerDef` (Containers section) — see `docs/directive-annotations-spec.md`.
+pub(crate) const VERSION: u16 = 3;
 /// Fixed-size preamble: magic + version + section count + reserved + file size + checksum.
 pub(crate) const HEADER_PREAMBLE: usize = 16;
 /// Each offset table entry: kind(1) + reserved(3) + offset(4)

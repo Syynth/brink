@@ -183,11 +183,13 @@ fn parse_global_entry(pair: P<'_>) -> Result<GlobalVarDef, InktParseError> {
     let default_value = parse_value(value_pair, Some(value_type))?;
 
     let mut mutable = false;
+    let mut local = false;
     let mut name = NameId(0);
 
     for remaining in inner {
         match remaining.as_rule() {
             Rule::mutable_flag => mutable = true,
+            Rule::local_flag => local = true,
             Rule::integer => {
                 name = NameId(parse_u16(&remaining)?);
             }
@@ -201,6 +203,7 @@ fn parse_global_entry(pair: P<'_>) -> Result<GlobalVarDef, InktParseError> {
         value_type,
         default_value,
         mutable,
+        local,
     })
 }
 
@@ -593,6 +596,7 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
     let mut counting_flags = CountingFlags::empty();
     let mut path_hash = 0i32;
     let mut param_count = 0u8;
+    let mut local = false;
     let mut lines = Vec::new();
     let mut bytecode = Vec::new();
     let mut name: Option<NameId> = None;
@@ -653,6 +657,7 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
                     col: 0,
                 })?;
             }
+            Rule::local_flag => local = true,
             Rule::lines_field => {
                 lines = parse_lines_field(child)?;
             }
@@ -671,6 +676,7 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
         counting_flags,
         path_hash,
         param_count,
+        local,
     };
     let line_table = ScopeLineTable { scope_id, lines };
     Ok((container, line_table))

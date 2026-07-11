@@ -3,6 +3,7 @@
 use brink_syntax::ast::{self, AstNode};
 
 use super::super::context::{LowerScope, LowerSink, Lowered};
+use super::super::directive::{DirectiveTarget, apply_scope_directives, directives_before};
 use super::super::doc_comment::{DocPolicy, parse_doc_comment};
 use super::super::helpers::{make_name, name_from_ident};
 use super::DeclareSymbols;
@@ -47,6 +48,10 @@ impl DeclareSymbols for ast::ListDecl {
             let qualified = format!("{list_name_text}.{}", member.name.text);
             sink.declare(SymbolKind::ListItem, &qualified, member.name.range);
         }
+
+        // Directives don't apply to LISTs (v1) — diagnose any that attach.
+        let dirs = directives_before(self.syntax());
+        let _ = apply_scope_directives(&dirs, DirectiveTarget::List, sink);
 
         Ok(ListDecl {
             ptr: ast::AstPtr::new(self),

@@ -468,6 +468,7 @@ mod tests {
             list_defs: vec![],
             list_def_map: HashMap::new(),
             external_fns: HashMap::new(),
+            local_scope_defaults: Vec::new(),
         }
     }
 

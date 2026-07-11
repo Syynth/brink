@@ -237,6 +237,7 @@ fn encode_global_var(v: &GlobalVarDef, buf: &mut Vec<u8>) {
     encode_value_type(v.value_type, buf);
     encode_value(&v.default_value, buf);
     write_u8(buf, u8::from(v.mutable));
+    write_u8(buf, u8::from(v.local));
 }
 
 fn encode_value_type(vt: ValueType, buf: &mut Vec<u8>) {
@@ -369,6 +370,7 @@ fn encode_container(c: &ContainerDef, buf: &mut Vec<u8>) {
     write_u8(buf, c.counting_flags.bits());
     write_i32(buf, c.path_hash);
     write_u8(buf, c.param_count);
+    write_u8(buf, u8::from(c.local));
     write_u32(buf, c.bytecode.len() as u32);
     buf.extend_from_slice(&c.bytecode);
 }

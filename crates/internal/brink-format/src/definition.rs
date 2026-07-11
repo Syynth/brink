@@ -28,6 +28,12 @@ pub struct ContainerDef {
     /// The converter reference pipeline leaves this `0` (inklecate's JSON does
     /// not expose it); only the brink compiler populates the true count.
     pub param_count: u8,
+    /// Compiled scope default: `true` for a flow-private (`#@local`) knot or
+    /// stitch. Only ever set on scope-owning containers; subtree coverage of
+    /// interior containers is resolved by the runtime at policy resolution
+    /// (`docs/directive-annotations-spec.md`). The converter always emits
+    /// `false` (inklecate has no flow-private concept).
+    pub local: bool,
 }
 
 /// Metadata for a single interpolation slot in a template line.
@@ -97,6 +103,11 @@ pub struct GlobalVarDef {
     pub value_type: ValueType,
     pub default_value: Value,
     pub mutable: bool,
+    /// Compiled scope default: `true` for a flow-private (`#@local`)
+    /// variable, `false` for ordinary shared state. Consumed by the runtime
+    /// as the base layer of `WorldPolicy` resolution
+    /// (`docs/directive-annotations-spec.md`).
+    pub local: bool,
 }
 
 /// A list (enum-like set) definition.

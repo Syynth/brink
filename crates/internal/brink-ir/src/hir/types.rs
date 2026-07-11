@@ -89,6 +89,10 @@ pub struct Knot {
     /// Content before the first stitch, or the full body if no stitches.
     pub body: Block,
     pub stitches: Vec<Stitch>,
+    /// Marked flow-private via a `#@local` directive line at the top of
+    /// the body. Covers the whole definition subtree at runtime policy
+    /// resolution (`docs/directive-annotations-spec.md`).
+    pub is_local: bool,
 }
 
 /// A stitch definition within a knot.
@@ -98,6 +102,9 @@ pub struct Stitch {
     pub name: Name,
     pub params: Vec<Param>,
     pub body: Block,
+    /// Marked flow-private via a `#@local` directive line at the top of
+    /// the body (`docs/directive-annotations-spec.md`).
+    pub is_local: bool,
 }
 
 /// A parameter on a knot, stitch, or function.
@@ -582,6 +589,9 @@ pub struct VarDecl {
     pub ptr: AstPtr<ast::VarDecl>,
     pub name: Name,
     pub value: Expr,
+    /// Marked flow-private via a `#@local` directive line above the
+    /// declaration (`docs/directive-annotations-spec.md`).
+    pub is_local: bool,
 }
 
 /// `CONST x = expr`
@@ -784,6 +794,22 @@ pub enum DiagnosticCode {
     /// Well-formed `///` doc-comment tag that doesn't apply to this
     /// declaration kind (e.g. `@kind` on a knot, `@param` on a VAR).
     E043,
+
+    // ── Directives (`#@…` — docs/directive-annotations-spec.md) ──
+    /// Unknown directive name (e.g. `#@locale`).
+    E044,
+    /// Directive has no valid target in this position.
+    E045,
+    /// Directive contains dynamic inline logic — directives are static text.
+    E046,
+    /// Directive must be the only tag on its line.
+    E047,
+    /// Duplicate directive on one target.
+    E048,
+    /// Directive not supported on this target (e.g. `@local` on CONST).
+    E049,
+    /// Directive does not take arguments or trailing text.
+    E050,
 }
 
 impl DiagnosticCode {
@@ -834,6 +860,13 @@ impl DiagnosticCode {
             Self::E041 => "E041",
             Self::E042 => "E042",
             Self::E043 => "E043",
+            Self::E044 => "E044",
+            Self::E045 => "E045",
+            Self::E046 => "E046",
+            Self::E047 => "E047",
+            Self::E048 => "E048",
+            Self::E049 => "E049",
+            Self::E050 => "E050",
         }
     }
 
@@ -884,6 +917,13 @@ impl DiagnosticCode {
             Self::E041 => "external argument type mismatch",
             Self::E042 => "external argument out of domain",
             Self::E043 => "doc-comment tag not applicable to this declaration",
+            Self::E044 => "unknown directive",
+            Self::E045 => "directive has no valid target here",
+            Self::E046 => "directive must be static text",
+            Self::E047 => "directive must be the only tag on its line",
+            Self::E048 => "duplicate directive",
+            Self::E049 => "directive not supported on this target",
+            Self::E050 => "directive does not take arguments",
         }
     }
 
@@ -953,6 +993,13 @@ impl DiagnosticCode {
             "E041" => Some(Self::E041),
             "E042" => Some(Self::E042),
             "E043" => Some(Self::E043),
+            "E044" => Some(Self::E044),
+            "E045" => Some(Self::E045),
+            "E046" => Some(Self::E046),
+            "E047" => Some(Self::E047),
+            "E048" => Some(Self::E048),
+            "E049" => Some(Self::E049),
+            "E050" => Some(Self::E050),
             _ => None,
         }
     }

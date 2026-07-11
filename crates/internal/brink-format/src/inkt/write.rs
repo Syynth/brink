@@ -95,6 +95,9 @@ fn write_globals(w: &mut dyn fmt::Write, globals: &[GlobalVarDef]) -> fmt::Resul
         if g.mutable {
             write!(w, " mutable")?;
         }
+        if g.local {
+            write!(w, " local")?;
+        }
         writeln!(w)?;
         writeln!(w, "      (name {}))", g.name.0)?;
     }
@@ -237,6 +240,11 @@ fn write_container(w: &mut dyn fmt::Write, c: &ContainerDef, lines: &[LineEntry]
     // Declared parameter count (parameterized knots/stitches/functions)
     if c.param_count != 0 {
         writeln!(w, "    (params {})", c.param_count)?;
+    }
+
+    // Flow-private scope default (`#@local` knot/stitch)
+    if c.local {
+        writeln!(w, "    local")?;
     }
 
     // Line table

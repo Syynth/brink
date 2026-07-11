@@ -1948,3 +1948,67 @@ fn compile_error_inline_multi_branch_conditional() {
     let codes = diagnostic_codes(&err);
     assert!(!codes.is_empty(), "expected a diagnostic, got: {codes:?}");
 }
+
+// ── Directive annotations (`#@local`) ───────────────────────────────
+
+#[test]
+fn local_directive_reaches_story_data() {
+    let files: HashMap<&str, &str> = HashMap::from([(
+        "main.ink",
+        "\
+#@local
+VAR mood = 0
+VAR shared = 1
+-> guard
+
+== guard ==
+#@local
+Halt! # spoken
+-> END
+
+== plaza ==
+Busy.
+-> END
+",
+    )]);
+
+    let story = compile_mem("main.ink", &files).unwrap();
+
+    // The VAR bit lands on the right global and only that one.
+    let name = |id: brink_format::NameId| story.name_table[id.0 as usize].as_str();
+    let mood = story
+        .variables
+        .iter()
+        .find(|v| name(v.name) == "mood")
+        .unwrap();
+    let shared = story
+        .variables
+        .iter()
+        .find(|v| name(v.name) == "shared")
+        .unwrap();
+    assert!(mood.local, "#@local VAR carries the scope bit");
+    assert!(!shared.local, "unmarked VAR stays World");
+
+    // The knot bit lands on `guard` and only `guard`.
+    let guard = story
+        .containers
+        .iter()
+        .find(|c| c.name.is_some_and(|n| name(n) == "guard"))
+        .unwrap();
+    let plaza = story
+        .containers
+        .iter()
+        .find(|c| c.name.is_some_and(|n| name(n) == "plaza"))
+        .unwrap();
+    assert!(guard.local, "#@local knot carries the scope bit");
+    assert!(!plaza.local, "unmarked knot stays World");
+
+    // Erasure: no `@local` text anywhere in the line tables, but the
+    // plain `spoken` tag survives.
+    let all_lines = format!("{:?}", story.line_tables);
+    assert!(
+        !all_lines.contains("@local"),
+        "directives never reach runtime content"
+    );
+    assert!(all_lines.contains("spoken"), "plain tags survive");
+}

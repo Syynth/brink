@@ -41,6 +41,7 @@ pub fn collect_globals(
                     name,
                     mutable: false,
                     default,
+                    local: false,
                 });
             }
         }
@@ -64,6 +65,7 @@ pub fn collect_globals(
                     name,
                     mutable: true,
                     default,
+                    local: var.is_local,
                 });
             }
         }
@@ -142,6 +144,7 @@ pub fn collect_lists(
                     items: active_item_ids,
                     origins: vec![list_id],
                 },
+                local: false,
             });
         }
     }

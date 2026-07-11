@@ -3,6 +3,7 @@
 use brink_syntax::ast::{self, AstNode};
 
 use super::super::context::{LowerScope, LowerSink, Lowered};
+use super::super::directive::{DirectiveTarget, apply_scope_directives, directives_before};
 use super::super::doc_comment::{DocPolicy, parse_doc_comment};
 use super::super::expr::LowerExpr;
 use super::super::helpers::name_from_ident;
@@ -40,6 +41,10 @@ impl DeclareSymbols for ast::ConstDecl {
             sink.diagnose(range, DiagnosticCode::E007);
             Expr::Null
         };
+
+        // Directives don't apply to CONSTs — diagnose any that attach.
+        let dirs = directives_before(self.syntax());
+        let _ = apply_scope_directives(&dirs, DirectiveTarget::Const, sink);
 
         Ok(ConstDecl {
             ptr: ast::AstPtr::new(self),

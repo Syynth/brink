@@ -3,6 +3,7 @@
 use brink_syntax::ast::{self, AstNode};
 
 use super::super::context::{LowerScope, LowerSink, Lowered};
+use super::super::directive::{DirectiveTarget, apply_scope_directives, directives_before};
 use super::super::doc_comment::{DocPolicy, parse_doc_comment};
 use super::super::expr::LowerExpr;
 use super::super::helpers::name_from_ident;
@@ -37,10 +38,15 @@ impl DeclareSymbols for ast::VarDecl {
             Expr::Null
         };
 
+        // `#@local` directive line(s) immediately above the declaration.
+        let dirs = directives_before(self.syntax());
+        let is_local = apply_scope_directives(&dirs, DirectiveTarget::Var, sink);
+
         Ok(VarDecl {
             ptr: ast::AstPtr::new(self),
             name,
             value,
+            is_local,
         })
     }
 }

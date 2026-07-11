@@ -205,29 +205,39 @@ fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ScopeLineT
         arb_counting_flags(),
         prop::collection::vec(arb_line_entry(), 0..4),
         any::<u8>(),
+        any::<bool>(),
     )
-        .prop_map(|(id, bytecode, counting_flags, lines, param_count)| {
-            let def = ContainerDef {
-                id,
-                scope_id: id,
-                name: None,
-                bytecode,
-                counting_flags,
-                path_hash: 0,
-                param_count,
-            };
-            let lt = ScopeLineTable {
-                scope_id: id,
-                lines,
-            };
-            (def, lt)
-        })
+        .prop_map(
+            |(id, bytecode, counting_flags, lines, param_count, local)| {
+                let def = ContainerDef {
+                    id,
+                    scope_id: id,
+                    name: None,
+                    bytecode,
+                    counting_flags,
+                    path_hash: 0,
+                    param_count,
+                    local,
+                };
+                let lt = ScopeLineTable {
+                    scope_id: id,
+                    lines,
+                };
+                (def, lt)
+            },
+        )
 }
 
 /// Generate a global var with consistent `value_type` and `default_value`.
 fn arb_global_var() -> impl Strategy<Value = GlobalVarDef> {
-    (arb_def_id(), arb_name_id(), arb_value(), any::<bool>()).prop_map(
-        |(id, name, default_value, mutable)| {
+    (
+        arb_def_id(),
+        arb_name_id(),
+        arb_value(),
+        any::<bool>(),
+        any::<bool>(),
+    )
+        .prop_map(|(id, name, default_value, mutable, local)| {
             let value_type = default_value.value_type();
             GlobalVarDef {
                 id,
@@ -235,9 +245,9 @@ fn arb_global_var() -> impl Strategy<Value = GlobalVarDef> {
                 value_type,
                 default_value,
                 mutable,
+                local,
             }
-        },
-    )
+        })
 }
 
 fn arb_list_def() -> impl Strategy<Value = ListDef> {

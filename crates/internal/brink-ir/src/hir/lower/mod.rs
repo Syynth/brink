@@ -11,6 +11,7 @@ mod conditional;
 mod content;
 mod context;
 mod decl;
+mod directive;
 mod divert;
 mod doc_comment;
 mod expr;
