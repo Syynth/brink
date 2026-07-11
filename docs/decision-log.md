@@ -1304,3 +1304,27 @@
 - **STATUS:** tentative
 - **WHAT:** The 2026-07-11 coarse-grained salsa ruling is phase-0 scope, not the end state. The expected long-term direction is fine-grained salsa integration — tracked structs, per-definition/field-level dependency granularity — including reworking the IRs (HIR/LIR) where that pays, as live semantic tooling grows. Phase-0 implication: query boundaries must not foreclose finer granularity — prefer def-keyed queries where cheap, keep per-def hashes in `hir`, and treat "IRs stay as-is" as a phase-0 constraint rather than a permanent principle.
 - **WHY:** The live-tooling product direction (type checker, per-keystroke semantics at studio scale) will eventually justify field-level tracking; acknowledging the destination now keeps phase-0 choices from ossifying the coarse shape and makes the later migration incremental instead of a second restructuring.
+
+## Tier-1 closures: env rows of val/ref captures
+- **WHEN:** 2026-07-11
+- **PROJECT:** brink
+- **SYSTEM:** language design (#397 value-model round)
+- **SCOPE:** architectural
+- **WHAT:** Closures are values `{fn: DefinitionId token, env: row}`. Env entries are by-value snapshots (default) or explicit `ref` captures via capture-list syntax; `ref` captures are restricted to durable cells (compile error on temps). The env is analyzer-transparent (a typed row) but author-opaque (no reflection, indexing, or comparison). Effect-row variables bind at creation site, so every closure value carries a concrete effect row. Still open: cross-flow resolution of a ref-captured `#@local` cell (late binding through the executing flow's scope view proposed).
+- **WHY:** Live capture where intended without the upvalue problem — no heap-promoted cells or identity objects; env rows serialize symbolically so closures live in saves and the journal; creation-site binding keeps closures fully transparent to the effects system (host callbacks carry knowable ECS access sets); explicit `ref` matches ink's existing aliasing spelling.
+
+## Error handling v1: ink-side infallible; errors are host events
+- **WHEN:** 2026-07-11
+- **PROJECT:** brink
+- **SYSTEM:** language design / runtime (#397 value-model round)
+- **SCOPE:** architectural
+- **WHAT:** v1 treats the script side as infallible: no exceptions, no unwinding, no in-language error values. Runtime faults (bad index, dead handle, invalid projection) are defined, deterministic outcomes — total operations with specified failure values where defined, otherwise turn-terminating diagnostic events surfaced to the host and recorded in the journal (replays fail identically). Result-shaped recoverable errors are a later, demand-driven addition that can join the effects system without grammar changes.
+- **WHY:** Matches ink lineage; keeps journal/replay simple (errors are events, not control flow); hosts already own the player-facing error surface; "may fail" slots into effect rows later if recoverable errors ever arrive.
+
+## Value-model round: closing ratifications
+- **WHEN:** 2026-07-11
+- **PROJECT:** brink
+- **SYSTEM:** language design (#397 value-model round)
+- **SCOPE:** architectural
+- **WHAT:** (1) The model (data-is-values / identity-is-names) and the sharing-unobservable invariant are standing law. (2) Maps: insertion-order iteration; v1 key domain {int, string, bool}. (3) Projections: indices snapshot at ref creation; invalidation is a turn-terminating fault; overlaps resolve by immediate write-through order. (4) Host boundary: snapshot-only contract + Handle tokens + load-time rehydration hook (bevy EntityMapper-based) — ratified WITH the snapshot-economics analysis: crossings are O(1) Arc bumps; retained-snapshot memory is bounded at (retained generations + 1), never accumulating history; Arc::ptr_eq is available to hosts as a change-detection hint (host-side only — never script-visible semantics); the wasm boundary serializes and is exempt from snapshot economics. (5) The compiler-guarantees contract (spec §9) is standing law. (6) Effects: direction ratified — inferred rows internally, declared/frozen at entry points via the #@ channel; detailed design gets its own round before implementation. (7) Cross-flow ref-captured #@local cells: late binding through the executing flow's scope view. (8) v1 ships ptr_eq only; collapsing/sweeps stay specified-optional. Tier-1 build ordering: format schema on paper → runtime value core (hand-assembled-bytecode testable, oracle-inert) → single format bump riding the runtime PR → compiler surface last.
+- **WHY:** Each follows from the ratified model and prior rulings; alternatives costed in docs/value-model-spec.md. The snapshot-economics discussion resolved the bevy memory/time concern (bounded divergence, lock-free parallel reads, free change detection); runtime-led ordering keeps every intermediate merge oracle-neutral by construction and validates the wire schema before it freezes.
