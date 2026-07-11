@@ -1012,6 +1012,7 @@ fn test_dummy_program() -> Program {
         list_defs: vec![],
         list_def_map: HashMap::new(),
         external_fns: HashMap::new(),
+        local_scope_defaults: Vec::new(),
     }
 }
 
@@ -1512,6 +1513,7 @@ mod tests {
             list_defs: vec![],
             list_def_map: HashMap::new(),
             external_fns: HashMap::new(),
+            local_scope_defaults: Vec::new(),
         };
 
         let line_tables = vec![vec![LineEntry {

@@ -234,21 +234,56 @@ impl ResolvedPolicy {
     /// override wins" as a natural consequence of processing order, no
     /// separate precedence pass needed.
     ///
-    /// The all-`World` default (empty `overrides`) resolves without any
-    /// name lookups (see [`all_world`](Self::all_world)) — this is the
-    /// fast path every existing construction path takes today.
+    /// **Compiled base layer.** Before host overrides apply, `resolve`
+    /// seeds scopes from the `Program`'s compiled `#@local` defaults
+    /// (`docs/directive-annotations-spec.md`): globals the compiler
+    /// marked flow-private seed `Local`, and every `#@local` knot/stitch
+    /// expands over its subtree exactly like a host override would.
+    /// Host overrides then layer on top — `base ⊕ host-overrides` — so a
+    /// host name always beats the compiled bit for that name's subtree.
+    ///
+    /// The all-`World` default (empty `overrides`, no compiled `#@local`
+    /// bits) resolves without any name lookups (see
+    /// [`all_world`](Self::all_world)) — this is the fast path every
+    /// unannotated single-flow program takes.
     pub fn resolve(program: &Program, policy: &WorldPolicy) -> Result<Self, PolicyError> {
         if policy.overrides.is_empty()
             && policy.default == Scope::World
             && policy.turn_index == Scope::World
             && policy.rng == Scope::World
+            && !program.has_local_defaults()
         {
             return Ok(Self::all_world());
         }
 
-        let mut global_scopes = vec![policy.default; program.global_count() as usize];
+        // Seed globals from the compiled base: `#@local` beats the host
+        // default; everything unmarked follows the host default.
+        let mut global_scopes: Vec<Scope> = (0..program.global_count())
+            .map(|slot| {
+                if program.global_is_local(slot) {
+                    Scope::Local
+                } else {
+                    policy.default
+                }
+            })
+            .collect();
         let mut knot_scopes = HashMap::new();
         let interior_by_scope = interior_containers_by_scope(program);
+
+        // Seed knots/stitches from the compiled base. The list is sorted
+        // by path at link time, so a `#@local` knot expands before any of
+        // its own `#@local` stitches — same ordering argument as the
+        // override loop below.
+        for (path, id) in program.local_scope_defaults() {
+            expand_knot_scope(
+                program,
+                &interior_by_scope,
+                &mut knot_scopes,
+                path,
+                *id,
+                Scope::Local,
+            );
+        }
 
         // `overrides` is a `BTreeMap`, so iteration order is deterministic
         // (sorted by name) — resolution never depends on hash-map order.
@@ -2182,5 +2217,179 @@ mod subtree_scope_tests {
             0,
             "World's own copy of the Local-scoped sequence's visit count must stay untouched"
         );
+    }
+}
+
+#[cfg(test)]
+mod compiled_defaults_tests {
+    //! Compiled `#@local` scope defaults seeding policy resolution
+    //! (`docs/directive-annotations-spec.md` §4.6): the base layer of
+    //! `base ⊕ host-overrides`, with zero host API involvement.
+
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use crate::link;
+
+    fn compile(src: &str) -> Program {
+        let out = brink_compiler::compile("t.ink", |p| {
+            if p == "t.ink" {
+                Ok(src.to_string())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "no such include",
+                ))
+            }
+        })
+        .expect("compile");
+        let (program, _line_tables) = link(&out.data).expect("link");
+        program
+    }
+
+    /// `mood` and `shrine` (with a stitch and an interior sequence) are
+    /// marked `#@local` in source; `gold` and `cellar` stay unmarked.
+    fn annotated_program() -> Program {
+        compile(
+            "VAR gold = 0\n\
+             #@local\n\
+             VAR mood = 0\n\
+             -> shrine\n\
+             === shrine ===\n\
+             #@local\n\
+             At the shrine {&once|again}.\n\
+             = inner\n\
+             Deeper in.\n\
+             -> END\n\
+             === cellar ===\n\
+             In the cellar.\n\
+             -> END\n",
+        )
+    }
+
+    #[test]
+    fn unannotated_program_keeps_the_fast_path() {
+        let program = compile("VAR gold = 0\nhello\n");
+        assert!(!program.has_local_defaults());
+        let resolved =
+            ResolvedPolicy::resolve(&program, &WorldPolicy::default()).expect("resolves");
+        // The all-World fast path allocates nothing.
+        assert!(resolved.global_scopes.is_empty());
+        assert!(resolved.knot_scopes.is_empty());
+    }
+
+    #[test]
+    fn compiled_local_var_seeds_the_base() {
+        let program = annotated_program();
+        assert!(program.has_local_defaults());
+        let resolved =
+            ResolvedPolicy::resolve(&program, &WorldPolicy::default()).expect("resolves");
+
+        let mood = program.global_index("mood").expect("mood declared");
+        let gold = program.global_index("gold").expect("gold declared");
+        assert_eq!(resolved.scope_of_global(mood), Scope::Local);
+        assert_eq!(resolved.scope_of_global(gold), Scope::World);
+    }
+
+    #[test]
+    fn compiled_local_knot_covers_its_subtree() {
+        let program = annotated_program();
+        let resolved =
+            ResolvedPolicy::resolve(&program, &WorldPolicy::default()).expect("resolves");
+
+        let shrine = program.find_path_target("shrine").expect("shrine exists");
+        let inner = program
+            .find_path_target("shrine.inner")
+            .expect("stitch exists");
+        let cellar = program.find_path_target("cellar").expect("cellar exists");
+
+        assert_eq!(resolved.scope_of_knot(shrine), Scope::Local);
+        assert_eq!(
+            resolved.scope_of_knot(inner),
+            Scope::Local,
+            "a #@local knot covers its stitches"
+        );
+        assert_eq!(resolved.scope_of_knot(cellar), Scope::World);
+
+        // Interior containers (the inline sequence) are covered too.
+        let interior = interior_containers_by_scope(&program);
+        let shrine_interior = interior.get(&shrine).cloned().unwrap_or_default();
+        assert!(
+            !shrine_interior.is_empty(),
+            "the {{&…}} sequence creates interior containers under shrine"
+        );
+        for id in shrine_interior {
+            assert_eq!(
+                resolved.scope_of_knot(id),
+                Scope::Local,
+                "interior container {id:?} inherits the knot's compiled scope"
+            );
+        }
+    }
+
+    #[test]
+    fn host_override_beats_the_compiled_bit() {
+        let program = annotated_program();
+        let mut overrides = BTreeMap::new();
+        overrides.insert("mood".to_owned(), Scope::World);
+        overrides.insert("shrine".to_owned(), Scope::World);
+        let policy = WorldPolicy {
+            default: Scope::World,
+            overrides,
+            turn_index: Scope::World,
+            rng: Scope::World,
+        };
+        let resolved = ResolvedPolicy::resolve(&program, &policy).expect("resolves");
+
+        let mood = program.global_index("mood").expect("mood declared");
+        let shrine = program.find_path_target("shrine").expect("shrine exists");
+        assert_eq!(
+            resolved.scope_of_global(mood),
+            Scope::World,
+            "host override wins over the compiled #@local bit"
+        );
+        assert_eq!(resolved.scope_of_knot(shrine), Scope::World);
+    }
+
+    /// End to end with zero host policy: a `World` built with the default
+    /// (empty) `WorldPolicy` picks up the compiled bits, and two flows
+    /// sharing it get isolated `mood` but shared `gold`.
+    #[test]
+    fn compiled_base_isolates_flows_without_host_policy() {
+        let program = annotated_program();
+        let mut world = World::new(&program, &WorldPolicy::default()).expect("world builds");
+
+        let mood = program.global_index("mood").expect("mood declared");
+        let gold = program.global_index("gold").expect("gold declared");
+
+        let mut local_a = FlowLocal::new();
+        let mut local_b = FlowLocal::new();
+
+        // Flow A writes both.
+        {
+            let mut view_a = ContextView::new(&mut world, &mut local_a);
+            view_a.set_global(mood, Value::Int(42));
+            view_a.set_global(gold, Value::Int(7));
+        }
+        // Flow B sees the shared `gold` but not A's private `mood`.
+        {
+            let view_b = ContextView::new(&mut world, &mut local_b);
+            assert_eq!(view_b.global(mood), &Value::Int(0));
+            assert_eq!(view_b.global(gold), &Value::Int(7));
+        }
+        assert_eq!(world.global(mood), &Value::Int(0));
+
+        // Visit counts: `shrine` is flow-private by compilation.
+        let shrine = program.find_path_target("shrine").expect("shrine exists");
+        {
+            let mut view_a = ContextView::new(&mut world, &mut local_a);
+            view_a.increment_visit(shrine);
+            assert_eq!(view_a.visit_count(shrine), 1);
+        }
+        {
+            let view_b = ContextView::new(&mut world, &mut local_b);
+            assert_eq!(view_b.visit_count(shrine), 0);
+        }
+        assert_eq!(world.visit_count(shrine), 0);
     }
 }

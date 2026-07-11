@@ -62,6 +62,7 @@ pub fn link(
             id: gvar.id,
             name: gvar.name,
             default: gvar.default_value.clone(),
+            local: gvar.local,
         });
     }
 
@@ -183,6 +184,19 @@ pub fn link(
         }
     }
 
+    // Compiled `#@local` knot/stitch defaults — the base layer of policy
+    // resolution. Sorted by path so a knot expands before its stitches.
+    let mut local_scope_defaults: Vec<(String, DefinitionId)> = data
+        .containers
+        .iter()
+        .filter(|c| c.local)
+        .filter_map(|c| {
+            c.name
+                .map(|n| (data.name_table[n.0 as usize].clone(), c.id))
+        })
+        .collect();
+    local_scope_defaults.sort();
+
     let program = Program {
         containers,
         address_map,
@@ -198,6 +212,7 @@ pub fn link(
         list_defs,
         list_def_map,
         external_fns,
+        local_scope_defaults,
     };
     Ok((program, line_tables))
 }
