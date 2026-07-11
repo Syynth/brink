@@ -11,6 +11,13 @@
 //! The enrichment map is always built (the IDE consumes it for hover /
 //! signature even with checks disabled); only the *diagnostics* are gated by
 //! the [`ExternalCheckSeverity`] policy.
+//!
+//! Semantic-type resolution additionally degrades gracefully when **no**
+//! [`HostManifest`] is registered at all: an unknown type name is treated as
+//! opaque (no `E040`) rather than hard-erroring, so ink that references host
+//! vocabulary (e.g. `actor_id`) still compiles host-free. Once a manifest is
+//! registered, checking is fully binding again — an unresolved name is a real
+//! `E040`. See issue #339.
 
 use std::collections::BTreeMap;
 
@@ -122,12 +129,17 @@ pub struct ResolvedType {
 /// Build the per-external enrichment map and collect manifest-driven
 /// diagnostics. The map is always returned; diagnostics are empty when the
 /// severity policy is `Off`.
+///
+/// `has_manifest` gates unknown-semantic-type checking (`E040`): with no
+/// registered `HostManifest`, an unresolved type name is tolerated as opaque
+/// rather than diagnosed (#339).
 pub fn analyze_externals(
     index: &SymbolIndex,
     inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
     types: &BTreeMap<String, SemanticTypeDef>,
     registered: &BTreeMap<String, &brink_ir::ManifestExternal>,
     severity: ExternalCheckSeverity,
+    has_manifest: bool,
 ) -> (BTreeMap<DefinitionId, SymbolMeta>, Vec<Diagnostic>) {
     let mut metas: BTreeMap<DefinitionId, SymbolMeta> = BTreeMap::new();
     let mut diags: Vec<Diagnostic> = Vec::new();
@@ -171,7 +183,7 @@ pub fn analyze_externals(
             let tref: Option<&TypeRef> = inline
                 .and_then(|d| d.params.iter().find(|(n, _)| n == &p.name).map(|(_, t)| t))
                 .or_else(|| reg.and_then(|r| r.params.get(i).map(|mp| &mp.ty)));
-            let ty = tref.and_then(|t| resolve_type(t, types, info, &mut diags));
+            let ty = tref.and_then(|t| resolve_type(t, types, info, has_manifest, &mut diags));
             params.push(ResolvedParam {
                 name: p.name.clone(),
                 ty,
@@ -182,7 +194,7 @@ pub fn analyze_externals(
         let returns = inline
             .and_then(|d| d.returns.as_ref())
             .or_else(|| reg.map(|r| &r.returns))
-            .and_then(|t| resolve_type(t, types, info, &mut diags));
+            .and_then(|t| resolve_type(t, types, info, has_manifest, &mut diags));
         let kind = inline
             .and_then(|d| d.kind)
             .or_else(|| reg.map(|r| r.kind))
@@ -212,14 +224,15 @@ pub fn analyze_externals(
 
 /// Build doc/type enrichment for knots and stitches from their inline `///`
 /// docs. Signature tags (`@param` / `@returns`) resolve against the same
-/// semantic-type vocabulary as externals (E040 on unknown types), but unlike
-/// externals there are no call-site checks — callable metadata is
-/// presentational only.
+/// semantic-type vocabulary as externals (E040 on unknown types, tolerated as
+/// opaque when `has_manifest` is `false` — #339), but unlike externals there
+/// are no call-site checks — callable metadata is presentational only.
 pub fn enrich_callables(
     index: &SymbolIndex,
     inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
     types: &BTreeMap<String, SemanticTypeDef>,
     severity: ExternalCheckSeverity,
+    has_manifest: bool,
 ) -> (BTreeMap<DefinitionId, SymbolMeta>, Vec<Diagnostic>) {
     let mut metas: BTreeMap<DefinitionId, SymbolMeta> = BTreeMap::new();
     let mut diags: Vec<Diagnostic> = Vec::new();
@@ -250,14 +263,14 @@ pub fn enrich_callables(
                     .map(|(_, t)| t);
                 ResolvedParam {
                     name: p.name.clone(),
-                    ty: tref.and_then(|t| resolve_type(t, types, info, &mut diags)),
+                    ty: tref.and_then(|t| resolve_type(t, types, info, has_manifest, &mut diags)),
                 }
             })
             .collect();
         let returns = inline
             .returns
             .as_ref()
-            .and_then(|t| resolve_type(t, types, info, &mut diags));
+            .and_then(|t| resolve_type(t, types, info, has_manifest, &mut diags));
 
         metas.insert(
             info.id,
@@ -426,11 +439,16 @@ fn path_display(path: &Path) -> String {
 }
 
 /// Resolve a [`TypeRef`] to a [`ResolvedType`], emitting E040 for an unknown
-/// semantic type. Returns `None` for an unspecified (empty) ref.
+/// semantic type — but only when `has_manifest` is `true`. With no manifest
+/// registered, semantic types are opaque by default (host vocabulary can't be
+/// validated against nothing) so an unresolved name is silently accepted as
+/// `base: None` rather than diagnosed (#339). Returns `None` for an
+/// unspecified (empty) ref.
 fn resolve_type(
     t: &TypeRef,
     types: &BTreeMap<String, SemanticTypeDef>,
     info: &SymbolInfo,
+    has_manifest: bool,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<ResolvedType> {
     if t.is_unspecified() {
@@ -454,17 +472,19 @@ fn resolve_type(
             widget: def.widget.clone(),
         });
     }
-    diags.push(Diagnostic {
-        file: info.file,
-        range: info.range,
-        message: format!(
-            "{}: `{}` (on `{}`)",
-            DiagnosticCode::E040.title(),
-            t.0.trim(),
-            info.name,
-        ),
-        code: DiagnosticCode::E040,
-    });
+    if has_manifest {
+        diags.push(Diagnostic {
+            file: info.file,
+            range: info.range,
+            message: format!(
+                "{}: `{}` (on `{}`)",
+                DiagnosticCode::E040.title(),
+                t.0.trim(),
+                info.name,
+            ),
+            code: DiagnosticCode::E040,
+        });
+    }
     Some(ResolvedType {
         name: t.0.clone(),
         base: None,
@@ -748,6 +768,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             ExternalCheckSeverity::Error,
+            true,
         );
         assert!(diags.is_empty(), "no diags: {diags:?}");
         let meta = meta_for(&metas, &index, "has");
@@ -786,6 +807,7 @@ mod tests {
             &BTreeMap::new(),
             &registered,
             ExternalCheckSeverity::Error,
+            true,
         );
         let meta = meta_for(&metas, &index, "grant");
         assert_eq!(meta.kind, ExternalKind::Effect);
@@ -826,6 +848,7 @@ mod tests {
             &BTreeMap::new(),
             &registered,
             ExternalCheckSeverity::Error,
+            true,
         );
         let meta = meta_for(&metas, &index, "has");
         assert_eq!(meta.kind, ExternalKind::Query, "inline @kind wins");
@@ -863,6 +886,7 @@ mod tests {
             &types,
             &BTreeMap::new(),
             ExternalCheckSeverity::Error,
+            true,
         );
         assert!(diags.is_empty(), "known semantic type: {diags:?}");
         let ty = meta_for(&metas, &index, "give").params[0]
@@ -888,6 +912,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             ExternalCheckSeverity::Error,
+            true,
         );
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code, DiagnosticCode::E040);
@@ -900,6 +925,80 @@ mod tests {
                 .base
                 .is_none()
         );
+    }
+
+    /// #339: with no `HostManifest` registered at all, an unresolved
+    /// semantic type is tolerated as opaque — no E040 — rather than
+    /// hard-erroring. Enrichment is still built (base: None).
+    #[test]
+    fn unknown_semantic_type_tolerated_without_manifest() {
+        let index = index_with_external("foo", &["x"]);
+        let mut docs = BTreeMap::new();
+        docs.insert(
+            (SymbolKind::External, "foo".to_string()),
+            inline(&[("x", "actor_id")], None, None),
+        );
+
+        let (metas, diags) = analyze_externals(
+            &index,
+            &docs,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            ExternalCheckSeverity::Error,
+            false, // no manifest registered
+        );
+        assert!(
+            diags.is_empty(),
+            "no manifest: tolerated, no E040: {diags:?}"
+        );
+        assert!(
+            meta_for(&metas, &index, "foo").params[0]
+                .ty
+                .as_ref()
+                .unwrap()
+                .base
+                .is_none(),
+            "type is still opaque (base: None) — just not diagnosed"
+        );
+    }
+
+    /// #339, other half: once a manifest *is* registered, checking is fully
+    /// binding again — a genuinely unknown type still emits E040 even though
+    /// other types resolve fine.
+    #[test]
+    fn unknown_semantic_type_still_errors_with_manifest_registered() {
+        let index = index_with_external("foo", &["x"]);
+        let mut types = BTreeMap::new();
+        types.insert(
+            "actor_id".to_string(),
+            SemanticTypeDef {
+                name: "actor_id".to_string(),
+                base: BaseType::String,
+                constraint: None,
+                values: None,
+                widget: None,
+            },
+        );
+        let mut docs = BTreeMap::new();
+        docs.insert(
+            (SymbolKind::External, "foo".to_string()),
+            inline(&[("x", "totally_bogus")], None, None),
+        );
+
+        let (_metas, diags) = analyze_externals(
+            &index,
+            &docs,
+            &types,
+            &BTreeMap::new(),
+            ExternalCheckSeverity::Error,
+            true, // manifest registered (has `actor_id`, but not `totally_bogus`)
+        );
+        assert_eq!(
+            diags.len(),
+            1,
+            "manifest present: unknown type still errors"
+        );
+        assert_eq!(diags[0].code, DiagnosticCode::E040);
     }
 
     #[test]
@@ -933,6 +1032,7 @@ mod tests {
             &BTreeMap::new(),
             &registered,
             ExternalCheckSeverity::Error,
+            true,
         );
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code, DiagnosticCode::E039);
@@ -953,6 +1053,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             ExternalCheckSeverity::Off,
+            true,
         );
         assert!(diags.is_empty(), "Off suppresses diagnostics");
         assert!(!metas.is_empty(), "enrichment still built when Off");
@@ -1022,7 +1123,8 @@ mod tests {
             },
         );
 
-        let (metas, diags) = enrich_callables(&index, &docs, &types, ExternalCheckSeverity::Error);
+        let (metas, diags) =
+            enrich_callables(&index, &docs, &types, ExternalCheckSeverity::Error, true);
         assert!(diags.is_empty(), "known types: {diags:?}");
         let meta = meta_for_kind(&metas, &index, SymbolKind::Knot, "damage");
         assert_eq!(meta.doc.as_deref(), Some("Damage roll."));
@@ -1055,6 +1157,7 @@ mod tests {
             &docs,
             &BTreeMap::new(),
             ExternalCheckSeverity::Error,
+            true,
         );
         assert!(diags.is_empty());
         let meta = meta_for_kind(&metas, &index, SymbolKind::Stitch, "hub.market");
@@ -1079,6 +1182,7 @@ mod tests {
             &docs,
             &BTreeMap::new(),
             ExternalCheckSeverity::Error,
+            true,
         );
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code, DiagnosticCode::E040);
@@ -1087,10 +1191,46 @@ mod tests {
         assert!(meta.params[0].ty.as_ref().is_some_and(|t| t.base.is_none()));
 
         // Severity Off keeps the meta but suppresses the diagnostic.
-        let (metas, diags) =
-            enrich_callables(&index, &docs, &BTreeMap::new(), ExternalCheckSeverity::Off);
+        let (metas, diags) = enrich_callables(
+            &index,
+            &docs,
+            &BTreeMap::new(),
+            ExternalCheckSeverity::Off,
+            true,
+        );
         assert!(diags.is_empty());
         assert!(!metas.is_empty());
+    }
+
+    /// #339: with no manifest registered, an unresolved semantic type on a
+    /// knot/stitch doc tag is tolerated as opaque too (callables share the
+    /// same vocabulary as externals).
+    #[test]
+    fn unknown_semantic_type_on_knot_tolerated_without_manifest() {
+        let index = index_with_callables();
+        let mut docs = BTreeMap::new();
+        docs.insert(
+            (SymbolKind::Knot, "damage".to_string()),
+            DocBlock {
+                doc: None,
+                params: vec![("weapon".to_string(), TypeRef("item_id".to_string()))],
+                returns: None,
+                kind: None,
+            },
+        );
+        let (metas, diags) = enrich_callables(
+            &index,
+            &docs,
+            &BTreeMap::new(),
+            ExternalCheckSeverity::Error,
+            false, // no manifest registered
+        );
+        assert!(
+            diags.is_empty(),
+            "no manifest: tolerated, no E040: {diags:?}"
+        );
+        let meta = meta_for_kind(&metas, &index, SymbolKind::Knot, "damage");
+        assert!(meta.params[0].ty.as_ref().is_some_and(|t| t.base.is_none()));
     }
 
     #[test]
@@ -1101,6 +1241,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             ExternalCheckSeverity::Error,
+            true,
         );
         assert!(metas.is_empty());
         assert!(diags.is_empty());

@@ -144,19 +144,27 @@ pub fn finish_analysis(
     // Host-manifest enrichment + checks (tooling/author-time only).
     let inline_docs = collect_inline_docs(&manifest_inputs);
     let (types, registered) = manifest_maps(opts.host_manifest.as_ref());
+    let has_manifest = opts.host_manifest.is_some();
     let (mut symbol_meta, ext_diags) = external_check::analyze_externals(
         &index,
         &inline_docs,
         &types,
         &registered,
         opts.external_check,
+        has_manifest,
     );
     diagnostics.extend(ext_diags);
 
     // Knot/stitch doc enrichment (presentational; shares the semantic-type
-    // vocabulary, so unknown types still diagnose).
-    let (callable_meta, callable_diags) =
-        external_check::enrich_callables(&index, &inline_docs, &types, opts.external_check);
+    // vocabulary, so unknown types still diagnose — but only once a manifest
+    // is registered; see `resolve_type` (#339)).
+    let (callable_meta, callable_diags) = external_check::enrich_callables(
+        &index,
+        &inline_docs,
+        &types,
+        opts.external_check,
+        has_manifest,
+    );
     diagnostics.extend(callable_diags);
     symbol_meta.extend(callable_meta);
 
@@ -221,4 +229,92 @@ fn manifest_maps(
         }
     }
     (types, registered)
+}
+
+#[cfg(test)]
+mod tests {
+    //! End-to-end coverage for #339: host semantic types (`///` `@param`
+    //! tags referencing host vocabulary, e.g. `actor_id`) must not block
+    //! compilation when no `HostManifest` is registered, while a registered
+    //! manifest keeps full checking (a genuinely unknown type still errors).
+
+    use brink_ir::{BaseType, HostManifest, SemanticTypeDef};
+
+    use super::{AnalysisOptions, FileId, analyze, analyze_with_options};
+
+    /// ink with an `EXTERNAL` whose param is typed with a host semantic type
+    /// (`actor_id`) — exactly the `host.ink`-generated shape from the issue.
+    const SRC: &str = "\
+/// @param who {actor_id}
+EXTERNAL add_state(who)
+";
+
+    fn lower(src: &str) -> (brink_ir::hir::HirFile, brink_ir::SymbolManifest) {
+        let parsed = brink_syntax::parse(src);
+        let tree = parsed.tree();
+        let (hir, manifest, diags) = brink_ir::hir::lower(FileId(0), &tree);
+        assert!(diags.is_empty(), "lowering diagnostics: {diags:?}");
+        (hir, manifest)
+    }
+
+    #[test]
+    fn host_semantic_type_compiles_host_free_with_no_manifest() {
+        let (hir, manifest) = lower(SRC);
+        // `analyze()` uses `AnalysisOptions::default()` — no host manifest —
+        // matching the real "no HostManifest registered" consumer path
+        // (`compileProject()` with no `setHostManifest` call).
+        let result = analyze(&[(FileId(0), &hir, &manifest)]);
+        assert!(
+            result.diagnostics.is_empty(),
+            "host-free compile must not error on unknown semantic types: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn host_semantic_type_still_checked_once_manifest_registered() {
+        let (hir, manifest) = lower(SRC);
+        let host_manifest = HostManifest {
+            externals: Vec::new(),
+            types: vec![SemanticTypeDef {
+                name: "actor_id".to_string(),
+                base: BaseType::String,
+                constraint: None,
+                values: None,
+                widget: None,
+            }],
+        };
+        let opts = AnalysisOptions {
+            host_manifest: Some(host_manifest),
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result.diagnostics.is_empty(),
+            "known semantic type resolves cleanly: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn genuinely_unknown_type_still_errors_when_manifest_registered() {
+        // Same shape, but the registered manifest does NOT define `actor_id`
+        // — a manifest being present makes checking fully binding again.
+        let (hir, manifest) = lower(SRC);
+        let opts = AnalysisOptions {
+            host_manifest: Some(HostManifest::default()),
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert_eq!(
+            result
+                .diagnostics
+                .iter()
+                .filter(|d| d.code == brink_ir::DiagnosticCode::E040)
+                .count(),
+            1,
+            "manifest registered but type unknown: E040 still fires: {:?}",
+            result.diagnostics
+        );
+    }
 }
