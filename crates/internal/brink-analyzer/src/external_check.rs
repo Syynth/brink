@@ -373,7 +373,7 @@ fn add_value_meta(
 
 /// The [`InferredType`] of an initializer literal, or `None` for anything
 /// whose type isn't statically obvious (calls, references, arithmetic).
-fn infer_literal_type(expr: &Expr) -> Option<InferredType> {
+pub(crate) fn infer_literal_type(expr: &Expr) -> Option<InferredType> {
     match expr {
         Expr::Int(_) => Some(InferredType::Int),
         Expr::Float(_) => Some(InferredType::Float),

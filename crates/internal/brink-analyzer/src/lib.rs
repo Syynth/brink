@@ -8,6 +8,7 @@
 mod external_check;
 mod manifest;
 mod resolve;
+mod signature;
 mod validate;
 
 use std::collections::BTreeMap;
@@ -17,6 +18,7 @@ pub use brink_ir::ResolutionMap;
 pub use external_check::{
     ExternalCheckSeverity, InferredType, ResolvedParam, ResolvedType, SymbolMeta, ValueMeta,
 };
+pub use signature::{Sig, signature};
 
 use brink_format::DefinitionId;
 use brink_ir::{
