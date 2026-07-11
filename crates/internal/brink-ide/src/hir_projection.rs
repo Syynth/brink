@@ -749,6 +749,7 @@ fn stmt_extent(stmt: &Stmt) -> Option<TextRange> {
         Stmt::Conditional(c) => Some(c.ptr.text_range()),
         Stmt::Sequence(s) => Some(s.ptr.text_range()),
         Stmt::ExprStmt(_) | Stmt::EndOfLine => None,
+        Stmt::LogicBlock(lb) => Some(lb.ptr.text_range()),
     }
 }
 

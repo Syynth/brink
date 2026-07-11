@@ -13,11 +13,14 @@ use brink_ir::{FileId, HirFile, SymbolManifest};
 /// Parse ink source → HIR lower → analyze → LIR lower. Returns the full Program.
 fn lower_ink(source: &str) -> lir::Program {
     let (program, _warnings) = lower_ink_with_warnings(source);
-    program
+    // unwrap: `lower_to_program` only returns `None` when the
+    // residual-extension backstop fires (E053) — this helper's callers all
+    // pass plain ink, so this should never be `None`.
+    program.unwrap()
 }
 
 /// Parse ink source → HIR lower → analyze → LIR lower. Returns program + warnings.
-fn lower_ink_with_warnings(source: &str) -> (lir::Program, Vec<brink_ir::Diagnostic>) {
+fn lower_ink_with_warnings(source: &str) -> (Option<lir::Program>, Vec<brink_ir::Diagnostic>) {
     let parsed = brink_syntax::parse(source);
     let tree = parsed.tree();
     let file_id = FileId(0);
@@ -2949,5 +2952,45 @@ fn temp_visible_in_choice_body_after_gather() {
     assert!(
         !has_get_global(&p.root),
         "program has no VAR — should have no GetGlobal expressions",
+    );
+}
+
+// ─── #572 review: residual T1b-extension backstop ────────────────────
+//
+// `lower_ink_with_warnings` deliberately mirrors a caller that (like a
+// suppressed dialect gate) never checks `brink_analyzer::analyze`'s
+// diagnostics before lowering to LIR. Before the fix, a residual
+// `LogicBlock`/`Index`/… HIR node reaching `lower_to_program` would panic
+// via `debug_assert!` in debug builds and silently drop data (`None` /
+// `lir::Expr::Null`) in release builds. It must now refuse to produce a
+// program and report an `E053` diagnostic instead.
+
+#[test]
+fn residual_logic_block_refuses_to_lower_instead_of_dropping_it() {
+    let (program, diags) = lower_ink_with_warnings("Hello\n~ {\ntemp x = 0\nx = x + 1\n}\nWorld\n");
+    assert!(
+        program.is_none(),
+        "a residual LogicBlock must not produce a program"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E053),
+        "expected E053 backstop diagnostic, got {diags:?}"
+    );
+}
+
+#[test]
+fn residual_index_refuses_to_lower_instead_of_becoming_null() {
+    let (program, diags) = lower_ink_with_warnings("VAR a = 5\n~ x = a[0]\n");
+    assert!(
+        program.is_none(),
+        "a residual Index expression must not produce a program"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E053),
+        "expected E053 backstop diagnostic, got {diags:?}"
     );
 }

@@ -7,7 +7,7 @@
 
 mod driver;
 
-pub use brink_driver::AnalysisOptions;
+pub use brink_driver::{AnalysisOptions, Dialect};
 pub use brink_ir::{DiagnosticCode, FileId};
 
 use brink_format::StoryData;
@@ -57,6 +57,19 @@ pub fn compile_path(path: &Path) -> Result<CompileOutput, CompileError> {
     compile(path.to_string_lossy().as_ref(), |p| {
         std::fs::read_to_string(p).map_err(|e| io::Error::new(e.kind(), format!("{p}: {e}")))
     })
+}
+
+/// Compile an ink story from an entry-point file path with explicit analysis
+/// options — e.g. the T1b `--dialect` flag (`AnalysisOptions::dialect`).
+pub fn compile_path_with_options(
+    path: &Path,
+    options: AnalysisOptions,
+) -> Result<CompileOutput, CompileError> {
+    compile_with_options(
+        path.to_string_lossy().as_ref(),
+        |p| std::fs::read_to_string(p).map_err(|e| io::Error::new(e.kind(), format!("{p}: {e}"))),
+        options,
+    )
 }
 
 /// Compile an ink story with caller-provided file reading.

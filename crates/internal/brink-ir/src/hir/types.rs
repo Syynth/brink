@@ -163,6 +163,75 @@ pub enum Stmt {
     ExprStmt(Expr),
     /// End-of-line marker — marks the end of a content output line.
     EndOfLine,
+    /// `~ { … }` — a T1b multi-line logic block (brink extension; parse-only
+    /// in T1b-1, docs/t1b-surface-spec.md §2). Never lowers to LIR — gated
+    /// out by `brink-analyzer`'s dialect check under both dialects.
+    LogicBlock(LogicBlock),
+}
+
+// ─── T1b superset: multi-line `~ { … }` blocks ──────────────────────
+//
+// Deliberately a CLOSED set of statement kinds with no variant for any
+// weave concept (content, choices, diverts, gathers, threads) — the seam
+// rule from docs/t1b-surface-spec.md §2 is enforced by construction here,
+// not by a runtime check: `BlockStmt` simply has nowhere to put a weave
+// node.
+
+/// A `~ { … }` multi-line logic block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogicBlock {
+    pub ptr: SyntaxNodePtr,
+    pub stmts: Vec<BlockStmt>,
+}
+
+/// A single statement inside a `~ { … }` block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockStmt {
+    TempDecl(TempDecl),
+    Assignment(Assignment),
+    Return(Return),
+    If(IfStmt),
+    While(WhileStmt),
+    For(ForStmt),
+    Break(SyntaxNodePtr),
+    Continue(SyntaxNodePtr),
+    /// A bare expression statement (function/external calls).
+    ExprStmt(Expr),
+}
+
+/// `if cond { … } (else …)?`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IfStmt {
+    pub ptr: SyntaxNodePtr,
+    pub condition: Expr,
+    pub body: Vec<BlockStmt>,
+    pub else_branch: Option<ElseBranch>,
+}
+
+/// The `else` arm of an [`IfStmt`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ElseBranch {
+    /// `else if cond { … }` — a nested `if`.
+    ElseIf(Box<IfStmt>),
+    /// `else { … }`.
+    Else(Vec<BlockStmt>),
+}
+
+/// `while cond { … }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhileStmt {
+    pub ptr: SyntaxNodePtr,
+    pub condition: Expr,
+    pub body: Vec<BlockStmt>,
+}
+
+/// `for name in expr { … }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForStmt {
+    pub ptr: SyntaxNodePtr,
+    pub var_name: Name,
+    pub iterable: Expr,
+    pub body: Vec<BlockStmt>,
 }
 
 // ─── Weave structure ────────────────────────────────────────────────
@@ -409,6 +478,37 @@ pub enum Expr {
 
     /// Function call (`func(args)`).
     Call(Path, Vec<Expr>),
+
+    /// `#[expr, …]` — array sigil literal (brink extension, T1b §3).
+    ArrayLiteral(ArrayLiteral),
+    /// `#{key: expr, …}` — map sigil literal (brink extension, T1b §3).
+    MapLiteral(MapLiteral),
+    /// `base[index]` — postfix indexing (brink extension, T1b §4).
+    Index(IndexExpr),
+}
+
+/// `#[expr, …]` — carries a `ptr` (unlike the plain literal variants above)
+/// so the T1b dialect gate can point its diagnostic at the exact literal,
+/// not just the enclosing statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArrayLiteral {
+    pub ptr: SyntaxNodePtr,
+    pub elements: Vec<Expr>,
+}
+
+/// `#{key: expr, …}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MapLiteral {
+    pub ptr: SyntaxNodePtr,
+    pub entries: Vec<(Expr, Expr)>,
+}
+
+/// `base[index]`, chainable (`grid[y][x]` lowers as nested `IndexExpr`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexExpr {
+    pub ptr: SyntaxNodePtr,
+    pub base: Box<Expr>,
+    pub index: Box<Expr>,
 }
 
 /// Float stored as raw bits so it can derive Eq.
@@ -531,6 +631,9 @@ pub fn display_expr(expr: &Expr) -> String {
             }
             format!("{name}(...)")
         }
+        Expr::ArrayLiteral(_) => "#[...]".to_string(),
+        Expr::MapLiteral(_) => "#{...}".to_string(),
+        Expr::Index(idx) => format!("{}[{}]", display_expr(&idx.base), display_expr(&idx.index)),
     }
 }
 
@@ -810,6 +913,21 @@ pub enum DiagnosticCode {
     E049,
     /// Directive does not take arguments or trailing text.
     E050,
+
+    // ── T1b dialect gate (docs/t1b-surface-spec.md §1) ────────────
+    /// A brink-extension construct (block, sigil literal, indexing) was
+    /// used under the `strict-ink` dialect.
+    E051,
+    /// A brink-extension construct was used under the `brink` dialect, but
+    /// T1b-1 lowers nothing to LIR yet (lands in T1b-2).
+    E052,
+    /// Internal error: a T1b brink-extension HIR node (`LogicBlock`,
+    /// `ArrayLiteral`, `MapLiteral`, `Index`) reached LIR lowering. The
+    /// dialect gate (E051/E052) should have rejected it first, but that
+    /// gate is a suppressible analysis diagnostic — this is the
+    /// non-suppressible backstop that fires when the gate was suppressed
+    /// (e.g. `// brink-disable-all`).
+    E053,
 }
 
 impl DiagnosticCode {
@@ -867,6 +985,9 @@ impl DiagnosticCode {
             Self::E048 => "E048",
             Self::E049 => "E049",
             Self::E050 => "E050",
+            Self::E051 => "E051",
+            Self::E052 => "E052",
+            Self::E053 => "E053",
         }
     }
 
@@ -924,6 +1045,11 @@ impl DiagnosticCode {
             Self::E048 => "duplicate directive",
             Self::E049 => "directive not supported on this target",
             Self::E050 => "directive does not take arguments",
+            Self::E051 => "brink extension used under strict-ink dialect",
+            Self::E052 => "brink extension not yet implemented (lands in T1b-2)",
+            Self::E053 => {
+                "internal: brink extension reached LIR lowering (dialect gate suppressed)"
+            }
         }
     }
 
@@ -1000,6 +1126,9 @@ impl DiagnosticCode {
             "E048" => Some(Self::E048),
             "E049" => Some(Self::E049),
             "E050" => Some(Self::E050),
+            "E051" => Some(Self::E051),
+            "E052" => Some(Self::E052),
+            "E053" => Some(Self::E053),
             _ => None,
         }
     }

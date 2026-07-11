@@ -1,23 +1,32 @@
 use crate::SyntaxKind::{
-    ASSIGNMENT, EOF, EQ, IDENT, IDENTIFIER, KW_RETURN, KW_TEMP, LOGIC_LINE, MINUS_EQ, NEWLINE,
-    PLUS_EQ, RETURN_STMT, TEMP_DECL,
+    ASSIGNMENT, BREAK_STMT, CONTINUE_STMT, DOT, ELSE_CLAUSE, EOF, EQ, EXPR_STMT, FOR_STMT, IDENT,
+    IDENTIFIER, IF_STMT, INDEX_EXPR, KW_ELSE, KW_RETURN, KW_TEMP, L_BRACE, L_BRACKET, LOGIC_LINE,
+    MINUS_EQ, NEWLINE, PLUS_EQ, R_BRACE, R_BRACKET, RETURN_STMT, STMT_BLOCK, TEMP_DECL, WHILE_STMT,
 };
 
 use super::Parser;
 
-/// Parse a logic line: `~ statement NEWLINE?`.
-///
-/// Optionally consumes a trailing NEWLINE if present. Used both at the
-/// statement level (where a newline is expected) and inside multiline
-/// branch bodies (where the parent manages newlines).
+/// Parse a logic line: `~ statement NEWLINE?`, or a T1b multi-line block
+/// `~ { … }` (docs/t1b-surface-spec.md §2) when the expression position
+/// opens with `{`.
 ///
 /// ```text
-/// logic_line = { "~" ~ (return_statement | temp_declaration | assignment | expression) ~ NEWLINE? }
+/// logic_line = { "~" ~ (stmt_block | return_statement | temp_declaration | assignment | expression) ~ NEWLINE? }
 /// ```
 pub(crate) fn logic_line(p: &mut Parser<'_, '_>) {
     p.start_node(LOGIC_LINE);
     p.bump(); // TILDE
     p.skip_ws();
+
+    if p.current() == L_BRACE {
+        stmt_block(p);
+        p.skip_ws();
+        if p.at(NEWLINE) {
+            p.bump();
+        }
+        p.finish_node();
+        return;
+    }
 
     match p.current() {
         KW_RETURN => return_statement(p),
@@ -36,20 +45,41 @@ pub(crate) fn logic_line(p: &mut Parser<'_, '_>) {
     p.finish_node();
 }
 
-/// Check if the identifier is followed by an assignment operator (=, +=, -=).
-/// We must not confuse `=` in `== knot ==` or bare `=` in stitch headers.
+/// Check if an indexable lvalue (`ident`, `ident.path`, `ident[i]`, chained)
+/// is followed by an assignment operator (=, +=, -=). Must not confuse `=`
+/// in `== knot ==` or bare `=` in stitch headers.
 fn is_assignment_ahead(p: &Parser<'_, '_>) -> bool {
-    let next = p.nth(1);
-    matches!(next, EQ | PLUS_EQ | MINUS_EQ) && !(next == EQ && p.nth(2) == EQ)
+    let mut i = 1; // nth(0) is already known to be IDENT by the caller
+    while p.nth(i) == DOT && p.nth(i + 1) == IDENT {
+        i += 2;
+    }
+    while p.nth(i) == L_BRACKET {
+        i += 1;
+        let mut depth = 1i32;
+        loop {
+            match p.nth(i) {
+                L_BRACKET => depth += 1,
+                R_BRACKET => depth -= 1,
+                EOF | NEWLINE => return false, // unterminated — not an assignment
+                _ => {}
+            }
+            i += 1;
+            if depth == 0 {
+                break;
+            }
+        }
+    }
+    let next = p.nth(i);
+    matches!(next, EQ | PLUS_EQ | MINUS_EQ) && !(next == EQ && p.nth(i + 1) == EQ)
 }
 
-/// Parse `return expr?`.
+/// Parse `return expr?`. The value is absent when followed directly by a
+/// statement terminator: end of line, end of block (`}`), or EOF.
 fn return_statement(p: &mut Parser<'_, '_>) {
     p.start_node(RETURN_STMT);
     p.bump(); // KW_RETURN
     p.skip_ws();
-    // Optional expression
-    if !matches!(p.current(), NEWLINE | EOF) {
+    if !matches!(p.current(), NEWLINE | EOF | R_BRACE) {
         super::expression::expression(p);
     }
     p.finish_node();
@@ -70,15 +100,29 @@ fn temp_declaration(p: &mut Parser<'_, '_>) {
     p.finish_node();
 }
 
-/// Parse `ident op= expr`.
+/// Parse `lvalue op= expr`, where `lvalue` is a (possibly indexed, T1b §4)
+/// path: `ident`, `ident.path`, or `ident[i]`/chained `grid[y][x]`.
 fn assignment(p: &mut Parser<'_, '_>) {
     p.start_node(ASSIGNMENT);
-    super::divert::path(p);
+    indexable_lvalue(p);
     p.skip_ws();
     assignment_op(p);
     p.skip_ws();
     super::expression::expression(p);
     p.finish_node();
+}
+
+/// Parse a path, then any trailing postfix index chain (`a[0]`, `grid[y][x]`)
+/// — the shared shape between an expression-position `INDEX_EXPR` and an
+/// assignment lvalue (T1b §4).
+fn indexable_lvalue(p: &mut Parser<'_, '_>) {
+    let checkpoint = p.checkpoint();
+    super::divert::path(p);
+    while p.current() == L_BRACKET {
+        p.start_node_at(checkpoint, INDEX_EXPR);
+        super::expression::index_bracket(p);
+        p.finish_node();
+    }
 }
 
 /// Consume an assignment operator: `=`, `+=`, or `-=`.
@@ -92,4 +136,157 @@ fn assignment_op(p: &mut Parser<'_, '_>) {
             p.error("expected assignment operator".into());
         }
     }
+}
+
+// ─── T1b multi-line blocks (docs/t1b-surface-spec.md §2) ────────────────
+
+/// Parse `{ stmt* }` — a braced statement list. Used for the top-level
+/// `~ { … }` block body and every nested `if`/`while`/`for` body.
+/// Depth-guarded like expression nesting (`if`/`while`/`for` bodies recurse
+/// through `stmt_block`).
+pub(super) fn stmt_block(p: &mut Parser<'_, '_>) {
+    p.start_node(STMT_BLOCK);
+    p.skip_ws();
+    p.bump(); // {
+
+    if p.at_depth_limit() {
+        p.error("nesting depth limit exceeded".into());
+        let mut depth = 1u32;
+        while !p.at_eof() && depth > 0 {
+            match p.current() {
+                L_BRACE => {
+                    depth += 1;
+                    p.bump();
+                }
+                R_BRACE => {
+                    depth -= 1;
+                    if depth > 0 {
+                        p.bump();
+                    }
+                }
+                _ => p.bump(),
+            }
+        }
+        if p.current() == R_BRACE {
+            p.bump();
+        }
+        p.finish_node();
+        return;
+    }
+
+    p.depth += 1;
+    loop {
+        p.skip_ws();
+        while p.at(NEWLINE) {
+            p.bump();
+            p.skip_ws();
+        }
+        if p.at(R_BRACE) || p.at_eof() {
+            break;
+        }
+        let before = p.pos();
+        block_stmt(p);
+        if p.pos() == before {
+            p.error_recover("unexpected token in block");
+        }
+        p.skip_ws();
+        if p.at(NEWLINE) {
+            p.bump();
+        }
+    }
+    p.skip_ws();
+    p.expect(R_BRACE);
+    p.depth -= 1;
+    p.finish_node();
+}
+
+/// Dispatch a single statement inside a `~ { … }` block (T1b §2).
+///
+/// `if`/`while`/`for`/`break`/`continue`/`in` are contextual (soft)
+/// keywords — plain `IDENT` tokens recognized only here by text, so they
+/// stay ordinary identifiers everywhere else in the grammar (knot names,
+/// variables, function names). `else` is a real, pre-existing ink keyword
+/// (already reserved for conditional `else:` branches), reused as-is.
+fn block_stmt(p: &mut Parser<'_, '_>) {
+    match p.current() {
+        KW_RETURN => return_statement(p),
+        KW_TEMP => temp_declaration(p),
+        IDENT if p.at_kw_text("if") => if_stmt(p),
+        IDENT if p.at_kw_text("while") => while_stmt(p),
+        IDENT if p.at_kw_text("for") => for_stmt(p),
+        IDENT if p.at_kw_text("break") => {
+            p.start_node(BREAK_STMT);
+            p.bump();
+            p.finish_node();
+        }
+        IDENT if p.at_kw_text("continue") => {
+            p.start_node(CONTINUE_STMT);
+            p.bump();
+            p.finish_node();
+        }
+        IDENT if is_assignment_ahead(p) => assignment(p),
+        _ => expr_stmt(p),
+    }
+}
+
+/// `if cond { … } (else if cond { … })* (else { … })?`.
+fn if_stmt(p: &mut Parser<'_, '_>) {
+    p.start_node(IF_STMT);
+    p.bump(); // "if" (IDENT)
+    p.skip_ws();
+    super::expression::expression(p);
+    p.skip_ws();
+    stmt_block(p);
+    p.skip_ws();
+    if p.at(KW_ELSE) {
+        p.start_node(ELSE_CLAUSE);
+        p.bump(); // else
+        p.skip_ws();
+        if p.at_kw_text("if") {
+            if_stmt(p); // else-if chain
+        } else {
+            stmt_block(p);
+        }
+        p.finish_node();
+    }
+    p.finish_node();
+}
+
+/// `while cond { … }`.
+fn while_stmt(p: &mut Parser<'_, '_>) {
+    p.start_node(WHILE_STMT);
+    p.bump(); // "while" (IDENT)
+    p.skip_ws();
+    super::expression::expression(p);
+    p.skip_ws();
+    stmt_block(p);
+    p.finish_node();
+}
+
+/// `for name in expr { … }`.
+fn for_stmt(p: &mut Parser<'_, '_>) {
+    p.start_node(FOR_STMT);
+    p.bump(); // "for" (IDENT)
+    p.skip_ws();
+    p.start_node(IDENTIFIER);
+    p.expect(IDENT);
+    p.finish_node();
+    p.skip_ws();
+    if p.at_kw_text("in") {
+        p.bump();
+    } else {
+        p.error("expected 'in'".into());
+    }
+    p.skip_ws();
+    super::expression::expression(p);
+    p.skip_ws();
+    stmt_block(p);
+    p.finish_node();
+}
+
+/// A bare expression statement inside a block (function/external calls).
+fn expr_stmt(p: &mut Parser<'_, '_>) {
+    p.start_node(EXPR_STMT);
+    super::expression::expression(p);
+    p.finish_node();
 }

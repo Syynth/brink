@@ -7,6 +7,7 @@
 mod literals;
 mod operators;
 mod references;
+mod sigils;
 
 use brink_syntax::ast;
 
@@ -42,6 +43,9 @@ impl LowerExpr for ast::Expr {
             ast::Expr::FunctionCall(fc) => fc.lower_expr(scope, sink),
             ast::Expr::DivertTarget(dt) => dt.lower_expr(scope, sink),
             ast::Expr::ListExpr(le) => le.lower_expr(scope, sink),
+            ast::Expr::ArrayLiteral(al) => al.lower_expr(scope, sink),
+            ast::Expr::MapLiteral(ml) => ml.lower_expr(scope, sink),
+            ast::Expr::Index(ie) => ie.lower_expr(scope, sink),
         }
     }
 }

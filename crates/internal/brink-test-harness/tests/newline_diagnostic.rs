@@ -107,6 +107,7 @@ fn stmt_name(s: &Stmt) -> &'static str {
         Stmt::Sequence(_) => "Sequence",
         Stmt::ExprStmt(_) => "ExprStmt",
         Stmt::EndOfLine => "EndOfLine",
+        Stmt::LogicBlock(_) => "LogicBlock",
     }
 }
 

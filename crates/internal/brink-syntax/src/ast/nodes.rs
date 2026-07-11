@@ -112,6 +112,24 @@ ast_node!(ArgList, ARG_LIST);
 ast_node!(DivertTargetExpr, DIVERT_TARGET_EXPR);
 ast_node!(ListExpr, LIST_EXPR);
 
+// ── T1b superset: sigil literals + indexing (docs/t1b-surface-spec.md §3-4) ──
+
+ast_node!(ArrayLiteral, ARRAY_LITERAL);
+ast_node!(MapLiteral, MAP_LITERAL);
+ast_node!(MapEntry, MAP_ENTRY);
+ast_node!(IndexExpr, INDEX_EXPR);
+
+// ── T1b superset: multi-line `~ { … }` blocks (docs/t1b-surface-spec.md §2) ──
+
+ast_node!(StmtBlock, STMT_BLOCK);
+ast_node!(IfStmt, IF_STMT);
+ast_node!(ElseClause, ELSE_CLAUSE);
+ast_node!(WhileStmt, WHILE_STMT);
+ast_node!(ForStmt, FOR_STMT);
+ast_node!(BreakStmt, BREAK_STMT);
+ast_node!(ContinueStmt, CONTINUE_STMT);
+ast_node!(ExprStmt, EXPR_STMT);
+
 // ── Diverts ──────────────────────────────────────────────────────────
 
 ast_node!(DivertNode, DIVERT_NODE);
@@ -167,6 +185,12 @@ pub enum Expr {
     Path(Path),
     ListExpr(ListExpr),
     DivertTarget(DivertTargetExpr),
+    /// `#[expr, …]` — array sigil literal (T1b §3, brink extension).
+    ArrayLiteral(ArrayLiteral),
+    /// `#{key: expr, …}` — map sigil literal (T1b §3, brink extension).
+    MapLiteral(MapLiteral),
+    /// `base[index]` — postfix indexing (T1b §4, brink extension).
+    Index(IndexExpr),
 }
 
 impl std::fmt::Debug for Expr {
@@ -197,6 +221,9 @@ impl crate::ast::AstNode for Expr {
                 | SyntaxKind::PATH
                 | SyntaxKind::LIST_EXPR
                 | SyntaxKind::DIVERT_TARGET_EXPR
+                | SyntaxKind::ARRAY_LITERAL
+                | SyntaxKind::MAP_LITERAL
+                | SyntaxKind::INDEX_EXPR
         )
     }
 
@@ -214,6 +241,9 @@ impl crate::ast::AstNode for Expr {
             SyntaxKind::PATH => Path::cast(node).map(Expr::Path),
             SyntaxKind::LIST_EXPR => ListExpr::cast(node).map(Expr::ListExpr),
             SyntaxKind::DIVERT_TARGET_EXPR => DivertTargetExpr::cast(node).map(Expr::DivertTarget),
+            SyntaxKind::ARRAY_LITERAL => ArrayLiteral::cast(node).map(Expr::ArrayLiteral),
+            SyntaxKind::MAP_LITERAL => MapLiteral::cast(node).map(Expr::MapLiteral),
+            SyntaxKind::INDEX_EXPR => IndexExpr::cast(node).map(Expr::Index),
             _ => None,
         }
     }
@@ -232,6 +262,9 @@ impl crate::ast::AstNode for Expr {
             Expr::Path(n) => n.syntax(),
             Expr::ListExpr(n) => n.syntax(),
             Expr::DivertTarget(n) => n.syntax(),
+            Expr::ArrayLiteral(n) => n.syntax(),
+            Expr::MapLiteral(n) => n.syntax(),
+            Expr::Index(n) => n.syntax(),
         }
     }
 }
@@ -526,6 +559,12 @@ impl LogicLine {
     pub fn assignment(&self) -> Option<Assignment> {
         support::child(&self.syntax)
     }
+
+    /// The T1b `~ { … }` multi-line block body, if this logic line opens one
+    /// (docs/t1b-surface-spec.md §2) rather than a single statement.
+    pub fn stmt_block(&self) -> Option<StmtBlock> {
+        support::child(&self.syntax)
+    }
 }
 
 // ── TagLine ──────────────────────────────────────────────────────────
@@ -591,6 +630,213 @@ impl Assignment {
 
     /// Returns the right-hand side value expression (the second `Expr` child).
     pub fn value(&self) -> Option<Expr> {
+        self.syntax.children().filter_map(Expr::cast).nth(1)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// T1b superset: multi-line `~ { … }` blocks (docs/t1b-surface-spec.md §2)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// A single statement inside a `~ { … }` block body.
+///
+/// Deliberately excludes every weave concept (content, choices, diverts,
+/// gathers, threads) — the seam rule from docs/t1b-surface-spec.md §2:
+/// blocks compute, weave flows.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum BlockStmt {
+    TempDecl(TempDecl),
+    Assignment(Assignment),
+    Return(ReturnStmt),
+    If(IfStmt),
+    While(WhileStmt),
+    For(ForStmt),
+    Break(BreakStmt),
+    Continue(ContinueStmt),
+    ExprStmt(ExprStmt),
+}
+
+impl std::fmt::Debug for BlockStmt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.syntax(), f)
+    }
+}
+
+impl crate::ast::AstNode for BlockStmt {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        matches!(
+            kind,
+            SyntaxKind::TEMP_DECL
+                | SyntaxKind::ASSIGNMENT
+                | SyntaxKind::RETURN_STMT
+                | SyntaxKind::IF_STMT
+                | SyntaxKind::WHILE_STMT
+                | SyntaxKind::FOR_STMT
+                | SyntaxKind::BREAK_STMT
+                | SyntaxKind::CONTINUE_STMT
+                | SyntaxKind::EXPR_STMT
+        )
+    }
+
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        match node.kind() {
+            SyntaxKind::TEMP_DECL => TempDecl::cast(node).map(BlockStmt::TempDecl),
+            SyntaxKind::ASSIGNMENT => Assignment::cast(node).map(BlockStmt::Assignment),
+            SyntaxKind::RETURN_STMT => ReturnStmt::cast(node).map(BlockStmt::Return),
+            SyntaxKind::IF_STMT => IfStmt::cast(node).map(BlockStmt::If),
+            SyntaxKind::WHILE_STMT => WhileStmt::cast(node).map(BlockStmt::While),
+            SyntaxKind::FOR_STMT => ForStmt::cast(node).map(BlockStmt::For),
+            SyntaxKind::BREAK_STMT => BreakStmt::cast(node).map(BlockStmt::Break),
+            SyntaxKind::CONTINUE_STMT => ContinueStmt::cast(node).map(BlockStmt::Continue),
+            SyntaxKind::EXPR_STMT => ExprStmt::cast(node).map(BlockStmt::ExprStmt),
+            _ => None,
+        }
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        match self {
+            BlockStmt::TempDecl(n) => n.syntax(),
+            BlockStmt::Assignment(n) => n.syntax(),
+            BlockStmt::Return(n) => n.syntax(),
+            BlockStmt::If(n) => n.syntax(),
+            BlockStmt::While(n) => n.syntax(),
+            BlockStmt::For(n) => n.syntax(),
+            BlockStmt::Break(n) => n.syntax(),
+            BlockStmt::Continue(n) => n.syntax(),
+            BlockStmt::ExprStmt(n) => n.syntax(),
+        }
+    }
+}
+
+// ── StmtBlock ────────────────────────────────────────────────────────
+
+impl StmtBlock {
+    /// The statements in this block, in source order.
+    pub fn stmts(&self) -> impl Iterator<Item = BlockStmt> {
+        support::children(&self.syntax)
+    }
+}
+
+// ── IfStmt ───────────────────────────────────────────────────────────
+
+impl IfStmt {
+    /// The condition expression (the first `Expr` child).
+    pub fn condition(&self) -> Option<Expr> {
+        self.syntax.children().find_map(Expr::cast)
+    }
+
+    /// The `{ … }` body executed when the condition holds.
+    pub fn body(&self) -> Option<StmtBlock> {
+        support::child(&self.syntax)
+    }
+
+    /// The `else` arm, if present.
+    pub fn else_clause(&self) -> Option<ElseClause> {
+        support::child(&self.syntax)
+    }
+}
+
+// ── ElseClause ───────────────────────────────────────────────────────
+
+impl ElseClause {
+    /// The nested `if` for an `else if` chain, if this is one.
+    pub fn if_stmt(&self) -> Option<IfStmt> {
+        support::child(&self.syntax)
+    }
+
+    /// The `{ … }` body for a bare `else`, if this is one (mutually
+    /// exclusive with [`ElseClause::if_stmt`]).
+    pub fn body(&self) -> Option<StmtBlock> {
+        support::child(&self.syntax)
+    }
+}
+
+// ── WhileStmt ────────────────────────────────────────────────────────
+
+impl WhileStmt {
+    pub fn condition(&self) -> Option<Expr> {
+        self.syntax.children().find_map(Expr::cast)
+    }
+
+    pub fn body(&self) -> Option<StmtBlock> {
+        support::child(&self.syntax)
+    }
+}
+
+// ── ForStmt ──────────────────────────────────────────────────────────
+
+impl ForStmt {
+    /// The loop variable name.
+    pub fn identifier(&self) -> Option<Identifier> {
+        support::child(&self.syntax)
+    }
+
+    pub fn name(&self) -> Option<String> {
+        self.identifier().and_then(|id| id.name())
+    }
+
+    /// The iterable expression (after `in`).
+    pub fn iterable(&self) -> Option<Expr> {
+        self.syntax.children().find_map(Expr::cast)
+    }
+
+    pub fn body(&self) -> Option<StmtBlock> {
+        support::child(&self.syntax)
+    }
+}
+
+// ── ExprStmt ─────────────────────────────────────────────────────────
+
+impl ExprStmt {
+    pub fn expr(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// T1b superset: sigil literals + indexing (docs/t1b-surface-spec.md §3-4)
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── ArrayLiteral ─────────────────────────────────────────────────────
+
+impl ArrayLiteral {
+    pub fn elements(&self) -> impl Iterator<Item = Expr> {
+        support::children(&self.syntax)
+    }
+}
+
+// ── MapLiteral ───────────────────────────────────────────────────────
+
+impl MapLiteral {
+    pub fn entries(&self) -> impl Iterator<Item = MapEntry> {
+        support::children(&self.syntax)
+    }
+}
+
+// ── MapEntry ─────────────────────────────────────────────────────────
+
+impl MapEntry {
+    /// The key expression (the first `Expr` child).
+    pub fn key(&self) -> Option<Expr> {
+        self.syntax.children().find_map(Expr::cast)
+    }
+
+    /// The value expression (the second `Expr` child).
+    pub fn value(&self) -> Option<Expr> {
+        self.syntax.children().filter_map(Expr::cast).nth(1)
+    }
+}
+
+// ── IndexExpr ────────────────────────────────────────────────────────
+
+impl IndexExpr {
+    /// The base being indexed (the first `Expr` child) — `a` in `a[i]`.
+    pub fn base(&self) -> Option<Expr> {
+        self.syntax.children().find_map(Expr::cast)
+    }
+
+    /// The index expression (the second `Expr` child) — `i` in `a[i]`.
+    pub fn index(&self) -> Option<Expr> {
         self.syntax.children().filter_map(Expr::cast).nth(1)
     }
 }

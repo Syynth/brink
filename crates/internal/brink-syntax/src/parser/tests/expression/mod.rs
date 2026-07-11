@@ -58,6 +58,91 @@ fn postfix_increment() {
     check("~ x++\n");
 }
 
+// ── T1b superset: sigil literals + indexing (docs/t1b-surface-spec.md §3-4) ──
+
+#[test]
+fn array_literal_empty() {
+    check("~ x = #[]\n");
+}
+
+#[test]
+fn array_literal_basic() {
+    check("~ x = #[1, 2, 3]\n");
+}
+
+#[test]
+fn array_literal_trailing_comma() {
+    check("~ x = #[1, 2, 3,]\n");
+}
+
+#[test]
+fn map_literal_empty() {
+    check("~ x = #{}\n");
+}
+
+#[test]
+fn map_literal_basic() {
+    check("~ x = #{\"a\": 1, \"b\": 2}\n");
+}
+
+#[test]
+fn map_literal_trailing_comma() {
+    check("~ x = #{\"a\": 1,}\n");
+}
+
+#[test]
+fn sigil_literal_nesting() {
+    check("~ x = #[#{\"a\": 1}, #{\"a\": 2}]\n");
+}
+
+#[test]
+fn index_basic() {
+    check("~ x = a[0]\n");
+}
+
+#[test]
+fn index_string_key() {
+    check("~ x = m[\"k\"]\n");
+}
+
+#[test]
+fn index_chained() {
+    check("~ x = grid[y][x]\n");
+}
+
+#[test]
+fn index_on_array_literal() {
+    check("~ x = #[1, 2, 3][0]\n");
+}
+
+#[test]
+fn indexed_assignment_basic() {
+    check("~ a[0] = 5\n");
+}
+
+#[test]
+fn indexed_assignment_chained() {
+    check("~ grid[y][x] = v\n");
+}
+
+#[test]
+fn insta_array_literal() {
+    let p = parse("~ x = #[1, 2, 3]\n");
+    insta::assert_snapshot!(format!("{:#?}", p.syntax()));
+}
+
+#[test]
+fn insta_map_literal() {
+    let p = parse("~ x = #{\"a\": 1}\n");
+    insta::assert_snapshot!(format!("{:#?}", p.syntax()));
+}
+
+#[test]
+fn insta_index_chained() {
+    let p = parse("~ grid[y][x] = v\n");
+    insta::assert_snapshot!(format!("{:#?}", p.syntax()));
+}
+
 #[test]
 fn function_call() {
     check("~ x = foo(1, 2)\n");

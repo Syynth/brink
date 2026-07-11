@@ -208,7 +208,9 @@ fn lower_lir(source: &str) -> lir::Program {
         &result.resolutions,
         &std::collections::HashMap::new(),
     );
-    program
+    // unwrap: SOURCE is plain ink, so the residual-extension backstop
+    // (E053) never fires and `program` is always `Some`.
+    program.unwrap()
 }
 
 #[test]

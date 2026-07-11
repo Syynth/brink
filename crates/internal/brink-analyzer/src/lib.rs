@@ -5,6 +5,7 @@
 //! duplicate detection, type checking). Both `brink-compiler` and `brink-lsp`
 //! consume the analysis result.
 
+mod dialect_gate;
 mod external_check;
 mod manifest;
 mod resolve;
@@ -16,6 +17,7 @@ use std::sync::Arc;
 
 pub use brink_ir::FileId;
 pub use brink_ir::ResolutionMap;
+pub use dialect_gate::Dialect;
 pub use external_check::{
     ExternalCheckSeverity, InferredType, ResolvedParam, ResolvedType,
     SemanticTypeDiagnosticSeverity, SymbolMeta, ValueMeta,
@@ -41,6 +43,11 @@ pub struct AnalysisOptions {
     /// `Error` to re-enable strict checking with no manifest registered
     /// (#532).
     pub semantic_type_check: SemanticTypeDiagnosticSeverity,
+    /// T1b compiler dialect: gates brink-extension syntax (blocks, sigil
+    /// literals, indexing). Defaults to `StrictInk` — an authoring-time/
+    /// tooling input only, mount-time (CLI flag) in T1b-1; project-file
+    /// config is out of scope (docs/t1b-surface-spec.md §1, #368 precedent).
+    pub dialect: Dialect,
 }
 
 /// The output of cross-file semantic analysis.
@@ -146,6 +153,7 @@ pub fn finish_analysis(
     let hir_inputs: Vec<(FileId, &HirFile)> = files.iter().map(|&(id, hir, _)| (id, hir)).collect();
 
     diagnostics.extend(validate::validate(&hir_inputs));
+    diagnostics.extend(dialect_gate::check(&hir_inputs, opts.dialect));
 
     // Host-manifest enrichment + checks (tooling/author-time only).
     let inline_docs = collect_inline_docs(&manifest_inputs);

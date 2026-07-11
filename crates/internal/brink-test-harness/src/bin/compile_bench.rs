@@ -480,6 +480,13 @@ fn staged_back_half(driver: &mut Driver, entry: FileId) -> Result<StageMs, Strin
         &analysis.resolutions,
         &file_paths,
     );
+    let Some(program) = program else {
+        return Err(
+            "unexpected LIR lowering failure during staged run: residual-extension backstop \
+             fired (E053) — a T1b brink-extension HIR node reached LIR lowering"
+                .to_string(),
+        );
+    };
     let lir_lower = ms(start);
 
     let start = Instant::now();

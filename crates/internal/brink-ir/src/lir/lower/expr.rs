@@ -88,6 +88,28 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
         hir::Expr::Postfix(inner, op) => lir::Expr::Postfix(Box::new(lower_expr(inner, ctx)), *op),
 
         hir::Expr::Call(path, args) => lower_call(path, args, ctx),
+
+        // T1b brink-extension expressions (docs/t1b-surface-spec.md §3-4).
+        // `brink-analyzer`'s dialect gate (E051/E052) is supposed to reject
+        // these before LIR lowering runs, but that gate is a suppressible
+        // *analysis* diagnostic (`// brink-disable-all` / line directives),
+        // so it is not a hard guarantee on its own. The real,
+        // non-suppressible guard is `lower_to_program`'s
+        // `check_residual_extensions` backstop: it scans for exactly these
+        // node kinds and bails out with an error-severity `E053` diagnostic
+        // — and `None` program — before any lowering function (including
+        // this one) is ever called. So this arm is unreachable in practice.
+        // `lower_expr` still has no diagnostic sink of its own (it's
+        // infallible by signature), so the `tracing::error!`-then-`Null`
+        // fallback below stays purely as defense in depth, matching the
+        // unresolved-call branch in `lower_call`.
+        hir::Expr::ArrayLiteral(_) | hir::Expr::MapLiteral(_) | hir::Expr::Index(_) => {
+            tracing::error!(
+                "ICE: T1b brink-extension expression reached LIR lowering — \
+                 the dialect gate should have rejected it before this point"
+            );
+            lir::Expr::Null
+        }
     }
 }
 

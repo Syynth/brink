@@ -9,6 +9,7 @@ mod content_line;
 mod divert_node;
 mod helpers;
 mod inline_logic;
+mod logic_block;
 mod logic_line;
 mod multiline_block;
 mod tag_line;
