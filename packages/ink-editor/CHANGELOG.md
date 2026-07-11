@@ -1,5 +1,29 @@
 # @brink-lang/editor
 
+## 0.9.1
+
+### Patch Changes
+
+- 66457c1: Fixed a silent dialect-classification drop in `computeLineInfos` (#426):
+  when a mounted view's wasm document handle was present but not yet synced
+  (or a host's `line_contexts_doc` returned `[]`, as some test/mock sessions
+  do), every line was classified via the bare regex fallback and the TS
+  dialect interpreter (`applyDialectFallback`) was never run — character cues,
+  parentheticals, and chained dialogue lines silently rendered as plain
+  narrative with no diagnostic. The same TS dialect fallback the no-handle
+  path already ran is now also run over the regex-classified tail whenever the
+  handle yields fewer line contexts than the document has lines, so dialect
+  classification survives that path.
+- 8f20d1e: HIR overlay now refreshes when the initial compile completes (#494). The
+  overlay's projection StateField seeded at view creation — before the first
+  async compile/analysis finished — and only recomputed on doc-changing
+  transactions, so a passively loaded file rendered no `brink-hir-*` marks or
+  rails until the first edit. `DocumentSessions` now dispatches a redecorate
+  effect to every mounted view whenever a compile result is delivered, and the
+  new `refreshHirOverlay(view)` / `refreshHirOverlayEffect` exports let hosts
+  with custom wiring re-read the projection from their own compile-complete
+  signal (mirrors `refreshGutterMarkers`).
+
 ## 0.9.0
 
 ### Minor Changes
