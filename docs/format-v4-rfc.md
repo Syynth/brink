@@ -83,6 +83,14 @@ descriptor)`, `CallValue(argc)`.
 `RecordNew(ShapeId)`, `RecordGet(offset)`, `RecordSet(offset)`,
 `RecordGetDyn(NameId)` (untyped fallback).
 
+**Methods need no wire surface** (completeness note): the typed
+dialect's method calls are statically dispatched — `x.f(args)`
+compiles to a direct call with the receiver as an implicit `ref`
+projection (`f(ref x, args)`), so no dispatch opcodes, method tables,
+or value tags exist beyond what this RFC already specifies. Data-
+carried function values (closure in a map/record field) use
+`VAL_FN_REF`/`VAL_CLOSURE` + `CallValue` as-is.
+
 ## 4. Compatibility & discipline
 
 - Reader stays strict (`version != 4` rejects). Converter output is
