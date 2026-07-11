@@ -27,6 +27,37 @@ fn resolve_diagnostics(driver: &Driver, diags: Vec<Diagnostic>) -> Vec<ResolvedD
         .collect()
 }
 
+/// Discover the project and point the db's queries at `entry`.
+///
+/// Batch compilation is now query-shaped (scripting-substrate spec §5): this
+/// sets the layer-0 inputs (file texts, entry, analysis options); the caller
+/// pulls the query it needs (`lir_product` or `story_data`).
+fn prepare_driver<F>(
+    entry: &str,
+    read_file: F,
+    options: AnalysisOptions,
+) -> Result<(Driver, brink_ir::FileId), CompileError>
+where
+    F: FnMut(&str) -> Result<String, io::Error>,
+{
+    info!(entry, "starting compilation");
+
+    let mut driver = Driver::new();
+    driver.set_analysis_options(options);
+    driver.discover(entry, read_file)?;
+
+    let file_count = driver.db().file_ids().count();
+    info!(file_count, "all files discovered");
+
+    let entry_id = driver.db_mut().set_entry(entry).ok_or_else(|| {
+        CompileError::Io(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("entry file not found after discovery: {entry}"),
+        ))
+    })?;
+    Ok((driver, entry_id))
+}
+
 /// Run the full compilation pipeline through LIR lowering.
 fn compile_lir<F>(
     entry: &str,
@@ -36,58 +67,28 @@ fn compile_lir<F>(
 where
     F: FnMut(&str) -> Result<String, io::Error>,
 {
-    info!(entry, "starting compilation");
+    let (driver, _entry_id) = prepare_driver(entry, read_file, options)?;
 
-    // ── Pass 1-2: Discover, parse, and lower all files ──────────────
-    let mut driver = Driver::new();
-    driver.set_analysis_options(options);
-    driver.discover(entry, read_file)?;
+    let product = driver
+        .db()
+        .lir_product()
+        .cloned()
+        .unwrap_or_default();
 
-    let file_count = driver.db().file_ids().count();
-    info!(file_count, "all files parsed and lowered");
-
-    // ── Pass 3-5: Analyze ───────────────────────────────────────────
-    let analysis = driver.analyze().clone();
-
-    info!(
-        symbols = analysis.index.symbols.len(),
-        diagnostics = analysis.diagnostics.len(),
-        "analysis complete"
-    );
-
-    // ── Collect and partition diagnostics ────────────────────────────
-    let entry_id = driver.db().file_id(entry).ok_or_else(|| {
-        CompileError::Io(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("entry file not found after discovery: {entry}"),
-        ))
-    })?;
-
-    let report = driver.collect_diagnostics(&analysis, Some(entry_id));
-
-    if !report.errors.is_empty() {
-        let mut all = report.errors;
-        all.extend(report.warnings);
+    let Some(program) = product.program else {
+        let mut all = product.errors;
+        all.extend(product.warnings);
         return Err(CompileError::Diagnostics(resolve_diagnostics(&driver, all)));
-    }
-
-    // ── Pass 6a: Build LIR ────────────────────────────────────────
-    let (files, file_paths) = driver.lir_inputs(entry_id);
-    let (program, lir_warnings) = brink_ir::lir::lower_to_program(
-        &files,
-        &analysis.index,
-        &analysis.resolutions,
-        &file_paths,
-    );
-
-    let mut warnings = report.warnings;
-    warnings.extend(lir_warnings);
+    };
 
     info!(globals = program.globals.len(), "LIR lowering complete");
 
     // Resolve FileId→path at the boundary, while the driver's map is alive.
-    let warnings = resolve_diagnostics(&driver, warnings);
-    Ok(LirOutput { program, warnings })
+    let warnings = resolve_diagnostics(&driver, product.warnings);
+    Ok(LirOutput {
+        program: std::sync::Arc::unwrap_or_clone(program),
+        warnings,
+    })
 }
 
 /// Compile to LIR — public for the JSON backend.
@@ -109,6 +110,8 @@ where
 /// Run the full compilation pipeline with explicit analysis options — e.g. a
 /// registered host-capability manifest and its external-check severity, so
 /// manifest-driven diagnostics surface in the compile output.
+///
+/// Batch compile = pull the `story_data` query (spec §5).
 pub fn compile_with_options<F>(
     entry: &str,
     read_file: F,
@@ -117,11 +120,22 @@ pub fn compile_with_options<F>(
 where
     F: FnMut(&str) -> Result<String, io::Error>,
 {
-    let lir_output = compile_lir(entry, read_file, options)?;
+    let (driver, _entry_id) = prepare_driver(entry, read_file, options)?;
 
-    // ── Pass 6b: Codegen ────────────────────────────────────────────
+    let product = driver
+        .db()
+        .story_data()
+        .cloned()
+        .unwrap_or_default();
+
+    let Some(story) = product.story else {
+        let mut all = product.errors;
+        all.extend(product.warnings);
+        return Err(CompileError::Diagnostics(resolve_diagnostics(&driver, all)));
+    };
+
     Ok(CompileOutput {
-        data: brink_codegen_inkb::emit(&lir_output.program),
-        warnings: lir_output.warnings,
+        data: std::sync::Arc::unwrap_or_clone(story),
+        warnings: resolve_diagnostics(&driver, product.warnings),
     })
 }

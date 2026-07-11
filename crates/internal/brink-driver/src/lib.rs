@@ -20,8 +20,6 @@ pub use discover::DiscoverError;
 /// Pipeline orchestration wrapper around `ProjectDb`.
 pub struct Driver {
     db: ProjectDb,
-    analysis: Option<AnalysisResult>,
-    analysis_options: AnalysisOptions,
 }
 
 impl Driver {
@@ -29,26 +27,19 @@ impl Driver {
     pub fn new() -> Self {
         Self {
             db: ProjectDb::new(),
-            analysis: None,
-            analysis_options: AnalysisOptions::default(),
         }
     }
 
     /// Create a driver from an existing database.
     pub fn from_db(db: ProjectDb) -> Self {
-        Self {
-            db,
-            analysis: None,
-            analysis_options: AnalysisOptions::default(),
-        }
+        Self { db }
     }
 
     /// Set the analysis options (e.g. a registered host manifest + external
-    /// check severity) used by [`analyze`](Self::analyze). Invalidates any
-    /// cached analysis.
+    /// check severity) used by [`analyze`](Self::analyze). An input write —
+    /// dependent queries recompute on next read.
     pub fn set_analysis_options(&mut self, options: AnalysisOptions) {
-        self.analysis_options = options;
-        self.analysis = None;
+        self.db.set_analysis_options(options);
     }
 
     /// Borrow the underlying database.
@@ -58,10 +49,9 @@ impl Driver {
 
     /// Mutably borrow the underlying database.
     ///
-    /// Invalidates the cached analysis result, since any mutation may change
-    /// HIR/manifest data that analysis depends on.
+    /// Salsa's dependency tracking invalidates derived queries on input
+    /// writes, so no manual cache invalidation happens here.
     pub fn db_mut(&mut self) -> &mut ProjectDb {
-        self.analysis = None;
         &mut self.db
     }
 
@@ -82,26 +72,10 @@ impl Driver {
 
     // ── Analysis ─────────────────────────────────────────────────────
 
-    /// Run cross-file analysis on all files (or return cached result).
-    #[expect(
-        clippy::expect_used,
-        reason = "analysis is always Some after the if-block above"
-    )]
+    /// Run cross-file analysis on all files (memoized by the db's `analysis`
+    /// query — an unchanged project returns the cached result).
     pub fn analyze(&mut self) -> &AnalysisResult {
-        if self.analysis.is_none() {
-            let inputs = self.db.analysis_inputs();
-            let files: Vec<_> = inputs
-                .iter()
-                .map(|(id, hir, manifest)| (*id, hir, manifest))
-                .collect();
-
-            tracing::info!(files = files.len(), "running cross-file analysis");
-            self.analysis = Some(brink_analyzer::analyze_with_options(
-                &files,
-                &self.analysis_options,
-            ));
-        }
-        self.analysis.as_ref().expect("just set above")
+        self.db.analysis()
     }
 
     /// Run analysis on a specific subset of files (one project). Not cached.

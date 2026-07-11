@@ -1,10 +1,8 @@
 //! Diagnostic collection, suppression, and partitioning.
 
-use std::collections::HashMap;
-
 use brink_analyzer::AnalysisResult;
-use brink_db::ProjectDb;
-use brink_ir::{Diagnostic, FileId, Severity};
+use brink_db::{FileDiagnostics, ProjectDb, partition_diagnostics};
+use brink_ir::{Diagnostic, FileId};
 
 /// Partitioned diagnostics after suppression filtering.
 pub struct DiagnosticReport {
@@ -18,59 +16,32 @@ pub struct DiagnosticReport {
 ///
 /// `entry`: if `Some`, checks its suppressions for `disable_all` (compiler mode).
 ///          if `None`, analysis diagnostics are always included (LSP mode).
+///
+/// The partitioning core is shared with the db's `lir` query
+/// ([`brink_db::partition_diagnostics`]) so the two paths cannot drift.
 pub fn collect_diagnostics(
     db: &ProjectDb,
     analysis: &AnalysisResult,
     entry: Option<FileId>,
 ) -> DiagnosticReport {
-    let mut errors = Vec::new();
-    let mut warnings = Vec::new();
-
     // Check if the entry file has brink-disable-all
     let disable_all = entry
         .and_then(|id| db.suppressions(id))
         .is_some_and(|s| s.disable_all);
 
-    // Per-file lowering diagnostics
-    for id in db.file_ids() {
-        let raw: Vec<Diagnostic> = db.file_diagnostics(id).unwrap_or_default().to_vec();
-        let source = db.source(id).unwrap_or_default();
-        let suppressions = db.suppressions(id).cloned().unwrap_or_default();
-        let filtered = brink_ir::suppressions::apply_suppressions(id, source, raw, &suppressions);
-        for d in filtered {
-            if d.code.severity() == Severity::Error {
-                errors.push(d);
-            } else {
-                warnings.push(d);
-            }
-        }
-    }
+    let inputs: Vec<FileDiagnostics<'_>> = db
+        .file_ids()
+        .filter_map(|id| {
+            Some(FileDiagnostics {
+                file: id,
+                source: db.source(id)?,
+                suppressions: db.suppressions(id)?,
+                lowering: db.file_diagnostics(id)?,
+            })
+        })
+        .collect();
 
-    // Analysis diagnostics (unless disable_all)
-    if !disable_all {
-        let mut by_file: HashMap<FileId, Vec<Diagnostic>> = HashMap::new();
-        for d in &analysis.diagnostics {
-            by_file.entry(d.file).or_default().push(d.clone());
-        }
-        // Sort by FileId for determinism
-        let mut file_ids: Vec<_> = by_file.keys().copied().collect();
-        file_ids.sort_by_key(|id| id.0);
-        for fid in file_ids {
-            let diags = by_file.remove(&fid).unwrap_or_default();
-            let source = db.source(fid).unwrap_or_default();
-            let suppressions = db.suppressions(fid).cloned().unwrap_or_default();
-            let filtered =
-                brink_ir::suppressions::apply_suppressions(fid, source, diags, &suppressions);
-            for d in filtered {
-                if d.code.severity() == Severity::Error {
-                    errors.push(d);
-                } else {
-                    warnings.push(d);
-                }
-            }
-        }
-    }
-
+    let (errors, warnings) = partition_diagnostics(&inputs, &analysis.diagnostics, disable_all);
     DiagnosticReport { errors, warnings }
 }
 
