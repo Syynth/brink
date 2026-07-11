@@ -158,3 +158,57 @@ describe("inline-style sweep", () => {
     picker.destroy();
   });
 });
+
+// ── Replaced-range widget audit (#427) ───────────────────────────────
+//
+// #421's regression test (structural-decoration-attrs.test.ts) proved
+// `.cm-line` never carries a `style` attribute under `theme: false` — but
+// that only covers LINE decorations. `screenplay.ts` also has two
+// replaced-RANGE widgets that were never swept by #363/#414:
+// `DepthSigilWidget` (the superscript-depth glyph that replaces a nested
+// choice/gather's `*`/`-` sigil run) and the sigil-hiding widget used for
+// dialect hidden geometry — the `@`/`:<>` cue affixes and `(`/`)<>`
+// parenthetical glue (both render as `.brink-hidden-sigil`). Both already
+// carry only a `className` (no `.style.*` writes in `toDOM`) — this audit
+// proves it holds under both the default theme and headless (`theme:
+// false`), guarding the #363 "no inline styles" contract against a future
+// regression the way #421 does for line decorations.
+describe("replaced-range widgets (#427)", () => {
+  const mount = (doc: string, theme: false | undefined = undefined): EditorView =>
+    new EditorView({
+      state: EditorState.create({
+        doc,
+        extensions: [brinkStudio(theme === false ? { ...minimal, theme: false } : minimal)],
+      }),
+      parent: document.body,
+    });
+
+  it.each([
+    ["default theme", undefined],
+    ["headless (theme: false)", false],
+  ] as const)("depth-sigil widget carries no inline style — %s", (_label, theme) => {
+    const view = mount("* Option A\n    * * Nested A1\n        A1 body.\n", theme);
+    const sigils = [...view.dom.querySelectorAll<HTMLElement>(".brink-depth-sigil")];
+    expect(sigils.length).toBeGreaterThan(0);
+    for (const sigil of sigils) {
+      expect(sigil.hasAttribute("style")).toBe(false);
+    }
+    view.destroy();
+  });
+
+  it.each([
+    ["default theme", undefined],
+    ["headless (theme: false)", false],
+  ] as const)(
+    "hidden-sigil widget (character/parenthetical dialect glyphs) carries no inline style — %s",
+    (_label, theme) => {
+      const view = mount("@Alice:<>\n(quietly)<>\nHello there.\n", theme);
+      const sigils = [...view.dom.querySelectorAll<HTMLElement>(".brink-hidden-sigil")];
+      expect(sigils.length).toBeGreaterThan(0);
+      for (const sigil of sigils) {
+        expect(sigil.hasAttribute("style")).toBe(false);
+      }
+      view.destroy();
+    },
+  );
+});
