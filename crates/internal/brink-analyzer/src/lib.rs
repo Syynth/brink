@@ -38,7 +38,10 @@ pub struct AnalysisOptions {
 }
 
 /// The output of cross-file semantic analysis.
-#[derive(Debug, Clone)]
+///
+/// `PartialEq` supports early-cutoff backdating when the result is produced
+/// by the salsa `analysis` query in `brink-db`.
+#[derive(Debug, Clone, PartialEq)]
 pub struct AnalysisResult {
     /// The unified symbol index.
     pub index: Arc<SymbolIndex>,
@@ -101,8 +104,6 @@ pub fn analyze_with_options(
         .map(|&(id, _hir, manifest)| (id, manifest))
         .collect();
 
-    let hir_inputs: Vec<(FileId, &HirFile)> = files.iter().map(|&(id, hir, _)| (id, hir)).collect();
-
     let (index, mut diagnostics) = symbol_index(&manifest_inputs);
     let mut resolutions = ResolutionMap::new();
     for &(file_id, manifest) in &manifest_inputs {
@@ -110,6 +111,34 @@ pub fn analyze_with_options(
         resolutions.extend(Arc::unwrap_or_clone(file_map));
         diagnostics.extend(file_diags);
     }
+
+    finish_analysis(files, index, resolutions, diagnostics, opts)
+}
+
+/// Assemble the final [`AnalysisResult`] from the already-computed layer-2
+/// pieces (index + per-file resolutions), running the remaining monolithic
+/// passes: validation, host-manifest enrichment/checks, and value-meta
+/// inference.
+///
+/// Query-shaped seam for the scripting substrate: `brink-db`'s salsa
+/// `analysis` query composes [`symbol_index`] and per-file [`resolve`]
+/// queries and then calls this — the same back half [`analyze_with_options`]
+/// runs — so the query-composed result is identical to the monolithic one by
+/// construction.
+pub fn finish_analysis(
+    files: &[(FileId, &HirFile, &SymbolManifest)],
+    index: Arc<SymbolIndex>,
+    resolutions: ResolutionMap,
+    mut diagnostics: Vec<Diagnostic>,
+    opts: &AnalysisOptions,
+) -> AnalysisResult {
+    let manifest_inputs: Vec<(FileId, &SymbolManifest)> = files
+        .iter()
+        .map(|&(id, _hir, manifest)| (id, manifest))
+        .collect();
+
+    let hir_inputs: Vec<(FileId, &HirFile)> = files.iter().map(|&(id, hir, _)| (id, hir)).collect();
+
     diagnostics.extend(validate::validate(&hir_inputs));
 
     // Host-manifest enrichment + checks (tooling/author-time only).

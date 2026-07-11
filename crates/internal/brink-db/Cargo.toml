@@ -12,7 +12,14 @@ description = "Incremental project database for inkle's ink narrative scripting 
 [dependencies]
 brink-syntax = { workspace = true }
 brink-ir = { workspace = true }
+# brink-db owns ALL query APIs (scripting-substrate spec §3): it is the one
+# crate that knows salsa exists. That pulls the analyzer and the inkb backend
+# up into its dependency set so the layer-2/3 queries can be defined here.
+brink-analyzer = { workspace = true }
+brink-codegen-inkb = { workspace = true }
+brink-format = { workspace = true }
 rowan.workspace = true
+salsa.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 

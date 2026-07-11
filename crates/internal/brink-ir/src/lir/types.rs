@@ -6,6 +6,7 @@ use crate::{AssignOp, InfixOp, PostfixOp, PrefixOp, SequenceType};
 
 /// The complete LIR program — a single merged, resolved representation
 /// of all source files, ready for backend consumption.
+#[derive(Clone)]
 pub struct Program {
     /// The root container — the top of the container tree.
     /// Child containers (knots, stitches, gathers, choice targets)
@@ -34,6 +35,7 @@ pub struct Program {
 // ─── Definitions ─────────────────────────────────────────────────────
 
 /// A global variable or constant definition with its compile-time default.
+#[derive(Clone)]
 pub struct GlobalDef {
     pub id: DefinitionId,
     pub name: NameId,
@@ -45,6 +47,7 @@ pub struct GlobalDef {
 }
 
 /// A list definition.
+#[derive(Clone)]
 pub struct ListDef {
     pub id: DefinitionId,
     pub name: NameId,
@@ -53,6 +56,7 @@ pub struct ListDef {
 }
 
 /// A single list item, independently addressable by its `DefinitionId`.
+#[derive(Clone)]
 pub struct ListItemDef {
     pub id: DefinitionId,
     pub name: NameId,
@@ -62,6 +66,7 @@ pub struct ListItemDef {
 }
 
 /// An external function declaration.
+#[derive(Clone)]
 pub struct ExternalDef {
     pub id: DefinitionId,
     pub name: NameId,
@@ -102,6 +107,7 @@ pub enum ConstValue {
     clippy::struct_excessive_bools,
     reason = "independent structural flags, not a state machine"
 )]
+#[derive(Clone)]
 pub struct Container {
     pub id: DefinitionId,
     /// Local name of this container (e.g. `"order"` for stitch `tavern.order`).
@@ -162,6 +168,7 @@ pub enum ContainerKind {
 }
 
 /// A parameter on a container (knot, stitch, or function).
+#[derive(Clone)]
 pub struct Param {
     pub name: NameId,
     /// The temp slot index this parameter occupies in the call frame.
