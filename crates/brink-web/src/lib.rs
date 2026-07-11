@@ -1480,7 +1480,6 @@ fn value_to_typed_js(v: &Value, program: &brink_runtime::Program) -> TypedValueJ
         Value::String(s) => TypedValueJs::String {
             value: s.to_string(),
         },
-        Value::Null => TypedValueJs::Null,
         Value::List(list) => TypedValueJs::List {
             items: program
                 .list_members(list)
@@ -1495,9 +1494,15 @@ fn value_to_typed_js(v: &Value, program: &brink_runtime::Program) -> TypedValueJ
         Value::DivertTarget(id) => TypedValueJs::Divert {
             path: program.divert_target_path(*id),
         },
-        Value::VariablePointer(_) | Value::TempPointer { .. } | Value::FragmentRef(_) => {
-            TypedValueJs::Null
-        }
+        // Array/Map gain a typed-JS mapping when T1b emits their opcodes; no
+        // opcode produces a collection yet, so these are unreachable and add no
+        // JS-observable behavior (hence no changeset).
+        Value::Null
+        | Value::VariablePointer(_)
+        | Value::TempPointer { .. }
+        | Value::FragmentRef(_)
+        | Value::Array(_)
+        | Value::Map(_) => TypedValueJs::Null,
     }
 }
 

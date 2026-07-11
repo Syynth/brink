@@ -24,6 +24,8 @@ pub(crate) fn is_truthy(v: &Value) -> bool {
         | Value::TempPointer { .. }
         | Value::FragmentRef(_) => true,
         Value::List(lv) => !lv.items.is_empty(),
+        Value::Array(items) => !items.is_empty(),
+        Value::Map(map) => !map.is_empty(),
     }
 }
 
@@ -43,6 +45,30 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
         // FragmentRef resolution happens in resolve_part, not stringify.
         // This fallback is for computation contexts where FragmentRef shouldn't appear.
         Value::FragmentRef(idx) => format!("<fragment:{idx}>"),
+        // Collections are runtime-only until T1b emits their opcodes; the
+        // author-facing output format is a T1b concern. This provisional
+        // rendering keeps `stringify` total and is not reachable while the
+        // collection opcodes are inert.
+        Value::Array(items) => {
+            let parts: Vec<String> = items.iter().map(|v| stringify(v, program)).collect();
+            format!("[{}]", parts.join(", "))
+        }
+        Value::Map(map) => {
+            let parts: Vec<String> = map
+                .iter()
+                .map(|(k, v)| format!("{}: {}", stringify_map_key(k), stringify(v, program)))
+                .collect();
+            format!("{{{}}}", parts.join(", "))
+        }
+    }
+}
+
+/// Provisional stringify for a map key (see [`stringify`]'s collection arms).
+fn stringify_map_key(key: &brink_format::MapKey) -> String {
+    match key {
+        brink_format::MapKey::Int(n) => n.to_string(),
+        brink_format::MapKey::Str(s) => s.to_string(),
+        brink_format::MapKey::Bool(b) => if *b { "true" } else { "false" }.to_owned(),
     }
 }
 

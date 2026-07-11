@@ -136,6 +136,19 @@ impl<'a> Resolver<'a> {
             Value::VariablePointer(id) => format!("ref {}", self.gname(*id)),
             Value::TempPointer { slot, frame_depth } => format!("temp[{slot}]@{frame_depth}"),
             Value::FragmentRef(idx) => format!("<fragment {idx}>"),
+            // Collections are runtime-only until T1b emits their opcodes, so
+            // these arms are unreachable and JS-unobservable in this version.
+            Value::Array(items) => {
+                let parts: Vec<String> = items.iter().map(|v| self.format_value(v)).collect();
+                format!("[{}]", parts.join(", "))
+            }
+            Value::Map(map) => {
+                let parts: Vec<String> = map
+                    .iter()
+                    .map(|(k, v)| format!("{k:?}: {}", self.format_value(v)))
+                    .collect();
+                format!("{{{}}}", parts.join(", "))
+            }
         }
     }
 }

@@ -19,7 +19,7 @@ use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, SelectKey};
 use crate::opcode::{ChoiceFlags, Opcode, SequenceKind};
 use crate::story::StoryData;
-use crate::value::{ListValue, Value, ValueType};
+use crate::value::{ListValue, MapKey, Value, ValueType};
 
 /// Write the textual (.inkt) representation of a compiled story.
 pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
@@ -545,6 +545,8 @@ fn value_type_name(vt: ValueType) -> &'static str {
         ValueType::TempPointer => "temp_pointer",
         ValueType::Null => "null",
         ValueType::FragmentRef => "fragment_ref",
+        ValueType::Array => "array",
+        ValueType::Map => "map",
     }
 }
 
@@ -580,6 +582,37 @@ fn write_value(w: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
         }
         Value::Null => write!(w, "null"),
         Value::FragmentRef(idx) => write!(w, "(fragment_ref {idx})"),
+        // Array/Map get their textual `.inkt` form with the T1a-4 literal pool
+        // (#526); no opcode emits a collection literal yet, so these are
+        // unreachable in this format version. The debug rendering below exists
+        // only to keep the match total.
+        Value::Array(items) => {
+            write!(w, "(array")?;
+            for item in items.iter() {
+                write!(w, " ")?;
+                write_value(w, item)?;
+            }
+            write!(w, ")")
+        }
+        Value::Map(map) => {
+            write!(w, "(map")?;
+            for (key, value) in map.iter() {
+                write!(w, " (")?;
+                write_map_key(w, key)?;
+                write!(w, " ")?;
+                write_value(w, value)?;
+                write!(w, ")")?;
+            }
+            write!(w, ")")
+        }
+    }
+}
+
+fn write_map_key(w: &mut dyn fmt::Write, key: &MapKey) -> fmt::Result {
+    match key {
+        MapKey::Int(n) => write!(w, "{n}"),
+        MapKey::Str(s) => write!(w, "\"{}\"", escape_string(s)),
+        MapKey::Bool(b) => write!(w, "{b}"),
     }
 }
 

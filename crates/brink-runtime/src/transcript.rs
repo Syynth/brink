@@ -494,7 +494,10 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
             write_u8(buf, VAL_FRAGMENT_REF);
             write_u32(buf, *idx);
         }
-        Value::TempPointer { .. } | Value::Null => {
+        // TempPointer is runtime-only. Array/Map get their transcript tree
+        // encoding in T1a-3 (#525); no opcode emits a collection yet, so
+        // neither can appear in a serialized transcript in this version.
+        Value::TempPointer { .. } | Value::Null | Value::Array(_) | Value::Map(_) => {
             write_u8(buf, VAL_NULL);
         }
     }
