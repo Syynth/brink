@@ -2012,3 +2012,77 @@ Busy.
     );
     assert!(all_lines.contains("spoken"), "plain tags survive");
 }
+
+/// `#@local` declares that a knot/stitch's counts are per-flow memory —
+/// the compiler must set `CountingFlags::VISITS` on the marked container
+/// (and the scope-owning containers in its subtree, i.e. a marked knot's
+/// stitches) even when nothing in the ink reads the count. Without this,
+/// the read-site optimization compiles counting out and there is nothing
+/// to privatize (#496).
+#[test]
+fn local_directive_implies_visits_counting() {
+    let files: HashMap<&str, &str> = HashMap::from([(
+        "main.ink",
+        "\
+-> guard
+
+== guard ==
+#@local
+Halt!
+-> inner
+
+= inner
+Deeper.
+-> END
+
+== plaza ==
+Busy.
+-> nook
+
+= nook
+#@local
+Quiet.
+-> END
+",
+    )]);
+
+    let story = compile_mem("main.ink", &files).unwrap();
+
+    let name = |id: brink_format::NameId| story.name_table[id.0 as usize].as_str();
+    let container = |wanted: &str| {
+        story
+            .containers
+            .iter()
+            .find(|c| c.name.is_some_and(|n| name(n) == wanted))
+            .unwrap_or_else(|| {
+                let names: Vec<_> = story
+                    .containers
+                    .iter()
+                    .filter_map(|c| c.name.map(name))
+                    .collect();
+                panic!("container {wanted:?} not found; named containers: {names:?}")
+            })
+    };
+    let visits = |wanted: &str| {
+        container(wanted)
+            .counting_flags
+            .contains(brink_format::CountingFlags::VISITS)
+    };
+
+    // The marked knot: no read site anywhere, VISITS forced anyway.
+    assert!(visits("guard"), "#@local knot implies VISITS");
+    // Scope-owning child of the marked knot: covered by the subtree rule
+    // (the runtime privatizes the whole definition subtree, so the
+    // stitch's count must exist too).
+    assert!(
+        visits("guard.inner"),
+        "stitch under a #@local knot implies VISITS"
+    );
+    // A marked stitch inside an unmarked knot: the stitch is forced...
+    assert!(visits("plaza.nook"), "#@local stitch implies VISITS");
+    // ...but the read-site optimization stays intact everywhere else.
+    assert!(
+        !visits("plaza"),
+        "unmarked, unread knot keeps counting compiled out"
+    );
+}
