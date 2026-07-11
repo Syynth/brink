@@ -3,6 +3,11 @@ use std::collections::HashMap;
 use brink_ir::FileId;
 
 /// Tracks `INCLUDE` relationships between files.
+///
+/// Built by the `include_graph` tracked query in [`crate::queries`];
+/// `PartialEq` (order-independent on the underlying maps) enables salsa
+/// early-cutoff for dependents when edges are unchanged.
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct IncludeGraph {
     /// file → files it includes
     forward: HashMap<FileId, Vec<FileId>>,

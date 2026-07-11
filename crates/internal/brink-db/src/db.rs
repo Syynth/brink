@@ -1,210 +1,124 @@
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
-use brink_ir::suppressions::{Suppressions, parse_suppressions};
-use brink_ir::{
-    Diagnostic, DiagnosticCode, FileId, HirFile, SymbolManifest, lower, lower_single_knot,
-    lower_top_level,
-};
-use brink_syntax::ast::AstNode as _;
-use brink_syntax::{Parse, parse_with_cache};
-use rowan::{GreenNode, NodeCache};
+use brink_analyzer::{AnalysisOptions, AnalysisResult, Sig};
+use brink_format::DefinitionId;
+use brink_ir::suppressions::Suppressions;
+use brink_ir::{Diagnostic, FileId, HirFile, ResolutionMap, SymbolIndex, SymbolManifest};
+use brink_syntax::Parse;
+use salsa::Setter as _;
 use tracing::debug;
 
-use crate::file_state::{FileState, TopLevelEntry};
-use crate::include_graph::IncludeGraph;
-use crate::knot_cache::KnotEntry;
+use crate::queries::{
+    BrinkDatabase, CompileProduct, DefKey, LirProduct, ProjectInput, SourceFile, analysis_query,
+    diagnostics_query, include_graph_query, lir_query, lowered_query, parse_query, resolve_query,
+    signature_query, story_data_query, suppressions_query, symbol_index_query,
+};
 
 /// Stateful incremental project database.
 ///
-/// Caches parsed trees and lowered HIR per file, enabling efficient re-analysis
-/// when individual files change. Both the compiler (one-shot) and LSP
-/// (long-lived) use this as their project model.
+/// A thin, path-keyed shell around a [salsa](https://github.com/salsa-rs/salsa)
+/// database: file texts are salsa inputs, and every derived artifact (parse
+/// tree, HIR, symbol index, resolutions, LIR, `StoryData`) is a memoized
+/// tracked query with real dependency tracking and early cutoff. Both the
+/// compiler (one-shot) and LSP/IDE (long-lived) use this as their project
+/// model; editor overlays are plain input writes.
 pub struct ProjectDb {
-    files: HashMap<FileId, FileState>,
+    salsa: BrinkDatabase,
+    project: ProjectInput,
+    files: HashMap<FileId, SourceFile>,
     path_to_id: HashMap<String, FileId>,
     id_to_path: HashMap<FileId, String>,
     next_id: u32,
-    include_graph: IncludeGraph,
-    node_cache: NodeCache,
 }
 
 impl ProjectDb {
     /// Create an empty project database.
     pub fn new() -> Self {
+        let salsa = BrinkDatabase::default();
+        let project = ProjectInput::new(&salsa, Vec::new(), None, AnalysisOptions::default());
         Self {
+            salsa,
+            project,
             files: HashMap::new(),
             path_to_id: HashMap::new(),
             id_to_path: HashMap::new(),
             next_id: 0,
-            include_graph: IncludeGraph::new(),
-            node_cache: NodeCache::default(),
         }
     }
 
-    /// Add or replace a file. Performs full parse + lower + cache.
+    /// Add or replace a file. An existing file's text is overwritten in
+    /// place (an input write); derived queries recompute lazily on next read.
     pub fn set_file(&mut self, path: &str, source: String) -> FileId {
         let file_id = self.get_or_create_id(path);
 
-        let parse = parse_with_cache(&source, &mut self.node_cache);
-        let tree = parse.tree();
-
-        // Per-knot lowering
-        let knot_entries: Vec<KnotEntry> = tree
-            .knots()
-            .map(|knot_ast| {
-                let green = knot_ast.syntax().green().into();
-                let offset = knot_ast.syntax().text_range().start();
-                let (knot, manifest, diagnostics) = lower_single_knot(file_id, &knot_ast);
-                KnotEntry {
-                    green,
-                    offset,
-                    knot,
-                    manifest,
-                    diagnostics,
-                }
-            })
-            .collect();
-
-        // Top-level lowering
-        let top_level = Self::lower_top_level_entry(file_id, &tree);
-
-        // Assemble full HirFile and SymbolManifest
-        let (hir, manifest, mut diagnostics) =
-            Self::assemble(file_id, &knot_entries, &top_level, &tree);
-        // Surface parser/syntax errors as compile diagnostics alongside lowering.
-        diagnostics.extend(Self::syntax_diagnostics(file_id, &parse));
-
-        let suppressions = parse_suppressions(&source);
-
-        let state = FileState {
-            source,
-            parse,
-            knot_entries,
-            top_level,
-            hir,
-            manifest,
-            diagnostics,
-            suppressions,
-        };
-
-        // Update include graph
-        let include_ids: Vec<FileId> = state
-            .hir
-            .includes
-            .iter()
-            .filter_map(|inc| {
-                let resolved = resolve_include_path(path, &inc.file_path);
-                self.path_to_id.get(&resolved).copied()
-            })
-            .collect();
-        self.include_graph.update(file_id, include_ids);
-
-        self.files.insert(file_id, state);
+        if let Some(&file) = self.files.get(&file_id) {
+            file.set_text(&mut self.salsa).to(source);
+        } else {
+            let file = SourceFile::new(&self.salsa, file_id, path.to_string(), source);
+            self.files.insert(file_id, file);
+            // Ids are allocated monotonically, so pushing keeps the project
+            // file list sorted by `FileId`.
+            let mut list = self.project.files(&self.salsa).clone();
+            list.push(file);
+            self.project.set_files(&mut self.salsa).to(list);
+        }
 
         debug!(path, id = file_id.0, "set_file complete");
         file_id
     }
 
-    /// Incrementally update a file. Re-parses, diffs knots by green-node
-    /// identity, and only re-lowers changed knots.
+    /// Incrementally update a file. Identical to [`set_file`](Self::set_file):
+    /// salsa's dependency tracking decides what recomputes.
     pub fn update_file(&mut self, path: &str, source: String) -> FileId {
-        let file_id = self.get_or_create_id(path);
-
-        // If the file doesn't exist yet, fall through to set_file
-        if !self.files.contains_key(&file_id) {
-            return self.set_file(path, source);
-        }
-
-        let parse = parse_with_cache(&source, &mut self.node_cache);
-        let tree = parse.tree();
-
-        // Top-level is always re-lowered (cheap relative to knots)
-        let top_level = Self::lower_top_level_entry(file_id, &tree);
-
-        // Diff knots by green-node identity
-        let new_knot_asts: Vec<_> = tree.knots().collect();
-        let old_state = self.files.get(&file_id);
-
-        let mut knot_entries = Vec::with_capacity(new_knot_asts.len());
-        let mut reused = 0u32;
-
-        for (i, knot_ast) in new_knot_asts.iter().enumerate() {
-            let new_green: GreenNode = knot_ast.syntax().green().into();
-
-            let new_offset = knot_ast.syntax().text_range().start();
-            let reuse_entry = old_state
-                .and_then(|s| s.knot_entries.get(i))
-                .filter(|old| old.green == new_green && old.offset == new_offset);
-
-            if let Some(old_entry) = reuse_entry {
-                knot_entries.push(KnotEntry {
-                    green: new_green,
-                    offset: new_offset,
-                    knot: old_entry.knot.clone(),
-                    manifest: old_entry.manifest.clone(),
-                    diagnostics: old_entry.diagnostics.clone(),
-                });
-                reused += 1;
-            } else {
-                let (knot, manifest, diagnostics) = lower_single_knot(file_id, knot_ast);
-                knot_entries.push(KnotEntry {
-                    green: new_green,
-                    offset: new_offset,
-                    knot,
-                    manifest,
-                    diagnostics,
-                });
-            }
-        }
-
-        debug!(
-            path,
-            total = new_knot_asts.len(),
-            reused,
-            "knot diff complete"
-        );
-
-        let (hir, manifest, mut diagnostics) =
-            Self::assemble(file_id, &knot_entries, &top_level, &tree);
-        diagnostics.extend(Self::syntax_diagnostics(file_id, &parse));
-
-        let suppressions = parse_suppressions(&source);
-
-        let state = FileState {
-            source,
-            parse,
-            knot_entries,
-            top_level,
-            hir,
-            manifest,
-            diagnostics,
-            suppressions,
-        };
-
-        // Update include graph
-        let include_ids: Vec<FileId> = state
-            .hir
-            .includes
-            .iter()
-            .filter_map(|inc| {
-                let resolved = resolve_include_path(path, &inc.file_path);
-                self.path_to_id.get(&resolved).copied()
-            })
-            .collect();
-        self.include_graph.update(file_id, include_ids);
-
-        self.files.insert(file_id, state);
-
-        file_id
+        self.set_file(path, source)
     }
 
     /// Remove a file from the database.
     pub fn remove_file(&mut self, path: &str) {
         if let Some(id) = self.path_to_id.remove(path) {
             self.id_to_path.remove(&id);
-            self.files.remove(&id);
-            self.include_graph.remove(id);
+            if self.files.remove(&id).is_some() {
+                let list: Vec<SourceFile> = self
+                    .project
+                    .files(&self.salsa)
+                    .iter()
+                    .copied()
+                    .filter(|f| f.file_id(&self.salsa) != id)
+                    .collect();
+                self.project.set_files(&mut self.salsa).to(list);
+            }
+            if self.project.entry(&self.salsa) == Some(id) {
+                self.project.set_entry(&mut self.salsa).to(None);
+            }
         }
+    }
+
+    /// Set the compile entry point (for the [`lir_product`](Self::lir_product)
+    /// and [`story_data`](Self::story_data) queries). The file must already
+    /// be in the database.
+    pub fn set_entry(&mut self, path: &str) -> Option<FileId> {
+        let id = self.file_id(path)?;
+        if self.project.entry(&self.salsa) != Some(id) {
+            self.project.set_entry(&mut self.salsa).to(Some(id));
+        }
+        Some(id)
+    }
+
+    /// The current compile entry point, if any.
+    pub fn entry(&self) -> Option<FileId> {
+        self.project.entry(&self.salsa)
+    }
+
+    /// Set the analysis options (host manifest + external-check severity)
+    /// used by the [`analysis`](Self::analysis) and downstream queries.
+    pub fn set_analysis_options(&mut self, options: AnalysisOptions) {
+        self.project.set_analysis_options(&mut self.salsa).to(options);
+    }
+
+    /// The analysis options currently registered with the database.
+    pub fn analysis_options(&self) -> &AnalysisOptions {
+        self.project.analysis_options(&self.salsa)
     }
 
     /// Look up a file's ID by path.
@@ -227,81 +141,66 @@ impl ProjectDb {
     /// Return file IDs in topological include order (included files before
     /// the files that include them), matching ink's `INCLUDE` paste semantics.
     pub fn file_ids_topo(&self, entry: FileId) -> Vec<FileId> {
-        let all: Vec<_> = self.files.keys().copied().collect();
-        self.include_graph.topological_order(entry, &all)
+        let all: Vec<_> = self.file_ids().collect();
+        self.include_graph().topological_order(entry, &all)
     }
 
-    /// Get the cached parse tree for a file.
+    /// Get the parse tree for a file.
     pub fn parse(&self, id: FileId) -> Option<&Parse> {
-        self.files.get(&id).map(|s| &s.parse)
+        let file = self.files.get(&id)?;
+        Some(parse_query(&self.salsa, *file))
     }
 
-    /// Get the cached HIR for a file.
+    /// Get the HIR for a file.
     pub fn hir(&self, id: FileId) -> Option<&HirFile> {
-        self.files.get(&id).map(|s| &s.hir)
+        let file = self.files.get(&id)?;
+        Some(&lowered_query(&self.salsa, *file).hir)
     }
 
-    /// Get the cached symbol manifest for a file.
+    /// Get the symbol manifest for a file.
     pub fn manifest(&self, id: FileId) -> Option<&SymbolManifest> {
-        self.files.get(&id).map(|s| &s.manifest)
+        let file = self.files.get(&id)?;
+        Some(&lowered_query(&self.salsa, *file).manifest)
     }
 
     /// Get the source text for a file.
     pub fn source(&self, id: FileId) -> Option<&str> {
-        self.files.get(&id).map(|s| s.source.as_str())
+        let file = self.files.get(&id)?;
+        Some(file.text(&self.salsa).as_str())
     }
 
     /// Get per-file diagnostics (parse + lowering).
     pub fn file_diagnostics(&self, id: FileId) -> Option<&[Diagnostic]> {
-        self.files.get(&id).map(|s| s.diagnostics.as_slice())
+        let file = self.files.get(&id)?;
+        Some(lowered_query(&self.salsa, *file).diagnostics.as_slice())
     }
 
     /// Get parsed suppression directives for a file.
     pub fn suppressions(&self, id: FileId) -> Option<&Suppressions> {
-        self.files.get(&id).map(|s| &s.suppressions)
+        let file = self.files.get(&id)?;
+        Some(suppressions_query(&self.salsa, *file))
     }
 
     /// Rebuild include graph edges for all files.
     ///
-    /// Must be called after batch-loading files (e.g. workspace discovery)
-    /// because `set_file` can only create edges to files already in the db.
-    /// Files loaded before their include targets will have missing edges.
-    pub fn rebuild_include_graph(&mut self) {
-        let file_list: Vec<(FileId, String)> = self
-            .files
-            .keys()
-            .filter_map(|&id| self.id_to_path.get(&id).map(|p| (id, p.clone())))
-            .collect();
-
-        for (file_id, file_path) in &file_list {
-            if let Some(state) = self.files.get(file_id) {
-                let include_ids: Vec<FileId> = state
-                    .hir
-                    .includes
-                    .iter()
-                    .filter_map(|inc| {
-                        let resolved = resolve_include_path(file_path, &inc.file_path);
-                        self.path_to_id.get(&resolved).copied()
-                    })
-                    .collect();
-                self.include_graph.update(*file_id, include_ids);
-            }
-        }
-    }
+    /// No-op since the salsa migration: the include graph is a tracked query
+    /// over the full file set and is always complete. Kept so batch-loading
+    /// call sites need no change.
+    pub fn rebuild_include_graph(&mut self) {}
 
     /// Detect cycles in the include graph.
     ///
     /// Returns the first cycle found as an ordered path of file IDs.
     pub fn find_cycle(&self) -> Option<Vec<FileId>> {
-        self.include_graph.find_cycle()
+        self.include_graph().find_cycle()
     }
 
     /// Compute independent projects from include relationships.
     ///
     /// Returns `(root, members)` pairs sorted by root `FileId`.
     pub fn compute_projects(&self) -> Vec<(FileId, Vec<FileId>)> {
-        let all: Vec<_> = self.files.keys().copied().collect();
-        self.include_graph.compute_projects(&all)
+        let all: Vec<_> = self.file_ids().collect();
+        self.include_graph().compute_projects(&all)
     }
 
     /// All files reachable from `entry` via the forward `INCLUDE` graph,
@@ -311,7 +210,7 @@ impl ProjectDb {
     /// [`BTreeSet`], so iteration order is deterministic regardless of graph
     /// internals — callers that compare or render the set get stable output.
     pub fn reachable_from(&self, entry: FileId) -> BTreeSet<FileId> {
-        self.include_graph.reachable_from(entry)
+        self.include_graph().reachable_from(entry)
     }
 
     /// Snapshot analysis inputs for a subset of files.
@@ -324,8 +223,9 @@ impl ProjectDb {
         let mut inputs: Vec<_> = file_ids
             .iter()
             .filter_map(|&id| {
-                let state = self.files.get(&id)?;
-                Some((id, state.hir.clone(), state.manifest.clone()))
+                let file = self.files.get(&id)?;
+                let lowered = lowered_query(&self.salsa, *file);
+                Some((id, lowered.hir.clone(), lowered.manifest.clone()))
             })
             .collect();
         inputs.sort_by_key(|(id, _, _)| id.0);
@@ -337,13 +237,8 @@ impl ProjectDb {
     /// Returns `(FileId, HirFile, SymbolManifest)` tuples cloned out of the db,
     /// so the caller can run `brink_analyzer::analyze()` without holding the lock.
     pub fn analysis_inputs(&self) -> Vec<(FileId, HirFile, SymbolManifest)> {
-        let mut inputs: Vec<_> = self
-            .files
-            .iter()
-            .map(|(&id, state)| (id, state.hir.clone(), state.manifest.clone()))
-            .collect();
-        inputs.sort_by_key(|(id, _, _)| id.0);
-        inputs
+        let ids: Vec<_> = self.file_ids().collect();
+        self.analysis_inputs_for(&ids)
     }
 
     /// Snapshot file metadata for diagnostic publishing.
@@ -352,18 +247,79 @@ impl ProjectDb {
     pub fn file_metadata(&self) -> Vec<(FileId, String, String)> {
         let mut meta: Vec<_> = self
             .files
-            .keys()
-            .filter_map(|&id| {
+            .iter()
+            .filter_map(|(&id, file)| {
                 let path = self.id_to_path.get(&id)?.clone();
-                let source = self.files.get(&id)?.source.clone();
-                Some((id, path, source))
+                Some((id, path, file.text(&self.salsa).clone()))
             })
             .collect();
         meta.sort_by_key(|(id, _, _)| id.0);
         meta
     }
 
+    // ── Query surface (scripting-substrate spec §4) ──────────────────
+
+    /// The merged project-wide symbol index (layer 2, `symbol_index()`).
+    pub fn symbol_index(&self) -> Arc<SymbolIndex> {
+        Arc::clone(&symbol_index_query(&self.salsa, self.project).0)
+    }
+
+    /// Indexing diagnostics (duplicate definitions, built-in shadowing)
+    /// produced alongside [`symbol_index`](Self::symbol_index).
+    pub fn symbol_index_diagnostics(&self) -> &[Diagnostic] {
+        &symbol_index_query(&self.salsa, self.project).1
+    }
+
+    /// One file's resolved references + resolution diagnostics (layer 2,
+    /// `resolve(FileId)`).
+    pub fn resolve(&self, id: FileId) -> Option<(Arc<ResolutionMap>, &[Diagnostic])> {
+        let file = self.files.get(&id)?;
+        let (map, diags) = resolve_query(&self.salsa, self.project, *file);
+        Some((Arc::clone(map), diags.as_slice()))
+    }
+
+    /// Per-declaration signature stub (layer 2, `signature(def)`). `None`
+    /// for an unknown definition id.
+    pub fn signature(&self, def: DefinitionId) -> Option<Arc<Sig>> {
+        signature_query(&self.salsa, self.project, DefKey::new(&self.salsa, def))
+    }
+
+    /// Full cross-file analysis over all files, honoring the registered
+    /// [`AnalysisOptions`]. Memoized; identical to
+    /// `brink_analyzer::analyze_with_options` over
+    /// [`analysis_inputs`](Self::analysis_inputs) by construction.
+    pub fn analysis(&self) -> &AnalysisResult {
+        analysis_query(&self.salsa, self.project)
+    }
+
+    /// Per-file diagnostics including this file's share of analysis
+    /// diagnostics (layer 3, `diagnostics(FileId)`). Raw — no suppression
+    /// filtering.
+    pub fn diagnostics(&self, id: FileId) -> Option<&[Diagnostic]> {
+        let file = self.files.get(&id)?;
+        Some(diagnostics_query(&self.salsa, self.project, *file).as_slice())
+    }
+
+    /// Whole-project LIR lowering (layer 3). `None` until an entry point is
+    /// set via [`set_entry`](Self::set_entry).
+    pub fn lir_product(&self) -> Option<&LirProduct> {
+        self.project.entry(&self.salsa)?;
+        Some(lir_query(&self.salsa, self.project))
+    }
+
+    /// Whole-project compile to [`brink_format::StoryData`] (layer 3,
+    /// `story_data()`). `None` until an entry point is set via
+    /// [`set_entry`](Self::set_entry).
+    pub fn story_data(&self) -> Option<&CompileProduct> {
+        self.project.entry(&self.salsa)?;
+        Some(story_data_query(&self.salsa, self.project))
+    }
+
     // ── Internal helpers ──────────────────────────────────────────────
+
+    fn include_graph(&self) -> &crate::include_graph::IncludeGraph {
+        include_graph_query(&self.salsa, self.project)
+    }
 
     fn get_or_create_id(&mut self, path: &str) -> FileId {
         if let Some(&id) = self.path_to_id.get(path) {
@@ -375,107 +331,12 @@ impl ProjectDb {
         self.id_to_path.insert(id, path.to_string());
         id
     }
-
-    fn lower_top_level_entry(
-        file_id: FileId,
-        tree: &brink_syntax::ast::SourceFile,
-    ) -> TopLevelEntry {
-        let green_children = Self::collect_top_level_green(tree);
-        let (root_content, top_level_knots, manifest, diagnostics) = lower_top_level(file_id, tree);
-        TopLevelEntry {
-            green_children,
-            root_content,
-            top_level_knots,
-            manifest,
-            diagnostics,
-        }
-    }
-
-    /// Collect green nodes of non-knot direct children for diffing.
-    fn collect_top_level_green(tree: &brink_syntax::ast::SourceFile) -> Vec<GreenNode> {
-        use brink_syntax::SyntaxKind;
-
-        tree.syntax()
-            .children()
-            .filter(|child| child.kind() != SyntaxKind::KNOT_DEF)
-            .map(|child| child.green().into())
-            .collect()
-    }
-
-    /// Assemble a complete `HirFile` and `SymbolManifest` from cached pieces.
-    fn assemble(
-        file_id: FileId,
-        knot_entries: &[KnotEntry],
-        top_level: &TopLevelEntry,
-        tree: &brink_syntax::ast::SourceFile,
-    ) -> (HirFile, SymbolManifest, Vec<Diagnostic>) {
-        // We need declarations from the full lower to build HirFile.
-        // lower_top_level only returns (Block, SymbolManifest, diagnostics).
-        // For the declarations (variables, constants, lists, externals, includes),
-        // we need to call `lower()` or extract them from the AST.
-        //
-        // Approach: use `lower()` to get the full HirFile, then replace knots
-        // with our cached versions. This means top-level lowering happens twice
-        // on change, but it's simple and correct.
-        let (mut full_hir, _full_manifest, _full_diag) = lower(file_id, tree);
-
-        // Replace knots with our cached (possibly reused) versions,
-        // plus any top-level stitches promoted to knots.
-        full_hir.knots = knot_entries.iter().filter_map(|e| e.knot.clone()).collect();
-        full_hir.knots.extend(top_level.top_level_knots.clone());
-        full_hir.root_content = top_level.root_content.clone();
-
-        // Merge manifests: top-level + all knots
-        let mut manifest = top_level.manifest.clone();
-        for entry in knot_entries {
-            merge_manifest_into(&mut manifest, &entry.manifest);
-        }
-
-        // Merge diagnostics
-        let mut diagnostics = top_level.diagnostics.clone();
-        for entry in knot_entries {
-            diagnostics.extend(entry.diagnostics.iter().cloned());
-        }
-
-        (full_hir, manifest, diagnostics)
-    }
-
-    /// Convert parser/syntax errors into compile diagnostics (`E037`), so
-    /// malformed source fails the compile instead of being silently ignored.
-    fn syntax_diagnostics(file_id: FileId, parse: &Parse) -> Vec<Diagnostic> {
-        parse
-            .errors()
-            .iter()
-            .map(|e| Diagnostic {
-                file: file_id,
-                range: e.range,
-                message: e.message.clone(),
-                code: DiagnosticCode::E037,
-            })
-            .collect()
-    }
 }
 
 impl Default for ProjectDb {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Merge `src` manifest fields into `dst`.
-fn merge_manifest_into(dst: &mut SymbolManifest, src: &SymbolManifest) {
-    dst.knots.extend(src.knots.iter().cloned());
-    dst.stitches.extend(src.stitches.iter().cloned());
-    dst.variables.extend(src.variables.iter().cloned());
-    dst.constants.extend(src.constants.iter().cloned());
-    dst.lists.extend(src.lists.iter().cloned());
-    dst.externals.extend(src.externals.iter().cloned());
-    dst.labels.extend(src.labels.iter().cloned());
-    dst.list_items.extend(src.list_items.iter().cloned());
-    dst.locals.extend(src.locals.iter().cloned());
-    dst.unresolved.extend(src.unresolved.iter().cloned());
-    dst.docs
-        .extend(src.docs.iter().map(|(k, v)| (k.clone(), v.clone())));
 }
 
 /// Resolve an INCLUDE path relative to the including file's directory.
@@ -644,14 +505,13 @@ mod path_tests {
 mod reachable_tests {
     use super::ProjectDb;
 
-    /// Load files in dependency order then rebuild the graph so every edge is
-    /// linked regardless of insertion order.
+    /// Load files then read reachability — the include graph is a tracked
+    /// query, so no rebuild step is needed regardless of insertion order.
     fn db_with(files: &[(&str, &str)]) -> ProjectDb {
         let mut db = ProjectDb::new();
         for (path, src) in files {
             db.set_file(path, (*src).to_owned());
         }
-        db.rebuild_include_graph();
         db
     }
 
