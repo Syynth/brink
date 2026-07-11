@@ -26,9 +26,9 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    /// Convert between ink formats (.ink.json, .inkb, .inkt)
+    /// Convert between ink formats (.inkb, .inkt)
     Convert {
-        /// Input file (.ink.json, .inkb, or .inkt)
+        /// Input file (.ink, .inkb, or .inkt)
         input: PathBuf,
         /// Output file (format inferred from extension, defaults to stdout as .inkt)
         #[arg(short, long)]
@@ -36,7 +36,7 @@ enum Commands {
     },
     /// Export line tables from a compiled story as XLIFF 2.0
     ExportXliff {
-        /// Input story file (.inkb, .ink.json, or .inkt)
+        /// Input story file (.inkb, .ink, or .inkt)
         input: PathBuf,
         /// BCP 47 source language tag (e.g. "en")
         #[arg(long, default_value = "en")]
@@ -91,7 +91,7 @@ enum Commands {
     },
     /// Play an ink story interactively
     Play {
-        /// Story file (.ink source, .ink.json, .inkb, or .inkt)
+        /// Story file (.ink source, .inkb, or .inkt)
         file: PathBuf,
         /// Read choice inputs from a file (one 1-indexed choice per line)
         #[arg(short, long)]
@@ -110,7 +110,7 @@ enum Commands {
     Replay {
         /// Transcript file (.brkt)
         transcript: PathBuf,
-        /// Story file (.ink source, .ink.json, .inkb, or .inkt)
+        /// Story file (.ink source, .inkb, or .inkt)
         #[arg(short, long)]
         story: PathBuf,
         /// Locale overlay file (.inkl) to apply before rendering
@@ -295,11 +295,12 @@ fn load_story_data(
         let text = std::fs::read_to_string(input)?;
         Ok(brink_format::read_inkt(&text)?)
     } else {
-        // Assume ink.json
-        let json_text = std::fs::read_to_string(input)?;
-        let json_text = json_text.strip_prefix('\u{feff}').unwrap_or(&json_text);
-        let story: brink_json::InkJson = serde_json::from_str(json_text)?;
-        Ok(brink_converter::convert(&story)?)
+        Err(format!(
+            "unsupported story format: {} (expected .ink, .inkb, or .inkt; \
+             .ink.json ingestion was retired — compile the .ink source instead)",
+            input.display()
+        )
+        .into())
     }
 }
 

@@ -2080,7 +2080,6 @@ version = "0.0.11"
 dependencies = [
  "brink-analyzer",
  "brink-compiler",
- "brink-converter",
  "brink-db",
  "brink-driver",
  "brink-fmt",
@@ -2088,7 +2087,6 @@ dependencies = [
  "brink-ide",
  "brink-intl",
  "brink-ir",
- "brink-json",
  "brink-runtime",
  "clap",
  "ratatui",
@@ -2109,43 +2107,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "brink-codegen-json"
-version = "0.0.11"
-dependencies = [
- "brink-format",
- "brink-ir",
- "brink-json",
-]
-
-[[package]]
 name = "brink-compiler"
 version = "0.0.11"
 dependencies = [
  "brink-analyzer",
  "brink-codegen-inkb",
- "brink-codegen-json",
  "brink-driver",
  "brink-format",
  "brink-ir",
- "brink-json",
  "brink-runtime",
  "brink-syntax",
  "brink-test-harness",
  "rowan",
- "serde_json",
  "thiserror 2.0.18",
  "tracing",
-]
-
-[[package]]
-name = "brink-converter"
-version = "0.0.11"
-dependencies = [
- "brink-format",
- "brink-json",
- "insta",
- "serde_json",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2248,17 +2223,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tracing",
-]
-
-[[package]]
-name = "brink-json"
-version = "0.0.11"
-dependencies = [
- "bitflags 2.13.0",
- "insta",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -24,8 +24,6 @@ brink-ir = { workspace = true }
 brink-analyzer = { workspace = true }
 brink-fmt = { workspace = true }
 brink-format = { workspace = true, features = ["inkt"] }
-brink-json = { workspace = true }
-brink-converter = { workspace = true }
 brink-intl = { workspace = true }
 brink-runtime = { workspace = true }
 xliff2 = { workspace = true }

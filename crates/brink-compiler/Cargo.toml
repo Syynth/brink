@@ -12,8 +12,6 @@ description = "Compiler for inkle's ink narrative scripting language"
 [dependencies]
 brink-ir = { workspace = true }
 brink-format = { workspace = true }
-brink-json = { workspace = true }
-brink-codegen-json = { workspace = true }
 brink-codegen-inkb = { workspace = true }
 brink-driver = { workspace = true }
 rowan.workspace = true
@@ -26,7 +24,6 @@ brink-runtime = { path = "../brink-runtime" }
 brink-syntax = { path = "../internal/brink-syntax" }
 brink-format = { path = "../internal/brink-format", features = ["inkt"]  }
 brink-test-harness = { path = "../internal/brink-test-harness" }
-serde_json.workspace = true
 
 [lints]
 workspace = true

@@ -18,20 +18,19 @@ fn run_story_src(src: &str, inputs: &[usize]) -> String {
     let data = brink_compiler::compile("main.ink", |_p| Ok(src.to_owned()))
         .unwrap()
         .data;
-    run_story_data(data, inputs)
+    run_story_data(&data, inputs)
 }
 
 /// Compile a `.ink` fixture, link, and run to completion with the given choice inputs.
 /// Returns the full text output.
-#[expect(clippy::unwrap_used)]
 fn run_story(ink_path: &str, inputs: &[usize]) -> String {
     let data = compile_ink(ink_path);
-    run_story_data(data, inputs)
+    run_story_data(&data, inputs)
 }
 
 #[expect(clippy::unwrap_used)]
-fn run_story_data(data: brink_format::StoryData, inputs: &[usize]) -> String {
-    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+fn run_story_data(data: &brink_format::StoryData, inputs: &[usize]) -> String {
+    let (program, line_tables) = brink_runtime::link(data).unwrap();
     let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
     let mut output = String::new();
     let mut input_idx = 0;
@@ -178,7 +177,8 @@ fn variable_tunnel_call() {
 /// choice point will infinite-loop because exhausted choices keep appearing.
 #[test]
 fn once_only_choices_filtered_by_visit_count() {
-    let ink_path = "../../tests/tier1/choices/I079-once-only-choices-can-link-back-to-self/story.ink";
+    let ink_path =
+        "../../tests/tier1/choices/I079-once-only-choices-can-link-back-to-self/story.ink";
     // Input: choose 0 twice (first choice both times). The story should
     // terminate after the fallback fires, not infinite loop.
     let result = run_story(ink_path, &[0, 0]);

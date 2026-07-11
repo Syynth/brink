@@ -14,8 +14,8 @@ use crate::program::{
 /// Link a [`StoryData`] into an executable [`Program`].
 ///
 /// Builds lookup tables mapping [`DefinitionId`]s to flat array indices.
-/// The root container is `containers[0]` by convention — both the converter
-/// and the brink compiler emit the root first.
+/// The root container is `containers[0]` by convention — the brink compiler
+/// emits the root first.
 #[expect(clippy::cast_possible_truncation, clippy::too_many_lines)]
 pub fn link(
     data: &StoryData,

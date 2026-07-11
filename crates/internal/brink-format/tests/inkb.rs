@@ -107,7 +107,10 @@ fn inkb_roundtrip_corpus_smoke() {
         .join("tests");
 
     let files = collect_story_ink_files(&tests_dir);
-    assert!(!files.is_empty(), "no story.ink files found in {tests_dir:?}");
+    assert!(
+        !files.is_empty(),
+        "no story.ink files found in {tests_dir:?}"
+    );
 
     let mut failures = Vec::new();
 

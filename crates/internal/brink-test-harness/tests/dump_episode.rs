@@ -61,7 +61,10 @@ fn print_episode(ep: &brink_test_harness::Episode, label: &str) {
 
 #[test]
 fn dump_minimal() {
-    let ep = record_from_ink("../../../tests/tier1/basics/I001-minimal-story/story.ink", &[]);
+    let ep = record_from_ink(
+        "../../../tests/tier1/basics/I001-minimal-story/story.ink",
+        &[],
+    );
     print_episode(&ep, "I001 — minimal story (no choices)");
 
     // Also dump as JSON to verify serde roundtrip
@@ -109,7 +112,10 @@ fn dump_tower_of_hanoi_3() {
         .filter(|l| !l.is_empty())
         .filter_map(|l| l.trim().parse().ok())
         .collect();
-    let ep = record_from_ink("../../../tests/tier3/lists/tower-of-hanoi/story.ink", &inputs);
+    let ep = record_from_ink(
+        "../../../tests/tier3/lists/tower-of-hanoi/story.ink",
+        &inputs,
+    );
     print_episode(&ep, "Tower of Hanoi (3 discs)");
 }
 
