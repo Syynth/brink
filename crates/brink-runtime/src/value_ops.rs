@@ -1,6 +1,10 @@
 //! Arithmetic, comparison, coercion, truthiness, and stringify for [`Value`].
 
-use std::sync::Arc;
+use alloc::borrow::ToOwned;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use brink_format::{ListValue, Value};
 
@@ -85,11 +89,11 @@ pub(crate) fn binary_op(
             Ok(Value::List(Arc::new(list_ordinal_shift(a, shift, program))))
         }
         (Value::Int(a), Value::Int(b)) => int_op(op, *a, *b),
-        (Value::Float(a), Value::Float(b)) => Ok(float_op(op, *a, *b)),
+        (Value::Float(a), Value::Float(b)) => float_op(op, *a, *b),
         #[expect(clippy::cast_precision_loss)]
-        (Value::Int(a), Value::Float(b)) => Ok(float_op(op, *a as f32, *b)),
+        (Value::Int(a), Value::Float(b)) => float_op(op, *a as f32, *b),
         #[expect(clippy::cast_precision_loss)]
-        (Value::Float(a), Value::Int(b)) => Ok(float_op(op, *a, *b as f32)),
+        (Value::Float(a), Value::Int(b)) => float_op(op, *a, *b as f32),
         (Value::String(a), Value::String(b)) => string_op(op, a, b),
         // Int + String coercion: stringify the int
         (Value::String(a), Value::Int(b)) if op == BinaryOp::Add => {
@@ -128,8 +132,8 @@ pub(crate) fn binary_op(
         (Value::Bool(a), Value::Int(b)) => int_op(op, i32::from(*a), *b),
         (Value::Int(a), Value::Bool(b)) => int_op(op, *a, i32::from(*b)),
         // Bool + Float coercion
-        (Value::Bool(a), Value::Float(b)) => Ok(float_op(op, if *a { 1.0 } else { 0.0 }, *b)),
-        (Value::Float(a), Value::Bool(b)) => Ok(float_op(op, *a, if *b { 1.0 } else { 0.0 })),
+        (Value::Bool(a), Value::Float(b)) => float_op(op, if *a { 1.0 } else { 0.0 }, *b),
+        (Value::Float(a), Value::Bool(b)) => float_op(op, *a, if *b { 1.0 } else { 0.0 }),
         // DivertTarget equality
         (Value::DivertTarget(a), Value::DivertTarget(b)) if op == BinaryOp::Equal => {
             Ok(Value::Bool(a == b))
@@ -360,13 +364,32 @@ fn int_op(op: BinaryOp, a: i32, b: i32) -> Result<Value, RuntimeError> {
         BinaryOp::Or => Value::Bool(a != 0 || b != 0),
         BinaryOp::Min => Value::Int(a.min(b)),
         BinaryOp::Max => Value::Int(a.max(b)),
+        // `powf` needs `libm` — std-only. See `float_op`.
+        #[cfg(feature = "std")]
         #[expect(clippy::cast_precision_loss)]
-        BinaryOp::Pow => float_op(op, a as f32, b as f32),
+        BinaryOp::Pow => Value::Float((a as f32).powf(b as f32)),
+        #[cfg(not(feature = "std"))]
+        BinaryOp::Pow => {
+            return Err(RuntimeError::Unimplemented(
+                "POW() requires the `std` feature (no libm in no_std builds)".into(),
+            ));
+        }
     })
 }
 
-fn float_op(op: BinaryOp, a: f32, b: f32) -> Value {
-    match op {
+// `powf` needs a transcendental (`libm`) implementation that `core` doesn't
+// provide — it's std-only. Every other case here is plain arithmetic or a
+// core-available intrinsic (`abs`/`min`/`max`), so only `Pow` needs to
+// branch; under `no_std` it reports `Unimplemented` instead of miscomputing
+// or panicking. `std` behavior (the default, and the only path the oracle
+// exercises) is unchanged.
+//
+// `Result` looks unnecessary from a `std`-only reading (clippy checks the
+// default feature set) — the `Err` arm only exists under the mutually
+// exclusive `not(feature = "std")` config.
+#[cfg_attr(feature = "std", expect(clippy::unnecessary_wraps))]
+fn float_op(op: BinaryOp, a: f32, b: f32) -> Result<Value, RuntimeError> {
+    Ok(match op {
         BinaryOp::Add => Value::Float(a + b),
         BinaryOp::Subtract => Value::Float(a - b),
         BinaryOp::Multiply => Value::Float(a * b),
@@ -382,8 +405,15 @@ fn float_op(op: BinaryOp, a: f32, b: f32) -> Value {
         BinaryOp::Or => Value::Bool(a != 0.0 || b != 0.0),
         BinaryOp::Min => Value::Float(a.min(b)),
         BinaryOp::Max => Value::Float(a.max(b)),
+        #[cfg(feature = "std")]
         BinaryOp::Pow => Value::Float(a.powf(b)),
-    }
+        #[cfg(not(feature = "std"))]
+        BinaryOp::Pow => {
+            return Err(RuntimeError::Unimplemented(
+                "POW() requires the `std` feature (no libm in no_std builds)".into(),
+            ));
+        }
+    })
 }
 
 fn string_op(op: BinaryOp, a: &str, b: &str) -> Result<Value, RuntimeError> {

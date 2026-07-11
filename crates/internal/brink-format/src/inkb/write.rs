@@ -1,5 +1,8 @@
 //! Encoding (write) half of the `.inkb` binary format.
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use crate::codec::{
     crc32, write_def_id, write_i32, write_str, write_u8, write_u16, write_u32, write_u64,
 };

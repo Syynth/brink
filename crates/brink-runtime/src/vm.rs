@@ -1,6 +1,12 @@
 //! Opcode decode-dispatch loop.
 
-use std::sync::Arc;
+use alloc::borrow::ToOwned;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::mem;
 
 use brink_format::{
     ChoiceFlags, CountingFlags, DefinitionId, LineContent, LineEntry, LinePart, Opcode,
@@ -493,10 +499,19 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         }
 
         // ── Math ────────────────────────────────────────────────────
+        // `floor`/`ceil` need a `libm`-backed implementation that `core`
+        // doesn't provide — std-only, like `powf` in `value_ops::float_op`.
         Opcode::Floor => {
             let val = flow.pop_value()?;
             let result = match val {
+                #[cfg(feature = "std")]
                 Value::Float(f) => Value::Float(f.floor()),
+                #[cfg(not(feature = "std"))]
+                Value::Float(_) => {
+                    return Err(RuntimeError::Unimplemented(
+                        "FLOOR() requires the `std` feature (no libm in no_std builds)".into(),
+                    ));
+                }
                 Value::Int(_) => val,
                 _ => return Err(RuntimeError::TypeError("floor requires numeric".into())),
             };
@@ -505,7 +520,14 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         Opcode::Ceiling => {
             let val = flow.pop_value()?;
             let result = match val {
+                #[cfg(feature = "std")]
                 Value::Float(f) => Value::Float(f.ceil()),
+                #[cfg(not(feature = "std"))]
+                Value::Float(_) => {
+                    return Err(RuntimeError::Unimplemented(
+                        "CEILING() requires the `std` feature (no libm in no_std builds)".into(),
+                    ));
+                }
                 Value::Int(_) => val,
                 _ => return Err(RuntimeError::TypeError("ceiling requires numeric".into())),
             };
@@ -1332,7 +1354,7 @@ fn handle_begin_choice(
     } else {
         stats.snapshot_cache_misses += 1;
     }
-    let tags = std::mem::take(&mut flow.current_tags);
+    let tags = mem::take(&mut flow.current_tags);
     flow.pending_choices.push(PendingChoice {
         display,
         target_id,

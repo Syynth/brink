@@ -1,5 +1,7 @@
 //! Runtime error types.
 
+use alloc::string::String;
+
 use brink_format::{DecodeError, DefinitionId};
 
 /// Errors that can occur during story linking or execution.

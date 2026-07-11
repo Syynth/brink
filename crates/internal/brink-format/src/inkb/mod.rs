@@ -40,7 +40,9 @@ pub use write::{
     write_section_name_table, write_section_variables,
 };
 
-use std::ops::Range;
+use core::ops::Range;
+
+use alloc::vec::Vec;
 
 use crate::opcode::DecodeError;
 

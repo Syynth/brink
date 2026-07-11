@@ -1,3 +1,6 @@
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use crate::counting::CountingFlags;
 use crate::id::{DefinitionId, NameId};
 use crate::line::LineContent;
@@ -164,10 +167,27 @@ pub struct AddressPath {
 /// changed across builds, enabling the regeneration workflow in the
 /// internationalization pipeline.
 pub fn content_hash(text: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    text.hash(&mut hasher);
-    hasher.finish()
+    #[cfg(feature = "std")]
+    {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut hasher);
+        hasher.finish()
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        // `std::collections::hash_map::DefaultHasher` isn't available
+        // without `std`. This is a plain FNV-1a fallback: still
+        // deterministic, but NOT bit-identical to the `std` path above —
+        // nothing compares hashes produced by the two builds against each
+        // other, so that's fine.
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in text.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash
+    }
 }
 
 /// An externally-bound function definition.

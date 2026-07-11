@@ -1,5 +1,7 @@
 use core::fmt;
 
+use alloc::vec::Vec;
+
 use crate::codec::{
     read_def_id, read_f32, read_i32, read_u8, read_u16, read_u32, write_def_id, write_f32,
     write_i32, write_u8, write_u16, write_u32,
@@ -315,7 +317,7 @@ impl fmt::Display for DecodeError {
     }
 }
 
-impl std::error::Error for DecodeError {}
+impl core::error::Error for DecodeError {}
 
 /// A single VM instruction with its operands.
 #[derive(Debug, Clone, PartialEq)]

@@ -1,9 +1,11 @@
 //! Locale overlay loading.
 
-use std::collections::HashMap;
+use alloc::vec;
+use alloc::vec::Vec;
 
 use brink_format::{DefinitionId, LineEntry, LocaleData};
 
+use crate::collections::Map as HashMap;
 use crate::error::RuntimeError;
 use crate::program::Program;
 

@@ -1,9 +1,11 @@
 //! Links [`StoryData`] into an executable [`Program`].
 
-use std::collections::HashMap;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 use brink_format::{DefinitionId, StoryData};
 
+use crate::collections::{Map as HashMap, map_with_capacity};
 use crate::error::RuntimeError;
 use crate::program::{
     ExternalFnEntry, GlobalSlot, LinkedContainer, ListDefEntry, ListItemEntry, PathTarget, Program,
@@ -18,7 +20,7 @@ use crate::program::{
 pub fn link(
     data: &StoryData,
 ) -> Result<(Program, Vec<Vec<brink_format::LineEntry>>), RuntimeError> {
-    let mut container_map = HashMap::with_capacity(data.containers.len());
+    let mut container_map = map_with_capacity(data.containers.len());
 
     for (i, cdef) in data.containers.iter().enumerate() {
         let idx = i as u32;
@@ -26,8 +28,7 @@ pub fn link(
     }
 
     // Build scope line tables and a map from scope_id → table index.
-    let mut scope_table_map: HashMap<DefinitionId, u32> =
-        HashMap::with_capacity(data.line_tables.len());
+    let mut scope_table_map: HashMap<DefinitionId, u32> = map_with_capacity(data.line_tables.len());
     let mut line_tables: Vec<Vec<brink_format::LineEntry>> =
         Vec::with_capacity(data.line_tables.len());
     let mut scope_ids: Vec<DefinitionId> = Vec::with_capacity(data.line_tables.len());
@@ -54,7 +55,7 @@ pub fn link(
 
     // Build globals.
     let mut globals = Vec::with_capacity(data.variables.len());
-    let mut global_map = HashMap::with_capacity(data.variables.len());
+    let mut global_map = map_with_capacity(data.variables.len());
     for (i, gvar) in data.variables.iter().enumerate() {
         let idx = i as u32;
         global_map.insert(gvar.id, idx);
@@ -68,7 +69,7 @@ pub fn link(
 
     // Build unified address map from containers and address defs.
     // Containers get offset 0 (primary addresses).
-    let mut address_map = HashMap::with_capacity(data.containers.len() + data.addresses.len());
+    let mut address_map = map_with_capacity(data.containers.len() + data.addresses.len());
     for (i, cdef) in data.containers.iter().enumerate() {
         address_map.insert(cdef.id, (i as u32, 0usize));
     }
@@ -90,7 +91,7 @@ pub fn link(
     let name_table = data.name_table.clone();
 
     // Build list item map.
-    let mut list_item_map = HashMap::with_capacity(data.list_items.len());
+    let mut list_item_map = map_with_capacity(data.list_items.len());
     for li in &data.list_items {
         list_item_map.insert(
             li.id,
@@ -104,7 +105,7 @@ pub fn link(
 
     // Build list defs and list def map.
     let mut list_defs = Vec::with_capacity(data.list_defs.len());
-    let mut list_def_map = HashMap::with_capacity(data.list_defs.len());
+    let mut list_def_map = map_with_capacity(data.list_defs.len());
     for ldef in &data.list_defs {
         let idx = list_defs.len();
         // Collect all items belonging to this list, sorted by ordinal.
@@ -127,7 +128,7 @@ pub fn link(
     let list_literals = data.list_literals.clone();
 
     // Build external function map.
-    let mut external_fns = HashMap::with_capacity(data.externals.len());
+    let mut external_fns = map_with_capacity(data.externals.len());
     for ext in &data.externals {
         external_fns.insert(
             ext.id,
@@ -151,6 +152,8 @@ pub fn link(
     // the previous behavior, which already qualifies knot/stitch scope names.
     let mut address_by_path: HashMap<String, PathTarget> = HashMap::new();
     if data.address_paths.is_empty() {
+        // `BTreeMap` has no `reserve` — no-op under `no_std`.
+        #[cfg(feature = "std")]
         address_by_path.reserve(data.containers.len());
         for (i, cdef) in data.containers.iter().enumerate() {
             if let Some(name_id) = cdef.name {
@@ -166,6 +169,8 @@ pub fn link(
             }
         }
     } else {
+        // `BTreeMap` has no `reserve` — no-op under `no_std`.
+        #[cfg(feature = "std")]
         address_by_path.reserve(data.address_paths.len());
         for ap in &data.address_paths {
             // Resolve the target through the address map; skip anything

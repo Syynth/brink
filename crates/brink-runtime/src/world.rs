@@ -53,11 +53,16 @@
 //! byte-identical to the F1.3 passthrough for every existing single-flow
 //! construction path.
 
-use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::format;
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use brink_format::{DefinitionId, Value};
 
+use crate::collections::Map as HashMap;
 use crate::program::Program;
 use crate::rng::StoryRng;
 use crate::state::ContextAccess;

@@ -13,7 +13,13 @@ categories.workspace = true
 all-features = true
 
 [features]
-default = []
+default = ["std"]
+# `std` gates the handful of spots that need the standard library: the
+# `DefaultHasher`-backed fast path of `content_hash`, and pulling in
+# `serde/std`. Without it the crate is `no_std` + `alloc` (see
+# `docs/no-std-portability.md`). `inkt`/`inkt-write` are NOT part of the
+# no_std surface — `pest` is std-oriented — so they're independent of `std`.
+std = ["serde/std"]
 # `inkt-write` exposes the dependency-free `.inkt` writer (`write_inkt`).
 # `inkt` adds the reader (`read_inkt`), which needs the `pest` parser.
 inkt-write = []
@@ -23,7 +29,11 @@ inkt = ["inkt-write", "dep:pest", "dep:pest_derive"]
 bitflags = { workspace = true }
 pest = { workspace = true, optional = true }
 pest_derive = { workspace = true, optional = true }
-serde = { workspace = true }
+# Not `workspace = true`: this crate needs `default-features = false` (no
+# `std`) to support the no_std build, which Cargo won't let a member
+# override when the workspace table leaves `default-features` implicit.
+# Version matches `workspace.dependencies.serde`.
+serde = { version = "1", default-features = false, features = ["alloc", "derive", "rc"] }
 
 [dev-dependencies]
 brink-converter = { path = "../brink-converter" }

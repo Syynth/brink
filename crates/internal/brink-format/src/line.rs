@@ -1,3 +1,6 @@
+use alloc::string::String;
+use alloc::vec::Vec;
+
 /// The content of a single output line — either a plain string or a template
 /// with interpolation slots and plural selects.
 #[derive(Debug, Clone, PartialEq)]

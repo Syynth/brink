@@ -1,6 +1,9 @@
 //! List opcode implementations.
 
-use std::sync::Arc;
+use alloc::format;
+use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
 
 use brink_format::{ListValue, Value};
 

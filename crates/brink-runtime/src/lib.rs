@@ -23,7 +23,14 @@
 //!     }
 //! }
 //! ```
+//!
+//! `no_std` + `alloc`: this crate builds without the standard library when
+//! the default `std` feature is disabled (see `docs/no-std-portability.md`).
+#![cfg_attr(not(feature = "std"), no_std)]
 
+extern crate alloc;
+
+mod collections;
 mod debug;
 mod error;
 mod external_policy;

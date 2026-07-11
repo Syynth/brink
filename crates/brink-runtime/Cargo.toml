@@ -13,11 +13,23 @@ description = "Runtime/VM for executing compiled ink stories"
 all-features = true
 
 [dependencies]
-brink-format = { workspace = true }
-serde = { workspace = true }
-thiserror.workspace = true
+# Not `workspace = true` for `serde`/`thiserror`: this crate needs
+# `default-features = false` (no `std`) to support the no_std build, which
+# Cargo won't let a member override when the workspace table leaves
+# `default-features` implicit. Versions match `workspace.dependencies`.
+brink-format = { path = "../internal/brink-format", version = "0.0.11", default-features = false }
+serde = { version = "1", default-features = false, features = ["alloc", "derive", "rc"] }
+thiserror = { version = "2", default-features = false }
 
 [features]
+default = ["std"]
+# `std` gates the parts of the runtime that need the standard library.
+# Without it the crate is `no_std` + `alloc` (see
+# `docs/no-std-portability.md`): the persistent `Map` type falls back from
+# `std::collections::HashMap` to `alloc::collections::BTreeMap`, and a
+# handful of `std::`-only call sites (mostly in test-only code) are gated
+# out. Public API and behavior under the default `std` build are unchanged.
+std = ["brink-format/std", "serde/std", "thiserror/std"]
 testing = []
 
 [dev-dependencies]

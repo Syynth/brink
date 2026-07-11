@@ -8,6 +8,8 @@
 //! any `ContextAccess` implementor and fires `WriteObserver` callbacks on
 //! every mutation.
 
+use alloc::vec::Vec;
+
 use brink_format::{DefinitionId, Value};
 
 use crate::rng::StoryRng;

@@ -8,7 +8,9 @@
 //! unchanged. The runtime (`Story::save_state` / `load_state`) produces and
 //! reconciles it. See `docs/external-binding-foundation.md`.
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 
