@@ -221,6 +221,8 @@ fn parse_value_type(pair: P<'_>) -> Result<ValueType, InktParseError> {
         "temp_pointer" => Ok(ValueType::TempPointer),
         "fragment_ref" => Ok(ValueType::FragmentRef),
         "null" => Ok(ValueType::Null),
+        "array" => Ok(ValueType::Array),
+        "map" => Ok(ValueType::Map),
         _ => Err(err(&pair, format!("unknown value type: {s}"))),
     }
 }

@@ -150,6 +150,26 @@ impl<'p> NameResolver<'p> {
                 format!("temp[{slot}]@{frame_depth}")
             }
             Value::FragmentRef(idx) => format!("<fragment {idx}>"),
+            Value::Array(items) => {
+                let parts: Vec<String> = items.iter().map(|v| self.format_value(v)).collect();
+                format!("[{}]", parts.join(", "))
+            }
+            Value::Map(map) => {
+                let parts: Vec<String> = map
+                    .iter()
+                    .map(|(k, v)| format!("{}: {}", format_map_key(k), self.format_value(v)))
+                    .collect();
+                format!("{{{}}}", parts.join(", "))
+            }
         }
+    }
+}
+
+/// Format a map key for debug display.
+fn format_map_key(key: &brink_format::MapKey) -> String {
+    match key {
+        brink_format::MapKey::Int(n) => n.to_string(),
+        brink_format::MapKey::Str(s) => format!("\"{s}\""),
+        brink_format::MapKey::Bool(b) => b.to_string(),
     }
 }

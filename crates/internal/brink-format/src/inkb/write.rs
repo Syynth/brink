@@ -254,7 +254,11 @@ fn encode_value_type(vt: ValueType, buf: &mut Vec<u8>) {
         ValueType::VariablePointer => VAL_VAR_POINTER,
         // TempPointer is runtime-only and should never appear in .inkb files.
         ValueType::FragmentRef => VAL_FRAGMENT_REF,
-        ValueType::TempPointer | ValueType::Null => VAL_NULL,
+        // `Array`/`Map` gain their `.inkb` literal-pool encoding in T1a-4
+        // (#526). No opcode emits a collection literal yet, so a var can never
+        // be declared with one of these types in this format version; they
+        // fold to `VAL_NULL` alongside the runtime-only `TempPointer`.
+        ValueType::TempPointer | ValueType::Null | ValueType::Array | ValueType::Map => VAL_NULL,
     };
     write_u8(buf, tag);
 }
@@ -302,7 +306,10 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
             write_u32(buf, *idx);
         }
         // TempPointer is runtime-only and should never appear in .inkb files.
-        Value::TempPointer { .. } | Value::Null => {
+        // Array/Map get their literal-pool encoding in T1a-4 (#526); no opcode
+        // emits a collection literal yet, so neither can reach this writer in
+        // this format version.
+        Value::TempPointer { .. } | Value::Null | Value::Array(_) | Value::Map(_) => {
             write_u8(buf, VAL_NULL);
         }
     }
