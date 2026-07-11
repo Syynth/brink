@@ -526,6 +526,11 @@ pub enum BrinkCallError {
     /// A query binding's system failed to run.
     #[error("query binding system failed: {0}")]
     QueryFailed(String),
+    /// The `SystemState` snapshot of flow components + assets + bindings
+    /// failed to validate against the world (e.g. a required resource,
+    /// like `Assets<ProgramAsset>`, isn't present — the plugin wasn't added).
+    #[error("system param validation failed: {0}")]
+    SystemParamInvalid(String),
     /// The runtime raised an error during evaluation.
     #[error(transparent)]
     Runtime(#[from] RuntimeError),
@@ -611,7 +616,9 @@ pub fn call_ink_function<M: Send + Sync + 'static>(
 
     // Begin the evaluation.
     let mut next = {
-        let (mut flows, globals, programs, tables, bindings) = state.get_mut(world);
+        let (mut flows, globals, programs, tables, bindings) = state
+            .get_mut(world)
+            .map_err(|e| BrinkCallError::SystemParamInvalid(e.to_string()))?;
         let mut globals = globals.ok_or(BrinkCallError::NotAFlow)?;
         let (prog_c, loc_c, mut flow, mut ctx) = flows
             .get_mut(entity)
@@ -652,7 +659,9 @@ pub fn call_ink_function<M: Send + Sync + 'static>(
                     .run_system_with(system, (entity, qargs))
                     .map_err(|e| BrinkCallError::QueryFailed(format!("{e:?}")))?;
                 next = {
-                    let (mut flows, globals, programs, tables, bindings) = state.get_mut(world);
+                    let (mut flows, globals, programs, tables, bindings) = state
+                        .get_mut(world)
+                        .map_err(|e| BrinkCallError::SystemParamInvalid(e.to_string()))?;
                     let mut globals = globals.ok_or(BrinkCallError::NotAFlow)?;
                     let (prog_c, loc_c, mut flow, mut ctx) = flows
                         .get_mut(entity)
@@ -817,7 +826,9 @@ pub fn advance_flow<M: Send + Sync + 'static>(
         budget -= 1;
 
         let step = {
-            let (mut flows, globals, programs, tables, bindings) = state.get_mut(world);
+            let (mut flows, globals, programs, tables, bindings) = state
+                .get_mut(world)
+                .map_err(|e| BrinkCallError::SystemParamInvalid(e.to_string()))?;
             let mut globals = globals.ok_or(BrinkCallError::NotAFlow)?;
             let (prog_c, loc_c, mut flow, mut ctx) = flows
                 .get_mut(entity)
@@ -895,7 +906,9 @@ pub fn advance_flow<M: Send + Sync + 'static>(
                 if let Some(rec) = recorder.as_mut() {
                     rec.record(&name, &qargs, &value);
                 }
-                let (mut flows, ..) = state.get_mut(world);
+                let (mut flows, ..) = state
+                    .get_mut(world)
+                    .map_err(|e| BrinkCallError::SystemParamInvalid(e.to_string()))?;
                 let (_, _, mut flow, _) = flows
                     .get_mut(entity)
                     .map_err(|_| BrinkCallError::NotAFlow)?;
@@ -965,7 +978,11 @@ fn decide_dispatch<M: Send + Sync + 'static>(world: &mut World, entity: Entity) 
         Res<Assets<ProgramAsset>>,
         Res<BrinkBindings<M>>,
     )> = SystemState::new(world);
-    let (flows, programs, bindings) = state.get(world);
+    let Ok((flows, programs, bindings)) = state.get(world) else {
+        // A required resource (Assets<ProgramAsset>, BrinkBindings<M>) isn't
+        // present yet — leave parked; we'll retry next frame.
+        return Dispatch::Nothing;
+    };
     let Ok((prog_c, flow, awaiting, pending_task)) = flows.get(entity) else {
         return Dispatch::Nothing;
     };

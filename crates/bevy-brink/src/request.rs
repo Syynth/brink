@@ -678,7 +678,7 @@ mod tests {
     fn drive_entity(app: &mut App, entity: Entity) -> Line {
         let mut state: FlowQuery = SystemState::new(app.world_mut());
         let (mut flows, mut globals, programs, tables, mut commands) =
-            state.get_mut(app.world_mut());
+            state.get_mut(app.world_mut()).expect("system params");
         let (mut flow, mut ctx, prog, loc) = flows.get_mut(entity).expect("flow components");
         let program = &programs.get(&prog.handle).expect("program asset").program;
         let line_tables = &tables.get(&loc.handle).expect("line tables asset").tables;
@@ -706,7 +706,7 @@ mod tests {
     fn choose_entity(app: &mut App, entity: Entity, index: usize) {
         let mut state: FlowQuery = SystemState::new(app.world_mut());
         let (mut flows, mut globals, _programs, _tables, _commands) =
-            state.get_mut(app.world_mut());
+            state.get_mut(app.world_mut()).expect("system params");
         let (mut flow, mut ctx, _prog, _loc) = flows.get_mut(entity).expect("flow components");
         let mut view = flow_context_view(&mut globals, &mut ctx);
         flow.choose(&mut view, index).expect("choose");
@@ -788,7 +788,7 @@ mod tests {
         let (world_save, save_a, save_b) = {
             let mut state: FlowQuery = SystemState::new(app1.world_mut());
             let (mut flows, mut globals, programs, _tables, _commands) =
-                state.get_mut(app1.world_mut());
+                state.get_mut(app1.world_mut()).expect("system params");
 
             let handle = flows.get(entity_a).expect("flow a").2.handle.clone();
             let program = &programs.get(&handle).expect("program asset").program;
@@ -829,7 +829,7 @@ mod tests {
         {
             let mut state: FlowQuery = SystemState::new(app2.world_mut());
             let (mut flows, mut globals, programs, _tables, _commands) =
-                state.get_mut(app2.world_mut());
+                state.get_mut(app2.world_mut()).expect("system params");
 
             let handle = flows.get(entity_a2).expect("flow a2").2.handle.clone();
             let program = &programs.get(&handle).expect("program asset").program;
@@ -914,7 +914,7 @@ mod tests {
         {
             let mut state: FlowQuery = SystemState::new(app.world_mut());
             let (mut flows, mut globals, programs, _tables, _commands) =
-                state.get_mut(app.world_mut());
+                state.get_mut(app.world_mut()).expect("system params");
             let handle = flows.get(entity).expect("flow").2.handle.clone();
             let program = &programs.get(&handle).expect("program asset").program;
             let (_flow, mut ctx, _p, _l) = flows.get_mut(entity).expect("flow");
@@ -959,7 +959,7 @@ mod tests {
         {
             let mut state: FlowQuery = SystemState::new(app.world_mut());
             let (mut flows, mut globals, _programs, _tables, _commands) =
-                state.get_mut(app.world_mut());
+                state.get_mut(app.world_mut()).expect("system params");
             let (_flow, mut ctx, _p, _l) = flows.get_mut(entity).expect("flow");
             let view = flow_context_view(&mut globals, &mut ctx);
             assert_eq!(
@@ -996,7 +996,7 @@ mod tests {
         {
             let mut state: FlowQuery = SystemState::new(app.world_mut());
             let (mut flows, mut globals, _programs, _tables, _commands) =
-                state.get_mut(app.world_mut());
+                state.get_mut(app.world_mut()).expect("system params");
             let (_flow, mut ctx, _p, _l) = flows.get_mut(other).expect("other flow");
             let view = flow_context_view(&mut globals, &mut ctx);
             assert_ne!(
@@ -1038,7 +1038,7 @@ mod tests {
         let (report, mood_idx) = {
             let mut state: FlowQuery = SystemState::new(app.world_mut());
             let (mut flows, mut globals, programs, _tables, _commands) =
-                state.get_mut(app.world_mut());
+                state.get_mut(app.world_mut()).expect("system params");
             let handle = flows.get(entity).expect("flow").2.handle.clone();
             let program = &programs.get(&handle).expect("program asset").program;
             let mood_idx = program.global_index("mood").expect("mood global");
@@ -1053,7 +1053,7 @@ mod tests {
         // The known entry still applied despite the unknown one.
         let mut state: FlowQuery = SystemState::new(app.world_mut());
         let (mut flows, mut globals, _programs, _tables, _commands) =
-            state.get_mut(app.world_mut());
+            state.get_mut(app.world_mut()).expect("system params");
         let (_flow, mut ctx, _p, _l) = flows.get_mut(entity).expect("flow");
         let view = flow_context_view(&mut globals, &mut ctx);
         assert_eq!(

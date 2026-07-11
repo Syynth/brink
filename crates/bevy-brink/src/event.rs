@@ -1,6 +1,6 @@
 //! Observer events fired by the runtime as flows advance.
 //!
-//! Bevy 0.18 distinguishes two event flavors:
+//! Bevy 0.19 distinguishes two event flavors:
 //!
 //! - **Observer events** (`Event` derive, `commands.trigger(...)`,
 //!   `app.add_observer(...)`) — synchronous fire-and-react, no buffered

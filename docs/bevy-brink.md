@@ -1,6 +1,6 @@
 # bevy-brink: Status
 
-Bevy 0.18 integration for the brink ink runtime. Lets a Bevy game load
+Bevy 0.19 integration for the brink ink runtime. Lets a Bevy game load
 `.ink` (or `.inkb`) story files, advance them in response to input,
 render the produced lines via observer events, and (in dev mode) live-edit
 the source file with the running flow rebuilt against the new bytecode.
@@ -428,7 +428,7 @@ We chose the request-component pattern because:
 
 ### Observer events over MessageReader/Writer
 
-Bevy 0.18 has two event flavors:
+Bevy 0.19 has two event flavors:
 - **Messages** (`Message` derive, `MessageReader`/`MessageWriter`): the
   renamed buffered events from older Bevy versions. Per-tick polling.
 - **Observer events** (`Event` derive, `commands.trigger`,

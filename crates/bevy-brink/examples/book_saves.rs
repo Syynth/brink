@@ -180,7 +180,7 @@ type FlowState = SystemState<(
 /// serialize directly; a real game might key by save-slot + NPC id).
 fn save_all(app: &mut App, entities: [(&str, Entity); 2]) -> HashMap<String, SaveState> {
     let mut state: FlowState = SystemState::new(app.world_mut());
-    let (mut flows, mut globals, programs) = state.get_mut(app.world_mut());
+    let (mut flows, mut globals, programs) = state.get_mut(app.world_mut()).expect("system params");
     let (prog, _) = flows.get(entities[0].1).expect("flow");
     let program = &programs.get(&prog.handle).expect("program asset").program;
 
@@ -209,7 +209,7 @@ fn save_all(app: &mut App, entities: [(&str, Entity); 2]) -> HashMap<String, Sav
 /// instead.
 fn load_all(app: &mut App, saves: &HashMap<String, SaveState>, entities: [(&str, Entity); 2]) {
     let mut state: FlowState = SystemState::new(app.world_mut());
-    let (mut flows, mut globals, programs) = state.get_mut(app.world_mut());
+    let (mut flows, mut globals, programs) = state.get_mut(app.world_mut()).expect("system params");
     let (prog, _) = flows.get(entities[0].1).expect("flow");
     let program = &programs.get(&prog.handle).expect("program asset").program;
 

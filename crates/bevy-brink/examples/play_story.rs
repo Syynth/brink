@@ -206,7 +206,7 @@ fn setup_ui(mut commands: Commands) {
                 Text::new(""),
                 TextColor(Color::srgb(0.6, 0.85, 0.6)),
                 TextFont {
-                    font_size: 18.0,
+                    font_size: FontSize::Px(18.0),
                     ..default()
                 },
             ));
@@ -221,7 +221,7 @@ fn setup_ui(mut commands: Commands) {
                 Text::new("Loading story..."),
                 TextColor(Color::WHITE),
                 TextFont {
-                    font_size: 22.0,
+                    font_size: FontSize::Px(22.0),
                     ..default()
                 },
             ));
@@ -232,7 +232,7 @@ fn setup_ui(mut commands: Commands) {
                 Text::new(""),
                 TextColor(Color::srgb(0.6, 0.6, 0.6)),
                 TextFont {
-                    font_size: 16.0,
+                    font_size: FontSize::Px(16.0),
                     ..default()
                 },
             ));

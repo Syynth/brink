@@ -160,7 +160,7 @@ pub(crate) fn emit_story_assets(
 /// Component holding the `Handle<ProgramAsset>` a [`BrinkFlow<M>`](crate::BrinkFlow)
 /// executes against.
 ///
-/// In Bevy 0.18 `Handle<T>` is no longer a `Component` directly, so
+/// In Bevy 0.19 `Handle<T>` is no longer a `Component` directly, so
 /// flow entities need a wrapper to associate a flow with its program.
 /// The fulfillment system inserts this (as part of [`BrinkStory`])
 /// when consuming a [`BrinkFlowRequest`](crate::BrinkFlowRequest);

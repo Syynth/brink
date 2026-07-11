@@ -692,7 +692,14 @@ mod tests {
             let mut programs = app
                 .world_mut()
                 .resource_mut::<bevy_asset::Assets<crate::ProgramAsset>>();
-            let _ = programs.get_mut(&program_handle);
+            // Bevy 0.19: `Assets::get_mut` returns a change-tracking `AssetMut`
+            // guard that only queues `AssetEvent::Modified` if the value is
+            // actually dereferenced mutably (see the migration note on
+            // `AssetMut`). We're simulating "file watcher re-issued the same
+            // content", so force that dereference without changing anything.
+            if let Some(mut slot) = programs.get_mut(&program_handle) {
+                let _ = &mut *slot;
+            }
         }
 
         // Tick: asset_events system propagates the queued event into the
@@ -892,7 +899,7 @@ mod tests {
             let mut programs = app
                 .world_mut()
                 .resource_mut::<Assets<crate::ProgramAsset>>();
-            if let Some(slot) = programs.get_mut(&program_handle) {
+            if let Some(mut slot) = programs.get_mut(&program_handle) {
                 slot.program = program_v2;
             }
         }
@@ -901,7 +908,7 @@ mod tests {
             let mut tables = app
                 .world_mut()
                 .resource_mut::<Assets<crate::LineTablesAsset>>();
-            if let Some(slot) = tables.get_mut(&line_tables_handle) {
+            if let Some(mut slot) = tables.get_mut(&line_tables_handle) {
                 slot.tables = tables_v2;
             }
         }
@@ -1020,7 +1027,7 @@ mod tests {
                 ResMut<'static, crate::BrinkGlobals<()>>,
             )>;
             let mut state: ChooseState = bevy_ecs::system::SystemState::new(app.world_mut());
-            let (mut q, mut globals) = state.get_mut(app.world_mut());
+            let (mut q, mut globals) = state.get_mut(app.world_mut()).expect("system params");
             let (mut flow, mut ctx, mut log) = q.get_mut(entity).expect("flow components");
             let mut view = crate::globals::flow_context_view(&mut globals, &mut ctx);
             flow.choose_recording(&mut view, &mut log, 0)
@@ -1063,7 +1070,14 @@ mod tests {
             let mut programs = app
                 .world_mut()
                 .resource_mut::<Assets<crate::ProgramAsset>>();
-            let _ = programs.get_mut(&program_handle);
+            // Bevy 0.19: `Assets::get_mut` returns a change-tracking `AssetMut`
+            // guard that only queues `AssetEvent::Modified` if the value is
+            // actually dereferenced mutably (see the migration note on
+            // `AssetMut`). We're simulating "file watcher re-issued the same
+            // content", so force that dereference without changing anything.
+            if let Some(mut slot) = programs.get_mut(&program_handle) {
+                let _ = &mut *slot;
+            }
         }
         app.update(); // asset_events → replay_on_reload rebuilds + replays
         app.update(); // flush deferred triggers from replay
@@ -1214,7 +1228,14 @@ mod tests {
             let mut programs = app
                 .world_mut()
                 .resource_mut::<Assets<crate::ProgramAsset>>();
-            let _ = programs.get_mut(&program_handle);
+            // Bevy 0.19: `Assets::get_mut` returns a change-tracking `AssetMut`
+            // guard that only queues `AssetEvent::Modified` if the value is
+            // actually dereferenced mutably (see the migration note on
+            // `AssetMut`). We're simulating "file watcher re-issued the same
+            // content", so force that dereference without changing anything.
+            if let Some(mut slot) = programs.get_mut(&program_handle) {
+                let _ = &mut *slot;
+            }
         }
         app.update();
         app.update();
@@ -1344,7 +1365,14 @@ mod tests {
             let mut programs = app
                 .world_mut()
                 .resource_mut::<Assets<crate::ProgramAsset>>();
-            let _ = programs.get_mut(&program_handle);
+            // Bevy 0.19: `Assets::get_mut` returns a change-tracking `AssetMut`
+            // guard that only queues `AssetEvent::Modified` if the value is
+            // actually dereferenced mutably (see the migration note on
+            // `AssetMut`). We're simulating "file watcher re-issued the same
+            // content", so force that dereference without changing anything.
+            if let Some(mut slot) = programs.get_mut(&program_handle) {
+                let _ = &mut *slot;
+            }
         }
         app.update();
         app.update();

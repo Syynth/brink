@@ -20,17 +20,17 @@ bevy-brink-derive = { workspace = true }
 brink-compiler = { workspace = true, optional = true }
 brink-syntax = { workspace = true, optional = true }
 
-bevy_app = { version = "0.18.1", default-features = false }
-bevy_asset = { version = "0.18.1", default-features = false }
-bevy_ecs = { version = "0.18.1", default-features = false }
-bevy_input = { version = "0.18.1", default-features = false, features = ["std", "keyboard"] }
-bevy_log = { version = "0.18.1", default-features = false }
-bevy_reflect = { version = "0.18.1", default-features = false }
+bevy_app = { version = "0.19.0", default-features = false }
+bevy_asset = { version = "0.19.0", default-features = false }
+bevy_ecs = { version = "0.19.0", default-features = false }
+bevy_input = { version = "0.19.0", default-features = false, features = ["std", "keyboard"] }
+bevy_log = { version = "0.19.0", default-features = false }
+bevy_reflect = { version = "0.19.0", default-features = false }
 # Async-task bindings (bind_brink_task) spawn detached futures on
 # AsyncComputeTaskPool and poll them via poll_once/block_on. `multi_threaded`
 # matches what bevy_app's DefaultPlugins set up so spawned work runs off the
 # main thread; `futures-lite` (default) supplies poll_once + block_on.
-bevy_tasks = { version = "0.18.1", features = ["multi_threaded"] }
+bevy_tasks = { version = "0.19.0", features = ["multi_threaded"] }
 
 bon.workspace = true
 serde.workspace = true
@@ -48,7 +48,7 @@ dev = ["dep:brink-compiler", "dep:brink-syntax"]
 [dev-dependencies]
 # The `play_story` example uses the bevy umbrella crate for windowing,
 # UI, input, and the file_watcher feature that drives hot-reload.
-bevy = { version = "0.18.1", features = ["file_watcher"] }
+bevy = { version = "0.19.0", features = ["file_watcher"] }
 # Tests compile small inline ink stories to exercise the loader/replay
 # code paths. brink-compiler is also pulled in via the `dev` feature
 # in the regular dependency set, but adding it as a dev-dep means
