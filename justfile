@@ -24,6 +24,12 @@ fix:
 bench:
     cargo bench -p brink-runtime
 
+# Compile-time benchmark baseline (#498): cold corpus compile, studio-scale
+# synthetic project (cold + warm one-line-edit recompile), per-stage breakdown.
+# Extra args pass through, e.g. `just bench-compile --runs 9`.
+bench-compile *ARGS:
+    cargo run --release -p brink-test-harness --bin compile_bench -- {{ARGS}}
+
 # Run cross-implementation benchmark comparison
 cross-language-benchmark:
     #!/usr/bin/env bash
