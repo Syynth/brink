@@ -2518,6 +2518,25 @@ impl EditorSession {
         Ok(())
     }
 
+    /// Set the severity policy for unknown-semantic-type diagnostics
+    /// (`E040`), parallel to [`Self::set_external_check`] (#532): `"tolerant"`
+    /// (default — unresolved types are only diagnosed once a manifest is
+    /// registered, #339/#527) or `"error"` (always diagnose, even with no
+    /// manifest registered — catches typo'd host semantic-type tags).
+    pub fn set_semantic_type_check(&mut self, level: &str) -> Result<(), JsError> {
+        let severity = match level {
+            "tolerant" => brink_analyzer::SemanticTypeDiagnosticSeverity::Tolerant,
+            "error" => brink_analyzer::SemanticTypeDiagnosticSeverity::Error,
+            other => {
+                return Err(JsError::new(&format!(
+                    "unknown semantic-type-check level `{other}` (expected \"tolerant\" or \"error\")"
+                )));
+            }
+        };
+        self.session.set_semantic_type_check(severity);
+        Ok(())
+    }
+
     /// Switch the active file for IDE queries. Returns false if the file is not loaded.
     /// Clears any active view context (view is file-specific).
     pub fn set_active_file(&mut self, path: &str) -> bool {

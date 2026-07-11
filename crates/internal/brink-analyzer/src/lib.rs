@@ -17,7 +17,8 @@ use std::sync::Arc;
 pub use brink_ir::FileId;
 pub use brink_ir::ResolutionMap;
 pub use external_check::{
-    ExternalCheckSeverity, InferredType, ResolvedParam, ResolvedType, SymbolMeta, ValueMeta,
+    ExternalCheckSeverity, InferredType, ResolvedParam, ResolvedType,
+    SemanticTypeDiagnosticSeverity, SymbolMeta, ValueMeta,
 };
 pub use signature::{Sig, signature};
 
@@ -35,6 +36,11 @@ pub struct AnalysisOptions {
     pub host_manifest: Option<HostManifest>,
     /// Severity policy for manifest-driven external diagnostics.
     pub external_check: ExternalCheckSeverity,
+    /// Severity policy for unknown-semantic-type diagnostics (`E040`).
+    /// Defaults to `Tolerant` (the #339/#527 default-tolerant path); raise to
+    /// `Error` to re-enable strict checking with no manifest registered
+    /// (#532).
+    pub semantic_type_check: SemanticTypeDiagnosticSeverity,
 }
 
 /// The output of cross-file semantic analysis.
@@ -145,25 +151,31 @@ pub fn finish_analysis(
     let inline_docs = collect_inline_docs(&manifest_inputs);
     let (types, registered) = manifest_maps(opts.host_manifest.as_ref());
     let has_manifest = opts.host_manifest.is_some();
+    // Unknown-semantic-type checking (`E040`) is on when a manifest is
+    // registered, or when the severity lever is explicitly raised to `Error`
+    // (#532) — a host can opt back into strict checking with no manifest.
+    let check_unknown_types =
+        has_manifest || opts.semantic_type_check == SemanticTypeDiagnosticSeverity::Error;
     let (mut symbol_meta, ext_diags) = external_check::analyze_externals(
         &index,
         &inline_docs,
         &types,
         &registered,
         opts.external_check,
-        has_manifest,
+        check_unknown_types,
     );
     diagnostics.extend(ext_diags);
 
     // Knot/stitch doc enrichment (presentational; shares the semantic-type
     // vocabulary, so unknown types still diagnose — but only once a manifest
-    // is registered; see `resolve_type` (#339)).
+    // is registered, or the severity lever is raised (#339/#532); see
+    // `resolve_type`).
     let (callable_meta, callable_diags) = external_check::enrich_callables(
         &index,
         &inline_docs,
         &types,
         opts.external_check,
-        has_manifest,
+        check_unknown_types,
     );
     diagnostics.extend(callable_diags);
     symbol_meta.extend(callable_meta);
@@ -240,7 +252,9 @@ mod tests {
 
     use brink_ir::{BaseType, HostManifest, SemanticTypeDef};
 
-    use super::{AnalysisOptions, FileId, analyze, analyze_with_options};
+    use super::{
+        AnalysisOptions, FileId, SemanticTypeDiagnosticSeverity, analyze, analyze_with_options,
+    };
 
     /// ink with an `EXTERNAL` whose param is typed with a host semantic type
     /// (`actor_id`) — exactly the `host.ink`-generated shape from the issue.
@@ -314,6 +328,75 @@ EXTERNAL add_state(who)
                 .count(),
             1,
             "manifest registered but type unknown: E040 still fires: {:?}",
+            result.diagnostics
+        );
+    }
+
+    /// #532: `semantic_type_check` defaults to `Tolerant`, matching the
+    /// #339/#527 default-tolerant behavior — an explicit `Tolerant` opt-in
+    /// behaves identically to the unset default.
+    #[test]
+    fn semantic_type_check_default_is_tolerant() {
+        let (hir, manifest) = lower(SRC);
+        let opts = AnalysisOptions {
+            semantic_type_check: SemanticTypeDiagnosticSeverity::Tolerant,
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result.diagnostics.is_empty(),
+            "Tolerant (default) with no manifest: no E040: {:?}",
+            result.diagnostics
+        );
+    }
+
+    /// #532: raising `semantic_type_check` to `Error` re-enables strict
+    /// checking even with no manifest registered — a host can catch typo'd
+    /// semantic-type tags before wiring up a full manifest.
+    #[test]
+    fn semantic_type_check_error_diagnoses_with_no_manifest() {
+        let (hir, manifest) = lower(SRC);
+        let opts = AnalysisOptions {
+            semantic_type_check: SemanticTypeDiagnosticSeverity::Error,
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert_eq!(
+            result
+                .diagnostics
+                .iter()
+                .filter(|d| d.code == brink_ir::DiagnosticCode::E040)
+                .count(),
+            1,
+            "Error with no manifest: E040 still fires: {:?}",
+            result.diagnostics
+        );
+    }
+
+    /// #532: the lever composes with a registered manifest that defines the
+    /// type — a known type never diagnoses regardless of severity.
+    #[test]
+    fn semantic_type_check_error_with_known_type_in_manifest_is_clean() {
+        let (hir, manifest) = lower(SRC);
+        let host_manifest = HostManifest {
+            externals: Vec::new(),
+            types: vec![SemanticTypeDef {
+                name: "actor_id".to_string(),
+                base: BaseType::String,
+                constraint: None,
+                values: None,
+                widget: None,
+            }],
+        };
+        let opts = AnalysisOptions {
+            host_manifest: Some(host_manifest),
+            semantic_type_check: SemanticTypeDiagnosticSeverity::Error,
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result.diagnostics.is_empty(),
+            "known type resolves cleanly regardless of severity: {:?}",
             result.diagnostics
         );
     }

@@ -8,7 +8,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use brink_analyzer::{AnalysisOptions, AnalysisResult, ExternalCheckSeverity};
+use brink_analyzer::{
+    AnalysisOptions, AnalysisResult, ExternalCheckSeverity, SemanticTypeDiagnosticSeverity,
+};
 use brink_db::ProjectDb;
 use brink_ir::{FileId, HirFile, HostManifest, ResolvedDialect, SymbolManifest};
 
@@ -19,6 +21,7 @@ pub struct IdeSnapshot {
     inputs: Vec<(FileId, HirFile, SymbolManifest)>,
     host_manifest: Option<HostManifest>,
     external_check: ExternalCheckSeverity,
+    semantic_type_check: SemanticTypeDiagnosticSeverity,
 }
 
 impl IdeSnapshot {
@@ -33,6 +36,7 @@ impl IdeSnapshot {
         let opts = AnalysisOptions {
             host_manifest: self.host_manifest.clone(),
             external_check: self.external_check,
+            semantic_type_check: self.semantic_type_check,
         };
         brink_analyzer::analyze_with_options(&refs, &opts)
     }
@@ -49,6 +53,9 @@ pub struct IdeSession {
     host_values: crate::HostValues,
     /// Severity policy for manifest-driven external checks.
     external_check: ExternalCheckSeverity,
+    /// Severity policy for unknown-semantic-type diagnostics (`E040`),
+    /// parallel to `external_check` (#532).
+    semantic_type_check: SemanticTypeDiagnosticSeverity,
     /// The registered dialogue dialect (#368), pre-compiled for
     /// classification. Tooling-only, query-time state consumed by
     /// `line_contexts` — never part of analysis, so registering one needs no
@@ -75,6 +82,7 @@ impl IdeSession {
             host_manifest: None,
             host_values: crate::HostValues::new(),
             external_check: ExternalCheckSeverity::default(),
+            semantic_type_check: SemanticTypeDiagnosticSeverity::default(),
             dialect: None,
             projection_cache: RefCell::new(HashMap::new()),
         }
@@ -137,6 +145,15 @@ impl IdeSession {
         self.reanalyze();
     }
 
+    /// Set the severity policy for unknown-semantic-type diagnostics
+    /// (`E040`), then re-analyze. Parallel to [`Self::set_external_check`]
+    /// (#532) — raise to `Error` to re-enable strict checking (catching
+    /// typo'd host semantic-type tags) even with no manifest registered.
+    pub fn set_semantic_type_check(&mut self, severity: SemanticTypeDiagnosticSeverity) {
+        self.semantic_type_check = severity;
+        self.reanalyze();
+    }
+
     /// Re-run analysis on the current inputs (e.g. after a manifest change).
     fn reanalyze(&mut self) {
         let result = self.snapshot().analyze();
@@ -163,6 +180,7 @@ impl IdeSession {
             inputs: self.db.analysis_inputs(),
             host_manifest: self.host_manifest.clone(),
             external_check: self.external_check,
+            semantic_type_check: self.semantic_type_check,
         }
     }
 
@@ -288,12 +306,14 @@ impl IdeSession {
         (result, db)
     }
 
-    /// The current analysis options (registered host manifest + external-check
-    /// severity), for callers that run their own analysis/compile pass.
+    /// The current analysis options (registered host manifest +
+    /// external-check / semantic-type-check severities), for callers that run
+    /// their own analysis/compile pass.
     pub fn analysis_options(&self) -> AnalysisOptions {
         AnalysisOptions {
             host_manifest: self.host_manifest.clone(),
             external_check: self.external_check,
+            semantic_type_check: self.semantic_type_check,
         }
     }
 
@@ -343,7 +363,7 @@ mod tests {
         ManifestParam, SemanticTypeDef, TypeRef,
     };
 
-    use super::{ExternalCheckSeverity, IdeSession};
+    use super::{ExternalCheckSeverity, IdeSession, SemanticTypeDiagnosticSeverity};
 
     fn color_manifest() -> HostManifest {
         HostManifest {
@@ -417,6 +437,45 @@ mod tests {
         );
         // ...but enrichment is still built.
         assert!(!analysis.symbol_meta.is_empty(), "meta built even when Off");
+    }
+
+    /// #532: ink with a host semantic type param and no registered manifest.
+    const HOST_TYPE_SRC: &str = "\
+/// @param who {actor_id}
+EXTERNAL add_state(who)
+";
+
+    #[test]
+    fn semantic_type_check_defaults_to_tolerant_with_no_manifest() {
+        let mut session = IdeSession::new();
+        session.update_and_analyze("t.ink", HOST_TYPE_SRC.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        assert!(
+            !analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E040),
+            "default (Tolerant) with no manifest: no E040: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn semantic_type_check_error_diagnoses_with_no_manifest() {
+        let mut session = IdeSession::new();
+        session.update_and_analyze("t.ink", HOST_TYPE_SRC.to_string());
+        session.set_semantic_type_check(SemanticTypeDiagnosticSeverity::Error);
+        let analysis = session.analysis().expect("analysis");
+
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E040),
+            "Error with no manifest: E040 fires: {:?}",
+            analysis.diagnostics
+        );
     }
 
     #[test]
