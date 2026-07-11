@@ -145,4 +145,5 @@ Per-area specs live in `docs/` (`compiler-spec.md`, `runtime-spec.md`, `format-s
 - **Lints:** `unsafe_code`, `unwrap_used`, `expect_used`, `panic`, `todo`, `print_stdout`, `print_stderr` are denied. Clippy pedantic is on. Tests are exempt via `clippy.toml`.
 - **Determinism matters.** Never iterate `HashMap` keys/values where order affects output. Sort or use `BTreeMap`. We've been burned by this — see converter list items, analyzer label lookup, db file ordering.
 - **Commit after every fix.** Do not accumulate changes. Each fix is one commit. This makes bisecting easy and keeps the history clean.
+- **Wasm-observable behavior needs a changeset.** Any PR (crates-only included) changing behavior observable through `@brink-lang/web` carries a `@brink-lang/web` patch changeset (decision 2026-07-11).
 - **Never use `.ink.json` in the translation workflow.** The translation pipeline is `.ink` → compile → `.inkb` → export-xliff → `.xlf`. The `.ink.json` files are inklecate output used only by the converter reference pipeline. They must never be used as input to `export-xliff`, `compile-locale`, or any other intl operation.
