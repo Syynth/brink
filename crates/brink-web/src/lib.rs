@@ -1,4 +1,6 @@
 use std::cell::{Cell, RefCell};
+#[cfg(debug_assertions)]
+use std::collections::BTreeSet;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -1132,6 +1134,8 @@ fn value_to_js(v: &Value) -> JsValue {
         }
         Value::Map(map) => {
             let obj = js_sys::Object::new();
+            #[cfg(debug_assertions)]
+            warn_on_map_key_collisions(map.iter().map(|(k, _)| k));
             for (k, val) in map.iter() {
                 // `Reflect::set` on a fresh, extensible object cannot fail;
                 // discard the `Result` rather than unwrap it.
@@ -1151,6 +1155,126 @@ fn map_key_to_js(key: &brink_format::MapKey) -> JsValue {
         brink_format::MapKey::Int(n) => JsValue::from_str(&n.to_string()),
         brink_format::MapKey::Str(s) => JsValue::from_str(s),
         brink_format::MapKey::Bool(b) => JsValue::from_str(if *b { "true" } else { "false" }),
+    }
+}
+
+// ── map_key_to_js collision diagnostic (debug-only, #551) ─────────────
+//
+// `map_key_to_js` deliberately coerces every `MapKey` variant to a JS
+// property string (value-model-spec §8: `value_to_js`'s `Map` arm is the
+// lossy native leg; `value_to_typed_js` — the `eval_function` JSON boundary
+// — is the lossless one). That coercion means distinct keys can collide —
+// `MapKey::Int(1)` and `MapKey::Str("1")` both become `"1"` — and
+// `Reflect::set` then silently drops one entry. No behavior change is
+// wanted here: this is purely a debug-build visibility aid so the failure
+// mode is diagnosable once T1b makes colliding keys author-reachable.
+//
+// The detection (`map_key_collisions`) is plain Rust with no `JsValue`, so
+// it is unit-testable on the host without a JS runtime; only the reporting
+// wrapper (`warn_on_map_key_collisions`) touches `web_sys::console`.
+
+/// The JS-property-string a [`brink_format::MapKey`] coerces to at the
+/// `value_to_js` wasm boundary. Mirrors [`map_key_to_js`]'s coercion as
+/// plain Rust (no `JsValue`) so collisions in it are testable off wasm32.
+/// Kept as a separate, debug-only helper rather than reused by
+/// `map_key_to_js` itself, so the always-on marshaling path is untouched.
+#[cfg(debug_assertions)]
+fn map_key_coercion_string(key: &brink_format::MapKey) -> String {
+    match key {
+        brink_format::MapKey::Int(n) => n.to_string(),
+        brink_format::MapKey::Str(s) => s.to_string(),
+        brink_format::MapKey::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+    }
+}
+
+/// The coerced JS-property strings that more than one of `keys` maps to
+/// (via [`map_key_coercion_string`]), in first-collision order. Empty when
+/// every key coerces to a distinct string.
+#[cfg(debug_assertions)]
+fn map_key_collisions<'a>(keys: impl Iterator<Item = &'a brink_format::MapKey>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut collided = Vec::new();
+    for key in keys {
+        let coerced = map_key_coercion_string(key);
+        if !seen.insert(coerced.clone()) && !collided.contains(&coerced) {
+            collided.push(coerced);
+        }
+    }
+    collided
+}
+
+/// Debug-only diagnostic: log a `console.warn` for each JS-property string
+/// that two or more of a map's keys coerce to via [`map_key_to_js`] — the
+/// silent-overwrite failure mode this issue tracks. Purely observational;
+/// the caller's `Reflect::set` loop still runs unchanged.
+#[cfg(debug_assertions)]
+fn warn_on_map_key_collisions<'a>(keys: impl Iterator<Item = &'a brink_format::MapKey>) {
+    for coerced in map_key_collisions(keys) {
+        web_sys::console::warn_1(&JsValue::from_str(&format!(
+            "brink: map key coercion collision at the wasm value_to_js boundary: \
+             multiple map keys stringify to {coerced:?} — one entry silently \
+             overwrites another (value-model-spec §8; the lossless boundary is \
+             value_to_typed_js / eval_function's TypedValueJs result)"
+        )));
+    }
+}
+
+/// Plain-Rust tests for the collision *detection* (no `JsValue`/`web_sys`, so
+/// these run under host `cargo test` — no wasm32 target needed).
+#[cfg(all(test, debug_assertions))]
+mod map_key_collision_tests {
+    use super::{map_key_coercion_string, map_key_collisions};
+    use brink_format::MapKey;
+
+    #[test]
+    fn int_and_string_coerce_to_the_same_property_name() {
+        assert_eq!(map_key_coercion_string(&MapKey::from(1)), "1");
+        assert_eq!(map_key_coercion_string(&MapKey::from("1")), "1");
+    }
+
+    #[test]
+    fn bool_and_string_coerce_to_the_same_property_name() {
+        assert_eq!(map_key_coercion_string(&MapKey::from(true)), "true");
+        assert_eq!(map_key_coercion_string(&MapKey::from("true")), "true");
+    }
+
+    #[test]
+    fn no_collision_among_distinct_keys() {
+        let keys = [MapKey::from(1), MapKey::from("two"), MapKey::from(false)];
+        assert!(map_key_collisions(keys.iter()).is_empty());
+    }
+
+    #[test]
+    fn detects_int_str_collision() {
+        let keys = [MapKey::from(1), MapKey::from("1")];
+        assert_eq!(map_key_collisions(keys.iter()), vec!["1".to_string()]);
+    }
+
+    #[test]
+    fn detects_bool_str_collision() {
+        let keys = [MapKey::from(true), MapKey::from("true")];
+        assert_eq!(map_key_collisions(keys.iter()), vec!["true".to_string()]);
+    }
+
+    #[test]
+    fn reports_each_colliding_group_once_regardless_of_group_size() {
+        // Three keys all coercing to "1": the collision is reported once,
+        // not once per extra colliding key.
+        let keys = [MapKey::from(1), MapKey::from("1"), MapKey::from("1")];
+        assert_eq!(map_key_collisions(keys.iter()), vec!["1".to_string()]);
+    }
+
+    #[test]
+    fn multiple_independent_collisions_are_all_reported() {
+        let keys = [
+            MapKey::from(1),
+            MapKey::from("1"),
+            MapKey::from(true),
+            MapKey::from("true"),
+        ];
+        let mut collided = map_key_collisions(keys.iter());
+        collided.sort();
+        assert_eq!(collided, vec!["1".to_string(), "true".to_string()]);
     }
 }
 
