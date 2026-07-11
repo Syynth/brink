@@ -30,6 +30,14 @@ bench:
 bench-compile *ARGS:
     cargo run --release -p brink-test-harness --bin compile_bench -- {{ARGS}}
 
+# Editor-session memory profiling harness (#529): drives a long, deterministic
+# editor-style session through a persistent ProjectDb and reports salsa
+# memo-table/heap growth per query kind. Measurement only — does not set any
+# salsa LRU capacities (that's a data-driven follow-up ruling, spec §8).
+# Extra args pass through, e.g. `just bench-editor-session --edits 2000`.
+bench-editor-session *ARGS:
+    cargo run --release -p brink-test-harness --bin editor_session_bench -- {{ARGS}}
+
 # Run cross-implementation benchmark comparison
 cross-language-benchmark:
     #!/usr/bin/env bash

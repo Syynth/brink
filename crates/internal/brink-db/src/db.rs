@@ -317,6 +317,15 @@ impl ProjectDb {
         Some(story_data_query(&self.salsa, self.project))
     }
 
+    /// Snapshot salsa's memo-table memory usage — one row per salsa
+    /// ingredient (input/tracked struct or memoized query function), sorted
+    /// for deterministic output. Behind the `memory-introspection` feature
+    /// (issue #529); see `brink-test-harness`'s `editor_session_bench`.
+    #[cfg(feature = "memory-introspection")]
+    pub fn memory_snapshot(&self) -> Vec<crate::memory::IngredientMemory> {
+        crate::memory::snapshot(&self.salsa)
+    }
+
     // ── Internal helpers ──────────────────────────────────────────────
 
     fn include_graph(&self) -> &crate::include_graph::IncludeGraph {
