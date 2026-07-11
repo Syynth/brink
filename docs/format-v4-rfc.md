@@ -51,9 +51,20 @@ reused not reinvented.
 - **`StructShapes` (reserved)**: count always 0 in 4.0. Entry encoding
   specified: ShapeId, name NameId, u16 field count, field NameIds in
   declaration order.
+- **`EffectRows` (reserved, section-locally versioned)**: count always
+  0 in 4.0, plus a one-byte section version so the T2 effects round can
+  define the row encoding WITHOUT a format bump. Rationale (gap caught
+  in review): effect-row *inference* is compile-time, but the ECS join
+  happens in the host at runtime against pre-compiled `.inkb` with no
+  compiler present — frozen entry-point rows must ship in the artifact,
+  the same compiled-declarations-as-data pattern as #473's scope bits
+  and #474's metadata-tag table. Sketch (T2 finalizes): per entry —
+  DefinitionId, reads (global slots/NameIds), writes, external call
+  kinds (NameIds).
 - No handle-kinds section: a handle's kind is a NameId; the kind
   *vocabulary* lives in the external manifest (analyzer side), not the
-  format.
+  format. The *access-set* vocabulary the manifest maps kinds onto is
+  host-side; the format ships only the rows.
 
 ## 3. Opcodes
 
