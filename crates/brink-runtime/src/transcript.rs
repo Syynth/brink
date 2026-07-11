@@ -60,6 +60,13 @@ const VAL_FRAGMENT_REF: u8 = 0x08;
 const VAL_ARRAY: u8 = 0x09;
 const VAL_MAP: u8 = 0x0A;
 
+/// Maximum nesting depth permitted when decoding `VAL_ARRAY`/`VAL_MAP`
+/// values, matching the `.inkb` reader's cap (`brink_format::inkb::read`).
+/// Generous for legitimate data but bounds worst-case recursion so a crafted
+/// transcript of nested single-element arrays cannot stack-overflow the
+/// reader (CLAUDE.md "guard against unbounded growth"; issue #553).
+const MAX_DECODE_DEPTH: usize = 128;
+
 // ── Error type ────────────────────────────────────────────────────────────
 
 /// Errors from transcript serialization/deserialization.
@@ -83,6 +90,8 @@ pub enum TranscriptError {
     InvalidUtf8,
     #[error("invalid definition ID")]
     InvalidDefinitionId,
+    #[error("value nesting exceeded max decode depth ({0})")]
+    MaxDepthExceeded(usize),
 }
 
 // ── Write ─────────────────────────────────────────────────────────────────
@@ -258,7 +267,7 @@ pub fn read_transcript(bytes: &[u8]) -> Result<TranscriptData, TranscriptError> 
                 let slot_count = read_u16(bytes, &mut off)? as usize;
                 let mut slots = Vec::with_capacity(slot_count);
                 for _ in 0..slot_count {
-                    slots.push(decode_value(bytes, &mut off)?);
+                    slots.push(decode_value(bytes, &mut off, 0)?);
                 }
                 OutputPart::LineRef {
                     container_idx,
@@ -267,7 +276,7 @@ pub fn read_transcript(bytes: &[u8]) -> Result<TranscriptData, TranscriptError> 
                     flags,
                 }
             }
-            TAG_VALUE_REF => OutputPart::ValueRef(decode_value(bytes, &mut off)?),
+            TAG_VALUE_REF => OutputPart::ValueRef(decode_value(bytes, &mut off, 0)?),
             TAG_NEWLINE => OutputPart::Newline,
             TAG_SPRING => OutputPart::Spring,
             TAG_GLUE => OutputPart::Glue,
@@ -299,7 +308,7 @@ pub fn read_transcript(bytes: &[u8]) -> Result<TranscriptData, TranscriptError> 
                     let slot_count = read_u16(bytes, &mut off)? as usize;
                     let mut slots = Vec::with_capacity(slot_count);
                     for _ in 0..slot_count {
-                        slots.push(decode_value(bytes, &mut off)?);
+                        slots.push(decode_value(bytes, &mut off, 0)?);
                     }
                     OutputPart::LineRef {
                         container_idx,
@@ -308,7 +317,7 @@ pub fn read_transcript(bytes: &[u8]) -> Result<TranscriptData, TranscriptError> 
                         flags,
                     }
                 }
-                TAG_VALUE_REF => OutputPart::ValueRef(decode_value(bytes, &mut off)?),
+                TAG_VALUE_REF => OutputPart::ValueRef(decode_value(bytes, &mut off, 0)?),
                 TAG_NEWLINE => OutputPart::Newline,
                 TAG_SPRING => OutputPart::Spring,
                 TAG_GLUE => OutputPart::Glue,
@@ -545,7 +554,10 @@ fn encode_map_key(key: &MapKey, buf: &mut Vec<u8>) {
     }
 }
 
-fn decode_value(buf: &[u8], off: &mut usize) -> Result<Value, TranscriptError> {
+fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, TranscriptError> {
+    if depth > MAX_DECODE_DEPTH {
+        return Err(TranscriptError::MaxDepthExceeded(MAX_DECODE_DEPTH));
+    }
     let tag = read_u8(buf, off)?;
     match tag {
         VAL_INT => Ok(Value::Int(read_i32(buf, off)?)),
@@ -584,7 +596,7 @@ fn decode_value(buf: &[u8], off: &mut usize) -> Result<Value, TranscriptError> {
             let len = read_u32(buf, off)? as usize;
             let mut items = Vec::with_capacity(len.min(buf.len().saturating_sub(*off)));
             for _ in 0..len {
-                items.push(decode_value(buf, off)?);
+                items.push(decode_value(buf, off, depth + 1)?);
             }
             Ok(Value::array(items))
         }
@@ -593,7 +605,7 @@ fn decode_value(buf: &[u8], off: &mut usize) -> Result<Value, TranscriptError> {
             let mut map = OrderedMap::with_capacity(len.min(buf.len().saturating_sub(*off)));
             for _ in 0..len {
                 let key = decode_map_key(buf, off)?;
-                let val = decode_value(buf, off)?;
+                let val = decode_value(buf, off, depth + 1)?;
                 map.insert(key, val);
             }
             Ok(Value::map(map))
@@ -778,6 +790,73 @@ mod tests {
         assert!(matches!(
             read_transcript(&bytes),
             Err(TranscriptError::IntegrityCheckFailed)
+        ));
+    }
+
+    // ── Recursion-depth cap on VAL_ARRAY/VAL_MAP decode (#553) ──────────────
+    //
+    // `decode_value` recurses into itself for VAL_ARRAY/VAL_MAP children with
+    // no depth limit. A crafted transcript of nested single-element arrays
+    // (~5 bytes/level) can stack-overflow the reader. These tests hand-build
+    // a `Value` nested exactly at, and one past, `MAX_DECODE_DEPTH` and prove
+    // the reader accepts the former and rejects the latter with a proper
+    // decode error instead of overflowing the stack.
+
+    /// A `Value` wrapped in `depth` single-element arrays around a scalar
+    /// leaf, matching the issue's "nested single-element arrays" shape.
+    fn nested_array(depth: usize) -> Value {
+        let mut v = Value::Int(42);
+        for _ in 0..depth {
+            v = Value::array(vec![v]);
+        }
+        v
+    }
+
+    #[test]
+    fn decode_value_accepts_max_depth_nesting() {
+        // Exactly MAX_DECODE_DEPTH levels of nesting must still decode
+        // cleanly — the cap must not clip legitimate (if unusual) data.
+        let value = nested_array(MAX_DECODE_DEPTH);
+        let parts = vec![OutputPart::ValueRef(value.clone())];
+        let bytes = write_transcript(&parts, 0, &[]);
+
+        let data = read_transcript(&bytes).expect("depth exactly at cap must decode");
+        match &data.parts[0] {
+            OutputPart::ValueRef(v) => assert_eq!(*v, value),
+            other => unreachable!("expected ValueRef, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_value_rejects_beyond_max_depth() {
+        // One level past the cap must be rejected with a proper decode
+        // error, not a stack overflow.
+        let value = nested_array(MAX_DECODE_DEPTH + 1);
+        let parts = vec![OutputPart::ValueRef(value)];
+        let bytes = write_transcript(&parts, 0, &[]);
+
+        assert!(matches!(
+            read_transcript(&bytes),
+            Err(TranscriptError::MaxDepthExceeded(MAX_DECODE_DEPTH))
+        ));
+    }
+
+    #[test]
+    fn decode_value_rejects_deeply_crafted_nesting() {
+        // The actual attack scenario the issue describes: a much deeper
+        // chain than any legitimate story would produce (well beyond the
+        // cap, but shallow enough that constructing/encoding the fixture
+        // itself — which has no depth cap by design; only the
+        // untrusted-input decode path is guarded — doesn't hit unrelated
+        // recursion limits). The reader must reject it promptly rather than
+        // recursing hundreds of frames deep.
+        let value = nested_array(8 * MAX_DECODE_DEPTH);
+        let parts = vec![OutputPart::ValueRef(value)];
+        let bytes = write_transcript(&parts, 0, &[]);
+
+        assert!(matches!(
+            read_transcript(&bytes),
+            Err(TranscriptError::MaxDepthExceeded(MAX_DECODE_DEPTH))
         ));
     }
 }
