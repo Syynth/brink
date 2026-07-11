@@ -1,11 +1,9 @@
 # The value model — data, identity, and sharing in Tier-1 brink
 
-Status: **DRAFT for the value-model design round** (epic #397; follows
-phase 0). Nothing here is ruled yet. The lead candidate is presented
-with its alternatives honestly costed; §11 (functions as values,
-closures) is deliberately open pending the round's remaining
-discussion. Rulings land in `docs/decision-log.md` and this header
-flips to "ratified" section by section.
+Status: **RATIFIED 2026-07-11** (epic #397 design round closed; see
+`docs/decision-log.md` 2026-07-11 entries). One deferral: §11b effects
+has its *direction* ratified but its detailed design happens in its own
+round before implementation.
 
 Context: `docs/scripting-substrate-spec.md` (the query-shaped compiler
 this model compiles under), the #397 sizing ("the value model is the
@@ -165,6 +163,19 @@ breaking change forever. This is the first ruling to ratify.
     semantic-type vocabulary the analyzer already polices), giving the
     future type checker `handle<AudioInstance>`-level checking, and
     giving the Track-B capability manifest its nouns.
+- **Snapshot economics** (ratified with the contract): a snapshot is an
+  Arc bump — O(1) in time regardless of size. Transient bindings retain
+  nothing. A *retained* snapshot bounds memory at (retained generations
+  + 1 live) per value — the mutator pays one COW copy at first
+  divergence, history never accumulates. `Arc::ptr_eq` on a refreshed
+  snapshot is free change detection for host systems — a HOST-side
+  optimization hint only, never script-visible semantics (the §3
+  invariant boundary runs exactly here). Snapshots are frozen trees:
+  lock-free parallel reads across host threads while the script
+  mutates the live version. The wasm boundary serializes instead;
+  snapshot economics apply to native hosts. Guidance for bevy-brink
+  docs: retain projections, not worlds; a dev-build snapshot-retention
+  metric is a worthwhile later addition.
 
 Summary dogma: the script world holds only **values and names**; every
 name (cell, divert target, handle) is symbolic and serializable, and
@@ -205,7 +216,7 @@ collapse/compaction are invisible to all of the above. The only place
 resumability could have leaked — foreign identity inside values — is
 closed by §8's token design.
 
-## 11. Functions as values, closures — RULED 2026-07-11 (cross-flow ref-capture binding still open)
+## 11. Functions as values, closures — RULED 2026-07-11 (cross-flow ref capture: late binding, ruled in closing batch)
 
 - **Function references**: symbolic tokens (`DefinitionId`, the divert-
   target move) — serializable, replayable, compared by token.
@@ -235,7 +246,7 @@ closed by §8's token design.
   consistent with names-not-identities; proposed) vs pinned to the
   creating flow (requires flow identity inside a value; disfavored).
 
-## 11b. Effects & ECS scheduling — OPEN (sketch)
+## 11b. Effects & ECS scheduling — DIRECTION RATIFIED 2026-07-11 (detailed design: own round)
 
 After §2, effects are syntactically total: state changes only via cell
 writes, declared `ref`s, and declared externals. So the compiler can
@@ -272,22 +283,13 @@ the journal (replays fail identically). Result-shaped recoverable
 errors are a later, demand-driven addition that joins the effects
 system (§11b) without grammar changes.
 
-## 12. Rulings needed (round checklist)
+## 12. Rulings — ALL CLOSED 2026-07-11
 
-1. Ratify the model (§2) and the invariant (§3).
-2. Map iteration order + key domain (§4).
-3. Path-projection trio: index snapshot, invalidation, overlap (§7).
-4. Host boundary contract + Handle design (§8) — including the
-   rehydration hook's shape in bevy-brink.
-5. The compiler guarantees contract (§9) as standing law.
-6. ~~Functions/closures (§11)~~ RULED 2026-07-11 — except the
-   cross-flow `ref`-capture binding question (late binding proposed).
-7. Effects (§11b): effect rows, the manifest join, and the
-   declared-at-entry firewall.
-8. ~~Error handling (§11c)~~ RULED 2026-07-11 (ink-side infallible;
-   host events).
-9. v1 scope line: which of §6's optimizations ship v1 (proposed:
-   `ptr_eq` only) vs specified-for-later.
+Every item ratified; see the decision-log entries of 2026-07-11
+("Tier-1 closures…", "Error handling v1…", "Value-model round: closing
+ratifications"). Build ordering: format schema on paper → runtime value
+core → one format bump → compiler surface (docs/tier1-roadmap.md).
+The single remaining design debt is §11b's detailed effects round.
 
 ## 13. Non-goals
 
