@@ -263,6 +263,17 @@ export class EditorSessionHandle {
     this.session.set_external_check(level);
   }
 
+  /**
+   * Set the severity policy for unknown-semantic-type diagnostics (#532):
+   * `"tolerant"` (default — unresolved types are only diagnosed once a host
+   * manifest is registered, #339/#527) or `"error"` (always diagnose, even
+   * with no manifest registered — catches typo'd host semantic-type tags).
+   */
+  setSemanticTypeCheck(level: "tolerant" | "error"): void {
+    this.bump();
+    this.session.set_semantic_type_check(level);
+  }
+
   setActiveFile(path: string): boolean {
     return this.session.set_active_file(path);
   }
