@@ -987,7 +987,7 @@ fn apply_counting_flags(root: &mut lir::Container, globals: &[lir::GlobalDef]) {
     }
 
     // Apply phase: walk entire tree
-    apply_counting_flags_tree(root, &visit_ids, &turns_ids);
+    apply_counting_flags_tree(root, &visit_ids, &turns_ids, false);
 }
 
 fn collect_counting_refs_tree(
@@ -1005,7 +1005,26 @@ fn apply_counting_flags_tree(
     container: &mut lir::Container,
     visit_ids: &[brink_format::DefinitionId],
     turns_ids: &[brink_format::DefinitionId],
+    in_local_scope: bool,
 ) {
+    // `#@local` on a knot/stitch declares that its counts are per-flow
+    // memory (#496): force VISITS on the marked container and on every
+    // scope-owning container in its definition subtree (a marked knot
+    // covers its stitches — the runtime privatizes the whole subtree at
+    // policy resolution), regardless of the read-site analysis below.
+    // Interior containers are untouched: sequences already carry VISITS
+    // intrinsically (branch selection needs the counter), and unread
+    // labels stay compiled out exactly as in unmarked scopes.
+    let in_local_scope = in_local_scope || container.local;
+    if in_local_scope
+        && matches!(
+            container.kind,
+            lir::ContainerKind::Knot | lir::ContainerKind::Stitch
+        )
+    {
+        container.counting_flags |= CountingFlags::VISITS;
+    }
+
     if visit_ids.contains(&container.id) {
         container.counting_flags |= CountingFlags::VISITS;
         // Labeled containers (gathers with labels like `- (loop)`) need
@@ -1019,7 +1038,7 @@ fn apply_counting_flags_tree(
         container.counting_flags |= CountingFlags::TURNS;
     }
     for child in &mut container.children {
-        apply_counting_flags_tree(child, visit_ids, turns_ids);
+        apply_counting_flags_tree(child, visit_ids, turns_ids, in_local_scope);
     }
 }
 

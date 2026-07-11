@@ -2392,4 +2392,64 @@ mod compiled_defaults_tests {
         }
         assert_eq!(world.visit_count(shrine), 0);
     }
+
+    /// End to end through the VM: a `#@local` knot whose visit count is
+    /// never *read* anywhere in the ink must still track visits — and
+    /// track them per flow (#496). Without the compiler forcing
+    /// `CountingFlags::VISITS` on marked containers, the read-site
+    /// optimization compiles counting out and the VM never records the
+    /// visit at all, in any layer.
+    #[test]
+    fn local_knot_with_no_reads_still_tracks_visits_per_flow() {
+        use crate::rng::FastRng;
+        use crate::story::{FallbackHandler, FlowInstance};
+
+        let out = brink_compiler::compile("t.ink", |p| {
+            if p == "t.ink" {
+                Ok("-> shrine\n\
+                    === shrine ===\n\
+                    #@local\n\
+                    At the shrine.\n\
+                    -> END\n"
+                    .to_string())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "no such include",
+                ))
+            }
+        })
+        .expect("compile");
+        let (program, tables) = link(&out.data).expect("link");
+        let shrine = program.find_path_target("shrine").expect("shrine exists");
+
+        let mut world = World::new(&program, &WorldPolicy::default()).expect("world builds");
+        let mut local_a = FlowLocal::new();
+        let mut local_b = FlowLocal::new();
+
+        // Drive flow A through the knot.
+        {
+            let (mut flow, _unused_default_world) = FlowInstance::new_at_root(&program);
+            let mut view_a = ContextView::new(&mut world, &mut local_a);
+            flow.drive_to_terminal::<FastRng>(
+                &program,
+                &tables,
+                &mut view_a,
+                &FallbackHandler,
+                None,
+            )
+            .expect("drive succeeds");
+            assert_eq!(
+                view_a.visit_count(shrine),
+                1,
+                "the VM must count the visit even though nothing reads it"
+            );
+        }
+        // The count is flow-private: flow B and the shared World see 0.
+        {
+            let view_b = ContextView::new(&mut world, &mut local_b);
+            assert_eq!(view_b.visit_count(shrine), 0);
+        }
+        assert_eq!(world.visit_count(shrine), 0);
+    }
 }
