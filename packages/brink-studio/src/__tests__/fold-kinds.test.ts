@@ -278,6 +278,89 @@ describe("narrative pill cast — via dialect speaker attr, not characterName()"
   });
 });
 
+describe("narrative pill — choice-body anchor + sigil-stripped snippet (#417)", () => {
+  const minimal = {
+    compile: () => ({ ok: true, diagnostics: [] }) as never,
+    getSemanticTokens: () => [],
+    getTokenTypeNames: () => [],
+  };
+
+  // The jackie_call fixture from #413/#417: a choice whose body IS a
+  // narrative run (a character cue + chained dialogue).
+  const doc = "* [Talk]\n  @Jackie:<>\n  I'm doing okay here at home.\n- (g)\n-> END\n";
+
+  function mountJackieCall(): EditorView {
+    // start_line 1 == the cue line (run start == body start); the Rust
+    // fold computation would re-anchor this on the choice line (0) and
+    // fold from its start — this test fixes the FoldRange the extension
+    // is handed (mirroring what the Rust side now emits) so it exercises
+    // the same placeholder path regardless of the Rust fix landing in the
+    // same build.
+    const ranges: FoldRange[] = [
+      { start_line: 0, end_line: 2, from_line_start: true, kind: "narrative" },
+    ];
+    const v = new EditorView({
+      state: EditorState.create({
+        doc,
+        extensions: [brinkStudio({ ...minimal, getFoldingRanges: () => ranges })],
+      }),
+      parent: document.body,
+    });
+    setActiveFoldKinds(v, ALL_KINDS);
+    view = v;
+    return v;
+  }
+
+  it("point 1/3: a whole-line fold anchored on the choice line hides the choice line itself", () => {
+    const v = mountJackieCall();
+    foldLine(v, 0);
+    // The choice line (`* [Talk]`) is inside the folded range now — its
+    // text must not remain visible ahead of the pill.
+    expect(v.dom.textContent).not.toContain("[Talk]");
+    expect(v.dom.textContent).not.toContain("@Jackie:<>");
+  });
+
+  it("point 3: the pill IS the line — no duplicated cue text before the chip", () => {
+    const v = mountJackieCall();
+    foldLine(v, 0);
+    const pill = v.dom.querySelector<HTMLElement>(".brink-fold-pill-narrative");
+    expect(pill).not.toBeNull();
+    // The cue's raw text must not appear a second time preceding the pill
+    // on the same rendered line.
+    const line = pill?.closest(".cm-line");
+    expect(line?.textContent?.trim()).toBe(pill?.textContent?.trim());
+  });
+
+  it("point 2: the snippet strips the cue's raw sigils and shows the first content line", () => {
+    const v = mountJackieCall();
+    foldLine(v, 0);
+    const summary = v.dom.querySelector(".brink-fold-pill-summary")?.textContent ?? "";
+    expect(summary).not.toContain("@Jackie:<>");
+    expect(summary).not.toContain("@");
+    expect(summary).toContain("I'm doing okay here at home.");
+    expect(summary).toContain("Jackie");
+  });
+
+  it("point 2: falls back to the stripped cue NAME when the run has no content line", () => {
+    const cueOnlyDoc = "@Jackie:<>\n@Minnie:<>\n";
+    const ranges: FoldRange[] = [
+      { start_line: 0, end_line: 1, from_line_start: true, kind: "narrative" },
+    ];
+    view = new EditorView({
+      state: EditorState.create({
+        doc: cueOnlyDoc,
+        extensions: [brinkStudio({ ...minimal, getFoldingRanges: () => ranges })],
+      }),
+      parent: document.body,
+    });
+    setActiveFoldKinds(view, ALL_KINDS);
+    foldLine(view, 0);
+    const summary = view.dom.querySelector(".brink-fold-pill-summary")?.textContent ?? "";
+    expect(summary).not.toContain("@Jackie:<>");
+    expect(summary).toContain("Jackie");
+  });
+});
+
 describe("decl pill — data-decl-kind + icon slot (#365 deliverable)", () => {
   it("tags a knot fold with data-decl-kind='knot'", () => {
     const v = mountFolding("== hub ==\ntext\n", () => [

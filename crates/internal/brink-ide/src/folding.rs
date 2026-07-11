@@ -27,6 +27,7 @@ pub enum FoldKind {
 }
 
 /// A foldable range in the document.
+#[derive(Debug)]
 pub struct FoldRange {
     pub start_line: u32,
     pub end_line: u32,
@@ -521,11 +522,31 @@ pub fn machinery_and_narrative_folds(
         .collect();
     let bound_at = |i: usize| weave_bounds.get(i).copied().flatten();
 
-    let mut ranges = Vec::new();
-    let mut run_start: Option<(u32, LineNature, Option<u32>)> = None;
+    // Choice container handle -> the line its own choice text starts on
+    // (#417). A Choice container's extent is choice-line ∪ body (§5.1); the
+    // body's first line is always `choice_start + 1`. Used below to detect
+    // when a narrative run *is* a choice's body (run start == body start),
+    // so the fold can be re-anchored on the choice line itself rather than
+    // starting inside the body.
+    let mut choice_start_lines: std::collections::HashMap<u32, u32> =
+        std::collections::HashMap::new();
+    for span in &projection.spans {
+        if span.kind == SpanKind::Choice
+            && let Some(handle) = span.handle
+        {
+            let (line, _) = idx.line_col(span.range.start());
+            choice_start_lines.entry(handle).or_insert(line);
+        }
+    }
 
-    let mut flush = |run_start: &mut Option<(u32, LineNature, Option<u32>)>, end_line: u32| {
-        if let Some((start, nature, _)) = run_start.take()
+    let mut ranges = Vec::new();
+    // (run's first content line, nature, weave bound, choice line to extend
+    // the fold's anchor to — #417 point 1).
+    let mut run_start: Option<(u32, LineNature, Option<u32>, Option<u32>)> = None;
+
+    let mut flush = |run_start: &mut Option<(u32, LineNature, Option<u32>, Option<u32>)>,
+                     end_line: u32| {
+        if let Some((start, nature, _, extend_to)) = run_start.take()
             && end_line > start
         {
             let kind = match nature {
@@ -533,11 +554,22 @@ pub fn machinery_and_narrative_folds(
                 LineNature::Narrative => FoldKind::Narrative,
                 LineNature::Structural => return,
             };
+            // Narrative folds anchor on the whole line (#417 point 3):
+            // the anchor's visible content must not double with the
+            // pill, so the fold hides from the line's start and the
+            // pill IS the line — same shape as the decl-fold
+            // placeholder. When the run is exactly a choice's body
+            // (point 1), that anchor line is the choice line itself
+            // rather than the run's own first line.
+            let (start_line, from_line_start) = match kind {
+                FoldKind::Narrative => (extend_to.unwrap_or(start), true),
+                _ => (start, false),
+            };
             ranges.push(FoldRange {
-                start_line: start,
+                start_line,
                 end_line,
                 collapsed_text: None,
-                from_line_start: false,
+                from_line_start,
                 kind,
             });
         }
@@ -551,10 +583,17 @@ pub fn machinery_and_narrative_folds(
                 flush(&mut run_start, line_no.saturating_sub(1));
                 run_start = None;
             }
-            (n, Some((_, current, b))) if n == current && bound == b => {}
+            (n, Some((_, current, b, _))) if n == current && bound == b => {}
             (n, _) => {
                 flush(&mut run_start, line_no.saturating_sub(1));
-                run_start = Some((line_no, n, bound));
+                let extend_to = if n == LineNature::Narrative {
+                    bound
+                        .and_then(|h| choice_start_lines.get(&h).copied())
+                        .filter(|&choice_line| choice_line + 1 == line_no)
+                } else {
+                    None
+                };
+                run_start = Some((line_no, n, bound, extend_to));
             }
         }
     }
@@ -819,18 +858,40 @@ Continuation prose.
 // ── Machinery/narrative fold-run tests (#365) ──────────────────────────
 #[cfg(test)]
 mod fold_kind_tests {
-    use super::{FoldKind, machinery_and_narrative_folds};
+    use super::{FoldKind, FoldRange, machinery_and_narrative_folds};
     use crate::line_context::line_contexts;
 
     fn kinds_for(src: &str) -> Vec<(u32, u32, FoldKind)> {
+        ranges_full_for(src)
+            .into_iter()
+            .map(|r| (r.start_line, r.end_line, r.kind))
+            .collect()
+    }
+
+    fn ranges_full_for(src: &str) -> Vec<FoldRange> {
         let parsed = brink_syntax::parse(src);
         let (hir, _, _) = brink_ir::hir::lower(brink_ir::FileId(0), &parsed.tree());
         let projection = crate::hir_projection::project_hir_structural(&hir, src);
         let ctx = line_contexts(src, &parsed.syntax(), &projection);
         machinery_and_narrative_folds(&projection, src, &ctx)
-            .into_iter()
-            .map(|r| (r.start_line, r.end_line, r.kind))
-            .collect()
+    }
+
+    /// Fold ranges for `src` with the at-cue dialect resolved and applied —
+    /// shared by the #417 choice-body-anchor tests, which need cues/dialogue
+    /// to classify as `Narrative` inside a choice body.
+    fn dialect_ranges_for(src: &str) -> Vec<FoldRange> {
+        let parsed = brink_syntax::parse(src);
+        let (hir, _, _) = brink_ir::hir::lower(brink_ir::FileId(0), &parsed.tree());
+        let dialect = brink_ir::ResolvedDialect::compile(&brink_ir::DialogueDialect::default())
+            .expect("at-cue preset compiles");
+        let projection = crate::hir_projection::project_hir_structural(&hir, src);
+        let ctx = crate::line_context::line_contexts_with_dialect(
+            src,
+            &parsed.syntax(),
+            &projection,
+            &dialect,
+        );
+        machinery_and_narrative_folds(&projection, src, &ctx)
     }
 
     #[test]
@@ -1075,22 +1136,71 @@ Come on in, take a seat.
         // dialogue line are both Narrative-natured (at-cue preset) and fold
         // as one narrative run, exactly like plain prose would.
         let src = "=== start ===\n@Alice:<>\nHello there.\n";
-        let parsed = brink_syntax::parse(src);
-        let (hir, _, _) = brink_ir::hir::lower(brink_ir::FileId(0), &parsed.tree());
-        let dialect = brink_ir::ResolvedDialect::compile(&brink_ir::DialogueDialect::default())
-            .expect("at-cue preset compiles");
-        let projection = crate::hir_projection::project_hir_structural(&hir, src);
-        let ctx = crate::line_context::line_contexts_with_dialect(
-            src,
-            &parsed.syntax(),
-            &projection,
-            &dialect,
-        );
-        let ranges: Vec<(u32, u32, FoldKind)> =
-            machinery_and_narrative_folds(&projection, src, &ctx)
-                .into_iter()
-                .map(|r| (r.start_line, r.end_line, r.kind))
-                .collect();
+        let ranges: Vec<(u32, u32, FoldKind)> = dialect_ranges_for(src)
+            .into_iter()
+            .map(|r| (r.start_line, r.end_line, r.kind))
+            .collect();
         assert!(ranges.contains(&(1, 2, FoldKind::Narrative)), "{ranges:?}");
+    }
+
+    // ── #417: choice-body anchor + whole-line narrative pill ────────────
+
+    #[test]
+    fn narrative_run_folds_from_the_anchor_lines_start() {
+        // Point 3: a narrative fold must hide its own anchor line (the
+        // run's first line), not leave it visible ahead of the pill — the
+        // pill IS the line, mirroring the decl-fold placeholder shape.
+        let src = "=== start ===\nHello there friend.\nHow are you today?\n~ temp x = 1\n";
+        let ranges = ranges_full_for(src);
+        let narrative = ranges
+            .iter()
+            .find(|r| r.kind == FoldKind::Narrative)
+            .expect("narrative run present");
+        assert_eq!((narrative.start_line, narrative.end_line), (1, 2));
+        assert!(
+            narrative.from_line_start,
+            "narrative fold must hide the whole anchor line: {ranges:?}"
+        );
+    }
+
+    #[test]
+    fn narrative_run_that_is_a_choice_body_anchors_on_the_choice_line() {
+        // Point 1: when a narrative run IS a choice's body (run start ==
+        // body start), the fold anchors on the CHOICE line, hiding the
+        // whole body beneath it — not starting inside the body on the cue
+        // line (the jackie_call fixture from #413/#417).
+        let src = "=== start ===\n* [Talk]\n  @Jackie:<>\n  Hello there.\n- (g)\n-> END\n";
+        let ranges = dialect_ranges_for(src);
+        let narrative = ranges
+            .iter()
+            .find(|r| r.kind == FoldKind::Narrative)
+            .expect("narrative run present");
+        assert_eq!(
+            narrative.start_line, 1,
+            "anchors on the choice line (`* [Talk]`), not the cue line: {ranges:?}"
+        );
+        assert_eq!(narrative.end_line, 3);
+        assert!(narrative.from_line_start, "{ranges:?}");
+    }
+
+    #[test]
+    fn narrative_run_not_at_the_start_of_a_choice_body_is_not_extended() {
+        // A narrative run that does NOT start at the body's first line
+        // (some machinery precedes it) must not be re-anchored on the
+        // choice line — only an exact run-start == body-start match
+        // extends per point 1. It still folds from its own line's start
+        // per point 3.
+        let src = "=== start ===\n* [Talk]\n  ~ temp a = 1\n  @Jackie:<>\n  Hello there.\n- (g)\n-> END\n";
+        let ranges = dialect_ranges_for(src);
+        let narrative = ranges
+            .iter()
+            .find(|r| r.kind == FoldKind::Narrative)
+            .expect("narrative run present");
+        assert_eq!(
+            narrative.start_line, 3,
+            "run starts on the cue line, not extended to the choice line: {ranges:?}"
+        );
+        assert_eq!(narrative.end_line, 4);
+        assert!(narrative.from_line_start, "{ranges:?}");
     }
 }
