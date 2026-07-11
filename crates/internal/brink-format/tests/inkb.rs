@@ -33,6 +33,85 @@ fn roundtrip_i001_minimal_story() {
     assert_eq!(data, recovered);
 }
 
+// ── v4 collection value encoding (#526) ─────────────────────────────────────
+//
+// The v4 format serializes `Value::Array`/`Value::Map` as trees in the
+// Variables section (and everywhere else `encode_value` is reached). No opcode
+// emits a collection literal yet — that is T1b — so this test hand-injects
+// collection-valued globals and round-trips the whole `.inkb`, proving the new
+// tag arms encode and decode structurally (insertion order + scalar key types
+// preserved) instead of the pre-v4 fold-to-`VAL_NULL` placeholder.
+#[test]
+fn roundtrip_collection_valued_globals() {
+    use brink_format::{
+        DefinitionId, DefinitionTag, GlobalVarDef, MapKey, NameId, OrderedMap, Value, ValueType,
+    };
+
+    let mut data = i001_data();
+    let next_id = data.variables.len() as u64;
+
+    // A nested array: [1, "two", [true, null]].
+    let arr = Value::array(vec![
+        Value::Int(1),
+        Value::String("two".into()),
+        Value::array(vec![Value::Bool(true), Value::Null]),
+    ]);
+    // A map with all three scalar key kinds in a deliberately non-sorted order,
+    // nesting an array value.
+    let map: OrderedMap = [
+        (MapKey::from("hp"), Value::Int(30)),
+        (
+            MapKey::from(7),
+            Value::array(vec![Value::Int(1), Value::Int(2)]),
+        ),
+        (MapKey::from(true), Value::String("flag".into())),
+    ]
+    .into_iter()
+    .collect();
+
+    data.variables.push(GlobalVarDef {
+        id: DefinitionId::new(DefinitionTag::GlobalVar, next_id),
+        name: NameId(0),
+        value_type: ValueType::Array,
+        default_value: arr,
+        mutable: true,
+        local: false,
+    });
+    data.variables.push(GlobalVarDef {
+        id: DefinitionId::new(DefinitionTag::GlobalVar, next_id + 1),
+        name: NameId(0),
+        value_type: ValueType::Map,
+        default_value: Value::map(map),
+        mutable: true,
+        local: false,
+    });
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
+    assert_eq!(data, recovered);
+}
+
+// The strict reader rejects any version but 4 — a future v5 artifact is not
+// silently accepted (the version check runs ahead of the content checksum).
+#[test]
+fn strict_reader_rejects_non_v4_version() {
+    let data = i001_data();
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+    assert!(read_inkb(&buf).is_ok(), "v4 buffer reads cleanly");
+
+    // Bump the on-wire version field (bytes 4..6, LE) to 5.
+    buf[4] = 5;
+    buf[5] = 0;
+    assert!(
+        matches!(read_inkb(&buf), Err(DecodeError::UnsupportedVersion(5))),
+        "a v5 artifact must be rejected as UnsupportedVersion(5)"
+    );
+}
+
 #[test]
 fn snapshot_i001_inkb_bytes() {
     let data = i001_data();
@@ -160,7 +239,7 @@ fn index_parsing() {
     write_inkb(&data, &mut buf);
 
     let index = read_inkb_index(&buf).unwrap();
-    assert_eq!(index.version, 3);
+    assert_eq!(index.version, 4);
     assert_eq!(index.file_size as usize, buf.len());
     assert_eq!(index.sections.len(), 10);
 

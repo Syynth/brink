@@ -13,14 +13,14 @@ use crate::id::NameId;
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::opcode::DecodeError;
 use crate::story::StoryData;
-use crate::value::{ListValue, Value, ValueType};
+use crate::value::{ListValue, MapKey, OrderedMap, Value, ValueType};
 
 use super::{
     CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HEADER_PREAMBLE, InkbIndex,
     KEY_CARDINAL, KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN, LINE_TEMPLATE, MAGIC,
-    PART_LITERAL, PART_SELECT, PART_SLOT, SECTION_ENTRY_SIZE, SectionEntry, SectionKind, VAL_BOOL,
-    VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FRAGMENT_REF, VAL_INT, VAL_LIST, VAL_NULL, VAL_STRING,
-    VAL_VAR_POINTER, VERSION, safe_capacity,
+    PART_LITERAL, PART_SELECT, PART_SLOT, SECTION_ENTRY_SIZE, SectionEntry, SectionKind, VAL_ARRAY,
+    VAL_BOOL, VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FRAGMENT_REF, VAL_INT, VAL_LIST, VAL_MAP, VAL_NULL,
+    VAL_STRING, VAL_VAR_POINTER, VERSION, safe_capacity,
 };
 
 // ── Tier 1: Full story read ─────────────────────────────────────────────────
@@ -331,6 +331,8 @@ fn decode_value_type(buf: &[u8], off: &mut usize) -> Result<ValueType, DecodeErr
         VAL_VAR_POINTER => Ok(ValueType::VariablePointer),
         VAL_FRAGMENT_REF => Ok(ValueType::FragmentRef),
         VAL_NULL => Ok(ValueType::Null),
+        VAL_ARRAY => Ok(ValueType::Array),
+        VAL_MAP => Ok(ValueType::Map),
         _ => Err(DecodeError::InvalidValueType(tag)),
     }
 }
@@ -366,6 +368,39 @@ fn decode_value(buf: &[u8], off: &mut usize) -> Result<Value, DecodeError> {
         VAL_VAR_POINTER => Ok(Value::VariablePointer(read_def_id(buf, off)?)),
         VAL_FRAGMENT_REF => Ok(Value::FragmentRef(read_u32(buf, off)?)),
         VAL_NULL => Ok(Value::Null),
+        VAL_ARRAY => {
+            let len = read_u32(buf, off)? as usize;
+            // Each element is at least one tag byte, so `len` can't exceed the
+            // remaining bytes — cap the pre-allocation against crafted inputs.
+            let mut items = Vec::with_capacity(safe_capacity(len, buf.len(), *off, 1));
+            for _ in 0..len {
+                items.push(decode_value(buf, off)?);
+            }
+            Ok(Value::array(items))
+        }
+        VAL_MAP => {
+            let len = read_u32(buf, off)? as usize;
+            let mut map = OrderedMap::with_capacity(safe_capacity(len, buf.len(), *off, 2));
+            for _ in 0..len {
+                let key = decode_map_key(buf, off)?;
+                let val = decode_value(buf, off)?;
+                map.insert(key, val);
+            }
+            Ok(Value::map(map))
+        }
+        _ => Err(DecodeError::InvalidValueType(tag)),
+    }
+}
+
+/// Decode a [`MapKey`] written by `encode_map_key`: a scalar `VAL_*` tag
+/// (`int`/`string`/`bool`) then its payload. The strict reader rejects any
+/// other tag — only the v1 key domain is permitted (`docs/value-model-spec.md` §4).
+fn decode_map_key(buf: &[u8], off: &mut usize) -> Result<MapKey, DecodeError> {
+    let tag = read_u8(buf, off)?;
+    match tag {
+        VAL_INT => Ok(MapKey::Int(read_i32(buf, off)?)),
+        VAL_STRING => Ok(MapKey::Str(read_str(buf, off)?.into())),
+        VAL_BOOL => Ok(MapKey::Bool(read_u8(buf, off)? != 0)),
         _ => Err(DecodeError::InvalidValueType(tag)),
     }
 }

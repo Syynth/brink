@@ -582,10 +582,10 @@ fn write_value(w: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
         }
         Value::Null => write!(w, "null"),
         Value::FragmentRef(idx) => write!(w, "(fragment_ref {idx})"),
-        // Array/Map get their textual `.inkt` form with the T1a-4 literal pool
-        // (#526); no opcode emits a collection literal yet, so these are
-        // unreachable in this format version. The debug rendering below exists
-        // only to keep the match total.
+        // Array/Map render as nested s-expressions — the textual mirror of the
+        // v4 `.inkb`/transcript tree encoding (`docs/format-v4-rfc.md` §1). A
+        // collection reaches the dump whenever a binding/external return value
+        // (which since #525 can be a collection) is stored or emitted.
         Value::Array(items) => {
             write!(w, "(array")?;
             for item in items.iter() {

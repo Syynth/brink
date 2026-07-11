@@ -271,7 +271,7 @@ proptest! {
         prop_assert_eq!(index.file_size as usize, buf.len());
 
         // Correct version.
-        prop_assert_eq!(index.version, 3);
+        prop_assert_eq!(index.version, 4);
 
         // Exactly 10 sections in canonical order.
         prop_assert_eq!(index.sections.len(), 10);
