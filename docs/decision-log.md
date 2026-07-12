@@ -1364,3 +1364,9 @@
 - **SYSTEM:** language design (#397 Tier-1, T1b stdlib)
 - **WHAT:** (1) `contains(m, needle)` with a needle outside the map key domain (float, collection, …) returns **false** instead of raising an `InvalidMapKeyType` fault — a value that can never be a key is simply not a member, making `contains` total on both branches like the array branch. Indexing/mutation key faults (spec §6) are unchanged; a static analyzer warning for statically-visible non-key needles is deferred (#582). (2) Wrong-arity calls to the stdlib mutators (`push`/`insert`/`remove`) are a **targeted compile error** naming the expected signature, replacing warning E031 + silently-dropped RMW lowering; pure-function arity behavior (warning + Null) is unchanged. Both shipped in PR #584 (#580, #581); this entry backfills the log requirement those issues carried.
 - **WHY:** (1) value-model-spec §11c's total-operations principle, symmetry with the array branch, and removing a story-crashing footgun from a read-only membership test. (2) A mutator call that does nothing is never what the author meant, and unlike pure functions there is no fallback value to produce — silent no-op mutation violates the silent-drop rule.
+
+## brink-fmt block formatting: blank-line-run collapsing ratified
+- **WHEN:** 2026-07-12
+- **SYSTEM:** brink-fmt (T1b formatter)
+- **WHAT:** Inside `~ { }` blocks the formatter collapses runs of 2+ blank lines to one (positions preserved, counts not). Ratified as the intended reading of the #573 ruling's "preserved verbatim in place" — position is preserved verbatim; counts normalize to the whole-file formatter's existing one-blank-line norm. Exact-count preservation, if ever wanted, becomes a #592 config knob, not the default.
+- **WHY:** Consistency with the rest of the formatter and with common fmt-tool behavior; resolves the literal-wording ambiguity PR #602's review flagged before future fmt/IDE work builds on the block renderer.
