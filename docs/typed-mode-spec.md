@@ -103,16 +103,23 @@ space).
 **PROPOSED surface** (the genuinely new design — review this hardest):
 
 ```ink
-STRUCT Point = x: float, y: float          // decl, ink's LIST/VAR style
+STRUCT Point = #{                          // decl body MIRRORS the literal:
+    x: float,                              // types sit where values go
+    y: float,
+}
 
 ~ temp p = Point#{x: 1.0, y: 2.0}          // construction: typed brace literal
 ~ temp x = p.x                              // field access
 ~ p.y = 3.0                                 // field write (RMW discipline)
 ```
 
-- Declaration is a top-level decl in ink's existing style; fields are
-  typed (structs only exist meaningfully under strict mode, though
-  gradual projects may use them dynamically).
+- Declaration keeps ink's `NAME = …` decl convention and its body takes
+  the same braced `#{…}` shape as the construction literal, with types
+  in value position — declaration and usage rhyme (amended from a flat
+  comma list, maintainer ruling 2026-07-13). Single-line form is legal
+  for short structs; brink-fmt formats multiline bodies like blocks.
+  Fields are typed (structs only exist meaningfully under strict mode,
+  though gradual projects may use them dynamically).
 - Construction reuses the sigil-literal shape with a leading shape name
   — self-identifying, gateable lexically.
 - **Field access `p.x` uses resolution fallback** (same pattern as the
