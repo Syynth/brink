@@ -1,5 +1,8 @@
+use rowan::TextRange;
+
 use crate::hir;
 use crate::symbols::SymbolKind;
+use crate::{Diagnostic, DiagnosticCode};
 
 use super::content::lower_content;
 use super::context::LowerCtx;
@@ -94,8 +97,11 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
         }
 
         // ChoiceSet, LabeledBlock, Conditional, and Sequence are dispatched
-        // by lower_block_with_children before reaching lower_stmt. If they
-        // reach here, it indicates a dispatch bug.
+        // by lower_block_with_children before reaching lower_stmt — that
+        // caller can hand back child containers (`Vec<lir::Container>`),
+        // which these four constructs may need and this function's
+        // `Option<lir::Stmt>` return can't express. If they reach here, it
+        // indicates a dispatch bug.
         // Content is intercepted by lower_block_with_children for glue-aware
         // recognition, but may still reach here from lower_inline_block.
         hir::Stmt::Content(content) => {
@@ -106,14 +112,31 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
             }
         }
 
+        // Sibling of the `LogicBlock` arm below and reached the exact same
+        // way (see #578, `content::lower_inline_block`'s doc comment): an
+        // inline conditional/sequence embedded in a `Choice`'s own
+        // `start_content`/`bracket_content`/`inner_content` — HIR
+        // normalization never lifts *those* into a top-level
+        // `Stmt::Conditional`/`Stmt::Sequence`, so it keeps its
+        // `ContentPart::InlineConditional`/`InlineSequence` shape and its
+        // branch bodies are lowered by `lower_inline_block`, which (unlike
+        // `lower_block_with_children`) has no way to hand a child container
+        // back to its caller. Unlike `LogicBlock`, these four constructs
+        // are not "proper routing" candidates here: a nested `ChoiceSet`
+        // fundamentally needs an addressable child container for the
+        // runtime to divert into on selection, a `LabeledBlock` needs one
+        // to divert into by label, and a nested `Conditional`/`Sequence`
+        // needs one per branch to isolate choices — none of which an
+        // inline-content position (no choice/gather children possible) can
+        // hold. Route this to a real, non-suppressible compile error (E059)
+        // instead of `debug_assert!(false, …)`, which panicked in debug
+        // builds and silently dropped the construct in release (#585,
+        // live-reproduced sibling of #578 — see PR #584's build notes).
         hir::Stmt::ChoiceSet(_)
         | hir::Stmt::LabeledBlock(_)
         | hir::Stmt::Conditional(_)
         | hir::Stmt::Sequence(_) => {
-            debug_assert!(
-                false,
-                "ChoiceSet/LabeledBlock/Conditional/Sequence should not reach lower_stmt"
-            );
+            reject_unsupported_inline_construct(stmt, ctx);
             None
         }
 
@@ -135,6 +158,75 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
             None
         }
     }
+}
+
+/// Dispatch a `ChoiceSet`/`LabeledBlock`/`Conditional`/`Sequence` reaching
+/// `lower_stmt` to a real, non-suppressible `E059` compile error, naming
+/// the construct and its best-effort source anchor. Split out of
+/// `lower_stmt`'s match arm purely to keep that function's line count
+/// under the `too_many_lines` clippy budget — see its match arm for the
+/// full rationale (#585).
+fn reject_unsupported_inline_construct(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) {
+    let (range, construct) = match stmt {
+        hir::Stmt::ChoiceSet(cs) => (choice_set_anchor_range(cs), "a nested choice"),
+        hir::Stmt::LabeledBlock(inner) => (
+            labeled_block_anchor_range(inner),
+            "a nested labeled gather block (`- (label)`)",
+        ),
+        hir::Stmt::Conditional(cond) => (cond.ptr.text_range(), "a nested multi-line conditional"),
+        hir::Stmt::Sequence(seq) => (
+            seq.ptr.text_range(),
+            "a nested sequence (stopping/cycle/once/shuffle)",
+        ),
+        _ => unreachable!(
+            "reject_unsupported_inline_construct is only called for ChoiceSet/LabeledBlock/\
+             Conditional/Sequence"
+        ),
+    };
+    emit_unsupported_nested_construct(ctx, range, construct);
+}
+
+/// Emit a real, non-suppressible `E059` compile error for a choice/gather
+/// construct that reached inline-content lowering (`lower_inline_block`)
+/// instead of the top-level `lower_block_with_children` dispatch that can
+/// create the child container it needs. See the `lower_stmt` match arms
+/// above for the full rationale (#585).
+fn emit_unsupported_nested_construct(ctx: &mut LowerCtx<'_>, range: TextRange, construct: &str) {
+    ctx.diagnostics.push(Diagnostic {
+        file: ctx.file,
+        range,
+        message: format!(
+            "{}: {construct} is not supported embedded in inline content (e.g. a choice's own \
+             display/bracket/inner text) — it needs a child container, which an inline-content \
+             position cannot hold",
+            DiagnosticCode::E059.title(),
+        ),
+        code: DiagnosticCode::E059,
+    });
+}
+
+/// Best-effort diagnostic anchor for a `ChoiceSet` reaching
+/// `lower_inline_block` — `ChoiceSet` itself carries no `AstPtr`/range (its
+/// only provenance is per-choice), so anchor on the first choice, which
+/// always exists (a choice set is folded from at least one choice).
+fn choice_set_anchor_range(cs: &hir::ChoiceSet) -> TextRange {
+    cs.choices.first().map_or_else(
+        || TextRange::new(0.into(), 0.into()),
+        |c| c.ptr.text_range(),
+    )
+}
+
+/// Best-effort diagnostic anchor for a `LabeledBlock` reaching
+/// `lower_inline_block` — the wrapped `Block` carries no `AstPtr` of its
+/// own; use the label's range if labeled, otherwise fall back to a
+/// zero-width range. This path is a defense-in-depth backstop, not a
+/// routine user-facing diagnostic — no plausible ink source reaches an
+/// *unlabeled* nested gather block this way.
+fn labeled_block_anchor_range(block: &hir::Block) -> TextRange {
+    block
+        .label
+        .as_ref()
+        .map_or_else(|| TextRange::new(0.into(), 0.into()), |label| label.range)
 }
 
 fn lower_divert_target(target: &hir::DivertTarget, ctx: &mut LowerCtx<'_>) -> lir::Divert {

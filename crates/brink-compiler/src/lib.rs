@@ -111,6 +111,12 @@ pub enum CompileError {
     /// Circular INCLUDE dependency detected.
     #[error("circular INCLUDE dependency: {0}")]
     CircularInclude(String),
+    /// Codegen (`brink-codegen-inkb`) refused a `Program` that violates an
+    /// invariant an earlier compiler stage is supposed to guarantee — a
+    /// compiler bug, not an authoring mistake. See
+    /// `brink_codegen_inkb::CodegenError` and #586.
+    #[error("internal codegen error: {0}")]
+    Codegen(#[from] brink_codegen_inkb::CodegenError),
 }
 
 impl From<brink_driver::DiscoverError> for CompileError {

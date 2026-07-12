@@ -13,6 +13,39 @@ use brink_format::{
 };
 use brink_ir::lir;
 
+/// A defect in the LIR fed to codegen — an invariant that a well-formed
+/// `Program` is guaranteed to satisfy by earlier, non-suppressible compiler
+/// stages, which codegen has no independent way to verify structurally
+/// beyond this checkpoint. See #586: with #577's `Nop` degradation removed,
+/// `container.rs`'s `LogicBreak`/`LogicContinue` handling had zero
+/// codegen-level guard against a `loop_stack` that's empty — a future or
+/// refactored LIR producer that ever emitted one outside a loop would
+/// silently corrupt bytecode via an unpatched `Jump(0)` that looks
+/// well-formed, rather than fail. This is the hard error that replaces
+/// that silent corruption; today it can only fire on hand-assembled LIR
+/// that bypasses `brink-ir::lir::lower` (which rejects this case at E057,
+/// non-suppressibly, before a `Program` is ever produced).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodegenError {
+    message: String,
+}
+
+impl CodegenError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for CodegenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for CodegenError {}
+
 /// Collapse runs of consecutive spaces/tabs within `s` to a single space.
 fn collapse_whitespace(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -32,7 +65,11 @@ fn collapse_whitespace(s: &str) -> String {
 }
 
 /// Compile a resolved LIR `Program` into `StoryData` for the runtime.
-pub fn emit(program: &lir::Program) -> StoryData {
+///
+/// Returns `Err(CodegenError)` only for a defect in the LIR itself — see
+/// [`CodegenError`]. A well-formed `Program` (the only kind
+/// `brink-ir::lir::lower` ever hands back) always succeeds.
+pub fn emit(program: &lir::Program) -> Result<StoryData, CodegenError> {
     let mut state = EmitState {
         containers: Vec::new(),
         addresses: Vec::new(),
@@ -42,6 +79,7 @@ pub fn emit(program: &lir::Program) -> StoryData {
         literal_pool: Vec::new(),
         name_table: program.name_table.clone(),
         name_index: HashMap::new(),
+        errors: Vec::new(),
     };
 
     // Build the name index from the existing name table for dedup.
@@ -54,6 +92,10 @@ pub fn emit(program: &lir::Program) -> StoryData {
     // Root is always a scope — its scope_id is its own id; its author scope
     // path is empty.
     walk_container(&program.root, "", "", program.root.id, &mut state);
+
+    if let Some(first) = state.errors.into_iter().next() {
+        return Err(first);
+    }
 
     // Build globals, lists, externals.
     let variables = build_globals(&program.globals);
@@ -69,7 +111,7 @@ pub fn emit(program: &lir::Program) -> StoryData {
         .collect();
     line_tables.sort_by_key(|lt| lt.scope_id.to_raw());
 
-    StoryData {
+    Ok(StoryData {
         containers: state.containers,
         line_tables,
         variables,
@@ -82,7 +124,7 @@ pub fn emit(program: &lir::Program) -> StoryData {
         list_literals: state.list_literals,
         literal_pool: state.literal_pool,
         source_checksum: 0,
-    }
+    })
 }
 
 // ─── Emission state ─────────────────────────────────────────────────
@@ -102,6 +144,13 @@ struct EmitState {
     literal_pool: Vec<Value>,
     name_table: Vec<String>,
     name_index: HashMap<String, NameId>,
+    /// Codegen-level defects found during the tree walk (see
+    /// [`CodegenError`]) — accumulated the same way `brink-ir`'s LIR
+    /// lowering accumulates diagnostics (`ctx.diagnostics.push`), checked
+    /// once after the whole walk finishes rather than threading a
+    /// `Result` through every recursive emitter call. Bounded by the size
+    /// of the `Program` being walked, same as every other `Vec` here.
+    errors: Vec<CodegenError>,
 }
 
 // ─── Container emitter ──────────────────────────────────────────────
@@ -117,6 +166,9 @@ struct ContainerEmitter<'a> {
     /// Stack of open T1b `LogicWhile` loops (innermost last) — targets for
     /// `break`/`continue` jump patching. Empty outside any loop.
     loop_stack: Vec<LoopCtx>,
+    /// Shared with every other `ContainerEmitter` created during the same
+    /// `emit()` call (see `EmitState::errors`).
+    errors: &'a mut Vec<CodegenError>,
 }
 
 /// Jump-patch bookkeeping for one open `LogicWhile` (innermost = top of
@@ -142,6 +194,7 @@ impl<'a> ContainerEmitter<'a> {
             state_name_index: &mut state.name_index,
             in_conditional_branch: false,
             loop_stack: Vec::new(),
+            errors: &mut state.errors,
         }
     }
 

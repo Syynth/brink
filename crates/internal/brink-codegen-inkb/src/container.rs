@@ -3,7 +3,7 @@
 use brink_format::{ChoiceFlags, Opcode, SequenceKind};
 use brink_ir::lir;
 
-use crate::{ContainerEmitter, LoopCtx};
+use crate::{CodegenError, ContainerEmitter, LoopCtx};
 
 impl ContainerEmitter<'_> {
     pub(super) fn emit_body(&mut self, stmts: &[lir::Stmt]) {
@@ -144,18 +144,51 @@ impl ContainerEmitter<'_> {
                 // that invariant the same way every other statement in this
                 // file trusts LIR is well-formed (no other arm here
                 // defensively re-checks its input) — see #577 review, which
-                // replaced a silent `Nop` degradation with this real,
-                // upstream error path.
-                let site = self.emit_jump_placeholder(Opcode::Jump(0));
-                if let Some(ctx) = self.loop_stack.last_mut() {
-                    ctx.break_patches.push(site);
+                // replaced a silent `Nop` degradation with a real, upstream
+                // error path (E057).
+                //
+                // That upstream guarantee is enforced by a *different*
+                // compiler stage, though, and codegen has no way to verify
+                // it structurally beyond this checkpoint — "safe today only
+                // by construction" (#586 review). If a future or
+                // refactored LIR producer (or, as here, a hand-assembled
+                // `Program` in a test) ever hands codegen a `LogicBreak`
+                // with an empty `loop_stack` anyway, there is no patch
+                // target for the jump this statement would otherwise emit:
+                // silently falling through to `Opcode::Jump(0)` would
+                // corrupt the bytecode with a jump to the start of the
+                // container, indistinguishable from a valid jump. Fail
+                // loudly instead — and skip emitting the dangling jump
+                // placeholder entirely, so no unpatched opcode ever lands
+                // in the output.
+                if self.loop_stack.is_empty() {
+                    self.errors.push(CodegenError::new(
+                        "codegen: `break` (LogicBreak) reached codegen outside any loop \
+                         context — LIR lowering (E057) should have rejected this before it \
+                         reached codegen; refusing to emit an unpatched jump (#586)",
+                    ));
+                } else {
+                    let site = self.emit_jump_placeholder(Opcode::Jump(0));
+                    if let Some(ctx) = self.loop_stack.last_mut() {
+                        ctx.break_patches.push(site);
+                    }
                 }
             }
 
             lir::Stmt::LogicContinue => {
-                let site = self.emit_jump_placeholder(Opcode::Jump(0));
-                if let Some(ctx) = self.loop_stack.last_mut() {
-                    ctx.continue_patches.push(site);
+                // See `LogicBreak` above — identical reasoning, `continue`'s
+                // own jump target.
+                if self.loop_stack.is_empty() {
+                    self.errors.push(CodegenError::new(
+                        "codegen: `continue` (LogicContinue) reached codegen outside any loop \
+                         context — LIR lowering (E057) should have rejected this before it \
+                         reached codegen; refusing to emit an unpatched jump (#586)",
+                    ));
+                } else {
+                    let site = self.emit_jump_placeholder(Opcode::Jump(0));
+                    if let Some(ctx) = self.loop_stack.last_mut() {
+                        ctx.continue_patches.push(site);
+                    }
                 }
             }
         }

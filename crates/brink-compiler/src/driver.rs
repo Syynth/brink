@@ -88,7 +88,7 @@ where
     };
 
     Ok(CompileOutput {
-        data: brink_codegen_inkb::emit(&program),
+        data: brink_codegen_inkb::emit(&program)?,
         warnings: resolve_diagnostics(&driver, product.warnings),
     })
 }
