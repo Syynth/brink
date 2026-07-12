@@ -362,6 +362,20 @@ fn resolve_function(
         return;
     }
 
+    // T1b stdlib slice 1 (docs/t1b-surface-spec.md §5): `len`/`keys`/
+    // `values`/`contains`/`push`/`insert`/`remove` with no matching user
+    // symbol are the brink-dialect builtins, handled at LIR lowering —
+    // same "skip resolution, no diagnostic here" treatment as
+    // `is_builtin_function` above. Dialect-agnostic at this layer (an
+    // author-defined symbol of the same name always wins regardless of
+    // dialect, matched by the lookups above before this is reached);
+    // `strict-ink` rejection of an unresolved use is a separate diagnostic
+    // (`brink-analyzer::dialect_gate`, which — unlike this resolution pass —
+    // does know the dialect).
+    if is_t1b_stdlib_name(path) {
+        return;
+    }
+
     diagnostics.push(unresolved_diag(
         file_id,
         uref.range,
@@ -528,6 +542,28 @@ pub(crate) fn is_builtin_function(name: &str) -> bool {
             | "LIST_FROM_INT"
             | "READ_COUNT"
             | "TURNS"
+    )
+}
+
+/// T1b stdlib slice 1 function names (`docs/t1b-surface-spec.md` §5):
+/// lowercase free functions, brink-dialect-gated. Kept in sync by hand with
+/// `brink_ir`'s LIR-lowering copy of this same list (`lir::lower::expr::
+/// is_t1b_stdlib_name`) — the crates don't share a dependency edge for this
+/// purpose in the analysis → codegen direction, mirroring the existing
+/// `is_builtin_function`/`recognize_builtin` split for the classic uppercase
+/// ink intrinsics above.
+///
+/// Unlike `is_builtin_function`, a name in this list is *not* unconditionally
+/// treated as reserved: `resolve_function`'s lookup chain (externals, knots,
+/// lists, variables, locals) always runs first, so an author-defined symbol
+/// of the same name resolves normally — shadowing the builtin (§5's
+/// ruling) — and only a resolution *failure* additionally checks this list
+/// before falling back to the builtin (silently, no diagnostic) instead of
+/// emitting E025.
+pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
+    matches!(
+        name,
+        "len" | "keys" | "values" | "contains" | "push" | "insert" | "remove"
     )
 }
 

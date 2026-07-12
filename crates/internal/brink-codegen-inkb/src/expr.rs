@@ -157,6 +157,30 @@ impl ContainerEmitter<'_> {
                 self.emit_expr(inner, false);
                 self.emit(Opcode::CollectionKeys);
             }
+
+            lir::Expr::CollectionValues(inner) => {
+                self.emit_expr(inner, false);
+                self.emit(Opcode::CollectionValues);
+            }
+
+            lir::Expr::CollectionContains { container, needle } => {
+                self.emit_expr(container, false);
+                self.emit_expr(needle, false);
+                self.emit(Opcode::MapContains);
+            }
+
+            lir::Expr::CollectionInsert { base, key, value } => {
+                self.emit_expr(base, false);
+                self.emit_expr(key, false);
+                self.emit_expr(value, false);
+                self.emit(Opcode::MapInsert);
+            }
+
+            lir::Expr::CollectionRemove { base, key } => {
+                self.emit_expr(base, false);
+                self.emit_expr(key, false);
+                self.emit(Opcode::MapRemove);
+            }
         }
     }
 

@@ -614,6 +614,38 @@ pub enum Expr {
     /// `for`-loop lowering over maps; not surfaced to authors until the
     /// `keys()` stdlib function lands (T1b-3).
     CollectionKeys(Box<Expr>),
+    /// `[map]` → `Array` of values in insertion order. The `values()`
+    /// stdlib pure function (T1b-3, `docs/t1b-surface-spec.md` §5).
+    CollectionValues(Box<Expr>),
+    /// `[container, needle]` → `Bool`. The `contains(x, v)` stdlib pure
+    /// function (T1b-3, §5) — arrays: element containment; maps: key
+    /// containment.
+    CollectionContains {
+        container: Box<Expr>,
+        needle: Box<Expr>,
+    },
+    /// `IndexSet`'s sibling for the `push`/`insert` stdlib mutators (T1b-3,
+    /// §5): evaluates `base`, `key`, `value` and pushes the *updated*
+    /// container — arrays: `Vec::insert(key, value)` (key is an index,
+    /// `<= len` inclusive so `push(a, v)` can lower to `insert(a, len(a),
+    /// v)`); maps: insert-or-overwrite by key. Never produced by ordinary
+    /// expression lowering; only by the mutator-statement desugaring
+    /// (`lir::lower::blocks`), which follows the same take → `make_mut` →
+    /// write-back RMW discipline `IndexSet` uses.
+    CollectionInsert {
+        base: Box<Expr>,
+        key: Box<Expr>,
+        value: Box<Expr>,
+    },
+    /// `IndexSet`'s sibling for the `remove` stdlib mutator (T1b-3, §5):
+    /// evaluates `base`, `key` and pushes the *updated* container — arrays:
+    /// `Vec::remove(key)` (key is an index, `< len`); maps: remove by key
+    /// (no-op if absent). Never produced by ordinary expression lowering;
+    /// only by the mutator-statement desugaring.
+    CollectionRemove {
+        base: Box<Expr>,
+        key: Box<Expr>,
+    },
 }
 
 impl Expr {

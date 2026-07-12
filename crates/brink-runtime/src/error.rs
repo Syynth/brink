@@ -5,7 +5,7 @@ use alloc::string::String;
 use brink_format::{DecodeError, DefinitionId};
 
 /// Errors that can occur during story linking or execution.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum RuntimeError {
     #[error("bytecode decode error: {0}")]
     Decode(#[from] DecodeError),

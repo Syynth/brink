@@ -113,6 +113,43 @@ fn if_else_if_else_chain() {
     assert_case("if-else-chain");
 }
 
+// ── T1b-3 stdlib slice 1 (docs/t1b-surface-spec.md §5) ────────────────────
+
+#[test]
+fn stdlib_len_and_contains() {
+    assert_case("stdlib-len-and-contains");
+}
+
+#[test]
+fn stdlib_keys_and_values() {
+    assert_case("stdlib-keys-and-values");
+}
+
+#[test]
+fn stdlib_push_appends_in_call_order() {
+    assert_case("stdlib-push");
+}
+
+#[test]
+fn stdlib_insert_array_and_map() {
+    assert_case("stdlib-insert");
+}
+
+#[test]
+fn stdlib_remove_array_and_map() {
+    assert_case("stdlib-remove");
+}
+
+#[test]
+fn stdlib_mutator_accepts_an_indexed_path_lvalue() {
+    assert_case("stdlib-mutator-nested-lvalue");
+}
+
+#[test]
+fn stdlib_author_function_shadows_builtin() {
+    assert_case("stdlib-shadowing");
+}
+
 /// Every `tests/tier1-brink/` case directory is exercised by a `#[test]`
 /// above — a directory with no matching test would silently never run.
 #[test]
@@ -125,6 +162,13 @@ fn every_case_directory_has_a_test() {
         "nested-index-assignment",
         "break-continue",
         "if-else-chain",
+        "stdlib-len-and-contains",
+        "stdlib-keys-and-values",
+        "stdlib-push",
+        "stdlib-insert",
+        "stdlib-remove",
+        "stdlib-mutator-nested-lvalue",
+        "stdlib-shadowing",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink")
@@ -166,5 +210,190 @@ fn block_scoped_temp_shadowing_an_outer_temp_warns() {
             .any(|w| w.code == brink_compiler::DiagnosticCode::E054),
         "expected E054 shadow warning, got {:?}",
         out.warnings
+    );
+}
+
+// ── T1b-3 stdlib diagnostics (docs/t1b-surface-spec.md §5) ───────────────
+
+fn compile_brink(
+    source: &str,
+) -> Result<brink_compiler::CompileOutput, brink_compiler::CompileError> {
+    let options = AnalysisOptions {
+        dialect: Dialect::Brink,
+        ..AnalysisOptions::default()
+    };
+    let files: std::collections::HashMap<&str, &str> =
+        std::collections::HashMap::from([("main.ink", source)]);
+    brink_compiler::compile_with_options(
+        "main.ink",
+        |path| {
+            files
+                .get(path)
+                .map(|s| (*s).to_string())
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, path))
+        },
+        options,
+    )
+}
+
+fn errors_of(err: &brink_compiler::CompileError) -> &[brink_compiler::ResolvedDiagnostic] {
+    match err {
+        brink_compiler::CompileError::Diagnostics(diags) => diags,
+        other => panic!("expected Diagnostics error, got {other:?}"),
+    }
+}
+
+#[test]
+fn author_defined_len_shadows_builtin_with_e035_warning() {
+    let source = "=== function len(x)\n~ return 999\n\nHello.\n-> END\n";
+    let out = compile_brink(source).expect("shadowing is a warning, not a compile error");
+    assert!(
+        out.warnings
+            .iter()
+            .any(|w| w.code == brink_compiler::DiagnosticCode::E035),
+        "expected E035 shadow warning, got {:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn push_with_an_rvalue_first_argument_is_a_compile_error() {
+    // `push(#[1, 2], 3)` — the array literal is an rvalue, not a place to
+    // write the mutated array back into.
+    let source = "~ {\n    push(#[1, 2], 3)\n}\nDone.\n-> END\n";
+    let err = compile_brink(source).expect_err("rvalue mutator argument must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E055),
+        "expected E055, got {diags:?}"
+    );
+}
+
+#[test]
+fn insert_with_an_rvalue_first_argument_is_a_compile_error() {
+    let source = "~ {\n    insert(#{\"a\": 1}, \"b\", 2)\n}\nDone.\n-> END\n";
+    let err = compile_brink(source).expect_err("rvalue mutator argument must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E055),
+        "expected E055, got {diags:?}"
+    );
+}
+
+#[test]
+fn mutator_used_in_expression_position_is_a_compile_error() {
+    // Mutators return nothing (§5) — using the "result" is invalid.
+    let source = "VAR arr = 0\n~ {\n    arr = #[]\n    temp x = push(arr, 1)\n}\nDone.\n-> END\n";
+    let err = compile_brink(source).expect_err("mutator-as-expression must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E056),
+        "expected E056, got {diags:?}"
+    );
+}
+
+#[test]
+fn stdlib_call_with_wrong_arity_warns() {
+    // Arity mismatches are warnings throughout this codebase (E031 is also
+    // how `resolve::check_arity` reports them for ordinary function calls)
+    // — not a hard error, matching existing convention.
+    let source = "VAR arr = 0\n~ {\n    arr = #[1]\n    temp n = len(arr, 1)\n}\nDone.\n-> END\n";
+    let out = compile_brink(source).expect("wrong arity is a warning, not a compile error");
+    assert!(
+        out.warnings
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E031),
+        "expected E031, got {:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn strict_ink_rejects_an_unresolved_stdlib_call() {
+    // Default dialect (StrictInk, no options override) never sees the
+    // builtins — an unresolved `len(x)` call is a brink-extension error.
+    let source = "VAR arr = 0\n~ x = len(arr)\nDone.\n-> END\n";
+    let files: std::collections::HashMap<&str, &str> =
+        std::collections::HashMap::from([("main.ink", source)]);
+    let err = brink_compiler::compile_with_options(
+        "main.ink",
+        |path| {
+            files
+                .get(path)
+                .map(|s| (*s).to_string())
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, path))
+        },
+        AnalysisOptions::default(),
+    )
+    .expect_err("strict-ink must reject an unresolved stdlib call");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E051),
+        "expected E051, got {diags:?}"
+    );
+}
+
+// ── T1b-3 runtime faults (value-model-spec-spec §6, t1b-surface-spec §6) ──
+
+fn run_to_error(source: &str) -> brink_runtime::RuntimeError {
+    let options = AnalysisOptions {
+        dialect: Dialect::Brink,
+        ..AnalysisOptions::default()
+    };
+    let output =
+        brink_compiler::compile_with_options("main.ink", |_| Ok(source.to_string()), options)
+            .expect("compile");
+    let (program, line_tables) = brink_runtime::link(&output.data).expect("link");
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
+    loop {
+        match story.continue_single() {
+            Ok(Line::Text { .. }) => {}
+            Ok(other) => panic!("expected a runtime fault, story completed with {other:?}"),
+            Err(e) => return e,
+        }
+    }
+}
+
+#[test]
+fn remove_array_index_out_of_bounds_faults() {
+    let source = "VAR arr = 0\n~ {\n    arr = #[1, 2]\n    remove(arr, 5)\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert!(
+        matches!(
+            err,
+            brink_runtime::RuntimeError::IndexOutOfBounds { index: 5, len: 2 }
+        ),
+        "expected IndexOutOfBounds, got {err:?}"
+    );
+}
+
+#[test]
+fn insert_array_index_out_of_bounds_faults() {
+    let source = "VAR arr = 0\n~ {\n    arr = #[1, 2]\n    insert(arr, 9, 3)\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert!(
+        matches!(
+            err,
+            brink_runtime::RuntimeError::IndexOutOfBounds { index: 9, len: 2 }
+        ),
+        "expected IndexOutOfBounds, got {err:?}"
+    );
+}
+
+#[test]
+fn contains_on_a_non_collection_faults() {
+    let source = "VAR n = 5\n~ {\n    temp b = contains(n, 5)\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::NotIndexable("int")),
+        "expected NotIndexable, got {err:?}"
     );
 }

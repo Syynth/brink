@@ -93,7 +93,9 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
         hir::BlockStmt::Break(_) => out.push(lir::Stmt::LogicBreak),
         hir::BlockStmt::Continue(_) => out.push(lir::Stmt::LogicContinue),
         hir::BlockStmt::ExprStmt(expr) => {
-            out.push(lir::Stmt::ExprStmt(lower_expr(expr, ctx)));
+            if !try_lower_mutator_stmt(expr, ctx, out) {
+                out.push(lir::Stmt::ExprStmt(lower_expr(expr, ctx)));
+            }
         }
     }
 }
@@ -394,4 +396,286 @@ fn lower_for_stmt(f: &hir::ForStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec<lir::S
         body,
         post,
     }));
+}
+
+// ─── T1b stdlib slice 1 mutators (§5) ──────────────────────────────────
+//
+// `push(a, v)` / `insert(x, k_or_i, v)` / `remove(x, k_or_i)` require an
+// lvalue first argument and lower through the same take → `make_mut` →
+// write-back RMW discipline as indexed assignment (§4) — desugaring to a
+// chain of synthetic-temp `Assign`s exactly like `lower_indexed_assignment`
+// above, just with a `CollectionInsert`/`CollectionRemove` mutate step
+// instead of the deepest level's `IndexSet`.
+
+/// The chain state [`lower_lvalue_container_chain`] returns: the root
+/// assign target, the materialized index temps, and the materialized
+/// container-read temps. See that function's doc for the shape.
+type LvalueContainerChain = (
+    lir::AssignTarget,
+    Vec<(u16, brink_format::NameId)>,
+    Vec<(u16, brink_format::NameId)>,
+);
+
+/// A collection mutator recognized from a call expression
+/// (`docs/t1b-surface-spec.md` §5).
+#[derive(Clone, Copy)]
+enum MutatorKind {
+    /// `push(a, v)` — 2 args; desugars to `insert(a, len(a), v)`.
+    Push,
+    /// `insert(x, k_or_i, v)` — 3 args.
+    Insert,
+    /// `remove(x, k_or_i)` — 2 args.
+    Remove,
+}
+
+impl MutatorKind {
+    /// The three mutator names are a subset of
+    /// `super::expr::is_t1b_stdlib_name` (which also covers the four pure
+    /// functions) — kept as an explicit `matches!` here rather than
+    /// depending on that function so this module doesn't need to filter out
+    /// the pure names on every call.
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "push" => Some(Self::Push),
+            "insert" => Some(Self::Insert),
+            "remove" => Some(Self::Remove),
+            _ => None,
+        }
+    }
+
+    fn expected_argc(self) -> usize {
+        match self {
+            Self::Push | Self::Remove => 2,
+            Self::Insert => 3,
+        }
+    }
+}
+
+/// Whether `expr` is a valid mutator lvalue (§5: "a variable, temp, or
+/// indexed path") — a bare path, or an (arbitrarily chained) indexed path
+/// rooted in one. Anything else (a call, literal, operator, collection
+/// literal, …) is an rvalue.
+fn is_lvalue_expr(expr: &hir::Expr) -> bool {
+    match expr {
+        hir::Expr::Path(_) => true,
+        hir::Expr::Index(idx) => is_lvalue_expr(&idx.base),
+        _ => false,
+    }
+}
+
+/// Recognize and fully lower a `push`/`insert`/`remove` call statement
+/// (§5), splicing its RMW expansion into `out`. Returns `false` (nothing
+/// pushed) when `expr` isn't one of these three calls, or resolves to a
+/// real user symbol — a temp/param holding a divert target, or a resolved
+/// knot/external/list/variable (shadowed; the caller falls through to
+/// ordinary call lowering, and `brink-analyzer`'s symbol-declaration pass
+/// separately emits the E035 shadow warning at the declaration site).
+///
+/// Called from both `~ { … }` block statements (`lower_block_stmt` above)
+/// and classic non-block `~ push(...)` logic lines (`lower::mod`'s
+/// `lower_block_with_children`) — a function call used as a statement for
+/// its side effect is not a T1b-only concept (ordinary knots/externals are
+/// already callable that way outside any block).
+pub(super) fn try_lower_mutator_stmt(
+    expr: &hir::Expr,
+    ctx: &mut LowerCtx<'_>,
+    out: &mut Vec<lir::Stmt>,
+) -> bool {
+    let hir::Expr::Call(path, args) = expr else {
+        return false;
+    };
+    let name = super::expr::path_to_string(path);
+    let Some(kind) = MutatorKind::from_name(&name) else {
+        return false;
+    };
+    if ctx.temp_slot(&name).is_some() || ctx.resolve_path(path.range).is_some() {
+        return false;
+    }
+
+    let expected = kind.expected_argc();
+    if args.len() != expected {
+        ctx.diagnostics.push(Diagnostic {
+            file: ctx.file,
+            range: path.range,
+            message: format!(
+                "{}: `{name}` expects {expected} argument(s), got {}",
+                DiagnosticCode::E031.title(),
+                args.len(),
+            ),
+            code: DiagnosticCode::E031,
+        });
+        return true;
+    }
+
+    let lvalue_expr = &args[0];
+    if !is_lvalue_expr(lvalue_expr) {
+        ctx.diagnostics.push(Diagnostic {
+            file: ctx.file,
+            range: path.range,
+            message: format!(
+                "{}: `{name}` mutates its first argument — bind it to a variable first",
+                DiagnosticCode::E055.title(),
+            ),
+            code: DiagnosticCode::E055,
+        });
+        return true;
+    }
+
+    let Some((root_target, idx_slots, c_slots)) =
+        lower_lvalue_container_chain(lvalue_expr, ctx, out)
+    else {
+        // Structurally unreachable given the `is_lvalue_expr` guard above —
+        // guarded rather than asserted so a future grammar change can't
+        // corrupt output instead of doing nothing (same discipline as
+        // `lower_indexed_assignment`'s `n == 0` guard).
+        return true;
+    };
+    // `lower_lvalue_container_chain` always pushes the root as `c_slots[0]`
+    // before ever returning `Some`, so `c_slots` is never empty.
+    let Some(&(last_slot, last_name)) = c_slots.last() else {
+        return true;
+    };
+    let container = || lir::Expr::GetTemp(last_slot, last_name);
+
+    let new_container = match kind {
+        MutatorKind::Push => {
+            let value = lower_expr(&args[1], ctx);
+            lir::Expr::CollectionInsert {
+                base: Box::new(container()),
+                key: Box::new(lir::Expr::CollectionLen(Box::new(container()))),
+                value: Box::new(value),
+            }
+        }
+        MutatorKind::Insert => {
+            let key = lower_expr(&args[1], ctx);
+            let value = lower_expr(&args[2], ctx);
+            lir::Expr::CollectionInsert {
+                base: Box::new(container()),
+                key: Box::new(key),
+                value: Box::new(value),
+            }
+        }
+        MutatorKind::Remove => {
+            let key = lower_expr(&args[1], ctx);
+            lir::Expr::CollectionRemove {
+                base: Box::new(container()),
+                key: Box::new(key),
+            }
+        }
+    };
+
+    out.push(lir::Stmt::Assign {
+        target: lir::AssignTarget::Temp(last_slot, last_name),
+        op: AssignOp::Set,
+        value: new_container,
+    });
+    writeback_lvalue_container_chain(root_target, &idx_slots, &c_slots, out);
+    true
+}
+
+/// Resolve an lvalue expression (§5 — "a variable, temp, or indexed path")
+/// for a collection mutator's first argument, materializing the same
+/// take-chain shape indexed-assignment lowering uses (§4): every index
+/// sub-expression evaluated once, left to right, then the container read
+/// once at each chain level.
+///
+/// Returns `root_target` (the ultimate variable to write the mutated
+/// container back into), the index temps (empty for a bare variable), and
+/// the container-read temps: `c_slots[0]` is the root's current value,
+/// `c_slots[k]` is the root indexed by `idx_slots[0..k]`, and
+/// `c_slots.last()` — after all `idx_slots.len()` index levels — is the
+/// container the mutator itself reads and replaces.
+///
+/// Contrast [`lower_indexed_assignment`]'s `c_slots`, which stops one level
+/// short: an indexed *assignment* only ever needs to read as far as the
+/// second-to-last level, since the deepest write is expressed via
+/// `IndexSet` directly on that level. A mutator instead needs to read all
+/// the way to the fully-indexed value, because that value — not one level
+/// up — is the collection being mutated (`push(grid[y], v)` pushes onto the
+/// array *at* `grid[y]`, not to some slot of `grid` itself).
+///
+/// Returns `None` only if `lvalue` isn't a `Path`/`Index` shape, or its root
+/// doesn't resolve to an assignable target — both structurally unreachable
+/// once the caller has checked [`is_lvalue_expr`] (a genuinely undeclared
+/// root is already rejected by the analyzer's E025 before lowering runs).
+fn lower_lvalue_container_chain(
+    lvalue: &hir::Expr,
+    ctx: &mut LowerCtx<'_>,
+    out: &mut Vec<lir::Stmt>,
+) -> Option<LvalueContainerChain> {
+    let (root_expr, indices_hir) = match lvalue {
+        hir::Expr::Index(idx) => flatten_index_chain(idx),
+        hir::Expr::Path(_) => (lvalue, Vec::new()),
+        _ => return None,
+    };
+    let root_target = super::stmts::lower_assign_target(root_expr, ctx)?;
+
+    let idx_slots: Vec<(u16, brink_format::NameId)> = indices_hir
+        .iter()
+        .map(|e| {
+            let v = lower_expr(e, ctx);
+            declare_synthetic("__idx", v, ctx, out)
+        })
+        .collect();
+
+    let mut c_slots: Vec<(u16, brink_format::NameId)> = vec![declare_synthetic(
+        "__c",
+        get_expr_for_target(&root_target),
+        ctx,
+        out,
+    )];
+    for k in 0..idx_slots.len() {
+        let base = lir::Expr::GetTemp(c_slots[k].0, c_slots[k].1);
+        let index = lir::Expr::GetTemp(idx_slots[k].0, idx_slots[k].1);
+        let read = lir::Expr::Index {
+            base: Box::new(base),
+            index: Box::new(index),
+        };
+        c_slots.push(declare_synthetic("__c", read, ctx, out));
+    }
+
+    Some((root_target, idx_slots, c_slots))
+}
+
+/// Cascade the write-back for a mutated container chain built by
+/// [`lower_lvalue_container_chain`]: `c_slots.last()` must already hold the
+/// mutated value (the caller assigns it there before calling this) — this
+/// writes it back up through an `IndexSet` at each index level and finally
+/// into `root_target`, mirroring `lower_indexed_assignment`'s steps 5-6. A
+/// bare-variable lvalue (`idx_slots` empty) skips straight to the root
+/// write.
+fn writeback_lvalue_container_chain(
+    root_target: lir::AssignTarget,
+    idx_slots: &[(u16, brink_format::NameId)],
+    c_slots: &[(u16, brink_format::NameId)],
+    out: &mut Vec<lir::Stmt>,
+) {
+    for k in (0..idx_slots.len()).rev() {
+        let Some(&(slot, name)) = c_slots.get(k) else {
+            return;
+        };
+        let Some(&(next_slot, next_name)) = c_slots.get(k + 1) else {
+            return;
+        };
+        let base = lir::Expr::GetTemp(slot, name);
+        let index = lir::Expr::GetTemp(idx_slots[k].0, idx_slots[k].1);
+        let inner = lir::Expr::GetTemp(next_slot, next_name);
+        out.push(lir::Stmt::Assign {
+            target: lir::AssignTarget::Temp(slot, name),
+            op: AssignOp::Set,
+            value: lir::Expr::IndexSet {
+                base: Box::new(base),
+                index: Box::new(index),
+                value: Box::new(inner),
+            },
+        });
+    }
+    let Some(&(root_slot, root_name)) = c_slots.first() else {
+        return;
+    };
+    out.push(lir::Stmt::Assign {
+        target: root_target,
+        op: AssignOp::Set,
+        value: lir::Expr::GetTemp(root_slot, root_name),
+    });
 }
