@@ -23,8 +23,8 @@ struct Cli {
 enum DialectArg {
     /// Reject brink-extension syntax with a targeted diagnostic (default).
     StrictInk,
-    /// Accept brink-extension syntax at parse/HIR — still rejected before
-    /// LIR in T1b-1 (lands in T1b-2).
+    /// Accept brink-extension syntax: logic blocks (`~ { … }`), collection
+    /// literals (`#[…]`/`#{…}`), and indexing (T1b-1 through T1b-3).
     Brink,
 }
 
@@ -49,8 +49,8 @@ enum Commands {
         /// Compiler dialect (docs/t1b-surface-spec.md §1). `strict-ink`
         /// (default) rejects brink-extension syntax (`~ { … }` blocks,
         /// `#[…]`/`#{…}` sigil literals, indexing) with a targeted
-        /// diagnostic; `brink` accepts the syntax but T1b-1 still rejects
-        /// it — nothing lowers to LIR yet (lands in T1b-2). Mount-time only:
+        /// diagnostic; `brink` accepts and compiles the syntax (T1b-2 and
+        /// T1b-3 are live). Mount-time only:
         /// never embedded in `.inkb`, never delivered to the runtime.
         #[arg(long, value_enum, default_value_t = DialectArg::StrictInk)]
         dialect: DialectArg,

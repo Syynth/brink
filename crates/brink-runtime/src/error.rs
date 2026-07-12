@@ -124,7 +124,7 @@ pub enum RuntimeError {
         got: usize,
     },
 
-    // ── T1b collections (docs/value-model-spec.md §6, §11c) ──────────────
+    // ── T1b collections (docs/value-model-spec.md §11c) ──────────────
     //
     // Out-of-bounds/missing-key reads and writes are turn-terminating
     // runtime faults — total operations with no silent growth on
