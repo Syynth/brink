@@ -1,6 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
+use brink_compiler::{AnalysisOptions, Dialect};
 use brink_format::StoryData;
 use brink_runtime::{DotNetRng, Line, Program, Stats, Story};
 
@@ -29,6 +30,15 @@ const HANOI_10_INPUT: &str = include_str!("../../../benchmarks/stories/hanoi-10/
 
 const CRUCIBLE_8_INK: &str = "../../benchmarks/stories/crucible-8/story.ink";
 const CRUCIBLE_8_INPUT: &str = include_str!("../../../benchmarks/stories/crucible-8/input.txt");
+
+/// Loop-append (issue #576, `docs/value-model-spec.md` §5's "one cliff")
+/// benchmark: 10k sequential `push`es onto a freshly-created array in one
+/// `~ { … }` block — brink-dialect only (no strict-ink/oracle equivalent;
+/// see the `.ink` file's header comment for the before/after cliff this
+/// isolates). Not part of `scenarios()`/`Scenario` (those all compile under
+/// the default strict-ink dialect via `compile_story`) — `loop_append_bench`
+/// below is a standalone `#[divan::bench]` using `compile_story_brink`.
+const LOOP_APPEND_10K_INK: &str = "../../benchmarks/stories/loop-append-10k/story.ink";
 
 #[expect(clippy::unwrap_used)]
 fn parse_inputs(s: &str) -> Vec<usize> {
@@ -74,6 +84,21 @@ fn scenarios() -> &'static [Scenario] {
 fn compile_story(ink_rel: &str) -> StoryData {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(ink_rel);
     brink_compiler::compile_path(&path).unwrap().data
+}
+
+/// Like [`compile_story`] but under the brink dialect (`push`/`~ { … }`
+/// blocks are T1b extensions, invisible to the default strict-ink
+/// compile) — used only by [`LOOP_APPEND_10K_INK`].
+#[expect(clippy::unwrap_used)]
+fn compile_story_brink(ink_rel: &str) -> StoryData {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(ink_rel);
+    let options = AnalysisOptions {
+        dialect: Dialect::Brink,
+        ..AnalysisOptions::default()
+    };
+    brink_compiler::compile_path_with_options(&path, options)
+        .unwrap()
+        .data
 }
 
 #[expect(clippy::unwrap_used)]
@@ -145,6 +170,26 @@ mod runtime_step {
         let (program, line_tables) = brink_runtime::link(&data).unwrap();
         let program = std::sync::Arc::new(program);
         bencher.bench_local(|| run_to_completion(&program, line_tables.clone(), &scenario.inputs));
+    }
+}
+
+/// Loop-append (issue #576) benchmark: isolates the RMW-mutate cost alone
+/// (link once, run repeatedly), matching `runtime_step`'s granularity —
+/// the compile step is brink-dialect-specific setup, not part of what this
+/// benchmark measures. Before #576, this scenario is O(n^2) in the push
+/// count (10k re-COWs of an up-to-10k-element array); after #576, O(n)
+/// amortized. See the PR description for measured before/after numbers
+/// (`docs/value-model-spec.md` §5 predicts, this benchmark verifies).
+mod loop_append_bench {
+    use super::{LOOP_APPEND_10K_INK, compile_story_brink, run_to_completion};
+
+    #[divan::bench]
+    fn push_10k(bencher: divan::Bencher) {
+        let data = compile_story_brink(LOOP_APPEND_10K_INK);
+        #[expect(clippy::unwrap_used)]
+        let (program, line_tables) = brink_runtime::link(&data).unwrap();
+        let program = std::sync::Arc::new(program);
+        bencher.bench_local(|| run_to_completion(&program, line_tables.clone(), &[]));
     }
 }
 

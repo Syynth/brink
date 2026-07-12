@@ -511,6 +511,10 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::CollectionValues => write!(w, "collection_values"),
         Opcode::PushLiteral(idx) => write!(w, "push_literal {idx}"),
 
+        // Sharing discipline (T1b-4)
+        Opcode::TakeGlobal(id) => write!(w, "take_global {id}"),
+        Opcode::TakeTemp(idx) => write!(w, "take_temp {idx}"),
+
         // Lifecycle
         Opcode::Done => write!(w, "done"),
         Opcode::Yield => write!(w, "yield"),

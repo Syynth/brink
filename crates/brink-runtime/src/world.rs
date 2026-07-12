@@ -942,6 +942,15 @@ impl ContextAccess for World {
         self.globals[idx as usize] = value;
     }
 
+    /// Real move via [`core::mem::replace`] — `World`'s globals are a flat
+    /// `Vec<Value>`, so taking is exactly as cheap as an ordinary indexed
+    /// write, with no extra `Arc` clone (unlike the trait's default
+    /// clone-then-null implementation).
+    #[inline]
+    fn take_global(&mut self, idx: u32) -> Value {
+        core::mem::replace(&mut self.globals[idx as usize], Value::Null)
+    }
+
     #[inline]
     fn visit_count(&self, id: DefinitionId) -> u32 {
         self.visit_counts.get(&id).copied().unwrap_or(0)
@@ -1033,6 +1042,30 @@ impl ContextAccess for ContextView<'_> {
                 self.local.globals.insert(idx, value);
             }
             Scope::World => self.world.set_global(idx, value),
+        }
+    }
+
+    /// `World`-scoped units (the all-`World` default policy every oracle
+    /// program runs under) delegate straight to `World::take_global`'s real
+    /// move. `Local`-scoped units use the trait's default clone-then-null:
+    /// a real move only helps when *this* flow already owns the unique
+    /// reference, which the read-through chain (own overrides → frozen
+    /// base → `World`) can't generally provide — an immutable
+    /// [`FrozenLocal`] ancestor can't be moved out of. Own-layer overrides
+    /// (`self.local.globals`) *could* be moved out of directly, but the
+    /// perf-critical path this closes (value-model-spec §5's loop-append
+    /// cliff) is the common single-`World` case; a `Local`-scoped fast path
+    /// is future work if profiling ever shows it matters (T1b-4/#576 scope
+    /// note).
+    #[inline]
+    fn take_global(&mut self, idx: u32) -> Value {
+        match self.effective_scope(self.world.policy.scope_of_global(idx)) {
+            Scope::Local => {
+                let v = self.global(idx).clone();
+                self.local.globals.insert(idx, Value::Null);
+                v
+            }
+            Scope::World => self.world.take_global(idx),
         }
     }
 
@@ -2456,5 +2489,128 @@ mod compiled_defaults_tests {
             assert_eq!(view_b.visit_count(shrine), 0);
         }
         assert_eq!(world.visit_count(shrine), 0);
+    }
+}
+
+/// `take_global` (issue #576, `docs/value-model-spec.md` §5) mechanics:
+/// proves the move is real (not a disguised clone) using the same
+/// `Arc::strong_count`/pointer-identity technique
+/// `brink-format::value::tests` uses for `array_make_mut`'s COW proofs —
+/// the load-bearing property behind this PR's O(1)-amortized loop-append
+/// claim.
+#[cfg(test)]
+mod take_global_tests {
+    use super::*;
+
+    fn world_with_one_global(value: Value) -> World {
+        World::from_globals(vec![value], ResolvedPolicy::all_world())
+    }
+
+    /// `World::take_global` is a real move: the returned value is the exact
+    /// same `Arc` allocation an external clone already pointed at (not a
+    /// fresh copy), the refcount doesn't go up because of the take, and the
+    /// slot is left `Value::Null`.
+    #[test]
+    fn world_take_global_moves_without_cloning() {
+        let array = Value::array(vec![Value::Int(1), Value::Int(2)]);
+        let external = Arc::clone(array.as_array().expect("array"));
+        assert_eq!(Arc::strong_count(&external), 2, "world's slot + external");
+
+        let mut world = world_with_one_global(array);
+        let taken = world.take_global(0);
+
+        assert_eq!(
+            Arc::as_ptr(taken.as_array().expect("array")),
+            Arc::as_ptr(&external),
+            "take_global must return the SAME allocation, not a copy"
+        );
+        assert_eq!(
+            Arc::strong_count(&external),
+            2,
+            "the take itself must not bump the refcount: external + taken, \
+             the world's own slot reference is GONE (moved out, not cloned)"
+        );
+        assert_eq!(
+            world.global(0),
+            &Value::Null,
+            "the slot must be left Value::Null after a take"
+        );
+    }
+
+    /// Contrast with the ordinary `global()` read: cloning DOES bump the
+    /// refcount — this is the exact COW cliff #576 closes (a `GetGlobal`
+    /// clone leaves the slot AND the read both holding a reference, so a
+    /// subsequent `array_make_mut` always sees itself as shared).
+    #[test]
+    fn ordinary_global_read_clones_and_bumps_refcount() {
+        let array = Value::array(vec![Value::Int(1)]);
+        let external = Arc::clone(array.as_array().expect("array"));
+        assert_eq!(Arc::strong_count(&external), 2);
+
+        let world = world_with_one_global(array);
+        let read = world.global(0).clone();
+
+        assert_eq!(
+            Arc::strong_count(&external),
+            3,
+            "world's slot + external + this clone — the ordinary read path \
+             genuinely bumps the refcount, unlike take_global"
+        );
+        drop(read);
+    }
+
+    /// `ContextView` routes `take_global` straight to `World::take_global`
+    /// (the real move) for `World`-scoped units — the common, oracle-anchored
+    /// all-`World` policy every program runs under by default.
+    #[test]
+    fn context_view_world_scoped_take_is_a_real_move() {
+        let array = Value::array(vec![Value::Int(7)]);
+        let external = Arc::clone(array.as_array().expect("array"));
+
+        let mut world = world_with_one_global(array);
+        let mut local = FlowLocal::new();
+        let mut view = ContextView::new(&mut world, &mut local);
+
+        let taken = view.take_global(0);
+        assert_eq!(
+            Arc::as_ptr(taken.as_array().expect("array")),
+            Arc::as_ptr(&external)
+        );
+        assert_eq!(Arc::strong_count(&external), 2, "no extra clone");
+        assert_eq!(view.global(0), &Value::Null);
+    }
+
+    /// `ContextView`'s `Local`-scoped branch (the trait default: clone then
+    /// null) — correctness over a read-through miss: taking a `Local`-scoped
+    /// global that's never been locally overridden reads `World`'s current
+    /// value (via the read-through chain), leaves a `Value::Null` override
+    /// in the flow's own layer, and never touches `World` itself.
+    #[test]
+    fn context_view_local_scoped_take_reads_through_and_nulls_local_override() {
+        let array = Value::array(vec![Value::Int(9)]);
+        let mut world = world_with_one_global(array.clone());
+        // Force every global to Local scope.
+        *world.policy = ResolvedPolicy {
+            default: Scope::Local,
+            global_scopes: vec![Scope::Local],
+            knot_scopes: HashMap::new(),
+            turn_index: Scope::World,
+            rng: Scope::World,
+        };
+        let mut local = FlowLocal::new();
+        let mut view = ContextView::new(&mut world, &mut local);
+
+        let taken = view.take_global(0);
+        assert_eq!(taken, array, "read-through gives the World's current value");
+        assert_eq!(
+            view.global(0),
+            &Value::Null,
+            "the flow's own override layer must now read Null"
+        );
+        assert_eq!(
+            world.global(0),
+            &array,
+            "World's own copy is untouched — Local writes never land in World"
+        );
     }
 }

@@ -458,6 +458,75 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 .unwrap_or(Value::Null);
             flow.value_stack.push(val);
         }
+        // ── Sharing discipline (T1b-4, docs/value-model-spec.md §5) ────
+        Opcode::TakeGlobal(id) => {
+            // No auto-dereference — mirrors `GetGlobal`/`SetGlobal`: a
+            // ref-param pointer lives in a *temp*, never in a global slot
+            // itself.
+            let idx = program
+                .resolve_global(id)
+                .ok_or(RuntimeError::UnresolvedGlobal(id))?;
+            let val = context.take_global(idx);
+            flow.value_stack.push(val);
+        }
+        Opcode::TakeTemp(slot) => {
+            // Auto-dereference, mirroring `GetTemp`: if the temp holds a
+            // pointer, take from the *pointed-to* location and leave it
+            // `Null` — the pointer itself stays in this slot untouched (a
+            // `ref` param must keep pointing at its target for the rest of
+            // the call, exactly like `GetTemp`/`SetTemp`'s write-through).
+            let thread = flow.current_thread();
+            let frame = thread
+                .call_stack
+                .last()
+                .ok_or(RuntimeError::CallStackUnderflow)?;
+            let current = frame
+                .temps
+                .get(slot as usize)
+                .cloned()
+                .unwrap_or(Value::Null);
+            match current {
+                Value::VariablePointer(target_id) => {
+                    let global_idx = program
+                        .resolve_global(target_id)
+                        .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
+                    let taken = context.take_global(global_idx);
+                    flow.value_stack.push(taken);
+                }
+                Value::TempPointer {
+                    slot: target_slot,
+                    frame_depth,
+                } => {
+                    let thread = flow.current_thread_mut();
+                    let target = thread
+                        .call_stack
+                        .get_mut(frame_depth as usize)
+                        .ok_or(RuntimeError::CallStackUnderflow)?;
+                    let ti = target_slot as usize;
+                    while target.temps.len() <= ti {
+                        target.temps.push(Value::Null);
+                    }
+                    #[expect(clippy::indexing_slicing, reason = "padded to ti + 1 above")]
+                    let taken = mem::replace(&mut target.temps[ti], Value::Null);
+                    flow.value_stack.push(taken);
+                }
+                _ => {
+                    let thread = flow.current_thread_mut();
+                    let frame = thread
+                        .call_stack
+                        .last_mut()
+                        .ok_or(RuntimeError::CallStackUnderflow)?;
+                    let idx = slot as usize;
+                    while frame.temps.len() <= idx {
+                        frame.temps.push(Value::Null);
+                    }
+                    #[expect(clippy::indexing_slicing, reason = "padded to idx + 1 above")]
+                    let taken = mem::replace(&mut frame.temps[idx], Value::Null);
+                    flow.value_stack.push(taken);
+                }
+            }
+        }
+
         Opcode::PushTempPointer(slot) => {
             // Push a pointer to a temp variable. If the temp already holds
             // a pointer (VariablePointer or TempPointer), flatten through

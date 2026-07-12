@@ -1272,6 +1272,12 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
             &operands, 0, mnemonic,
         )?)),
 
+        // Sharing discipline (T1b-4)
+        "take_global" => Ok(Opcode::TakeGlobal(parse_operand_def_id(
+            &operands, 0, mnemonic,
+        )?)),
+        "take_temp" => Ok(Opcode::TakeTemp(parse_operand_u16(&operands, 0, mnemonic)?)),
+
         // Lifecycle
         "done" => Ok(Opcode::Done),
         "yield" => Ok(Opcode::Yield),

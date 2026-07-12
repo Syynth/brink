@@ -417,23 +417,32 @@ handles, projections, records — RFC §3) are named in the RFC but out of this
 reservation; each gets its own contiguous block, numbered when its own
 milestone lands.
 
-#### Sharing-discipline operations (`0xCA`–`0xCC`, reserved)
+#### Sharing-discipline operations (`0xCA`–`0xCD`)
 
 Named in `docs/format-v4-rfc.md` §3 "Sharing discipline (T1a)"; semantics in
-`docs/value-model-spec.md` §6 and §9. Numeric assignments are frozen by the
-§9 one-bump rule, contiguous and adjacent to the collection block above. Not
-`Opcode` variants yet — there is no decode match arm for these bytes, so the
-strict reader rejects them (`UnknownOpcode`) until the T1a compiler surface
-begins emitting them.
+`docs/value-model-spec.md` §5, §6, and §9. Numeric assignments are frozen by
+the §9 one-bump rule, contiguous and adjacent to the collection block above.
+`TakeGlobal`/`TakeTemp` are live as of T1b-4 (#576) — the RFC's generic
+`TakeVar(slot)` split into its two concrete slot kinds (a global
+`DefinitionId` and a temp `u16` don't share an operand encoding, so one
+opcode can't cover both). `StoreVarIfNew`/`EqVars` remain reserved (no
+`Opcode` variant — `decode`'s catch-all still rejects `0xCB`/`0xCC` as
+`UnknownOpcode`) until their own milestone.
 
 | Opcode | Description |
 |--------|-------------|
-| `0xCA` `TakeVar(slot)` | Move the value out of `slot`, leaving `Null` behind — the last-use elision target (value-model spec §9) |
-| `0xCB` `StoreVarIfNew` | Optional store-time keep-old-Arc cutoff: skip the write if the new value is structurally equal to the existing one (value-model spec §6) |
-| `0xCC` `EqVars(a, b)` | Fused compare of two variable slots (peephole over `LoadVar a; LoadVar b; Eq`), with optional ref-collapse on equality (value-model spec §6) |
+| `0xCA` `TakeGlobal(DefinitionId)` | Move the value out of the named global, leaving `Null` behind — the take-half of the take → `make_mut` → write-back RMW discipline that closes the indexed-write COW cliff (value-model spec §5). No auto-dereference (mirrors `GetGlobal`/`SetGlobal` — a `ref`-param pointer lives in a temp, never a global). |
+| `0xCB` `StoreVarIfNew` (reserved) | Optional store-time keep-old-Arc cutoff: skip the write if the new value is structurally equal to the existing one (value-model spec §6) |
+| `0xCC` `EqVars(a, b)` (reserved) | Fused compare of two variable slots (peephole over `LoadVar a; LoadVar b; Eq`), with optional ref-collapse on equality (value-model spec §6) |
+| `0xCD` `TakeTemp(slot)` | Move the value out of the temp slot, leaving `Null` behind — `TakeGlobal`'s temp-slot counterpart. Auto-dereferences like `GetTemp`: if the slot holds a `VariablePointer`/`TempPointer` (a `ref` parameter), the *pointed-to* location is taken and left `Null`, while the pointer itself stays in the slot untouched. |
 
-All three are optional peephole/sharing optimizations, never required for
-correctness — v1 ships with just the `ptr_eq` equality fast path (spec §6).
+`StoreVarIfNew`/`EqVars` are optional peephole/sharing optimizations, never
+required for correctness — v1 ships with just the `ptr_eq` equality fast
+path (spec §6). `TakeGlobal`/`TakeTemp` are load-bearing for the loop-append
+performance claim in spec §5 but never required for *correctness* either —
+the compiler's fallback (ordinary `GetGlobal`/`GetTemp` clone-based RMW,
+still used for chained indexed assignment, T1b-4 PR description) produces
+identical observable results, just without the O(1)-amortized guarantee.
 Later Tier-1 opcode groups (functions, handles, projections, records — RFC
 §3) remain named in the RFC but out of this reservation; each gets its own
 contiguous block, numbered when its own milestone lands.
