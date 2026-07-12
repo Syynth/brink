@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use brink_analyzer::{
-    AnalysisOptions, AnalysisResult, ExternalCheckSeverity, SemanticTypeDiagnosticSeverity,
+    AnalysisOptions, AnalysisResult, Dialect, ExternalCheckSeverity, SemanticTypeDiagnosticSeverity,
 };
 use brink_db::ProjectDb;
 use brink_ir::{FileId, HirFile, HostManifest, ResolvedDialect, SymbolManifest};
@@ -22,6 +22,7 @@ pub struct IdeSnapshot {
     host_manifest: Option<HostManifest>,
     external_check: ExternalCheckSeverity,
     semantic_type_check: SemanticTypeDiagnosticSeverity,
+    dialect: Dialect,
 }
 
 impl IdeSnapshot {
@@ -37,7 +38,7 @@ impl IdeSnapshot {
             host_manifest: self.host_manifest.clone(),
             external_check: self.external_check,
             semantic_type_check: self.semantic_type_check,
-            ..AnalysisOptions::default()
+            dialect: self.dialect,
         };
         brink_analyzer::analyze_with_options(&refs, &opts)
     }
@@ -63,6 +64,16 @@ pub struct IdeSession {
     /// re-analyze. `None` means no dialect is mounted (plain structural
     /// classification only).
     dialect: Option<ResolvedDialect>,
+    /// The T1b compiler dialect (docs/t1b-surface-spec.md §1, #589/#600),
+    /// set via `set_language_dialect`. Defaults to `Dialect::StrictInk`,
+    /// matching `AnalysisOptions::default()`. Unlike `dialect` above (the
+    /// #368 dialogue-dialect, query-time-only tooling state), this one feeds
+    /// `analyze`/`reanalyze`/`analyze_overlay`/`analyze_projection` — it
+    /// gates the `E051` "brink extension" diagnostic (#611: previously only
+    /// `EditorSession`'s local copy gated completions/signature-help, so a
+    /// `brink`-dialect project got permanent spurious `E051` from the
+    /// background analysis pass regardless of this setting).
+    language_dialect: Dialect,
     /// Per-file HIR projection cache (#480): the canonical structural model
     /// is computed once per edit and shared by every per-line/per-span view
     /// (`line_contexts`, folding, `hir_spans`). The flag records whether the
@@ -85,6 +96,7 @@ impl IdeSession {
             external_check: ExternalCheckSeverity::default(),
             semantic_type_check: SemanticTypeDiagnosticSeverity::default(),
             dialect: None,
+            language_dialect: Dialect::default(),
             projection_cache: RefCell::new(HashMap::new()),
         }
     }
@@ -139,6 +151,23 @@ impl IdeSession {
         self.dialect.as_ref()
     }
 
+    /// Set the T1b compiler dialect (docs/t1b-surface-spec.md §1, #589/#600),
+    /// then re-analyze — this is the diagnostics-facing counterpart of
+    /// completions/signature-help gating (#611). `Dialect::Brink` drops the
+    /// `E051` "brink extension" diagnostic for extension syntax that already
+    /// lowers and runs under either dialect; `Dialect::StrictInk` (the
+    /// default) restores it.
+    pub fn set_language_dialect(&mut self, dialect: Dialect) {
+        self.language_dialect = dialect;
+        self.reanalyze();
+    }
+
+    /// The registered T1b compiler dialect (defaults to `Dialect::StrictInk`).
+    #[must_use]
+    pub fn language_dialect(&self) -> Dialect {
+        self.language_dialect
+    }
+
     /// Set the severity policy for manifest-driven external checks, then
     /// re-analyze.
     pub fn set_external_check(&mut self, severity: ExternalCheckSeverity) {
@@ -182,6 +211,7 @@ impl IdeSession {
             host_manifest: self.host_manifest.clone(),
             external_check: self.external_check,
             semantic_type_check: self.semantic_type_check,
+            dialect: self.language_dialect,
         }
     }
 
@@ -308,14 +338,16 @@ impl IdeSession {
     }
 
     /// The current analysis options (registered host manifest +
-    /// external-check / semantic-type-check severities), for callers that run
-    /// their own analysis/compile pass.
+    /// external-check / semantic-type-check severities + T1b compiler
+    /// dialect), for callers that run their own analysis/compile pass.
+    /// `analyze_overlay`/`analyze_projection` use this, so the declared
+    /// dialect carries through to their gate-check passes too (#611).
     pub fn analysis_options(&self) -> AnalysisOptions {
         AnalysisOptions {
             host_manifest: self.host_manifest.clone(),
             external_check: self.external_check,
             semantic_type_check: self.semantic_type_check,
-            ..AnalysisOptions::default()
+            dialect: self.language_dialect,
         }
     }
 
@@ -365,7 +397,7 @@ mod tests {
         ManifestParam, SemanticTypeDef, TypeRef,
     };
 
-    use super::{ExternalCheckSeverity, IdeSession, SemanticTypeDiagnosticSeverity};
+    use super::{Dialect, ExternalCheckSeverity, IdeSession, SemanticTypeDiagnosticSeverity};
 
     fn color_manifest() -> HostManifest {
         HostManifest {
@@ -477,6 +509,96 @@ EXTERNAL add_state(who)
                 .any(|d| d.code == DiagnosticCode::E040),
             "Error with no manifest: E040 fires: {:?}",
             analysis.diagnostics
+        );
+    }
+
+    /// #611: a `~ { … }` multi-line logic block is brink-extension syntax
+    /// (docs/t1b-surface-spec.md §1) — flagged `E051` under the default
+    /// `StrictInk` dialect, silent under `Brink`.
+    const BRINK_EXT_SRC: &str = "~ {\n    temp x = 0\n}\n-> END\n";
+
+    #[test]
+    fn strict_ink_default_flags_e051_on_extension_syntax() {
+        let mut session = IdeSession::new();
+        session.update_and_analyze("t.ink", BRINK_EXT_SRC.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E051),
+            "StrictInk default: E051 stands: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn set_language_dialect_brink_suppresses_e051_on_analyze() {
+        let mut session = IdeSession::new();
+        session.update_and_analyze("t.ink", BRINK_EXT_SRC.to_string());
+        session.set_language_dialect(Dialect::Brink);
+        let analysis = session.analysis().expect("analysis");
+
+        assert!(
+            !analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E051),
+            "brink dialect: no E051 on valid extension syntax: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn set_language_dialect_reanalyzes_files_added_afterward() {
+        // The dialect is set before the file is even loaded — `reanalyze`
+        // must be picked up by the subsequent `update_and_analyze` (which
+        // re-snapshots and re-reads `language_dialect`), not just by files
+        // present at `set_language_dialect` time.
+        let mut session = IdeSession::new();
+        session.set_language_dialect(Dialect::Brink);
+        session.update_and_analyze("t.ink", BRINK_EXT_SRC.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        assert!(
+            !analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E051),
+            "brink dialect set before load: no E051: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn analyze_overlay_and_analyze_projection_respect_declared_dialect() {
+        let mut session = IdeSession::new();
+        session.update_and_analyze("t.ink", "-> END\n".to_string());
+        session.set_language_dialect(Dialect::Brink);
+
+        let mut overlay = std::collections::BTreeMap::new();
+        overlay.insert("t.ink".to_string(), BRINK_EXT_SRC.to_string());
+        let (overlay_result, _db) = session.analyze_overlay(&overlay);
+        assert!(
+            !overlay_result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E051),
+            "analyze_overlay: brink dialect carries through: {:?}",
+            overlay_result.diagnostics
+        );
+
+        let mut projection = std::collections::BTreeMap::new();
+        projection.insert("t.ink".to_string(), BRINK_EXT_SRC.to_string());
+        let (projection_result, _db) = session.analyze_projection(&projection);
+        assert!(
+            !projection_result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E051),
+            "analyze_projection: brink dialect carries through: {:?}",
+            projection_result.diagnostics
         );
     }
 

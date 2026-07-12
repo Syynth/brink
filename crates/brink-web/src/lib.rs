@@ -2933,11 +2933,13 @@ pub struct EditorSession {
     fold_runs_enabled: bool,
     /// The T1b compiler dialect (docs/t1b-surface-spec.md §1), set via
     /// `set_language_dialect`. Defaults to `StrictInk`, matching
-    /// `AnalysisOptions::default()`. Tooling-only — gates whether stdlib
-    /// slice 1 completion/signature help are offered (#589, #600), mirroring
-    /// `brink-lsp`'s `Backend::dialect`; it does not (yet) feed into
-    /// `IdeSession`'s background analysis pass, so diagnostics still analyze
-    /// under the default dialect regardless of this setting.
+    /// `AnalysisOptions::default()`. Gates whether stdlib slice 1
+    /// completion/signature help are offered (#589, #600), mirroring
+    /// `brink-lsp`'s `Backend::dialect` — kept as its own field (rather than
+    /// reading back through `session`) because those two call sites need a
+    /// plain value, not an `Option<&_>`/reference. Since #611 it is also
+    /// forwarded to `IdeSession::set_language_dialect`, so it gates the
+    /// background analysis pass's `E051` diagnostic too.
     dialect: brink_analyzer::Dialect,
 }
 
@@ -3045,17 +3047,21 @@ impl EditorSession {
     }
 
     /// Set the T1b compiler dialect (docs/t1b-surface-spec.md §1, #589,
-    /// #600): `"brink"` or `"strict-ink"`; any other value (or never
+    /// #600, #611): `"brink"` or `"strict-ink"`; any other value (or never
     /// calling this at all) keeps the `StrictInk` default. Mirrors
     /// `brink-lsp`'s `initializationOptions.dialect` handling. Gates stdlib
-    /// slice 1 completion (`completions`/`completions_doc`) and
-    /// dialect-aware signature help (`signature_help`/`signature_help_doc`)
-    /// only — it does not change analysis, so diagnostics are unaffected.
+    /// slice 1 completion (`completions`/`completions_doc`), dialect-aware
+    /// signature help (`signature_help`/`signature_help_doc`), and — since
+    /// #611 — the background analysis pass's `E051` "brink extension"
+    /// diagnostic: a `brink`-dialect project no longer shows permanent
+    /// spurious `E051` on valid extension syntax. Re-analyzes immediately
+    /// (like `set_external_check`/`set_semantic_type_check`).
     pub fn set_language_dialect(&mut self, value: &str) {
         self.dialect = match value {
             "brink" => brink_analyzer::Dialect::Brink,
             _ => brink_analyzer::Dialect::StrictInk,
         };
+        self.session.set_language_dialect(self.dialect);
     }
 
     /// Push the host's current values for `host`-source semantic types (Tier 3,
@@ -8109,6 +8115,66 @@ mod tests {
             .find(|r| r["kind"] == "structural" && r["start_line"] == 1)
             .expect("logic block folds as a structural region");
         assert_eq!(block["end_line"], 4, "{block}");
+    }
+
+    // ── #611: thread the declared dialect into background analysis ────
+
+    /// A `~ { … }` multi-line logic block is brink-extension syntax
+    /// (docs/t1b-surface-spec.md §1) — flagged `E051` under the default
+    /// `StrictInk` dialect, silent under `Brink`.
+    const BRINK_EXT_SRC: &str = "=== start ===\n~ {\n    temp x = 1\n}\n-> END\n";
+
+    #[test]
+    fn strict_ink_default_flags_e051_in_background_analysis() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", BRINK_EXT_SRC);
+        let analysis = s.session.analysis().expect("analysis");
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+            "StrictInk default: E051 stands: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn set_language_dialect_brink_suppresses_e051_in_background_analysis() {
+        // #611: before this fix, `set_language_dialect` only updated the
+        // bridge's local `dialect` field (consumed by completions/signature
+        // help) — the `IdeSession`'s background analysis pass never saw it,
+        // so a brink-dialect project kept showing spurious `E051`.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", BRINK_EXT_SRC);
+        s.set_language_dialect("brink");
+        let analysis = s.session.analysis().expect("analysis");
+        assert!(
+            !analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+            "brink dialect: no E051 on valid extension syntax: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn set_language_dialect_strict_ink_value_keeps_e051() {
+        // Any value other than the exact string "brink" (including an
+        // explicit "strict-ink") keeps the StrictInk default.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", BRINK_EXT_SRC);
+        s.set_language_dialect("strict-ink");
+        let analysis = s.session.analysis().expect("analysis");
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+            "explicit strict-ink: E051 stands: {:?}",
+            analysis.diagnostics
+        );
     }
 }
 
