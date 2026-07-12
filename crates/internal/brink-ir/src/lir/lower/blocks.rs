@@ -209,6 +209,19 @@ fn get_expr_for_target(target: &lir::AssignTarget) -> lir::Expr {
     }
 }
 
+/// `get_expr_for_target`'s move-semantics counterpart (issue #576,
+/// `docs/value-model-spec.md` §5): moves the target's current value out,
+/// leaving `Value::Null` behind, instead of cloning (`Arc`-bumping) it.
+/// Only safe to use where nothing else needs `target`'s old value again
+/// before it's written back — see [`lower_flat_indexed_assignment`] and
+/// [`lower_bare_mutator`], the two call sites that establish this.
+fn take_expr_for_target(target: &lir::AssignTarget) -> lir::Expr {
+    match target {
+        lir::AssignTarget::Global(id) => lir::Expr::TakeGlobal(*id),
+        lir::AssignTarget::Temp(slot, name) => lir::Expr::TakeTemp(*slot, *name),
+    }
+}
+
 fn declare_synthetic(
     prefix: &str,
     value: lir::Expr,
@@ -231,6 +244,17 @@ fn declare_synthetic(
 /// references (no projections in T1b). Every sub-expression is evaluated
 /// exactly once: the root once, each index left-to-right once, the value
 /// once.
+///
+/// `n == 1` (`a[i] = v`/`a[i] op= v` on a bare variable — the loop-append
+/// case value-model-spec §5's "one cliff" targets) dispatches to
+/// [`lower_flat_indexed_assignment`], which closes the COW cliff via
+/// `TakeGlobal`/`TakeTemp` (issue #576). `n > 1` (chained, e.g.
+/// `grid[y][x] = v`) keeps the clone-based RMW below unchanged: a nested
+/// container's element is necessarily read out via a structural clone
+/// before it can be walked further (it's *still referenced from inside its
+/// parent* until that parent's own write-back cascade completes), so a
+/// take at any level but the root buys nothing there — this is the
+/// sanctioned §7 fallback ("per-write path-walking RMW"), not a regression.
 fn lower_indexed_assignment(
     idx: &hir::IndexExpr,
     op: AssignOp,
@@ -252,6 +276,142 @@ fn lower_indexed_assignment(
         return;
     }
 
+    if n == 1 {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "n == 1 just proved indices_hir has exactly one element"
+        )]
+        let index_hir = indices_hir[0];
+        lower_flat_indexed_assignment(root_target, index_hir, op, value_expr, ctx, out);
+        return;
+    }
+
+    lower_chained_indexed_assignment(root_target, &indices_hir, op, value_expr, ctx, out);
+}
+
+/// Fast path for `n == 1` (`a[i] = v`/`a[i] op= v`, `a` a bare variable):
+/// closes the indexed-write COW cliff (issue #576, value-model-spec §5) by
+/// using `TakeGlobal`/`TakeTemp` (move semantics — `docs/format-v4-rfc.md`
+/// §3 "Sharing discipline") for the root read and the mutate step's
+/// container operand, so `array_make_mut`/`map_make_mut` sees a unique
+/// `Arc` (refcount 1) whenever nothing else aliases the container — O(1)
+/// amortized in-place mutation instead of an O(n) COW copy on every write.
+///
+/// **Evaluation order** (correctness-critical): the index, the RHS value,
+/// and (for compound assignment) the pre-mutation `current = a[idx]` read
+/// are ALL fully evaluated — via a non-taking, ordinary read of the
+/// still-intact root — *before* the root is taken. This matters because
+/// either expression may reference the root variable by name (e.g. `a[0] =
+/// a[1] + 1`, or a compound `a[i] += a[i]`) and must see its pre-mutation
+/// value, not the `Value::Null` a take would leave behind if it happened
+/// first.
+///
+/// **Fault-during-RMW slot state** (issue #576's required property): the
+/// `current = a[idx]` read is *always* computed (even for plain `=`, where
+/// its value is otherwise unused) specifically to force the exact same
+/// bounds/key validation `IndexSet`'s mutate step would do — using an
+/// ordinary `Index` read, which is non-mutating (never calls
+/// `array_make_mut`/`map_make_mut`) and therefore can't itself trigger a
+/// COW; it's a transient `Arc`-bump-and-drop of the *container* plus a
+/// clone of the single *element*, negligible next to the O(n) copy this
+/// fast path exists to avoid. Because that read uses the identical
+/// container value and index the later take-based mutate will use (nothing
+/// mutates in between), a fault there is proof the mutate would fault too
+/// — so by the time the root is actually taken (after this check passes),
+/// the mutate is *guaranteed* to succeed. The root is therefore **never**
+/// left holding `Value::Null` due to a fault on this fast path — a fault
+/// (out-of-bounds index, missing map key, or a non-collection root) is
+/// caught before anything is taken, leaving the root completely untouched,
+/// exactly like the pre-#576 clone-based RMW. See
+/// `fault_during_flat_indexed_assignment_leaves_root_unchanged` (runtime
+/// crate) for the property test.
+fn lower_flat_indexed_assignment(
+    root_target: lir::AssignTarget,
+    index_hir: &hir::Expr,
+    op: AssignOp,
+    value_expr: &hir::Expr,
+    ctx: &mut LowerCtx<'_>,
+    out: &mut Vec<lir::Stmt>,
+) {
+    // 1. Index, evaluated once — root is still intact.
+    let index_value = lower_expr(index_hir, ctx);
+    let (idx_slot, idx_name) = declare_synthetic("__idx", index_value, ctx, out);
+
+    // 2. RHS value, materialized into its own temp *before* the take (see
+    //    doc above) — also still reading the intact root if it references
+    //    it.
+    let rhs_value = lower_expr(value_expr, ctx);
+    let (rhs_slot, rhs_name) = declare_synthetic("__rhs", rhs_value, ctx, out);
+
+    // 3. Pre-mutation `current = a[idx]`, ALWAYS computed (fault pre-check
+    //    + compound assignment's operand — see doc above), via an ordinary
+    //    (non-taking) read of the still-intact root.
+    let current = lir::Expr::Index {
+        base: Box::new(get_expr_for_target(&root_target)),
+        index: Box::new(lir::Expr::GetTemp(idx_slot, idx_name)),
+    };
+    let (current_slot, current_name) = declare_synthetic("__current", current, ctx, out);
+
+    let rhs = if op == AssignOp::Set {
+        lir::Expr::GetTemp(rhs_slot, rhs_name)
+    } else {
+        // `op == AssignOp::Set` is excluded above, so only `Add`/`Sub`
+        // ever reach here.
+        let infix_op = if op == AssignOp::Sub {
+            InfixOp::Sub
+        } else {
+            InfixOp::Add
+        };
+        lir::Expr::Infix(
+            Box::new(lir::Expr::GetTemp(current_slot, current_name)),
+            infix_op,
+            Box::new(lir::Expr::GetTemp(rhs_slot, rhs_name)),
+        )
+    };
+
+    // 4. Take the root — step 3 already proved this exact index is valid
+    //    against this exact container value (nothing mutated in between),
+    //    so nothing from here on can fault; the root is never left
+    //    `Value::Null` on this fast path.
+    let (c_slot, c_name) = declare_synthetic("__c", take_expr_for_target(&root_target), ctx, out);
+
+    // 5. Mutate in place: base is a *take* from `c_slot` too — `c_slot`'s
+    //    old value is never read again (this statement's own result
+    //    overwrites it), so by the time `array_make_mut`/`map_make_mut`
+    //    runs, the only live reference to the container is the one this
+    //    statement is about to consume — refcount 1 whenever nothing else
+    //    aliases it.
+    out.push(lir::Stmt::Assign {
+        target: lir::AssignTarget::Temp(c_slot, c_name),
+        op: AssignOp::Set,
+        value: lir::Expr::IndexSet {
+            base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
+            index: Box::new(lir::Expr::GetTemp(idx_slot, idx_name)),
+            value: Box::new(rhs),
+        },
+    });
+
+    // 6. Write the mutated container back into the root — takes the (now
+    //    dead) synthetic temp too, avoiding one final wasted `Arc` clone.
+    out.push(lir::Stmt::Assign {
+        target: root_target,
+        op: AssignOp::Set,
+        value: lir::Expr::TakeTemp(c_slot, c_name),
+    });
+}
+
+/// `n > 1` (chained, e.g. `grid[y][x] = v`) — the pre-#576 clone-based RMW,
+/// unchanged. See [`lower_indexed_assignment`]'s doc for why the take-based
+/// optimization doesn't extend here.
+fn lower_chained_indexed_assignment(
+    root_target: lir::AssignTarget,
+    indices_hir: &[&hir::Expr],
+    op: AssignOp,
+    value_expr: &hir::Expr,
+    ctx: &mut LowerCtx<'_>,
+    out: &mut Vec<lir::Stmt>,
+) {
+    let n = indices_hir.len();
     // 1. Materialize every index value into its own temp, evaluated once,
     //    left to right, before any container read.
     let idx_slots: Vec<(u16, brink_format::NameId)> = indices_hir
@@ -521,6 +681,18 @@ pub(super) fn try_lower_mutator_stmt(
         return true;
     }
 
+    // Bare-variable lvalue (`push(a, v)`, not `push(grid[y], v)`) — the
+    // loop-append benchmark's shape — dispatches to the take-based fast
+    // path (issue #576). A chained lvalue keeps the clone-based fallback
+    // below unchanged, for the same reason `lower_indexed_assignment`
+    // scopes its own fast path to `n == 1`: a nested element is still
+    // referenced from inside its parent until the write-back cascade
+    // completes, so Take buys nothing at any level but the root.
+    if let hir::Expr::Path(_) = lvalue_expr {
+        lower_bare_mutator(kind, lvalue_expr, args, ctx, out);
+        return true;
+    }
+
     let Some((root_target, idx_slots, c_slots)) =
         lower_lvalue_container_chain(lvalue_expr, ctx, out)
     else {
@@ -571,6 +743,109 @@ pub(super) fn try_lower_mutator_stmt(
     });
     writeback_lvalue_container_chain(root_target, &idx_slots, &c_slots, out);
     true
+}
+
+/// Fast path for a mutator (`push`/`insert`/`remove`) whose lvalue is a
+/// bare variable — mirrors [`lower_flat_indexed_assignment`]'s Take-based
+/// RMW (issue #576): the root is taken (not cloned) only *after* every
+/// mutator argument is fully evaluated into its own synthetic temp, since
+/// any of them may reference the root by name (e.g. `insert(a, 0, a[0])`);
+/// the container fed to `CollectionInsert`/`CollectionRemove` is itself a
+/// take from the synthetic root temp, so `array_make_mut`/`map_make_mut`
+/// sees a unique `Arc` whenever nothing else aliases the container.
+///
+/// **Fault-during-RMW slot state**: `push`'s key is always `len(container)`
+/// — by construction always a valid insert index — so `push` can only ever
+/// fault via `NotIndexable` (the root isn't an array/map at runtime), and
+/// this path pre-checks exactly that (the `CollectionLen` read below is
+/// non-mutating, so it can't itself trigger a COW) *before* taking the
+/// root, giving `push` the same "root is never lost to a fault" guarantee
+/// `lower_flat_indexed_assignment` has — and for free, since that same
+/// `CollectionLen` read also IS the value `push`'s key needs. `insert`/
+/// `remove` at an arbitrary author-supplied key don't get an equivalent
+/// cheap pre-check (validating an arbitrary key/index without mutating
+/// would need a dedicated "is this key valid" primitive this issue doesn't
+/// add — see the PR's scope notes): a fault there leaves the root holding
+/// `Value::Null`, a deliberate, documented, and tested trade-off consistent
+/// with this VM's pre-existing no-rollback-on-fault model (a fault
+/// anywhere mid-turn already leaves earlier same-turn mutations applied;
+/// this extends that same contract to the RMW's own target). See
+/// `fault_during_push_leaves_root_unchanged` and
+/// `fault_during_insert_leaves_root_null` (runtime crate) for the property
+/// tests.
+fn lower_bare_mutator(
+    kind: MutatorKind,
+    root_expr: &hir::Expr,
+    args: &[hir::Expr],
+    ctx: &mut LowerCtx<'_>,
+    out: &mut Vec<lir::Stmt>,
+) {
+    let Some(root_target) = super::stmts::lower_assign_target(root_expr, ctx) else {
+        // Structurally unreachable: `root_expr` is a `hir::Expr::Path`
+        // already validated as a resolvable lvalue by `is_lvalue_expr` and
+        // (indirectly) `try_lower_mutator_stmt`'s shadow check above —
+        // guarded rather than asserted per this module's usual discipline.
+        return;
+    };
+
+    // Evaluate the mutator's own args (key/value) before touching root —
+    // any of them may reference the root by name.
+    let arg_slots: Vec<(u16, brink_format::NameId)> = args[1..]
+        .iter()
+        .map(|a| {
+            let v = lower_expr(a, ctx);
+            declare_synthetic("__arg", v, ctx, out)
+        })
+        .collect();
+
+    // `push`'s fault pre-check doubles as its key (see doc above) — read
+    // while root is still intact.
+    let push_len = matches!(kind, MutatorKind::Push).then(|| {
+        declare_synthetic(
+            "__len",
+            lir::Expr::CollectionLen(Box::new(get_expr_for_target(&root_target))),
+            ctx,
+            out,
+        )
+    });
+
+    // Take the root.
+    let (c_slot, c_name) = declare_synthetic("__c", take_expr_for_target(&root_target), ctx, out);
+
+    let new_container = match kind {
+        MutatorKind::Push => {
+            let Some((len_slot, len_name)) = push_len else {
+                // Structurally unreachable: `push_len` is always `Some` for
+                // `MutatorKind::Push` by the `matches!` guard above.
+                return;
+            };
+            lir::Expr::CollectionInsert {
+                base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
+                key: Box::new(lir::Expr::GetTemp(len_slot, len_name)),
+                value: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
+            }
+        }
+        MutatorKind::Insert => lir::Expr::CollectionInsert {
+            base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
+            key: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
+            value: Box::new(lir::Expr::GetTemp(arg_slots[1].0, arg_slots[1].1)),
+        },
+        MutatorKind::Remove => lir::Expr::CollectionRemove {
+            base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
+            key: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
+        },
+    };
+
+    out.push(lir::Stmt::Assign {
+        target: lir::AssignTarget::Temp(c_slot, c_name),
+        op: AssignOp::Set,
+        value: new_container,
+    });
+    out.push(lir::Stmt::Assign {
+        target: root_target,
+        op: AssignOp::Set,
+        value: lir::Expr::TakeTemp(c_slot, c_name),
+    });
 }
 
 /// Resolve an lvalue expression (§5 — "a variable, temp, or indexed path")

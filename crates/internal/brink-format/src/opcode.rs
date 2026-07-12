@@ -158,21 +158,36 @@ const PUSH_LITERAL: u8 = 0xC9;
 // the RFC but out of this reservation — each gets its own contiguous block,
 // numbered when its own issue lands.
 
-// Reserved v4 sharing-discipline opcodes (`docs/format-v4-rfc.md` §3
-// "Sharing discipline (T1a)"; semantics in `docs/value-model-spec.md` §6)
-// — numeric assignments frozen by the §9 one-bump rule, contiguous and
-// adjacent to the collection block above. Same discipline: comments only,
-// no `Opcode` variants, so `decode`'s catch-all keeps rejecting every byte
-// in the block (`UnknownOpcode`) until T1a's compiler surface emits them.
-//   0xCA TakeVar(slot)       0xCB StoreVarIfNew     0xCC EqVars(a, b)
-// `TakeVar(slot)` moves the slot's value out and leaves `Null` behind — the
-// last-use elision target (spec §9). `StoreVarIfNew` and `EqVars` are the
-// optional ref-collapsing sites from spec §6 (store-time keep-old-Arc
-// cutoff; fused compare with optional collapse on structural equality) —
-// pure peephole optimizations over `LoadVar`/`Eq`, never required for
-// correctness. Later Tier-1 groups (functions, handles, projections,
-// records) remain named in the RFC but out of this reservation — each gets
-// its own contiguous block, numbered when its own issue lands.
+// v4 sharing-discipline opcodes (`docs/format-v4-rfc.md` §3 "Sharing
+// discipline (T1a)"; semantics in `docs/value-model-spec.md` §5/§6) —
+// numeric assignments frozen by the §9 one-bump rule, contiguous and
+// adjacent to the collection block above. Live as of T1b-4 (#576):
+//   0xCA TakeGlobal(DefinitionId)   0xCB StoreVarIfNew (reserved)
+//   0xCC EqVars(a, b) (reserved)    0xCD TakeTemp(u16)
+// `TakeGlobal`/`TakeTemp` are the RFC's generic `TakeVar(slot)` split into
+// its two concrete slot kinds (global `DefinitionId` vs temp `u16` — they
+// don't share an operand encoding, so one opcode can't cover both): each
+// moves the slot's current value out and leaves `Value::Null` behind — the
+// take-half of the take → `make_mut` → write-back RMW discipline (spec §5)
+// that closes the indexed-write COW cliff. `TakeTemp` mirrors `GetTemp`'s
+// pointer auto-dereference (`ref` params): if the temp holds a
+// `VariablePointer`/`TempPointer`, the *pointed-to* location is taken, not
+// the pointer value itself (see `vm.rs`'s `Opcode::TakeTemp` arm).
+// `TakeGlobal` does not auto-dereference — `GetGlobal`/`SetGlobal` don't
+// either, since ref-params live in temps, never in globals themselves.
+// `0xCD` is claimed fresh, adjacent to this block, rather than reusing
+// `0xCB`/`0xCC` — those stay reserved for `StoreVarIfNew`/`EqVars` exactly
+// as the RFC named them; splitting `TakeVar` doesn't touch their
+// numbering. `StoreVarIfNew` and `EqVars` remain reserved (comments only,
+// no `Opcode` variants — `decode`'s catch-all keeps rejecting both bytes)
+// — the optional ref-collapsing sites from spec §6 (store-time keep-old-Arc
+// cutoff; fused compare with optional collapse on structural equality),
+// pure peephole optimizations, never required for correctness. Later
+// Tier-1 groups (functions, handles, projections, records) remain named in
+// the RFC but out of this reservation — each gets its own contiguous
+// block, numbered when its own issue lands.
+const TAKE_GLOBAL: u8 = 0xCA;
+const TAKE_TEMP: u8 = 0xCD;
 
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
@@ -549,6 +564,20 @@ pub enum Opcode {
     /// `LiteralPool[idx]` → cloned value (an `Arc` bump for collections).
     PushLiteral(u32),
 
+    // ── Sharing discipline (T1b-4, `docs/format-v4-rfc.md` §3) ──────────
+    /// Move a global's current value out, leaving `Value::Null` behind —
+    /// the take-half of the take → `make_mut` → write-back RMW discipline
+    /// (value-model-spec §5). No stack input; pushes the taken value.
+    /// Unlike `GetGlobal`, never auto-dereferences (globals can't hold
+    /// `ref`-param pointers — those live in temps).
+    TakeGlobal(DefinitionId),
+    /// Move a temp's current value out, leaving `Value::Null` behind —
+    /// mirrors `TakeGlobal` for temp slots. Auto-dereferences like
+    /// `GetTemp`: if the temp holds a `VariablePointer`/`TempPointer`, the
+    /// *pointed-to* location is taken (and left `Null`), not the pointer
+    /// value itself, which stays in this slot untouched.
+    TakeTemp(u16),
+
     // ── Lifecycle ───────────────────────────────────────────────────────
     Done,
     /// Pause for choice presentation. Like `Done` but does NOT set
@@ -810,6 +839,16 @@ impl Opcode {
                 write_u32(buf, idx);
             }
 
+            // Sharing discipline
+            Self::TakeGlobal(id) => {
+                write_u8(buf, TAKE_GLOBAL);
+                write_def_id(buf, id);
+            }
+            Self::TakeTemp(idx) => {
+                write_u8(buf, TAKE_TEMP);
+                write_u16(buf, idx);
+            }
+
             // Lifecycle
             Self::Done => write_u8(buf, DONE),
             Self::Yield => write_u8(buf, YIELD),
@@ -995,6 +1034,10 @@ impl Opcode {
             COLLECTION_KEYS => Self::CollectionKeys,
             COLLECTION_VALUES => Self::CollectionValues,
             PUSH_LITERAL => Self::PushLiteral(read_u32(buf, offset)?),
+
+            // Sharing discipline
+            TAKE_GLOBAL => Self::TakeGlobal(read_def_id(buf, offset)?),
+            TAKE_TEMP => Self::TakeTemp(read_u16(buf, offset)?),
 
             // Lifecycle
             DONE => Self::Done,
@@ -1363,18 +1406,44 @@ mod tests {
         }
     }
 
-    /// Reserved v4 sharing-discipline opcode block (`0xCA`-`0xCC`,
-    /// `docs/format-v4-rfc.md` §3 "Sharing discipline (T1a)") is numbered
-    /// but deliberately not wired into `Opcode` — the strict reader must
-    /// keep rejecting every byte in the block until the T1a milestone lands.
+    /// `StoreVarIfNew`/`EqVars` (`0xCB`-`0xCC`, `docs/format-v4-rfc.md` §3
+    /// "Sharing discipline (T1a)") stay numbered but deliberately not wired
+    /// into `Opcode` — the strict reader must keep rejecting both bytes
+    /// until their own milestone lands (spec §6's optional ref-collapsing
+    /// sites, not part of T1b-4/#576).
     #[test]
     fn decode_reserved_sharing_discipline_opcodes_still_rejected() {
-        for disc in 0xCAu8..=0xCCu8 {
+        for disc in 0xCBu8..=0xCCu8 {
             let buf = [disc];
             let mut offset = 0;
             let err = Opcode::decode(&buf, &mut offset).unwrap_err();
             assert_eq!(err, DecodeError::UnknownOpcode(disc));
         }
+    }
+
+    /// `TakeGlobal`/`TakeTemp` (`0xCA`, `0xCD` — T1b-4/#576) round-trip
+    /// through encode/decode.
+    #[test]
+    fn roundtrip_take_opcodes() {
+        roundtrip(&Opcode::TakeGlobal(global_id()));
+        roundtrip(&Opcode::TakeTemp(0));
+        roundtrip(&Opcode::TakeTemp(u16::MAX));
+    }
+
+    /// `TakeGlobal`/`TakeTemp` land at the exact bytes the RFC comment in
+    /// `opcode.rs` documents — `0xCA` (splitting the RFC's generic
+    /// `TakeVar(slot)`) and `0xCD` (freshly claimed, adjacent to the
+    /// reserved block, leaving `0xCB`/`0xCC` untouched for
+    /// `StoreVarIfNew`/`EqVars`).
+    #[test]
+    fn take_opcodes_land_at_documented_bytes() {
+        let mut buf = Vec::new();
+        Opcode::TakeGlobal(global_id()).encode(&mut buf);
+        assert_eq!(buf[0], 0xCA);
+
+        let mut buf = Vec::new();
+        Opcode::TakeTemp(0).encode(&mut buf);
+        assert_eq!(buf[0], 0xCD);
     }
 
     #[test]

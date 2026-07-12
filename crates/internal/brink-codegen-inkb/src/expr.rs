@@ -24,6 +24,8 @@ impl ContainerEmitter<'_> {
 
             lir::Expr::GetGlobal(id) => self.emit(Opcode::GetGlobal(*id)),
             lir::Expr::GetTemp(slot, _) => self.emit(Opcode::GetTemp(*slot)),
+            lir::Expr::TakeGlobal(id) => self.emit(Opcode::TakeGlobal(*id)),
+            lir::Expr::TakeTemp(slot, _) => self.emit(Opcode::TakeTemp(*slot)),
 
             lir::Expr::VisitCount(id) => {
                 self.emit(Opcode::PushDivertTarget(*id));

@@ -534,6 +534,15 @@ pub enum Expr {
     GetGlobal(DefinitionId),
     /// Read a temp variable by slot index and name.
     GetTemp(u16, NameId),
+    /// Move a global's current value out, leaving `Value::Null` behind —
+    /// the take-half of the take → `make_mut` → write-back RMW discipline
+    /// (`docs/value-model-spec.md` §5). Never produced by ordinary
+    /// expression lowering; only by indexed-assignment/mutator RMW
+    /// desugaring's bare-variable fast path (`lir::lower::blocks`).
+    TakeGlobal(DefinitionId),
+    /// Move a temp's current value out, leaving `Value::Null` behind —
+    /// `TakeGlobal`'s temp-slot counterpart. Same production sites.
+    TakeTemp(u16, NameId),
     /// The visit count of a container (knot/stitch/label name used
     /// in expression context).
     VisitCount(DefinitionId),

@@ -459,6 +459,10 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         Opcode::CollectionValues => "collection_values".to_owned(),
         Opcode::PushLiteral(idx) => format!("push_literal {idx}"),
 
+        // Sharing discipline (T1b-4)
+        Opcode::TakeGlobal(id) => format!("take_global {id}"),
+        Opcode::TakeTemp(idx) => format!("take_temp {idx}"),
+
         // Lifecycle
         Opcode::Done => "done".to_owned(),
         Opcode::Yield => "yield".to_owned(),
