@@ -1138,6 +1138,7 @@ fn value_to_js(v: &Value) -> JsValue {
             {
                 warn_on_map_key_collisions(map.keys());
                 warn_on_map_key_reordering(map.keys());
+                warn_on_float_precision_noise(map.values());
             }
             for (k, val) in map.iter() {
                 // `Reflect::set` on a fresh, extensible object cannot fail;
@@ -1177,12 +1178,12 @@ fn map_key_to_js(key: &brink_format::MapKey) -> JsValue {
     JsValue::from_str(&map_key_coercion_string(key))
 }
 
-// ── map_key_to_js debug diagnostics (§8's two native-leg failure modes) ───
+// ── map_key_to_js debug diagnostics (§8's native-leg failure modes) ───────
 //
 // `map_key_to_js` deliberately coerces every `MapKey` variant to a JS
 // property string (value-model-spec §8: `value_to_js`'s `Map` arm is the
 // lossy native leg; `value_to_typed_js` — the `eval_function` JSON boundary
-// — is the lossless one). Two distinct failure modes follow from that:
+// — is the lossless one). Three distinct failure modes follow from that:
 //
 // 1. **Collision** (#551/#555): distinct keys can coerce to the same
 //    string — `MapKey::Int(1)` and `MapKey::Str("1")` both become `"1"` —
@@ -1194,11 +1195,29 @@ fn map_key_to_js(key: &brink_format::MapKey) -> JsValue {
 //    `Reflect::set` call order. That silently reorders a map's author
 //    insertion order whenever an integer-like key is inserted somewhere
 //    other than first.
+// 3. **Float precision-display noise** (#568): this one is on the *value*
+//    side of a map entry, not the key side — `MapKey`'s ratified domain
+//    (value-model-spec §4/§11c) is `{int(i32), string, bool}`, which has no
+//    float variant, and `Value::Int` (i32) widens to `f64` exactly (no i32
+//    magnitude can lose precision in a 53-bit mantissa), so neither a
+//    literal "float map key" nor a "large-int" precision loss is reachable.
+//    What *is* reachable: a `Value::Float` (f32) map **value** widens to
+//    `f64` via `f64::from` — mathematically exact, bit-for-bit — but a real
+//    JS engine's `Number.prototype.toString()` computes the *shortest*
+//    decimal that round-trips to that exact f64 bit pattern, which is
+//    almost never the short decimal an author recognizes as "their" f32
+//    (`0.1f32` widens to the f64 whose shortest round-trip decimal is
+//    `0.10000000149011612`). No value precision is actually lost — the
+//    widening is exact — but the extra digits are a genuine "where did
+//    these come from" surprise at the same marshaling boundary, so this
+//    diagnostic runs alongside the two key-coercion ones in the same `Map`
+//    arm even though it inspects values, not keys.
 //
-// Neither wants a behavior change: these are debug-build visibility aids so
-// the failure modes are diagnosable once T1b makes them author-reachable.
-// Detection is plain Rust with no `JsValue`, so it is unit-testable on the
-// host without a JS runtime; only the `warn_on_*` wrappers touch
+// None of these want a behavior change: these are debug-build visibility
+// aids so the failure modes are diagnosable once T1b makes them
+// author-reachable. Detection is plain Rust with no `JsValue`, so it is
+// unit-testable on the host without a JS runtime; only the `warn_on_*`
+// wrappers touch
 // `web_sys::console`.
 
 /// The coerced JS-property strings that more than one of `keys` maps to
@@ -1299,15 +1318,73 @@ fn warn_on_map_key_reordering<'a>(keys: impl Iterator<Item = &'a brink_format::M
     }
 }
 
+/// Whether widening `f` (a `Value::Float`) to `f64` — exactly what
+/// `value_to_js`'s scalar arm does via `JsValue::from_f64(f64::from(*f))`
+/// — would print with more digits than `f`'s own shortest round-trip
+/// decimal. Both Rust's `f32`/`f64` `Display` and a real JS engine's
+/// `Number.prototype.toString()` compute the shortest decimal string that
+/// round-trips to the exact same bit pattern (IEEE 754 shortest-round-trip
+/// formatting), so this is host-testable without a JS runtime and without
+/// `JsValue`.
+///
+/// `Value::Int` (i32) never triggers this: `f64::from(i32)` is exact for
+/// every i32 magnitude (i32's full range fits well inside f64's 53-bit
+/// mantissa), so the widened f64's shortest decimal always equals the i32's
+/// own decimal string. A "large-int" precision-loss variant of this
+/// diagnostic is not meaningfully constructible — see the module doc above.
+#[cfg(debug_assertions)]
+fn float_widening_shows_precision_noise(f: f32) -> bool {
+    f64::from(f).to_string() != f.to_string()
+}
+
+/// The map values (in iteration order) that are `Value::Float`s whose f64
+/// widening shows precision-display noise (`(index, value)` pairs — `index`
+/// is the value's position among ALL map values, matching how a consumer
+/// would locate it against `map.values()`/`map.iter()`).
+#[cfg(debug_assertions)]
+fn float_precision_noise_values<'a>(values: impl Iterator<Item = &'a Value>) -> Vec<(usize, f32)> {
+    values
+        .enumerate()
+        .filter_map(|(i, v)| match v {
+            Value::Float(f) if float_widening_shows_precision_noise(*f) => Some((i, *f)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Debug-only diagnostic: log a `console.warn` for each `Value::Float` map
+/// value whose `f64` widening would print with more digits in a real JS
+/// engine than the value's own f32 shortest decimal — the precision-display
+/// noise failure mode this issue tracks (see the module doc above for why
+/// this is a *value*-side check even though it lives alongside the two
+/// key-coercion diagnostics). Purely observational; the caller's widening
+/// (`value_to_js`'s `Value::Float` arm) still runs unchanged — the widening
+/// itself is exact, only its JS-visible string form is surprising.
+#[cfg(debug_assertions)]
+fn warn_on_float_precision_noise<'a>(values: impl Iterator<Item = &'a Value>) {
+    for (index, f) in float_precision_noise_values(values) {
+        web_sys::console::warn_1(&JsValue::from_str(&format!(
+            "brink: float precision-display noise at the wasm value_to_js boundary: \
+             map value #{index} ({f}f32) widens losslessly to f64::from({f}) = {} \
+             — a real JS engine's Number.prototype.toString() will print that longer \
+             decimal, not {f} (value-model-spec §8; the lossless boundary is \
+             value_to_typed_js / eval_function's TypedValueJs result, which preserves \
+             the f32 value directly)",
+            f64::from(f),
+        )));
+    }
+}
+
 /// Plain-Rust tests for the debug diagnostics' *detection* logic (no
 /// `JsValue`/`web_sys`, so these run under host `cargo test` — no wasm32
 /// target needed).
 #[cfg(all(test, debug_assertions))]
 mod map_key_diagnostic_tests {
     use super::{
-        js_array_index_value, map_key_coercion_string, map_key_collisions, map_key_reordering,
+        float_precision_noise_values, float_widening_shows_precision_noise, js_array_index_value,
+        map_key_coercion_string, map_key_collisions, map_key_reordering,
     };
-    use brink_format::MapKey;
+    use brink_format::{MapKey, Value};
 
     #[test]
     fn int_and_string_coerce_to_the_same_property_name() {
@@ -1428,6 +1505,72 @@ mod map_key_diagnostic_tests {
         // a plain string key and does not get reordered ahead of "z".
         let keys = [MapKey::from("z"), MapKey::from("007")];
         assert_eq!(map_key_reordering(keys.iter()), None);
+    }
+
+    // ── #568: float precision-display noise (third lossy-leg failure mode) ─
+
+    #[test]
+    fn zero_point_one_widens_with_visible_precision_noise() {
+        // The canonical example: 0.1f32's exact value, widened to f64, has
+        // a much longer shortest-round-trip decimal than "0.1".
+        assert!(float_widening_shows_precision_noise(0.1_f32));
+    }
+
+    #[test]
+    fn whole_number_floats_never_show_precision_noise() {
+        for f in [0.0_f32, 1.0, -1.0, 5.0, 100.0, -3.5_f32 * 2.0] {
+            assert!(
+                !float_widening_shows_precision_noise(f),
+                "{f} should widen cleanly"
+            );
+        }
+    }
+
+    #[test]
+    fn simple_binary_fractions_never_show_precision_noise() {
+        // 0.5, 0.25, 0.125, … are exact in both f32 and f64 (powers of two),
+        // so their shortest decimals match after widening.
+        for f in [0.5_f32, 0.25, 0.125, -0.5] {
+            assert!(
+                !float_widening_shows_precision_noise(f),
+                "{f} should widen cleanly"
+            );
+        }
+    }
+
+    #[test]
+    fn large_int_map_values_never_show_precision_noise() {
+        // Value::Int (i32) widening to f64 is exact for every magnitude —
+        // this function only inspects Value::Float, but the underlying
+        // widening rule (f64::from) applies identically, so exercise it
+        // directly for completeness with the module doc's claim.
+        for n in [0_i32, 1, -1, i32::MAX, i32::MIN, 2_147_483_000] {
+            let widened = f64::from(n);
+            assert_eq!(
+                widened.to_string(),
+                n.to_string(),
+                "i32 -> f64 widening must never show precision noise"
+            );
+        }
+    }
+
+    #[test]
+    fn float_precision_noise_values_finds_the_offending_index() {
+        let values = [
+            Value::Int(1),
+            Value::from("hp"),
+            Value::Float(0.1),
+            Value::Bool(true),
+            Value::Float(2.0),
+        ];
+        let found = float_precision_noise_values(values.iter());
+        assert_eq!(found, vec![(2, 0.1_f32)]);
+    }
+
+    #[test]
+    fn float_precision_noise_values_empty_when_nothing_noisy() {
+        let values = [Value::Int(1), Value::Float(2.0), Value::from("x")];
+        assert!(float_precision_noise_values(values.iter()).is_empty());
     }
 }
 
