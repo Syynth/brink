@@ -1014,6 +1014,7 @@ fn make_ctx<'a>(
         next_block_slot,
         block_scopes: Vec::new(),
         diagnostics,
+        loop_depth: 0,
     }
 }
 
