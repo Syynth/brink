@@ -2931,6 +2931,14 @@ pub struct EditorSession {
     /// matter to hosts that implement prose/logic view modes, and computing
     /// them costs a full per-line classification on every folding query.
     fold_runs_enabled: bool,
+    /// The T1b compiler dialect (docs/t1b-surface-spec.md §1), set via
+    /// `set_language_dialect`. Defaults to `StrictInk`, matching
+    /// `AnalysisOptions::default()`. Tooling-only — gates whether stdlib
+    /// slice 1 completion/signature help are offered (#589, #600), mirroring
+    /// `brink-lsp`'s `Backend::dialect`; it does not (yet) feed into
+    /// `IdeSession`'s background analysis pass, so diagnostics still analyze
+    /// under the default dialect regardless of this setting.
+    dialect: brink_analyzer::Dialect,
 }
 
 impl Default for EditorSession {
@@ -2951,6 +2959,7 @@ impl EditorSession {
             docs: BTreeMap::new(),
             next_doc_id: 1,
             fold_runs_enabled: false,
+            dialect: brink_analyzer::Dialect::StrictInk,
         }
     }
 
@@ -3033,6 +3042,20 @@ impl EditorSession {
     /// Session-wide, like `set_dialect`.
     pub fn set_fold_runs_enabled(&mut self, enabled: bool) {
         self.fold_runs_enabled = enabled;
+    }
+
+    /// Set the T1b compiler dialect (docs/t1b-surface-spec.md §1, #589,
+    /// #600): `"brink"` or `"strict-ink"`; any other value (or never
+    /// calling this at all) keeps the `StrictInk` default. Mirrors
+    /// `brink-lsp`'s `initializationOptions.dialect` handling. Gates stdlib
+    /// slice 1 completion (`completions`/`completions_doc`) and
+    /// dialect-aware signature help (`signature_help`/`signature_help_doc`)
+    /// only — it does not change analysis, so diagnostics are unaffected.
+    pub fn set_language_dialect(&mut self, value: &str) {
+        self.dialect = match value {
+            "brink" => brink_analyzer::Dialect::Brink,
+            _ => brink_analyzer::Dialect::StrictInk,
+        };
     }
 
     /// Push the host's current values for `host`-source semantic types (Tier 3,
@@ -4638,6 +4661,23 @@ impl EditorSession {
         let symbol_items = dedupe_out_of_scope(path, symbol_items.collect());
         items.extend(symbol_items);
 
+        // Stdlib slice 1 completion (docs/t1b-surface-spec.md §5, #589,
+        // #600) — brink dialect only ("never offered in StrictInk"); an
+        // author-defined symbol of the same name is already offered above
+        // (shadowing, per §5), mirroring brink-lsp's `completion` handler.
+        items.extend(
+            brink_ide::stdlib_completions(&ctx, self.dialect)
+                .iter()
+                .map(|f| CompletionItemJs {
+                    name: f.name.to_owned(),
+                    kind: "stdlib".to_owned(),
+                    detail: Some(f.signature_label()),
+                    insert: None,
+                    out_of_scope: false,
+                    source_file: None,
+                }),
+        );
+
         serde_json::to_string(&items).unwrap_or_default()
     }
 
@@ -5100,7 +5140,12 @@ impl EditorSession {
         };
 
         let abs_offset = self.to_absolute(path, view, offset);
-        match brink_ide::signature::signature_help(analysis, source, abs_offset as usize) {
+        match brink_ide::signature::signature_help_with_dialect(
+            analysis,
+            source,
+            abs_offset as usize,
+            self.dialect,
+        ) {
             Some(info) => {
                 let js = SignatureInfoJs {
                     label: info.label,
@@ -5137,6 +5182,13 @@ impl EditorSession {
         // Structural folds (#313 G, #476 weave folds) — never auto-collapsed
         // by a host.
         let mut ranges = brink_ide::folding::folding_ranges(hir, source, &projection);
+
+        // `~ { … }` logic-block + nested if/while/for folds (#589, #600).
+        // No dialect gate: brink-syntax always parses the superset grammar
+        // and brink-ir always lowers it to this HIR shape regardless of
+        // dialect (docs/t1b-surface-spec.md §1) — a logic block folds
+        // identically in a strict-ink file (flagged E051) as in a brink one.
+        ranges.extend(brink_ide::folding::block_folds(hir, source));
 
         // Machinery/narrative fold runs (#365): computed from the same
         // per-line classification `line_contexts_impl` exposes, so a
@@ -7955,6 +8007,108 @@ mod tests {
             Some("included.ink"),
             "source span attributes the line to its own included file: {table}"
         );
+    }
+
+    // ── #600: wire the #589 IDE features into the wasm bridge ─────────
+
+    #[test]
+    fn stdlib_completions_offered_only_after_opting_into_brink_dialect() {
+        // Before `set_language_dialect("brink")` the bridge defaults to
+        // `StrictInk` (matching `AnalysisOptions::default()`) — stdlib slice
+        // 1 names (docs/t1b-surface-spec.md §5) must not be offered.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== start ===\n~ temp x = \nEND\n");
+        assert!(s.set_active_file("main.ink"));
+
+        let offset = u32::try_from("=== start ===\n~ temp x = ".len()).expect("fits u32");
+        let before = json(&s.completions(offset));
+        assert!(
+            before
+                .as_array()
+                .expect("array")
+                .iter()
+                .all(|i| i["name"] != "len"),
+            "stdlib names withheld under the StrictInk default: {before}"
+        );
+
+        s.set_language_dialect("brink");
+        let after = json(&s.completions(offset));
+        let len_item = after
+            .as_array()
+            .expect("array")
+            .iter()
+            .find(|i| i["name"] == "len")
+            .expect("stdlib `len` offered once brink dialect is set");
+        assert_eq!(len_item["kind"], "stdlib", "{len_item}");
+        assert_eq!(len_item["detail"], "len(x) -> int", "{len_item}");
+    }
+
+    #[test]
+    fn stdlib_completions_never_offered_for_strict_ink_value() {
+        // Any value other than the exact string "brink" (including a typo
+        // or an explicit "strict-ink") keeps the StrictInk default, mirroring
+        // brink-lsp's `initializationOptions.dialect` handling.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== start ===\n~ temp x = \nEND\n");
+        assert!(s.set_active_file("main.ink"));
+        s.set_language_dialect("strict-ink");
+
+        let offset = u32::try_from("=== start ===\n~ temp x = ".len()).expect("fits u32");
+        let items = json(&s.completions(offset));
+        assert!(
+            items
+                .as_array()
+                .expect("array")
+                .iter()
+                .all(|i| i["name"] != "len"),
+            "{items}"
+        );
+    }
+
+    #[test]
+    fn signature_help_is_dialect_aware_for_stdlib_mutators() {
+        // #600: `signature_help` must call `signature_help_with_dialect` —
+        // the lvalue-mutator rendering (`push(a: lvalue, v)`,
+        // docs/t1b-surface-spec.md §5) only surfaces once brink dialect is
+        // set, and never under the StrictInk default.
+        let src = "=== start ===\n~ push(inventory, \"sword\")\n-> END\n";
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", src);
+        assert!(s.set_active_file("main.ink"));
+
+        let offset =
+            u32::try_from(src.find("push(").expect("call present") + "push(".len()).expect("fits");
+
+        let before = s.signature_help(offset);
+        assert_eq!(before, "null", "no stdlib signature help under StrictInk");
+
+        s.set_language_dialect("brink");
+        let sig = json(&s.signature_help(offset));
+        assert_eq!(sig["label"], "push(a: lvalue, v)", "{sig}");
+        assert_eq!(sig["active_parameter"], 0, "{sig}");
+    }
+
+    #[test]
+    fn folding_ranges_include_logic_block_folds() {
+        // #600: `folding_ranges` must call `block_folds` — a `~ { … }`
+        // logic block folds as its own structural region, with no dialect
+        // gate (it folds identically in a strict-ink file, where it is
+        // flagged E051, as in a brink one).
+        let mut s = EditorSession::new();
+        s.update_file(
+            "main.ink",
+            "=== start ===\n~ {\n    temp x = 1\n    temp y = 2\n}\nHello.\n-> END\n",
+        );
+        assert!(s.set_active_file("main.ink"));
+
+        let ranges = json(&s.folding_ranges());
+        let block = ranges
+            .as_array()
+            .expect("array")
+            .iter()
+            .find(|r| r["kind"] == "structural" && r["start_line"] == 1)
+            .expect("logic block folds as a structural region");
+        assert_eq!(block["end_line"], 4, "{block}");
     }
 }
 
