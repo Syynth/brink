@@ -150,6 +150,71 @@ fn stdlib_author_function_shadows_builtin() {
     assert_case("stdlib-shadowing");
 }
 
+// ── #587 breadth pass: nesting depth (docs/t1b-surface-spec.md §2/§4) ────
+
+#[test]
+fn deep_nesting_control_flow() {
+    assert_case("deep-nesting-control-flow");
+}
+
+#[test]
+fn deep_nesting_collections() {
+    assert_case("deep-nesting-collections");
+}
+
+// ── #587 breadth pass: weave<->block seam interleavings (§2's seam rule) ─
+
+#[test]
+fn weave_seam_two_knots() {
+    assert_case("weave-seam-two-knots");
+}
+
+#[test]
+fn weave_seam_stitch() {
+    assert_case("weave-seam-stitch");
+}
+
+// ── #587 breadth pass: shadowing/scoping edges (§2) ───────────────────────
+
+#[test]
+fn shadowing_triple_nested_blocks() {
+    assert_case("shadowing-triple-nested-blocks");
+}
+
+#[test]
+fn shadowing_for_loop_variable() {
+    assert_case("shadowing-for-loop-variable");
+}
+
+// ── #587 breadth pass: map key-domain edges post-#580 (value-model-spec §4) ─
+
+#[test]
+fn map_key_domain_contains_edges() {
+    assert_case("map-key-domain-contains-edges");
+}
+
+// ── #587 breadth pass: RMW aliasing post-#576 (value-model-spec §5) ──────
+
+#[test]
+fn rmw_self_referential_flat_assignment() {
+    assert_case("rmw-self-referential-flat-assignment");
+}
+
+#[test]
+fn rmw_chain_self_referential() {
+    assert_case("rmw-chain-self-referential");
+}
+
+#[test]
+fn rmw_shared_map_cow() {
+    assert_case("rmw-shared-map-cow");
+}
+
+#[test]
+fn rmw_mutator_shared_nested_lvalue() {
+    assert_case("rmw-mutator-shared-nested-lvalue");
+}
+
 /// Every `tests/tier1-brink/` case directory is exercised by a `#[test]`
 /// above — a directory with no matching test would silently never run.
 #[test]
@@ -169,6 +234,17 @@ fn every_case_directory_has_a_test() {
         "stdlib-remove",
         "stdlib-mutator-nested-lvalue",
         "stdlib-shadowing",
+        "deep-nesting-control-flow",
+        "deep-nesting-collections",
+        "weave-seam-two-knots",
+        "weave-seam-stitch",
+        "shadowing-triple-nested-blocks",
+        "shadowing-for-loop-variable",
+        "map-key-domain-contains-edges",
+        "rmw-self-referential-flat-assignment",
+        "rmw-chain-self-referential",
+        "rmw-shared-map-cow",
+        "rmw-mutator-shared-nested-lvalue",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink")
@@ -396,4 +472,216 @@ fn contains_on_a_non_collection_faults() {
         matches!(err, brink_runtime::RuntimeError::NotIndexable("int")),
         "expected NotIndexable, got {err:?}"
     );
+}
+
+// ── #587 breadth pass: every stdlib function x faults (§5, value-model §11c) ─
+//
+// `contains`/`push`/`insert`/`remove` on non-collection/out-of-bounds roots
+// are covered above and in `take_rmw.rs`. This section rounds out `len`,
+// `keys`, `values` (including the `values(array)` edge, which faults —
+// `collection_values` is Map-only, unlike `collection_keys`'s deliberate
+// array-identity pass-through documented on `collection_ops::collection_keys`).
+
+#[test]
+fn len_on_a_non_collection_faults() {
+    let source = "VAR n = 5\n~ {\n    temp x = len(n)\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::NotIndexable("int")),
+        "expected NotIndexable, got {err:?}"
+    );
+}
+
+#[test]
+fn keys_on_a_non_collection_faults() {
+    let source = "VAR n = 5\n~ {\n    temp x = keys(n)\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::NotIndexable("int")),
+        "expected NotIndexable, got {err:?}"
+    );
+}
+
+#[test]
+fn keys_on_an_array_is_identity_pass_through_not_a_fault() {
+    // `collection_keys`'s documented array branch: "returns the array itself
+    // unchanged" — the single-opcode `for x in iterable` unification (§2/§5)
+    // depends on this being total for arrays, not a fault.
+    let source = "VAR arr = 0\nVAR out = \"\"\n~ {\n    arr = #[7, 8, 9]\n    for x in keys(arr) {\n        out = out + \" \" + x\n    }\n}\n{out}\n-> END\n";
+    let options = AnalysisOptions {
+        dialect: Dialect::Brink,
+        ..AnalysisOptions::default()
+    };
+    let output =
+        brink_compiler::compile_with_options("main.ink", |_| Ok(source.to_string()), options)
+            .expect("compile");
+    let (program, line_tables) = brink_runtime::link(&output.data).expect("link");
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
+    let mut out = String::new();
+    loop {
+        match story.continue_single().expect("no fault expected") {
+            Line::Text { text, .. } => out.push_str(&text),
+            Line::Done { text, .. } | Line::End { text, .. } => {
+                out.push_str(&text);
+                break;
+            }
+            Line::Choices { .. } => panic!("unexpected choices"),
+        }
+    }
+    assert_eq!(out.trim(), "7 8 9");
+}
+
+#[test]
+fn values_on_an_array_faults() {
+    // Unlike `keys`, `collection_values` is Map-only — no array pass-through.
+    let source =
+        "VAR arr = 0\n~ {\n    arr = #[1, 2, 3]\n    temp x = values(arr)\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::NotIndexable("array")),
+        "expected NotIndexable(\"array\"), got {err:?}"
+    );
+}
+
+#[test]
+fn values_on_a_non_collection_faults() {
+    let source = "VAR n = 5\n~ {\n    temp x = values(n)\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::NotIndexable("int")),
+        "expected NotIndexable, got {err:?}"
+    );
+}
+
+#[test]
+fn push_on_a_non_collection_faults() {
+    let source = "VAR arr = 0\n~ {\n    arr = 5\n    push(arr, 1)\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::NotIndexable("int")),
+        "expected NotIndexable, got {err:?}"
+    );
+}
+
+// ── #587 breadth pass: map key-domain edges post-#580 ─────────────────────
+//
+// `contains(m, needle)` is TOTAL on a non-key-domain needle — `false`, never
+// a fault (#580, `map-key-domain-contains-edges` corpus case). Indexing and
+// the `insert`/`remove` mutators are NOT total on a non-key-domain key —
+// `to_map_key` faults with `InvalidMapKeyType` for all of them, unchanged by
+// #580 (only the `MapContains` map branch's call site changed). This
+// asymmetry is the exact edge value-model-spec §11c draws: `contains` has no
+// "the key isn't there" failure mode to escalate to a fault, but
+// indexing/`insert`/`remove` do.
+
+#[test]
+fn map_index_get_with_non_key_domain_float_faults() {
+    let source = "VAR m = 0\n~ {\n    m = #{\"a\": 1}\n    temp x = m[3.5]\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::InvalidMapKeyType("float")),
+        "expected InvalidMapKeyType(\"float\"), got {err:?}"
+    );
+}
+
+#[test]
+fn map_index_set_with_non_key_domain_float_faults() {
+    let source = "VAR m = 0\n~ {\n    m = #{\"a\": 1}\n    m[3.5] = 9\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::InvalidMapKeyType("float")),
+        "expected InvalidMapKeyType(\"float\"), got {err:?}"
+    );
+}
+
+#[test]
+fn map_insert_with_non_key_domain_float_key_faults() {
+    let source = "VAR m = 0\n~ {\n    m = #{\"a\": 1}\n    insert(m, 3.5, 9)\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::InvalidMapKeyType("float")),
+        "expected InvalidMapKeyType(\"float\"), got {err:?}"
+    );
+}
+
+#[test]
+fn map_remove_with_non_key_domain_float_key_faults() {
+    let source = "VAR m = 0\n~ {\n    m = #{\"a\": 1}\n    remove(m, 3.5)\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::InvalidMapKeyType("float")),
+        "expected InvalidMapKeyType(\"float\"), got {err:?}"
+    );
+}
+
+// ── #587 breadth pass: every stdlib function x the dialect gate (§1/§5) ───
+//
+// `dialect_gate.rs`'s unit tests prove the gate mechanism generically via
+// one name (`len`) plus the "resolved call is never flagged" shadow case;
+// this proves the full seven-name surface end-to-end through the compiler
+// entry point, matching `strict_ink_rejects_an_unresolved_stdlib_call`'s
+// existing single-name version above.
+
+#[test]
+fn every_stdlib_name_is_rejected_under_strict_ink_and_compiles_under_brink() {
+    // Pure functions are gated as a plain unresolved call outside a block;
+    // mutators (§5: "require an lvalue first argument") are gated the same
+    // way — `is_t1b_stdlib_call_name` doesn't distinguish pure/mutator, only
+    // resolution status, so an unresolved `push(arr)` call is flagged
+    // exactly like `len(arr)` regardless of arity/lvalue-ness (those checks
+    // are downstream, brink-dialect-only concerns E055/E058).
+    let strict_ink_call_sites: [(&str, &str); 7] = [
+        ("len", "len(arr)"),
+        ("keys", "keys(arr)"),
+        ("values", "values(arr)"),
+        ("contains", "contains(arr, 1)"),
+        ("push", "push(arr)"),
+        ("insert", "insert(arr)"),
+        ("remove", "remove(arr)"),
+    ];
+    for (name, call) in strict_ink_call_sites {
+        let source = format!("VAR arr = 0\n~ x = {call}\nDone.\n-> END\n");
+        let files: std::collections::HashMap<&str, &str> =
+            std::collections::HashMap::from([("main.ink", source.as_str())]);
+        let err = brink_compiler::compile_with_options(
+            "main.ink",
+            |path| {
+                files
+                    .get(path)
+                    .map(|s| (*s).to_string())
+                    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, path))
+            },
+            AnalysisOptions::default(),
+        )
+        .expect_err(&format!(
+            "strict-ink must reject an unresolved `{name}` call"
+        ));
+        let diags = errors_of(&err);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == brink_compiler::DiagnosticCode::E051),
+            "`{name}`: expected E051, got {diags:?}"
+        );
+    }
+
+    // Under `Dialect::Brink`, each name resolves and lowers cleanly with a
+    // signature-correct call: pure functions as an expression, mutators as
+    // an lvalue-first statement (§5).
+    let brink_call_sites: [(&str, &str); 7] = [
+        ("len", "temp x = len(arr)"),
+        ("keys", "temp x = keys(arr)"),
+        ("values", "temp x = values(m)"),
+        ("contains", "temp x = contains(arr, 1)"),
+        ("push", "push(arr, 3)"),
+        ("insert", "insert(arr, 0, 9)"),
+        ("remove", "remove(arr, 0)"),
+    ];
+    for (name, stmt) in brink_call_sites {
+        let brink_source = format!(
+            "VAR arr = 0\nVAR m = 0\n~ {{\n    arr = #[1, 2]\n    m = #{{\"a\": 1}}\n    {stmt}\n}}\nDone.\n-> END\n"
+        );
+        compile_brink(&brink_source)
+            .unwrap_or_else(|e| panic!("`{name}` must compile under brink dialect: {e:?}"));
+    }
 }
