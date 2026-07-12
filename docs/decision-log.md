@@ -1394,3 +1394,9 @@
 - **SYSTEM:** language design (#605 typed mode, TM-4 surface)
 - **WHAT:** `STRUCT Point = #{ x: float, y: float }` — the declaration keeps ink's `NAME = …` convention and its body takes the same braced `#{…}` shape as the construction literal (`Point#{x: 1.0, y: 2.0}`), with types in value position. Amends the flat comma-list form (`STRUCT Point = x: float, y: float`) ratified hours earlier in PR #607, before any TM-4 implementation existed. Multiline + trailing comma; brink-fmt formats bodies like blocks.
 - **WHY:** Declaration and usage should rhyme — the flat form read like nothing else in the language and degraded past a few fields. Zero cost: caught pre-implementation.
+
+## Salsa fine-grained migration promoted: tentative destination → committed before the epic closes
+- **WHEN:** 2026-07-13
+- **SYSTEM:** compiler architecture (#397 / #623)
+- **WHAT:** The fine-grained salsa trajectory (tracked structs, per-def query granularity, symbolic-ref codegen linking — the phase-0 #499 ruling's "tentative destination") is **committed: required before the #397 epic is done**. Measurement now governs *sequencing only*: the trigger is TM-1's (#617) compile-bench report vs the #498 baseline — immediate scheduling if inference already moves warm ide-reanalyze materially; otherwise no later than before the T2 effects implementation, which must not ship per-def effect rows on the coarse substrate. Epic filed as #623 (design round required); sweeps up #517 and the incremental==from-scratch harness extension to new per-def query families.
+- **WHY:** The typed-mode query family (and effects after it) is inherently per-def; running it indefinitely on coarse memoization wastes the architecture the phase-0 substrate was built to enable. Committing now lets TM slices make locally-correct choices (lazy inference, per-def shapes) knowing the granularity destination instead of hedging.
