@@ -6,6 +6,7 @@
 //! indentation depth for every source line.
 
 use brink_ir::hir;
+use brink_syntax::ParseError;
 use brink_syntax::SyntaxElement;
 use brink_syntax::SyntaxNode;
 use brink_syntax::syntax_kind::SyntaxKind;
@@ -49,7 +50,7 @@ pub fn format(source: &str, config: &FormatConfig) -> String {
     let line_starts = build_line_starts(source);
     let depth_map = build_depth_map(source, &line_starts, &hir_file);
 
-    let lines = classify_lines(source, &root, &depth_map);
+    let lines = classify_lines(source, &root, parse.errors(), &depth_map);
     render(source, &lines, config)
 }
 
@@ -355,8 +356,19 @@ enum LineKind {
     /// carries the `LOGIC_LINE` CST node so `render()` can walk its
     /// `STMT_BLOCK` and reindent the internals (#573).
     LogicBlock,
+    /// A T1b `~ { … }` multi-line block whose CST subtree contains a parse
+    /// error (#603) — mid-edit or otherwise malformed input. Reindenting it
+    /// with `render_logic_block` assumes well-formed structure and can
+    /// corrupt it (a trailing comment swallowing the next line's `{`,
+    /// spurious blank lines and broken idempotence around a multi-line call,
+    /// a mangled lone `else`/brace line). This line and every physical line
+    /// through the trailing newline after the block's closing `}` (or EOF,
+    /// if the `}` itself is what's missing) are widened into a single
+    /// byte-for-byte verbatim span — the pre-#602 behavior — for this block
+    /// only; well-formed blocks still go through [`LineKind::LogicBlock`].
+    LogicBlockVerbatim,
     /// A line already emitted as part of a preceding [`LineKind::LogicBlock`]
-    /// span — renders nothing.
+    /// or [`LineKind::LogicBlockVerbatim`] span — renders nothing.
     Skip,
 }
 
@@ -375,7 +387,12 @@ struct ClassifiedLine {
 }
 
 /// Classify every line in the source by walking the CST, using HIR depth map.
-fn classify_lines(source: &str, root: &SyntaxNode, depth_map: &[u32]) -> Vec<ClassifiedLine> {
+fn classify_lines(
+    source: &str,
+    root: &SyntaxNode,
+    errors: &[ParseError],
+    depth_map: &[u32],
+) -> Vec<ClassifiedLine> {
     let line_starts = build_line_starts(source);
     let line_count = line_starts.len();
 
@@ -412,7 +429,7 @@ fn classify_lines(source: &str, root: &SyntaxNode, depth_map: &[u32]) -> Vec<Cla
     mark_block_comments(root, &line_starts, &mut lines);
 
     // Walk CST to classify line kinds (but depth comes from HIR).
-    classify_node(root, &line_starts, &mut lines);
+    classify_node(root, &line_starts, errors, &mut lines);
 
     // Check for lines that are still Blank but have non-whitespace content.
     for line in &mut lines {
@@ -444,7 +461,12 @@ fn mark_block_comments(root: &SyntaxNode, line_starts: &[usize], lines: &mut [Cl
 }
 
 /// Walk CST to classify line kinds. Depth is already set from HIR.
-fn classify_node(node: &SyntaxNode, line_starts: &[usize], lines: &mut [ClassifiedLine]) {
+fn classify_node(
+    node: &SyntaxNode,
+    line_starts: &[usize],
+    errors: &[ParseError],
+    lines: &mut [ClassifiedLine],
+) {
     for child in node.children() {
         let start_offset: usize = child.text_range().start().into();
         let line_idx = line_for_offset(line_starts, start_offset);
@@ -472,22 +494,31 @@ fn classify_node(node: &SyntaxNode, line_starts: &[usize], lines: &mut [Classifi
                     lines[line_idx].kind = LineKind::Choice { depth };
                     // HIR depth already set for choices.
                 }
-                classify_node(&child, line_starts, lines);
+                classify_node(&child, line_starts, errors, lines);
             }
             SyntaxKind::GATHER => {
                 let depth = gather_depth(&child);
                 if line_idx < lines.len() {
                     lines[line_idx].kind = LineKind::Gather { depth };
                 }
-                classify_node(&child, line_starts, lines);
+                classify_node(&child, line_starts, errors, lines);
             }
             SyntaxKind::LOGIC_LINE => {
                 // T1b `~ { … }` multi-line blocks (docs/t1b-surface-spec.md
                 // §2, brink extension) span several physical lines —
                 // reindent them as a unit via `render_logic_block` (#573)
-                // rather than classifying each inner physical line.
+                // rather than classifying each inner physical line. But
+                // first: if this block's own subtree contains a parse error
+                // (#603 — mid-edit or otherwise malformed input),
+                // `render_logic_block` assumes well-formed structure and can
+                // corrupt it, so bail to the pre-#602 verbatim pass-through
+                // for this block only.
                 if child.children().any(|c| c.kind() == SyntaxKind::STMT_BLOCK) {
-                    mark_logic_block_span(&child, line_starts, lines);
+                    if subtree_has_parse_error(child.text_range(), errors) {
+                        mark_verbatim_span(&child, line_starts, lines);
+                    } else {
+                        mark_logic_block_span(&child, line_starts, lines);
+                    }
                 } else if line_idx < lines.len() {
                     lines[line_idx].kind = LineKind::Logic;
                 }
@@ -522,13 +553,13 @@ fn classify_node(node: &SyntaxNode, line_starts: &[usize], lines: &mut [Classifi
             | SyntaxKind::STITCH_DEF
             | SyntaxKind::STITCH_BODY
             | SyntaxKind::SOURCE_FILE => {
-                classify_node(&child, line_starts, lines);
+                classify_node(&child, line_starts, errors, lines);
             }
             _ => {
                 if is_comment_only(&child) && line_idx < lines.len() {
                     lines[line_idx].kind = LineKind::Comment;
                 }
-                classify_node(&child, line_starts, lines);
+                classify_node(&child, line_starts, errors, lines);
             }
         }
     }
@@ -550,6 +581,51 @@ fn mark_logic_block_span(node: &SyntaxNode, line_starts: &[usize], lines: &mut [
     }
     lines[start_line].kind = LineKind::LogicBlock;
     lines[start_line].logic_block_node = Some(node.clone());
+    let last = end_line.min(lines.len() - 1);
+    for line in &mut lines[start_line + 1..=last] {
+        line.kind = LineKind::Skip;
+    }
+}
+
+/// Does any parse error touch or fall inside `range`? Used to decide whether
+/// a `~ { … }` block's subtree is well-formed enough for `render_logic_block`
+/// to reindent (#603).
+///
+/// This checks [`brink_syntax::Parse::errors`] rather than scanning the
+/// subtree for `ERROR` CST nodes: not every recovery path wraps a node.
+/// `Parser::expect` (a missing expected token, e.g. an absent closing `}`
+/// or `IDENT`) records a `ParseError` with a zero-length range at the point
+/// the token was expected, without inserting an `ERROR` node — scanning for
+/// `ERROR` nodes alone would miss it. `TextRange::intersect` treats a
+/// zero-length range that merely touches `range`'s boundary as a hit too
+/// (`Some` with an empty range), which is what we want here: a missing `}`
+/// at the very end of the block is still a reason not to trust its
+/// structure.
+fn subtree_has_parse_error(range: rowan::TextRange, errors: &[ParseError]) -> bool {
+    errors.iter().any(|e| range.intersect(e.range).is_some())
+}
+
+/// Mark every physical line spanned by `node` (a T1b `~ { … }` multi-line
+/// block's `LOGIC_LINE` whose CST subtree contains a parse error, #603) as a
+/// verbatim pass-through: the first line's `start`/`end` are widened to cover
+/// the node's *entire* text range (through the trailing newline after the
+/// closing `}`, which the parser always includes in the `LOGIC_LINE` node —
+/// or through EOF, if the `}` itself is what's missing), and every
+/// subsequent line spanned becomes [`LineKind::Skip`] so it renders nothing
+/// of its own. This is the pre-#602 behavior for `~ { … }` blocks, applied
+/// here only when the block's own subtree isn't well-formed enough to trust
+/// `render_logic_block`'s structural assumptions.
+fn mark_verbatim_span(node: &SyntaxNode, line_starts: &[usize], lines: &mut [ClassifiedLine]) {
+    let range = node.text_range();
+    let start_line = line_for_offset(line_starts, range.start().into());
+    let end_line = line_for_offset(line_starts, range.end().into());
+    if start_line >= lines.len() {
+        return;
+    }
+    lines[start_line].kind = LineKind::LogicBlockVerbatim;
+    lines[start_line].start = range.start().into();
+    lines[start_line].end = range.end().into();
+    lines[start_line].logic_block_node = None;
     let last = end_line.min(lines.len() - 1);
     for line in &mut lines[start_line + 1..=last] {
         line.kind = LineKind::Skip;
@@ -635,10 +711,10 @@ fn render(source: &str, lines: &[ClassifiedLine], config: &FormatConfig) -> Stri
                 out.push('\n');
                 continue;
             }
-            // Already emitted as part of a preceding `LogicBlock` span (T1b
-            // `~ { … }` block, docs/t1b-surface-spec.md §2) — nothing to do,
-            // and it must not reset `consecutive_blanks` or count as a line
-            // of its own.
+            // Already emitted as part of a preceding `LogicBlock` or
+            // `LogicBlockVerbatim` span (T1b `~ { … }` block,
+            // docs/t1b-surface-spec.md §2) — nothing to do, and it must not
+            // reset `consecutive_blanks` or count as a line of its own.
             LineKind::Skip => continue,
             _ => {}
         }
@@ -707,6 +783,14 @@ fn render(source: &str, lines: &[ClassifiedLine], config: &FormatConfig) -> Stri
                     let base_indent = indent_str(config, line.depth);
                     out.push_str(&render_logic_block(node, &base_indent));
                 }
+            }
+            // `raw` already spans the whole node through its own trailing
+            // newline (see `mark_verbatim_span`) — push it byte-for-byte,
+            // with no extra trim/indent/newline. This block's subtree has a
+            // parse error (#603), so its structure can't be trusted enough
+            // to reindent.
+            LineKind::LogicBlockVerbatim => {
+                out.push_str(raw);
             }
             LineKind::Blank | LineKind::BlockComment | LineKind::Skip => unreachable!(),
         }
@@ -1479,6 +1563,77 @@ mod tests {
                 "fixture {name} should converge to a fixed point"
             );
         }
+    }
+
+    // ── #603: parse errors inside `~ { … }` blocks bail to verbatim ─────
+    // `render_logic_block` assumes a well-formed CST subtree; mid-edit or
+    // otherwise malformed blocks must instead pass through byte-for-byte
+    // (the pre-#602 `~ { … }` behavior) rather than being corrupted.
+
+    #[test]
+    fn block_parse_error_comment_before_brace_stays_verbatim() {
+        // Repro (a): a trailing `//` comment between the `if` condition and
+        // its opening `{` produces a parse error (the grammar treats the
+        // real `{` on the next line as an unexpected token, wrapping it in
+        // an `ERROR` node) — `header_expr_text` used to inline the comment
+        // right before the ` {`, commenting the brace itself out. Verbatim
+        // pass-through must leave the source untouched.
+        let input = "~ {\nif x>0 // note\n{\nx = 1\n}\n}\n";
+        assert_eq!(
+            fmt(input),
+            input,
+            "malformed block must pass through verbatim"
+        );
+    }
+
+    #[test]
+    fn block_parse_error_multiline_call_stays_verbatim_and_idempotent() {
+        // Repro (b): a multi-line call missing a comma is a parse error
+        // (ERROR node wraps the unexpected token) — the old code injected
+        // spurious blank lines and wasn't idempotent.
+        let input = "~ {\nfoo(\n  1,\n  2\n\nbar()\n}\n";
+        let first = fmt(input);
+        assert_eq!(first, input, "malformed block must pass through verbatim");
+        let second = fmt(&first);
+        assert_eq!(first, second, "verbatim pass-through must be idempotent");
+    }
+
+    #[test]
+    fn block_parse_error_lone_else_stays_verbatim() {
+        // Repro (c): a lone `else` with no preceding `if {` on the same
+        // construct is a parse error (ERROR node wraps the stray `else`
+        // keyword) — the old code mangled it into a bare statement line
+        // with mismatched braces.
+        let input = "~ {\nif x {\nelse\n}\n}\n";
+        assert_eq!(
+            fmt(input),
+            input,
+            "malformed block must pass through verbatim"
+        );
+    }
+
+    #[test]
+    fn block_parse_error_missing_closing_brace_stays_verbatim() {
+        // A missing expected token (here: the block's own closing `}`) is
+        // recorded as a `ParseError` with a zero-length range at EOF but
+        // does *not* insert an `ERROR` CST node — `subtree_has_parse_error`
+        // must catch this via `Parse::errors()`, not by scanning for `ERROR`
+        // nodes alone.
+        let input = "~ {\ntemp x = 0\n";
+        assert_eq!(
+            fmt(input),
+            input,
+            "malformed block must pass through verbatim"
+        );
+    }
+
+    #[test]
+    fn block_well_formed_still_reindents_alongside_malformed_sibling() {
+        // A parse error in one `~ { … }` block must not disable reindenting
+        // for a well-formed block elsewhere in the same file.
+        let input = "~ {\nif x {\nelse\n}\n}\nContent\n~ {\ntemp y   =   1\n}\n";
+        let expected = "~ {\nif x {\nelse\n}\n}\nContent\n~ {\n    temp y = 1\n}\n";
+        assert_eq!(fmt(input), expected);
     }
 
     #[test]
