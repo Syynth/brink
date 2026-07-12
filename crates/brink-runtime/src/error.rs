@@ -123,4 +123,36 @@ pub enum RuntimeError {
         /// Arguments the host supplied.
         got: usize,
     },
+
+    // ── T1b collections (docs/value-model-spec.md §6, §11c) ──────────────
+    //
+    // Out-of-bounds/missing-key reads and writes are turn-terminating
+    // runtime faults — total operations with no silent growth on
+    // write-past-end (`docs/t1b-surface-spec.md` §4). Propagating as
+    // `RuntimeError` (rather than a special in-band value) is exactly what
+    // "turn-terminating" already means in this VM: it unwinds `step()`,
+    // ending the current turn, the same mechanism `DivisionByZero` uses.
+    /// Array index read/write out of bounds (`0 <= index < len` required).
+    #[error("array index {index} out of bounds (len {len})")]
+    IndexOutOfBounds { index: i32, len: usize },
+    /// Map key read/write on a key that isn't present. Indexed *write*
+    /// (`m[k] = v`) requires the key to already exist — it never inserts;
+    /// use the `insert()` stdlib mutator (T1b-3) to add a new key.
+    #[error("map has no key {key}")]
+    MapKeyNotFound { key: String },
+    /// `a[i]`/`a[i] = v`/`m[k]`/`m[k] = v` where `a`/`m` isn't an
+    /// `Array`/`Map`.
+    #[error("cannot index into a {0} value")]
+    NotIndexable(&'static str),
+    /// Array index expression didn't evaluate to an `Int`.
+    #[error("array index must be an int, got {0}")]
+    InvalidArrayIndex(&'static str),
+    /// Map key expression evaluated to a type outside the ratified key
+    /// domain (int/string/bool — value-model-spec §4).
+    #[error("map key must be int, string, or bool, got {0}")]
+    InvalidMapKeyType(&'static str),
+    /// `PushLiteral(idx)` referenced an index outside the literal pool —
+    /// malformed bytecode, not an author-triggerable condition.
+    #[error("literal pool index {0} out of range")]
+    InvalidLiteralIndex(u32),
 }

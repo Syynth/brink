@@ -12,7 +12,7 @@ use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::opcode::{ChoiceFlags, Opcode, SequenceKind};
 use crate::story::StoryData;
-use crate::value::{ListValue, Value, ValueType};
+use crate::value::{ListValue, MapKey, OrderedMap, Value, ValueType};
 
 #[derive(Parser)]
 #[grammar = "inkt/inkt.pest"]
@@ -79,6 +79,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
     let mut containers = Vec::new();
     let mut line_tables = Vec::new();
     let mut list_literals = Vec::new();
+    let mut literal_pool = Vec::new();
     let mut source_checksum = 0u32;
 
     for inner in pair.into_inner() {
@@ -96,6 +97,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
             Rule::addresses => addresses = parse_addresses(inner)?,
             Rule::address_paths => address_paths = parse_address_paths(inner)?,
             Rule::list_literals => list_literals = parse_list_literals(inner)?,
+            Rule::literal_pool => literal_pool = parse_literal_pool(inner)?,
             Rule::container => {
                 let (container, lt) = parse_container(inner)?;
                 let is_scope_owner = container.scope_id == container.id;
@@ -125,6 +127,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
         address_paths,
         name_table,
         list_literals,
+        literal_pool,
         source_checksum,
     })
 }
@@ -274,6 +277,36 @@ fn parse_value(pair: P<'_>, type_hint: Option<ValueType>) -> Result<Value, InktP
         Rule::def_id => Ok(Value::DivertTarget(parse_def_id(inner)?)),
         Rule::null_value => Ok(Value::Null),
         Rule::list_value => parse_list_value(inner),
+        Rule::array_value => {
+            let mut items = Vec::new();
+            for child in inner.into_inner() {
+                items.push(parse_value(child, None)?);
+            }
+            Ok(Value::array(items))
+        }
+        Rule::map_value => {
+            let mut map = OrderedMap::new();
+            for entry in inner.into_inner() {
+                if entry.as_rule() != Rule::map_entry {
+                    continue;
+                }
+                let mut children = entry.into_inner();
+                let key_pair = children.next().ok_or_else(|| InktParseError {
+                    message: "expected map key".into(),
+                    line: 0,
+                    col: 0,
+                })?;
+                let value_pair = children.next().ok_or_else(|| InktParseError {
+                    message: "expected map value".into(),
+                    line: 0,
+                    col: 0,
+                })?;
+                let key = parse_map_key(key_pair)?;
+                let value = parse_value(value_pair, None)?;
+                map.insert(key, value);
+            }
+            Ok(Value::map(map))
+        }
         Rule::var_pointer_value => {
             let id_pair = inner.into_inner().next().ok_or_else(|| InktParseError {
                 message: "expected def_id in var_pointer".into(),
@@ -327,6 +360,43 @@ fn parse_list_value(pair: P<'_>) -> Result<Value, InktParseError> {
     }
 
     Ok(Value::List(ListValue { items, origins }.into()))
+}
+
+/// Parse a `map_key` node (`string | integer | bool_value`) into a
+/// [`MapKey`] — the ratified scalar key domain (value-model-spec §4).
+fn parse_map_key(pair: P<'_>) -> Result<MapKey, InktParseError> {
+    let inner = pair.into_inner().next().ok_or_else(|| InktParseError {
+        message: "empty map key".into(),
+        line: 0,
+        col: 0,
+    })?;
+    match inner.as_rule() {
+        Rule::string => Ok(MapKey::Str(unescape_string(inner.as_str()).into())),
+        Rule::integer => {
+            let n: i32 = inner
+                .as_str()
+                .parse()
+                .map_err(|_| err(&inner, "invalid integer map key"))?;
+            Ok(MapKey::Int(n))
+        }
+        Rule::bool_value => Ok(MapKey::Bool(inner.as_str() == "true")),
+        _ => Err(err(
+            &inner,
+            format!("unexpected map key rule: {:?}", inner.as_rule()),
+        )),
+    }
+}
+
+// ── Literal pool ─────────────────────────────────────────────────────────────
+
+fn parse_literal_pool(pair: P<'_>) -> Result<Vec<Value>, InktParseError> {
+    let mut pool = Vec::new();
+    for entry in pair.into_inner() {
+        if entry.as_rule() == Rule::value {
+            pool.push(parse_value(entry, None)?);
+        }
+    }
+    Ok(pool)
 }
 
 // ── Lists ───────────────────────────────────────────────────────────────────
@@ -1186,6 +1256,22 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         "list_from_int" => Ok(Opcode::ListFromInt),
         "list_random" => Ok(Opcode::ListRandom),
 
+        // Collections (T1b)
+        "array_new" => Ok(Opcode::ArrayNew(parse_operand_u32(&operands, 0, mnemonic)?)),
+        "map_new" => Ok(Opcode::MapNew(parse_operand_u32(&operands, 0, mnemonic)?)),
+        "index_get" => Ok(Opcode::IndexGet),
+        "index_set" => Ok(Opcode::IndexSet),
+        "collection_len" => Ok(Opcode::CollectionLen),
+        "map_get" => Ok(Opcode::MapGet),
+        "map_insert" => Ok(Opcode::MapInsert),
+        "map_remove" => Ok(Opcode::MapRemove),
+        "map_contains" => Ok(Opcode::MapContains),
+        "collection_keys" => Ok(Opcode::CollectionKeys),
+        "collection_values" => Ok(Opcode::CollectionValues),
+        "push_literal" => Ok(Opcode::PushLiteral(parse_operand_u32(
+            &operands, 0, mnemonic,
+        )?)),
+
         // Lifecycle
         "done" => Ok(Opcode::Done),
         "yield" => Ok(Opcode::Yield),
@@ -1319,6 +1405,15 @@ fn parse_operand_u16(operands: &[P<'_>], idx: usize, context: &str) -> Result<u1
     let s = operand_str(operands, idx, context)?;
     s.parse().map_err(|_| InktParseError {
         message: format!("invalid u16 operand for {context}: {s}"),
+        line: 0,
+        col: 0,
+    })
+}
+
+fn parse_operand_u32(operands: &[P<'_>], idx: usize, context: &str) -> Result<u32, InktParseError> {
+    let s = operand_str(operands, idx, context)?;
+    s.parse().map_err(|_| InktParseError {
+        message: format!("invalid u32 operand for {context}: {s}"),
         line: 0,
         col: 0,
     })

@@ -1,4 +1,4 @@
-//! T1b-1 dialect gate (docs/t1b-surface-spec.md §1).
+//! T1b dialect gate (docs/t1b-surface-spec.md §1).
 //!
 //! `brink-syntax` always parses the full superset grammar — multi-line
 //! `~ { … }` blocks, `#[…]`/`#{…}` sigil literals, postfix indexing — and
@@ -7,10 +7,14 @@
 //! HIR lowering, using the caller's declared [`Dialect`]:
 //!
 //! - `StrictInk` (the default): every extension construct is a targeted
-//!   error at its exact span — "brink extension" (`E051`).
-//! - `Brink`: every extension construct is still an error in T1b-1 — nothing
-//!   lowers to LIR yet (lands in T1b-2) — but with a different message
-//!   (`E052`) so authors know it's a roadmap gap, not a permanent rejection.
+//!   error at its exact span — "brink extension" (`E051`). This is the
+//!   *only* strict-ink enforcement — like every other suppressible analysis
+//!   diagnostic in this codebase, `// brink-disable-all` bypasses it, and a
+//!   suppressed strict-ink project simply compiles the construct as brink
+//!   dialect would (LIR lowering doesn't consult the dialect at all).
+//! - `Brink`: every extension construct lowers to LIR since T1b-2 (#570) —
+//!   `E052` ("not yet implemented") no longer fires for any construct this
+//!   gate recognizes; nothing is flagged under `Brink` at all.
 //!
 //! Per docs/t1b-surface-spec.md §1, the dialect is an authoring-time/tooling
 //! input only (mirrors the #368 dialogue-dialect precedent): it is never
@@ -54,25 +58,21 @@ struct GateVisitor<'a> {
 }
 
 impl GateVisitor<'_> {
+    /// Flag `construct` under `StrictInk` (E051); a no-op under `Brink` —
+    /// every construct this gate recognizes lowers to LIR since T1b-2
+    /// (#570), so there's nothing left to reject as "not yet implemented".
     fn flag(&mut self, range: rowan::TextRange, construct: &str) {
-        let (code, message) = match self.dialect {
-            Dialect::StrictInk => (
-                DiagnosticCode::E051,
-                format!(
-                    "{construct} is a brink extension — this project compiles \
-                     strict ink (dialect = brink to enable)"
-                ),
-            ),
-            Dialect::Brink => (
-                DiagnosticCode::E052,
-                format!("{construct} is not yet implemented — lands in T1b-2"),
-            ),
-        };
+        if self.dialect != Dialect::StrictInk {
+            return;
+        }
         self.diagnostics.push(Diagnostic {
             file: self.file,
             range,
-            message,
-            code,
+            message: format!(
+                "{construct} is a brink extension — this project compiles \
+                 strict ink (dialect = brink to enable)"
+            ),
+            code: DiagnosticCode::E051,
         });
     }
 }
@@ -120,12 +120,10 @@ mod tests {
     }
 
     #[test]
-    fn brink_dialect_flags_block_as_not_yet_implemented() {
+    fn brink_dialect_does_not_flag_block_since_it_lowers_in_t1b_2() {
         let hir = lower_src("~ {\ntemp x = 0\n}\n");
         let diags = check(&[(FileId(0), &hir)], Dialect::Brink);
-        assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].code, DiagnosticCode::E052);
-        assert!(diags[0].message.contains("not yet implemented"));
+        assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]

@@ -31,13 +31,13 @@ pub use read::{
     read_inkb, read_inkb_index, read_section_address_paths, read_section_addresses,
     read_section_containers, read_section_externals, read_section_line_tables,
     read_section_list_defs, read_section_list_items, read_section_list_literals,
-    read_section_name_table, read_section_variables,
+    read_section_literal_pool, read_section_name_table, read_section_variables,
 };
 pub use write::{
     assemble_inkb, write_inkb, write_section_address_paths, write_section_addresses,
     write_section_containers, write_section_externals, write_section_line_tables,
     write_section_list_defs, write_section_list_items, write_section_list_literals,
-    write_section_name_table, write_section_variables,
+    write_section_literal_pool, write_section_name_table, write_section_variables,
 };
 
 use core::ops::Range;
@@ -63,7 +63,7 @@ pub(crate) const HEADER_PREAMBLE: usize = 16;
 /// Each offset table entry: kind(1) + reserved(3) + offset(4)
 pub(crate) const SECTION_ENTRY_SIZE: usize = 8;
 /// Number of sections in the current format.
-pub(crate) const SECTION_COUNT: u8 = 10;
+pub(crate) const SECTION_COUNT: u8 = 11;
 
 // Value type tags
 pub(crate) const VAL_INT: u8 = 0x00;
@@ -126,6 +126,11 @@ pub enum SectionKind {
     Labels = 0x08,
     ListLiterals = 0x09,
     AddressPaths = 0x0A,
+    /// T1b `LiteralPool` (`docs/format-v4-rfc.md` §2): content-hash
+    /// deduplicated constant values referenced by `PushLiteral(idx)`.
+    /// Additive alongside `ListLiterals` — see the T1b-2 PR description for
+    /// why the RFC's `ListLiterals` absorption is deferred, not done here.
+    LiteralPool = 0x0B,
 }
 
 // Reserved v4 section kinds — numeric assignments frozen by the §9 one-bump
@@ -134,9 +139,6 @@ pub enum SectionKind {
 // these, so the strict reader keeps rejecting them (`InvalidSectionKind`)
 // until each section's milestone lands and a real variant is added, the same
 // discipline the reserved v4 value tags (above) already follow.
-//   0x0B LiteralPool   — content-hash-deduplicated constant pool (T1a;
-//                        absorbs `ListLiterals` — `PushList` retires in favor
-//                        of `PushLiteral(idx)` when the collection opcodes land)
 //   0x0C StructShapes  — reserved, count always 0 in 4.0 (typed-dialect era)
 //   0x0D EffectRows    — reserved, count always 0 in 4.0, section-locally
 //                        versioned so T2 can define the row encoding without
@@ -155,6 +157,7 @@ impl SectionKind {
             0x08 => Ok(Self::Labels),
             0x09 => Ok(Self::ListLiterals),
             0x0A => Ok(Self::AddressPaths),
+            0x0B => Ok(Self::LiteralPool),
             _ => Err(DecodeError::InvalidSectionKind(tag)),
         }
     }
@@ -218,13 +221,14 @@ pub(crate) fn safe_capacity(
 mod tests {
     use super::*;
 
-    /// Reserved v4 sections (`LiteralPool` 0x0B, `StructShapes` 0x0C,
-    /// `EffectRows` 0x0D — `docs/format-v4-rfc.md` §2) are numbered but
-    /// deliberately not `SectionKind` variants — the strict reader must keep
-    /// rejecting every reserved tag until each section's milestone lands.
+    /// Reserved v4 sections (`StructShapes` 0x0C, `EffectRows` 0x0D —
+    /// `docs/format-v4-rfc.md` §2) are numbered but deliberately not
+    /// `SectionKind` variants — the strict reader must keep rejecting every
+    /// reserved tag until each section's milestone lands. `LiteralPool`
+    /// (0x0B) graduated to a real section in T1b-2 (#570).
     #[test]
     fn from_u8_rejects_reserved_v4_sections() {
-        for tag in [0x0Bu8, 0x0C, 0x0D] {
+        for tag in [0x0Cu8, 0x0D] {
             let err = SectionKind::from_u8(tag).unwrap_err();
             assert_eq!(err, DecodeError::InvalidSectionKind(tag));
         }
@@ -232,7 +236,7 @@ mod tests {
 
     #[test]
     fn from_u8_accepts_all_current_sections() {
-        for tag in 0x01u8..=0x0A {
+        for tag in 0x01u8..=0x0B {
             assert!(SectionKind::from_u8(tag).is_ok());
         }
     }

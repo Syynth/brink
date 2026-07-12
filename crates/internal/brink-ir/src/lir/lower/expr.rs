@@ -89,27 +89,105 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
 
         hir::Expr::Call(path, args) => lower_call(path, args, ctx),
 
-        // T1b brink-extension expressions (docs/t1b-surface-spec.md §3-4).
-        // `brink-analyzer`'s dialect gate (E051/E052) is supposed to reject
-        // these before LIR lowering runs, but that gate is a suppressible
-        // *analysis* diagnostic (`// brink-disable-all` / line directives),
-        // so it is not a hard guarantee on its own. The real,
-        // non-suppressible guard is `lower_to_program`'s
-        // `check_residual_extensions` backstop: it scans for exactly these
-        // node kinds and bails out with an error-severity `E053` diagnostic
-        // — and `None` program — before any lowering function (including
-        // this one) is ever called. So this arm is unreachable in practice.
-        // `lower_expr` still has no diagnostic sink of its own (it's
-        // infallible by signature), so the `tracing::error!`-then-`Null`
-        // fallback below stays purely as defense in depth, matching the
-        // unresolved-call branch in `lower_call`.
-        hir::Expr::ArrayLiteral(_) | hir::Expr::MapLiteral(_) | hir::Expr::Index(_) => {
-            tracing::error!(
-                "ICE: T1b brink-extension expression reached LIR lowering — \
-                 the dialect gate should have rejected it before this point"
-            );
-            lir::Expr::Null
+        // T1b sigil collection literals + postfix indexing
+        // (docs/t1b-surface-spec.md §3-4). A literal lowers to the V4
+        // literal pool (`lir::Expr::ConstLiteral`, deduplicated at codegen)
+        // when every element/entry is constant-foldable, else to the
+        // runtime construction opcodes (`ArrayNew`/`MapNew`).
+        hir::Expr::ArrayLiteral(arr) => lower_array_literal(arr, ctx),
+        hir::Expr::MapLiteral(map) => lower_map_literal(map, ctx),
+        hir::Expr::Index(idx) => lir::Expr::Index {
+            base: Box::new(lower_expr(&idx.base, ctx)),
+            index: Box::new(lower_expr(&idx.index, ctx)),
+        },
+    }
+}
+
+fn lower_array_literal(arr: &hir::ArrayLiteral, ctx: &mut LowerCtx<'_>) -> lir::Expr {
+    let folded: Option<Vec<lir::ConstValue>> = arr.elements.iter().map(try_const_fold).collect();
+    if let Some(items) = folded {
+        return lir::Expr::ConstLiteral(lir::ConstValue::Array(items));
+    }
+    lir::Expr::ArrayNew(arr.elements.iter().map(|e| lower_expr(e, ctx)).collect())
+}
+
+fn lower_map_literal(map: &hir::MapLiteral, ctx: &mut LowerCtx<'_>) -> lir::Expr {
+    let folded: Option<Vec<(lir::ConstMapKey, lir::ConstValue)>> = map
+        .entries
+        .iter()
+        .map(|(k, v)| {
+            let key = try_const_fold(k).and_then(const_value_to_map_key)?;
+            let value = try_const_fold(v)?;
+            Some((key, value))
+        })
+        .collect();
+    if let Some(entries) = folded {
+        return lir::Expr::ConstLiteral(lir::ConstValue::Map(entries));
+    }
+    lir::Expr::MapNew(
+        map.entries
+            .iter()
+            .map(|(k, v)| (lower_expr(k, ctx), lower_expr(v, ctx)))
+            .collect(),
+    )
+}
+
+/// Attempt to fold a HIR expression into a [`lir::ConstValue`] — the T1b
+/// literal-pool eligibility test. Only genuinely constant syntax folds
+/// (literals, `null`, non-interpolated strings, nested constant array/map
+/// literals); any variable reference, call, or operator bails out to the
+/// runtime-construction path (`ArrayNew`/`MapNew`).
+fn try_const_fold(expr: &hir::Expr) -> Option<lir::ConstValue> {
+    match expr {
+        hir::Expr::Int(n) => Some(lir::ConstValue::Int(*n)),
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "f64->f32 is intentional per ink spec, matches lower_expr's Float arm"
+        )]
+        hir::Expr::Float(bits) => Some(lir::ConstValue::Float(bits.to_f64() as f32)),
+        hir::Expr::Bool(b) => Some(lir::ConstValue::Bool(*b)),
+        hir::Expr::Null => Some(lir::ConstValue::Null),
+        hir::Expr::String(s) => {
+            // Only a single non-interpolated literal part folds; anything
+            // with `{expr}` interpolation is not compile-time-constant.
+            match s.parts.as_slice() {
+                [hir::StringPart::Literal(text)] => Some(lir::ConstValue::String(text.clone())),
+                [] => Some(lir::ConstValue::String(String::new())),
+                _ => None,
+            }
         }
+        hir::Expr::ArrayLiteral(arr) => {
+            let items: Option<Vec<lir::ConstValue>> =
+                arr.elements.iter().map(try_const_fold).collect();
+            items.map(lir::ConstValue::Array)
+        }
+        hir::Expr::MapLiteral(map) => {
+            let entries: Option<Vec<(lir::ConstMapKey, lir::ConstValue)>> = map
+                .entries
+                .iter()
+                .map(|(k, v)| {
+                    let key = try_const_fold(k).and_then(const_value_to_map_key)?;
+                    let value = try_const_fold(v)?;
+                    Some((key, value))
+                })
+                .collect();
+            entries.map(lir::ConstValue::Map)
+        }
+        _ => None,
+    }
+}
+
+/// Narrow a folded [`lir::ConstValue`] to the ratified map-key domain
+/// (int/string/bool). A statically-visible non-key type (float, null,
+/// array, map) makes the whole map literal non-constant — it falls back to
+/// the `MapNew` runtime path, where key-domain validation happens at
+/// `MapNew` construction time (a turn-terminating fault) instead.
+fn const_value_to_map_key(v: lir::ConstValue) -> Option<lir::ConstMapKey> {
+    match v {
+        lir::ConstValue::Int(n) => Some(lir::ConstMapKey::Int(n)),
+        lir::ConstValue::String(s) => Some(lir::ConstMapKey::Str(s)),
+        lir::ConstValue::Bool(b) => Some(lir::ConstMapKey::Bool(b)),
+        _ => None,
     }
 }
 

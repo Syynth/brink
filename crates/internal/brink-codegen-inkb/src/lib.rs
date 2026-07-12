@@ -8,7 +8,8 @@ use std::collections::HashMap;
 
 use brink_format::{
     AddressDef, AddressPath, ContainerDef, DefinitionId, ExternalFnDef, GlobalVarDef, LineContent,
-    LineEntry, ListDef, ListItemDef, ListValue, NameId, Opcode, ScopeLineTable, StoryData, Value,
+    LineEntry, ListDef, ListItemDef, ListValue, MapKey, NameId, Opcode, OrderedMap, ScopeLineTable,
+    StoryData, Value,
 };
 use brink_ir::lir;
 
@@ -38,6 +39,7 @@ pub fn emit(program: &lir::Program) -> StoryData {
         address_paths: Vec::new(),
         scope_line_tables: HashMap::new(),
         list_literals: Vec::new(),
+        literal_pool: Vec::new(),
         name_table: program.name_table.clone(),
         name_index: HashMap::new(),
     };
@@ -78,6 +80,7 @@ pub fn emit(program: &lir::Program) -> StoryData {
         address_paths: state.address_paths,
         name_table: state.name_table,
         list_literals: state.list_literals,
+        literal_pool: state.literal_pool,
         source_checksum: 0,
     }
 }
@@ -92,6 +95,11 @@ struct EmitState {
     /// Scope-shared line tables: `scope_id` → accumulated line entries.
     scope_line_tables: HashMap<DefinitionId, Vec<LineEntry>>,
     list_literals: Vec<ListValue>,
+    /// The T1b `LiteralPool` (`docs/format-v4-rfc.md` §2), built up as
+    /// `PushLiteral` sites are emitted. Content-hash-dedup isn't needed for
+    /// correctness (structural equality dedup below is exact); a linear
+    /// scan is fine at game-corpus literal-pool sizes.
+    literal_pool: Vec<Value>,
     name_table: Vec<String>,
     name_index: HashMap<String, NameId>,
 }
@@ -102,9 +110,24 @@ struct ContainerEmitter<'a> {
     bytecode: Vec<u8>,
     scope_line_table: &'a mut Vec<LineEntry>,
     list_literals: &'a mut Vec<ListValue>,
+    literal_pool: &'a mut Vec<Value>,
     state_name_table: &'a mut Vec<String>,
     state_name_index: &'a mut HashMap<String, NameId>,
     in_conditional_branch: bool,
+    /// Stack of open T1b `LogicWhile` loops (innermost last) — targets for
+    /// `break`/`continue` jump patching. Empty outside any loop.
+    loop_stack: Vec<LoopCtx>,
+}
+
+/// Jump-patch bookkeeping for one open `LogicWhile` (innermost = top of
+/// `ContainerEmitter::loop_stack`).
+struct LoopCtx {
+    /// `break` sites — patched to land just after the whole loop.
+    break_patches: Vec<usize>,
+    /// `continue` sites — patched to land at the start of `post` (the
+    /// backward jump to `condition` for a plain `while`, since `post` is
+    /// empty then).
+    continue_patches: Vec<usize>,
 }
 
 impl<'a> ContainerEmitter<'a> {
@@ -114,9 +137,11 @@ impl<'a> ContainerEmitter<'a> {
             bytecode: Vec::new(),
             scope_line_table,
             list_literals: &mut state.list_literals,
+            literal_pool: &mut state.literal_pool,
             state_name_table: &mut state.name_table,
             state_name_index: &mut state.name_index,
             in_conditional_branch: false,
+            loop_stack: Vec::new(),
         }
     }
 
@@ -451,6 +476,8 @@ fn const_value_type(v: &lir::ConstValue) -> brink_format::ValueType {
         lir::ConstValue::List { .. } => brink_format::ValueType::List,
         lir::ConstValue::DivertTarget(_) => brink_format::ValueType::DivertTarget,
         lir::ConstValue::Null => brink_format::ValueType::Null,
+        lir::ConstValue::Array(_) => brink_format::ValueType::Array,
+        lir::ConstValue::Map(_) => brink_format::ValueType::Map,
     }
 }
 
@@ -469,5 +496,21 @@ fn const_to_value(v: &lir::ConstValue) -> Value {
             }
             .into(),
         ),
+        lir::ConstValue::Array(items) => Value::array(items.iter().map(const_to_value).collect()),
+        lir::ConstValue::Map(entries) => {
+            let mut map = OrderedMap::with_capacity(entries.len());
+            for (k, v) in entries {
+                map.insert(const_map_key_to_value(k), const_to_value(v));
+            }
+            Value::map(map)
+        }
+    }
+}
+
+fn const_map_key_to_value(k: &lir::ConstMapKey) -> MapKey {
+    match k {
+        lir::ConstMapKey::Int(n) => MapKey::Int(*n),
+        lir::ConstMapKey::Str(s) => MapKey::Str(s.clone().into()),
+        lir::ConstMapKey::Bool(b) => MapKey::Bool(*b),
     }
 }

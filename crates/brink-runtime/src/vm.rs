@@ -13,6 +13,7 @@ use brink_format::{
     PluralCategory, PluralResolver, SelectKey, Value,
 };
 
+use crate::collection_ops;
 use crate::error::RuntimeError;
 use crate::list_ops;
 use crate::program::Program;
@@ -901,6 +902,20 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         Opcode::ListRange => list_ops::list_range(flow, program)?,
         Opcode::ListFromInt => list_ops::list_from_int(flow, program)?,
         Opcode::ListRandom => list_ops::list_random::<R>(flow, context)?,
+
+        // ── Collections (T1b) ────────────────────────────────────────
+        Opcode::ArrayNew(n) => collection_ops::array_new(flow, n)?,
+        Opcode::MapNew(n) => collection_ops::map_new(flow, n)?,
+        Opcode::IndexGet => collection_ops::index_get(flow)?,
+        Opcode::IndexSet => collection_ops::index_set(flow)?,
+        Opcode::CollectionLen => collection_ops::collection_len(flow)?,
+        Opcode::MapGet => collection_ops::map_get(flow)?,
+        Opcode::MapInsert => collection_ops::map_insert(flow)?,
+        Opcode::MapRemove => collection_ops::map_remove(flow)?,
+        Opcode::MapContains => collection_ops::map_contains(flow)?,
+        Opcode::CollectionKeys => collection_ops::collection_keys(flow)?,
+        Opcode::CollectionValues => collection_ops::collection_values(flow)?,
+        Opcode::PushLiteral(idx) => collection_ops::push_literal(flow, program, idx)?,
 
         // ── External functions ──────────────────────────────────────
         Opcode::CallExternal(fn_id, arg_count) => {

@@ -9,6 +9,10 @@ impl ContainerEmitter<'_> {
     /// Emit an expression. When `display` is true, function calls are
     /// wrapped in `BeginFragment`/`EndFragment` so their output is captured
     /// structurally for locale re-rendering.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one match arm per LIR Expr variant; splitting would obscure the dispatch"
+    )]
     pub(super) fn emit_expr(&mut self, expr: &lir::Expr, display: bool) {
         match expr {
             lir::Expr::Int(n) => self.emit(Opcode::PushInt(*n)),
@@ -104,7 +108,76 @@ impl ContainerEmitter<'_> {
             lir::Expr::CallBuiltin { builtin, args } => {
                 self.emit_builtin(*builtin, args);
             }
+
+            // ── Collections (T1b) ────────────────────────────────────
+            lir::Expr::ConstLiteral(v) => self.emit_literal_pool_push(v),
+
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "collection literals stay well under u32::MAX elements"
+            )]
+            lir::Expr::ArrayNew(elements) => {
+                for e in elements {
+                    self.emit_expr(e, false);
+                }
+                self.emit(Opcode::ArrayNew(elements.len() as u32));
+            }
+
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "collection literals stay well under u32::MAX entries"
+            )]
+            lir::Expr::MapNew(entries) => {
+                for (k, v) in entries {
+                    self.emit_expr(k, false);
+                    self.emit_expr(v, false);
+                }
+                self.emit(Opcode::MapNew(entries.len() as u32));
+            }
+
+            lir::Expr::Index { base, index } => {
+                self.emit_expr(base, false);
+                self.emit_expr(index, false);
+                self.emit(Opcode::IndexGet);
+            }
+
+            lir::Expr::IndexSet { base, index, value } => {
+                self.emit_expr(base, false);
+                self.emit_expr(index, false);
+                self.emit_expr(value, false);
+                self.emit(Opcode::IndexSet);
+            }
+
+            lir::Expr::CollectionLen(inner) => {
+                self.emit_expr(inner, false);
+                self.emit(Opcode::CollectionLen);
+            }
+
+            lir::Expr::CollectionKeys(inner) => {
+                self.emit_expr(inner, false);
+                self.emit(Opcode::CollectionKeys);
+            }
         }
+    }
+
+    /// Push a T1b constant collection literal via the literal pool
+    /// (`PushLiteral(idx)`), deduplicating by structural equality against
+    /// entries already in the pool (`docs/format-v4-rfc.md` §2).
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "literal pools stay well under u32::MAX entries"
+    )]
+    fn emit_literal_pool_push(&mut self, v: &lir::ConstValue) {
+        let value = crate::const_to_value(v);
+        let idx = self
+            .literal_pool
+            .iter()
+            .position(|existing| *existing == value)
+            .unwrap_or_else(|| {
+                self.literal_pool.push(value);
+                self.literal_pool.len() - 1
+            });
+        self.emit(Opcode::PushLiteral(idx as u32));
     }
 
     /// Emit a call opcode. The runtime no longer implicitly captures

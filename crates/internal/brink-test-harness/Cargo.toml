@@ -26,6 +26,7 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
+proptest = { workspace = true }
 brink-syntax = { path = "../brink-syntax" }
 brink-analyzer = { path = "../brink-analyzer" }
 

@@ -119,24 +119,18 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
 
         hir::Stmt::EndOfLine => Some(lir::Stmt::EndOfLine),
 
-        // T1b `~ { … }` blocks (docs/t1b-surface-spec.md §2). The dialect
-        // gate (E051/E052) is supposed to reject a `LogicBlock` before LIR
-        // lowering runs, but that gate is a suppressible *analysis*
-        // diagnostic (`// brink-disable-all` / line directives), so it is
-        // not a hard guarantee. `lower_to_program`'s
-        // `check_residual_extensions` backstop is the real, non-suppressible
-        // guard: it scans for exactly this node kind and bails out with an
-        // error-severity `E053` diagnostic before any lowering function
-        // (including this one) is ever called. So this arm is unreachable
-        // in practice, mirroring the ChoiceSet/LabeledBlock/Conditional/
-        // Sequence dispatch-bug guard just above — but unlike that guard,
-        // whose unreachability is structural (intra-pass dispatch), this
-        // one depends on the upstream backstop actually running first.
+        // T1b `~ { … }` blocks (docs/t1b-surface-spec.md §2) are dispatched
+        // by `lower_block_with_children` — like ChoiceSet/LabeledBlock/
+        // Conditional/Sequence above, they may splice multiple `lir::Stmt`s
+        // (one per block statement) at this position, which a function
+        // returning a single `Option<lir::Stmt>` can't express. Real
+        // lowering lives in `blocks::lower_logic_block`; this arm is a
+        // structural dispatch-bug guard, unreachable in practice.
         hir::Stmt::LogicBlock(_) => {
             debug_assert!(
                 false,
-                "T1b LogicBlock reached lower_stmt — the dialect gate should \
-                 have rejected it before this point"
+                "T1b LogicBlock should be dispatched by lower_block_with_children, \
+                 not reach lower_stmt"
             );
             None
         }
@@ -185,7 +179,10 @@ fn lower_divert_target(target: &hir::DivertTarget, ctx: &mut LowerCtx<'_>) -> li
     }
 }
 
-fn lower_assign_target(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> Option<lir::AssignTarget> {
+pub(super) fn lower_assign_target(
+    expr: &hir::Expr,
+    ctx: &mut LowerCtx<'_>,
+) -> Option<lir::AssignTarget> {
     match expr {
         hir::Expr::Path(path) => {
             let name = path_to_string(path);

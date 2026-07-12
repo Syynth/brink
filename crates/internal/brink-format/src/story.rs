@@ -29,6 +29,13 @@ pub struct StoryData {
     pub name_table: Vec<String>,
     /// List literal values referenced by `PushList(idx)` opcodes.
     pub list_literals: Vec<ListValue>,
+    /// The T1b `LiteralPool` (`docs/format-v4-rfc.md` §2): content-hash
+    /// deduplicated constant values referenced by `PushLiteral(idx)` opcodes.
+    /// Distinct from `list_literals`/`PushList` — this is additive new
+    /// surface for T1b collection literals, not a replacement (the RFC's
+    /// `ListLiterals` absorption is a separate, larger migration; see the
+    /// T1b-2 PR description).
+    pub literal_pool: Vec<crate::value::Value>,
     /// CRC-32 checksum from the `.inkb` header, used for locale validation.
     /// Zero for stories not loaded from `.inkb`.
     pub source_checksum: u32,

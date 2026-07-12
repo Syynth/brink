@@ -32,6 +32,7 @@ fn empty_scopes_are_omitted() {
         address_paths: vec![],
         name_table: vec![],
         list_literals: vec![],
+        literal_pool: vec![],
         source_checksum: 0,
     };
     let lines_json = brink_intl::export_lines(&data, 0);
@@ -51,6 +52,7 @@ fn source_checksum_formatting() {
         address_paths: vec![],
         name_table: vec![],
         list_literals: vec![],
+        literal_pool: vec![],
         source_checksum: 0,
     };
     let lines_json = brink_intl::export_lines(&data, 0xDEAD_BEEF);
@@ -81,6 +83,7 @@ fn audio_ref_exported() {
         address_paths: vec![],
         name_table: vec![],
         list_literals: vec![],
+        literal_pool: vec![],
         source_checksum: 0,
     };
     let lines_json = brink_intl::export_lines(&data, 0);

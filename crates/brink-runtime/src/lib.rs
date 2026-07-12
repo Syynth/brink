@@ -30,6 +30,7 @@
 
 extern crate alloc;
 
+mod collection_ops;
 mod collections;
 mod debug;
 mod error;
