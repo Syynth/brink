@@ -81,7 +81,9 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
         hir::BlockStmt::While(w) => {
             let condition = lower_expr(&w.condition, ctx);
             ctx.push_block_scope();
+            ctx.loop_depth += 1;
             let body = lower_block_stmt_list(&w.body, ctx);
+            ctx.loop_depth -= 1;
             ctx.pop_block_scope();
             out.push(lir::Stmt::LogicWhile(lir::LogicWhile {
                 condition,
@@ -90,14 +92,51 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
             }));
         }
         hir::BlockStmt::For(f) => lower_for_stmt(f, ctx, out),
-        hir::BlockStmt::Break(_) => out.push(lir::Stmt::LogicBreak),
-        hir::BlockStmt::Continue(_) => out.push(lir::Stmt::LogicContinue),
+        hir::BlockStmt::Break(ptr) => {
+            lower_loop_control(ptr, "break", lir::Stmt::LogicBreak, ctx, out);
+        }
+        hir::BlockStmt::Continue(ptr) => {
+            lower_loop_control(ptr, "continue", lir::Stmt::LogicContinue, ctx, out);
+        }
         hir::BlockStmt::ExprStmt(expr) => {
             if !try_lower_mutator_stmt(expr, ctx, out) {
                 out.push(lir::Stmt::ExprStmt(lower_expr(expr, ctx)));
             }
         }
     }
+}
+
+/// Lower a `break`/`continue` statement, rejecting it with E057 when it's
+/// not nested inside any `while`/`for` loop (`ctx.loop_depth == 0`) instead
+/// of emitting an unguarded `LogicBreak`/`LogicContinue` — codegen's
+/// `loop_stack` has no jump target for one and previously degraded it to a
+/// silent `Nop` (#577 review). The malformed statement is skipped (not
+/// pushed to `out`), matching how an unresolvable assignment target is
+/// already skipped elsewhere in this module — the diagnostic is what
+/// surfaces this to authors, and it's Error-severity (unlike the E054
+/// shadow warning above), so `brink-db`'s `lir_query` refuses to hand back
+/// a `Program` at all, independent of and non-suppressible relative to any
+/// analysis-phase diagnostic covering the same construct.
+fn lower_loop_control(
+    ptr: &brink_syntax::ast::SyntaxNodePtr,
+    keyword: &str,
+    stmt: lir::Stmt,
+    ctx: &mut LowerCtx<'_>,
+    out: &mut Vec<lir::Stmt>,
+) {
+    if ctx.loop_depth == 0 {
+        ctx.diagnostics.push(Diagnostic {
+            file: ctx.file,
+            range: ptr.text_range(),
+            message: format!(
+                "{}: `{keyword}` used outside any enclosing while/for loop",
+                DiagnosticCode::E057.title(),
+            ),
+            code: DiagnosticCode::E057,
+        });
+        return;
+    }
+    out.push(stmt);
 }
 
 fn lower_if_branch(
@@ -542,7 +581,9 @@ fn lower_for_stmt(f: &hir::ForStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec<lir::S
             index: Box::new(lir::Expr::GetTemp(idx_slot, idx_name)),
         }),
     }];
+    ctx.loop_depth += 1;
     body.extend(lower_block_stmt_list(&f.body, ctx));
+    ctx.loop_depth -= 1;
     ctx.pop_block_scope();
 
     let post = vec![lir::Stmt::Assign {
@@ -609,6 +650,16 @@ impl MutatorKind {
             Self::Insert => 3,
         }
     }
+
+    /// The mutator's documented signature (§5), for a targeted E058 message
+    /// naming exactly what was expected.
+    fn signature(self) -> &'static str {
+        match self {
+            Self::Push => "push(container, value)",
+            Self::Insert => "insert(container, key_or_index, value)",
+            Self::Remove => "remove(container, key_or_index)",
+        }
+    }
 }
 
 /// Whether `expr` is a valid mutator lvalue (§5: "a variable, temp, or
@@ -652,17 +703,30 @@ pub(super) fn try_lower_mutator_stmt(
         return false;
     }
 
+    // RULED 2026-07-12 (#581, docs/decision-log.md): a mutator arity
+    // mismatch is a targeted compile error naming the expected signature
+    // (E058), replacing the generic E031 warning this used to share with
+    // ordinary function-call arity checking. E031 only ever warned — it
+    // never blocked compilation — so the malformed statement fell through
+    // to "return true, push nothing," silently dropping the RMW lowering
+    // (the mutator call vanished from the bytecode with no compile
+    // failure). E058 is Error-severity, so `brink-db`'s `lir_query` now
+    // refuses to hand back a `Program` for it, exactly like E055/E056.
+    // Pure-function arity checking (ordinary knot/external calls) is
+    // untouched — this only covers the three mutator names.
     let expected = kind.expected_argc();
     if args.len() != expected {
         ctx.diagnostics.push(Diagnostic {
             file: ctx.file,
             range: path.range,
             message: format!(
-                "{}: `{name}` expects {expected} argument(s), got {}",
-                DiagnosticCode::E031.title(),
+                "{}: `{}` expects {expected} argument(s), got {} — expected signature: `{}`",
+                DiagnosticCode::E058.title(),
+                name,
                 args.len(),
+                kind.signature(),
             ),
-            code: DiagnosticCode::E031,
+            code: DiagnosticCode::E058,
         });
         return true;
     }

@@ -232,6 +232,14 @@ pub(crate) fn map_remove(flow: &mut Flow) -> Result<(), RuntimeError> {
 ///
 /// - **Map**: key containment — `needle` is coerced through the ratified key
 ///   domain (int/string/bool), matching `MapGet`/`IndexGet`'s key handling.
+///   A `needle` outside the key domain (float, array, map, …) can never be a
+///   key, so it's simply not contained — `false`, not a fault. This is
+///   **total on both branches**, matching the array branch below and
+///   value-model-spec §11c ("total operations with specified failure
+///   values where defined"); unlike `MapGet`/indexing (§6), `contains` has
+///   no "the key isn't there" failure mode to escalate to a fault — a
+///   non-key-domain needle *is* "the key isn't there." Ruled 2026-07-12,
+///   see `docs/decision-log.md`.
 /// - **Array**: element containment — a linear scan for a `needle` that
 ///   compares structurally equal (`Value`'s `PartialEq`, value-model-spec
 ///   §4/§5) to any element. `needle` may be any value, not just a scalar.
@@ -239,10 +247,7 @@ pub(crate) fn map_contains(flow: &mut Flow) -> Result<(), RuntimeError> {
     let needle = flow.pop_value()?;
     let container = flow.pop_value()?;
     let found = match &container {
-        Value::Map(map) => {
-            let map_key = to_map_key(&needle)?;
-            map.contains_key(&map_key)
-        }
+        Value::Map(map) => MapKey::from_value(&needle).is_some_and(|k| map.contains_key(&k)),
         Value::Array(items) => items.iter().any(|item| item == &needle),
         other => return Err(RuntimeError::NotIndexable(type_name(other))),
     };
@@ -625,6 +630,32 @@ mod tests {
         push_args(&mut flow, vec![Value::map(map), Value::from("k")]);
         map_contains(&mut flow).unwrap();
         assert_eq!(flow.pop_value().unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn map_contains_map_non_key_domain_float_needle_returns_false() {
+        // RULED 2026-07-12 (#580, docs/decision-log.md): a needle outside
+        // the map-key domain (int/string/bool) can never be a key, so
+        // `contains` is total — `false`, not a fault — matching the array
+        // branch's totality. Regression for the map branch specifically.
+        let mut map = OrderedMap::new();
+        map.insert(MapKey::Int(1), Value::Int(1));
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![Value::map(map), Value::Float(1.0)]);
+        map_contains(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::Bool(false));
+    }
+
+    #[test]
+    fn map_contains_map_collection_needle_returns_false() {
+        // A collection needle (array/map) is likewise outside the key
+        // domain — total `false`, not `InvalidMapKeyType`.
+        let mut map = OrderedMap::new();
+        map.insert(MapKey::Str(Arc::from("k")), Value::Int(1));
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![Value::map(map), arr(vec![Value::Int(1)])]);
+        map_contains(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::Bool(false));
     }
 
     #[test]

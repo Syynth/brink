@@ -941,6 +941,15 @@ pub enum DiagnosticCode {
     /// `push`/`insert`/`remove` was used in expression position — they
     /// return nothing and are only valid as a statement.
     E056,
+
+    // ── T1b logic blocks (docs/t1b-surface-spec.md §2) ────────────────
+    /// `break`/`continue` used outside any enclosing `while`/`for` loop.
+    E057,
+    /// Collection mutator (`push`/`insert`/`remove`) called with the wrong
+    /// number of arguments — a targeted compile error naming the expected
+    /// signature (replaces the generic `E031` warning + silently-dropped
+    /// RMW lowering, RULED 2026-07-12, see `docs/decision-log.md`).
+    E058,
 }
 
 impl DiagnosticCode {
@@ -1004,6 +1013,8 @@ impl DiagnosticCode {
             Self::E054 => "E054",
             Self::E055 => "E055",
             Self::E056 => "E056",
+            Self::E057 => "E057",
+            Self::E058 => "E058",
         }
     }
 
@@ -1069,6 +1080,8 @@ impl DiagnosticCode {
             Self::E054 => "block-scoped temp shadows an already-visible temp",
             Self::E055 => "collection mutator's first argument is not an lvalue",
             Self::E056 => "collection mutator used in expression position",
+            Self::E057 => "break/continue outside a loop",
+            Self::E058 => "collection mutator argument count mismatch",
         }
     }
 
@@ -1152,6 +1165,8 @@ impl DiagnosticCode {
             "E054" => Some(Self::E054),
             "E055" => Some(Self::E055),
             "E056" => Some(Self::E056),
+            "E057" => Some(Self::E057),
+            "E058" => Some(Self::E058),
             _ => None,
         }
     }

@@ -100,10 +100,28 @@ fn lower_inline_sequence(seq: &hir::Sequence, ctx: &mut LowerCtx<'_>) -> lir::Co
 }
 
 /// Lower a block in inline content context (no choice/gather children possible).
+///
+/// `hir::Stmt::LogicBlock` (a T1b `~ { … }` block, docs/t1b-surface-spec.md
+/// §2) is intercepted here exactly like `lower_block_with_children` does at
+/// the top level — it splices possibly-many `lir::Stmt`s via
+/// `blocks::lower_logic_block`, which `stmts::lower_stmt`'s `Option<Stmt>`
+/// return can't express. This branch is reachable in practice: an inline
+/// multiline conditional/sequence that is *not* the first inline construct
+/// on its content line (or one embedded in choice display/bracket/inner
+/// text, which HIR normalization never touches — see `hir::normalize`)
+/// keeps its `InlineConditional`/`InlineSequence` shape all the way to LIR
+/// lowering instead of being lifted to a top-level `Stmt::Conditional`/
+/// `Stmt::Sequence`, and its branches can legally contain a `LogicBlock`.
+/// Before this fix that reached `stmts::lower_stmt`'s `debug_assert!`-guarded
+/// "should be dispatched by `lower_block_with_children`" arm — a no-op in
+/// release (silently dropping the block's statements) and a panic in debug
+/// (see #578 review).
 fn lower_inline_block(block: &hir::Block, ctx: &mut LowerCtx<'_>) -> Vec<lir::Stmt> {
     let mut stmts = Vec::new();
     for stmt in &block.stmts {
-        if let Some(s) = super::stmts::lower_stmt(stmt, ctx) {
+        if let hir::Stmt::LogicBlock(lb) = stmt {
+            stmts.extend(super::blocks::lower_logic_block(&lb.stmts, ctx));
+        } else if let Some(s) = super::stmts::lower_stmt(stmt, ctx) {
             stmts.push(s);
         }
     }
