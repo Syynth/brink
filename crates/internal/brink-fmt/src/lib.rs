@@ -623,7 +623,10 @@ fn mark_verbatim_span(node: &SyntaxNode, line_starts: &[usize], lines: &mut [Cla
         return;
     }
     lines[start_line].kind = LineKind::LogicBlockVerbatim;
-    lines[start_line].start = range.start().into();
+    // Anchor to the physical line start, not the `~` offset — otherwise an
+    // indented block's first line is dedented while its body keeps its
+    // indentation (review finding on #610).
+    lines[start_line].start = line_starts[start_line];
     lines[start_line].end = range.end().into();
     lines[start_line].logic_block_node = None;
     let last = end_line.min(lines.len() - 1);
@@ -1507,6 +1510,21 @@ mod tests {
         let input = "~ {\ntemp i = 0\nwhile true {\ni = i + 1\nif i > 10 {\nbreak\n}\nif i mod 2 == 0 {\ncontinue\n}\n}\n}\n";
         let expected = "~ {\n    temp i = 0\n    while true {\n        i = i + 1\n        if i > 10 {\n            break\n        }\n        if i mod 2 == 0 {\n            continue\n        }\n    }\n}\n";
         assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn block_parse_error_indented_first_line_keeps_indent() {
+        // A knot-nested (indented) malformed block must stay verbatim
+        // INCLUDING the first line's leading indentation — the span anchors
+        // to the physical line start, not the `~` token offset.
+        let input =
+            "=== knot ===\n  ~ {\n      temp y = 1\n      if y > 0 // note\n      { y = 2 }\n  }\n";
+        let out = fmt(input);
+        assert!(
+            out.contains("\n  ~ {\n"),
+            "first line of the verbatim block must keep its leading indent, got:\n{out}"
+        );
+        assert_eq!(fmt(&out), out, "verbatim bail-out must stay idempotent");
     }
 
     fn tier1_brink_fixture(name: &str) -> String {
