@@ -7,9 +7,14 @@ them as dialect syntax before the parser has to decide anything else:
 - **Map**: `#{key: expr, key: expr, …}` — trailing comma allowed, `#{}` for
   empty. Keys are restricted to the ratified key domain — `int`, `string`,
   `bool` — the same domain every other map-keyed operation in the value
-  model uses. The analyzer warns when a key's type is statically visible and
-  outside that domain; an actual out-of-domain key is also a runtime fault
-  (see [Indexing & Mutation](./indexing.md)).
+  model uses. An out-of-domain key is caught **only at runtime today** — a
+  turn-terminating construction fault when the map literal executes (see
+  [Indexing & Mutation](./indexing.md)). There is no compile-time warning:
+  `lower_map_literal` const-folds in-domain keys but simply falls through to
+  the runtime `MapNew` path for any statically-visible non-key type (float,
+  null, array, map), and no diagnostic is pushed on that path. If a
+  compile-time warning here is spec-mandated, that's a spec/implementation
+  divergence — flagged, not asserted as shipped behavior.
 
 ```ink
 ~ {
