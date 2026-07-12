@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
+use brink_analyzer::Dialect;
 use tokio::sync::{Notify, watch};
 use tower_lsp::{LspService, Server};
 
@@ -25,6 +26,12 @@ async fn main() {
     let trigger = Arc::new(Notify::new());
     let (analysis_tx, analysis_rx) = watch::channel(None);
     let last_published = Arc::new(Mutex::new(HashMap::new()));
+    // Shared with `Backend` (#599): `initialize`'s `initializationOptions
+    // .dialect` handler writes it, and both the foreground `Backend` handlers
+    // (completion/signature/folding) and the background `analysis_loop` task
+    // read it, so live diagnostics analyze under the same client-declared
+    // dialect as everything else.
+    let dialect = Arc::new(Mutex::new(Dialect::default()));
 
     let (service, socket) = LspService::new(|client| {
         // Spawn the background analysis loop
@@ -35,6 +42,7 @@ async fn main() {
             analysis_tx,
             client.clone(),
             Arc::clone(&last_published),
+            Arc::clone(&dialect),
         ));
 
         Backend::new(
@@ -44,6 +52,7 @@ async fn main() {
             Arc::clone(&trigger),
             Arc::clone(&generation),
             Arc::clone(&last_published),
+            Arc::clone(&dialect),
         )
     });
     Server::new(stdin, stdout, socket).serve(service).await;

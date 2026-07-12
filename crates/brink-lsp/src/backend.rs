@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use brink_analyzer::{AnalysisResult, Dialect};
+use brink_analyzer::{AnalysisOptions, AnalysisResult, Dialect};
 use brink_syntax::ast::AstNode;
 use tokio::sync::{Notify, watch};
 use tower_lsp::jsonrpc::Result;
@@ -83,9 +83,10 @@ pub struct Backend {
     /// `initialize`'s `initializationOptions.dialect` (`"brink"` or
     /// `"strict-ink"`; defaults to `StrictInk`, matching
     /// `AnalysisOptions::default()`). Tooling-only — gates whether stdlib
-    /// slice 1 completion/signature help are offered (#589); it does not
-    /// (yet) feed into the background analysis pass, so diagnostics still
-    /// analyze under the default dialect regardless of this setting.
+    /// slice 1 completion/signature help are offered (#589), and (#599) the
+    /// same `Arc` is shared with the background `analysis_loop` task so its
+    /// diagnostics analyze under the client-declared dialect too, instead of
+    /// always defaulting to `StrictInk`.
     dialect: Arc<Mutex<Dialect>>,
 }
 
@@ -99,6 +100,7 @@ impl Backend {
         last_published: Arc<
             Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>,
         >,
+        dialect: Arc<Mutex<Dialect>>,
     ) -> Self {
         Self {
             client,
@@ -108,7 +110,7 @@ impl Backend {
             generation,
             last_published,
             workspace_roots: Arc::new(Mutex::new(Vec::new())),
-            dialect: Arc::new(Mutex::new(Dialect::default())),
+            dialect,
         }
     }
 
@@ -1599,6 +1601,12 @@ fn ranges_overlap(a: &Range, b: &Range) -> bool {
 /// to coalesce rapid edits, then snapshots analysis inputs under the lock,
 /// runs per-project analysis without holding the lock, and publishes diagnostics
 /// for all files whose diagnostic set changed.
+///
+/// `dialect` is the same `Arc<Mutex<Dialect>>` `Backend` reads from (#599) —
+/// `initialize`'s `initializationOptions.dialect` handler writes it, and this
+/// loop re-reads it every iteration so a client that (re-)declares its
+/// dialect gets diagnostics analyzed under that dialect on the very next
+/// background pass, with no separate propagation step needed.
 pub async fn analysis_loop(
     db: Arc<Mutex<brink_db::ProjectDb>>,
     _generation: Arc<AtomicU64>,
@@ -1606,11 +1614,20 @@ pub async fn analysis_loop(
     tx: watch::Sender<Option<Arc<ProjectAnalyses>>>,
     client: Client,
     last_published: Arc<Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>>,
+    dialect: Arc<Mutex<Dialect>>,
 ) {
     loop {
         trigger.notified().await;
         // Coalesce rapid edits — yield so any queued notifications collapse
         tokio::task::yield_now().await;
+
+        // Re-read the declared dialect each iteration (poisoned-lock-safe,
+        // mirrors `Backend::dialect()`) so a client that changes its
+        // declared dialect mid-session is picked up on the next pass.
+        let opts = AnalysisOptions {
+            dialect: dialect.lock().map_or_else(|_| Dialect::default(), |g| *g),
+            ..AnalysisOptions::default()
+        };
 
         // Snapshot inputs under lock
         let (projects, file_meta, per_file_diags, file_suppressions) = {
@@ -1642,7 +1659,7 @@ pub async fn analysis_loop(
                 .iter()
                 .map(|(id, hir, manifest)| (*id, hir, manifest))
                 .collect();
-            let result = brink_analyzer::analyze(&file_refs);
+            let result = brink_analyzer::analyze_with_options(&file_refs, &opts);
             by_root.insert(*root, Arc::new(result));
 
             let members: Vec<_> = inputs.iter().map(|(id, _, _)| *id).collect();
