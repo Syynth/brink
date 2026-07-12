@@ -928,6 +928,10 @@ pub enum DiagnosticCode {
     /// non-suppressible backstop that fires when the gate was suppressed
     /// (e.g. `// brink-disable-all`).
     E053,
+    /// A block-scoped `temp` (`~ { … }`, docs/t1b-surface-spec.md §2) or
+    /// `for` loop variable shadows an already-visible temp/param — either an
+    /// enclosing `~ { … }` block scope or an outer classic `~ temp`.
+    E054,
 }
 
 impl DiagnosticCode {
@@ -988,6 +992,7 @@ impl DiagnosticCode {
             Self::E051 => "E051",
             Self::E052 => "E052",
             Self::E053 => "E053",
+            Self::E054 => "E054",
         }
     }
 
@@ -1050,6 +1055,7 @@ impl DiagnosticCode {
             Self::E053 => {
                 "internal: brink extension reached LIR lowering (dialect gate suppressed)"
             }
+            Self::E054 => "block-scoped temp shadows an already-visible temp",
         }
     }
 
@@ -1067,7 +1073,8 @@ impl DiagnosticCode {
             | Self::E034
             | Self::E035
             | Self::E038
-            | Self::E043 => Severity::Warning,
+            | Self::E043
+            | Self::E054 => Severity::Warning,
             _ => Severity::Error,
         }
     }
@@ -1129,6 +1136,7 @@ impl DiagnosticCode {
             "E051" => Some(Self::E051),
             "E052" => Some(Self::E052),
             "E053" => Some(Self::E053),
+            "E054" => Some(Self::E054),
             _ => None,
         }
     }

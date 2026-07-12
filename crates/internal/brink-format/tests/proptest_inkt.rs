@@ -325,6 +325,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                     address_paths,
                     name_table,
                     list_literals: vec![],
+                    literal_pool: vec![],
                     source_checksum,
                 }
             },

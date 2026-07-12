@@ -2955,42 +2955,30 @@ fn temp_visible_in_choice_body_after_gather() {
     );
 }
 
-// ─── #572 review: residual T1b-extension backstop ────────────────────
+// ─── T1b-2 (#570): LogicBlock/Index lower for real, no dialect gate needed ──
 //
 // `lower_ink_with_warnings` deliberately mirrors a caller that (like a
 // suppressed dialect gate) never checks `brink_analyzer::analyze`'s
-// diagnostics before lowering to LIR. Before the fix, a residual
-// `LogicBlock`/`Index`/… HIR node reaching `lower_to_program` would panic
-// via `debug_assert!` in debug builds and silently drop data (`None` /
-// `lir::Expr::Null`) in release builds. It must now refuse to produce a
-// program and report an `E053` diagnostic instead.
+// diagnostics before lowering to LIR. Through T1b-1, a `LogicBlock`/`Index`/…
+// HIR node reaching `lower_to_program` this way would panic via
+// `debug_assert!` in debug builds and silently drop data (`None` /
+// `lir::Expr::Null`) in release builds — caught by the (now-retired) E053
+// backstop, which refused to produce a program at all (#572 review). T1b-2
+// replaces that rejection with real lowering, so these HIR node kinds are no
+// longer "residual" — this test now proves the opposite of its T1b-1
+// version: the program lowers successfully and correctly.
 
 #[test]
-fn residual_logic_block_refuses_to_lower_instead_of_dropping_it() {
-    let (program, diags) = lower_ink_with_warnings("Hello\n~ {\ntemp x = 0\nx = x + 1\n}\nWorld\n");
-    assert!(
-        program.is_none(),
-        "a residual LogicBlock must not produce a program"
-    );
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.code == brink_ir::DiagnosticCode::E053),
-        "expected E053 backstop diagnostic, got {diags:?}"
-    );
+fn logic_block_lowers_without_a_dialect_gate_in_the_loop() {
+    let (program, _diags) =
+        lower_ink_with_warnings("Hello\n~ {\ntemp x = 0\nx = x + 1\n}\nWorld\n");
+    let program = program.expect("LogicBlock should lower to a real program in T1b-2");
+    assert!(!program.root.body.is_empty());
 }
 
 #[test]
-fn residual_index_refuses_to_lower_instead_of_becoming_null() {
-    let (program, diags) = lower_ink_with_warnings("VAR a = 5\n~ x = a[0]\n");
-    assert!(
-        program.is_none(),
-        "a residual Index expression must not produce a program"
-    );
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.code == brink_ir::DiagnosticCode::E053),
-        "expected E053 backstop diagnostic, got {diags:?}"
-    );
+fn index_expression_lowers_without_a_dialect_gate_in_the_loop() {
+    let (program, _diags) = lower_ink_with_warnings("VAR a = 5\n~ x = a[0]\n");
+    let program = program.expect("Index expression should lower to a real program in T1b-2");
+    assert!(!program.root.body.is_empty());
 }

@@ -2280,6 +2280,7 @@ dependencies = [
  "brink-runtime",
  "brink-syntax",
  "insta",
+ "proptest",
  "serde",
  "serde_json",
 ]

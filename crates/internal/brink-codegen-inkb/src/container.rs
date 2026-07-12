@@ -3,7 +3,7 @@
 use brink_format::{ChoiceFlags, Opcode, SequenceKind};
 use brink_ir::lir;
 
-use crate::ContainerEmitter;
+use crate::{ContainerEmitter, LoopCtx};
 
 impl ContainerEmitter<'_> {
     pub(super) fn emit_body(&mut self, stmts: &[lir::Stmt]) {
@@ -12,6 +12,10 @@ impl ContainerEmitter<'_> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one match arm per LIR Stmt variant; splitting would obscure the dispatch"
+    )]
     fn emit_stmt(&mut self, stmt: &lir::Stmt) {
         match stmt {
             lir::Stmt::EmitContent(content) => self.emit_content(content),
@@ -126,6 +130,86 @@ impl ContainerEmitter<'_> {
             lir::Stmt::EndOfLine => {
                 self.emit(Opcode::EmitNewline);
             }
+
+            lir::Stmt::LogicWhile(w) => self.emit_logic_while(w),
+
+            lir::Stmt::LogicBreak => {
+                // Patched to land just after the whole loop once it's fully
+                // emitted (`emit_logic_while`). A `break` outside any loop
+                // (should be rejected upstream; no analyzer check exists yet
+                // — see the T1b-2 PR description scopeNotes) degrades to a
+                // no-op rather than panicking or emitting a dangling jump.
+                if self.loop_stack.is_empty() {
+                    self.emit(Opcode::Nop);
+                } else {
+                    let site = self.emit_jump_placeholder(Opcode::Jump(0));
+                    if let Some(ctx) = self.loop_stack.last_mut() {
+                        ctx.break_patches.push(site);
+                    }
+                }
+            }
+
+            lir::Stmt::LogicContinue => {
+                if self.loop_stack.is_empty() {
+                    self.emit(Opcode::Nop);
+                } else {
+                    let site = self.emit_jump_placeholder(Opcode::Jump(0));
+                    if let Some(ctx) = self.loop_stack.last_mut() {
+                        ctx.continue_patches.push(site);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Compile a `while`/desugared-`for` loop to a flat backward-jump loop
+    /// in the same container's bytecode — no child container, since block
+    /// bodies never contain choices/gathers that would need one.
+    ///
+    /// ```text
+    /// loop_start: <condition>
+    ///             JumpIfFalse loop_end   ; jf_exit
+    ///             <body>                 ; break -> loop_end, continue -> post_start
+    /// post_start: <post>                 ; empty for a plain `while`
+    ///             Jump loop_start
+    /// loop_end:
+    /// ```
+    #[expect(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+    fn emit_logic_while(&mut self, w: &lir::LogicWhile) {
+        let loop_start = self.bytecode.len();
+        self.emit_expr(&w.condition, false);
+        let jf_exit = self.emit_jump_placeholder(Opcode::JumpIfFalse(0));
+
+        self.loop_stack.push(LoopCtx {
+            break_patches: Vec::new(),
+            continue_patches: Vec::new(),
+        });
+        self.emit_body(&w.body);
+        let LoopCtx {
+            break_patches,
+            continue_patches,
+        } = self.loop_stack.pop().unwrap_or(LoopCtx {
+            break_patches: Vec::new(),
+            continue_patches: Vec::new(),
+        });
+        // `continue` lands here, right before `post` — for a plain `while`
+        // (`post` empty) that's exactly the backward jump below, i.e.
+        // "re-check the condition"; for a desugared `for`, that's the index
+        // increment, so `continue` still advances the loop instead of
+        // spinning forever.
+        for site in continue_patches {
+            self.patch_jump(site);
+        }
+        self.emit_body(&w.post);
+
+        // Backward jump to re-check the condition.
+        let relative = loop_start as i32 - (self.bytecode.len() as i32 + 5);
+        self.emit(Opcode::Jump(relative));
+
+        // `loop_end`: both the false-condition exit and every `break` land here.
+        self.patch_jump(jf_exit);
+        for site in break_patches {
+            self.patch_jump(site);
         }
     }
 

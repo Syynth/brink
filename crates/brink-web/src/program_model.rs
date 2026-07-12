@@ -445,6 +445,20 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         Opcode::ListFromInt => "list_from_int".to_owned(),
         Opcode::ListRandom => "list_random".to_owned(),
 
+        // Collections (T1b)
+        Opcode::ArrayNew(n) => format!("array_new {n}"),
+        Opcode::MapNew(n) => format!("map_new {n}"),
+        Opcode::IndexGet => "index_get".to_owned(),
+        Opcode::IndexSet => "index_set".to_owned(),
+        Opcode::CollectionLen => "collection_len".to_owned(),
+        Opcode::MapGet => "map_get".to_owned(),
+        Opcode::MapInsert => "map_insert".to_owned(),
+        Opcode::MapRemove => "map_remove".to_owned(),
+        Opcode::MapContains => "map_contains".to_owned(),
+        Opcode::CollectionKeys => "collection_keys".to_owned(),
+        Opcode::CollectionValues => "collection_values".to_owned(),
+        Opcode::PushLiteral(idx) => format!("push_literal {idx}"),
+
         // Lifecycle
         Opcode::Done => "done".to_owned(),
         Opcode::Yield => "yield".to_owned(),

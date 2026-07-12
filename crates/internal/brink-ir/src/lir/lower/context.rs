@@ -153,6 +153,29 @@ pub struct LowerCtx<'a> {
     /// regardless of whether they're entered via `enter_container`
     /// (structured) or `goto` (ink divert).
     pub choice_gather_target: Option<brink_format::DefinitionId>,
+    /// Next free temp slot for T1b block-scoped locals (explicit `temp`
+    /// declarations inside `~ { … }`, `for` loop variables, and
+    /// compiler-synthesized temps for indexed-assignment/for-loop
+    /// desugaring). Shared by mutable reference across an entire frame
+    /// (a knot body + all its stitches, or the whole root scope across
+    /// files) — the same threading discipline as `ids` — so two block
+    /// scopes that share a call frame never collide on a slot number.
+    /// Seeded to the classic `TempMap`'s `total_slots()` for that frame.
+    pub next_block_slot: &'a mut u16,
+    /// Stack of open `~ { … }` lexical scopes. Each frame holds
+    /// `(name, slot)` pairs for locals declared in that scope, innermost
+    /// last. [`LowerCtx::temp_slot`] searches this stack (innermost first)
+    /// before falling back to the classic flat `temps` map, so a
+    /// block-scoped `temp` correctly shadows an outer temp of the same
+    /// name (docs/t1b-surface-spec.md §2) without disturbing the outer
+    /// slot's storage.
+    pub block_scopes: Vec<Vec<(String, u16)>>,
+    /// Warning-severity diagnostics produced during lowering (currently
+    /// just the T1b block-scoped-temp shadow warning, E054). Shared by
+    /// mutable reference across an entire `lower_to_program` call — the
+    /// same threading discipline as `ids`/`next_block_slot` — and returned
+    /// alongside the program.
+    pub diagnostics: &'a mut Vec<crate::Diagnostic>,
 }
 
 impl<'a> LowerCtx<'a> {
@@ -169,11 +192,77 @@ impl<'a> LowerCtx<'a> {
 
     /// Look up a name in the temp map for the current scope.
     /// Only returns a slot if the temp has been declared (is visible).
+    ///
+    /// Checks open T1b block scopes first (innermost frame first, most
+    /// recent declaration within a frame first) so a block-scoped `temp`
+    /// correctly shadows an outer temp of the same name; outside any block
+    /// (`block_scopes` empty) this is exactly the pre-T1b lookup.
     pub fn temp_slot(&self, name: &str) -> Option<u16> {
+        if let Some(slot) = self.lookup_block_local(name) {
+            return Some(slot);
+        }
         if self.visible_temps.contains(name) {
             self.temps.get(name)
         } else {
             None
+        }
+    }
+
+    /// Search the open block-scope stack for `name`, innermost first.
+    fn lookup_block_local(&self, name: &str) -> Option<u16> {
+        for frame in self.block_scopes.iter().rev() {
+            if let Some(&(_, slot)) = frame.iter().rev().find(|(n, _)| n == name) {
+                return Some(slot);
+            }
+        }
+        None
+    }
+
+    /// Open a new T1b lexical block scope (`~ { … }`, or an `if`/`while`/
+    /// `for` body nested within one). Must be paired with
+    /// [`pop_block_scope`](Self::pop_block_scope).
+    pub fn push_block_scope(&mut self) {
+        self.block_scopes.push(Vec::new());
+    }
+
+    /// Close the innermost T1b lexical block scope. Locals declared in it
+    /// stop shadowing once popped.
+    pub fn pop_block_scope(&mut self) {
+        self.block_scopes.pop();
+    }
+
+    /// Allocate a fresh temp slot for a T1b block-scoped local (explicit or
+    /// compiler-synthesized). Never reused/deduped by name — that's exactly
+    /// what makes shadowing safe.
+    pub fn alloc_block_slot(&mut self) -> u16 {
+        let slot = *self.next_block_slot;
+        *self.next_block_slot += 1;
+        slot
+    }
+
+    /// Whether `name` is already visible as a temp/param — either an open
+    /// T1b block scope (innermost first) or the classic flat scope (knot/
+    /// stitch params + `~ temp` declarations seen so far in source order).
+    /// The shadow-warning check (`docs/t1b-surface-spec.md` §2, E054) uses
+    /// this: declaring a block-scoped `temp` with a name that's already
+    /// visible — from an enclosing block *or* an outer classic temp — is a
+    /// shadow.
+    pub fn is_name_visible(&self, name: &str) -> bool {
+        self.lookup_block_local(name).is_some() || self.visible_temps.contains(name)
+    }
+
+    /// Bind `name` to `slot` in the innermost open block scope.
+    ///
+    /// Every T1b local is declared while lowering a `~ { … }`/`if`/`while`/
+    /// `for` body, all of which push a scope first, so `block_scopes` is
+    /// never empty in practice; self-heals (opens a scope) rather than
+    /// using a denied `expect`/`unwrap` if that invariant is ever violated.
+    pub fn declare_block_local(&mut self, name: String, slot: u16) {
+        if self.block_scopes.is_empty() {
+            self.block_scopes.push(Vec::new());
+        }
+        if let Some(frame) = self.block_scopes.last_mut() {
+            frame.push((name, slot));
         }
     }
 

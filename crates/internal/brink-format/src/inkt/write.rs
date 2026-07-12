@@ -37,6 +37,7 @@ pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
     write_addresses(w, &story.addresses)?;
     write_address_paths(w, &story.address_paths)?;
     write_list_literals(w, &story.list_literals)?;
+    write_literal_pool(w, &story.literal_pool)?;
 
     // Build a lookup from scope_id → line table for writing
     let line_map: HashMap<DefinitionId, &[LineEntry]> = story
@@ -153,6 +154,22 @@ fn write_list_literals(w: &mut dyn fmt::Write, list_literals: &[ListValue]) -> f
             write!(w, " {origin}")?;
         }
         writeln!(w, "))")?;
+    }
+    writeln!(w, "  )")
+}
+
+/// Write the T1b literal pool section (`docs/format-v4-rfc.md` §2) —
+/// printed only when present, matching the RFC's section discipline.
+fn write_literal_pool(w: &mut dyn fmt::Write, literal_pool: &[Value]) -> fmt::Result {
+    if literal_pool.is_empty() {
+        return Ok(());
+    }
+    writeln!(w)?;
+    writeln!(w, "  (literal_pool")?;
+    for v in literal_pool {
+        write!(w, "    ")?;
+        write_value(w, v)?;
+        writeln!(w)?;
     }
     writeln!(w, "  )")
 }
@@ -480,6 +497,20 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::ListFromInt => write!(w, "list_from_int"),
         Opcode::ListRandom => write!(w, "list_random"),
 
+        // Collections (T1b)
+        Opcode::ArrayNew(n) => write!(w, "array_new {n}"),
+        Opcode::MapNew(n) => write!(w, "map_new {n}"),
+        Opcode::IndexGet => write!(w, "index_get"),
+        Opcode::IndexSet => write!(w, "index_set"),
+        Opcode::CollectionLen => write!(w, "collection_len"),
+        Opcode::MapGet => write!(w, "map_get"),
+        Opcode::MapInsert => write!(w, "map_insert"),
+        Opcode::MapRemove => write!(w, "map_remove"),
+        Opcode::MapContains => write!(w, "map_contains"),
+        Opcode::CollectionKeys => write!(w, "collection_keys"),
+        Opcode::CollectionValues => write!(w, "collection_values"),
+        Opcode::PushLiteral(idx) => write!(w, "push_literal {idx}"),
+
         // Lifecycle
         Opcode::Done => write!(w, "done"),
         Opcode::Yield => write!(w, "yield"),
@@ -664,6 +695,7 @@ mod tests {
             address_paths: vec![],
             name_table: vec![],
             list_literals: vec![],
+            literal_pool: vec![],
             source_checksum: 0,
         };
         let mut buf = String::new();

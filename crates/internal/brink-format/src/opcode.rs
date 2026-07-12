@@ -120,24 +120,43 @@ const MAX: u8 = 0x96;
 // External fns
 const CALL_EXTERNAL: u8 = 0xA0;
 
-// Reserved v4 collection opcodes (`docs/format-v4-rfc.md` §3 "Collections
-// (T1a)") — numeric assignments frozen by the §9 one-bump rule, contiguous
-// and adjacent to the existing List ops block below so the T1a milestone
-// needs no renumbering. Deliberately NOT `Opcode` variants: there is no
-// match arm for these bytes in `Opcode::decode`, so the strict reader keeps
-// rejecting them (`UnknownOpcode`) until the T1a compiler surface begins
-// emitting them, the same discipline the reserved v4 value tags/sections
-// follow (`inkb/mod.rs`).
+// v4 collection opcodes (`docs/format-v4-rfc.md` §3 "Collections (T1a)") —
+// numeric assignments frozen by the §9 one-bump rule, contiguous and
+// adjacent to the existing List ops block below. Live as of T1b-2 (#570):
+// `Opcode` variants + VM execution exist for the whole block, though only a
+// subset (`ArrayNew`, `MapNew`, `IndexGet`, `IndexSet`, `Len`, `Keys`,
+// `PushLiteral`) is emitted by the compiler in T1b-2 — the map-mutator ops
+// (`MapGet`, `MapInsert`, `MapRemove`, `MapContains`, `Values`) become
+// compiler-reachable when the stdlib slice (T1b-3, `docs/t1b-surface-spec.md`
+// §5) lands, matching the RFC's "inert until each milestone's compiler work
+// emits them" discipline.
 //   0xBE ArrayNew(n)     0xBF MapNew(n)        0xC0 IndexGet
 //   0xC1 IndexSet        0xC2 Len              0xC3 MapGet
 //   0xC4 MapInsert       0xC5 MapRemove        0xC6 MapContains
 //   0xC7 Keys            0xC8 Values           0xC9 PushLiteral(u32)
-// `PushLiteral(u32)` absorbs `PushList`/`ListLiterals` (RFC §2): once the
-// `LiteralPool` section and this opcode land together, `PushList`/
-// `VAL_LIST`/`ListLiterals` retire. Sharing-discipline ops (`TakeVar`,
-// `StoreVarIfNew`, `EqVars`) and later Tier-1 groups (functions, handles,
-// projections, records) are named in the RFC but out of this reservation —
-// each gets its own contiguous block, numbered when its own issue lands.
+const ARRAY_NEW: u8 = 0xBE;
+const MAP_NEW: u8 = 0xBF;
+const INDEX_GET: u8 = 0xC0;
+const INDEX_SET: u8 = 0xC1;
+const COLLECTION_LEN: u8 = 0xC2;
+const MAP_GET: u8 = 0xC3;
+const MAP_INSERT: u8 = 0xC4;
+const MAP_REMOVE: u8 = 0xC5;
+const MAP_CONTAINS: u8 = 0xC6;
+const COLLECTION_KEYS: u8 = 0xC7;
+const COLLECTION_VALUES: u8 = 0xC8;
+const PUSH_LITERAL: u8 = 0xC9;
+// `PushLiteral(u32)` is the T1b `LiteralPool` reference opcode (RFC §2).
+// `PushList`/`ListLiterals` are unaffected by this PR — the RFC's absorption
+// of `ListLiterals` into `LiteralPool` is a separate, larger migration (see
+// PR description scopeNotes) that would require regenerating every checked-in
+// oracle `.inkb` fixture; out of scope here by construction (nothing in this
+// PR touches `PushList`/`ListLiterals` emission or decoding).
+//
+// Sharing-discipline ops (`TakeVar`, `StoreVarIfNew`, `EqVars`) and later
+// Tier-1 groups (functions, handles, projections, records) remain named in
+// the RFC but out of this reservation — each gets its own contiguous block,
+// numbered when its own issue lands.
 
 // Reserved v4 sharing-discipline opcodes (`docs/format-v4-rfc.md` §3
 // "Sharing discipline (T1a)"; semantics in `docs/value-model-spec.md` §6)
@@ -497,6 +516,39 @@ pub enum Opcode {
     ListFromInt,
     ListRandom,
 
+    // ── Collections (T1b, `docs/format-v4-rfc.md` §3 "Collections (T1a)") ─
+    /// `[elem_0, …, elem_{n-1}]` → `Array([elem_0, …, elem_{n-1}])`.
+    ArrayNew(u32),
+    /// `[k_0, v_0, …, k_{n-1}, v_{n-1}]` → `Map({k_0: v_0, …})` (insertion
+    /// order = argument order; a repeated key keeps its first position and
+    /// takes the last value, matching `OrderedMap::insert`).
+    MapNew(u32),
+    /// `[container, index]` → element/value. Turn-terminating fault on
+    /// out-of-bounds array index or missing map key (value-model-spec §6).
+    IndexGet,
+    /// `[container, index, value]` → updated container (take → `make_mut` →
+    /// write-back). Turn-terminating fault on out-of-bounds array index or
+    /// missing map key — no silent growth on write-past-end (spec §6).
+    IndexSet,
+    /// `[container]` → `Int(len)`. Array or map.
+    CollectionLen,
+    /// `[map, key]` → value. Turn-terminating fault on missing key.
+    MapGet,
+    /// `[map, key, value]` → updated map (insert-or-overwrite; unlike
+    /// `IndexSet`, a missing key is not a fault — this is the stdlib
+    /// `insert()` mutator's primitive).
+    MapInsert,
+    /// `[map, key]` → updated map with `key` removed (no-op if absent).
+    MapRemove,
+    /// `[map, key]` → `Bool`.
+    MapContains,
+    /// `[map]` → `Array` of keys in insertion order.
+    CollectionKeys,
+    /// `[map]` → `Array` of values in insertion order.
+    CollectionValues,
+    /// `LiteralPool[idx]` → cloned value (an `Arc` bump for collections).
+    PushLiteral(u32),
+
     // ── Lifecycle ───────────────────────────────────────────────────────
     Done,
     /// Pause for choice presentation. Like `Done` but does NOT set
@@ -735,6 +787,29 @@ impl Opcode {
             Self::ListFromInt => write_u8(buf, LIST_FROM_INT),
             Self::ListRandom => write_u8(buf, LIST_RANDOM),
 
+            // Collections
+            Self::ArrayNew(n) => {
+                write_u8(buf, ARRAY_NEW);
+                write_u32(buf, n);
+            }
+            Self::MapNew(n) => {
+                write_u8(buf, MAP_NEW);
+                write_u32(buf, n);
+            }
+            Self::IndexGet => write_u8(buf, INDEX_GET),
+            Self::IndexSet => write_u8(buf, INDEX_SET),
+            Self::CollectionLen => write_u8(buf, COLLECTION_LEN),
+            Self::MapGet => write_u8(buf, MAP_GET),
+            Self::MapInsert => write_u8(buf, MAP_INSERT),
+            Self::MapRemove => write_u8(buf, MAP_REMOVE),
+            Self::MapContains => write_u8(buf, MAP_CONTAINS),
+            Self::CollectionKeys => write_u8(buf, COLLECTION_KEYS),
+            Self::CollectionValues => write_u8(buf, COLLECTION_VALUES),
+            Self::PushLiteral(idx) => {
+                write_u8(buf, PUSH_LITERAL);
+                write_u32(buf, idx);
+            }
+
             // Lifecycle
             Self::Done => write_u8(buf, DONE),
             Self::Yield => write_u8(buf, YIELD),
@@ -906,6 +981,20 @@ impl Opcode {
             LIST_RANGE => Self::ListRange,
             LIST_FROM_INT => Self::ListFromInt,
             LIST_RANDOM => Self::ListRandom,
+
+            // Collections
+            ARRAY_NEW => Self::ArrayNew(read_u32(buf, offset)?),
+            MAP_NEW => Self::MapNew(read_u32(buf, offset)?),
+            INDEX_GET => Self::IndexGet,
+            INDEX_SET => Self::IndexSet,
+            COLLECTION_LEN => Self::CollectionLen,
+            MAP_GET => Self::MapGet,
+            MAP_INSERT => Self::MapInsert,
+            MAP_REMOVE => Self::MapRemove,
+            MAP_CONTAINS => Self::MapContains,
+            COLLECTION_KEYS => Self::CollectionKeys,
+            COLLECTION_VALUES => Self::CollectionValues,
+            PUSH_LITERAL => Self::PushLiteral(read_u32(buf, offset)?),
 
             // Lifecycle
             DONE => Self::Done,
@@ -1176,6 +1265,56 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_collections() {
+        for op in [
+            Opcode::ArrayNew(0),
+            Opcode::ArrayNew(1),
+            Opcode::ArrayNew(u32::MAX),
+            Opcode::MapNew(0),
+            Opcode::MapNew(3),
+            Opcode::IndexGet,
+            Opcode::IndexSet,
+            Opcode::CollectionLen,
+            Opcode::MapGet,
+            Opcode::MapInsert,
+            Opcode::MapRemove,
+            Opcode::MapContains,
+            Opcode::CollectionKeys,
+            Opcode::CollectionValues,
+            Opcode::PushLiteral(0),
+            Opcode::PushLiteral(u32::MAX),
+        ] {
+            roundtrip(&op);
+        }
+    }
+
+    /// The collection opcode block is contiguous (`docs/format-v4-rfc.md`
+    /// §3): `0xBE`-`0xC9` inclusive, no gaps, no overlap with the adjacent
+    /// list-ops block (`0xB0`-`0xBD`) or the lifecycle block (`0xF0`+).
+    #[test]
+    fn collection_opcode_block_is_contiguous_and_matches_rfc_layout() {
+        let expected: [(u8, Opcode); 12] = [
+            (0xBE, Opcode::ArrayNew(0)),
+            (0xBF, Opcode::MapNew(0)),
+            (0xC0, Opcode::IndexGet),
+            (0xC1, Opcode::IndexSet),
+            (0xC2, Opcode::CollectionLen),
+            (0xC3, Opcode::MapGet),
+            (0xC4, Opcode::MapInsert),
+            (0xC5, Opcode::MapRemove),
+            (0xC6, Opcode::MapContains),
+            (0xC7, Opcode::CollectionKeys),
+            (0xC8, Opcode::CollectionValues),
+            (0xC9, Opcode::PushLiteral(0)),
+        ];
+        for (byte, op) in expected {
+            let mut buf = Vec::new();
+            op.encode(&mut buf);
+            assert_eq!(buf[0], byte, "{op:?} encoded to unexpected discriminant");
+        }
+    }
+
+    #[test]
     fn roundtrip_lifecycle() {
         for op in [Opcode::Done, Opcode::Yield, Opcode::End, Opcode::Nop] {
             roundtrip(&op);
@@ -1202,17 +1341,25 @@ mod tests {
         assert_eq!(err, DecodeError::UnknownOpcode(0xFF));
     }
 
-    /// Reserved v4 collection opcode block (`0xBE`-`0xC9`,
-    /// `docs/format-v4-rfc.md` §3 "Collections (T1a)") is numbered but
-    /// deliberately not wired into `Opcode` — the strict reader must keep
-    /// rejecting every byte in the block until the T1a milestone lands.
+    /// The v4 collection opcode block (`0xBE`-`0xC9`, `docs/format-v4-rfc.md`
+    /// §3 "Collections (T1a)") went live in T1b-2 (#570) — every byte in the
+    /// block now decodes to a real `Opcode` variant (superseding the T1a-era
+    /// "still rejected" test this replaces). `ArrayNew`/`MapNew`/
+    /// `PushLiteral` carry a `u32` operand so a bare 1-byte buffer isn't
+    /// enough for those three; this asserts every discriminant byte decodes
+    /// to *some* `Opcode` (not `UnknownOpcode`), operand length aside.
     #[test]
-    fn decode_reserved_collection_opcodes_still_rejected() {
+    fn collection_opcode_block_no_longer_rejected() {
         for disc in 0xBEu8..=0xC9u8 {
-            let buf = [disc];
+            // Pad with zero bytes so the 4-byte `u32` operand opcodes
+            // (`ArrayNew`/`MapNew`/`PushLiteral`) have enough to decode too.
+            let buf = [disc, 0, 0, 0, 0];
             let mut offset = 0;
-            let err = Opcode::decode(&buf, &mut offset).unwrap_err();
-            assert_eq!(err, DecodeError::UnknownOpcode(disc));
+            let result = Opcode::decode(&buf, &mut offset);
+            assert!(
+                !matches!(result, Err(DecodeError::UnknownOpcode(_))),
+                "0x{disc:02x} should decode to a real Opcode, got {result:?}"
+            );
         }
     }
 

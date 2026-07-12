@@ -247,6 +247,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                     address_paths,
                     name_table,
                     list_literals: vec![],
+                    literal_pool: vec![],
                     source_checksum: 0,
                 }
             },
@@ -273,8 +274,8 @@ proptest! {
         // Correct version.
         prop_assert_eq!(index.version, 4);
 
-        // Exactly 10 sections in canonical order.
-        prop_assert_eq!(index.sections.len(), 10);
+        // Exactly 11 sections in canonical order.
+        prop_assert_eq!(index.sections.len(), 11);
         prop_assert_eq!(index.sections[0].kind, SectionKind::NameTable);
         prop_assert_eq!(index.sections[1].kind, SectionKind::Variables);
         prop_assert_eq!(index.sections[2].kind, SectionKind::ListDefs);
@@ -285,6 +286,7 @@ proptest! {
         prop_assert_eq!(index.sections[7].kind, SectionKind::Labels);
         prop_assert_eq!(index.sections[8].kind, SectionKind::ListLiterals);
         prop_assert_eq!(index.sections[9].kind, SectionKind::AddressPaths);
+        prop_assert_eq!(index.sections[10].kind, SectionKind::LiteralPool);
 
         let header_size = u32::try_from(index.header_size()).unwrap();
 

@@ -45,8 +45,9 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
         SectionKind::Labels,
         SectionKind::ListLiterals,
         SectionKind::AddressPaths,
+        SectionKind::LiteralPool,
     ];
-    let mut section_offsets = [0u32; 10];
+    let mut section_offsets = [0u32; 11];
 
     // 1. NameTable
     section_offsets[0] = (buf.len() - base) as u32;
@@ -87,6 +88,10 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
     // 10. AddressPaths
     section_offsets[9] = (buf.len() - base) as u32;
     write_section_address_paths(&story.address_paths, buf);
+
+    // 11. LiteralPool
+    section_offsets[10] = (buf.len() - base) as u32;
+    write_section_literal_pool(&story.literal_pool, buf);
 
     let file_size = (buf.len() - base) as u32;
     let checksum = crc32(&buf[base + header_size..]);
@@ -381,6 +386,19 @@ pub fn write_section_list_literals(list_literals: &[ListValue], buf: &mut Vec<u8
         for origin in &lv.origins {
             write_def_id(buf, *origin);
         }
+    }
+}
+
+/// Write the T1b literal pool section (no header framing) — a flat list of
+/// content-hash-deduplicated constant [`Value`]s referenced by
+/// `PushLiteral(idx)` (`docs/format-v4-rfc.md` §2). Each entry uses the
+/// existing generic `encode_value` (the same recursive `VAL_ARRAY`/`VAL_MAP`
+/// tree encoding as a `GlobalVarDef` default).
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_literal_pool(literal_pool: &[Value], buf: &mut Vec<u8>) {
+    write_u32(buf, literal_pool.len() as u32);
+    for v in literal_pool {
+        encode_value(v, buf);
     }
 }
 

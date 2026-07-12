@@ -49,6 +49,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
     let addresses = read_section_addresses(buf, &index)?;
     let list_literals = read_section_list_literals(buf, &index)?;
     let address_paths = read_section_address_paths(buf, &index)?;
+    let literal_pool = read_section_literal_pool(buf, &index)?;
 
     Ok(StoryData {
         containers,
@@ -61,6 +62,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
         address_paths,
         name_table,
         list_literals,
+        literal_pool,
         source_checksum: index.checksum,
     })
 }
@@ -459,6 +461,22 @@ pub fn read_section_list_literals(
         literals.push(ListValue { items, origins });
     }
     Ok(literals)
+}
+
+/// Read the T1b literal pool from a complete `.inkb` file using its index.
+/// Absent section (older-shaped buffer within the same version) decodes as
+/// empty, mirroring [`read_section_list_literals`].
+pub fn read_section_literal_pool(buf: &[u8], index: &InkbIndex) -> Result<Vec<Value>, DecodeError> {
+    let Some(range) = index.section_range(SectionKind::LiteralPool) else {
+        return Ok(Vec::new());
+    };
+    let mut off = range.start;
+    let count = read_u32(buf, &mut off)? as usize;
+    let mut pool = Vec::with_capacity(safe_capacity(count, buf.len(), off, 1));
+    for _ in 0..count {
+        pool.push(decode_value(buf, &mut off, 0)?);
+    }
+    Ok(pool)
 }
 
 fn decode_external(buf: &[u8], off: &mut usize) -> Result<ExternalFnDef, DecodeError> {

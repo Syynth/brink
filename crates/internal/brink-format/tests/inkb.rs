@@ -6,11 +6,11 @@ use brink_format::{
     DecodeError, MAX_DECODE_DEPTH, SectionKind, assemble_inkb, read_inkb, read_inkb_index,
     read_section_addresses, read_section_containers, read_section_externals,
     read_section_line_tables, read_section_list_defs, read_section_list_items,
-    read_section_list_literals, read_section_name_table, read_section_variables, write_inkb,
-    write_section_address_paths, write_section_addresses, write_section_containers,
-    write_section_externals, write_section_line_tables, write_section_list_defs,
-    write_section_list_items, write_section_list_literals, write_section_name_table,
-    write_section_variables,
+    read_section_list_literals, read_section_literal_pool, read_section_name_table,
+    read_section_variables, write_inkb, write_section_address_paths, write_section_addresses,
+    write_section_containers, write_section_externals, write_section_line_tables,
+    write_section_list_defs, write_section_list_items, write_section_list_literals,
+    write_section_literal_pool, write_section_name_table, write_section_variables,
 };
 
 fn i001_data() -> brink_format::StoryData {
@@ -369,7 +369,7 @@ fn index_parsing() {
     let index = read_inkb_index(&buf).unwrap();
     assert_eq!(index.version, 4);
     assert_eq!(index.file_size as usize, buf.len());
-    assert_eq!(index.sections.len(), 10);
+    assert_eq!(index.sections.len(), 11);
 
     // Sections are in canonical order.
     assert_eq!(index.sections[0].kind, SectionKind::NameTable);
@@ -382,9 +382,10 @@ fn index_parsing() {
     assert_eq!(index.sections[7].kind, SectionKind::Labels);
     assert_eq!(index.sections[8].kind, SectionKind::ListLiterals);
     assert_eq!(index.sections[9].kind, SectionKind::AddressPaths);
+    assert_eq!(index.sections[10].kind, SectionKind::LiteralPool);
 
-    // Header size is 16 + 8*10 = 96.
-    assert_eq!(index.header_size(), 96);
+    // Header size is 16 + 8*11 = 104.
+    assert_eq!(index.header_size(), 104);
 
     // First section starts right after header.
     assert_eq!(index.sections[0].offset as usize, index.header_size());
@@ -454,6 +455,32 @@ fn section_level_roundtrip() {
 
     let list_literals = read_section_list_literals(&buf, &index).unwrap();
     assert_eq!(list_literals, data.list_literals);
+
+    let literal_pool = read_section_literal_pool(&buf, &index).unwrap();
+    assert_eq!(literal_pool, data.literal_pool);
+}
+
+/// The T1b literal pool round-trips through `.inkb`, including nested
+/// array/map entries (the whole point of the section — `docs/format-v4-rfc.md`
+/// §2).
+#[test]
+fn literal_pool_roundtrip_with_collections() {
+    use brink_format::{MapKey, OrderedMap, Value};
+
+    let mut data = i001_data();
+    let mut inner_map = OrderedMap::new();
+    inner_map.insert(MapKey::from("hp"), Value::Int(10));
+    inner_map.insert(MapKey::from(true), Value::String("flag".into()));
+    data.literal_pool = vec![
+        Value::array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        Value::map(inner_map),
+        Value::array(vec![Value::array(vec![]), Value::Null]),
+    ];
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+    let recovered = read_inkb(&buf).unwrap();
+    assert_eq!(recovered.literal_pool, data.literal_pool);
 }
 
 #[test]
@@ -512,6 +539,9 @@ fn assemble_inkb_equivalence() {
     let mut ap_buf = Vec::new();
     write_section_address_paths(&data.address_paths, &mut ap_buf);
 
+    let mut literal_pool_buf = Vec::new();
+    write_section_literal_pool(&data.literal_pool, &mut literal_pool_buf);
+
     let mut assembled = Vec::new();
     assemble_inkb(
         &[
@@ -525,6 +555,7 @@ fn assemble_inkb_equivalence() {
             (SectionKind::Labels, &label_buf),
             (SectionKind::ListLiterals, &list_lit_buf),
             (SectionKind::AddressPaths, &ap_buf),
+            (SectionKind::LiteralPool, &literal_pool_buf),
         ],
         &mut assembled,
     );
@@ -606,6 +637,7 @@ fn roundtrip_line_entry_with_audio_ref() {
         address_paths: vec![],
         name_table: vec!["root".to_string()],
         list_literals: vec![],
+        literal_pool: vec![],
         source_checksum: 0,
     };
 

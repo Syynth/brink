@@ -91,6 +91,24 @@ pub enum ConstValue {
     },
     DivertTarget(DefinitionId),
     Null,
+    /// A compile-time-constant array (all elements constant-foldable),
+    /// destined for the T1b literal pool (`docs/format-v4-rfc.md` §2).
+    Array(Vec<ConstValue>),
+    /// A compile-time-constant map (all keys/values constant-foldable).
+    /// Keys are restricted to the ratified scalar domain by construction —
+    /// [`ConstMapKey`] has no variant for anything else.
+    Map(Vec<(ConstMapKey, ConstValue)>),
+}
+
+/// A compile-time-constant map key — the ratified scalar domain
+/// (value-model-spec §4: int/string/bool). Kept distinct from [`ConstValue`]
+/// so an invalid key type is a *type error at construction*, not a runtime
+/// possibility to guard against when emitting the literal pool.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConstMapKey {
+    Int(i32),
+    Str(String),
+    Bool(bool),
 }
 
 // ─── Containers ──────────────────────────────────────────────────────
@@ -261,6 +279,36 @@ pub enum Stmt {
     /// divert on the same line). JSON backend emits `"\n"`, bytecode backend
     /// emits `EmitNewline` opcode.
     EndOfLine,
+
+    // ── T1b logic blocks (docs/t1b-surface-spec.md §2) ──────────────
+    //
+    // `~ { … }` blocks are pure logic — no weave concepts (content, choices,
+    // diverts, gathers, threads) ever appear in these bodies; `if`/`else`
+    // reuse `Stmt::Conditional` above (identical shape: a list of
+    // `(Option<condition>, body)` branches, no sub-containers needed since
+    // block bodies never contain choices).
+    /// `while cond { … }`. Compiles to a flat backward-jump loop in the
+    /// enclosing container's own bytecode (no child container) — loops run
+    /// under the existing VM step limit like all bytecode.
+    LogicWhile(LogicWhile),
+    /// `break` — jump past the innermost enclosing `LogicWhile`.
+    LogicBreak,
+    /// `continue` — jump to the innermost enclosing `LogicWhile`'s condition
+    /// re-check.
+    LogicContinue,
+}
+
+/// A `while cond { … }` loop body (T1b).
+#[derive(Clone)]
+pub struct LogicWhile {
+    pub condition: Expr,
+    pub body: Vec<Stmt>,
+    /// Statements that run after `body` completes each iteration, before the
+    /// condition re-check — also where `continue` jumps to. Empty for an
+    /// author-written `while`; the `for`-loop desugar (§2: `for x in arr`)
+    /// puts the index increment here so `continue` still advances the loop
+    /// instead of infinite-looping.
+    pub post: Vec<Stmt>,
 }
 
 /// The resolved target of an assignment.
@@ -531,6 +579,41 @@ pub enum Expr {
         builtin: BuiltinFn,
         args: Vec<Expr>,
     },
+
+    // ── Collections (T1b, docs/t1b-surface-spec.md §3-4) ────────────
+    /// A compile-time-constant collection literal — emitted via the V4
+    /// literal pool (`PushLiteral(idx)`), deduplicated at codegen.
+    ConstLiteral(ConstValue),
+    /// `#[e0, e1, …]` where at least one element is not constant-foldable —
+    /// evaluates each element then `ArrayNew(n)`.
+    ArrayNew(Vec<Expr>),
+    /// `#{k0: v0, …}` where at least one entry is not constant-foldable —
+    /// evaluates each key/value pair then `MapNew(n)` (n = pair count).
+    MapNew(Vec<(Expr, Expr)>),
+    /// `base[index]` (read). Turn-terminating fault on out-of-bounds array
+    /// index or missing map key (value-model-spec §6).
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
+    },
+    /// `IndexSet` as an expression: evaluates `base`, `index`, `value` and
+    /// pushes the *updated* container — the take → `make_mut` → write-back
+    /// primitive that indexed-assignment lowering composes (`docs/t1b-
+    /// surface-spec.md` §4). Never produced by ordinary expression lowering;
+    /// only by indexed-assignment desugaring.
+    IndexSet {
+        base: Box<Expr>,
+        index: Box<Expr>,
+        value: Box<Expr>,
+    },
+    /// `[container]` → `Int` length. Internal — used by `for`-loop lowering
+    /// over arrays; not surfaced to authors until the `len()` stdlib
+    /// function lands (T1b-3).
+    CollectionLen(Box<Expr>),
+    /// `[map]` → `Array` of keys in insertion order. Internal — used by
+    /// `for`-loop lowering over maps; not surfaced to authors until the
+    /// `keys()` stdlib function lands (T1b-3).
+    CollectionKeys(Box<Expr>),
 }
 
 impl Expr {

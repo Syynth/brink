@@ -127,6 +127,9 @@ pub fn link(
     // Clone list literals.
     let list_literals = data.list_literals.clone();
 
+    // Clone the T1b literal pool (`PushLiteral(idx)` targets).
+    let literal_pool = data.literal_pool.clone();
+
     // Build external function map.
     let mut external_fns = map_with_capacity(data.externals.len());
     for ext in &data.externals {
@@ -213,6 +216,7 @@ pub fn link(
         address_by_path,
         root_idx,
         list_literals,
+        literal_pool,
         list_item_map,
         list_defs,
         list_def_map,

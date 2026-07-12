@@ -33,6 +33,9 @@ pub struct Program {
     pub(crate) root_idx: u32,
     /// List literal values referenced by `PushList(idx)`.
     pub(crate) list_literals: Vec<ListValue>,
+    /// The T1b literal pool: constant collection values referenced by
+    /// `PushLiteral(idx)` (`docs/format-v4-rfc.md` §2).
+    pub(crate) literal_pool: Vec<Value>,
     /// Per-item metadata keyed by item `DefinitionId`.
     pub(crate) list_item_map: HashMap<DefinitionId, ListItemEntry>,
     /// List definitions indexed by position.
@@ -214,6 +217,13 @@ impl Program {
     /// Get a list literal by index.
     pub(crate) fn list_literal(&self, idx: u16) -> &ListValue {
         &self.list_literals[idx as usize]
+    }
+
+    /// Get a T1b literal pool entry by index. `None` on an out-of-range
+    /// index (malformed bytecode) rather than panicking — the VM turns
+    /// this into a `RuntimeError`, never a crash.
+    pub(crate) fn literal_pool_entry(&self, idx: u32) -> Option<&Value> {
+        self.literal_pool.get(idx as usize)
     }
 
     /// Look up a list item's metadata.
@@ -411,6 +421,7 @@ mod find_address_tests {
             address_by_path,
             root_idx: 0,
             list_literals: Vec::new(),
+            literal_pool: Vec::new(),
             list_item_map: HashMap::new(),
             list_defs: Vec::new(),
             list_def_map: HashMap::new(),
