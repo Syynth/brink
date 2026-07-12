@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use brink_analyzer::{AnalysisOptions, AnalysisResult, Sig};
+use brink_analyzer::{AnalysisOptions, AnalysisResult, BodyTypes, InferenceResult, Sig};
 use brink_format::DefinitionId;
 use brink_ir::suppressions::Suppressions;
 use brink_ir::{Diagnostic, FileId, HirFile, ResolutionMap, SymbolIndex, SymbolManifest};
@@ -11,8 +11,9 @@ use tracing::debug;
 
 use crate::queries::{
     BrinkDatabase, CompileProduct, DefKey, LirProduct, ProjectInput, SourceFile, analysis_query,
-    diagnostics_query, include_graph_query, lir_query, lowered_query, parse_query, resolve_query,
-    signature_query, story_data_query, suppressions_query, symbol_index_query,
+    diagnostics_query, include_graph_query, infer_body_query, lir_query, lowered_query,
+    parse_query, resolve_query, signature_query, story_data_query, suppressions_query,
+    symbol_index_query, type_diagnostics_query, type_inference_query,
 };
 
 /// Stateful incremental project database.
@@ -343,6 +344,29 @@ impl ProjectDb {
     pub fn diagnostics(&self, id: FileId) -> Option<&[Diagnostic]> {
         let file = self.files.get(&id)?;
         Some(diagnostics_query(&self.salsa, self.project, *file).as_slice())
+    }
+
+    /// Whole-project type inference (TM-1, typed-mode-spec §2/§9 step 1).
+    /// Advisory-only substrate: `infer_body`/`type_diagnostics` are thin
+    /// per-def/per-file views over this. Lazy — nothing in `story_data`,
+    /// `lir_product`, or `diagnostics` reads it, so calling this (directly
+    /// or via `infer_body`/`type_diagnostics`) is the only thing that
+    /// triggers the underlying computation.
+    pub fn type_inference(&self) -> &InferenceResult {
+        type_inference_query(&self.salsa, self.project)
+    }
+
+    /// Per-def inferred body types (`infer_body(def)`). `None` for a def
+    /// with no inferable body (not a knot/stitch, or an unknown id).
+    pub fn infer_body(&self, def: DefinitionId) -> Option<Arc<BodyTypes>> {
+        infer_body_query(&self.salsa, self.project, DefKey::new(&self.salsa, def))
+    }
+
+    /// Per-file type diagnostics (`type_diagnostics(FileId)`). Advisory-only
+    /// in this slice — always empty (see `type_diagnostics_query`'s docs).
+    pub fn type_diagnostics(&self, id: FileId) -> Option<&[Diagnostic]> {
+        let file = self.files.get(&id)?;
+        Some(type_diagnostics_query(&self.salsa, self.project, *file).as_slice())
     }
 
     /// Whole-project LIR lowering (layer 3). `None` until an entry point is
@@ -744,5 +768,90 @@ mod reachable_tests {
         assert!(reachable.contains(&a));
         assert!(reachable.contains(&b));
         assert_eq!(reachable.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod type_inference_tests {
+    use super::ProjectDb;
+    use brink_ir::SymbolKind;
+
+    /// End-to-end reachability proof (TM-1, #617): `infer_body`/
+    /// `type_inference` are reachable through the same public `ProjectDb`
+    /// surface every other query surfaces through, and return a real
+    /// inferred type for a param whose body use pins it — not a stub.
+    #[test]
+    fn infer_body_is_reachable_through_project_db() {
+        let mut db = ProjectDb::new();
+        db.set_file(
+            "main.ink",
+            "=== heal(hp) ===\n~ temp x = hp + 1\n-> DONE\n".to_owned(),
+        );
+        db.set_entry("main.ink");
+
+        let index = db.symbol_index();
+        let heal = index
+            .by_name
+            .get("heal")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("heal knot indexed");
+        assert_eq!(
+            index.symbols.get(&heal).map(|i| i.kind),
+            Some(SymbolKind::Knot)
+        );
+
+        let body = db.infer_body(heal).expect("heal has an inferable body");
+        assert_eq!(body.params.len(), 1);
+        assert_eq!(body.params[0].0, "hp");
+        assert_eq!(body.params[0].1.display(), "int");
+
+        // Same view via the whole-project result and via `type_diagnostics`
+        // (advisory-only: empty, but reachable and correctly shaped).
+        assert!(db.type_inference().signatures.contains_key(&heal));
+        let main = db.file_id("main.ink").expect("main");
+        assert_eq!(db.type_diagnostics(main), Some(&[][..]));
+    }
+
+    #[test]
+    fn infer_body_is_none_for_a_non_callable_def() {
+        let mut db = ProjectDb::new();
+        db.set_file("main.ink", "VAR gold = 10\n-> DONE\n".to_owned());
+        let index = db.symbol_index();
+        let gold = index
+            .by_name
+            .get("gold")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("gold indexed");
+        assert_eq!(db.infer_body(gold), None, "a VAR has no inferable body");
+    }
+
+    #[test]
+    fn type_inference_is_independent_of_the_compile_path() {
+        // Pulling every other query surface (diagnostics, story_data) first
+        // — neither reads `type_inference_query` (see its module docs), so
+        // this exercises `infer_body` cold, after, and must still return the
+        // same correct result: nothing about the compile path's query graph
+        // secretly depends on inference having (or not having) run yet.
+        let mut db = ProjectDb::new();
+        db.set_file(
+            "main.ink",
+            "=== heal(hp) ===\n~ temp x = hp + 1\n-> DONE\n".to_owned(),
+        );
+        db.set_entry("main.ink");
+        let main = db.file_id("main.ink").expect("main");
+        let _ = db.diagnostics(main);
+        let _ = db.story_data();
+
+        let index = db.symbol_index();
+        let heal = index
+            .by_name
+            .get("heal")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("heal knot indexed");
+        let body = db.infer_body(heal).expect("heal has an inferable body");
+        assert_eq!(body.params[0].1.display(), "int");
     }
 }

@@ -7,6 +7,7 @@
 
 mod dialect_gate;
 mod external_check;
+mod infer;
 mod manifest;
 mod resolve;
 mod signature;
@@ -22,6 +23,7 @@ pub use external_check::{
     ExternalCheckSeverity, InferredType, ResolvedParam, ResolvedType,
     SemanticTypeDiagnosticSeverity, SymbolMeta, ValueMeta,
 };
+pub use infer::{BodyTypes, InferenceResult, InferredSig, Ty, infer_project, unify, unify_all};
 pub use signature::{Sig, signature};
 
 use brink_format::DefinitionId;
