@@ -490,7 +490,8 @@ fn staged_back_half(driver: &mut Driver, entry: FileId) -> Result<StageMs, Strin
     let lir_lower = ms(start);
 
     let start = Instant::now();
-    let data = brink_codegen_inkb::emit(&program);
+    let data = brink_codegen_inkb::emit(&program)
+        .map_err(|e| format!("unexpected codegen failure during staged run: {e}"))?;
     let codegen = ms(start);
     // Keep the output alive to here so codegen cannot be optimized out.
     std::hint::black_box(&data);

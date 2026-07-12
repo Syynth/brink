@@ -950,6 +950,23 @@ pub enum DiagnosticCode {
     /// signature (replaces the generic `E031` warning + silently-dropped
     /// RMW lowering, RULED 2026-07-12, see `docs/decision-log.md`).
     E058,
+
+    // ── Weave-in-inline-content backstop (sibling of #578, #585) ──────
+    /// A choice set, labeled gather block, multi-line conditional, or
+    /// sequence was found nested inside inline content (e.g. a choice's own
+    /// display/bracket/inner text) where it would need a child container
+    /// that position structurally cannot hold.
+    E059,
+
+    // ── Codegen defense-in-depth backstop (#586) ──────────────────────
+    /// `brink-codegen-inkb` refused to emit bytecode for a `Program` that
+    /// violates an invariant an earlier, non-suppressible compiler stage is
+    /// supposed to guarantee (currently: an out-of-loop `LogicBreak`/
+    /// `LogicContinue`, normally rejected at `E057`). Reaching this from a
+    /// normal compile is a compiler bug, not an authoring mistake — this
+    /// code exists so that bug fails loudly instead of silently corrupting
+    /// bytecode.
+    E060,
 }
 
 impl DiagnosticCode {
@@ -1015,6 +1032,8 @@ impl DiagnosticCode {
             Self::E056 => "E056",
             Self::E057 => "E057",
             Self::E058 => "E058",
+            Self::E059 => "E059",
+            Self::E060 => "E060",
         }
     }
 
@@ -1082,6 +1101,8 @@ impl DiagnosticCode {
             Self::E056 => "collection mutator used in expression position",
             Self::E057 => "break/continue outside a loop",
             Self::E058 => "collection mutator argument count mismatch",
+            Self::E059 => "choice/gather construct nested inside inline content",
+            Self::E060 => "internal codegen error",
         }
     }
 
@@ -1167,6 +1188,8 @@ impl DiagnosticCode {
             "E056" => Some(Self::E056),
             "E057" => Some(Self::E057),
             "E058" => Some(Self::E058),
+            "E059" => Some(Self::E059),
+            "E060" => Some(Self::E060),
             _ => None,
         }
     }

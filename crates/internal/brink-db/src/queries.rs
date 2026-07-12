@@ -490,16 +490,49 @@ pub struct CompileProduct {
 }
 
 /// Whole-project codegen: LIR → [`StoryData`] via `brink-codegen-inkb`.
+///
+/// `brink_codegen_inkb::emit` only fails on a `Program` that violates an
+/// invariant an earlier, non-suppressible LIR-lowering diagnostic (E057) is
+/// supposed to guarantee — see `CodegenError`'s doc comment and #586. That
+/// can't happen via this query today (`lir.program` is only `Some` when
+/// `lir.errors` is already empty, which requires E057 to not have fired),
+/// but codegen has no way to prove that structurally, so this still handles
+/// the `Err` case for real rather than assuming it away: surfaced as an
+/// `E060` compile error (no meaningful source span survives into codegen
+/// for this class of defect, so it's anchored at the project entry file
+/// with an empty range) rather than silently downgrading to `story: None`
+/// with an empty `errors` — which would look like "nothing to compile" to
+/// every caller instead of "codegen refused to compile this."
 #[salsa::tracked(returns(ref))]
 pub(crate) fn story_data_query(db: &dyn salsa::Database, project: ProjectInput) -> CompileProduct {
     let lir = lir_query(db, project);
-    CompileProduct {
-        story: lir
-            .program
-            .as_ref()
-            .map(|p| Arc::new(brink_codegen_inkb::emit(p))),
-        errors: lir.errors.clone(),
-        warnings: lir.warnings.clone(),
+    let Some(program) = lir.program.as_ref() else {
+        return CompileProduct {
+            story: None,
+            errors: lir.errors.clone(),
+            warnings: lir.warnings.clone(),
+        };
+    };
+    match brink_codegen_inkb::emit(program) {
+        Ok(story) => CompileProduct {
+            story: Some(Arc::new(story)),
+            errors: lir.errors.clone(),
+            warnings: lir.warnings.clone(),
+        },
+        Err(err) => {
+            let mut errors = lir.errors.clone();
+            errors.push(Diagnostic {
+                file: project.entry(db).unwrap_or(FileId(0)),
+                range: rowan::TextRange::default(),
+                message: format!("{}: {err}", DiagnosticCode::E060.title()),
+                code: DiagnosticCode::E060,
+            });
+            CompileProduct {
+                story: None,
+                errors,
+                warnings: lir.warnings.clone(),
+            }
+        }
     }
 }
 
