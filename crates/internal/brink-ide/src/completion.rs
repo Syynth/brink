@@ -1,6 +1,7 @@
 use brink_ir::SymbolKind;
 
 /// What kind of completion context the cursor is in.
+#[derive(Debug)]
 pub enum CompletionContext {
     /// After `->` — show divert targets.
     Divert,
@@ -181,6 +182,38 @@ pub fn is_visible_in_context(
     }
 }
 
+/// Whether `ctx` is a call-expression position where a T1b stdlib slice 1
+/// call is legal (docs/t1b-surface-spec.md §5 — expression position only:
+/// `~` lines, block statements, call arguments, condition expressions).
+/// Mirrors the contexts [`is_visible_in_context`] already offers real
+/// function symbols (`SymbolKind::Knot`/`External`) in: [`CompletionContext::Logic`]
+/// and [`CompletionContext::InlineExpr`].
+#[must_use]
+pub fn stdlib_completion_context(ctx: &CompletionContext) -> bool {
+    matches!(
+        ctx,
+        CompletionContext::Logic | CompletionContext::InlineExpr
+    )
+}
+
+/// Stdlib slice 1 completion candidates for `ctx` under `dialect`
+/// (docs/t1b-surface-spec.md §5). Empty outside a call-expression position,
+/// and empty under [`brink_analyzer::Dialect::StrictInk`] — "Names live in
+/// the brink dialect only; strict-ink projects never see them" (§5). Callers
+/// still need their own shadowing filter: an author-defined symbol of the
+/// same name is offered too (from the ordinary symbol-index completion
+/// list), matching §5's shadow-with-warning rule.
+#[must_use]
+pub fn stdlib_completions(
+    ctx: &CompletionContext,
+    dialect: brink_analyzer::Dialect,
+) -> &'static [crate::stdlib::StdlibFn] {
+    if dialect != brink_analyzer::Dialect::Brink || !stdlib_completion_context(ctx) {
+        return &[];
+    }
+    crate::stdlib::STDLIB_FUNCTIONS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,5 +349,45 @@ mod tests {
         let scope = cursor_scope(src, 5);
         assert!(scope.knot.is_none());
         assert!(scope.stitch.is_none());
+    }
+
+    // ── Stdlib slice 1 completion (#589) ────────────────────────────────
+
+    #[test]
+    fn stdlib_completions_offered_in_brink_dialect_logic_context() {
+        let items = stdlib_completions(&CompletionContext::Logic, brink_analyzer::Dialect::Brink);
+        assert_eq!(items.len(), 7, "all seven stdlib names: {items:?}");
+    }
+
+    #[test]
+    fn stdlib_completions_offered_in_brink_dialect_inline_expr_context() {
+        let items = stdlib_completions(
+            &CompletionContext::InlineExpr,
+            brink_analyzer::Dialect::Brink,
+        );
+        assert_eq!(items.len(), 7);
+    }
+
+    #[test]
+    fn stdlib_completions_never_offered_in_strict_ink() {
+        for ctx in [CompletionContext::Logic, CompletionContext::InlineExpr] {
+            let items = stdlib_completions(&ctx, brink_analyzer::Dialect::StrictInk);
+            assert!(items.is_empty(), "strict-ink must never see stdlib names");
+        }
+    }
+
+    #[test]
+    fn stdlib_completions_empty_outside_call_expression_contexts() {
+        for ctx in [
+            CompletionContext::Divert,
+            CompletionContext::General,
+            CompletionContext::FunctionArgs,
+        ] {
+            let items = stdlib_completions(&ctx, brink_analyzer::Dialect::Brink);
+            assert!(
+                items.is_empty(),
+                "stdlib calls aren't offered outside Logic/InlineExpr: {ctx:?} -> {items:?}",
+            );
+        }
     }
 }

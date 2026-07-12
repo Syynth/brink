@@ -152,6 +152,129 @@ pub fn folding_ranges(hir: &HirFile, source: &str, projection: &Projection) -> V
     ranges
 }
 
+/// Folding ranges for `~ { … }` multi-line logic blocks and their nested
+/// control bodies — `if`/`else if`/`else`, `while`, `for`
+/// (docs/t1b-surface-spec.md §2, brink extension; #589).
+///
+/// A separate pass from [`folding_ranges`]: the HIR projection
+/// ([`crate::hir_projection`]) doesn't model `LogicBlock`/`BlockStmt` at all
+/// (T1b-2 added them to the HIR after the projection's phase-1 coverage was
+/// fixed — #454/#476 predate T1b), so this walks the HIR directly via
+/// [`brink_ir::hir::visit`] instead of going through `projection.spans`,
+/// mirroring [`machinery_and_narrative_folds`]'s separate-pass shape.
+///
+/// No dialect gate: `brink-syntax` always parses the superset grammar and
+/// `brink-ir` always lowers it to this same HIR shape regardless of dialect
+/// (docs/t1b-surface-spec.md §1) — the dialect gate only rejects the
+/// construct at *analysis*, never at parse/HIR — so a `~ { … }` block folds
+/// identically in a strict-ink file (where it's flagged `E051`) as in a
+/// brink one.
+///
+/// Every nested `if`/`while`/`for` folds as its own region (from its own
+/// HIR `ptr` extent, which already spans the construct's own braces —
+/// `while cond { … }`/`for x in y { … }`/`if cond { … } else { … }` — so no
+/// brace-extension is needed, unlike the Conditional/Sequence `{...}` folds
+/// in `folding_ranges`), so an editor can collapse an inner `if` without
+/// collapsing its enclosing block.
+#[must_use]
+pub fn block_folds(hir: &HirFile, source: &str) -> Vec<FoldRange> {
+    let idx = LineIndex::new(source);
+    let mut ranges = Vec::new();
+    let mut collector = BlockFoldCollector {
+        source,
+        idx: &idx,
+        ranges: &mut ranges,
+    };
+    brink_ir::hir::visit::visit(hir, &mut collector);
+    ranges
+}
+
+struct BlockFoldCollector<'a> {
+    source: &'a str,
+    idx: &'a LineIndex,
+    ranges: &'a mut Vec<FoldRange>,
+}
+
+impl brink_ir::hir::HirVisitor for BlockFoldCollector<'_> {
+    fn enter_stmt(&mut self, stmt: &brink_ir::hir::Stmt) {
+        if let brink_ir::hir::Stmt::LogicBlock(lb) = stmt {
+            push_fold(
+                lb.ptr.text_range(),
+                None,
+                self.source,
+                self.idx,
+                self.ranges,
+            );
+            for bs in &lb.stmts {
+                collect_block_stmt_folds(bs, self.source, self.idx, self.ranges);
+            }
+        }
+    }
+}
+
+/// Fold a nested control-flow `BlockStmt` (`if`/`while`/`for`) and recurse
+/// into its body for further nesting. Non-control statements (assignments,
+/// temp decls, returns, breaks/continues, expression statements) have
+/// nothing to fold — they're always single-line.
+fn collect_block_stmt_folds(
+    bs: &brink_ir::hir::BlockStmt,
+    source: &str,
+    idx: &LineIndex,
+    out: &mut Vec<FoldRange>,
+) {
+    match bs {
+        brink_ir::hir::BlockStmt::If(if_stmt) => collect_if_folds(if_stmt, source, idx, out),
+        brink_ir::hir::BlockStmt::While(w) => {
+            push_fold(w.ptr.text_range(), None, source, idx, out);
+            for inner in &w.body {
+                collect_block_stmt_folds(inner, source, idx, out);
+            }
+        }
+        brink_ir::hir::BlockStmt::For(f) => {
+            push_fold(f.ptr.text_range(), None, source, idx, out);
+            for inner in &f.body {
+                collect_block_stmt_folds(inner, source, idx, out);
+            }
+        }
+        brink_ir::hir::BlockStmt::TempDecl(_)
+        | brink_ir::hir::BlockStmt::Assignment(_)
+        | brink_ir::hir::BlockStmt::Return(_)
+        | brink_ir::hir::BlockStmt::Break(_)
+        | brink_ir::hir::BlockStmt::Continue(_)
+        | brink_ir::hir::BlockStmt::ExprStmt(_) => {}
+    }
+}
+
+/// Fold one `if`/`else if`/`else` chain: the outer `if`'s own extent folds
+/// as one region (condition through the chain's final `}`, matching how a
+/// choice branch or gather continuation folds from its own anchor line —
+/// #476's precedent), and each nested `else if` additionally folds as its
+/// own (shorter) region, so collapsing an inner clause doesn't require
+/// collapsing the whole chain. Recurses into every body (including a plain
+/// `else { … }`'s statements) for further nested control bodies.
+fn collect_if_folds(
+    if_stmt: &brink_ir::hir::IfStmt,
+    source: &str,
+    idx: &LineIndex,
+    out: &mut Vec<FoldRange>,
+) {
+    push_fold(if_stmt.ptr.text_range(), None, source, idx, out);
+    for inner in &if_stmt.body {
+        collect_block_stmt_folds(inner, source, idx, out);
+    }
+    match &if_stmt.else_branch {
+        Some(brink_ir::hir::ElseBranch::ElseIf(inner)) => {
+            collect_if_folds(inner, source, idx, out);
+        }
+        Some(brink_ir::hir::ElseBranch::Else(stmts)) => {
+            for inner in stmts {
+                collect_block_stmt_folds(inner, source, idx, out);
+            }
+        }
+        None => {}
+    }
+}
+
 /// Whether a Gather container's extent starts on an actual gather line
 /// (trimmed text starting with `-`, not `->`) — the guard that keeps a
 /// mis-anchored extent (ptr-less gather-line prose, see the caller's
@@ -851,6 +974,120 @@ Continuation prose.
         assert!(
             !ranges.iter().any(|&(s, _, _)| s == 3),
             "a bare labeled gather is single-line — nothing to fold: {ranges:?}"
+        );
+    }
+}
+
+// ── `~ { … }` block + nested control-body fold tests (#589) ────────────
+#[cfg(test)]
+mod block_fold_tests {
+    use super::block_folds;
+
+    /// `(start_line, end_line)` pairs for `src`.
+    fn folds_for(src: &str) -> Vec<(u32, u32)> {
+        let parsed = brink_syntax::parse(src);
+        let (hir, _, _) = brink_ir::hir::lower(brink_ir::FileId(0), &parsed.tree());
+        block_folds(&hir, src)
+            .iter()
+            .map(|r| (r.start_line, r.end_line))
+            .collect()
+    }
+
+    #[test]
+    fn multiline_block_folds_from_its_opening_brace_line() {
+        let src = "=== start ===\n~ {\n    temp x = 1\n    x = x + 1\n}\n-> END\n";
+        let ranges = folds_for(src);
+        // Line 1 is `~ {`, line 4 is the closing `}`.
+        assert!(ranges.contains(&(1, 4)), "{ranges:?}");
+    }
+
+    #[test]
+    fn single_line_block_does_not_fold() {
+        let src = "=== start ===\n~ { temp x = 1 }\n-> END\n";
+        let ranges = folds_for(src);
+        assert!(ranges.is_empty(), "nothing to fold on one line: {ranges:?}");
+    }
+
+    #[test]
+    fn nested_for_loop_folds_separately_from_the_enclosing_block() {
+        let src = "\
+=== start ===
+~ {
+    temp total = 0
+    for item in #[1, 2, 3] {
+        total = total + item
+    }
+    if total > 3 {
+        score = total
+    }
+}
+-> END
+";
+        let ranges = folds_for(src);
+        // `~ {` is line 1, block closes on line 9.
+        assert!(ranges.contains(&(1, 9)), "outer block: {ranges:?}");
+        // `for item in #[1, 2, 3] {` is line 3, its own `}` is line 5.
+        assert!(ranges.contains(&(3, 5)), "for loop body: {ranges:?}");
+        // `if total > 3 {` is line 6, its own `}` is line 8.
+        assert!(ranges.contains(&(6, 8)), "if body: {ranges:?}");
+    }
+
+    #[test]
+    fn nested_while_loop_folds_as_its_own_region() {
+        let src = "\
+=== start ===
+~ {
+    temp n = 0
+    while n < 3 {
+        n = n + 1
+    }
+}
+-> END
+";
+        let ranges = folds_for(src);
+        assert!(ranges.contains(&(3, 5)), "while body: {ranges:?}");
+    }
+
+    #[test]
+    fn else_if_chain_folds_each_clause_separately() {
+        let src = "\
+=== start ===
+~ {
+    if a > 3 {
+        x = 1
+    } else if a > 1 {
+        x = 2
+    } else {
+        x = 3
+    }
+}
+-> END
+";
+        let ranges = folds_for(src);
+        // The outer `if` folds the whole chain (its own line through the
+        // final `}`, line 8).
+        assert!(ranges.contains(&(2, 8)), "whole if/else chain: {ranges:?}");
+        // The `else if` clause folds its own (shorter) region too.
+        assert!(ranges.contains(&(4, 8)), "else-if clause: {ranges:?}");
+    }
+
+    #[test]
+    fn block_inside_a_choice_body_still_folds() {
+        // The visitor reaches a `~ { … }` wherever it sits in the tree, not
+        // just top-level knot bodies.
+        let src = "\
+=== start ===
+* Take it
+  ~ {
+      temp x = 1
+      x = x + 1
+  }
+- done
+";
+        let ranges = folds_for(src);
+        assert!(
+            !ranges.is_empty(),
+            "block inside a choice body folds too: {ranges:?}"
         );
     }
 }

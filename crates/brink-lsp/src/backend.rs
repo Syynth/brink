@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use brink_analyzer::AnalysisResult;
+use brink_analyzer::{AnalysisResult, Dialect};
 use brink_syntax::ast::AstNode;
 use tokio::sync::{Notify, watch};
 use tower_lsp::jsonrpc::Result;
@@ -79,6 +79,14 @@ pub struct Backend {
     generation: Arc<AtomicU64>,
     last_published: Arc<Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>>,
     workspace_roots: Arc<Mutex<Vec<PathBuf>>>,
+    /// The T1b compiler dialect (docs/t1b-surface-spec.md §1), read from
+    /// `initialize`'s `initializationOptions.dialect` (`"brink"` or
+    /// `"strict-ink"`; defaults to `StrictInk`, matching
+    /// `AnalysisOptions::default()`). Tooling-only — gates whether stdlib
+    /// slice 1 completion/signature help are offered (#589); it does not
+    /// (yet) feed into the background analysis pass, so diagnostics still
+    /// analyze under the default dialect regardless of this setting.
+    dialect: Arc<Mutex<Dialect>>,
 }
 
 impl Backend {
@@ -100,7 +108,16 @@ impl Backend {
             generation,
             last_published,
             workspace_roots: Arc::new(Mutex::new(Vec::new())),
+            dialect: Arc::new(Mutex::new(Dialect::default())),
         }
+    }
+
+    /// The registered T1b compiler dialect (defaults to `StrictInk`, poisoned-
+    /// lock-safe via `map_or_else` — never panics on a poisoned mutex).
+    fn dialect(&self) -> Dialect {
+        self.dialect
+            .lock()
+            .map_or_else(|_| Dialect::default(), |g| *g)
     }
 
     fn uri_to_path(uri: &Url) -> Option<String> {
@@ -330,6 +347,27 @@ impl LanguageServer for Backend {
         }
         if let Ok(mut ws) = self.workspace_roots.lock() {
             *ws = roots;
+        }
+
+        // T1b compiler dialect (docs/t1b-surface-spec.md §1, #589): an
+        // authoring-time/tooling input, read once from
+        // `initializationOptions.dialect` ("brink" or "strict-ink"; any
+        // other value, or absence, keeps the `StrictInk` default). Gates
+        // stdlib slice 1 completion/signature help only — see the `dialect`
+        // field's doc comment.
+        if let Some(requested) = params
+            .initialization_options
+            .as_ref()
+            .and_then(|opts| opts.get("dialect"))
+            .and_then(|v| v.as_str())
+        {
+            let resolved = match requested {
+                "brink" => Dialect::Brink,
+                _ => Dialect::StrictInk,
+            };
+            if let Ok(mut d) = self.dialect.lock() {
+                *d = resolved;
+            }
         }
 
         Ok(InitializeResult {
@@ -759,9 +797,12 @@ impl LanguageServer for Backend {
         let offset = idx.offset(pos.line, pos.character);
         let byte_offset: usize = offset.into();
 
-        let Some(sig) =
-            brink_ide::signature::signature_help(&snap.analysis, &snap.source, byte_offset)
-        else {
+        let Some(sig) = brink_ide::signature::signature_help_with_dialect(
+            &snap.analysis,
+            &snap.source,
+            byte_offset,
+            self.dialect(),
+        ) else {
             return Ok(None);
         };
 
@@ -840,6 +881,14 @@ impl LanguageServer for Backend {
                 continue;
             }
             items.push(make_completion_item(info, None));
+        }
+
+        // Stdlib slice 1 completion (docs/t1b-surface-spec.md §5, #589) —
+        // brink dialect only ("never offered in StrictInk"); an
+        // author-defined symbol of the same name is already offered above
+        // (shadowing, per §5), so this only adds names.
+        for f in brink_ide::stdlib_completions(&ctx, self.dialect()) {
+            items.push(make_stdlib_completion_item(f));
         }
 
         // Add synthetic DONE/END for divert context.
@@ -1343,7 +1392,10 @@ impl LanguageServer for Backend {
         };
 
         let projection = brink_ide::hir_projection::project_hir_structural(hir, source);
-        let domain_ranges = brink_ide::folding::folding_ranges(hir, source, &projection);
+        let mut domain_ranges = brink_ide::folding::folding_ranges(hir, source, &projection);
+        // `~ { … }` blocks + nested control bodies (docs/t1b-surface-spec.md
+        // §2, #589) — a separate pass, see `block_folds`'s doc comment.
+        domain_ranges.extend(brink_ide::folding::block_folds(hir, source));
 
         let ranges = domain_ranges
             .into_iter()
@@ -1490,6 +1542,25 @@ fn make_completion_item(
         label: label_override.unwrap_or_else(|| info.name.clone()),
         kind: Some(kind),
         detail,
+        ..Default::default()
+    }
+}
+
+/// Build a `CompletionItem` for a T1b stdlib slice 1 function
+/// (docs/t1b-surface-spec.md §5, #589) — signature as `detail` (the
+/// lvalue-mutator rule renders right there, e.g. `push(a: lvalue, v)`), the
+/// one-line semantics as markdown documentation.
+fn make_stdlib_completion_item(f: &brink_ide::stdlib::StdlibFn) -> CompletionItem {
+    CompletionItem {
+        label: f.name.to_owned(),
+        kind: Some(CompletionItemKind::FUNCTION),
+        detail: Some(f.signature_label()),
+        documentation: Some(tower_lsp::lsp_types::Documentation::MarkupContent(
+            MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: f.doc.to_owned(),
+            },
+        )),
         ..Default::default()
     }
 }
