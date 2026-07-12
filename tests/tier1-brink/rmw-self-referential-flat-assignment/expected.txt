@@ -1,0 +1,1 @@
+Result is 110. Arr is [30, 20, 60].

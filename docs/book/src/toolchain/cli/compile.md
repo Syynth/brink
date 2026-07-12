@@ -3,7 +3,7 @@
 Compile `.ink` source files to bytecode. The input file is the story's entry point; `INCLUDE` directives are resolved automatically.
 
 ```sh
-brink compile <INPUT> [--output <OUTPUT>]
+brink compile <INPUT> [--output <OUTPUT>] [--dialect <strict-ink|brink>]
 ```
 
 ## Options
@@ -11,6 +11,7 @@ brink compile <INPUT> [--output <OUTPUT>]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--output <FILE>` / `-o` | stdout | Output file path. Format inferred from extension. |
+| `--dialect <DIALECT>` | `strict-ink` | `strict-ink` rejects [brink-dialect extension syntax](../dialect/index.md) (`~ { … }` blocks, `#[…]`/`#{…}` literals, indexing) with a targeted diagnostic; `brink` accepts it. Mount-time only — never embedded in the compiled output. |
 
 Output format is determined by the file extension:
 
