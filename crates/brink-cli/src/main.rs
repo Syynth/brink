@@ -32,8 +32,6 @@ impl From<DialectArg> for brink_compiler::Dialect {
     fn from(arg: DialectArg) -> Self {
         match arg {
             DialectArg::StrictInk => brink_compiler::Dialect::StrictInk,
-    /// Accept brink-extension syntax: logic blocks (`~ { … }`), collection
-    /// literals (`#[…]`/`#{…}`), and indexing (T1b-1 through T1b-3).
             DialectArg::Brink => brink_compiler::Dialect::Brink,
         }
     }
