@@ -434,23 +434,41 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
     let (program, lir_diagnostics) =
         brink_ir::lir::lower_to_program(&hir_refs, &analysis.index, &analysis.resolutions, &paths);
 
-    if let Some(program) = program {
+    // LIR lowering itself is total (T1b-2: every construct lowers to a
+    // program regardless of dialect) — a diagnostic pushed during lowering
+    // doesn't stop `lower_to_program` from returning `Some`. It must still
+    // be severity-partitioned like every other diagnostic here: an
+    // Error-severity one (T1b-3's E055/E056 — a collection mutator's rvalue
+    // first argument, or a mutator used in expression position) blocks
+    // compilation exactly like an analysis-phase error would, not just a
+    // cosmetic warning on an otherwise-successful compile.
+    let (mut lir_errors, mut lir_warnings): (Vec<Diagnostic>, Vec<Diagnostic>) = lir_diagnostics
+        .into_iter()
+        .partition(|d| d.code.severity() == Severity::Error);
+
+    if program.is_some() && lir_errors.is_empty() {
+        let mut errors = errors;
+        errors.append(&mut lir_errors);
         let mut warnings = warnings;
-        warnings.extend(lir_diagnostics);
+        warnings.append(&mut lir_warnings);
         LirProduct {
-            program: Some(Arc::new(program)),
+            program: program.map(Arc::new),
             errors,
             warnings,
         }
     } else {
-        // `lower_to_program` refused to lower: its residual-extension
-        // backstop fired (E053), meaning a T1b brink-extension HIR node
-        // reached LIR lowering despite the dialect gate — only possible if
-        // the gate's analysis diagnostic was suppressed. Surface it as a
-        // compile error; never return a corrupt or partial program. See
-        // #572 review.
+        // Either `lower_to_program` refused to lower (its residual-extension
+        // backstop fired — E053, meaning a T1b brink-extension HIR node
+        // reached LIR lowering despite the dialect gate, only possible if
+        // the gate's analysis diagnostic was suppressed — see #572 review),
+        // or lowering succeeded but produced an Error-severity diagnostic
+        // (T1b-3's rvalue-mutator/mutator-in-expression-position checks).
+        // Either way: surface it as a compile error, never return a corrupt,
+        // partial, or diagnostically-invalid program.
         let mut errors = errors;
-        errors.extend(lir_diagnostics);
+        errors.append(&mut lir_errors);
+        let mut warnings = warnings;
+        warnings.append(&mut lir_warnings);
         LirProduct {
             program: None,
             errors,

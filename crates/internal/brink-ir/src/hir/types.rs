@@ -932,6 +932,15 @@ pub enum DiagnosticCode {
     /// `for` loop variable shadows an already-visible temp/param — either an
     /// enclosing `~ { … }` block scope or an outer classic `~ temp`.
     E054,
+
+    // ── T1b stdlib slice 1 (docs/t1b-surface-spec.md §5) ──────────────
+    /// `push`/`insert`/`remove`'s first argument is not an lvalue (a
+    /// variable, temp, or indexed path) — mutators require a place to
+    /// write the mutated container back into.
+    E055,
+    /// `push`/`insert`/`remove` was used in expression position — they
+    /// return nothing and are only valid as a statement.
+    E056,
 }
 
 impl DiagnosticCode {
@@ -993,6 +1002,8 @@ impl DiagnosticCode {
             Self::E052 => "E052",
             Self::E053 => "E053",
             Self::E054 => "E054",
+            Self::E055 => "E055",
+            Self::E056 => "E056",
         }
     }
 
@@ -1056,6 +1067,8 @@ impl DiagnosticCode {
                 "internal: brink extension reached LIR lowering (dialect gate suppressed)"
             }
             Self::E054 => "block-scoped temp shadows an already-visible temp",
+            Self::E055 => "collection mutator's first argument is not an lvalue",
+            Self::E056 => "collection mutator used in expression position",
         }
     }
 
@@ -1137,6 +1150,8 @@ impl DiagnosticCode {
             "E052" => Some(Self::E052),
             "E053" => Some(Self::E053),
             "E054" => Some(Self::E054),
+            "E055" => Some(Self::E055),
+            "E056" => Some(Self::E056),
             _ => None,
         }
     }

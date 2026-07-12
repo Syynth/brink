@@ -695,6 +695,19 @@ fn lower_block_with_children(
                 pos += 1;
             }
 
+            // A classic (non-block) `~ push(a, v)` logic line — same
+            // mutator recognition/RMW desugaring `~ { … }` block statements
+            // use (docs/t1b-surface-spec.md §5), splicing possibly-multiple
+            // `lir::Stmt`s here since `stmts::lower_stmt`'s `Option<Stmt>`
+            // return can't express that. Falls through to the ordinary
+            // `stmts::lower_stmt` path (the `_` arm below) for every other
+            // expression statement, including a shadowed `push`/`insert`/
+            // `remove` user function.
+            hir::Stmt::ExprStmt(expr) if blocks::try_lower_mutator_stmt(expr, ctx, &mut stmts) => {
+                children.append(&mut ctx.pending_children);
+                pos += 1;
+            }
+
             _ => {
                 if let Some(s) = stmts::lower_stmt(stmt, ctx) {
                     stmts.push(s);

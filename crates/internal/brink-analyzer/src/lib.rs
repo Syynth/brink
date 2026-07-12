@@ -153,7 +153,7 @@ pub fn finish_analysis(
     let hir_inputs: Vec<(FileId, &HirFile)> = files.iter().map(|&(id, hir, _)| (id, hir)).collect();
 
     diagnostics.extend(validate::validate(&hir_inputs));
-    diagnostics.extend(dialect_gate::check(&hir_inputs, opts.dialect));
+    diagnostics.extend(dialect_gate::check(&hir_inputs, &resolutions, opts.dialect));
 
     // Host-manifest enrichment + checks (tooling/author-time only).
     let inline_docs = collect_inline_docs(&manifest_inputs);

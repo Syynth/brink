@@ -52,6 +52,18 @@ fn run_brink(source: &str) -> String {
     out
 }
 
+/// Space-separated `i32`s, matching the `out = out + " " + x` accumulation
+/// pattern the T1b-3 property tests below use to read a mutated array back
+/// through ink's text-output surface (`.trim()`'d at the comparison site, so
+/// this doesn't need a leading/trailing space to match).
+fn space_joined(values: &[i32]) -> String {
+    values
+        .iter()
+        .map(i32::to_string)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn arb_grid_dims() -> impl Strategy<Value = (usize, usize)> {
     (2usize..=4, 2usize..=4)
 }
@@ -189,6 +201,87 @@ proptest! {
         let b_text = parts.next().unwrap_or_default();
         let expected_a = flatten_grid(&original);
         let expected_b = flatten_grid(&mutated);
+        prop_assert_eq!(a_text.trim(), expected_a.trim());
+        prop_assert_eq!(b_text.trim(), expected_b.trim());
+    }
+
+    // ── T1b-3 stdlib mutators (docs/t1b-surface-spec.md §5) ───────────────
+
+    /// `push(a, v)` desugars to `insert(a, len(a), v)` (T1b-3 PR
+    /// description) — a sequence of pushes on a compiled brink program must
+    /// equal the same sequence of `Vec::push` calls on a Rust reference,
+    /// regardless of how many pushes or what the values are.
+    #[test]
+    fn push_sequence_matches_manual_vec_push(
+        values in prop::collection::vec(-1000i32..1000, 0..8),
+    ) {
+        let reference: Vec<i32> = values.clone();
+
+        let pushes: Vec<String> = values.iter().map(|v| format!("    push(arr, {v})\n")).collect();
+        let pushes = pushes.join("");
+        let source = format!(
+            "VAR arr = 0\nVAR out = \"\"\n~ {{\n    arr = #[]\n{pushes}    for x in arr {{\n        out = out + \" \" + x\n    }}\n}}\n{{out}}\n-> END\n",
+        );
+        let out = run_brink(&source);
+        let expected = space_joined(&reference);
+        prop_assert_eq!(out.trim(), expected.trim());
+    }
+
+    /// `insert(a, i, v)` (shift right) then `remove(a, j)` (shift left) on a
+    /// compiled brink program must equal the same sequence of `Vec::insert`/
+    /// `Vec::remove` calls on a Rust reference — the RMW chain equivalence
+    /// law (§6) extended to the mutators, not just indexed assignment.
+    #[test]
+    fn insert_then_remove_matches_manual_vec_ops(
+        base in prop::collection::vec(0i32..100, 1..5),
+        insert_at in 0usize..5,
+        insert_v in -1000i32..1000,
+        remove_at in 0usize..5,
+    ) {
+        let mut reference = base.clone();
+        let clamped_insert = insert_at.min(reference.len());
+        reference.insert(clamped_insert, insert_v);
+        prop_assume!(remove_at < reference.len());
+        reference.remove(remove_at);
+
+        let literal = format!(
+            "#[{}]",
+            base.iter().map(i32::to_string).collect::<Vec<_>>().join(", ")
+        );
+        let source = format!(
+            "VAR arr = 0\nVAR out = \"\"\n~ {{\n    arr = {literal}\n    insert(arr, {clamped_insert}, {insert_v})\n    remove(arr, {remove_at})\n    for x in arr {{\n        out = out + \" \" + x\n    }}\n}}\n{{out}}\n-> END\n",
+        );
+        let out = run_brink(&source);
+        let expected = space_joined(&reference);
+        prop_assert_eq!(out.trim(), expected.trim());
+    }
+
+    /// Sharing-unobservable law (value-model-spec §3) applied to `push`:
+    /// assigning `b = a` then `push`ing onto `b` never changes `a` — the COW
+    /// path a mutator's take → `make_mut` → write-back must take when the
+    /// backing `Arc` is shared.
+    #[test]
+    fn copy_then_push_never_observes_through_the_original(
+        base in prop::collection::vec(0i32..100, 0..5),
+        v in -1000i32..1000,
+    ) {
+        let original = base.clone();
+        let mut mutated = base.clone();
+        mutated.push(v);
+
+        let literal = format!(
+            "#[{}]",
+            base.iter().map(i32::to_string).collect::<Vec<_>>().join(", ")
+        );
+        let source = format!(
+            "VAR a = 0\nVAR b = 0\nVAR out_a = \"\"\nVAR out_b = \"\"\n~ {{\n    a = {literal}\n    b = a\n    push(b, {v})\n    for x in a {{\n        out_a = out_a + \" \" + x\n    }}\n    for x in b {{\n        out_b = out_b + \" \" + x\n    }}\n}}\n{{out_a}}\nSPLIT\n{{out_b}}\n-> END\n",
+        );
+        let out = run_brink(&source);
+        let mut parts = out.split("SPLIT");
+        let a_text = parts.next().unwrap_or_default();
+        let b_text = parts.next().unwrap_or_default();
+        let expected_a = space_joined(&original);
+        let expected_b = space_joined(&mutated);
         prop_assert_eq!(a_text.trim(), expected_a.trim());
         prop_assert_eq!(b_text.trim(), expected_b.trim());
     }

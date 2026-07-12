@@ -340,6 +340,8 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
                 }
             }
         }
+    } else if let Some(expr) = lower_t1b_stdlib_call(&name, args, path.range, ctx) {
+        expr
     } else {
         tracing::error!(
             "ICE: unresolved call to `{name}` — analyzer marked as builtin but \
@@ -347,6 +349,116 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
         );
         lir::Expr::Null
     }
+}
+
+/// Recognize a T1b stdlib call (`docs/t1b-surface-spec.md` §5) reached with
+/// no resolved symbol. An author-defined function of the same name always
+/// wins — `lower_call`'s `ctx.resolve_path` branch above already handles
+/// that (the existing external/knot/list/variable lookup chain resolves a
+/// shadowing user symbol exactly like any other call; `brink-analyzer`'s
+/// symbol-declaration pass separately warns on the shadow, E035); this is
+/// only the "no shadow, genuinely the builtin" fallback.
+///
+/// Dialect-agnostic at this layer, matching the T1b-2 precedent (every
+/// brink-extension construct lowers to a correct program regardless of
+/// dialect; `strict-ink` enforcement is a separate analysis diagnostic —
+/// `brink-analyzer`'s dialect gate, extended in T1b-3 to flag an unresolved
+/// call to one of these names under `strict-ink`).
+///
+/// `push`/`insert`/`remove` (the mutators) are statement-only — recognized
+/// and fully lowered by `blocks::try_lower_mutator_stmt` *before* a call
+/// expression ever reaches here. Reaching here with one of those three names
+/// means the author used it in expression position (`~ x = push(a, v)`),
+/// which is invalid since mutators return nothing (§5) — E056.
+fn lower_t1b_stdlib_call(
+    name: &str,
+    args: &[hir::Expr],
+    call_range: rowan::TextRange,
+    ctx: &mut LowerCtx<'_>,
+) -> Option<lir::Expr> {
+    if !is_t1b_stdlib_name(name) {
+        return None;
+    }
+    let arity_ok = |ctx: &mut LowerCtx<'_>, expected: usize| -> bool {
+        if args.len() == expected {
+            true
+        } else {
+            ctx.diagnostics.push(crate::Diagnostic {
+                file: ctx.file,
+                range: call_range,
+                message: format!(
+                    "{}: `{name}` expects {expected} argument(s), got {}",
+                    crate::DiagnosticCode::E031.title(),
+                    args.len(),
+                ),
+                code: crate::DiagnosticCode::E031,
+            });
+            false
+        }
+    };
+
+    match name {
+        "len" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::CollectionLen(Box::new(lower_expr(
+                &args[0], ctx,
+            ))))
+        }
+        "keys" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::CollectionKeys(Box::new(lower_expr(
+                &args[0], ctx,
+            ))))
+        }
+        "values" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::CollectionValues(Box::new(lower_expr(
+                &args[0], ctx,
+            ))))
+        }
+        "contains" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::CollectionContains {
+                container: Box::new(lower_expr(&args[0], ctx)),
+                needle: Box::new(lower_expr(&args[1], ctx)),
+            })
+        }
+        "push" | "insert" | "remove" => {
+            ctx.diagnostics.push(crate::Diagnostic {
+                file: ctx.file,
+                range: call_range,
+                message: format!(
+                    "{}: `{name}` mutates its first argument and returns nothing — it can \
+                     only be used as a statement, not an expression",
+                    crate::DiagnosticCode::E056.title(),
+                ),
+                code: crate::DiagnosticCode::E056,
+            });
+            Some(lir::Expr::Null)
+        }
+        _ => None,
+    }
+}
+
+/// The T1b stdlib slice 1 function names (`docs/t1b-surface-spec.md` §5),
+/// brink-dialect-gated free functions. Kept in sync by hand with
+/// `brink_analyzer::resolve::is_t1b_stdlib_name` — the two crates don't
+/// share a dependency edge for this purpose (mirrors the existing
+/// `recognize_builtin`/`is_builtin_function` split for the classic uppercase
+/// ink intrinsics).
+pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
+    matches!(
+        name,
+        "len" | "keys" | "values" | "contains" | "push" | "insert" | "remove"
+    )
 }
 
 pub(super) fn lower_call_args(

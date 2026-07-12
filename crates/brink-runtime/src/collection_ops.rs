@@ -13,7 +13,7 @@
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
-use brink_format::{MapKey, OrderedMap, Value};
+use brink_format::{MapKey, OrderedMap, Value, ValueType};
 
 use crate::error::RuntimeError;
 use crate::program::Program;
@@ -148,46 +148,105 @@ pub(crate) fn map_get(flow: &mut Flow) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-/// `MapInsert`: `[map, key, value]` → updated map (insert-or-overwrite).
-/// Unlike `IndexSet`, a missing key is not a fault — this is the stdlib
-/// `insert()` mutator's primitive (T1b-3).
+/// `MapInsert`: `[container, key_or_index, value]` → updated container.
+/// This is the stdlib `insert()`/`push()` mutators' primitive (T1b-3,
+/// `docs/t1b-surface-spec.md` §5) — generalized over both collection kinds
+/// despite the opcode's `Map*` name (the RFC's frozen collection-opcode
+/// block has no dedicated array-append/insert opcode; §5's ruling is that
+/// `insert(x, k_or_i, v)` and `push(a, v)` work on either kind, so the
+/// existing map-shaped opcodes are the natural, frozen-numbering-compatible
+/// targets — see the T1b-3 PR description):
+///
+/// - **Map**: insert-or-overwrite by key. Unlike `IndexSet`, a missing key
+///   is not a fault.
+/// - **Array**: `Vec::insert(index, value)`, shifting later elements right.
+///   `index` must be an `Int` in `[0, len]` inclusive — `index == len` is
+///   "insert at the end", i.e. `push(a, v)` lowers to
+///   `insert(a, len(a), v)`. Unlike `IndexSet`'s strict `< len`, this is the
+///   one array write that's allowed to reach the end, by construction (it
+///   grows the array by exactly one element, never further) — still no
+///   *silent* growth: any other out-of-range index is a fault.
 pub(crate) fn map_insert(flow: &mut Flow) -> Result<(), RuntimeError> {
     let value = flow.pop_value()?;
     let key = flow.pop_value()?;
     let mut container = flow.pop_value()?;
-    let Some(map) = container.map_make_mut() else {
-        return Err(RuntimeError::NotIndexable(type_name(&container)));
-    };
-    let map_key = to_map_key(&key)?;
-    map.insert(map_key, value);
+    match container.value_type() {
+        ValueType::Map => {
+            let map_key = to_map_key(&key)?;
+            let Some(map) = container.map_make_mut() else {
+                return Err(RuntimeError::NotIndexable(type_name(&container)));
+            };
+            map.insert(map_key, value);
+        }
+        ValueType::Array => {
+            let len = container.as_array().map_or(0, |items| items.len());
+            let idx = insert_index(&key, len)?;
+            let Some(items) = container.array_make_mut() else {
+                return Err(RuntimeError::NotIndexable(type_name(&container)));
+            };
+            items.insert(idx, value);
+        }
+        _ => return Err(RuntimeError::NotIndexable(type_name(&container))),
+    }
     flow.value_stack.push(container);
     Ok(())
 }
 
-/// `MapRemove`: `[map, key]` → updated map with `key` removed (no-op if
-/// the key was already absent).
+/// `MapRemove`: `[container, key_or_index]` → updated container. The stdlib
+/// `remove()` mutator's primitive (T1b-3) — generalized like `MapInsert`
+/// above:
+///
+/// - **Map**: remove by key, no-op if the key was already absent.
+/// - **Array**: `Vec::remove(index)`, shifting later elements left. `index`
+///   must be an `Int` in `[0, len)` — strictly less than `len`, unlike
+///   `MapInsert`'s append-friendly `<=`, since there is no element to remove
+///   at `len`. Out-of-range is a fault (`IndexOutOfBounds`), matching
+///   `IndexGet`/`IndexSet`.
 pub(crate) fn map_remove(flow: &mut Flow) -> Result<(), RuntimeError> {
     let key = flow.pop_value()?;
     let mut container = flow.pop_value()?;
-    let Some(map) = container.map_make_mut() else {
-        return Err(RuntimeError::NotIndexable(type_name(&container)));
-    };
-    let map_key = to_map_key(&key)?;
-    map.remove(&map_key);
+    match container.value_type() {
+        ValueType::Map => {
+            let map_key = to_map_key(&key)?;
+            let Some(map) = container.map_make_mut() else {
+                return Err(RuntimeError::NotIndexable(type_name(&container)));
+            };
+            map.remove(&map_key);
+        }
+        ValueType::Array => {
+            let len = container.as_array().map_or(0, |items| items.len());
+            let idx = array_index(&key, len)?;
+            let Some(items) = container.array_make_mut() else {
+                return Err(RuntimeError::NotIndexable(type_name(&container)));
+            };
+            items.remove(idx);
+        }
+        _ => return Err(RuntimeError::NotIndexable(type_name(&container))),
+    }
     flow.value_stack.push(container);
     Ok(())
 }
 
-/// `MapContains`: `[map, key]` → `Bool`.
+/// `MapContains`: `[container, needle]` → `Bool`. The stdlib `contains(x,
+/// v)` primitive (T1b-3) — generalized like `MapInsert`/`MapRemove`:
+///
+/// - **Map**: key containment — `needle` is coerced through the ratified key
+///   domain (int/string/bool), matching `MapGet`/`IndexGet`'s key handling.
+/// - **Array**: element containment — a linear scan for a `needle` that
+///   compares structurally equal (`Value`'s `PartialEq`, value-model-spec
+///   §4/§5) to any element. `needle` may be any value, not just a scalar.
 pub(crate) fn map_contains(flow: &mut Flow) -> Result<(), RuntimeError> {
-    let key = flow.pop_value()?;
+    let needle = flow.pop_value()?;
     let container = flow.pop_value()?;
-    let Value::Map(map) = &container else {
-        return Err(RuntimeError::NotIndexable(type_name(&container)));
+    let found = match &container {
+        Value::Map(map) => {
+            let map_key = to_map_key(&needle)?;
+            map.contains_key(&map_key)
+        }
+        Value::Array(items) => items.iter().any(|item| item == &needle),
+        other => return Err(RuntimeError::NotIndexable(type_name(other))),
     };
-    let map_key = to_map_key(&key)?;
-    flow.value_stack
-        .push(Value::Bool(map.contains_key(&map_key)));
+    flow.value_stack.push(Value::Bool(found));
     Ok(())
 }
 
@@ -313,5 +372,298 @@ fn array_index(index: &Value, len: usize) -> Result<usize, RuntimeError> {
         Err(RuntimeError::IndexOutOfBounds { index: *i, len })
     } else {
         Ok(*i as usize)
+    }
+}
+
+/// Validate an index value is an `Int` in `[0, len]` — inclusive of `len`,
+/// the one array write allowed to reach the end (`MapInsert`'s array
+/// branch: `index == len` means "insert at the end", the `push()` stdlib
+/// mutator's primitive). Distinct from [`array_index`]'s strict `< len`,
+/// used by `IndexGet`/`IndexSet`/`MapRemove`'s array branch, none of which
+/// ever grow the array.
+fn insert_index(index: &Value, len: usize) -> Result<usize, RuntimeError> {
+    let Value::Int(i) = index else {
+        return Err(RuntimeError::InvalidArrayIndex(type_name(index)));
+    };
+    #[expect(clippy::cast_sign_loss)]
+    if *i < 0 || *i as usize > len {
+        Err(RuntimeError::IndexOutOfBounds { index: *i, len })
+    } else {
+        Ok(*i as usize)
+    }
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────
+//
+// T1b-3 stdlib slice 1 (`docs/t1b-surface-spec.md` §5) is VM-native: the
+// compiler emits `MapInsert`/`MapRemove`/`MapContains` for the generalized
+// array/map semantics these tests prove directly against hand-assembled
+// `Value` trees, one level below full bytecode — the same "op function,
+// not full VM" granularity T1b-2's fault-semantics tests used. End-to-end
+// compile+run coverage (source `.ink` -> bytecode -> VM) lives in the
+// `tests/tier1-brink` corpus wing and `brink-test-harness`'s T1b property
+// tests, which exercise these same primitives via the real
+// `push`/`insert`/`remove`/`contains` call sites.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::output::OutputBuffer;
+    use crate::story::Flow;
+    use alloc::sync::Arc;
+
+    /// A `Flow` with nothing but an empty value stack — every function in
+    /// this module reads/writes only `flow.value_stack`.
+    fn test_flow() -> Flow {
+        Flow {
+            threads: Vec::new(),
+            value_stack: Vec::new(),
+            output: OutputBuffer::new(),
+            pending_choices: Vec::new(),
+            current_tags: Vec::new(),
+            in_tag: false,
+            skipping_choice: false,
+            did_safe_exit: false,
+            did_unsafe_yield: false,
+        }
+    }
+
+    fn arr(items: Vec<Value>) -> Value {
+        Value::array(items)
+    }
+
+    fn push_args(flow: &mut Flow, args: Vec<Value>) {
+        for v in args {
+            flow.value_stack.push(v);
+        }
+    }
+
+    // ── MapInsert generalized for Array (push/insert primitive) ──────────
+
+    #[test]
+    fn map_insert_array_appends_at_len_index() {
+        // push([1, 2], 3) == insert([1, 2], len([1,2]), 3) -> [1, 2, 3]
+        let mut flow = test_flow();
+        push_args(
+            &mut flow,
+            vec![
+                arr(vec![Value::Int(1), Value::Int(2)]),
+                Value::Int(2),
+                Value::Int(3),
+            ],
+        );
+        map_insert(&mut flow).unwrap();
+        let result = flow.pop_value().unwrap();
+        assert_eq!(
+            result,
+            arr(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+        );
+    }
+
+    #[test]
+    fn map_insert_array_shifts_elements_right_at_interior_index() {
+        let mut flow = test_flow();
+        push_args(
+            &mut flow,
+            vec![
+                arr(vec![Value::Int(1), Value::Int(3)]),
+                Value::Int(1),
+                Value::Int(2),
+            ],
+        );
+        map_insert(&mut flow).unwrap();
+        let result = flow.pop_value().unwrap();
+        assert_eq!(
+            result,
+            arr(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+        );
+    }
+
+    #[test]
+    fn map_insert_array_index_past_len_faults() {
+        let mut flow = test_flow();
+        push_args(
+            &mut flow,
+            vec![arr(vec![Value::Int(1)]), Value::Int(5), Value::Int(9)],
+        );
+        let err = map_insert(&mut flow).unwrap_err();
+        assert_eq!(err, RuntimeError::IndexOutOfBounds { index: 5, len: 1 });
+    }
+
+    #[test]
+    fn map_insert_array_negative_index_faults() {
+        let mut flow = test_flow();
+        push_args(
+            &mut flow,
+            vec![arr(vec![Value::Int(1)]), Value::Int(-1), Value::Int(9)],
+        );
+        let err = map_insert(&mut flow).unwrap_err();
+        assert_eq!(err, RuntimeError::IndexOutOfBounds { index: -1, len: 1 });
+    }
+
+    #[test]
+    fn map_insert_array_non_int_index_faults() {
+        let mut flow = test_flow();
+        push_args(
+            &mut flow,
+            vec![arr(vec![Value::Int(1)]), Value::from("nope"), Value::Int(9)],
+        );
+        let err = map_insert(&mut flow).unwrap_err();
+        assert_eq!(err, RuntimeError::InvalidArrayIndex("string"));
+    }
+
+    #[test]
+    fn map_insert_map_still_insert_or_overwrite_by_key() {
+        // Unaffected regression check: existing Map behavior is unchanged
+        // by the Array generalization.
+        let mut map = OrderedMap::new();
+        map.insert(MapKey::Str(Arc::from("a")), Value::Int(1));
+        let mut flow = test_flow();
+        push_args(
+            &mut flow,
+            vec![Value::map(map), Value::from("b"), Value::Int(2)],
+        );
+        map_insert(&mut flow).unwrap();
+        let result = flow.pop_value().unwrap();
+        let Value::Map(m) = result else {
+            unreachable!("map_insert on a map must return a map")
+        };
+        assert_eq!(m.len(), 2);
+        assert_eq!(m.get(&MapKey::Str(Arc::from("b"))), Some(&Value::Int(2)));
+    }
+
+    // ── MapRemove generalized for Array ───────────────────────────────────
+
+    #[test]
+    fn map_remove_array_shifts_elements_left() {
+        let mut flow = test_flow();
+        push_args(
+            &mut flow,
+            vec![
+                arr(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+                Value::Int(1),
+            ],
+        );
+        map_remove(&mut flow).unwrap();
+        let result = flow.pop_value().unwrap();
+        assert_eq!(result, arr(vec![Value::Int(1), Value::Int(3)]));
+    }
+
+    #[test]
+    fn map_remove_array_index_equal_to_len_faults() {
+        // Unlike MapInsert's push-friendly `<= len`, remove has no element
+        // to remove at `len` — strictly `< len`, same as IndexGet/IndexSet.
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![arr(vec![Value::Int(1)]), Value::Int(1)]);
+        let err = map_remove(&mut flow).unwrap_err();
+        assert_eq!(err, RuntimeError::IndexOutOfBounds { index: 1, len: 1 });
+    }
+
+    #[test]
+    fn map_remove_map_no_op_when_key_absent() {
+        let mut flow = test_flow();
+        push_args(
+            &mut flow,
+            vec![Value::map(OrderedMap::new()), Value::from("missing")],
+        );
+        map_remove(&mut flow).unwrap();
+        let result = flow.pop_value().unwrap();
+        let Value::Map(m) = result else {
+            unreachable!("map_remove on a map must return a map")
+        };
+        assert_eq!(m.len(), 0);
+    }
+
+    // ── MapContains generalized for Array (element containment) ──────────
+
+    #[test]
+    fn map_contains_array_element_present() {
+        let mut flow = test_flow();
+        push_args(
+            &mut flow,
+            vec![
+                arr(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+                Value::Int(2),
+            ],
+        );
+        map_contains(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn map_contains_array_element_absent() {
+        let mut flow = test_flow();
+        push_args(
+            &mut flow,
+            vec![arr(vec![Value::Int(1), Value::Int(2)]), Value::Int(9)],
+        );
+        map_contains(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::Bool(false));
+    }
+
+    #[test]
+    fn map_contains_array_non_scalar_needle() {
+        // contains(x, v) accepts any expression argument (§5) — element
+        // containment is structural equality, not restricted to the map-key
+        // domain the way MapGet/MapContains's Map branch is.
+        let mut flow = test_flow();
+        push_args(
+            &mut flow,
+            vec![
+                arr(vec![arr(vec![Value::Int(1)]), arr(vec![Value::Int(2)])]),
+                arr(vec![Value::Int(2)]),
+            ],
+        );
+        map_contains(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn map_contains_map_key_containment_unchanged() {
+        let mut map = OrderedMap::new();
+        map.insert(MapKey::Str(Arc::from("k")), Value::Int(1));
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![Value::map(map), Value::from("k")]);
+        map_contains(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn map_contains_non_collection_faults() {
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![Value::Int(5), Value::Int(5)]);
+        let err = map_contains(&mut flow).unwrap_err();
+        assert_eq!(err, RuntimeError::NotIndexable("int"));
+    }
+
+    // ── COW / RMW discipline ──────────────────────────────────────────────
+
+    #[test]
+    fn map_insert_array_cows_when_shared() {
+        // Take -> make_mut -> write-back (value-model-spec §5): mutating a
+        // shared Arc must not observably affect the other holder.
+        let original = arr(vec![Value::Int(1)]);
+        let snapshot = original.clone();
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![original, Value::Int(1), Value::Int(2)]);
+        map_insert(&mut flow).unwrap();
+        let mutated = flow.pop_value().unwrap();
+        assert_eq!(snapshot, arr(vec![Value::Int(1)]), "snapshot unmutated");
+        assert_eq!(mutated, arr(vec![Value::Int(1), Value::Int(2)]));
+    }
+
+    #[test]
+    fn map_remove_array_cows_when_shared() {
+        let original = arr(vec![Value::Int(1), Value::Int(2)]);
+        let snapshot = original.clone();
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![original, Value::Int(0)]);
+        map_remove(&mut flow).unwrap();
+        let mutated = flow.pop_value().unwrap();
+        assert_eq!(
+            snapshot,
+            arr(vec![Value::Int(1), Value::Int(2)]),
+            "snapshot unmutated"
+        );
+        assert_eq!(mutated, arr(vec![Value::Int(2)]));
     }
 }
