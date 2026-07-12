@@ -1,6 +1,6 @@
 //! T1b collection opcode implementations (`docs/format-v4-rfc.md` §3
 //! "Collections (T1a)"; fault semantics from `docs/value-model-spec.md`
-//! §6/§11c).
+//! §11c).
 //!
 //! Every op here is total: out-of-bounds array indices and missing map keys
 //! are turn-terminating `RuntimeError`s (propagated via `?`, unwinding
@@ -236,7 +236,7 @@ pub(crate) fn map_remove(flow: &mut Flow) -> Result<(), RuntimeError> {
 ///   key, so it's simply not contained — `false`, not a fault. This is
 ///   **total on both branches**, matching the array branch below and
 ///   value-model-spec §11c ("total operations with specified failure
-///   values where defined"); unlike `MapGet`/indexing (§6), `contains` has
+///   values where defined"); unlike `MapGet`/indexing (§11c), `contains` has
 ///   no "the key isn't there" failure mode to escalate to a fault — a
 ///   non-key-domain needle *is* "the key isn't there." Ruled 2026-07-12,
 ///   see `docs/decision-log.md`.

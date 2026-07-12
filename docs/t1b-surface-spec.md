@@ -110,7 +110,7 @@ to the VERSION 4 literal pool + the reserved collection opcode block
   nested RMW, never to interior references (no projections in T1b —
   those are T1e).
 - Out-of-bounds / missing-key reads and writes follow value-model-spec
-  §6 error semantics (turn-terminating runtime fault; no silent
+  §11c error semantics (turn-terminating runtime fault; no silent
   growth on write-past-end).
 
 ## 5. Stdlib slice 1
