@@ -170,12 +170,27 @@ pub struct LowerCtx<'a> {
     /// name (docs/t1b-surface-spec.md §2) without disturbing the outer
     /// slot's storage.
     pub block_scopes: Vec<Vec<(String, u16)>>,
-    /// Warning-severity diagnostics produced during lowering (currently
-    /// just the T1b block-scoped-temp shadow warning, E054). Shared by
-    /// mutable reference across an entire `lower_to_program` call — the
-    /// same threading discipline as `ids`/`next_block_slot` — and returned
-    /// alongside the program.
+    /// Diagnostics produced during lowering — historically just warnings
+    /// (the T1b block-scoped-temp shadow warning, E054), but also
+    /// Error-severity ones now (E055/E056 mutator checks, E057
+    /// break/continue-outside-loop, E058 mutator arity). Severity is read
+    /// from `DiagnosticCode::severity()`, not from which list a diagnostic
+    /// was pushed to — `brink-db`'s `lir_query` partitions this Vec by
+    /// severity and refuses to hand back a `Program` (gates `program:
+    /// None`, bypassing `// brink-disable-all` suppression entirely, unlike
+    /// analysis-phase diagnostics) when any Error-severity one is present,
+    /// so pushing here is a real, non-suppressible compile error, not a
+    /// cosmetic note. Shared by mutable reference across an entire
+    /// `lower_to_program` call — the same threading discipline as
+    /// `ids`/`next_block_slot` — and returned alongside the program.
     pub diagnostics: &'a mut Vec<crate::Diagnostic>,
+    /// Depth of `while`/`for` loop nesting the current T1b block-statement
+    /// lowering position is inside — incremented/decremented around
+    /// `while`/`for` body lowering in `blocks::lower_block_stmt`. Zero
+    /// outside any loop; used to reject `break`/`continue` at depth 0
+    /// (E057) instead of emitting an unguarded `LogicBreak`/`LogicContinue`
+    /// that codegen has no jump target for (see #577 review).
+    pub loop_depth: u32,
 }
 
 impl<'a> LowerCtx<'a> {

@@ -135,28 +135,27 @@ impl ContainerEmitter<'_> {
 
             lir::Stmt::LogicBreak => {
                 // Patched to land just after the whole loop once it's fully
-                // emitted (`emit_logic_while`). A `break` outside any loop
-                // (should be rejected upstream; no analyzer check exists yet
-                // — see the T1b-2 PR description scopeNotes) degrades to a
-                // no-op rather than panicking or emitting a dangling jump.
-                if self.loop_stack.is_empty() {
-                    self.emit(Opcode::Nop);
-                } else {
-                    let site = self.emit_jump_placeholder(Opcode::Jump(0));
-                    if let Some(ctx) = self.loop_stack.last_mut() {
-                        ctx.break_patches.push(site);
-                    }
+                // emitted (`emit_logic_while`). LIR lowering (E057,
+                // `brink-ir::lir::lower::blocks`) rejects `break` outside
+                // any loop and never emits this statement in that case — it
+                // is a non-suppressible LIR-lowering-time compile error, not
+                // a suppressible analysis diagnostic, so a well-formed
+                // `Program` never contains an unguarded `LogicBreak`. Trust
+                // that invariant the same way every other statement in this
+                // file trusts LIR is well-formed (no other arm here
+                // defensively re-checks its input) — see #577 review, which
+                // replaced a silent `Nop` degradation with this real,
+                // upstream error path.
+                let site = self.emit_jump_placeholder(Opcode::Jump(0));
+                if let Some(ctx) = self.loop_stack.last_mut() {
+                    ctx.break_patches.push(site);
                 }
             }
 
             lir::Stmt::LogicContinue => {
-                if self.loop_stack.is_empty() {
-                    self.emit(Opcode::Nop);
-                } else {
-                    let site = self.emit_jump_placeholder(Opcode::Jump(0));
-                    if let Some(ctx) = self.loop_stack.last_mut() {
-                        ctx.continue_patches.push(site);
-                    }
+                let site = self.emit_jump_placeholder(Opcode::Jump(0));
+                if let Some(ctx) = self.loop_stack.last_mut() {
+                    ctx.continue_patches.push(site);
                 }
             }
         }

@@ -2982,3 +2982,237 @@ fn index_expression_lowers_without_a_dialect_gate_in_the_loop() {
     let program = program.expect("Index expression should lower to a real program in T1b-2");
     assert!(!program.root.body.is_empty());
 }
+
+// ─── #578: LogicBlock inside an un-lifted inline conditional/sequence ──────
+//
+// `hir::normalize_file` (called unconditionally by `lower_to_program`) lifts
+// every `InlineConditional`/`InlineSequence` it finds in a block's own
+// `Stmt::Content` parts into a top-level `Stmt::Conditional`/`Stmt::Sequence`
+// — the safe path that reaches `lower_stmt` via `lower_block_with_children`,
+// which explicitly dispatches `hir::Stmt::LogicBlock`. But normalization
+// only walks `Block.stmts` (root/knot/stitch bodies, choice bodies,
+// continuations) — it never touches a `Choice`'s own display text
+// (`start_content`/`bracket_content`/`inner_content`), which LIR lowering
+// feeds straight to `content::lower_content` regardless. A multiline
+// branched conditional embedded in choice text (e.g. `* Pick {cond: - a:
+// ~{...} - b: ...}`) therefore keeps its `InlineConditional` shape all the
+// way to `content::lower_inline_block`, and if a branch contains a `~ { … }`
+// T1b block, that reached `stmts::lower_stmt`'s `debug_assert!`-guarded
+// "should be dispatched by lower_block_with_children" arm — panicking in
+// debug builds, silently dropping the block's statements in release.
+#[test]
+fn logic_block_in_choice_text_inline_conditional_lowers_without_panicking() {
+    let src = "VAR x = 1\n* Pick {x > 0:\n- true: ~ { x = x + 1 }\n- else: ~ { x = x - 1 }\n}\n    -> END\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let program =
+        program.expect("choice-text LogicBlock should lower to a real program, not panic/drop");
+
+    // Prove the LogicBlock's `Assign` statements actually made it into the
+    // lowered choice's display text (not silently dropped): find the
+    // top-level ChoiceSet, dig into its one choice's `start_content`, and
+    // confirm the `InlineConditional`'s branches carry `Stmt::Assign`.
+    let Some(lir::Stmt::ChoiceSet(cs)) = program
+        .root
+        .body
+        .iter()
+        .find(|s| matches!(s, lir::Stmt::ChoiceSet(_)))
+    else {
+        panic!("expected a ChoiceSet in the root body");
+    };
+    assert_eq!(cs.choices.len(), 1);
+    let start_content = cs.choices[0]
+        .start_content
+        .as_ref()
+        .expect("choice should have start_content (the inline conditional's text)");
+    let has_assign_in_branches = start_content.parts.iter().any(|p| {
+        let lir::ContentPart::InlineConditional(cond) = p else {
+            return false;
+        };
+        cond.branches
+            .iter()
+            .any(|b| b.body.iter().any(|s| matches!(s, lir::Stmt::Assign { .. })))
+    });
+    assert!(
+        has_assign_in_branches,
+        "expected the LogicBlock's Assign statements spliced into the \
+         InlineConditional's branches, not dropped"
+    );
+}
+
+#[test]
+fn logic_block_second_inline_construct_on_a_content_line_lowers() {
+    // Two inline logics on one content line: the first (`{x}`) is a plain
+    // interpolation, so `lower_multiline_block_from_inline`'s "is it the
+    // first inline logic AND promotable" check fails on it and the whole
+    // line falls through to the generic content-parts path — the second
+    // inline logic (the multiline conditional with LogicBlock branches)
+    // becomes an un-lifted `ContentPart::InlineConditional` too, independent
+    // of the choice-text case above.
+    let src =
+        "VAR x = 1\nHello {x} and {x > 0:\n- true: ~ { x = x + 1 }\n- else: ~ { x = x - 1 }\n}\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let program = program.expect("should lower to a real program, not panic/drop");
+    assert!(!program.root.body.is_empty());
+}
+
+// ─── #577: break/continue outside a loop is a targeted compile error ──────
+//
+// Previously `~ { break }`/`~ { continue }` with no enclosing `while`/`for`
+// lowered unconditionally to `lir::Stmt::LogicBreak`/`LogicContinue`, and
+// codegen's `container.rs` silently degraded the resulting unguarded jump
+// to `Opcode::Nop` (`self.loop_stack.is_empty()`) instead of ever surfacing
+// an error. `blocks::lower_block_stmt` now rejects it at LIR-lowering time
+// (E057, Error severity) and skips emitting the statement — a real,
+// non-suppressible compile error (`brink-db`'s `lir_query` gates `program:
+// None` on any Error-severity LIR diagnostic, bypassing `// brink-disable-
+// all`, which only covers analysis-phase diagnostics), not a cosmetic note.
+
+fn find_e057(diags: &[brink_ir::Diagnostic]) -> Option<&brink_ir::Diagnostic> {
+    diags
+        .iter()
+        .find(|d| d.code == brink_ir::DiagnosticCode::E057)
+}
+
+#[test]
+fn break_outside_any_loop_emits_e057_error_and_is_not_lowered() {
+    let (program, diags) = lower_ink_with_warnings("Hello\n~ {\nbreak\n}\n");
+    let e057 = find_e057(&diags).expect("expected E057 for break outside a loop");
+    assert_eq!(e057.code.severity(), brink_ir::Severity::Error);
+    let program = program.expect("lower_to_program is total — it still returns Some");
+    assert!(
+        !program
+            .root
+            .body
+            .iter()
+            .any(|s| matches!(s, lir::Stmt::LogicBreak)),
+        "the unguarded break must not be lowered to a LogicBreak statement"
+    );
+}
+
+#[test]
+fn continue_outside_any_loop_emits_e057_error_and_is_not_lowered() {
+    let (program, diags) = lower_ink_with_warnings("Hello\n~ {\ncontinue\n}\n");
+    let e057 = find_e057(&diags).expect("expected E057 for continue outside a loop");
+    assert_eq!(e057.code.severity(), brink_ir::Severity::Error);
+    let program = program.expect("lower_to_program is total — it still returns Some");
+    assert!(
+        !program
+            .root
+            .body
+            .iter()
+            .any(|s| matches!(s, lir::Stmt::LogicContinue)),
+        "the unguarded continue must not be lowered to a LogicContinue statement"
+    );
+}
+
+#[test]
+fn break_after_a_while_loop_at_the_same_depth_still_errors() {
+    // `loop_depth` must be decremented back to 0 on exiting the while body —
+    // a break textually after the loop (sibling, not nested) is still an
+    // error, proving the counter doesn't leak across sibling statements.
+    let (_program, diags) =
+        lower_ink_with_warnings("Hello\n~ {\ntemp x = 0\nwhile x < 3 {\nx = x + 1\n}\nbreak\n}\n");
+    assert!(
+        find_e057(&diags).is_some(),
+        "expected E057 for a break textually after (not inside) the loop"
+    );
+}
+
+#[test]
+fn break_inside_if_inside_while_is_allowed() {
+    // `if`/`else` nesting inside a loop body must not reset loop_depth —
+    // break/continue reached through conditional nesting is still valid.
+    let (program, diags) = lower_ink_with_warnings(
+        "Hello\n~ {\ntemp x = 0\nwhile x < 3 {\nif x == 1 {\nbreak\n}\nx = x + 1\n}\n}\n",
+    );
+    assert!(
+        find_e057(&diags).is_none(),
+        "break nested in if-inside-while must not error: {diags:?}"
+    );
+    let program = program.expect("should lower to a real program");
+    assert!(!program.root.body.is_empty());
+}
+
+#[test]
+fn continue_inside_for_loop_is_allowed() {
+    let (program, diags) = lower_ink_with_warnings(
+        "VAR a = #[1, 2, 3]\n~ {\nfor v in a {\nif v == 2 {\ncontinue\n}\n}\n}\n",
+    );
+    assert!(find_e057(&diags).is_none(), "unexpected E057: {diags:?}");
+    let program = program.expect("should lower to a real program");
+    assert!(!program.root.body.is_empty());
+}
+
+// ─── #581: collection mutator arity mismatch is a targeted compile error ──
+//
+// `push`/`insert`/`remove` called with the wrong argument count used to
+// share the generic warning-severity E031 with ordinary function-call arity
+// checking, and — because E031 never blocked compilation — the malformed
+// mutator statement silently vanished from the lowered bytecode (nothing
+// pushed to `out`, `try_lower_mutator_stmt` still returned `true`). E058 is
+// Error-severity and names the expected signature.
+
+fn find_e058(diags: &[brink_ir::Diagnostic]) -> Option<&brink_ir::Diagnostic> {
+    diags
+        .iter()
+        .find(|d| d.code == brink_ir::DiagnosticCode::E058)
+}
+
+#[test]
+fn push_wrong_arity_emits_e058_naming_the_signature() {
+    let (_program, diags) = lower_ink_with_warnings("VAR a = #[1]\n~ push(a)\n");
+    let e058 = find_e058(&diags).expect("expected E058 for push with 1 argument");
+    assert_eq!(e058.code.severity(), brink_ir::Severity::Error);
+    assert!(
+        e058.message.contains("push(container, value)"),
+        "message should name the expected signature: {}",
+        e058.message
+    );
+}
+
+#[test]
+fn insert_wrong_arity_emits_e058_naming_the_signature() {
+    let (_program, diags) = lower_ink_with_warnings("VAR a = #[1]\n~ insert(a, 0)\n");
+    let e058 = find_e058(&diags).expect("expected E058 for insert with 2 arguments");
+    assert!(
+        e058.message
+            .contains("insert(container, key_or_index, value)"),
+        "message should name the expected signature: {}",
+        e058.message
+    );
+}
+
+#[test]
+fn remove_wrong_arity_emits_e058_naming_the_signature() {
+    let (_program, diags) = lower_ink_with_warnings("VAR a = #[1]\n~ remove(a, 0, 1)\n");
+    let e058 = find_e058(&diags).expect("expected E058 for remove with 3 arguments");
+    assert!(
+        e058.message.contains("remove(container, key_or_index)"),
+        "message should name the expected signature: {}",
+        e058.message
+    );
+}
+
+#[test]
+fn mutator_correct_arity_no_e058() {
+    let (program, diags) = lower_ink_with_warnings(
+        "VAR a = #[1]\n~ {\npush(a, 2)\ninsert(a, 0, 9)\nremove(a, 0)\n}\n",
+    );
+    assert!(find_e058(&diags).is_none(), "unexpected E058: {diags:?}");
+    let program = program.expect("should lower to a real program");
+    assert!(!program.root.body.is_empty());
+}
+
+#[test]
+fn pure_function_call_arity_still_uses_e031_not_e058() {
+    // Ordinary (non-mutator) function-call arity checking is untouched by
+    // #581 — only push/insert/remove route through E058.
+    let (_program, diags) =
+        lower_ink_with_warnings("~ temp x = f(1)\n== function f(a, b) ==\n~ return a + b\n");
+    assert!(
+        find_e058(&diags).is_none(),
+        "pure function arity mismatch must not use E058: {diags:?}"
+    );
+}
