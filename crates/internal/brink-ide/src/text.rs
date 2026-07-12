@@ -91,6 +91,32 @@ pub fn builtin_hover_text(name: &str) -> Option<String> {
     Some(format!("**built-in** `{signature}`\n\n{description}"))
 }
 
+/// Return hover markdown for a T1b stdlib slice 1 function
+/// (docs/t1b-surface-spec.md §5 — `len`/`keys`/`values`/`contains`/`push`/
+/// `insert`/`remove`), or `None` if `name` isn't one.
+///
+/// Dialect-agnostic by design, like [`builtin_hover_text`]: hovering a name
+/// is informational even in a strict-ink file, where a resolved use of the
+/// name would be flagged `E051` ("brink extension") — the hover explains
+/// what the name means and that it needs the brink dialect, rather than
+/// staying silent. Callers that want dialect-gated *offering* of these names
+/// (completion, signature help) consult `brink_analyzer::Dialect` themselves;
+/// this function never does.
+#[must_use]
+pub fn stdlib_hover_text(name: &str) -> Option<String> {
+    let f = crate::stdlib::stdlib_fn(name)?;
+    let note = if f.is_mutator() {
+        "brink dialect only — mutates its first argument in place; statement position only"
+    } else {
+        "brink dialect only"
+    };
+    Some(format!(
+        "**brink stdlib** `{}`\n\n{}\n\n*({note})*",
+        f.signature_label(),
+        f.doc,
+    ))
+}
+
 /// Find the function call context at the given byte offset.
 ///
 /// Returns `(function_name, active_parameter_index)` if the cursor is inside

@@ -5,7 +5,7 @@ use brink_ir::FileId;
 use rowan::{TextRange, TextSize};
 
 use crate::navigation::find_def_at_offset;
-use crate::{builtin_hover_text, word_at_offset, word_range_at_offset};
+use crate::{builtin_hover_text, stdlib_hover_text, word_at_offset, word_range_at_offset};
 
 /// Hover information for a symbol.
 pub struct HoverInfo {
@@ -116,7 +116,8 @@ pub fn hover(
             info.name
         )
     } else {
-        word_at_offset(source, offset).and_then(builtin_hover_text)?
+        let word = word_at_offset(source, offset)?;
+        builtin_hover_text(word).or_else(|| stdlib_hover_text(word))?
     };
 
     let range = analysis
@@ -213,6 +214,56 @@ stalls
             info.content.contains("Whether the player holds an item."),
             "{}",
             info.content
+        );
+    }
+
+    // ── Stdlib slice 1 hover (#589) ─────────────────────────────────────
+
+    #[test]
+    fn hover_shows_stdlib_pure_function_signature_and_semantics() {
+        let src = "~ temp n = len(inventory)\n-> END\n";
+        let content = hover_at(src, "len(inventory)");
+        assert!(content.contains("**brink stdlib**"), "{content}");
+        assert!(content.contains("len(x) -> int"), "{content}");
+        assert!(content.contains("keys in a map"), "{content}");
+    }
+
+    #[test]
+    fn hover_shows_stdlib_mutator_with_lvalue_signature() {
+        let src = "~ push(inventory, \"sword\")\n-> END\n";
+        let content = hover_at(src, "push(inventory");
+        assert!(
+            content.contains("push(a: lvalue, v)"),
+            "shows the lvalue-mutator signature: {content}"
+        );
+        assert!(content.contains("mutates its first argument"), "{content}");
+    }
+
+    #[test]
+    fn hover_stdlib_name_is_available_even_when_unresolved() {
+        // No `inventory` symbol declared at all — hover on `contains` must
+        // still explain the stdlib function rather than falling through to
+        // nothing, mirroring `builtin_hover_text`'s unconditional shape.
+        let src = "~ temp ok = contains(items, 1)\n-> END\n";
+        let content = hover_at(src, "contains(items");
+        assert!(content.contains("contains(x, v) -> bool"), "{content}");
+        assert!(
+            content.contains("totality") || content.contains("total:"),
+            "{content}"
+        );
+    }
+
+    #[test]
+    fn hover_non_stdlib_word_has_no_stdlib_content() {
+        let src = "~ temp x = 1\n-> END\n";
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.ink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+        let pos = u32::try_from(src.find("temp x").expect("present") + 5).expect("offset");
+        let info = hover(analysis, file_id, src, TextSize::from(pos), &[]);
+        assert!(
+            info.is_none() || !info.expect("checked").content.contains("brink stdlib"),
+            "`x` is not a stdlib name"
         );
     }
 }
