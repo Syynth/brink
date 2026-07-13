@@ -49,6 +49,8 @@ pub struct HirFile {
     pub constants: Vec<ConstDecl>,
     /// `LIST` declarations.
     pub lists: Vec<ListDecl>,
+    /// `STRUCT` declarations (TM-4b, docs/typed-mode-spec.md §6).
+    pub structs: Vec<StructDecl>,
     /// `EXTERNAL` declarations.
     pub externals: Vec<ExternalDecl>,
     /// `INCLUDE` sites (for cross-file resolution by the analyzer).
@@ -535,6 +537,38 @@ pub enum Expr {
     MapLiteral(MapLiteral),
     /// `base[index]` — postfix indexing (brink extension, T1b §4).
     Index(IndexExpr),
+    /// `Name#{field: expr, …}` — struct construction literal (brink
+    /// extension, TM-4b, docs/typed-mode-spec.md §6).
+    StructLiteral(StructLiteral),
+    /// `base.field` — postfix field access (brink extension, TM-4b,
+    /// docs/typed-mode-spec.md §6). Only produced for the unambiguous
+    /// grammar shape (a non-`Path` base); a bare `ident.ident` chain still
+    /// lowers as `Expr::Path` — the resolution fallback that disambiguates
+    /// "static path" from "field access on a variable" is
+    /// `brink-analyzer`'s job (§6: "ink's static dotted paths... resolved
+    /// first and win").
+    FieldAccess(FieldAccessExpr),
+}
+
+/// `Name#{field: expr, …}`. `ptr` lets the dialect gate point its
+/// diagnostic at the exact literal, matching `ArrayLiteral`/`MapLiteral`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructLiteral {
+    pub ptr: SyntaxNodePtr,
+    pub shape: Name,
+    /// Field initializers, in source order — construction validity
+    /// (missing/extra/mistyped fields) is `brink-analyzer`'s job, not this
+    /// shape's.
+    pub fields: Vec<(Name, Expr)>,
+}
+
+/// `base.field`, chainable (`base.field.field2` lowers as nested
+/// `FieldAccessExpr`, same pattern as [`IndexExpr`]'s `grid[y][x]`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldAccessExpr {
+    pub ptr: SyntaxNodePtr,
+    pub base: Box<Expr>,
+    pub field: Name,
 }
 
 /// `#[expr, …]` — carries a `ptr` (unlike the plain literal variants above)
@@ -684,6 +718,8 @@ pub fn display_expr(expr: &Expr) -> String {
         Expr::ArrayLiteral(_) => "#[...]".to_string(),
         Expr::MapLiteral(_) => "#{...}".to_string(),
         Expr::Index(idx) => format!("{}[{}]", display_expr(&idx.base), display_expr(&idx.index)),
+        Expr::StructLiteral(sl) => format!("{}#{{...}}", sl.shape.text),
+        Expr::FieldAccess(fa) => format!("{}.{}", display_expr(&fa.base), fa.field.text),
     }
 }
 
@@ -806,6 +842,31 @@ pub struct ListMember {
     pub value: Option<i32>,
     /// Whether this member is active by default (wrapped in parens).
     pub is_active: bool,
+}
+
+// ─── TM-4b structs (docs/typed-mode-spec.md §6) ─────────────────────
+//
+// Superset grammar surface — always lowered to HIR regardless of dialect
+// (mirrors the T1b/TM-2 pattern); `brink-analyzer::dialect_gate` is where
+// `strict-ink` rejection (E051) happens. LIR lowering rejects every
+// construct below with a targeted diagnostic — codegen lands with TM-4c.
+
+/// `STRUCT Name = #{ field: type, … }`. Top-level only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructDecl {
+    pub ptr: AstPtr<ast::StructDecl>,
+    pub name: Name,
+    /// Declared fields, in source order — the same order
+    /// `brink_format`'s `Value::Record` flat field vector will follow once
+    /// TM-4c's codegen assigns a `ShapeId`.
+    pub fields: Vec<StructFieldDecl>,
+}
+
+/// One `field: type` pair inside a [`StructDecl`]'s body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructFieldDecl {
+    pub name: Name,
+    pub ty: TypeExpr,
 }
 
 /// `EXTERNAL fn_name(param1, param2)`
@@ -1066,6 +1127,28 @@ pub enum DiagnosticCode {
     /// checked — a statement-position call (`~ f()`) or a call nested inside
     /// interpolation is never flagged. Never emitted under `types = gradual`.
     E067,
+
+    // ── TM-4b structs (docs/typed-mode-spec.md §6) ────────────────────
+    /// A struct construction literal's leading shape name (`Name#{…}`)
+    /// doesn't name any declared `STRUCT`.
+    E068,
+    /// Under `types = strict`, a struct construction literal omits a
+    /// declared field — names the missing field.
+    E069,
+    /// A struct construction literal supplies a field the shape doesn't
+    /// declare — names the extra field.
+    E070,
+    /// Under `types = strict`, a struct construction literal's field
+    /// initializer disagrees with the field's declared type — names the
+    /// field.
+    E071,
+    /// A struct construct (construction literal, field access) reached LIR
+    /// lowering — codegen isn't implemented yet (lands with TM-4c, #666).
+    /// Non-suppressible defense-in-depth backstop, mirroring `E053`/`E060`:
+    /// reaching this from a normal compile means `brink-analyzer`'s
+    /// dialect-gate diagnostic (`E051`) was suppressed
+    /// (`// brink-disable-all`), not a compiler bug on its own.
+    E072,
 }
 
 impl DiagnosticCode {
@@ -1140,6 +1223,11 @@ impl DiagnosticCode {
             Self::E065 => "E065",
             Self::E066 => "E066",
             Self::E067 => "E067",
+            Self::E068 => "E068",
+            Self::E069 => "E069",
+            Self::E070 => "E070",
+            Self::E071 => "E071",
+            Self::E072 => "E072",
         }
     }
 
@@ -1216,6 +1304,11 @@ impl DiagnosticCode {
             Self::E065 => "type escapes strict inference as Unknown",
             Self::E066 => "type is Conflicted under strict inference",
             Self::E067 => "assigning the result of a void function",
+            Self::E068 => "struct construction literal names an undeclared STRUCT",
+            Self::E069 => "struct construction literal is missing a declared field",
+            Self::E070 => "struct construction literal supplies an undeclared field",
+            Self::E071 => "struct construction literal field disagrees with the declared type",
+            Self::E072 => "struct construct reached LIR lowering — codegen lands with TM-4c",
         }
     }
 
@@ -1311,6 +1404,11 @@ impl DiagnosticCode {
             "E065" => Some(Self::E065),
             "E066" => Some(Self::E066),
             "E067" => Some(Self::E067),
+            "E068" => Some(Self::E068),
+            "E069" => Some(Self::E069),
+            "E070" => Some(Self::E070),
+            "E071" => Some(Self::E071),
+            "E072" => Some(Self::E072),
             _ => None,
         }
     }

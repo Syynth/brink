@@ -504,6 +504,7 @@ pub(crate) fn symbol_kind_str(kind: brink_ir::SymbolKind) -> &'static str {
         brink_ir::SymbolKind::Label => "label",
         brink_ir::SymbolKind::Param => "param",
         brink_ir::SymbolKind::Temp => "temp",
+        brink_ir::SymbolKind::Struct => "struct",
     }
 }
 

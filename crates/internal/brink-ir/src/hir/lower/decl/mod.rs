@@ -7,6 +7,7 @@
 mod constant;
 mod external;
 mod list;
+mod struct_decl;
 mod var;
 
 use super::context::{LowerScope, LowerSink, Lowered};

@@ -543,6 +543,22 @@ fn classify_node(
                     lines[line_idx].depth = 0;
                 }
             }
+            // TM-4b (docs/typed-mode-spec.md §6): unlike `VAR`/`CONST`/`LIST`
+            // (always single physical line), a `STRUCT` decl body is legal
+            // across multiple lines ("single-line form is legal for short
+            // structs" implies multi-line is the common case). Every other
+            // `LineKind` here assumes one physical line per CST node; a
+            // generic per-line `Declaration`/`Other` treatment would `trim()`
+            // and reindent each continuation line independently, silently
+            // discarding the author's own field indentation. Pass the whole
+            // node through byte-for-byte instead — the same verbatim
+            // discipline `mark_verbatim_span` already gives a malformed
+            // `~ { … }` block. Reformatting a `STRUCT` body "like a block"
+            // (§6) is deferred to a follow-up; verbatim keeps output
+            // idempotent and non-lossy in the meantime.
+            SyntaxKind::STRUCT_DECL => {
+                mark_verbatim_span(&child, line_starts, lines);
+            }
             SyntaxKind::EMPTY_LINE => {
                 if line_idx < lines.len() {
                     lines[line_idx].kind = LineKind::Blank;
@@ -1804,5 +1820,46 @@ mod tests {
 
         let result = fmt(input);
         assert_eq!(result, expected);
+    }
+
+    // ── TM-4b structs (docs/typed-mode-spec.md §6) ────────────────────
+    //
+    // Verbatim pass-through (see `STRUCT_DECL`'s `classify_node` arm) — a
+    // `STRUCT` body is legal across multiple physical lines, unlike every
+    // other `Declaration`-classified node, so it gets the same
+    // whole-node-verbatim treatment `mark_verbatim_span` gives a malformed
+    // `~ { … }` block rather than the generic per-line trim/reindent.
+
+    #[test]
+    fn struct_decl_single_line_is_idempotent() {
+        let input = "STRUCT Point = #{x: float, y: float}\n";
+        let once = fmt(input);
+        assert_eq!(once, input, "single-line struct decl stays verbatim");
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn struct_decl_multiline_is_idempotent_and_preserves_field_indentation() {
+        let input = "STRUCT Point = #{\n    x: float,\n    y: float,\n}\n";
+        let once = fmt(input);
+        assert_eq!(
+            once, input,
+            "multiline struct decl must round-trip byte-for-byte, indentation included"
+        );
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn struct_decl_followed_by_ordinary_content_formats_normally() {
+        // The `STRUCT_DECL` span itself stays verbatim; everything after it
+        // still goes through the ordinary formatter rules (blank line
+        // before a knot header, body content indented one level) —
+        // verbatim is scoped to the decl's own node, not "the rest of the
+        // file after any struct decl".
+        let input = "STRUCT Point = #{\n    x: float,\n}\n=== main ===\nHello.\n-> DONE\n";
+        let expected = "STRUCT Point = #{\n    x: float,\n}\n\n=== main ===\n  Hello.\n  -> DONE\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
     }
 }

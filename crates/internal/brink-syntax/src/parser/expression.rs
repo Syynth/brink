@@ -1,11 +1,11 @@
 use crate::SyntaxKind::{
     self, AMP_AMP, ARRAY_LITERAL, BANG, BANG_EQ, BANG_QUESTION, BOOLEAN_LIT, CARET, COLON, COMMA,
-    DIVERT, DIVERT_TARGET_EXPR, DOT, EOF, EQ_EQ, FLOAT, FLOAT_LIT, FUNCTION_CALL, GT, GT_EQ, HASH,
-    IDENT, IDENTIFIER, INDEX_EXPR, INFIX_EXPR, INTEGER, INTEGER_LIT, KW_AND, KW_FALSE, KW_HAS,
-    KW_HASNT, KW_MOD, KW_NOT, KW_OR, KW_TRUE, L_BRACE, L_BRACKET, L_PAREN, LIST_EXPR, LT, LT_EQ,
-    MAP_ENTRY, MAP_LITERAL, MINUS, MINUS_EQ, NEWLINE, PAREN_EXPR, PERCENT, PIPE, PLUS, PLUS_EQ,
-    POSTFIX_EXPR, PREFIX_EXPR, QUESTION, QUOTE, R_BRACE, R_BRACKET, R_PAREN, SLASH, STAR,
-    STRING_LIT,
+    DIVERT, DIVERT_TARGET_EXPR, DOT, EOF, EQ_EQ, FIELD_ACCESS_EXPR, FLOAT, FLOAT_LIT,
+    FUNCTION_CALL, GT, GT_EQ, HASH, IDENT, IDENTIFIER, INDEX_EXPR, INFIX_EXPR, INTEGER,
+    INTEGER_LIT, KW_AND, KW_FALSE, KW_HAS, KW_HASNT, KW_MOD, KW_NOT, KW_OR, KW_TRUE, L_BRACE,
+    L_BRACKET, L_PAREN, LIST_EXPR, LT, LT_EQ, MAP_ENTRY, MAP_LITERAL, MINUS, MINUS_EQ, NEWLINE,
+    PAREN_EXPR, PERCENT, PIPE, PLUS, PLUS_EQ, POSTFIX_EXPR, PREFIX_EXPR, QUESTION, QUOTE, R_BRACE,
+    R_BRACKET, R_PAREN, SLASH, STAR, STRING_LIT, STRUCT_FIELD_INIT, STRUCT_LITERAL,
 };
 
 use super::Parser;
@@ -117,6 +117,29 @@ fn expression_bp(p: &mut Parser<'_, '_>, min_bp: Prec) {
             continue;
         }
 
+        // Postfix field access: `base.field` (TM-4b, docs/typed-mode-spec.md
+        // §6). Only reached where the existing dotted-`PATH` grammar doesn't
+        // already cover the shape: a bare `ident.ident…` chain is greedily
+        // consumed whole by `divert::path` inside `atom()`, so by the time
+        // this loop runs there is no leftover `.field` to see — that
+        // ambiguous case (`p.x` where `p` might be a variable *or* the head
+        // of a static dotted path like `knot.stitch`) is resolved by
+        // `brink-analyzer`'s resolution fallback, not by new grammar. This
+        // arm only fires after a non-`PATH` primary — a `STRUCT_LITERAL`, an
+        // `INDEX_EXPR`, a parenthesized/call expression — where `.field` is
+        // unambiguously field access. Chains (`base.field.field2`) fall out
+        // for free: the loop just runs again.
+        if p.current() == DOT && p.nth(1) == IDENT {
+            p.start_node_at(checkpoint, FIELD_ACCESS_EXPR);
+            p.bump(); // .
+            p.skip_ws();
+            p.start_node(IDENTIFIER);
+            p.bump(); // field name
+            p.finish_node();
+            p.finish_node();
+            continue;
+        }
+
         // `||` — two adjacent PIPE tokens = logical OR
         if p.current() == PIPE && p.nth_raw(1) == PIPE {
             let (prec, right_assoc) = (Prec::Or, false);
@@ -181,11 +204,19 @@ fn atom(p: &mut Parser<'_, '_>) -> bool {
             true
         }
 
-        // Identifier -- could be function_call or plain identifier
+        // Identifier -- could be function_call, a struct construction
+        // literal, or a plain (possibly dotted) identifier
         IDENT => {
             // function_call = ident ( args )
             if p.nth(1) == L_PAREN {
                 function_call(p);
+            } else if p.nth(1) == HASH && p.nth(2) == L_BRACE {
+                // Name#{field: expr, …} — struct construction literal
+                // (TM-4b, docs/typed-mode-spec.md §6). Self-identifying via
+                // the leading shape name — unambiguous with the dotted-path
+                // `IDENT` arm below, since a bare path never has `#{`
+                // immediately following its first segment.
+                struct_literal(p);
             } else {
                 // dotted_identifier
                 super::divert::path(p);
@@ -330,6 +361,60 @@ fn map_literal(p: &mut Parser<'_, '_>) {
 fn map_entry(p: &mut Parser<'_, '_>) {
     p.start_node(MAP_ENTRY);
     expression(p);
+    p.skip_ws();
+    p.expect(COLON);
+    p.skip_ws();
+    expression(p);
+    p.finish_node();
+}
+
+/// `Name#{field: expr, …}` — struct construction literal (TM-4b,
+/// docs/typed-mode-spec.md §6). Trailing comma and the empty form
+/// `Name#{}` are both accepted, mirroring [`map_literal`]'s shape exactly
+/// (the decl body mirrors this same shape, with types in value position).
+fn struct_literal(p: &mut Parser<'_, '_>) {
+    p.start_node(STRUCT_LITERAL);
+    p.start_node(IDENTIFIER);
+    p.bump(); // shape name (IDENT)
+    p.finish_node();
+    p.skip_ws();
+    p.bump_assert(HASH);
+    p.skip_ws();
+    p.bump_assert(L_BRACE);
+    if p.at_depth_limit() {
+        p.error("nesting depth limit exceeded".into());
+        skip_balanced(p, L_BRACE, R_BRACE);
+        p.finish_node();
+        return;
+    }
+    p.depth += 1;
+    p.skip_ws();
+    if p.current() != R_BRACE {
+        struct_field_init(p);
+        loop {
+            p.skip_ws();
+            if !p.eat(COMMA) {
+                break;
+            }
+            p.skip_ws();
+            if p.current() == R_BRACE {
+                break; // trailing comma
+            }
+            struct_field_init(p);
+        }
+    }
+    p.skip_ws();
+    p.expect(R_BRACE);
+    p.depth -= 1;
+    p.finish_node();
+}
+
+/// `field: expr` — one entry of a struct construction literal.
+fn struct_field_init(p: &mut Parser<'_, '_>) {
+    p.start_node(STRUCT_FIELD_INIT);
+    p.start_node(IDENTIFIER);
+    p.expect_ident_or_keyword();
+    p.finish_node();
     p.skip_ws();
     p.expect(COLON);
     p.skip_ws();

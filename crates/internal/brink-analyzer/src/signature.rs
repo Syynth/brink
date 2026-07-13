@@ -13,7 +13,9 @@ use brink_format::DefinitionId;
 use brink_ir::hir::HirFile;
 use brink_ir::{FileId, ParamInfo, SymbolIndex, SymbolKind};
 
-use crate::annotations::{declared_list_names, resolve as resolve_annotation};
+use crate::annotations::{
+    declared_list_names, declared_struct_names, resolve as resolve_annotation,
+};
 use crate::external_check::{InferredType, infer_literal_type};
 use crate::infer::Ty;
 
@@ -73,7 +75,11 @@ fn ty_to_inferred_type(ty: &Ty) -> Option<InferredType> {
         // `Conflicted` (#627): a genuine type conflict has no representable
         // `InferredType` any more than `Unknown` does — this stub is a
         // gradual/advisory consumer, so it reads both the same way.
-        Ty::Array(_) | Ty::Map(_, _) | Ty::Unknown | Ty::Conflicted => None,
+        // `Struct` (TM-4b): no `InferredType` representation exists for a
+        // nominal struct shape either — same gap as `Array`/`Map`, not a
+        // silent drop (the full `Ty::Struct` is still available via
+        // `param_annotations`/`return_annotation`/`resolve_annotation`).
+        Ty::Array(_) | Ty::Map(_, _) | Ty::Struct(_) | Ty::Unknown | Ty::Conflicted => None,
     }
 }
 
@@ -84,9 +90,10 @@ fn value_type_with_annotation_override(
     literal_type: Option<InferredType>,
     annotation: Option<&brink_ir::TypeExpr>,
     list_names: &std::collections::BTreeSet<String>,
+    struct_names: &std::collections::BTreeSet<String>,
 ) -> Option<InferredType> {
     annotation
-        .and_then(|ann| resolve_annotation(ann, list_names))
+        .and_then(|ann| resolve_annotation(ann, list_names, struct_names))
         .and_then(|ty| ty_to_inferred_type(&ty))
         .or(literal_type)
 }
@@ -97,6 +104,14 @@ fn value_type_with_annotation_override(
 /// file's HIR for the initializer expression and the `#@local` bit. Returns
 /// `None` for an unknown definition id.
 #[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "TM-4b (docs/typed-mode-spec.md §6) threads a second declared-name \
+              set (struct_names, alongside the pre-existing list_names) through \
+              every existing per-kind annotation-resolution branch below — the \
+              same shape the function already had, just wider, not a new \
+              structural concern worth splitting out"
+)]
 pub fn signature(
     def: DefinitionId,
     index: &SymbolIndex,
@@ -113,10 +128,12 @@ pub fn signature(
     let mut param_annotations = Vec::new();
     let mut return_annotation = None;
     if let Some(hir) = hir {
-        // `list<L>` annotations resolve nominally against every declared
-        // `LIST` in the project (spec §2/§3) — computed lazily, only when
-        // this def actually has a knot/stitch/var to annotate below.
+        // `list<L>`/declared-struct annotations resolve nominally against
+        // every declared `LIST`/`STRUCT` in the project (spec §2/§3, TM-4b
+        // §6) — computed lazily, only when this def actually has a
+        // knot/stitch/var to annotate below.
         let list_names = || declared_list_names(index);
+        let struct_names = || declared_struct_names(index);
         match info.kind {
             SymbolKind::Variable => {
                 if let Some(v) = hir.variables.iter().find(|v| v.name.text == info.name) {
@@ -126,6 +143,7 @@ pub fn signature(
                         infer_literal_type(&v.value),
                         v.annotation.as_ref(),
                         &list_names(),
+                        &struct_names(),
                     );
                 }
             }
@@ -137,6 +155,7 @@ pub fn signature(
                         infer_literal_type(&c.value),
                         c.annotation.as_ref(),
                         &list_names(),
+                        &struct_names(),
                     );
                 }
             }
@@ -144,19 +163,20 @@ pub fn signature(
                 if let Some(k) = hir.knots.iter().find(|k| k.name.text == info.name) {
                     is_local = k.is_local;
                     let names = list_names();
+                    let s_names = struct_names();
                     param_annotations = k
                         .params
                         .iter()
                         .map(|p| {
                             p.annotation
                                 .as_ref()
-                                .and_then(|a| resolve_annotation(a, &names))
+                                .and_then(|a| resolve_annotation(a, &names, &s_names))
                         })
                         .collect();
                     return_annotation = k
                         .return_type
                         .as_ref()
-                        .and_then(|rt| resolve_annotation(rt, &names));
+                        .and_then(|rt| resolve_annotation(rt, &names, &s_names));
                 }
             }
             SymbolKind::Stitch => {
@@ -172,32 +192,34 @@ pub fn signature(
                     {
                         is_local = s.is_local;
                         let names = list_names();
+                        let s_names = struct_names();
                         param_annotations = s
                             .params
                             .iter()
                             .map(|p| {
                                 p.annotation
                                     .as_ref()
-                                    .and_then(|a| resolve_annotation(a, &names))
+                                    .and_then(|a| resolve_annotation(a, &names, &s_names))
                             })
                             .collect();
                     }
                 } else if let Some(k) = hir.knots.iter().find(|k| k.name.text == info.name) {
                     is_local = k.is_local;
                     let names = list_names();
+                    let s_names = struct_names();
                     param_annotations = k
                         .params
                         .iter()
                         .map(|p| {
                             p.annotation
                                 .as_ref()
-                                .and_then(|a| resolve_annotation(a, &names))
+                                .and_then(|a| resolve_annotation(a, &names, &s_names))
                         })
                         .collect();
                     return_annotation = k
                         .return_type
                         .as_ref()
-                        .and_then(|rt| resolve_annotation(rt, &names));
+                        .and_then(|rt| resolve_annotation(rt, &names, &s_names));
                 }
             }
             _ => {}

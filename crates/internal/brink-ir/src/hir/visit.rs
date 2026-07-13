@@ -361,6 +361,14 @@ fn walk_expr(expr: &Expr, v: &mut impl HirVisitor) {
             walk_expr(&idx.base, v);
             walk_expr(&idx.index, v);
         }
+        Expr::StructLiteral(sl) => {
+            for (_name, val) in &sl.fields {
+                walk_expr(val, v);
+            }
+        }
+        Expr::FieldAccess(fa) => {
+            walk_expr(&fa.base, v);
+        }
     }
 }
 

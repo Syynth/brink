@@ -95,6 +95,12 @@ pub fn check(
                 v.flag(ann.range(), "type annotation");
             }
         }
+        // TM-4b (docs/typed-mode-spec.md §6): `STRUCT Name = #{ … }`. Also a
+        // file-level declaration outside `visit::visit`'s block-tree walk —
+        // same reason and same pattern as `VAR`/`CONST` annotations above.
+        for s in &hir.structs {
+            v.flag(s.ptr.text_range(), "`STRUCT` declaration");
+        }
     }
     out
 }
@@ -225,6 +231,12 @@ impl HirVisitor for GateVisitor<'_> {
                 }
             }
             Expr::Index(i) => self.flag(i.ptr.text_range(), "postfix indexing `[…]`"),
+            Expr::StructLiteral(sl) => {
+                self.flag(sl.ptr.text_range(), "struct construction literal");
+            }
+            Expr::FieldAccess(fa) => {
+                self.flag(fa.ptr.text_range(), "postfix field access `.field`");
+            }
             _ => {}
         }
     }
@@ -436,6 +448,50 @@ mod tests {
             "=== heal(hp) ===\nVAR gold = 100\nCONST speed = 0.5\n~ temp t = 1\n~ return hp\n",
         );
         let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    // ── TM-4b structs (docs/typed-mode-spec.md §6) ────────────────────
+
+    #[test]
+    fn strict_ink_flags_struct_decl() {
+        let hir = lower_src("STRUCT Point = #{x: float, y: float}\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E051);
+    }
+
+    #[test]
+    fn brink_dialect_does_not_flag_struct_decl() {
+        let hir = lower_src("STRUCT Point = #{x: float, y: float}\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::Brink);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn strict_ink_flags_struct_literal() {
+        let hir = lower_src("STRUCT Point = #{x: float, y: float}\n~ p = Point#{x: 1.0, y: 2.0}\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        // The decl AND the construction literal are each flagged.
+        assert_eq!(diags.len(), 2, "{diags:?}");
+        assert!(diags.iter().all(|d| d.code == DiagnosticCode::E051));
+    }
+
+    #[test]
+    fn strict_ink_flags_field_access() {
+        let hir =
+            lower_src("STRUCT Point = #{x: float, y: float}\n~ x = Point#{x: 1.0, y: 2.0}.x\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        // The decl, the literal, AND the field access are each flagged.
+        assert_eq!(diags.len(), 3, "{diags:?}");
+        assert!(diags.iter().all(|d| d.code == DiagnosticCode::E051));
+    }
+
+    #[test]
+    fn brink_dialect_does_not_flag_struct_literal_or_field_access() {
+        let hir =
+            lower_src("STRUCT Point = #{x: float, y: float}\n~ x = Point#{x: 1.0, y: 2.0}.x\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::Brink);
         assert!(diags.is_empty(), "{diags:?}");
     }
 }

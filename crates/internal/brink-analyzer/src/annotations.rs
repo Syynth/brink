@@ -48,8 +48,20 @@ fn is_known_leaf(name: &str) -> bool {
 /// `Ty::Fn` variant exists, spec §2), and any name this function doesn't
 /// recognize (an unknown leaf name, or a `list<L>` whose `L` isn't a
 /// declared `LIST` — [`check`] is what reports these, not this function).
+///
+/// `struct_names` (TM-4b, docs/typed-mode-spec.md §6): a bare `Named` type
+/// whose name is a declared `STRUCT` resolves to `Ty::Struct` — "declared
+/// struct names join the TM-2 annotation type grammar", the same join
+/// `list_names` gives `list<L>`. Checked after the fixed scalar-keyword set
+/// so a struct can never shadow `int`/`float`/etc. (those names aren't
+/// legal `STRUCT` identifiers by convention, but this ordering is the
+/// unambiguous choice regardless).
 #[must_use]
-pub fn resolve(te: &brink_ir::TypeExpr, list_names: &BTreeSet<String>) -> Option<Ty> {
+pub fn resolve(
+    te: &brink_ir::TypeExpr,
+    list_names: &BTreeSet<String>,
+    struct_names: &BTreeSet<String>,
+) -> Option<Ty> {
     match te {
         brink_ir::TypeExpr::Named { name, .. } => match name.as_str() {
             "int" => Some(Ty::Int),
@@ -57,6 +69,7 @@ pub fn resolve(te: &brink_ir::TypeExpr, list_names: &BTreeSet<String>) -> Option
             "bool" => Some(Ty::Bool),
             "string" => Some(Ty::String),
             "divert" => Some(Ty::Divert),
+            _ if struct_names.contains(name) => Some(Ty::Struct(name.clone())),
             _ => None, // "void", or an unrecognized/unknown name
         },
         brink_ir::TypeExpr::Generic { name, args, .. } => match name.as_str() {
@@ -67,11 +80,11 @@ pub fn resolve(te: &brink_ir::TypeExpr, list_names: &BTreeSet<String>) -> Option
                 _ => None,
             },
             "array" if args.len() == 1 => {
-                resolve(&args[0], list_names).map(|t| Ty::Array(Box::new(t)))
+                resolve(&args[0], list_names, struct_names).map(|t| Ty::Array(Box::new(t)))
             }
             "map" if args.len() == 2 => {
-                let k = resolve(&args[0], list_names)?;
-                let v = resolve(&args[1], list_names)?;
+                let k = resolve(&args[0], list_names, struct_names)?;
+                let v = resolve(&args[1], list_names, struct_names)?;
                 Some(Ty::Map(Box::new(k), Box::new(v)))
             }
             _ => None,
@@ -92,42 +105,62 @@ pub(crate) fn declared_list_names(index: &SymbolIndex) -> BTreeSet<String> {
         .collect()
 }
 
+/// Every declared `STRUCT` name in the project (TM-4b, docs/typed-mode-spec.md
+/// §6) — mirrors [`declared_list_names`] exactly for the same reason: a
+/// struct name is nominal, and joining the annotation grammar needs
+/// project-wide knowledge.
+pub(crate) fn declared_struct_names(index: &SymbolIndex) -> BTreeSet<String> {
+    index
+        .symbols
+        .values()
+        .filter(|s| s.kind == SymbolKind::Struct)
+        .map(|s| s.name.clone())
+        .collect()
+}
+
 /// Semantic diagnostics on annotation content: unknown type names (`E061`)
 /// and reserved-until-T1c function types (`E062`). Unconditional in both
 /// dialects (see module doc).
 #[must_use]
 pub fn check(files: &[(FileId, &HirFile)], index: &SymbolIndex) -> Vec<Diagnostic> {
     let list_names = declared_list_names(index);
+    let struct_names = declared_struct_names(index);
     let mut out = Vec::new();
     for &(file, hir) in files {
         for v in &hir.variables {
             if let Some(te) = &v.annotation {
-                check_one(te, &list_names, file, &mut out);
+                check_one(te, &list_names, &struct_names, file, &mut out);
             }
         }
         for c in &hir.constants {
             if let Some(te) = &c.annotation {
-                check_one(te, &list_names, file, &mut out);
+                check_one(te, &list_names, &struct_names, file, &mut out);
             }
         }
         for knot in &hir.knots {
-            check_knot(knot, file, &list_names, &mut out);
+            check_knot(knot, file, &list_names, &struct_names, &mut out);
         }
     }
     out
 }
 
-fn check_knot(knot: &Knot, file: FileId, list_names: &BTreeSet<String>, out: &mut Vec<Diagnostic>) {
+fn check_knot(
+    knot: &Knot,
+    file: FileId,
+    list_names: &BTreeSet<String>,
+    struct_names: &BTreeSet<String>,
+    out: &mut Vec<Diagnostic>,
+) {
     for p in &knot.params {
         if let Some(te) = &p.annotation {
-            check_one(te, list_names, file, out);
+            check_one(te, list_names, struct_names, file, out);
         }
     }
     if let Some(rt) = &knot.return_type {
-        check_one(rt, list_names, file, out);
+        check_one(rt, list_names, struct_names, file, out);
     }
     for stitch in &knot.stitches {
-        check_stitch(stitch, file, list_names, out);
+        check_stitch(stitch, file, list_names, struct_names, out);
     }
 }
 
@@ -135,11 +168,12 @@ fn check_stitch(
     stitch: &Stitch,
     file: FileId,
     list_names: &BTreeSet<String>,
+    struct_names: &BTreeSet<String>,
     out: &mut Vec<Diagnostic>,
 ) {
     for p in &stitch.params {
         if let Some(te) = &p.annotation {
-            check_one(te, list_names, file, out);
+            check_one(te, list_names, struct_names, file, out);
         }
     }
 }
@@ -149,18 +183,23 @@ fn check_stitch(
 fn check_one(
     te: &brink_ir::TypeExpr,
     list_names: &BTreeSet<String>,
+    struct_names: &BTreeSet<String>,
     file: FileId,
     out: &mut Vec<Diagnostic>,
 ) {
     match te {
         brink_ir::TypeExpr::Named { name, range } => {
-            if !is_known_leaf(name) {
+            // TM-4b (docs/typed-mode-spec.md §6): "declared struct names
+            // join the TM-2 annotation type grammar... E061 no longer fires
+            // for a declared name".
+            if !is_known_leaf(name) && !struct_names.contains(name) {
                 out.push(Diagnostic {
                     file,
                     range: *range,
                     message: format!(
                         "`{name}` is not a recognized type — expected int, float, bool, \
-                         string, divert, void, list<L>, array<T>, or map<K, V>"
+                         string, divert, void, list<L>, array<T>, map<K, V>, or a declared \
+                         STRUCT name"
                     ),
                     code: DiagnosticCode::E061,
                 });
@@ -186,7 +225,7 @@ fn check_one(
             }
             "array" | "map" => {
                 for a in args {
-                    check_one(a, list_names, file, out);
+                    check_one(a, list_names, struct_names, file, out);
                 }
             }
             _ => {
@@ -206,9 +245,9 @@ fn check_one(
                 code: DiagnosticCode::E062,
             });
             for p in params {
-                check_one(p, list_names, file, out);
+                check_one(p, list_names, struct_names, file, out);
             }
-            check_one(ret, list_names, file, out);
+            check_one(ret, list_names, struct_names, file, out);
         }
     }
 }
@@ -238,12 +277,29 @@ pub fn mismatches(
     inference: &InferenceResult,
 ) -> Vec<Diagnostic> {
     let list_names = declared_list_names(index);
+    let struct_names = declared_struct_names(index);
     let mut out = Vec::new();
     for &(file, hir) in files {
         for knot in &hir.knots {
-            check_def_mismatch(knot, file, index, &list_names, inference, &mut out);
+            check_def_mismatch(
+                knot,
+                file,
+                index,
+                &list_names,
+                &struct_names,
+                inference,
+                &mut out,
+            );
             for stitch in &knot.stitches {
-                check_stitch_mismatch(stitch, file, index, &list_names, inference, &mut out);
+                check_stitch_mismatch(
+                    stitch,
+                    file,
+                    index,
+                    &list_names,
+                    &struct_names,
+                    inference,
+                    &mut out,
+                );
             }
         }
     }
@@ -274,6 +330,7 @@ fn check_def_mismatch(
     file: FileId,
     index: &SymbolIndex,
     list_names: &BTreeSet<String>,
+    struct_names: &BTreeSet<String>,
     inference: &InferenceResult,
     out: &mut Vec<Diagnostic>,
 ) {
@@ -285,7 +342,7 @@ fn check_def_mismatch(
     };
     for (i, p) in knot.params.iter().enumerate() {
         let Some(ann) = &p.annotation else { continue };
-        let Some(ann_ty) = resolve(ann, list_names) else {
+        let Some(ann_ty) = resolve(ann, list_names, struct_names) else {
             continue;
         };
         let Some(body_ty) = inferred.params.get(i) else {
@@ -294,7 +351,7 @@ fn check_def_mismatch(
         report_if_mismatched(ann, &ann_ty, body_ty, file, out);
     }
     if let Some(rt) = &knot.return_type
-        && let Some(ann_ty) = resolve(rt, list_names)
+        && let Some(ann_ty) = resolve(rt, list_names, struct_names)
     {
         report_if_mismatched(rt, &ann_ty, &inferred.return_ty, file, out);
     }
@@ -305,6 +362,7 @@ fn check_stitch_mismatch(
     file: FileId,
     index: &SymbolIndex,
     list_names: &BTreeSet<String>,
+    struct_names: &BTreeSet<String>,
     inference: &InferenceResult,
     out: &mut Vec<Diagnostic>,
 ) {
@@ -316,7 +374,7 @@ fn check_stitch_mismatch(
     };
     for (i, p) in stitch.params.iter().enumerate() {
         let Some(ann) = &p.annotation else { continue };
-        let Some(ann_ty) = resolve(ann, list_names) else {
+        let Some(ann_ty) = resolve(ann, list_names, struct_names) else {
             continue;
         };
         let Some(body_ty) = inferred.params.get(i) else {
@@ -395,9 +453,9 @@ mod tests {
         let b = hir.variables[1].annotation.as_ref().expect("b annotation");
         let c = hir.variables[2].annotation.as_ref().expect("c annotation");
         let empty = BTreeSet::new();
-        assert_eq!(resolve(a, &empty), Some(Ty::Int));
-        assert_eq!(resolve(b, &empty), Some(Ty::Float));
-        assert_eq!(resolve(c, &empty), Some(Ty::Bool));
+        assert_eq!(resolve(a, &empty, &empty), Some(Ty::Int));
+        assert_eq!(resolve(b, &empty, &empty), Some(Ty::Float));
+        assert_eq!(resolve(c, &empty, &empty), Some(Ty::Bool));
     }
 
     #[test]
@@ -406,9 +464,12 @@ mod tests {
         let a = hir.variables[0].annotation.as_ref().expect("a");
         let m = hir.variables[1].annotation.as_ref().expect("m");
         let empty = BTreeSet::new();
-        assert_eq!(resolve(a, &empty), Some(Ty::Array(Box::new(Ty::Int))));
         assert_eq!(
-            resolve(m, &empty),
+            resolve(a, &empty, &empty),
+            Some(Ty::Array(Box::new(Ty::Int)))
+        );
+        assert_eq!(
+            resolve(m, &empty, &empty),
             Some(Ty::Map(Box::new(Ty::String), Box::new(Ty::Int)))
         );
     }
@@ -418,10 +479,14 @@ mod tests {
         let (hir, _index) = build("VAR w: list<Weathers> = 0\n");
         let te = hir.variables[0].annotation.as_ref().expect("annotation");
         let empty = BTreeSet::new();
-        assert_eq!(resolve(te, &empty), None, "Weathers isn't declared here");
+        assert_eq!(
+            resolve(te, &empty, &empty),
+            None,
+            "Weathers isn't declared here"
+        );
         let declared: BTreeSet<String> = ["Weathers".to_string()].into_iter().collect();
         assert_eq!(
-            resolve(te, &declared),
+            resolve(te, &declared, &empty),
             Some(Ty::List("Weathers".to_string()))
         );
     }
@@ -433,8 +498,28 @@ mod tests {
         let empty = BTreeSet::new();
         for v in &hir.variables {
             let te = v.annotation.as_ref().expect("annotation");
-            assert_eq!(resolve(te, &empty), None, "{v:?}");
+            assert_eq!(resolve(te, &empty, &empty), None, "{v:?}");
         }
+    }
+
+    #[test]
+    fn resolve_recognizes_declared_struct_name() {
+        // TM-4b: "declared struct names join the TM-2 annotation type
+        // grammar" — a bare `Named` type whose name is a declared `STRUCT`
+        // resolves to `Ty::Struct`, same join `list_names` gives `list<L>`.
+        let (hir, _index) = build("STRUCT Point = #{x: float}\nVAR p: Point = 0\n");
+        let te = hir.variables[0].annotation.as_ref().expect("annotation");
+        let empty = BTreeSet::new();
+        assert_eq!(
+            resolve(te, &empty, &empty),
+            None,
+            "Point isn't in struct_names here"
+        );
+        let declared: BTreeSet<String> = ["Point".to_string()].into_iter().collect();
+        assert_eq!(
+            resolve(te, &empty, &declared),
+            Some(Ty::Struct("Point".to_string()))
+        );
     }
 
     // ── check() ─────────────────────────────────────────────────────
@@ -475,6 +560,24 @@ mod tests {
         let (hir, index) = build("LIST Weathers = sunny, rainy\nVAR w: list<Weathers> = sunny\n");
         let diags = check(&[(FileId(0), &hir)], &index);
         assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// TM-4b: "E061 no longer fires for a declared [struct] name".
+    #[test]
+    fn check_accepts_declared_struct_name() {
+        let (hir, index) = build("STRUCT Point = #{x: float}\nVAR p: Point = 0\n");
+        let diags = check(&[(FileId(0), &hir)], &index);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn check_flags_undeclared_struct_name_still() {
+        // A name that isn't a known scalar, generic head, or declared
+        // struct still flags E061 — TM-4b only widens the accepted set.
+        let (hir, index) = build("VAR w: NotAStruct = 0\n");
+        let diags = check(&[(FileId(0), &hir)], &index);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E061);
     }
 
     #[test]

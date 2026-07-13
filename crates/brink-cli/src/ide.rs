@@ -509,6 +509,7 @@ fn kind_name(k: SymbolKind) -> &'static str {
         SymbolKind::Label => "label",
         SymbolKind::Param => "param",
         SymbolKind::Temp => "temp",
+        SymbolKind::Struct => "struct",
     }
 }
 

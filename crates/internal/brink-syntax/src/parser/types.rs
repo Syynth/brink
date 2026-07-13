@@ -46,7 +46,12 @@ pub(crate) fn type_annotation(p: &mut Parser<'_, '_>) {
 /// ```text
 /// type_expr = { type_fn | type_name_or_generic }
 /// ```
-fn type_expr(p: &mut Parser<'_, '_>) {
+///
+/// `pub(crate)` so `declaration::struct_field_decl` (TM-4b, a `STRUCT`
+/// body's `field: type` pairs — value position mirrors a type annotation's
+/// value position, docs/typed-mode-spec.md §6) can parse a bare field type
+/// without going through the `:`-prefixed `type_annotation` wrapper.
+pub(crate) fn type_expr(p: &mut Parser<'_, '_>) {
     p.start_node(TYPE_EXPR);
     if p.at_depth_limit() {
         p.error("nesting depth limit exceeded".into());

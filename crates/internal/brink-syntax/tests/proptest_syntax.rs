@@ -365,6 +365,63 @@ fn arb_typed_test_body() -> impl Strategy<Value = String> {
     prop::collection::vec(arb_content_line(), 1..=3).prop_map(|lines| lines.join(""))
 }
 
+// ── TM-4b structs (docs/typed-mode-spec.md §6) ────────────────────────
+
+/// A struct field name distinct from the shape/base identifiers used
+/// alongside it in the same generated snippet — avoids a field literally
+/// named `fn` (a contextual type keyword) tripping up unrelated grammar,
+/// mirroring `arb_type_leaf`'s own filter.
+fn arb_field_name() -> impl Strategy<Value = String> {
+    arb_ident().prop_filter("must not be the `fn` contextual keyword", |s| s != "fn")
+}
+
+/// `STRUCT Name = #{field: type, …}` — single-line body (the multi-line
+/// case is covered by hand-written unit tests; the property-test generator
+/// stays single-line so `arb_field_name`/`arb_type_leaf` combinations don't
+/// need newline-aware joining).
+fn arb_struct_decl() -> impl Strategy<Value = String> {
+    (
+        arb_ident(),
+        prop::collection::vec((arb_field_name(), arb_type_leaf()), 0..=4),
+    )
+        .prop_map(|(name, fields)| {
+            let body = fields
+                .iter()
+                .map(|(f, t)| format!("{f}: {t}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("STRUCT {name} = #{{{body}}}\n")
+        })
+}
+
+/// `Name#{field: expr, …}` — struct construction literal, generated as a
+/// `~` assignment so it parses in expression position.
+fn arb_struct_literal() -> impl Strategy<Value = String> {
+    (
+        arb_ident(),
+        prop::collection::vec((arb_field_name(), arb_simple_value()), 0..=4),
+    )
+        .prop_map(|(shape, fields)| {
+            let body = fields
+                .iter()
+                .map(|(f, v)| format!("{f}: {v}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("~ p = {shape}#{{{body}}}\n")
+        })
+}
+
+/// `~ x = Name#{…}.field` — postfix field access after a struct literal
+/// (the unambiguous new grammar; a bare `ident.ident` chain stays a `PATH`,
+/// exercised separately by the existing dotted-path generators).
+fn arb_field_access() -> impl Strategy<Value = String> {
+    (arb_ident(), arb_field_name(), arb_field_name()).prop_map(
+        |(shape, init_field, access_field)| {
+            format!("~ x = {shape}#{{{init_field}: 1}}.{access_field}\n")
+        },
+    )
+}
+
 fn arb_knot_header_typed() -> impl Strategy<Value = String> {
     (
         arb_ident(),
@@ -620,6 +677,87 @@ proptest! {
         arb_const_decl_typed(),
         arb_temp_decl_typed(),
         (arb_knot_header_typed(), arb_typed_test_body()).prop_map(|(h, b)| format!("{h}{b}")),
+    ]) {
+        let _ = parse(&input);
+    }
+
+    // ── TM-4b structs (docs/typed-mode-spec.md §6) ────────────────────
+
+    #[test]
+    fn struct_decl_roundtrip(input in arb_struct_decl()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn struct_decl_no_errors(input in arb_struct_decl()) {
+        let parsed = parse(&input);
+        prop_assert!(
+            parsed.errors().is_empty(),
+            "parse errors for input: {:?}\nerrors: {:?}",
+            input, parsed.errors(),
+        );
+    }
+
+    #[test]
+    fn struct_decl_produces_struct_decl_node(input in arb_struct_decl()) {
+        let parsed = parse(&input);
+        prop_assert!(has_node_kind(&parsed.syntax(), SyntaxKind::STRUCT_DECL));
+    }
+
+    #[test]
+    fn struct_literal_roundtrip(input in arb_struct_literal()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn struct_literal_no_errors(input in arb_struct_literal()) {
+        let parsed = parse(&input);
+        prop_assert!(
+            parsed.errors().is_empty(),
+            "parse errors for input: {:?}\nerrors: {:?}",
+            input, parsed.errors(),
+        );
+    }
+
+    #[test]
+    fn struct_literal_produces_struct_literal_node(input in arb_struct_literal()) {
+        let parsed = parse(&input);
+        prop_assert!(has_node_kind(&parsed.syntax(), SyntaxKind::STRUCT_LITERAL));
+    }
+
+    #[test]
+    fn field_access_roundtrip(input in arb_field_access()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn field_access_no_errors(input in arb_field_access()) {
+        let parsed = parse(&input);
+        prop_assert!(
+            parsed.errors().is_empty(),
+            "parse errors for input: {:?}\nerrors: {:?}",
+            input, parsed.errors(),
+        );
+    }
+
+    #[test]
+    fn field_access_produces_field_access_expr_node(input in arb_field_access()) {
+        let parsed = parse(&input);
+        prop_assert!(has_node_kind(&parsed.syntax(), SyntaxKind::FIELD_ACCESS_EXPR));
+    }
+
+    /// Never panics on any TM-4b struct input, in either dialect — extends
+    /// the grammar fuzz coverage (docs/t1b-surface-spec.md §6 pattern,
+    /// docs/typed-mode-spec.md §6) the same way TM-2's
+    /// `type_annotated_input_never_panics` does.
+    #[test]
+    fn struct_input_never_panics(input in prop_oneof![
+        arb_struct_decl(),
+        arb_struct_literal(),
+        arb_field_access(),
     ]) {
         let _ = parse(&input);
     }

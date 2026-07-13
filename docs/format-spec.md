@@ -38,9 +38,8 @@ The linker resolves all `DefinitionId` references uniformly to compact runtime i
 | `0x03` | List definition | Name, items (name + ordinal each) |
 | `0x04` | List item | Origin list `DefinitionId`, ordinal, name |
 | `0x05` | External function | Name, arg count, optional fallback `DefinitionId` |
+| `0x06` | Struct declaration (TM-4b) | Compiler-side only — `brink-analyzer`'s `SymbolIndex` bookkeeping for a `STRUCT` name (duplicate detection, goto-def, resolution). Never serialized to `.inkb`; the runtime-facing shape identity is the separate `ShapeId`/`StructShapes` space (§ StructShapes section, tag `0x0C`), populated once TM-4c's codegen lowers struct constructs. |
 | `0x07` | Local variable | Params and temps — scoped to a container, not serialized in bytecode |
-
-Note: tag `0x06` is unassigned.
 
 ## Addresses (tag `0x01`)
 

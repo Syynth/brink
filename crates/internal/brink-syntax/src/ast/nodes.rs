@@ -138,6 +138,14 @@ ast_node!(TypeName, TYPE_NAME);
 ast_node!(TypeGeneric, TYPE_GENERIC);
 ast_node!(TypeFn, TYPE_FN);
 
+// ── TM-4b structs (docs/typed-mode-spec.md §6) ────────────────────────
+
+ast_node!(StructDecl, STRUCT_DECL);
+ast_node!(StructFieldDecl, STRUCT_FIELD_DECL);
+ast_node!(StructLiteral, STRUCT_LITERAL);
+ast_node!(StructFieldInit, STRUCT_FIELD_INIT);
+ast_node!(FieldAccessExpr, FIELD_ACCESS_EXPR);
+
 // ── Diverts ──────────────────────────────────────────────────────────
 
 ast_node!(DivertNode, DIVERT_NODE);
@@ -283,6 +291,13 @@ pub enum Expr {
     MapLiteral(MapLiteral),
     /// `base[index]` — postfix indexing (T1b §4, brink extension).
     Index(IndexExpr),
+    /// `Name#{field: expr, …}` — struct construction literal (TM-4b,
+    /// docs/typed-mode-spec.md §6, brink extension).
+    StructLiteral(StructLiteral),
+    /// `base.field` — postfix field access (TM-4b, docs/typed-mode-spec.md
+    /// §6, brink extension). Only produced where the dotted-`PATH` grammar
+    /// doesn't already cover the shape — see `FIELD_ACCESS_EXPR`'s doc.
+    FieldAccess(FieldAccessExpr),
 }
 
 impl std::fmt::Debug for Expr {
@@ -316,6 +331,8 @@ impl crate::ast::AstNode for Expr {
                 | SyntaxKind::ARRAY_LITERAL
                 | SyntaxKind::MAP_LITERAL
                 | SyntaxKind::INDEX_EXPR
+                | SyntaxKind::STRUCT_LITERAL
+                | SyntaxKind::FIELD_ACCESS_EXPR
         )
     }
 
@@ -336,6 +353,8 @@ impl crate::ast::AstNode for Expr {
             SyntaxKind::ARRAY_LITERAL => ArrayLiteral::cast(node).map(Expr::ArrayLiteral),
             SyntaxKind::MAP_LITERAL => MapLiteral::cast(node).map(Expr::MapLiteral),
             SyntaxKind::INDEX_EXPR => IndexExpr::cast(node).map(Expr::Index),
+            SyntaxKind::STRUCT_LITERAL => StructLiteral::cast(node).map(Expr::StructLiteral),
+            SyntaxKind::FIELD_ACCESS_EXPR => FieldAccessExpr::cast(node).map(Expr::FieldAccess),
             _ => None,
         }
     }
@@ -357,6 +376,8 @@ impl crate::ast::AstNode for Expr {
             Expr::ArrayLiteral(n) => n.syntax(),
             Expr::MapLiteral(n) => n.syntax(),
             Expr::Index(n) => n.syntax(),
+            Expr::StructLiteral(n) => n.syntax(),
+            Expr::FieldAccess(n) => n.syntax(),
         }
     }
 }
@@ -424,6 +445,14 @@ impl SourceFile {
     }
 
     pub fn list_decls(&self) -> impl Iterator<Item = ListDecl> {
+        support::children(&self.syntax)
+    }
+
+    /// `STRUCT` declarations (TM-4b, docs/typed-mode-spec.md §6) — unlike
+    /// `VAR`/`CONST`/`LIST` (which C# allows at any statement level, so
+    /// callers walk `.descendants()` for those), a struct shape is
+    /// top-level only, so a direct-children scan is exact.
+    pub fn struct_decls(&self) -> impl Iterator<Item = StructDecl> {
         support::children(&self.syntax)
     }
 
@@ -948,6 +977,99 @@ impl IndexExpr {
     /// The index expression (the second `Expr` child) — `i` in `a[i]`.
     pub fn index(&self) -> Option<Expr> {
         self.syntax.children().filter_map(Expr::cast).nth(1)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// TM-4b structs (docs/typed-mode-spec.md §6)
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── StructDecl ───────────────────────────────────────────────────────
+
+impl StructDecl {
+    pub fn identifier(&self) -> Option<Identifier> {
+        support::child(&self.syntax)
+    }
+
+    pub fn name(&self) -> Option<String> {
+        self.identifier().and_then(|id| id.name())
+    }
+
+    /// The declared fields, in source order.
+    pub fn fields(&self) -> impl Iterator<Item = StructFieldDecl> {
+        support::children(&self.syntax)
+    }
+}
+
+// ── StructFieldDecl ──────────────────────────────────────────────────
+
+impl StructFieldDecl {
+    pub fn identifier(&self) -> Option<Identifier> {
+        support::child(&self.syntax)
+    }
+
+    pub fn name(&self) -> Option<String> {
+        self.identifier().and_then(|id| id.name())
+    }
+
+    /// The field's declared type (value position — mirrors the
+    /// construction literal's field-init value position, §6).
+    pub fn type_expr(&self) -> Option<TypeExpr> {
+        support::child(&self.syntax)
+    }
+}
+
+// ── StructLiteral ────────────────────────────────────────────────────
+
+impl StructLiteral {
+    /// The leading shape-name identifier (e.g. `Point` in `Point#{…}`).
+    pub fn identifier(&self) -> Option<Identifier> {
+        support::child(&self.syntax)
+    }
+
+    pub fn shape_name(&self) -> Option<String> {
+        self.identifier().and_then(|id| id.name())
+    }
+
+    /// The field initializers, in source order.
+    pub fn fields(&self) -> impl Iterator<Item = StructFieldInit> {
+        support::children(&self.syntax)
+    }
+}
+
+// ── StructFieldInit ──────────────────────────────────────────────────
+
+impl StructFieldInit {
+    pub fn identifier(&self) -> Option<Identifier> {
+        support::child(&self.syntax)
+    }
+
+    pub fn name(&self) -> Option<String> {
+        self.identifier().and_then(|id| id.name())
+    }
+
+    /// The initializer expression after `:`.
+    pub fn value(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+}
+
+// ── FieldAccessExpr ──────────────────────────────────────────────────
+
+impl FieldAccessExpr {
+    /// The expression being accessed (the first, and only, `Expr` child) —
+    /// `base` in `base.field`.
+    pub fn base(&self) -> Option<Expr> {
+        self.syntax.children().find_map(Expr::cast)
+    }
+
+    /// The field name identifier after `.`.
+    pub fn field(&self) -> Option<Identifier> {
+        support::child(&self.syntax)
+    }
+
+    pub fn field_name(&self) -> Option<String> {
+        self.field().and_then(|id| id.name())
     }
 }
 

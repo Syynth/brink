@@ -1527,6 +1527,7 @@ fn make_completion_item(
         brink_ir::SymbolKind::List => CompletionItemKind::ENUM,
         brink_ir::SymbolKind::ListItem => CompletionItemKind::ENUM_MEMBER,
         brink_ir::SymbolKind::Label => CompletionItemKind::REFERENCE,
+        brink_ir::SymbolKind::Struct => CompletionItemKind::STRUCT,
     };
 
     let detail = match info.kind {

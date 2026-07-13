@@ -38,6 +38,7 @@ pub fn hover(
             brink_ir::SymbolKind::Label => "label",
             brink_ir::SymbolKind::Param => "parameter",
             brink_ir::SymbolKind::Temp => "temp variable",
+            brink_ir::SymbolKind::Struct => "struct",
         };
 
         // Symbol-metadata enrichment: docs and typed params/returns for

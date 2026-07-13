@@ -40,6 +40,13 @@ pub enum Ty {
     Array(Box<Ty>),
     /// `#{...}` map sigil literal key/value types.
     Map(Box<Ty>, Box<Ty>),
+    /// A struct value, nominal per the declaring `STRUCT` name (TM-4b,
+    /// docs/typed-mode-spec.md §6 — mirrors `List`'s "nominal per LIST
+    /// declaration" precedent). Carries only the shape name in this slice —
+    /// no field-type table is threaded through inference yet (TM-4c/codegen
+    /// concern); a struct-typed slot is still *concrete* for E065/E066
+    /// escape-checking purposes (`brink-analyzer::strict::classify`).
+    Struct(String),
     /// Not (yet) resolved to a concrete type — legal in this slice (spec
     /// §2: "unresolved -> Unknown, which is LEGAL"). Acts as the join
     /// identity: `unify(Unknown, x) == x`.
@@ -80,6 +87,7 @@ impl Ty {
             Ty::List(name) => format!("list<{name}>"),
             Ty::Array(elem) => format!("array<{}>", elem.display()),
             Ty::Map(k, v) => format!("map<{}, {}>", k.display(), v.display()),
+            Ty::Struct(name) => name.clone(),
             Ty::Unknown => "Unknown".to_string(),
             Ty::Conflicted => "Conflicted".to_string(),
         }
@@ -135,12 +143,13 @@ impl Ord for Ty {
                 Ty::List(_) => 5,
                 Ty::Array(_) => 6,
                 Ty::Map(_, _) => 7,
-                Ty::Unknown => 8,
-                Ty::Conflicted => 9,
+                Ty::Struct(_) => 8,
+                Ty::Unknown => 9,
+                Ty::Conflicted => 10,
             }
         }
         match (self, other) {
-            (Ty::List(a), Ty::List(b)) => a.cmp(b),
+            (Ty::List(a), Ty::List(b)) | (Ty::Struct(a), Ty::Struct(b)) => a.cmp(b),
             (Ty::Array(a), Ty::Array(b)) => a.cmp(b),
             (Ty::Map(k1, v1), Ty::Map(k2, v2)) => k1.cmp(k2).then_with(|| v1.cmp(v2)),
             _ => rank(self).cmp(&rank(other)),
