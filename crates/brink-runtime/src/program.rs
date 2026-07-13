@@ -4,7 +4,7 @@ use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use brink_format::{CountingFlags, DefinitionId, ListValue, NameId, Value};
+use brink_format::{CountingFlags, DefinitionId, ListValue, NameId, ShapeId, Value};
 
 use crate::collections::Map as HashMap;
 
@@ -50,6 +50,24 @@ pub struct Program {
     /// The base layer of `WorldPolicy` resolution
     /// (`docs/directive-annotations-spec.md`).
     pub(crate) local_scope_defaults: Vec<(String, DefinitionId)>,
+    /// TM-4 `StructShapes` table (`docs/typed-mode-spec.md` §6), indexed by
+    /// `ShapeId` — every `RecordNew`/`RecordGetDyn`/`RecordSetDyn` opcode
+    /// looks a shape up here for its field count and field-name → offset
+    /// mapping. Empty until a compiler milestone emits `STRUCT`
+    /// declarations.
+    pub(crate) struct_shapes: Vec<StructShapeEntry>,
+}
+
+/// Runtime metadata for one declared struct shape.
+pub(crate) struct StructShapeEntry {
+    #[expect(
+        dead_code,
+        reason = "carried for debugging/inspection parity with other entries"
+    )]
+    pub name: NameId,
+    /// Declared field names, in shape order — the same order
+    /// [`brink_format::Value::Record`]'s flat field vector follows.
+    pub fields: Vec<NameId>,
 }
 
 pub(crate) struct LinkedContainer {
@@ -224,6 +242,13 @@ impl Program {
     /// this into a `RuntimeError`, never a crash.
     pub(crate) fn literal_pool_entry(&self, idx: u32) -> Option<&Value> {
         self.literal_pool.get(idx as usize)
+    }
+
+    /// Look up a `STRUCT` shape's runtime metadata by `ShapeId`. `None` on an
+    /// out-of-range id (malformed bytecode) rather than panicking — mirrors
+    /// [`literal_pool_entry`](Self::literal_pool_entry).
+    pub(crate) fn struct_shape(&self, shape: ShapeId) -> Option<&StructShapeEntry> {
+        self.struct_shapes.get(shape.0 as usize)
     }
 
     /// Look up a list item's metadata.
@@ -427,6 +452,7 @@ mod find_address_tests {
             list_def_map: HashMap::new(),
             external_fns: HashMap::new(),
             local_scope_defaults: Vec::new(),
+            struct_shapes: Vec::new(),
         }
     }
 

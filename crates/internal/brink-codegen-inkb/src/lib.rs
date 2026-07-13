@@ -123,6 +123,10 @@ pub fn emit(program: &lir::Program) -> Result<StoryData, CodegenError> {
         name_table: state.name_table,
         list_literals: state.list_literals,
         literal_pool: state.literal_pool,
+        // TM-4 `StructShapes`: reserved-section-only in this PR — no
+        // compiler surface emits `STRUCT` declarations yet (see the PR
+        // description's scope note), so this is always empty today.
+        struct_shapes: Vec::new(),
         source_checksum: 0,
     })
 }

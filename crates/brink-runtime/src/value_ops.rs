@@ -19,10 +19,14 @@ pub(crate) fn is_truthy(v: &Value) -> bool {
         Value::Float(n) => *n != 0.0,
         Value::String(s) => !s.is_empty(),
         Value::Null => false,
+        // A record is a value with fields, not a collection with a size —
+        // it's always truthy, same as every other non-collection variant
+        // here (divert targets, pointers, fragment refs).
         Value::DivertTarget(_)
         | Value::VariablePointer(_)
         | Value::TempPointer { .. }
-        | Value::FragmentRef(_) => true,
+        | Value::FragmentRef(_)
+        | Value::Record { .. } => true,
         Value::List(lv) => !lv.items.is_empty(),
         Value::Array(items) => !items.is_empty(),
         Value::Map(map) => !map.is_empty(),
@@ -58,6 +62,14 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
                 .iter()
                 .map(|(k, v)| format!("{}: {}", stringify_map_key(k), stringify(v, program)))
                 .collect();
+            format!("{{{}}}", parts.join(", "))
+        }
+        // Same provisional-rendering rationale as the collection arms above:
+        // no compiler surface constructs a `Record` yet, so this format is
+        // not user-facing-authoritative — it exists only so `stringify`
+        // stays total.
+        Value::Record { fields, .. } => {
+            let parts: Vec<String> = fields.iter().map(|v| stringify(v, program)).collect();
             format!("{{{}}}", parts.join(", "))
         }
     }
@@ -526,6 +538,7 @@ mod tests {
             list_def_map: HashMap::new(),
             external_fns: HashMap::new(),
             local_scope_defaults: Vec::new(),
+            struct_shapes: Vec::new(),
         }
     }
 

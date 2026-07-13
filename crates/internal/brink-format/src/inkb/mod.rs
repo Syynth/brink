@@ -31,13 +31,15 @@ pub use read::{
     read_inkb, read_inkb_index, read_section_address_paths, read_section_addresses,
     read_section_containers, read_section_externals, read_section_line_tables,
     read_section_list_defs, read_section_list_items, read_section_list_literals,
-    read_section_literal_pool, read_section_name_table, read_section_variables,
+    read_section_literal_pool, read_section_name_table, read_section_struct_shapes,
+    read_section_variables,
 };
 pub use write::{
     assemble_inkb, write_inkb, write_section_address_paths, write_section_addresses,
     write_section_containers, write_section_externals, write_section_line_tables,
     write_section_list_defs, write_section_list_items, write_section_list_literals,
-    write_section_literal_pool, write_section_name_table, write_section_variables,
+    write_section_literal_pool, write_section_name_table, write_section_struct_shapes,
+    write_section_variables,
 };
 
 use core::ops::Range;
@@ -63,7 +65,7 @@ pub(crate) const HEADER_PREAMBLE: usize = 16;
 /// Each offset table entry: kind(1) + reserved(3) + offset(4)
 pub(crate) const SECTION_ENTRY_SIZE: usize = 8;
 /// Number of sections in the current format.
-pub(crate) const SECTION_COUNT: u8 = 11;
+pub(crate) const SECTION_COUNT: u8 = 12;
 
 // Value type tags
 pub(crate) const VAL_INT: u8 = 0x00;
@@ -79,13 +81,17 @@ pub(crate) const VAL_FRAGMENT_REF: u8 = 0x08;
 // not preserved on the wire — a snapshot serializes as a plain nested tree.
 pub(crate) const VAL_ARRAY: u8 = 0x09;
 pub(crate) const VAL_MAP: u8 = 0x0A;
+// TM-4 (`docs/typed-mode-spec.md` §6 / `docs/value-model-spec.md` §11c):
+// closed-shape records. `docs/format-v4-rfc.md` §1: `ShapeId (u32 into
+// StructShapes), then field values in shape order`.
+pub(crate) const VAL_RECORD: u8 = 0x0F;
+
 // Reserved v4 value tags — numeric assignments frozen by the one-bump rule,
 // emitted by nothing in 4.0 (each is materialized when its milestone lands,
 // still under VERSION 4). The strict reader rejects them until then because no
 // `Value` variant exists to decode into. See `docs/format-v4-rfc.md` §1:
 //   0x0B VAL_FN_REF     (T1c)   0x0C VAL_CLOSURE (T1c)
 //   0x0D VAL_HANDLE     (T1d)   0x0E VAL_PROJECTION (T1e)
-//   0x0F VAL_RECORD     (reserved, typed-dialect era)
 
 // LineContent tags
 pub(crate) const LINE_PLAIN: u8 = 0x00;
@@ -131,15 +137,20 @@ pub enum SectionKind {
     /// Additive alongside `ListLiterals` — see the T1b-2 PR description for
     /// why the RFC's `ListLiterals` absorption is deferred, not done here.
     LiteralPool = 0x0B,
+    /// TM-4 `StructShapes` (`docs/typed-mode-spec.md` §6): one entry per
+    /// declared `STRUCT` — shape id, name, ordered field names. Reserved
+    /// (count always 0) through 4.0; this PR lands the section's real
+    /// encoding at the format layer only — nothing in the compiler emits a
+    /// non-empty table yet (see the PR description's scope note).
+    StructShapes = 0x0C,
 }
 
 // Reserved v4 section kinds — numeric assignments frozen by the §9 one-bump
 // rule (`docs/format-v4-rfc.md` §2 "Sections"), emitted by nothing in 4.0.
-// Deliberately NOT `SectionKind` variants: `from_u8` has no match arm for
-// these, so the strict reader keeps rejecting them (`InvalidSectionKind`)
-// until each section's milestone lands and a real variant is added, the same
-// discipline the reserved v4 value tags (above) already follow.
-//   0x0C StructShapes  — reserved, count always 0 in 4.0 (typed-dialect era)
+// Deliberately NOT a `SectionKind` variant: `from_u8` has no match arm for
+// this, so the strict reader keeps rejecting it (`InvalidSectionKind`) until
+// its milestone lands and a real variant is added, the same discipline
+// `StructShapes` itself followed before this PR.
 //   0x0D EffectRows    — reserved, count always 0 in 4.0, section-locally
 //                        versioned so T2 can define the row encoding without
 //                        another format bump
@@ -158,6 +169,7 @@ impl SectionKind {
             0x09 => Ok(Self::ListLiterals),
             0x0A => Ok(Self::AddressPaths),
             0x0B => Ok(Self::LiteralPool),
+            0x0C => Ok(Self::StructShapes),
             _ => Err(DecodeError::InvalidSectionKind(tag)),
         }
     }
@@ -221,22 +233,21 @@ pub(crate) fn safe_capacity(
 mod tests {
     use super::*;
 
-    /// Reserved v4 sections (`StructShapes` 0x0C, `EffectRows` 0x0D —
-    /// `docs/format-v4-rfc.md` §2) are numbered but deliberately not
-    /// `SectionKind` variants — the strict reader must keep rejecting every
-    /// reserved tag until each section's milestone lands. `LiteralPool`
-    /// (0x0B) graduated to a real section in T1b-2 (#570).
+    /// `EffectRows` (0x0D, `docs/format-v4-rfc.md` §2) is numbered but
+    /// deliberately not a `SectionKind` variant — the strict reader must keep
+    /// rejecting it until its milestone lands. `LiteralPool` (0x0B)
+    /// graduated to a real section in T1b-2 (#570); `StructShapes` (0x0C)
+    /// graduates here (TM-4, #620).
     #[test]
     fn from_u8_rejects_reserved_v4_sections() {
-        for tag in [0x0Cu8, 0x0D] {
-            let err = SectionKind::from_u8(tag).unwrap_err();
-            assert_eq!(err, DecodeError::InvalidSectionKind(tag));
-        }
+        let tag = 0x0Du8;
+        let err = SectionKind::from_u8(tag).unwrap_err();
+        assert_eq!(err, DecodeError::InvalidSectionKind(tag));
     }
 
     #[test]
     fn from_u8_accepts_all_current_sections() {
-        for tag in 0x01u8..=0x0B {
+        for tag in 0x01u8..=0x0C {
             assert!(SectionKind::from_u8(tag).is_ok());
         }
     }

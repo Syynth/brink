@@ -128,6 +128,10 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
         name_table,
         list_literals,
         literal_pool,
+        // TM-4 `StructShapes`: not yet round-tripped through the `.inkt`
+        // textual format (always empty in this PR — nothing emits a
+        // non-empty table). See the format-spec doc note.
+        struct_shapes: Vec::new(),
         source_checksum,
     })
 }

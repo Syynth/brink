@@ -149,6 +149,12 @@ impl<'a> Resolver<'a> {
                     .collect();
                 format!("{{{}}}", parts.join(", "))
             }
+            // TM-4 records: same "runtime-only, no compiler surface yet"
+            // rationale as the collection arms above.
+            Value::Record { shape, fields } => {
+                let parts: Vec<String> = fields.iter().map(|v| self.format_value(v)).collect();
+                format!("Record#{}{{{}}}", shape.0, parts.join(", "))
+            }
         }
     }
 }
@@ -478,6 +484,11 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
 
         // Debug
         Opcode::SourceLocation(line, col) => format!("source_location {line}:{col}"),
+
+        // Records (TM-4)
+        Opcode::RecordNew(shape_id) => format!("record_new {shape_id}"),
+        Opcode::RecordGetDyn(name_id) => format!("record_get_dyn {name_id}"),
+        Opcode::RecordSetDyn(name_id) => format!("record_set_dyn {name_id}"),
     }
 }
 

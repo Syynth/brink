@@ -155,4 +155,19 @@ pub enum RuntimeError {
     /// malformed bytecode, not an author-triggerable condition.
     #[error("literal pool index {0} out of range")]
     InvalidLiteralIndex(u32),
+
+    // ── TM-4 records (docs/typed-mode-spec.md §6 / value-model-spec §11c) ──
+    /// `RecordNew(shape_id)` referenced a shape id outside the compiled
+    /// `StructShapes` table — malformed bytecode.
+    #[error("struct shape id {0} out of range")]
+    InvalidShapeId(u32),
+    /// `RecordGetDyn`/`RecordSetDyn` on a value that isn't a `Record`.
+    #[error("cannot access a field on a {0} value")]
+    NotARecord(&'static str),
+    /// `RecordGetDyn`/`RecordSetDyn` named a field the record's shape
+    /// doesn't declare — a compile-time typo under strict mode (surfaced as
+    /// a diagnostic there) or a genuine dynamic mismatch under gradual mode,
+    /// both turn-terminating at runtime (spec §11c pattern).
+    #[error("struct has no field {0:?}")]
+    RecordFieldNotFound(String),
 }

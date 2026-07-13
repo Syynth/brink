@@ -530,6 +530,11 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
 
         // Debug
         Opcode::SourceLocation(line, col) => write!(w, "source_location {line}:{col}"),
+
+        // Records (TM-4)
+        Opcode::RecordNew(shape_id) => write!(w, "record_new {shape_id}"),
+        Opcode::RecordGetDyn(name_id) => write!(w, "record_get_dyn {name_id}"),
+        Opcode::RecordSetDyn(name_id) => write!(w, "record_set_dyn {name_id}"),
     }
 }
 
@@ -582,6 +587,7 @@ fn value_type_name(vt: ValueType) -> &'static str {
         ValueType::FragmentRef => "fragment_ref",
         ValueType::Array => "array",
         ValueType::Map => "map",
+        ValueType::Record => "record",
     }
 }
 
@@ -637,6 +643,14 @@ fn write_value(w: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
                 write!(w, " ")?;
                 write_value(w, value)?;
                 write!(w, ")")?;
+            }
+            write!(w, ")")
+        }
+        Value::Record { shape, fields } => {
+            write!(w, "(record {}", shape.0)?;
+            for field in fields.iter() {
+                write!(w, " ")?;
+                write_value(w, field)?;
             }
             write!(w, ")")
         }
@@ -700,6 +714,7 @@ mod tests {
             name_table: vec![],
             list_literals: vec![],
             literal_pool: vec![],
+            struct_shapes: vec![],
             source_checksum: 0,
         };
         let mut buf = String::new();

@@ -19,6 +19,18 @@ use crate::id::DefinitionId;
 /// each defining their own copy (issue #561).
 pub const MAX_DECODE_DEPTH: usize = 128;
 
+/// Identifies a struct shape (TM-4, `docs/typed-mode-spec.md` §6) within the
+/// compiled story's `StructShapes` section (`docs/format-spec.md`, section
+/// tag `0x0C`).
+///
+/// Distinct from [`crate::id::DefinitionId`]: a `STRUCT` declaration is a
+/// compile-time nominal type, not a runtime storage location, so its wire
+/// footprint is this flat `u32` index into `StructShapes`, not a tagged
+/// definition id. Assigned deterministically at codegen time (sorted by
+/// declared struct name, never `HashMap` iteration order — CLAUDE.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ShapeId(pub u32);
+
 /// The runtime type of a [`Value`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ValueType {
@@ -36,6 +48,8 @@ pub enum ValueType {
     Array,
     /// A copy-on-write insertion-ordered map ([`Value::Map`]).
     Map,
+    /// A closed-shape, copy-on-write record ([`Value::Record`]) — TM-4.
+    Record,
 }
 
 /// A runtime value in the ink VM.
@@ -88,6 +102,21 @@ pub enum Value {
     /// iteration order is insertion order, so the value is deterministic
     /// without sorting or hashing.
     Map(Arc<OrderedMap>),
+    /// A closed-shape record (typed-dialect era, TM-4;
+    /// `docs/value-model-spec.md` §11c / `docs/typed-mode-spec.md` §6).
+    ///
+    /// `fields` is a flat, shape-ordered vector shared behind an `Arc` — the
+    /// exact same COW discipline as [`Array`](Self::Array)/[`Map`](Self::Map):
+    /// clone is a refcount bump, mutation goes through
+    /// [`record_make_mut`](Self::record_make_mut). The shape is closed (no
+    /// dynamic add/remove of fields) and identified by [`ShapeId`], an
+    /// interned index into the compiled story's `StructShapes` table — two
+    /// records are never equal unless their shapes match, even if their
+    /// field vectors happen to coincide.
+    Record {
+        shape: ShapeId,
+        fields: Arc<Vec<Value>>,
+    },
 }
 
 impl Value {
@@ -106,6 +135,7 @@ impl Value {
             Self::FragmentRef(_) => ValueType::FragmentRef,
             Self::Array(_) => ValueType::Array,
             Self::Map(_) => ValueType::Map,
+            Self::Record { .. } => ValueType::Record,
         }
     }
 
@@ -167,6 +197,24 @@ impl Value {
         Self::Map(Arc::new(map))
     }
 
+    /// Build a [`Record`](Self::Record) from a shape id and its field values
+    /// (already in the shape's declared field order — the caller, not this
+    /// constructor, is responsible for ordering).
+    pub fn record(shape: ShapeId, fields: Vec<Value>) -> Self {
+        Self::Record {
+            shape,
+            fields: Arc::new(fields),
+        }
+    }
+
+    /// Borrow the record payload if this value is a [`Record`](Self::Record).
+    pub fn as_record(&self) -> Option<(ShapeId, &Arc<Vec<Value>>)> {
+        match self {
+            Self::Record { shape, fields } => Some((*shape, fields)),
+            _ => None,
+        }
+    }
+
     /// Borrow the array payload if this value is an [`Array`](Self::Array).
     ///
     /// Read-only: the returned slice never triggers a copy. Mutation uses
@@ -213,6 +261,18 @@ impl Value {
             _ => None,
         }
     }
+
+    /// Copy-on-write mutable access to a [`Record`](Self::Record)'s flat
+    /// field vector, or `None` for any other value. See
+    /// [`array_make_mut`](Self::array_make_mut) for the RMW discipline this
+    /// implements — the shape itself never changes (closed shape), only
+    /// field values.
+    pub fn record_make_mut(&mut self) -> Option<&mut Vec<Value>> {
+        match self {
+            Self::Record { fields, .. } => Some(Arc::make_mut(fields)),
+            _ => None,
+        }
+    }
 }
 
 /// Structural equality with an `Arc::ptr_eq` fast path for collections
@@ -256,6 +316,16 @@ impl PartialEq for Value {
             (Self::FragmentRef(a), Self::FragmentRef(b)) => a == b,
             (Self::Array(a), Self::Array(b)) => Arc::ptr_eq(a, b) || a == b,
             (Self::Map(a), Self::Map(b)) => Arc::ptr_eq(a, b) || a == b,
+            (
+                Self::Record {
+                    shape: sa,
+                    fields: a,
+                },
+                Self::Record {
+                    shape: sb,
+                    fields: b,
+                },
+            ) => sa == sb && (Arc::ptr_eq(a, b) || a == b),
             _ => false,
         }
     }

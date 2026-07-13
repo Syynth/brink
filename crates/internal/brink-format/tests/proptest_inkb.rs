@@ -248,6 +248,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                     name_table,
                     list_literals: vec![],
                     literal_pool: vec![],
+                    struct_shapes: vec![],
                     source_checksum: 0,
                 }
             },
@@ -275,7 +276,7 @@ proptest! {
         prop_assert_eq!(index.version, 4);
 
         // Exactly 11 sections in canonical order.
-        prop_assert_eq!(index.sections.len(), 11);
+        prop_assert_eq!(index.sections.len(), 12);
         prop_assert_eq!(index.sections[0].kind, SectionKind::NameTable);
         prop_assert_eq!(index.sections[1].kind, SectionKind::Variables);
         prop_assert_eq!(index.sections[2].kind, SectionKind::ListDefs);
