@@ -47,6 +47,7 @@ path-keyed shell, re-exported through `brink-driver`.
 | `resolve_query` | `(ProjectInput, SourceFile)` | per-file | reads `resolution_index` + the file's own `manifest.locals` |
 | `signature_query` | `(ProjectInput, DefKey)` | **per-def key, whole-project deps** | see below |
 | `analysis_query` | `ProjectInput` | **whole-project** | the big coarse memo — see below |
+| `inference_index_query` | `ProjectInput` | **whole-project** (FG-1, PR #634) | projection of `symbol_index_query` for `type_inference_query`: every symbol *including locals*, ranges zeroed — `resolution_index_query` can't serve this (it drops locals, #517) |
 | `type_inference_query` | `ProjectInput` | **whole-project** (TM-1, #625) | wraps `infer_project`; **lazy** — see below |
 | `infer_body_query` | `(ProjectInput, DefKey)` | per-def **view** over the project memo | `Option<Arc<BodyTypes>>`, value-`Eq` backdates |
 | `type_diagnostics_query` | `(ProjectInput, SourceFile)` | per-file | **empty stub** — shape reserved for TM-3 |
@@ -228,10 +229,21 @@ Every new boundary must place a **range-free, span-free, ordering-stable**
   the editor quadratic.
 - **The `analysis_query` edge**: `type_inference_query` currently takes
   `(index, resolutions)` from `analysis_query`, inheriting its almost-never-
-  backdates `PartialEq`. The decomposition must re-source these from
-  `resolution_index_query` + per-file `resolve_query` (the same data, without
-  riding the diagnostics-laden `AnalysisResult`) — otherwise per-SCC
-  granularity is defeated one edge upstream.
+  backdates `PartialEq`. The decomposition must re-source `resolutions` from
+  per-file `resolve_query` (the same data, without riding the
+  diagnostics-laden `AnalysisResult`) and `index` from a **new** narrow
+  projection, `inference_index_query`, rather than `resolution_index_query`
+  directly (landed in FG-1, PR #634) — `resolution_index_query` drops locals
+  entirely (#517: a local's *identity*, not just its range, changes when a
+  `~ temp` is added/removed elsewhere), but inference resolves already-
+  resolved `Param`/`Temp` ids back to a `kind`/`name`
+  (`infer::body::ty_of_def`/`observe`/`infer_list_literal`), which
+  `resolution_index_query` can't serve. `inference_index_query` keeps every
+  symbol — declarations *and* locals — and only zeroes ranges (nothing in
+  `signature`/`infer` ever reads a symbol's range), so it stays just as
+  cutoff-friendly as `resolution_index_query` without losing the data
+  inference needs. Otherwise per-SCC granularity is defeated one edge
+  upstream.
 
 ---
 
@@ -406,11 +418,17 @@ Each slice is a single reviewed, oracle-gated, behavior-neutral PR train (the
 spine-slice method):
 
 - **FG-1 — de-coarsen `signature(def)` + re-source inference inputs.**
-  `signature_query` reads only the declaring file's `lowered_query` (via
-  `resolution_index`'s `SymbolInfo.file`); `type_inference_query` takes
-  `(index, resolutions)` from `resolution_index_query` + per-file
-  `resolve_query` instead of `analysis_query`. Adds `signature`-incremental
-  assertions to `incremental_fuzz`. Oracle-neutral. Small.
+  (Landed, PR #634.) `signature_query` reads only the declaring file's
+  `lowered_query` (via `resolution_index`'s `SymbolInfo.file`);
+  `type_inference_query` takes `resolutions` from per-file `resolve_query`
+  and `index` from a new query, `inference_index_query`, instead of both from
+  `analysis_query`. `inference_index_query` — not `resolution_index_query`
+  directly — was necessary because `resolution_index_query` drops locals by
+  design (#517) and inference resolves `Param`/`Temp` ids back to
+  `kind`/`name`; the new query keeps every symbol, including locals, and
+  only zeroes ranges, so it stays cutoff-friendly. Adds
+  `signature`-incremental assertions to `incremental_fuzz`. Oracle-neutral.
+  Small.
 - **FG-2 — decompose `infer_project` per-SCC.** `call_edges(def)`,
   `scc_membership()`, `solve_scc(SccId)` (Fork 1a), `inferred_signature(def)`
   (the missing per-def view), `infer_body_query` re-pointed at its SCC.
