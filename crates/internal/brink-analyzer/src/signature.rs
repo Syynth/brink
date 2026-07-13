@@ -30,12 +30,13 @@ pub struct Sig {
     /// Declared parameters (knots, stitches, externals).
     pub params: Vec<ParamInfo>,
     /// Type inferred from the initializer literal (VAR/CONST only), if the
-    /// initializer is one. TM-2 (docs/typed-mode-spec.md §3): when the `VAR`
-    /// also carries a `: type` annotation and that annotation resolves to a
-    /// representable [`InferredType`], the annotation *replaces* this value
-    /// — annotation wins over inference (the firewall rule) — so every
-    /// existing consumer of `value_type` (notably `infer::collect_globals`)
-    /// picks up the annotated type automatically, with no seam change.
+    /// initializer is one. TM-2 (docs/typed-mode-spec.md §3): when the
+    /// `VAR`/`CONST` also carries a `: type` annotation and that annotation
+    /// resolves to a representable [`InferredType`], the annotation
+    /// *replaces* this value — annotation wins over inference (the
+    /// firewall rule) — so every existing consumer of `value_type`
+    /// (notably `infer::collect_globals`) picks up the annotated type
+    /// automatically, with no seam change.
     pub value_type: Option<InferredType>,
     /// Marked flow-private via a `#@local` directive (knots, stitches, VARs).
     pub is_local: bool,
@@ -76,6 +77,20 @@ fn ty_to_inferred_type(ty: &Ty) -> Option<InferredType> {
     }
 }
 
+/// TM-2 firewall rule, shared by `VAR` and `CONST`: if `annotation` resolves
+/// to a representable [`InferredType`], it replaces `literal_type`; otherwise
+/// the literal-inferred type stands.
+fn value_type_with_annotation_override(
+    literal_type: Option<InferredType>,
+    annotation: Option<&brink_ir::TypeExpr>,
+    list_names: &std::collections::BTreeSet<String>,
+) -> Option<InferredType> {
+    annotation
+        .and_then(|ann| resolve_annotation(ann, list_names))
+        .and_then(|ty| ty_to_inferred_type(&ty))
+        .or(literal_type)
+}
+
 /// Compute the signature stub for one definition.
 ///
 /// Reads the declaration only: the indexed `SymbolInfo` plus the declaring
@@ -105,20 +120,24 @@ pub fn signature(
         match info.kind {
             SymbolKind::Variable => {
                 if let Some(v) = hir.variables.iter().find(|v| v.name.text == info.name) {
-                    value_type = infer_literal_type(&v.value);
                     is_local = v.is_local;
                     // TM-2: annotation wins over the literal-inferred type.
-                    if let Some(ann) = &v.annotation
-                        && let Some(ty) = resolve_annotation(ann, &list_names())
-                        && let Some(inferred) = ty_to_inferred_type(&ty)
-                    {
-                        value_type = Some(inferred);
-                    }
+                    value_type = value_type_with_annotation_override(
+                        infer_literal_type(&v.value),
+                        v.annotation.as_ref(),
+                        &list_names(),
+                    );
                 }
             }
             SymbolKind::Constant => {
                 if let Some(c) = hir.constants.iter().find(|c| c.name.text == info.name) {
-                    value_type = infer_literal_type(&c.value);
+                    // TM-2: annotation wins over the literal-inferred type
+                    // (same firewall rule as VAR — see the `Variable` arm).
+                    value_type = value_type_with_annotation_override(
+                        infer_literal_type(&c.value),
+                        c.annotation.as_ref(),
+                        &list_names(),
+                    );
                 }
             }
             SymbolKind::Knot => {

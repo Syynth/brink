@@ -1395,6 +1395,16 @@ mod tests {
     }
 
     #[test]
+    fn const_type_annotation_formats_verbatim_modulo_trailing_whitespace() {
+        // #641: CONST mirrors VAR — same single-line declaration renderer,
+        // no dedicated formatting code.
+        assert_eq!(
+            fmt("CONST speed: float = 0.5   \n"),
+            "CONST speed: float = 0.5\n"
+        );
+    }
+
+    #[test]
     fn temp_ascription_normalizes_whitespace_like_any_other_logic_line() {
         assert_eq!(
             fmt("=== knot ===\n~   temp   name:string=who\n"),
@@ -1410,6 +1420,7 @@ mod tests {
             "=== knot ===\n~ temp name: string = who\n",
             "VAR w: list<Weathers> = 0\nVAR m: map<string, int> = 0\n",
             "VAR cb: fn(int, int): bool = 0\n",
+            "CONST speed: float = 0.5\n",
         ] {
             let first = fmt(input);
             let second = fmt(&first);

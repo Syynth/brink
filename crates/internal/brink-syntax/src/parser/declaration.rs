@@ -113,6 +113,10 @@ pub(crate) fn var_declaration(p: &mut Parser<'_, '_>) {
 }
 
 /// Parse `CONST ident = expr\n`.
+///
+/// ```text
+/// const_declaration = { "CONST" ~ INLINE_WS+ ~ identifier ~ type_annotation? ~ INLINE_WS* ~ "=" ~ INLINE_WS* ~ expression ~ NEWLINE }
+/// ```
 pub(crate) fn const_declaration(p: &mut Parser<'_, '_>) {
     p.start_node(CONST_DECL);
     p.bump(); // KW_CONST
@@ -120,6 +124,11 @@ pub(crate) fn const_declaration(p: &mut Parser<'_, '_>) {
     p.start_node(IDENTIFIER);
     p.expect(IDENT);
     p.finish_node();
+    // Optional type annotation (TM-2, docs/typed-mode-spec.md §3, "optional
+    // anywhere"): `CONST name: type = expr`.
+    if at_type_annotation(p) {
+        type_annotation(p);
+    }
     p.skip_ws();
     p.expect(EQ);
     p.skip_ws();

@@ -756,6 +756,9 @@ pub struct ConstDecl {
     pub ptr: AstPtr<ast::ConstDecl>,
     pub name: Name,
     pub value: Expr,
+    /// The declared type annotation (TM-2, docs/typed-mode-spec.md §3:
+    /// `CONST name: type = expr`), brink-dialect-gated syntax.
+    pub annotation: Option<TypeExpr>,
 }
 
 /// `~ temp x = expr`

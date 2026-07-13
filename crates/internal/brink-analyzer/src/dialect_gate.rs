@@ -80,12 +80,18 @@ pub fn check(
         };
         visit::visit(hir, &mut v);
 
-        // TM-2 (docs/typed-mode-spec.md §3): `VAR name: type = expr`. File-level
-        // declarations aren't part of the block-tree walk `visit::visit`
-        // covers (see its module doc) — iterated directly here, same
-        // pattern `signature.rs`/`infer::collect_globals` use.
+        // TM-2 (docs/typed-mode-spec.md §3): `VAR name: type = expr` and
+        // `CONST name: type = expr`. File-level declarations aren't part of
+        // the block-tree walk `visit::visit` covers (see its module doc) —
+        // iterated directly here, same pattern `signature.rs`/
+        // `infer::collect_globals` use.
         for var in &hir.variables {
             if let Some(ann) = &var.annotation {
+                v.flag(ann.range(), "type annotation");
+            }
+        }
+        for c in &hir.constants {
+            if let Some(ann) = &c.annotation {
                 v.flag(ann.range(), "type annotation");
             }
         }
@@ -385,6 +391,22 @@ mod tests {
     }
 
     #[test]
+    fn strict_ink_flags_const_annotation() {
+        // #641: CONST mirrors VAR's annotation gating end to end.
+        let hir = lower_src("CONST speed: float = 0.5\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E051);
+    }
+
+    #[test]
+    fn brink_dialect_does_not_flag_const_annotation() {
+        let hir = lower_src("CONST speed: float = 0.5\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::Brink);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
     fn strict_ink_flags_temp_ascription() {
         let hir = lower_src("~ temp name: string = \"a\"\n");
         let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
@@ -410,7 +432,9 @@ mod tests {
 
     #[test]
     fn unannotated_declarations_produce_no_type_diagnostics() {
-        let hir = lower_src("=== heal(hp) ===\nVAR gold = 100\n~ temp t = 1\n~ return hp\n");
+        let hir = lower_src(
+            "=== heal(hp) ===\nVAR gold = 100\nCONST speed = 0.5\n~ temp t = 1\n~ return hp\n",
+        );
         let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
         assert!(diags.is_empty(), "{diags:?}");
     }
