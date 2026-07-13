@@ -148,52 +148,86 @@ pub fn analyze_with_options(
     finish_analysis(files, index, resolutions, diagnostics, opts, None)
 }
 
-/// Assemble the final [`AnalysisResult`] from the already-computed layer-2
-/// pieces (index + per-file resolutions), running the remaining monolithic
-/// passes: validation, host-manifest enrichment/checks, and value-meta
-/// inference.
+/// Per-file diagnostic contributors (issue #632 / FG-3,
+/// `docs/fine-grained-salsa-proposal.md` §1 item 4): structural validation,
+/// the dialect gate, and (brink dialect only) annotation-*content* checks —
+/// the three passes `finish_analysis` used to run as whole-project loops
+/// (`validate::validate`/`dialect_gate::check`/`annotations::check`, each
+/// internally iterating every file) even though none of them actually reads
+/// another file's state:
 ///
-/// Query-shaped seam for the scripting substrate: `brink-db`'s salsa
-/// `analysis` query composes [`symbol_index`] and per-file [`resolve`]
-/// queries and then calls this — the same back half [`analyze_with_options`]
-/// runs — so the query-composed result is identical to the monolithic one by
-/// construction.
+/// - [`validate::validate`] never reads cross-file state at all.
+/// - [`dialect_gate::check`]'s only cross-file-shaped input, the resolution
+///   map, is queried only for `(this file, range)` pairs — a reference's
+///   resolution record always carries the file the reference itself lives
+///   in, never another file's — so `file_resolutions` need only be this
+///   file's own slice.
+/// - [`annotations::check`]'s only cross-file input is the project's
+///   declared `LIST` names, itself derivable from a range-free index
+///   projection (`declared_list_names` reads no symbol's range).
+///
+/// This is the query-shaped seam `brink-db`'s `per_file_diagnostics_query`
+/// wraps: a body edit in file Y leaves file X's per-file contributor memo
+/// untouched (pinned by `fg3_dependency_edges.rs`).
+#[must_use]
+pub fn per_file_diagnostics(
+    file: FileId,
+    hir: &HirFile,
+    file_resolutions: &ResolutionMap,
+    index: &SymbolIndex,
+    dialect: Dialect,
+) -> Vec<Diagnostic> {
+    let files = [(file, hir)];
+    let mut out = validate::validate(&files);
+    out.extend(dialect_gate::check(&files, file_resolutions, dialect));
+    // Annotation *content* checks (E061/E062) run only under the brink
+    // dialect: under `strict-ink` the annotation is already rejected whole
+    // by `dialect_gate` (E051), and critiquing the inside of rejected
+    // syntax is noise (maintainer ruling 2026-07-13).
+    if dialect == Dialect::Brink {
+        out.extend(annotations::check(&files, index));
+    }
+    out
+}
+
+/// Whole-project diagnostic contributors that genuinely need cross-file
+/// state (issue #632 / FG-3 design doc §1): host-manifest enrichment/checks
+/// (`external_check` — needs the full ranged index for diagnostic spans and
+/// every file's HIR to find call sites anywhere in the project) and, under
+/// `types = strict`, the strict typed-mode checks (`strict::check` — needs a
+/// whole-project [`InferenceResult`]). Also produces `symbol_meta`
+/// (doc/type enrichment for hover etc.), which is inherently project-wide
+/// the same way.
 ///
 /// `strict_inference`: TM-3's strict pass needs a whole-project
 /// [`InferenceResult`] (docs/typed-mode-spec.md §9-step-3 — E063 auto-wiring
 /// "must run inference anyway"). Pass `None` to have this function compute
 /// its own via [`infer_project`] (the self-contained default —
 /// [`analyze_with_options`]'s pure, non-salsa path). Pass `Some` to reuse an
-/// already-computed result instead — `brink-db`'s `analysis_query` supplies
-/// its FG-narrowed, per-SCC-memoized `type_inference_query` here so strict
-/// mode's warm-reanalyze cost is the incremental one the FG spine exists
-/// for, not a from-scratch whole-project solve on every keystroke. Ignored
-/// entirely under `types = gradual` or when the dialect makes strict mode a
-/// config error.
-pub fn finish_analysis(
+/// already-computed result instead — `brink-db`'s
+/// `whole_project_diagnostics_query` supplies its FG-narrowed,
+/// per-SCC-memoized `type_inference_query` here so strict mode's
+/// warm-reanalyze cost is the incremental one the FG spine exists for, not a
+/// from-scratch whole-project solve on every keystroke. Ignored entirely
+/// under `types = gradual` or when the dialect makes strict mode a config
+/// error. The `types = strict` + wrong-dialect config error (`E064`) is
+/// computed exactly once here, guarded by the same top-level `if` as before
+/// this split (issue #632's TM-3-interaction fence).
+#[must_use]
+pub fn whole_project_diagnostics(
     files: &[(FileId, &HirFile, &SymbolManifest)],
-    index: Arc<SymbolIndex>,
-    resolutions: ResolutionMap,
-    mut diagnostics: Vec<Diagnostic>,
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
     opts: &AnalysisOptions,
     strict_inference: Option<&infer::InferenceResult>,
-) -> AnalysisResult {
+) -> (Vec<Diagnostic>, BTreeMap<DefinitionId, SymbolMeta>) {
     let manifest_inputs: Vec<(FileId, &SymbolManifest)> = files
         .iter()
         .map(|&(id, _hir, manifest)| (id, manifest))
         .collect();
-
     let hir_inputs: Vec<(FileId, &HirFile)> = files.iter().map(|&(id, hir, _)| (id, hir)).collect();
 
-    diagnostics.extend(validate::validate(&hir_inputs));
-    diagnostics.extend(dialect_gate::check(&hir_inputs, &resolutions, opts.dialect));
-    // Annotation *content* checks (E061/E062) run only under the brink
-    // dialect: under `strict-ink` the annotation is already rejected whole
-    // by `dialect_gate` (E051), and critiquing the inside of rejected
-    // syntax is noise (maintainer ruling 2026-07-13).
-    if opts.dialect == Dialect::Brink {
-        diagnostics.extend(annotations::check(&hir_inputs, &index));
-    }
+    let mut diagnostics = Vec::new();
 
     // TM-3 strict typed-mode policy (docs/typed-mode-spec.md §1/§9-step-3).
     // `types = strict` requires `dialect = brink` — a config error (`E064`)
@@ -212,10 +246,10 @@ pub fn finish_analysis(
             let inference = if let Some(inf) = strict_inference {
                 inf
             } else {
-                owned_inference = infer::infer_project(&hir_inputs, &index, &resolutions);
+                owned_inference = infer::infer_project(&hir_inputs, index, resolutions);
                 &owned_inference
             };
-            diagnostics.extend(strict::check(&hir_inputs, &index, inference, &resolutions));
+            diagnostics.extend(strict::check(&hir_inputs, index, inference, resolutions));
         }
     }
 
@@ -229,7 +263,7 @@ pub fn finish_analysis(
     let check_unknown_types =
         has_manifest || opts.semantic_type_check == SemanticTypeDiagnosticSeverity::Error;
     let (mut symbol_meta, ext_diags) = external_check::analyze_externals(
-        &index,
+        index,
         &inline_docs,
         &types,
         &registered,
@@ -243,7 +277,7 @@ pub fn finish_analysis(
     // is registered, or the severity lever is raised (#339/#532); see
     // `resolve_type`).
     let (callable_meta, callable_diags) = external_check::enrich_callables(
-        &index,
+        index,
         &inline_docs,
         &types,
         opts.external_check,
@@ -255,7 +289,7 @@ pub fn finish_analysis(
     // VAR/CONST initializer info + LIST docs (presentational, no diagnostics).
     symbol_meta.extend(external_check::infer_value_meta(
         &hir_inputs,
-        &index,
+        index,
         &inline_docs,
     ));
 
@@ -272,6 +306,52 @@ pub fn finish_analysis(
             .collect();
         diagnostics.extend(external_check::check_call_sites(&hir_inputs, &name_to_meta));
     }
+
+    (diagnostics, symbol_meta)
+}
+
+/// Assemble the final [`AnalysisResult`] from the already-computed layer-2
+/// pieces (index + per-file resolutions), running the remaining passes:
+/// per-file diagnostic contributors ([`per_file_diagnostics`]) for every
+/// file, then the whole-project contributors
+/// ([`whole_project_diagnostics`]).
+///
+/// Query-shaped seam for the scripting substrate: `brink-db`'s salsa
+/// `analysis_query` composes [`symbol_index`] and per-file [`resolve`]
+/// queries, then the decomposed per-file/whole-project queries this
+/// function's two halves wrap (issue #632 / FG-3) — the same sequence this
+/// function runs, in the same order, so the query-composed result is
+/// identical to the monolithic one by construction (pinned by
+/// `query_equivalence.rs`).
+///
+/// `strict_inference`: see [`whole_project_diagnostics`]'s doc — forwarded
+/// unchanged.
+pub fn finish_analysis(
+    files: &[(FileId, &HirFile, &SymbolManifest)],
+    index: Arc<SymbolIndex>,
+    resolutions: ResolutionMap,
+    mut diagnostics: Vec<Diagnostic>,
+    opts: &AnalysisOptions,
+    strict_inference: Option<&infer::InferenceResult>,
+) -> AnalysisResult {
+    for &(file_id, hir, _manifest) in files {
+        let file_resolutions: ResolutionMap = resolutions
+            .iter()
+            .filter(|r| r.file == file_id)
+            .cloned()
+            .collect();
+        diagnostics.extend(per_file_diagnostics(
+            file_id,
+            hir,
+            &file_resolutions,
+            &index,
+            opts.dialect,
+        ));
+    }
+
+    let (whole_diagnostics, symbol_meta) =
+        whole_project_diagnostics(files, &index, &resolutions, opts, strict_inference);
+    diagnostics.extend(whole_diagnostics);
 
     AnalysisResult {
         index,

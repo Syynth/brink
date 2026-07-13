@@ -12,10 +12,11 @@ use salsa::Setter as _;
 use tracing::debug;
 
 use crate::queries::{
-    BrinkDatabase, CompileProduct, DefKey, LirProduct, ProjectInput, SourceFile, analysis_query,
-    diagnostics_query, include_graph_query, infer_body_query, inferred_signature_query, lir_query,
-    lowered_query, parse_query, resolve_query, signature_query, story_data_query,
-    suppressions_query, symbol_index_query, type_diagnostics_query, type_inference_query,
+    BrinkDatabase, CompileProduct, DefKey, LirProduct, ProjectInput, ResolvedProject, SourceFile,
+    analysis_query, diagnostics_query, include_graph_query, infer_body_query,
+    inferred_signature_query, lir_query, lowered_query, parse_query, per_file_diagnostics_query,
+    resolutions_index_query, resolve_query, signature_query, story_data_query, suppressions_query,
+    symbol_index_query, type_diagnostics_query, type_inference_query,
 };
 
 /// Stateful incremental project database.
@@ -338,6 +339,23 @@ impl ProjectDb {
     /// [`analysis_inputs`](Self::analysis_inputs) by construction.
     pub fn analysis(&self) -> &AnalysisResult {
         analysis_query(&self.salsa, self.project)
+    }
+
+    /// Index + resolutions, no diagnostics (issue #632 / FG-3 — the
+    /// RESOLUTIONS/INDEX half of [`analysis`](Self::analysis), split off
+    /// from the diagnostics half so a diagnostics-only `AnalysisOptions`
+    /// edit leaves this `Arc`'s pointer identity untouched).
+    pub fn resolutions_index(&self) -> Arc<ResolvedProject> {
+        resolutions_index_query(&self.salsa, self.project)
+    }
+
+    /// One file's per-file diagnostic contributors — structural validation,
+    /// the dialect gate, and (brink dialect only) annotation-content checks
+    /// (issue #632 / FG-3). `None` for an unknown file id. A body edit in a
+    /// *different* file leaves this `Arc`'s pointer identity untouched.
+    pub fn per_file_diagnostics(&self, id: FileId) -> Option<Arc<Vec<Diagnostic>>> {
+        let file = *self.files.get(&id)?;
+        Some(per_file_diagnostics_query(&self.salsa, self.project, file))
     }
 
     /// Per-file diagnostics including this file's share of analysis

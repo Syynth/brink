@@ -21,4 +21,6 @@ pub use brink_ir::FileId;
 pub use db::{ProjectDb, compute_relative_path, resolve_include_path};
 #[cfg(feature = "memory-introspection")]
 pub use memory::{IngredientKind, IngredientMemory};
-pub use queries::{CompileProduct, FileDiagnostics, LirProduct, partition_diagnostics};
+pub use queries::{
+    CompileProduct, FileDiagnostics, LirProduct, ResolvedProject, partition_diagnostics,
+};
