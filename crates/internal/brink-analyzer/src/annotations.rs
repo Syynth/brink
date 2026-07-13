@@ -326,7 +326,11 @@ fn check_stitch_mismatch(
 /// (`Unknown` never disagrees — an unused/unconstrained slot is silent, not
 /// a mismatch; `unify(ann, body) == ann` covers the one legal directional
 /// coercion, `int` annotated but body only ever compares against `int`
-/// literals promoted to `float` nowhere, etc.).
+/// literals promoted to `float` nowhere, etc.). `Conflicted` (#627) reads
+/// the same as `Unknown` here too: E063 is gradual/advisory (never wired
+/// into `finish_analysis`), and reporting a *conflicted* slot specifically
+/// is strict mode's TM-3 (#619) job, not this diagnostic's — see
+/// [`Ty::is_unresolved`].
 fn report_if_mismatched(
     te: &brink_ir::TypeExpr,
     ann_ty: &Ty,
@@ -334,7 +338,7 @@ fn report_if_mismatched(
     file: FileId,
     out: &mut Vec<Diagnostic>,
 ) {
-    if body_ty.is_unknown() || body_ty == ann_ty {
+    if body_ty.is_unresolved() || body_ty == ann_ty {
         return;
     }
     if &crate::infer::unify(ann_ty, body_ty) == ann_ty {
@@ -526,6 +530,36 @@ mod tests {
         let (hir, index, res) =
             build_with_resolutions("=== heal(hp: float) ===\n{hp > 1:\n  ok\n}\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = mismatches(&[(FileId(0), &hir)], &index, &inference);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn mismatches_is_silent_when_body_is_conflicted() {
+        // #627 ruling: `Conflicted` reads exactly like `Unknown` to this
+        // gradual/advisory consumer — reporting a *conflicted* slot
+        // specifically is strict mode's TM-3 (#619) job, not E063's. `hp`
+        // is compared against both an int and a string literal (a genuine
+        // conflict), annotated `int`; this must stay silent, unchanged from
+        // the pre-#627 behavior where the same body inferred `Unknown`.
+        let (hir, index, res) = build_with_resolutions(
+            "=== heal(hp: int) ===\n{hp > 1:\n  ok\n}\n{hp == \"x\":\n  no\n}\n-> DONE\n",
+        );
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        // Confirm the fixture actually exercises `Conflicted`, not some
+        // other path, before asserting on `mismatches`' silence.
+        let heal_id = index
+            .by_name
+            .get("heal")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("heal");
+        let sig = inference
+            .signatures
+            .get(&heal_id)
+            .expect("inferred signature for heal");
+        assert_eq!(sig.params, vec![Ty::Conflicted], "fixture sanity check");
+
         let diags = mismatches(&[(FileId(0), &hir)], &index, &inference);
         assert!(diags.is_empty(), "{diags:?}");
     }
