@@ -684,6 +684,80 @@ mod tests {
         assert_eq!(a, b, "same input must infer identical types every run");
     }
 
+    // ─── Conflicted lattice point (#627) ───────────────────────────────
+
+    #[test]
+    fn genuinely_disjoint_uses_infer_param_as_conflicted() {
+        // `hp` is compared against an int literal and a string literal —
+        // a genuine, irreconcilable conflict. Pre-#627 this degraded to
+        // `Unknown`, indistinguishable from "never observed".
+        let (hir, index, res) = build(
+            "=== conflict_case(hp) ===\n{hp > 5:\n  ok\n}\n{hp == \"no\":\n  no\n}\n-> DONE\n",
+        );
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let sig = sig_of(&result, &index, "conflict_case");
+        assert_eq!(sig.params, vec![Ty::Conflicted]);
+    }
+
+    #[test]
+    fn conflict_detection_is_order_independent_across_real_source() {
+        // The exact bug #627 exists to close: `unify(Int, String)` used to
+        // degrade to `Unknown`, and `observe` short-circuits on an
+        // `Unknown` candidate (a legitimate optimization for the true
+        // identity element) — so which concrete type "won" depended on
+        // which comparison the walk reached *last*, silently masking the
+        // conflict as a normal concrete type instead of surfacing it. Both
+        // source orderings below must now infer the same `Conflicted`
+        // param, proving detection no longer depends on declaration order.
+        let forward =
+            "=== conflict_fwd(hp) ===\n{hp > 5:\n  ok\n}\n{hp == \"no\":\n  no\n}\n-> DONE\n";
+        let reversed =
+            "=== conflict_rev(hp) ===\n{hp == \"no\":\n  no\n}\n{hp > 5:\n  ok\n}\n-> DONE\n";
+
+        let (hir_f, index_f, res_f) = build(forward);
+        let result_f = infer_project(&[(FileId(0), &hir_f)], &index_f, &res_f);
+        let sig_f = sig_of(&result_f, &index_f, "conflict_fwd");
+
+        let (hir_r, index_r, res_r) = build(reversed);
+        let result_r = infer_project(&[(FileId(0), &hir_r)], &index_r, &res_r);
+        let sig_r = sig_of(&result_r, &index_r, "conflict_rev");
+
+        assert_eq!(sig_f.params, vec![Ty::Conflicted], "int-then-string order");
+        assert_eq!(sig_r.params, vec![Ty::Conflicted], "string-then-int order");
+        assert_eq!(
+            sig_f.params, sig_r.params,
+            "conflict detection must not depend on observation order"
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::similar_names,
+        reason = "ping/pong are the clearest names for this pair"
+    )]
+    fn conflicted_absorbs_through_the_scc_fixpoint() {
+        // `ping`'s own base case returns a string; `pong`'s own base case
+        // returns an int; each recursive case returns whatever the other
+        // member currently resolves to. Neither member's own body is
+        // internally conflicted (each sees only one concrete literal type
+        // directly), but the two base cases can never agree once threaded
+        // through the SCC's shared fixpoint — join stays monotone, so once
+        // either member's estimate becomes `Conflicted` mid-fixpoint it
+        // must propagate to the other and never get diluted back to
+        // `Unknown` in a later round (the #627 ruling's "SCC fixpoint
+        // convergence is unaffected" clause, proven end to end here rather
+        // than just at the `unify` unit level).
+        let (hir, index, res) = build(
+            "=== function ping(n) ===\n{n == 0:\n  ~ return \"done\"\n}\n~ return pong(n - 1)\n\
+             === function pong(n) ===\n{n == 0:\n  ~ return 1\n}\n~ return ping(n - 1)\n",
+        );
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let ping_sig = sig_of(&result, &index, "ping");
+        let pong_sig = sig_of(&result, &index, "pong");
+        assert_eq!(ping_sig.return_ty, Ty::Conflicted);
+        assert_eq!(pong_sig.return_ty, Ty::Conflicted);
+    }
+
     // ─── Per-def/per-SCC decomposition (FG-2, issue #631) ─────────────
 
     #[test]
