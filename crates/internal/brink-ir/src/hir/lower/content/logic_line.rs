@@ -6,6 +6,7 @@ use crate::{AssignOp, Assignment, DiagnosticCode, Expr, Return, Stmt, TempDecl};
 use super::super::context::{LowerScope, LowerSink, Lowered};
 use super::super::expr::LowerExpr;
 use super::super::helpers::{expr_contains_call, name_from_ident};
+use super::super::types::lower_type_annotation;
 use super::LowerBody;
 use super::logic_block::lower_stmt_block;
 
@@ -79,6 +80,9 @@ impl LowerBody for ast::LogicLine {
             let name = name_from_ident(&ident)
                 .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E014))?;
             let value = temp.value().and_then(|e| e.lower_expr(scope, sink).ok());
+            let annotation = temp
+                .type_annotation()
+                .and_then(|ta| lower_type_annotation(&ta));
             sink.add_local(crate::symbols::LocalSymbol {
                 name: name.text.clone(),
                 range: name.range,
@@ -90,6 +94,7 @@ impl LowerBody for ast::LogicLine {
                 ptr: ast::AstPtr::new(&temp),
                 name,
                 value,
+                annotation,
             }));
         }
 

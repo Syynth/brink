@@ -15,6 +15,7 @@ use crate::{AssignOp, Assignment, DiagnosticCode, Return, SymbolKind, TempDecl};
 use super::super::context::{LowerScope, LowerSink, Lowered};
 use super::super::expr::LowerExpr;
 use super::super::helpers::name_from_ident;
+use super::super::types::lower_type_annotation;
 
 /// Lower a `~ { … }` block body's statements.
 pub(crate) fn lower_stmt_block(
@@ -59,6 +60,9 @@ fn lower_block_temp_decl(
         .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E014))?;
     let name = name_from_ident(&ident).ok_or_else(|| sink.diagnose(range, DiagnosticCode::E014))?;
     let value = temp.value().and_then(|e| e.lower_expr(scope, sink).ok());
+    let annotation = temp
+        .type_annotation()
+        .and_then(|ta| lower_type_annotation(&ta));
     sink.add_local(LocalSymbol {
         name: name.text.clone(),
         range: name.range,
@@ -70,6 +74,7 @@ fn lower_block_temp_decl(
         ptr: ast::AstPtr::new(temp),
         name,
         value,
+        annotation,
     }))
 }
 

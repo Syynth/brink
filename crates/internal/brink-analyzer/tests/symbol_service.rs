@@ -226,3 +226,139 @@ fn signature_is_declaration_derived_only() {
     .expect("camp in b");
     assert_eq!(*sig_a, *sig_b, "body edit changed a declaration signature");
 }
+
+// ─── TM-2 inline type annotations (docs/typed-mode-spec.md §3) ──────────
+//
+// `signature()` as the annotation firewall: an annotated param/return/`VAR`
+// carries the annotation's resolved type in `Sig`, independent of anything
+// body inference would derive (annotation wins, per spec).
+
+#[test]
+fn signature_knot_carries_param_and_return_type_annotations() {
+    let src = "=== function heal(hp: int, amount: float): bool ===\n~ return true\n";
+    let (hir, _manifest, result) = analyzed(src);
+    let def = def_id(&result, SymbolKind::Knot, "heal");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)]).expect("known def");
+    assert_eq!(
+        sig.param_annotations,
+        vec![
+            Some(brink_analyzer::Ty::Int),
+            Some(brink_analyzer::Ty::Float)
+        ]
+    );
+    assert_eq!(sig.return_annotation, Some(brink_analyzer::Ty::Bool));
+}
+
+#[test]
+fn signature_unannotated_param_is_none_in_param_annotations() {
+    let src = "=== heal(hp: int, amount) ===\n~ return\n";
+    let (hir, _manifest, result) = analyzed(src);
+    let def = def_id(&result, SymbolKind::Knot, "heal");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)]).expect("known def");
+    assert_eq!(
+        sig.param_annotations,
+        vec![Some(brink_analyzer::Ty::Int), None]
+    );
+    assert_eq!(sig.return_annotation, None, "no return annotation declared");
+}
+
+#[test]
+fn signature_stitch_carries_param_annotations_but_never_a_return_annotation() {
+    // `= stitch` headers have no return-type grammar position (TM-2 §3
+    // scopes `): type ===` to `== knot ==` headers only).
+    let src = "=== camp ===\nText.\n= fire\n~ temp x: string = who\n-> DONE\n";
+    let (hir, _manifest, result) = analyzed(src);
+    let def = def_id(&result, SymbolKind::Stitch, "camp.fire");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)]).expect("known def");
+    assert!(sig.param_annotations.is_empty(), "fire has no params");
+    assert_eq!(sig.return_annotation, None);
+}
+
+#[test]
+fn signature_var_annotation_wins_over_the_literal_inferred_type() {
+    // The initializer literal alone would infer `Int` (via
+    // `infer_literal_type`); the explicit `float` annotation overrides it —
+    // annotation wins over inference (spec §3/TM-1 firewall rule).
+    let src = "VAR gold: float = 100\n";
+    let (hir, _manifest, result) = analyzed(src);
+    let def = def_id(&result, SymbolKind::Variable, "gold");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)]).expect("known def");
+    assert_eq!(sig.value_type, Some(brink_analyzer::InferredType::Float));
+}
+
+#[test]
+fn signature_unannotated_var_keeps_the_literal_inferred_type() {
+    let src = "VAR gold = 100\n";
+    let (hir, _manifest, result) = analyzed(src);
+    let def = def_id(&result, SymbolKind::Variable, "gold");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)]).expect("known def");
+    assert_eq!(sig.value_type, Some(brink_analyzer::InferredType::Int));
+}
+
+#[test]
+fn signature_list_generic_annotation_resolves_against_declared_list_names() {
+    let src = "LIST Weathers = sunny, (rainy)\n=== function pick(w: list<Weathers>): void ===\n~ return\n";
+    let (hir, _manifest, result) = analyzed(src);
+    let def = def_id(&result, SymbolKind::Knot, "pick");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)]).expect("known def");
+    assert_eq!(
+        sig.param_annotations,
+        vec![Some(brink_analyzer::Ty::List("Weathers".to_string()))]
+    );
+    // `void` has no `Ty` representation in this slice (return-position-only
+    // sentinel) — `resolve_annotation` correctly reports it as unresolved.
+    assert_eq!(sig.return_annotation, None);
+}
+
+#[test]
+fn strict_ink_suppresses_annotation_content_checks() {
+    // Maintainer ruling 2026-07-13: under `strict-ink` a bad annotation is
+    // rejected whole by the dialect gate (E051) — the content checks
+    // (E061 unknown name / E062 fn-reserved) must NOT stack a second
+    // diagnostic on the same span. Under `brink` the content checks fire.
+    let src = "VAR cb: fn(int): bool = 0\nVAR p: Frobnicator = 0\n";
+    let (hir, manifest) = lower(FileId(0), src);
+    let files = [(FileId(0), &hir, &manifest)];
+
+    let strict = brink_analyzer::analyze_with_options(
+        &files,
+        &brink_analyzer::AnalysisOptions::default(), // dialect = StrictInk
+    );
+    assert!(
+        strict
+            .diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+        "strict-ink still rejects the annotation as extension syntax"
+    );
+    assert!(
+        !strict.diagnostics.iter().any(|d| matches!(
+            d.code,
+            brink_ir::DiagnosticCode::E061 | brink_ir::DiagnosticCode::E062
+        )),
+        "strict-ink must not critique the content of rejected syntax: {:?}",
+        strict.diagnostics
+    );
+
+    let brink = brink_analyzer::analyze_with_options(
+        &files,
+        &brink_analyzer::AnalysisOptions {
+            dialect: brink_analyzer::Dialect::Brink,
+            ..Default::default()
+        },
+    );
+    assert!(
+        brink
+            .diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E061),
+        "brink dialect flags the unknown type name"
+    );
+    assert!(
+        brink
+            .diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E062),
+        "brink dialect flags the reserved fn(...) type"
+    );
+}

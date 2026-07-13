@@ -17,6 +17,7 @@ mod doc_comment;
 mod expr;
 mod helpers;
 mod structure;
+mod types;
 
 #[cfg(test)]
 mod tests;

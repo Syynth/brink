@@ -5,6 +5,7 @@ use crate::SyntaxKind::{
 };
 
 use super::Parser;
+use super::types::{at_type_annotation, type_annotation};
 
 /// Returns `true` if we're at a knot header (`== ...`).
 pub(crate) fn at_knot(p: &Parser<'_, '_>) -> bool {
@@ -66,6 +67,13 @@ fn knot_header(p: &mut Parser<'_, '_>) {
         p.skip_ws();
     }
 
+    // Optional return type annotation (TM-2, docs/typed-mode-spec.md §3):
+    // `): type ===` in function-header return position.
+    if at_type_annotation(p) {
+        type_annotation(p);
+        p.skip_ws();
+    }
+
     // Optional trailing equals
     if p.current() == EQ_EQ || p.current() == EQ {
         eat_extra_equals(p);
@@ -118,6 +126,13 @@ fn knot_param_decl(p: &mut Parser<'_, '_>) {
     p.start_node(IDENTIFIER);
     p.expect_ident_or_keyword();
     p.finish_node();
+    // Optional param type annotation (TM-2, docs/typed-mode-spec.md §3):
+    // `name: type`. `at_type_annotation` only peeks (non-destructive), so
+    // the non-annotated case consumes nothing extra here — unchanged CST
+    // for every pre-existing (unannotated) param.
+    if at_type_annotation(p) {
+        type_annotation(p);
+    }
     p.finish_node();
 }
 

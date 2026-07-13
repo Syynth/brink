@@ -9,6 +9,7 @@ mod knot;
 mod logic;
 mod story;
 mod tag;
+mod types;
 
 use crate::SyntaxKind::{self, COLON, EOF, ERROR, IDENT, L_BRACE, NEWLINE, PIPE, R_BRACE};
 // `IDENT` above is also used by `at_kw_text`/`nth_text` (soft-keyword lookup).

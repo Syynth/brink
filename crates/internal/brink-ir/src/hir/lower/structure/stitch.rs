@@ -83,6 +83,11 @@ pub(super) fn lower_top_level_stitch(
         body,
         stitches: Vec::new(),
         is_local,
+        // `= stitch` headers never carry a return-type annotation — that
+        // grammar only exists on `== knot ==` headers (TM-2, docs/typed-mode-spec.md
+        // §3: `): type ===`), which this promoted-top-level-stitch path
+        // never parses through.
+        return_type: None,
     })
 }
 

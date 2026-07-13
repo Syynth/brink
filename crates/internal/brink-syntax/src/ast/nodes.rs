@@ -130,6 +130,14 @@ ast_node!(BreakStmt, BREAK_STMT);
 ast_node!(ContinueStmt, CONTINUE_STMT);
 ast_node!(ExprStmt, EXPR_STMT);
 
+// ── TM-2 inline type annotations (docs/typed-mode-spec.md §3) ────────
+
+ast_node!(TypeAnnotation, TYPE_ANNOTATION);
+ast_node!(TypeExpr, TYPE_EXPR);
+ast_node!(TypeName, TYPE_NAME);
+ast_node!(TypeGeneric, TYPE_GENERIC);
+ast_node!(TypeFn, TYPE_FN);
+
 // ── Diverts ──────────────────────────────────────────────────────────
 
 ast_node!(DivertNode, DIVERT_NODE);
@@ -138,6 +146,90 @@ ast_node!(DivertTargetWithArgs, DIVERT_TARGET_WITH_ARGS);
 ast_node!(ThreadStart, THREAD_START);
 ast_node!(TunnelOnwardsNode, TUNNEL_ONWARDS_NODE);
 ast_node!(TunnelCallNode, TUNNEL_CALL_NODE);
+
+// ── TM-2 inline type annotations (docs/typed-mode-spec.md §3) ────────
+
+impl TypeAnnotation {
+    /// The annotated type expression after `:`.
+    pub fn type_expr(&self) -> Option<TypeExpr> {
+        support::child(&self.syntax)
+    }
+}
+
+/// What a [`TypeExpr`] wraps — exactly one of these per node.
+pub enum TypeExprKind {
+    Name(TypeName),
+    Generic(TypeGeneric),
+    Fn(TypeFn),
+}
+
+impl TypeExpr {
+    /// The single child this type expression wraps.
+    ///
+    /// `None` only for a malformed/error-recovered `TYPE_EXPR` (e.g. an
+    /// empty annotation at the parser's nesting depth limit) — every
+    /// well-formed one always has exactly one of these.
+    pub fn kind(&self) -> Option<TypeExprKind> {
+        if let Some(n) = support::child::<TypeName>(&self.syntax) {
+            Some(TypeExprKind::Name(n))
+        } else if let Some(g) = support::child::<TypeGeneric>(&self.syntax) {
+            Some(TypeExprKind::Generic(g))
+        } else {
+            support::child::<TypeFn>(&self.syntax).map(TypeExprKind::Fn)
+        }
+    }
+}
+
+impl TypeName {
+    pub fn identifier(&self) -> Option<Identifier> {
+        support::child(&self.syntax)
+    }
+
+    /// The bare type name text (e.g. `"int"`, `"void"`, or an unrecognized
+    /// name — grammar accepts any identifier; validity is a semantic check).
+    pub fn name(&self) -> Option<String> {
+        self.identifier().and_then(|id| id.name())
+    }
+}
+
+impl TypeGeneric {
+    pub fn identifier(&self) -> Option<Identifier> {
+        support::child(&self.syntax)
+    }
+
+    /// The generic head name (e.g. `"list"`, `"array"`, `"map"`).
+    pub fn name(&self) -> Option<String> {
+        self.identifier().and_then(|id| id.name())
+    }
+
+    /// The type arguments in source order (e.g. `[K, V]` for `map<K, V>`).
+    pub fn args(&self) -> impl Iterator<Item = TypeExpr> {
+        support::children(&self.syntax)
+    }
+}
+
+impl TypeFn {
+    /// Every `TYPE_EXPR` child in source order: the last is the return type,
+    /// every earlier one is a parameter type.
+    fn type_exprs(&self) -> Vec<TypeExpr> {
+        support::children(&self.syntax).collect()
+    }
+
+    /// Parameter types, in declaration order.
+    pub fn params(&self) -> Vec<TypeExpr> {
+        let mut exprs = self.type_exprs();
+        if exprs.is_empty() {
+            return exprs;
+        }
+        exprs.pop(); // drop the return type
+        exprs
+    }
+
+    /// The return type after `:`.
+    pub fn return_type(&self) -> Option<TypeExpr> {
+        self.type_exprs().pop()
+    }
+}
 
 // ── Identifiers ──────────────────────────────────────────────────────
 
@@ -419,6 +511,12 @@ impl KnotHeader {
     pub fn params(&self) -> Option<KnotParams> {
         support::child(&self.syntax)
     }
+
+    /// The return type annotation after the params (TM-2, docs/typed-mode-spec.md
+    /// §3: `): type ===`), if present.
+    pub fn return_type(&self) -> Option<TypeAnnotation> {
+        support::child(&self.syntax)
+    }
 }
 
 // ── KnotBody ─────────────────────────────────────────────────────────
@@ -478,6 +576,12 @@ impl KnotParamDecl {
 
     pub fn name(&self) -> Option<String> {
         self.identifier().and_then(|id| id.name())
+    }
+
+    /// The parameter's type annotation (TM-2, docs/typed-mode-spec.md §3:
+    /// `name: type`), if present.
+    pub fn type_annotation(&self) -> Option<TypeAnnotation> {
+        support::child(&self.syntax)
     }
 }
 
@@ -601,6 +705,12 @@ impl TempDecl {
 
     pub fn name(&self) -> Option<String> {
         self.identifier().and_then(|id| id.name())
+    }
+
+    /// The ascription's type annotation (TM-2, docs/typed-mode-spec.md §3:
+    /// `~ temp name: type = expr`), if present.
+    pub fn type_annotation(&self) -> Option<TypeAnnotation> {
+        support::child(&self.syntax)
     }
 
     pub fn eq_token(&self) -> Option<SyntaxToken> {
@@ -1529,6 +1639,12 @@ impl VarDecl {
 
     pub fn name(&self) -> Option<String> {
         self.identifier().and_then(|id| id.name())
+    }
+
+    /// The declared type annotation (TM-2, docs/typed-mode-spec.md §3:
+    /// `VAR name: type = expr`), if present.
+    pub fn type_annotation(&self) -> Option<TypeAnnotation> {
+        support::child(&self.syntax)
     }
 
     /// Returns the initializer expression after `=`.

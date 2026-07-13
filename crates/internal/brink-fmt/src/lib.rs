@@ -1371,6 +1371,55 @@ mod tests {
         assert_eq!(first, second, "formatting should be idempotent");
     }
 
+    // ── TM-2 inline type annotations (docs/typed-mode-spec.md §3) ───────
+    //
+    // The knot-header/declaration/logic-line renderers are single-line
+    // token-collapsing passes over the raw physical-line text (see
+    // `format_knot_header`/`format_logic`/`LineKind::Declaration`'s own
+    // docs) — a `:` is just another non-whitespace token to them, so
+    // annotations format "for free" through the exact same code path
+    // exercised for every other knot header/declaration/logic line. These
+    // tests pin that down explicitly rather than relying on it implicitly.
+
+    #[test]
+    fn param_and_return_type_annotations_normalize_whitespace() {
+        assert_eq!(
+            fmt("===function heal(hp:int,amount:  int)  :  int===\n~ return hp\n"),
+            "=== function heal(hp:int,amount: int) : int ===\n  ~ return hp\n"
+        );
+    }
+
+    #[test]
+    fn var_type_annotation_formats_verbatim_modulo_trailing_whitespace() {
+        assert_eq!(fmt("VAR gold: int = 100   \n"), "VAR gold: int = 100\n");
+    }
+
+    #[test]
+    fn temp_ascription_normalizes_whitespace_like_any_other_logic_line() {
+        assert_eq!(
+            fmt("=== knot ===\n~   temp   name:string=who\n"),
+            "=== knot ===\n  ~ temp   name:string=who\n"
+        );
+    }
+
+    #[test]
+    fn type_annotations_are_idempotent() {
+        for input in [
+            "=== function heal(hp: int, amount: int): int ===\n~ return hp\n",
+            "VAR gold: int = 100\n",
+            "=== knot ===\n~ temp name: string = who\n",
+            "VAR w: list<Weathers> = 0\nVAR m: map<string, int> = 0\n",
+            "VAR cb: fn(int, int): bool = 0\n",
+        ] {
+            let first = fmt(input);
+            let second = fmt(&first);
+            assert_eq!(
+                first, second,
+                "type-annotated formatting should be idempotent for {input:?}"
+            );
+        }
+    }
+
     // ── T1b `~ { … }` blocks: indentation-aware reformatting ────────────
     // (docs/t1b-surface-spec.md §2, ruled acceptance criteria on #573)
 
