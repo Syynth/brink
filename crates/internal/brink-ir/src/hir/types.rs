@@ -1059,6 +1059,13 @@ pub enum DiagnosticCode {
     /// on the slot's type. Legal (advisory-only, unreported) under `types =
     /// gradual`.
     E066,
+    /// Under `types = strict`, a `~ x = f()` / `~ temp x = f()` assigns the
+    /// result of a call whose resolved def is a `void`-returning function
+    /// (docs/typed-mode-spec.md §3: "assigning a `void` call is an error in
+    /// strict mode"). Only the assignment/temp-decl's RHS *root* call is
+    /// checked — a statement-position call (`~ f()`) or a call nested inside
+    /// interpolation is never flagged. Never emitted under `types = gradual`.
+    E067,
 }
 
 impl DiagnosticCode {
@@ -1132,6 +1139,7 @@ impl DiagnosticCode {
             Self::E064 => "E064",
             Self::E065 => "E065",
             Self::E066 => "E066",
+            Self::E067 => "E067",
         }
     }
 
@@ -1207,6 +1215,7 @@ impl DiagnosticCode {
             Self::E064 => "strict types require the brink dialect",
             Self::E065 => "type escapes strict inference as Unknown",
             Self::E066 => "type is Conflicted under strict inference",
+            Self::E067 => "assigning the result of a void function",
         }
     }
 
@@ -1301,6 +1310,7 @@ impl DiagnosticCode {
             "E064" => Some(Self::E064),
             "E065" => Some(Self::E065),
             "E066" => Some(Self::E066),
+            "E067" => Some(Self::E067),
             _ => None,
         }
     }

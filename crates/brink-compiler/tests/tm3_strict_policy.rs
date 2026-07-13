@@ -115,3 +115,85 @@ fn strict_heterogeneous_collection_blocks_compilation() {
         "{diags:?}"
     );
 }
+
+// ── Review fix 1: E063 is error-eligible under strict (#640-round ruling) ──
+
+#[test]
+fn strict_annotation_inference_mismatch_blocks_compilation_with_e063() {
+    // A plain (non-function) knot, deliberately clean of every *other*
+    // strict diagnostic: `x`'s annotation exempts it from Unknown-escape
+    // (E065), and no return-type check applies (not a function knot) — the
+    // only way this fixture can fail to compile is if E063 itself partitions
+    // as an error. `x`'s annotation says `int`, but the body's own use
+    // (`x + "!"`, string concatenation) forces a concrete `string` body type
+    // — a genuine annotation-vs-inference disagreement, not an
+    // Unknown/Conflicted body type (`mismatches()` skips unresolved body
+    // types via `Ty::is_unresolved`, so the fixture must produce a
+    // *concrete* disagreement to exercise E063 at all).
+    //
+    // Before this fix, `DiagnosticCode::E063.severity()` was hardcoded to
+    // `Warning` and both `brink-db` partition sites split on that raw
+    // severity — with no other error-severity diagnostic in this fixture,
+    // `errors` would come out empty and this compile would have returned
+    // `Ok` (with a warning), making `.expect_err` below panic. That is the
+    // review's blocking finding.
+    let err = compile_mem(
+        "=== f(x: int) ===\n~ temp y = x + \"!\"\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err(
+        "an annotation disagreeing with a concrete inferred body type must fail strict compilation",
+    );
+    let diags = diagnostics_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "this fixture is deliberately clean of every other strict diagnostic \
+         so E063 alone must be what fails compilation: {diags:?}"
+    );
+}
+
+#[test]
+fn gradual_annotation_inference_mismatch_still_compiles() {
+    // Same fixture, `types` left at its default (`Gradual`) — E063 stays
+    // advisory-only and never blocks compilation (the #618/PR#640 ruling
+    // this issue explicitly does not touch).
+    let result = compile_mem(
+        "=== f(x: int) ===\n~ temp y = x + \"!\"\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::default(),
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
+// ── Review fix 2: void-assignment is an error under strict (spec §3) ──────
+
+#[test]
+fn strict_void_assignment_blocks_compilation_with_e067() {
+    let err = compile_mem(
+        "=== function noop(): void ===\n~ return\n\
+         === main ===\n~ temp x = noop()\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err("assigning a void call's result must fail strict compilation");
+    let diags = diagnostics_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E067),
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn strict_void_statement_position_call_compiles_clean() {
+    // `~ f()` (no assignment) is never flagged — only the assignment/temp-
+    // decl RHS-root shape is.
+    let result = compile_mem(
+        "=== function noop(): void ===\n~ return\n\
+         === main ===\n~ noop()\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    );
+    assert!(result.is_ok(), "{result:?}");
+}

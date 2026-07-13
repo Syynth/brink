@@ -3,7 +3,7 @@
 //! `types = strict` is a project-level config option, orthogonal to (but
 //! gated by) the T1b dialect (`docs/t1b-surface-spec.md` §1): strict typing
 //! requires the brink dialect, since its annotation syntax (TM-2, spec §3)
-//! is brink-extension syntax. Two jobs live here:
+//! is brink-extension syntax. Three jobs live here:
 //!
 //! - [`config_error`]: `types = strict` + `dialect = strict-ink` is a
 //!   project-level config error (`E064`), reported once and skipping every
@@ -15,11 +15,22 @@
 //!   signature and body-local slots (spec §1: "Unknown escaping inference is
 //!   a compile error"; the #627-landed `Ty::Conflicted` absorbing point is
 //!   strict mode's payoff, spec's own words: "TM-3 (#619) is the slice that
-//!   turns a Conflicted slot into a real strict-mode error"), plus wiring
-//!   the already-landed advisory `annotations::mismatches` (`E063`) into
+//!   turns a Conflicted slot into a real strict-mode error"), the void-
+//!   assignment check (`E067`, spec §3: "assigning a `void` call is an error
+//!   in strict mode" — a `~ x = f()` / `~ temp x = f()` whose RHS *root* is a
+//!   call resolving to a `void`-returning function; statement-position calls
+//!   and calls nested in interpolation are never flagged), plus wiring the
+//!   already-landed advisory `annotations::mismatches` (`E063`) into
 //!   production under strict (the inherited #640-round ruling: "TM-3's
 //!   strict-policy wiring, which must run inference anyway, is where E063
 //!   starts firing in production").
+//! - [`effective_severity`]: the policy-conditional severity lookup both of
+//!   `brink-db`'s diagnostic-partitioning sites (`partition_diagnostics`'s
+//!   two call sites, plus `lir_query`'s own LIR-diagnostic partition) must
+//!   call instead of the raw [`brink_ir::DiagnosticCode::severity`] default —
+//!   `E063` is `Warning` under `types = gradual` but `Error`-eligible under
+//!   `types = strict` (the #640-round ruling this module's `check` doc above
+//!   already cites); every other code's severity is policy-independent.
 //!
 //! A slot is exempted from Unknown-escape when an explicit, resolvable type
 //! annotation is present (TM-2's "annotation = firewall" — the entire point
@@ -56,12 +67,12 @@
 //! pure conversion intrinsics (they don't exist yet; adding them is new
 //! stdlib surface, not diagnostics wiring).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use brink_format::DefinitionId;
 use brink_ir::{
-    Block, BlockStmt, Content, ContentPart, ElseBranch, FileId, HirFile, IfStmt, Stmt, SymbolIndex,
-    SymbolKind, TypeExpr,
+    Block, BlockStmt, Content, ContentPart, ElseBranch, Expr, FileId, HirFile, IfStmt, Path,
+    ResolutionMap, Stmt, SymbolIndex, SymbolKind, TypeExpr,
 };
 use rowan::TextRange;
 
@@ -78,6 +89,24 @@ pub enum TypePolicy {
     #[default]
     Gradual,
     Strict,
+}
+
+/// The severity a diagnostic code should actually be reported at, given the
+/// project's `types` policy — the single seam every diagnostic-partitioning
+/// site must call instead of the raw [`brink_ir::DiagnosticCode::severity`]
+/// default (the #640-round ruling: "TM-3's strict-policy wiring, which must
+/// run inference anyway, is where E063 starts firing in production", i.e.
+/// `E063` — annotation-vs-inference mismatch — is advisory (`Warning`) under
+/// `types = gradual` but error-eligible under `types = strict`). Every other
+/// code's severity is policy-independent and this simply defers to
+/// [`brink_ir::DiagnosticCode::severity`].
+#[must_use]
+pub fn effective_severity(code: brink_ir::DiagnosticCode, types: TypePolicy) -> brink_ir::Severity {
+    if code == brink_ir::DiagnosticCode::E063 && types == TypePolicy::Strict {
+        brink_ir::Severity::Error
+    } else {
+        code.severity()
+    }
 }
 
 /// `types = strict` + `dialect != brink` is a project-level config error —
@@ -107,18 +136,25 @@ pub fn config_error(
 }
 
 /// The strict-mode diagnostics that need a full `InferenceResult`:
-/// Unknown-escape (`E065`), Conflicted-escape (`E066`), and — the inherited
-/// #640-round ruling — auto-wiring `annotations::mismatches` (`E063`) into
-/// production. Callers only reach this once [`config_error`] has confirmed
-/// `dialect = brink`.
+/// Unknown-escape (`E065`), Conflicted-escape (`E066`), void-assignment
+/// (`E067`), and — the inherited #640-round ruling — auto-wiring
+/// `annotations::mismatches` (`E063`) into production. Callers only reach
+/// this once [`config_error`] has confirmed `dialect = brink`.
+///
+/// `resolutions`: the project's full resolution map — the void-assignment
+/// pass needs it to resolve a call-site's `Path` back to the def it targets
+/// (the same range→`DefinitionId` lookup `infer::body` builds its own
+/// per-file projection of).
 #[must_use]
 pub fn check(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
     inference: &InferenceResult,
+    resolutions: &ResolutionMap,
 ) -> Vec<brink_ir::Diagnostic> {
     let mut out = check_escapes(files, index, inference);
     out.extend(annotations::mismatches(files, index, inference));
+    out.extend(check_void_assignments(files, index, resolutions));
     out
 }
 
@@ -327,6 +363,291 @@ fn classify(ty: &Ty) -> Escape {
         },
         Ty::Int | Ty::Float | Ty::Bool | Ty::String | Ty::Divert | Ty::List(_) => Escape::Clean,
     }
+}
+
+// ── Void-assignment (E067, docs/typed-mode-spec.md §3) ────────────────
+
+/// `(start, end)` `u32` pair — `TextRange` has no `Ord` impl, so every
+/// `BTreeMap` keyed by a source range in this module uses this instead
+/// (mirrors `infer::mod`'s own `range_key`).
+fn range_key(range: TextRange) -> (u32, u32) {
+    (range.start().into(), range.end().into())
+}
+
+/// `~ x = f()` / `~ temp x = f()` where `f`'s resolved def is a `void`-
+/// returning function is a compile error under strict (spec §3: "assigning a
+/// `void` call is an error in strict mode"). Only the assignment/temp-decl's
+/// RHS *root* expression is checked — a statement-position call (`~ f()`) or
+/// a call nested inside interpolation is never flagged, since neither
+/// assigns the (nonexistent) result anywhere.
+#[must_use]
+fn check_void_assignments(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+) -> Vec<brink_ir::Diagnostic> {
+    let void_defs = collect_void_defs(files, index);
+    if void_defs.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for &(file, hir) in files {
+        let resolution_by_range = resolution_index(resolutions, file);
+        for knot in &hir.knots {
+            check_void_block(file, &knot.body, &void_defs, &resolution_by_range, &mut out);
+            for stitch in &knot.stitches {
+                check_void_block(
+                    file,
+                    &stitch.body,
+                    &void_defs,
+                    &resolution_by_range,
+                    &mut out,
+                );
+            }
+        }
+    }
+    out
+}
+
+/// Every function knot whose `): void ===` return annotation resolves to
+/// `void`, by `DefinitionId`. Stitches never carry `return_type` (only
+/// `Knot` does — see the field's doc comment), so only `hir.knots` entries
+/// with `is_function` set are candidates, mirroring `check_escapes`' own
+/// def-id lookup (`kind` tracks `knot.ptr`, since a top-level stitch
+/// promoted to knot status is indexed under `SymbolKind::Stitch`, #626).
+fn collect_void_defs(files: &[(FileId, &HirFile)], index: &SymbolIndex) -> BTreeSet<DefinitionId> {
+    let mut out = BTreeSet::new();
+    for &(file, hir) in files {
+        for knot in &hir.knots {
+            if !knot.is_function {
+                continue;
+            }
+            let is_void = knot
+                .return_type
+                .as_ref()
+                .is_some_and(|rt| matches!(rt, TypeExpr::Named { name, .. } if name == "void"));
+            if !is_void {
+                continue;
+            }
+            let kind = match knot.ptr {
+                brink_ir::ContainerPtr::Knot(_) => SymbolKind::Knot,
+                brink_ir::ContainerPtr::Stitch(_) => SymbolKind::Stitch,
+            };
+            if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
+                out.insert(id);
+            }
+        }
+    }
+    out
+}
+
+/// This file's own reference resolutions, projected to a range-keyed lookup
+/// (mirrors `infer::mod`'s `index_resolutions_by_file`, narrowed to one file
+/// at a time — a `Path`'s range is only unique within its own file).
+fn resolution_index(
+    resolutions: &ResolutionMap,
+    file: FileId,
+) -> BTreeMap<(u32, u32), DefinitionId> {
+    resolutions
+        .iter()
+        .filter(|r| r.file == file)
+        .map(|r| (range_key(r.range), r.target))
+        .collect()
+}
+
+fn check_void_block(
+    file: FileId,
+    block: &Block,
+    void_defs: &BTreeSet<DefinitionId>,
+    resolution_by_range: &BTreeMap<(u32, u32), DefinitionId>,
+    out: &mut Vec<brink_ir::Diagnostic>,
+) {
+    for stmt in &block.stmts {
+        check_void_stmt(file, stmt, void_defs, resolution_by_range, out);
+    }
+}
+
+fn check_void_stmt(
+    file: FileId,
+    stmt: &Stmt,
+    void_defs: &BTreeSet<DefinitionId>,
+    resolution_by_range: &BTreeMap<(u32, u32), DefinitionId>,
+    out: &mut Vec<brink_ir::Diagnostic>,
+) {
+    match stmt {
+        Stmt::TempDecl(t) => {
+            if let Some(value) = &t.value {
+                check_void_root(file, value, void_defs, resolution_by_range, out);
+            }
+        }
+        Stmt::Assignment(a) => {
+            check_void_root(file, &a.value, void_defs, resolution_by_range, out);
+        }
+        Stmt::ChoiceSet(cs) => {
+            for choice in &cs.choices {
+                check_void_block(file, &choice.body, void_defs, resolution_by_range, out);
+                if let Some(c) = &choice.start_content {
+                    check_void_content(file, c, void_defs, resolution_by_range, out);
+                }
+                if let Some(c) = &choice.bracket_content {
+                    check_void_content(file, c, void_defs, resolution_by_range, out);
+                }
+                if let Some(c) = &choice.inner_content {
+                    check_void_content(file, c, void_defs, resolution_by_range, out);
+                }
+            }
+            check_void_block(file, &cs.continuation, void_defs, resolution_by_range, out);
+        }
+        Stmt::LabeledBlock(b) => check_void_block(file, b, void_defs, resolution_by_range, out),
+        Stmt::Conditional(c) => {
+            for branch in &c.branches {
+                check_void_block(file, &branch.body, void_defs, resolution_by_range, out);
+            }
+        }
+        Stmt::Sequence(s) => {
+            for branch in &s.branches {
+                check_void_block(file, branch, void_defs, resolution_by_range, out);
+            }
+        }
+        Stmt::Content(c) => check_void_content(file, c, void_defs, resolution_by_range, out),
+        Stmt::LogicBlock(lb) => {
+            for bs in &lb.stmts {
+                check_void_block_stmt(file, bs, void_defs, resolution_by_range, out);
+            }
+        }
+        Stmt::Divert(_)
+        | Stmt::TunnelCall(_)
+        | Stmt::ThreadStart(_)
+        | Stmt::Return(_)
+        | Stmt::ExprStmt(_)
+        | Stmt::EndOfLine => {}
+    }
+}
+
+fn check_void_content(
+    file: FileId,
+    content: &Content,
+    void_defs: &BTreeSet<DefinitionId>,
+    resolution_by_range: &BTreeMap<(u32, u32), DefinitionId>,
+    out: &mut Vec<brink_ir::Diagnostic>,
+) {
+    for part in &content.parts {
+        match part {
+            ContentPart::InlineConditional(c) => {
+                for branch in &c.branches {
+                    check_void_block(file, &branch.body, void_defs, resolution_by_range, out);
+                }
+            }
+            ContentPart::InlineSequence(s) => {
+                for branch in &s.branches {
+                    check_void_block(file, branch, void_defs, resolution_by_range, out);
+                }
+            }
+            ContentPart::Interpolation(_)
+            | ContentPart::Text(_)
+            | ContentPart::Glue
+            | ContentPart::Spring => {}
+        }
+    }
+}
+
+fn check_void_block_stmt(
+    file: FileId,
+    bs: &BlockStmt,
+    void_defs: &BTreeSet<DefinitionId>,
+    resolution_by_range: &BTreeMap<(u32, u32), DefinitionId>,
+    out: &mut Vec<brink_ir::Diagnostic>,
+) {
+    match bs {
+        BlockStmt::TempDecl(t) => {
+            if let Some(value) = &t.value {
+                check_void_root(file, value, void_defs, resolution_by_range, out);
+            }
+        }
+        BlockStmt::Assignment(a) => {
+            check_void_root(file, &a.value, void_defs, resolution_by_range, out);
+        }
+        BlockStmt::If(i) => check_void_if(file, i, void_defs, resolution_by_range, out),
+        BlockStmt::While(w) => {
+            for s in &w.body {
+                check_void_block_stmt(file, s, void_defs, resolution_by_range, out);
+            }
+        }
+        BlockStmt::For(f) => {
+            for s in &f.body {
+                check_void_block_stmt(file, s, void_defs, resolution_by_range, out);
+            }
+        }
+        BlockStmt::Return(_)
+        | BlockStmt::ExprStmt(_)
+        | BlockStmt::Break(_)
+        | BlockStmt::Continue(_) => {}
+    }
+}
+
+fn check_void_if(
+    file: FileId,
+    i: &IfStmt,
+    void_defs: &BTreeSet<DefinitionId>,
+    resolution_by_range: &BTreeMap<(u32, u32), DefinitionId>,
+    out: &mut Vec<brink_ir::Diagnostic>,
+) {
+    for s in &i.body {
+        check_void_block_stmt(file, s, void_defs, resolution_by_range, out);
+    }
+    match &i.else_branch {
+        Some(ElseBranch::ElseIf(inner)) => {
+            check_void_if(file, inner, void_defs, resolution_by_range, out);
+        }
+        Some(ElseBranch::Else(stmts)) => {
+            for s in stmts {
+                check_void_block_stmt(file, s, void_defs, resolution_by_range, out);
+            }
+        }
+        None => {}
+    }
+}
+
+/// If `expr`'s root is `Expr::Call(path, _)` resolving to a def in
+/// `void_defs`, push `E067`. Anything else (a non-call root, or a call that
+/// doesn't resolve to a known void def) is silently clean — this is a root-
+/// position-only check, never a recursive expression walk (a void call
+/// buried inside e.g. `1 + f()` is a type error `infer::body` would already
+/// have caught as a non-numeric operand, not this diagnostic's job).
+fn check_void_root(
+    file: FileId,
+    expr: &Expr,
+    void_defs: &BTreeSet<DefinitionId>,
+    resolution_by_range: &BTreeMap<(u32, u32), DefinitionId>,
+    out: &mut Vec<brink_ir::Diagnostic>,
+) {
+    let Expr::Call(path, _) = expr else {
+        return;
+    };
+    let Some(&def_id) = resolution_by_range.get(&range_key(path.range)) else {
+        return;
+    };
+    if !void_defs.contains(&def_id) {
+        return;
+    }
+    out.push(brink_ir::Diagnostic {
+        file,
+        range: path.range,
+        message: format!(
+            "`{}` returns void — its result cannot be assigned (docs/typed-mode-spec.md §3)",
+            path_display(path)
+        ),
+        code: brink_ir::DiagnosticCode::E067,
+    });
+}
+
+/// Dotted display name for a call target's `Path` (e.g. `knot.stitch`).
+fn path_display(path: &Path) -> String {
+    path.segments
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 /// A temp declaration's own name span plus its resolved ascription type
@@ -550,7 +871,7 @@ mod tests {
     fn unused_param_escapes_as_unknown() {
         let (hir, index, res) = build("=== noop(x) ===\nHello.\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E065);
         assert!(diags[0].message.contains('x'));
@@ -560,7 +881,7 @@ mod tests {
     fn annotated_unused_param_is_exempt_from_unknown_escape() {
         let (hir, index, res) = build("=== noop(x: int) ===\nHello.\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
         assert!(diags.is_empty(), "annotation supplies the type: {diags:?}");
     }
 
@@ -569,7 +890,7 @@ mod tests {
         // spec §5's own worked example.
         let (hir, index, res) = build("=== main ===\n~ temp x = #[]\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E065);
     }
@@ -580,7 +901,7 @@ mod tests {
         // the binding" — following that advice must silence the error.
         let (hir, index, res) = build("=== main ===\n~ temp x: array<int> = #[]\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
         assert!(diags.is_empty(), "ascription supplies the type: {diags:?}");
     }
 
@@ -588,7 +909,7 @@ mod tests {
     fn unannotated_function_return_escapes_as_unknown() {
         let (hir, index, res) = build("=== function noop() ===\nHello.\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E065);
         assert!(diags[0].message.contains("return"));
@@ -598,7 +919,7 @@ mod tests {
     fn void_annotated_function_return_is_exempt() {
         let (hir, index, res) = build("=== function noop(): void ===\n~ return\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -608,7 +929,7 @@ mod tests {
         // regardless of whether the body ever exercises `~ return`.
         let (hir, index, res) = build("=== main ===\nHello.\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -620,7 +941,7 @@ mod tests {
             "=== conflict_case(hp) ===\n{hp > 5:\n  ok\n}\n{hp == \"no\":\n  no\n}\n-> DONE\n",
         );
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E066);
     }
@@ -634,7 +955,7 @@ mod tests {
             "=== conflict_case(hp: int) ===\n{hp > 5:\n  ok\n}\n{hp == \"no\":\n  no\n}\n-> DONE\n",
         );
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E066);
     }
@@ -646,7 +967,7 @@ mod tests {
         // catches it through the nesting.
         let (hir, index, res) = build("=== main ===\n~ temp x = #[1, \"a\"]\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E066);
     }
@@ -659,7 +980,7 @@ mod tests {
         // must never escape — the type resolves cleanly to a concrete `int`.
         let (hir, index, res) = build("=== main ===\nVAR gold = 5\n{gold:\n  rich\n}\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -667,7 +988,7 @@ mod tests {
     fn int_to_float_join_survives_strict_with_no_escape() {
         let (hir, index, res) = build("=== spend(gold) ===\n{gold > 1.5:\n  ok\n}\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
         assert!(
             diags.is_empty(),
             "int->float directional join is clean: {diags:?}"
@@ -680,7 +1001,7 @@ mod tests {
     fn check_wires_in_e063_mismatches() {
         let (hir, index, res) = build("=== heal(hp: string) ===\n{hp > 1:\n  ok\n}\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
         assert!(
             diags.iter().any(|d| d.code == DiagnosticCode::E063),
             "{diags:?}"
@@ -698,11 +1019,11 @@ mod tests {
 
         let (hir_f, index_f, res_f) = build(forward);
         let inference_f = crate::infer_project(&[(FileId(0), &hir_f)], &index_f, &res_f);
-        let diags_f = check(&[(FileId(0), &hir_f)], &index_f, &inference_f);
+        let diags_f = check(&[(FileId(0), &hir_f)], &index_f, &inference_f, &res_f);
 
         let (hir_r, index_r, res_r) = build(reversed);
         let inference_r = crate::infer_project(&[(FileId(0), &hir_r)], &index_r, &res_r);
-        let diags_r = check(&[(FileId(0), &hir_r)], &index_r, &inference_r);
+        let diags_r = check(&[(FileId(0), &hir_r)], &index_r, &inference_r, &res_r);
 
         assert_eq!(codes(&diags_f), vec![DiagnosticCode::E066]);
         assert_eq!(codes(&diags_r), vec![DiagnosticCode::E066]);
@@ -714,7 +1035,126 @@ mod tests {
             "=== function heal(hp: int): int ===\n~ temp bonus: int = 5\n~ return hp + bonus\n",
         );
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
         assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    // ── effective_severity ──────────────────────────────────────────
+
+    #[test]
+    fn effective_severity_e063_is_warning_under_gradual() {
+        assert_eq!(
+            effective_severity(DiagnosticCode::E063, TypePolicy::Gradual),
+            brink_ir::Severity::Warning
+        );
+    }
+
+    #[test]
+    fn effective_severity_e063_is_error_under_strict() {
+        assert_eq!(
+            effective_severity(DiagnosticCode::E063, TypePolicy::Strict),
+            brink_ir::Severity::Error
+        );
+    }
+
+    #[test]
+    fn effective_severity_other_codes_are_policy_independent() {
+        // A code with no strict-conditional carve-out keeps its default
+        // severity regardless of policy — only E063 is ever conditioned.
+        for policy in [TypePolicy::Gradual, TypePolicy::Strict] {
+            assert_eq!(
+                effective_severity(DiagnosticCode::E065, policy),
+                DiagnosticCode::E065.severity()
+            );
+            assert_eq!(
+                effective_severity(DiagnosticCode::E022, policy),
+                DiagnosticCode::E022.severity()
+            );
+        }
+    }
+
+    // ── check(): void-assignment (E067) ────────────────────────────
+
+    #[test]
+    fn void_assigned_to_temp_is_e067() {
+        let (hir, index, res) = build(
+            "=== function noop(): void ===\n~ return\n\
+             === main ===\n~ temp x = noop()\n-> DONE\n",
+        );
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E067),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn void_assigned_to_var_is_e067() {
+        let (hir, index, res) = build(
+            "VAR gold = 0\n=== function noop(): void ===\n~ return\n\
+             === main ===\n~ gold = noop()\n-> DONE\n",
+        );
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E067),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn void_call_in_statement_position_is_clean() {
+        let (hir, index, res) = build(
+            "=== function noop(): void ===\n~ return\n\
+             === main ===\n~ noop()\n-> DONE\n",
+        );
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(
+            !diags.iter().any(|d| d.code == DiagnosticCode::E067),
+            "statement-position void call must never be flagged: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn non_void_call_assigned_is_clean_of_e067() {
+        let (hir, index, res) = build(
+            "=== function give(): int ===\n~ return 5\n\
+             === main ===\n~ temp x: int = give()\n-> DONE\n",
+        );
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(
+            !diags.iter().any(|d| d.code == DiagnosticCode::E067),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn void_assignment_never_checked_under_gradual() {
+        // `check`'s void-assignment pass is unconditional — it's
+        // `finish_analysis` that gates the whole `strict::check` call behind
+        // `opts.types == TypePolicy::Strict`. Exercise that real gate (not
+        // `check` directly) to prove a void assignment stays silent under
+        // gradual, matching this module's "byte-identical forever" contract.
+        let parsed = brink_syntax::parse(
+            "=== function noop(): void ===\n~ return\n\
+             === main ===\n~ temp x = noop()\n-> DONE\n",
+        );
+        let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let opts = crate::AnalysisOptions {
+            dialect: crate::Dialect::Brink,
+            ..crate::AnalysisOptions::default()
+        };
+        let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E067),
+            "gradual must never surface E067: {:?}",
+            result.diagnostics
+        );
     }
 }

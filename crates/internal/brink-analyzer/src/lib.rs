@@ -34,7 +34,7 @@ pub use infer::{
     solve_scc, unify, unify_all,
 };
 pub use signature::{Sig, signature};
-pub use strict::TypePolicy;
+pub use strict::{TypePolicy, effective_severity};
 
 use brink_format::DefinitionId;
 use brink_ir::{
@@ -215,7 +215,7 @@ pub fn finish_analysis(
                 owned_inference = infer::infer_project(&hir_inputs, &index, &resolutions);
                 &owned_inference
             };
-            diagnostics.extend(strict::check(&hir_inputs, &index, inference));
+            diagnostics.extend(strict::check(&hir_inputs, &index, inference, &resolutions));
         }
     }
 
