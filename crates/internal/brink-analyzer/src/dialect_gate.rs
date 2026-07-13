@@ -240,6 +240,13 @@ impl HirVisitor for GateVisitor<'_> {
             Expr::FieldAccess(fa) => {
                 self.flag(fa.ptr.text_range(), "postfix field access `.field`");
             }
+            // T1c (docs/t1c-spec.md §2): `#fn(…)` is brink-dialect-gated
+            // "under the T1b superset-grammar rule (strict-ink rejects at
+            // analysis with the standard E051-class diagnostic; parse never
+            // fails)".
+            Expr::FnLiteral(fl) => {
+                self.flag(fl.ptr.text_range(), "`#fn(…)` function-value creation");
+            }
             _ => {}
         }
     }
@@ -451,6 +458,37 @@ mod tests {
             "=== heal(hp) ===\nVAR gold = 100\nCONST speed = 0.5\n~ temp t = 1\n~ return hp\n",
         );
         let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    // ── T1c function values (docs/t1c-spec.md §2) ─────────────────────
+
+    #[test]
+    fn strict_ink_flags_fn_literal() {
+        let hir = lower_src("~ f = #fn(heal, hp)\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E051);
+        assert!(diags[0].message.contains("#fn"), "{diags:?}");
+    }
+
+    #[test]
+    fn strict_ink_flags_fn_literal_nested_in_a_call_argument() {
+        // "every extension construct... at its exact span" — a #fn nested
+        // inside an ordinary call argument still gets its own diagnostic.
+        let hir = lower_src("~ x = apply(#fn(heal, hp), 5)\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E051);
+    }
+
+    #[test]
+    fn brink_dialect_does_not_flag_fn_literal_at_the_gate() {
+        // Under `Brink` the gate stays silent — T1c-1's "not yet
+        // implemented" rejection is LIR lowering's non-suppressible E052
+        // (`lir::lower::expr::reject_fn_literal`), not a gate concern.
+        let hir = lower_src("~ f = #fn(heal, hp)\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::Brink);
         assert!(diags.is_empty(), "{diags:?}");
     }
 

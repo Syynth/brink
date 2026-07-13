@@ -202,3 +202,19 @@ fn disable_all_lets_indexing_compile_and_run_correctly_under_strict_ink() {
         "indexing must read the real value, not silently become null: {text:?}"
     );
 }
+
+// ── T1c-1 (#699): strict-ink rejects `#fn(…)` at analysis ───────────────
+
+#[test]
+fn strict_ink_rejects_fn_literal() {
+    let source = "=== function heal(hp) ===\n~ return hp + 1\n\n\
+                  === main ===\n~ temp f = #fn(heal, 1)\nDone.\n-> END\n";
+    let err = compile_mem_with_dialect(source, Dialect::StrictInk).unwrap_err();
+    let diags = diagnostics_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E051
+            && d.message.contains("brink extension")
+            && d.message.contains("#fn")),
+        "{diags:?}"
+    );
+}
