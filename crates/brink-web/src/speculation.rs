@@ -349,6 +349,16 @@ enum TypedValueJs {
     Map {
         entries: Vec<TypedMapEntryJs>,
     },
+    /// A closed-shape record ([`Value::Record`], TM-4) as a shape id plus its
+    /// flat field values, each recursively typed — same lossless-tree
+    /// rationale as [`Array`](Self::Array)/[`Map`](Self::Map). Field *names*
+    /// are not resolved here (that needs the compiled `StructShapes` table,
+    /// not just the `Program` a binding return already carries); the shape
+    /// id is enough to disambiguate two records with the same field count.
+    Record {
+        shape: u32,
+        fields: Vec<TypedValueJs>,
+    },
 }
 
 #[derive(Serialize)]
@@ -424,6 +434,13 @@ fn value_to_typed_js(v: &Value, program: &brink_runtime::Program) -> TypedValueJ
                     key: map_key_to_typed_js(k),
                     value: value_to_typed_js(val, program),
                 })
+                .collect(),
+        },
+        Value::Record { shape, fields } => TypedValueJs::Record {
+            shape: shape.0,
+            fields: fields
+                .iter()
+                .map(|f| value_to_typed_js(f, program))
                 .collect(),
         },
         Value::Null

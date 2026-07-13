@@ -189,6 +189,25 @@ const PUSH_LITERAL: u8 = 0xC9;
 const TAKE_GLOBAL: u8 = 0xCA;
 const TAKE_TEMP: u8 = 0xCD;
 
+// v4 record opcodes (TM-4, `docs/typed-mode-spec.md` §6; named but
+// numerically unallocated in `docs/format-v4-rfc.md` §3 — "design the exact
+// encoding against the reserved space" — assigned here) — contiguous and
+// adjacent to the sharing-discipline block above:
+//   0xCE RecordNew(ShapeId)      0xCF RecordGetDyn(NameId)
+//   0xD0 RecordSetDyn(NameId)    0xD1 RecordGet(offset) (reserved)
+//   0xD2 RecordSet(offset) (reserved)
+// Live in this PR: `RecordNew`/`RecordGetDyn`/`RecordSetDyn` — the by-name
+// field ops every dialect can use correctly today. `RecordGet`/`RecordSet`
+// (static-offset field ops, the strict-mode performance payoff
+// typed-mode-spec §6 anticipates) stay reserved — named and numbered, no
+// `Opcode` variant yet, `decode`'s catch-all keeps rejecting both bytes —
+// until a follow-up wires per-variable shape tracking into codegen. This is
+// the exact "reserved, decode rejects" discipline `StoreVarIfNew`/`EqVars`
+// already established two blocks up.
+const RECORD_NEW: u8 = 0xCE;
+const RECORD_GET_DYN: u8 = 0xCF;
+const RECORD_SET_DYN: u8 = 0xD0;
+
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
 const LIST_NOT_CONTAINS: u8 = 0xB1;
@@ -578,6 +597,20 @@ pub enum Opcode {
     /// value itself, which stays in this slot untouched.
     TakeTemp(u16),
 
+    // ── Records (TM-4, `docs/typed-mode-spec.md` §6) ─────────────────────
+    /// `[field_0, …, field_{n-1}]` → `Record` (n = the shape's declared
+    /// field count, looked up from `StructShapes`; fields popped/assigned in
+    /// shape declaration order). The `u32` operand is the `ShapeId`.
+    RecordNew(u32),
+    /// `[record]` → field value, looked up by name (`NameId` operand) in the
+    /// record's own shape. Turn-terminating fault if the shape has no field
+    /// by that name (value-model-spec §11c).
+    RecordGetDyn(u16),
+    /// `[record, value]` → updated record (take → `make_mut` → write-back),
+    /// field selected by name (`NameId` operand). Turn-terminating fault if
+    /// the shape has no field by that name.
+    RecordSetDyn(u16),
+
     // ── Lifecycle ───────────────────────────────────────────────────────
     Done,
     /// Pause for choice presentation. Like `Done` but does NOT set
@@ -849,6 +882,20 @@ impl Opcode {
                 write_u16(buf, idx);
             }
 
+            // Records
+            Self::RecordNew(shape_id) => {
+                write_u8(buf, RECORD_NEW);
+                write_u32(buf, shape_id);
+            }
+            Self::RecordGetDyn(name_id) => {
+                write_u8(buf, RECORD_GET_DYN);
+                write_u16(buf, name_id);
+            }
+            Self::RecordSetDyn(name_id) => {
+                write_u8(buf, RECORD_SET_DYN);
+                write_u16(buf, name_id);
+            }
+
             // Lifecycle
             Self::Done => write_u8(buf, DONE),
             Self::Yield => write_u8(buf, YIELD),
@@ -1038,6 +1085,11 @@ impl Opcode {
             // Sharing discipline
             TAKE_GLOBAL => Self::TakeGlobal(read_def_id(buf, offset)?),
             TAKE_TEMP => Self::TakeTemp(read_u16(buf, offset)?),
+
+            // Records
+            RECORD_NEW => Self::RecordNew(read_u32(buf, offset)?),
+            RECORD_GET_DYN => Self::RecordGetDyn(read_u16(buf, offset)?),
+            RECORD_SET_DYN => Self::RecordSetDyn(read_u16(buf, offset)?),
 
             // Lifecycle
             DONE => Self::Done,
@@ -1444,6 +1496,45 @@ mod tests {
         let mut buf = Vec::new();
         Opcode::TakeTemp(0).encode(&mut buf);
         assert_eq!(buf[0], 0xCD);
+    }
+
+    /// The three live record opcodes (`0xCE`-`0xD0` — TM-4) round-trip
+    /// through encode/decode at their documented bytes.
+    #[test]
+    fn roundtrip_record_opcodes() {
+        roundtrip(&Opcode::RecordNew(0));
+        roundtrip(&Opcode::RecordNew(u32::MAX));
+        roundtrip(&Opcode::RecordGetDyn(0));
+        roundtrip(&Opcode::RecordGetDyn(u16::MAX));
+        roundtrip(&Opcode::RecordSetDyn(0));
+        roundtrip(&Opcode::RecordSetDyn(u16::MAX));
+
+        let mut buf = Vec::new();
+        Opcode::RecordNew(1).encode(&mut buf);
+        assert_eq!(buf[0], 0xCE);
+
+        let mut buf = Vec::new();
+        Opcode::RecordGetDyn(1).encode(&mut buf);
+        assert_eq!(buf[0], 0xCF);
+
+        let mut buf = Vec::new();
+        Opcode::RecordSetDyn(1).encode(&mut buf);
+        assert_eq!(buf[0], 0xD0);
+    }
+
+    /// `RecordGet`/`RecordSet` (static-offset field ops, `0xD1`-`0xD2`) stay
+    /// reserved — named and numbered but no `Opcode` variant yet, so the
+    /// strict reader must keep rejecting both bytes until a follow-up wires
+    /// per-variable shape tracking into codegen (typed-mode-spec §6's
+    /// static-offset payoff).
+    #[test]
+    fn decode_reserved_record_offset_opcodes_still_rejected() {
+        for disc in 0xD1u8..=0xD2u8 {
+            let buf = [disc];
+            let mut offset = 0;
+            let err = Opcode::decode(&buf, &mut offset).unwrap_err();
+            assert_eq!(err, DecodeError::UnknownOpcode(disc));
+        }
     }
 
     #[test]

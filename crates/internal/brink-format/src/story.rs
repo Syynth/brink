@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 
 use crate::definition::{
     AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, ListDef, ListItemDef,
-    ScopeLineTable,
+    ScopeLineTable, StructShapeDef,
 };
 use crate::value::ListValue;
 
@@ -36,6 +36,12 @@ pub struct StoryData {
     /// `ListLiterals` absorption is a separate, larger migration; see the
     /// T1b-2 PR description).
     pub literal_pool: Vec<crate::value::Value>,
+    /// The TM-4 `StructShapes` table (`docs/format-spec.md` section tag
+    /// `0x0C`): one entry per declared `STRUCT`, indexed by
+    /// [`crate::value::ShapeId`]. Referenced by `RecordNew`/static
+    /// `RecordGet`/`RecordSet` opcodes and by `Value::Record` values in the
+    /// literal pool, globals, and the transcript.
+    pub struct_shapes: Vec<StructShapeDef>,
     /// CRC-32 checksum from the `.inkb` header, used for locale validation.
     /// Zero for stories not loaded from `.inkb`.
     pub source_checksum: u32,

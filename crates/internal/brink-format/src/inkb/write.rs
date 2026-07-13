@@ -8,7 +8,7 @@ use crate::codec::{
 };
 use crate::definition::{
     AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef, ScopeLineTable,
+    ListItemDef, ScopeLineTable, StructShapeDef,
 };
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::story::StoryData;
@@ -19,7 +19,7 @@ use super::{
     KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN, LINE_TEMPLATE, MAGIC, PART_LITERAL,
     PART_SELECT, PART_SLOT, SECTION_COUNT, SECTION_ENTRY_SIZE, SectionKind, VAL_ARRAY, VAL_BOOL,
     VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FRAGMENT_REF, VAL_INT, VAL_LIST, VAL_MAP, VAL_NULL,
-    VAL_STRING, VAL_VAR_POINTER, VERSION,
+    VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION,
 };
 
 // ── Tier 1: Full story write ────────────────────────────────────────────────
@@ -46,8 +46,9 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
         SectionKind::ListLiterals,
         SectionKind::AddressPaths,
         SectionKind::LiteralPool,
+        SectionKind::StructShapes,
     ];
-    let mut section_offsets = [0u32; 11];
+    let mut section_offsets = [0u32; 12];
 
     // 1. NameTable
     section_offsets[0] = (buf.len() - base) as u32;
@@ -92,6 +93,10 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
     // 11. LiteralPool
     section_offsets[10] = (buf.len() - base) as u32;
     write_section_literal_pool(&story.literal_pool, buf);
+
+    // 12. StructShapes (TM-4)
+    section_offsets[11] = (buf.len() - base) as u32;
+    write_section_struct_shapes(&story.struct_shapes, buf);
 
     let file_size = (buf.len() - base) as u32;
     let checksum = crc32(&buf[base + header_size..]);
@@ -263,6 +268,8 @@ fn encode_value_type(vt: ValueType, buf: &mut Vec<u8>) {
         // Collection value types (v4, `docs/format-v4-rfc.md` §1).
         ValueType::Array => VAL_ARRAY,
         ValueType::Map => VAL_MAP,
+        // TM-4 record value type (v4, reserved tag graduated this PR).
+        ValueType::Record => VAL_RECORD,
     };
     write_u8(buf, tag);
 }
@@ -332,6 +339,17 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
                 encode_value(val, buf);
             }
         }
+        // TM-4 (`docs/format-v4-rfc.md` §1): `ShapeId` then field values in
+        // shape order — no field names on the wire (they live once, in the
+        // `StructShapes` section entry the shape id references).
+        Value::Record { shape, fields } => {
+            write_u8(buf, VAL_RECORD);
+            write_u32(buf, shape.0);
+            write_u32(buf, fields.len() as u32);
+            for field in fields.iter() {
+                encode_value(field, buf);
+            }
+        }
     }
 }
 
@@ -399,6 +417,23 @@ pub fn write_section_literal_pool(literal_pool: &[Value], buf: &mut Vec<u8>) {
     write_u32(buf, literal_pool.len() as u32);
     for v in literal_pool {
         encode_value(v, buf);
+    }
+}
+
+/// Write the TM-4 `StructShapes` section (no header framing): one entry per
+/// declared `STRUCT` — shape id, name, then its ordered field `NameId`s
+/// (`docs/format-v4-rfc.md` §2). Empty (count 0) until a compiler milestone
+/// emits struct declarations — see the PR description's scope note.
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_struct_shapes(struct_shapes: &[StructShapeDef], buf: &mut Vec<u8>) {
+    write_u32(buf, struct_shapes.len() as u32);
+    for shape in struct_shapes {
+        write_u32(buf, shape.id.0);
+        write_u16(buf, shape.name.0);
+        write_u16(buf, shape.fields.len() as u16);
+        for field in &shape.fields {
+            write_u16(buf, field.0);
+        }
     }
 }
 

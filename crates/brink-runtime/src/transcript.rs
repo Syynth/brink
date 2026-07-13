@@ -59,6 +59,9 @@ const VAL_FRAGMENT_REF: u8 = 0x08;
 // #525 can be a collection) into `OutputPart::ValueRef`.
 const VAL_ARRAY: u8 = 0x09;
 const VAL_MAP: u8 = 0x0A;
+// TM-4 record tag — shared numeric surface with the `.inkb` format
+// (`docs/format-v4-rfc.md` §1: `ShapeId`, then field values in shape order).
+const VAL_RECORD: u8 = 0x0F;
 
 // ── Error type ────────────────────────────────────────────────────────────
 
@@ -524,6 +527,14 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
                 encode_value(val, buf);
             }
         }
+        Value::Record { shape, fields } => {
+            write_u8(buf, VAL_RECORD);
+            write_u32(buf, shape.0);
+            write_u32(buf, fields.len() as u32);
+            for field in fields.iter() {
+                encode_value(field, buf);
+            }
+        }
     }
 }
 
@@ -602,6 +613,15 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Tran
                 map.insert(key, val);
             }
             Ok(Value::map(map))
+        }
+        VAL_RECORD => {
+            let shape = brink_format::ShapeId(read_u32(buf, off)?);
+            let len = read_u32(buf, off)? as usize;
+            let mut fields = Vec::with_capacity(len.min(buf.len().saturating_sub(*off)));
+            for _ in 0..len {
+                fields.push(decode_value(buf, off, depth + 1)?);
+            }
+            Ok(Value::record(shape, fields))
         }
         _ => Err(TranscriptError::InvalidValueTag(tag)),
     }

@@ -17,6 +17,7 @@ use crate::collection_ops;
 use crate::error::RuntimeError;
 use crate::list_ops;
 use crate::program::Program;
+use crate::record_ops;
 use crate::state::ContextAccess;
 use crate::story::{CallFrame, CallFrameType, ContainerPosition, Flow, PendingChoice, Stats};
 use crate::value_ops::{self, BinaryOp};
@@ -985,6 +986,11 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         Opcode::CollectionKeys => collection_ops::collection_keys(flow)?,
         Opcode::CollectionValues => collection_ops::collection_values(flow)?,
         Opcode::PushLiteral(idx) => collection_ops::push_literal(flow, program, idx)?,
+
+        // ── Records (TM-4) ────────────────────────────────────────────
+        Opcode::RecordNew(shape_id) => record_ops::record_new(flow, program, shape_id)?,
+        Opcode::RecordGetDyn(name_id) => record_ops::record_get_dyn(flow, program, name_id)?,
+        Opcode::RecordSetDyn(name_id) => record_ops::record_set_dyn(flow, program, name_id)?,
 
         // ── External functions ──────────────────────────────────────
         Opcode::CallExternal(fn_id, arg_count) => {

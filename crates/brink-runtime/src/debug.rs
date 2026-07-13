@@ -161,6 +161,10 @@ impl<'p> NameResolver<'p> {
                     .collect();
                 format!("{{{}}}", parts.join(", "))
             }
+            Value::Record { shape, fields } => {
+                let parts: Vec<String> = fields.iter().map(|v| self.format_value(v)).collect();
+                format!("Record#{}{{{}}}", shape.0, parts.join(", "))
+            }
         }
     }
 }

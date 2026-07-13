@@ -286,6 +286,7 @@ fn type_name(v: &Value) -> &'static str {
         Value::FragmentRef(_) => "fragment_ref",
         Value::Array(_) => "array",
         Value::Map(_) => "map",
+        Value::Record { .. } => "record",
     }
 }
 

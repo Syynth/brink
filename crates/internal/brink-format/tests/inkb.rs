@@ -10,7 +10,8 @@ use brink_format::{
     read_section_variables, write_inkb, write_section_address_paths, write_section_addresses,
     write_section_containers, write_section_externals, write_section_line_tables,
     write_section_list_defs, write_section_list_items, write_section_list_literals,
-    write_section_literal_pool, write_section_name_table, write_section_variables,
+    write_section_literal_pool, write_section_name_table, write_section_struct_shapes,
+    write_section_variables,
 };
 
 fn i001_data() -> brink_format::StoryData {
@@ -369,7 +370,7 @@ fn index_parsing() {
     let index = read_inkb_index(&buf).unwrap();
     assert_eq!(index.version, 4);
     assert_eq!(index.file_size as usize, buf.len());
-    assert_eq!(index.sections.len(), 11);
+    assert_eq!(index.sections.len(), 12);
 
     // Sections are in canonical order.
     assert_eq!(index.sections[0].kind, SectionKind::NameTable);
@@ -383,9 +384,10 @@ fn index_parsing() {
     assert_eq!(index.sections[8].kind, SectionKind::ListLiterals);
     assert_eq!(index.sections[9].kind, SectionKind::AddressPaths);
     assert_eq!(index.sections[10].kind, SectionKind::LiteralPool);
+    assert_eq!(index.sections[11].kind, SectionKind::StructShapes);
 
-    // Header size is 16 + 8*11 = 104.
-    assert_eq!(index.header_size(), 104);
+    // Header size is 16 + 8*12 = 112.
+    assert_eq!(index.header_size(), 112);
 
     // First section starts right after header.
     assert_eq!(index.sections[0].offset as usize, index.header_size());
@@ -542,6 +544,9 @@ fn assemble_inkb_equivalence() {
     let mut literal_pool_buf = Vec::new();
     write_section_literal_pool(&data.literal_pool, &mut literal_pool_buf);
 
+    let mut struct_shapes_buf = Vec::new();
+    write_section_struct_shapes(&data.struct_shapes, &mut struct_shapes_buf);
+
     let mut assembled = Vec::new();
     assemble_inkb(
         &[
@@ -556,6 +561,7 @@ fn assemble_inkb_equivalence() {
             (SectionKind::ListLiterals, &list_lit_buf),
             (SectionKind::AddressPaths, &ap_buf),
             (SectionKind::LiteralPool, &literal_pool_buf),
+            (SectionKind::StructShapes, &struct_shapes_buf),
         ],
         &mut assembled,
     );
@@ -638,6 +644,7 @@ fn roundtrip_line_entry_with_audio_ref() {
         name_table: vec!["root".to_string()],
         list_literals: vec![],
         literal_pool: vec![],
+        struct_shapes: vec![],
         source_checksum: 0,
     };
 

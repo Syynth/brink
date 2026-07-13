@@ -40,6 +40,7 @@ mod list_ops;
 mod locale;
 mod output;
 mod program;
+mod record_ops;
 mod replay;
 pub mod rng;
 mod save;
