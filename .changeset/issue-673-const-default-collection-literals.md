@@ -19,7 +19,13 @@ its catch-all `_ => ConstValue::Null`.
   it). A map key that isn't a compile-time-constant scalar (int/string/
   bool) in a declaration default is a new compile error (`E076`) — a
   declaration default has no runtime `MapNew` construction step left to
-  fault at the way a mid-story map literal does.
+  fault at the way a mid-story map literal does. Likewise, an array
+  element or map value whose expression can never constant-fold (a
+  function call, indexing, field access, or `++`/`--` — e.g. `VAR arr =
+  #[f(), 2]`) is a new compile error (`E077`), never a silently-`Null`
+  element. The check is keyed off the source expression kind, so
+  constant-foldable shapes (`#[1 + 2, -SOME_CONST]`, nested literals)
+  are unaffected.
 - A struct construction literal used directly as a declaration default is
   a new compile error (`E075`) — `ConstValue` has no record-carrying
   variant (adding one is a format question outside this fix), and unlike
@@ -28,7 +34,7 @@ its catch-all `_ => ConstValue::Null`.
   assignment after declaration instead (`VAR p = 0` then `~ p =
   Point#{...}`).
 
-Both `E075` and `E076` are LIR-lowering diagnostics, so — like `E053`/
+`E075`, `E076`, and `E077` are LIR-lowering diagnostics, so — like `E053`/
 `E073`/`E074` — they're never suppressible via `// brink-disable`/
 `// brink-disable-all`.
 

@@ -472,6 +472,41 @@ fn map_literal_declaration_default_with_non_scalar_key_is_a_real_compile_error()
 }
 
 #[test]
+fn array_literal_declaration_default_with_non_constant_element_is_a_real_compile_error() {
+    // #679 review: a function call inside the literal can never
+    // constant-fold — a declaration default is baked into `StoryData` at
+    // compile time, with no runtime construction step left to evaluate the
+    // element at. Before E077 the element silently compiled to `Null`
+    // (#673's silent-Null bug one level down, inside the literal).
+    let source = "VAR arr = #[f(), 2]\nHello.\n-> END\n\n=== function f()\n~ return 1\n";
+    let err = compile_brink(source)
+        .expect_err("non-constant array element in a declaration default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E077),
+        "expected E077, got {diags:?}"
+    );
+}
+
+#[test]
+fn map_literal_declaration_default_with_non_constant_value_is_a_real_compile_error() {
+    // #679 review: same E077 story as the array-element test, for a map
+    // *value*. (A never-constant map *key* is already E076.)
+    let source = "VAR m = #{\"a\": f()}\nHello.\n-> END\n\n=== function f()\n~ return 1\n";
+    let err = compile_brink(source)
+        .expect_err("non-constant map value in a declaration default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E077),
+        "expected E077, got {diags:?}"
+    );
+}
+
+#[test]
 fn mutator_used_in_expression_position_is_a_compile_error() {
     // Mutators return nothing (§5) — using the "result" is invalid.
     let source = "VAR arr = 0\n~ {\n    arr = #[]\n    temp x = push(arr, 1)\n}\nDone.\n-> END\n";

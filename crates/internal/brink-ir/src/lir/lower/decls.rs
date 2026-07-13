@@ -324,7 +324,10 @@ pub fn eval_const_expr(
 /// literal`), not new collection semantics. Elements recurse through
 /// `eval_const_expr` itself (not `expr::try_const_fold`) so a constant
 /// reference nested inside the array (`#[SOME_CONST, 2]`) resolves via
-/// `const_values`, same as a bare scalar default would.
+/// `const_values`, same as a bare scalar default would. An element whose
+/// source expression kind can never constant-fold is a real compile error
+/// (`E077`), never a silently-`Null` element — see
+/// [`is_const_foldable_kind`].
 fn eval_const_array_literal(
     arr: &hir::ArrayLiteral,
     index: &SymbolIndex,
@@ -333,11 +336,25 @@ fn eval_const_array_literal(
     const_values: &std::collections::HashMap<DefinitionId, lir::ConstValue>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> lir::ConstValue {
-    let items: Vec<lir::ConstValue> = arr
-        .elements
-        .iter()
-        .map(|e| eval_const_expr(e, index, resolutions, file, const_values, diagnostics))
-        .collect();
+    let mut items = Vec::with_capacity(arr.elements.len());
+    for e in &arr.elements {
+        if !is_const_foldable_kind(e) {
+            diagnostics.push(Diagnostic {
+                file,
+                range: arr.ptr.text_range(),
+                message: DiagnosticCode::E077.title().to_string(),
+                code: DiagnosticCode::E077,
+            });
+        }
+        items.push(eval_const_expr(
+            e,
+            index,
+            resolutions,
+            file,
+            const_values,
+            diagnostics,
+        ));
+    }
     lir::ConstValue::Array(items)
 }
 
@@ -347,7 +364,11 @@ fn eval_const_array_literal(
 /// drop of that entry — unlike `expr::lower_map_literal`'s expression-
 /// position twin, a declaration default has no `MapNew` runtime-
 /// construction step left to fault at, so this is the compile-time
-/// equivalent of that runtime fault.
+/// equivalent of that runtime fault. A *value* whose source expression
+/// kind can never constant-fold is likewise a real compile error (`E077`),
+/// never a silently-`Null` entry — see [`is_const_foldable_kind`]. (A
+/// never-constant *key* already lands in the `E076` arm: it folds to
+/// `Null`, which is outside the scalar key domain.)
 fn eval_const_map_literal(
     map: &hir::MapLiteral,
     index: &SymbolIndex,
@@ -358,6 +379,14 @@ fn eval_const_map_literal(
 ) -> lir::ConstValue {
     let mut entries = Vec::with_capacity(map.entries.len());
     for (k, v) in &map.entries {
+        if !is_const_foldable_kind(v) {
+            diagnostics.push(Diagnostic {
+                file,
+                range: map.ptr.text_range(),
+                message: DiagnosticCode::E077.title().to_string(),
+                code: DiagnosticCode::E077,
+            });
+        }
         let key_val = eval_const_expr(k, index, resolutions, file, const_values, diagnostics);
         let value = eval_const_expr(v, index, resolutions, file, const_values, diagnostics);
         match const_value_to_map_key(key_val) {
@@ -395,6 +424,50 @@ fn eval_const_struct_literal(
         code: DiagnosticCode::E075,
     });
     lir::ConstValue::Null
+}
+
+/// #679 review: can this source expression *kind* ever constant-fold in a
+/// declaration default? `false` means `eval_const_expr` is guaranteed to
+/// land in a `Null` fallthrough — a function call, postfix indexing, field
+/// access, or `++`/`--` has no compile-time evaluation and no runtime
+/// construction step left to defer to, so an array element / map value of
+/// that kind is a real compile error (`E077`), #673's silent-`Null` bug one
+/// level down inside the literal.
+///
+/// Deliberately keyed off the expression kind, never the folded result:
+///
+/// - `Expr::Null` is HIR error recovery (or a missing initializer), not
+///   author-writable source — folding it to `Null` is correct and already
+///   diagnosed upstream, so it must not double-report here.
+/// - `Expr::Path` constness depends on what the path resolves to; a bare
+///   reference to another `VAR` folding to `Null` is the pre-existing,
+///   separately-tracked gap #679's scope notes name, and its behavior is
+///   deliberately unchanged.
+/// - Collection/struct literals recurse through their own `eval_const_*`
+///   arms, which do their own per-element checking (`E075`/`E076`/`E077`).
+///
+/// Exhaustive on purpose: a new `hir::Expr` variant must decide its
+/// declaration-default story here instead of silently inheriting `true`.
+fn is_const_foldable_kind(expr: &hir::Expr) -> bool {
+    match expr {
+        hir::Expr::Int(_)
+        | hir::Expr::Float(_)
+        | hir::Expr::Bool(_)
+        | hir::Expr::String(_)
+        | hir::Expr::Null
+        | hir::Expr::Path(_)
+        | hir::Expr::DivertTarget(_)
+        | hir::Expr::ListLiteral(_)
+        | hir::Expr::ArrayLiteral(_)
+        | hir::Expr::MapLiteral(_)
+        | hir::Expr::StructLiteral(_) => true,
+        hir::Expr::Prefix(_, inner) => is_const_foldable_kind(inner),
+        hir::Expr::Infix(lhs, _, rhs) => is_const_foldable_kind(lhs) && is_const_foldable_kind(rhs),
+        hir::Expr::Postfix(..)
+        | hir::Expr::Call(..)
+        | hir::Expr::Index(_)
+        | hir::Expr::FieldAccess(_) => false,
+    }
 }
 
 /// Evaluate a compile-time string, emitting E030 if interpolation is present.
