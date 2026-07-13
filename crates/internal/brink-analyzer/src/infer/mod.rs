@@ -51,7 +51,9 @@ mod ty;
 use std::collections::{BTreeMap, BTreeSet};
 
 use brink_format::DefinitionId;
-use brink_ir::{Block, FileId, HirFile, Param, ResolutionMap, SymbolIndex, SymbolKind};
+use brink_ir::{
+    Block, ContainerPtr, FileId, HirFile, Param, ResolutionMap, SymbolIndex, SymbolKind,
+};
 use rowan::TextRange;
 
 pub use graph::{CallGraph, SccGraph, scc_graph};
@@ -168,6 +170,14 @@ fn collect_globals(
 /// Every inferable (knot/stitch) def in the project, resolved back to its
 /// own `DefinitionId` via `(file, kind, qualified name)` — HIR `Knot`/
 /// `Stitch` nodes carry only a bare `Name`, not their own id.
+///
+/// A *floating* stitch (`= stitch`, declared before any `== knot ==`
+/// header) lowers into `hir.knots` as a `Knot` node (`ContainerPtr::Stitch`)
+/// but was declared `SymbolKind::Stitch` with a bare name by
+/// `lower_top_level_stitch` — never `SymbolKind::Knot`, and never qualified
+/// with a knot prefix (there is no enclosing knot). So the symbol-kind used
+/// for the `def_of` lookup must track `knot.ptr`, not assume every
+/// `hir.knots` entry is a real `SymbolKind::Knot` (#626).
 fn collect_defs<'a>(files: &[(FileId, &'a HirFile)], index: &SymbolIndex) -> Vec<Def<'a>> {
     let mut def_of: BTreeMap<(FileId, SymbolKind, String), DefinitionId> = BTreeMap::new();
     for (&id, info) in &index.symbols {
@@ -177,7 +187,11 @@ fn collect_defs<'a>(files: &[(FileId, &'a HirFile)], index: &SymbolIndex) -> Vec
     let mut defs: Vec<Def<'a>> = Vec::new();
     for &(file_id, hir) in files {
         for knot in &hir.knots {
-            if let Some(&id) = def_of.get(&(file_id, SymbolKind::Knot, knot.name.text.clone())) {
+            let knot_symbol_kind = match knot.ptr {
+                ContainerPtr::Knot(_) => SymbolKind::Knot,
+                ContainerPtr::Stitch(_) => SymbolKind::Stitch,
+            };
+            if let Some(&id) = def_of.get(&(file_id, knot_symbol_kind, knot.name.text.clone())) {
                 defs.push(Def {
                     id,
                     file: file_id,
@@ -508,6 +522,48 @@ mod tests {
         let result = infer_project(&[(FileId(0), &hir)], &index, &res);
         let sig = sig_of(&result, &index, "spend");
         assert_eq!(sig.params, vec![Ty::Float]);
+    }
+
+    #[test]
+    fn floating_stitch_body_is_inferred() {
+        // A *floating* stitch — `= name`, declared before any `== knot ==`
+        // header — lowers into `hir.knots` (as `ContainerPtr::Stitch`) but
+        // is declared `SymbolKind::Stitch` with a bare name, not
+        // `SymbolKind::Knot`. Before #626, `collect_defs` always looked the
+        // entry up as `SymbolKind::Knot`, the lookup silently failed, and
+        // this def never made it into `defs` — no signature, no body types,
+        // total silent skip.
+        let (hir, index, res) = build("= heal(hp)\n~ temp x = hp + 1\n-> DONE\n");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let sig = sig_of(&result, &index, "heal");
+        assert_eq!(sig.params, vec![Ty::Int]);
+    }
+
+    #[test]
+    fn floating_stitch_coexists_with_real_knot_and_its_nested_stitch() {
+        // Regression guard for the fix itself: distinguishing floating
+        // stitches (`ContainerPtr::Stitch`) from real knots
+        // (`ContainerPtr::Knot`) in `collect_defs` must not disturb the
+        // existing, already-working real-knot / nested-stitch lookup path.
+        let (hir, index, res) = build(
+            "= intro(hp)\n~ temp x = hp + 1\n-> DONE\n\
+             === knot_a(gold) ===\n{gold > 1.5:\n  ok\n}\n-> stitch_a ->\n\
+             = stitch_a(silver)\n~ temp y = silver + 1\n-> DONE\n",
+        );
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        assert_eq!(sig_of(&result, &index, "intro").params, vec![Ty::Int]);
+        assert_eq!(sig_of(&result, &index, "knot_a").params, vec![Ty::Float]);
+        let stitch_a_id = index
+            .by_name
+            .get("knot_a.stitch_a")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("no def for knot_a.stitch_a");
+        let stitch_a_sig = result
+            .signatures
+            .get(&stitch_a_id)
+            .expect("no inferred signature for knot_a.stitch_a");
+        assert_eq!(stitch_a_sig.params, vec![Ty::Int]);
     }
 
     #[test]
