@@ -2119,6 +2119,7 @@ dependencies = [
  "brink-syntax",
  "brink-test-harness",
  "rowan",
+ "serde_json",
  "thiserror 2.0.18",
  "tracing",
 ]

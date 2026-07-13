@@ -183,6 +183,42 @@ impl ContainerEmitter<'_> {
                 self.emit_expr(key, false);
                 self.emit(Opcode::MapRemove);
             }
+
+            // ── Records (TM-4c) ──────────────────────────────────────
+            lir::Expr::RecordNew { shape_id, fields } => {
+                for f in fields {
+                    self.emit_expr(f, false);
+                }
+                self.emit(Opcode::RecordNew(*shape_id));
+            }
+
+            lir::Expr::RecordGet {
+                base,
+                field,
+                static_offset,
+            } => {
+                self.emit_expr(base, false);
+                if let Some(offset) = static_offset {
+                    self.emit(Opcode::RecordGet(*offset));
+                } else {
+                    self.emit(Opcode::RecordGetDyn(field.0));
+                }
+            }
+
+            lir::Expr::RecordSet {
+                base,
+                field,
+                static_offset,
+                value,
+            } => {
+                self.emit_expr(base, false);
+                self.emit_expr(value, false);
+                if let Some(offset) = static_offset {
+                    self.emit(Opcode::RecordSet(*offset));
+                } else {
+                    self.emit(Opcode::RecordSetDyn(field.0));
+                }
+            }
         }
     }
 

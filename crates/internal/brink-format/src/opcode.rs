@@ -194,19 +194,24 @@ const TAKE_TEMP: u8 = 0xCD;
 // encoding against the reserved space" — assigned here) — contiguous and
 // adjacent to the sharing-discipline block above:
 //   0xCE RecordNew(ShapeId)      0xCF RecordGetDyn(NameId)
-//   0xD0 RecordSetDyn(NameId)    0xD1 RecordGet(offset) (reserved)
-//   0xD2 RecordSet(offset) (reserved)
-// Live in this PR: `RecordNew`/`RecordGetDyn`/`RecordSetDyn` — the by-name
-// field ops every dialect can use correctly today. `RecordGet`/`RecordSet`
-// (static-offset field ops, the strict-mode performance payoff
-// typed-mode-spec §6 anticipates) stay reserved — named and numbered, no
-// `Opcode` variant yet, `decode`'s catch-all keeps rejecting both bytes —
-// until a follow-up wires per-variable shape tracking into codegen. This is
-// the exact "reserved, decode rejects" discipline `StoreVarIfNew`/`EqVars`
-// already established two blocks up.
+//   0xD0 RecordSetDyn(NameId)    0xD1 RecordGet(offset)
+//   0xD2 RecordSet(offset)
+// `RecordNew`/`RecordGetDyn`/`RecordSetDyn` (PR #620/TM-4 foundation) are the
+// by-name field ops every dialect can use correctly. `RecordGet`/`RecordSet`
+// (TM-4c, #666) are the static-offset field ops, the strict-mode-only
+// performance payoff typed-mode-spec §6 anticipates: `brink-ir`'s LIR
+// lowering only emits them when a field access's record shape is proven at
+// compile time (see `docs/typed-mode-spec.md` §6 and the TM-4c PR
+// description) — the operand is a flat `u16` index into the record's own
+// field vector, checked only against that vector's bounds at runtime (no
+// shape re-verification — the "offset" payoff is skipping exactly that
+// lookup), so out-of-range is a turn-terminating fault
+// (`RuntimeError::RecordFieldOffsetOutOfRange`), never UB/panic.
 const RECORD_NEW: u8 = 0xCE;
 const RECORD_GET_DYN: u8 = 0xCF;
 const RECORD_SET_DYN: u8 = 0xD0;
+const RECORD_GET: u8 = 0xD1;
+const RECORD_SET: u8 = 0xD2;
 
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
@@ -610,6 +615,16 @@ pub enum Opcode {
     /// field selected by name (`NameId` operand). Turn-terminating fault if
     /// the shape has no field by that name.
     RecordSetDyn(u16),
+    /// `[record]` → field value, looked up by flat offset into the record's
+    /// own field vector (TM-4c, `docs/typed-mode-spec.md` §6 static-offset
+    /// payoff). Emitted only when the record's shape is compile-time known
+    /// (`types = strict`); turn-terminating fault if the offset is out of
+    /// range for the popped record's field count — no shape re-check.
+    RecordGet(u16),
+    /// `[record, value]` → updated record (take → `make_mut` → write-back),
+    /// field selected by flat offset (TM-4c). Turn-terminating fault if the
+    /// offset is out of range.
+    RecordSet(u16),
 
     // ── Lifecycle ───────────────────────────────────────────────────────
     Done,
@@ -895,6 +910,14 @@ impl Opcode {
                 write_u8(buf, RECORD_SET_DYN);
                 write_u16(buf, name_id);
             }
+            Self::RecordGet(offset) => {
+                write_u8(buf, RECORD_GET);
+                write_u16(buf, offset);
+            }
+            Self::RecordSet(offset) => {
+                write_u8(buf, RECORD_SET);
+                write_u16(buf, offset);
+            }
 
             // Lifecycle
             Self::Done => write_u8(buf, DONE),
@@ -1090,6 +1113,8 @@ impl Opcode {
             RECORD_NEW => Self::RecordNew(read_u32(buf, offset)?),
             RECORD_GET_DYN => Self::RecordGetDyn(read_u16(buf, offset)?),
             RECORD_SET_DYN => Self::RecordSetDyn(read_u16(buf, offset)?),
+            RECORD_GET => Self::RecordGet(read_u16(buf, offset)?),
+            RECORD_SET => Self::RecordSet(read_u16(buf, offset)?),
 
             // Lifecycle
             DONE => Self::Done,
@@ -1498,7 +1523,7 @@ mod tests {
         assert_eq!(buf[0], 0xCD);
     }
 
-    /// The three live record opcodes (`0xCE`-`0xD0` — TM-4) round-trip
+    /// All five record opcodes (`0xCE`-`0xD2` — TM-4/TM-4c) round-trip
     /// through encode/decode at their documented bytes.
     #[test]
     fn roundtrip_record_opcodes() {
@@ -1508,6 +1533,10 @@ mod tests {
         roundtrip(&Opcode::RecordGetDyn(u16::MAX));
         roundtrip(&Opcode::RecordSetDyn(0));
         roundtrip(&Opcode::RecordSetDyn(u16::MAX));
+        roundtrip(&Opcode::RecordGet(0));
+        roundtrip(&Opcode::RecordGet(u16::MAX));
+        roundtrip(&Opcode::RecordSet(0));
+        roundtrip(&Opcode::RecordSet(u16::MAX));
 
         let mut buf = Vec::new();
         Opcode::RecordNew(1).encode(&mut buf);
@@ -1520,21 +1549,14 @@ mod tests {
         let mut buf = Vec::new();
         Opcode::RecordSetDyn(1).encode(&mut buf);
         assert_eq!(buf[0], 0xD0);
-    }
 
-    /// `RecordGet`/`RecordSet` (static-offset field ops, `0xD1`-`0xD2`) stay
-    /// reserved — named and numbered but no `Opcode` variant yet, so the
-    /// strict reader must keep rejecting both bytes until a follow-up wires
-    /// per-variable shape tracking into codegen (typed-mode-spec §6's
-    /// static-offset payoff).
-    #[test]
-    fn decode_reserved_record_offset_opcodes_still_rejected() {
-        for disc in 0xD1u8..=0xD2u8 {
-            let buf = [disc];
-            let mut offset = 0;
-            let err = Opcode::decode(&buf, &mut offset).unwrap_err();
-            assert_eq!(err, DecodeError::UnknownOpcode(disc));
-        }
+        let mut buf = Vec::new();
+        Opcode::RecordGet(1).encode(&mut buf);
+        assert_eq!(buf[0], 0xD1);
+
+        let mut buf = Vec::new();
+        Opcode::RecordSet(1).encode(&mut buf);
+        assert_eq!(buf[0], 0xD2);
     }
 
     #[test]

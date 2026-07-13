@@ -170,4 +170,12 @@ pub enum RuntimeError {
     /// both turn-terminating at runtime (spec §11c pattern).
     #[error("struct has no field {0:?}")]
     RecordFieldNotFound(String),
+    /// `RecordGet(offset)`/`RecordSet(offset)` (TM-4c static-offset field
+    /// ops) with an offset outside the popped record's own field vector.
+    /// These ops never re-check the record's shape (that's the payoff over
+    /// `RecordGetDyn`/`RecordSetDyn`) — only the field count is verified, so
+    /// this is the sole fault this pair can produce, malformed bytecode or
+    /// otherwise.
+    #[error("struct field offset {offset} out of range (record has {len} fields)")]
+    RecordFieldOffsetOutOfRange { offset: u16, len: usize },
 }

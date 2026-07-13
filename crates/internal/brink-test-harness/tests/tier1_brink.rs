@@ -103,6 +103,13 @@ fn nested_index_assignment_is_rmw() {
     assert_case("nested-index-assignment");
 }
 
+// ── TM-4c (#666): structs — construction/read/write, nesting, chains ─────
+
+#[test]
+fn struct_construct_read_write() {
+    assert_case("struct-construct-read-write");
+}
+
 #[test]
 fn break_and_continue() {
     assert_case("break-continue");
@@ -245,6 +252,7 @@ fn every_case_directory_has_a_test() {
         "rmw-chain-self-referential",
         "rmw-shared-map-cow",
         "rmw-mutator-shared-nested-lvalue",
+        "struct-construct-read-write",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink")

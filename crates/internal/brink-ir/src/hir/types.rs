@@ -1142,13 +1142,32 @@ pub enum DiagnosticCode {
     /// initializer disagrees with the field's declared type — names the
     /// field.
     E071,
-    /// A struct construct (construction literal, field access) reached LIR
-    /// lowering — codegen isn't implemented yet (lands with TM-4c, #666).
-    /// Non-suppressible defense-in-depth backstop, mirroring `E053`/`E060`:
-    /// reaching this from a normal compile means `brink-analyzer`'s
-    /// dialect-gate diagnostic (`E051`) was suppressed
-    /// (`// brink-disable-all`), not a compiler bug on its own.
+    /// RETIRED (TM-4c, #666): previously a non-suppressible backstop
+    /// rejecting *every* struct construct/field access reaching LIR
+    /// lowering, back when codegen for structs didn't exist yet. Structs
+    /// now lower for real (`E073` is TM-4c's narrower replacement
+    /// backstop). Code kept reserved, not reused, for diagnostic-code
+    /// stability — no longer emitted by any pass.
     E072,
+    /// Non-suppressible defense-in-depth backstop, mirroring `E053`/`E060`/
+    /// (former) `E072`: a struct construction literal referencing a shape
+    /// name that doesn't resolve to any declared `STRUCT` reached LIR
+    /// lowering. Reaching this from a normal compile means
+    /// `brink-analyzer`'s `resolve::resolve_struct_ref` diagnostic (`E068`)
+    /// was suppressed (`// brink-disable-all`), not a compiler bug on its
+    /// own — `RecordNew` needs a real `ShapeId` at compile time; there is no
+    /// dynamic "construct with unknown shape" concept in this design.
+    E073,
+    /// A field-write target (`p.field = expr`) is a *chained* projection —
+    /// `p.a.b = v` or a mixed `p.a[i].b = v` — never a bare `ident.field`
+    /// on a resolvable root. TM-4c ships single-level field writes only
+    /// (mirrors `lower_indexed_assignment`'s `n == 1` fast path); chained
+    /// writes are an explicit, permanent T1e boundary (`docs/
+    /// typed-mode-spec.md` §6), not a "not implemented yet" gap — this is a
+    /// real, reachable, non-suppressible diagnostic authors can hit by
+    /// writing ordinary (if currently unsupported) ink, not a defensive
+    /// backstop for a suppressed analysis diagnostic.
+    E074,
 }
 
 impl DiagnosticCode {
@@ -1228,6 +1247,8 @@ impl DiagnosticCode {
             Self::E070 => "E070",
             Self::E071 => "E071",
             Self::E072 => "E072",
+            Self::E073 => "E073",
+            Self::E074 => "E074",
         }
     }
 
@@ -1308,7 +1329,11 @@ impl DiagnosticCode {
             Self::E069 => "struct construction literal is missing a declared field",
             Self::E070 => "struct construction literal supplies an undeclared field",
             Self::E071 => "struct construction literal field disagrees with the declared type",
-            Self::E072 => "struct construct reached LIR lowering — codegen lands with TM-4c",
+            Self::E072 => "retired (TM-4c) — struct constructs now lower for real",
+            Self::E073 => {
+                "struct construction literal names an unresolved STRUCT shape at LIR lowering"
+            }
+            Self::E074 => "chained field-write projection (p.a.b = v) is not supported",
         }
     }
 
@@ -1409,6 +1434,8 @@ impl DiagnosticCode {
             "E070" => Some(Self::E070),
             "E071" => Some(Self::E071),
             "E072" => Some(Self::E072),
+            "E073" => Some(Self::E073),
+            "E074" => Some(Self::E074),
             _ => None,
         }
     }

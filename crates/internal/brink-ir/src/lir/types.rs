@@ -30,6 +30,30 @@ pub struct Program {
     /// names, variable names, list names, etc. — anything the runtime
     /// needs as a string for debugging, host binding, or inspection.
     pub name_table: Vec<String>,
+
+    /// TM-4c (`docs/typed-mode-spec.md` §6): every declared `STRUCT` shape,
+    /// in the order [`lower_to_program`](super::lower_to_program) assigned
+    /// their ids (topological file order, then source declaration order
+    /// within a file — deterministic, never a `HashMap` iteration order).
+    /// `StructShapeDef::id` indexes this `Vec` directly (`id as usize ==`
+    /// its own position), so codegen can hand it straight to
+    /// `brink_format::StoryData::struct_shapes`.
+    pub struct_shapes: Vec<StructShapeDef>,
+}
+
+/// One declared `STRUCT` shape (TM-4c). Mirrors
+/// `brink_format::StructShapeDef` field-for-field; codegen maps this 1:1
+/// into that format type. Kept as its own `brink-ir`-local type rather than
+/// reusing `brink_format::StructShapeDef` directly, matching this module's
+/// existing convention ([`GlobalDef`] vs. `brink_format::GlobalVarDef`,
+/// etc.) of never committing the LIR to a specific backend's wire shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructShapeDef {
+    pub id: u32,
+    pub name: NameId,
+    /// Declared fields, in shape declaration order — the order
+    /// `RecordNew`/`RecordGet`/`RecordSet` offsets index into.
+    pub fields: Vec<NameId>,
 }
 
 // ─── Definitions ─────────────────────────────────────────────────────
@@ -654,6 +678,41 @@ pub enum Expr {
     CollectionRemove {
         base: Box<Expr>,
         key: Box<Expr>,
+    },
+
+    // ── Records (TM-4c, `docs/typed-mode-spec.md` §6) ───────────────
+    /// `Name#{field: expr, …}` construction. `fields` is already reordered
+    /// into the shape's *declaration* order (not source order) — see
+    /// `lir::lower::expr::lower_struct_literal`'s doc for why every
+    /// initializer is still evaluated in source order regardless (each
+    /// entry here may itself be a `GetTemp` read of a source-order-
+    /// evaluated synthetic temp, not the raw initializer expression).
+    RecordNew {
+        shape_id: u32,
+        fields: Vec<Expr>,
+    },
+    /// `base.field` (read). `static_offset: Some(offset)` when
+    /// `brink-ir`'s LIR lowering proved `base`'s shape at compile time
+    /// (construction-literal chains, or a `types = strict` project's
+    /// struct-typed `VAR`/`temp` annotation — see typed-mode-spec §6);
+    /// codegen emits the static `RecordGet` offset op then, the by-name
+    /// `RecordGetDyn` otherwise. `field` is always populated (even when
+    /// `static_offset` is `Some`) so codegen/tooling never needs the
+    /// `struct_shapes` table just to describe this node.
+    RecordGet {
+        base: Box<Expr>,
+        field: NameId,
+        static_offset: Option<u16>,
+    },
+    /// `RecordGet`'s RMW write-back sibling — the primitive single-level
+    /// `p.field = expr` lowering composes (mirrors `IndexSet`): evaluates
+    /// `base`, `value` and pushes the *updated* record. Never produced by
+    /// ordinary expression lowering; only by field-assignment desugaring.
+    RecordSet {
+        base: Box<Expr>,
+        field: NameId,
+        static_offset: Option<u16>,
+        value: Box<Expr>,
     },
 }
 

@@ -89,6 +89,58 @@ pub(crate) fn record_set_dyn(
     Ok(())
 }
 
+/// `RecordGet(offset)`: `[record]` → field value, looked up by flat offset
+/// into the record's own field vector (TM-4c, the strict-mode static-offset
+/// payoff typed-mode-spec §6 anticipates). Unlike [`record_get_dyn`], this
+/// never touches `Program::struct_shapes` — the offset is trusted to
+/// already be correct for whatever shape the compiler proved at LIR
+/// lowering time, and only the record's own field count is checked, which
+/// is exactly the lookup this op exists to skip. Turn-terminating fault if
+/// the popped value isn't a `Record`, or the offset is out of range.
+pub(crate) fn record_get(flow: &mut Flow, offset: u16) -> Result<(), RuntimeError> {
+    let record = flow.pop_value()?;
+    let Some((_, fields)) = record.as_record() else {
+        return Err(RuntimeError::NotARecord(type_name(&record)));
+    };
+    let Some(value) = fields.get(offset as usize).cloned() else {
+        return Err(RuntimeError::RecordFieldOffsetOutOfRange {
+            offset,
+            len: fields.len(),
+        });
+    };
+    flow.value_stack.push(value);
+    Ok(())
+}
+
+/// `RecordSet(offset)`: `[record, value]` → updated record (take →
+/// `make_mut` → write-back — identical COW discipline to
+/// [`record_set_dyn`]), field selected by flat offset. Turn-terminating
+/// fault if the popped container isn't a `Record`, or the offset is out of
+/// range.
+pub(crate) fn record_set(flow: &mut Flow, offset: u16) -> Result<(), RuntimeError> {
+    let value = flow.pop_value()?;
+    let mut record = flow.pop_value()?;
+    let len = record
+        .as_record()
+        .map(|(_, fields)| fields.len())
+        .ok_or_else(|| RuntimeError::NotARecord(type_name(&record)))?;
+    if offset as usize >= len {
+        return Err(RuntimeError::RecordFieldOffsetOutOfRange { offset, len });
+    }
+    let Some(fields) = record.record_make_mut() else {
+        return Err(RuntimeError::NotARecord(type_name(&record)));
+    };
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "offset validated against len above"
+    )]
+    {
+        fields[offset as usize] = value;
+    }
+    flow.value_stack.push(record);
+    Ok(())
+}
+
 // ── Shared helpers ───────────────────────────────────────────────────────
 
 fn type_name(v: &Value) -> &'static str {
@@ -284,6 +336,87 @@ mod tests {
         push_args(&mut flow, vec![record, Value::Float(9.0)]);
         let err = record_set_dyn(&mut flow, &program, 7).unwrap_err();
         assert!(matches!(err, RuntimeError::RecordFieldNotFound(_)));
+    }
+
+    // ── Static-offset ops (TM-4c) ───────────────────────────────────────────
+
+    #[test]
+    fn record_get_reads_field_by_offset() {
+        let mut flow = test_flow();
+        let record = Value::record(ShapeId(0), vec![Value::Float(1.0), Value::Float(2.0)]);
+        push_args(&mut flow, vec![record]);
+        record_get(&mut flow, 1).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::Float(2.0));
+    }
+
+    #[test]
+    fn record_get_out_of_range_offset_faults() {
+        let mut flow = test_flow();
+        let record = Value::record(ShapeId(0), vec![Value::Float(1.0), Value::Float(2.0)]);
+        push_args(&mut flow, vec![record]);
+        let err = record_get(&mut flow, 5).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::RecordFieldOffsetOutOfRange { offset: 5, len: 2 }
+        );
+    }
+
+    #[test]
+    fn record_get_non_record_faults() {
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![Value::Int(1)]);
+        let err = record_get(&mut flow, 0).unwrap_err();
+        assert_eq!(err, RuntimeError::NotARecord("int"));
+    }
+
+    #[test]
+    fn record_set_writes_field_by_offset() {
+        let mut flow = test_flow();
+        let record = Value::record(ShapeId(0), vec![Value::Float(1.0), Value::Float(2.0)]);
+        push_args(&mut flow, vec![record, Value::Float(9.0)]);
+        record_set(&mut flow, 1).unwrap();
+        let result = flow.pop_value().unwrap();
+        let (_, fields) = result.as_record().unwrap();
+        assert_eq!(fields.as_slice(), &[Value::Float(1.0), Value::Float(9.0)]);
+    }
+
+    #[test]
+    fn record_set_out_of_range_offset_faults() {
+        let mut flow = test_flow();
+        let record = Value::record(ShapeId(0), vec![Value::Float(1.0), Value::Float(2.0)]);
+        push_args(&mut flow, vec![record, Value::Float(9.0)]);
+        let err = record_set(&mut flow, 7).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::RecordFieldOffsetOutOfRange { offset: 7, len: 2 }
+        );
+    }
+
+    #[test]
+    fn record_set_non_record_faults() {
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![Value::Int(1), Value::Float(9.0)]);
+        let err = record_set(&mut flow, 0).unwrap_err();
+        assert_eq!(err, RuntimeError::NotARecord("int"));
+    }
+
+    #[test]
+    fn record_set_cows_when_shared() {
+        let original = Value::record(ShapeId(0), vec![Value::Float(1.0), Value::Float(2.0)]);
+        let snapshot = original.clone();
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![original, Value::Float(9.0)]);
+        record_set(&mut flow, 0).unwrap();
+        let mutated = flow.pop_value().unwrap();
+        assert_eq!(
+            snapshot,
+            Value::record(ShapeId(0), vec![Value::Float(1.0), Value::Float(2.0)]),
+            "snapshot unmutated"
+        );
+        assert_eq!(
+            mutated,
+            Value::record(ShapeId(0), vec![Value::Float(9.0), Value::Float(2.0)])
+        );
     }
 
     // ── COW / sharing law ─────────────────────────────────────────────────
