@@ -598,6 +598,18 @@ Bravo content.
 /// the round count is capped, matching the project's "guard against
 /// unbounded growth" rule for any polling/accumulation loop.
 fn diagnostics_after_background_analysis(dialect: Option<&str>, source: &str) -> Vec<Value> {
+    diagnostics_after_background_analysis_with_types(dialect, None, source)
+}
+
+/// Same as [`diagnostics_after_background_analysis`], but also sets
+/// `initializationOptions.types` (`"strict"`/`"gradual"`, or `None` to omit
+/// it, exercising the `Gradual` default) — #660's LSP-side counterpart of
+/// the `dialect` option.
+fn diagnostics_after_background_analysis_with_types(
+    dialect: Option<&str>,
+    types: Option<&str>,
+    source: &str,
+) -> Vec<Value> {
     // Bounded polling: the background analysis pass is cheap (no real I/O),
     // so it settles within a handful of round-trips; cap at 40 rounds
     // (~a few hundred ms worst case) so a genuine regression fails fast
@@ -620,8 +632,15 @@ fn diagnostics_after_background_analysis(dialect: Option<&str>, source: &str) ->
         "capabilities": {},
         "rootUri": null,
     });
-    if let Some(d) = dialect {
-        init_params["initializationOptions"] = json!({ "dialect": d });
+    if dialect.is_some() || types.is_some() {
+        let mut opts = serde_json::Map::new();
+        if let Some(d) = dialect {
+            opts.insert("dialect".to_string(), json!(d));
+        }
+        if let Some(t) = types {
+            opts.insert("types".to_string(), json!(t));
+        }
+        init_params["initializationOptions"] = Value::Object(opts);
     }
 
     send(
@@ -747,4 +766,61 @@ Hello.
              for extension syntax, got: {diags:?}"
         );
     }
+}
+
+/// #660: the background `analysis_loop` must analyze under the
+/// client-declared TM-3 typed-mode policy, not always default to `Gradual`.
+/// `types = strict` under the default `strict-ink` dialect is a
+/// project-level config error (`E064`) — the LSP surface must reach this the
+/// same way the compiler CLI's `--types strict` does. Before #660,
+/// `initialize` had no `types` handler at all, so this option was silently
+/// ignored.
+#[test]
+fn background_analysis_uses_declared_strict_types_flags_e064_without_brink_dialect() {
+    let source = "-> END\n";
+    let diags = diagnostics_after_background_analysis_with_types(None, Some("strict"), source);
+    let e064: Vec<&Value> = diags
+        .iter()
+        .filter(|d| d["code"].as_str() == Some("E064"))
+        .collect();
+    assert!(
+        !e064.is_empty(),
+        "types=strict + dialect=strict-ink (default): expected E064, got: {diags:?}"
+    );
+}
+
+/// #660 counterpart: `types = strict` + `dialect = brink` turns on the
+/// Unknown-escape check (`E065`) — proving the LSP plumbing reaches the real
+/// strict-mode checks, not just the config-error path.
+#[test]
+fn background_analysis_uses_declared_strict_types_with_brink_dialect_flags_e065() {
+    let source = "=== noop(x) ===\nHello.\n-> DONE\n";
+    let diags =
+        diagnostics_after_background_analysis_with_types(Some("brink"), Some("strict"), source);
+    let e065: Vec<&Value> = diags
+        .iter()
+        .filter(|d| d["code"].as_str() == Some("E065"))
+        .collect();
+    assert!(
+        !e065.is_empty(),
+        "types=strict + dialect=brink: expected E065 on unused param `x`, got: {diags:?}"
+    );
+}
+
+/// #660: the default `types` (no `initializationOptions.types` at all, i.e.
+/// `Gradual`) must NOT flag the same unused-param construct as `E065` — the
+/// handler must not blanket-enable strict checks, only thread through the
+/// client's actual choice.
+#[test]
+fn background_analysis_default_types_does_not_flag_e065() {
+    let source = "=== noop(x) ===\nHello.\n-> DONE\n";
+    let diags = diagnostics_after_background_analysis_with_types(Some("brink"), None, source);
+    let e065: Vec<&Value> = diags
+        .iter()
+        .filter(|d| d["code"].as_str() == Some("E065"))
+        .collect();
+    assert!(
+        e065.is_empty(),
+        "default types (gradual) must not flag E065: {diags:?}"
+    );
 }
