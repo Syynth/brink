@@ -117,7 +117,7 @@ fn mutate(rng: &mut Lcg, original: &str, current: &str, step: u64) -> String {
         return current.to_owned();
     }
 
-    let op = rng.pick(6);
+    let op = rng.pick(7);
     let at = safe[rng.pick(safe.len())];
     let mut out: Vec<String> = lines.iter().map(|&l| l.to_owned()).collect();
     match op {
@@ -140,6 +140,33 @@ fn mutate(rng: &mut Lcg, original: &str, current: &str, step: u64) -> String {
         // Insert a temp declaration (locals-in-index exercise; may be
         // invalid at top level, which exercises the diagnostics path).
         4 => out.insert(at, format!("~ temp fz_{step} = {}", rng.pick(9))),
+        // VAR/CONST initializer edit (FG-2.1, issue #638): mutate a
+        // declared global's initializer value in place, when the chosen
+        // line happens to be one — exercises the lazy-globals edge
+        // (`referenced_globals`/`signature_query`'s narrow `BodyCtx.globals`
+        // map, Ruling 1) under incremental-equals-fresh. A body edit is
+        // already covered by the other ops; this specifically targets the
+        // *declaration* a body's global lookup resolves through. Falls back
+        // to a plain line insert if this line isn't a VAR/CONST decl (still
+        // a valid, bounded mutation either way).
+        5 => {
+            let trimmed = out[at].trim_start();
+            let keyword = if trimmed.starts_with("VAR ") {
+                Some("VAR")
+            } else if trimmed.starts_with("CONST ") {
+                Some("CONST")
+            } else {
+                None
+            };
+            match keyword.and_then(|kw| {
+                trimmed[kw.len() + 1..]
+                    .split_once('=')
+                    .map(|(name, _)| (kw, name))
+            }) {
+                Some((kw, name)) => out[at] = format!("{kw} {name}= {}", rng.pick(999)),
+                None => out.insert(at, format!("A fuzzed line, step {step}.")),
+            }
+        }
         // Revert the file to its original content.
         _ => return original.to_owned(),
     }

@@ -41,6 +41,23 @@ fn cycle(db: &mut ProjectDb, variant: usize) {
     let _ = db.diagnostics(id);
     assert!(db.story_data().is_some());
 
+    // FG-2.1 (issue #638): also pull the new per-def inference projections
+    // — `def_body_query`/`referenced_globals_query` (behind
+    // `infer_body`/`inferred_signature`) — so this churn cycle exercises
+    // their memo rows too, not just the pre-existing per-file ones. A
+    // leaked per-def memo on remove/re-add would show up as a growing
+    // `count` on these ingredients exactly like the pre-#536 per-file leak
+    // this test already guards.
+    let index = db.symbol_index();
+    if let Some(&scratch_knot) = index
+        .by_name
+        .get("scratch_knot")
+        .and_then(|ids| ids.first())
+    {
+        let _ = db.infer_body(scratch_knot);
+        let _ = db.inferred_signature(scratch_knot);
+    }
+
     db.remove_file("scratch.ink");
     db.update_file("main.ink", main_text(false));
     let main = db.file_id("main.ink").expect("main.ink");
