@@ -11,7 +11,7 @@ mod discover;
 use std::collections::HashMap;
 use std::io;
 
-pub use brink_analyzer::{AnalysisOptions, AnalysisResult, Dialect};
+pub use brink_analyzer::{AnalysisOptions, AnalysisResult, Dialect, TypePolicy};
 pub use brink_db::{CompileProduct, LirProduct, ProjectDb};
 pub use brink_ir::FileId;
 pub use diagnostics::DiagnosticReport;

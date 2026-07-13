@@ -250,7 +250,7 @@ pub fn mismatches(
     out
 }
 
-fn def_id_for(
+pub(crate) fn def_id_for(
     index: &SymbolIndex,
     file: FileId,
     kind: SymbolKind,

@@ -7,7 +7,7 @@
 
 mod driver;
 
-pub use brink_driver::{AnalysisOptions, Dialect};
+pub use brink_driver::{AnalysisOptions, Dialect, TypePolicy};
 pub use brink_ir::{DiagnosticCode, FileId};
 
 use brink_format::StoryData;

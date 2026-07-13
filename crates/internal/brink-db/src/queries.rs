@@ -350,12 +350,27 @@ pub(crate) fn analysis_query(db: &dyn salsa::Database, project: ProjectInput) ->
         })
         .collect();
 
+    let opts = project.analysis_options(db);
+    // TM-3 (docs/typed-mode-spec.md §9-step-3): under `types = strict` +
+    // `dialect = brink`, reuse the already-memoized, FG-narrowed
+    // `type_inference_query` instead of letting `finish_analysis` recompute
+    // inference from scratch via `infer_project` — this is the "inference
+    // finally has a consumer" seam the per-def/per-SCC decomposition (FG-2,
+    // FG-2.1) exists for: a warm re-analyze after an edit only re-solves the
+    // SCC(s) that edit actually touched, not the whole project. Consumes
+    // `type_inference_query` as an already-registered ingredient (no new
+    // salsa query decomposition — #619's own fence).
+    let strict_inference = (opts.dialect == brink_analyzer::Dialect::Brink
+        && opts.types == brink_analyzer::TypePolicy::Strict)
+        .then(|| type_inference_query(db, project).as_ref());
+
     brink_analyzer::finish_analysis(
         &full_refs,
         index,
         resolutions,
         diagnostics,
-        project.analysis_options(db),
+        opts,
+        strict_inference,
     )
 }
 
