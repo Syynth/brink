@@ -312,8 +312,9 @@ fn struct_field_decl(p: &mut Parser<'_, '_>) {
 /// `for`: `STRUCT` stays a plain `IDENT` everywhere else, so an existing
 /// knot/variable/function named `STRUCT` is byte-for-byte unaffected. Full
 /// four-token lookahead (`STRUCT` `IDENT` `=` `#{`) disambiguates from any
-/// other use of the bare word, mirroring how `at_struct_literal` needs no
-/// such lookahead (its shape is unambiguous in expression position).
+/// other use of the bare word. (Struct construction literals need no such
+/// helper — `expression.rs`'s atom parser peeks `IDENT` `#` `{` inline,
+/// which is unambiguous in expression position.)
 pub(crate) fn at_struct_decl(p: &Parser<'_, '_>) -> bool {
     p.at_kw_text("STRUCT")
         && p.nth(1) == IDENT
