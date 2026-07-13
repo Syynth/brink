@@ -183,7 +183,7 @@ pub fn per_file_diagnostics(
     let files = [(file, hir)];
     let mut out = validate::validate(&files);
     out.extend(dialect_gate::check(&files, file_resolutions, dialect));
-    // Annotation *content* checks (E061/E062) run only under the brink
+    // Annotation *content* checks (E061) run only under the brink
     // dialect: under `strict-ink` the annotation is already rejected whole
     // by `dialect_gate` (E051), and critiquing the inside of rejected
     // syntax is noise (maintainer ruling 2026-07-13).

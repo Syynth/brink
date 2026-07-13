@@ -377,11 +377,14 @@ fn strict_ink_suppresses_annotation_content_checks() {
             .any(|d| d.code == brink_ir::DiagnosticCode::E061),
         "brink dialect flags the unknown type name"
     );
+    // T1c-1 (#699): `fn(T…): R` is a legal type form now — E062 is retired
+    // and must not fire under either dialect.
     assert!(
-        brink
+        !brink
             .diagnostics
             .iter()
             .any(|d| d.code == brink_ir::DiagnosticCode::E062),
-        "brink dialect flags the reserved fn(...) type"
+        "fn(...) types are legal since T1c-1 — E062 is retired: {:?}",
+        brink.diagnostics
     );
 }

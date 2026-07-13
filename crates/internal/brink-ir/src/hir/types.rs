@@ -148,8 +148,9 @@ pub enum TypeExpr {
         args: Vec<TypeExpr>,
         range: TextRange,
     },
-    /// `fn(params…): ret` — a function type. Parses everywhere; typed as
-    /// reserved until T1c (a targeted diagnostic fires on any use).
+    /// `fn(params…): ret` — a function type (unfrozen with T1c-1, #699:
+    /// resolves to the checker's `Ty::Fn`; the row is val-only — refs are
+    /// bound away at `#fn` creation, docs/t1c-spec.md §4).
     Fn {
         params: Vec<TypeExpr>,
         ret: Box<TypeExpr>,
@@ -1132,8 +1133,12 @@ pub enum DiagnosticCode {
     /// naming a declared `LIST`, `array<T>`, or `map<K, V>` — declared
     /// struct names arrive in TM-4.
     E061,
-    /// `fn(T…): R` function-type annotation used — parses, but types as
-    /// reserved until T1c.
+    /// RETIRED (T1c-1, #699): previously "`fn(T…): R` function-type
+    /// annotation used — parses, but types as reserved until T1c". T1c
+    /// unfroze the form (docs/t1c-spec.md §4: "boundary annotations gain
+    /// the `fn(T…): R` form"), so it now resolves to a real checker type.
+    /// Code kept reserved, not reused, for diagnostic-code stability — no
+    /// longer emitted by any pass.
     E062,
     /// A param/return/`VAR` type annotation disagrees with the type
     /// TM-1's body inference would otherwise derive. Advisory only in this
@@ -1428,7 +1433,7 @@ impl DiagnosticCode {
             Self::E059 => "choice/gather construct nested inside inline content",
             Self::E060 => "internal codegen error",
             Self::E061 => "unknown type name in annotation",
-            Self::E062 => "function-type annotation is reserved until T1c",
+            Self::E062 => "retired (T1c-1) — fn(T…): R annotations now resolve for real",
             Self::E063 => "type annotation disagrees with inferred type",
             Self::E064 => "strict types require the brink dialect",
             Self::E065 => "type escapes strict inference as Unknown",

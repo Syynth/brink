@@ -374,6 +374,22 @@ fn classify(ty: &Ty) -> Escape {
             (Escape::Unknown, _) | (_, Escape::Unknown) => Escape::Unknown,
             (Escape::Clean, Escape::Clean) => Escape::Clean,
         },
+        // T1c `fn(T…): R` (docs/t1c-spec.md §4): the same recursive lattice
+        // walk as Array/Map — a fn value whose row carries Unknown or
+        // Conflicted slots can't be call-checked, so it escapes like any
+        // other nesting. (In practice the row comes from the target's own
+        // inferred signature, so the target def carries the root-cause
+        // E065/E066 too.)
+        Ty::Fn(params, ret) => {
+            params
+                .iter()
+                .chain(std::iter::once(ret.as_ref()))
+                .fold(Escape::Clean, |acc, t| match (acc, classify(t)) {
+                    (Escape::Conflicted, _) | (_, Escape::Conflicted) => Escape::Conflicted,
+                    (Escape::Unknown, _) | (_, Escape::Unknown) => Escape::Unknown,
+                    (Escape::Clean, Escape::Clean) => Escape::Clean,
+                })
+        }
         // TM-4b (docs/typed-mode-spec.md §6): "struct-typed slots are
         // concrete for E065/E066 purposes" — a resolved `Ty::Struct` is as
         // clean as any other nominal (`Ty::List`'s existing precedent).
