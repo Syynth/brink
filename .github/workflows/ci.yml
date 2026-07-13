@@ -26,6 +26,12 @@ jobs:
           persist-credentials: false
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - run: cargo check --workspace
+      # The wasm-side test modules (`wasm_bindgen_test`) were compiled by no
+      # CI job — only the lib was ever checked for wasm32 — so they bitrotted
+      # invisibly when PR #654's module split broke their `super::` paths
+      # (#672 lane G finding). Compile them here; *executing* them in CI is
+      # #672 workstream D.
+      - run: cargo check -p brink-web --all-targets --target wasm32-unknown-unknown
 
   test:
     name: Test

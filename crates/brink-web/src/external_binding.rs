@@ -405,7 +405,7 @@ mod binding_wasm_tests {
     #[wasm_bindgen_test]
     fn program_checksum_matches_program_model() {
         let b = bytes("Hello.\n-> END\n");
-        let sum = super::program_checksum(&b).ok().expect("checksum decodes");
+        let sum = crate::program_checksum(&b).ok().expect("checksum decodes");
         assert!(sum.starts_with("0x"), "formatted as hex: {sum}");
         // The standalone checksum must match the one the runner's program model
         // reports — the studio compares the two to detect source-out-of-sync.
@@ -421,10 +421,10 @@ mod binding_wasm_tests {
 
     #[wasm_bindgen_test]
     fn program_checksum_differs_for_different_sources() {
-        let a = super::program_checksum(&bytes("Apple.\n-> END\n"))
+        let a = crate::program_checksum(&bytes("Apple.\n-> END\n"))
             .ok()
             .expect("a");
-        let b = super::program_checksum(&bytes("Banana.\n-> END\n"))
+        let b = crate::program_checksum(&bytes("Banana.\n-> END\n"))
             .ok()
             .expect("b");
         assert_ne!(a, b, "distinct sources have distinct identity");
