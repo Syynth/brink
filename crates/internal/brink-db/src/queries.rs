@@ -44,7 +44,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use brink_analyzer::{AnalysisOptions, AnalysisResult, Sig};
+use brink_analyzer::{AnalysisOptions, AnalysisResult, InferenceResult, Sig};
 use brink_format::{DefinitionId, StoryData};
 use brink_ir::suppressions::{Suppressions, apply_suppressions, parse_suppressions};
 use brink_ir::{
@@ -94,6 +94,10 @@ impl Default for BrinkDatabase {
                 .ingredient::<signature_query>()
                 .ingredient::<analysis_query>()
                 .ingredient::<diagnostics_query>()
+                // Layer 2/3: type inference (TM-1, advisory-only).
+                .ingredient::<type_inference_query>()
+                .ingredient::<infer_body_query>()
+                .ingredient::<type_diagnostics_query>()
                 // Layer 3.
                 .ingredient::<lir_query>()
                 .ingredient::<story_data_query>()
@@ -345,6 +349,72 @@ pub(crate) fn diagnostics_query(
             .cloned(),
     );
     out
+}
+
+// ─── Layer 2/3: type inference (TM-1, advisory-only) ──────────────────
+//
+// The checker substrate (typed-mode-spec §2/§9 step 1): `signature`/
+// `infer_body`/`type_diagnostics`. **Advisory-only** — nothing here changes
+// compiler output; `type_inference_query` is not read by `lir_query` or
+// `story_data_query`, so it is lazy by construction (computed only when a
+// consumer calls `infer_body`/`type_diagnostics`, which today is nobody —
+// see the PR's warm/cold benchmark report). Whole-project, like
+// `analysis_query`/`lir_query` in this same slice (scripting-substrate spec
+// §7 defers per-container splitting to slice C); `infer_body_query` and
+// `type_diagnostics_query` are thin per-def/per-file views over the one
+// project-wide memo, mirroring `signature_query`'s and `diagnostics_query`'s
+// own shape.
+
+/// Whole-project type inference. Wraps [`brink_analyzer::infer_project`]
+/// over the same `(index, resolutions)` pair `analysis_query` already
+/// computed — the firewall is `brink_analyzer::infer_project`'s job (see its
+/// module docs); this query only supplies its inputs.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn type_inference_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> Arc<InferenceResult> {
+    let files = project.files(db);
+    let analysis = analysis_query(db, project);
+    let hir_refs: Vec<(FileId, &HirFile)> = files
+        .iter()
+        .map(|f| (f.file_id(db), &lowered_query(db, *f).hir))
+        .collect();
+    Arc::new(brink_analyzer::infer_project(
+        &hir_refs,
+        &analysis.index,
+        &analysis.resolutions,
+    ))
+}
+
+/// Per-def inferred body types (`infer_body(def)`). `None` for a def with no
+/// inferable body (not a knot/stitch, or an unknown id) — same `None`
+/// contract as [`signature_query`].
+#[salsa::tracked]
+pub(crate) fn infer_body_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: ProjectInput,
+    def: DefKey<'db>,
+) -> Option<Arc<brink_analyzer::BodyTypes>> {
+    let result = type_inference_query(db, project);
+    result.bodies.get(&def.def(db)).cloned().map(Arc::new)
+}
+
+/// Per-file type diagnostics (`type_diagnostics(FileId)`). **Advisory-only
+/// in this slice**: TM-1 produces inference *results* (`infer_body`,
+/// `signature`), not new user-facing diagnostics (typed-mode-spec §9 step 1:
+/// "essentially no new user-facing diagnostics") — this always returns
+/// empty today. The query exists now, correctly shaped, so TM-3 (strict
+/// mode's `Unknown`-escape errors) only has to fill the body in rather than
+/// threading a new query through every consumer.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn type_diagnostics_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+) -> Vec<Diagnostic> {
+    let _ = (db, project, file);
+    Vec::new()
 }
 
 // ─── Layer 3: lowering / codegen (whole-project in slice B) ──────────

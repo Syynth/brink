@@ -16,7 +16,7 @@ mod include_graph;
 mod memory;
 mod queries;
 
-pub use brink_analyzer::Sig;
+pub use brink_analyzer::{BodyTypes, InferenceResult, InferredSig, Sig, Ty};
 pub use brink_ir::FileId;
 pub use db::{ProjectDb, compute_relative_path, resolve_include_path};
 #[cfg(feature = "memory-introspection")]
