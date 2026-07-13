@@ -184,3 +184,94 @@ describe("DocumentSessions HIR overlay refresh on compile delivery", () => {
     expect(view.state.doc.toString()).toBe(MAIN_INK);
   });
 });
+
+// ── 3. View mounts AFTER the compile was delivered (#518) ───────────
+
+describe("DocumentSessions HIR overlay refresh on view mount", () => {
+  const containers: HTMLElement[] = [];
+  let documents: DocumentSessions | null = null;
+
+  afterEach(() => {
+    setMockHirProjection(null);
+    documents?.dispose();
+    documents = null;
+    for (const el of containers) el.remove();
+    containers.length = 0;
+  });
+
+  function mountWithDispose(
+    docs: DocumentSessions,
+    docKey: string,
+    groupId: string,
+  ): { view: EditorView; dispose: () => void } {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    containers.push(container);
+    const dispose = docs.mountView(docKey, groupId, container);
+    const dom = container.querySelector(".cm-editor");
+    const view = dom === null ? null : EditorView.findFromDOM(dom as HTMLElement);
+    if (!view) throw new Error("no editor mounted");
+    return { view, dispose };
+  }
+
+  function mount(docs: DocumentSessions, docKey: string, groupId: string): EditorView {
+    return mountWithDispose(docs, docKey, groupId).view;
+  }
+
+  async function makeSessions(): Promise<DocumentSessions> {
+    await initWasm();
+    const provider = new InMemoryFileProvider({ "main.ink": MAIN_INK });
+    const project = new ProjectSession({ provider, entryFile: "main.ink" });
+    await project.initialize();
+    documents = new DocumentSessions(project);
+    return documents;
+  }
+
+  it("populates a view that mounts after the delivered compile — no doc edit", async () => {
+    const docs = await makeSessions();
+
+    // The compile result lands while NO view is mounted (the external
+    // embedder order, #518: initialize → triggerCompile → the framework
+    // commits the editor mount afterwards). deliverCompile's per-view
+    // refresh loop finds nothing to refresh.
+    setMockHirProjection(JSON.stringify(PROJECTION));
+    docs.triggerCompile();
+
+    // A passive load never compiles again, and no edit happens — the mount
+    // itself must self-serve the missed refresh.
+    const view = mount(docs, "main.ink", "g1");
+
+    const marks = markEls(view);
+    expect(marks).toHaveLength(1);
+    expect(marks[0].getAttribute("data-hir-kind")).toBe("divert");
+    expect(railEls(view).length).toBeGreaterThan(0);
+    expect(view.state.doc.toString()).toBe(MAIN_INK); // truly no edit
+  });
+
+  it("populates a REMOUNTED view whose cached state predates the compile", async () => {
+    const docs = await makeSessions();
+
+    // Mounted before any analysis/compile: the overlay field seeds empty …
+    const first = mountWithDispose(docs, "main.ink", "g1");
+    expect(markEls(first.view)).toHaveLength(0);
+
+    // … and that (blank) EditorState is cached at unmount.
+    first.dispose();
+
+    // The compile result lands while the slot has no view — deliverCompile
+    // skips it (the refresh is dropped, not queued).
+    setMockHirProjection(JSON.stringify(PROJECTION));
+    docs.triggerCompile();
+
+    // Remount reuses the cached EditorState (content unchanged), so the
+    // overlay field's create() never re-runs — without the mount refresh the
+    // blank value cached at unmount would persist until the first edit.
+    const view = mount(docs, "main.ink", "g1");
+
+    const marks = markEls(view);
+    expect(marks).toHaveLength(1);
+    expect(marks[0].getAttribute("data-hir-kind")).toBe("divert");
+    expect(railEls(view).length).toBeGreaterThan(0);
+    expect(view.state.doc.toString()).toBe(MAIN_INK);
+  });
+});

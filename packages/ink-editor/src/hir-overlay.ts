@@ -76,9 +76,20 @@ const emptyState: HirOverlayState = {
  * compile/analysis completes — and otherwise only recomputes on doc-changing
  * transactions, so a passive load would keep the empty seed until the first
  * edit. `DocumentSessions` dispatches this to every mounted view when a
- * compile result is delivered; hosts with custom wiring can dispatch it (or
- * call `refreshHirOverlay(view)`) from their own compile-complete signal.
+ * compile result is delivered, AND to a view that mounts after a compile was
+ * already delivered (#518 — the delivery-time loop only reaches views that
+ * exist; a later mount self-serves the refresh, covering both mount orders
+ * and remounts that reuse a cached EditorState, where `create()` never
+ * re-runs). Hosts with custom wiring can dispatch it (or call
+ * `refreshHirOverlay(view)`) from their own compile-complete signal.
  * Mirrors `reclassifyEffect` / `refreshGutterMarkersEffect`.
+ *
+ * NOTE for hosts dispatching this themselves: the effect is matched by
+ * object identity (`e.is(refreshHirOverlayEffect)`), so it must come from
+ * the SAME module instance of `@brink-lang/editor` that built the view's
+ * extensions. A bundler that duplicates the package (e.g. an app importing
+ * it directly while also consuming a library that bundled its own copy)
+ * produces an effect the field silently ignores.
  */
 export const refreshHirOverlayEffect = StateEffect.define<void>();
 
