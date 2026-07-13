@@ -602,9 +602,12 @@ pub(crate) fn is_builtin_function(name: &str) -> bool {
     )
 }
 
-/// T1b stdlib slice 1 function names (`docs/t1b-surface-spec.md` §5):
-/// lowercase free functions, brink-dialect-gated. Kept in sync by hand with
-/// `brink_ir`'s LIR-lowering copy of this same list (`lir::lower::expr::
+/// T1b stdlib slice 1 function names (`docs/t1b-surface-spec.md` §5) plus
+/// the TM-3-completion pure conversion intrinsics `int`/`float`/`string`
+/// (`docs/typed-mode-spec.md` §4, maintainer ruling 2026-07-13, issue #659,
+/// "per the stdlib slice-1 pattern"): lowercase free functions,
+/// brink-dialect-gated. Kept in sync by hand with `brink_ir`'s
+/// LIR-lowering copy of this same list (`lir::lower::expr::
 /// is_t1b_stdlib_name`) — the crates don't share a dependency edge for this
 /// purpose in the analysis → codegen direction, mirroring the existing
 /// `is_builtin_function`/`recognize_builtin` split for the classic uppercase
@@ -620,7 +623,16 @@ pub(crate) fn is_builtin_function(name: &str) -> bool {
 pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
     matches!(
         name,
-        "len" | "keys" | "values" | "contains" | "push" | "insert" | "remove"
+        "len"
+            | "keys"
+            | "values"
+            | "contains"
+            | "push"
+            | "insert"
+            | "remove"
+            | "int"
+            | "float"
+            | "string"
     )
 }
 

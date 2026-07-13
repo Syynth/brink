@@ -14,6 +14,7 @@ use brink_format::{
 };
 
 use crate::collection_ops;
+use crate::conversion_ops;
 use crate::error::RuntimeError;
 use crate::list_ops;
 use crate::program::Program;
@@ -993,6 +994,11 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         Opcode::RecordSetDyn(name_id) => record_ops::record_set_dyn(flow, program, name_id)?,
         Opcode::RecordGet(offset) => record_ops::record_get(flow, offset)?,
         Opcode::RecordSet(offset) => record_ops::record_set(flow, offset)?,
+
+        // ── Conversion intrinsics (TM-3 completion, #659) ────────────
+        Opcode::ConvertInt => conversion_ops::convert_to_int(flow)?,
+        Opcode::ConvertFloat => conversion_ops::convert_to_float(flow)?,
+        Opcode::ConvertString => conversion_ops::convert_to_string(flow, program)?,
 
         // ── External functions ──────────────────────────────────────
         Opcode::CallExternal(fn_id, arg_count) => {

@@ -32,6 +32,7 @@ extern crate alloc;
 
 mod collection_ops;
 mod collections;
+mod conversion_ops;
 mod debug;
 mod error;
 mod external_policy;

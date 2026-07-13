@@ -537,6 +537,11 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::RecordSetDyn(name_id) => write!(w, "record_set_dyn {name_id}"),
         Opcode::RecordGet(offset) => write!(w, "record_get {offset}"),
         Opcode::RecordSet(offset) => write!(w, "record_set {offset}"),
+
+        // Conversion intrinsics (TM-3 completion, #659)
+        Opcode::ConvertInt => write!(w, "convert_int"),
+        Opcode::ConvertFloat => write!(w, "convert_float"),
+        Opcode::ConvertString => write!(w, "convert_string"),
     }
 }
 

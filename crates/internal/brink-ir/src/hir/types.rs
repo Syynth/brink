@@ -1187,6 +1187,15 @@ pub enum DiagnosticCode {
     /// construction step to fault at, so this is the compile-time
     /// equivalent — a real error, never a silent `Null`.
     E076,
+    // ── TM-3 completion: conversion intrinsics (docs/typed-mode-spec.md
+    // §4, maintainer ruling 2026-07-13, issue #659) ──────────────────────
+    /// Under `types = strict`, an unresolved (builtin, not author-shadowed)
+    /// call to `int(x)`/`float(x)` where `x` is statically a divert-target,
+    /// LIST, array, map, or struct construction literal — outside the
+    /// permissive numeric+bool domain (ruling 2: "compile error under
+    /// `types = strict`, runtime fault under gradual"). `string(x)` accepts
+    /// every type and is never checked here.
+    E078,
 }
 
 impl DiagnosticCode {
@@ -1270,6 +1279,7 @@ impl DiagnosticCode {
             Self::E074 => "E074",
             Self::E075 => "E075",
             Self::E076 => "E076",
+            Self::E078 => "E078",
         }
     }
 
@@ -1361,6 +1371,7 @@ impl DiagnosticCode {
             Self::E076 => {
                 "map literal key in a VAR/CONST declaration default is not a compile-time-constant scalar (int/string/bool)"
             }
+            Self::E078 => "int()/float() argument is outside the permissive numeric+bool domain",
         }
     }
 
@@ -1465,6 +1476,7 @@ impl DiagnosticCode {
             "E074" => Some(Self::E074),
             "E075" => Some(Self::E075),
             "E076" => Some(Self::E076),
+            "E078" => Some(Self::E078),
             _ => None,
         }
     }

@@ -178,4 +178,27 @@ pub enum RuntimeError {
     /// otherwise.
     #[error("struct field offset {offset} out of range (record has {len} fields)")]
     RecordFieldOffsetOutOfRange { offset: u16, len: usize },
+
+    // ── TM-3 completion: conversion intrinsics (docs/typed-mode-spec.md
+    // §4, maintainer ruling 2026-07-13, issue #659) ──────────────────────
+    /// `int(x)`/`float(x)` where `x` is a `String` that fails to parse as
+    /// the target numeric type. Turn-terminating fault — no
+    /// zero-defaulting, no silent garbage (ruling 1: "Parse failure is a
+    /// turn-terminating fault... like a missing map key"). Unlike this,
+    /// the classic uppercase `INT()`/`FLOAT()` builtins keep their
+    /// pre-existing silent-0 legacy behavior (`value_ops::cast_to_int`/
+    /// `cast_to_float`) — untouched, oracle-byte-identical, a distinct
+    /// code path.
+    #[error("cannot parse {input:?} as {target}")]
+    ConversionParseFailure { target: &'static str, input: String },
+    /// `int(x)`/`float(x)` where `x` is outside the permissive
+    /// numeric+bool domain (divert targets, LIST values, arrays, maps,
+    /// records) — compile error under `types = strict` (`brink-analyzer`'s
+    /// intrinsic typing/domain check), turn-terminating fault under
+    /// `types = gradual` (ruling 2).
+    #[error("cannot convert a {got} value to {target}")]
+    InvalidConversionDomain {
+        target: &'static str,
+        got: &'static str,
+    },
 }

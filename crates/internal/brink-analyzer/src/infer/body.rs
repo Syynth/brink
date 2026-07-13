@@ -360,13 +360,19 @@ impl InferPass<'_, '_> {
 
     /// Stdlib intrinsic typing rules (typed-mode-spec §2's "facility
     /// doctrine" list): `len`/`keys`/`values`/`contains`/`push`/`insert`/
-    /// `remove`. These names have no `DefinitionId` of their own (they
-    /// resolve specially, not through the symbol index — see
-    /// `brink_ir::lir::lower::expr::is_t1b_stdlib_name`), so the rules live
-    /// here as a direct match rather than "attached" to a resolved def.
+    /// `remove`, plus the TM-3-completion pure conversion intrinsics
+    /// `int`/`float`/`string` (§4, issue #659). These names have no
+    /// `DefinitionId` of their own (they resolve specially, not through the
+    /// symbol index — see `brink_ir::lir::lower::expr::is_t1b_stdlib_name`),
+    /// so the rules live here as a direct match rather than "attached" to a
+    /// resolved def.
     fn infer_intrinsic(&mut self, name: &str, args: &[Expr], arg_tys: &[Ty]) -> Ty {
         match name {
-            "len" => Ty::Int,
+            // `len` (stdlib slice 1) and `int` (TM-3-completion conversion
+            // intrinsic, #659) both return a fixed `Ty::Int` independent of
+            // the argument — merged into one arm per clippy's
+            // `match_same_arms` (identical bodies, distinct call sites).
+            "len" | "int" => Ty::Int,
             "keys" => match arg_tys.first() {
                 Some(Ty::Map(k, _)) => Ty::Array(k.clone()),
                 _ => Ty::Unknown,
@@ -410,6 +416,19 @@ impl InferPass<'_, '_> {
                 }
                 Ty::Unknown
             }
+            // TM-3 completion (docs/typed-mode-spec.md §4, maintainer ruling
+            // 2026-07-13, issue #659): pure conversion intrinsics. Each has a
+            // fixed return type independent of the argument's own type — the
+            // permissive multi-type domain (float/string/bool/int for
+            // `int`/`float`; everything for `string`) is a runtime/strict-
+            // domain-check concern (`conversions::check`), not a constraint
+            // this unification-style inference can express by joining the
+            // argument's type into anything, so no `self.observe` call here
+            // (unlike `push`/`insert`/`remove` above, which do narrow their
+            // container's element type). `int`'s arm lives above, merged
+            // with `len` (both fixed `Ty::Int`, per clippy).
+            "float" => Ty::Float,
+            "string" => Ty::String,
             _ => Ty::Unknown,
         }
     }

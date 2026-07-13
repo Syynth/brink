@@ -714,20 +714,57 @@ fn lower_t1b_stdlib_call(
             });
             Some(lir::Expr::Null)
         }
+        // TM-3 completion (docs/typed-mode-spec.md §4, maintainer ruling
+        // 2026-07-13, issue #659): `int(x)`/`float(x)`/`string(x)` pure
+        // conversion intrinsics. Fault semantics (parse failure,
+        // out-of-domain input) live entirely at the runtime op — this
+        // lowering just recognizes the call shape.
+        "int" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::ConvertInt(Box::new(lower_expr(&args[0], ctx))))
+        }
+        "float" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::ConvertFloat(Box::new(lower_expr(&args[0], ctx))))
+        }
+        "string" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::ConvertString(Box::new(lower_expr(
+                &args[0], ctx,
+            ))))
+        }
         _ => None,
     }
 }
 
-/// The T1b stdlib slice 1 function names (`docs/t1b-surface-spec.md` §5),
-/// brink-dialect-gated free functions. Kept in sync by hand with
-/// `brink_analyzer::resolve::is_t1b_stdlib_name` — the two crates don't
-/// share a dependency edge for this purpose (mirrors the existing
-/// `recognize_builtin`/`is_builtin_function` split for the classic uppercase
-/// ink intrinsics).
+/// The T1b stdlib slice 1 function names (`docs/t1b-surface-spec.md` §5)
+/// plus the TM-3-completion pure conversion intrinsics (`docs/
+/// typed-mode-spec.md` §4, issue #659) — brink-dialect-gated free functions,
+/// all sharing the same resolution-fallback/shadowing/dialect-gate
+/// machinery (the #659 ruling: "per the stdlib slice-1 pattern"). Kept in
+/// sync by hand with `brink_analyzer::resolve::is_t1b_stdlib_name` — the two
+/// crates don't share a dependency edge for this purpose (mirrors the
+/// existing `recognize_builtin`/`is_builtin_function` split for the classic
+/// uppercase ink intrinsics).
 pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
     matches!(
         name,
-        "len" | "keys" | "values" | "contains" | "push" | "insert" | "remove"
+        "len"
+            | "keys"
+            | "values"
+            | "contains"
+            | "push"
+            | "insert"
+            | "remove"
+            | "int"
+            | "float"
+            | "string"
     )
 }
 
