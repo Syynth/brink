@@ -714,6 +714,22 @@ pub enum Expr {
         static_offset: Option<u16>,
         value: Box<Expr>,
     },
+
+    // ── TM-3 completion: conversion intrinsics (typed-mode-spec §4,
+    // maintainer ruling 2026-07-13, issue #659) ─────────────────────────
+    /// `int(x)` pure conversion intrinsic. Domains: `Int` (identity),
+    /// `Float` (truncate toward zero, matching vanilla ink's `INT()`
+    /// exactly), `Bool` (`true` → 1, `false` → 0), `String` (parse).
+    /// Turn-terminating fault on parse failure or an out-of-domain input
+    /// (divert/LIST/array/map/record) — value-model-spec §11c.
+    ConvertInt(Box<Expr>),
+    /// `float(x)` pure conversion intrinsic. Domains: `Float` (identity),
+    /// `Int` (widen), `Bool` (`true` → 1.0, `false` → 0.0), `String`
+    /// (parse). Same fault domain as `ConvertInt`.
+    ConvertFloat(Box<Expr>),
+    /// `string(x)` pure conversion intrinsic — display form, identical to
+    /// interpolation. Total over every value; never faults.
+    ConvertString(Box<Expr>),
 }
 
 impl Expr {

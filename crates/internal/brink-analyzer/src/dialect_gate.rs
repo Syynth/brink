@@ -22,13 +22,15 @@
 //!
 //! T1b-3 (docs/t1b-surface-spec.md §5) extends this gate to the stdlib slice
 //! 1 lowercase free functions (`len`/`keys`/`values`/`contains`/`push`/
-//! `insert`/`remove`). Unlike blocks/sigils/indexing, a *call* to one of
-//! these names isn't self-evidently extension syntax — `len(x)` parses
-//! identically whether `len` means the builtin or an author's own knot — so
-//! this gate needs the resolution result too: a call that resolved to a
-//! real symbol is an ordinary (possibly shadowing) function call, never
-//! flagged; a call that didn't resolve is only valid because
-//! `brink-analyzer::resolve` silently treats these seven names as the
+//! `insert`/`remove`); the TM-3-completion pure conversion intrinsics
+//! `int`/`float`/`string` (docs/typed-mode-spec.md §4, issue #659) ride the
+//! same mechanism, "per the stdlib slice-1 pattern". Unlike blocks/sigils/
+//! indexing, a *call* to one of these names isn't self-evidently extension
+//! syntax — `len(x)` parses identically whether `len` means the builtin or
+//! an author's own knot — so this gate needs the resolution result too: a
+//! call that resolved to a real symbol is an ordinary (possibly shadowing)
+//! function call, never flagged; a call that didn't resolve is only valid
+//! because `brink-analyzer::resolve` silently treats these ten names as the
 //! builtin regardless of dialect (mirroring how LIR lowering always
 //! succeeds for blocks/sigils/indexing too) — so *this* gate is where
 //! `strict-ink` rejection actually happens for them.
@@ -176,11 +178,12 @@ impl GateVisitor<'_> {
     }
 }
 
-/// T1b stdlib slice 1 function names (`docs/t1b-surface-spec.md` §5). Kept
-/// in sync by hand with `resolve::is_t1b_stdlib_name` — same name, same
-/// list, different call site (that one gates resolution; this one gates
-/// `strict-ink`), not worth a shared constant across the two passes for
-/// seven literals.
+/// T1b stdlib slice 1 function names (`docs/t1b-surface-spec.md` §5) plus
+/// the TM-3-completion conversion intrinsics (issue #659). Kept in sync by
+/// hand with `resolve::is_t1b_stdlib_name` — same name, same list,
+/// different call site (that one gates resolution; this one gates
+/// `strict-ink`), not worth a shared constant across the two passes for ten
+/// literals.
 fn is_t1b_stdlib_call_name(name: &str) -> bool {
     crate::resolve::is_t1b_stdlib_name(name)
 }

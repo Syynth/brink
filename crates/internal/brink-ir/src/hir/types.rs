@@ -1168,6 +1168,16 @@ pub enum DiagnosticCode {
     /// writing ordinary (if currently unsupported) ink, not a defensive
     /// backstop for a suppressed analysis diagnostic.
     E074,
+
+    // ── TM-3 completion: conversion intrinsics (docs/typed-mode-spec.md
+    // §4, maintainer ruling 2026-07-13, issue #659) ──────────────────────
+    /// Under `types = strict`, an unresolved (builtin, not author-shadowed)
+    /// call to `int(x)`/`float(x)` where `x` is statically a divert-target,
+    /// LIST, array, map, or struct construction literal — outside the
+    /// permissive numeric+bool domain (ruling 2: "compile error under
+    /// `types = strict`, runtime fault under gradual"). `string(x)` accepts
+    /// every type and is never checked here.
+    E078,
 }
 
 impl DiagnosticCode {
@@ -1249,6 +1259,7 @@ impl DiagnosticCode {
             Self::E072 => "E072",
             Self::E073 => "E073",
             Self::E074 => "E074",
+            Self::E078 => "E078",
         }
     }
 
@@ -1334,6 +1345,7 @@ impl DiagnosticCode {
                 "struct construction literal names an unresolved STRUCT shape at LIR lowering"
             }
             Self::E074 => "chained field-write projection (p.a.b = v) is not supported",
+            Self::E078 => "int()/float() argument is outside the permissive numeric+bool domain",
         }
     }
 
@@ -1436,6 +1448,7 @@ impl DiagnosticCode {
             "E072" => Some(Self::E072),
             "E073" => Some(Self::E073),
             "E074" => Some(Self::E074),
+            "E078" => Some(Self::E078),
             _ => None,
         }
     }

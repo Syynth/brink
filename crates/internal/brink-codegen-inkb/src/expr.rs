@@ -219,6 +219,22 @@ impl ContainerEmitter<'_> {
                     self.emit(Opcode::RecordSetDyn(field.0));
                 }
             }
+
+            // ── Conversion intrinsics (TM-3 completion, #659) ─────────
+            lir::Expr::ConvertInt(inner) => {
+                self.emit_expr(inner, false);
+                self.emit(Opcode::ConvertInt);
+            }
+
+            lir::Expr::ConvertFloat(inner) => {
+                self.emit_expr(inner, false);
+                self.emit(Opcode::ConvertFloat);
+            }
+
+            lir::Expr::ConvertString(inner) => {
+                self.emit_expr(inner, false);
+                self.emit(Opcode::ConvertString);
+            }
         }
     }
 

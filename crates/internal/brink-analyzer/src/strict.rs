@@ -59,13 +59,14 @@
 //! detection (the inference substrate never joins a global's declaration-
 //! derived type against its assignment sites — `infer::body`'s `observe`
 //! only accumulates for `Param`/`Temp` locals; extending it is a `BodyCtx`
-//! change, fenced off by #619 itself), the boundary-annotation-*required*
+//! change, fenced off by #619 itself), or the boundary-annotation-*required*
 //! diagnostic (spec's "host-callable functions... and entry points require
 //! explicit annotations" has no ratified, mechanically-checkable definition
 //! of either term in the codebase today — inventing one here would be
-//! unilateral architecture, not wiring), or the `int()`/`float()`/`string()`
-//! pure conversion intrinsics (they don't exist yet; adding them is new
-//! stdlib surface, not diagnostics wiring).
+//! unilateral architecture, not wiring). The `int()`/`float()`/`string()`
+//! pure conversion intrinsics (TM-3 completion, issue #659) now exist —
+//! VM-native ops plus the `conversions` module's strict-mode domain check,
+//! wired in below alongside `structs::check`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -158,6 +159,10 @@ pub fn check(
     // TM-4b (docs/typed-mode-spec.md §6): missing/extra/mistyped struct
     // construction-literal fields — strict-mode-only, per the crate doc.
     out.extend(crate::structs::check(files, index));
+    // TM-3 completion (docs/typed-mode-spec.md §4, issue #659): `int(x)`/
+    // `float(x)` statically out-of-domain argument literals —
+    // strict-mode-only, per `conversions`'s own module doc.
+    out.extend(crate::conversions::check(files, resolutions));
     out
 }
 
