@@ -39,6 +39,10 @@ impl IdeSnapshot {
             external_check: self.external_check,
             semantic_type_check: self.semantic_type_check,
             dialect: self.dialect,
+            // TM-3 (#619): not yet threaded through the IDE session — every
+            // session analyzes under `types = gradual` (the default),
+            // byte-identical to pre-#619 behavior. See PR description.
+            types: brink_analyzer::TypePolicy::default(),
         };
         brink_analyzer::analyze_with_options(&refs, &opts)
     }
@@ -348,6 +352,8 @@ impl IdeSession {
             external_check: self.external_check,
             semantic_type_check: self.semantic_type_check,
             dialect: self.language_dialect,
+            // TM-3 (#619): see the matching note in `IdeSnapshot::analyze`.
+            types: brink_analyzer::TypePolicy::default(),
         }
     }
 

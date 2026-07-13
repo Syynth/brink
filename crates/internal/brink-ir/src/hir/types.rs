@@ -1042,6 +1042,30 @@ pub enum DiagnosticCode {
     /// TM-1's body inference would otherwise derive. Advisory only in this
     /// slice (gradual policy) — strict-mode severity is TM-3's call.
     E063,
+
+    // ── TM-3 strict typed-mode policy (docs/typed-mode-spec.md §1/§9-3) ──
+    /// `types = strict` was requested but the project's dialect isn't
+    /// `brink` — strict typing is a brink-dialect extension (its annotation
+    /// syntax is extension syntax), so `types = strict` + `dialect =
+    /// strict-ink` is a config error, not a per-construct diagnostic.
+    E064,
+    /// Under `types = strict`, a def's inferred signature or body slot
+    /// (param, return, or temp) resolved to `Unknown` after the SCC
+    /// fixpoint with no annotation to supply a concrete type — "annotate or
+    /// restructure" (spec §1). Legal under `types = gradual`.
+    E065,
+    /// Under `types = strict`, a def's inferred signature or body slot
+    /// resolved to `Ty::Conflicted` (#627) — the body's own uses disagree
+    /// on the slot's type. Legal (advisory-only, unreported) under `types =
+    /// gradual`.
+    E066,
+    /// Under `types = strict`, a `~ x = f()` / `~ temp x = f()` assigns the
+    /// result of a call whose resolved def is a `void`-returning function
+    /// (docs/typed-mode-spec.md §3: "assigning a `void` call is an error in
+    /// strict mode"). Only the assignment/temp-decl's RHS *root* call is
+    /// checked — a statement-position call (`~ f()`) or a call nested inside
+    /// interpolation is never flagged. Never emitted under `types = gradual`.
+    E067,
 }
 
 impl DiagnosticCode {
@@ -1112,6 +1136,10 @@ impl DiagnosticCode {
             Self::E061 => "E061",
             Self::E062 => "E062",
             Self::E063 => "E063",
+            Self::E064 => "E064",
+            Self::E065 => "E065",
+            Self::E066 => "E066",
+            Self::E067 => "E067",
         }
     }
 
@@ -1184,6 +1212,10 @@ impl DiagnosticCode {
             Self::E061 => "unknown type name in annotation",
             Self::E062 => "function-type annotation is reserved until T1c",
             Self::E063 => "type annotation disagrees with inferred type",
+            Self::E064 => "strict types require the brink dialect",
+            Self::E065 => "type escapes strict inference as Unknown",
+            Self::E066 => "type is Conflicted under strict inference",
+            Self::E067 => "assigning the result of a void function",
         }
     }
 
@@ -1275,6 +1307,10 @@ impl DiagnosticCode {
             "E061" => Some(Self::E061),
             "E062" => Some(Self::E062),
             "E063" => Some(Self::E063),
+            "E064" => Some(Self::E064),
+            "E065" => Some(Self::E065),
+            "E066" => Some(Self::E066),
+            "E067" => Some(Self::E067),
             _ => None,
         }
     }

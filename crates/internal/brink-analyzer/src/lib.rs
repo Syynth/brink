@@ -12,6 +12,7 @@ mod infer;
 mod manifest;
 mod resolve;
 mod signature;
+mod strict;
 mod validate;
 
 use std::collections::BTreeMap;
@@ -33,6 +34,7 @@ pub use infer::{
     solve_scc, unify, unify_all,
 };
 pub use signature::{Sig, signature};
+pub use strict::{TypePolicy, effective_severity};
 
 use brink_format::DefinitionId;
 use brink_ir::{
@@ -58,6 +60,14 @@ pub struct AnalysisOptions {
     /// tooling input only, mount-time (CLI flag) in T1b-1; project-file
     /// config is out of scope (docs/t1b-surface-spec.md §1, #368 precedent).
     pub dialect: Dialect,
+    /// TM-3 typed-mode policy (docs/typed-mode-spec.md §1): `Gradual` (the
+    /// default) is today's behavior, byte-identical forever. `Strict`
+    /// requires `dialect = Brink` (a config error otherwise, `E064`) and
+    /// turns on `Unknown`/`Conflicted`-escape errors, the boundary
+    /// annotation-firewall exemption, and auto-wires `E063`
+    /// (annotation-vs-inference mismatch) into production. Authoring-time/
+    /// tooling input only — never embedded in `.inkb`, mirroring `dialect`.
+    pub types: TypePolicy,
 }
 
 /// The output of cross-file semantic analysis.
@@ -135,7 +145,7 @@ pub fn analyze_with_options(
         diagnostics.extend(file_diags);
     }
 
-    finish_analysis(files, index, resolutions, diagnostics, opts)
+    finish_analysis(files, index, resolutions, diagnostics, opts, None)
 }
 
 /// Assemble the final [`AnalysisResult`] from the already-computed layer-2
@@ -148,12 +158,25 @@ pub fn analyze_with_options(
 /// queries and then calls this — the same back half [`analyze_with_options`]
 /// runs — so the query-composed result is identical to the monolithic one by
 /// construction.
+///
+/// `strict_inference`: TM-3's strict pass needs a whole-project
+/// [`InferenceResult`] (docs/typed-mode-spec.md §9-step-3 — E063 auto-wiring
+/// "must run inference anyway"). Pass `None` to have this function compute
+/// its own via [`infer_project`] (the self-contained default —
+/// [`analyze_with_options`]'s pure, non-salsa path). Pass `Some` to reuse an
+/// already-computed result instead — `brink-db`'s `analysis_query` supplies
+/// its FG-narrowed, per-SCC-memoized `type_inference_query` here so strict
+/// mode's warm-reanalyze cost is the incremental one the FG spine exists
+/// for, not a from-scratch whole-project solve on every keystroke. Ignored
+/// entirely under `types = gradual` or when the dialect makes strict mode a
+/// config error.
 pub fn finish_analysis(
     files: &[(FileId, &HirFile, &SymbolManifest)],
     index: Arc<SymbolIndex>,
     resolutions: ResolutionMap,
     mut diagnostics: Vec<Diagnostic>,
     opts: &AnalysisOptions,
+    strict_inference: Option<&infer::InferenceResult>,
 ) -> AnalysisResult {
     let manifest_inputs: Vec<(FileId, &SymbolManifest)> = files
         .iter()
@@ -170,6 +193,30 @@ pub fn finish_analysis(
     // syntax is noise (maintainer ruling 2026-07-13).
     if opts.dialect == Dialect::Brink {
         diagnostics.extend(annotations::check(&hir_inputs, &index));
+    }
+
+    // TM-3 strict typed-mode policy (docs/typed-mode-spec.md §1/§9-step-3).
+    // `types = strict` requires `dialect = brink` — a config error (`E064`)
+    // otherwise, reported alone (nothing else strict-specific runs against a
+    // project whose dialect already rejects the annotation syntax strict
+    // mode needs). Under `dialect = brink`, run inference (reusing
+    // `strict_inference` when the caller already computed one) and wire in
+    // Unknown/Conflicted-escape (`E065`/`E066`) plus `E063` mismatches.
+    // Gradual mode never reaches this block — byte-identical, forever.
+    if opts.types == TypePolicy::Strict {
+        if let Some(diag) = strict::config_error(opts.dialect, hir_inputs.first().map(|&(f, _)| f))
+        {
+            diagnostics.push(diag);
+        } else {
+            let owned_inference;
+            let inference = if let Some(inf) = strict_inference {
+                inf
+            } else {
+                owned_inference = infer::infer_project(&hir_inputs, &index, &resolutions);
+                &owned_inference
+            };
+            diagnostics.extend(strict::check(&hir_inputs, &index, inference, &resolutions));
+        }
     }
 
     // Host-manifest enrichment + checks (tooling/author-time only).
@@ -278,7 +325,8 @@ mod tests {
     use brink_ir::{BaseType, HostManifest, SemanticTypeDef};
 
     use super::{
-        AnalysisOptions, FileId, SemanticTypeDiagnosticSeverity, analyze, analyze_with_options,
+        AnalysisOptions, Dialect, FileId, SemanticTypeDiagnosticSeverity, TypePolicy, analyze,
+        analyze_with_options,
     };
 
     /// ink with an `EXTERNAL` whose param is typed with a host semantic type
@@ -424,5 +472,113 @@ EXTERNAL add_state(who)
             "known type resolves cleanly regardless of severity: {:?}",
             result.diagnostics
         );
+    }
+
+    // ── TM-3 (#619): strict policy end-to-end through analyze_with_options ──
+
+    fn lower_one(src: &str) -> (brink_ir::hir::HirFile, brink_ir::SymbolManifest) {
+        let parsed = brink_syntax::parse(src);
+        let (hir, manifest, diags) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        assert!(diags.is_empty(), "lowering diagnostics: {diags:?}");
+        (hir, manifest)
+    }
+
+    /// Gradual is byte-identical forever: the same source, `types` left at
+    /// its default (`Gradual`), under either dialect, must produce results
+    /// identical to a build that predates TM-3 entirely — no `E064`/`E065`/
+    /// `E066`, and `E063` stays un-auto-invoked (matching the #618/PR#640
+    /// ruling this issue explicitly does not touch).
+    #[test]
+    fn gradual_is_byte_identical_regardless_of_dialect() {
+        let src = "=== noop(x) ===\nHello.\n-> DONE\n";
+        let (hir, manifest) = lower_one(src);
+        for dialect in [Dialect::StrictInk, Dialect::Brink] {
+            let opts = AnalysisOptions {
+                dialect,
+                ..AnalysisOptions::default()
+            };
+            let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+            assert!(
+                result.diagnostics.is_empty(),
+                "gradual (default types) must stay silent under dialect {dialect:?}: {:?}",
+                result.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn strict_with_strict_ink_dialect_is_a_config_error_and_nothing_else_runs() {
+        let src = "=== noop(x) ===\nHello.\n-> DONE\n";
+        let (hir, manifest) = lower_one(src);
+        let opts = AnalysisOptions {
+            dialect: Dialect::StrictInk,
+            types: TypePolicy::Strict,
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        let strict_diags: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                matches!(
+                    d.code,
+                    brink_ir::DiagnosticCode::E064
+                        | brink_ir::DiagnosticCode::E065
+                        | brink_ir::DiagnosticCode::E066
+                )
+            })
+            .collect();
+        assert_eq!(
+            strict_diags.len(),
+            1,
+            "exactly the one config error, nothing else: {:?}",
+            result.diagnostics
+        );
+        assert_eq!(strict_diags[0].code, brink_ir::DiagnosticCode::E064);
+    }
+
+    #[test]
+    fn strict_with_brink_dialect_surfaces_unknown_escape_as_a_compile_error() {
+        let src = "=== noop(x) ===\nHello.\n-> DONE\n";
+        let (hir, manifest) = lower_one(src);
+        let opts = AnalysisOptions {
+            dialect: Dialect::Brink,
+            types: TypePolicy::Strict,
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E065),
+            "{:?}",
+            result.diagnostics
+        );
+        assert_eq!(
+            result
+                .diagnostics
+                .iter()
+                .find(|d| d.code == brink_ir::DiagnosticCode::E065)
+                .expect("checked above")
+                .code
+                .severity(),
+            brink_ir::Severity::Error,
+            "Unknown-escape is a compile error under strict, not a warning"
+        );
+    }
+
+    #[test]
+    fn strict_clean_project_compiles_with_no_diagnostics() {
+        let src =
+            "=== function heal(hp: int): int ===\n~ temp bonus: int = 5\n~ return hp + bonus\n";
+        let (hir, manifest) = lower_one(src);
+        let opts = AnalysisOptions {
+            dialect: Dialect::Brink,
+            types: TypePolicy::Strict,
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     }
 }

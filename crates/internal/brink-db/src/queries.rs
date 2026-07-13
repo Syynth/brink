@@ -350,12 +350,27 @@ pub(crate) fn analysis_query(db: &dyn salsa::Database, project: ProjectInput) ->
         })
         .collect();
 
+    let opts = project.analysis_options(db);
+    // TM-3 (docs/typed-mode-spec.md §9-step-3): under `types = strict` +
+    // `dialect = brink`, reuse the already-memoized, FG-narrowed
+    // `type_inference_query` instead of letting `finish_analysis` recompute
+    // inference from scratch via `infer_project` — this is the "inference
+    // finally has a consumer" seam the per-def/per-SCC decomposition (FG-2,
+    // FG-2.1) exists for: a warm re-analyze after an edit only re-solves the
+    // SCC(s) that edit actually touched, not the whole project. Consumes
+    // `type_inference_query` as an already-registered ingredient (no new
+    // salsa query decomposition — #619's own fence).
+    let strict_inference = (opts.dialect == brink_analyzer::Dialect::Brink
+        && opts.types == brink_analyzer::TypePolicy::Strict)
+        .then(|| type_inference_query(db, project).as_ref());
+
     brink_analyzer::finish_analysis(
         &full_refs,
         index,
         resolutions,
         diagnostics,
-        project.analysis_options(db),
+        opts,
+        strict_inference,
     )
 }
 
@@ -861,7 +876,9 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
             lowering: &lowered_query(db, *f).diagnostics,
         })
         .collect();
-    let (errors, warnings) = partition_diagnostics(&inputs, &analysis.diagnostics, disable_all);
+    let types = project.analysis_options(db).types;
+    let (errors, warnings) =
+        partition_diagnostics(&inputs, &analysis.diagnostics, disable_all, types);
 
     if !errors.is_empty() {
         return LirProduct {
@@ -899,7 +916,7 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
     // cosmetic warning on an otherwise-successful compile.
     let (mut lir_errors, mut lir_warnings): (Vec<Diagnostic>, Vec<Diagnostic>) = lir_diagnostics
         .into_iter()
-        .partition(|d| d.code.severity() == Severity::Error);
+        .partition(|d| brink_analyzer::effective_severity(d.code, types) == Severity::Error);
 
     if program.is_some() && lir_errors.is_empty() {
         let mut errors = errors;
@@ -1025,17 +1042,26 @@ static NO_SUPPRESSIONS: Suppressions = Suppressions {
 /// `disable_all`: whether the entry file carries `brink-disable-all`
 /// (compiler mode skips analysis diagnostics entirely); pass `false` for LSP
 /// mode where analysis diagnostics are always included.
+///
+/// `types`: the project's TM-3 `types` policy — every diagnostic is
+/// partitioned by [`brink_analyzer::effective_severity`], not the raw
+/// [`DiagnosticCode::severity`] default, so `E063` (annotation-vs-inference
+/// mismatch) partitions as an error under `types = strict` and a warning
+/// under `types = gradual` (the #640-round ruling) no matter which of this
+/// function's two callers ([`lir_query`] or `brink-driver`'s
+/// `collect_diagnostics`) is asking.
 #[must_use]
 pub fn partition_diagnostics(
     files: &[FileDiagnostics<'_>],
     analysis_diagnostics: &[Diagnostic],
     disable_all: bool,
+    types: brink_analyzer::TypePolicy,
 ) -> (Vec<Diagnostic>, Vec<Diagnostic>) {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
     let mut partition = |d: Diagnostic| {
-        if d.code.severity() == Severity::Error {
+        if brink_analyzer::effective_severity(d.code, types) == Severity::Error {
             errors.push(d);
         } else {
             warnings.push(d);

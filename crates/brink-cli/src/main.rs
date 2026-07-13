@@ -37,6 +37,27 @@ impl From<DialectArg> for brink_compiler::Dialect {
     }
 }
 
+/// CLI-facing mirror of `brink_compiler::TypePolicy` (docs/typed-mode-spec.md
+/// §1/§9-step-3, TM-3) — same rationale as [`DialectArg`], a plain `clap`
+/// surface distinct from the analyzer's own enum.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum TypesArg {
+    /// `Unknown` unifies with anything; annotations are optional (default).
+    Gradual,
+    /// `Unknown`/`Conflicted` escapes are compile errors; requires
+    /// `dialect = brink`.
+    Strict,
+}
+
+impl From<TypesArg> for brink_compiler::TypePolicy {
+    fn from(arg: TypesArg) -> Self {
+        match arg {
+            TypesArg::Gradual => brink_compiler::TypePolicy::Gradual,
+            TypesArg::Strict => brink_compiler::TypePolicy::Strict,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Compile an .ink story (native pipeline)
@@ -54,6 +75,13 @@ enum Commands {
         /// never embedded in `.inkb`, never delivered to the runtime.
         #[arg(long, value_enum, default_value_t = DialectArg::StrictInk)]
         dialect: DialectArg,
+        /// Typed-mode policy (docs/typed-mode-spec.md §1, TM-3). `gradual`
+        /// (default) is today's behavior, byte-identical forever. `strict`
+        /// makes `Unknown`/`Conflicted`-escaping inference a compile error
+        /// and requires `--dialect brink` (a config error otherwise).
+        /// Mount-time only: never embedded in `.inkb`.
+        #[arg(long, value_enum, default_value_t = TypesArg::Gradual)]
+        types: TypesArg,
     },
     /// Convert between ink formats (.inkb, .inkt)
     Convert {
@@ -183,8 +211,9 @@ fn run_command(command: Commands) -> ExitCode {
             input,
             output,
             dialect,
+            types,
         } => {
-            if let Err(e) = run_compile(&input, output.as_deref(), dialect.into()) {
+            if let Err(e) = run_compile(&input, output.as_deref(), dialect.into(), types.into()) {
                 tracing::error!("{e}");
                 return ExitCode::FAILURE;
             }
@@ -279,9 +308,11 @@ fn run_compile(
     input: &std::path::Path,
     output: Option<&std::path::Path>,
     dialect: brink_compiler::Dialect,
+    types: brink_compiler::TypePolicy,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let options = brink_compiler::AnalysisOptions {
         dialect,
+        types,
         ..brink_compiler::AnalysisOptions::default()
     };
     let output_result = brink_compiler::compile_path_with_options(input, options)?;
