@@ -95,7 +95,8 @@ pub struct Knot {
     pub is_local: bool,
     /// The function-header return type annotation (TM-2, docs/typed-mode-spec.md
     /// §3: `): type ===`), brink-dialect-gated syntax. `None` when absent —
-    /// not the same as an explicit `void` (`TypeExpr::Void`).
+    /// not the same as an explicit `void`, which lowers as
+    /// `TypeExpr::Named { name: "void" }` like every other nominal.
     pub return_type: Option<TypeExpr>,
 }
 

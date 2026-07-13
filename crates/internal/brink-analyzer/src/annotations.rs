@@ -10,11 +10,11 @@
 //!   `return_annotation` fields, populated via this function).
 //! - [`check`]: semantic diagnostics on the annotation *content* — unknown
 //!   type names (`E061`) and `fn(...)` function types, which parse
-//!   everywhere but type as reserved until T1c (`E062`). Unconditional in
-//!   both dialects — independent of whether `dialect_gate` also rejects the
-//!   annotation as extension syntax (`E051`) under `strict-ink`; a
-//!   `strict-ink` project gets both diagnostics; a `brink` one gets only
-//!   this pass's.
+//!   everywhere but type as reserved until T1c (`E062`). Runs only under
+//!   the brink dialect (`finish_analysis` gates the call): under
+//!   `strict-ink`, `dialect_gate` already rejects the annotation whole as
+//!   extension syntax (`E051`), and content diagnostics on rejected syntax
+//!   are noise (maintainer ruling 2026-07-13).
 //!
 //! [`mismatches`] is the third job: the annotation-vs-body-inference
 //! diagnostic (`E063`), composing `signature()`'s annotations with

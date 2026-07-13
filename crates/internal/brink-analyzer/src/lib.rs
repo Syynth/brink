@@ -163,7 +163,13 @@ pub fn finish_analysis(
 
     diagnostics.extend(validate::validate(&hir_inputs));
     diagnostics.extend(dialect_gate::check(&hir_inputs, &resolutions, opts.dialect));
-    diagnostics.extend(annotations::check(&hir_inputs, &index));
+    // Annotation *content* checks (E061/E062) run only under the brink
+    // dialect: under `strict-ink` the annotation is already rejected whole
+    // by `dialect_gate` (E051), and critiquing the inside of rejected
+    // syntax is noise (maintainer ruling 2026-07-13).
+    if opts.dialect == Dialect::Brink {
+        diagnostics.extend(annotations::check(&hir_inputs, &index));
+    }
 
     // Host-manifest enrichment + checks (tooling/author-time only).
     let inline_docs = collect_inline_docs(&manifest_inputs);

@@ -309,3 +309,56 @@ fn signature_list_generic_annotation_resolves_against_declared_list_names() {
     // sentinel) — `resolve_annotation` correctly reports it as unresolved.
     assert_eq!(sig.return_annotation, None);
 }
+
+#[test]
+fn strict_ink_suppresses_annotation_content_checks() {
+    // Maintainer ruling 2026-07-13: under `strict-ink` a bad annotation is
+    // rejected whole by the dialect gate (E051) — the content checks
+    // (E061 unknown name / E062 fn-reserved) must NOT stack a second
+    // diagnostic on the same span. Under `brink` the content checks fire.
+    let src = "VAR cb: fn(int): bool = 0\nVAR p: Frobnicator = 0\n";
+    let (hir, manifest) = lower(FileId(0), src);
+    let files = [(FileId(0), &hir, &manifest)];
+
+    let strict = brink_analyzer::analyze_with_options(
+        &files,
+        &brink_analyzer::AnalysisOptions::default(), // dialect = StrictInk
+    );
+    assert!(
+        strict
+            .diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+        "strict-ink still rejects the annotation as extension syntax"
+    );
+    assert!(
+        !strict.diagnostics.iter().any(|d| matches!(
+            d.code,
+            brink_ir::DiagnosticCode::E061 | brink_ir::DiagnosticCode::E062
+        )),
+        "strict-ink must not critique the content of rejected syntax: {:?}",
+        strict.diagnostics
+    );
+
+    let brink = brink_analyzer::analyze_with_options(
+        &files,
+        &brink_analyzer::AnalysisOptions {
+            dialect: brink_analyzer::Dialect::Brink,
+            ..Default::default()
+        },
+    );
+    assert!(
+        brink
+            .diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E061),
+        "brink dialect flags the unknown type name"
+    );
+    assert!(
+        brink
+            .diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E062),
+        "brink dialect flags the reserved fn(...) type"
+    );
+}
