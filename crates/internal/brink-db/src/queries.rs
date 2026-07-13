@@ -95,6 +95,7 @@ impl Default for BrinkDatabase {
                 .ingredient::<analysis_query>()
                 .ingredient::<diagnostics_query>()
                 // Layer 2/3: type inference (TM-1, advisory-only).
+                .ingredient::<inference_index_query>()
                 .ingredient::<type_inference_query>()
                 .ingredient::<infer_body_query>()
                 .ingredient::<type_diagnostics_query>()
@@ -281,6 +282,16 @@ pub(crate) struct DefKey<'db> {
 /// find the declaring file, reintroducing the project-wide invalidation this
 /// projection exists to avoid. No consumer calls `signature` with a local id
 /// today (phase-0 stub, not yet wired to hover).
+///
+/// **Declaring-file dependency only (issue #630 / FG-1 §2.1).**
+/// `brink_analyzer::signature` reads only the declaring file's HIR (looked
+/// up by `SymbolInfo.file`, known from the index) — this query used to build
+/// `hir_refs` over *every* project file before calling it, so salsa recorded
+/// a read-edge on every file's `lowered_query` regardless, and a body edit
+/// in any file re-ran every signature memo. Filtering `project.files(db)`
+/// down to the one matching `SourceFile` before calling `lowered_query`
+/// means the only per-file dependency recorded is the declaring file's own —
+/// a body edit elsewhere in the project no longer invalidates this memo.
 #[salsa::tracked]
 pub(crate) fn signature_query<'db>(
     db: &'db dyn salsa::Database,
@@ -288,12 +299,15 @@ pub(crate) fn signature_query<'db>(
     def: DefKey<'db>,
 ) -> Option<Arc<Sig>> {
     let index = resolution_index_query(db, project);
-    let files = project.files(db);
-    let hir_refs: Vec<(FileId, &HirFile)> = files
+    let def_id = def.def(db);
+    let declaring_file = index.symbols.get(&def_id)?.file;
+    let hir_refs: Vec<(FileId, &HirFile)> = project
+        .files(db)
         .iter()
+        .filter(|f| f.file_id(db) == declaring_file)
         .map(|f| (f.file_id(db), &lowered_query(db, *f).hir))
         .collect();
-    brink_analyzer::signature(def.def(db), index, &hir_refs)
+    brink_analyzer::signature(def_id, index, &hir_refs)
 }
 
 /// Full cross-file analysis, composed from the layer-2 queries plus the
@@ -365,25 +379,69 @@ pub(crate) fn diagnostics_query(
 // project-wide memo, mirroring `signature_query`'s and `diagnostics_query`'s
 // own shape.
 
-/// Whole-project type inference. Wraps [`brink_analyzer::infer_project`]
-/// over the same `(index, resolutions)` pair `analysis_query` already
-/// computed — the firewall is `brink_analyzer::infer_project`'s job (see its
-/// module docs); this query only supplies its inputs.
+/// The cutoff projection of the symbol index feeding whole-project type
+/// inference (issue #630 / FG-1 §3): every symbol — declarations *and*
+/// locals (`Param`/`Temp`) — with ranges zeroed.
+///
+/// Unlike [`resolution_index_query`] (name *resolution*'s projection, which
+/// drops locals entirely — issue #517, because a local's identity, not just
+/// its range, changes when a `~ temp` is added/removed elsewhere), inference
+/// reads `index.symbols.get(def)` only for already-*resolved* ids
+/// (`brink_analyzer::infer::body::ty_of_def`/`observe`/`infer_list_literal`)
+/// to recover a local's `kind`/`name` — it never resolves a name against
+/// this index, so dropping locals here would silently make every local
+/// reference type as `Unknown`. Neither this query nor
+/// [`brink_analyzer::signature`] (called for globals via `infer/mod.rs`'s
+/// `collect_globals`) ever reads a symbol's range, so zeroing it is safe and
+/// backdates this projection across any edit that adds/removes no
+/// declaration or local.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn inference_index_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> Arc<SymbolIndex> {
+    let (index, _diags) = symbol_index_query(db, project);
+    let mut stripped: SymbolIndex = (**index).clone();
+    for info in stripped.symbols.values_mut() {
+        info.range = rowan::TextRange::default();
+    }
+    Arc::new(stripped)
+}
+
+/// Whole-project type inference. Wraps [`brink_analyzer::infer_project`].
+///
+/// **Re-sourced off `resolution_index`/`resolve`, not `analysis_query`
+/// (issue #630 / FG-1 §3).** `analysis_query`'s only cutoff is `PartialEq`
+/// over a range-carrying `AnalysisResult` (diagnostics + the full
+/// `ResolutionMap`) that almost never backdates, so riding that edge would
+/// make the first real consumer of this query (TM-2) re-run whole-project
+/// inference on nearly every edit — and it forces `finish_analysis`'s
+/// diagnostic passes (`validate`/`dialect_gate`/`external_check`) to run
+/// just to supply `(index, resolutions)`, which inference never reads past
+/// this projection anyway. `resolutions` is assembled the same way
+/// `analysis_query` assembles its own copy — the identical per-file
+/// `resolve_query` loop, same file order — so this is byte-identical input,
+/// not a behavior change; only the dependency edge moves.
 #[salsa::tracked(returns(ref))]
 pub(crate) fn type_inference_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
 ) -> Arc<InferenceResult> {
     let files = project.files(db);
-    let analysis = analysis_query(db, project);
+    let index = inference_index_query(db, project);
+    let mut resolutions = ResolutionMap::new();
+    for file in files {
+        let (file_map, _file_diags) = resolve_query(db, project, *file);
+        resolutions.extend(file_map.iter().cloned());
+    }
     let hir_refs: Vec<(FileId, &HirFile)> = files
         .iter()
         .map(|f| (f.file_id(db), &lowered_query(db, *f).hir))
         .collect();
     Arc::new(brink_analyzer::infer_project(
         &hir_refs,
-        &analysis.index,
-        &analysis.resolutions,
+        index,
+        &resolutions,
     ))
 }
 

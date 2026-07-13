@@ -244,6 +244,32 @@ fn incremental_story_data_equals_fresh_compile() {
                 story_bytes(fresh),
                 "{project}: serialized StoryData differs after edit {step}"
             );
+
+            // FG-1 (#630): the per-def `signature(def)` query must agree
+            // between the long-lived incremental db and a from-scratch one,
+            // for every non-local def — the equivalence gate the design doc
+            // asks incremental_fuzz to carry for the narrowed dependency
+            // edge (declaring-file-only, not every project file's HIR).
+            let mut defs: Vec<_> = db
+                .symbol_index()
+                .symbols
+                .iter()
+                .filter(|(_, info)| {
+                    !matches!(
+                        info.kind,
+                        brink_ir::SymbolKind::Param | brink_ir::SymbolKind::Temp
+                    )
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            defs.sort();
+            for def in defs {
+                assert_eq!(
+                    db.signature(def),
+                    fresh_db.signature(def),
+                    "{project}: signature({def:?}) diverged from fresh compile after edit {step}"
+                );
+            }
         }
     }
 
