@@ -66,6 +66,8 @@ pub enum SymbolKind {
     Param,
     /// A `~ temp` local variable.
     Temp,
+    /// A `STRUCT` shape declaration (TM-4b, docs/typed-mode-spec.md §6).
+    Struct,
 }
 
 impl SymbolKind {
@@ -78,6 +80,7 @@ impl SymbolKind {
             Self::ListItem => DefinitionTag::ListItem,
             Self::External => DefinitionTag::ExternalFn,
             Self::Param | Self::Temp => DefinitionTag::LocalVar,
+            Self::Struct => DefinitionTag::StructDef,
         }
     }
 }

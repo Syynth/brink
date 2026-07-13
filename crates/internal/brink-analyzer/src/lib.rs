@@ -13,6 +13,7 @@ mod manifest;
 mod resolve;
 mod signature;
 mod strict;
+mod structs;
 mod validate;
 
 use std::collections::BTreeMap;

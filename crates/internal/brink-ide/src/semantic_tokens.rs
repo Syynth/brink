@@ -25,6 +25,7 @@ pub fn token_type_names() -> &'static [&'static str] {
         "parameter",  // 10 function/knot params
         "decorator",  // 11 tags (#)
         "label",      // 12 labels, gather names
+        "struct",     // 13 STRUCT declarations (TM-4b)
     ]
 }
 
@@ -53,6 +54,7 @@ const TT_ENUM_MEMBER: u32 = 9;
 const TT_PARAMETER: u32 = 10;
 const TT_DECORATOR: u32 = 11;
 const TT_LABEL: u32 = 12;
+const TT_STRUCT: u32 = 13;
 
 // ── Modifier bitmasks ──────────────────────────────────────────────
 
@@ -352,6 +354,10 @@ fn symbol_kind_to_classification(kind: SymbolKind) -> Classification {
         },
         SymbolKind::Param => Classification {
             token_type: TT_PARAMETER,
+            modifiers: 0,
+        },
+        SymbolKind::Struct => Classification {
+            token_type: TT_STRUCT,
             modifiers: 0,
         },
     }

@@ -81,6 +81,12 @@ pub fn lower_top_level(
         .filter_map(ast::ListDecl::cast)
         .filter_map(|l| l.declare_and_lower(&scope, &mut sink).ok())
         .collect();
+    // TM-4b (docs/typed-mode-spec.md §6): `STRUCT` is top-level only, unlike
+    // `VAR`/`CONST`/`LIST` — `file.struct_decls()` is a direct-children scan.
+    let _structs: Vec<_> = file
+        .struct_decls()
+        .filter_map(|s| s.declare_and_lower(&scope, &mut sink).ok())
+        .collect();
     let _externals: Vec<_> = file
         .externals()
         .filter_map(|e| e.declare_and_lower(&scope, &mut sink).ok())
@@ -124,6 +130,12 @@ fn lower_source_file(
         .filter_map(ast::ListDecl::cast)
         .filter_map(|l| l.declare_and_lower(scope, sink).ok())
         .collect();
+    // TM-4b (docs/typed-mode-spec.md §6): `STRUCT` is top-level only, unlike
+    // `VAR`/`CONST`/`LIST` — `file.struct_decls()` is a direct-children scan.
+    let structs = file
+        .struct_decls()
+        .filter_map(|s| s.declare_and_lower(scope, sink).ok())
+        .collect();
     let externals = file
         .externals()
         .filter_map(|e| e.declare_and_lower(scope, sink).ok())
@@ -149,6 +161,7 @@ fn lower_source_file(
         variables,
         constants,
         lists,
+        structs,
         externals,
         includes,
     }

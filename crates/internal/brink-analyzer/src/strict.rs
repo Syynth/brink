@@ -155,6 +155,9 @@ pub fn check(
     let mut out = check_escapes(files, index, inference);
     out.extend(annotations::mismatches(files, index, inference));
     out.extend(check_void_assignments(files, index, resolutions));
+    // TM-4b (docs/typed-mode-spec.md §6): missing/extra/mistyped struct
+    // construction-literal fields — strict-mode-only, per the crate doc.
+    out.extend(crate::structs::check(files, index));
     out
 }
 
@@ -168,6 +171,7 @@ fn check_escapes(
     inference: &InferenceResult,
 ) -> Vec<brink_ir::Diagnostic> {
     let list_names = annotations::declared_list_names(index);
+    let struct_names = annotations::declared_struct_names(index);
     let mut out = Vec::new();
     for &(file, hir) in files {
         for knot in &hir.knots {
@@ -186,6 +190,7 @@ fn check_escapes(
                     &knot.params,
                     &knot.body,
                     &list_names,
+                    &struct_names,
                     inference,
                     &mut out,
                 );
@@ -205,6 +210,7 @@ fn check_escapes(
                         &stitch.params,
                         &stitch.body,
                         &list_names,
+                        &struct_names,
                         inference,
                         &mut out,
                     );
@@ -226,6 +232,7 @@ fn check_def(
     params: &[brink_ir::Param],
     body: &Block,
     list_names: &std::collections::BTreeSet<String>,
+    struct_names: &std::collections::BTreeSet<String>,
     inference: &InferenceResult,
     out: &mut Vec<brink_ir::Diagnostic>,
 ) {
@@ -245,7 +252,7 @@ fn check_def(
         let annotated = p
             .annotation
             .as_ref()
-            .is_some_and(|ann| annotations::resolve(ann, list_names).is_some());
+            .is_some_and(|ann| annotations::resolve(ann, list_names, struct_names).is_some());
         let ty = sig.params.get(i).unwrap_or(&Ty::Unknown);
         emit_escape(
             file,
@@ -263,8 +270,9 @@ fn check_def(
     if is_function {
         let is_void = return_type
             .is_some_and(|rt| matches!(rt, TypeExpr::Named { name, .. } if name == "void"));
-        let annotated =
-            is_void || return_type.is_some_and(|rt| annotations::resolve(rt, list_names).is_some());
+        let annotated = is_void
+            || return_type
+                .is_some_and(|rt| annotations::resolve(rt, list_names, struct_names).is_some());
         if !is_void {
             emit_escape(
                 file,
@@ -282,7 +290,7 @@ fn check_def(
     // the same way a param annotation does (Unknown-escape only, per above).
     let param_names: std::collections::BTreeSet<&str> =
         params.iter().map(|p| p.name.text.as_str()).collect();
-    let temp_decls = collect_temps(body, list_names);
+    let temp_decls = collect_temps(body, list_names, struct_names);
     for (name, ty) in &body_types.locals {
         if param_names.contains(name.as_str()) {
             continue; // already checked above, positionally + annotation-aware
@@ -361,7 +369,12 @@ fn classify(ty: &Ty) -> Escape {
             (Escape::Unknown, _) | (_, Escape::Unknown) => Escape::Unknown,
             (Escape::Clean, Escape::Clean) => Escape::Clean,
         },
-        Ty::Int | Ty::Float | Ty::Bool | Ty::String | Ty::Divert | Ty::List(_) => Escape::Clean,
+        // TM-4b (docs/typed-mode-spec.md §6): "struct-typed slots are
+        // concrete for E065/E066 purposes" — a resolved `Ty::Struct` is as
+        // clean as any other nominal (`Ty::List`'s existing precedent).
+        Ty::Int | Ty::Float | Ty::Bool | Ty::String | Ty::Divert | Ty::List(_) | Ty::Struct(_) => {
+            Escape::Clean
+        }
     }
 }
 
@@ -668,25 +681,28 @@ struct TempDecl {
 fn collect_temps(
     body: &Block,
     list_names: &std::collections::BTreeSet<String>,
+    struct_names: &std::collections::BTreeSet<String>,
 ) -> BTreeMap<String, TempDecl> {
     let mut out = BTreeMap::new();
-    collect_temps_block(body, list_names, &mut out);
+    collect_temps_block(body, list_names, struct_names, &mut out);
     out
 }
 
 fn collect_temps_block(
     block: &Block,
     list_names: &std::collections::BTreeSet<String>,
+    struct_names: &std::collections::BTreeSet<String>,
     out: &mut BTreeMap<String, TempDecl>,
 ) {
     for stmt in &block.stmts {
-        collect_temps_stmt(stmt, list_names, out);
+        collect_temps_stmt(stmt, list_names, struct_names, out);
     }
 }
 
 fn collect_temps_stmt(
     stmt: &Stmt,
     list_names: &std::collections::BTreeSet<String>,
+    struct_names: &std::collections::BTreeSet<String>,
     out: &mut BTreeMap<String, TempDecl>,
 ) {
     match stmt {
@@ -694,7 +710,7 @@ fn collect_temps_stmt(
             let annotation_ty = t
                 .annotation
                 .as_ref()
-                .and_then(|te| annotations::resolve(te, list_names));
+                .and_then(|te| annotations::resolve(te, list_names, struct_names));
             out.insert(
                 t.name.text.clone(),
                 TempDecl {
@@ -705,34 +721,34 @@ fn collect_temps_stmt(
         }
         Stmt::ChoiceSet(cs) => {
             for choice in &cs.choices {
-                collect_temps_block(&choice.body, list_names, out);
+                collect_temps_block(&choice.body, list_names, struct_names, out);
                 if let Some(c) = &choice.start_content {
-                    collect_temps_content(c, list_names, out);
+                    collect_temps_content(c, list_names, struct_names, out);
                 }
                 if let Some(c) = &choice.bracket_content {
-                    collect_temps_content(c, list_names, out);
+                    collect_temps_content(c, list_names, struct_names, out);
                 }
                 if let Some(c) = &choice.inner_content {
-                    collect_temps_content(c, list_names, out);
+                    collect_temps_content(c, list_names, struct_names, out);
                 }
             }
-            collect_temps_block(&cs.continuation, list_names, out);
+            collect_temps_block(&cs.continuation, list_names, struct_names, out);
         }
-        Stmt::LabeledBlock(b) => collect_temps_block(b, list_names, out),
+        Stmt::LabeledBlock(b) => collect_temps_block(b, list_names, struct_names, out),
         Stmt::Conditional(c) => {
             for branch in &c.branches {
-                collect_temps_block(&branch.body, list_names, out);
+                collect_temps_block(&branch.body, list_names, struct_names, out);
             }
         }
         Stmt::Sequence(s) => {
             for branch in &s.branches {
-                collect_temps_block(branch, list_names, out);
+                collect_temps_block(branch, list_names, struct_names, out);
             }
         }
-        Stmt::Content(c) => collect_temps_content(c, list_names, out),
+        Stmt::Content(c) => collect_temps_content(c, list_names, struct_names, out),
         Stmt::LogicBlock(lb) => {
             for bs in &lb.stmts {
-                collect_temps_block_stmt(bs, list_names, out);
+                collect_temps_block_stmt(bs, list_names, struct_names, out);
             }
         }
         Stmt::Divert(_)
@@ -748,18 +764,19 @@ fn collect_temps_stmt(
 fn collect_temps_content(
     content: &Content,
     list_names: &std::collections::BTreeSet<String>,
+    struct_names: &std::collections::BTreeSet<String>,
     out: &mut BTreeMap<String, TempDecl>,
 ) {
     for part in &content.parts {
         match part {
             ContentPart::InlineConditional(c) => {
                 for branch in &c.branches {
-                    collect_temps_block(&branch.body, list_names, out);
+                    collect_temps_block(&branch.body, list_names, struct_names, out);
                 }
             }
             ContentPart::InlineSequence(s) => {
                 for branch in &s.branches {
-                    collect_temps_block(branch, list_names, out);
+                    collect_temps_block(branch, list_names, struct_names, out);
                 }
             }
             ContentPart::Interpolation(_)
@@ -773,6 +790,7 @@ fn collect_temps_content(
 fn collect_temps_block_stmt(
     bs: &BlockStmt,
     list_names: &std::collections::BTreeSet<String>,
+    struct_names: &std::collections::BTreeSet<String>,
     out: &mut BTreeMap<String, TempDecl>,
 ) {
     match bs {
@@ -780,7 +798,7 @@ fn collect_temps_block_stmt(
             let annotation_ty = t
                 .annotation
                 .as_ref()
-                .and_then(|te| annotations::resolve(te, list_names));
+                .and_then(|te| annotations::resolve(te, list_names, struct_names));
             out.insert(
                 t.name.text.clone(),
                 TempDecl {
@@ -789,15 +807,15 @@ fn collect_temps_block_stmt(
                 },
             );
         }
-        BlockStmt::If(i) => collect_temps_if(i, list_names, out),
+        BlockStmt::If(i) => collect_temps_if(i, list_names, struct_names, out),
         BlockStmt::While(w) => {
             for s in &w.body {
-                collect_temps_block_stmt(s, list_names, out);
+                collect_temps_block_stmt(s, list_names, struct_names, out);
             }
         }
         BlockStmt::For(f) => {
             for s in &f.body {
-                collect_temps_block_stmt(s, list_names, out);
+                collect_temps_block_stmt(s, list_names, struct_names, out);
             }
         }
         BlockStmt::Assignment(_)
@@ -811,16 +829,17 @@ fn collect_temps_block_stmt(
 fn collect_temps_if(
     i: &IfStmt,
     list_names: &std::collections::BTreeSet<String>,
+    struct_names: &std::collections::BTreeSet<String>,
     out: &mut BTreeMap<String, TempDecl>,
 ) {
     for s in &i.body {
-        collect_temps_block_stmt(s, list_names, out);
+        collect_temps_block_stmt(s, list_names, struct_names, out);
     }
     match &i.else_branch {
-        Some(ElseBranch::ElseIf(inner)) => collect_temps_if(inner, list_names, out),
+        Some(ElseBranch::ElseIf(inner)) => collect_temps_if(inner, list_names, struct_names, out),
         Some(ElseBranch::Else(stmts)) => {
             for s in stmts {
-                collect_temps_block_stmt(s, list_names, out);
+                collect_temps_block_stmt(s, list_names, struct_names, out);
             }
         }
         None => {}
@@ -1154,6 +1173,59 @@ mod tests {
                 .iter()
                 .any(|d| d.code == DiagnosticCode::E067),
             "gradual must never surface E067: {:?}",
+            result.diagnostics
+        );
+    }
+
+    // ── TM-4b structs wiring (docs/typed-mode-spec.md §6) ──────────────
+
+    #[test]
+    fn strict_check_wires_in_struct_construction_errors_through_the_real_pipeline() {
+        // Exercises the full production path (`analyze_with_options` ->
+        // `finish_analysis` -> `whole_project_diagnostics` ->
+        // `strict::check` -> `crate::structs::check`), not `structs::check`
+        // in isolation — proves the wiring, not just the unit.
+        let parsed = brink_syntax::parse(
+            "STRUCT Point = #{x: float, y: float}\n\
+             === main ===\n~ p = Point#{x: 1.0}\n-> DONE\n",
+        );
+        let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let opts = crate::AnalysisOptions {
+            dialect: crate::Dialect::Brink,
+            types: TypePolicy::Strict,
+            ..crate::AnalysisOptions::default()
+        };
+        let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E069),
+            "missing field must surface through the real strict pipeline: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn struct_construction_errors_never_surface_under_gradual() {
+        let parsed = brink_syntax::parse(
+            "STRUCT Point = #{x: float, y: float}\n\
+             === main ===\n~ p = Point#{x: 1.0}\n-> DONE\n",
+        );
+        let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let opts = crate::AnalysisOptions {
+            dialect: crate::Dialect::Brink,
+            ..crate::AnalysisOptions::default()
+        };
+        let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E069
+                    || d.code == DiagnosticCode::E070
+                    || d.code == DiagnosticCode::E071),
+            "gradual must never surface construction errors: {:?}",
             result.diagnostics
         );
     }

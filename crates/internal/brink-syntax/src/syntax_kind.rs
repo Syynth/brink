@@ -279,6 +279,31 @@ pub enum SyntaxKind {
     /// types as reserved until T1c.
     TYPE_FN,
 
+    // ── TM-4b structs (docs/typed-mode-spec.md §6) ─────────────────
+    // `STRUCT Name = #{ field: type, … }` declaration, `Name#{field: expr, …}`
+    // construction literal, postfix `.field` access. Superset grammar —
+    // always parses (dialect-gated at analysis, same T1b/TM-2 pattern);
+    // `STRUCT` is a contextual (soft) keyword recognized only at top-level
+    // declaration-start position (`STRUCT` `IDENT` `=` `#` `{`), so it never
+    // reserves the word elsewhere. LIR lowering rejects every construct
+    // below — codegen lands with TM-4c (#666).
+    /// `STRUCT Name = #{ field: type, … }`. Top-level only.
+    STRUCT_DECL,
+    /// One `field: type` pair inside a `STRUCT_DECL`'s body.
+    STRUCT_FIELD_DECL,
+    /// `Name#{field: expr, …}` — struct construction literal. Expression
+    /// position only, like `ARRAY_LITERAL`/`MAP_LITERAL`.
+    STRUCT_LITERAL,
+    /// One `field: expr` pair inside a `STRUCT_LITERAL`.
+    STRUCT_FIELD_INIT,
+    /// `base.field` — postfix field access. Only used where the existing
+    /// dotted-`PATH` grammar doesn't already cover the shape (e.g. after a
+    /// `STRUCT_LITERAL`, an `INDEX_EXPR`, or a parenthesized expression); a
+    /// bare `ident.ident` chain still parses as one `PATH` node and the
+    /// static-path-vs-field-access ambiguity is resolved by
+    /// `brink-analyzer`'s resolution fallback (typed-mode-spec §6), not here.
+    FIELD_ACCESS_EXPR,
+
     // Not a real kind — used only for `rowan::Language::kind_to_raw` bounds.
     #[doc(hidden)]
     __LAST,

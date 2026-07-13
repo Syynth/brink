@@ -156,6 +156,11 @@ impl InferPass<'_, '_> {
             SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::External | SymbolKind::Label => {
                 Ty::Unknown
             }
+            // A bare `Expr::Path` never resolves to a struct shape name
+            // (TM-4b's `RefKind::Struct` is a disjoint resolution pass from
+            // the `RefKind::Variable` one `ty_of_def` serves) — kept for
+            // match exhaustiveness only.
+            SymbolKind::Struct => Ty::Unknown,
         }
     }
 
@@ -255,6 +260,26 @@ impl InferPass<'_, '_> {
                         Ty::Unknown
                     }
                 }
+            }
+            // TM-4b (docs/typed-mode-spec.md §6). A construction literal's
+            // nominal type is the shape name itself — resolved-vs-declared
+            // validity is `brink-analyzer::structs`' construction-check job,
+            // not inference's; field values are still visited for their
+            // side effects (nested calls/uses), same as every other
+            // aggregate literal above.
+            Expr::StructLiteral(sl) => {
+                for (_name, val) in &sl.fields {
+                    self.infer_expr(val);
+                }
+                Ty::Struct(sl.shape.text.clone())
+            }
+            // Field-type propagation through a struct's declared shape is
+            // out of scope for this slice (no static field-type table is
+            // threaded through inference yet) — the base is still inferred
+            // for its own escape-checking purposes.
+            Expr::FieldAccess(fa) => {
+                self.infer_expr(&fa.base);
+                Ty::Unknown
             }
         }
     }

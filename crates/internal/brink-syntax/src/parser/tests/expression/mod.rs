@@ -143,6 +143,84 @@ fn insta_index_chained() {
     insta::assert_snapshot!(format!("{:#?}", p.syntax()));
 }
 
+// ── TM-4b structs (docs/typed-mode-spec.md §6) ────────────────────────
+
+#[test]
+fn struct_literal_empty() {
+    check("~ x = Point#{}\n");
+}
+
+#[test]
+fn struct_literal_basic() {
+    check("~ p = Point#{x: 1.0, y: 2.0}\n");
+}
+
+#[test]
+fn struct_literal_trailing_comma() {
+    check("~ p = Point#{x: 1.0, y: 2.0,}\n");
+}
+
+#[test]
+fn struct_literal_single_field() {
+    check("~ w = Wrapper#{value: 1}\n");
+}
+
+/// Nesting: an array of struct literals (issue #665's own example).
+#[test]
+fn struct_literal_nested_in_array() {
+    check("~ pts = #[Point#{x: 1.0, y: 2.0}, Point#{x: 3.0, y: 4.0}]\n");
+}
+
+/// A struct literal as a map value.
+#[test]
+fn struct_literal_nested_in_map() {
+    check("~ m = #{\"a\": Point#{x: 1.0, y: 2.0}}\n");
+}
+
+#[test]
+fn field_access_after_struct_literal() {
+    check("~ x = Point#{x: 1.0, y: 2.0}.x\n");
+}
+
+#[test]
+fn field_access_chained_after_struct_literal() {
+    check("~ x = Point#{x: 1.0, y: 2.0}.x.y\n");
+}
+
+#[test]
+fn field_access_after_index_expr() {
+    check("~ x = pts[0].x\n");
+}
+
+#[test]
+fn field_access_after_paren_expr() {
+    check("~ x = (p).x\n");
+}
+
+/// A bare `ident.ident` chain is NOT the new `FIELD_ACCESS_EXPR` grammar —
+/// it stays one `PATH` node (the existing dotted-identifier parse), same
+/// CST shape as `knot.stitch`. The resolution-fallback disambiguation
+/// (static path vs. field access) is a `brink-analyzer` concern.
+#[test]
+fn bare_dotted_identifier_is_still_a_path_not_field_access() {
+    let p = parse("~ x = p.x\n");
+    let text = format!("{:#?}", p.syntax());
+    assert!(text.contains("PATH"), "{text}");
+    assert!(!text.contains("FIELD_ACCESS_EXPR"), "{text}");
+}
+
+#[test]
+fn insta_struct_literal() {
+    let p = parse("~ p = Point#{x: 1.0, y: 2.0}\n");
+    insta::assert_snapshot!(format!("{:#?}", p.syntax()));
+}
+
+#[test]
+fn insta_field_access_after_struct_literal() {
+    let p = parse("~ x = Point#{x: 1.0, y: 2.0}.x\n");
+    insta::assert_snapshot!(format!("{:#?}", p.syntax()));
+}
+
 #[test]
 fn function_call() {
     check("~ x = foo(1, 2)\n");

@@ -100,7 +100,44 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
             base: Box::new(lower_expr(&idx.base, ctx)),
             index: Box::new(lower_expr(&idx.index, ctx)),
         },
+
+        // TM-4b structs (docs/typed-mode-spec.md §6): grammar+HIR+analyzer
+        // land in this slice, codegen with TM-4c (#666) — see
+        // `reject_struct_construct`'s doc for the T1b-1/E053-backstop
+        // discipline this follows (a real diagnostic, not a silent
+        // Null/drop). Still walks children so any nested diagnostics
+        // (unresolved refs, etc.) inside a rejected construct still surface.
+        hir::Expr::StructLiteral(sl) => {
+            for (_name, val) in &sl.fields {
+                lower_expr(val, ctx);
+            }
+            reject_struct_construct(sl.ptr.text_range(), ctx)
+        }
+        hir::Expr::FieldAccess(fa) => {
+            lower_expr(&fa.base, ctx);
+            reject_struct_construct(fa.ptr.text_range(), ctx)
+        }
     }
+}
+
+/// Non-suppressible backstop for a struct construct reaching LIR lowering
+/// (TM-4b, docs/typed-mode-spec.md §6) — the T1b-1 discipline (grammar/HIR/
+/// analyzer land before codegen; LIR lowering rejects) plus the E053-backstop
+/// lesson (#572 review: a `debug_assert!`-guarded stub silently drops/
+/// corrupts data in release builds if the analyzer's dialect-gate diagnostic
+/// is suppressed via `// brink-disable-all`). This pushes a real,
+/// Error-severity `Diagnostic` into `ctx.diagnostics` — `brink-db`'s
+/// `lir_query` partitions LIR diagnostics by severity independently of
+/// analysis-phase suppression, so this fires unconditionally, in both
+/// dialects, suppressed or not.
+fn reject_struct_construct(range: rowan::TextRange, ctx: &mut LowerCtx<'_>) -> lir::Expr {
+    ctx.diagnostics.push(crate::Diagnostic {
+        file: ctx.file,
+        range,
+        message: crate::DiagnosticCode::E072.title().to_string(),
+        code: crate::DiagnosticCode::E072,
+    });
+    lir::Expr::Null
 }
 
 fn lower_array_literal(arr: &hir::ArrayLiteral, ctx: &mut LowerCtx<'_>) -> lir::Expr {
@@ -201,6 +238,23 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
 
     // Resolve via resolution map
     if let Some(info) = ctx.resolve_path(path.range) {
+        // TM-4b resolution fallback (docs/typed-mode-spec.md §6): a
+        // multi-segment `Path` resolving to a variable/constant/param/temp
+        // can only mean the analyzer's fallback kicked in (every dotted
+        // symbol name this resolution map otherwise produces for those four
+        // kinds is single-segment) — i.e. `p.x` field access on `p`, not a
+        // static dotted path. Codegen for this isn't ready (TM-4c) — reject
+        // rather than silently loading `p` itself and dropping `.x` (the
+        // exact silent-data-drop hazard the E053-backstop lesson warns
+        // about; see `reject_struct_construct`).
+        if path.segments.len() > 1
+            && matches!(
+                info.kind,
+                SymbolKind::Variable | SymbolKind::Constant | SymbolKind::Param | SymbolKind::Temp
+            )
+        {
+            return reject_struct_construct(path.range, ctx);
+        }
         match info.kind {
             SymbolKind::Variable | SymbolKind::Constant => lir::Expr::GetGlobal(info.id),
             SymbolKind::List => {
@@ -254,9 +308,14 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
                 let global_id = DefinitionId::new(DefinitionTag::GlobalVar, hasher.finish());
                 lir::Expr::GetGlobal(global_id)
             }
-            // Params should already be caught by temp_slot above;
-            // externals used as values are meaningless — fall back to null.
-            SymbolKind::External | SymbolKind::Param => lir::Expr::Null,
+            // Params should already be caught by temp_slot above; externals
+            // used as values are meaningless; a bare `Expr::Path` never
+            // resolves to a struct shape name either — a struct construction
+            // literal's shape name is registered as `RefKind::Struct`
+            // (TM-4b), a disjoint resolution pass from the
+            // `RefKind::Variable` one that reaches `lower_path` here (kept
+            // only for match exhaustiveness). All three fall back to null.
+            SymbolKind::External | SymbolKind::Param | SymbolKind::Struct => lir::Expr::Null,
         }
     } else {
         lir::Expr::Null

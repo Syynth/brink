@@ -3277,3 +3277,65 @@ fn nested_sequence_in_choice_text_inline_conditional_emits_e059_not_panic() {
     let program = program.expect("lower_to_program is total — it still returns Some");
     assert!(!program.root.body.is_empty());
 }
+
+// ─── TM-4b (#665): struct constructs reject at LIR lowering (E072) ─────
+//
+// Grammar + HIR + analyzer land in this slice (docs/typed-mode-spec.md §6);
+// codegen lands with TM-4c (#666) — the T1b-1 discipline. Mirrors the
+// E053/E057/E058 backstop pattern: a real, non-suppressible Error-severity
+// diagnostic, not a `debug_assert!`-guarded silent Null/drop, so a
+// suppressed dialect-gate diagnostic (`// brink-disable-all`) can never let
+// a struct construct silently reach a corrupt or data-dropping bytecode
+// emission.
+
+fn find_e072(diags: &[brink_ir::Diagnostic]) -> Option<&brink_ir::Diagnostic> {
+    diags
+        .iter()
+        .find(|d| d.code == brink_ir::DiagnosticCode::E072)
+}
+
+#[test]
+fn struct_literal_reaching_lir_emits_e072_and_is_not_lowered() {
+    let src = "STRUCT Point = #{x: float, y: float}\n~ temp p = Point#{x: 1.0, y: 2.0}\nHello.\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    let e072 = find_e072(&diags).expect("expected E072 for a struct literal reaching LIR");
+    assert_eq!(e072.code.severity(), brink_ir::Severity::Error);
+    // `lower_to_program` stays total (like E057/E058/E059) — it still
+    // returns a program; `brink-db`'s `lir_query` is what turns an
+    // Error-severity LIR diagnostic into `program: None` for compilation
+    // purposes, not `lower_to_program` itself.
+    let program = program.expect("lower_to_program is total — it still returns Some");
+    assert!(!program.root.body.is_empty());
+}
+
+#[test]
+fn field_access_reaching_lir_emits_e072() {
+    let src = "STRUCT Point = #{x: float}\n~ temp v = Point#{x: 1.0}.x\nHello.\n";
+    let (_program, diags) = lower_ink_with_warnings(src);
+    find_e072(&diags).expect("expected E072 for field access reaching LIR");
+}
+
+#[test]
+fn resolution_fallback_field_access_reaching_lir_also_emits_e072() {
+    // The ambiguous `p.x` shape (ordinary dotted `Path`, not the new
+    // `FIELD_ACCESS_EXPR` grammar): once `brink-analyzer`'s resolution
+    // fallback resolves it to a variable via a multi-segment path (TM-4b),
+    // LIR lowering's `lower_path` must reject it too — silently loading `p`
+    // itself and dropping `.x` would be the exact silent-data-drop hazard
+    // the E053-backstop lesson exists to catch.
+    let src = "VAR p = 0\n~ temp y = p.x\nHello.\n";
+    let (_program, diags) = lower_ink_with_warnings(src);
+    find_e072(&diags).expect("expected E072 for the ambiguous-path field access reaching LIR");
+}
+
+#[test]
+fn ordinary_dotted_path_never_emits_e072() {
+    // A genuine static path (`knot.stitch`) must never be rejected — only
+    // the TM-4b fallback case (resolved to Variable/Constant/Param/Temp via
+    // a multi-segment path) is a struct construct.
+    let src =
+        "=== knot ===\n= stitch\nHello.\n-> DONE\n=== main ===\n~ temp x = knot.stitch\n-> DONE\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(find_e072(&diags).is_none(), "{diags:?}");
+    program.expect("ordinary dotted path must lower cleanly");
+}

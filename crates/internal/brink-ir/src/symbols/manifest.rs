@@ -18,6 +18,8 @@ pub struct SymbolManifest {
     pub constants: Vec<DeclaredSymbol>,
     /// Declared list names.
     pub lists: Vec<DeclaredSymbol>,
+    /// Declared `STRUCT` shape names (TM-4b, docs/typed-mode-spec.md §6).
+    pub structs: Vec<DeclaredSymbol>,
     /// Declared external function names.
     pub externals: Vec<DeclaredSymbol>,
     /// Declared labels (qualified: `knot.label` or `knot.stitch.label`).
@@ -81,4 +83,8 @@ pub enum RefKind {
     Variable,
     Function,
     List,
+    /// A struct construction literal's leading shape name (`Name#{…}`,
+    /// TM-4b, docs/typed-mode-spec.md §6) — resolved against declared
+    /// `SymbolKind::Struct` symbols.
+    Struct,
 }

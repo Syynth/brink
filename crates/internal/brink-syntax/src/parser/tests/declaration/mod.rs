@@ -1,6 +1,6 @@
 mod cst;
 
-use super::check;
+use super::{check, check_lossless};
 use crate::parse;
 
 #[test]
@@ -115,5 +115,58 @@ fn insta_external() {
 #[test]
 fn insta_list() {
     let p = parse("LIST items = (sword = 1), shield\n");
+    insta::assert_snapshot!(format!("{:#?}", p.syntax()));
+}
+
+// ── TM-4b struct declarations (docs/typed-mode-spec.md §6) ────────────
+
+#[test]
+fn struct_decl_single_line() {
+    check("STRUCT Point = #{x: float, y: float}\n");
+}
+
+#[test]
+fn struct_decl_multiline() {
+    check("STRUCT Point = #{\n    x: float,\n    y: float,\n}\n");
+}
+
+#[test]
+fn struct_decl_trailing_comma_single_line() {
+    check("STRUCT Point = #{x: float, y: float,}\n");
+}
+
+#[test]
+fn struct_decl_empty_body() {
+    check("STRUCT Empty = #{}\n");
+}
+
+#[test]
+fn struct_decl_single_field() {
+    check("STRUCT Wrapper = #{value: int}\n");
+}
+
+#[test]
+fn struct_decl_generic_field_type() {
+    check("STRUCT Bag = #{items: array<int>}\n");
+}
+
+/// `STRUCT` is a contextual keyword — a plain identifier everywhere else,
+/// same discipline as T1b's `if`/`while`/`for` (docs/t1b-surface-spec.md
+/// §2). An existing knot named `STRUCT` must parse completely unaffected.
+#[test]
+fn struct_as_ordinary_knot_name_is_unaffected() {
+    check("=== STRUCT ===\nHello.\n-> DONE\n");
+}
+
+/// Bare `STRUCT` with no `= #{` lookahead is not a struct declaration at
+/// all — falls through to ordinary content parsing, same as any other word.
+#[test]
+fn struct_word_without_decl_shape_is_content() {
+    check_lossless("STRUCT is just a word here.\n");
+}
+
+#[test]
+fn insta_struct_decl_multiline() {
+    let p = parse("STRUCT Point = #{\n    x: float,\n    y: float,\n}\n");
     insta::assert_snapshot!(format!("{:#?}", p.syntax()));
 }
