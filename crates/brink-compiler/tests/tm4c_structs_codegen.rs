@@ -226,6 +226,36 @@ fn strict_construction_field_mismatch_is_a_compile_error() {
     );
 }
 
+// ── TM-5 (#621) corpus wing growth: the extra-field half of the same rule ─
+//
+// Spec §6: "Missing/extra fields at construction: compile error (strict) /
+// construction fault (gradual)." The tests above only exercise the
+// *missing*-field half via `Point#{x: 1.0}`; these two round out the
+// *extra*-field half (`z` isn't a declared `Point` field) end-to-end,
+// mirroring the missing-field tests' shape exactly.
+
+#[test]
+fn gradual_construction_extra_field_faults_at_runtime() {
+    let src = format!("{POINT_SRC}~ temp p = Point#{{x: 1.0, y: 2.0, z: 3.0}}\nHello.\n-> DONE\n");
+    let data = compile_mem(&src, Dialect::Brink, TypePolicy::Gradual).unwrap();
+    let mut story = story_for(&data);
+    let err = story.continue_maximally().unwrap_err();
+    assert!(
+        matches!(err, RuntimeError::InvalidShapeId(_)),
+        "expected a turn-terminating construction fault, got {err:?}"
+    );
+}
+
+#[test]
+fn strict_construction_extra_field_is_a_compile_error() {
+    let src = format!("{POINT_SRC}~ temp p = Point#{{x: 1.0, y: 2.0, z: 3.0}}\nHello.\n-> DONE\n");
+    let result = compile_mem(&src, Dialect::Brink, TypePolicy::Strict);
+    assert!(
+        result.is_err(),
+        "extra field under strict must be a compile error (E070)"
+    );
+}
+
 #[test]
 fn save_state_round_trips_a_struct_valued_global() {
     let src = format!("{POINT_SRC}VAR p = 0\n~ p = Point#{{x: 1.0, y: 2.0}}\nHello.\n-> DONE\n");
