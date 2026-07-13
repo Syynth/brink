@@ -127,11 +127,18 @@ impl From<crate::InferredType> for Ty {
 
 /// One inferable definition: its own id, declaring file, declared params,
 /// and body.
-struct Def<'a> {
-    id: DefinitionId,
-    file: FileId,
-    params: &'a [Param],
-    body: &'a Block,
+///
+/// `pub` (FG-2.1, issue #638): `brink-db`'s `solve_scc_query` builds these
+/// itself from per-def `def_body_query` results (Ruling 2b's narrowed HIR
+/// projection) and passes them into [`solve_scc`] directly, instead of
+/// [`solve_scc`] rebuilding them via [`collect_defs`] over a whole-project
+/// (or even whole-file) HIR slice.
+#[derive(Debug, Clone, Copy)]
+pub struct Def<'a> {
+    pub id: DefinitionId,
+    pub file: FileId,
+    pub params: &'a [Param],
+    pub body: &'a Block,
 }
 
 /// Per-file resolution lookup: a `Path`'s range is only unique within its
@@ -392,12 +399,57 @@ pub fn infer_project(
 // into salsa-memoized, per-def/per-SCC-cacheable ones.
 
 /// Every inferable (knot/stitch) definition's id in the project (FG-2, issue
-/// #631). A cheap structural scan — `brink-db`'s `call_graph_query` uses this
-/// to enumerate the per-def [`call_edges`] it merges into the whole-project
-/// [`CallGraph`].
+/// #631). A cheap structural scan — needs the whole project's HIR to
+/// enumerate every def's body. Superseded, for `brink-db`'s per-def/per-SCC
+/// query wiring, by [`inferable_defs_from_index`] (FG-2.1, issue #638,
+/// Ruling 2b — the same id set, sourced from the index alone, no HIR read);
+/// kept for direct pure-function callers (e.g. [`infer_project`]) and as the
+/// equivalence anchor `inferable_defs_from_index_matches_hir_derived_set`
+/// pins.
 #[must_use]
 pub fn inferable_defs(files: &[(FileId, &HirFile)], index: &SymbolIndex) -> BTreeSet<DefinitionId> {
     collect_defs(files, index).iter().map(|d| d.id).collect()
+}
+
+/// The same inferable (knot/stitch) def id set as [`inferable_defs`], read
+/// directly off the index's `SymbolKind` — no HIR (FG-2.1, issue #638,
+/// Ruling 2b: "`inferable` comes from an index-sourced `inferable_defs_query`
+/// (dep = `inference_index_query`, not HIR)"). A knot/stitch symbol is
+/// always indexed at exactly the same moment its `hir.knots` entry is
+/// lowered (`lower_single_knot`/`lower_top_level`), so filtering
+/// `index.symbols` by kind here is output-identical to walking every file's
+/// HIR the way [`inferable_defs`] does — pinned by
+/// `inferable_defs_from_index_matches_hir_derived_set`.
+#[must_use]
+pub fn inferable_defs_from_index(index: &SymbolIndex) -> BTreeSet<DefinitionId> {
+    index
+        .symbols
+        .iter()
+        .filter(|(_, info)| matches!(info.kind, SymbolKind::Knot | SymbolKind::Stitch))
+        .map(|(&id, _)| id)
+        .collect()
+}
+
+/// Find one inferable def's own params + body from a declaring-file-scoped
+/// HIR slice alone (FG-2.1, issue #638, Ruling 2b — backs `brink-db`'s
+/// per-def `def_body_query(def)` projection, the `inference_index_query`
+/// precedent applied to bodies). A thin filter over the same
+/// [`collect_defs`] walk [`call_edges`]/[`solve_scc`] already used
+/// project-wide, scoped here to exactly `def`'s declaring file so the salsa
+/// wrapper records a read-edge on only that file's `lowered_query` — not
+/// every project file's. Returns owned data (`Vec<Param>`/`Block` both
+/// `Clone`) since the salsa caller stores the result in a long-lived memo,
+/// past the borrow of any one `lowered_query` call.
+#[must_use]
+pub fn def_body(
+    def: DefinitionId,
+    declaring_file_hir: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+) -> Option<(Vec<Param>, Block)> {
+    collect_defs(declaring_file_hir, index)
+        .into_iter()
+        .find(|d| d.id == def)
+        .map(|d| (d.params.to_vec(), d.body.clone()))
 }
 
 /// Pass 1, exposed per one definition (FG-2, issue #631 — `call_edges(def)`).
@@ -408,29 +460,76 @@ pub fn inferable_defs(files: &[(FileId, &HirFile)], index: &SymbolIndex) -> BTre
 /// as today" allowance for this query). Returns an empty set for an
 /// unknown/non-inferable def id — same "absent data reads as empty, never
 /// panics" contract as the rest of this module.
+///
+/// **Narrowed inputs (FG-2.1, issue #638, Ruling 2a).** `declaring_file_hir`
+/// need only cover `def`'s own declaring file (pass 1 never needs any other
+/// file's HIR to find one def's own body); `inferable` is caller-supplied
+/// (index-sourced — see [`inferable_defs_from_index`]) rather than
+/// recomputed via [`collect_defs`] over the narrowed slice, because a
+/// resolved call target can land in a *different* file than `def`'s own.
+/// `collect_globals` is dropped entirely — pass 1 discards every computed
+/// type (spec §5), so a permanently-empty globals map is behavior-identical
+/// and strictly cheaper.
 #[must_use]
 pub fn call_edges(
     def: DefinitionId,
-    files: &[(FileId, &HirFile)],
+    declaring_file_hir: &[(FileId, &HirFile)],
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
+    inferable: &BTreeSet<DefinitionId>,
 ) -> BTreeSet<DefinitionId> {
     let by_file = index_resolutions_by_file(resolutions);
-    let globals = collect_globals(files, index);
-    let defs = collect_defs(files, index);
-    let inferable: BTreeSet<DefinitionId> = defs.iter().map(|d| d.id).collect();
-    let ctx = ProjectCtx {
-        index,
-        globals: &globals,
-        by_file: &by_file,
-        inferable: &inferable,
-    };
+    let defs = collect_defs(declaring_file_hir, index);
     let Some(d) = defs.iter().find(|d| d.id == def) else {
         return BTreeSet::new();
+    };
+    let empty_globals: BTreeMap<DefinitionId, Ty> = BTreeMap::new();
+    let ctx = ProjectCtx {
+        index,
+        globals: &empty_globals,
+        by_file: &by_file,
+        inferable,
     };
     let no_sigs: BTreeMap<DefinitionId, InferredSig> = BTreeMap::new();
     let body_ctx = ctx.body_ctx(d, &no_sigs);
     infer_def_body(d.params, d.body, &body_ctx).calls
+}
+
+/// Pass 1b, exposed per one definition (FG-2.1, issue #638, Ruling 1 —
+/// `referenced_globals(def)`, the same per-def body-facts family as
+/// [`call_edges`]). The VAR/CONST global ids `def`'s body references,
+/// recorded by [`body::BodyResult::referenced_globals`] regardless of
+/// whether a real globals map was supplied — this call passes an empty one,
+/// exactly [`call_edges`]'s "discard the computed types, keep the
+/// structural fact" shape. `brink-db` resolves each returned id via
+/// `signature_query` and hands the walk a small narrow `BTreeMap` before the
+/// *real* solve runs (two walks: this scan, then [`solve_scc`] — see the
+/// spec's Ruling 1 tradeoff note). Also the per-def global *read set* a
+/// future T2 effect row needs — named and shaped for that reuse now, no
+/// speculative machinery added.
+#[must_use]
+pub fn referenced_globals(
+    def: DefinitionId,
+    declaring_file_hir: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+) -> BTreeSet<DefinitionId> {
+    let by_file = index_resolutions_by_file(resolutions);
+    let defs = collect_defs(declaring_file_hir, index);
+    let Some(d) = defs.iter().find(|d| d.id == def) else {
+        return BTreeSet::new();
+    };
+    let empty_globals: BTreeMap<DefinitionId, Ty> = BTreeMap::new();
+    let empty_inferable: BTreeSet<DefinitionId> = BTreeSet::new();
+    let ctx = ProjectCtx {
+        index,
+        globals: &empty_globals,
+        by_file: &by_file,
+        inferable: &empty_inferable,
+    };
+    let no_sigs: BTreeMap<DefinitionId, InferredSig> = BTreeMap::new();
+    let body_ctx = ctx.body_ctx(d, &no_sigs);
+    infer_def_body(d.params, d.body, &body_ctx).referenced_globals
 }
 
 /// Solve exactly one SCC batch (FG-2, issue #631 — `solve_scc(SccId)`).
@@ -443,34 +542,36 @@ pub fn call_edges(
 /// maximal by construction), so that recursion is always acyclic — no salsa
 /// cycles anywhere (Fork 1 ruling, design doc §8).
 ///
-/// Rebuilds the project-wide globals/defs context on every call — the same
-/// "as today" cost [`call_edges`] accepts (see its docs: this round
-/// decomposes the *solve* step's granularity, not the input-gathering
-/// step's). The win this query boundary buys is that solving is scoped to
-/// one SCC at a time instead of [`solve_batches`]'s whole-project loop, so
-/// an SCC whose call-graph-topology and dependency signatures are unchanged
-/// backdates instead of re-solving.
+/// **Narrowed inputs (FG-2.1, issue #638, Ruling 2b/Ruling 1).** `defs` is
+/// caller-supplied (built from per-def `def_body_query` results — only
+/// `batch`'s own members' declaring files are ever read); `globals` is the
+/// small narrow map `brink-db` built from every member's
+/// [`referenced_globals`] pre-scan, resolved through `signature_query`
+/// (never [`collect_globals`]'s whole-project scan); `inferable` is
+/// index-sourced ([`inferable_defs_from_index`]). None of this changes the
+/// fixpoint mechanics below — only how the read-only context feeding it is
+/// assembled, and how narrow the salsa dependency edges recording that
+/// assembly turn out to be.
 #[must_use]
 pub fn solve_scc(
     batch: &BTreeSet<DefinitionId>,
-    files: &[(FileId, &HirFile)],
+    defs: &[Def<'_>],
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
+    globals: &BTreeMap<DefinitionId, Ty>,
+    inferable: &BTreeSet<DefinitionId>,
     mut known_sigs: BTreeMap<DefinitionId, InferredSig>,
 ) -> (
     BTreeMap<DefinitionId, InferredSig>,
     BTreeMap<DefinitionId, BodyTypes>,
 ) {
     let by_file = index_resolutions_by_file(resolutions);
-    let globals = collect_globals(files, index);
-    let defs = collect_defs(files, index);
-    let inferable: BTreeSet<DefinitionId> = defs.iter().map(|d| d.id).collect();
     let by_id: BTreeMap<DefinitionId, &Def<'_>> = defs.iter().map(|d| (d.id, d)).collect();
     let ctx = ProjectCtx {
         index,
-        globals: &globals,
+        globals,
         by_file: &by_file,
-        inferable: &inferable,
+        inferable,
     };
 
     let bodies = solve_one_batch(batch, &by_id, &ctx, &mut known_sigs);
@@ -779,13 +880,14 @@ mod tests {
             .copied()
             .expect("use_it");
 
-        let edges = call_edges(main_id, &files, &index, &res);
+        let inferable = inferable_defs_from_index(&index);
+        let edges = call_edges(main_id, &files, &index, &res, &inferable);
         assert_eq!(
             edges,
             BTreeSet::from([use_it_id]),
             "main's only call edge is to use_it"
         );
-        let leaf_edges = call_edges(use_it_id, &files, &index, &res);
+        let leaf_edges = call_edges(use_it_id, &files, &index, &res, &inferable);
         assert!(leaf_edges.is_empty(), "use_it calls nothing");
     }
 
@@ -794,7 +896,81 @@ mod tests {
         let (hir, index, res) = build("=== main ===\nHello.\n-> DONE\n");
         let files = [(FileId(0), &hir)];
         let bogus = DefinitionId::new(brink_format::DefinitionTag::Address, 0xDEAD_BEEF);
-        assert!(call_edges(bogus, &files, &index, &res).is_empty());
+        let inferable = inferable_defs_from_index(&index);
+        assert!(call_edges(bogus, &files, &index, &res, &inferable).is_empty());
+    }
+
+    // ─── Lazy per-reference globals (FG-2.1, issue #638) ───────────────
+
+    #[test]
+    fn inferable_defs_from_index_matches_hir_derived_set() {
+        // Same three fixtures the FG-2/#626 tests already carry (plain
+        // mutual call, floating stitch, nested stitch) — the index-only
+        // projection must agree with the HIR-walking one on every shape
+        // `collect_defs` handles, not just the easy case.
+        let fixtures = [
+            "=== main ===\n~ temp v = 1\n~ use_it(v)\n-> DONE\n=== use_it(n) ===\n{n > 2.5:\n  big\n}\n-> DONE\n",
+            "= heal(hp)\n~ temp x = hp + 1\n-> DONE\n",
+            "= intro(hp)\n~ temp x = hp + 1\n-> DONE\n\
+             === knot_a(gold) ===\n{gold > 1.5:\n  ok\n}\n-> stitch_a ->\n\
+             = stitch_a(silver)\n~ temp y = silver + 1\n-> DONE\n",
+        ];
+        for src in fixtures {
+            let (hir, index, _res) = build(src);
+            let files = [(FileId(0), &hir)];
+            assert_eq!(
+                inferable_defs_from_index(&index),
+                inferable_defs(&files, &index),
+                "index-sourced and HIR-walking inferable sets diverged for: {src}"
+            );
+        }
+    }
+
+    #[test]
+    fn referenced_globals_finds_every_var_and_const_read_in_a_body() {
+        let (hir, index, res) = build(
+            "VAR gold = 10\nCONST max_gold = 100\n\
+             === spend(cost) ===\n~ gold = gold - cost\n{gold > max_gold:\n  rich\n}\n-> DONE\n",
+        );
+        let files = [(FileId(0), &hir)];
+        let spend_id = index
+            .by_name
+            .get("spend")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("spend");
+        let gold_id = index
+            .by_name
+            .get("gold")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("gold");
+        let max_gold_id = index
+            .by_name
+            .get("max_gold")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("max_gold");
+
+        let global_refs = referenced_globals(spend_id, &files, &index, &res);
+        assert_eq!(
+            global_refs,
+            BTreeSet::from([gold_id, max_gold_id]),
+            "spend's body reads both gold and max_gold"
+        );
+    }
+
+    #[test]
+    fn referenced_globals_is_empty_when_a_body_reads_no_globals() {
+        let (hir, index, res) = build("=== main ===\n~ temp v = 1\n-> DONE\n");
+        let files = [(FileId(0), &hir)];
+        let main_id = index
+            .by_name
+            .get("main")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("main");
+        assert!(referenced_globals(main_id, &files, &index, &res).is_empty());
     }
 
     #[test]
@@ -838,12 +1014,16 @@ mod tests {
 
         // Compose: call_edges per def -> merged CallGraph -> scc_graph ->
         // solve_scc per component, threading known_sigs in dependency order
-        // exactly like `solve_batches` does internally.
-        let defs = inferable_defs(&files, &index);
+        // exactly like `solve_batches` does internally. Every per-def input
+        // (defs, globals, inferable) is built the same narrowed way
+        // `brink-db`'s query wiring builds it (FG-2.1, issue #638), not by
+        // handing the whole-project HIR straight to `collect_defs`/
+        // `collect_globals` the way the pre-#638 version of this test did.
+        let defs = inferable_defs_from_index(&index);
         let mut graph = CallGraph::new();
         for &def in &defs {
             graph.add_node(def);
-            for callee in call_edges(def, &files, &index, &res) {
+            for callee in call_edges(def, &files, &index, &res, &defs) {
                 graph.add_edge(def, callee);
             }
         }
@@ -853,7 +1033,47 @@ mod tests {
         let mut signatures: BTreeMap<DefinitionId, InferredSig> = BTreeMap::new();
         let mut bodies: BTreeMap<DefinitionId, BodyTypes> = BTreeMap::new();
         for batch in &sg.order {
-            let (sigs, bods) = solve_scc(batch, &files, &index, &res, known_sigs.clone());
+            // Per-def HIR projection (Ruling 2b): only this batch's own
+            // members' bodies, never the whole project's.
+            let owned: Vec<(DefinitionId, Vec<Param>, Block)> = batch
+                .iter()
+                .filter_map(|&id| def_body(id, &files, &index).map(|(p, b)| (id, p, b)))
+                .collect();
+            let batch_defs: Vec<Def<'_>> = owned
+                .iter()
+                .map(|(id, params, body)| Def {
+                    id: *id,
+                    file: FileId(0),
+                    params,
+                    body,
+                })
+                .collect();
+
+            // Pre-scan + narrow map (Ruling 1): union of every member's
+            // referenced_globals, resolved through signature() — never
+            // collect_globals's whole-project scan.
+            let mut global_ids: BTreeSet<DefinitionId> = BTreeSet::new();
+            for &id in batch {
+                global_ids.extend(referenced_globals(id, &files, &index, &res));
+            }
+            let mut globals: BTreeMap<DefinitionId, Ty> = BTreeMap::new();
+            for gid in global_ids {
+                if let Some(sig) = crate::signature::signature(gid, &index, &files)
+                    && let Some(vt) = sig.value_type
+                {
+                    globals.insert(gid, Ty::from(vt));
+                }
+            }
+
+            let (sigs, bods) = solve_scc(
+                batch,
+                &batch_defs,
+                &index,
+                &res,
+                &globals,
+                &defs,
+                known_sigs.clone(),
+            );
             known_sigs.extend(sigs.iter().map(|(k, v)| (*k, v.clone())));
             signatures.extend(sigs);
             bodies.extend(bods);

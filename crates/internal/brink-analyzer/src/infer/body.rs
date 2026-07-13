@@ -70,6 +70,15 @@ pub(super) struct BodyResult {
     /// call-graph construction on the first pass; harmless to recompute on
     /// later passes.
     pub calls: BTreeSet<DefinitionId>,
+    /// Every VAR/CONST `DefinitionId` this body looked up, recorded in
+    /// `ty_of_def` regardless of whether `ctx.globals` actually had an entry
+    /// for it (FG-2.1, issue #638 — the `referenced_globals(def)` body-facts
+    /// projection, same family as `calls`). This is the exact reference set
+    /// a lazy globals resolver would consult, pre-scanned so `brink-db` can
+    /// build a narrow `BTreeMap` before the real solve walk runs (spec
+    /// Ruling 1) — also the per-def global *read set* future T2 effect rows
+    /// need.
+    pub referenced_globals: BTreeSet<DefinitionId>,
 }
 
 /// Infer one definition's body against `ctx`. `param_names` are the
@@ -81,6 +90,7 @@ pub(super) fn infer_def_body(params: &[Param], body: &Block, ctx: &BodyCtx<'_>) 
         locals: BTreeMap::new(),
         return_ty: Ty::Unknown,
         calls: BTreeSet::new(),
+        referenced_globals: BTreeSet::new(),
     };
     pass.infer_block(body);
 
@@ -101,6 +111,7 @@ pub(super) fn infer_def_body(params: &[Param], body: &Block, ctx: &BodyCtx<'_>) 
         locals: pass.locals,
         return_ty: pass.return_ty,
         calls: pass.calls,
+        referenced_globals: pass.referenced_globals,
     }
 }
 
@@ -109,6 +120,7 @@ struct InferPass<'a, 'b> {
     locals: BTreeMap<String, Ty>,
     return_ty: Ty,
     calls: BTreeSet<DefinitionId>,
+    referenced_globals: BTreeSet<DefinitionId>,
 }
 
 impl InferPass<'_, '_> {
@@ -118,7 +130,7 @@ impl InferPass<'_, '_> {
         self.ctx.resolution_by_range.get(&range_key(range)).copied()
     }
 
-    fn ty_of_def(&self, def: DefinitionId) -> Ty {
+    fn ty_of_def(&mut self, def: DefinitionId) -> Ty {
         let Some(info) = self.ctx.index.symbols.get(&def) else {
             return Ty::Unknown;
         };
@@ -127,6 +139,11 @@ impl InferPass<'_, '_> {
                 self.locals.get(&info.name).cloned().unwrap_or(Ty::Unknown)
             }
             SymbolKind::Variable | SymbolKind::Constant => {
+                // Record the reference regardless of whether `ctx.globals`
+                // has an entry for it — a pre-scan call (empty/placeholder
+                // globals map) still needs to discover *which* ids get
+                // looked up (FG-2.1, issue #638, Ruling 1).
+                self.referenced_globals.insert(def);
                 self.ctx.globals.get(&def).cloned().unwrap_or(Ty::Unknown)
             }
             SymbolKind::List => Ty::List(info.name.clone()),

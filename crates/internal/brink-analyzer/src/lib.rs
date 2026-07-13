@@ -28,8 +28,9 @@ pub use external_check::{
     SemanticTypeDiagnosticSeverity, SymbolMeta, ValueMeta,
 };
 pub use infer::{
-    BodyTypes, CallGraph, InferenceResult, InferredSig, SccGraph, Ty, call_edges, infer_project,
-    inferable_defs, scc_graph, solve_scc, unify, unify_all,
+    BodyTypes, CallGraph, Def, InferenceResult, InferredSig, SccGraph, Ty, call_edges, def_body,
+    infer_project, inferable_defs, inferable_defs_from_index, referenced_globals, scc_graph,
+    solve_scc, unify, unify_all,
 };
 pub use signature::{Sig, signature};
 

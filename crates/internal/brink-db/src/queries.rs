@@ -98,7 +98,15 @@ impl Default for BrinkDatabase {
                 // Per-def/per-SCC decomposition (FG-2, issue #631):
                 // call_edges(def) -> call_graph() -> scc_membership() ->
                 // solve_scc(SccId) -> inferred_signature(def)/infer_body(def).
+                // Lazy per-reference globals + full dependency narrowing
+                // (FG-2.1, issue #638): inferable_defs_query/def_body_query/
+                // referenced_globals_query are the new per-def projections
+                // call_edges_query/solve_scc_query read instead of every
+                // project file's HIR.
                 .ingredient::<inference_index_query>()
+                .ingredient::<inferable_defs_query>()
+                .ingredient::<def_body_query>()
+                .ingredient::<referenced_globals_query>()
                 .ingredient::<call_edges_query>()
                 .ingredient::<call_graph_query>()
                 .ingredient::<scc_membership_query>()
@@ -416,32 +424,6 @@ pub(crate) fn inference_index_query(
     Arc::new(stripped)
 }
 
-/// Shared input-gathering for every per-def/per-SCC inference query below
-/// (FG-2, issue #631): the same three inputs [`brink_analyzer::infer_project`]
-/// itself takes — the inference index projection, every file's HIR, and the
-/// merged per-file resolutions — assembled exactly the way
-/// `type_inference_query` assembled them pre-decomposition (issue #630 /
-/// FG-1 §3: re-sourced off `inference_index_query`/`resolve_query`, never
-/// `analysis_query`, so the pointer-identity guarantee
-/// `fg1_dependency_edges.rs` pins keeps holding after this refactor).
-fn inference_inputs(
-    db: &dyn salsa::Database,
-    project: ProjectInput,
-) -> (Arc<SymbolIndex>, Vec<(FileId, &HirFile)>, ResolutionMap) {
-    let files = project.files(db);
-    let index = Arc::clone(inference_index_query(db, project));
-    let mut resolutions = ResolutionMap::new();
-    for file in files {
-        let (file_map, _file_diags) = resolve_query(db, project, *file);
-        resolutions.extend(file_map.iter().cloned());
-    }
-    let hir_refs: Vec<(FileId, &HirFile)> = files
-        .iter()
-        .map(|f| (f.file_id(db), &lowered_query(db, *f).hir))
-        .collect();
-    (index, hir_refs, resolutions)
-}
-
 /// A strongly-connected component's stable identifier (FG-2, issue #631):
 /// the component's minimum-valued `DefinitionId` member, exactly
 /// [`brink_analyzer::scc_graph`]'s own sort/dedup key. A plain alias, not a
@@ -452,24 +434,133 @@ fn inference_inputs(
 /// own id.
 pub(crate) type SccId = DefinitionId;
 
+/// The project's inferable (knot/stitch) def ids, sourced from the index
+/// alone (FG-2.1, issue #638, Ruling 2b — `inferable_defs_query`, the
+/// `inference_index_query` precedent applied to the "which defs have a
+/// body" question). No HIR read: `call_graph_query`'s per-def loop and
+/// [`call_edges_query`]/[`referenced_globals_query`]'s `inferable`
+/// membership check both read this instead of walking every project file's
+/// HIR just to enumerate ids — a body edit that adds/removes no
+/// knot/stitch declaration leaves this memo's *dependency edge* untouched
+/// (it only reads `inference_index_query`, never `lowered_query`).
+#[salsa::tracked(returns(ref))]
+pub(crate) fn inferable_defs_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> BTreeSet<DefinitionId> {
+    let index = inference_index_query(db, project);
+    brink_analyzer::inferable_defs_from_index(index)
+}
+
+/// One inferable def's own params + body, read from its declaring file's
+/// HIR alone (FG-2.1, issue #638, Ruling 2b — `def_body_query(def)`, the
+/// per-def HIR projection `solve_scc_query` reads instead of every
+/// project file's `lowered_query`). `Arc<plain>`, `Eq`-derived so an
+/// edit to a *different* def in the same declaring file — which still
+/// changes that file's `lowered_query` output — backdates here as long as
+/// this specific def's own params/body come out byte-identical.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DefBody {
+    pub file: FileId,
+    pub params: Vec<brink_ir::Param>,
+    pub body: brink_ir::Block,
+}
+
+#[salsa::tracked]
+pub(crate) fn def_body_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: ProjectInput,
+    def: DefKey<'db>,
+) -> Option<Arc<DefBody>> {
+    let index = inference_index_query(db, project);
+    let def_id = def.def(db);
+    let declaring_file = index.symbols.get(&def_id)?.file;
+    let file = project
+        .files(db)
+        .iter()
+        .find(|f| f.file_id(db) == declaring_file)?;
+    let hir = &lowered_query(db, *file).hir;
+    let (params, body) = brink_analyzer::def_body(def_id, &[(declaring_file, hir)], index)?;
+    Some(Arc::new(DefBody {
+        file: declaring_file,
+        params,
+        body,
+    }))
+}
+
+/// The VAR/CONST global ids one def's body references (FG-2.1, issue #638,
+/// Ruling 1 — `referenced_globals_query(def)`, the pre-scan `solve_scc_query`
+/// resolves into a narrow `BodyCtx.globals` map via `signature_query`,
+/// exactly the same declaring-file-only dependency edge
+/// [`def_body_query`] uses). Also the per-def global *read set* a future T2
+/// effect row needs — see `brink_analyzer::referenced_globals`'s docs.
+#[salsa::tracked]
+pub(crate) fn referenced_globals_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: ProjectInput,
+    def: DefKey<'db>,
+) -> Arc<BTreeSet<DefinitionId>> {
+    let index = inference_index_query(db, project);
+    let def_id = def.def(db);
+    let Some(declaring_file) = index.symbols.get(&def_id).map(|info| info.file) else {
+        return Arc::new(BTreeSet::new());
+    };
+    let Some(file) = project
+        .files(db)
+        .iter()
+        .find(|f| f.file_id(db) == declaring_file)
+    else {
+        return Arc::new(BTreeSet::new());
+    };
+    let hir = &lowered_query(db, *file).hir;
+    let (resolutions, _diags) = resolve_query(db, project, *file);
+    Arc::new(brink_analyzer::referenced_globals(
+        def_id,
+        &[(declaring_file, hir)],
+        index,
+        resolutions,
+    ))
+}
+
 /// Pass 1, per-def (FG-2, issue #631 — `call_edges(def)`). Thin salsa
 /// wrapper over [`brink_analyzer::call_edges`]; the per-def key gives Eq
 /// cutoff on this def's own edge set (`BTreeSet<DefinitionId>`, no ranges,
 /// derived `Eq`) — see the design doc §2 table's explicit allowance to keep
 /// reusing `infer_def_body` and discard types, as `infer_project` already
 /// did, for this pass's computation.
+///
+/// **Narrowed inputs (FG-2.1, issue #638, Ruling 2a).** Reads only `def`'s
+/// own declaring file's `lowered_query`/`resolve_query` — never every
+/// project file's — plus the index-sourced [`inferable_defs_query`]. No
+/// globals map at all (pass 1 discards every computed type; see
+/// `brink_analyzer::call_edges`'s docs).
 #[salsa::tracked]
 pub(crate) fn call_edges_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
     def: DefKey<'db>,
 ) -> Arc<BTreeSet<DefinitionId>> {
-    let (index, hir_refs, resolutions) = inference_inputs(db, project);
+    let index = inference_index_query(db, project);
+    let def_id = def.def(db);
+    let Some(declaring_file) = index.symbols.get(&def_id).map(|info| info.file) else {
+        return Arc::new(BTreeSet::new());
+    };
+    let Some(file) = project
+        .files(db)
+        .iter()
+        .find(|f| f.file_id(db) == declaring_file)
+    else {
+        return Arc::new(BTreeSet::new());
+    };
+    let hir = &lowered_query(db, *file).hir;
+    let (resolutions, _diags) = resolve_query(db, project, *file);
+    let inferable = inferable_defs_query(db, project);
     Arc::new(brink_analyzer::call_edges(
-        def.def(db),
-        &hir_refs,
-        &index,
-        &resolutions,
+        def_id,
+        &[(declaring_file, hir)],
+        index,
+        resolutions,
+        inferable,
     ))
 }
 
@@ -477,12 +568,21 @@ pub(crate) fn call_edges_query<'db>(
 /// [`call_edges_query`] (FG-2, issue #631 — the derived `call_graph()` the
 /// design doc's §2 table names). [`CallGraph`]'s `Eq` (added for this slice)
 /// is the cutoff [`scc_membership_query`] backdates on.
+///
+/// Inherently project-wide (FG-2.1, issue #638, Ruling 2c: `call_graph_query`
+/// is one of the two queries that "genuinely need project shape") — it must
+/// enumerate every inferable def to build the graph. What FG-2.1 narrows is
+/// each *individual* read inside the loop: [`inferable_defs_query`] is
+/// index-only (no HIR), and each [`call_edges_query`] call is validated
+/// without re-executing unless *that specific def's* declaring file changed
+/// — so an edit in file X only pays for X's own defs, even though this
+/// query's own closure still walks the whole project's def list every time
+/// it *does* run.
 #[salsa::tracked(returns(ref))]
 pub(crate) fn call_graph_query(db: &dyn salsa::Database, project: ProjectInput) -> CallGraph {
-    let (index, hir_refs, _resolutions) = inference_inputs(db, project);
-    let defs = brink_analyzer::inferable_defs(&hir_refs, &index);
+    let defs = inferable_defs_query(db, project);
     let mut graph = CallGraph::new();
-    for &def in &defs {
+    for &def in defs {
         graph.add_node(def);
         let edges = call_edges_query(db, project, DefKey::new(db, def));
         for &callee in edges.iter() {
@@ -494,7 +594,9 @@ pub(crate) fn call_graph_query(db: &dyn salsa::Database, project: ProjectInput) 
 
 /// SCC partition + condensation DAG over the whole project's call graph
 /// (FG-2, issue #631 — `scc_membership()` (+ topo order)). Thin salsa
-/// wrapper over [`brink_analyzer::scc_graph`].
+/// wrapper over [`brink_analyzer::scc_graph`]. The other query Ruling 2c
+/// keeps project-wide — SCC membership is inherently a global graph
+/// property, not narrowable per-def.
 #[salsa::tracked(returns(ref))]
 pub(crate) fn scc_membership_query(db: &dyn salsa::Database, project: ProjectInput) -> SccGraph {
     let graph = call_graph_query(db, project);
@@ -520,6 +622,18 @@ pub(crate) struct SolvedScc {
 /// component's own members. Returns an empty [`SolvedScc`] for an id that
 /// isn't any component's minimum member (defensive — never panics on a
 /// stale/unknown key).
+///
+/// **Full narrowing (FG-2.1, issue #638, Ruling 2b + Ruling 1).** HIR:
+/// [`def_body_query`] per member — only this batch's own declaring files,
+/// never every project file's. Resolutions: only those same declaring
+/// files' `resolve_query` results (sufficient to resolve every `Path` range
+/// inside a member's own body, cross-file targets included — see
+/// `signature_query`'s docs on why resolution reads the *source* file's map
+/// only). Globals: the narrow map built from every member's
+/// [`referenced_globals_query`] pre-scan, each id resolved through the
+/// existing per-declaring-file [`signature_query`] (never a whole-project
+/// globals scan). `inferable`: the same index-sourced
+/// [`inferable_defs_query`] `call_edges_query` uses.
 #[salsa::tracked]
 pub(crate) fn solve_scc_query<'db>(
     db: &'db dyn salsa::Database,
@@ -544,9 +658,62 @@ pub(crate) fn solve_scc_query<'db>(
         }
     }
 
-    let (index, hir_refs, resolutions) = inference_inputs(db, project);
-    let (signatures, bodies) =
-        brink_analyzer::solve_scc(batch, &hir_refs, &index, &resolutions, known_sigs);
+    let index = inference_index_query(db, project);
+    let inferable = inferable_defs_query(db, project);
+
+    // Per-def HIR projection (Ruling 2b): only this batch's own members'
+    // bodies. `member_bodies` keeps the owned `Arc<DefBody>`s alive for the
+    // `Def` borrows built from them below.
+    let member_bodies: BTreeMap<DefinitionId, Arc<DefBody>> = batch
+        .iter()
+        .filter_map(|&id| def_body_query(db, project, DefKey::new(db, id)).map(|b| (id, b)))
+        .collect();
+    let defs: Vec<brink_analyzer::Def<'_>> = member_bodies
+        .iter()
+        .map(|(&id, b)| brink_analyzer::Def {
+            id,
+            file: b.file,
+            params: &b.params,
+            body: &b.body,
+        })
+        .collect();
+
+    // Pre-scan + narrow map (Ruling 1): union of every member's
+    // referenced_globals, each resolved through the existing
+    // per-declaring-file `signature_query`.
+    let mut global_ids: BTreeSet<DefinitionId> = BTreeSet::new();
+    for &member in batch {
+        global_ids.extend(referenced_globals_query(db, project, DefKey::new(db, member)).iter());
+    }
+    let mut globals: BTreeMap<DefinitionId, brink_analyzer::Ty> = BTreeMap::new();
+    for gid in global_ids {
+        if let Some(sig) = signature_query(db, project, DefKey::new(db, gid))
+            && let Some(vt) = sig.value_type
+        {
+            globals.insert(gid, brink_analyzer::Ty::from(vt));
+        }
+    }
+
+    // Narrowed resolutions (Ruling 2b): only this batch's own declaring
+    // files' `resolve_query` results, deduplicated by file.
+    let mut resolutions = ResolutionMap::new();
+    let member_files: BTreeSet<FileId> = member_bodies.values().map(|b| b.file).collect();
+    for file_id in member_files {
+        if let Some(file) = project.files(db).iter().find(|f| f.file_id(db) == file_id) {
+            let (file_map, _diags) = resolve_query(db, project, *file);
+            resolutions.extend(file_map.iter().cloned());
+        }
+    }
+
+    let (signatures, bodies) = brink_analyzer::solve_scc(
+        batch,
+        &defs,
+        index,
+        &resolutions,
+        &globals,
+        inferable,
+        known_sigs,
+    );
     Arc::new(SolvedScc { signatures, bodies })
 }
 

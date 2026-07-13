@@ -13,6 +13,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::sync::Arc;
+
 use brink_db::ProjectDb;
 use brink_ir::SymbolKind;
 
@@ -128,5 +130,99 @@ fn adding_a_call_edge_changes_the_scc_solve_downstream() {
         "adding the use_it(v) call edge must flow use_it's Float param back onto v \
          (the call-graph-topology change must be picked up by the decomposed \
          call_graph/scc_membership/solve_scc query chain, not just a stale cache)"
+    );
+}
+
+// ─── Lazy per-reference globals + full narrowing (FG-2.1, issue #638) ─────
+//
+// The assertion the whole FG-2.1 slice exists for (spec §9 gate, Ruling 2b):
+// an unrelated SCC's `solve_scc` must not *re-execute* on a body/global edit
+// in a different file it neither calls into nor reads a global from — not
+// just "backdate to an equal value downstream" (the pre-#638 shape, where
+// `inference_inputs`'s all-files `hir_refs` recorded a read-edge on every
+// file's `lowered_query` regardless). Pointer/Arc identity, not value
+// equality, is the assertion — same reasoning `fg1_dependency_edges.rs`'s
+// module doc spells out: a query that re-executes and happens to produce an
+// `Eq` result still allocates a fresh `Arc`, so identity breaks even though
+// downstream consumers never notice. `infer_body`/`inferred_signature` are
+// thin per-def views that themselves only re-execute their own closure if
+// `solve_scc_query` (or `scc_membership_query`, upstream of it) reports a
+// changed dependency — so their returned `Arc`'s pointer is a faithful proxy
+// for "did `solve_scc` for this def's SCC actually re-run its fixpoint."
+
+#[test]
+fn unrelated_scc_solve_survives_a_body_edit_in_another_file_no_shared_globals_or_calls() {
+    let mut db = ProjectDb::new();
+    db.set_file(
+        "x.ink",
+        "=== helper_x ===\n~ temp v = 1\n-> DONE\n".to_owned(),
+    );
+    db.set_file(
+        "y.ink",
+        "=== helper_y(hp) ===\n~ temp x = hp + 1\n-> DONE\n".to_owned(),
+    );
+
+    let helper_x = def_named(&db, "helper_x");
+    let helper_y = def_named(&db, "helper_y");
+
+    let before_x = db.infer_body(helper_x).expect("helper_x has a body");
+    let before_y = db.infer_body(helper_y).expect("helper_y has a body");
+    let before_y_ptr = Arc::as_ptr(&before_y);
+
+    // Edit x.ink's body value only (Int -> Float literal, so the inferred
+    // *type* itself changes, not just the source text) — no call
+    // added/removed, no global declared or referenced anywhere in this
+    // project. helper_y neither calls helper_x nor reads any global
+    // helper_x might reference, so its own SCC's `solve_scc` must not need
+    // to re-run at all.
+    db.update_file(
+        "x.ink",
+        "=== helper_x ===\n~ temp v = 2.5\n-> DONE\n".to_owned(),
+    );
+
+    // Sanity: the edit is real — helper_x's own inferred body picks up the
+    // Int -> Float change (not a vacuously-true test because nothing
+    // changed anywhere).
+    let after_x = db.infer_body(helper_x).expect("helper_x still has a body");
+    assert_ne!(
+        before_x.locals.get("v"),
+        after_x.locals.get("v"),
+        "helper_x's own body edit should change its own inferred local type"
+    );
+
+    let after_y = db.infer_body(helper_y).expect("helper_y still has a body");
+    assert!(
+        Arc::ptr_eq(&before_y, &after_y),
+        "editing an unrelated file re-executed helper_y's SCC solve \
+         (over-coarse dependency edge — issue #638 FG-2.1 full narrowing)"
+    );
+    assert_eq!(
+        Arc::as_ptr(&after_y),
+        before_y_ptr,
+        "the returned Arc must be the exact same allocation, not merely Eq"
+    );
+}
+
+#[test]
+fn unrelated_scc_solve_survives_a_global_edit_it_never_references() {
+    let mut db = ProjectDb::new();
+    db.set_file("globals.ink", "VAR gold = 10\n-> DONE\n".to_owned());
+    db.set_file(
+        "reader.ink",
+        "VAR silver = 5\n=== spend(cost) ===\n~ silver = silver - cost\n-> DONE\n".to_owned(),
+    );
+
+    let spend = def_named(&db, "spend");
+    let before = db.infer_body(spend).expect("spend has a body");
+
+    // Edit an unreferenced global's initializer in a different file. `spend`
+    // reads `silver`, never `gold` — its own SCC's solve must not re-run.
+    db.update_file("globals.ink", "VAR gold = 99\n-> DONE\n".to_owned());
+
+    let after = db.infer_body(spend).expect("spend still has a body");
+    assert!(
+        Arc::ptr_eq(&before, &after),
+        "editing an unreferenced global in another file re-executed spend's \
+         SCC solve (issue #638 FG-2.1 Ruling 1 — lazy per-reference globals)"
     );
 }
