@@ -1,6 +1,6 @@
 use crate::SyntaxKind::{
     self, AMP_AMP, ARRAY_LITERAL, BANG, BANG_EQ, BANG_QUESTION, BOOLEAN_LIT, CARET, COLON, COMMA,
-    DIVERT, DIVERT_TARGET_EXPR, DOT, EOF, EQ_EQ, FIELD_ACCESS_EXPR, FLOAT, FLOAT_LIT,
+    DIVERT, DIVERT_TARGET_EXPR, DOT, EOF, EQ_EQ, FIELD_ACCESS_EXPR, FLOAT, FLOAT_LIT, FN_LITERAL,
     FUNCTION_CALL, GT, GT_EQ, HASH, IDENT, IDENTIFIER, INDEX_EXPR, INFIX_EXPR, INTEGER,
     INTEGER_LIT, KW_AND, KW_FALSE, KW_HAS, KW_HASNT, KW_MOD, KW_NOT, KW_OR, KW_TRUE, L_BRACE,
     L_BRACKET, L_PAREN, LIST_EXPR, LT, LT_EQ, MAP_ENTRY, MAP_LITERAL, MINUS, MINUS_EQ, NEWLINE,
@@ -248,6 +248,16 @@ fn atom(p: &mut Parser<'_, '_>) -> bool {
             true
         }
 
+        // Function-value creation `#fn(name, args…)` (T1c §2) — expression
+        // position only, same sigil-family rule as the collection literals
+        // below. `fn` is a contextual (soft) keyword: a plain IDENT whose
+        // text is checked here, so `fn` stays usable as an ordinary
+        // identifier everywhere else.
+        HASH if p.nth(1) == IDENT && p.nth_text(1) == "fn" && p.nth(2) == L_PAREN => {
+            fn_literal(p);
+            true
+        }
+
         // Sigil collection literals (T1b §3) — expression position only.
         // Unambiguous: `#` never begins an expression in vanilla ink, and in
         // prose position `#` is always claimed by `tag::tags` before
@@ -405,6 +415,51 @@ fn struct_literal(p: &mut Parser<'_, '_>) {
     }
     p.skip_ws();
     p.expect(R_BRACE);
+    p.depth -= 1;
+    p.finish_node();
+}
+
+/// `#fn(target, args…)` — function-value creation (T1c §2). `target` is a
+/// (possibly dotted) static path — a name, never an expression; `args…` are
+/// ordinary expressions binding a prefix of the target's declared params.
+/// Trailing comma accepted, mirroring the sibling sigil literals. The
+/// zero-arg form `#fn(name)` is legal grammar (legal semantics iff the
+/// target has no `ref` params — an analyzer concern, E080).
+fn fn_literal(p: &mut Parser<'_, '_>) {
+    p.start_node(FN_LITERAL);
+    p.bump(); // #
+    p.skip_ws();
+    p.bump_assert(IDENT); // the contextual `fn` keyword
+    p.skip_ws();
+    p.bump_assert(L_PAREN);
+    if p.at_depth_limit() {
+        p.error("nesting depth limit exceeded".into());
+        skip_balanced(p, L_PAREN, R_PAREN);
+        p.finish_node();
+        return;
+    }
+    p.depth += 1;
+    p.skip_ws();
+    if p.current() != R_PAREN {
+        if p.at_ident_or_keyword() {
+            super::divert::path(p);
+        } else {
+            p.error("expected function name".into());
+        }
+        loop {
+            p.skip_ws();
+            if !p.eat(COMMA) {
+                break;
+            }
+            p.skip_ws();
+            if p.current() == R_PAREN {
+                break; // trailing comma
+            }
+            expression(p);
+        }
+    }
+    p.skip_ws();
+    p.expect(R_PAREN);
     p.depth -= 1;
     p.finish_node();
 }
