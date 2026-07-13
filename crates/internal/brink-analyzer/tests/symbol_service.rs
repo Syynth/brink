@@ -296,6 +296,27 @@ fn signature_unannotated_var_keeps_the_literal_inferred_type() {
 }
 
 #[test]
+fn signature_const_annotation_wins_over_the_literal_inferred_type() {
+    // #641: CONST mirrors VAR's firewall rule — the initializer literal
+    // alone would infer `Int`; the explicit `float` annotation overrides
+    // it (same pattern as `signature_var_annotation_wins_over_the_literal_inferred_type`).
+    let src = "CONST speed: float = 100\n";
+    let (hir, _manifest, result) = analyzed(src);
+    let def = def_id(&result, SymbolKind::Constant, "speed");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)]).expect("known def");
+    assert_eq!(sig.value_type, Some(brink_analyzer::InferredType::Float));
+}
+
+#[test]
+fn signature_unannotated_const_keeps_the_literal_inferred_type() {
+    let src = "CONST speed = 100\n";
+    let (hir, _manifest, result) = analyzed(src);
+    let def = def_id(&result, SymbolKind::Constant, "speed");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)]).expect("known def");
+    assert_eq!(sig.value_type, Some(brink_analyzer::InferredType::Int));
+}
+
+#[test]
 fn signature_list_generic_annotation_resolves_against_declared_list_names() {
     let src = "LIST Weathers = sunny, (rainy)\n=== function pick(w: list<Weathers>): void ===\n~ return\n";
     let (hir, _manifest, result) = analyzed(src);
@@ -316,7 +337,9 @@ fn strict_ink_suppresses_annotation_content_checks() {
     // rejected whole by the dialect gate (E051) — the content checks
     // (E061 unknown name / E062 fn-reserved) must NOT stack a second
     // diagnostic on the same span. Under `brink` the content checks fire.
-    let src = "VAR cb: fn(int): bool = 0\nVAR p: Frobnicator = 0\n";
+    // #641: CONST is covered by the same gated `annotations::check` call
+    // as VAR — exercised here alongside it, not re-gated separately.
+    let src = "VAR cb: fn(int): bool = 0\nVAR p: Frobnicator = 0\nCONST bad: Bogus = 0\n";
     let (hir, manifest) = lower(FileId(0), src);
     let files = [(FileId(0), &hir, &manifest)];
 

@@ -105,6 +105,11 @@ pub fn check(files: &[(FileId, &HirFile)], index: &SymbolIndex) -> Vec<Diagnosti
                 check_one(te, &list_names, file, &mut out);
             }
         }
+        for c in &hir.constants {
+            if let Some(te) = &c.annotation {
+                check_one(te, &list_names, file, &mut out);
+            }
+        }
         for knot in &hir.knots {
             check_knot(knot, file, &list_names, &mut out);
         }

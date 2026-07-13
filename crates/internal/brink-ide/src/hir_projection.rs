@@ -856,6 +856,7 @@ VAR name = \"x\"
     fn ide_pipeline_does_not_crash_on_annotated_sources_and_still_projects_spans() {
         let src = "\
 VAR gold: int = 100
+CONST max_gold: int = 999
 LIST Weathers = sunny, (rainy)
 === function heal(ref hp: int, amount: float): bool ===
 ~ temp bonus: string = \"none\"
@@ -871,6 +872,12 @@ LIST Weathers = sunny, (rainy)
                 .iter()
                 .any(|s| s.kind == SpanKind::VarDecl && s.def_id.is_some()),
             "annotated VAR decl still projects with a def_id"
+        );
+        assert!(
+            p.spans
+                .iter()
+                .any(|s| s.kind == SpanKind::ConstDecl && s.def_id.is_some()),
+            "annotated CONST decl still projects with a def_id"
         );
         assert!(
             p.spans
@@ -893,13 +900,19 @@ LIST Weathers = sunny, (rainy)
         // `fn(...)` (reserved until T1c) and an unrecognized name both
         // produce analyzer diagnostics (E062/E061), not a panic anywhere
         // in the pipeline.
-        let src = "VAR cb: fn(int): bool = 0\nVAR p: Frobnicator = 0\n";
+        let src = "VAR cb: fn(int): bool = 0\nVAR p: Frobnicator = 0\nCONST bad: Frobnicator = 0\n";
         let p = project(src);
         assert!(
             p.spans
                 .iter()
                 .any(|s| s.kind == SpanKind::VarDecl && s.def_id.is_some()),
             "VAR decls with reserved/unknown annotations still project"
+        );
+        assert!(
+            p.spans
+                .iter()
+                .any(|s| s.kind == SpanKind::ConstDecl && s.def_id.is_some()),
+            "CONST decl with an unknown annotation still projects"
         );
     }
 

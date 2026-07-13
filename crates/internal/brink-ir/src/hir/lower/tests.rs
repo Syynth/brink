@@ -738,3 +738,23 @@ fn unknown_type_name_still_lowers_without_diagnostics() {
         other => panic!("expected Named(\"Frobnicator\"), got {other:?}"),
     }
 }
+
+#[test]
+fn const_annotation_lowers_onto_const_decl() {
+    // #641: mirrors `var_annotation_lowers_onto_var_decl` — CONST accepts
+    // a type annotation end to end, same as VAR (typed-mode-spec.md §3,
+    // "optional anywhere").
+    let (hir, diags) = lower_hir("CONST speed: float = 0.5\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    match &hir.constants[0].annotation {
+        Some(TypeExpr::Named { name, .. }) => assert_eq!(name, "float"),
+        other => panic!("expected Named(\"float\"), got {other:?}"),
+    }
+}
+
+#[test]
+fn unannotated_const_lowers_to_none() {
+    let (hir, diags) = lower_hir("CONST speed = 0.5\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.constants[0].annotation, None);
+}

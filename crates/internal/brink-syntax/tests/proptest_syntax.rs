@@ -344,6 +344,12 @@ fn arb_var_decl_typed() -> impl Strategy<Value = String> {
         .prop_map(|(name, ty, val)| format!("VAR {name}: {ty} = {val}\n"))
 }
 
+/// #641: CONST mirrors VAR's typed-declaration strategy.
+fn arb_const_decl_typed() -> impl Strategy<Value = String> {
+    (arb_ident(), arb_type_expr(), arb_simple_value())
+        .prop_map(|(name, ty, val)| format!("CONST {name}: {ty} = {val}\n"))
+}
+
 fn arb_temp_decl_typed() -> impl Strategy<Value = String> {
     (arb_ident(), arb_type_expr(), arb_ident())
         .prop_map(|(name, ty, val)| format!("~ temp {name}: {ty} = {val}\n"))
@@ -549,6 +555,28 @@ proptest! {
     }
 
     #[test]
+    fn const_decl_typed_roundtrip(input in arb_const_decl_typed()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn const_decl_typed_no_errors(input in arb_const_decl_typed()) {
+        let parsed = parse(&input);
+        prop_assert!(
+            parsed.errors().is_empty(),
+            "parse errors for input: {:?}\nerrors: {:?}",
+            input, parsed.errors(),
+        );
+    }
+
+    #[test]
+    fn const_decl_typed_produces_type_annotation(input in arb_const_decl_typed()) {
+        let parsed = parse(&input);
+        prop_assert!(has_node_kind(&parsed.syntax(), SyntaxKind::TYPE_ANNOTATION));
+    }
+
+    #[test]
     fn temp_decl_typed_roundtrip(input in arb_temp_decl_typed()) {
         let parsed = parse(&input);
         prop_assert_eq!(parsed.syntax().text().to_string(), input);
@@ -589,6 +617,7 @@ proptest! {
     #[test]
     fn type_annotated_input_never_panics(input in prop_oneof![
         arb_var_decl_typed(),
+        arb_const_decl_typed(),
         arb_temp_decl_typed(),
         (arb_knot_header_typed(), arb_typed_test_body()).prop_map(|(h, b)| format!("{h}{b}")),
     ]) {

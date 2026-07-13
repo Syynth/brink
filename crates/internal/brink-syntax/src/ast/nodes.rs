@@ -1664,6 +1664,12 @@ impl ConstDecl {
         self.identifier().and_then(|id| id.name())
     }
 
+    /// The declared type annotation (TM-2, docs/typed-mode-spec.md §3:
+    /// `CONST name: type = expr`), if present.
+    pub fn type_annotation(&self) -> Option<TypeAnnotation> {
+        support::child(&self.syntax)
+    }
+
     /// Returns the initializer expression after `=`.
     pub fn value(&self) -> Option<Expr> {
         support::child(&self.syntax)
