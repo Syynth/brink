@@ -213,6 +213,14 @@ const RECORD_SET_DYN: u8 = 0xD0;
 const RECORD_GET: u8 = 0xD1;
 const RECORD_SET: u8 = 0xD2;
 
+// TM-3 completion conversion intrinsics (`docs/typed-mode-spec.md` §4,
+// maintainer ruling 2026-07-13, issue #659) — contiguous and adjacent to the
+// record block above, this PR's own reservation (no prior RFC allocation for
+// these three; the record block's own "assigned here" precedent applies).
+const CONVERT_INT: u8 = 0xD3;
+const CONVERT_FLOAT: u8 = 0xD4;
+const CONVERT_STRING: u8 = 0xD5;
+
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
 const LIST_NOT_CONTAINS: u8 = 0xB1;
@@ -626,6 +634,25 @@ pub enum Opcode {
     /// offset is out of range.
     RecordSet(u16),
 
+    // ── Conversion intrinsics (TM-3 completion, `docs/typed-mode-spec.md`
+    // §4, maintainer ruling 2026-07-13, issue #659) ──────────────────────
+    /// `[x]` → `Int`. The `int(x)` pure conversion intrinsic: `Int`
+    /// (identity), `Float` (truncate toward zero, matching vanilla ink's
+    /// `INT()`), `Bool` (`true` → 1, `false` → 0), `String` (parse).
+    /// Turn-terminating fault on a string that fails to parse, or on any
+    /// value outside this permissive numeric+bool domain (divert targets,
+    /// LIST values, arrays, maps, records) — value-model-spec §11c.
+    ConvertInt,
+    /// `[x]` → `Float`. The `float(x)` pure conversion intrinsic: `Float`
+    /// (identity), `Int` (widen), `Bool` (`true` → 1.0, `false` → 0.0),
+    /// `String` (parse). Same fault domain as `ConvertInt`.
+    ConvertFloat,
+    /// `[x]` → `String`. The `string(x)` pure conversion intrinsic: display
+    /// form, identical to interpolation (`{x}`) — total over every `Value`,
+    /// never faults (typed-mode-spec §4: "display is universal, not a
+    /// coercion").
+    ConvertString,
+
     // ── Lifecycle ───────────────────────────────────────────────────────
     Done,
     /// Pause for choice presentation. Like `Done` but does NOT set
@@ -919,6 +946,11 @@ impl Opcode {
                 write_u16(buf, offset);
             }
 
+            // Conversion intrinsics (TM-3 completion, #659)
+            Self::ConvertInt => write_u8(buf, CONVERT_INT),
+            Self::ConvertFloat => write_u8(buf, CONVERT_FLOAT),
+            Self::ConvertString => write_u8(buf, CONVERT_STRING),
+
             // Lifecycle
             Self::Done => write_u8(buf, DONE),
             Self::Yield => write_u8(buf, YIELD),
@@ -1115,6 +1147,11 @@ impl Opcode {
             RECORD_SET_DYN => Self::RecordSetDyn(read_u16(buf, offset)?),
             RECORD_GET => Self::RecordGet(read_u16(buf, offset)?),
             RECORD_SET => Self::RecordSet(read_u16(buf, offset)?),
+
+            // Conversion intrinsics (TM-3 completion, #659)
+            CONVERT_INT => Self::ConvertInt,
+            CONVERT_FLOAT => Self::ConvertFloat,
+            CONVERT_STRING => Self::ConvertString,
 
             // Lifecycle
             DONE => Self::Done,
@@ -1557,6 +1594,32 @@ mod tests {
         let mut buf = Vec::new();
         Opcode::RecordSet(1).encode(&mut buf);
         assert_eq!(buf[0], 0xD2);
+    }
+
+    /// The three TM-3-completion conversion-intrinsic opcodes (`0xD3`-`0xD5`
+    /// — issue #659) round-trip and sit contiguous and adjacent to the
+    /// record block, matching the reservation comment above `CONVERT_INT`.
+    #[test]
+    fn roundtrip_conversion_opcodes() {
+        for op in [
+            Opcode::ConvertInt,
+            Opcode::ConvertFloat,
+            Opcode::ConvertString,
+        ] {
+            roundtrip(&op);
+        }
+
+        let mut buf = Vec::new();
+        Opcode::ConvertInt.encode(&mut buf);
+        assert_eq!(buf[0], 0xD3);
+
+        let mut buf = Vec::new();
+        Opcode::ConvertFloat.encode(&mut buf);
+        assert_eq!(buf[0], 0xD4);
+
+        let mut buf = Vec::new();
+        Opcode::ConvertString.encode(&mut buf);
+        assert_eq!(buf[0], 0xD5);
     }
 
     #[test]

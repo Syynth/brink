@@ -491,6 +491,11 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         Opcode::RecordSetDyn(name_id) => format!("record_set_dyn {name_id}"),
         Opcode::RecordGet(offset) => format!("record_get {offset}"),
         Opcode::RecordSet(offset) => format!("record_set {offset}"),
+
+        // Conversion intrinsics (TM-3 completion, #659)
+        Opcode::ConvertInt => "convert_int".to_owned(),
+        Opcode::ConvertFloat => "convert_float".to_owned(),
+        Opcode::ConvertString => "convert_string".to_owned(),
     }
 }
 

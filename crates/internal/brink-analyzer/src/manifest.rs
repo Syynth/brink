@@ -159,8 +159,9 @@ fn insert_symbol(
 
     // Warn if the symbol name shadows a built-in function — the classic
     // uppercase ink intrinsics (`is_builtin_function`) or a T1b stdlib
-    // slice 1 lowercase free function (`is_t1b_stdlib_name`,
-    // docs/t1b-surface-spec.md §5 — "an author-defined function with the
+    // slice 1 / TM-3-completion lowercase free function
+    // (`is_t1b_stdlib_name`, docs/t1b-surface-spec.md §5 +
+    // docs/typed-mode-spec.md §4 — "an author-defined function with the
     // same name shadows the builtin, with a warning diagnostic"). Fired
     // dialect-agnostically here, same as the existing uppercase check: under
     // `strict-ink` the T1b names aren't reserved at all, so the warning is

@@ -195,6 +195,14 @@ fn stdlib_author_function_shadows_builtin() {
     assert_case("stdlib-shadowing");
 }
 
+// ── TM-3 completion: conversion intrinsics (docs/typed-mode-spec.md §4,
+// maintainer ruling 2026-07-13, issue #659) ───────────────────────────────
+
+#[test]
+fn stdlib_conversions_int_float_string() {
+    assert_case("stdlib-conversions");
+}
+
 // ── #587 breadth pass: nesting depth (docs/t1b-surface-spec.md §2/§4) ────
 
 #[test]
@@ -279,6 +287,7 @@ fn every_case_directory_has_a_test() {
         "stdlib-remove",
         "stdlib-mutator-nested-lvalue",
         "stdlib-shadowing",
+        "stdlib-conversions",
         "deep-nesting-control-flow",
         "deep-nesting-collections",
         "weave-seam-two-knots",
@@ -669,6 +678,220 @@ fn map_remove_with_non_key_domain_float_key_faults() {
 // this proves the full seven-name surface end-to-end through the compiler
 // entry point, matching `strict_ink_rejects_an_unresolved_stdlib_call`'s
 // existing single-name version above.
+
+// ── TM-3 completion: conversion intrinsics (docs/typed-mode-spec.md §4,
+// maintainer ruling 2026-07-13, issue #659) ───────────────────────────────
+
+#[test]
+fn author_defined_int_shadows_builtin_with_e035_warning() {
+    let source = "=== function int(x)\n~ return 999\n\nHello.\n-> END\n";
+    let out = compile_brink(source).expect("shadowing is a warning, not a compile error");
+    assert!(
+        out.warnings
+            .iter()
+            .any(|w| w.code == brink_compiler::DiagnosticCode::E035),
+        "expected E035 shadow warning, got {:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn every_conversion_name_is_rejected_under_strict_ink_and_compiles_under_brink() {
+    let strict_ink_call_sites: [(&str, &str); 3] = [
+        ("int", "int(x)"),
+        ("float", "float(x)"),
+        ("string", "string(x)"),
+    ];
+    for (name, call) in strict_ink_call_sites {
+        let source = format!("VAR x = 0\n~ y = {call}\nDone.\n-> END\n");
+        let files: std::collections::HashMap<&str, &str> =
+            std::collections::HashMap::from([("main.ink", source.as_str())]);
+        let err = brink_compiler::compile_with_options(
+            "main.ink",
+            |path| {
+                files
+                    .get(path)
+                    .map(|s| (*s).to_string())
+                    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, path))
+            },
+            AnalysisOptions::default(),
+        )
+        .expect_err(&format!(
+            "strict-ink must reject an unresolved `{name}` call"
+        ));
+        let diags = errors_of(&err);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == brink_compiler::DiagnosticCode::E051),
+            "`{name}`: expected E051, got {diags:?}"
+        );
+    }
+
+    for (name, expr) in [
+        ("int", "int(1)"),
+        ("float", "float(1.0)"),
+        ("string", "string(1)"),
+    ] {
+        let brink_source = format!("~ temp y = {expr}\nDone.\n-> END\n");
+        compile_brink(&brink_source)
+            .unwrap_or_else(|e| panic!("`{name}` must compile under brink dialect: {e:?}"));
+    }
+}
+
+#[test]
+fn int_parse_failure_faults() {
+    let source = "~ {\n    temp x = int(\"potato\")\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert_eq!(
+        err,
+        brink_runtime::RuntimeError::ConversionParseFailure {
+            target: "int",
+            input: "potato".to_string(),
+        }
+    );
+}
+
+#[test]
+fn float_parse_failure_faults() {
+    let source = "~ {\n    temp x = float(\"nope\")\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert_eq!(
+        err,
+        brink_runtime::RuntimeError::ConversionParseFailure {
+            target: "float",
+            input: "nope".to_string(),
+        }
+    );
+}
+
+#[test]
+fn int_of_negative_float_truncates_toward_zero_not_floor() {
+    // Ruling 3's pinned case: int(-2.9) == -2 (truncate), not -3 (floor) —
+    // matches vanilla ink's INT() exactly.
+    let source = "{int(-2.9)}\n-> END\n";
+    let options = AnalysisOptions {
+        dialect: Dialect::Brink,
+        ..AnalysisOptions::default()
+    };
+    let output =
+        brink_compiler::compile_with_options("main.ink", |_| Ok(source.to_string()), options)
+            .expect("compile");
+    let (program, line_tables) = brink_runtime::link(&output.data).expect("link");
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
+    match story.continue_single().expect("no fault expected") {
+        Line::Done { text, .. } | Line::End { text, .. } => assert_eq!(text.trim(), "-2"),
+        other => panic!("expected terminal line, got {other:?}"),
+    }
+}
+
+#[test]
+fn int_of_a_divert_target_faults_under_gradual() {
+    // Root-level content is the entry point (`run_to_error`'s pattern
+    // throughout this file) — `target` is declared only so `-> target` has
+    // somewhere to resolve; it's never actually reached.
+    let source =
+        "~ {\n    temp x = int(-> target)\n}\nDone.\n-> END\n=== target ===\nHi.\n-> DONE\n";
+    let err = run_to_error(source);
+    assert_eq!(
+        err,
+        brink_runtime::RuntimeError::InvalidConversionDomain {
+            target: "int",
+            got: "divert_target",
+        }
+    );
+}
+
+#[test]
+fn float_of_a_list_faults_under_gradual() {
+    let source = "LIST Colors = red, blue\n~ {\n    temp x = float((red))\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert_eq!(
+        err,
+        brink_runtime::RuntimeError::InvalidConversionDomain {
+            target: "float",
+            got: "list",
+        }
+    );
+}
+
+#[test]
+fn int_of_an_array_faults_under_gradual() {
+    let source = "VAR arr = 0\n~ {\n    arr = #[1, 2]\n    temp x = int(arr)\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert_eq!(
+        err,
+        brink_runtime::RuntimeError::InvalidConversionDomain {
+            target: "int",
+            got: "array",
+        }
+    );
+}
+
+#[test]
+fn string_of_a_divert_target_never_faults() {
+    // Ruling 2: `string()` accepts every type — the same divert-target
+    // input that faults `int()` above must succeed for `string()`. Root
+    // content is the entry point; `target` is declared only so `-> target`
+    // resolves, never actually reached.
+    let source = "VAR s = \"\"\n~ {\n    s = string(-> target)\n}\n{s}\n-> END\n=== target ===\nHi.\n-> DONE\n";
+    let options = AnalysisOptions {
+        dialect: Dialect::Brink,
+        ..AnalysisOptions::default()
+    };
+    let output =
+        brink_compiler::compile_with_options("main.ink", |_| Ok(source.to_string()), options)
+            .expect("compile");
+    let (program, line_tables) = brink_runtime::link(&output.data).expect("link");
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
+    let mut out = String::new();
+    loop {
+        match story.continue_single().expect("string() must never fault") {
+            Line::Text { text, .. } => out.push_str(&text),
+            Line::Done { text, .. } | Line::End { text, .. } => {
+                out.push_str(&text);
+                break;
+            }
+            Line::Choices { .. } => panic!("unexpected choices"),
+        }
+    }
+    // Proves the conversion actually ran (not a vacuous pass on zero
+    // executed lines) — `string(-> target)`'s display form is non-empty.
+    assert!(
+        !out.trim().is_empty(),
+        "expected string(-> target)'s non-empty display form in output, got {out:?}"
+    );
+}
+
+#[test]
+fn strict_mode_rejects_int_of_a_divert_target_literal_with_e078() {
+    let source = "=== knot ===\nHello.\n-> DONE\n=== main ===\n~ x = int(-> knot)\n-> DONE\n";
+    let options = AnalysisOptions {
+        dialect: Dialect::Brink,
+        types: brink_compiler::TypePolicy::Strict,
+        ..AnalysisOptions::default()
+    };
+    let files: std::collections::HashMap<&str, &str> =
+        std::collections::HashMap::from([("main.ink", source)]);
+    let err = brink_compiler::compile_with_options(
+        "main.ink",
+        |path| {
+            files
+                .get(path)
+                .map(|s| (*s).to_string())
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, path))
+        },
+        options,
+    )
+    .expect_err("strict mode must reject int(-> knot) at compile time");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E078),
+        "expected E078, got {diags:?}"
+    );
+}
 
 #[test]
 fn every_stdlib_name_is_rejected_under_strict_ink_and_compiles_under_brink() {
