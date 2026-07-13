@@ -115,3 +115,36 @@ fn strict_analyze_populates_the_memoized_whole_project_inference() {
         "heal's param is inferred int from `hp + 1`"
     );
 }
+
+/// T1c follow-up (issue #712), through the *real* incremental salsa path:
+/// `db.diagnostics(file)` -> `analysis_query` -> `strict::check`, backed by
+/// `type_inference_query` -> `solve_scc_query`'s FG-2.1-narrowed globals map
+/// (`brink-db/src/queries.rs`) — a separate implementation from the pure-
+/// function `brink_analyzer::infer_project`'s `collect_globals`, which
+/// `brink-analyzer`'s own unit tests exercise directly. A global `VAR`
+/// holding a `#fn(...)` value, called with a wrong-typed argument, must
+/// surface `E063` here too — proving the narrowed globals map picked up the
+/// same `Sig::fn_type` fix, not just the whole-project one.
+#[test]
+fn strict_global_fn_value_mismatch_reaches_production_diagnostics() {
+    let mut db = ProjectDb::new();
+    let file = db.set_file(
+        "main.ink",
+        "=== function heal(ref hp: int, amount: int): int ===\n\
+         ~ hp = hp + amount\n~ return hp\n\
+         VAR player_hp = 10\n\
+         VAR heal_player = #fn(heal, player_hp)\n\
+         === main ===\n~ temp r: int = heal_player(\"x\")\n-> DONE\n"
+            .to_owned(),
+    );
+    db.set_entry("main.ink");
+    db.set_analysis_options(strict_opts());
+
+    let diags = db.diagnostics(file).expect("file diagnostics");
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+        "{diags:?}"
+    );
+}

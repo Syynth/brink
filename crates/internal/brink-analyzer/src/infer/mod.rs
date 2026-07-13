@@ -213,6 +213,12 @@ fn index_resolutions_by_file(
 
 /// Declaration-derived global (VAR/CONST) types — read via `signature()`,
 /// the firewall boundary for every non-callable reference in a body.
+///
+/// `value_type` covers the scalar/list/divert domain; `fn_type` (T1c
+/// follow-up, issue #712) covers `Ty::Fn` separately since `InferredType`
+/// has no `Fn` form (`Sig::fn_type`'s doc) — the two are mutually exclusive
+/// per declaration, so trying `value_type` first and falling back to
+/// `fn_type` never masks either.
 fn collect_globals(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
@@ -221,9 +227,12 @@ fn collect_globals(
     for (&id, info) in &index.symbols {
         if matches!(info.kind, SymbolKind::Variable | SymbolKind::Constant)
             && let Some(sig) = crate::signature::signature(id, index, files)
-            && let Some(vt) = sig.value_type
         {
-            globals.insert(id, Ty::from(vt));
+            if let Some(vt) = sig.value_type {
+                globals.insert(id, Ty::from(vt));
+            } else if let Some(ft) = sig.fn_type.clone() {
+                globals.insert(id, ft);
+            }
         }
     }
     globals
