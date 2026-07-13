@@ -259,6 +259,26 @@ pub enum SyntaxKind {
     /// `base[index]` — postfix indexing, chainable (§4).
     INDEX_EXPR,
 
+    // ── TM-2 inline type annotations (docs/typed-mode-spec.md §3) ──
+    // `name: type` after params/VAR/temp declarations, `): type ===` return
+    // position. Superset grammar — always parses; dialect-gated (E051 under
+    // strict-ink) at analysis, same pattern as T1b.
+    /// `: type_expr` — one annotation, attached after an identifier (param,
+    /// `VAR`/`temp` name) or a knot header's params (return position).
+    TYPE_ANNOTATION,
+    /// A type expression: wraps exactly one of `TYPE_NAME`, `TYPE_GENERIC`,
+    /// or `TYPE_FN`.
+    TYPE_EXPR,
+    /// A bare nominal type name (`int`, `float`, `bool`, `string`, `divert`,
+    /// `void`, or an unrecognized identifier — semantic validity is an
+    /// analyzer concern, not a grammar one).
+    TYPE_NAME,
+    /// `name<type_expr, …>` — `list<L>`, `array<T>`, `map<K, V>`.
+    TYPE_GENERIC,
+    /// `fn(type_expr, …): type_expr` — function type. Parses in T1b/TM-2;
+    /// types as reserved until T1c.
+    TYPE_FN,
+
     // Not a real kind — used only for `rowan::Language::kind_to_raw` bounds.
     #[doc(hidden)]
     __LAST,

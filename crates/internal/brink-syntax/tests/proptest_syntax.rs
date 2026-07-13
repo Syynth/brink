@@ -305,6 +305,76 @@ fn arb_simple_value() -> impl Strategy<Value = String> {
     prop_oneof![arb_integer(), arb_float(), arb_string_lit(),]
 }
 
+// ── TM-2 type annotation strategy (depth-bounded, docs/typed-mode-spec.md
+// §3) ──────────────────────────────────────────────────────────────────
+
+fn arb_type_leaf() -> impl Strategy<Value = String> {
+    prop_oneof![
+        Just("int".to_string()),
+        Just("float".to_string()),
+        Just("bool".to_string()),
+        Just("string".to_string()),
+        Just("divert".to_string()),
+        Just("void".to_string()),
+        // Exercises the "unknown type name" surface too. `fn` is excluded:
+        // it's a contextual keyword in type position (starts a `fn(...):
+        // ...` function type — see `parser::types::type_fn`), so landing on
+        // it bare would be a spurious property-test failure, not a bug.
+        arb_ident().prop_filter("must not be the `fn` contextual keyword", |s| s != "fn"),
+    ]
+}
+
+fn arb_type_expr() -> impl Strategy<Value = String> {
+    arb_type_leaf().prop_recursive(2, 8, 3, |inner| {
+        prop_oneof![
+            inner.clone().prop_map(|t| format!("array<{t}>")),
+            (inner.clone(), inner.clone()).prop_map(|(k, v)| format!("map<{k}, {v}>")),
+            inner.clone().prop_map(|t| format!("list<{t}>")),
+            prop::collection::vec(inner.clone(), 0..=3).prop_map(|params| format!(
+                "fn({}): {}",
+                params.join(", "),
+                "int"
+            )),
+        ]
+    })
+}
+
+fn arb_var_decl_typed() -> impl Strategy<Value = String> {
+    (arb_ident(), arb_type_expr(), arb_simple_value())
+        .prop_map(|(name, ty, val)| format!("VAR {name}: {ty} = {val}\n"))
+}
+
+fn arb_temp_decl_typed() -> impl Strategy<Value = String> {
+    (arb_ident(), arb_type_expr(), arb_ident())
+        .prop_map(|(name, ty, val)| format!("~ temp {name}: {ty} = {val}\n"))
+}
+
+/// A deliberately narrow body generator for the TM-2 knot-header tests
+/// below — `arb_body()` (via `arb_content_with_inline`) can produce
+/// content-line/inline-logic combinations that are a pre-existing,
+/// unrelated generator edge case (not a TM-2 regression); these tests only
+/// need *some* well-formed body to follow a typed header, not full body
+/// coverage (already exercised by `story_roundtrip` et al.).
+fn arb_typed_test_body() -> impl Strategy<Value = String> {
+    prop::collection::vec(arb_content_line(), 1..=3).prop_map(|lines| lines.join(""))
+}
+
+fn arb_knot_header_typed() -> impl Strategy<Value = String> {
+    (
+        arb_ident(),
+        prop::collection::vec((arb_ident(), arb_type_expr()), 0..=3),
+        arb_type_expr(),
+    )
+        .prop_map(|(name, params, ret)| {
+            let params = params
+                .iter()
+                .map(|(n, t)| format!("{n}: {t}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("=== function {name}({params}): {ret} ===\n")
+        })
+}
+
 fn arb_list_decl() -> impl Strategy<Value = String> {
     (arb_ident(), prop::collection::vec(arb_list_member(), 1..=4))
         .prop_map(|(name, members)| format!("LIST {name} = {}\n", members.join(", ")))
@@ -452,6 +522,77 @@ proptest! {
     fn var_decl_roundtrip(input in arb_var_decl()) {
         let parsed = parse(&input);
         prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    // ── TM-2 type annotations (docs/typed-mode-spec.md §3) ────────────
+
+    #[test]
+    fn var_decl_typed_roundtrip(input in arb_var_decl_typed()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn var_decl_typed_no_errors(input in arb_var_decl_typed()) {
+        let parsed = parse(&input);
+        prop_assert!(
+            parsed.errors().is_empty(),
+            "parse errors for input: {:?}\nerrors: {:?}",
+            input, parsed.errors(),
+        );
+    }
+
+    #[test]
+    fn var_decl_typed_produces_type_annotation(input in arb_var_decl_typed()) {
+        let parsed = parse(&input);
+        prop_assert!(has_node_kind(&parsed.syntax(), SyntaxKind::TYPE_ANNOTATION));
+    }
+
+    #[test]
+    fn temp_decl_typed_roundtrip(input in arb_temp_decl_typed()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn temp_decl_typed_no_errors(input in arb_temp_decl_typed()) {
+        let parsed = parse(&input);
+        prop_assert!(
+            parsed.errors().is_empty(),
+            "parse errors for input: {:?}\nerrors: {:?}",
+            input, parsed.errors(),
+        );
+    }
+
+    #[test]
+    fn knot_header_typed_roundtrip((header, body) in (arb_knot_header_typed(), arb_typed_test_body())) {
+        let input = format!("{header}{body}");
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn knot_header_typed_no_errors((header, body) in (arb_knot_header_typed(), arb_typed_test_body())) {
+        let input = format!("{header}{body}");
+        let parsed = parse(&input);
+        prop_assert!(
+            parsed.errors().is_empty(),
+            "parse errors for input: {:?}\nerrors: {:?}",
+            input, parsed.errors(),
+        );
+    }
+
+    /// Never panics on any type-annotated input — extends the grammar fuzz
+    /// coverage (docs/t1b-surface-spec.md §6 pattern) to TM-2's superset
+    /// grammar: the parser must never crash, in either dialect (the parser
+    /// itself is dialect-agnostic — dialect gating happens at analysis).
+    #[test]
+    fn type_annotated_input_never_panics(input in prop_oneof![
+        arb_var_decl_typed(),
+        arb_temp_decl_typed(),
+        (arb_knot_header_typed(), arb_typed_test_body()).prop_map(|(h, b)| format!("{h}{b}")),
+    ]) {
+        let _ = parse(&input);
     }
 
     #[test]

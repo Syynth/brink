@@ -97,11 +97,13 @@ mod tests {
                 name: dummy_name("a"),
                 is_ref: false,
                 is_divert: false,
+                annotation: None,
             },
             Param {
                 name: dummy_name("b"),
                 is_ref: false,
                 is_divert: false,
+                annotation: None,
             },
         ];
         let empty_block = Block::default();

@@ -36,7 +36,10 @@
 use std::collections::HashSet;
 
 use brink_ir::hir::visit::{self, HirVisitor};
-use brink_ir::{Diagnostic, DiagnosticCode, Expr, FileId, HirFile, ResolutionMap, Stmt};
+use brink_ir::{
+    BlockStmt, Diagnostic, DiagnosticCode, ElseBranch, Expr, FileId, HirFile, IfStmt, Knot,
+    ResolutionMap, Stitch, Stmt,
+};
 
 /// Compiler dialect: gates T1b brink-extension syntax. Default `StrictInk` —
 /// divergence from the oracle-anchored ink subset is a visible, one-time,
@@ -76,6 +79,16 @@ pub fn check(
             diagnostics: &mut out,
         };
         visit::visit(hir, &mut v);
+
+        // TM-2 (docs/typed-mode-spec.md §3): `VAR name: type = expr`. File-level
+        // declarations aren't part of the block-tree walk `visit::visit`
+        // covers (see its module doc) — iterated directly here, same
+        // pattern `signature.rs`/`infer::collect_globals` use.
+        for var in &hir.variables {
+            if let Some(ann) = &var.annotation {
+                v.flag(ann.range(), "type annotation");
+            }
+        }
     }
     out
 }
@@ -105,6 +118,50 @@ impl GateVisitor<'_> {
             code: DiagnosticCode::E051,
         });
     }
+
+    /// Flag every param's type annotation (TM-2, docs/typed-mode-spec.md §3:
+    /// `name: type`), if present.
+    fn flag_params(&mut self, params: &[brink_ir::Param]) {
+        for p in params {
+            if let Some(ann) = &p.annotation {
+                self.flag(ann.range(), "type annotation");
+            }
+        }
+    }
+
+    /// Flag every `~ temp name: type = expr` ascription inside a `~ { … }`
+    /// block, recursing through `if`/`while`/`for` bodies — the shared
+    /// `HirVisitor` walk doesn't fire `enter_stmt` for `BlockStmt`s (T1b's
+    /// closed block-statement set, docs/t1b-surface-spec.md §2), so this
+    /// gate descends by hand.
+    fn flag_block_stmts(&mut self, stmts: &[BlockStmt]) {
+        for s in stmts {
+            match s {
+                BlockStmt::TempDecl(t) => {
+                    if let Some(ann) = &t.annotation {
+                        self.flag(ann.range(), "type annotation");
+                    }
+                }
+                BlockStmt::If(i) => self.flag_if_stmt(i),
+                BlockStmt::While(w) => self.flag_block_stmts(&w.body),
+                BlockStmt::For(f) => self.flag_block_stmts(&f.body),
+                BlockStmt::Assignment(_)
+                | BlockStmt::Return(_)
+                | BlockStmt::ExprStmt(_)
+                | BlockStmt::Break(_)
+                | BlockStmt::Continue(_) => {}
+            }
+        }
+    }
+
+    fn flag_if_stmt(&mut self, i: &IfStmt) {
+        self.flag_block_stmts(&i.body);
+        match &i.else_branch {
+            Some(ElseBranch::ElseIf(inner)) => self.flag_if_stmt(inner),
+            Some(ElseBranch::Else(stmts)) => self.flag_block_stmts(stmts),
+            None => {}
+        }
+    }
 }
 
 /// T1b stdlib slice 1 function names (`docs/t1b-surface-spec.md` §5). Kept
@@ -121,9 +178,29 @@ impl HirVisitor for GateVisitor<'_> {
         true
     }
 
+    fn enter_knot(&mut self, knot: &Knot) {
+        self.flag_params(&knot.params);
+        if let Some(ret) = &knot.return_type {
+            self.flag(ret.range(), "type annotation");
+        }
+    }
+
+    fn enter_stitch(&mut self, stitch: &Stitch) {
+        self.flag_params(&stitch.params);
+    }
+
     fn enter_stmt(&mut self, stmt: &Stmt) {
-        if let Stmt::LogicBlock(lb) = stmt {
-            self.flag(lb.ptr.text_range(), "`~ { … }` multi-line logic block");
+        match stmt {
+            Stmt::LogicBlock(lb) => {
+                self.flag(lb.ptr.text_range(), "`~ { … }` multi-line logic block");
+                self.flag_block_stmts(&lb.stmts);
+            }
+            Stmt::TempDecl(t) => {
+                if let Some(ann) = &t.annotation {
+                    self.flag(ann.range(), "type annotation");
+                }
+            }
+            _ => {}
         }
     }
 
@@ -270,6 +347,71 @@ mod tests {
             target: brink_format::DefinitionId::new(brink_format::DefinitionTag::Address, 1),
         }];
         let diags = check(&[(FileId(0), &hir)], &resolutions, Dialect::StrictInk);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    // ── TM-2 inline type annotations (docs/typed-mode-spec.md §3) ──────
+
+    #[test]
+    fn strict_ink_flags_param_annotation() {
+        let hir = lower_src("=== heal(hp: int) ===\n~ return hp\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E051);
+    }
+
+    #[test]
+    fn strict_ink_flags_return_type_annotation() {
+        let hir = lower_src("=== function heal(hp): int ===\n~ return hp\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E051);
+    }
+
+    #[test]
+    fn strict_ink_flags_both_param_and_return_annotations_separately() {
+        let hir = lower_src("=== function heal(hp: int): int ===\n~ return hp\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert_eq!(diags.len(), 2, "{diags:?}");
+        assert!(diags.iter().all(|d| d.code == DiagnosticCode::E051));
+    }
+
+    #[test]
+    fn strict_ink_flags_var_annotation() {
+        let hir = lower_src("VAR gold: int = 100\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E051);
+    }
+
+    #[test]
+    fn strict_ink_flags_temp_ascription() {
+        let hir = lower_src("~ temp name: string = \"a\"\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E051);
+    }
+
+    #[test]
+    fn strict_ink_flags_temp_ascription_inside_a_block() {
+        let hir = lower_src("~ {\ntemp x: int = 1\n}\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        // The block itself AND the nested ascription are each flagged.
+        assert_eq!(diags.len(), 2, "{diags:?}");
+        assert!(diags.iter().all(|d| d.code == DiagnosticCode::E051));
+    }
+
+    #[test]
+    fn brink_dialect_does_not_flag_type_annotations() {
+        let hir = lower_src("=== function heal(hp: int): int ===\n~ return hp\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::Brink);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn unannotated_declarations_produce_no_type_diagnostics() {
+        let hir = lower_src("=== heal(hp) ===\nVAR gold = 100\n~ temp t = 1\n~ return hp\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
         assert!(diags.is_empty(), "{diags:?}");
     }
 }

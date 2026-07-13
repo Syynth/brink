@@ -5,6 +5,7 @@ use crate::SyntaxKind::{
 };
 
 use super::Parser;
+use super::types::{at_type_annotation, type_annotation};
 
 /// Parse a logic line: `~ statement NEWLINE?`, or a T1b multi-line block
 /// `~ { … }` (docs/t1b-surface-spec.md §2) when the expression position
@@ -93,6 +94,11 @@ fn temp_declaration(p: &mut Parser<'_, '_>) {
     p.start_node(IDENTIFIER);
     p.expect(IDENT);
     p.finish_node();
+    // Optional ascription (TM-2, docs/typed-mode-spec.md §3):
+    // `~ temp name: type = expr`.
+    if at_type_annotation(p) {
+        type_annotation(p);
+    }
     p.skip_ws();
     assignment_op(p);
     p.skip_ws();

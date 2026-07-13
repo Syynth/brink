@@ -5,6 +5,7 @@ use crate::SyntaxKind::{
 };
 
 use super::Parser;
+use super::types::{at_type_annotation, type_annotation};
 
 /// Parse `INCLUDE filepath\n`.
 ///
@@ -96,6 +97,11 @@ pub(crate) fn var_declaration(p: &mut Parser<'_, '_>) {
     p.start_node(IDENTIFIER);
     p.expect(IDENT);
     p.finish_node();
+    // Optional type annotation (TM-2, docs/typed-mode-spec.md §3):
+    // `VAR name: type = expr`.
+    if at_type_annotation(p) {
+        type_annotation(p);
+    }
     p.skip_ws();
     p.expect(EQ);
     p.skip_ws();

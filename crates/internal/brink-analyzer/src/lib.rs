@@ -5,6 +5,7 @@
 //! duplicate detection, type checking). Both `brink-compiler` and `brink-lsp`
 //! consume the analysis result.
 
+mod annotations;
 mod dialect_gate;
 mod external_check;
 mod infer;
@@ -16,6 +17,9 @@ mod validate;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+pub use annotations::{
+    check as check_annotations, mismatches as annotation_mismatches, resolve as resolve_annotation,
+};
 pub use brink_ir::FileId;
 pub use brink_ir::ResolutionMap;
 pub use dialect_gate::Dialect;
@@ -159,6 +163,7 @@ pub fn finish_analysis(
 
     diagnostics.extend(validate::validate(&hir_inputs));
     diagnostics.extend(dialect_gate::check(&hir_inputs, &resolutions, opts.dialect));
+    diagnostics.extend(annotations::check(&hir_inputs, &index));
 
     // Host-manifest enrichment + checks (tooling/author-time only).
     let inline_docs = collect_inline_docs(&manifest_inputs);

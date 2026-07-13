@@ -340,7 +340,7 @@ fn map_entry(p: &mut Parser<'_, '_>) {
 /// Error recovery: skip tokens until the matching `close` (the `open` token
 /// has already been consumed) or EOF. Used when a depth-limited nested
 /// construct bails out early — mirrors [`paren_expr`]'s recovery loop.
-fn skip_balanced(p: &mut Parser<'_, '_>, open: SyntaxKind, close: SyntaxKind) {
+pub(crate) fn skip_balanced(p: &mut Parser<'_, '_>, open: SyntaxKind, close: SyntaxKind) {
     let mut depth = 1u32;
     while !p.at_eof() && depth > 0 {
         let k = p.current();

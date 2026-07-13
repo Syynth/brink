@@ -93,6 +93,10 @@ pub struct Knot {
     /// the body. Covers the whole definition subtree at runtime policy
     /// resolution (`docs/directive-annotations-spec.md`).
     pub is_local: bool,
+    /// The function-header return type annotation (TM-2, docs/typed-mode-spec.md
+    /// §3: `): type ===`), brink-dialect-gated syntax. `None` when absent —
+    /// not the same as an explicit `void` (`TypeExpr::Void`).
+    pub return_type: Option<TypeExpr>,
 }
 
 /// A stitch definition within a knot.
@@ -115,6 +119,51 @@ pub struct Param {
     pub is_ref: bool,
     /// `->` parameter — tunnel return divert target.
     pub is_divert: bool,
+    /// The parameter's type annotation (TM-2, docs/typed-mode-spec.md §3:
+    /// `name: type`), brink-dialect-gated syntax.
+    pub annotation: Option<TypeExpr>,
+}
+
+// ─── TM-2 inline type annotations (docs/typed-mode-spec.md §3) ──────
+//
+// Superset grammar surface — always lowered to HIR regardless of dialect
+// (mirrors the T1b pattern); `brink-analyzer::dialect_gate` is where
+// `strict-ink` rejection (E051) happens. Nominal grammar only: no struct
+// names yet (TM-4), `Fn` parses but types as reserved until T1c.
+
+/// A parsed type annotation expression.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeExpr {
+    /// A bare nominal name: `int`, `float`, `bool`, `string`, `divert`,
+    /// `void`, or an unrecognized identifier (flagged by a targeted
+    /// diagnostic — declared struct names arrive in TM-4).
+    Named { name: String, range: TextRange },
+    /// `name<args…>` — `list<L>`, `array<T>`, `map<K, V>`, or an
+    /// unrecognized generic head.
+    Generic {
+        name: String,
+        args: Vec<TypeExpr>,
+        range: TextRange,
+    },
+    /// `fn(params…): ret` — a function type. Parses everywhere; typed as
+    /// reserved until T1c (a targeted diagnostic fires on any use).
+    Fn {
+        params: Vec<TypeExpr>,
+        ret: Box<TypeExpr>,
+        range: TextRange,
+    },
+}
+
+impl TypeExpr {
+    /// The full source range of this type expression.
+    #[must_use]
+    pub fn range(&self) -> TextRange {
+        match self {
+            Self::Named { range, .. } | Self::Generic { range, .. } | Self::Fn { range, .. } => {
+                *range
+            }
+        }
+    }
 }
 
 // ─── Block and statements ───────────────────────────────────────────
@@ -695,6 +744,9 @@ pub struct VarDecl {
     /// Marked flow-private via a `#@local` directive line above the
     /// declaration (`docs/directive-annotations-spec.md`).
     pub is_local: bool,
+    /// The declared type annotation (TM-2, docs/typed-mode-spec.md §3:
+    /// `VAR name: type = expr`), brink-dialect-gated syntax.
+    pub annotation: Option<TypeExpr>,
 }
 
 /// `CONST x = expr`
@@ -711,6 +763,11 @@ pub struct TempDecl {
     pub ptr: AstPtr<ast::TempDecl>,
     pub name: Name,
     pub value: Option<Expr>,
+    /// The ascription's type annotation (TM-2, docs/typed-mode-spec.md §3:
+    /// `~ temp name: type = expr`), brink-dialect-gated syntax. HIR/parse
+    /// surface only in this slice — not yet wired into body inference (that
+    /// would touch `infer::body::BodyCtx`, out of scope per #638).
+    pub annotation: Option<TypeExpr>,
 }
 
 /// `~ x = expr` or `~ x += expr`
@@ -967,6 +1024,20 @@ pub enum DiagnosticCode {
     /// code exists so that bug fails loudly instead of silently corrupting
     /// bytecode.
     E060,
+
+    // ── TM-2 inline type annotations (docs/typed-mode-spec.md §3) ────
+    /// A type annotation names something that isn't a recognized nominal
+    /// type (`int`/`float`/`bool`/`string`/`divert`/`void`), a `list<L>`
+    /// naming a declared `LIST`, `array<T>`, or `map<K, V>` — declared
+    /// struct names arrive in TM-4.
+    E061,
+    /// `fn(T…): R` function-type annotation used — parses, but types as
+    /// reserved until T1c.
+    E062,
+    /// A param/return/`VAR` type annotation disagrees with the type
+    /// TM-1's body inference would otherwise derive. Advisory only in this
+    /// slice (gradual policy) — strict-mode severity is TM-3's call.
+    E063,
 }
 
 impl DiagnosticCode {
@@ -1034,6 +1105,9 @@ impl DiagnosticCode {
             Self::E058 => "E058",
             Self::E059 => "E059",
             Self::E060 => "E060",
+            Self::E061 => "E061",
+            Self::E062 => "E062",
+            Self::E063 => "E063",
         }
     }
 
@@ -1103,6 +1177,9 @@ impl DiagnosticCode {
             Self::E058 => "collection mutator argument count mismatch",
             Self::E059 => "choice/gather construct nested inside inline content",
             Self::E060 => "internal codegen error",
+            Self::E061 => "unknown type name in annotation",
+            Self::E062 => "function-type annotation is reserved until T1c",
+            Self::E063 => "type annotation disagrees with inferred type",
         }
     }
 
@@ -1121,7 +1198,8 @@ impl DiagnosticCode {
             | Self::E035
             | Self::E038
             | Self::E043
-            | Self::E054 => Severity::Warning,
+            | Self::E054
+            | Self::E063 => Severity::Warning,
             _ => Severity::Error,
         }
     }
@@ -1190,6 +1268,9 @@ impl DiagnosticCode {
             "E058" => Some(Self::E058),
             "E059" => Some(Self::E059),
             "E060" => Some(Self::E060),
+            "E061" => Some(Self::E061),
+            "E062" => Some(Self::E062),
+            "E063" => Some(Self::E063),
             _ => None,
         }
     }
