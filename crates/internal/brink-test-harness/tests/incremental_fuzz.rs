@@ -250,6 +250,11 @@ fn incremental_story_data_equals_fresh_compile() {
             // for every non-local def — the equivalence gate the design doc
             // asks incremental_fuzz to carry for the narrowed dependency
             // edge (declaring-file-only, not every project file's HIR).
+            //
+            // FG-2 (#631): extend the same equivalence gate to the new
+            // per-def/per-SCC inference views — `inferred_signature(def)`
+            // and `infer_body(def)` — per the design doc §7's explicit ask
+            // to sweep every new per-def family into this harness.
             let mut defs: Vec<_> = db
                 .symbol_index()
                 .symbols
@@ -268,6 +273,16 @@ fn incremental_story_data_equals_fresh_compile() {
                     db.signature(def),
                     fresh_db.signature(def),
                     "{project}: signature({def:?}) diverged from fresh compile after edit {step}"
+                );
+                assert_eq!(
+                    db.inferred_signature(def),
+                    fresh_db.inferred_signature(def),
+                    "{project}: inferred_signature({def:?}) diverged from fresh compile after edit {step}"
+                );
+                assert_eq!(
+                    db.infer_body(def),
+                    fresh_db.infer_body(def),
+                    "{project}: infer_body({def:?}) diverged from fresh compile after edit {step}"
                 );
             }
         }

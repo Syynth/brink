@@ -23,7 +23,10 @@ pub use external_check::{
     ExternalCheckSeverity, InferredType, ResolvedParam, ResolvedType,
     SemanticTypeDiagnosticSeverity, SymbolMeta, ValueMeta,
 };
-pub use infer::{BodyTypes, InferenceResult, InferredSig, Ty, infer_project, unify, unify_all};
+pub use infer::{
+    BodyTypes, CallGraph, InferenceResult, InferredSig, SccGraph, Ty, call_edges, infer_project,
+    inferable_defs, scc_graph, solve_scc, unify, unify_all,
+};
 pub use signature::{Sig, signature};
 
 use brink_format::DefinitionId;

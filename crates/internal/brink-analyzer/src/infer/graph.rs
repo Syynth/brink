@@ -30,7 +30,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use brink_format::DefinitionId;
 
 /// A directed call graph over inferable definitions.
-#[derive(Debug, Clone, Default)]
+///
+/// `PartialEq`/`Eq` (FG-2, issue #631): the salsa cutoff for
+/// `call_graph_query` in `brink-db` — an edit that leaves every def's call
+/// targets unchanged leaves this equal, so `scc_membership_query` and every
+/// `solve_scc_query` backdate instead of re-executing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CallGraph {
     pub nodes: BTreeSet<DefinitionId>,
     /// `caller -> { callees }`.
@@ -120,38 +125,58 @@ pub fn strongly_connected_components(graph: &CallGraph) -> Vec<BTreeSet<Definiti
     components
 }
 
-/// Order SCCs so every component appears after every *other* component it
-/// calls into (a component's own self-edges/internal edges never block it).
-/// Ties (independent components, or components with no cross-component
-/// calls) break on the component's minimum member for determinism.
+/// [`scc_graph`]'s output: the dependency-ordered component membership plus
+/// the condensation DAG's adjacency, keyed by each component's stable id —
+/// its own minimum member (FG-2, issue #631's `scc_membership()` query;
+/// `SccId` is a plain `DefinitionId` in `brink-db`'s query layer, per the
+/// design doc's "already the sort key in graph.rs" note).
 ///
-/// This is the processing order [`super::infer_project`] uses: by the time a
-/// component is solved, every component it depends on already has a
-/// finalized signature — the cross-SCC half of the firewall. Within one
-/// returned component, callers may be mutually recursive with callees
-/// (that's what makes it one SCC); the caller solves those together via
-/// fixpoint, not via this ordering.
+/// `PartialEq`/`Eq`: the salsa cutoff for `scc_membership_query` — an edit
+/// that leaves the call graph's SCC partition and condensation identical
+/// leaves this equal, so every `solve_scc_query` backdates.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SccGraph {
+    /// Every component, in the same dependency order [`topo_order`]
+    /// returns: a component appears after every *other* component it calls.
+    pub order: Vec<BTreeSet<DefinitionId>>,
+    /// `component id -> { other component ids it calls }` — the condensation
+    /// adjacency. `solve_scc(S)` reads `solve_scc(T)` for each `T` in
+    /// `depends_on[S]`; the condensation is a DAG (SCCs are maximal by
+    /// construction), so this recursion is always acyclic — no salsa cycles
+    /// (Fork 1 ruling, design doc §8).
+    pub depends_on: BTreeMap<DefinitionId, BTreeSet<DefinitionId>>,
+    /// `def -> its component's id` — the reverse index `inferred_signature(def)`
+    /// / `infer_body(def)` use to find which `solve_scc` result to read.
+    pub member_of: BTreeMap<DefinitionId, DefinitionId>,
+}
+
+/// Partition `graph` into SCCs and compute the condensation DAG in one pass
+/// (FG-2, issue #631). [`topo_order`] is now a thin projection of this
+/// (`.order`) kept for its own existing tests/callers; `scc_membership_query`
+/// is the new consumer that needs the adjacency too.
 #[must_use]
-pub fn topo_order(graph: &CallGraph) -> Vec<BTreeSet<DefinitionId>> {
+pub fn scc_graph(graph: &CallGraph) -> SccGraph {
     let components = strongly_connected_components(graph);
     if components.is_empty() {
-        return components;
+        return SccGraph::default();
     }
 
-    // Map each node to the index of its component in `components`.
+    // Map each node to the index of its component in `components`, and each
+    // component's index to its stable id (its own minimum member).
     let mut owner: BTreeMap<DefinitionId, usize> = BTreeMap::new();
     for (idx, comp) in components.iter().enumerate() {
         for &n in comp {
             owner.insert(n, idx);
         }
     }
+    let component_key = |idx: usize| components[idx].iter().next().copied();
 
     // Condensation adjacency: component -> { other components it calls }.
-    let mut depends_on: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
-    let mut dependents: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    let mut depends_on_idx: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    let mut dependents_idx: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
     for idx in 0..components.len() {
-        depends_on.insert(idx, BTreeSet::new());
-        dependents.insert(idx, BTreeSet::new());
+        depends_on_idx.insert(idx, BTreeSet::new());
+        dependents_idx.insert(idx, BTreeSet::new());
     }
     for (caller, callees) in &graph.edges {
         let Some(&from) = owner.get(caller) else {
@@ -162,17 +187,16 @@ pub fn topo_order(graph: &CallGraph) -> Vec<BTreeSet<DefinitionId>> {
                 continue;
             };
             if from != to {
-                depends_on.entry(from).or_default().insert(to);
-                dependents.entry(to).or_default().insert(from);
+                depends_on_idx.entry(from).or_default().insert(to);
+                dependents_idx.entry(to).or_default().insert(from);
             }
         }
     }
 
     // Kahn's algorithm: a component is ready once every component it calls
     // has already been placed in `order`.
-    let mut remaining = depends_on.clone();
-    let mut order: Vec<usize> = Vec::new();
-    let component_key = |idx: usize| components[idx].iter().next().copied();
+    let mut remaining = depends_on_idx.clone();
+    let mut order_idx: Vec<usize> = Vec::new();
 
     loop {
         let mut ready: Vec<usize> = remaining
@@ -192,8 +216,8 @@ pub fn topo_order(graph: &CallGraph) -> Vec<BTreeSet<DefinitionId>> {
                 // defensive rather than double-count.
                 continue;
             }
-            order.push(idx);
-            if let Some(deps) = dependents.get(&idx) {
+            order_idx.push(idx);
+            if let Some(deps) = dependents_idx.get(&idx) {
                 for &dep in deps {
                     if let Some(set) = remaining.get_mut(&dep) {
                         set.remove(&idx);
@@ -211,12 +235,52 @@ pub fn topo_order(graph: &CallGraph) -> Vec<BTreeSet<DefinitionId>> {
     // assuming the impossible-in-theory case away.
     let mut leftover: Vec<usize> = remaining.keys().copied().collect();
     leftover.sort_by_key(|&idx| component_key(idx));
-    order.extend(leftover);
+    order_idx.extend(leftover);
 
-    order
+    let order: Vec<BTreeSet<DefinitionId>> = order_idx
         .into_iter()
         .map(|idx| components[idx].clone())
-        .collect()
+        .collect();
+
+    let mut depends_on: BTreeMap<DefinitionId, BTreeSet<DefinitionId>> = BTreeMap::new();
+    let mut member_of: BTreeMap<DefinitionId, DefinitionId> = BTreeMap::new();
+    for (idx, comp) in components.iter().enumerate() {
+        let Some(comp_id) = component_key(idx) else {
+            continue;
+        };
+        for &member in comp {
+            member_of.insert(member, comp_id);
+        }
+        let deps: BTreeSet<DefinitionId> = depends_on_idx
+            .get(&idx)
+            .into_iter()
+            .flatten()
+            .filter_map(|&dep_idx| component_key(dep_idx))
+            .collect();
+        depends_on.insert(comp_id, deps);
+    }
+
+    SccGraph {
+        order,
+        depends_on,
+        member_of,
+    }
+}
+
+/// Order SCCs so every component appears after every *other* component it
+/// calls into (a component's own self-edges/internal edges never block it).
+/// Ties (independent components, or components with no cross-component
+/// calls) break on the component's minimum member for determinism.
+///
+/// This is the processing order [`super::infer_project`] uses: by the time a
+/// component is solved, every component it depends on already has a
+/// finalized signature — the cross-SCC half of the firewall. Within one
+/// returned component, callers may be mutually recursive with callees
+/// (that's what makes it one SCC); the caller solves those together via
+/// fixpoint, not via this ordering.
+#[must_use]
+pub fn topo_order(graph: &CallGraph) -> Vec<BTreeSet<DefinitionId>> {
+    scc_graph(graph).order
 }
 
 #[cfg(test)]
@@ -304,5 +368,65 @@ mod tests {
         let order = topo_order(&g);
         let flat: BTreeSet<DefinitionId> = order.into_iter().flatten().collect();
         assert_eq!(flat, BTreeSet::from([def(1), def(2), def(10), def(20)]));
+    }
+
+    // ── scc_graph (FG-2, issue #631) ───────────────────────────────────
+
+    #[test]
+    fn scc_graph_order_matches_topo_order() {
+        // scc_graph must agree with topo_order (a thin projection of it) on
+        // every shape already covered above — the refactor must not change
+        // topo_order's own behavior.
+        let mut g = CallGraph::new();
+        g.add_edge(def(1), def(2));
+        g.add_edge(def(2), def(3));
+        g.add_edge(def(4), def(1));
+        assert_eq!(scc_graph(&g).order, topo_order(&g));
+    }
+
+    #[test]
+    fn scc_graph_member_of_maps_every_node_to_its_component_id() {
+        // a <-> b mutually recursive (component id = min(a, b) = a); c is a
+        // singleton component (component id = c).
+        let mut g = CallGraph::new();
+        g.add_edge(def(1), def(2));
+        g.add_edge(def(2), def(1));
+        g.add_edge(def(3), def(1));
+        let sg = scc_graph(&g);
+        assert_eq!(sg.member_of.get(&def(1)), Some(&def(1)));
+        assert_eq!(sg.member_of.get(&def(2)), Some(&def(1)));
+        assert_eq!(sg.member_of.get(&def(3)), Some(&def(3)));
+    }
+
+    #[test]
+    fn scc_graph_depends_on_is_the_condensation_adjacency() {
+        // a -> b -> c: each singleton component depends on exactly the next
+        // one down the chain (component ids equal the node ids here).
+        let mut g = CallGraph::new();
+        g.add_edge(def(1), def(2));
+        g.add_edge(def(2), def(3));
+        let sg = scc_graph(&g);
+        assert_eq!(sg.depends_on.get(&def(1)), Some(&BTreeSet::from([def(2)])));
+        assert_eq!(sg.depends_on.get(&def(2)), Some(&BTreeSet::from([def(3)])));
+        assert_eq!(sg.depends_on.get(&def(3)), Some(&BTreeSet::new()));
+    }
+
+    #[test]
+    fn scc_graph_depends_on_never_names_the_components_own_id() {
+        // Internal/self edges within a component must never appear in its
+        // own depends_on entry (only *other* components it calls) — a
+        // mutually-recursive pair's condensation entry is empty even though
+        // a and b call each other constantly.
+        let mut g = CallGraph::new();
+        g.add_edge(def(1), def(2));
+        g.add_edge(def(2), def(1));
+        let sg = scc_graph(&g);
+        assert_eq!(sg.depends_on.get(&def(1)), Some(&BTreeSet::new()));
+    }
+
+    #[test]
+    fn scc_graph_empty_graph_is_empty() {
+        let g = CallGraph::new();
+        assert_eq!(scc_graph(&g), SccGraph::default());
     }
 }
