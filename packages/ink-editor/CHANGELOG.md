@@ -1,5 +1,71 @@
 # @brink-lang/editor
 
+## 0.9.2
+
+### Patch Changes
+
+- 601e999: HIR overlay now also refreshes when a view MOUNTS after a compile was
+  already delivered (#518, follow-up to #494/#502). The 0.9.1 fix refreshed
+  mounted views on `deliverCompile`, but for a slot without a view the refresh
+  was dropped, not queued — so in the mount-after-initial-compile order (an
+  external embedder's passive-load sequence: `ProjectSession.initialize()` →
+  `triggerCompile()` → the framework commits the editor mount afterwards) the
+  overlay showed whatever its `StateField` last held and nothing ever
+  repainted it: a passive load never compiles again, and a remount reuses the
+  cached `EditorState`, so the field's `create()` never re-runs and a value
+  cached blank at unmount persisted until the first keystroke.
+
+  `DocumentSessions.mountView` now self-serves the missed refresh: when a
+  compile has already been delivered (`lastCompileDelivered`), it dispatches
+  `refreshHirOverlayEffect` to the freshly mounted view — after the slot's
+  wasm handle is (re)opened, so the projection read is live at mount time.
+  The overlay's refresh trigger set is now
+  {compile-deliver} ∪ {view-mount-after-a-deliver}, covering both mount
+  orders and cached-state remounts.
+
+  Also documents (hir-overlay.ts, editor-consumer-guide) that a host-dispatched
+  `refreshHirOverlayEffect` is matched by object identity, so it must come from
+  the same module instance of `@brink-lang/editor` that built the view's
+  extensions — a bundler-duplicated copy produces an effect the field silently
+  ignores, which can make host-side refresh workarounds appear to "read empty".
+
+- 8333685: Fixed narrative-run folding in screenplay mode (#417). When a narrative run
+  IS a choice's body (a character cue + dialogue directly under `* [Talk]`),
+  the fold now anchors on the choice line itself and hides the whole body
+  beneath it, instead of anchoring one line down on the cue. The collapsed
+  pill no longer duplicates the anchor line's visible text ahead of the chip —
+  the fold now hides the whole anchor line and the pill IS the line, matching
+  the existing decl-fold placeholder shape. The pill's snippet also strips the
+  dialect's cue sigils and shows the first CONTENT line (or the cue's bare
+  name when the run has no content line), rather than raw text like
+  `@Jackie:<>`.
+- Updated dependencies [e2acdbb]
+- Updated dependencies [6ed8a8d]
+- Updated dependencies [eb06ccc]
+- Updated dependencies [1154eb4]
+- Updated dependencies [0f6ae50]
+- Updated dependencies [e96d2a1]
+- Updated dependencies [bd69ac6]
+- Updated dependencies [f40c345]
+- Updated dependencies [f25362a]
+- Updated dependencies [ebce613]
+- Updated dependencies [3c5808f]
+- Updated dependencies [eaff136]
+- Updated dependencies [ba69a35]
+- Updated dependencies [124bb9e]
+- Updated dependencies [75b8a3b]
+- Updated dependencies [350b663]
+- Updated dependencies [9e1257d]
+- Updated dependencies [9213d77]
+- Updated dependencies [f835cfd]
+- Updated dependencies [b8392a2]
+- Updated dependencies [6089ed6]
+- Updated dependencies [1c389ec]
+- Updated dependencies [81f0055]
+- Updated dependencies [6e007d3]
+- Updated dependencies [0308aec]
+  - @brink-lang/web@0.10.1
+
 ## 0.9.1
 
 ### Patch Changes
