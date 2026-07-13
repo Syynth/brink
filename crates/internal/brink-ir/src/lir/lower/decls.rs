@@ -4,6 +4,7 @@ use crate::symbols::{SymbolIndex, SymbolKind};
 use crate::{Diagnostic, DiagnosticCode, FileId, hir};
 
 use super::context::{NameTable, ResolutionLookup};
+use super::expr::const_value_to_map_key;
 use super::lir;
 
 /// Collect global variable/constant definitions from HIR files.
@@ -299,8 +300,101 @@ pub fn eval_const_expr(
             }
             lir::ConstValue::List { items, origins }
         }
+        // #673: `VAR`/`CONST arr = #[…]` — see `eval_const_array_literal`'s
+        // doc.
+        hir::Expr::ArrayLiteral(arr) => {
+            eval_const_array_literal(arr, index, resolutions, file, const_values, diagnostics)
+        }
+        // #673: `VAR`/`CONST m = #{…}` — see `eval_const_map_literal`'s doc.
+        hir::Expr::MapLiteral(map) => {
+            eval_const_map_literal(map, index, resolutions, file, const_values, diagnostics)
+        }
+        // #673: `VAR`/`CONST p = Name#{…}` — see `eval_const_struct_literal`'s
+        // doc.
+        hir::Expr::StructLiteral(sl) => eval_const_struct_literal(sl, file, diagnostics),
         _ => lir::ConstValue::Null,
     }
+}
+
+/// #673: constant-fold a literal-only array default into a real
+/// `ConstValue::Array`, exactly the representation `build_globals`
+/// (brink-codegen-inkb) already materializes into `Value::array` for any
+/// global default; this is wiring `decls` into a codegen path that already
+/// exists for expression-position array literals (`expr::lower_array_
+/// literal`), not new collection semantics. Elements recurse through
+/// `eval_const_expr` itself (not `expr::try_const_fold`) so a constant
+/// reference nested inside the array (`#[SOME_CONST, 2]`) resolves via
+/// `const_values`, same as a bare scalar default would.
+fn eval_const_array_literal(
+    arr: &hir::ArrayLiteral,
+    index: &SymbolIndex,
+    resolutions: &ResolutionLookup,
+    file: FileId,
+    const_values: &std::collections::HashMap<DefinitionId, lir::ConstValue>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> lir::ConstValue {
+    let items: Vec<lir::ConstValue> = arr
+        .elements
+        .iter()
+        .map(|e| eval_const_expr(e, index, resolutions, file, const_values, diagnostics))
+        .collect();
+    lir::ConstValue::Array(items)
+}
+
+/// #673: same constant-folding story as [`eval_const_array_literal`], for
+/// `ConstValue::Map`. A key that doesn't fold into the ratified map-key
+/// domain (int/string/bool) is a real compile error (`E076`), not a silent
+/// drop of that entry — unlike `expr::lower_map_literal`'s expression-
+/// position twin, a declaration default has no `MapNew` runtime-
+/// construction step left to fault at, so this is the compile-time
+/// equivalent of that runtime fault.
+fn eval_const_map_literal(
+    map: &hir::MapLiteral,
+    index: &SymbolIndex,
+    resolutions: &ResolutionLookup,
+    file: FileId,
+    const_values: &std::collections::HashMap<DefinitionId, lir::ConstValue>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> lir::ConstValue {
+    let mut entries = Vec::with_capacity(map.entries.len());
+    for (k, v) in &map.entries {
+        let key_val = eval_const_expr(k, index, resolutions, file, const_values, diagnostics);
+        let value = eval_const_expr(v, index, resolutions, file, const_values, diagnostics);
+        match const_value_to_map_key(key_val) {
+            Some(key) => entries.push((key, value)),
+            None => {
+                diagnostics.push(Diagnostic {
+                    file,
+                    range: map.ptr.text_range(),
+                    message: DiagnosticCode::E076.title().to_string(),
+                    code: DiagnosticCode::E076,
+                });
+            }
+        }
+    }
+    lir::ConstValue::Map(entries)
+}
+
+/// #673: `ConstValue` has no record-carrying variant (adding one is a format
+/// question outside this fix's fence, per the issue), and unlike
+/// arrays/maps there is no existing codegen path to reuse: a global's
+/// default is baked into `StoryData` at compile time, with no `RecordNew`
+/// runtime construction step for a declaration default to defer to the way
+/// a mid-story `p = Point#{…}` assignment has. A real, non-suppressible
+/// compile error (`E075`) replaces the silent `Null` fallthrough — the
+/// minimum-acceptable fix direction the issue names for exactly this case.
+fn eval_const_struct_literal(
+    sl: &hir::StructLiteral,
+    file: FileId,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> lir::ConstValue {
+    diagnostics.push(Diagnostic {
+        file,
+        range: sl.ptr.text_range(),
+        message: DiagnosticCode::E075.title().to_string(),
+        code: DiagnosticCode::E075,
+    });
+    lir::ConstValue::Null
 }
 
 /// Evaluate a compile-time string, emitting E030 if interpolation is present.

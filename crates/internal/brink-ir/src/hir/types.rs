@@ -1168,6 +1168,25 @@ pub enum DiagnosticCode {
     /// writing ordinary (if currently unsupported) ink, not a defensive
     /// backstop for a suppressed analysis diagnostic.
     E074,
+
+    // ── decls constant-folding backstops (#673) ───────────────────────
+    /// A struct construction literal (`Name#{…}`) appears as a `VAR`/`CONST`
+    /// declaration's default. `eval_const_expr` (`brink-ir::lir::lower::
+    /// decls`) has no compile-time representation for a record value — a
+    /// global's default is baked into `StoryData` at compile time, so there
+    /// is no runtime construction path to defer to the way a mid-story
+    /// `p = Point#{…}` assignment has. A real, non-suppressible compile
+    /// error (never a silent `Null`) until declaration-default structs get
+    /// a design (`ConstValue` would need a struct-carrying variant).
+    E075,
+    /// A map literal used as a `VAR`/`CONST` declaration default has a key
+    /// that isn't a compile-time-constant scalar in the ratified map-key
+    /// domain (int/string/bool — value-model-spec §4). Mid-story map
+    /// construction (`MapNew`) faults on this at runtime
+    /// (`InvalidMapKeyType`); a declaration default has no runtime
+    /// construction step to fault at, so this is the compile-time
+    /// equivalent — a real error, never a silent `Null`.
+    E076,
 }
 
 impl DiagnosticCode {
@@ -1249,6 +1268,8 @@ impl DiagnosticCode {
             Self::E072 => "E072",
             Self::E073 => "E073",
             Self::E074 => "E074",
+            Self::E075 => "E075",
+            Self::E076 => "E076",
         }
     }
 
@@ -1334,6 +1355,12 @@ impl DiagnosticCode {
                 "struct construction literal names an unresolved STRUCT shape at LIR lowering"
             }
             Self::E074 => "chained field-write projection (p.a.b = v) is not supported",
+            Self::E075 => {
+                "struct construction literal is not supported as a VAR/CONST declaration default"
+            }
+            Self::E076 => {
+                "map literal key in a VAR/CONST declaration default is not a compile-time-constant scalar (int/string/bool)"
+            }
         }
     }
 
@@ -1436,6 +1463,8 @@ impl DiagnosticCode {
             "E072" => Some(Self::E072),
             "E073" => Some(Self::E073),
             "E074" => Some(Self::E074),
+            "E075" => Some(Self::E075),
+            "E076" => Some(Self::E076),
             _ => None,
         }
     }

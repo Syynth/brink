@@ -91,6 +91,43 @@ fn global_with_collection_default_roundtrips() {
     assert_eq!(recovered.variables, data.variables);
 }
 
+/// #673: a `VAR`/`CONST` declaration default that's a collection literal
+/// (`#[…]`/`#{…}`) used to constant-fold to `Value::Null` with no
+/// diagnostic (`eval_const_expr` had no `ArrayLiteral`/`MapLiteral` arm).
+/// Compiles real brink-dialect source through the actual compiler entry
+/// point (not a hand-built `StoryData`, unlike `global_with_collection_
+/// default_roundtrips` above, which only proves the format layer can
+/// *represent* a collection default — this proves the compiler actually
+/// *produces* one from a literal-only default) and inspects the `.inkt`
+/// text dump: the fixed default must render as the real collection
+/// (`(array 1 2 3)`/`(map ("a" 1))`), never `null`.
+#[test]
+fn collection_literal_declaration_default_compiles_to_a_real_value_not_null() {
+    let src = "VAR arr = #[1, 2, 3]\nVAR m = #{\"a\": 1}\nHello.\n-> END\n";
+    let options = brink_compiler::AnalysisOptions {
+        dialect: brink_compiler::Dialect::Brink,
+        ..brink_compiler::AnalysisOptions::default()
+    };
+    let output = brink_compiler::compile_with_options("main.ink", |_p| Ok(src.to_owned()), options)
+        .expect("brink-dialect collection literal defaults must compile cleanly");
+
+    let mut buf = String::new();
+    brink_format::write_inkt(&output.data, &mut buf).unwrap();
+
+    assert!(
+        buf.contains("(array 1 2 3)"),
+        "expected the real array default in .inkt output, got:\n{buf}"
+    );
+    assert!(
+        buf.contains("(map (\"a\" 1))"),
+        "expected the real map default in .inkt output, got:\n{buf}"
+    );
+    assert!(
+        !buf.contains("null"),
+        ".inkt output must not contain a silently-dropped `null` default:\n{buf}"
+    );
+}
+
 fn collect_story_ink_files(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
     if dir.is_dir() {
