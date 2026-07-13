@@ -31,9 +31,12 @@
 //! - E028 — no production emit site; a circular INCLUDE surfaces as
 //!   `CompileError::CircularInclude` from discovery instead (covered in
 //!   `tests/driver.rs::compile_circular_includes_detected`).
-//! - E052 / E053 — retired by T1b-2 (#570): the dialect gate never emits
-//!   E052 anymore and the E053 LIR backstop was replaced by real lowering;
-//!   neither has a production emit site.
+//! - E053 — retired by T1b-2 (#570): the LIR backstop was replaced by real
+//!   lowering; no production emit site remains. (E052, formerly listed
+//!   alongside it, was **revived by T1c-1 (#699)** as the `#fn(…)`
+//!   not-yet-implemented lowering fence — tested below and, for the
+//!   VAR-declaration-default path, in
+//!   `brink-test-harness/tests/tier1_brink.rs`.)
 //! - E060 — emitted only when codegen rejects a `Program` violating an
 //!   invariant an earlier stage guarantees (a compiler bug by definition);
 //!   not constructible from source.
@@ -633,7 +636,7 @@ fn e059_weave_nested_in_inline_content() {
     );
 }
 
-// ─── Type annotations (E061, E062 — brink dialect only) ──────────────
+// ─── Type annotations (E061; E062 retired by T1c-1 — brink dialect only) ──
 
 #[test]
 fn e061_unknown_type_name_in_annotation() {
@@ -646,12 +649,46 @@ fn e061_unknown_type_name_in_annotation() {
 }
 
 #[test]
-fn e062_function_type_annotation_reserved() {
+fn e062_retired_fn_type_annotation_is_legal_since_t1c1() {
+    // T1c-1 (#699, docs/t1c-spec.md §4): `fn(T…): R` is a legal type form —
+    // E062 is retired (reserved, never reused) and must not fire anywhere.
+    let out = compile("VAR f: fn(int): int = 0\nHi\n", brink_options())
+        .expect("a fn-type annotation compiles cleanly since T1c-1");
+    assert!(
+        !out.warnings.iter().any(|d| d.code == DiagnosticCode::E062),
+        "E062 is retired and must never fire: {:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn e062_retired_fn_type_annotation_actually_resolves_under_strict() {
+    // Absence alone could mean the annotation was silently ignored — prove
+    // it resolves to a real checker type: under `types = strict`, `cb`'s
+    // ONLY constraint is its `fn(int): int` annotation, so this compiles
+    // clean iff the annotation genuinely carries the fn type (otherwise
+    // `cb` escapes as Unknown, E065, and the call through it can't check).
+    let source = "=== function apply(cb: fn(int): int): int ===\n~ return cb(1)\nHi\n-> END\n";
+    let out = compile(source, strict_options());
+    assert!(
+        out.is_ok(),
+        "fn-typed boundary annotation must resolve and check under strict: {:?}",
+        out.err()
+    );
+}
+
+// ─── T1c-1 lowering fence (E052 — revived by #699) ───────────────────
+
+#[test]
+fn e052_fn_literal_not_yet_implemented_at_lowering() {
+    // A well-formed `#fn` creation site under dialect=brink parses, gates,
+    // and type-checks in T1c-1 but has no LIR/codegen story until T1c-2 —
+    // the non-suppressible lowering fence is the one error left.
     assert_error_at(
-        "VAR f: fn(int): int = 0\nHi\n",
+        "=== function double(x) ===\n~ return x + x\n\n~ temp f = #fn(double, 1)\nHi\n",
         brink_options(),
-        DiagnosticCode::E062,
-        "fn(int): int",
+        DiagnosticCode::E052,
+        "#fn(double, 1)",
     );
 }
 
