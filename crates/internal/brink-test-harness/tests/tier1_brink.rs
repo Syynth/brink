@@ -1045,3 +1045,117 @@ fn every_stdlib_name_is_rejected_under_strict_ink_and_compiles_under_brink() {
             .unwrap_or_else(|e| panic!("`{name}` must compile under brink dialect: {e:?}"));
     }
 }
+
+// ── T1c-1 (#699): `#fn(…)` function values — lowering fence ─────────────
+//
+// The T1c-1 slice ships grammar + HIR + dialect gate + creation-site
+// diagnostics + typing, but NO LIR/codegen/VM (docs/t1c-spec.md §11). A
+// program that actually uses `#fn` under `dialect = brink` must be a clean,
+// targeted compile error (E052, the "brink extension not yet implemented"
+// class) — never a silent drop or a miscompiled Null.
+
+#[test]
+fn fn_literal_under_brink_dialect_is_a_targeted_not_yet_implemented_error() {
+    let source = "=== function heal(hp) ===\n~ return hp + 1\n\n\
+                  === main ===\n~ temp f = #fn(heal, 1)\nDone.\n-> END\n";
+    let err = compile_brink(source)
+        .expect_err("#fn must reject at lowering in T1c-1 (no LIR/codegen yet)");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E052),
+        "expected E052 lowering rejection, got {diags:?}"
+    );
+}
+
+#[test]
+fn fn_literal_declaration_default_is_a_targeted_error_not_a_silent_null() {
+    // A `VAR` default has no runtime construction step — without a targeted
+    // arm this would silently bake `Null` into StoryData (the exact silent
+    // drop class the house rules forbid).
+    let source = "=== function heal(hp) ===\n~ return hp + 1\n\n\
+                  VAR f = #fn(heal, 1)\nHello.\n-> END\n";
+    let err = compile_brink(source)
+        .expect_err("#fn as a declaration default must be a compile error in T1c-1");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E052),
+        "expected E052 lowering rejection, got {diags:?}"
+    );
+}
+
+// ── T1c-1 (#699): creation-site diagnostics E079/E080/E081 ───────────────
+
+#[test]
+fn fn_target_that_is_not_a_function_definition_is_e079() {
+    let source = "VAR gold = 5\n=== main ===\n~ temp f = #fn(gold)\nDone.\n-> END\n";
+    let err = compile_brink(source).expect_err("#fn(variable) must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E079),
+        "expected E079, got {diags:?}"
+    );
+}
+
+#[test]
+fn fn_ref_param_bound_to_temp_is_e080() {
+    let source = "=== function heal(ref hp, amount) ===\n~ hp = hp + amount\n~ return hp\n\n\
+                  === main ===\n~ temp local_hp = 10\n~ temp f = #fn(heal, local_hp)\nDone.\n-> END\n";
+    let err = compile_brink(source).expect_err("ref bound to a temp must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E080),
+        "expected E080, got {diags:?}"
+    );
+}
+
+#[test]
+fn fn_unbound_ref_param_is_e080() {
+    let source = "=== function heal(ref hp, amount) ===\n~ hp = hp + amount\n~ return hp\n\n\
+                  === main ===\n~ temp f = #fn(heal)\nDone.\n-> END\n";
+    let err = compile_brink(source).expect_err("unbound ref param must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E080),
+        "expected E080, got {diags:?}"
+    );
+}
+
+#[test]
+fn fn_over_binding_is_e081() {
+    let source = "=== function double(x) ===\n~ return x + x\n\n\
+                  === main ===\n~ temp f = #fn(double, 1, 2)\nDone.\n-> END\n";
+    let err = compile_brink(source).expect_err("over-binding must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E081),
+        "expected E081, got {diags:?}"
+    );
+}
+
+#[test]
+fn well_formed_fn_creation_reaches_the_lowering_fence_only() {
+    // A fully legal creation site under gradual types: the ONLY error left
+    // is the T1c-1 lowering fence (E052) — no E079/E080/E081 noise.
+    let source = "=== function heal(ref hp, amount) ===\n~ hp = hp + amount\n~ return hp\n\n\
+                  VAR player_hp = 10\n=== main ===\n~ temp f = #fn(heal, player_hp)\nDone.\n-> END\n";
+    let err = compile_brink(source).expect_err("still rejects at lowering in T1c-1");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code == brink_compiler::DiagnosticCode::E052),
+        "only the lowering fence should fire for a well-formed creation: {diags:?}"
+    );
+}

@@ -79,7 +79,15 @@ fn ty_to_inferred_type(ty: &Ty) -> Option<InferredType> {
         // nominal struct shape either — same gap as `Array`/`Map`, not a
         // silent drop (the full `Ty::Struct` is still available via
         // `param_annotations`/`return_annotation`/`resolve_annotation`).
-        Ty::Array(_) | Ty::Map(_, _) | Ty::Struct(_) | Ty::Unknown | Ty::Conflicted => None,
+        // `Fn` (T1c): a function-value type has no `InferredType`
+        // representation either — same gap as `Array`/`Map`/`Struct`, not a
+        // silent drop.
+        Ty::Array(_)
+        | Ty::Map(_, _)
+        | Ty::Struct(_)
+        | Ty::Fn(..)
+        | Ty::Unknown
+        | Ty::Conflicted => None,
     }
 }
 

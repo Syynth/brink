@@ -156,6 +156,11 @@ pub fn check(
     let mut out = check_escapes(files, index, inference);
     out.extend(annotations::mismatches(files, index, inference));
     out.extend(check_void_assignments(files, index, resolutions));
+    // T1c (docs/t1c-spec.md §4/§8): calls through function values are
+    // statically checked under strict — the facts inference already
+    // recorded map onto the existing TM-3 codes (E065/E066 escapes, E063
+    // typed mismatches), never parallel ones.
+    out.extend(check_value_calls(files, index, inference));
     // TM-4b (docs/typed-mode-spec.md §6): missing/extra/mistyped struct
     // construction-literal fields — strict-mode-only, per the crate doc.
     out.extend(crate::structs::check(files, index));
@@ -374,6 +379,22 @@ fn classify(ty: &Ty) -> Escape {
             (Escape::Unknown, _) | (_, Escape::Unknown) => Escape::Unknown,
             (Escape::Clean, Escape::Clean) => Escape::Clean,
         },
+        // T1c `fn(T…): R` (docs/t1c-spec.md §4): the same recursive lattice
+        // walk as Array/Map — a fn value whose row carries Unknown or
+        // Conflicted slots can't be call-checked, so it escapes like any
+        // other nesting. (In practice the row comes from the target's own
+        // inferred signature, so the target def carries the root-cause
+        // E065/E066 too.)
+        Ty::Fn(params, ret) => {
+            params
+                .iter()
+                .chain(std::iter::once(ret.as_ref()))
+                .fold(Escape::Clean, |acc, t| match (acc, classify(t)) {
+                    (Escape::Conflicted, _) | (_, Escape::Conflicted) => Escape::Conflicted,
+                    (Escape::Unknown, _) | (_, Escape::Unknown) => Escape::Unknown,
+                    (Escape::Clean, Escape::Clean) => Escape::Clean,
+                })
+        }
         // TM-4b (docs/typed-mode-spec.md §6): "struct-typed slots are
         // concrete for E065/E066 purposes" — a resolved `Ty::Struct` is as
         // clean as any other nominal (`Ty::List`'s existing precedent).
@@ -381,6 +402,108 @@ fn classify(ty: &Ty) -> Escape {
             Escape::Clean
         }
     }
+}
+
+// ── T1c: calls through function values (docs/t1c-spec.md §4/§8) ───────
+
+/// Report every [`crate::infer::ValueCallFact`] inference recorded, per
+/// def, using the existing TM-3 vocabulary:
+///
+/// - `Unknown` callee → `E065` (the escape rule applied to call position:
+///   "a strict-mode author can never reach the §3 runtime fault");
+/// - `Conflicted` callee → `E066`;
+/// - known-type mismatches (non-callable type, arity, argument type) →
+///   `E063` (typed-mismatch reporting extended to call-through-value
+///   sites — `Error` under strict via [`effective_severity`]).
+fn check_value_calls(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    inference: &InferenceResult,
+) -> Vec<brink_ir::Diagnostic> {
+    use crate::infer::ValueCallKind;
+
+    let mut out = Vec::new();
+    for &(file, hir) in files {
+        let mut def_ids: Vec<DefinitionId> = Vec::new();
+        for knot in &hir.knots {
+            let kind = match knot.ptr {
+                brink_ir::ContainerPtr::Knot(_) => SymbolKind::Knot,
+                brink_ir::ContainerPtr::Stitch(_) => SymbolKind::Stitch,
+            };
+            if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
+                def_ids.push(id);
+            }
+            for stitch in &knot.stitches {
+                let qualified = format!("{}.{}", knot.name.text, stitch.name.text);
+                if let Some(id) =
+                    annotations::def_id_for(index, file, SymbolKind::Stitch, &qualified)
+                {
+                    def_ids.push(id);
+                }
+            }
+        }
+        for id in def_ids {
+            let Some(body) = inference.bodies.get(&id) else {
+                continue;
+            };
+            for fact in &body.value_calls {
+                let callee = &fact.callee;
+                let (message, code) = match &fact.kind {
+                    ValueCallKind::UnknownCallee => (
+                        format!(
+                            "`{callee}` is called as a function value but its type escapes \
+                             strict inference as Unknown — annotate (`fn(T…): R`) or \
+                             restructure"
+                        ),
+                        brink_ir::DiagnosticCode::E065,
+                    ),
+                    ValueCallKind::ConflictedCallee => (
+                        format!(
+                            "`{callee}` is called as a function value but its type is \
+                             Conflicted under strict types — its uses disagree"
+                        ),
+                        brink_ir::DiagnosticCode::E066,
+                    ),
+                    ValueCallKind::NotCallable(ty) => (
+                        format!(
+                            "`{callee}` has type `{}` — not callable (a `fn(T…): R` \
+                             function value is required in call position)",
+                            ty.display()
+                        ),
+                        brink_ir::DiagnosticCode::E063,
+                    ),
+                    ValueCallKind::ArityMismatch { expected, got } => (
+                        format!(
+                            "call through `{callee}` supplies {got} argument(s) but its \
+                             known type expects {expected}"
+                        ),
+                        brink_ir::DiagnosticCode::E063,
+                    ),
+                    ValueCallKind::ArgMismatch {
+                        index,
+                        expected,
+                        found,
+                    } => (
+                        format!(
+                            "argument {} of call through `{callee}` has type `{}` but its \
+                             known type expects `{}`",
+                            index + 1,
+                            found.display(),
+                            expected.display()
+                        ),
+                        brink_ir::DiagnosticCode::E063,
+                    ),
+                };
+                out.push(brink_ir::Diagnostic {
+                    file,
+                    range: fact.range,
+                    message,
+                    code,
+                });
+            }
+        }
+    }
+    out
 }
 
 // ── Void-assignment (E067, docs/typed-mode-spec.md §3) ────────────────
@@ -1178,6 +1301,200 @@ mod tests {
                 .iter()
                 .any(|d| d.code == DiagnosticCode::E067),
             "gradual must never surface E067: {:?}",
+            result.diagnostics
+        );
+    }
+
+    // ── T1c: calls through function values (docs/t1c-spec.md §4/§8) ────
+
+    /// The spec's worked example, end to end at the analysis layer: a
+    /// well-formed creation + a well-typed call through the value is clean
+    /// under strict.
+    const HEAL: &str = "=== function heal(ref hp: int, amount: int): int ===\n~ hp = hp + amount\n~ return hp\n\
+         VAR player_hp = 10\n";
+
+    #[test]
+    fn well_typed_call_through_a_fn_value_is_clean_under_strict() {
+        let (hir, index, res) = build(&format!(
+            "{HEAL}=== main ===\n~ temp heal_player = #fn(heal, player_hp)\n\
+             ~ temp result: int = heal_player(5)\n-> DONE\n"
+        ));
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn int_to_float_coercion_applies_to_fn_value_call_arguments() {
+        // `fn(float): float` called with an int literal — the one legal
+        // directional coercion (spec §4) applies exactly as at direct calls.
+        let (hir, index, res) = build(
+            "=== function scale(factor: float): float ===\n~ return factor * 2.0\n\
+             === main ===\n~ temp f = #fn(scale)\n~ temp r: float = f(2)\n-> DONE\n",
+        );
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn fn_value_call_arity_mismatch_is_a_typed_mismatch_error() {
+        let (hir, index, res) = build(&format!(
+            "{HEAL}=== main ===\n~ temp f = #fn(heal, player_hp)\n\
+             ~ temp r: int = f(5, 6)\n-> DONE\n"
+        ));
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E063);
+        assert!(diags[0].message.contains("2 argument"), "{diags:?}");
+    }
+
+    #[test]
+    fn fn_value_call_argument_type_mismatch_is_a_typed_mismatch_error() {
+        let (hir, index, res) = build(&format!(
+            "{HEAL}=== main ===\n~ temp f = #fn(heal, player_hp)\n\
+             ~ temp r: int = f(\"lots\")\n-> DONE\n"
+        ));
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn float_to_int_narrowing_at_a_fn_value_call_is_an_error() {
+        // The coercion is directional: int -> float only. `fn(int): int`
+        // called with a float literal must be flagged.
+        let (hir, index, res) = build(&format!(
+            "{HEAL}=== main ===\n~ temp f = #fn(heal, player_hp)\n\
+             ~ temp r: int = f(1.5)\n-> DONE\n"
+        ));
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_callee_in_call_position_is_an_escape_error() {
+        // A call through a value whose type never resolves — the TM-3
+        // escape rule applied to call position (spec §4: "if the callee's
+        // type is Unknown/Conflicted, that is an escape error").
+        let (hir, index, res) = build("=== main(g) ===\n~ temp r = g(1)\n-> DONE\n");
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E065
+                && d.message.contains("called as a function value")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn conflicted_callee_in_call_position_is_a_conflicted_escape_error() {
+        let (hir, index, res) =
+            build("=== main ===\n~ temp f = 1\n{f == \"x\":\n  no\n}\n~ temp r = f(5)\n-> DONE\n");
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E066
+                && d.message.contains("called as a function value")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn calling_a_known_non_fn_value_is_a_typed_mismatch_error() {
+        let (hir, index, res) = build("=== main ===\n~ temp n = 5\n~ temp r = n(1)\n-> DONE\n");
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("not callable")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn annotated_fn_typed_param_is_callable_under_strict() {
+        // The boundary-annotation form (spec §4: "fn-typed params can cross
+        // host boundaries under strict"): `cb`'s only constraint is its
+        // annotation, and the call through it checks against that row.
+        let (hir, index, res) =
+            build("=== function apply(cb: fn(int): int, x: int): int ===\n~ return cb(x)\n");
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn annotated_fn_typed_param_call_still_checks_argument_types() {
+        let (hir, index, res) =
+            build("=== function apply(cb: fn(int): int): int ===\n~ return cb(\"nope\")\n");
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn fn_value_call_checks_never_surface_under_gradual() {
+        // The real production gate: `finish_analysis` only calls
+        // `strict::check` under `types = strict` — gradual stays advisory
+        // (the §3 runtime fault is its backstop).
+        let parsed = brink_syntax::parse("=== main ===\n~ temp n = 5\n~ temp r = n(1)\n-> DONE\n");
+        let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let opts = crate::AnalysisOptions {
+            dialect: crate::Dialect::Brink,
+            ..crate::AnalysisOptions::default()
+        };
+        let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            !result.diagnostics.iter().any(|d| matches!(
+                d.code,
+                DiagnosticCode::E063 | DiagnosticCode::E065 | DiagnosticCode::E066
+            )),
+            "gradual must never surface value-call checks: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn strict_fn_value_mismatch_fires_through_the_real_pipeline() {
+        // analyze_with_options -> finish_analysis -> whole_project_
+        // diagnostics -> strict::check — the wiring, not just the unit.
+        let parsed = brink_syntax::parse(
+            "=== function heal(ref hp: int, amount: int): int ===\n~ hp = hp + amount\n~ return hp\n\
+             VAR player_hp = 10\n\
+             === main ===\n~ temp f = #fn(heal, player_hp)\n~ temp r: int = f(\"x\")\n-> DONE\n",
+        );
+        let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let opts = crate::AnalysisOptions {
+            dialect: crate::Dialect::Brink,
+            types: TypePolicy::Strict,
+            ..crate::AnalysisOptions::default()
+        };
+        let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "{:?}",
             result.diagnostics
         );
     }

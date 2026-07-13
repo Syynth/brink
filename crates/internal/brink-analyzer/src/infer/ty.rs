@@ -1,8 +1,9 @@
 //! The type universe (typed-mode-spec §2/§4) and its unification rule.
 //!
 //! `Ty` is deliberately small: `int`, `float`, `bool`, `string`, `divert`,
-//! nominal `list<L>`, `array<T>`, `map<K, V>`, plus `Unknown` — no function
-//! types (T1c), no structs (TM-4), no unions. v1 is monomorphic and
+//! nominal `list<L>`, `array<T>`, `map<K, V>`, nominal structs (TM-4),
+//! structural `fn(T…): R` function-value types (T1c), plus `Unknown` — no
+//! unions. v1 is monomorphic and
 //! unification-free of overloading/typeclasses, so the constraint lattice is
 //! finite and every join terminates in O(depth) — see spec §2's "constraint
 //! solving stays near-linear" ruling.
@@ -47,6 +48,14 @@ pub enum Ty {
     /// concern); a struct-typed slot is still *concrete* for E065/E066
     /// escape-checking purposes (`brink-analyzer::strict::classify`).
     Struct(String),
+    /// A function value's type, `fn(T…): R` (T1c, docs/t1c-spec.md §4;
+    /// typed-mode-spec §3 reserved the written form). The param row is
+    /// **val-only by construction**: every `ref` param of the target is
+    /// bound away at `#fn` creation (all refs must bind in the prefix,
+    /// E080), so the type form carries no modes — a `Ty::Fn` row describes
+    /// exactly the *remaining* (unbound) params a call through the value
+    /// must supply.
+    Fn(Vec<Ty>, Box<Ty>),
     /// Not (yet) resolved to a concrete type — legal in this slice (spec
     /// §2: "unresolved -> Unknown, which is LEGAL"). Acts as the join
     /// identity: `unify(Unknown, x) == x`.
@@ -88,6 +97,14 @@ impl Ty {
             Ty::Array(elem) => format!("array<{}>", elem.display()),
             Ty::Map(k, v) => format!("map<{}, {}>", k.display(), v.display()),
             Ty::Struct(name) => name.clone(),
+            Ty::Fn(params, ret) => {
+                let row = params
+                    .iter()
+                    .map(Ty::display)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("fn({row}): {}", ret.display())
+            }
             Ty::Unknown => "Unknown".to_string(),
             Ty::Conflicted => "Conflicted".to_string(),
         }
@@ -144,14 +161,16 @@ impl Ord for Ty {
                 Ty::Array(_) => 6,
                 Ty::Map(_, _) => 7,
                 Ty::Struct(_) => 8,
-                Ty::Unknown => 9,
-                Ty::Conflicted => 10,
+                Ty::Fn(..) => 9,
+                Ty::Unknown => 10,
+                Ty::Conflicted => 11,
             }
         }
         match (self, other) {
             (Ty::List(a), Ty::List(b)) | (Ty::Struct(a), Ty::Struct(b)) => a.cmp(b),
             (Ty::Array(a), Ty::Array(b)) => a.cmp(b),
             (Ty::Map(k1, v1), Ty::Map(k2, v2)) => k1.cmp(k2).then_with(|| v1.cmp(v2)),
+            (Ty::Fn(p1, r1), Ty::Fn(p2, r2)) => p1.cmp(p2).then_with(|| r1.cmp(r2)),
             _ => rank(self).cmp(&rank(other)),
         }
     }
@@ -195,6 +214,16 @@ pub fn unify(a: &Ty, b: &Ty) -> Ty {
         (Ty::Map(k1, v1), Ty::Map(k2, v2)) => {
             Ty::Map(Box::new(unify(k1, k2)), Box::new(unify(v1, v2)))
         }
+        // Fn vs Fn unifies pointwise when the (val-only) rows agree on
+        // arity (T1c ruling, docs/t1c-spec.md §4 / the #627 lattice) —
+        // params and return join component-wise, so `fn(int): int` and
+        // `fn(float): int` join to `fn(float): int` exactly like the
+        // Array/Map elements above. Rows of different length are a genuine
+        // structural mismatch and fall through to `Conflicted`.
+        (Ty::Fn(p1, r1), Ty::Fn(p2, r2)) if p1.len() == p2.len() => Ty::Fn(
+            p1.iter().zip(p2).map(|(x, y)| unify(x, y)).collect(),
+            Box::new(unify(r1, r2)),
+        ),
         _ => Ty::Conflicted,
     }
 }
@@ -318,5 +347,129 @@ mod tests {
         assert_eq!(unify_all([Ty::Int, Ty::Float]), Ty::Float);
         assert_eq!(unify_all(Vec::<Ty>::new()), Ty::Unknown);
         assert_eq!(unify_all([Ty::Bool]), Ty::Bool);
+    }
+
+    // ─── T1c `Ty::Fn` (docs/t1c-spec.md §4) ────────────────────────────
+
+    fn fn_ty(params: &[Ty], ret: Ty) -> Ty {
+        Ty::Fn(params.to_vec(), Box::new(ret))
+    }
+
+    #[test]
+    fn fn_unifies_pointwise_including_the_directional_numeric_join() {
+        // Params and return join component-wise, exactly like Array/Map
+        // elements — the int -> float directional coercion applies inside
+        // the row too.
+        assert_eq!(
+            unify(&fn_ty(&[Ty::Int], Ty::Int), &fn_ty(&[Ty::Float], Ty::Int)),
+            fn_ty(&[Ty::Float], Ty::Int)
+        );
+        assert_eq!(
+            unify(
+                &fn_ty(&[Ty::String], Ty::Int),
+                &fn_ty(&[Ty::String], Ty::Float)
+            ),
+            fn_ty(&[Ty::String], Ty::Float)
+        );
+    }
+
+    #[test]
+    fn fn_unknown_row_slots_absorb_concrete_ones() {
+        assert_eq!(
+            unify(
+                &fn_ty(&[Ty::Unknown], Ty::Unknown),
+                &fn_ty(&[Ty::Int], Ty::Bool)
+            ),
+            fn_ty(&[Ty::Int], Ty::Bool)
+        );
+    }
+
+    #[test]
+    fn fn_arity_mismatch_is_conflicted() {
+        assert_eq!(
+            unify(&fn_ty(&[Ty::Int], Ty::Int), &fn_ty(&[], Ty::Int)),
+            Ty::Conflicted
+        );
+    }
+
+    #[test]
+    fn fn_vs_other_concrete_is_conflicted_per_the_627_lattice() {
+        assert_eq!(unify(&fn_ty(&[], Ty::Int), &Ty::Int), Ty::Conflicted);
+        assert_eq!(unify(&Ty::String, &fn_ty(&[], Ty::Int)), Ty::Conflicted);
+        assert_eq!(
+            unify(&fn_ty(&[], Ty::Int), &Ty::Array(Box::new(Ty::Int))),
+            Ty::Conflicted
+        );
+    }
+
+    #[test]
+    fn fn_conflict_inside_the_row_stays_inside_the_row() {
+        // A disagreeing param slot conflicts *pointwise* — the row shape
+        // survives, mirroring `Array(Conflicted)` for `#[1, "a"]`, and the
+        // recursive strict-mode classify walk is what surfaces it.
+        assert_eq!(
+            unify(&fn_ty(&[Ty::Int], Ty::Int), &fn_ty(&[Ty::String], Ty::Int)),
+            fn_ty(&[Ty::Conflicted], Ty::Int)
+        );
+    }
+
+    #[test]
+    fn fn_unify_is_order_independent() {
+        // Extends the #627 order-independence property to `Fn` rows: every
+        // permutation of observations must reach the same join.
+        let a = fn_ty(&[Ty::Int, Ty::String], Ty::Int);
+        let b = fn_ty(&[Ty::Float, Ty::String], Ty::Unknown);
+        let c = fn_ty(&[Ty::Unknown, Ty::String], Ty::Float);
+        let expected = fn_ty(&[Ty::Float, Ty::String], Ty::Float);
+        let orderings: [[&Ty; 3]; 6] = [
+            [&a, &b, &c],
+            [&a, &c, &b],
+            [&b, &a, &c],
+            [&b, &c, &a],
+            [&c, &a, &b],
+            [&c, &b, &a],
+        ];
+        for ordering in orderings {
+            assert_eq!(
+                unify_all(ordering.iter().map(|t| (*t).clone())),
+                expected,
+                "order {ordering:?} must reach the same join"
+            );
+        }
+    }
+
+    #[test]
+    fn fn_conflict_detection_is_order_independent() {
+        // A genuine row conflict (int vs string in the same slot) must be
+        // detected regardless of observation order, and must never heal.
+        let a = fn_ty(&[Ty::Int], Ty::Int);
+        let b = fn_ty(&[Ty::String], Ty::Int);
+        let u = fn_ty(&[Ty::Unknown], Ty::Unknown);
+        let expected = fn_ty(&[Ty::Conflicted], Ty::Int);
+        let orderings: [[&Ty; 3]; 6] = [
+            [&a, &b, &u],
+            [&a, &u, &b],
+            [&b, &a, &u],
+            [&b, &u, &a],
+            [&u, &a, &b],
+            [&u, &b, &a],
+        ];
+        for ordering in orderings {
+            assert_eq!(
+                unify_all(ordering.iter().map(|t| (*t).clone())),
+                expected,
+                "order {ordering:?} must detect the row conflict"
+            );
+        }
+    }
+
+    #[test]
+    fn fn_display_is_the_reserved_written_form() {
+        assert_eq!(fn_ty(&[Ty::Int], Ty::Int).display(), "fn(int): int");
+        assert_eq!(
+            fn_ty(&[Ty::Int, Ty::String], Ty::Bool).display(),
+            "fn(int, string): bool"
+        );
+        assert_eq!(fn_ty(&[], Ty::Float).display(), "fn(): float");
     }
 }

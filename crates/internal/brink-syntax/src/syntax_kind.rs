@@ -304,6 +304,14 @@ pub enum SyntaxKind {
     /// `brink-analyzer`'s resolution fallback (typed-mode-spec §6), not here.
     FIELD_ACCESS_EXPR,
 
+    // ── T1c function values (docs/t1c-spec.md §2) ──────────────────
+    /// `#fn(target, args…)` — function-value creation (partial application
+    /// over a named function). Joins the `#[…]`/`#{…}`/`Name#{…}` sigil
+    /// family: expression position only — in prose position `#` still opens
+    /// a tag, unchanged. Superset grammar — always parses; dialect-gated
+    /// (E051 under strict-ink) at analysis, same pattern as T1b/TM-4b.
+    FN_LITERAL,
+
     // Not a real kind — used only for `rowan::Language::kind_to_raw` bounds.
     #[doc(hidden)]
     __LAST,

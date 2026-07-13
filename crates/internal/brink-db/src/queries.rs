@@ -689,6 +689,9 @@ pub(crate) fn inferable_defs_query(
 pub(crate) struct DefBody {
     pub file: FileId,
     pub params: Vec<brink_ir::Param>,
+    /// The knot's `): type ===` return annotation, if any (T1c — feeds the
+    /// annotation-firewall overlay in `infer_def_body`).
+    pub return_annotation: Option<brink_ir::TypeExpr>,
     pub body: brink_ir::Block,
 }
 
@@ -706,10 +709,12 @@ pub(crate) fn def_body_query<'db>(
         .iter()
         .find(|f| f.file_id(db) == declaring_file)?;
     let hir = &lowered_query(db, *file).hir;
-    let (params, body) = brink_analyzer::def_body(def_id, &[(declaring_file, hir)], index)?;
+    let (params, return_annotation, body) =
+        brink_analyzer::def_body(def_id, &[(declaring_file, hir)], index)?;
     Some(Arc::new(DefBody {
         file: declaring_file,
         params,
+        return_annotation,
         body,
     }))
 }
@@ -901,6 +906,7 @@ pub(crate) fn solve_scc_query<'db>(
             file: b.file,
             params: &b.params,
             body: &b.body,
+            return_annotation: b.return_annotation.as_ref(),
         })
         .collect();
 

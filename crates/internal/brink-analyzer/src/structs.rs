@@ -158,6 +158,9 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
         Expr::MapLiteral(m) => m.entries.iter().flat_map(|(k, v)| [k, v]).collect(),
         Expr::Index(idx) => vec![&idx.base, &idx.index],
         Expr::StructLiteral(sl) => sl.fields.iter().map(|(_, v)| v).collect(),
+        // T1c `#fn(target, args…)`: only the bound arguments are child
+        // expressions — the target is a static `Path` field, same as `Call`.
+        Expr::FnLiteral(fl) => fl.args.iter().collect(),
         Expr::String(s) => s
             .parts
             .iter()

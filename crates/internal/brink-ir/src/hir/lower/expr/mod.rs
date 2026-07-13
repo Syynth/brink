@@ -49,6 +49,7 @@ impl LowerExpr for ast::Expr {
             ast::Expr::Index(ie) => ie.lower_expr(scope, sink),
             ast::Expr::StructLiteral(sl) => sl.lower_expr(scope, sink),
             ast::Expr::FieldAccess(fa) => fa.lower_expr(scope, sink),
+            ast::Expr::FnLiteral(fl) => fl.lower_expr(scope, sink),
         }
     }
 }

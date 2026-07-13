@@ -221,6 +221,63 @@ fn insta_field_access_after_struct_literal() {
     insta::assert_snapshot!(format!("{:#?}", p.syntax()));
 }
 
+// ── T1c function values (docs/t1c-spec.md §2) ─────────────────────────
+
+#[test]
+fn fn_literal_zero_args() {
+    check("~ f = #fn(heal)\n");
+}
+
+#[test]
+fn fn_literal_with_args() {
+    check("~ f = #fn(heal, player_hp, 5)\n");
+}
+
+#[test]
+fn fn_literal_trailing_comma() {
+    check("~ f = #fn(heal, player_hp,)\n");
+}
+
+#[test]
+fn fn_literal_dotted_target() {
+    check("~ f = #fn(knot.helper, x)\n");
+}
+
+#[test]
+fn fn_literal_nested_in_call_argument() {
+    check("~ x = apply(#fn(heal, hp), 5)\n");
+}
+
+#[test]
+fn fn_literal_arg_can_be_a_collection_literal() {
+    check("~ f = #fn(heal, #[1, 2])\n");
+}
+
+/// `fn` stays a contextual keyword: an ordinary identifier named `fn` (or a
+/// call to a function named `fn`) parses exactly as before.
+#[test]
+fn bare_fn_identifier_is_still_an_ordinary_ident() {
+    check("~ x = fn\n");
+    check("~ x = fn(1)\n");
+}
+
+/// Prose position is untouched: `#` still opens a tag there, so `#fn(...)`
+/// mid-prose is tag text, not a function-value literal (the T1b sigil rule,
+/// docs/t1b-surface-spec.md §3, carried over per t1c-spec §2 PROPOSED).
+#[test]
+fn prose_position_hash_fn_is_a_tag_not_a_fn_literal() {
+    let p = parse("Hello #fn(heal)\n");
+    let text = format!("{:#?}", p.syntax());
+    assert!(text.contains("TAG"), "{text}");
+    assert!(!text.contains("FN_LITERAL"), "{text}");
+}
+
+#[test]
+fn insta_fn_literal() {
+    let p = parse("~ f = #fn(heal, player_hp, 5)\n");
+    insta::assert_snapshot!(format!("{:#?}", p.syntax()));
+}
+
 #[test]
 fn function_call() {
     check("~ x = foo(1, 2)\n");

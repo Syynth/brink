@@ -52,7 +52,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use brink_format::DefinitionId;
 use brink_ir::{
-    Block, ContainerPtr, FileId, HirFile, Param, ResolutionMap, SymbolIndex, SymbolKind,
+    Block, ContainerPtr, FileId, HirFile, Param, ResolutionMap, SymbolIndex, SymbolKind, TypeExpr,
 };
 use rowan::TextRange;
 
@@ -96,6 +96,55 @@ pub struct BodyTypes {
     pub params: Vec<(String, Ty)>,
     pub locals: BTreeMap<String, Ty>,
     pub return_ty: Ty,
+    /// T1c (docs/t1c-spec.md §4): statically-checkable facts about calls
+    /// *through a value* (a callee resolving to a param/temp/VAR/CONST
+    /// rather than a callable def) observed in this body, in source-walk
+    /// order. Recorded unconditionally during inference (the walk is the
+    /// only place argument expressions have types); **reported only by
+    /// strict mode** (`strict::check` — gradual stays advisory, the runtime
+    /// fault is its backstop, spec §3/§4).
+    pub value_calls: Vec<ValueCallFact>,
+}
+
+/// One statically-checkable fact about a call through a function value
+/// (T1c, docs/t1c-spec.md §4 — "under `types = strict`, calls through
+/// function values are statically checked").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueCallFact {
+    /// The callee reference's source range (the diagnostic site).
+    pub range: TextRange,
+    /// The callee's display name (`f` in `f(5)`).
+    pub callee: String,
+    pub kind: ValueCallKind,
+}
+
+/// What a [`ValueCallFact`] observed. Strict mode maps these onto the
+/// existing TM-3 machinery — escape codes for unresolved callees, the
+/// typed-mismatch code for known-type disagreements — rather than minting
+/// parallel codes (docs/t1c-spec.md §8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValueCallKind {
+    /// The callee's type is `Unknown` in call position — a strict-mode
+    /// escape (`E065` class): the call can't be checked, so a strict author
+    /// must annotate or restructure.
+    UnknownCallee,
+    /// The callee's type is `Conflicted` (#627) in call position (`E066`
+    /// class).
+    ConflictedCallee,
+    /// The callee has a known concrete type that isn't `fn(T…): R` (and
+    /// isn't `divert` — calling through a divert-ref variable is a
+    /// pre-existing ink pattern this slice deliberately leaves unchecked).
+    NotCallable(Ty),
+    /// Known `fn(T…): R` callee, wrong argument count.
+    ArityMismatch { expected: usize, got: usize },
+    /// Known `fn(T…): R` callee; argument `index` (0-based) has a concrete
+    /// type that neither matches the row's param type nor coerces to it
+    /// (`int -> float` is the one legal directional coercion, spec §4).
+    ArgMismatch {
+        index: usize,
+        expected: Ty,
+        found: Ty,
+    },
 }
 
 /// The whole-project inference result (mirrors `AnalysisResult`'s shape:
@@ -139,6 +188,12 @@ pub struct Def<'a> {
     pub file: FileId,
     pub params: &'a [Param],
     pub body: &'a Block,
+    /// The function-header return annotation (`): type ===`), when the def
+    /// is a knot that carries one (T1c — the boundary-annotation firewall
+    /// applied to the return slot: an `Unknown` inferred return overlays to
+    /// the annotated type, so `#fn` rows built from this signature are
+    /// concrete). `None` for stitches and unannotated knots.
+    pub return_annotation: Option<&'a TypeExpr>,
 }
 
 /// Per-file resolution lookup: a `Path`'s range is only unique within its
@@ -204,6 +259,7 @@ fn collect_defs<'a>(files: &[(FileId, &'a HirFile)], index: &SymbolIndex) -> Vec
                     file: file_id,
                     params: &knot.params,
                     body: &knot.body,
+                    return_annotation: knot.return_type.as_ref(),
                 });
             }
             for stitch in &knot.stitches {
@@ -214,6 +270,7 @@ fn collect_defs<'a>(files: &[(FileId, &'a HirFile)], index: &SymbolIndex) -> Vec
                         file: file_id,
                         params: &stitch.params,
                         body: &stitch.body,
+                        return_annotation: None,
                     });
                 }
             }
@@ -229,10 +286,31 @@ struct ProjectCtx<'a> {
     globals: &'a BTreeMap<DefinitionId, Ty>,
     by_file: &'a BTreeMap<FileId, BTreeMap<(u32, u32), DefinitionId>>,
     inferable: &'a BTreeSet<DefinitionId>,
+    /// Declared `LIST`/`STRUCT` names, computed once per context — needed
+    /// by the T1c annotation-firewall overlay (`annotations::resolve` of
+    /// param/return/temp annotations inside [`body::infer_def_body`]).
+    list_names: BTreeSet<String>,
+    struct_names: BTreeSet<String>,
 }
 
-impl ProjectCtx<'_> {
-    fn body_ctx<'a>(
+impl<'a> ProjectCtx<'a> {
+    fn new(
+        index: &'a SymbolIndex,
+        globals: &'a BTreeMap<DefinitionId, Ty>,
+        by_file: &'a BTreeMap<FileId, BTreeMap<(u32, u32), DefinitionId>>,
+        inferable: &'a BTreeSet<DefinitionId>,
+    ) -> Self {
+        Self {
+            index,
+            globals,
+            by_file,
+            inferable,
+            list_names: crate::annotations::declared_list_names(index),
+            struct_names: crate::annotations::declared_struct_names(index),
+        }
+    }
+
+    fn body_ctx(
         &'a self,
         def: &Def<'_>,
         known_sigs: &'a BTreeMap<DefinitionId, InferredSig>,
@@ -244,6 +322,8 @@ impl ProjectCtx<'_> {
             globals: self.globals,
             known_sigs,
             inferable: self.inferable,
+            list_names: &self.list_names,
+            struct_names: &self.struct_names,
         }
     }
 }
@@ -258,7 +338,7 @@ fn build_call_graph(defs: &[Def<'_>], ctx: &ProjectCtx<'_>) -> CallGraph {
     for d in defs {
         graph.add_node(d.id);
         let body_ctx = ctx.body_ctx(d, &no_sigs);
-        let result = infer_def_body(d.params, d.body, &body_ctx);
+        let result = infer_def_body(d, &body_ctx);
         for callee in result.calls {
             graph.add_edge(d.id, callee);
         }
@@ -302,7 +382,7 @@ fn solve_one_batch(
         for &id in batch {
             let Some(&d) = by_id.get(&id) else { continue };
             let body_ctx = ctx.body_ctx(d, known_sigs);
-            let result = infer_def_body(d.params, d.body, &body_ctx);
+            let result = infer_def_body(d, &body_ctx);
             let new_sig = InferredSig {
                 params: result.params.iter().map(|(_, t)| t.clone()).collect(),
                 return_ty: result.return_ty.clone(),
@@ -328,6 +408,7 @@ fn solve_one_batch(
                     params: result.params,
                     locals: result.locals,
                     return_ty: result.return_ty,
+                    value_calls: result.value_calls,
                 },
             )
         })
@@ -373,12 +454,7 @@ pub fn infer_project(
     let inferable: BTreeSet<DefinitionId> = defs.iter().map(|d| d.id).collect();
     let by_id: BTreeMap<DefinitionId, &Def<'_>> = defs.iter().map(|d| (d.id, d)).collect();
 
-    let ctx = ProjectCtx {
-        index,
-        globals: &globals,
-        by_file: &by_file,
-        inferable: &inferable,
-    };
+    let ctx = ProjectCtx::new(index, &globals, &by_file, &inferable);
 
     let graph = build_call_graph(&defs, &ctx);
     let batches = topo_order(&graph);
@@ -445,11 +521,17 @@ pub fn def_body(
     def: DefinitionId,
     declaring_file_hir: &[(FileId, &HirFile)],
     index: &SymbolIndex,
-) -> Option<(Vec<Param>, Block)> {
+) -> Option<(Vec<Param>, Option<TypeExpr>, Block)> {
     collect_defs(declaring_file_hir, index)
         .into_iter()
         .find(|d| d.id == def)
-        .map(|d| (d.params.to_vec(), d.body.clone()))
+        .map(|d| {
+            (
+                d.params.to_vec(),
+                d.return_annotation.cloned(),
+                d.body.clone(),
+            )
+        })
 }
 
 /// Pass 1, exposed per one definition (FG-2, issue #631 — `call_edges(def)`).
@@ -484,15 +566,10 @@ pub fn call_edges(
         return BTreeSet::new();
     };
     let empty_globals: BTreeMap<DefinitionId, Ty> = BTreeMap::new();
-    let ctx = ProjectCtx {
-        index,
-        globals: &empty_globals,
-        by_file: &by_file,
-        inferable,
-    };
+    let ctx = ProjectCtx::new(index, &empty_globals, &by_file, inferable);
     let no_sigs: BTreeMap<DefinitionId, InferredSig> = BTreeMap::new();
     let body_ctx = ctx.body_ctx(d, &no_sigs);
-    infer_def_body(d.params, d.body, &body_ctx).calls
+    infer_def_body(d, &body_ctx).calls
 }
 
 /// Pass 1b, exposed per one definition (FG-2.1, issue #638, Ruling 1 —
@@ -521,15 +598,10 @@ pub fn referenced_globals(
     };
     let empty_globals: BTreeMap<DefinitionId, Ty> = BTreeMap::new();
     let empty_inferable: BTreeSet<DefinitionId> = BTreeSet::new();
-    let ctx = ProjectCtx {
-        index,
-        globals: &empty_globals,
-        by_file: &by_file,
-        inferable: &empty_inferable,
-    };
+    let ctx = ProjectCtx::new(index, &empty_globals, &by_file, &empty_inferable);
     let no_sigs: BTreeMap<DefinitionId, InferredSig> = BTreeMap::new();
     let body_ctx = ctx.body_ctx(d, &no_sigs);
-    infer_def_body(d.params, d.body, &body_ctx).referenced_globals
+    infer_def_body(d, &body_ctx).referenced_globals
 }
 
 /// Solve exactly one SCC batch (FG-2, issue #631 — `solve_scc(SccId)`).
@@ -567,12 +639,7 @@ pub fn solve_scc(
 ) {
     let by_file = index_resolutions_by_file(resolutions);
     let by_id: BTreeMap<DefinitionId, &Def<'_>> = defs.iter().map(|d| (d.id, d)).collect();
-    let ctx = ProjectCtx {
-        index,
-        globals,
-        by_file: &by_file,
-        inferable,
-    };
+    let ctx = ProjectCtx::new(index, globals, &by_file, inferable);
 
     let bodies = solve_one_batch(batch, &by_id, &ctx, &mut known_sigs);
     let signatures: BTreeMap<DefinitionId, InferredSig> = batch
@@ -859,6 +926,99 @@ mod tests {
         assert_eq!(pong_sig.return_ty, Ty::Conflicted);
     }
 
+    // ─── T1c: #fn typing + the annotation-firewall overlay ─────────────
+
+    /// The spec's own worked example (docs/t1c-spec.md §2/§4): with the
+    /// target fully annotated, `#fn(heal, player_hp)` consumes the bound
+    /// prefix and types as `fn(int): int`.
+    #[test]
+    fn fn_literal_consumes_the_bound_prefix_of_the_targets_signature() {
+        let (hir, index, res) = build(
+            "=== function heal(ref hp: int, amount: int): int ===\n~ hp = hp + amount\n~ return hp\n\
+             VAR player_hp = 10\n\
+             === main ===\n~ temp heal_player = #fn(heal, player_hp)\n-> DONE\n",
+        );
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let main_id = index
+            .by_name
+            .get("main")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("main");
+        let body = result.bodies.get(&main_id).expect("main body");
+        assert_eq!(
+            body.locals.get("heal_player"),
+            Some(&Ty::Fn(vec![Ty::Int], Box::new(Ty::Int)))
+        );
+    }
+
+    #[test]
+    fn fn_literal_over_an_inferred_signature_needs_no_annotations() {
+        // The target's row can come from body inference alone.
+        let (hir, index, res) = build(
+            "=== function double(x) ===\n~ return x * 2\n\
+             === main ===\n~ temp f = #fn(double)\n-> DONE\n",
+        );
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let main_id = index
+            .by_name
+            .get("main")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("main");
+        let body = result.bodies.get(&main_id).expect("main body");
+        assert_eq!(
+            body.locals.get("f"),
+            Some(&Ty::Fn(vec![Ty::Int], Box::new(Ty::Int)))
+        );
+    }
+
+    #[test]
+    fn fn_literal_with_unresolvable_target_stays_unknown() {
+        let (hir, index, res) = build("=== main ===\n~ temp f = #fn(nowhere)\n-> DONE\n");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let main_id = index
+            .by_name
+            .get("main")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("main");
+        let body = result.bodies.get(&main_id).expect("main body");
+        assert_eq!(body.locals.get("f"), Some(&Ty::Unknown));
+    }
+
+    /// T1c overlay: an annotated param the body never constrains surfaces
+    /// its annotation type in the inferred signature (the firewall applied
+    /// to the signature — a `#fn` row built from it must be concrete).
+    #[test]
+    fn annotated_but_unconstrained_param_overlays_to_the_annotation_type() {
+        let (hir, index, res) = build("=== noop(x: int) ===\nHello.\n-> DONE\n");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let sig = sig_of(&result, &index, "noop");
+        assert_eq!(sig.params, vec![Ty::Int]);
+    }
+
+    /// Overlay is Unknown-only: a body use that disagrees with the
+    /// annotation keeps its own derivation (E063's two-independent-
+    /// derivations comparison, and the #627 Conflicted lattice, untouched).
+    #[test]
+    fn overlay_never_replaces_a_concrete_body_derivation() {
+        let (hir, index, res) = build("=== heal(hp: string) ===\n{hp > 1:\n  ok\n}\n-> DONE\n");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let sig = sig_of(&result, &index, "heal");
+        assert_eq!(sig.params, vec![Ty::Int], "body derivation wins");
+    }
+
+    #[test]
+    fn return_annotation_overlays_an_unconstrained_return() {
+        // `return hp` types Unknown from the body alone (nothing pins hp
+        // before the return); the `): int` annotation overlays it.
+        let (hir, index, res) = build("=== function passthru(hp): int ===\n~ return hp\n");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let sig = sig_of(&result, &index, "passthru");
+        assert_eq!(sig.return_ty, Ty::Int);
+    }
+
     // ─── Per-def/per-SCC decomposition (FG-2, issue #631) ─────────────
 
     #[test]
@@ -1035,17 +1195,18 @@ mod tests {
         for batch in &sg.order {
             // Per-def HIR projection (Ruling 2b): only this batch's own
             // members' bodies, never the whole project's.
-            let owned: Vec<(DefinitionId, Vec<Param>, Block)> = batch
+            let owned: Vec<(DefinitionId, Vec<Param>, Option<TypeExpr>, Block)> = batch
                 .iter()
-                .filter_map(|&id| def_body(id, &files, &index).map(|(p, b)| (id, p, b)))
+                .filter_map(|&id| def_body(id, &files, &index).map(|(p, ra, b)| (id, p, ra, b)))
                 .collect();
             let batch_defs: Vec<Def<'_>> = owned
                 .iter()
-                .map(|(id, params, body)| Def {
+                .map(|(id, params, return_annotation, body)| Def {
                     id: *id,
                     file: FileId(0),
                     params,
                     body,
+                    return_annotation: return_annotation.as_ref(),
                 })
                 .collect();
 

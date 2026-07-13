@@ -9,6 +9,7 @@ mod annotations;
 mod conversions;
 mod dialect_gate;
 mod external_check;
+mod fn_values;
 mod infer;
 mod manifest;
 mod resolve;
@@ -31,9 +32,9 @@ pub use external_check::{
     SemanticTypeDiagnosticSeverity, SymbolMeta, ValueMeta,
 };
 pub use infer::{
-    BodyTypes, CallGraph, Def, InferenceResult, InferredSig, SccGraph, Ty, call_edges, def_body,
-    infer_project, inferable_defs, inferable_defs_from_index, referenced_globals, scc_graph,
-    solve_scc, unify, unify_all,
+    BodyTypes, CallGraph, Def, InferenceResult, InferredSig, SccGraph, Ty, ValueCallFact,
+    ValueCallKind, call_edges, def_body, infer_project, inferable_defs, inferable_defs_from_index,
+    referenced_globals, scc_graph, solve_scc, unify, unify_all,
 };
 pub use signature::{Sig, signature};
 pub use strict::{TypePolicy, effective_severity};
@@ -182,12 +183,18 @@ pub fn per_file_diagnostics(
     let files = [(file, hir)];
     let mut out = validate::validate(&files);
     out.extend(dialect_gate::check(&files, file_resolutions, dialect));
-    // Annotation *content* checks (E061/E062) run only under the brink
+    // Annotation *content* checks (E061) run only under the brink
     // dialect: under `strict-ink` the annotation is already rejected whole
     // by `dialect_gate` (E051), and critiquing the inside of rejected
     // syntax is noise (maintainer ruling 2026-07-13).
     if dialect == Dialect::Brink {
         out.extend(annotations::check(&files, index));
+        // T1c `#fn` creation-site checks (E079/E080/E081) follow the same
+        // brink-only rule: under `strict-ink` the literal is already
+        // rejected whole (E051). Per-file by the same argument as
+        // `dialect_gate`: the resolution records consulted always carry
+        // this file's own id.
+        out.extend(fn_values::check(&files, file_resolutions, index));
     }
     out
 }

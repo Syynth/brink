@@ -107,7 +107,36 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
         // `lower_field_access`'s own docs.
         hir::Expr::StructLiteral(sl) => lower_struct_literal(sl, ctx),
         hir::Expr::FieldAccess(fa) => lower_field_access(fa, ctx),
+
+        // T1c-1 (docs/t1c-spec.md §11): `#fn(…)` function values parse,
+        // gate, and type-check in this slice, but their LIR/codegen/VM
+        // story is T1c-2 — see [`reject_fn_literal`].
+        hir::Expr::FnLiteral(fl) => reject_fn_literal(fl, ctx),
     }
+}
+
+/// T1c-1 lowering fence (docs/t1c-spec.md §11 build sequencing): `#fn(…)`
+/// has grammar, HIR, dialect gating, creation-site diagnostics, and typing
+/// in this slice — LIR emission (`PushFnRef`/`MakeClosure`), dispatch, and
+/// persistence land in T1c-2. Until then, a `#fn` reaching LIR lowering is
+/// a real, targeted, **non-suppressible** compile error (E052, the
+/// designated "brink extension not yet implemented" class) — never a silent
+/// drop (house rule: silent drops are always bugs). Bound-argument
+/// subexpressions are still lowered for their own diagnostics' sake; the
+/// result is discarded along with the whole expression.
+fn reject_fn_literal(fl: &hir::FnLiteral, ctx: &mut LowerCtx<'_>) -> lir::Expr {
+    for arg in &fl.args {
+        lower_expr(arg, ctx);
+    }
+    ctx.diagnostics.push(crate::Diagnostic {
+        file: ctx.file,
+        range: fl.ptr.text_range(),
+        message: "`#fn(…)` function values are not yet implemented in this slice — \
+                  creation type-checks (T1c-1) but lowering/execution lands in T1c-2"
+            .to_owned(),
+        code: crate::DiagnosticCode::E052,
+    });
+    lir::Expr::Null
 }
 
 /// A sentinel `ShapeId` that never names a real declared shape — `Program::

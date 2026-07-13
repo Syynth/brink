@@ -25,13 +25,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use brink_format::DefinitionId;
 use brink_ir::{
     Block, BlockStmt, Choice, ChoiceSet, CondKind, Conditional, Content, ContentPart, DivertPath,
-    DivertTarget, ElseBranch, Expr, IfStmt, InfixOp, LogicBlock, Param, Path as HirPath, PrefixOp,
-    Stmt, StringPart, SymbolIndex, SymbolKind,
+    DivertTarget, ElseBranch, Expr, IfStmt, InfixOp, LogicBlock, Path as HirPath, PrefixOp, Stmt,
+    StringPart, SymbolIndex, SymbolKind,
 };
 use rowan::TextRange;
 
 use super::ty::{Ty, unify, unify_all};
-use super::{InferredSig, range_key};
+use super::{InferredSig, ValueCallFact, ValueCallKind, range_key};
 
 /// Read-only context shared by every body inferred in the same SCC round.
 pub(super) struct BodyCtx<'a> {
@@ -54,6 +54,11 @@ pub(super) struct BodyCtx<'a> {
     /// Defs with an inferable body (knots/stitches) — used to decide whether
     /// a resolved call target is worth recording as a call-graph edge.
     pub inferable: &'a BTreeSet<DefinitionId>,
+    /// Declared `LIST`/`STRUCT` names (from `ProjectCtx`) — needed to
+    /// resolve param/return/temp annotations for the T1c firewall overlay
+    /// and the call-position annotated-callee fallback.
+    pub list_names: &'a BTreeSet<String>,
+    pub struct_names: &'a BTreeSet<String>,
 }
 
 /// The result of walking one definition's body.
@@ -79,39 +84,87 @@ pub(super) struct BodyResult {
     /// Ruling 1) — also the per-def global *read set* future T2 effect rows
     /// need.
     pub referenced_globals: BTreeSet<DefinitionId>,
+    /// T1c: statically-checkable call-through-value facts (see
+    /// [`super::ValueCallFact`]) — recorded here because this walk is the
+    /// only place argument expressions have types; reported by strict mode
+    /// only.
+    pub value_calls: Vec<ValueCallFact>,
 }
 
-/// Infer one definition's body against `ctx`. `param_names` are the
-/// declared params in order (a knot's or stitch's `params`); `body` is its
-/// `Block`. `params` in the result echoes `param_names`'s order.
-pub(super) fn infer_def_body(params: &[Param], body: &Block, ctx: &BodyCtx<'_>) -> BodyResult {
+/// Infer one definition's body against `ctx`. `def.params` are the declared
+/// params in order (a knot's or stitch's `params`); `def.body` is its
+/// `Block`. `params` in the result echoes the declaration order.
+///
+/// ## The T1c annotation-firewall overlay
+///
+/// After the body walk, a param or return slot whose *body-derived* type is
+/// still `Unknown` overlays to its resolvable annotation type (TM-2's
+/// "annotation wins over nothing" firewall applied to the signature —
+/// docs/t1c-spec.md §4: `#fn` consumes "the target's (inferred or
+/// annotated) signature", which requires annotated-but-body-unconstrained
+/// slots to surface concretely). Deliberately overlay-not-seed: a body use
+/// that *disagrees* with the annotation still infers its own concrete type
+/// so `annotations::mismatches` (E063) keeps comparing two independent
+/// derivations, and a genuinely conflicted body still comes out
+/// `Conflicted` (E066) — the #627 lattice is untouched.
+pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyResult {
+    let annotated: BTreeMap<String, Ty> = def
+        .params
+        .iter()
+        .filter_map(|p| {
+            let te = p.annotation.as_ref()?;
+            let ty = crate::annotations::resolve(te, ctx.list_names, ctx.struct_names)?;
+            Some((p.name.text.clone(), ty))
+        })
+        .collect();
+
     let mut pass = InferPass {
         ctx,
         locals: BTreeMap::new(),
         return_ty: Ty::Unknown,
         calls: BTreeSet::new(),
         referenced_globals: BTreeSet::new(),
+        annotated,
+        value_calls: Vec::new(),
     };
-    pass.infer_block(body);
+    pass.infer_block(def.body);
 
-    let param_types = params
+    let param_types = def
+        .params
         .iter()
         .map(|p| {
-            let ty = pass
+            let inferred = pass
                 .locals
                 .get(&p.name.text)
                 .cloned()
                 .unwrap_or(Ty::Unknown);
+            let ty = if inferred.is_unknown() {
+                pass.annotated
+                    .get(&p.name.text)
+                    .cloned()
+                    .unwrap_or(inferred)
+            } else {
+                inferred
+            };
             (p.name.text.clone(), ty)
         })
         .collect();
 
+    let return_ty = if pass.return_ty.is_unknown() {
+        def.return_annotation
+            .and_then(|te| crate::annotations::resolve(te, ctx.list_names, ctx.struct_names))
+            .unwrap_or(pass.return_ty)
+    } else {
+        pass.return_ty
+    };
+
     BodyResult {
         params: param_types,
         locals: pass.locals,
-        return_ty: pass.return_ty,
+        return_ty,
         calls: pass.calls,
         referenced_globals: pass.referenced_globals,
+        value_calls: pass.value_calls,
     }
 }
 
@@ -121,6 +174,14 @@ struct InferPass<'a, 'b> {
     return_ty: Ty,
     calls: BTreeSet<DefinitionId>,
     referenced_globals: BTreeSet<DefinitionId>,
+    /// Resolvable annotation/ascription types by local name — params up
+    /// front, temps added as their declarations are walked. Consulted only
+    /// as a *fallback* at consumption sites where the body-derived type is
+    /// still `Unknown` (call-position callee lookup, the end-of-walk
+    /// signature overlay) — never joined into the lattice, so E063's
+    /// two-independent-derivations comparison stays intact.
+    annotated: BTreeMap<String, Ty>,
+    value_calls: Vec<ValueCallFact>,
 }
 
 impl InferPass<'_, '_> {
@@ -186,6 +247,17 @@ impl InferPass<'_, '_> {
         let name = info.name.clone();
         let cur = self.locals.get(&name).cloned().unwrap_or(Ty::Unknown);
         self.locals.insert(name, unify(&cur, ty));
+    }
+
+    /// Record a `~ temp name: T = …` ascription in the annotated-fallback
+    /// map (same role as a param annotation — see the field's doc).
+    fn register_ascription(&mut self, t: &brink_ir::TempDecl) {
+        if let Some(te) = &t.annotation
+            && let Some(ty) =
+                crate::annotations::resolve(te, self.ctx.list_names, self.ctx.struct_names)
+        {
+            self.annotated.insert(t.name.text.clone(), ty);
+        }
     }
 
     fn bind_local(&mut self, name: &str, ty: &Ty) {
@@ -281,6 +353,14 @@ impl InferPass<'_, '_> {
                 self.infer_expr(&fa.base);
                 Ty::Unknown
             }
+            // T1c `#fn(target, args…)` (docs/t1c-spec.md §4): the creation
+            // consumes the bound prefix from the target's signature — the
+            // value's type is `fn(remaining…): R`. The target's signature
+            // arrives through `known_sigs` exactly like a direct call's
+            // (firewall intact; the call edge recorded here is what orders
+            // the target's SCC before this one). Bound args are observed
+            // against the target's param row, same as direct-call args.
+            Expr::FnLiteral(fl) => self.infer_fn_literal(fl),
         }
     }
 
@@ -339,6 +419,25 @@ impl InferPass<'_, '_> {
     fn infer_call(&mut self, path: &HirPath, args: &[Expr]) -> Ty {
         let arg_tys: Vec<Ty> = args.iter().map(|a| self.infer_expr(a)).collect();
         if let Some(def) = self.resolve(path.range) {
+            // T1c: a callee resolving to a *value* (param/temp/VAR/CONST)
+            // is a call through a function value, not a direct call — its
+            // check runs against the value's own type, not `known_sigs`.
+            // Classified by `SymbolKind` when the index carries the symbol,
+            // by `DefinitionTag::LocalVar` when it doesn't (brink-db's
+            // inference index projection can strip locals).
+            let is_value_callee = match self.ctx.index.symbols.get(&def) {
+                Some(info) => matches!(
+                    info.kind,
+                    SymbolKind::Param
+                        | SymbolKind::Temp
+                        | SymbolKind::Variable
+                        | SymbolKind::Constant
+                ),
+                None => def.tag() == brink_format::DefinitionTag::LocalVar,
+            };
+            if is_value_callee {
+                return self.infer_value_call(path, def, args, &arg_tys);
+            }
             self.record_call_edge(def);
             return self.ctx.known_sigs.get(&def).map_or(Ty::Unknown, |sig| {
                 for (i, arg) in args.iter().enumerate() {
@@ -356,6 +455,136 @@ impl InferPass<'_, '_> {
             return self.infer_intrinsic(&seg.text, args, &arg_tys);
         }
         Ty::Unknown
+    }
+
+    /// `#fn(target, args…)` — docs/t1c-spec.md §4: consume the bound prefix
+    /// from the target's signature. An unresolved target or a target with
+    /// no known signature (a variable, an external, an E079 case) types as
+    /// `Unknown` — the creation-site diagnostics own the error reporting.
+    fn infer_fn_literal(&mut self, fl: &brink_ir::FnLiteral) -> Ty {
+        for arg in &fl.args {
+            self.infer_expr(arg);
+        }
+        let Some(def) = self.resolve(fl.target.range) else {
+            return Ty::Unknown;
+        };
+        self.record_call_edge(def);
+        let Some(sig) = self.ctx.known_sigs.get(&def) else {
+            return Ty::Unknown;
+        };
+        for (i, arg) in fl.args.iter().enumerate() {
+            if let Some(param_ty) = sig.params.get(i) {
+                self.observe(arg, param_ty);
+            }
+        }
+        let remaining: Vec<Ty> = sig.params.iter().skip(fl.args.len()).cloned().collect();
+        Ty::Fn(remaining, Box::new(sig.return_ty.clone()))
+    }
+
+    /// A call whose callee resolved to a param/temp/VAR/CONST — a call
+    /// through a value (T1c, docs/t1c-spec.md §4). Records the
+    /// statically-checkable facts strict mode reports (`strict::check`):
+    ///
+    /// - known `fn(T…): R` callee → arity + per-arg checks (the `int ->
+    ///   float` directional coercion is legal, same rule as
+    ///   `annotations::report_if_mismatched`: legal iff
+    ///   `unify(param, arg) == param`);
+    /// - `Unknown`/`Conflicted` callee → an escape fact (the TM-3 escape
+    ///   rule applied to call position);
+    /// - any other concrete type → not callable — except `Divert`, the
+    ///   pre-existing ink "call through a divert-ref variable" pattern,
+    ///   which stays unchecked in this slice.
+    ///
+    /// The callee's type is its body-inferred one, falling back to its
+    /// annotation/ascription when inference alone left it `Unknown` — the
+    /// boundary-annotation firewall applied at the consumption site
+    /// (`cb: fn(int): int` params must be callable under strict without a
+    /// body use pinning them first).
+    fn infer_value_call(
+        &mut self,
+        path: &HirPath,
+        def: DefinitionId,
+        args: &[Expr],
+        arg_tys: &[Ty],
+    ) -> Ty {
+        let mut callee_ty = self.ty_of_def(def);
+        if callee_ty.is_unknown()
+            && let Some(name) = self.ctx.index.symbols.get(&def).map(|i| i.name.clone())
+            && let Some(ann) = self.annotated.get(&name)
+        {
+            callee_ty = ann.clone();
+        } else if callee_ty.is_unknown()
+            && let [seg] = path.segments.as_slice()
+            && let Some(ann) = self.annotated.get(&seg.text)
+        {
+            // Local callee under a locals-stripped index (see
+            // `infer_call`): the bare name is the path's single segment.
+            callee_ty = ann.clone();
+        }
+
+        let callee = path
+            .segments
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join(".");
+
+        match callee_ty {
+            Ty::Fn(params, ret) => {
+                if args.len() != params.len() {
+                    self.push_value_call(
+                        path.range,
+                        &callee,
+                        ValueCallKind::ArityMismatch {
+                            expected: params.len(),
+                            got: args.len(),
+                        },
+                    );
+                }
+                for (i, param_ty) in params.iter().enumerate() {
+                    if let Some(arg_ty) = arg_tys.get(i)
+                        && !param_ty.is_unresolved()
+                        && !arg_ty.is_unresolved()
+                        && &unify(param_ty, arg_ty) != param_ty
+                    {
+                        self.push_value_call(
+                            path.range,
+                            &callee,
+                            ValueCallKind::ArgMismatch {
+                                index: i,
+                                expected: param_ty.clone(),
+                                found: arg_ty.clone(),
+                            },
+                        );
+                    }
+                    if let Some(arg) = args.get(i) {
+                        self.observe(arg, param_ty);
+                    }
+                }
+                *ret
+            }
+            Ty::Divert => Ty::Unknown,
+            Ty::Unknown => {
+                self.push_value_call(path.range, &callee, ValueCallKind::UnknownCallee);
+                Ty::Unknown
+            }
+            Ty::Conflicted => {
+                self.push_value_call(path.range, &callee, ValueCallKind::ConflictedCallee);
+                Ty::Unknown
+            }
+            other => {
+                self.push_value_call(path.range, &callee, ValueCallKind::NotCallable(other));
+                Ty::Unknown
+            }
+        }
+    }
+
+    fn push_value_call(&mut self, range: TextRange, callee: &str, kind: ValueCallKind) {
+        self.value_calls.push(ValueCallFact {
+            range,
+            callee: callee.to_string(),
+            kind,
+        });
     }
 
     /// Stdlib intrinsic typing rules (typed-mode-spec §2's "facility
@@ -471,6 +700,7 @@ impl InferPass<'_, '_> {
             }
             Stmt::ThreadStart(t) => self.infer_target(&t.target),
             Stmt::TempDecl(t) => {
+                self.register_ascription(t);
                 let ty = t.value.as_ref().map_or(Ty::Unknown, |e| self.infer_expr(e));
                 self.bind_local(&t.name.text, &ty);
             }
@@ -569,6 +799,7 @@ impl InferPass<'_, '_> {
     fn infer_block_stmt(&mut self, bs: &BlockStmt) {
         match bs {
             BlockStmt::TempDecl(t) => {
+                self.register_ascription(t);
                 let ty = t.value.as_ref().map_or(Ty::Unknown, |e| self.infer_expr(e));
                 self.bind_local(&t.name.text, &ty);
             }

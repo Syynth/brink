@@ -146,6 +146,10 @@ ast_node!(StructLiteral, STRUCT_LITERAL);
 ast_node!(StructFieldInit, STRUCT_FIELD_INIT);
 ast_node!(FieldAccessExpr, FIELD_ACCESS_EXPR);
 
+// ── T1c function values (docs/t1c-spec.md §2) ─────────────────────────
+
+ast_node!(FnLiteral, FN_LITERAL);
+
 // ── Diverts ──────────────────────────────────────────────────────────
 
 ast_node!(DivertNode, DIVERT_NODE);
@@ -298,6 +302,9 @@ pub enum Expr {
     /// §6, brink extension). Only produced where the dotted-`PATH` grammar
     /// doesn't already cover the shape — see `FIELD_ACCESS_EXPR`'s doc.
     FieldAccess(FieldAccessExpr),
+    /// `#fn(target, args…)` — function-value creation (T1c,
+    /// docs/t1c-spec.md §2, brink extension).
+    FnLiteral(FnLiteral),
 }
 
 impl std::fmt::Debug for Expr {
@@ -333,6 +340,7 @@ impl crate::ast::AstNode for Expr {
                 | SyntaxKind::INDEX_EXPR
                 | SyntaxKind::STRUCT_LITERAL
                 | SyntaxKind::FIELD_ACCESS_EXPR
+                | SyntaxKind::FN_LITERAL
         )
     }
 
@@ -355,6 +363,7 @@ impl crate::ast::AstNode for Expr {
             SyntaxKind::INDEX_EXPR => IndexExpr::cast(node).map(Expr::Index),
             SyntaxKind::STRUCT_LITERAL => StructLiteral::cast(node).map(Expr::StructLiteral),
             SyntaxKind::FIELD_ACCESS_EXPR => FieldAccessExpr::cast(node).map(Expr::FieldAccess),
+            SyntaxKind::FN_LITERAL => FnLiteral::cast(node).map(Expr::FnLiteral),
             _ => None,
         }
     }
@@ -378,6 +387,7 @@ impl crate::ast::AstNode for Expr {
             Expr::Index(n) => n.syntax(),
             Expr::StructLiteral(n) => n.syntax(),
             Expr::FieldAccess(n) => n.syntax(),
+            Expr::FnLiteral(n) => n.syntax(),
         }
     }
 }
@@ -1070,6 +1080,31 @@ impl FieldAccessExpr {
 
     pub fn field_name(&self) -> Option<String> {
         self.field().and_then(|id| id.name())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// T1c function values (docs/t1c-spec.md §2)
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── FnLiteral ────────────────────────────────────────────────────────
+
+impl FnLiteral {
+    /// The static target path (the first `PATH` child) — `heal` in
+    /// `#fn(heal, hp)`. `None` on malformed input (`#fn()`, `#fn(1)`).
+    pub fn target(&self) -> Option<Path> {
+        support::child(&self.syntax)
+    }
+
+    /// The bound-argument expressions after the target, in source order.
+    /// The target `PATH` is itself castable to `Expr::Path`, so this skips
+    /// the first `Expr` child iff it is that target node.
+    pub fn args(&self) -> impl Iterator<Item = Expr> {
+        let target_node = self.target().map(|t| t.syntax().clone());
+        self.syntax
+            .children()
+            .filter_map(Expr::cast)
+            .filter(move |e| Some(e.syntax()) != target_node.as_ref())
     }
 }
 

@@ -148,8 +148,9 @@ pub enum TypeExpr {
         args: Vec<TypeExpr>,
         range: TextRange,
     },
-    /// `fn(params…): ret` — a function type. Parses everywhere; typed as
-    /// reserved until T1c (a targeted diagnostic fires on any use).
+    /// `fn(params…): ret` — a function type (unfrozen with T1c-1, #699:
+    /// resolves to the checker's `Ty::Fn`; the row is val-only — refs are
+    /// bound away at `#fn` creation, docs/t1c-spec.md §4).
     Fn {
         params: Vec<TypeExpr>,
         ret: Box<TypeExpr>,
@@ -548,6 +549,25 @@ pub enum Expr {
     /// `brink-analyzer`'s job (§6: "ink's static dotted paths... resolved
     /// first and win").
     FieldAccess(FieldAccessExpr),
+    /// `#fn(target, args…)` — function-value creation (brink extension,
+    /// T1c, docs/t1c-spec.md §2): partial application over the statically
+    /// named function `target`, binding a prefix of its declared params.
+    FnLiteral(FnLiteral),
+}
+
+/// `#fn(target, args…)`. `ptr` lets the dialect gate point its diagnostic
+/// at the exact literal, matching the sibling sigil-literal shapes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FnLiteral {
+    pub ptr: SyntaxNodePtr,
+    /// The static target path — a name (possibly dotted), never an
+    /// expression. Whether it resolves to a function definition is
+    /// `brink-analyzer`'s creation-site check (E079), not this shape's.
+    pub target: Path,
+    /// Bound-argument expressions, in source order — a prefix of the
+    /// target's declared param row (over-binding is E081; `ref`-param
+    /// binding discipline is E080).
+    pub args: Vec<Expr>,
 }
 
 /// `Name#{field: expr, …}`. `ptr` lets the dialect gate point its
@@ -720,6 +740,20 @@ pub fn display_expr(expr: &Expr) -> String {
         Expr::Index(idx) => format!("{}[{}]", display_expr(&idx.base), display_expr(&idx.index)),
         Expr::StructLiteral(sl) => format!("{}#{{...}}", sl.shape.text),
         Expr::FieldAccess(fa) => format!("{}.{}", display_expr(&fa.base), fa.field.text),
+        Expr::FnLiteral(fl) => {
+            let mut name = String::new();
+            for (i, seg) in fl.target.segments.iter().enumerate() {
+                if i > 0 {
+                    name.push('.');
+                }
+                name.push_str(&seg.text);
+            }
+            if fl.args.is_empty() {
+                format!("#fn({name})")
+            } else {
+                format!("#fn({name}, ...)")
+            }
+        }
     }
 }
 
@@ -1040,8 +1074,11 @@ pub enum DiagnosticCode {
     /// A brink-extension construct (block, sigil literal, indexing) was
     /// used under the `strict-ink` dialect.
     E051,
-    /// A brink-extension construct was used under the `brink` dialect, but
-    /// T1b-1 lowers nothing to LIR yet (lands in T1b-2).
+    /// A brink-extension construct parses and analyzes cleanly under the
+    /// `brink` dialect, but its LIR lowering hasn't landed yet. Originally
+    /// minted for T1b-1 (every T1b construct lowers since T1b-2, #570); now
+    /// fires for `#fn(…)` function values, whose lowering lands in T1c-2
+    /// (docs/t1c-spec.md §11).
     E052,
     /// Internal error: a T1b brink-extension HIR node (`LogicBlock`,
     /// `ArrayLiteral`, `MapLiteral`, `Index`) reached LIR lowering. The
@@ -1096,8 +1133,12 @@ pub enum DiagnosticCode {
     /// naming a declared `LIST`, `array<T>`, or `map<K, V>` — declared
     /// struct names arrive in TM-4.
     E061,
-    /// `fn(T…): R` function-type annotation used — parses, but types as
-    /// reserved until T1c.
+    /// RETIRED (T1c-1, #699): previously "`fn(T…): R` function-type
+    /// annotation used — parses, but types as reserved until T1c". T1c
+    /// unfroze the form (docs/t1c-spec.md §4: "boundary annotations gain
+    /// the `fn(T…): R` form"), so it now resolves to a real checker type.
+    /// Code kept reserved, not reused, for diagnostic-code stability — no
+    /// longer emitted by any pass.
     E062,
     /// A param/return/`VAR` type annotation disagrees with the type
     /// TM-1's body inference would otherwise derive. Advisory only in this
@@ -1210,6 +1251,30 @@ pub enum DiagnosticCode {
     /// `types = strict`, runtime fault under gradual"). `string(x)` accepts
     /// every type and is never checked here.
     E078,
+
+    // ── T1c function values (docs/t1c-spec.md §2/§8, issue #699) ─────
+    /// `#fn(name, …)`'s target does not resolve to a statically-named
+    /// function definition (`=== function name ===`) — it resolved to a
+    /// variable/list/external/label/non-function knot or stitch, or it
+    /// names a builtin/stdlib intrinsic (which has no definition to take a
+    /// token of). Only fires under `dialect = brink` — under `strict-ink`
+    /// the whole literal is already rejected as extension syntax (E051),
+    /// and content diagnostics on rejected syntax are noise (the TM-2
+    /// suppression precedent, maintainer ruling 2026-07-13).
+    E079,
+    /// A `ref` param of a `#fn` target is not bound in the creation-site
+    /// prefix, or is bound to a non-durable lvalue. All `ref` params must
+    /// be bound at creation, and each must capture a durable cell — a
+    /// global `VAR` (flow-local `#@local` VARs included); a `temp`/param
+    /// is a compile error (temps die with the frame, value-model §11), a
+    /// `CONST` is not a mutable cell, and any rvalue/field projection is
+    /// not a cell at all.
+    E080,
+    /// `#fn(name, args…)` binds more arguments than the target declares —
+    /// the bound-arg row is a *prefix* of the declared param row
+    /// (docs/t1c-spec.md §2: "binding more args than the target declares
+    /// is a compile error").
+    E081,
 }
 
 impl DiagnosticCode {
@@ -1295,6 +1360,9 @@ impl DiagnosticCode {
             Self::E076 => "E076",
             Self::E077 => "E077",
             Self::E078 => "E078",
+            Self::E079 => "E079",
+            Self::E080 => "E080",
+            Self::E081 => "E081",
         }
     }
 
@@ -1353,7 +1421,7 @@ impl DiagnosticCode {
             Self::E049 => "directive not supported on this target",
             Self::E050 => "directive does not take arguments",
             Self::E051 => "brink extension used under strict-ink dialect",
-            Self::E052 => "brink extension not yet implemented (lands in T1b-2)",
+            Self::E052 => "brink extension not yet implemented",
             Self::E053 => {
                 "internal: brink extension reached LIR lowering (dialect gate suppressed)"
             }
@@ -1365,7 +1433,7 @@ impl DiagnosticCode {
             Self::E059 => "choice/gather construct nested inside inline content",
             Self::E060 => "internal codegen error",
             Self::E061 => "unknown type name in annotation",
-            Self::E062 => "function-type annotation is reserved until T1c",
+            Self::E062 => "retired (T1c-1) — fn(T…): R annotations now resolve for real",
             Self::E063 => "type annotation disagrees with inferred type",
             Self::E064 => "strict types require the brink dialect",
             Self::E065 => "type escapes strict inference as Unknown",
@@ -1390,6 +1458,9 @@ impl DiagnosticCode {
                 "array element or map value in a VAR/CONST declaration default is not a compile-time-constant expression"
             }
             Self::E078 => "int()/float() argument is outside the permissive numeric+bool domain",
+            Self::E079 => "#fn target is not a statically-named function definition",
+            Self::E080 => "#fn ref parameter is not bound to a durable cell at creation",
+            Self::E081 => "#fn binds more arguments than the target declares",
         }
     }
 
@@ -1496,6 +1567,9 @@ impl DiagnosticCode {
             "E076" => Some(Self::E076),
             "E077" => Some(Self::E077),
             "E078" => Some(Self::E078),
+            "E079" => Some(Self::E079),
+            "E080" => Some(Self::E080),
+            "E081" => Some(Self::E081),
             _ => None,
         }
     }

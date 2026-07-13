@@ -9,12 +9,12 @@
 //!   wins over inference — see `crate::signature::Sig`'s `param_annotations`/
 //!   `return_annotation` fields, populated via this function).
 //! - [`check`]: semantic diagnostics on the annotation *content* — unknown
-//!   type names (`E061`) and `fn(...)` function types, which parse
-//!   everywhere but type as reserved until T1c (`E062`). Runs only under
-//!   the brink dialect (`finish_analysis` gates the call): under
-//!   `strict-ink`, `dialect_gate` already rejects the annotation whole as
-//!   extension syntax (`E051`), and content diagnostics on rejected syntax
-//!   are noise (maintainer ruling 2026-07-13).
+//!   type names (`E061`). Runs only under the brink dialect
+//!   (`finish_analysis` gates the call): under `strict-ink`,
+//!   `dialect_gate` already rejects the annotation whole as extension
+//!   syntax (`E051`), and content diagnostics on rejected syntax are noise
+//!   (maintainer ruling 2026-07-13). `fn(T…): R` types, formerly reserved
+//!   (`E062`, retired with T1c-1), are legal and resolve to [`Ty::Fn`].
 //!
 //! [`mismatches`] is the third job: the annotation-vs-body-inference
 //! diagnostic (`E063`), composing `signature()`'s annotations with
@@ -44,10 +44,15 @@ fn is_known_leaf(name: &str) -> bool {
 /// Resolve a parsed type annotation into the checker's `Ty` universe.
 ///
 /// Returns `None` for `void` (no `Ty` — return-position-only, handled
-/// separately by callers that care), `fn(...)` (reserved until T1c — no
-/// `Ty::Fn` variant exists, spec §2), and any name this function doesn't
+/// separately by callers that care) and any name this function doesn't
 /// recognize (an unknown leaf name, or a `list<L>` whose `L` isn't a
 /// declared `LIST` — [`check`] is what reports these, not this function).
+///
+/// `fn(T…): R` (T1c, docs/t1c-spec.md §4 — the boundary-annotation form)
+/// resolves to [`Ty::Fn`] when every param and the return resolve; a
+/// `void` return inside a fn type is unsupported in this slice (the type
+/// universe has no void — the whole annotation resolves `None`, i.e. is
+/// treated as absent, same contract as any other unresolvable component).
 ///
 /// `struct_names` (TM-4b, docs/typed-mode-spec.md §6): a bare `Named` type
 /// whose name is a declared `STRUCT` resolves to `Ty::Struct` — "declared
@@ -89,7 +94,14 @@ pub fn resolve(
             }
             _ => None,
         },
-        brink_ir::TypeExpr::Fn { .. } => None, // reserved until T1c
+        brink_ir::TypeExpr::Fn { params, ret, .. } => {
+            let params: Option<Vec<Ty>> = params
+                .iter()
+                .map(|p| resolve(p, list_names, struct_names))
+                .collect();
+            let ret = resolve(ret, list_names, struct_names)?;
+            Some(Ty::Fn(params?, Box::new(ret)))
+        }
     }
 }
 
@@ -118,9 +130,8 @@ pub(crate) fn declared_struct_names(index: &SymbolIndex) -> BTreeSet<String> {
         .collect()
 }
 
-/// Semantic diagnostics on annotation content: unknown type names (`E061`)
-/// and reserved-until-T1c function types (`E062`). Unconditional in both
-/// dialects (see module doc).
+/// Semantic diagnostics on annotation content: unknown type names (`E061`).
+/// Brink-dialect-only (see module doc).
 #[must_use]
 pub fn check(files: &[(FileId, &HirFile)], index: &SymbolIndex) -> Vec<Diagnostic> {
     let list_names = declared_list_names(index);
@@ -237,13 +248,10 @@ fn check_one(
                 });
             }
         },
-        brink_ir::TypeExpr::Fn { params, ret, range } => {
-            out.push(Diagnostic {
-                file,
-                range: *range,
-                message: "function types (`fn(...): R`) land with T1c — not usable yet".to_owned(),
-                code: DiagnosticCode::E062,
-            });
+        // T1c: `fn(T…): R` is a legal type form (docs/t1c-spec.md §4 —
+        // "boundary annotations gain the fn(T…): R form"); E062 is retired.
+        // Component names are still content-checked recursively (E061).
+        brink_ir::TypeExpr::Fn { params, ret, .. } => {
             for p in params {
                 check_one(p, list_names, struct_names, file, out);
             }
@@ -492,14 +500,65 @@ mod tests {
     }
 
     #[test]
-    fn resolve_void_and_fn_and_unknown_are_none() {
-        let (hir, _index) =
-            build("VAR v: void = 0\nVAR f: fn(int): int = 0\nVAR u: Frobnicator = 0\n");
+    fn resolve_void_and_unknown_are_none() {
+        let (hir, _index) = build("VAR v: void = 0\nVAR u: Frobnicator = 0\n");
         let empty = BTreeSet::new();
         for v in &hir.variables {
             let te = v.annotation.as_ref().expect("annotation");
             assert_eq!(resolve(te, &empty, &empty), None, "{v:?}");
         }
+    }
+
+    // ── T1c fn(T…): R (docs/t1c-spec.md §4) ─────────────────────────
+
+    #[test]
+    fn resolve_fn_type_form() {
+        let (hir, _index) = build("VAR cb: fn(int, string): bool = 0\nVAR z: fn(): int = 0\n");
+        let empty = BTreeSet::new();
+        let cb = hir.variables[0].annotation.as_ref().expect("cb");
+        let z = hir.variables[1].annotation.as_ref().expect("z");
+        assert_eq!(
+            resolve(cb, &empty, &empty),
+            Some(Ty::Fn(vec![Ty::Int, Ty::String], Box::new(Ty::Bool)))
+        );
+        assert_eq!(
+            resolve(z, &empty, &empty),
+            Some(Ty::Fn(Vec::new(), Box::new(Ty::Int)))
+        );
+    }
+
+    #[test]
+    fn resolve_nested_fn_type_forms() {
+        // fn types compose with the generic heads in both directions.
+        let (hir, _index) =
+            build("VAR a: array<fn(int): int> = 0\nVAR b: fn(array<int>): fn(int): bool = 0\n");
+        let empty = BTreeSet::new();
+        let a = hir.variables[0].annotation.as_ref().expect("a");
+        let b = hir.variables[1].annotation.as_ref().expect("b");
+        assert_eq!(
+            resolve(a, &empty, &empty),
+            Some(Ty::Array(Box::new(Ty::Fn(
+                vec![Ty::Int],
+                Box::new(Ty::Int)
+            ))))
+        );
+        assert_eq!(
+            resolve(b, &empty, &empty),
+            Some(Ty::Fn(
+                vec![Ty::Array(Box::new(Ty::Int))],
+                Box::new(Ty::Fn(vec![Ty::Int], Box::new(Ty::Bool)))
+            ))
+        );
+    }
+
+    #[test]
+    fn resolve_fn_type_with_void_return_is_none_in_this_slice() {
+        // The checker's type universe has no void — a fn type whose return
+        // is void resolves as absent (documented T1c-1 limitation).
+        let (hir, _index) = build("VAR cb: fn(int): void = 0\n");
+        let te = hir.variables[0].annotation.as_ref().expect("annotation");
+        let empty = BTreeSet::new();
+        assert_eq!(resolve(te, &empty, &empty), None);
     }
 
     #[test]
@@ -533,11 +592,19 @@ mod tests {
     }
 
     #[test]
-    fn check_flags_fn_type_as_reserved() {
+    fn check_accepts_fn_type_since_t1c() {
+        // T1c-1 (#699): E062 retired — `fn(T…): R` is a legal type form.
         let (hir, index) = build("VAR cb: fn(int, int): bool = 0\n");
         let diags = check(&[(FileId(0), &hir)], &index);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn check_still_flags_unknown_names_inside_a_fn_type() {
+        let (hir, index) = build("VAR cb: fn(Bogus): bool = 0\n");
+        let diags = check(&[(FileId(0), &hir)], &index);
         assert_eq!(diags.len(), 1, "{diags:?}");
-        assert_eq!(diags[0].code, DiagnosticCode::E062);
+        assert_eq!(diags[0].code, DiagnosticCode::E061);
     }
 
     #[test]

@@ -312,6 +312,8 @@ pub fn eval_const_expr(
         // #673: `VAR`/`CONST p = Name#{…}` — see `eval_const_struct_literal`'s
         // doc.
         hir::Expr::StructLiteral(sl) => eval_const_struct_literal(sl, file, diagnostics),
+        // T1c-1: `VAR f = #fn(…)` — see `eval_const_fn_literal`'s doc.
+        hir::Expr::FnLiteral(fl) => eval_const_fn_literal(fl, file, diagnostics),
         _ => lir::ConstValue::Null,
     }
 }
@@ -426,6 +428,27 @@ fn eval_const_struct_literal(
     lir::ConstValue::Null
 }
 
+/// T1c-1: `VAR f = #fn(…)` — function values don't lower anywhere yet
+/// (T1c-2, docs/t1c-spec.md §11), and a declaration default has no runtime
+/// construction step to defer to regardless. A real compile error (E052,
+/// same "not yet implemented" class as the expression-position rejection in
+/// `expr::reject_fn_literal`), never a silent `Null` default.
+fn eval_const_fn_literal(
+    fl: &hir::FnLiteral,
+    file: FileId,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> lir::ConstValue {
+    diagnostics.push(Diagnostic {
+        file,
+        range: fl.ptr.text_range(),
+        message: "`#fn(…)` function values are not yet implemented in this slice — \
+                  creation type-checks (T1c-1) but lowering/execution lands in T1c-2"
+            .to_owned(),
+        code: DiagnosticCode::E052,
+    });
+    lir::ConstValue::Null
+}
+
 /// #679 review: can this source expression *kind* ever constant-fold in a
 /// declaration default? `false` means `eval_const_expr` is guaranteed to
 /// land in a `Null` fallthrough — a function call, postfix indexing, field
@@ -466,7 +489,11 @@ fn is_const_foldable_kind(expr: &hir::Expr) -> bool {
         hir::Expr::Postfix(..)
         | hir::Expr::Call(..)
         | hir::Expr::Index(_)
-        | hir::Expr::FieldAccess(_) => false,
+        | hir::Expr::FieldAccess(_)
+        // T1c-1: `#fn(…)` never constant-folds — as a declaration default it
+        // is already a targeted E052 at `eval_const_expr`'s own arm; as an
+        // array/map element it reports the standard E077.
+        | hir::Expr::FnLiteral(_) => false,
     }
 }
 
