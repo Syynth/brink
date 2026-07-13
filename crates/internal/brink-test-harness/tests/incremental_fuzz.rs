@@ -195,6 +195,40 @@ fn story_bytes(product: &brink_driver::CompileProduct) -> Option<Vec<u8>> {
     })
 }
 
+/// FG-3 (issue #632): assert the decomposed `analysis_query` family agrees
+/// between a long-lived incremental db and a from-scratch one — the
+/// RESOLUTIONS/INDEX half (`resolutions_index()`) and every file's per-file
+/// diagnostic contributors (`per_file_diagnostics(file)`). Extracted from
+/// the main fuzz loop to keep it under clippy's line-count lint.
+fn assert_fg3_families_match(
+    db: &ProjectDb,
+    fresh_db: &ProjectDb,
+    project: &str,
+    paths: &[String],
+    step: u64,
+) {
+    assert_eq!(
+        *db.resolutions_index(),
+        *fresh_db.resolutions_index(),
+        "{project}: resolutions_index() diverged from fresh compile after edit {step}"
+    );
+    for path in paths {
+        let incremental_id = db.file_id(path);
+        let fresh_id = fresh_db.file_id(path);
+        assert_eq!(
+            incremental_id, fresh_id,
+            "{project}: file id for {path} diverged between incremental and fresh"
+        );
+        if let Some(id) = incremental_id {
+            assert_eq!(
+                db.per_file_diagnostics(id),
+                fresh_db.per_file_diagnostics(id),
+                "{project}: per_file_diagnostics({path}) diverged from fresh compile after edit {step}"
+            );
+        }
+    }
+}
+
 #[test]
 fn incremental_story_data_equals_fresh_compile() {
     let root = workspace_root().join("tests");
@@ -271,6 +305,14 @@ fn incremental_story_data_equals_fresh_compile() {
                 story_bytes(fresh),
                 "{project}: serialized StoryData differs after edit {step}"
             );
+
+            // FG-3 (#632): the decomposed analysis_query family — the
+            // RESOLUTIONS/INDEX half and every file's per-file diagnostic
+            // contributors — must agree between the long-lived incremental
+            // db and a from-scratch one, the same equivalence gate FG-1/FG-2
+            // carry for their own new query families (design doc §7's
+            // explicit sweep-every-new-family ask).
+            assert_fg3_families_match(&db, &fresh_db, project, &paths, step);
 
             // FG-1 (#630): the per-def `signature(def)` query must agree
             // between the long-lived incremental db and a from-scratch one,

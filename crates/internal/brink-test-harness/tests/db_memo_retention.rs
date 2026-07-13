@@ -41,6 +41,17 @@ fn cycle(db: &mut ProjectDb, variant: usize) {
     let _ = db.diagnostics(id);
     assert!(db.story_data().is_some());
 
+    // FG-3 (issue #632): also pull the decomposed analysis_query family's
+    // per-file-keyed memo — `per_file_diagnostics_query` (behind
+    // `per_file_diagnostics`) — and the whole-project
+    // `resolutions_index_query` (behind `resolutions_index`), so this churn
+    // cycle exercises their rows too. A leaked per-file memo on remove/
+    // re-add would show up as a growing `count` on
+    // `per_file_diagnostics_query` exactly like the pre-#536 per-file leak
+    // this test already guards.
+    let _ = db.per_file_diagnostics(id);
+    let _ = db.resolutions_index();
+
     // FG-2.1 (issue #638): also pull the new per-def inference projections
     // — `def_body_query`/`referenced_globals_query` (behind
     // `infer_body`/`inferred_signature`) — so this churn cycle exercises
