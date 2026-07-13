@@ -44,6 +44,17 @@ pub enum Ty {
     /// §2: "unresolved -> Unknown, which is LEGAL"). Acts as the join
     /// identity: `unify(Unknown, x) == x`.
     Unknown,
+    /// A genuine, irreconcilable type conflict was observed for this slot
+    /// (e.g. used as both `int` and `string`) — #627 ruling. A distinct
+    /// absorbing lattice point, *not* a synonym for `Unknown`:
+    /// `unify(Conflicted, x) == Conflicted` for every `x` (including
+    /// `Unknown`), so a conflict can never silently "heal" back to a
+    /// concrete type depending on the order observations arrive in. Gradual
+    /// mode (every consumer today) treats it exactly like `Unknown` —
+    /// strict mode's TM-3 (#619) is the slice that reports it as a
+    /// diagnostic; this lattice point only exists so that reporting can be
+    /// order-independent when it lands.
+    Conflicted,
 }
 
 /// `Unknown` is the natural default: every local/return slot starts here
@@ -70,12 +81,30 @@ impl Ty {
             Ty::Array(elem) => format!("array<{}>", elem.display()),
             Ty::Map(k, v) => format!("map<{}, {}>", k.display(), v.display()),
             Ty::Unknown => "Unknown".to_string(),
+            Ty::Conflicted => "Conflicted".to_string(),
         }
     }
 
     #[must_use]
     pub fn is_unknown(&self) -> bool {
         matches!(self, Ty::Unknown)
+    }
+
+    #[must_use]
+    pub fn is_conflicted(&self) -> bool {
+        matches!(self, Ty::Conflicted)
+    }
+
+    /// Gradual/advisory consumers' view (#627 ruling: "Conflicted like
+    /// Unknown, zero behavior change today") — a slot that is either
+    /// unconstrained or genuinely conflicted carries no usable concrete
+    /// type for a consumer that isn't strict-mode's TM-3 conflict reporter.
+    /// Strict mode (#619) is the one place these two must stay
+    /// distinguished; every other consumer should read this instead of
+    /// `is_unknown()`.
+    #[must_use]
+    pub fn is_unresolved(&self) -> bool {
+        matches!(self, Ty::Unknown | Ty::Conflicted)
     }
 
     #[must_use]
@@ -107,6 +136,7 @@ impl Ord for Ty {
                 Ty::Array(_) => 6,
                 Ty::Map(_, _) => 7,
                 Ty::Unknown => 8,
+                Ty::Conflicted => 9,
             }
         }
         match (self, other) {
@@ -131,22 +161,32 @@ impl Ord for Ty {
 /// - Two structurally equal types join to themselves (including recursively
 ///   for `array<T>`/`map<K, V>`, so `array<int>` joined with `array<float>`
 ///   is `array<float>`, not a hard mismatch).
+/// - `Conflicted` is absorbing: joining it with anything (including
+///   `Unknown`) stays `Conflicted` (#627 ruling). This is what makes
+///   conflict detection order-independent — once a slot has seen a genuine
+///   conflict, no later observation (concrete or `Unknown`) can heal it
+///   back to a concrete type.
 /// - Anything else is a genuine structural mismatch (e.g. `int` vs
-///   `string`). This slice is advisory-only and never raises a diagnostic
-///   for it (spec step 1: "essentially no new user-facing diagnostics") —
-///   it degrades to `Unknown`, which is legal (spec §2) and exactly the
-///   escape hatch TM-3 will later turn into a real error.
+///   `string`) and joins to `Ty::Conflicted` (#627 ruling — previously this
+///   degraded to `Unknown`, which let a later observation silently absorb
+///   and hide the conflict depending on source order). This slice is still
+///   advisory-only and raises no new diagnostic for it (spec step 1:
+///   "essentially no new user-facing diagnostics") — gradual/advisory
+///   consumers read `Conflicted` exactly like `Unknown`
+///   ([`Ty::is_unresolved`]); TM-3 (#619) is the slice that turns a
+///   `Conflicted` slot into a real strict-mode error.
 #[must_use]
 pub fn unify(a: &Ty, b: &Ty) -> Ty {
     match (a, b) {
         (Ty::Unknown, x) | (x, Ty::Unknown) => x.clone(),
+        (Ty::Conflicted, _) | (_, Ty::Conflicted) => Ty::Conflicted,
         (x, y) if x == y => x.clone(),
         (Ty::Int, Ty::Float) | (Ty::Float, Ty::Int) => Ty::Float,
         (Ty::Array(x), Ty::Array(y)) => Ty::Array(Box::new(unify(x, y))),
         (Ty::Map(k1, v1), Ty::Map(k2, v2)) => {
             Ty::Map(Box::new(unify(k1, k2)), Box::new(unify(v1, v2)))
         }
-        _ => Ty::Unknown,
+        _ => Ty::Conflicted,
     }
 }
 
@@ -186,11 +226,64 @@ mod tests {
     }
 
     #[test]
-    fn structural_mismatch_degrades_to_unknown_not_error() {
-        // Advisory-only: TM-1 never hard-errors on a real mismatch, it
-        // reports Unknown (spec: "unresolved -> Unknown, which is LEGAL").
-        assert_eq!(unify(&Ty::Int, &Ty::String), Ty::Unknown);
-        assert_eq!(unify(&Ty::Bool, &Ty::Divert), Ty::Unknown);
+    fn structural_mismatch_yields_conflicted_not_unknown() {
+        // #627 ruling: a genuinely disjoint concrete pair is a distinct
+        // absorbing lattice point, `Ty::Conflicted` — no longer degrades to
+        // `Unknown` (which would let a later observation silently "heal"
+        // the slot back to a concrete type, hiding the conflict).
+        assert_eq!(unify(&Ty::Int, &Ty::String), Ty::Conflicted);
+        assert_eq!(unify(&Ty::Bool, &Ty::Divert), Ty::Conflicted);
+    }
+
+    #[test]
+    fn conflicted_absorbs_unknown_and_everything_else() {
+        // `Conflicted JOIN anything = Conflicted` (#627 ruling) — it is a
+        // stronger absorbing point than `Unknown`: `Unknown` is the join
+        // *identity*, `Conflicted` is the join *absorber*.
+        assert_eq!(unify(&Ty::Conflicted, &Ty::Unknown), Ty::Conflicted);
+        assert_eq!(unify(&Ty::Unknown, &Ty::Conflicted), Ty::Conflicted);
+        assert_eq!(unify(&Ty::Conflicted, &Ty::Int), Ty::Conflicted);
+        assert_eq!(unify(&Ty::Int, &Ty::Conflicted), Ty::Conflicted);
+        assert_eq!(unify(&Ty::Conflicted, &Ty::Conflicted), Ty::Conflicted);
+    }
+
+    #[test]
+    fn conflict_detection_is_order_independent() {
+        // #627 ruling: permuting the order observations are folded in must
+        // not change whether a conflict is detected — a genuine int/string
+        // conflict must not "self-heal" depending on which observation
+        // arrives first (the bug this issue exists to close).
+        let orderings: [&[Ty]; 6] = [
+            &[Ty::Int, Ty::String, Ty::Int],
+            &[Ty::String, Ty::Int, Ty::Int],
+            &[Ty::Int, Ty::Int, Ty::String],
+            &[Ty::String, Ty::Int, Ty::Int],
+            &[Ty::Int, Ty::String, Ty::Int],
+            &[Ty::String, Ty::String, Ty::Int],
+        ];
+        for ordering in orderings {
+            assert_eq!(
+                unify_all(ordering.iter().cloned()),
+                Ty::Conflicted,
+                "order {ordering:?} must detect the conflict"
+            );
+        }
+    }
+
+    #[test]
+    fn conflict_detection_survives_unknown_interleaving_in_any_order() {
+        // Interleaving `Unknown` observations (an unconstrained/unused
+        // intermediate use) anywhere in the sequence must not mask the
+        // conflict — `Unknown` is a true identity, never a reset.
+        let orderings: [&[Ty]; 4] = [
+            &[Ty::Unknown, Ty::Int, Ty::Unknown, Ty::String],
+            &[Ty::Int, Ty::Unknown, Ty::String, Ty::Unknown],
+            &[Ty::String, Ty::Unknown, Ty::Unknown, Ty::Int],
+            &[Ty::Unknown, Ty::Unknown, Ty::String, Ty::Int],
+        ];
+        for ordering in orderings {
+            assert_eq!(unify_all(ordering.iter().cloned()), Ty::Conflicted);
+        }
     }
 
     #[test]

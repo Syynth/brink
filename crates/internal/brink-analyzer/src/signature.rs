@@ -70,7 +70,10 @@ fn ty_to_inferred_type(ty: &Ty) -> Option<InferredType> {
         Ty::String => Some(InferredType::String),
         Ty::Divert => Some(InferredType::Divert),
         Ty::List(_) => Some(InferredType::List),
-        Ty::Array(_) | Ty::Map(_, _) | Ty::Unknown => None,
+        // `Conflicted` (#627): a genuine type conflict has no representable
+        // `InferredType` any more than `Unknown` does — this stub is a
+        // gradual/advisory consumer, so it reads both the same way.
+        Ty::Array(_) | Ty::Map(_, _) | Ty::Unknown | Ty::Conflicted => None,
     }
 }
 
