@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use brink_analyzer::{AnalysisOptions, AnalysisResult, Dialect};
+use brink_analyzer::{AnalysisOptions, AnalysisResult, Dialect, TypePolicy};
 use brink_syntax::ast::AstNode;
 use tokio::sync::{Notify, watch};
 use tower_lsp::jsonrpc::Result;
@@ -71,6 +71,41 @@ impl ProjectAnalyses {
     }
 }
 
+/// Client-declared, authoring-time-only compiler policy knobs: the T1b
+/// dialect (docs/t1b-surface-spec.md §1, #589) and the TM-3 typed-mode
+/// policy (docs/typed-mode-spec.md §1, #660). Bundled into one struct
+/// (rather than two loose `Arc<Mutex<_>>` constructor params) because they
+/// share identical lifetime/mutability characteristics — both are read once
+/// from `initialize`'s `initializationOptions`, then shared unchanged
+/// between the foreground `Backend` and the background `analysis_loop` task
+/// for the life of the session. `Clone` is shallow (`Arc` clone): every
+/// clone reads/writes the same underlying state.
+#[derive(Clone)]
+pub struct LanguageOptions {
+    /// `"brink"` or `"strict-ink"`; defaults to `StrictInk`, matching
+    /// `AnalysisOptions::default()`. Tooling-only — gates whether stdlib
+    /// slice 1 completion/signature help are offered (#589), and (#599)
+    /// feeds `analysis_loop` so its diagnostics analyze under the
+    /// client-declared dialect too, instead of always defaulting to
+    /// `StrictInk`.
+    dialect: Arc<Mutex<Dialect>>,
+    /// `"strict"` or `"gradual"`; defaults to `Gradual`, matching
+    /// `AnalysisOptions::default()`. Mirrors `dialect` exactly (#660: PR
+    /// #656 left this reachable only via the compiler CLI's `--types
+    /// strict`, never via the IDE/LSP surface) — feeds `analysis_loop` so
+    /// its diagnostics analyze under the client-declared types policy too.
+    types: Arc<Mutex<TypePolicy>>,
+}
+
+impl LanguageOptions {
+    pub fn new() -> Self {
+        Self {
+            dialect: Arc::new(Mutex::new(Dialect::default())),
+            types: Arc::new(Mutex::new(TypePolicy::default())),
+        }
+    }
+}
+
 pub struct Backend {
     client: Client,
     db: Arc<Mutex<brink_db::ProjectDb>>,
@@ -79,15 +114,7 @@ pub struct Backend {
     generation: Arc<AtomicU64>,
     last_published: Arc<Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>>,
     workspace_roots: Arc<Mutex<Vec<PathBuf>>>,
-    /// The T1b compiler dialect (docs/t1b-surface-spec.md §1), read from
-    /// `initialize`'s `initializationOptions.dialect` (`"brink"` or
-    /// `"strict-ink"`; defaults to `StrictInk`, matching
-    /// `AnalysisOptions::default()`). Tooling-only — gates whether stdlib
-    /// slice 1 completion/signature help are offered (#589), and (#599) the
-    /// same `Arc` is shared with the background `analysis_loop` task so its
-    /// diagnostics analyze under the client-declared dialect too, instead of
-    /// always defaulting to `StrictInk`.
-    dialect: Arc<Mutex<Dialect>>,
+    language: LanguageOptions,
 }
 
 impl Backend {
@@ -100,7 +127,7 @@ impl Backend {
         last_published: Arc<
             Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>,
         >,
-        dialect: Arc<Mutex<Dialect>>,
+        language: LanguageOptions,
     ) -> Self {
         Self {
             client,
@@ -110,14 +137,15 @@ impl Backend {
             generation,
             last_published,
             workspace_roots: Arc::new(Mutex::new(Vec::new())),
-            dialect,
+            language,
         }
     }
 
     /// The registered T1b compiler dialect (defaults to `StrictInk`, poisoned-
     /// lock-safe via `map_or_else` — never panics on a poisoned mutex).
     fn dialect(&self) -> Dialect {
-        self.dialect
+        self.language
+            .dialect
             .lock()
             .map_or_else(|_| Dialect::default(), |g| *g)
     }
@@ -326,6 +354,28 @@ impl Backend {
     }
 }
 
+/// Read `initializationOptions.<key>` as a string and, if present, write the
+/// mapped value into `slot` (poisoned-lock-safe — a poisoned mutex silently
+/// keeps its prior value rather than panicking). Shared by `initialize`'s
+/// `dialect` and `types` (#660) handlers, which differ only in the key name
+/// and the string→enum mapping.
+fn apply_initialization_option<T: Copy>(
+    params: &InitializeParams,
+    key: &str,
+    slot: &Mutex<T>,
+    map: impl FnOnce(&str) -> T,
+) {
+    if let Some(requested) = params
+        .initialization_options
+        .as_ref()
+        .and_then(|opts| opts.get(key))
+        .and_then(|v| v.as_str())
+        && let Ok(mut guard) = slot.lock()
+    {
+        *guard = map(requested);
+    }
+}
+
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
@@ -357,20 +407,21 @@ impl LanguageServer for Backend {
         // other value, or absence, keeps the `StrictInk` default). Gates
         // stdlib slice 1 completion/signature help only — see the `dialect`
         // field's doc comment.
-        if let Some(requested) = params
-            .initialization_options
-            .as_ref()
-            .and_then(|opts| opts.get("dialect"))
-            .and_then(|v| v.as_str())
-        {
-            let resolved = match requested {
-                "brink" => Dialect::Brink,
-                _ => Dialect::StrictInk,
-            };
-            if let Ok(mut d) = self.dialect.lock() {
-                *d = resolved;
-            }
-        }
+        apply_initialization_option(&params, "dialect", &self.language.dialect, |v| match v {
+            "brink" => Dialect::Brink,
+            _ => Dialect::StrictInk,
+        });
+
+        // TM-3 typed-mode policy (docs/typed-mode-spec.md §1, #660): read
+        // once from `initializationOptions.types` ("strict" or "gradual";
+        // any other value, or absence, keeps the `Gradual` default), mirroring
+        // the `dialect` handling directly above. `Strict` requires
+        // `dialect = brink` (a config-error diagnostic otherwise, `E064`) —
+        // the client's responsibility, same as the compiler CLI.
+        apply_initialization_option(&params, "types", &self.language.types, |v| match v {
+            "strict" => TypePolicy::Strict,
+            _ => TypePolicy::Gradual,
+        });
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
@@ -1603,11 +1654,12 @@ fn ranges_overlap(a: &Range, b: &Range) -> bool {
 /// runs per-project analysis without holding the lock, and publishes diagnostics
 /// for all files whose diagnostic set changed.
 ///
-/// `dialect` is the same `Arc<Mutex<Dialect>>` `Backend` reads from (#599) —
-/// `initialize`'s `initializationOptions.dialect` handler writes it, and this
-/// loop re-reads it every iteration so a client that (re-)declares its
-/// dialect gets diagnostics analyzed under that dialect on the very next
-/// background pass, with no separate propagation step needed.
+/// `language` is the same [`LanguageOptions`] `Backend` holds (#599, #660) —
+/// `initialize`'s `initializationOptions.dialect`/`.types` handlers write
+/// into its shared `Arc<Mutex<_>>`s, and this loop re-reads both every
+/// iteration so a client that (re-)declares either gets diagnostics
+/// analyzed under the current values on the very next background pass, with
+/// no separate propagation step needed.
 pub async fn analysis_loop(
     db: Arc<Mutex<brink_db::ProjectDb>>,
     _generation: Arc<AtomicU64>,
@@ -1615,18 +1667,25 @@ pub async fn analysis_loop(
     tx: watch::Sender<Option<Arc<ProjectAnalyses>>>,
     client: Client,
     last_published: Arc<Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>>,
-    dialect: Arc<Mutex<Dialect>>,
+    language: LanguageOptions,
 ) {
     loop {
         trigger.notified().await;
         // Coalesce rapid edits — yield so any queued notifications collapse
         tokio::task::yield_now().await;
 
-        // Re-read the declared dialect each iteration (poisoned-lock-safe,
-        // mirrors `Backend::dialect()`) so a client that changes its
-        // declared dialect mid-session is picked up on the next pass.
+        // Re-read the declared dialect + types policy each iteration
+        // (poisoned-lock-safe, mirrors `Backend::dialect()`) so a client that
+        // changes either mid-session is picked up on the next pass.
         let opts = AnalysisOptions {
-            dialect: dialect.lock().map_or_else(|_| Dialect::default(), |g| *g),
+            dialect: language
+                .dialect
+                .lock()
+                .map_or_else(|_| Dialect::default(), |g| *g),
+            types: language
+                .types
+                .lock()
+                .map_or_else(|_| TypePolicy::default(), |g| *g),
             ..AnalysisOptions::default()
         };
 

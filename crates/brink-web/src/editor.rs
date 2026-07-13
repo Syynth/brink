@@ -200,6 +200,32 @@ impl EditorSession {
         self.session.set_language_dialect(self.dialect);
     }
 
+    /// Set the TM-3 typed-mode policy (docs/typed-mode-spec.md §1, #660):
+    /// `"strict"` or `"gradual"`; any other value (or never calling this at
+    /// all) keeps the `Gradual` default. Mirrors `set_language_dialect`
+    /// exactly — this is the compile-facing counterpart of the compiler
+    /// CLI's `--types strict`, previously reachable only there (PR #656 left
+    /// `IdeSession` hardcoded to `Gradual`). `TypePolicy::Strict` requires
+    /// `language_dialect() == "brink"`, or `compile_project`/the background
+    /// analysis surface a single project-level `E064` config-error
+    /// diagnostic instead of running the normal passes (the caller's
+    /// responsibility, same as the CLI). Re-analyzes immediately (like
+    /// `set_language_dialect`).
+    ///
+    /// **wasm-observable**: `compile_project` reads this through
+    /// `IdeSession::analysis_options`, so a project that opts into
+    /// `types = strict` now gets the `E065`/`E066`/`E067` strict-mode
+    /// diagnostics (or the `E064` config error, if `dialect` isn't also
+    /// `"brink"`) surfaced through `@brink-lang/web`'s compile/editor entry
+    /// points — behavior no wasm consumer could previously reach at all.
+    pub fn set_type_policy(&mut self, value: &str) {
+        let types = match value {
+            "strict" => brink_analyzer::TypePolicy::Strict,
+            _ => brink_analyzer::TypePolicy::Gradual,
+        };
+        self.session.set_type_policy(types);
+    }
+
     /// Push the host's current values for `host`-source semantic types (Tier 3,
     /// #174) from a JSON object `{ "<type>": [{ "value", "label", "detail"? }] }`
     /// — a full snapshot that **replaces** the cache. The attached host (e.g.
@@ -4423,6 +4449,105 @@ mod tests {
                 .iter()
                 .any(|d| d.code == brink_ir::DiagnosticCode::E051),
             "explicit strict-ink: E051 stands: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    // ── TM-3 typed-mode policy (#660) ──────────────────────────────────
+
+    /// #660: `set_type_policy` defaults to `Gradual` (byte-identical to
+    /// pre-#619 behavior) until called — before this fix `EditorSession` had
+    /// no way to reach `types = strict` at all (only the compiler CLI's
+    /// `--types strict` could).
+    #[test]
+    fn type_policy_defaults_to_gradual_no_e065() {
+        let mut s = EditorSession::new();
+        s.set_language_dialect("brink");
+        s.update_file("main.ink", "=== noop(x) ===\nHello.\n-> DONE\n");
+        let analysis = s.session.analysis().expect("analysis");
+        assert!(
+            !analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E065),
+            "default (gradual) must not flag E065: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    /// #660: `types = strict` under the default `StrictInk` dialect is a
+    /// project-level config error (`E064`) — reached through
+    /// `set_type_policy`, mirroring the compiler CLI's
+    /// `--types strict --dialect strict-ink`.
+    #[test]
+    fn set_type_policy_strict_with_strict_ink_dialect_flags_e064() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "-> END\n");
+        s.set_type_policy("strict");
+        let analysis = s.session.analysis().expect("analysis");
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E064),
+            "types=strict + dialect=strict-ink (default): expected E064: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    /// #660 counterpart: `types = strict` + `dialect = brink` turns on the
+    /// Unknown-escape check (`E065`) — proving `set_type_policy` reaches the
+    /// real strict-mode checks, not just the config-error path, and that
+    /// `compile_project` (which reads `IdeSession::analysis_options`) would
+    /// see the same policy.
+    #[test]
+    fn set_type_policy_strict_with_brink_dialect_flags_e065() {
+        let mut s = EditorSession::new();
+        s.set_language_dialect("brink");
+        s.set_type_policy("strict");
+        s.update_file("main.ink", "=== noop(x) ===\nHello.\n-> DONE\n");
+        let analysis = s.session.analysis().expect("analysis");
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E065),
+            "types=strict + dialect=brink: expected E065 on unused param `x`: {:?}",
+            analysis.diagnostics
+        );
+
+        // The compile entry point (`compile_project`) reads the same
+        // session's `analysis_options`, so the wasm-observable compile path
+        // sees the strict-mode diagnostic too, not just background analysis.
+        // E065 is error-severity, so compilation fails (`ok: false`).
+        let result = s.compile_project("main.ink");
+        let v: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        assert_eq!(v["ok"], false, "{result}");
+        let has_unknown_escape = v["warnings"].as_array().is_some_and(|ws| {
+            ws.iter()
+                .any(|w| w["message"].as_str().unwrap_or("").contains("Unknown"))
+        });
+        assert!(
+            has_unknown_escape,
+            "compile_project should surface the strict-mode E065 diagnostic too: {result}"
+        );
+    }
+
+    /// #660: any value other than the exact string "strict" (including an
+    /// explicit "gradual") keeps the `Gradual` default.
+    #[test]
+    fn set_type_policy_gradual_value_keeps_default() {
+        let mut s = EditorSession::new();
+        s.set_language_dialect("brink");
+        s.set_type_policy("gradual");
+        s.update_file("main.ink", "=== noop(x) ===\nHello.\n-> DONE\n");
+        let analysis = s.session.analysis().expect("analysis");
+        assert!(
+            !analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E065),
+            "explicit gradual: no E065: {:?}",
             analysis.diagnostics
         );
     }

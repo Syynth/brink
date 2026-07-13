@@ -9,7 +9,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use brink_analyzer::{
-    AnalysisOptions, AnalysisResult, Dialect, ExternalCheckSeverity, SemanticTypeDiagnosticSeverity,
+    AnalysisOptions, AnalysisResult, Dialect, ExternalCheckSeverity,
+    SemanticTypeDiagnosticSeverity, TypePolicy,
 };
 use brink_db::ProjectDb;
 use brink_ir::{FileId, HirFile, HostManifest, ResolvedDialect, SymbolManifest};
@@ -23,6 +24,7 @@ pub struct IdeSnapshot {
     external_check: ExternalCheckSeverity,
     semantic_type_check: SemanticTypeDiagnosticSeverity,
     dialect: Dialect,
+    types: TypePolicy,
 }
 
 impl IdeSnapshot {
@@ -39,10 +41,7 @@ impl IdeSnapshot {
             external_check: self.external_check,
             semantic_type_check: self.semantic_type_check,
             dialect: self.dialect,
-            // TM-3 (#619): not yet threaded through the IDE session — every
-            // session analyzes under `types = gradual` (the default),
-            // byte-identical to pre-#619 behavior. See PR description.
-            types: brink_analyzer::TypePolicy::default(),
+            types: self.types,
         };
         brink_analyzer::analyze_with_options(&refs, &opts)
     }
@@ -78,6 +77,17 @@ pub struct IdeSession {
     /// `brink`-dialect project got permanent spurious `E051` from the
     /// background analysis pass regardless of this setting).
     language_dialect: Dialect,
+    /// TM-3 typed-mode policy (docs/typed-mode-spec.md §1), set via
+    /// `set_type_policy`. Defaults to `TypePolicy::Gradual`, matching
+    /// `AnalysisOptions::default()` — byte-identical to pre-#619/#660
+    /// behavior until a caller opts in. Mirrors `language_dialect` exactly
+    /// (#660: PR #656 left this hardcoded to `Gradual` in both `snapshot`
+    /// and `analysis_options`, so the IDE/LSP/web surface could not reach
+    /// `types = strict` at all — the compiler CLI's `--types strict` was the
+    /// only path). Authoring-time/tooling input only, feeding
+    /// `analyze`/`reanalyze`/`analyze_overlay`/`analyze_projection`, same as
+    /// `language_dialect`.
+    type_policy: TypePolicy,
     /// Per-file HIR projection cache (#480): the canonical structural model
     /// is computed once per edit and shared by every per-line/per-span view
     /// (`line_contexts`, folding, `hir_spans`). The flag records whether the
@@ -101,6 +111,7 @@ impl IdeSession {
             semantic_type_check: SemanticTypeDiagnosticSeverity::default(),
             dialect: None,
             language_dialect: Dialect::default(),
+            type_policy: TypePolicy::default(),
             projection_cache: RefCell::new(HashMap::new()),
         }
     }
@@ -172,6 +183,25 @@ impl IdeSession {
         self.language_dialect
     }
 
+    /// Set the TM-3 typed-mode policy (docs/typed-mode-spec.md §1, #660),
+    /// then re-analyze — the diagnostics-facing counterpart of the compiler
+    /// CLI's `--types strict`. `TypePolicy::Strict` requires
+    /// `language_dialect() == Dialect::Brink`, or `analyze` reports a single
+    /// project-level `E064` config-error diagnostic instead of running the
+    /// normal passes (see `brink_analyzer::strict::config_error`) — same
+    /// caller responsibility as `set_language_dialect`.
+    pub fn set_type_policy(&mut self, types: TypePolicy) {
+        self.type_policy = types;
+        self.reanalyze();
+    }
+
+    /// The registered TM-3 typed-mode policy (defaults to
+    /// `TypePolicy::Gradual`).
+    #[must_use]
+    pub fn type_policy(&self) -> TypePolicy {
+        self.type_policy
+    }
+
     /// Set the severity policy for manifest-driven external checks, then
     /// re-analyze.
     pub fn set_external_check(&mut self, severity: ExternalCheckSeverity) {
@@ -216,6 +246,7 @@ impl IdeSession {
             external_check: self.external_check,
             semantic_type_check: self.semantic_type_check,
             dialect: self.language_dialect,
+            types: self.type_policy,
         }
     }
 
@@ -343,17 +374,17 @@ impl IdeSession {
 
     /// The current analysis options (registered host manifest +
     /// external-check / semantic-type-check severities + T1b compiler
-    /// dialect), for callers that run their own analysis/compile pass.
-    /// `analyze_overlay`/`analyze_projection` use this, so the declared
-    /// dialect carries through to their gate-check passes too (#611).
+    /// dialect + TM-3 typed-mode policy), for callers that run their own
+    /// analysis/compile pass. `analyze_overlay`/`analyze_projection` use
+    /// this, so the declared dialect and types policy carry through to their
+    /// gate-check passes too (#611, #660).
     pub fn analysis_options(&self) -> AnalysisOptions {
         AnalysisOptions {
             host_manifest: self.host_manifest.clone(),
             external_check: self.external_check,
             semantic_type_check: self.semantic_type_check,
             dialect: self.language_dialect,
-            // TM-3 (#619): see the matching note in `IdeSnapshot::analyze`.
-            types: brink_analyzer::TypePolicy::default(),
+            types: self.type_policy,
         }
     }
 
@@ -403,7 +434,9 @@ mod tests {
         ManifestParam, SemanticTypeDef, TypeRef,
     };
 
-    use super::{Dialect, ExternalCheckSeverity, IdeSession, SemanticTypeDiagnosticSeverity};
+    use super::{
+        Dialect, ExternalCheckSeverity, IdeSession, SemanticTypeDiagnosticSeverity, TypePolicy,
+    };
 
     fn color_manifest() -> HostManifest {
         HostManifest {
@@ -604,6 +637,122 @@ EXTERNAL add_state(who)
                 .iter()
                 .any(|d| d.code == DiagnosticCode::E051),
             "analyze_projection: brink dialect carries through: {:?}",
+            projection_result.diagnostics
+        );
+    }
+
+    /// #660: `IdeSession` defaults to `TypePolicy::Gradual` (byte-identical
+    /// to pre-#619 behavior) until a caller opts in via `set_type_policy`.
+    #[test]
+    fn type_policy_defaults_to_gradual() {
+        let session = IdeSession::new();
+        assert_eq!(session.type_policy(), TypePolicy::Gradual);
+        assert_eq!(
+            session.analysis_options().types,
+            TypePolicy::Gradual,
+            "analysis_options must mirror the default, not a hardcoded literal"
+        );
+    }
+
+    /// #660 (TM-3 basic reachability): `types = strict` under the default
+    /// `StrictInk` dialect is a project-level config error (`E064`) — the
+    /// IDE surface must reach this the same way the compiler CLI's
+    /// `--types strict --dialect strict-ink` does.
+    #[test]
+    fn set_type_policy_strict_with_strict_ink_dialect_is_config_error() {
+        let mut session = IdeSession::new();
+        session.update_and_analyze("t.ink", "-> END\n".to_string());
+        session.set_type_policy(TypePolicy::Strict);
+        let analysis = session.analysis().expect("analysis");
+
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E064),
+            "types=strict + dialect=strict-ink (default): expected E064: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    /// #660: with `dialect = brink`, `types = strict` turns on the
+    /// Unknown-escape check (`E065`) on `analyze` — proving the setter
+    /// reaches the real strict-mode checks, not just the config-error path.
+    #[test]
+    fn set_type_policy_strict_with_brink_dialect_flags_unknown_escape() {
+        let mut session = IdeSession::new();
+        session.set_language_dialect(Dialect::Brink);
+        session.set_type_policy(TypePolicy::Strict);
+        session.update_and_analyze("t.ink", "=== noop(x) ===\nHello.\n-> DONE\n".to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E065),
+            "types=strict + dialect=brink: expected E065 on unused param `x`: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    /// #660: the default `TypePolicy::Gradual` must NOT flag the same
+    /// unused-param construct as `E065` — the setter must not blanket-enable
+    /// strict checks, only thread through the caller's actual choice.
+    #[test]
+    fn gradual_default_does_not_flag_unknown_escape() {
+        let mut session = IdeSession::new();
+        session.set_language_dialect(Dialect::Brink);
+        session.update_and_analyze("t.ink", "=== noop(x) ===\nHello.\n-> DONE\n".to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        assert!(
+            !analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E065),
+            "gradual (default) must not flag E065: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    /// #660: `analyze_overlay`/`analyze_projection` must carry the declared
+    /// types policy through to their gate-check passes too, mirroring the
+    /// existing dialect coverage.
+    #[test]
+    fn analyze_overlay_and_analyze_projection_respect_declared_type_policy() {
+        let mut session = IdeSession::new();
+        session.update_and_analyze("t.ink", "-> END\n".to_string());
+        session.set_language_dialect(Dialect::Brink);
+        session.set_type_policy(TypePolicy::Strict);
+
+        let mut overlay = std::collections::BTreeMap::new();
+        overlay.insert(
+            "t.ink".to_string(),
+            "=== noop(x) ===\nHello.\n-> DONE\n".to_string(),
+        );
+        let (overlay_result, _db) = session.analyze_overlay(&overlay);
+        assert!(
+            overlay_result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E065),
+            "analyze_overlay: strict types policy carries through: {:?}",
+            overlay_result.diagnostics
+        );
+
+        let mut projection = std::collections::BTreeMap::new();
+        projection.insert(
+            "t.ink".to_string(),
+            "=== noop(x) ===\nHello.\n-> DONE\n".to_string(),
+        );
+        let (projection_result, _db) = session.analyze_projection(&projection);
+        assert!(
+            projection_result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E065),
+            "analyze_projection: strict types policy carries through: {:?}",
             projection_result.diagnostics
         );
     }
