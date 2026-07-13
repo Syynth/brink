@@ -1086,3 +1086,76 @@ fn fn_literal_declaration_default_is_a_targeted_error_not_a_silent_null() {
         "expected E052 lowering rejection, got {diags:?}"
     );
 }
+
+// ── T1c-1 (#699): creation-site diagnostics E079/E080/E081 ───────────────
+
+#[test]
+fn fn_target_that_is_not_a_function_definition_is_e079() {
+    let source = "VAR gold = 5\n=== main ===\n~ temp f = #fn(gold)\nDone.\n-> END\n";
+    let err = compile_brink(source).expect_err("#fn(variable) must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E079),
+        "expected E079, got {diags:?}"
+    );
+}
+
+#[test]
+fn fn_ref_param_bound_to_temp_is_e080() {
+    let source = "=== function heal(ref hp, amount) ===\n~ hp = hp + amount\n~ return hp\n\n\
+                  === main ===\n~ temp local_hp = 10\n~ temp f = #fn(heal, local_hp)\nDone.\n-> END\n";
+    let err = compile_brink(source).expect_err("ref bound to a temp must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E080),
+        "expected E080, got {diags:?}"
+    );
+}
+
+#[test]
+fn fn_unbound_ref_param_is_e080() {
+    let source = "=== function heal(ref hp, amount) ===\n~ hp = hp + amount\n~ return hp\n\n\
+                  === main ===\n~ temp f = #fn(heal)\nDone.\n-> END\n";
+    let err = compile_brink(source).expect_err("unbound ref param must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E080),
+        "expected E080, got {diags:?}"
+    );
+}
+
+#[test]
+fn fn_over_binding_is_e081() {
+    let source = "=== function double(x) ===\n~ return x + x\n\n\
+                  === main ===\n~ temp f = #fn(double, 1, 2)\nDone.\n-> END\n";
+    let err = compile_brink(source).expect_err("over-binding must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E081),
+        "expected E081, got {diags:?}"
+    );
+}
+
+#[test]
+fn well_formed_fn_creation_reaches_the_lowering_fence_only() {
+    // A fully legal creation site under gradual types: the ONLY error left
+    // is the T1c-1 lowering fence (E052) — no E079/E080/E081 noise.
+    let source = "=== function heal(ref hp, amount) ===\n~ hp = hp + amount\n~ return hp\n\n\
+                  VAR player_hp = 10\n=== main ===\n~ temp f = #fn(heal, player_hp)\nDone.\n-> END\n";
+    let err = compile_brink(source).expect_err("still rejects at lowering in T1c-1");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code == brink_compiler::DiagnosticCode::E052),
+        "only the lowering fence should fire for a well-formed creation: {diags:?}"
+    );
+}

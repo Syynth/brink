@@ -1246,6 +1246,30 @@ pub enum DiagnosticCode {
     /// `types = strict`, runtime fault under gradual"). `string(x)` accepts
     /// every type and is never checked here.
     E078,
+
+    // ── T1c function values (docs/t1c-spec.md §2/§8, issue #699) ─────
+    /// `#fn(name, …)`'s target does not resolve to a statically-named
+    /// function definition (`=== function name ===`) — it resolved to a
+    /// variable/list/external/label/non-function knot or stitch, or it
+    /// names a builtin/stdlib intrinsic (which has no definition to take a
+    /// token of). Only fires under `dialect = brink` — under `strict-ink`
+    /// the whole literal is already rejected as extension syntax (E051),
+    /// and content diagnostics on rejected syntax are noise (the TM-2
+    /// suppression precedent, maintainer ruling 2026-07-13).
+    E079,
+    /// A `ref` param of a `#fn` target is not bound in the creation-site
+    /// prefix, or is bound to a non-durable lvalue. All `ref` params must
+    /// be bound at creation, and each must capture a durable cell — a
+    /// global `VAR` (flow-local `#@local` VARs included); a `temp`/param
+    /// is a compile error (temps die with the frame, value-model §11), a
+    /// `CONST` is not a mutable cell, and any rvalue/field projection is
+    /// not a cell at all.
+    E080,
+    /// `#fn(name, args…)` binds more arguments than the target declares —
+    /// the bound-arg row is a *prefix* of the declared param row
+    /// (docs/t1c-spec.md §2: "binding more args than the target declares
+    /// is a compile error").
+    E081,
 }
 
 impl DiagnosticCode {
@@ -1331,6 +1355,9 @@ impl DiagnosticCode {
             Self::E076 => "E076",
             Self::E077 => "E077",
             Self::E078 => "E078",
+            Self::E079 => "E079",
+            Self::E080 => "E080",
+            Self::E081 => "E081",
         }
     }
 
@@ -1426,6 +1453,9 @@ impl DiagnosticCode {
                 "array element or map value in a VAR/CONST declaration default is not a compile-time-constant expression"
             }
             Self::E078 => "int()/float() argument is outside the permissive numeric+bool domain",
+            Self::E079 => "#fn target is not a statically-named function definition",
+            Self::E080 => "#fn ref parameter is not bound to a durable cell at creation",
+            Self::E081 => "#fn binds more arguments than the target declares",
         }
     }
 
@@ -1532,6 +1562,9 @@ impl DiagnosticCode {
             "E076" => Some(Self::E076),
             "E077" => Some(Self::E077),
             "E078" => Some(Self::E078),
+            "E079" => Some(Self::E079),
+            "E080" => Some(Self::E080),
+            "E081" => Some(Self::E081),
             _ => None,
         }
     }

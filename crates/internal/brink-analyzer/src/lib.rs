@@ -9,6 +9,7 @@ mod annotations;
 mod conversions;
 mod dialect_gate;
 mod external_check;
+mod fn_values;
 mod infer;
 mod manifest;
 mod resolve;
@@ -188,6 +189,12 @@ pub fn per_file_diagnostics(
     // syntax is noise (maintainer ruling 2026-07-13).
     if dialect == Dialect::Brink {
         out.extend(annotations::check(&files, index));
+        // T1c `#fn` creation-site checks (E079/E080/E081) follow the same
+        // brink-only rule: under `strict-ink` the literal is already
+        // rejected whole (E051). Per-file by the same argument as
+        // `dialect_gate`: the resolution records consulted always carry
+        // this file's own id.
+        out.extend(fn_values::check(&files, file_resolutions, index));
     }
     out
 }

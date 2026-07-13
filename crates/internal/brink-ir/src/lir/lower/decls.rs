@@ -312,23 +312,8 @@ pub fn eval_const_expr(
         // #673: `VAR`/`CONST p = Name#{…}` — see `eval_const_struct_literal`'s
         // doc.
         hir::Expr::StructLiteral(sl) => eval_const_struct_literal(sl, file, diagnostics),
-        // T1c-1: `VAR f = #fn(…)` — function values don't lower anywhere yet
-        // (T1c-2, docs/t1c-spec.md §11), and a declaration default has no
-        // runtime construction step to defer to regardless. A real compile
-        // error (E052, same "not yet implemented" class as the
-        // expression-position rejection in `expr::reject_fn_literal`),
-        // never a silent `Null` default.
-        hir::Expr::FnLiteral(fl) => {
-            diagnostics.push(Diagnostic {
-                file,
-                range: fl.ptr.text_range(),
-                message: "`#fn(…)` function values are not yet implemented in this slice — \
-                          creation type-checks (T1c-1) but lowering/execution lands in T1c-2"
-                    .to_owned(),
-                code: DiagnosticCode::E052,
-            });
-            lir::ConstValue::Null
-        }
+        // T1c-1: `VAR f = #fn(…)` — see `eval_const_fn_literal`'s doc.
+        hir::Expr::FnLiteral(fl) => eval_const_fn_literal(fl, file, diagnostics),
         _ => lir::ConstValue::Null,
     }
 }
@@ -439,6 +424,27 @@ fn eval_const_struct_literal(
         range: sl.ptr.text_range(),
         message: DiagnosticCode::E075.title().to_string(),
         code: DiagnosticCode::E075,
+    });
+    lir::ConstValue::Null
+}
+
+/// T1c-1: `VAR f = #fn(…)` — function values don't lower anywhere yet
+/// (T1c-2, docs/t1c-spec.md §11), and a declaration default has no runtime
+/// construction step to defer to regardless. A real compile error (E052,
+/// same "not yet implemented" class as the expression-position rejection in
+/// `expr::reject_fn_literal`), never a silent `Null` default.
+fn eval_const_fn_literal(
+    fl: &hir::FnLiteral,
+    file: FileId,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> lir::ConstValue {
+    diagnostics.push(Diagnostic {
+        file,
+        range: fl.ptr.text_range(),
+        message: "`#fn(…)` function values are not yet implemented in this slice — \
+                  creation type-checks (T1c-1) but lowering/execution lands in T1c-2"
+            .to_owned(),
+        code: DiagnosticCode::E052,
     });
     lir::ConstValue::Null
 }
