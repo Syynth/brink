@@ -26,6 +26,7 @@
   - [Collections](./toolchain/dialect/literals.md)
   - [Indexing & Mutation](./toolchain/dialect/indexing.md)
   - [Standard Library](./toolchain/dialect/stdlib.md)
+  - [Types](./toolchain/dialect/types.md)
   - [Conformance](./toolchain/dialect/conformance.md)
 - [Concepts](./toolchain/concepts/index.md)
   - [The Execution Model](./toolchain/concepts/execution-model.md)

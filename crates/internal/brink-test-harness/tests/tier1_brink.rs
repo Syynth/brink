@@ -110,6 +110,44 @@ fn struct_construct_read_write() {
     assert_case("struct-construct-read-write");
 }
 
+// ── TM-5 (#621) corpus wing growth ────────────────────────────────────────
+//
+// TM-4c's `struct-construct-read-write` only reads/writes a struct in place;
+// it never crosses a function-call boundary. This proves `Value::Record`
+// marshals correctly as a call argument and a return value (real production
+// codegen, not a unit test in isolation), and that the callee's returned
+// struct is an independent copy — `p` must read back unchanged after
+// `translate(p, ...)` returns a *new* point (value semantics, not aliasing).
+
+#[test]
+fn struct_through_function_call_marshals_and_stays_a_value_copy() {
+    assert_case("struct-through-function-call");
+}
+
+// ── TM-5 (#621) corpus wing growth: TM-2 inline annotations end-to-end ────
+//
+// TM-2 landed annotation grammar/HIR/fmt/IDE feeding `signature()`; this
+//
+// NOTE (scopeNotes, #680): the fixture deliberately writes its `temp` decl
+// and its `ref`-argument call (`heal(gold, 10)`) as separate standalone `~`
+// logic lines rather than inside one `~ { }` block. A `~ { temp … \n
+// ref-call(global) }` block body — with or without any type annotation
+// anywhere in the file — was found to misresolve the global's storage slot
+// at runtime (`RuntimeError::UnresolvedGlobal`) while probing shapes for
+// this fixture. Confirmed pre-existing (T1b-era, unrelated to annotations)
+// and out of #621's corpus/book/IDE fence; filed as #680, not fixed here.
+// proves the full annotation surface (§3: scalar `VAR`/`CONST`/`temp`
+// ascriptions, `ref` params, a typed return, a `void`-returning function)
+// compiles and runs through the real pipeline with the exact value an
+// unannotated equivalent would produce — annotations are "optional
+// seasoning" (spec §3), never a behavior change, proven at the corpus
+// level rather than only in `brink-analyzer`'s unit tests.
+
+#[test]
+fn annotations_are_optional_seasoning_end_to_end() {
+    assert_case("annotations-mixed");
+}
+
 #[test]
 fn break_and_continue() {
     assert_case("break-continue");
@@ -253,6 +291,8 @@ fn every_case_directory_has_a_test() {
         "rmw-shared-map-cow",
         "rmw-mutator-shared-nested-lvalue",
         "struct-construct-read-write",
+        "struct-through-function-call",
+        "annotations-mixed",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink")

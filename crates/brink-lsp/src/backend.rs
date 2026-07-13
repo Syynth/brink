@@ -313,6 +313,25 @@ fn lock_db(db: &Arc<Mutex<brink_db::ProjectDb>>) -> std::sync::MutexGuard<'_, br
     }
 }
 
+/// Map a domain `InlayHintKind` to the LSP's own (`PARAMETER`/`TYPE` are the
+/// only two the spec defines). TM-5's new `InferredType` kind is a type
+/// hint, not a parameter-name hint — an explicit arm here rather than a
+/// blanket default, so a future new variant fails to compile instead of
+/// silently inheriting `PARAMETER` (CLAUDE.md's wildcard-arm rule).
+fn lsp_inlay_hint_kind(
+    kind: &brink_ide::inlay_hints::InlayHintKind,
+) -> tower_lsp::lsp_types::InlayHintKind {
+    match kind {
+        brink_ide::inlay_hints::InlayHintKind::Parameter
+        | brink_ide::inlay_hints::InlayHintKind::Value => {
+            tower_lsp::lsp_types::InlayHintKind::PARAMETER
+        }
+        brink_ide::inlay_hints::InlayHintKind::InferredType => {
+            tower_lsp::lsp_types::InlayHintKind::TYPE
+        }
+    }
+}
+
 /// Snapshot of analysis + per-file data needed for navigation handlers.
 struct NavigationSnapshot {
     analysis: Arc<AnalysisResult>,
@@ -809,8 +828,13 @@ impl LanguageServer for Backend {
         let idx = LineIndex::new(&snap.source);
         let offset = convert::to_text_size(params.text_document_position_params.position, &idx);
 
+        // TM-5 (#621): a brief, transient lock — `db.infer_body`/
+        // `inferred_signature` are the FG-narrowed per-def fallback hover
+        // reads when a param/temp/signature position has no declared type.
+        let db = lock_db(&self.db);
         let Some(info) = brink_ide::hover::hover(
             &snap.analysis,
+            &db,
             snap.file_id,
             &snap.source,
             offset,
@@ -818,6 +842,7 @@ impl LanguageServer for Backend {
         ) else {
             return Ok(None);
         };
+        drop(db);
 
         let hover_range = info.range.map(|r| convert::to_lsp_range(r, &idx));
 
@@ -1489,12 +1514,20 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
         let root = parse.tree();
-        drop(db);
 
         // The LSP has no host-value push channel (#174) — static value labels
         // still resolve from the manifest; `host`-source labels need none.
-        let domain_hints =
-            brink_ide::inlay_hints::inlay_hints(root.syntax(), &snap.analysis, request_range, None);
+        // TM-5 (#621): `db` stays locked through this call — inlay hints now
+        // also read `db.infer_body` for unannotated `temp` decls.
+        let domain_hints = brink_ide::inlay_hints::inlay_hints(
+            root.syntax(),
+            &snap.analysis,
+            &db,
+            file_id,
+            request_range,
+            None,
+        );
+        drop(db);
 
         if domain_hints.is_empty() {
             return Ok(None);
@@ -1507,7 +1540,7 @@ impl LanguageServer for Backend {
                 LspInlayHint {
                     position: Position::new(line, col),
                     label: InlayHintLabel::String(h.label),
-                    kind: Some(tower_lsp::lsp_types::InlayHintKind::PARAMETER),
+                    kind: Some(lsp_inlay_hint_kind(&h.kind)),
                     text_edits: None,
                     tooltip: None,
                     padding_left: None,

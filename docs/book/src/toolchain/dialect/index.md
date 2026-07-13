@@ -25,6 +25,8 @@ This chapter covers:
   runtime faults that replace ink's usual silent tolerance.
 - **[Standard Library](./stdlib.md)** — `len`/`keys`/`values`/`contains` and
   the mutating `push`/`insert`/`remove`.
+- **[Types](./types.md)** — gradual vs. strict, inline annotations,
+  structs, and the visit-count idiom that survives strict mode unchanged.
 - **[Conformance](./conformance.md)** — how the dialect coexists with the
   oracle-anchored core, and what "authoring-time only" actually means.
 

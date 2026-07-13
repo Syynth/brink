@@ -1864,6 +1864,7 @@ impl EditorSession {
         let abs_offset = self.to_absolute(path, view, offset);
         match brink_ide::hover::hover(
             analysis,
+            self.session.db(),
             file_id,
             source,
             TextSize::new(abs_offset),
@@ -2083,6 +2084,8 @@ impl EditorSession {
         let hints = brink_ide::inlay_hints::inlay_hints(
             &root,
             analysis,
+            self.session.db(),
+            file_id,
             range,
             Some(self.session.host_values()),
         );

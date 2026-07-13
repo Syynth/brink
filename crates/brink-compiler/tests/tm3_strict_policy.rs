@@ -197,3 +197,83 @@ fn strict_void_statement_position_call_compiles_clean() {
     );
     assert!(result.is_ok(), "{result:?}");
 }
+
+// ── TM-5 (#621) corpus wing growth: end-to-end (compile AND run) proofs ───
+//
+// The tests above prove strict-policy diagnostics fire/don't-fire at
+// compile time; none of them actually *run* the compiled story to check
+// runtime behavior is correct, not merely non-erroring. These two close
+// that gap for the two spec §4 claims the upcoming book "Types" chapter
+// makes verbatim: the condition-truthiness idiom survives strict (already
+// unit-tested in `brink_analyzer::strict` for the type-checking side only),
+// and `int -> float` is a real, directional, implicit coercion (not just
+// "doesn't error").
+
+#[test]
+fn strict_condition_truthiness_idiom_runs_correctly_end_to_end() {
+    // spec §4: "Condition-position int truthiness stays ({visited_knot: …},
+    // nonzero = true) — scoped to condition position only." A knot's visit
+    // count is a plain `int`; using it bare in a `{cond: …}` conditional
+    // must type-check AND branch correctly under `types = strict` — the
+    // idiom that makes ink ink, not merely a diagnostic-suppression rule.
+    let src = "-> hub\n\
+               === hub ===\n\
+               { hub: I have been here before. | This is my first visit. }\n\
+               -> hub_again\n\
+               \n\
+               === hub_again ===\n\
+               { hub_again: Second time in this knot too. | First time here. }\n\
+               -> DONE\n";
+    let data = compile_mem(src, Dialect::Brink, TypePolicy::Strict)
+        .expect("visit-count truthiness must compile clean under strict")
+        .data;
+    let (program, line_tables) = brink_runtime::link(&data).expect("link");
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
+    let lines = story.continue_maximally().expect("run to completion");
+    let mut text = String::new();
+    for line in &lines {
+        text.push_str(line.text());
+    }
+    // Ink increments a knot's visit count on *entry*, before its content
+    // runs — so a self-referential `{knot: …}` check inside that very knot
+    // is already looking at count 1 on the very first visit, hence the
+    // "seen before" branch both times (verified against actual output: this
+    // is the correct idiom's behavior, not a bug in this test's fixture).
+    assert!(
+        text.contains("I have been here before.") && text.contains("Second time in this knot too."),
+        "{text:?}"
+    );
+}
+
+#[test]
+fn strict_int_to_float_coercion_runs_correctly_end_to_end() {
+    // spec §4: "int -> float: implicit, directional (the one ink numeric
+    // promotion)." An `int`-valued expression flowing into a `float`
+    // binding must compile AND actually produce the promoted float value
+    // at runtime, not merely fail to raise a coercion diagnostic.
+    let src = "VAR rate: float = 1\n\
+               ~ temp total: float = rate + 3\n\
+               {total}\n\
+               -> DONE\n";
+    let data = compile_mem(src, Dialect::Brink, TypePolicy::Strict)
+        .expect("int flowing into a float binding must compile clean under strict")
+        .data;
+    let (program, line_tables) = brink_runtime::link(&data).expect("link");
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
+    let lines = story.continue_maximally().expect("run to completion");
+    let mut text = String::new();
+    for line in &lines {
+        text.push_str(line.text());
+    }
+    assert_eq!(
+        text.trim(),
+        "4",
+        "int 1 + int 3 promoted through a float binding"
+    );
+}
