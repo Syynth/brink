@@ -1,7 +1,9 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use brink_analyzer::{AnalysisOptions, AnalysisResult, BodyTypes, InferenceResult, Sig};
+use brink_analyzer::{
+    AnalysisOptions, AnalysisResult, BodyTypes, InferenceResult, InferredSig, Sig,
+};
 use brink_format::DefinitionId;
 use brink_ir::suppressions::Suppressions;
 use brink_ir::{Diagnostic, FileId, HirFile, ResolutionMap, SymbolIndex, SymbolManifest};
@@ -11,9 +13,9 @@ use tracing::debug;
 
 use crate::queries::{
     BrinkDatabase, CompileProduct, DefKey, LirProduct, ProjectInput, SourceFile, analysis_query,
-    diagnostics_query, include_graph_query, infer_body_query, lir_query, lowered_query,
-    parse_query, resolve_query, signature_query, story_data_query, suppressions_query,
-    symbol_index_query, type_diagnostics_query, type_inference_query,
+    diagnostics_query, include_graph_query, infer_body_query, inferred_signature_query, lir_query,
+    lowered_query, parse_query, resolve_query, signature_query, story_data_query,
+    suppressions_query, symbol_index_query, type_diagnostics_query, type_inference_query,
 };
 
 /// Stateful incremental project database.
@@ -360,6 +362,16 @@ impl ProjectDb {
     /// with no inferable body (not a knot/stitch, or an unknown id).
     pub fn infer_body(&self, def: DefinitionId) -> Option<Arc<BodyTypes>> {
         infer_body_query(&self.salsa, self.project, DefKey::new(&self.salsa, def))
+    }
+
+    /// Per-def inferred signature (`inferred_signature(def)`, FG-2 issue
+    /// #631) — the firewall-facing per-def view: params + return type only,
+    /// no locals, no ranges. This is the boundary TM-2's annotation-override
+    /// consumer reads. `None` for a def with no inferable body (not a
+    /// knot/stitch, or an unknown id) — same `None` contract as
+    /// [`signature`](Self::signature)/[`infer_body`](Self::infer_body).
+    pub fn inferred_signature(&self, def: DefinitionId) -> Option<Arc<InferredSig>> {
+        inferred_signature_query(&self.salsa, self.project, DefKey::new(&self.salsa, def))
     }
 
     /// Per-file type diagnostics (`type_diagnostics(FileId)`). Advisory-only

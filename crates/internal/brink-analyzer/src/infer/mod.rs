@@ -54,10 +54,11 @@ use brink_format::DefinitionId;
 use brink_ir::{Block, FileId, HirFile, Param, ResolutionMap, SymbolIndex, SymbolKind};
 use rowan::TextRange;
 
+pub use graph::{CallGraph, SccGraph, scc_graph};
 pub use ty::{Ty, unify, unify_all};
 
 use body::{BodyCtx, infer_def_body};
-use graph::{CallGraph, topo_order};
+use graph::topo_order;
 
 /// `TextRange` has no `Ord` impl (ranges have no single natural total
 /// order), so every `BTreeMap` keyed by a reference's source range in this
@@ -244,10 +245,78 @@ fn build_call_graph(defs: &[Def<'_>], ctx: &ProjectCtx<'_>) -> CallGraph {
     graph
 }
 
+/// Solve one SCC batch's fixpoint in place (the per-batch body of pass 2):
+/// extends `known_sigs` with `batch`'s own members' finalized signatures —
+/// seeded `Unknown`, re-run until stable or [`MAX_SCC_ITERATIONS`] — and
+/// returns `batch`'s finalized [`BodyTypes`]. `known_sigs` must already carry
+/// the finalized signature of every def *outside* `batch` that a member of
+/// `batch` calls (every earlier batch's signature, for [`solve_batches`]'s
+/// whole-project loop; every condensation-predecessor SCC's signature, for
+/// the public [`solve_scc`] — FG-2, issue #631).
+///
+/// Shared by [`solve_batches`] (`ctx`/`by_id` built once, looped over every
+/// batch — unchanged cost from before this function was extracted) and
+/// [`solve_scc`] (`ctx`/`by_id` rebuilt per call, one batch at a time — the
+/// new per-SCC query boundary).
+fn solve_one_batch(
+    batch: &BTreeSet<DefinitionId>,
+    by_id: &BTreeMap<DefinitionId, &Def<'_>>,
+    ctx: &ProjectCtx<'_>,
+    known_sigs: &mut BTreeMap<DefinitionId, InferredSig>,
+) -> BTreeMap<DefinitionId, BodyTypes> {
+    for &id in batch {
+        known_sigs.entry(id).or_insert_with(|| {
+            let param_count = by_id.get(&id).map_or(0, |d| d.params.len());
+            InferredSig {
+                params: vec![Ty::Unknown; param_count],
+                return_ty: Ty::Unknown,
+            }
+        });
+    }
+
+    let mut last_round: BTreeMap<DefinitionId, body::BodyResult> = BTreeMap::new();
+    for _round in 0..MAX_SCC_ITERATIONS {
+        let mut round: BTreeMap<DefinitionId, body::BodyResult> = BTreeMap::new();
+        let mut changed = false;
+        for &id in batch {
+            let Some(&d) = by_id.get(&id) else { continue };
+            let body_ctx = ctx.body_ctx(d, known_sigs);
+            let result = infer_def_body(d.params, d.body, &body_ctx);
+            let new_sig = InferredSig {
+                params: result.params.iter().map(|(_, t)| t.clone()).collect(),
+                return_ty: result.return_ty.clone(),
+            };
+            if known_sigs.get(&id) != Some(&new_sig) {
+                changed = true;
+            }
+            known_sigs.insert(id, new_sig);
+            round.insert(id, result);
+        }
+        last_round = round;
+        if !changed {
+            break;
+        }
+    }
+
+    last_round
+        .into_iter()
+        .map(|(id, result)| {
+            (
+                id,
+                BodyTypes {
+                    params: result.params,
+                    locals: result.locals,
+                    return_ty: result.return_ty,
+                },
+            )
+        })
+        .collect()
+}
+
 /// Pass 2: solve every SCC batch in dependency order, mutually-recursive
 /// batches by fixpoint (spec §2's SCC rule — see the module doc).
 fn solve_batches(
-    batches: Vec<BTreeSet<DefinitionId>>,
+    batches: &[BTreeSet<DefinitionId>],
     by_id: &BTreeMap<DefinitionId, &Def<'_>>,
     ctx: &ProjectCtx<'_>,
 ) -> (
@@ -258,50 +327,8 @@ fn solve_batches(
     let mut bodies: BTreeMap<DefinitionId, BodyTypes> = BTreeMap::new();
 
     for batch in batches {
-        for &id in &batch {
-            known_sigs.entry(id).or_insert_with(|| {
-                let param_count = by_id.get(&id).map_or(0, |d| d.params.len());
-                InferredSig {
-                    params: vec![Ty::Unknown; param_count],
-                    return_ty: Ty::Unknown,
-                }
-            });
-        }
-
-        let mut last_round: BTreeMap<DefinitionId, body::BodyResult> = BTreeMap::new();
-        for _round in 0..MAX_SCC_ITERATIONS {
-            let mut round: BTreeMap<DefinitionId, body::BodyResult> = BTreeMap::new();
-            let mut changed = false;
-            for &id in &batch {
-                let Some(&d) = by_id.get(&id) else { continue };
-                let body_ctx = ctx.body_ctx(d, &known_sigs);
-                let result = infer_def_body(d.params, d.body, &body_ctx);
-                let new_sig = InferredSig {
-                    params: result.params.iter().map(|(_, t)| t.clone()).collect(),
-                    return_ty: result.return_ty.clone(),
-                };
-                if known_sigs.get(&id) != Some(&new_sig) {
-                    changed = true;
-                }
-                known_sigs.insert(id, new_sig);
-                round.insert(id, result);
-            }
-            last_round = round;
-            if !changed {
-                break;
-            }
-        }
-
-        for (id, result) in last_round {
-            bodies.insert(
-                id,
-                BodyTypes {
-                    params: result.params,
-                    locals: result.locals,
-                    return_ty: result.return_ty,
-                },
-            );
-        }
+        let batch_bodies = solve_one_batch(batch, by_id, ctx, &mut known_sigs);
+        bodies.extend(batch_bodies);
     }
 
     (known_sigs, bodies)
@@ -334,9 +361,110 @@ pub fn infer_project(
 
     let graph = build_call_graph(&defs, &ctx);
     let batches = topo_order(&graph);
-    let (signatures, bodies) = solve_batches(batches, &by_id, &ctx);
+    let (signatures, bodies) = solve_batches(&batches, &by_id, &ctx);
 
     InferenceResult { signatures, bodies }
+}
+
+// ─── Per-def/per-SCC query boundary (FG-2, issue #631) ────────────────
+//
+// `docs/fine-grained-salsa-proposal.md` §2 decomposes `infer_project` into
+// `call_edges(def) -> scc_membership() -> solve_scc(SccId) ->
+// inferred_signature(def)`. This module keeps every algorithm exactly as
+// `infer_project` already used it (SCC/condensation in `graph.rs`, the
+// single-batch fixpoint above); `brink-db` owns the query *keys*, *edges*,
+// and `SccId` interning (a plain `DefinitionId` — the component's minimum
+// member, already `graph.rs`'s own sort key) that turn these pure functions
+// into salsa-memoized, per-def/per-SCC-cacheable ones.
+
+/// Every inferable (knot/stitch) definition's id in the project (FG-2, issue
+/// #631). A cheap structural scan — `brink-db`'s `call_graph_query` uses this
+/// to enumerate the per-def [`call_edges`] it merges into the whole-project
+/// [`CallGraph`].
+#[must_use]
+pub fn inferable_defs(files: &[(FileId, &HirFile)], index: &SymbolIndex) -> BTreeSet<DefinitionId> {
+    collect_defs(files, index).iter().map(|d| d.id).collect()
+}
+
+/// Pass 1, exposed per one definition (FG-2, issue #631 — `call_edges(def)`).
+/// Computes exactly what [`build_call_graph`]'s loop body computes for one
+/// def: infer this def's body with `known_sigs` empty (every call resolves
+/// `Unknown`; only the *set* of resolved call targets is kept, matching the
+/// design doc's explicit "keep reusing `infer_def_body` and discard types,
+/// as today" allowance for this query). Returns an empty set for an
+/// unknown/non-inferable def id — same "absent data reads as empty, never
+/// panics" contract as the rest of this module.
+#[must_use]
+pub fn call_edges(
+    def: DefinitionId,
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+) -> BTreeSet<DefinitionId> {
+    let by_file = index_resolutions_by_file(resolutions);
+    let globals = collect_globals(files, index);
+    let defs = collect_defs(files, index);
+    let inferable: BTreeSet<DefinitionId> = defs.iter().map(|d| d.id).collect();
+    let ctx = ProjectCtx {
+        index,
+        globals: &globals,
+        by_file: &by_file,
+        inferable: &inferable,
+    };
+    let Some(d) = defs.iter().find(|d| d.id == def) else {
+        return BTreeSet::new();
+    };
+    let no_sigs: BTreeMap<DefinitionId, InferredSig> = BTreeMap::new();
+    let body_ctx = ctx.body_ctx(d, &no_sigs);
+    infer_def_body(d.params, d.body, &body_ctx).calls
+}
+
+/// Solve exactly one SCC batch (FG-2, issue #631 — `solve_scc(SccId)`).
+///
+/// `known_sigs` must already carry the finalized signature of every def
+/// *outside* `batch` that a member of `batch` calls — in practice, every def
+/// in every condensation-predecessor SCC. `brink-db`'s `solve_scc_query`
+/// gets these by recursively reading its own dependency SCCs'
+/// `solve_scc_query` results first; the condensation is a DAG (SCCs are
+/// maximal by construction), so that recursion is always acyclic — no salsa
+/// cycles anywhere (Fork 1 ruling, design doc §8).
+///
+/// Rebuilds the project-wide globals/defs context on every call — the same
+/// "as today" cost [`call_edges`] accepts (see its docs: this round
+/// decomposes the *solve* step's granularity, not the input-gathering
+/// step's). The win this query boundary buys is that solving is scoped to
+/// one SCC at a time instead of [`solve_batches`]'s whole-project loop, so
+/// an SCC whose call-graph-topology and dependency signatures are unchanged
+/// backdates instead of re-solving.
+#[must_use]
+pub fn solve_scc(
+    batch: &BTreeSet<DefinitionId>,
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+    mut known_sigs: BTreeMap<DefinitionId, InferredSig>,
+) -> (
+    BTreeMap<DefinitionId, InferredSig>,
+    BTreeMap<DefinitionId, BodyTypes>,
+) {
+    let by_file = index_resolutions_by_file(resolutions);
+    let globals = collect_globals(files, index);
+    let defs = collect_defs(files, index);
+    let inferable: BTreeSet<DefinitionId> = defs.iter().map(|d| d.id).collect();
+    let by_id: BTreeMap<DefinitionId, &Def<'_>> = defs.iter().map(|d| (d.id, d)).collect();
+    let ctx = ProjectCtx {
+        index,
+        globals: &globals,
+        by_file: &by_file,
+        inferable: &inferable,
+    };
+
+    let bodies = solve_one_batch(batch, &by_id, &ctx, &mut known_sigs);
+    let signatures: BTreeMap<DefinitionId, InferredSig> = batch
+        .iter()
+        .filter_map(|id| known_sigs.get(id).map(|sig| (*id, sig.clone())))
+        .collect();
+    (signatures, bodies)
 }
 
 #[cfg(test)]
@@ -498,5 +626,113 @@ mod tests {
         let a = infer_project(&[(FileId(0), &hir_a)], &index_a, &res_a);
         let b = infer_project(&[(FileId(0), &hir_b)], &index_b, &res_b);
         assert_eq!(a, b, "same input must infer identical types every run");
+    }
+
+    // ─── Per-def/per-SCC decomposition (FG-2, issue #631) ─────────────
+
+    #[test]
+    fn call_edges_matches_the_calls_infer_project_discovers() {
+        let (hir, index, res) = build(
+            "=== main ===\n~ temp v = 1\n~ use_it(v)\n-> DONE\n=== use_it(n) ===\n{n > 2.5:\n  big\n}\n-> DONE\n",
+        );
+        let files = [(FileId(0), &hir)];
+        let main_id = index
+            .by_name
+            .get("main")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("main");
+        let use_it_id = index
+            .by_name
+            .get("use_it")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("use_it");
+
+        let edges = call_edges(main_id, &files, &index, &res);
+        assert_eq!(
+            edges,
+            BTreeSet::from([use_it_id]),
+            "main's only call edge is to use_it"
+        );
+        let leaf_edges = call_edges(use_it_id, &files, &index, &res);
+        assert!(leaf_edges.is_empty(), "use_it calls nothing");
+    }
+
+    #[test]
+    fn call_edges_is_empty_for_an_unknown_def() {
+        let (hir, index, res) = build("=== main ===\nHello.\n-> DONE\n");
+        let files = [(FileId(0), &hir)];
+        let bogus = DefinitionId::new(brink_format::DefinitionTag::Address, 0xDEAD_BEEF);
+        assert!(call_edges(bogus, &files, &index, &res).is_empty());
+    }
+
+    #[test]
+    fn inferable_defs_matches_every_knot_and_stitch() {
+        let (hir, index, res) = build(
+            "=== main ===\n~ temp v = 1\n~ use_it(v)\n-> DONE\n=== use_it(n) ===\n{n > 2.5:\n  big\n}\n-> DONE\n",
+        );
+        let files = [(FileId(0), &hir)];
+        let _ = &res;
+        let defs = inferable_defs(&files, &index);
+        let main_id = index
+            .by_name
+            .get("main")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("main");
+        let use_it_id = index
+            .by_name
+            .get("use_it")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("use_it");
+        assert_eq!(defs, BTreeSet::from([main_id, use_it_id]));
+    }
+
+    /// The decomposition equivalence gate the design doc's §9 FG-2 bullet
+    /// asks for: composing `call_edges` -> `scc_graph` -> `solve_scc` per
+    /// component, in dependency order, must equal a single `infer_project`
+    /// call over the exact same inputs. Uses the mutual-recursion fixture
+    /// (a real multi-round SCC fixpoint, not just a linear chain) so the
+    /// composed path actually exercises cross-SCC signature threading.
+    #[test]
+    fn composed_per_scc_solve_equals_monolithic_infer_project() {
+        let src = "=== function ping(n) ===\n{n == 0:\n  ~ return 0.0\n}\n~ return pong(n - 1)\n\
+                   === function pong(n) ===\n~ return ping(n)\n\
+                   === caller ===\n~ temp x = ping(3)\n-> DONE\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+
+        let monolithic = infer_project(&files, &index, &res);
+
+        // Compose: call_edges per def -> merged CallGraph -> scc_graph ->
+        // solve_scc per component, threading known_sigs in dependency order
+        // exactly like `solve_batches` does internally.
+        let defs = inferable_defs(&files, &index);
+        let mut graph = CallGraph::new();
+        for &def in &defs {
+            graph.add_node(def);
+            for callee in call_edges(def, &files, &index, &res) {
+                graph.add_edge(def, callee);
+            }
+        }
+        let sg = scc_graph(&graph);
+
+        let mut known_sigs: BTreeMap<DefinitionId, InferredSig> = BTreeMap::new();
+        let mut signatures: BTreeMap<DefinitionId, InferredSig> = BTreeMap::new();
+        let mut bodies: BTreeMap<DefinitionId, BodyTypes> = BTreeMap::new();
+        for batch in &sg.order {
+            let (sigs, bods) = solve_scc(batch, &files, &index, &res, known_sigs.clone());
+            known_sigs.extend(sigs.iter().map(|(k, v)| (*k, v.clone())));
+            signatures.extend(sigs);
+            bodies.extend(bods);
+        }
+        let composed = InferenceResult { signatures, bodies };
+
+        assert_eq!(
+            composed, monolithic,
+            "per-SCC composed inference must equal a single infer_project call"
+        );
     }
 }

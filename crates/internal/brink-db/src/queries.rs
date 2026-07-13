@@ -41,10 +41,10 @@
 //! behavior-neutral by construction (locked by the `query_equivalence` tests
 //! and the oracle gate).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-use brink_analyzer::{AnalysisOptions, AnalysisResult, InferenceResult, Sig};
+use brink_analyzer::{AnalysisOptions, AnalysisResult, CallGraph, InferenceResult, SccGraph, Sig};
 use brink_format::{DefinitionId, StoryData};
 use brink_ir::suppressions::{Suppressions, apply_suppressions, parse_suppressions};
 use brink_ir::{
@@ -95,7 +95,15 @@ impl Default for BrinkDatabase {
                 .ingredient::<analysis_query>()
                 .ingredient::<diagnostics_query>()
                 // Layer 2/3: type inference (TM-1, advisory-only).
+                // Per-def/per-SCC decomposition (FG-2, issue #631):
+                // call_edges(def) -> call_graph() -> scc_membership() ->
+                // solve_scc(SccId) -> inferred_signature(def)/infer_body(def).
                 .ingredient::<inference_index_query>()
+                .ingredient::<call_edges_query>()
+                .ingredient::<call_graph_query>()
+                .ingredient::<scc_membership_query>()
+                .ingredient::<solve_scc_query>()
+                .ingredient::<inferred_signature_query>()
                 .ingredient::<type_inference_query>()
                 .ingredient::<infer_body_query>()
                 .ingredient::<type_diagnostics_query>()
@@ -408,27 +416,20 @@ pub(crate) fn inference_index_query(
     Arc::new(stripped)
 }
 
-/// Whole-project type inference. Wraps [`brink_analyzer::infer_project`].
-///
-/// **Re-sourced off `resolution_index`/`resolve`, not `analysis_query`
-/// (issue #630 / FG-1 §3).** `analysis_query`'s only cutoff is `PartialEq`
-/// over a range-carrying `AnalysisResult` (diagnostics + the full
-/// `ResolutionMap`) that almost never backdates, so riding that edge would
-/// make the first real consumer of this query (TM-2) re-run whole-project
-/// inference on nearly every edit — and it forces `finish_analysis`'s
-/// diagnostic passes (`validate`/`dialect_gate`/`external_check`) to run
-/// just to supply `(index, resolutions)`, which inference never reads past
-/// this projection anyway. `resolutions` is assembled the same way
-/// `analysis_query` assembles its own copy — the identical per-file
-/// `resolve_query` loop, same file order — so this is byte-identical input,
-/// not a behavior change; only the dependency edge moves.
-#[salsa::tracked(returns(ref))]
-pub(crate) fn type_inference_query(
+/// Shared input-gathering for every per-def/per-SCC inference query below
+/// (FG-2, issue #631): the same three inputs [`brink_analyzer::infer_project`]
+/// itself takes — the inference index projection, every file's HIR, and the
+/// merged per-file resolutions — assembled exactly the way
+/// `type_inference_query` assembled them pre-decomposition (issue #630 /
+/// FG-1 §3: re-sourced off `inference_index_query`/`resolve_query`, never
+/// `analysis_query`, so the pointer-identity guarantee
+/// `fg1_dependency_edges.rs` pins keeps holding after this refactor).
+fn inference_inputs(
     db: &dyn salsa::Database,
     project: ProjectInput,
-) -> Arc<InferenceResult> {
+) -> (Arc<SymbolIndex>, Vec<(FileId, &HirFile)>, ResolutionMap) {
     let files = project.files(db);
-    let index = inference_index_query(db, project);
+    let index = Arc::clone(inference_index_query(db, project));
     let mut resolutions = ResolutionMap::new();
     for file in files {
         let (file_map, _file_diags) = resolve_query(db, project, *file);
@@ -438,24 +439,183 @@ pub(crate) fn type_inference_query(
         .iter()
         .map(|f| (f.file_id(db), &lowered_query(db, *f).hir))
         .collect();
-    Arc::new(brink_analyzer::infer_project(
+    (index, hir_refs, resolutions)
+}
+
+/// A strongly-connected component's stable identifier (FG-2, issue #631):
+/// the component's minimum-valued `DefinitionId` member, exactly
+/// [`brink_analyzer::scc_graph`]'s own sort/dedup key. A plain alias, not a
+/// fresh newtype — it *is* a real member `DefinitionId`, reused as the
+/// component's name, so the existing [`DefKey`] interning already covers it:
+/// [`solve_scc_query`]'s key is `DefKey::new(db, scc_id)`, the same
+/// interning [`signature_query`]/[`infer_body_query`] use for a definition's
+/// own id.
+pub(crate) type SccId = DefinitionId;
+
+/// Pass 1, per-def (FG-2, issue #631 — `call_edges(def)`). Thin salsa
+/// wrapper over [`brink_analyzer::call_edges`]; the per-def key gives Eq
+/// cutoff on this def's own edge set (`BTreeSet<DefinitionId>`, no ranges,
+/// derived `Eq`) — see the design doc §2 table's explicit allowance to keep
+/// reusing `infer_def_body` and discard types, as `infer_project` already
+/// did, for this pass's computation.
+#[salsa::tracked]
+pub(crate) fn call_edges_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: ProjectInput,
+    def: DefKey<'db>,
+) -> Arc<BTreeSet<DefinitionId>> {
+    let (index, hir_refs, resolutions) = inference_inputs(db, project);
+    Arc::new(brink_analyzer::call_edges(
+        def.def(db),
         &hir_refs,
-        index,
+        &index,
         &resolutions,
     ))
 }
 
-/// Per-def inferred body types (`infer_body(def)`). `None` for a def with no
-/// inferable body (not a knot/stitch, or an unknown id) — same `None`
-/// contract as [`signature_query`].
+/// The whole-project call graph, merged from every inferable def's
+/// [`call_edges_query`] (FG-2, issue #631 — the derived `call_graph()` the
+/// design doc's §2 table names). [`CallGraph`]'s `Eq` (added for this slice)
+/// is the cutoff [`scc_membership_query`] backdates on.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn call_graph_query(db: &dyn salsa::Database, project: ProjectInput) -> CallGraph {
+    let (index, hir_refs, _resolutions) = inference_inputs(db, project);
+    let defs = brink_analyzer::inferable_defs(&hir_refs, &index);
+    let mut graph = CallGraph::new();
+    for &def in &defs {
+        graph.add_node(def);
+        let edges = call_edges_query(db, project, DefKey::new(db, def));
+        for &callee in edges.iter() {
+            graph.add_edge(def, callee);
+        }
+    }
+    graph
+}
+
+/// SCC partition + condensation DAG over the whole project's call graph
+/// (FG-2, issue #631 — `scc_membership()` (+ topo order)). Thin salsa
+/// wrapper over [`brink_analyzer::scc_graph`].
+#[salsa::tracked(returns(ref))]
+pub(crate) fn scc_membership_query(db: &dyn salsa::Database, project: ProjectInput) -> SccGraph {
+    let graph = call_graph_query(db, project);
+    brink_analyzer::scc_graph(graph)
+}
+
+/// One SCC's finalized inference result: signatures for the SCC's own
+/// members plus their full body-type pictures. `Arc<plain>`, `Eq`-derived —
+/// the per-SCC cutoff [`inferred_signature_query`]/[`infer_body_query`]
+/// backdate on (Arc<plain> ruling, design doc §2 Fork 2).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SolvedScc {
+    pub signatures: BTreeMap<DefinitionId, brink_analyzer::InferredSig>,
+    pub bodies: BTreeMap<DefinitionId, brink_analyzer::BodyTypes>,
+}
+
+/// Pass 2, per-SCC (FG-2, issue #631 — `solve_scc(SccId)`). Reads
+/// `solve_scc_query` for every condensation predecessor first (recursion is
+/// acyclic by construction — the condensation is a DAG, Fork 1 ruling — so
+/// salsa never sees a cycle here), merges their finalized signatures into
+/// `known_sigs`, then runs [`brink_analyzer::solve_scc`]'s bounded fixpoint
+/// (plain Rust inside this one query execution) for exactly this
+/// component's own members. Returns an empty [`SolvedScc`] for an id that
+/// isn't any component's minimum member (defensive — never panics on a
+/// stale/unknown key).
+#[salsa::tracked]
+pub(crate) fn solve_scc_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: ProjectInput,
+    scc: DefKey<'db>,
+) -> Arc<SolvedScc> {
+    let scc_id: SccId = scc.def(db);
+    let membership = scc_membership_query(db, project);
+    let Some(batch) = membership
+        .order
+        .iter()
+        .find(|comp| comp.iter().next().copied() == Some(scc_id))
+    else {
+        return Arc::new(SolvedScc::default());
+    };
+
+    let mut known_sigs: BTreeMap<DefinitionId, brink_analyzer::InferredSig> = BTreeMap::new();
+    if let Some(deps) = membership.depends_on.get(&scc_id) {
+        for &dep in deps {
+            let solved = solve_scc_query(db, project, DefKey::new(db, dep));
+            known_sigs.extend(solved.signatures.iter().map(|(k, v)| (*k, v.clone())));
+        }
+    }
+
+    let (index, hir_refs, resolutions) = inference_inputs(db, project);
+    let (signatures, bodies) =
+        brink_analyzer::solve_scc(batch, &hir_refs, &index, &resolutions, known_sigs);
+    Arc::new(SolvedScc { signatures, bodies })
+}
+
+/// Per-def inferred signature (`inferred_signature(def)`, FG-2 issue #631 —
+/// the missing per-def API TM-2's firewall consumer needs most). `None` for
+/// a def with no inferable body (not a knot/stitch, or an unknown id) — same
+/// `None` contract as [`signature_query`]/[`infer_body_query`].
+#[salsa::tracked]
+pub(crate) fn inferred_signature_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: ProjectInput,
+    def: DefKey<'db>,
+) -> Option<Arc<brink_analyzer::InferredSig>> {
+    let def_id = def.def(db);
+    let membership = scc_membership_query(db, project);
+    let scc_id = *membership.member_of.get(&def_id)?;
+    let solved = solve_scc_query(db, project, DefKey::new(db, scc_id));
+    solved.signatures.get(&def_id).cloned().map(Arc::new)
+}
+
+/// Whole-project type inference — now an aggregation over
+/// [`scc_membership_query`] + [`solve_scc_query`] (FG-2, issue #631; was a
+/// single monolithic [`brink_analyzer::infer_project`] call
+/// pre-decomposition). Still re-sourced off `inference_index`/`resolve`,
+/// never `analysis_query` (FG-1 §3) — every query this reads
+/// (`scc_membership_query` -> `call_graph_query` -> `call_edges_query` ->
+/// `inference_inputs`) traces back to the same two roots, so the
+/// pointer-identity guarantee `fg1_dependency_edges.rs` pins (a
+/// diagnostics-only edit leaves this memo fully validated, never
+/// re-executed) still holds after this refactor.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn type_inference_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> Arc<InferenceResult> {
+    let membership = scc_membership_query(db, project);
+    let mut signatures = BTreeMap::new();
+    let mut bodies = BTreeMap::new();
+    let mut seen: BTreeSet<SccId> = BTreeSet::new();
+    for comp in &membership.order {
+        let Some(scc_id) = comp.iter().next().copied() else {
+            continue;
+        };
+        if !seen.insert(scc_id) {
+            continue;
+        }
+        let solved = solve_scc_query(db, project, DefKey::new(db, scc_id));
+        signatures.extend(solved.signatures.iter().map(|(k, v)| (*k, v.clone())));
+        bodies.extend(solved.bodies.iter().map(|(k, v)| (*k, v.clone())));
+    }
+    Arc::new(InferenceResult { signatures, bodies })
+}
+
+/// Per-def inferred body types (`infer_body(def)`). Re-pointed at
+/// `solve_scc(scc_of(def))` (FG-2, issue #631) — was a view over the
+/// whole-project `type_inference_query` memo pre-decomposition. `None` for a
+/// def with no inferable body (not a knot/stitch, or an unknown id) — same
+/// `None` contract as [`signature_query`].
 #[salsa::tracked]
 pub(crate) fn infer_body_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
     def: DefKey<'db>,
 ) -> Option<Arc<brink_analyzer::BodyTypes>> {
-    let result = type_inference_query(db, project);
-    result.bodies.get(&def.def(db)).cloned().map(Arc::new)
+    let def_id = def.def(db);
+    let membership = scc_membership_query(db, project);
+    let scc_id = *membership.member_of.get(&def_id)?;
+    let solved = solve_scc_query(db, project, DefKey::new(db, scc_id));
+    solved.bodies.get(&def_id).cloned().map(Arc::new)
 }
 
 /// Per-file type diagnostics (`type_diagnostics(FileId)`). **Advisory-only
