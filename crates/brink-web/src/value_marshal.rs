@@ -7,9 +7,9 @@ use serde::Serialize;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
-/// Map an ink [`Value`] to a native JS value for a binding argument. Only the
-/// scalar variants cross the boundary; VM-internal variants (pointers, divert
-/// targets, fragment refs, lists) map to `null` for now.
+/// Map an ink [`Value`] to a native JS value for a binding argument. Scalars,
+/// collections, and records cross the boundary; VM-internal variants
+/// (pointers, divert targets, fragment refs, lists) map to `null` for now.
 pub(crate) fn value_to_js(v: &Value) -> JsValue {
     match v {
         Value::Int(i) => JsValue::from_f64(f64::from(*i)),
@@ -45,6 +45,22 @@ pub(crate) fn value_to_js(v: &Value) -> JsValue {
                 let _ = js_sys::Reflect::set(&obj, &map_key_to_js(k), &value_to_js(val));
             }
             obj.into()
+        }
+        // A record (TM-4) is a named-field aggregate — far closer to `Map`
+        // than to a VM-internal pointer, so it must not fall through to the
+        // `null` arm (that would be a silent data drop on a wasm-observable
+        // path). Field *names* live in the program's shape table, which this
+        // native leg has no access to, so the ergonomic native form is a JS
+        // array of the field values in shape order — the same deliberate
+        // lossiness caveat as `Map` key types above. The lossless form
+        // (shape id + fields) is `TypedValueJs::Record` on the
+        // `eval_function` JSON boundary.
+        Value::Record { fields, .. } => {
+            let arr = js_sys::Array::new();
+            for field in fields.iter() {
+                arr.push(&value_to_js(field));
+            }
+            arr.into()
         }
         _ => JsValue::NULL,
     }
@@ -756,5 +772,32 @@ mod value_marshal_wasm_tests {
         // Functions are objects but carry no data — they must not become maps.
         let f = js_sys::Function::new_no_args("return 1");
         assert_eq!(js_to_value(&f), Value::Null);
+    }
+}
+
+/// Wasm-side tests for [`value_to_js`]'s record arm (needs `js_sys`, so
+/// wasm32-gated like every other `wasm_bindgen_test` in this crate).
+#[cfg(test)]
+mod record_marshal_tests {
+    use super::value_to_js;
+    use brink_format::{ShapeId, Value};
+    use std::sync::Arc;
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn record_marshals_to_field_value_array_not_null() {
+        // Regression guard for the silent-drop wildcard: a Record must never
+        // fall through to the `null` arm (PR #664 review finding).
+        let record = Value::Record {
+            shape: ShapeId(0),
+            fields: Arc::new(vec![Value::Int(3), Value::String("y".into())]),
+        };
+        let js = value_to_js(&record);
+        assert!(!js.is_null(), "Record must not marshal to null");
+        let arr: js_sys::Array = js.unchecked_into();
+        assert_eq!(arr.length(), 2);
+        assert_eq!(arr.get(0).as_f64(), Some(3.0));
+        assert_eq!(arr.get(1).as_string().as_deref(), Some("y"));
     }
 }
