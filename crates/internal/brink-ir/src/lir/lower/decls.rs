@@ -187,7 +187,11 @@ pub fn collect_externals(
     externals
 }
 
-fn lookup_global(index: &SymbolIndex, name: &str, kind: SymbolKind) -> Option<DefinitionId> {
+pub(super) fn lookup_global(
+    index: &SymbolIndex,
+    name: &str,
+    kind: SymbolKind,
+) -> Option<DefinitionId> {
     index.by_name.get(name).and_then(|ids| {
         ids.iter()
             .find(|&&id| index.symbols.get(&id).is_some_and(|info| info.kind == kind))

@@ -489,6 +489,8 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         Opcode::RecordNew(shape_id) => format!("record_new {shape_id}"),
         Opcode::RecordGetDyn(name_id) => format!("record_get_dyn {name_id}"),
         Opcode::RecordSetDyn(name_id) => format!("record_set_dyn {name_id}"),
+        Opcode::RecordGet(offset) => format!("record_get {offset}"),
+        Opcode::RecordSet(offset) => format!("record_set {offset}"),
     }
 }
 

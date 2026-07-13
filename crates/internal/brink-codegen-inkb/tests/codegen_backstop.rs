@@ -50,6 +50,7 @@ fn program_with_root_body(body: Vec<lir::Stmt>) -> lir::Program {
         list_items: Vec::new(),
         externals: Vec::new(),
         name_table: Vec::new(),
+        struct_shapes: Vec::new(),
     }
 }
 

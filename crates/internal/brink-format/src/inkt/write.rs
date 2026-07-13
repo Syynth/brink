@@ -535,6 +535,8 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::RecordNew(shape_id) => write!(w, "record_new {shape_id}"),
         Opcode::RecordGetDyn(name_id) => write!(w, "record_get_dyn {name_id}"),
         Opcode::RecordSetDyn(name_id) => write!(w, "record_set_dyn {name_id}"),
+        Opcode::RecordGet(offset) => write!(w, "record_get {offset}"),
+        Opcode::RecordSet(offset) => write!(w, "record_set {offset}"),
     }
 }
 

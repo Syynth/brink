@@ -991,6 +991,8 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         Opcode::RecordNew(shape_id) => record_ops::record_new(flow, program, shape_id)?,
         Opcode::RecordGetDyn(name_id) => record_ops::record_get_dyn(flow, program, name_id)?,
         Opcode::RecordSetDyn(name_id) => record_ops::record_set_dyn(flow, program, name_id)?,
+        Opcode::RecordGet(offset) => record_ops::record_get(flow, offset)?,
+        Opcode::RecordSet(offset) => record_ops::record_set(flow, offset)?,
 
         // ── External functions ──────────────────────────────────────
         Opcode::CallExternal(fn_id, arg_count) => {

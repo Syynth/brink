@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use brink_format::{
     AddressDef, AddressPath, ContainerDef, DefinitionId, ExternalFnDef, GlobalVarDef, LineContent,
     LineEntry, ListDef, ListItemDef, ListValue, MapKey, NameId, Opcode, OrderedMap, ScopeLineTable,
-    StoryData, Value,
+    ShapeId, StoryData, StructShapeDef, Value,
 };
 use brink_ir::lir;
 
@@ -102,6 +102,7 @@ pub fn emit(program: &lir::Program) -> Result<StoryData, CodegenError> {
     let list_defs = build_list_defs(&program.lists);
     let list_items = build_list_items(&program.list_items);
     let externals = build_externals(&program.externals);
+    let struct_shapes = build_struct_shapes(&program.struct_shapes);
 
     // Convert scope line tables to a sorted Vec<ScopeLineTable>.
     let mut line_tables: Vec<ScopeLineTable> = state
@@ -123,12 +124,23 @@ pub fn emit(program: &lir::Program) -> Result<StoryData, CodegenError> {
         name_table: state.name_table,
         list_literals: state.list_literals,
         literal_pool: state.literal_pool,
-        // TM-4 `StructShapes`: reserved-section-only in this PR — no
-        // compiler surface emits `STRUCT` declarations yet (see the PR
-        // description's scope note), so this is always empty today.
-        struct_shapes: Vec::new(),
+        struct_shapes,
         source_checksum: 0,
     })
+}
+
+/// TM-4c: `lir::StructShapeDef` → `brink_format::StructShapeDef`, id order
+/// preserved (`lir::lower::structs::struct_shape_defs` already hands back a
+/// `Vec` ordered by `ShapeId`, so this is a 1:1 field mapping, not a sort).
+fn build_struct_shapes(shapes: &[lir::StructShapeDef]) -> Vec<StructShapeDef> {
+    shapes
+        .iter()
+        .map(|s| StructShapeDef {
+            id: ShapeId(s.id),
+            name: s.name,
+            fields: s.fields.clone(),
+        })
+        .collect()
 }
 
 // ─── Emission state ─────────────────────────────────────────────────

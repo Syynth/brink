@@ -31,9 +31,11 @@
 //! temp) is legal but produces an E054 warning (§2).
 
 use crate::hir;
+use crate::symbols::SymbolKind;
 use crate::{AssignOp, Diagnostic, DiagnosticCode, InfixOp};
 
 use super::context::LowerCtx;
+use super::context::TypeMode;
 use super::expr::lower_expr;
 use super::lir;
 
@@ -197,6 +199,7 @@ fn lower_block_temp_decl(decl: &hir::TempDecl, ctx: &mut LowerCtx<'_>, out: &mut
     // outer `x`, not itself.
     let value = decl.value.as_ref().map(|e| lower_expr(e, ctx));
     let (slot, name) = declare_shadow_checked(&decl.name.text, decl.name.range, ctx);
+    ctx.record_temp_annotation(slot, decl.annotation.as_ref());
     out.push(lir::Stmt::DeclareTemp { slot, name, value });
 }
 
@@ -205,6 +208,9 @@ fn lower_block_assignment(
     ctx: &mut LowerCtx<'_>,
     out: &mut Vec<lir::Stmt>,
 ) {
+    if try_lower_field_assignment(assign, ctx, out) {
+        return;
+    }
     if let hir::Expr::Index(idx) = &assign.target {
         lower_indexed_assignment(idx, assign.op, &assign.value, ctx, out);
         return;
@@ -225,6 +231,180 @@ fn lower_block_assignment(
     // lowering already has (`lower_stmt`'s `Assignment` arm); the analyzer's
     // E025 unresolved-variable diagnostic is what surfaces this to authors,
     // not LIR lowering.
+}
+
+/// Attempt to lower `assign` as a TM-4c struct field write (`p.field =
+/// expr`/`p.field op= expr`, `docs/typed-mode-spec.md` §6) — single level
+/// only, mirroring [`lower_indexed_assignment`]'s `n == 1` fast path (take →
+/// `make_mut` → write-back on the root cell). Returns `false` (nothing
+/// lowered or diagnosed) when `assign.target` isn't this shape at all, so
+/// the caller falls through to ordinary assignment/indexed-assignment
+/// handling.
+///
+/// A bare `ident.ident` (or longer) chain always parses as one multi-segment
+/// `hir::Expr::Path` (see `expr::lower_ambiguous_dotted_path`'s doc) — that
+/// is the *only* shape a genuine `p.field = v` target ever takes. A
+/// **chained** write (`p.a.b = v`, 3+ segments) or a **mixed** chain
+/// (`arr[i].field = v`/`foo().field = v`, the "unambiguous" `FieldAccessExpr`
+/// target grammar, whose base is never a plain `Path`) is recognized here
+/// too, but rejected with a real, non-suppressible `E074` diagnostic (the
+/// T1e boundary the issue fences off) rather than silently miscompiled —
+/// this still returns `true` (handled: the diagnostic *is* the handling),
+/// so the caller doesn't fall through to a different lowering path that
+/// might mishandle the same target shape.
+pub(super) fn try_lower_field_assignment(
+    assign: &hir::Assignment,
+    ctx: &mut LowerCtx<'_>,
+    out: &mut Vec<lir::Stmt>,
+) -> bool {
+    if let hir::Expr::Path(path) = &assign.target
+        && path.segments.len() > 1
+        && let Some(info) = ctx.resolve_path(path.range)
+        && matches!(
+            info.kind,
+            SymbolKind::Variable | SymbolKind::Constant | SymbolKind::Param | SymbolKind::Temp
+        )
+    {
+        if path.segments.len() > 2 {
+            emit_chained_field_write_diagnostic(path.range, ctx);
+        } else {
+            lower_single_level_field_write(path, info, assign.op, &assign.value, ctx, out);
+        }
+        return true;
+    }
+
+    if let hir::Expr::FieldAccess(fa) = &assign.target {
+        emit_chained_field_write_diagnostic(fa.ptr.text_range(), ctx);
+        return true;
+    }
+
+    false
+}
+
+fn emit_chained_field_write_diagnostic(range: rowan::TextRange, ctx: &mut LowerCtx<'_>) {
+    ctx.diagnostics.push(Diagnostic {
+        file: ctx.file,
+        range,
+        message: DiagnosticCode::E074.title().to_string(),
+        code: DiagnosticCode::E074,
+    });
+}
+
+/// The single-level case (`path.segments.len() == 2`) — `p.field = v`/`p.field
+/// op= v` on a resolvable root. Follows the identical take → `make_mut` →
+/// write-back RMW discipline [`lower_flat_indexed_assignment`] uses,
+/// substituting a `RecordGet`/`RecordSet` field op for that function's
+/// `Index`/`IndexSet`: the RHS is evaluated once (root still intact), then
+/// `current = root.field` is *always* computed via a non-taking read (the
+/// fault pre-check — see `lower_flat_indexed_assignment`'s doc for why this
+/// matters: it forces the exact same missing-field validation the mutate
+/// step would hit, before the root is ever taken, so a fault never leaves
+/// the root holding `Value::Null`), then the root is taken and mutated in
+/// place.
+fn lower_single_level_field_write(
+    path: &hir::Path,
+    head_info: &crate::symbols::SymbolInfo,
+    op: AssignOp,
+    value_expr: &hir::Expr,
+    ctx: &mut LowerCtx<'_>,
+    out: &mut Vec<lir::Stmt>,
+) {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "caller already proved path.segments.len() == 2"
+    )]
+    let field_name = path.segments[1].text.clone();
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "caller already proved path.segments.len() == 2"
+    )]
+    let head_name = path.segments[0].text.clone();
+
+    let (root_target, root_shape) = match head_info.kind {
+        SymbolKind::Variable | SymbolKind::Constant => (
+            lir::AssignTarget::Global(head_info.id),
+            ctx.global_shape(head_info.id).map(str::to_string),
+        ),
+        SymbolKind::Param | SymbolKind::Temp => {
+            let Some(slot) = ctx.temp_slot(&head_name) else {
+                return;
+            };
+            let name_id = ctx.names.intern(&head_name);
+            (
+                lir::AssignTarget::Temp(slot, name_id),
+                ctx.temp_shape(slot).map(str::to_string),
+            )
+        }
+        // `try_lower_field_assignment` only reaches here for these four kinds.
+        _ => return,
+    };
+
+    let static_offset = if ctx.structs.type_mode == TypeMode::Strict {
+        root_shape
+            .as_deref()
+            .and_then(|s| ctx.structs.shapes.get(s))
+            .and_then(|shape| shape.field(&field_name))
+            .map(|(offset, _)| offset)
+    } else {
+        None
+    };
+    let field = ctx.names.intern(&field_name);
+
+    // 1. RHS value, evaluated once — root still intact (mirrors
+    //    `lower_flat_indexed_assignment` step 2).
+    let rhs_value = lower_expr(value_expr, ctx);
+    let (rhs_slot, rhs_name) = declare_synthetic("__rhs", rhs_value, ctx, out);
+
+    // 2. Pre-mutation `current = root.field`, ALWAYS computed (fault
+    //    pre-check + compound assignment's operand), via an ordinary
+    //    (non-taking) read of the still-intact root.
+    let current = lir::Expr::RecordGet {
+        base: Box::new(get_expr_for_target(&root_target)),
+        field,
+        static_offset,
+    };
+    let (current_slot, current_name) = declare_synthetic("__current", current, ctx, out);
+
+    let rhs = if op == AssignOp::Set {
+        lir::Expr::GetTemp(rhs_slot, rhs_name)
+    } else {
+        // `op == AssignOp::Set` is excluded above, so only `Add`/`Sub` ever
+        // reach here.
+        let infix_op = if op == AssignOp::Sub {
+            InfixOp::Sub
+        } else {
+            InfixOp::Add
+        };
+        lir::Expr::Infix(
+            Box::new(lir::Expr::GetTemp(current_slot, current_name)),
+            infix_op,
+            Box::new(lir::Expr::GetTemp(rhs_slot, rhs_name)),
+        )
+    };
+
+    // 3. Take the root — step 2 already proved this exact field is valid
+    //    against this exact record value (nothing mutated in between), so
+    //    nothing from here on can fault; the root is never left holding
+    //    `Value::Null` on this path.
+    let (c_slot, c_name) = declare_synthetic("__c", take_expr_for_target(&root_target), ctx, out);
+    out.push(lir::Stmt::Assign {
+        target: lir::AssignTarget::Temp(c_slot, c_name),
+        op: AssignOp::Set,
+        value: lir::Expr::RecordSet {
+            base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
+            field,
+            static_offset,
+            value: Box::new(rhs),
+        },
+    });
+
+    // 4. Write the mutated record back into the root — takes the (now
+    //    dead) synthetic temp too, avoiding one final wasted `Arc` clone.
+    out.push(lir::Stmt::Assign {
+        target: root_target,
+        op: AssignOp::Set,
+        value: lir::Expr::TakeTemp(c_slot, c_name),
+    });
 }
 
 /// Unwind a (possibly chained) `IndexExpr` into its root expression and the

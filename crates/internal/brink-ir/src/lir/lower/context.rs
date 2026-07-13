@@ -8,6 +8,8 @@ use rowan::TextRange;
 use crate::FileId;
 use crate::symbols::{ResolutionMap, SymbolIndex, SymbolInfo};
 
+use super::structs::{GlobalShapeMap, ShapeTable};
+
 // ─── Resolution lookup ──────────────────────────────────────────────
 
 /// O(1) lookup from `(FileId, TextRange)` to the resolved `DefinitionId`.
@@ -123,6 +125,32 @@ fn hash_path(path: &str) -> u64 {
     hasher.finish()
 }
 
+// ─── TM-4c struct-shape context ─────────────────────────────────────
+
+/// The project's `types` policy, as seen by LIR lowering (TM-4c,
+/// `docs/typed-mode-spec.md` §6/§1). A local, minimal mirror of
+/// `brink-analyzer`'s `TypePolicy` — `brink-ir` sits *below*
+/// `brink-analyzer` in the crate graph (`brink-analyzer` depends on
+/// `brink-ir`, never the reverse), so it cannot name that type directly;
+/// `brink-db`'s `lir_query` maps `TypePolicy` to this enum at the one call
+/// site that threads it into [`lower_to_program`](super::lower_to_program).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TypeMode {
+    #[default]
+    Gradual,
+    Strict,
+}
+
+/// Whole-program struct-shape data, built once before any container is
+/// lowered and shared (read-only) by every [`LowerCtx`] — see
+/// `lower::structs`' module doc for what each field is and the soundness
+/// argument for why [`TypeMode::Strict`] gates static-offset emission.
+pub struct StructCtx<'a> {
+    pub shapes: &'a ShapeTable,
+    pub global_shapes: &'a GlobalShapeMap,
+    pub type_mode: TypeMode,
+}
+
 // ─── Lower context ──────────────────────────────────────────────────
 
 /// Shared context threaded through all lowering functions.
@@ -191,6 +219,19 @@ pub struct LowerCtx<'a> {
     /// (E057) instead of emitting an unguarded `LogicBreak`/`LogicContinue`
     /// that codegen has no jump target for (see #577 review).
     pub loop_depth: u32,
+    /// TM-4c (`docs/typed-mode-spec.md` §6): the whole-program struct-shape
+    /// data (shape table, `types` policy, global struct-typed VAR/CONST
+    /// annotations) — shared, read-only, identical across every `LowerCtx`
+    /// in a single `lower_to_program` call.
+    pub structs: &'a StructCtx<'a>,
+    /// TM-4c: temp slots (this frame only — reset per `LowerCtx`, exactly
+    /// like `visible_temps`) whose declaring `TempDecl`'s TM-2 annotation
+    /// names a declared struct — the temp-local half of the "compile-time
+    /// known shape" story `expr::known_shape` chases (`structs::
+    /// GlobalShapeMap` is the global half). Keyed by slot, not name, so a
+    /// block-scoped shadow of an outer temp of the same name still maps to
+    /// its own (correct) shape.
+    pub temp_shapes: std::collections::HashMap<u16, String>,
 }
 
 impl<'a> LowerCtx<'a> {
@@ -286,6 +327,38 @@ impl<'a> LowerCtx<'a> {
     /// though the temp hasn't been marked visible yet.
     pub fn temp_slot_raw(&self, name: &str) -> Option<u16> {
         self.temps.get(name)
+    }
+
+    /// TM-4c: record that temp `slot` was declared with a TM-2 annotation
+    /// naming struct shape `shape_name`.
+    pub fn set_temp_shape(&mut self, slot: u16, shape_name: String) {
+        self.temp_shapes.insert(slot, shape_name);
+    }
+
+    /// TM-4c: if `annotation` is a `Named` type naming a declared struct,
+    /// record it as `slot`'s known shape (`set_temp_shape`) — the one call
+    /// every `TempDecl` lowering site (classic and block-scoped) makes right
+    /// after allocating/resolving the temp's own slot, so `expr::known_shape`
+    /// can later chase a struct-typed `temp`'s reads/writes to a static
+    /// offset under `types = strict`.
+    pub fn record_temp_annotation(&mut self, slot: u16, annotation: Option<&crate::hir::TypeExpr>) {
+        if let Some(crate::hir::TypeExpr::Named { name, .. }) = annotation
+            && self.structs.shapes.get(name).is_some()
+        {
+            self.set_temp_shape(slot, name.clone());
+        }
+    }
+
+    /// TM-4c: the declared struct shape name for temp `slot`, if its
+    /// `TempDecl` carried a struct-typed TM-2 annotation.
+    pub fn temp_shape(&self, slot: u16) -> Option<&str> {
+        self.temp_shapes.get(&slot).map(String::as_str)
+    }
+
+    /// TM-4c: the declared struct shape name for a resolved global `VAR`/
+    /// `CONST`, if its TM-2 annotation named a declared struct.
+    pub fn global_shape(&self, id: DefinitionId) -> Option<&str> {
+        self.structs.global_shapes.get(&id).map(String::as_str)
     }
 
     /// Qualify a label name with the current scope path.

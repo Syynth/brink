@@ -53,7 +53,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-use brink_analyzer::{AnalysisOptions, AnalysisResult, CallGraph, InferenceResult, SccGraph, Sig};
+use brink_analyzer::{
+    AnalysisOptions, AnalysisResult, CallGraph, InferenceResult, SccGraph, Sig, TypePolicy,
+};
 use brink_format::{DefinitionId, StoryData};
 use brink_ir::suppressions::{Suppressions, apply_suppressions, parse_suppressions};
 use brink_ir::{
@@ -1118,8 +1120,22 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
         .filter_map(|id| by_id.get(id).map(|f| (*id, f.path(db).clone())))
         .collect();
 
-    let (program, lir_diagnostics) =
-        brink_ir::lir::lower_to_program(&hir_refs, &resolved.index, &resolved.resolutions, &paths);
+    // TM-4c (`docs/typed-mode-spec.md` §6): the project's `types` policy
+    // gates static-offset record field ops — map the analyzer's
+    // `TypePolicy` to `brink-ir`'s local mirror (`brink-ir` sits below
+    // `brink-analyzer` in the crate graph and can't name `TypePolicy`
+    // directly).
+    let type_mode = match types {
+        TypePolicy::Strict => brink_ir::lir::TypeMode::Strict,
+        TypePolicy::Gradual => brink_ir::lir::TypeMode::Gradual,
+    };
+    let (program, lir_diagnostics) = brink_ir::lir::lower_to_program_with_type_mode(
+        &hir_refs,
+        &resolved.index,
+        &resolved.resolutions,
+        &paths,
+        type_mode,
+    );
 
     // LIR lowering itself is total (T1b-2: every construct lowers to a
     // program regardless of dialect) — a diagnostic pushed during lowering
