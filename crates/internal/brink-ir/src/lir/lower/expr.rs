@@ -360,10 +360,14 @@ fn try_const_fold(expr: &hir::Expr) -> Option<lir::ConstValue> {
 
 /// Narrow a folded [`lir::ConstValue`] to the ratified map-key domain
 /// (int/string/bool). A statically-visible non-key type (float, null,
-/// array, map) makes the whole map literal non-constant — it falls back to
-/// the `MapNew` runtime path, where key-domain validation happens at
-/// `MapNew` construction time (a turn-terminating fault) instead.
-fn const_value_to_map_key(v: lir::ConstValue) -> Option<lir::ConstMapKey> {
+/// array, map) returns `None` — shared by two callers with different
+/// fallbacks for that case: [`lower_map_literal`]'s expression-position path
+/// falls back to the `MapNew` runtime path (key-domain validation happens at
+/// `MapNew` construction time instead, a turn-terminating fault); `decls`'s
+/// `eval_const_expr` (#673) has no runtime construction step for a
+/// declaration default to fall back to, so it reports `None` as a real
+/// compile error (`E076`) instead.
+pub(super) fn const_value_to_map_key(v: lir::ConstValue) -> Option<lir::ConstMapKey> {
     match v {
         lir::ConstValue::Int(n) => Some(lir::ConstMapKey::Int(n)),
         lir::ConstValue::String(s) => Some(lir::ConstMapKey::Str(s)),

@@ -394,6 +394,278 @@ fn var_negative_default() {
     assert!(matches!(g.default, lir::ConstValue::Int(-42)));
 }
 
+// ─── #673: collection/struct literal declaration defaults ───────────
+//
+// `eval_const_expr` (decls) previously had no arm for `ArrayLiteral`/
+// `MapLiteral`/`StructLiteral` and fell through to `ConstValue::Null` with
+// no diagnostic. These fixtures deliberately do NOT use the `VAR p = 0` +
+// reassignment workaround idiom (`tests/tier1-brink/nested-index-
+// assignment/story.ink`'s precedent) — the literal is the declaration's
+// actual default.
+
+#[test]
+fn var_array_literal_default_folds_to_const_array_not_null() {
+    let p = lower_ink("VAR arr = #[1, 2, 3]\n");
+    let g = find_global(&p, "arr");
+    match &g.default {
+        lir::ConstValue::Array(items) => {
+            assert_eq!(
+                items,
+                &[
+                    lir::ConstValue::Int(1),
+                    lir::ConstValue::Int(2),
+                    lir::ConstValue::Int(3),
+                ]
+            );
+        }
+        other => panic!("expected ConstValue::Array, got {other:?} (silent Null regression)"),
+    }
+}
+
+#[test]
+fn var_map_literal_default_folds_to_const_map_not_null() {
+    let p = lower_ink("VAR m = #{\"a\": 1, \"b\": 2}\n");
+    let g = find_global(&p, "m");
+    match &g.default {
+        lir::ConstValue::Map(entries) => {
+            assert_eq!(
+                entries,
+                &[
+                    (
+                        lir::ConstMapKey::Str("a".to_string()),
+                        lir::ConstValue::Int(1)
+                    ),
+                    (
+                        lir::ConstMapKey::Str("b".to_string()),
+                        lir::ConstValue::Int(2)
+                    ),
+                ]
+            );
+        }
+        other => panic!("expected ConstValue::Map, got {other:?} (silent Null regression)"),
+    }
+}
+
+#[test]
+fn const_array_literal_default_folds_to_const_array() {
+    // The issue names both VAR and CONST declaration defaults.
+    let p = lower_ink("CONST arr = #[9, 8]\n");
+    let g = find_global(&p, "arr");
+    assert!(!g.mutable);
+    match &g.default {
+        lir::ConstValue::Array(items) => {
+            assert_eq!(items, &[lir::ConstValue::Int(9), lir::ConstValue::Int(8)]);
+        }
+        other => panic!("expected ConstValue::Array, got {other:?}"),
+    }
+}
+
+#[test]
+fn nested_array_literal_default_folds_recursively() {
+    let p = lower_ink("VAR grid = #[#[1, 2], #[3, 4]]\n");
+    let g = find_global(&p, "grid");
+    match &g.default {
+        lir::ConstValue::Array(items) => {
+            assert_eq!(
+                items,
+                &[
+                    lir::ConstValue::Array(vec![lir::ConstValue::Int(1), lir::ConstValue::Int(2)]),
+                    lir::ConstValue::Array(vec![lir::ConstValue::Int(3), lir::ConstValue::Int(4)]),
+                ]
+            );
+        }
+        other => panic!("expected nested ConstValue::Array, got {other:?}"),
+    }
+}
+
+#[test]
+fn struct_literal_default_is_a_real_compile_error_not_silent_null() {
+    let source =
+        "STRUCT Point = #{\n    x: float,\n    y: float,\n}\n\nVAR p = Point#{x: 1.0, y: 2.0}\n";
+    let (program, diagnostics) = lower_ink_with_warnings(source);
+    // Lowering is still total (matches E055/E056/E073/E074's existing
+    // "diagnostic doesn't stop `Some(program)`" convention) — the caller
+    // above `lower_to_program` (brink-db's `lir_query`) is what turns an
+    // Error-severity diagnostic into a blocked compile.
+    let program = program.expect("lowering stays total; severity partitioning happens upstream");
+    let g = find_global(&program, "p");
+    assert!(
+        matches!(g.default, lir::ConstValue::Null),
+        "struct defaults have no ConstValue representation yet — expected Null, got {:?}",
+        g.default
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E075),
+        "expected non-suppressible E075 for a struct literal VAR default, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn map_literal_default_with_non_scalar_key_is_a_real_compile_error() {
+    // Float is not in the ratified map-key domain (int/string/bool) —
+    // mid-story `MapNew` faults on this at runtime; a declaration default
+    // has no runtime construction step to fault at, so this must be a
+    // compile-time diagnostic, not a silently-dropped entry.
+    let source = "VAR m = #{3.5: 1}\n";
+    let (program, diagnostics) = lower_ink_with_warnings(source);
+    let program = program.expect("lowering stays total");
+    let g = find_global(&program, "m");
+    assert!(
+        matches!(&g.default, lir::ConstValue::Map(entries) if entries.is_empty()),
+        "expected the invalid-key entry to be dropped from the map, got {:?}",
+        g.default
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E076),
+        "expected non-suppressible E076 for a non-scalar map key in a VAR default, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn array_literal_default_with_non_constant_element_is_a_real_compile_error() {
+    // #679 review: a function call can never constant-fold — before E077
+    // the element recursed into `eval_const_expr`'s catch-all and silently
+    // became `Null`, #673's silent-Null bug one level down inside the
+    // literal. Keyed off the source expr *kind* (a call), not the folded
+    // result.
+    let source = "VAR arr = #[f(), 2]\n\n=== function f()\n~ return 1\n";
+    let (program, diagnostics) = lower_ink_with_warnings(source);
+    let program = program.expect("lowering stays total");
+    let g = find_global(&program, "arr");
+    assert!(
+        matches!(
+            &g.default,
+            lir::ConstValue::Array(items)
+                if items.as_slice() == [lir::ConstValue::Null, lir::ConstValue::Int(2)]
+        ),
+        "the never-constant element still folds to Null (now diagnosed, not silent), got {:?}",
+        g.default
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E077),
+        "expected non-suppressible E077 for a non-constant array element in a VAR default, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn map_literal_default_with_non_constant_value_is_a_real_compile_error() {
+    // #679 review: same E077 story as the array-element test, for a map
+    // *value*. (A never-constant map *key* is already E076 — it folds to
+    // Null, outside the scalar key domain.)
+    let source = "VAR m = #{\"a\": f()}\n\n=== function f()\n~ return 1\n";
+    let (program, diagnostics) = lower_ink_with_warnings(source);
+    let program = program.expect("lowering stays total");
+    let g = find_global(&program, "m");
+    assert!(
+        matches!(
+            &g.default,
+            lir::ConstValue::Map(entries)
+                if entries.as_slice()
+                    == [(
+                        lir::ConstMapKey::Str("a".to_string()),
+                        lir::ConstValue::Null
+                    )]
+        ),
+        "the never-constant value still folds to Null (now diagnosed, not silent), got {:?}",
+        g.default
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E077),
+        "expected non-suppressible E077 for a non-constant map value in a VAR default, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn nested_array_literal_with_non_constant_element_propagates_e077() {
+    // #679 review, nested case: the outer element is itself a literal (a
+    // constant-foldable *kind*), so the outer check passes and the E077
+    // must come from the recursion into the inner literal's own
+    // per-element check — the hole must not reopen one level down.
+    let source = "VAR grid = #[#[f()], #[2]]\n\n=== function f()\n~ return 1\n";
+    let (program, diagnostics) = lower_ink_with_warnings(source);
+    let program = program.expect("lowering stays total");
+    let g = find_global(&program, "grid");
+    assert!(
+        matches!(
+            &g.default,
+            lir::ConstValue::Array(items)
+                if items.as_slice()
+                    == [
+                        lir::ConstValue::Array(vec![lir::ConstValue::Null]),
+                        lir::ConstValue::Array(vec![lir::ConstValue::Int(2)]),
+                    ]
+        ),
+        "the nested never-constant element still folds to Null (now diagnosed), got {:?}",
+        g.default
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E077),
+        "expected E077 to propagate out of the nested literal, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn constant_infix_array_element_does_not_false_positive_e077() {
+    // The E077 check recurses through Prefix/Infix — `1 + 2` and `-3` are
+    // constant-foldable kinds and must not be flagged.
+    let source = "VAR arr = #[1 + 2, -3]\n";
+    let (program, diagnostics) = lower_ink_with_warnings(source);
+    let program = program.expect("lowering stays total");
+    let g = find_global(&program, "arr");
+    assert!(
+        matches!(
+            &g.default,
+            lir::ConstValue::Array(items)
+                if items.as_slice() == [lir::ConstValue::Int(3), lir::ConstValue::Int(-3)]
+        ),
+        "constant infix/prefix elements fold for real, got {:?}",
+        g.default
+    );
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E077),
+        "constant-foldable elements must not trip E077, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn const_reference_array_element_folds_and_does_not_false_positive_e077() {
+    // A `CONST` reference is a `Path` — a constant-foldable kind. It must
+    // resolve through `const_values` to the real value and must not trip
+    // E077 (the check is keyed off the source expr kind, and `Path`
+    // constness depends on resolution — deliberately not flagged).
+    let source = "CONST SOME_CONST = 7\nVAR arr = #[SOME_CONST, 2]\n";
+    let (program, diagnostics) = lower_ink_with_warnings(source);
+    let program = program.expect("lowering stays total");
+    let g = find_global(&program, "arr");
+    assert!(
+        matches!(
+            &g.default,
+            lir::ConstValue::Array(items)
+                if items.as_slice() == [lir::ConstValue::Int(7), lir::ConstValue::Int(2)]
+        ),
+        "CONST-reference element folds to the constant's value, got {:?}",
+        g.default
+    );
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E077),
+        "a CONST-reference element must not trip E077, got {diagnostics:?}"
+    );
+}
+
 // ─── Lists ──────────────────────────────────────────────────────────
 
 #[test]
@@ -3485,8 +3757,16 @@ fn chained_field_write_emits_e074() {
 
 #[test]
 fn single_level_field_write_lowers_via_take_make_mut_write_back() {
-    let src = "STRUCT Point = #{x: float, y: float}\nVAR p = Point#{x: 1.0, y: 2.0}\n\
-        ~ p.x = 9.0\nHello.\n";
+    // #673: a struct literal is no longer a legal VAR *declaration default*
+    // (that now emits a real E075 diagnostic, not a silent Null) — this
+    // test's actual concern is the RMW field-write desugaring, so `p` gets
+    // a scalar placeholder default (no TM-2 annotation here, so `types =
+    // gradual`'s advisory-only E063 is the worst this scalar/struct
+    // mismatch could trigger) and the real `Point` value is constructed via
+    // assignment, same as `tests/tier1-brink/struct-construct-read-write/
+    // story.ink`'s established pattern.
+    let src = "STRUCT Point = #{x: float, y: float}\nVAR p = 0\n\
+        ~ p = Point#{x: 1.0, y: 2.0}\n~ p.x = 9.0\nHello.\n";
     let (program, diags) = lower_ink_with_warnings(src);
     assert!(
         diags
@@ -3560,8 +3840,19 @@ fn gradual_construction_field_mismatch_uses_fault_sentinel_shape_id() {
 
 #[test]
 fn strict_mode_known_shape_field_read_uses_static_offset() {
-    let src = "STRUCT Point = #{x: float, y: float}\nVAR p: Point = Point#{x: 1.0, y: 2.0}\n\
-        ~ temp v = p.y\nHello.\n";
+    // #673: `VAR p: Point = Point#{...}` used to be exactly the pattern
+    // `eval_const_expr` silently dropped to `Null` — now a real E075. `p`
+    // gets the same `VAR p: Point = 0` + assignment shape
+    // `tm4c_structs_codegen.rs`'s `strict_and_gradual_produce_equivalent_
+    // output_for_well_formed_program` already establishes (a scalar
+    // placeholder default under a struct annotation doesn't trip E063 —
+    // that fixture already proves it compiles clean under strict): shape
+    // resolution for the static-offset decision is driven purely by the
+    // TM-2 annotation (`structs::build_global_shape_map` reads
+    // `var.annotation`, never the default expression), so the placeholder
+    // default doesn't affect what this test actually checks.
+    let src = "STRUCT Point = #{x: float, y: float}\nVAR p: Point = 0\n\
+        ~ p = Point#{x: 1.0, y: 2.0}\n~ temp v = p.y\nHello.\n";
     let (program, diags) = lower_ink_with_type_mode(src, lir::TypeMode::Strict);
     assert!(
         diags
@@ -3590,8 +3881,14 @@ fn gradual_mode_never_emits_static_offset_even_with_annotation() {
     // (the default) — the annotation is "optional seasoning" there, never
     // enforced, so trusting it for a static offset would be unsound (see
     // `expr::static_offset_for`'s doc). Must fall back to the by-name op.
-    let src = "STRUCT Point = #{x: float, y: float}\nVAR p: Point = Point#{x: 1.0, y: 2.0}\n\
-        ~ temp v = p.y\nHello.\n";
+    // #673: same fixture rewrite as
+    // `strict_mode_known_shape_field_read_uses_static_offset` above — a
+    // struct literal is no longer legal as the declaration default itself
+    // (real E075 now), so `p` gets a scalar placeholder default and the
+    // annotation stays for this test's actual point (the annotation being
+    // *ignored* under gradual).
+    let src = "STRUCT Point = #{x: float, y: float}\nVAR p: Point = 0\n\
+        ~ p = Point#{x: 1.0, y: 2.0}\n~ temp v = p.y\nHello.\n";
     let (program, diags) = lower_ink_with_warnings(src);
     assert!(
         diags

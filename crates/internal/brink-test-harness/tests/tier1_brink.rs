@@ -103,6 +103,20 @@ fn nested_index_assignment_is_rmw() {
     assert_case("nested-index-assignment");
 }
 
+// ── #673: collection literals as VAR/CONST declaration defaults ─────────
+//
+// Deliberately does NOT use the `VAR p = 0` + reassignment workaround idiom
+// this corpus otherwise relies on everywhere (`nested-index-assignment`'s
+// precedent, and every stdlib-* case above) — the array/map literal here IS
+// the declaration's actual default, proving `eval_const_expr` constant-folds
+// it into a real `ConstValue::Array`/`Map` instead of silently compiling to
+// `Null` (the pre-#673 bug).
+
+#[test]
+fn collection_literal_declaration_defaults_are_not_silently_null() {
+    assert_case("collection-literal-declaration-defaults");
+}
+
 // ── TM-4c (#666): structs — construction/read/write, nesting, chains ─────
 
 #[test]
@@ -278,6 +292,7 @@ fn every_case_directory_has_a_test() {
         "for-in-array",
         "for-in-map",
         "nested-index-assignment",
+        "collection-literal-declaration-defaults",
         "break-continue",
         "if-else-chain",
         "stdlib-len-and-contains",
@@ -414,6 +429,80 @@ fn insert_with_an_rvalue_first_argument_is_a_compile_error() {
             .iter()
             .any(|d| d.code == brink_compiler::DiagnosticCode::E055),
         "expected E055, got {diags:?}"
+    );
+}
+
+// ── #673: struct literal as a VAR/CONST declaration default ─────────────
+//
+// `eval_const_expr` has no `ConstValue` representation for a record (that's
+// a format question outside this fix's fence) — a struct construction
+// literal used directly as a declaration default is a real, non-suppressible
+// compile error (E075) through the full `compile_with_options` entry point,
+// never a silently-compiled `Null`.
+
+#[test]
+fn struct_literal_declaration_default_is_a_real_compile_error() {
+    let source = "STRUCT Point = #{\n    x: float,\n    y: float,\n}\n\nVAR p = Point#{x: 1.0, y: 2.0}\nHello.\n-> END\n";
+    let err = compile_brink(source)
+        .expect_err("struct literal declaration default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E075),
+        "expected E075, got {diags:?}"
+    );
+}
+
+#[test]
+fn map_literal_declaration_default_with_non_scalar_key_is_a_real_compile_error() {
+    // Float is outside the ratified map-key domain (int/string/bool) — a
+    // declaration default has no `MapNew` runtime-construction step to fault
+    // at (unlike a mid-story map literal), so this must be a compile error.
+    let source = "VAR m = #{3.5: 1}\nHello.\n-> END\n";
+    let err = compile_brink(source)
+        .expect_err("non-scalar map key in a declaration default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E076),
+        "expected E076, got {diags:?}"
+    );
+}
+
+#[test]
+fn array_literal_declaration_default_with_non_constant_element_is_a_real_compile_error() {
+    // #679 review: a function call inside the literal can never
+    // constant-fold — a declaration default is baked into `StoryData` at
+    // compile time, with no runtime construction step left to evaluate the
+    // element at. Before E077 the element silently compiled to `Null`
+    // (#673's silent-Null bug one level down, inside the literal).
+    let source = "VAR arr = #[f(), 2]\nHello.\n-> END\n\n=== function f()\n~ return 1\n";
+    let err = compile_brink(source)
+        .expect_err("non-constant array element in a declaration default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E077),
+        "expected E077, got {diags:?}"
+    );
+}
+
+#[test]
+fn map_literal_declaration_default_with_non_constant_value_is_a_real_compile_error() {
+    // #679 review: same E077 story as the array-element test, for a map
+    // *value*. (A never-constant map *key* is already E076.)
+    let source = "VAR m = #{\"a\": f()}\nHello.\n-> END\n\n=== function f()\n~ return 1\n";
+    let err = compile_brink(source)
+        .expect_err("non-constant map value in a declaration default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E077),
+        "expected E077, got {diags:?}"
     );
 }
 

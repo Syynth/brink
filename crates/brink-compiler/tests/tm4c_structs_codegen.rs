@@ -80,22 +80,18 @@ fn all_opcodes(data: &StoryData) -> Vec<Opcode> {
 
 const POINT_SRC: &str = "STRUCT Point = #{x: float, y: float}\n";
 
-// NOTE (scopeNotes): `VAR p = Point#{...}` — a struct construction literal
-// used directly as a `VAR`'s *declaration default* — silently compiles to
-// `Value::Null` instead of the constructed record. This is a **pre-existing**
-// gap in `brink-ir::lir::lower::decls::eval_const_expr` (the compile-time
-// constant-folding path `VAR`/`CONST` defaults go through, entirely separate
-// from `expr::lower_expr`'s runtime-construction path this PR adds to):
-// `eval_const_expr` has no arm for `ArrayLiteral`/`MapLiteral`/`StructLiteral`
-// and falls through to its catch-all `_ => ConstValue::Null` — confirmed to
-// affect T1b array/map literals too (`VAR arr = #[1,2,3]` also silently
-// defaults to `Value::Null`, verified against this same PR's build), not
-// something TM-4c introduced. The established T1b corpus workaround (see
-// `tests/tier1-brink/nested-index-assignment/story.ink`) is exactly what
-// every fixture below does: declare a scalar placeholder default (`VAR p =
-// 0`) and construct/reassign in a real statement afterward. Flagged here,
-// not fixed — fixing `eval_const_expr` is `brink-ir`-decls-layer work
-// unrelated to structs specifically, out of TM-4c's scope.
+// NOTE: every fixture below declares a scalar placeholder default (`VAR p =
+// 0`) and constructs/reassigns the real struct value in a statement
+// afterward, rather than using a struct construction literal directly as the
+// `VAR`'s declaration default. That was originally a required workaround —
+// `eval_const_expr` (`brink-ir::lir::lower::decls`, the compile-time
+// constant-folding path `VAR`/`CONST` defaults go through) silently compiled
+// a struct/array/map literal default to `Value::Null` with no diagnostic.
+// Fixed by #673: a struct literal used as a declaration default is now a
+// real, non-suppressible compile error (`E075`) instead of a silent drop —
+// so the fixtures below keep this shape not because it's still required to
+// dodge a bug, but because it's still the natural way to give a struct-typed
+// global a real starting value before constructing it.
 
 #[test]
 fn construction_read_and_write_run_end_to_end() {
@@ -111,8 +107,15 @@ fn construction_read_and_write_run_end_to_end() {
 
 #[test]
 fn struct_shapes_table_is_populated_and_ordered_by_declaration() {
+    // #673: a struct construction literal is no longer legal as a `VAR`
+    // declaration default (a real E075 now, not a silent `Value::Null`) —
+    // `build_shape_table` populates every declared `STRUCT` unconditionally
+    // from the declarations themselves (`hir_file.structs`), independent of
+    // any construction site, so this test never needed one; `A` is
+    // constructed in an ordinary `temp` instead, matching the established
+    // "construct after declaration" pattern.
     let src = "STRUCT A = #{v: int}\nSTRUCT B = #{v: int}\nSTRUCT C = #{v: int}\n\
-        VAR a = A#{v: 1}\nHello.\n-> DONE\n";
+        ~ temp a = A#{v: 1}\nHello.\n-> DONE\n";
     let data = compile_mem(src, Dialect::Brink, TypePolicy::Gradual).unwrap();
     assert_eq!(data.struct_shapes.len(), 3);
     let names: Vec<&str> = {

@@ -1169,6 +1169,38 @@ pub enum DiagnosticCode {
     /// backstop for a suppressed analysis diagnostic.
     E074,
 
+    // ── decls constant-folding backstops (#673) ───────────────────────
+    /// A struct construction literal (`Name#{…}`) appears as a `VAR`/`CONST`
+    /// declaration's default. `eval_const_expr` (`brink-ir::lir::lower::
+    /// decls`) has no compile-time representation for a record value — a
+    /// global's default is baked into `StoryData` at compile time, so there
+    /// is no runtime construction path to defer to the way a mid-story
+    /// `p = Point#{…}` assignment has. A real, non-suppressible compile
+    /// error (never a silent `Null`) until declaration-default structs get
+    /// a design (`ConstValue` would need a struct-carrying variant).
+    E075,
+    /// A map literal used as a `VAR`/`CONST` declaration default has a key
+    /// that isn't a compile-time-constant scalar in the ratified map-key
+    /// domain (int/string/bool — value-model-spec §4). Mid-story map
+    /// construction (`MapNew`) faults on this at runtime
+    /// (`InvalidMapKeyType`); a declaration default has no runtime
+    /// construction step to fault at, so this is the compile-time
+    /// equivalent — a real error, never a silent `Null`.
+    E076,
+    /// An array element or map value in a `VAR`/`CONST` declaration default
+    /// has a source expression kind that can never constant-fold — a
+    /// function call, postfix indexing, field access, or `++`/`--`. A
+    /// declaration default is baked into `StoryData` at compile time, so
+    /// there is no runtime construction step left to evaluate the element
+    /// at; without this diagnostic the element recursed into
+    /// `eval_const_expr`'s catch-all and silently became `Null` — #673's
+    /// silent-`Null` bug one level down, inside the literal (#679 review).
+    /// Keyed off the source expression *kind*, never the folded result: an
+    /// `Expr::Null` produced by HIR error recovery must not double-report,
+    /// and a bare `Path` reference (whose constness depends on resolution —
+    /// the pre-existing, separately-tracked gap #679's scope notes name)
+    /// keeps its existing behavior.
+    E077,
     // ── TM-3 completion: conversion intrinsics (docs/typed-mode-spec.md
     // §4, maintainer ruling 2026-07-13, issue #659) ──────────────────────
     /// Under `types = strict`, an unresolved (builtin, not author-shadowed)
@@ -1259,6 +1291,9 @@ impl DiagnosticCode {
             Self::E072 => "E072",
             Self::E073 => "E073",
             Self::E074 => "E074",
+            Self::E075 => "E075",
+            Self::E076 => "E076",
+            Self::E077 => "E077",
             Self::E078 => "E078",
         }
     }
@@ -1345,6 +1380,15 @@ impl DiagnosticCode {
                 "struct construction literal names an unresolved STRUCT shape at LIR lowering"
             }
             Self::E074 => "chained field-write projection (p.a.b = v) is not supported",
+            Self::E075 => {
+                "struct construction literal is not supported as a VAR/CONST declaration default"
+            }
+            Self::E076 => {
+                "map literal key in a VAR/CONST declaration default is not a compile-time-constant scalar (int/string/bool)"
+            }
+            Self::E077 => {
+                "array element or map value in a VAR/CONST declaration default is not a compile-time-constant expression"
+            }
             Self::E078 => "int()/float() argument is outside the permissive numeric+bool domain",
         }
     }
@@ -1448,6 +1492,9 @@ impl DiagnosticCode {
             "E072" => Some(Self::E072),
             "E073" => Some(Self::E073),
             "E074" => Some(Self::E074),
+            "E075" => Some(Self::E075),
+            "E076" => Some(Self::E076),
+            "E077" => Some(Self::E077),
             "E078" => Some(Self::E078),
             _ => None,
         }
