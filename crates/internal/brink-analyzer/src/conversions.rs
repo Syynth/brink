@@ -224,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn int_of_a_divert_target_literal_is_e075() {
+    fn int_of_a_divert_target_literal_is_e078() {
         let (hir, _index, res) =
             build("=== knot ===\nHello.\n-> DONE\n=== main ===\n~ x = int(-> knot)\n-> DONE\n");
         let diags = check(&[(FileId(0), &hir)], &res);
@@ -234,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn float_of_an_array_literal_is_e075() {
+    fn float_of_an_array_literal_is_e078() {
         let (hir, _index, res) = build("=== main ===\n~ x = float(#[1, 2])\n-> DONE\n");
         let diags = check(&[(FileId(0), &hir)], &res);
         assert_eq!(diags.len(), 1, "{diags:?}");
@@ -243,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn int_of_a_map_literal_is_e075() {
+    fn int_of_a_map_literal_is_e078() {
         let (hir, _index, res) = build("=== main ===\n~ x = int(#{\"a\": 1})\n-> DONE\n");
         let diags = check(&[(FileId(0), &hir)], &res);
         assert_eq!(diags.len(), 1, "{diags:?}");
@@ -251,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn int_of_a_struct_literal_is_e075() {
+    fn int_of_a_struct_literal_is_e078() {
         let (hir, _index, res) =
             build("STRUCT Point = #{x: float}\n=== main ===\n~ y = int(Point#{x: 1.0})\n-> DONE\n");
         let diags = check(&[(FileId(0), &hir)], &res);
@@ -260,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn int_of_a_list_literal_is_e075() {
+    fn int_of_a_list_literal_is_e078() {
         let (hir, _index, res) =
             build("LIST Colors = red, blue\n=== main ===\n~ x = int((red))\n-> DONE\n");
         let diags = check(&[(FileId(0), &hir)], &res);

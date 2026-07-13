@@ -824,7 +824,7 @@ fn string_of_a_divert_target_never_faults() {
 }
 
 #[test]
-fn strict_mode_rejects_int_of_a_divert_target_literal_with_e075() {
+fn strict_mode_rejects_int_of_a_divert_target_literal_with_e078() {
     let source = "=== knot ===\nHello.\n-> DONE\n=== main ===\n~ x = int(-> knot)\n-> DONE\n";
     let options = AnalysisOptions {
         dialect: Dialect::Brink,
