@@ -369,6 +369,14 @@ fn walk_expr(expr: &Expr, v: &mut impl HirVisitor) {
         Expr::FieldAccess(fa) => {
             walk_expr(&fa.base, v);
         }
+        // T1c `#fn(target, args…)`: the target is a static `Path` field
+        // (not an `Expr` child, same as `Call`'s path); only the bound
+        // arguments descend.
+        Expr::FnLiteral(fl) => {
+            for arg in &fl.args {
+                walk_expr(arg, v);
+            }
+        }
     }
 }
 

@@ -1045,3 +1045,44 @@ fn every_stdlib_name_is_rejected_under_strict_ink_and_compiles_under_brink() {
             .unwrap_or_else(|e| panic!("`{name}` must compile under brink dialect: {e:?}"));
     }
 }
+
+// ── T1c-1 (#699): `#fn(…)` function values — lowering fence ─────────────
+//
+// The T1c-1 slice ships grammar + HIR + dialect gate + creation-site
+// diagnostics + typing, but NO LIR/codegen/VM (docs/t1c-spec.md §11). A
+// program that actually uses `#fn` under `dialect = brink` must be a clean,
+// targeted compile error (E052, the "brink extension not yet implemented"
+// class) — never a silent drop or a miscompiled Null.
+
+#[test]
+fn fn_literal_under_brink_dialect_is_a_targeted_not_yet_implemented_error() {
+    let source = "=== function heal(hp) ===\n~ return hp + 1\n\n\
+                  === main ===\n~ temp f = #fn(heal, 1)\nDone.\n-> END\n";
+    let err = compile_brink(source)
+        .expect_err("#fn must reject at lowering in T1c-1 (no LIR/codegen yet)");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E052),
+        "expected E052 lowering rejection, got {diags:?}"
+    );
+}
+
+#[test]
+fn fn_literal_declaration_default_is_a_targeted_error_not_a_silent_null() {
+    // A `VAR` default has no runtime construction step — without a targeted
+    // arm this would silently bake `Null` into StoryData (the exact silent
+    // drop class the house rules forbid).
+    let source = "=== function heal(hp) ===\n~ return hp + 1\n\n\
+                  VAR f = #fn(heal, 1)\nHello.\n-> END\n";
+    let err = compile_brink(source)
+        .expect_err("#fn as a declaration default must be a compile error in T1c-1");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E052),
+        "expected E052 lowering rejection, got {diags:?}"
+    );
+}

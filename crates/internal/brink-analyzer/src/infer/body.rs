@@ -281,6 +281,14 @@ impl InferPass<'_, '_> {
                 self.infer_expr(&fa.base);
                 Ty::Unknown
             }
+            // T1c `#fn(target, args…)` — typed in a later slice of T1c-1;
+            // arguments are still visited for their side effects.
+            Expr::FnLiteral(fl) => {
+                for arg in &fl.args {
+                    self.infer_expr(arg);
+                }
+                Ty::Unknown
+            }
         }
     }
 

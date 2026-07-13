@@ -548,6 +548,25 @@ pub enum Expr {
     /// `brink-analyzer`'s job (§6: "ink's static dotted paths... resolved
     /// first and win").
     FieldAccess(FieldAccessExpr),
+    /// `#fn(target, args…)` — function-value creation (brink extension,
+    /// T1c, docs/t1c-spec.md §2): partial application over the statically
+    /// named function `target`, binding a prefix of its declared params.
+    FnLiteral(FnLiteral),
+}
+
+/// `#fn(target, args…)`. `ptr` lets the dialect gate point its diagnostic
+/// at the exact literal, matching the sibling sigil-literal shapes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FnLiteral {
+    pub ptr: SyntaxNodePtr,
+    /// The static target path — a name (possibly dotted), never an
+    /// expression. Whether it resolves to a function definition is
+    /// `brink-analyzer`'s creation-site check (E079), not this shape's.
+    pub target: Path,
+    /// Bound-argument expressions, in source order — a prefix of the
+    /// target's declared param row (over-binding is E081; `ref`-param
+    /// binding discipline is E080).
+    pub args: Vec<Expr>,
 }
 
 /// `Name#{field: expr, …}`. `ptr` lets the dialect gate point its
@@ -720,6 +739,20 @@ pub fn display_expr(expr: &Expr) -> String {
         Expr::Index(idx) => format!("{}[{}]", display_expr(&idx.base), display_expr(&idx.index)),
         Expr::StructLiteral(sl) => format!("{}#{{...}}", sl.shape.text),
         Expr::FieldAccess(fa) => format!("{}.{}", display_expr(&fa.base), fa.field.text),
+        Expr::FnLiteral(fl) => {
+            let mut name = String::new();
+            for (i, seg) in fl.target.segments.iter().enumerate() {
+                if i > 0 {
+                    name.push('.');
+                }
+                name.push_str(&seg.text);
+            }
+            if fl.args.is_empty() {
+                format!("#fn({name})")
+            } else {
+                format!("#fn({name}, ...)")
+            }
+        }
     }
 }
 
@@ -1040,8 +1073,11 @@ pub enum DiagnosticCode {
     /// A brink-extension construct (block, sigil literal, indexing) was
     /// used under the `strict-ink` dialect.
     E051,
-    /// A brink-extension construct was used under the `brink` dialect, but
-    /// T1b-1 lowers nothing to LIR yet (lands in T1b-2).
+    /// A brink-extension construct parses and analyzes cleanly under the
+    /// `brink` dialect, but its LIR lowering hasn't landed yet. Originally
+    /// minted for T1b-1 (every T1b construct lowers since T1b-2, #570); now
+    /// fires for `#fn(…)` function values, whose lowering lands in T1c-2
+    /// (docs/t1c-spec.md §11).
     E052,
     /// Internal error: a T1b brink-extension HIR node (`LogicBlock`,
     /// `ArrayLiteral`, `MapLiteral`, `Index`) reached LIR lowering. The
@@ -1353,7 +1389,7 @@ impl DiagnosticCode {
             Self::E049 => "directive not supported on this target",
             Self::E050 => "directive does not take arguments",
             Self::E051 => "brink extension used under strict-ink dialect",
-            Self::E052 => "brink extension not yet implemented (lands in T1b-2)",
+            Self::E052 => "brink extension not yet implemented",
             Self::E053 => {
                 "internal: brink extension reached LIR lowering (dialect gate suppressed)"
             }
