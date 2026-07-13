@@ -1,7 +1,11 @@
 use brink_analyzer::AnalysisResult;
+use brink_db::ProjectDb;
+use brink_ir::FileId;
 use brink_syntax::SyntaxNode;
 use brink_syntax::ast::AstNode;
 use rowan::{TextRange, TextSize};
+
+use crate::inferred_types::enclosing_callable;
 
 /// The kind of inlay hint.
 pub enum InlayHintKind {
@@ -10,6 +14,11 @@ pub enum InlayHintKind {
     /// A host value label after a literal argument (e.g. `5 ⟨HarborGate⟩`) —
     /// the static value source's label for that literal (#174).
     Value,
+    /// An inferred type label after an unannotated `temp` declaration
+    /// (TM-5, #621) — reads `ProjectDb::infer_body`, the FG-narrowed
+    /// per-def seam; never shown when the author already wrote a `: type`
+    /// ascription (TM-2) — that's already visible in the source.
+    InferredType,
 }
 
 /// An inlay hint to display in the editor.
@@ -24,10 +33,14 @@ pub struct InlayHint {
 ///
 /// `host_values` (Tier 3, #174) supplies labels for `host`-source semantic
 /// types from the pushed cache; pass `None` when no host is attached (static
-/// value labels still resolve from the manifest).
+/// value labels still resolve from the manifest). `db`/`file_id` back the
+/// TM-5 (#621) inferred-type hints on unannotated `temp` declarations —
+/// `db` is the same `ProjectDb` `analysis` was computed from/against.
 pub fn inlay_hints(
     root: &SyntaxNode,
     analysis: &AnalysisResult,
+    db: &ProjectDb,
+    file_id: FileId,
     range: TextRange,
     host_values: Option<&crate::HostValues>,
 ) -> Vec<InlayHint> {
@@ -49,10 +62,60 @@ pub fn inlay_hints(
         {
             let name = path_node.full_name();
             collect_param_hints(&name, target.arg_list(), analysis, host_values, &mut hints);
+        } else if let Some(temp_decl) = brink_syntax::ast::TempDecl::cast(node.clone()) {
+            collect_inferred_type_hint(&temp_decl, analysis, db, file_id, &mut hints);
         }
     }
 
     hints
+}
+
+/// TM-5 (#621): an inferred-type inlay after an *unannotated* `temp`
+/// declaration's name (`~ temp x = …` -> `~ temp x: int = …` as a ghost
+/// label, never inserted into the source). Silently does nothing when the
+/// author already wrote a `: type` ascription, the temp doesn't resolve to
+/// its own declaration symbol, or inference can't pin down a concrete type
+/// (`Unknown` — showing that would be noise, not information).
+fn collect_inferred_type_hint(
+    temp_decl: &brink_syntax::ast::TempDecl,
+    analysis: &AnalysisResult,
+    db: &ProjectDb,
+    file_id: FileId,
+    hints: &mut Vec<InlayHint>,
+) {
+    if temp_decl.type_annotation().is_some() {
+        return;
+    }
+    let Some(identifier) = temp_decl.identifier() else {
+        return;
+    };
+    let Some(name) = temp_decl.name() else {
+        return;
+    };
+    let ident_range = identifier.syntax().text_range();
+
+    // Resolve to this temp's own declaration-site `SymbolInfo` so its
+    // `Scope` gives us the enclosing knot/stitch to key `infer_body` by.
+    let Some(info) = analysis.index.symbols.values().find(|info| {
+        info.file == file_id && info.kind == brink_ir::SymbolKind::Temp && info.range == ident_range
+    }) else {
+        return;
+    };
+
+    let Some(ty) = enclosing_callable(analysis, info)
+        .and_then(|def| db.infer_body(def))
+        .and_then(|body| body.locals.get(&name).cloned())
+        .filter(|ty| !ty.is_unknown())
+    else {
+        return;
+    };
+
+    hints.push(InlayHint {
+        offset: ident_range.end(),
+        label: format!(": {}", ty.display()),
+        kind: InlayHintKind::InferredType,
+        padding_right: false,
+    });
 }
 
 /// Collect parameter name inlay hints for a call with the given callee name.
@@ -190,13 +253,15 @@ mod tests {
 -> END
 ";
         let mut session = IdeSession::new();
-        session.update_and_analyze("test.ink", src.to_string());
+        let file_id = session.update_and_analyze("test.ink", src.to_string());
         let analysis = session.analysis().expect("analysis");
 
         let parsed = brink_syntax::parse(src);
         let hints = inlay_hints(
             &parsed.syntax(),
             analysis,
+            session.db(),
+            file_id,
             TextRange::new(TextSize::new(0), TextSize::of(src)),
             None,
         );
@@ -216,7 +281,7 @@ mod tests {
         // conveys the type, so the inlay shows just `color:` (spec §9).
         let src = "EXTERNAL set_tint(color)\n~ set_tint(\"#FF8800\")\n-> END\n";
         let mut session = IdeSession::new();
-        session.update_and_analyze("test.ink", src.to_string());
+        let file_id = session.update_and_analyze("test.ink", src.to_string());
         session.set_host_manifest(HostManifest {
             externals: vec![ManifestExternal {
                 name: "set_tint".into(),
@@ -247,6 +312,8 @@ mod tests {
         let hints = inlay_hints(
             &parsed.syntax(),
             analysis,
+            session.db(),
+            file_id,
             TextRange::new(TextSize::new(0), TextSize::of(src)),
             None,
         );
@@ -270,7 +337,7 @@ EXTERNAL set_switch(id, on)
 -> END
 ";
         let mut session = IdeSession::new();
-        session.update_and_analyze("test.ink", src.to_string());
+        let file_id = session.update_and_analyze("test.ink", src.to_string());
         // set_switch(id: switch_id, on: bool); switch_id maps "5" -> "HarborGate".
         session.set_host_manifest(HostManifest {
             externals: vec![ManifestExternal {
@@ -312,6 +379,8 @@ EXTERNAL set_switch(id, on)
         let hints = inlay_hints(
             &parsed.syntax(),
             analysis,
+            session.db(),
+            file_id,
             TextRange::new(TextSize::new(0), TextSize::of(src)),
             None,
         );
@@ -339,7 +408,7 @@ EXTERNAL set_switch(id, on)
 
         let src = "EXTERNAL give_item(id)\n~ give_item(1)\n-> END\n";
         let mut session = IdeSession::new();
-        session.update_and_analyze("test.ink", src.to_string());
+        let file_id = session.update_and_analyze("test.ink", src.to_string());
         session.set_host_manifest(HostManifest {
             externals: vec![ManifestExternal {
                 name: "give_item".into(),
@@ -379,6 +448,8 @@ EXTERNAL set_switch(id, on)
         let hints = inlay_hints(
             &parsed.syntax(),
             analysis,
+            session.db(),
+            file_id,
             range,
             Some(session.host_values()),
         );
@@ -390,10 +461,108 @@ EXTERNAL set_switch(id, on)
         );
 
         // Without the cache (no host attached), no host label.
-        let bare = inlay_hints(&parsed.syntax(), analysis, range, None);
+        let bare = inlay_hints(
+            &parsed.syntax(),
+            analysis,
+            session.db(),
+            file_id,
+            range,
+            None,
+        );
         assert!(
             !bare.iter().any(|h| matches!(h.kind, InlayHintKind::Value)),
             "no host label without the cache",
+        );
+    }
+
+    // ── TM-5 (#621): inferred-type inlay hints on unannotated `temp` decls ──
+
+    #[test]
+    fn inferred_type_hint_after_unannotated_temp_in_a_function_body() {
+        let src = "=== function heal(hp) ===\n~ temp bonus = hp + 1\n~ return bonus\n";
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.ink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        let parsed = brink_syntax::parse(src);
+        let hints = inlay_hints(
+            &parsed.syntax(),
+            analysis,
+            session.db(),
+            file_id,
+            TextRange::new(TextSize::new(0), TextSize::of(src)),
+            None,
+        );
+        let inferred: Vec<_> = hints
+            .iter()
+            .filter(|h| matches!(h.kind, InlayHintKind::InferredType))
+            .collect();
+        assert_eq!(
+            inferred.len(),
+            1,
+            "{:?}",
+            hints.iter().map(|h| &h.label).collect::<Vec<_>>()
+        );
+        assert_eq!(inferred[0].label, ": int");
+        // Placed right after `bonus`, before ` = hp + 1`.
+        let bonus_end = TextSize::try_from(src.find("bonus").expect("present") + "bonus".len())
+            .expect("offset");
+        assert_eq!(inferred[0].offset, bonus_end);
+    }
+
+    #[test]
+    fn no_inferred_type_hint_when_temp_already_has_an_annotation() {
+        let src = "=== function heal(hp) ===\n~ temp bonus: int = hp + 1\n~ return bonus\n";
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.ink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        let parsed = brink_syntax::parse(src);
+        let hints = inlay_hints(
+            &parsed.syntax(),
+            analysis,
+            session.db(),
+            file_id,
+            TextRange::new(TextSize::new(0), TextSize::of(src)),
+            None,
+        );
+        assert!(
+            !hints
+                .iter()
+                .any(|h| matches!(h.kind, InlayHintKind::InferredType)),
+            "an explicit ascription already shows the type in-source: {:?}",
+            hints.iter().map(|h| &h.label).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn no_inferred_type_hint_when_inference_cannot_resolve_one() {
+        // `unused` is a temp that's never read — inference leaves it
+        // `Unknown`, and showing that would be noise, not information.
+        let src =
+            "=== function heal(hp) ===\n~ temp unused = hp\n~ temp other = 1\n~ return other\n";
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.ink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        let parsed = brink_syntax::parse(src);
+        let hints = inlay_hints(
+            &parsed.syntax(),
+            analysis,
+            session.db(),
+            file_id,
+            TextRange::new(TextSize::new(0), TextSize::of(src)),
+            None,
+        );
+        let labels: Vec<_> = hints
+            .iter()
+            .filter(|h| matches!(h.kind, InlayHintKind::InferredType))
+            .map(|h| h.label.as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            vec![": int"],
+            "only `other` resolves, `unused` stays Unknown"
         );
     }
 }

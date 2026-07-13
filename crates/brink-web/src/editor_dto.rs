@@ -538,6 +538,7 @@ pub(crate) fn inlay_hint_kind_str(kind: &brink_ide::inlay_hints::InlayHintKind) 
     match kind {
         brink_ide::inlay_hints::InlayHintKind::Parameter => "parameter",
         brink_ide::inlay_hints::InlayHintKind::Value => "value",
+        brink_ide::inlay_hints::InlayHintKind::InferredType => "inferred_type",
     }
 }
 

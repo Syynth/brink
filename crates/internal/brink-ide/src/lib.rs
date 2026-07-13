@@ -12,6 +12,7 @@ pub mod formatting;
 pub mod hir_projection;
 pub mod hover;
 pub mod include_block;
+mod inferred_types;
 pub mod inlay_hints;
 pub mod line_context;
 pub mod line_convert;
