@@ -251,7 +251,18 @@ impl ContainerEmitter<'_> {
             }
 
             // ── Records (TM-4c) ──────────────────────────────────────
-            lir::Expr::RecordNew { shape_id, fields } => {
+            lir::Expr::RecordNew {
+                shape_id,
+                fields,
+                prelude,
+            } => {
+                // Stage every initializer in source order first (issue
+                // #676) — each pop-then-store is stack-neutral, so this
+                // adds no net stack growth before `fields` is pushed.
+                for (slot, _name, expr) in prelude {
+                    self.emit_expr(expr, false);
+                    self.emit(Opcode::DeclareTemp(*slot));
+                }
                 for f in fields {
                     self.emit_expr(f, false);
                 }

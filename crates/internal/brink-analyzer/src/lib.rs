@@ -195,6 +195,13 @@ pub fn per_file_diagnostics(
         // `dialect_gate`: the resolution records consulted always carry
         // this file's own id.
         out.extend(fn_values::check(&files, file_resolutions, index));
+        // Struct construction-literal duplicate-field check (E084, issue
+        // #675) — same brink-only rule, and unlike `structs::check`'s
+        // missing/extra/mistyped trio this runs under *both* `types`
+        // policies (see `structs`' module doc): a repeated field name is a
+        // structural mistake detectable from the literal alone, with no
+        // shape resolution or whole-project inference needed.
+        out.extend(structs::check_duplicates(&files));
     }
     out
 }

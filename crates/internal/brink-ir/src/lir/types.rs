@@ -732,15 +732,24 @@ pub enum Expr {
     },
 
     // ── Records (TM-4c, `docs/typed-mode-spec.md` §6) ───────────────
-    /// `Name#{field: expr, …}` construction. `fields` is already reordered
-    /// into the shape's *declaration* order (not source order) — see
-    /// `lir::lower::expr::lower_struct_literal`'s doc for why every
-    /// initializer is still evaluated in source order regardless (each
-    /// entry here may itself be a `GetTemp` read of a source-order-
-    /// evaluated synthetic temp, not the raw initializer expression).
+    /// `Name#{field: expr, …}` construction. `fields` is in the exact order
+    /// `RecordNew`'s VM opcode expects the values pushed — the shape's
+    /// *declaration* order for a well-formed literal, or source order for
+    /// the construction-fault sentinel path (`lower_struct_literal`'s doc).
+    /// `prelude` runs first (source order — the author's left-to-right
+    /// order), staging every supplied initializer's value into a synthetic
+    /// temp slot *before* any `fields` entry is pushed — codegen emits each
+    /// `prelude` triple as `<expr bytecode>; DeclareTemp(slot)` in order,
+    /// then `fields` (which, on the well-formed path, are `GetTemp` reads
+    /// of those slots reordered into shape order). This decouples
+    /// evaluation order from placement order (issue #676): shape order is
+    /// a memory-layout concern for `fields`, never an evaluation-order one.
+    /// Empty on the construction-fault path, where `fields` already *is*
+    /// source order and no reordering — hence no staging — is needed.
     RecordNew {
         shape_id: u32,
         fields: Vec<Expr>,
+        prelude: Vec<(u16, NameId, Expr)>,
     },
     /// `base.field` (read). `static_offset: Some(offset)` when
     /// `brink-ir`'s LIR lowering proved `base`'s shape at compile time

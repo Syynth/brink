@@ -131,6 +131,17 @@ STRUCT Point = #{                          // decl body MIRRORS the literal:
 - Missing/extra fields at construction: compile error (strict) /
   construction fault (gradual). Field offsets compile statically under
   strict (the performance payoff the structs ruling anticipated).
+- **Construction-literal initializers evaluate in source order** — the
+  order the author wrote them, left-to-right — never the shape's
+  declaration order, under either policy (RULED 2026-07-14, decision-log
+  "Struct construction literals: source-order evaluation, duplicate field
+  is a compile error", issue #676). Shape order is purely a memory-layout
+  concern for the compiled `RecordNew` push order; it never governs when
+  an initializer's side effect fires.
+- **A duplicate field in a construction literal is a compile error**
+  (`E084`) under both `types = gradual` and `types = strict` — the
+  repeated occurrence's initializer, including any side effect, is not
+  silently dropped (same ruling, issue #675).
 
 ## 7. What strict mode checks in plain-ink content — PROPOSED
 

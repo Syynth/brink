@@ -697,7 +697,7 @@ fn e052_retired_fn_literal_lowers_without_error() {
     }
 }
 
-// ─── Structs (E068–E071, E073, E074) ─────────────────────────────────
+// ─── Structs (E068–E071, E073, E074, E084) ───────────────────────────
 
 const POINT_SRC: &str = "STRUCT Point = #{\n    x: float,\n    y: float,\n}\n";
 
@@ -752,4 +752,18 @@ fn e073_unresolved_shape_reaches_lir_when_e068_suppressed() {
 fn e074_chained_field_write_projection() {
     let source = "STRUCT Inner = #{v: int}\nSTRUCT Outer = #{inner: Inner}\nVAR o = 0\n~ {\n    o = Outer#{inner: Inner#{v: 1}}\n    o.inner.v = 2\n}\nHi\n";
     assert_error_at(source, brink_options(), DiagnosticCode::E074, "o.inner.v");
+}
+
+#[test]
+fn e084_duplicate_field_under_gradual() {
+    // Policy-independent (issue #675): fires under the default `types =
+    // gradual` too, not just strict — the repeated occurrence is the span.
+    let source = format!("{POINT_SRC}~ temp p = Point#{{x: 1.0, x: 2.0, y: 3.0}}\nHi\n");
+    assert_error_at(&source, brink_options(), DiagnosticCode::E084, "x: 2.0");
+}
+
+#[test]
+fn e084_duplicate_field_under_strict() {
+    let source = format!("{POINT_SRC}~ temp p = Point#{{x: 1.0, x: 2.0, y: 3.0}}\nHi\n");
+    assert_error_at(&source, strict_options(), DiagnosticCode::E084, "x: 2.0");
 }
