@@ -1,8 +1,8 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use brink_analyzer::{
-    AnalysisOptions, AnalysisResult, BodyTypes, InferenceResult, InferredSig, Sig,
+    AnalysisOptions, AnalysisResult, BodyTypes, InferenceResult, InferredSig, Sig, SymbolMeta,
 };
 use brink_format::DefinitionId;
 use brink_ir::suppressions::Suppressions;
@@ -13,10 +13,11 @@ use tracing::debug;
 
 use crate::queries::{
     BrinkDatabase, CompileProduct, DefKey, LirProduct, ProjectInput, ResolvedProject, SourceFile,
-    analysis_query, diagnostics_query, include_graph_query, infer_body_query,
-    inferred_signature_query, lir_query, lowered_query, parse_query, per_file_diagnostics_query,
-    resolutions_index_query, resolve_query, signature_query, story_data_query, suppressions_query,
-    symbol_index_query, type_diagnostics_query, type_inference_query,
+    analysis_query, call_site_diagnostics_query, call_site_metas_query, diagnostics_query,
+    include_graph_query, infer_body_query, inferred_signature_query, lir_query, lowered_query,
+    parse_query, per_file_diagnostics_query, resolutions_index_query, resolve_query,
+    signature_query, story_data_query, suppressions_query, symbol_index_query,
+    type_diagnostics_query, type_inference_query, value_meta_query,
 };
 
 /// Stateful incremental project database.
@@ -356,6 +357,34 @@ impl ProjectDb {
     pub fn per_file_diagnostics(&self, id: FileId) -> Option<Arc<Vec<Diagnostic>>> {
         let file = *self.files.get(&id)?;
         Some(per_file_diagnostics_query(&self.salsa, self.project, file))
+    }
+
+    /// One file's VAR/CONST/LIST initializer/doc enrichment (issue #750 /
+    /// FG-3 completion) — purely presentational `symbol_meta` entries, no
+    /// diagnostics. `None` for an unknown file id. A body edit in a
+    /// *different* file leaves this `Arc`'s pointer identity untouched.
+    pub fn file_value_meta(&self, id: FileId) -> Option<Arc<BTreeMap<DefinitionId, SymbolMeta>>> {
+        let file = *self.files.get(&id)?;
+        Some(value_meta_query(&self.salsa, self.project, file))
+    }
+
+    /// One file's external call-site literal checks (`E041`/`E042`, issue
+    /// #750 / FG-3 completion). `None` for an unknown file id; empty when
+    /// the `external_check` severity is `Off`. A body edit in a *different*
+    /// file leaves this `Arc`'s pointer identity untouched.
+    pub fn file_call_site_diagnostics(&self, id: FileId) -> Option<Arc<Vec<Diagnostic>>> {
+        let file = *self.files.get(&id)?;
+        Some(call_site_diagnostics_query(&self.salsa, self.project, file))
+    }
+
+    /// The range-free, name-keyed external metas feeding the per-file
+    /// call-site checks (issue #750 / FG-3 completion) — the cutoff seam
+    /// between the (often re-executed, full-ranged-index-reading)
+    /// enrichment pass and every file's call-site memo. Exposed for the
+    /// dependency-edge tests; pointer identity across an edit proves the
+    /// seam backdated.
+    pub fn call_site_metas(&self) -> Arc<BTreeMap<String, SymbolMeta>> {
+        call_site_metas_query(&self.salsa, self.project)
     }
 
     /// Per-file diagnostics including this file's share of analysis
