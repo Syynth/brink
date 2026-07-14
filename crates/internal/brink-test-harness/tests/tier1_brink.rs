@@ -124,6 +124,37 @@ fn struct_construct_read_write() {
     assert_case("struct-construct-read-write");
 }
 
+// ── #674: `arr[i].field = v` grammar fix ─────────────────────────────────
+//
+// The `.field` postfix grammar's assignment-target position used to reject
+// an `Index` base entirely — `arr[0].x = 2.0` failed to parse as an
+// assignment at all, producing a generic E015 parse error instead of
+// reaching LIR's existing chained/mixed-field-write fence. This proves the
+// full compiler entry point now surfaces the *intended* diagnostic — E074,
+// the T1e boundary — not E015, for a mixed index-then-field write target.
+// Full RMW support for this shape is still out of scope (T1e, deliberately
+// deferred); this only fixes the grammar/diagnostic-routing gap.
+
+#[test]
+fn index_then_field_assignment_target_is_e074_not_a_parse_error() {
+    let source = "VAR arr = #[1, 2, 3]\n~ arr[0].x = 2.0\nHello.\n-> END\n";
+    let err = compile_brink(source)
+        .expect_err("a mixed index-then-field write target must still be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E074),
+        "expected E074 (chained/mixed field-write projection), got {diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code != brink_compiler::DiagnosticCode::E015),
+        "must not regress to the old generic E015 parse error, got {diags:?}"
+    );
+}
+
 // ── TM-5 (#621) corpus wing growth ────────────────────────────────────────
 //
 // TM-4c's `struct-construct-read-write` only reads/writes a struct in place;
