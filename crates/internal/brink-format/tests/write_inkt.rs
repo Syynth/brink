@@ -91,6 +91,34 @@ fn global_with_collection_default_roundtrips() {
     assert_eq!(recovered.variables, data.variables);
 }
 
+/// T1d (`docs/t1d-spec.md` §2): a `Handle`-valued global round-trips through
+/// `.inkt` — both the declared `:handle` type keyword and the `(handle …)`
+/// value atom need matching writer/reader grammar (the #742 asymmetry class
+/// this PR must not repeat for its own new atom). This test would have
+/// caught the grammar gap this PR's implementation initially hit: the pest
+/// `type_name` rule not listing `"handle"` as a valid declared-type keyword.
+#[test]
+fn global_with_handle_default_roundtrips() {
+    use brink_format::{DefinitionId, DefinitionTag, GlobalVarDef, NameId, Value, ValueType};
+
+    let mut data = i001_data();
+    let next_id = data.variables.len() as u64;
+    data.variables.push(GlobalVarDef {
+        id: DefinitionId::new(DefinitionTag::GlobalVar, next_id),
+        name: NameId(0),
+        value_type: ValueType::Handle,
+        default_value: Value::handle(NameId(3), 42),
+        mutable: true,
+        local: false,
+    });
+
+    let mut buf = String::new();
+    brink_format::write_inkt(&data, &mut buf).unwrap();
+    assert!(buf.contains("(handle 3 42)"), "dump:\n{buf}");
+    let recovered = brink_format::read_inkt(&buf).unwrap();
+    assert_eq!(recovered.variables, data.variables);
+}
+
 /// #673: a `VAR`/`CONST` declaration default that's a collection literal
 /// (`#[…]`/`#{…}`) used to constant-fold to `Value::Null` with no
 /// diagnostic (`eval_const_expr` had no `ArrayLiteral`/`MapLiteral` arm).

@@ -96,6 +96,46 @@ fn roundtrip_collection_valued_globals() {
     assert_eq!(data, recovered);
 }
 
+/// T1d (`docs/t1d-spec.md` §2, `docs/format-v4-rfc.md` §1): the first
+/// emission of the reserved `VAL_HANDLE` wire tag — write→read identity for
+/// a `Handle`-valued global, both bare and nested inside a collection (the
+/// wire form is `kind NameId, u64 id`; a max-magnitude id must not lose a
+/// single bit crossing the wire).
+#[test]
+fn roundtrip_handle_valued_globals() {
+    use brink_format::{DefinitionId, DefinitionTag, GlobalVarDef, NameId, Value, ValueType};
+
+    let mut data = i001_data();
+    let next_id = data.variables.len() as u64;
+
+    data.variables.push(GlobalVarDef {
+        id: DefinitionId::new(DefinitionTag::GlobalVar, next_id),
+        name: NameId(0),
+        value_type: ValueType::Handle,
+        default_value: Value::handle(NameId(3), u64::MAX),
+        mutable: true,
+        local: false,
+    });
+    data.variables.push(GlobalVarDef {
+        id: DefinitionId::new(DefinitionTag::GlobalVar, next_id + 1),
+        name: NameId(0),
+        value_type: ValueType::Array,
+        default_value: Value::array(vec![
+            Value::handle(NameId(1), 0),
+            Value::handle(NameId(2), 42),
+        ]),
+        mutable: true,
+        local: false,
+    });
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
+    assert_eq!(data, recovered);
+}
+
 // ── Recursion-depth cap on VAL_ARRAY/VAL_MAP decode (#553, #561, #562) ──────
 //
 // `decode_value` recurses into itself for VAL_ARRAY/VAL_MAP children with no

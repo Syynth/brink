@@ -17,7 +17,7 @@ globals = { "(" ~ "globals" ~ global_entry* ~ ")" }
 global_entry = { "(" ~ "global" ~ def_id ~ ":" ~ type_name ~ value ~ mutable_flag? ~ local_flag? ~ "(" ~ "name" ~ integer ~ ")" ~ ")" }
 mutable_flag = { "mutable" }
 local_flag = { "local" }
-type_name = { "int" | "float" | "bool" | "string" | "list" | "divert_target" | "var_pointer" | "null" | "array" | "map" }
+type_name = { "int" | "float" | "bool" | "string" | "list" | "divert_target" | "var_pointer" | "null" | "array" | "map" | "handle" }
 
 // ── Lists ───────────────────────────────────────────────────────────────────
 
@@ -103,9 +103,14 @@ source_loc = @{ ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ }
 
 // ── Values ──────────────────────────────────────────────────────────────────
 
-value = { array_value | map_value | list_value | var_pointer_value | fragment_ref_value | string | float | integer | def_id | null_value | bool_value }
+value = { array_value | map_value | list_value | var_pointer_value | fragment_ref_value | handle_value | string | float | integer | def_id | null_value | bool_value }
 var_pointer_value = { "(" ~ "var_pointer" ~ def_id ~ ")" }
 fragment_ref_value = { "(" ~ "fragment_ref" ~ integer ~ ")" }
+// T1d handle value (docs/t1d-spec.md §2, docs/format-v4-rfc.md §1) — the
+// textual mirror of the `VAL_HANDLE` wire tag: kind NameId, then u64 id.
+// Reader lands with the writer in the same PR (the #742 asymmetry class —
+// record/fn_ref/closure atoms are write-only; this one is not).
+handle_value = { "(" ~ "handle" ~ integer ~ integer ~ ")" }
 list_value = { "(" ~ "list" ~ list_value_items ~ list_value_origins ~ ")" }
 list_value_items = { "(" ~ "items" ~ def_id* ~ ")" }
 list_value_origins = { "(" ~ "origins" ~ def_id* ~ ")" }

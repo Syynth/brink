@@ -139,8 +139,10 @@ fn arb_map_key() -> impl Strategy<Value = MapKey> {
 /// (`src/inkt/inkt.pest`) has no `record_value`/`fn_ref_value`/
 /// `closure_value` rule, so `write_inkt` can emit text for those variants
 /// that `read_inkt` cannot parse back — a write/read asymmetry, not a
-/// round-trip law this suite can assert (tracked as a scope note; see the
-/// PR description for issue #672 workstream B).
+/// round-trip law this suite can assert (tracked as issue #742). `Handle` is
+/// deliberately **included**: T1d's `.inkt` atom (`handle_value` in the
+/// grammar) lands its reader in the same PR as its writer, precisely so it
+/// does not join the `#742` exclusion list above.
 fn arb_value_leaf() -> impl Strategy<Value = Value> {
     prop_oneof![
         any::<i32>().prop_map(Value::Int),
@@ -154,6 +156,7 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
             prop::collection::vec(arb_def_id(), 0..3),
         )
             .prop_map(|(items, origins)| Value::List(ListValue { items, origins }.into())),
+        (arb_name_id(), any::<u64>()).prop_map(|(kind, id)| Value::handle(kind, id)),
     ]
 }
 

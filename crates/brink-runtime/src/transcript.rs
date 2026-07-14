@@ -24,7 +24,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use brink_format::{DefinitionId, LineFlags, MAX_DECODE_DEPTH, MapKey, OrderedMap, Value};
+use brink_format::{DefinitionId, LineFlags, MAX_DECODE_DEPTH, MapKey, NameId, OrderedMap, Value};
 
 use crate::output::{OutputPart, resolve_lines};
 use crate::program::Program;
@@ -72,6 +72,13 @@ const VAL_MAP: u8 = 0x0A;
 // or a saved binding.
 const VAL_FN_REF: u8 = 0x0B;
 const VAL_CLOSURE: u8 = 0x0C;
+// T1d handle tag — shared numeric surface with the `.inkb` format
+// (`docs/format-v4-rfc.md` §1: `kind NameId, u64 id`). A handle received
+// from a binding rides the append-only transcript / journal / speculation
+// snapshots as an ordinary value (`docs/t1d-spec.md` §2: "handles appear in
+// saves, journals, and speculation snapshots as ordinary values"), e.g. via
+// `Opcode::EmitValue` or a saved binding.
+const VAL_HANDLE: u8 = 0x0D;
 // TM-4 record tag — shared numeric surface with the `.inkb` format
 // (`docs/format-v4-rfc.md` §1: `ShapeId`, then field values in shape order).
 const VAL_RECORD: u8 = 0x0F;
@@ -565,6 +572,15 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
                 encode_value(&entry.payload, buf);
             }
         }
+        // Handle values (T1d, spec §5: "the journal records returned tokens";
+        // §2: "handles appear in saves, journals, and speculation snapshots
+        // as ordinary values"). Token equality holds at this level; rebinding
+        // to a live resource happens at the host boundary, not here.
+        Value::Handle { kind, id } => {
+            write_u8(buf, VAL_HANDLE);
+            write_u16(buf, kind.0);
+            write_u64(buf, *id);
+        }
     }
 }
 
@@ -673,6 +689,12 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Tran
                 });
             }
             Ok(Value::closure(target, env))
+        }
+        // Handle values (T1d, `docs/format-v4-rfc.md` §1).
+        VAL_HANDLE => {
+            let kind = NameId(read_u16(buf, off)?);
+            let id = read_u64(buf, off)?;
+            Ok(Value::handle(kind, id))
         }
         _ => Err(TranscriptError::InvalidValueTag(tag)),
     }

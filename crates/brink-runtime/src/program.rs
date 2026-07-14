@@ -178,7 +178,14 @@ impl Program {
     /// produced against a *different* compile can carry a `NameId` that no
     /// longer indexes this program's table — treated as a mismatch (fault),
     /// never a panic.
-    pub(crate) fn name_checked(&self, id: NameId) -> Option<&str> {
+    ///
+    /// Public (T1d, `docs/t1d-spec.md` §6): the same "index by id, `None` if
+    /// out of range" contract a host needs to resolve a [`brink_format::Value::Handle`]'s
+    /// `kind` to its manifest-declared name — e.g. for dev-tooling display or
+    /// a host-side capability check. `bevy-brink` re-exports `Program`
+    /// (decision 2026-07-10), so this is reachable from engine code without a
+    /// direct `brink-runtime` dependency.
+    pub fn name_checked(&self, id: NameId) -> Option<&str> {
         self.name_table.get(id.0 as usize).map(String::as_str)
     }
 
