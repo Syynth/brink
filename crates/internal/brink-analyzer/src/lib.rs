@@ -408,6 +408,16 @@ pub fn module_diagnostics(
 /// `strict_inference` when the caller already computed one — see
 /// [`whole_project_diagnostics`]'s doc) and wires in Unknown/Conflicted-
 /// escape (`E065`/`E066`) plus `E063` mismatches.
+///
+/// `inline_docs` (issue #805): forwarded to [`infer::infer_project`]'s own
+/// `EXTERNAL`-signature seeding when `strict_inference` isn't already
+/// supplied — the pure/self-contained fallback path only; `brink-db`'s
+/// production seam always supplies `strict_inference` (its FG-narrowed
+/// `type_inference_query`, which reads `inline_docs_query` itself through
+/// `solve_scc_query`), so this parameter is inert there. Kept required
+/// (rather than defaulted away) so the pure path stays composed-equals-
+/// monolithic with the salsa one for every caller, not just the memoized
+/// production one.
 #[must_use]
 pub fn strict_diagnostics(
     files: &[(FileId, &HirFile)],
@@ -415,6 +425,7 @@ pub fn strict_diagnostics(
     resolutions: &ResolutionMap,
     opts: &AnalysisOptions,
     strict_inference: Option<&InferenceResult>,
+    inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     if opts.types == TypePolicy::Strict {
@@ -425,8 +436,13 @@ pub fn strict_diagnostics(
             let inference = if let Some(inf) = strict_inference {
                 inf
             } else {
-                owned_inference =
-                    infer::infer_project(files, index, resolutions, opts.host_manifest.as_ref());
+                owned_inference = infer::infer_project(
+                    files,
+                    index,
+                    resolutions,
+                    opts.host_manifest.as_ref(),
+                    inline_docs,
+                );
                 &owned_inference
             };
             diagnostics.extend(strict::check(
@@ -477,6 +493,12 @@ pub fn whole_project_diagnostics(
         .collect();
     let hir_inputs: Vec<(FileId, &HirFile)> = files.iter().map(|&(id, hir, _)| (id, hir)).collect();
 
+    // Computed once, up front (moved ahead of `strict_diagnostics`, issue
+    // #805): both the TM-3 strict pass's `EXTERNAL`-signature seeding and
+    // the host-manifest enrichment pass below need the project-wide merged
+    // `///` doc map.
+    let inline_docs = collect_inline_docs(&manifest_inputs);
+
     // M-2 module import + visibility checks (docs/modules-spec.md
     // §2/§4/§7), first in diagnostic order.
     let mut diagnostics = module_diagnostics(&hir_inputs, index, resolutions);
@@ -489,11 +511,11 @@ pub fn whole_project_diagnostics(
         resolutions,
         opts,
         strict_inference,
+        &inline_docs,
     ));
 
     // Host-manifest enrichment + checks (tooling/author-time only) — the
     // index-driven half: externals (E039/E040), then callables.
-    let inline_docs = collect_inline_docs(&manifest_inputs);
     let (mut symbol_meta, ext_diags) = external_meta_diagnostics(index, &inline_docs, opts);
     diagnostics.extend(ext_diags);
 
