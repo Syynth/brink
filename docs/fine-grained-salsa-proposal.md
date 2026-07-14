@@ -450,3 +450,43 @@ spine-slice method):
 
 TM-2 (#618) and TM-3 land on top of FG-1/FG-2's `Sig`/`InferredSig` per-def
 boundaries — which is the whole reason this round runs before TM-2.
+
+## Appendix: the three resolution moments (FG-4 ↔ runtime linker layering)
+
+Recorded 2026-07-14 (maintainer discussion) as design authority for
+FG-4b onward. Brink has three name-resolution moments, cleanly
+layered — each consumes exactly the previous stage's output, and none
+reaches around another:
+
+1. **Compile-link (FG-4)** — per-def chunks emit symbolic references
+   (strings + patch sites); `story_data_query`'s link/assembly phase
+   assigns final NameIds and patches chunks into `StoryData`. An
+   assembler: fragments → wire.
+2. **Load-link (brink-runtime `linker::link`)** — resolves
+   fully-assigned wire ids into a runnable `Program` (address map,
+   containers, external bindings), validating untrusted ids
+   (`InvalidNameId` et al.). A loader: wire → memory.
+3. **Rehydration (`#@was` alias tables, handle rehydrators)** — maps
+   *old* identities across the save boundary at load, on the miss
+   path. A migrator: past wire → present wire.
+
+**The firewall between 1 and 2 is the byte-identical gate**: FG-4's
+link erases itself — the runtime linker must never be able to tell
+incremental assembly happened. The one hard constraint this imposes,
+flowing backward from the wire contract onto FG-4:
+**id assignment must be history-independent** — an incremental
+re-link after N edits produces the same bytes as a fresh build of the
+same source (the FG-4d `incremental ≡ from-scratch` gate is this
+constraint, not merely a convenience check). Assignment must
+therefore be content/tree-derived, never allocation-history-derived.
+
+**Forward-compatibility guidance (build none of it now)**: FG-4b's
+symbolic-ref representation should be serializable *in principle* —
+no transient pointers, content-addressed ids, self-contained patch
+records — because #717 (dynamic linking) is precisely "stop erasing
+moment 1's work": ship relocatable chunks and let moment 2 do final
+assignment at load. Per-container hot reload (the long-standing
+container-granularity ruling) is the same convergence: the runtime
+linker splicing a recompiled chunk into a live `Program`. Designing
+FG-4b's types with this in mind costs nothing; designing against it
+would foreclose both.
