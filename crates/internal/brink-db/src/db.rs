@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use brink_analyzer::{
@@ -11,6 +11,7 @@ use brink_syntax::Parse;
 use salsa::Setter as _;
 use tracing::debug;
 
+use crate::determinism::LookupMap;
 use crate::queries::{
     BrinkDatabase, CompileProduct, DefKey, LirProduct, ProjectInput, ResolvedProject, SourceFile,
     analysis_query, call_site_diagnostics_query, call_site_metas_query, diagnostics_query,
@@ -33,9 +34,9 @@ pub struct ProjectDb {
     project: ProjectInput,
     /// Live files only — every public accessor reads through this map, so
     /// tombstoned inputs (see `retired`) are invisible to consumers.
-    files: HashMap<FileId, SourceFile>,
-    path_to_id: HashMap<String, FileId>,
-    id_to_path: HashMap<FileId, String>,
+    files: LookupMap<FileId, SourceFile>,
+    path_to_id: LookupMap<String, FileId>,
+    id_to_path: LookupMap<FileId, String>,
     /// Tombstoned salsa inputs from removed files, keyed by path — the
     /// durable path→`FileId` identity store (#536). Salsa never forgets an
     /// input, so [`remove_file`](Self::remove_file) parks the `SourceFile`
@@ -43,7 +44,7 @@ pub struct ProjectDb {
     /// same path reinstates it, reusing its original `FileId` so the old
     /// per-file memos are overwritten in place rather than leaking as
     /// permanently unreachable dead entries (rust-analyzer precedent).
-    retired: HashMap<String, SourceFile>,
+    retired: LookupMap<String, SourceFile>,
     next_id: u32,
 }
 
@@ -55,10 +56,10 @@ impl ProjectDb {
         Self {
             salsa,
             project,
-            files: HashMap::new(),
-            path_to_id: HashMap::new(),
-            id_to_path: HashMap::new(),
-            retired: HashMap::new(),
+            files: LookupMap::new(),
+            path_to_id: LookupMap::new(),
+            id_to_path: LookupMap::new(),
+            retired: LookupMap::new(),
             next_id: 0,
         }
     }

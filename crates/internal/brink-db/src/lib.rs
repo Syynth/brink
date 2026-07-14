@@ -11,6 +11,7 @@
 //! model.
 
 mod db;
+mod determinism;
 mod include_graph;
 #[cfg(feature = "memory-introspection")]
 mod memory;
