@@ -16,9 +16,14 @@
 //! [`resolutions_index_query`] (index + resolutions, no diagnostics),
 //! [`per_file_diagnostics_query`]/[`contributor_diagnostics_query`] (the
 //! per-file validate/dialect_gate/annotation-content split),
-//! [`whole_project_diagnostics_query`] (`external_check` + strict, still
-//! whole-project), and [`analysis_diagnostics_query`] (every diagnostic
-//! source, merged). See the "FG-3" section below for the full rationale.
+//! [`whole_project_diagnostics_query`] (now a thin aggregator — issue #750
+//! decomposed the external-check family into [`inline_docs_query`] /
+//! [`external_meta_query`] / [`call_site_metas_query`] and the per-file
+//! [`value_meta_query`] / [`call_site_diagnostics_query`]; only the M-2
+//! modules pass and the strict typed-mode pass remain genuinely
+//! whole-project), and
+//! [`analysis_diagnostics_query`] (every diagnostic source, merged). See
+//! the "FG-3" section below for the full rationale.
 //!
 //! Layer 3 (lowering/codegen, whole-project in this slice): [`lir_query`],
 //! [`story_data_query`], and the per-file [`diagnostics_query`] — both now
@@ -69,8 +74,10 @@ mod analysis;
 
 pub use analysis::ResolvedProject;
 pub(crate) use analysis::{
-    analysis_diagnostics_query, analysis_query, contributor_diagnostics_query, diagnostics_query,
-    per_file_diagnostics_query, resolutions_index_query, whole_project_diagnostics_query,
+    analysis_diagnostics_query, analysis_query, call_site_diagnostics_query, call_site_metas_query,
+    contributor_diagnostics_query, diagnostics_query, external_meta_query, inline_docs_query,
+    per_file_diagnostics_query, resolutions_index_query, value_meta_query,
+    whole_project_diagnostics_query,
 };
 
 // ─── Database ────────────────────────────────────────────────────────
@@ -126,6 +133,21 @@ impl Default for BrinkDatabase {
                 .ingredient::<resolutions_index_query>()
                 .ingredient::<per_file_diagnostics_query>()
                 .ingredient::<contributor_diagnostics_query>()
+                // FG-3 completion (issue #750): the external-check family,
+                // decomposed. inline_docs_query (project doc merge, Eq
+                // cutoff) + external_meta_query (index-driven E039/E040 +
+                // enrichment, no HIR) + call_site_metas_query (the
+                // range-free name→meta cutoff seam) feed the per-file
+                // value_meta_query / call_site_diagnostics_query, so a body
+                // edit in file Y re-runs only Y's own value-meta and
+                // call-site walks; whole_project_diagnostics_query is now a
+                // thin aggregator (plus the genuinely whole-project M-2
+                // modules pass and strict pass).
+                .ingredient::<inline_docs_query>()
+                .ingredient::<external_meta_query>()
+                .ingredient::<call_site_metas_query>()
+                .ingredient::<value_meta_query>()
+                .ingredient::<call_site_diagnostics_query>()
                 .ingredient::<whole_project_diagnostics_query>()
                 .ingredient::<analysis_diagnostics_query>()
                 .ingredient::<analysis_query>()
