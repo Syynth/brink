@@ -62,12 +62,19 @@ fn is_importable(kind: SymbolKind) -> bool {
 /// stem-module), plus the public top-level exports per declared module (for
 /// bare-import validation).
 ///
-/// The module map is derived primarily from any symbol the file declares —
-/// every symbol in a file shares that file's module by construction — with a
-/// fallback to the file's own HIR `#@module(…)` declaration for a file that
-/// declares no top-level symbols of its own (only root content), which
-/// otherwise never appears in `index.symbols` and would wrongly resolve to
-/// "no module" (`None`).
+/// The module map is derived primarily from any *top-level* symbol the file
+/// declares — every top-level symbol in a file shares that file's module by
+/// construction — with a fallback to the file's own HIR `#@module(…)`
+/// declaration for a file that declares no top-level symbols of its own
+/// (only root content), which otherwise never appears in `index.symbols`
+/// and would wrongly resolve to "no module" (`None`).
+///
+/// Locals (`Param`/`Temp`) are skipped: they carry `module: None` by design
+/// (module-internal, never module-qualified — see `insert_local`), and
+/// `index.symbols` is a `HashMap` whose iteration order is nondeterministic,
+/// so a local iterated before the file's top-level symbols would randomly
+/// poison the attribution to `None` and fire `E087` on same-module
+/// self-references (issue #795).
 fn file_modules_and_exports(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
@@ -78,6 +85,11 @@ fn file_modules_and_exports(
     let mut file_module: BTreeMap<FileId, Option<String>> = BTreeMap::new();
     let mut declared_exports: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for info in index.symbols.values() {
+        // Locals never carry a module — attributing a file from one would
+        // be order-dependent and wrong (issue #795, doc above).
+        if matches!(info.kind, SymbolKind::Param | SymbolKind::Temp) {
+            continue;
+        }
         file_module.entry(info.file).or_insert(info.module.clone());
         if let Some(module) = &info.module
             && info.visibility == Visibility::Public
@@ -380,4 +392,124 @@ pub fn check(
     }
 
     diagnostics
+}
+
+#[cfg(test)]
+mod tests {
+    use brink_format::{DefinitionId, DefinitionTag};
+    use brink_ir::{
+        Block, FileId, HirFile, ModuleDecl, ResolvedRef, Scope, SymbolIndex, SymbolInfo,
+        SymbolKind, Visibility,
+    };
+    use rowan::{TextRange, TextSize};
+
+    use super::check;
+
+    fn range(offset: u32, len: u32) -> TextRange {
+        TextRange::new(TextSize::new(offset), TextSize::new(offset + len))
+    }
+
+    fn hir_with_module(name: &str) -> HirFile {
+        HirFile {
+            root_content: Block::default(),
+            knots: Vec::new(),
+            variables: Vec::new(),
+            constants: Vec::new(),
+            lists: Vec::new(),
+            structs: Vec::new(),
+            externals: Vec::new(),
+            includes: Vec::new(),
+            module: Some(ModuleDecl {
+                name: name.to_string(),
+                range: range(0, 1),
+                was: None,
+            }),
+            imports: Vec::new(),
+            visibility: Vec::new(),
+            was_directives: Vec::new(),
+        }
+    }
+
+    fn symbol(
+        id: DefinitionId,
+        kind: SymbolKind,
+        name: &str,
+        module: Option<&str>,
+        scope: Option<Scope>,
+    ) -> SymbolInfo {
+        SymbolInfo {
+            kind,
+            file: FileId(0),
+            range: range(0, 1),
+            id,
+            name: name.to_string(),
+            params: Vec::new(),
+            detail: None,
+            scope,
+            param_detail: None,
+            module: module.map(str::to_string),
+            visibility: Visibility::Private,
+        }
+    }
+
+    /// Issue #795: a single file declaring `#@module(quest)` whose knot
+    /// references a sibling knot bare must produce zero `E087`, no matter
+    /// which of the file's symbols `index.symbols` (a `HashMap` with
+    /// nondeterministic iteration order) happens to yield first. Locals
+    /// carry `module: None` by design; before the fix, a local iterated
+    /// ahead of the file's top-level symbols randomly poisoned the file's
+    /// module attribution to `None`, flagging every same-module
+    /// self-reference. Repeated fresh-HashMap runs cover the order space.
+    #[test]
+    fn single_file_declared_module_self_reference_never_e087() {
+        for _ in 0..64 {
+            let hir = hir_with_module("quest");
+            let files = [(FileId(0), &hir)];
+
+            let knot_id = DefinitionId::new(DefinitionTag::Address, 1);
+            let sibling_id = DefinitionId::new(DefinitionTag::Address, 2);
+            let temp_id = DefinitionId::new(DefinitionTag::LocalVar, 3);
+
+            // Fresh HashMaps each iteration — fresh RandomState, fresh order.
+            let mut index = SymbolIndex::default();
+            index.symbols.insert(
+                knot_id,
+                symbol(knot_id, SymbolKind::Knot, "caller", Some("quest"), None),
+            );
+            index.symbols.insert(
+                sibling_id,
+                symbol(sibling_id, SymbolKind::Knot, "sibling", Some("quest"), None),
+            );
+            index.symbols.insert(
+                temp_id,
+                symbol(
+                    temp_id,
+                    SymbolKind::Temp,
+                    "g",
+                    None,
+                    Some(Scope {
+                        knot: Some("caller".to_string()),
+                        stitch: None,
+                    }),
+                ),
+            );
+            for (name, id) in [("caller", knot_id), ("sibling", sibling_id), ("g", temp_id)] {
+                index.by_name.entry(name.to_string()).or_default().push(id);
+            }
+
+            // `caller` (file 0, module quest) references `sibling` bare —
+            // same declared module, must never be gated.
+            let resolutions = vec![ResolvedRef {
+                file: FileId(0),
+                range: range(10, 7),
+                target: sibling_id,
+            }];
+
+            let diagnostics = check(&files, &index, &resolutions);
+            assert!(
+                diagnostics.is_empty(),
+                "same-module self-reference must produce no diagnostics, got {diagnostics:?}"
+            );
+        }
+    }
 }
