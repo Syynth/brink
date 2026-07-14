@@ -179,8 +179,11 @@ Some text.
 }
 
 #[test]
-#[ignore = "flaky — intermittent failures in CI and local runs"]
+#[expect(clippy::too_many_lines)]
 fn diagnostics_for_scene1_ink() {
+    // Backstop cap on the wait loop below — see that loop's comment.
+    const MAX_MESSAGES: u64 = 2000;
+
     let bin = env!("CARGO_BIN_EXE_brink-lsp");
 
     let mut child = std::process::Command::new(bin)
@@ -239,27 +242,35 @@ fn diagnostics_for_scene1_ink() {
         }),
     );
 
-    // Send a dummy request so we can collect notifications that arrived
-    // between didOpen and this response.
-    send(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/documentSymbol",
-            "params": {
-                "textDocument": { "uri": file_uri }
-            }
-        }),
+    // Collect publishDiagnostics for the opened file until (a) at least one
+    // has arrived and (b) a background pass covering the file has completed.
+    // Both are guaranteed: `did_open` always publishes its per-file set
+    // (even when empty), and every background pass fires
+    // `$/brink/backgroundAnalysisComplete` (#695). This replaces the old
+    // dummy-request barrier (collect whatever notifications happened to
+    // precede a `documentSymbol` response), which raced against both
+    // publishers and flaked (#615) — the message cap is only a backstop
+    // against a genuine hang/regression.
+    let mut diag_notifications: Vec<Value> = Vec::new();
+    let mut analysis_done = false;
+    for _ in 0..MAX_MESSAGES {
+        let msg = recv(&mut stdout);
+        if msg["method"] == "textDocument/publishDiagnostics" && msg["params"]["uri"] == file_uri {
+            diag_notifications.push(msg);
+        } else if msg["method"] == "$/brink/backgroundAnalysisComplete"
+            && msg["params"]["file_count"].as_u64().unwrap_or(0) >= 1
+        {
+            analysis_done = true;
+        }
+        if analysis_done && !diag_notifications.is_empty() {
+            break;
+        }
+    }
+    assert!(
+        analysis_done,
+        "background analysis never signaled completion for {file_uri} \
+         within {MAX_MESSAGES} messages"
     );
-
-    let (_symbols_resp, notifications) = recv_response(&mut stdout, 2);
-
-    // Find publishDiagnostics notifications
-    let diag_notifications: Vec<&Value> = notifications
-        .iter()
-        .filter(|n| n["method"] == "textDocument/publishDiagnostics")
-        .collect();
 
     // Print diagnostics for inspection
     for note in &diag_notifications {
