@@ -1196,6 +1196,53 @@ fn explicit_call_with_wrong_arity_is_a_turn_terminating_fault() {
     );
 }
 
+// ── #721: direct-call `f(args…)` arity mismatch must fault cleanly ──────
+//
+// `f(args…)` compiles through the same `CallVariable` opcode as the classic
+// divert-target-variable-call path (`{s(P)}` etc. — `run_story.rs`'s
+// `function_variable_call`). Before #721, the popped-arg count for the
+// function-value arm was *derived* from the resolved target's arity instead
+// of carried as an `argc` operand, so a wrong-arity direct call could leave
+// a stray value on the stack instead of faulting. These prove both
+// directions fault via `FunctionValueArity`, matching the explicit
+// `call(f, args…)` form above — never silent stack corruption.
+
+#[test]
+fn direct_call_with_too_many_args_is_a_turn_terminating_fault() {
+    // `double` takes 1 param; the direct call supplies 2.
+    let src = "~ temp d = #fn(double)\n~ temp r = d(1, 2)\nUnreachable {r}.\n-> END\n\n\
+               === function double(x) ===\n~ return x + x\n";
+    let err = run_expecting_fault(src).expect("wrong arity must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::FunctionValueArity { .. }),
+        "expected FunctionValueArity, got {err:?}"
+    );
+}
+
+#[test]
+fn direct_call_with_too_few_args_is_a_turn_terminating_fault() {
+    // `add` takes 2 params; the direct call supplies 1.
+    let src = "~ temp d = #fn(add)\n~ temp r = d(1)\nUnreachable {r}.\n-> END\n\n\
+               === function add(x, y) ===\n~ return x + y\n";
+    let err = run_expecting_fault(src).expect("wrong arity must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::FunctionValueArity { .. }),
+        "expected FunctionValueArity, got {err:?}"
+    );
+}
+
+#[test]
+fn direct_call_with_correct_arity_still_works() {
+    // Regression guard: the argc-carrying dispatch must not disturb the
+    // matching-arity happy path.
+    let src = "~ temp d = #fn(double)\n~ temp r = d(21)\n{r}.\n-> END\n\n\
+               === function double(x) ===\n~ return x + x\n";
+    let (program, tables) = compile_and_link(src);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    let out = run_to_end(&mut story);
+    assert_eq!(out, "42.\n");
+}
+
 // ── T1c-2 (#700): persistence + rehydration (spec §6) ───────────────────
 
 /// Compile `source` (brink dialect) and link it to a runnable program.
