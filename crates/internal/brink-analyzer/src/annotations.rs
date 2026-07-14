@@ -479,6 +479,8 @@ fn report_if_mismatched(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use brink_ir::ResolutionMap;
     use brink_ir::hir::lower;
@@ -825,7 +827,8 @@ mod tests {
         // against an int literal — body inference derives `int`.
         let (hir, index, res) =
             build_with_resolutions("=== heal(hp: string) ===\n{hp > 1:\n  ok\n}\n-> DONE\n");
-        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res, None);
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         let diags = mismatches(&[(FileId(0), &hir)], &index, &inference, None);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E063);
@@ -835,7 +838,8 @@ mod tests {
     fn mismatches_is_silent_when_annotation_and_inference_agree() {
         let (hir, index, res) =
             build_with_resolutions("=== heal(hp: int) ===\n{hp > 1:\n  ok\n}\n-> DONE\n");
-        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res, None);
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         let diags = mismatches(&[(FileId(0), &hir)], &index, &inference, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
@@ -846,7 +850,8 @@ mod tests {
         // `Unknown`, which never disagrees (spec: "unresolved -> Unknown,
         // which is LEGAL").
         let (hir, index, res) = build_with_resolutions("=== heal(hp: int) ===\nHello.\n-> DONE\n");
-        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res, None);
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         let diags = mismatches(&[(FileId(0), &hir)], &index, &inference, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
@@ -858,7 +863,8 @@ mod tests {
         // coercion (spec §4) — not a disagreement.
         let (hir, index, res) =
             build_with_resolutions("=== heal(hp: float) ===\n{hp > 1:\n  ok\n}\n-> DONE\n");
-        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res, None);
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         let diags = mismatches(&[(FileId(0), &hir)], &index, &inference, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
@@ -874,7 +880,8 @@ mod tests {
         let (hir, index, res) = build_with_resolutions(
             "=== heal(hp: int) ===\n{hp > 1:\n  ok\n}\n{hp == \"x\":\n  no\n}\n-> DONE\n",
         );
-        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res, None);
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         // Confirm the fixture actually exercises `Conflicted`, not some
         // other path, before asserting on `mismatches`' silence.
         let heal_id = index
