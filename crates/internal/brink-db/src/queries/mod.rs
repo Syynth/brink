@@ -288,14 +288,14 @@ pub(crate) fn symbol_index_query(
     // their `DefinitionId`s stay byte-identical.
     let module_inputs: Vec<crate::modules::FileModuleInput> = files
         .iter()
-        .map(|f| crate::modules::FileModuleInput {
-            file: f.file_id(db),
-            stem: crate::modules::file_stem(f.path(db)).to_string(),
-            declared: lowered_query(db, *f)
-                .hir
-                .module
-                .as_ref()
-                .map(|m| m.name.clone()),
+        .map(|f| {
+            let hir_module = lowered_query(db, *f).hir.module.as_ref();
+            crate::modules::FileModuleInput {
+                file: f.file_id(db),
+                stem: crate::modules::file_stem(f.path(db)).to_string(),
+                declared: hir_module.map(|m| m.name.clone()),
+                was: hir_module.and_then(|m| m.was.as_ref().map(|(old, _)| old.clone())),
+            }
         })
         .collect();
     let (module_map, module_diags) =

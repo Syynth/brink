@@ -752,6 +752,7 @@ mod tests {
                 .collect(),
             detail: None,
             visibility: None,
+            was: None,
         });
         merge_manifests(&[(FileId(0), &m)]).0
     }
@@ -1106,6 +1107,7 @@ mod tests {
             }],
             detail: Some("function".to_string()),
             visibility: None,
+            was: None,
         });
         m.stitches.push(DeclaredSymbol {
             name: "hub.market".to_string(),
@@ -1113,6 +1115,7 @@ mod tests {
             params: Vec::new(),
             detail: None,
             visibility: None,
+            was: None,
         });
         merge_manifests(&[(FileId(0), &m)]).0
     }
@@ -1418,6 +1421,7 @@ mod tests {
             module: None,
             imports: Vec::new(),
             visibility: Vec::new(),
+            was_directives: Vec::new(),
         }
     }
 

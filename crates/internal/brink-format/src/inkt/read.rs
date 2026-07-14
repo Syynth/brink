@@ -5,8 +5,8 @@ use pest_derive::Parser;
 
 use crate::counting::CountingFlags;
 use crate::definition::{
-    AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef, ParamMeta, ScopeLineTable, SlotInfo, SourceLocation,
+    AddressDef, AddressPath, AliasEntry, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry,
+    ListDef, ListItemDef, ParamMeta, ScopeLineTable, SlotInfo, SourceLocation,
 };
 use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -81,6 +81,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
     let mut list_literals = Vec::new();
     let mut literal_pool = Vec::new();
     let mut private_defs = Vec::new();
+    let mut alias_table = Vec::new();
     let mut source_checksum = 0u32;
 
     for inner in pair.into_inner() {
@@ -100,6 +101,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
             Rule::list_literals => list_literals = parse_list_literals(inner)?,
             Rule::literal_pool => literal_pool = parse_literal_pool(inner)?,
             Rule::visibility => private_defs = parse_visibility(inner)?,
+            Rule::alias_table => alias_table = parse_alias_table(inner)?,
             Rule::container => {
                 let (container, lt) = parse_container(inner)?;
                 let is_scope_owner = container.scope_id == container.id;
@@ -135,6 +137,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
         // non-empty table). See the format-spec doc note.
         struct_shapes: Vec::new(),
         private_defs,
+        alias_table,
         source_checksum,
     })
 }
@@ -722,6 +725,32 @@ fn parse_visibility(pair: P<'_>) -> Result<Vec<DefinitionId>, InktParseError> {
         }
     }
     Ok(ids)
+}
+
+/// M-3 (`docs/modules-spec.md` §5): parse `(alias_table (alias $old -> $new) …)`.
+fn parse_alias_table(pair: P<'_>) -> Result<Vec<AliasEntry>, InktParseError> {
+    let mut aliases = Vec::new();
+    for entry in pair.into_inner() {
+        if entry.as_rule() == Rule::alias_entry {
+            aliases.push(parse_alias_entry(entry)?);
+        }
+    }
+    Ok(aliases)
+}
+
+fn parse_alias_entry(pair: P<'_>) -> Result<AliasEntry, InktParseError> {
+    let mut inner = pair.into_inner();
+    let old = parse_def_id(inner.next().ok_or_else(|| InktParseError {
+        message: "expected old def_id in alias".into(),
+        line: 0,
+        col: 0,
+    })?)?;
+    let new = parse_def_id(inner.next().ok_or_else(|| InktParseError {
+        message: "expected new def_id in alias".into(),
+        line: 0,
+        col: 0,
+    })?)?;
+    Ok(AliasEntry { old, new })
 }
 
 fn parse_address_paths(pair: P<'_>) -> Result<Vec<AddressPath>, InktParseError> {

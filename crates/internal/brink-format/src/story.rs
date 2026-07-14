@@ -2,8 +2,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::definition::{
-    AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, ListDef, ListItemDef,
-    ScopeLineTable, StructShapeDef,
+    AddressDef, AddressPath, AliasEntry, ContainerDef, ExternalFnDef, GlobalVarDef, ListDef,
+    ListItemDef, ScopeLineTable, StructShapeDef,
 };
 use crate::id::DefinitionId;
 use crate::value::ListValue;
@@ -56,6 +56,13 @@ pub struct StoryData {
     /// host **persistence** (save/load/journal/replay) ignores it and sees
     /// everything (§4 boundary rule 2).
     pub private_defs: Vec<DefinitionId>,
+    /// The M-3 `AliasTable` (`docs/modules-spec.md` §5, format section tag
+    /// `0x0F`): old→new `DefinitionId` rename records emitted from
+    /// `#@was(old_name)` directives on modules and definitions. Sorted by
+    /// `old` for the runtime's binary-search miss-path lookup. Empty for
+    /// every story that uses no `#@was` — including the entire pre-M-3
+    /// corpus and converter output.
+    pub alias_table: Vec<AliasEntry>,
     /// CRC-32 checksum from the `.inkb` header, used for locale validation.
     /// Zero for stories not loaded from `.inkb`.
     pub source_checksum: u32,

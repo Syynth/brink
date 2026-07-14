@@ -35,6 +35,7 @@ fn empty_scopes_are_omitted() {
         literal_pool: vec![],
         struct_shapes: vec![],
         private_defs: vec![],
+        alias_table: vec![],
         source_checksum: 0,
     };
     let lines_json = brink_intl::export_lines(&data, 0);
@@ -57,6 +58,7 @@ fn source_checksum_formatting() {
         literal_pool: vec![],
         struct_shapes: vec![],
         private_defs: vec![],
+        alias_table: vec![],
         source_checksum: 0,
     };
     let lines_json = brink_intl::export_lines(&data, 0xDEAD_BEEF);
@@ -90,6 +92,7 @@ fn audio_ref_exported() {
         literal_pool: vec![],
         struct_shapes: vec![],
         private_defs: vec![],
+        alias_table: vec![],
         source_checksum: 0,
     };
     let lines_json = brink_intl::export_lines(&data, 0);

@@ -12,8 +12,8 @@ use std::collections::HashMap;
 
 use crate::counting::CountingFlags;
 use crate::definition::{
-    AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef,
+    AddressDef, AddressPath, AliasEntry, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry,
+    ListDef, ListItemDef,
 };
 use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, SelectKey};
@@ -39,6 +39,7 @@ pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
     write_list_literals(w, &story.list_literals)?;
     write_literal_pool(w, &story.literal_pool)?;
     write_visibility(w, &story.private_defs)?;
+    write_alias_table(w, &story.alias_table)?;
 
     // Build a lookup from scope_id → line table for writing
     let line_map: HashMap<DefinitionId, &[LineEntry]> = story
@@ -229,6 +230,20 @@ fn write_address_paths(w: &mut dyn fmt::Write, address_paths: &[AddressPath]) ->
     writeln!(w, "  (address_paths")?;
     for ap in address_paths {
         writeln!(w, "    (path {} -> {})", ap.path.0, ap.target)?;
+    }
+    writeln!(w, "  )")
+}
+
+/// M-3 (`docs/modules-spec.md` §5): `#@was`-derived old→new `DefinitionId`
+/// rename records. Mirrors [`write_addresses`]'s `id -> target` shape.
+fn write_alias_table(w: &mut dyn fmt::Write, aliases: &[AliasEntry]) -> fmt::Result {
+    if aliases.is_empty() {
+        return Ok(());
+    }
+    writeln!(w)?;
+    writeln!(w, "  (alias_table")?;
+    for a in aliases {
+        writeln!(w, "    (alias {} -> {})", a.old, a.new)?;
     }
     writeln!(w, "  )")
 }
@@ -776,6 +791,7 @@ mod tests {
             literal_pool: vec![],
             struct_shapes: vec![],
             private_defs: vec![],
+            alias_table: vec![],
             source_checksum: 0,
         };
         let mut buf = String::new();

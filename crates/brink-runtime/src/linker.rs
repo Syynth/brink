@@ -242,6 +242,13 @@ pub fn link(
     let mut private_defs: Vec<DefinitionId> = data.private_defs.clone();
     private_defs.sort_by_key(|d| d.to_raw());
 
+    // M-3 (`docs/modules-spec.md` §5): the compiled alias table, sorted by
+    // `old` for `Program::resolve_alias`'s binary search. Sorted again here
+    // rather than trusted as-is — malformed/adversarial `.inkb` bytes are
+    // not guaranteed to preserve the compiler's ordering invariant.
+    let mut alias_table = data.alias_table.clone();
+    alias_table.sort_unstable();
+
     let program = Program {
         containers,
         address_map,
@@ -261,6 +268,7 @@ pub fn link(
         local_scope_defaults,
         struct_shapes,
         private_defs,
+        alias_table,
     };
     Ok((program, line_tables))
 }

@@ -6,8 +6,8 @@ use alloc::vec::Vec;
 use crate::codec::{crc32, read_def_id, read_i32, read_str, read_u8, read_u16, read_u32, read_u64};
 use crate::counting::CountingFlags;
 use crate::definition::{
-    AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef, ParamMeta, ScopeLineTable, SlotInfo, SourceLocation, StructShapeDef,
+    AddressDef, AddressPath, AliasEntry, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry,
+    ListDef, ListItemDef, ParamMeta, ScopeLineTable, SlotInfo, SourceLocation, StructShapeDef,
 };
 use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -17,6 +17,7 @@ use crate::value::{
     ClosureEnvEntry, ListValue, MAX_DECODE_DEPTH, MapKey, OrderedMap, ShapeId, Value, ValueType,
 };
 
+use super::write::ALIAS_TABLE_SECTION_VERSION;
 use super::{
     CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HEADER_PREAMBLE, InkbIndex,
     KEY_CARDINAL, KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN, LINE_TEMPLATE, MAGIC,
@@ -55,6 +56,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
     let literal_pool = read_section_literal_pool(buf, &index)?;
     let struct_shapes = read_section_struct_shapes(buf, &index)?;
     let private_defs = read_section_visibility(buf, &index)?;
+    let alias_table = read_section_alias_table(buf, &index)?;
 
     Ok(StoryData {
         containers,
@@ -70,6 +72,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
         literal_pool,
         struct_shapes,
         private_defs,
+        alias_table,
         source_checksum: index.checksum,
     })
 }
@@ -567,6 +570,36 @@ pub fn read_section_visibility(
         ids.push(read_def_id(buf, &mut off)?);
     }
     Ok(ids)
+}
+
+/// Read the M-3 `AliasTable` section (`docs/modules-spec.md` §5) from a
+/// complete `.inkb` file using its index. Absent section (a pre-M-3 file, or
+/// a story with no `#@was` directives) decodes as empty, mirroring
+/// [`read_section_literal_pool`]. The section-local version byte is checked
+/// independently of the whole-file `VERSION` — see [`ALIAS_TABLE_SECTION_VERSION`].
+pub fn read_section_alias_table(
+    buf: &[u8],
+    index: &InkbIndex,
+) -> Result<Vec<AliasEntry>, DecodeError> {
+    let Some(range) = index.section_range(SectionKind::AliasTable) else {
+        return Ok(Vec::new());
+    };
+    let mut off = range.start;
+    let section_version = read_u8(buf, &mut off)?;
+    if section_version != ALIAS_TABLE_SECTION_VERSION {
+        return Err(DecodeError::UnsupportedSectionVersion {
+            section: SectionKind::AliasTable as u8,
+            version: section_version,
+        });
+    }
+    let count = read_u32(buf, &mut off)? as usize;
+    let mut entries = Vec::with_capacity(safe_capacity(count, buf.len(), off, 16));
+    for _ in 0..count {
+        let old = read_def_id(buf, &mut off)?;
+        let new = read_def_id(buf, &mut off)?;
+        entries.push(AliasEntry { old, new });
+    }
+    Ok(entries)
 }
 
 fn decode_external(buf: &[u8], off: &mut usize) -> Result<ExternalFnDef, DecodeError> {

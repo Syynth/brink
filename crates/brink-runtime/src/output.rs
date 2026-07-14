@@ -1022,6 +1022,7 @@ fn test_dummy_program() -> Program {
         local_scope_defaults: Vec::new(),
         struct_shapes: Vec::new(),
         private_defs: Vec::new(),
+        alias_table: Vec::new(),
     }
 }
 
@@ -1527,6 +1528,7 @@ mod tests {
             local_scope_defaults: Vec::new(),
             struct_shapes: Vec::new(),
             private_defs: Vec::new(),
+            alias_table: Vec::new(),
         };
 
         let line_tables = vec![vec![LineEntry {

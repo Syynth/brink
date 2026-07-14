@@ -262,6 +262,7 @@ mod tests {
                 fields: vec![NameId(0), NameId(1)],
             }],
             private_defs: Vec::new(),
+            alias_table: Vec::new(),
         }
     }
 

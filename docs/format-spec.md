@@ -10,7 +10,7 @@ The `.inkb` and `.inkl` formats carry a `(MAGIC, VERSION)` header; the reader **
 
 Today these are **regenerable build artifacts** — produced from `.ink` on every compile, never decoupled from the compiler that made them — so the policy is deliberately simple: **regenerate on mismatch; no multi-version readers.** Maintaining back-compat parsers for bytes nobody persists would be premature complexity.
 
-**`.inkb` version history:** v2 added `ContainerDef::param_count`; v3 added the `local` scope bit to variables and containers; **v4** added the collection value tags `Array`/`Map` (tree encoding) and froze the reserved Tier-1 value-tag/section/opcode surface in a single planned bump (the §9 one-bump rule of `docs/value-model-spec.md`; RFC `docs/format-v4-rfc.md`). Per that rule, the remaining Tier-1 milestones (function values, handles, projections) add data using encodings already specified at v4 and do **not** bump the version — the writer and reader evolve together within VERSION 4 as each milestone's compiler surface begins emitting the reserved tags.
+**`.inkb` version history:** v2 added `ContainerDef::param_count`; v3 added the `local` scope bit to variables and containers; **v4** added the collection value tags `Array`/`Map` (tree encoding) and froze the reserved Tier-1 value-tag/section/opcode surface in a single planned bump (the §9 one-bump rule of `docs/value-model-spec.md`; RFC `docs/format-v4-rfc.md`). Per that rule, the remaining Tier-1 milestones (function values, handles, projections) add data using encodings already specified at v4 and do **not** bump the version — the writer and reader evolve together within VERSION 4 as each milestone's compiler surface begins emitting the reserved tags. (The optional `Visibility` section, M-2b, also landed on the v4 line — it is omitted entirely when empty, so it needed no bump of its own.) **v5** added the mandatory `AliasTable` section (M-3, `docs/modules-spec.md` §5): unlike `Visibility`, it is always present (possibly empty) and was not part of the v4 RFC's pre-reserved inventory, so its introduction is its own one-bump event.
 
 This is distinct from the **save format** (`SAVE_FORMAT_VERSION`, `save.rs`), which *is* durable — written by players and expected to survive runtime updates — and is therefore *tolerant* by design (`LoadReport` reports what it couldn't apply rather than failing). Program metadata such as container layout does not affect save compatibility: saves reference visit counts and variables by `DefinitionId`, not by container byte layout.
 
@@ -532,6 +532,7 @@ Each offset table entry (8 bytes):
 | `0x09` | List literals | Per entry: `ListValue` (items + origins) |
 | `0x0A` | Address paths | Per entry: qualified-path hash → target `DefinitionId` |
 | `0x0E` | Visibility (M-2b) | Per entry: the `DefinitionId` of a `#@private` definition, sorted ascending. **Optional** — omitted when empty. See below. |
+| `0x0F` | Alias table (M-3) | Section-local version byte, then per entry: old `DefinitionId` → new `DefinitionId`, sorted by old. Always present (possibly empty). See below. |
 
 **Reserved v4 sections** — numeric assignments are frozen by the §9 one-bump
 rule (`docs/format-v4-rfc.md` §2 "Sections") but not `SectionKind` variants
@@ -559,6 +560,18 @@ spec recommends). The runtime builds a lookup set from it to refuse host
 defs; host *persistence* (save/load/journal/replay) never consults it and sees
 everything (§4 boundary rule 2). `0x0D` is reserved for `EffectRows`, so this
 takes the next free tag, `0x0E`.
+
+**`AliasTable` section (`0x0F`, M-3)** — carries old→new `DefinitionId` rename
+records (`docs/modules-spec.md` §5) emitted from `#@was(old_name)`
+directives: a one-byte section-local version, then a `u32` count, then that
+many `(old DefinitionId, new DefinitionId)` pairs sorted by `old` for the
+runtime's binary-search miss-path lookup. Unlike `Visibility`, this section
+is **mandatory** — always present (possibly empty) — because it is a
+brand-new section not part of the v4 RFC's pre-reserved inventory, so its
+introduction is its own one-bump event: `.inkb` format version 4 → 5 (the
+row encoding itself stays section-locally versioned so it can still evolve
+without a further whole-file bump). `0x0E` is taken by `Visibility`, so this
+takes the next free tag, `0x0F`.
 
 #### Value type tags in `.inkb`
 

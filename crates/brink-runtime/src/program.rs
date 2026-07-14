@@ -4,7 +4,7 @@ use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use brink_format::{CountingFlags, DefinitionId, ListValue, NameId, ShapeId, Value};
+use brink_format::{AliasEntry, CountingFlags, DefinitionId, ListValue, NameId, ShapeId, Value};
 
 use crate::collections::Map as HashMap;
 
@@ -65,6 +65,10 @@ pub struct Program {
     /// `binary_search` — no set type needed for a list that is typically empty
     /// or tiny, and `no_std`-clean.
     pub(crate) private_defs: Vec<DefinitionId>,
+    /// M-3 (`docs/modules-spec.md` §5): the compiled `#@was` alias table,
+    /// sorted by `old` — [`Program::resolve_alias`] binary-searches it.
+    /// Empty for every story that uses no `#@was`.
+    pub(crate) alias_table: Vec<AliasEntry>,
 }
 
 /// Runtime metadata for one declared struct shape.
@@ -139,6 +143,40 @@ impl Program {
     /// Resolve any target (container or address) to `(container_idx, byte_offset)`.
     pub(crate) fn resolve_target(&self, id: DefinitionId) -> Option<(u32, usize)> {
         self.address_map.get(&id).copied()
+    }
+
+    /// Whether `id` names a live container/address in the current program
+    /// (a knot/stitch/label or a synthetic child address) — the "does this
+    /// still resolve directly" half of the M-3 rehydration miss-path check
+    /// (`docs/modules-spec.md` §5).
+    pub(crate) fn knows_address(&self, id: DefinitionId) -> bool {
+        self.address_map.contains_key(&id)
+    }
+
+    /// Whether `id` names a live global slot in the current program.
+    pub(crate) fn knows_global(&self, id: DefinitionId) -> bool {
+        self.global_map.contains_key(&id)
+    }
+
+    /// M-3 rehydration miss-path lookup (`docs/modules-spec.md` §5): given
+    /// an `id` the current program doesn't recognize, consult the compiled
+    /// `#@was` alias table for its current identity. Callers still need to
+    /// check whether the returned id itself resolves — an alias chain is
+    /// never followed (the compiler always emits `old -> new` against the
+    /// definition's *current* id, never `old -> old2`).
+    pub(crate) fn resolve_alias(&self, old: DefinitionId) -> Option<DefinitionId> {
+        self.alias_table
+            .binary_search_by_key(&old, |e| e.old)
+            .ok()
+            .map(|idx| self.alias_table[idx].new)
+    }
+
+    /// Whether this program carries any `#@was`-derived alias-table
+    /// entries at all. Gates `load_state`'s miss-path reporting: an
+    /// ordinary content edit with no rename directive stays exactly as
+    /// silent as it was before M-3.
+    pub(crate) fn has_aliases(&self) -> bool {
+        !self.alias_table.is_empty()
     }
 
     /// Resolve a definition ID to `(container_idx, byte_offset)`.
@@ -521,6 +559,7 @@ mod find_address_tests {
             local_scope_defaults: Vec::new(),
             struct_shapes: Vec::new(),
             private_defs: Vec::new(),
+            alias_table: Vec::new(),
         }
     }
 

@@ -175,6 +175,13 @@ pub fn lower_to_program_with_type_mode(
         .collect();
     private_defs.sort_by_key(|id| id.to_raw());
 
+    // M-3 (`docs/modules-spec.md` §5): sort the analyzer's collected alias
+    // entries by `old` — the runtime's binary-search lookup requires it, and
+    // sorting here (rather than trusting file/symbol iteration order) keeps
+    // codegen output deterministic independent of project file order.
+    let mut aliases = index.aliases.clone();
+    aliases.sort_unstable();
+
     (
         Some(lir::Program {
             root,
@@ -185,6 +192,7 @@ pub fn lower_to_program_with_type_mode(
             name_table: names.into_entries(),
             struct_shapes,
             private_defs,
+            aliases,
         }),
         lir_diagnostics,
     )

@@ -8,10 +8,10 @@ use brink_format::{
     read_section_line_tables, read_section_list_defs, read_section_list_items,
     read_section_list_literals, read_section_literal_pool, read_section_name_table,
     read_section_variables, write_inkb, write_section_address_paths, write_section_addresses,
-    write_section_containers, write_section_externals, write_section_line_tables,
-    write_section_list_defs, write_section_list_items, write_section_list_literals,
-    write_section_literal_pool, write_section_name_table, write_section_struct_shapes,
-    write_section_variables,
+    write_section_alias_table, write_section_containers, write_section_externals,
+    write_section_line_tables, write_section_list_defs, write_section_list_items,
+    write_section_list_literals, write_section_literal_pool, write_section_name_table,
+    write_section_struct_shapes, write_section_variables,
 };
 
 fn i001_data() -> brink_format::StoryData {
@@ -70,8 +70,11 @@ fn roundtrip_visibility_section() {
 
 #[test]
 fn visibility_section_omitted_when_empty() {
-    // The all-public common case: no Visibility section, no version bump, so
-    // pre-modules stories stay byte-identical.
+    // The all-public common case: no Visibility section, so an all-public
+    // story's offset table stays at the mandatory `SECTION_COUNT` entries —
+    // Visibility itself needs no version bump. (The whole-file `VERSION` is
+    // 5 regardless, because of the unrelated *mandatory* M-3 `AliasTable`
+    // section — see `roundtrip_alias_table`/`missing_alias_table_section_decodes_empty`.)
     let data = i001_data();
     assert!(data.private_defs.is_empty());
 
@@ -85,7 +88,7 @@ fn visibility_section_omitted_when_empty() {
             .iter()
             .any(|s| s.kind == SectionKind::Visibility)
     );
-    assert_eq!(index.version, 4);
+    assert_eq!(index.version, 5);
 }
 
 // ── v4 collection value encoding (#526) ─────────────────────────────────────
@@ -187,6 +190,56 @@ fn roundtrip_handle_valued_globals() {
     let mut recovered = read_inkb(&buf).unwrap();
     recovered.source_checksum = data.source_checksum;
     assert_eq!(data, recovered);
+}
+
+/// M-3 `AliasTable` section (`docs/modules-spec.md` §5, format section tag
+/// `0x0F`): write→read identity for the compiled `#@was` alias table —
+/// several entries of mixed `DefinitionTag`s (a knot rename and a global
+/// var rename both produce entries; their tags differ), proving the
+/// section round-trips through the binary format byte-for-byte.
+#[test]
+fn roundtrip_alias_table() {
+    use brink_format::{AliasEntry, DefinitionId, DefinitionTag};
+
+    let mut data = i001_data();
+    data.alias_table = vec![
+        AliasEntry {
+            old: DefinitionId::new(DefinitionTag::Address, 1),
+            new: DefinitionId::new(DefinitionTag::Address, 2),
+        },
+        AliasEntry {
+            old: DefinitionId::new(DefinitionTag::GlobalVar, 3),
+            new: DefinitionId::new(DefinitionTag::GlobalVar, 4),
+        },
+        AliasEntry {
+            old: DefinitionId::new(DefinitionTag::Address, u64::MAX),
+            new: DefinitionId::new(DefinitionTag::Address, 0),
+        },
+    ];
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
+    assert_eq!(data, recovered);
+}
+
+/// A `.inkb` with no `AliasTable` section at all (a pre-M-3 file, or a
+/// story with no `#@was` directives) decodes the alias table as empty
+/// rather than erroring — `read_section_alias_table`'s absent-section path.
+#[test]
+fn missing_alias_table_section_decodes_empty() {
+    let data = i001_data();
+    assert!(
+        data.alias_table.is_empty(),
+        "sanity: I001 has no #@was directives"
+    );
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+    let recovered = read_inkb(&buf).unwrap();
+    assert!(recovered.alias_table.is_empty());
 }
 
 // ── Recursion-depth cap on VAL_ARRAY/VAL_MAP decode (#553, #561, #562) ──────
@@ -316,21 +369,21 @@ fn decode_value_rejects_beyond_max_depth_map_nesting() {
     ));
 }
 
-// The strict reader rejects any version but 4 — a future v5 artifact is not
+// The strict reader rejects any version but 5 — a future v6 artifact is not
 // silently accepted (the version check runs ahead of the content checksum).
 #[test]
-fn strict_reader_rejects_non_v4_version() {
+fn strict_reader_rejects_non_v5_version() {
     let data = i001_data();
     let mut buf = Vec::new();
     write_inkb(&data, &mut buf);
-    assert!(read_inkb(&buf).is_ok(), "v4 buffer reads cleanly");
+    assert!(read_inkb(&buf).is_ok(), "v5 buffer reads cleanly");
 
-    // Bump the on-wire version field (bytes 4..6, LE) to 5.
-    buf[4] = 5;
+    // Bump the on-wire version field (bytes 4..6, LE) to 6.
+    buf[4] = 6;
     buf[5] = 0;
     assert!(
-        matches!(read_inkb(&buf), Err(DecodeError::UnsupportedVersion(5))),
-        "a v5 artifact must be rejected as UnsupportedVersion(5)"
+        matches!(read_inkb(&buf), Err(DecodeError::UnsupportedVersion(6))),
+        "a v6 artifact must be rejected as UnsupportedVersion(6)"
     );
 }
 
@@ -461,9 +514,9 @@ fn index_parsing() {
     write_inkb(&data, &mut buf);
 
     let index = read_inkb_index(&buf).unwrap();
-    assert_eq!(index.version, 4);
+    assert_eq!(index.version, 5);
     assert_eq!(index.file_size as usize, buf.len());
-    assert_eq!(index.sections.len(), 12);
+    assert_eq!(index.sections.len(), 13);
 
     // Sections are in canonical order.
     assert_eq!(index.sections[0].kind, SectionKind::NameTable);
@@ -478,9 +531,10 @@ fn index_parsing() {
     assert_eq!(index.sections[9].kind, SectionKind::AddressPaths);
     assert_eq!(index.sections[10].kind, SectionKind::LiteralPool);
     assert_eq!(index.sections[11].kind, SectionKind::StructShapes);
+    assert_eq!(index.sections[12].kind, SectionKind::AliasTable);
 
-    // Header size is 16 + 8*12 = 112.
-    assert_eq!(index.header_size(), 112);
+    // Header size is 16 + 8*13 = 120.
+    assert_eq!(index.header_size(), 120);
 
     // First section starts right after header.
     assert_eq!(index.sections[0].offset as usize, index.header_size());
@@ -640,6 +694,9 @@ fn assemble_inkb_equivalence() {
     let mut struct_shapes_buf = Vec::new();
     write_section_struct_shapes(&data.struct_shapes, &mut struct_shapes_buf);
 
+    let mut alias_table_buf = Vec::new();
+    write_section_alias_table(&data.alias_table, &mut alias_table_buf);
+
     let mut assembled = Vec::new();
     assemble_inkb(
         &[
@@ -655,6 +712,7 @@ fn assemble_inkb_equivalence() {
             (SectionKind::AddressPaths, &ap_buf),
             (SectionKind::LiteralPool, &literal_pool_buf),
             (SectionKind::StructShapes, &struct_shapes_buf),
+            (SectionKind::AliasTable, &alias_table_buf),
         ],
         &mut assembled,
     );
@@ -740,6 +798,7 @@ fn roundtrip_line_entry_with_audio_ref() {
         literal_pool: vec![],
         struct_shapes: vec![],
         private_defs: vec![],
+        alias_table: vec![],
         source_checksum: 0,
     };
 

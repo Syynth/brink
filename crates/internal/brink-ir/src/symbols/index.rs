@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use brink_format::{DefinitionId, DefinitionTag};
+use brink_format::{AliasEntry, DefinitionId, DefinitionTag};
 use rowan::TextRange;
 
 use crate::FileId;
@@ -15,6 +15,11 @@ pub struct SymbolIndex {
     pub symbols: HashMap<DefinitionId, SymbolInfo>,
     /// Reverse index from canonical name to definition IDs.
     pub by_name: HashMap<String, Vec<DefinitionId>>,
+    /// M-3 (docs/modules-spec.md §5): old→new `DefinitionId` rename records
+    /// collected from `#@was(old_name)` directives while merging manifests.
+    /// Unordered here (append order follows file/symbol processing order);
+    /// `brink-ir::lir::lower` sorts by `old` before handing this to codegen.
+    pub aliases: Vec<AliasEntry>,
 }
 
 /// Explicit visibility override on a declaration, from a `#@private` /

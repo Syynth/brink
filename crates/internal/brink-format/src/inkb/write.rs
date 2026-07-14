@@ -7,8 +7,8 @@ use crate::codec::{
     crc32, write_def_id, write_i32, write_str, write_u8, write_u16, write_u32, write_u64,
 };
 use crate::definition::{
-    AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef, ScopeLineTable, StructShapeDef,
+    AddressDef, AddressPath, AliasEntry, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry,
+    ListDef, ListItemDef, ScopeLineTable, StructShapeDef,
 };
 use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -32,8 +32,10 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
 
     // The `Visibility` section (M-2b, tag `0x0E`) is **optional**: emitted
     // only when the story has `#@private` definitions. All-public stories —
-    // the entire pre-modules world — omit it, so their bytes are unchanged
-    // (`SECTION_COUNT` entries) and no format version bump is required.
+    // the entire pre-modules world — omit it, so their offset table stays
+    // at `SECTION_COUNT` entries (which now includes the mandatory M-3
+    // `AliasTable` section, always present — possibly empty — from v5
+    // onward; see `SectionKind::AliasTable`).
     let has_visibility = !story.private_defs.is_empty();
     let section_count = SECTION_COUNT as usize + usize::from(has_visibility);
     let header_size = HEADER_PREAMBLE + section_count * SECTION_ENTRY_SIZE;
@@ -108,6 +110,12 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
             write_section_visibility(&story.private_defs, buf)
         );
     }
+    // AliasTable (M-3) is mandatory — always present (possibly empty) from
+    // v5 onward, unlike the optional `Visibility` section above.
+    section!(
+        SectionKind::AliasTable,
+        write_section_alias_table(&story.alias_table, buf)
+    );
 
     let file_size = (buf.len() - base) as u32;
     let checksum = crc32(&buf[base + header_size..]);
@@ -489,6 +497,25 @@ pub fn write_section_struct_shapes(struct_shapes: &[StructShapeDef], buf: &mut V
         for field in &shape.fields {
             write_u16(buf, field.0);
         }
+    }
+}
+
+/// Section-local encoding version for `AliasTable` (`docs/modules-spec.md`
+/// §5) — independent of the `.inkb` format `VERSION`, so the row encoding
+/// can change without another whole-format bump.
+pub(crate) const ALIAS_TABLE_SECTION_VERSION: u8 = 1;
+
+/// Write the M-3 `AliasTable` section (no header framing): a one-byte
+/// section-local version, then a flat list of old→new `DefinitionId` pairs
+/// (`docs/modules-spec.md` §5). Entries are written in the order given —
+/// callers sort by `old` for the runtime's binary-search lookup.
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_alias_table(entries: &[AliasEntry], buf: &mut Vec<u8>) {
+    write_u8(buf, ALIAS_TABLE_SECTION_VERSION);
+    write_u32(buf, entries.len() as u32);
+    for entry in entries {
+        write_def_id(buf, entry.old);
+        write_def_id(buf, entry.new);
     }
 }
 

@@ -1,4 +1,4 @@
-use brink_format::{CountingFlags, DefinitionId, NameId};
+use brink_format::{AliasEntry, CountingFlags, DefinitionId, NameId};
 
 use crate::{AssignOp, InfixOp, PostfixOp, PrefixOp, SequenceType};
 
@@ -48,6 +48,14 @@ pub struct Program {
     /// `brink_format::StoryData::private_defs`; the runtime uses it to refuse
     /// host semantic access. Empty for the all-public pre-modules world.
     pub private_defs: Vec<DefinitionId>,
+
+    /// M-3 (`docs/modules-spec.md` §5): old→new `DefinitionId` rename
+    /// records from every `#@was(old_name)` directive in the project,
+    /// sorted by `old` (deterministic regardless of file/symbol iteration
+    /// order — codegen hands this straight to
+    /// `brink_format::StoryData::alias_table`). Empty unless the source
+    /// uses `#@was`.
+    pub aliases: Vec<AliasEntry>,
 }
 
 /// One declared `STRUCT` shape (TM-4c). Mirrors
