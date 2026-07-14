@@ -739,9 +739,13 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
             });
             stats.frames_pushed += 1;
         }
-        Opcode::CallVariable => {
+        Opcode::CallVariable(argc) => {
             let val = flow.pop_value()?;
             match val {
+                // Classic divert-target-variable call (oracle path, unchanged):
+                // the target's own prologue self-consumes its declared params
+                // off the stack, so `argc` is not needed here — untouched by
+                // #721.
                 Value::DivertTarget(id) => {
                     let idx = program
                         .resolve_target(id)
@@ -772,21 +776,19 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 }
                 // T1c (docs/t1c-spec.md §3): the **direct** call form `f(args…)`
                 // where `f` holds a function value dispatches through the same
-                // `CallVariable` site (the codegen for `f(args)` pushes the
-                // supplied args, then the callee, then `CallVariable`) — the
-                // divert-target arm above stays the oracle path, this arm is
-                // inert for it. Without an `argc` operand the supplied count is
-                // *derived* from the target arity minus the bound prefix, so a
-                // gradual-mode arity mismatch on the direct form degrades to
-                // the target prologue's existing behavior (strict mode catches
-                // it at compile time, spec §4); the explicit `call(f, args…)`
-                // form (`CallValue(argc)`) carries the argc and faults exactly.
+                // `CallVariable` site (codegen pushes the supplied args, then
+                // the callee, then `CallVariable(argc)`) — the divert-target
+                // arm above stays the oracle path, this arm is inert for it.
+                // `argc` is the exact count codegen pushed at *this* call site
+                // (issue #721: never derive it from the resolved target's
+                // arity — that made the pop count trivially match `enter_fn_
+                // value`'s arity check, so a gradual-mode arity mismatch left
+                // a stray value on the stack instead of faulting). Popping the
+                // wire-carried `argc` here means a real mismatch surfaces as
+                // `FunctionValueArity` from `enter_fn_value`, exactly like the
+                // explicit `call(f, args…)` form (`CallValue(argc)`).
                 Value::FnRef(_) | Value::Closure(_) => {
-                    let bound = fn_value_bound_len(&val);
-                    let (target_idx, _) = fn_value_target_idx(&val, program)?;
-                    let supplied_count =
-                        (program.container(target_idx).param_count as usize).saturating_sub(bound);
-                    let supplied = pop_values(flow, supplied_count)?;
+                    let supplied = pop_values(flow, argc as usize)?;
                     enter_fn_value(flow, program, context, stats, &val, supplied)?;
                 }
                 other => {
@@ -1164,15 +1166,6 @@ fn pop_values(flow: &mut Flow, n: usize) -> Result<Vec<Value>, RuntimeError> {
         return Err(RuntimeError::StackUnderflow);
     }
     Ok(flow.value_stack.split_off(len - n))
-}
-
-/// Bound-prefix length of a function value (`0` for a zero-bound `FnRef` or a
-/// non-function value).
-fn fn_value_bound_len(v: &Value) -> usize {
-    match v {
-        Value::Closure(c) => c.env.len(),
-        _ => 0,
-    }
 }
 
 /// Resolve a function value to its target container index and fn token. A

@@ -124,6 +124,37 @@ fn struct_construct_read_write() {
     assert_case("struct-construct-read-write");
 }
 
+// ── #674: `arr[i].field = v` grammar fix ─────────────────────────────────
+//
+// The `.field` postfix grammar's assignment-target position used to reject
+// an `Index` base entirely — `arr[0].x = 2.0` failed to parse as an
+// assignment at all, producing a generic E015 parse error instead of
+// reaching LIR's existing chained/mixed-field-write fence. This proves the
+// full compiler entry point now surfaces the *intended* diagnostic — E074,
+// the T1e boundary — not E015, for a mixed index-then-field write target.
+// Full RMW support for this shape is still out of scope (T1e, deliberately
+// deferred); this only fixes the grammar/diagnostic-routing gap.
+
+#[test]
+fn index_then_field_assignment_target_is_e074_not_a_parse_error() {
+    let source = "VAR arr = #[1, 2, 3]\n~ arr[0].x = 2.0\nHello.\n-> END\n";
+    let err = compile_brink(source)
+        .expect_err("a mixed index-then-field write target must still be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E074),
+        "expected E074 (chained/mixed field-write projection), got {diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code != brink_compiler::DiagnosticCode::E015),
+        "must not regress to the old generic E015 parse error, got {diags:?}"
+    );
+}
+
 // ── TM-5 (#621) corpus wing growth ────────────────────────────────────────
 //
 // TM-4c's `struct-construct-read-write` only reads/writes a struct in place;
@@ -282,6 +313,21 @@ fn rmw_mutator_shared_nested_lvalue() {
     assert_case("rmw-mutator-shared-nested-lvalue");
 }
 
+// ── #680: ref-argument call co-occurring with a temp decl in one block ───
+
+#[test]
+fn ref_call_with_block_temp() {
+    // The issue's literal repro shape end-to-end: a `~ { … }` block body
+    // containing both a `temp` declaration and a `ref`-argument call
+    // targeting a global `VAR`, with the temp used only within its own
+    // block. Must resolve `gold`'s `ref` argument to the real global slot
+    // and run to completion — see the RCA + regression tests in
+    // `brink-ir`'s `lir_lowering.rs` for the root cause (a block-scoped
+    // temp read *after* its block closes, unrelated to `ref` at all) and
+    // the diagnostic (E082) that now catches that case instead.
+    assert_case("ref-call-with-block-temp");
+}
+
 /// Every `tests/tier1-brink/` case directory is exercised by a `#[test]`
 /// above — a directory with no matching test would silently never run.
 #[test]
@@ -320,6 +366,7 @@ fn every_case_directory_has_a_test() {
         "fn-value-call-forms",
         "fn-value-ref-mutation",
         "fn-value-bind-chain",
+        "ref-call-with-block-temp",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink")
@@ -1139,6 +1186,59 @@ fn well_formed_fn_creation_compiles_clean() {
     compile_brink(source).expect("a well-formed #fn creation compiles clean in T1c-2");
 }
 
+// ── #680 RCA: block-scoped temp referenced after its block closes (E082) ──
+//
+// #680 was filed as "a `ref`-argument call co-occurring with a `temp` decl
+// in the same `~ { }` block resolves to the wrong global slot
+// (UnresolvedGlobal)". RCA (see `brink-ir`'s `lir_lowering.rs` for the
+// lowering-layer regression tests) found the `ref`-argument call is not the
+// trigger at all: the actual defect is reading a T1b block-scoped `temp`
+// from *outside* its own `~ { … }` block, which used to silently fall
+// through to the compiler's inklecate-compat "forward-referenced classic
+// temp" path and emit a phantom global id — a runtime-only
+// `UnresolvedGlobal` fault with no compile diagnostic. That's now a real,
+// non-suppressible compile error (E082) instead.
+
+#[test]
+fn block_scoped_temp_read_after_its_block_closes_is_e082() {
+    let source = "VAR gold = 100\n~ {\n    temp name = \"hero\"\n}\n{name}\n-> END\n";
+    let err =
+        compile_brink(source).expect_err("reading a block temp after its block closed must fail");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E082),
+        "expected E082, got {diags:?}"
+    );
+}
+
+#[test]
+fn block_scoped_temp_passed_by_ref_after_its_block_closes_is_e082() {
+    let source = "VAR gold = 100\n~ {\n    temp name = \"hero\"\n}\n~ heal(name)\nDone.\n-> END\n\n\
+                  === function heal(ref hp) ===\n~ return hp\n";
+    let err =
+        compile_brink(source).expect_err("passing an out-of-scope block temp by ref must fail");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E082),
+        "expected E082, got {diags:?}"
+    );
+}
+
+#[test]
+fn ref_call_co_occurring_with_block_temp_is_not_e082() {
+    // The issue's literal repro shape: a `ref`-argument call and a `temp`
+    // decl in the *same* block, temp never read after the block closes —
+    // this compiles clean, proving `ref` calls were never the trigger.
+    let source = "VAR gold = 100\n~ {\n    temp x = 1\n    heal(gold)\n}\nDone.\n-> END\n\n\
+                  === function heal(ref hp) ===\n~ return hp\n";
+    compile_brink(source)
+        .expect("ref-argument call co-occurring with a temp decl in one block compiles clean");
+}
+
 // ── T1c-2 (#700): function-value corpus wing (straight-line cases) ───────
 
 #[test]
@@ -1222,6 +1322,29 @@ fn bind_over_binding_more_than_remaining_params_is_a_turn_terminating_fault() {
     );
 }
 
+// ── #721: direct-call `f(args…)` arity mismatch must fault cleanly ──────
+//
+// `f(args…)` compiles through the same `CallVariable` opcode as the classic
+// divert-target-variable-call path (`{s(P)}` etc. — `run_story.rs`'s
+// `function_variable_call`). Before #721, the popped-arg count for the
+// function-value arm was *derived* from the resolved target's arity instead
+// of carried as an `argc` operand, so a wrong-arity direct call could leave
+// a stray value on the stack instead of faulting. These prove both
+// directions fault via `FunctionValueArity`, matching the explicit
+// `call(f, args…)` form above — never silent stack corruption.
+
+#[test]
+fn direct_call_with_too_many_args_is_a_turn_terminating_fault() {
+    // `double` takes 1 param; the direct call supplies 2.
+    let src = "~ temp d = #fn(double)\n~ temp r = d(1, 2)\nUnreachable {r}.\n-> END\n\n\
+               === function double(x) ===\n~ return x + x\n";
+    let err = run_expecting_fault(src).expect("wrong arity must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::FunctionValueArity { .. }),
+        "expected FunctionValueArity, got {err:?}"
+    );
+}
+
 #[test]
 fn binding_a_non_function_value_is_a_turn_terminating_fault() {
     // `bind(x, …)` where `x` is not a function value is a dispatch fault
@@ -1231,6 +1354,18 @@ fn binding_a_non_function_value_is_a_turn_terminating_fault() {
     assert!(
         matches!(err, brink_runtime::RuntimeError::NotCallable(_)),
         "expected NotCallable, got {err:?}"
+    );
+}
+
+#[test]
+fn direct_call_with_too_few_args_is_a_turn_terminating_fault() {
+    // `add` takes 2 params; the direct call supplies 1.
+    let src = "~ temp d = #fn(add)\n~ temp r = d(1)\nUnreachable {r}.\n-> END\n\n\
+               === function add(x, y) ===\n~ return x + y\n";
+    let err = run_expecting_fault(src).expect("wrong arity must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::FunctionValueArity { .. }),
+        "expected FunctionValueArity, got {err:?}"
     );
 }
 
@@ -1245,6 +1380,18 @@ fn ordering_two_function_values_is_a_turn_terminating_fault() {
         matches!(err, brink_runtime::RuntimeError::TypeError(_)),
         "expected TypeError, got {err:?}"
     );
+}
+
+#[test]
+fn direct_call_with_correct_arity_still_works() {
+    // Regression guard: the argc-carrying dispatch must not disturb the
+    // matching-arity happy path.
+    let src = "~ temp d = #fn(double)\n~ temp r = d(21)\n{r}.\n-> END\n\n\
+               === function double(x) ===\n~ return x + x\n";
+    let (program, tables) = compile_and_link(src);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    let out = run_to_end(&mut story);
+    assert_eq!(out, "42.\n");
 }
 
 // ── T1c-2 (#700): persistence + rehydration (spec §6) ───────────────────

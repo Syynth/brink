@@ -464,10 +464,16 @@ fn eval_const_fn_literal(
         if is_ref {
             // A `ref` bound arg must name a durable global cell (analyzer E080
             // guaranteed this under `dialect = brink`); resolve it to the cell
-            // id so codegen bakes a `VariablePointer`.
-            let cell = match arg {
-                hir::Expr::Path(p) => resolutions.resolve(file, p.range).unwrap_or(target_id),
-                _ => target_id,
+            // id so codegen bakes a `VariablePointer`. An unresolved cell (the
+            // arg isn't a path, or the path doesn't resolve) means the
+            // analyzer's own diagnostic already stands for this site — fold
+            // the whole literal to `Null` rather than sentinel-binding the
+            // function's own `target_id` as a fake cell (T1c-2 rider, #721).
+            let Some(cell) = (match arg {
+                hir::Expr::Path(p) => resolutions.resolve(file, p.range),
+                _ => None,
+            }) else {
+                return lir::ConstValue::Null;
             };
             env.push(lir::ConstClosureEntry::Ref { name, cell });
         } else {

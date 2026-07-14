@@ -96,7 +96,14 @@ impl ContainerEmitter<'_> {
                     self.emit_call_arg(arg);
                 }
                 self.emit(Opcode::GetGlobal(*target));
-                self.emit_fragment_wrapped(display, Opcode::CallVariable);
+                self.emit_fragment_wrapped(
+                    display,
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "a call supplies <=255 args"
+                    )]
+                    Opcode::CallVariable(args.len() as u8),
+                );
             }
 
             lir::Expr::CallVariableTemp { slot, args, .. } => {
@@ -104,7 +111,14 @@ impl ContainerEmitter<'_> {
                     self.emit_call_arg(arg);
                 }
                 self.emit(Opcode::GetTemp(*slot));
-                self.emit_fragment_wrapped(display, Opcode::CallVariable);
+                self.emit_fragment_wrapped(
+                    display,
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "a call supplies <=255 args"
+                    )]
+                    Opcode::CallVariable(args.len() as u8),
+                );
             }
 
             lir::Expr::CallBuiltin { builtin, args } => {

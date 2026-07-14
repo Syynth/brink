@@ -29,9 +29,36 @@ jobs:
       # The wasm-side test modules (`wasm_bindgen_test`) were compiled by no
       # CI job — only the lib was ever checked for wasm32 — so they bitrotted
       # invisibly when PR #654's module split broke their `super::` paths
-      # (#672 lane G finding). Compile them here; *executing* them in CI is
-      # #672 workstream D.
+      # (#672 lane G finding). Compile them here; the `wasm-test` job below
+      # actually *executes* them (#672 workstream D).
       - run: cargo check -p brink-web --all-targets --target wasm32-unknown-unknown
+
+  # Executes the `#[wasm_bindgen_test]` suite under Node (the `check` job
+  # above only type-checks it for wasm32 — it never ran, so PR #620's
+  # Record→null marshal regression would not have been caught by any CI
+  # job). All 49 tests here go through `web_sys::console::*` at most — no
+  # `window`/`document`/`fetch`/storage — so Node's built-in `console`
+  # satisfies every dependency and no headless browser is needed. If this
+  # job proves flaky in practice, drop it from branch-protection's required
+  # list rather than deleting it (#672 workstream D).
+  wasm-test:
+    name: Wasm Tests (brink-web)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
+        # Pin the version (matching the `frontend` job below): the default
+        # `latest` queries the GitHub API for the newest release and breaks
+        # under API rate limiting (HTML, not JSON).
+        with:
+          version: v0.14.0
+      - run: wasm-pack test --node crates/brink-web
 
   test:
     name: Test

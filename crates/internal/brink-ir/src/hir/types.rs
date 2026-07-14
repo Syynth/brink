@@ -1278,6 +1278,18 @@ pub enum DiagnosticCode {
     /// (docs/t1c-spec.md §2: "binding more args than the target declares
     /// is a compile error").
     E081,
+
+    // ── T1b block-temp scoping (docs/t1b-surface-spec.md §2, issue #680) ──
+    /// A T1b block-scoped `temp` (`~ { … }`) — or a `for`-loop variable,
+    /// which desugars the same way — was referenced (by value or by `ref`
+    /// argument) after its own `~ { … }`/`while`/`for`/`if` block already
+    /// closed. Root-caused for #680: LIR lowering's fallback for "temp not
+    /// currently visible" (used for inklecate-compat forward-reference
+    /// emulation of *classic* temps) previously also caught this case,
+    /// silently emitting a phantom hashed `GetGlobal`/`RefGlobal` id that
+    /// was never registered as a real global — a runtime-only
+    /// `UnresolvedGlobal` fault with no compile diagnostic.
+    E082,
 }
 
 impl DiagnosticCode {
@@ -1366,6 +1378,7 @@ impl DiagnosticCode {
             Self::E079 => "E079",
             Self::E080 => "E080",
             Self::E081 => "E081",
+            Self::E082 => "E082",
         }
     }
 
@@ -1464,6 +1477,7 @@ impl DiagnosticCode {
             Self::E079 => "#fn target is not a statically-named function definition",
             Self::E080 => "#fn ref parameter is not bound to a durable cell at creation",
             Self::E081 => "#fn binds more arguments than the target declares",
+            Self::E082 => "block-scoped temp referenced after its block has closed",
         }
     }
 
@@ -1573,6 +1587,7 @@ impl DiagnosticCode {
             "E079" => Some(Self::E079),
             "E080" => Some(Self::E080),
             "E081" => Some(Self::E081),
+            "E082" => Some(Self::E082),
             _ => None,
         }
     }
