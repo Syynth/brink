@@ -46,21 +46,50 @@ binding declared to take `handle<AudioInstance>` rejects a
 mismatch is a runtime fault at the binding boundary (the §11c
 posture).
 
-## 4. Rehydration and dead handles — RULED (hook API shape PROPOSED)
+## 4. Rehydration and dead handles — RULED (2026-07-14 mechanics round)
 
-- A **rehydration hook** runs at load: saved tokens → live resources
-  or **dead**. bevy-brink's native implementation is
-  `EntityMapper`-based for entity kinds; other kinds get a per-kind
-  mapping callback.
+Rehydration is **two-halved**, because the knowledge lives on
+opposite sides of the save boundary: **save-side keying** (live
+resource → durable `SaveKey`) and **load-side resolution**
+(`SaveKey` → new resource). One per-kind trait carries both:
+
+```rust
+trait HandleKind: 'static {
+    const KIND: &'static str;                 // manifest name
+    type Resource;                            // Entity, AudioInstanceId, …
+    type SaveKey: Serialize + DeserializeOwned;
+    fn save_key(&self, world: &World, res: &Self::Resource) -> Option<Self::SaveKey>;
+    fn resolve(&self, world: &mut World, key: &Self::SaveKey) -> Option<Self::Resource>;
+}
+```
+
+- **`SaveKey` is a reconstruction recipe, not just a foreign key.**
+  The spectrum, chosen per kind by its implementor: identity lookup
+  (an NPC GUID, an asset path), reconstruction (a timer saves its
+  remaining duration and `resolve` spawns a fresh one — timers ARE
+  resumable), or deliberate ephemerality (`save_key → None`: "this
+  resource is meaningless across sessions" — an implementor CHOICE,
+  never a spec-assigned category).
+- bevy-brink owns opaque token ids and the per-kind registries,
+  persists the `token → SaveKey` table beside the ink `SaveState`,
+  and rebinds registries at load **keeping token ids stable** (ink
+  state is untouched; only the registry's right-hand side rebinds).
+  `EntityMapper` integrates for scene-based games.
 - **Dead handles are never UB and never a turn fault**: a binding
-  dereferencing one returns its **declared failure value** (each
-  binding declares this in the manifest — the same place its
-  capability row lives). Optional `is_valid(h)` ships as a standard
-  world-query binding in bevy-brink, not a language intrinsic.
-- **PROPOSED hook shape** (bevy-brink): a per-kind
-  `HandleRehydrator` registration — `fn rehydrate(kind, saved_id) ->
-  Option<live_id>`; unregistered kinds rehydrate as dead (safe
-  default, load never fails on a missing mapper).
+  dereferencing one returns its **declared failure value** (manifest,
+  beside its capability row). Optional `is_valid(h)` ships as a
+  standard world-query binding, not a language intrinsic. An
+  optional per-binding **dead-deref host event** feeds telemetry.
+- **Never-fail-load is the invariant** (player saves are sacred),
+  refined for developers: load produces a **rehydration report** —
+  rebound / dead-by-resolve (normal) / dead-ephemeral (chosen) /
+  **dead-by-unregistered-kind** (suspicious: integration drift) —
+  and a host policy knob: `Lenient` (production default) vs
+  `StrictKinds` (dev/CI: unregistered kinds fail the load loudly).
+- **Registry GC at quiescent points**: script state is enumerable,
+  so the host computes the live token set at `-> DONE` sweeps
+  (value-model §6 license) and drops unreachable registry entries —
+  no script-side destructors exist or are needed.
 
 ## 5. Journal and replay — RULED
 
@@ -80,14 +109,22 @@ record shape is needed — tokens are values.
   observable-surface-forever reasoning as the fn-value display
   ruling.
 
-## 7. Effects interaction — PROPOSED (restating the T2 skeleton position)
+## 7. Effects interaction — RULED (2026-07-14, reverses the earlier position)
 
-Handle-typed arguments add **the binding's declared access, nothing
-more** — dereference happens host-side, so the handle itself
-contributes no cells or kinds to a row beyond what the called
-binding's manifest entry already declares. (Entity-granular
-capability refinement — "reads Transform *of this handle's entity*" —
-remains reserved manifest syntax space, explicitly not designed.)
+**Capability atoms may be handle-parameterized**: a binding's
+manifest entry may declare `reads Transform(@arg0)` — the capability
+attaches to *the resource passed in that parameter*, not the
+component class globally. The factored `EffectRows` encoding
+**reserves the parameter slot now** (the flat-rows lesson); T2 v1
+populates every atom as `(any)` — component-granular, exactly the
+pre-amendment design — and **instance resolution ships later as a
+narrowing rung** (token comparison at schedule-commit; the existing
+selection-not-inference machinery). What this buys, when populated:
+per-entity reactive-sleep subscriptions (the flagship ambient-flow
+case), token-disjoint parallel scheduling, and **possession-bounded
+capabilities as the tier-2 security model** — handles are true
+object-capability tokens (no literal syntax exists; only bindings
+mint them; possession is authority).
 
 ## 8. Snapshot economics note — RULED (carried, no new surface)
 
