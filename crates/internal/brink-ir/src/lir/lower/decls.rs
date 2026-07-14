@@ -312,8 +312,10 @@ pub fn eval_const_expr(
         // #673: `VAR`/`CONST p = Name#{…}` — see `eval_const_struct_literal`'s
         // doc.
         hir::Expr::StructLiteral(sl) => eval_const_struct_literal(sl, file, diagnostics),
-        // T1c-1: `VAR f = #fn(…)` — see `eval_const_fn_literal`'s doc.
-        hir::Expr::FnLiteral(fl) => eval_const_fn_literal(fl, file, diagnostics),
+        // T1c-2: `VAR f = #fn(…)` — see `eval_const_fn_literal`'s doc.
+        hir::Expr::FnLiteral(fl) => {
+            eval_const_fn_literal(fl, index, resolutions, file, const_values, diagnostics)
+        }
         _ => lir::ConstValue::Null,
     }
 }
@@ -428,25 +430,55 @@ fn eval_const_struct_literal(
     lir::ConstValue::Null
 }
 
-/// T1c-1: `VAR f = #fn(…)` — function values don't lower anywhere yet
-/// (T1c-2, docs/t1c-spec.md §11), and a declaration default has no runtime
-/// construction step to defer to regardless. A real compile error (E052,
-/// same "not yet implemented" class as the expression-position rejection in
-/// `expr::reject_fn_literal`), never a silent `Null` default.
+/// T1c-2: `VAR f = #fn(name, args…)` — bake a function value into the
+/// declaration default (docs/t1c-spec.md §2/§6). This is the declaration-
+/// default half of the T1c-1 E052 fence removal (the expression-position half
+/// is `expr::lower_fn_literal`): a zero-bound `#fn(name)` folds to
+/// [`lir::ConstValue::FnRef`]; a bound `#fn(name, args…)` folds to
+/// [`lir::ConstValue::Closure`], with each `ref` param bound to a durable
+/// global cell and each `val` param to a compile-time snapshot. Creation-site
+/// validity (E079/E080/E081) is `brink-analyzer`'s job; an unresolved target
+/// leaves the analyzer's own diagnostic to stand and folds to `Null`.
 fn eval_const_fn_literal(
     fl: &hir::FnLiteral,
+    index: &SymbolIndex,
+    resolutions: &ResolutionLookup,
     file: FileId,
+    const_values: &std::collections::HashMap<DefinitionId, lir::ConstValue>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> lir::ConstValue {
-    diagnostics.push(Diagnostic {
-        file,
-        range: fl.ptr.text_range(),
-        message: "`#fn(…)` function values are not yet implemented in this slice — \
-                  creation type-checks (T1c-1) but lowering/execution lands in T1c-2"
-            .to_owned(),
-        code: DiagnosticCode::E052,
-    });
-    lir::ConstValue::Null
+    let Some(target_id) = resolutions.resolve(file, fl.target.range) else {
+        return lir::ConstValue::Null;
+    };
+    let Some(target_info) = index.symbols.get(&target_id) else {
+        return lir::ConstValue::Null;
+    };
+    if fl.args.is_empty() {
+        return lir::ConstValue::FnRef(target_id);
+    }
+    let mut env = Vec::with_capacity(fl.args.len());
+    for (i, arg) in fl.args.iter().enumerate() {
+        let param = target_info.params.get(i);
+        let name = param.map_or_else(String::new, |p| p.name.clone());
+        let is_ref = param.is_some_and(|p| p.is_ref);
+        if is_ref {
+            // A `ref` bound arg must name a durable global cell (analyzer E080
+            // guaranteed this under `dialect = brink`); resolve it to the cell
+            // id so codegen bakes a `VariablePointer`.
+            let cell = match arg {
+                hir::Expr::Path(p) => resolutions.resolve(file, p.range).unwrap_or(target_id),
+                _ => target_id,
+            };
+            env.push(lir::ConstClosureEntry::Ref { name, cell });
+        } else {
+            let value = eval_const_expr(arg, index, resolutions, file, const_values, diagnostics);
+            env.push(lir::ConstClosureEntry::Val { name, value });
+        }
+    }
+    lir::ConstValue::Closure {
+        target: target_id,
+        env,
+    }
 }
 
 /// #679 review: can this source expression *kind* ever constant-fold in a

@@ -317,6 +317,8 @@ fn every_case_directory_has_a_test() {
         "struct-construct-read-write",
         "struct-through-function-call",
         "annotations-mixed",
+        "fn-value-call-forms",
+        "fn-value-ref-mutation",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink")
@@ -1046,45 +1048,28 @@ fn every_stdlib_name_is_rejected_under_strict_ink_and_compiles_under_brink() {
     }
 }
 
-// ── T1c-1 (#699): `#fn(…)` function values — lowering fence ─────────────
+// ── T1c-2 (#700): `#fn(…)` function values — real lowering ──────────────
 //
-// The T1c-1 slice ships grammar + HIR + dialect gate + creation-site
-// diagnostics + typing, but NO LIR/codegen/VM (docs/t1c-spec.md §11). A
-// program that actually uses `#fn` under `dialect = brink` must be a clean,
-// targeted compile error (E052, the "brink extension not yet implemented"
-// class) — never a silent drop or a miscompiled Null.
+// T1c-2 lands LIR/codegen/VM (docs/t1c-spec.md §11): the T1c-1 E052 lowering
+// fence is retired. A program that uses `#fn` under `dialect = brink` now
+// compiles clean (expression position AND declaration defaults) — never a
+// silent drop, never a fence error.
 
 #[test]
-fn fn_literal_under_brink_dialect_is_a_targeted_not_yet_implemented_error() {
+fn fn_literal_under_brink_dialect_lowers_for_real() {
     let source = "=== function heal(hp) ===\n~ return hp + 1\n\n\
                   === main ===\n~ temp f = #fn(heal, 1)\nDone.\n-> END\n";
-    let err = compile_brink(source)
-        .expect_err("#fn must reject at lowering in T1c-1 (no LIR/codegen yet)");
-    let diags = errors_of(&err);
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.code == brink_compiler::DiagnosticCode::E052),
-        "expected E052 lowering rejection, got {diags:?}"
-    );
+    compile_brink(source).expect("#fn now lowers for real in T1c-2 (no E052 fence)");
 }
 
 #[test]
-fn fn_literal_declaration_default_is_a_targeted_error_not_a_silent_null() {
-    // A `VAR` default has no runtime construction step — without a targeted
-    // arm this would silently bake `Null` into StoryData (the exact silent
-    // drop class the house rules forbid).
+fn fn_literal_declaration_default_bakes_a_real_value_not_a_null() {
+    // A `VAR` default has no runtime construction step — T1c-2 bakes a real
+    // `FnRef`/`Closure` into StoryData (never the silent `Null` the house
+    // rules forbid, and no E052 fence).
     let source = "=== function heal(hp) ===\n~ return hp + 1\n\n\
                   VAR f = #fn(heal, 1)\nHello.\n-> END\n";
-    let err = compile_brink(source)
-        .expect_err("#fn as a declaration default must be a compile error in T1c-1");
-    let diags = errors_of(&err);
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.code == brink_compiler::DiagnosticCode::E052),
-        "expected E052 lowering rejection, got {diags:?}"
-    );
+    compile_brink(source).expect("#fn as a declaration default compiles clean in T1c-2");
 }
 
 // ── T1c-1 (#699): creation-site diagnostics E079/E080/E081 ───────────────
@@ -1145,17 +1130,232 @@ fn fn_over_binding_is_e081() {
 }
 
 #[test]
-fn well_formed_fn_creation_reaches_the_lowering_fence_only() {
-    // A fully legal creation site under gradual types: the ONLY error left
-    // is the T1c-1 lowering fence (E052) — no E079/E080/E081 noise.
+fn well_formed_fn_creation_compiles_clean() {
+    // A fully legal creation site under gradual types compiles clean in T1c-2
+    // — no E079/E080/E081 creation noise and no E052 fence.
     let source = "=== function heal(ref hp, amount) ===\n~ hp = hp + amount\n~ return hp\n\n\
                   VAR player_hp = 10\n=== main ===\n~ temp f = #fn(heal, player_hp)\nDone.\n-> END\n";
-    let err = compile_brink(source).expect_err("still rejects at lowering in T1c-1");
-    let diags = errors_of(&err);
+    compile_brink(source).expect("a well-formed #fn creation compiles clean in T1c-2");
+}
+
+// ── T1c-2 (#700): function-value corpus wing (straight-line cases) ───────
+
+#[test]
+fn fn_value_both_call_forms() {
+    // Creation (zero-bound FnRef + bound Closure) and both call forms — the
+    // direct `f(args…)` and the explicit `call(f, args…)`.
+    assert_case("fn-value-call-forms");
+}
+
+#[test]
+fn fn_value_ref_cell_mutation_through_a_stored_value() {
+    // A `#fn(heal, player_hp)` ref-binds a durable World cell; invoking the
+    // stored value twice mutates the cell through the captured pointer.
+    assert_case("fn-value-ref-mutation");
+}
+
+// ── T1c-2 (#700): gradual-mode dispatch faults (spec §3) ────────────────
+
+/// Run a brink program to completion, returning the first runtime error (if
+/// any) rather than panicking — for the turn-terminating fault cases.
+fn run_expecting_fault(source: &str) -> Option<brink_runtime::RuntimeError> {
+    let (program, tables) = compile_and_link(source);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    for _ in 0..64 {
+        match story.continue_single() {
+            Ok(Line::Done { .. } | Line::End { .. }) => return None,
+            Ok(_) => {}
+            Err(e) => return Some(e),
+        }
+    }
+    None
+}
+
+#[test]
+fn calling_a_non_function_value_is_a_turn_terminating_fault() {
+    // Gradual mode: `x(3)` where `x` holds an int is a dispatch fault — no
+    // silent garbage (spec §3, value-model §11c).
+    let src = "~ temp x = 5\n~ temp y = x(3)\nUnreachable {y}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("calling an int must fault");
     assert!(
-        diags
-            .iter()
-            .all(|d| d.code == brink_compiler::DiagnosticCode::E052),
-        "only the lowering fence should fire for a well-formed creation: {diags:?}"
+        matches!(err, brink_runtime::RuntimeError::NotCallable(_)),
+        "expected NotCallable, got {err:?}"
+    );
+}
+
+#[test]
+fn explicit_call_with_wrong_arity_is_a_turn_terminating_fault() {
+    // The explicit `call(f, args…)` form carries argc, so a gradual-mode arity
+    // mismatch faults exactly (spec §3/§4).
+    let src = "~ temp d = #fn(double)\n~ temp r = call(d, 1, 2)\nUnreachable {r}.\n-> END\n\n\
+               === function double(x) ===\n~ return x + x\n";
+    let err = run_expecting_fault(src).expect("wrong arity must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::FunctionValueArity { .. }),
+        "expected FunctionValueArity, got {err:?}"
+    );
+}
+
+// ── T1c-2 (#700): persistence + rehydration (spec §6) ───────────────────
+
+/// Compile `source` (brink dialect) and link it to a runnable program.
+fn compile_and_link(
+    source: &str,
+) -> (
+    std::sync::Arc<brink_runtime::Program>,
+    Vec<Vec<brink_format::LineEntry>>,
+) {
+    let files: std::collections::HashMap<&str, &str> =
+        std::collections::HashMap::from([("main.ink", source)]);
+    let output = brink_compiler::compile_with_options(
+        "main.ink",
+        |path| {
+            files
+                .get(path)
+                .map(|s| (*s).to_string())
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, path))
+        },
+        AnalysisOptions {
+            dialect: Dialect::Brink,
+            ..AnalysisOptions::default()
+        },
+    )
+    .expect("compile");
+    let (program, tables) = brink_runtime::link(&output.data).expect("link");
+    (std::sync::Arc::new(program), tables)
+}
+
+/// Drain a story to its terminal line, concatenating text.
+fn run_to_end(story: &mut Story<DotNetRng>) -> String {
+    let mut out = String::new();
+    loop {
+        match story.continue_single().expect("runtime error") {
+            Line::Text { text, .. } => out.push_str(&text),
+            Line::Done { text, .. } | Line::End { text, .. } | Line::Choices { text, .. } => {
+                out.push_str(&text);
+                break;
+            }
+        }
+    }
+    out
+}
+
+// A program that stores a function value in a global at `setup`, then invokes
+// it from a separate `invoke` knot — so a save taken after `setup` carries a
+// live fn value, and `invoke` can be reached after a load without re-running
+// creation.
+const SAVE_LOAD_SRC: &str = "\
+=== function double(x) ===
+~ return x + x
+
+VAR stored = 0
+
+=== setup ===
+~ stored = #fn(double)
+Set up.
+-> DONE
+
+=== invoke ===
+~ temp r = stored(21)
+Result {r}.
+-> END
+";
+
+#[test]
+fn fn_value_save_load_invoke_equals_direct_invoke() {
+    let (program, tables) = compile_and_link(SAVE_LOAD_SRC);
+
+    // Direct: setup, then invoke — no save/load in between.
+    let mut direct = Story::<DotNetRng>::new(std::sync::Arc::clone(&program), tables.clone());
+    direct.choose_path_string("setup").expect("goto setup");
+    let _ = run_to_end(&mut direct);
+    direct.choose_path_string("invoke").expect("goto invoke");
+    let direct_out = run_to_end(&mut direct);
+
+    // Save/load: setup, capture the game state (global holds the fn value),
+    // load it into a fresh story, then invoke without re-running setup.
+    let mut src = Story::<DotNetRng>::new(std::sync::Arc::clone(&program), tables.clone());
+    src.choose_path_string("setup").expect("goto setup");
+    let _ = run_to_end(&mut src);
+    let saved = src.save_state();
+
+    let mut loaded = Story::<DotNetRng>::new(program, tables);
+    let report = loaded.load_state(&saved);
+    assert!(
+        report.is_clean(),
+        "save round-trip should reconcile cleanly: {report:?}"
+    );
+    loaded.choose_path_string("invoke").expect("goto invoke");
+    let loaded_out = run_to_end(&mut loaded);
+
+    assert_eq!(
+        direct_out, loaded_out,
+        "save→load→invoke must equal direct invoke",
+    );
+    assert_eq!(loaded_out, "Result 42.\n");
+}
+
+#[test]
+fn fn_value_rehydration_faults_on_param_rename_and_remode() {
+    // v1: `heal(ref hp, amount)` — the closure ref-binds a World cell.
+    let v1 = "\
+=== function heal(ref hp, amount) ===
+~ hp = hp + amount
+~ return hp
+
+VAR world_hp = 10
+VAR stored = 0
+
+=== setup ===
+~ stored = #fn(heal, world_hp)
+Set up.
+-> DONE
+";
+    // v2: same knot name (same fn token / DefinitionId) but the first param is
+    // renamed AND re-moded (ref → val) — a saved closure must fault on invoke,
+    // never silently misbind (spec §6).
+    let v2 = "\
+=== function heal(dose, amount) ===
+~ return dose + amount
+
+VAR world_hp = 10
+VAR stored = 0
+
+=== invoke ===
+~ temp r = stored(5)
+Result {r}.
+-> END
+";
+
+    let (p1, t1) = compile_and_link(v1);
+    let mut s1 = Story::<DotNetRng>::new(p1, t1);
+    s1.choose_path_string("setup").expect("goto setup");
+    let _ = run_to_end(&mut s1);
+    let saved = s1.save_state();
+
+    let (p2, t2) = compile_and_link(v2);
+    let mut s2 = Story::<DotNetRng>::new(p2, t2);
+    let _ = s2.load_state(&saved);
+    s2.choose_path_string("invoke").expect("goto invoke");
+
+    // Invoking the rehydrated closure must be a defined fault.
+    let mut err = None;
+    for _ in 0..8 {
+        match s2.continue_single() {
+            Ok(Line::Done { .. } | Line::End { .. }) => break,
+            Ok(_) => {}
+            Err(e) => {
+                err = Some(e);
+                break;
+            }
+        }
+    }
+    let err = err.expect("rehydrated closure with a renamed/re-moded param must fault on invoke");
+    assert!(
+        matches!(
+            err,
+            brink_runtime::RuntimeError::FunctionValueRehydrationMismatch(_)
+        ),
+        "expected FunctionValueRehydrationMismatch, got {err:?}"
     );
 }

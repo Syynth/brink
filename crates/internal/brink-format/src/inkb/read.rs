@@ -7,20 +7,22 @@ use crate::codec::{crc32, read_def_id, read_i32, read_str, read_u8, read_u16, re
 use crate::counting::CountingFlags;
 use crate::definition::{
     AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef, ScopeLineTable, SlotInfo, SourceLocation, StructShapeDef,
+    ListItemDef, ParamMeta, ScopeLineTable, SlotInfo, SourceLocation, StructShapeDef,
 };
 use crate::id::NameId;
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::opcode::DecodeError;
 use crate::story::StoryData;
-use crate::value::{ListValue, MAX_DECODE_DEPTH, MapKey, OrderedMap, ShapeId, Value, ValueType};
+use crate::value::{
+    ClosureEnvEntry, ListValue, MAX_DECODE_DEPTH, MapKey, OrderedMap, ShapeId, Value, ValueType,
+};
 
 use super::{
     CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HEADER_PREAMBLE, InkbIndex,
     KEY_CARDINAL, KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN, LINE_TEMPLATE, MAGIC,
     PART_LITERAL, PART_SELECT, PART_SLOT, SECTION_ENTRY_SIZE, SectionEntry, SectionKind, VAL_ARRAY,
-    VAL_BOOL, VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FRAGMENT_REF, VAL_INT, VAL_LIST, VAL_MAP, VAL_NULL,
-    VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION, safe_capacity,
+    VAL_BOOL, VAL_CLOSURE, VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_INT,
+    VAL_LIST, VAL_MAP, VAL_NULL, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION, safe_capacity,
 };
 
 // ── Tier 1: Full story read ─────────────────────────────────────────────────
@@ -338,6 +340,8 @@ fn decode_value_type(buf: &[u8], off: &mut usize) -> Result<ValueType, DecodeErr
         VAL_ARRAY => Ok(ValueType::Array),
         VAL_MAP => Ok(ValueType::Map),
         VAL_RECORD => Ok(ValueType::Record),
+        VAL_FN_REF => Ok(ValueType::FnRef),
+        VAL_CLOSURE => Ok(ValueType::Closure),
         _ => Err(DecodeError::InvalidValueType(tag)),
     }
 }
@@ -404,6 +408,24 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Deco
                 fields.push(decode_value(buf, off, depth + 1)?);
             }
             Ok(Value::record(shape, fields))
+        }
+        // Function values (T1c, `docs/format-v4-rfc.md` §1).
+        VAL_FN_REF => Ok(Value::FnRef(read_def_id(buf, off)?)),
+        VAL_CLOSURE => {
+            let target = read_def_id(buf, off)?;
+            let count = read_u16(buf, off)? as usize;
+            let mut env = Vec::with_capacity(safe_capacity(count, buf.len(), *off, 4));
+            for _ in 0..count {
+                let name = NameId(read_u16(buf, off)?);
+                let is_ref = read_u8(buf, off)? != 0;
+                let payload = decode_value(buf, off, depth + 1)?;
+                env.push(ClosureEnvEntry {
+                    name,
+                    is_ref,
+                    payload,
+                });
+            }
+            Ok(Value::closure(target, env))
         }
         _ => Err(DecodeError::InvalidValueType(tag)),
     }
@@ -549,6 +571,14 @@ fn decode_container(buf: &[u8], off: &mut usize) -> Result<ContainerDef, DecodeE
     let path_hash = read_i32(buf, off)?;
     let param_count = read_u8(buf, off)?;
     let local = read_u8(buf, off)? != 0;
+    // Per-param name/mode metadata (T1c, `docs/t1c-spec.md` §6).
+    let param_meta_count = read_u16(buf, off)? as usize;
+    let mut params = Vec::with_capacity(safe_capacity(param_meta_count, buf.len(), *off, 3));
+    for _ in 0..param_meta_count {
+        let name = NameId(read_u16(buf, off)?);
+        let is_ref = read_u8(buf, off)? != 0;
+        params.push(ParamMeta { name, is_ref });
+    }
 
     let bytecode_len = read_u32(buf, off)? as usize;
     if *off + bytecode_len > buf.len() {
@@ -565,6 +595,7 @@ fn decode_container(buf: &[u8], off: &mut usize) -> Result<ContainerDef, DecodeE
         counting_flags,
         path_hash,
         param_count,
+        params,
         local,
     })
 }

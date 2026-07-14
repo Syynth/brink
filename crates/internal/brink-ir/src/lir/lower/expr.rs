@@ -108,35 +108,38 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
         hir::Expr::StructLiteral(sl) => lower_struct_literal(sl, ctx),
         hir::Expr::FieldAccess(fa) => lower_field_access(fa, ctx),
 
-        // T1c-1 (docs/t1c-spec.md §11): `#fn(…)` function values parse,
-        // gate, and type-check in this slice, but their LIR/codegen/VM
-        // story is T1c-2 — see [`reject_fn_literal`].
-        hir::Expr::FnLiteral(fl) => reject_fn_literal(fl, ctx),
+        // T1c-2 (docs/t1c-spec.md §2/§11): `#fn(…)` function values lower
+        // for real — `PushFnRef` (zero-bound) / `MakeClosure` (bound prefix)
+        // via [`lower_fn_literal`]. The T1c-1 E052 fence that stood here is
+        // removed exactly where this real lowering replaces it.
+        hir::Expr::FnLiteral(fl) => lower_fn_literal(fl, ctx),
     }
 }
 
-/// T1c-1 lowering fence (docs/t1c-spec.md §11 build sequencing): `#fn(…)`
-/// has grammar, HIR, dialect gating, creation-site diagnostics, and typing
-/// in this slice — LIR emission (`PushFnRef`/`MakeClosure`), dispatch, and
-/// persistence land in T1c-2. Until then, a `#fn` reaching LIR lowering is
-/// a real, targeted, **non-suppressible** compile error (E052, the
-/// designated "brink extension not yet implemented" class) — never a silent
-/// drop (house rule: silent drops are always bugs). Bound-argument
-/// subexpressions are still lowered for their own diagnostics' sake; the
-/// result is discarded along with the whole expression.
-fn reject_fn_literal(fl: &hir::FnLiteral, ctx: &mut LowerCtx<'_>) -> lir::Expr {
-    for arg in &fl.args {
-        lower_expr(arg, ctx);
+/// Lower `#fn(target, args…)` to a [`lir::Expr::MakeFnValue`] (T1c-2,
+/// docs/t1c-spec.md §2). The target resolves to a function `DefinitionId`;
+/// the bound args reuse the ordinary call-argument lowering
+/// ([`lower_call_args`]), so a `ref`-position bound arg becomes a
+/// [`lir::CallArg::RefGlobal`] (a captured durable cell) and a `val` a
+/// snapshot — exactly the creation-site discipline `brink-analyzer` enforced
+/// (E079/E080/E081). Codegen splits zero-bound (`PushFnRef`) from bound
+/// (`MakeClosure`).
+///
+/// An unresolved target is left to the analyzer's own diagnostic (E025/E079);
+/// the bound args are still lowered so their subexpression diagnostics fire,
+/// but the literal folds to `Null` (never a silent drop of a *reported*
+/// construct).
+fn lower_fn_literal(fl: &hir::FnLiteral, ctx: &mut LowerCtx<'_>) -> lir::Expr {
+    if let Some(info) = ctx.resolve_path(fl.target.range) {
+        let target = info.id;
+        let bound = lower_call_args(&fl.args, &info.params, ctx);
+        lir::Expr::MakeFnValue { target, bound }
+    } else {
+        for arg in &fl.args {
+            lower_expr(arg, ctx);
+        }
+        lir::Expr::Null
     }
-    ctx.diagnostics.push(crate::Diagnostic {
-        file: ctx.file,
-        range: fl.ptr.text_range(),
-        message: "`#fn(…)` function values are not yet implemented in this slice — \
-                  creation type-checks (T1c-1) but lowering/execution lands in T1c-2"
-            .to_owned(),
-        code: crate::DiagnosticCode::E052,
-    });
-    lir::Expr::Null
 }
 
 /// A sentinel `ShapeId` that never names a real declared shape — `Program::
@@ -669,6 +672,10 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
 /// expression ever reaches here. Reaching here with one of those three names
 /// means the author used it in expression position (`~ x = push(a, v)`),
 /// which is invalid since mutators return nothing (§5) — E056.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one-arm-per-stdlib-name dispatch; splitting would scatter the table"
+)]
 fn lower_t1b_stdlib_call(
     name: &str,
     args: &[hir::Expr],
@@ -768,6 +775,32 @@ fn lower_t1b_stdlib_call(
                 &args[0], ctx,
             ))))
         }
+        // T1c (docs/t1c-spec.md §3): the explicit call form `call(f, args…)` —
+        // dispatch through a function value where the callee is itself an
+        // expression. `f` is the callee; the remaining args are the supplied
+        // (val-only) params. Lowers to `CallValue(argc)`; the dispatch, arity
+        // and type faults live at the runtime op.
+        "call" => {
+            if args.is_empty() {
+                ctx.diagnostics.push(crate::Diagnostic {
+                    file: ctx.file,
+                    range: call_range,
+                    message: format!(
+                        "{}: `call` needs at least the callee function value \
+                         (`call(f, args…)`)",
+                        crate::DiagnosticCode::E031.title(),
+                    ),
+                    code: crate::DiagnosticCode::E031,
+                });
+                return Some(lir::Expr::Null);
+            }
+            let callee = lower_expr(&args[0], ctx);
+            let supplied = args[1..].iter().map(|a| lower_expr(a, ctx)).collect();
+            Some(lir::Expr::CallValue {
+                callee: Box::new(callee),
+                args: supplied,
+            })
+        }
         _ => None,
     }
 }
@@ -794,6 +827,7 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "int"
             | "float"
             | "string"
+            | "call"
     )
 }
 

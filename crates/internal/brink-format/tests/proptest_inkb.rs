@@ -1,10 +1,10 @@
 #![allow(clippy::unwrap_used)]
 
 use brink_format::{
-    AddressPath, ContainerDef, CountingFlags, DefinitionId, DefinitionTag, ExternalFnDef,
-    GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, NameId, PluralCategory,
-    ScopeLineTable, SectionKind, SelectKey, SlotInfo, SourceLocation, StoryData, Value, ValueType,
-    read_inkb, read_inkb_index, write_inkb,
+    AddressPath, ClosureEnvEntry, ContainerDef, CountingFlags, DefinitionId, DefinitionTag,
+    ExternalFnDef, GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, NameId,
+    PluralCategory, ScopeLineTable, SectionKind, SelectKey, SlotInfo, SourceLocation, StoryData,
+    Value, ValueType, read_inkb, read_inkb_index, write_inkb,
 };
 use proptest::prelude::*;
 
@@ -119,6 +119,8 @@ fn arb_value_type() -> impl Strategy<Value = ValueType> {
         Just(ValueType::String),
         Just(ValueType::DivertTarget),
         Just(ValueType::Null),
+        Just(ValueType::FnRef),
+        Just(ValueType::Closure),
     ]
 }
 
@@ -130,7 +132,29 @@ fn arb_value() -> impl Strategy<Value = Value> {
         ".*".prop_map(|s: String| Value::String(s.into())),
         arb_def_id().prop_map(Value::DivertTarget),
         Just(Value::Null),
+        // T1c function values (#700): a `#fn(…)` baked into a declaration
+        // default reaches the wire as a global's `default_value`.
+        arb_def_id().prop_map(Value::FnRef),
+        arb_closure(),
     ]
+}
+
+/// A `Value::Closure` with a small bound-env of `val` (`Int` snapshot) and
+/// `ref` (`VariablePointer`) entries — the two payload shapes T1c produces.
+fn arb_closure() -> impl Strategy<Value = Value> {
+    let entry = (arb_name_id(), any::<bool>(), arb_def_id(), any::<i32>()).prop_map(
+        |(name, is_ref, cell, n)| ClosureEnvEntry {
+            name,
+            is_ref,
+            payload: if is_ref {
+                Value::VariablePointer(cell)
+            } else {
+                Value::Int(n)
+            },
+        },
+    );
+    (arb_def_id(), prop::collection::vec(entry, 0..4))
+        .prop_map(|(target, env)| Value::closure(target, env))
 }
 
 fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ScopeLineTable)> {
@@ -152,6 +176,7 @@ fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ScopeLineT
                     counting_flags,
                     path_hash: 0,
                     param_count,
+                    params: Vec::new(),
                     local,
                 };
                 let lt = ScopeLineTable {

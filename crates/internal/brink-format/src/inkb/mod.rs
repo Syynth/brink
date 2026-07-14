@@ -85,12 +85,18 @@ pub(crate) const VAL_MAP: u8 = 0x0A;
 // closed-shape records. `docs/format-v4-rfc.md` §1: `ShapeId (u32 into
 // StructShapes), then field values in shape order`.
 pub(crate) const VAL_RECORD: u8 = 0x0F;
+// T1c (`docs/t1c-spec.md` §6, `docs/format-v4-rfc.md` §1): function values.
+// `VAL_FN_REF` = the zero-bound case (a `DefinitionId`); `VAL_CLOSURE` =
+// `DefinitionId`, u16 env count, then env entries `{NameId, kind u8 (0=val,
+// 1=ref), value}`. Numeric assignments were frozen by the one-bump rule; this
+// PR (T1c-2) materializes them.
+pub(crate) const VAL_FN_REF: u8 = 0x0B;
+pub(crate) const VAL_CLOSURE: u8 = 0x0C;
 
 // Reserved v4 value tags — numeric assignments frozen by the one-bump rule,
 // emitted by nothing in 4.0 (each is materialized when its milestone lands,
 // still under VERSION 4). The strict reader rejects them until then because no
 // `Value` variant exists to decode into. See `docs/format-v4-rfc.md` §1:
-//   0x0B VAL_FN_REF     (T1c)   0x0C VAL_CLOSURE (T1c)
 //   0x0D VAL_HANDLE     (T1d)   0x0E VAL_PROJECTION (T1e)
 
 // LineContent tags

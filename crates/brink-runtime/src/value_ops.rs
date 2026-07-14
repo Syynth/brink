@@ -22,11 +22,15 @@ pub(crate) fn is_truthy(v: &Value) -> bool {
         // A record is a value with fields, not a collection with a size —
         // it's always truthy, same as every other non-collection variant
         // here (divert targets, pointers, fragment refs).
+        // A function value is a value with an identity, not a collection with a
+        // size — always truthy, like every other non-collection variant here.
         Value::DivertTarget(_)
         | Value::VariablePointer(_)
         | Value::TempPointer { .. }
         | Value::FragmentRef(_)
-        | Value::Record { .. } => true,
+        | Value::Record { .. }
+        | Value::FnRef(_)
+        | Value::Closure(_) => true,
         Value::List(lv) => !lv.items.is_empty(),
         Value::Array(items) => !items.is_empty(),
         Value::Map(map) => !map.is_empty(),
@@ -71,6 +75,23 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
         Value::Record { fields, .. } => {
             let parts: Vec<String> = fields.iter().map(|v| stringify(v, program)).collect();
             format!("{{{}}}", parts.join(", "))
+        }
+        // Function values (T1c). The **authoritative** author-facing display
+        // form (`fn heal(ref hp = player_hp, amount)`, spec §5) is a T1c-3
+        // deliverable (`docs/t1c-spec.md` §11); this provisional rendering only
+        // keeps `stringify` total and is deliberately not locked by any corpus
+        // transcript in this slice.
+        Value::FnRef(_) => "fn".to_owned(),
+        Value::Closure(c) => {
+            let parts: Vec<String> = c
+                .env
+                .iter()
+                .map(|e| {
+                    let mode = if e.is_ref { "ref" } else { "val" };
+                    format!("{mode} {}", stringify(&e.payload, program))
+                })
+                .collect();
+            format!("fn({})", parts.join(", "))
         }
     }
 }
@@ -517,6 +538,7 @@ mod tests {
                 counting_flags: brink_format::CountingFlags::empty(),
                 path_hash: 0,
                 param_count: 0,
+                params: Vec::new(),
                 scope_table_idx: 0,
             }],
             address_map: {

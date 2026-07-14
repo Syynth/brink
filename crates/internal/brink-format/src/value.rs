@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 
-use crate::id::DefinitionId;
+use crate::id::{DefinitionId, NameId};
 
 /// Maximum nesting depth permitted when decoding `VAL_ARRAY`/`VAL_MAP`
 /// values. Generous for legitimate data but bounds worst-case recursion so a
@@ -50,6 +50,10 @@ pub enum ValueType {
     Map,
     /// A closed-shape, copy-on-write record ([`Value::Record`]) — TM-4.
     Record,
+    /// A zero-bound function value ([`Value::FnRef`]) — T1c.
+    FnRef,
+    /// A function value with a bound-arg prefix ([`Value::Closure`]) — T1c.
+    Closure,
 }
 
 /// A runtime value in the ink VM.
@@ -117,6 +121,55 @@ pub enum Value {
         shape: ShapeId,
         fields: Arc<Vec<Value>>,
     },
+    /// A **zero-bound function value** (`docs/t1c-spec.md` §1/§6, wire tag
+    /// `VAL_FN_REF`). Partial application over a statically-named function
+    /// with no bound-arg prefix — `#fn(name)` where the target has no `ref`
+    /// params. The `DefinitionId` is the fn token (hashes from the target's
+    /// name, so a saved token survives recompiles that only edit the body).
+    ///
+    /// A no-payload scalar (`Copy`-cheap `DefinitionId`); no `Arc` needed.
+    /// Structural equality is "same fn token" (§5, sharing-unobservable).
+    FnRef(DefinitionId),
+    /// A **function value with a bound-arg prefix** (`docs/t1c-spec.md`
+    /// §1/§6, wire tag `VAL_CLOSURE`). Despite the name there is no lexical
+    /// environment — ink has no free variables; the "env" is the bound
+    /// prefix of the target's declared params (a `val` entry snapshots the
+    /// value at creation, a `ref` entry captures a durable cell as a
+    /// [`VariablePointer`](Self::VariablePointer)).
+    ///
+    /// Wrapped in `Arc` for the same O(1)-clone discipline as the collection
+    /// variants. Structural equality (§5): same fn token **and** equal env
+    /// rows — `ref` entries compare by bound cell, `val` entries by value,
+    /// both of which fall out of the derived per-entry comparison because a
+    /// `ref` payload is a `VariablePointer` (compared by its `DefinitionId`).
+    Closure(Arc<ClosureValue>),
+}
+
+/// The payload of a [`Value::Closure`] — the fn token plus its bound-arg
+/// prefix (`docs/t1c-spec.md` §1/§6).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClosureValue {
+    /// The target function's [`DefinitionId`] (the fn token).
+    pub target: DefinitionId,
+    /// The bound-arg prefix, in the target's declared param order. The
+    /// entries carry the param **name and mode** deliberately (spec §6): on
+    /// load/invoke after a recompile they are validated against the current
+    /// signature so a renamed/re-moded param faults cleanly instead of
+    /// silently misbinding.
+    pub env: Vec<ClosureEnvEntry>,
+}
+
+/// One bound-arg entry in a [`ClosureValue`]'s env.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClosureEnvEntry {
+    /// The bound param's interned name (redundancy for rehydration checking).
+    pub name: NameId,
+    /// `true` if the target declared this param `ref` (the payload is a
+    /// captured cell), `false` for a `val` snapshot.
+    pub is_ref: bool,
+    /// The bound value: a snapshot (`val`) or a captured cell reference
+    /// (`ref` — a [`VariablePointer`](Value::VariablePointer)).
+    pub payload: Value,
 }
 
 impl Value {
@@ -136,6 +189,8 @@ impl Value {
             Self::Array(_) => ValueType::Array,
             Self::Map(_) => ValueType::Map,
             Self::Record { .. } => ValueType::Record,
+            Self::FnRef(_) => ValueType::FnRef,
+            Self::Closure(_) => ValueType::Closure,
         }
     }
 
@@ -211,6 +266,30 @@ impl Value {
     pub fn as_record(&self) -> Option<(ShapeId, &Arc<Vec<Value>>)> {
         match self {
             Self::Record { shape, fields } => Some((*shape, fields)),
+            _ => None,
+        }
+    }
+
+    /// Build a [`Closure`](Self::Closure) from a target and its bound-arg
+    /// prefix (T1c, `docs/t1c-spec.md` §6).
+    pub fn closure(target: DefinitionId, env: Vec<ClosureEnvEntry>) -> Self {
+        Self::Closure(Arc::new(ClosureValue { target, env }))
+    }
+
+    /// The fn token (target [`DefinitionId`]) if this value is a function
+    /// value — [`FnRef`](Self::FnRef) or [`Closure`](Self::Closure).
+    pub fn fn_target(&self) -> Option<DefinitionId> {
+        match self {
+            Self::FnRef(target) => Some(*target),
+            Self::Closure(c) => Some(c.target),
+            _ => None,
+        }
+    }
+
+    /// Borrow the closure payload if this value is a [`Closure`](Self::Closure).
+    pub fn as_closure(&self) -> Option<&Arc<ClosureValue>> {
+        match self {
+            Self::Closure(c) => Some(c),
             _ => None,
         }
     }
@@ -326,6 +405,15 @@ impl PartialEq for Value {
                     fields: b,
                 },
             ) => sa == sb && (Arc::ptr_eq(a, b) || a == b),
+            // Function values (T1c, docs/t1c-spec.md §5): structural equality
+            // is "same fn token and equal bound-arg rows". `FnRef` is the
+            // zero-bound case (same token). `Closure` adds the env comparison,
+            // with the `Arc::ptr_eq` fast path mirroring the collection arms;
+            // a `ref` env entry's `VariablePointer` payload compares by cell,
+            // a `val` entry by value — both fall out of `ClosureValue`'s
+            // derived `PartialEq`.
+            (Self::FnRef(a), Self::FnRef(b)) => a == b,
+            (Self::Closure(a), Self::Closure(b)) => Arc::ptr_eq(a, b) || a == b,
             _ => false,
         }
     }

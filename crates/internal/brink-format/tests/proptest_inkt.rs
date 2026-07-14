@@ -217,6 +217,7 @@ fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ScopeLineT
                     counting_flags,
                     path_hash: 0,
                     param_count,
+                    params: Vec::new(),
                     local,
                 };
                 let lt = ScopeLineTable {

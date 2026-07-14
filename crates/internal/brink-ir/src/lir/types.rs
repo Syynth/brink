@@ -122,6 +122,29 @@ pub enum ConstValue {
     /// Keys are restricted to the ratified scalar domain by construction —
     /// [`ConstMapKey`] has no variant for anything else.
     Map(Vec<(ConstMapKey, ConstValue)>),
+    /// A zero-bound function value baked into a declaration default
+    /// (`VAR f = #fn(name)`), T1c — `docs/t1c-spec.md` §2/§6.
+    FnRef(DefinitionId),
+    /// A bound function value baked into a declaration default
+    /// (`VAR f = #fn(name, args…)`), T1c. `env` is the bound prefix in
+    /// declared order.
+    Closure {
+        target: DefinitionId,
+        env: Vec<ConstClosureEntry>,
+    },
+}
+
+/// One bound-arg entry of a compile-time-constant [`ConstValue::Closure`].
+/// The param `name` is kept as a string (not a `NameId`) because it is
+/// interned into the story name table at codegen — `const_to_value` dedups it
+/// against the target's param names that are already in the table.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConstClosureEntry {
+    /// A `val` param bound to a compile-time snapshot.
+    Val { name: String, value: ConstValue },
+    /// A `ref` param bound to a durable cell (a global `VAR`) — codegens to a
+    /// `VariablePointer`.
+    Ref { name: String, cell: DefinitionId },
 }
 
 /// A compile-time-constant map key — the ratified scalar domain
@@ -610,6 +633,25 @@ pub enum Expr {
     /// Call a built-in function (`TURNS_SINCE`, `LIST_COUNT`, etc.).
     CallBuiltin {
         builtin: BuiltinFn,
+        args: Vec<Expr>,
+    },
+
+    // ── Function values (T1c, docs/t1c-spec.md §2/§3) ───────────────
+    /// `#fn(target, bound…)` — create a function value. With no bound args
+    /// this codegens to `PushFnRef` (a zero-bound `FnRef`); with bound args
+    /// to `MakeClosure` (a `Closure`). `bound` is the bound prefix in declared
+    /// order — a `ref` param is a [`CallArg::RefGlobal`] (a captured durable
+    /// cell), a `val` param a [`CallArg::Value`] snapshot.
+    MakeFnValue {
+        target: DefinitionId,
+        bound: Vec<CallArg>,
+    },
+    /// Call *through* a function value: the direct form `f(args…)` where `f`
+    /// holds a fn value, and the explicit `call(f, args…)` form. `callee`
+    /// evaluates to the function value; `args` are the supplied (val-only)
+    /// remaining params. Codegens to `CallValue(argc)`.
+    CallValue {
+        callee: Box<Expr>,
         args: Vec<Expr>,
     },
 

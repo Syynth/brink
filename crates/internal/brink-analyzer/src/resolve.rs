@@ -633,6 +633,13 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "int"
             | "float"
             | "string"
+            // T1c explicit call form `call(f, args…)` (docs/t1c-spec.md §3):
+            // recognized as a brink-dialect stdlib name so an unresolved use
+            // isn't E025 — it dispatches through a function value at LIR
+            // lowering (`CallValue`). Its full typing rule and effect row land
+            // with the rest of the `bind`/`call` stdlib in T1c-3; here it is
+            // gradual-advisory (Unknown), the runtime fault being the backstop.
+            | "call"
     )
 }
 

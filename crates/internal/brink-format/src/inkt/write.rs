@@ -254,9 +254,20 @@ fn write_container(w: &mut dyn fmt::Write, c: &ContainerDef, lines: &[LineEntry]
         writeln!(w, "    (path_hash {})", c.path_hash)?;
     }
 
-    // Declared parameter count (parameterized knots/stitches/functions)
+    // Declared parameter count (parameterized knots/stitches/functions).
+    // When per-param name/mode metadata is present (T1c, #700 — carried so
+    // rehydration can validate function values), dump it too for parity.
     if c.param_count != 0 {
-        writeln!(w, "    (params {})", c.param_count)?;
+        if c.params.is_empty() {
+            writeln!(w, "    (params {})", c.param_count)?;
+        } else {
+            write!(w, "    (params {}", c.param_count)?;
+            for p in &c.params {
+                let mode = if p.is_ref { "ref" } else { "val" };
+                write!(w, " ({mode} {})", p.name.0)?;
+            }
+            writeln!(w, ")")?;
+        }
     }
 
     // Flow-private scope default (`#@local` knot/stitch)
@@ -542,6 +553,14 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::ConvertInt => write!(w, "convert_int"),
         Opcode::ConvertFloat => write!(w, "convert_float"),
         Opcode::ConvertString => write!(w, "convert_string"),
+
+        // Function values (T1c, #700)
+        Opcode::PushFnRef(id) => write!(w, "push_fn_ref {id}"),
+        Opcode::MakeClosure {
+            target,
+            bound_count,
+        } => write!(w, "make_closure {target} bound={bound_count}"),
+        Opcode::CallValue(argc) => write!(w, "call_value argc={argc}"),
     }
 }
 
@@ -595,6 +614,8 @@ fn value_type_name(vt: ValueType) -> &'static str {
         ValueType::Array => "array",
         ValueType::Map => "map",
         ValueType::Record => "record",
+        ValueType::FnRef => "fn_ref",
+        ValueType::Closure => "closure",
     }
 }
 
@@ -658,6 +679,19 @@ fn write_value(w: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
             for field in fields.iter() {
                 write!(w, " ")?;
                 write_value(w, field)?;
+            }
+            write!(w, ")")
+        }
+        // Function values (T1c, #700): a fn value can reach the dump as a
+        // binding/global default value the same way a collection can.
+        Value::FnRef(target) => write!(w, "(fn_ref {target})"),
+        Value::Closure(c) => {
+            write!(w, "(closure {}", c.target)?;
+            for entry in &c.env {
+                let mode = if entry.is_ref { "ref" } else { "val" };
+                write!(w, " ({mode} {} ", entry.name.0)?;
+                write_value(w, &entry.payload)?;
+                write!(w, ")")?;
             }
             write!(w, ")")
         }

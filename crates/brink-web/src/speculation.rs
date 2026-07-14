@@ -359,6 +359,17 @@ enum TypedValueJs {
         shape: u32,
         fields: Vec<TypedValueJs>,
     },
+    /// A function value ([`Value::FnRef`]/[`Value::Closure`], T1c) as an
+    /// **opaque token** (`docs/t1c-spec.md` §6 host boundary: "function values
+    /// cross as opaque tokens `{DefinitionId, env}`; the host never
+    /// dereferences the env"). `target` is the resolved knot/stitch path;
+    /// `bound` carries the bound-arg prefix as a lossless typed tree so a
+    /// speculation/eval result never silently drops a fn value. The
+    /// host-side callback-invocation surface lands in T1c-3.
+    Fn {
+        target: Option<String>,
+        bound: Vec<TypedValueJs>,
+    },
 }
 
 #[derive(Serialize)]
@@ -441,6 +452,20 @@ fn value_to_typed_js(v: &Value, program: &brink_runtime::Program) -> TypedValueJ
             fields: fields
                 .iter()
                 .map(|f| value_to_typed_js(f, program))
+                .collect(),
+        },
+        // Function values (T1c, spec §6): opaque token — target path plus the
+        // bound-arg prefix as a lossless typed tree.
+        Value::FnRef(id) => TypedValueJs::Fn {
+            target: program.divert_target_path(*id),
+            bound: Vec::new(),
+        },
+        Value::Closure(c) => TypedValueJs::Fn {
+            target: program.divert_target_path(c.target),
+            bound: c
+                .env
+                .iter()
+                .map(|e| value_to_typed_js(&e.payload, program))
                 .collect(),
         },
         Value::Null

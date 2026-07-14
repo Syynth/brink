@@ -31,12 +31,34 @@ pub struct ContainerDef {
     /// The converter reference pipeline leaves this `0` (inklecate's JSON does
     /// not expose it); only the brink compiler populates the true count.
     pub param_count: u8,
+    /// Per-parameter name and mode metadata, in declared order (T1c,
+    /// `docs/t1c-spec.md` §6). Empty for the vast majority of containers.
+    ///
+    /// Carried so the runtime can validate a **rehydrated function value**
+    /// against the *current* signature: a `#fn`/closure saved before a
+    /// recompile stores its bound params' names and modes, and on load/invoke
+    /// they are checked against this table — a renamed or re-moded param is a
+    /// defined fault, never a silent misbinding (spec §6). `len()` always
+    /// equals [`param_count`](Self::param_count); both are kept (the count is
+    /// the pre-T1c arity-check field, the metadata is additive). The converter
+    /// reference pipeline leaves this empty.
+    pub params: Vec<ParamMeta>,
     /// Compiled scope default: `true` for a flow-private (`#@local`) knot or
     /// stitch. Only ever set on scope-owning containers; subtree coverage of
     /// interior containers is resolved by the runtime at policy resolution
     /// (`docs/directive-annotations-spec.md`). The converter always emits
     /// `false` (inklecate has no flow-private concept).
     pub local: bool,
+}
+
+/// Name + mode of one declared parameter of a container (T1c,
+/// `docs/t1c-spec.md` §6). See [`ContainerDef::params`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParamMeta {
+    /// The parameter's interned name.
+    pub name: NameId,
+    /// `true` if declared `ref`, `false` for a by-value param.
+    pub is_ref: bool,
 }
 
 /// Metadata for a single interpolation slot in a template line.

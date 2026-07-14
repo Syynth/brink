@@ -201,4 +201,39 @@ pub enum RuntimeError {
         target: &'static str,
         got: &'static str,
     },
+
+    // ── T1c function values (docs/t1c-spec.md §3/§6, issue #700) ──────────
+    /// `call(f, …)` / a direct `f(…)` where the callee value is not a
+    /// function value (nor a divert target). Gradual-mode dispatch fault —
+    /// "no silent garbage" (spec §3, value-model-spec §11c).
+    #[error("cannot call a {0} value as a function")]
+    NotCallable(&'static str),
+    /// Calling a function value with the wrong number of arguments: the bound
+    /// prefix plus the supplied args must exactly equal the target's declared
+    /// arity (spec §3). Turn-terminating in gradual mode; strict mode catches
+    /// it at compile time (spec §4).
+    #[error(
+        "function value expects {expected} argument(s), got {got} (bound {bound} + supplied {supplied})"
+    )]
+    FunctionValueArity {
+        expected: usize,
+        got: usize,
+        bound: usize,
+        supplied: usize,
+    },
+    /// A rehydrated function value's bound env no longer matches the current
+    /// signature — a param was renamed, reordered, or re-moded across a
+    /// recompile (spec §6). A defined fault, never a silent misbinding.
+    #[error("function value no longer matches its target's signature: {0}")]
+    FunctionValueRehydrationMismatch(String),
+    /// Invoking a function value that `ref`-binds a flow-private (`#@local`)
+    /// cell (spec §3). T1c ships this fault instead of creating-flow identity
+    /// (#597): a `#@local`-`ref` binding can only be dereferenced safely from
+    /// its creating flow, and no creating-flow identity is tracked yet, so the
+    /// invocation faults rather than risk a silent cross-flow misbinding. The
+    /// payload is the bound cell's name.
+    #[error(
+        "function value ref-binds flow-private cell `{0}`; cross-flow invocation is a fault in T1c (see #597)"
+    )]
+    FunctionValueCrossFlowLocal(String),
 }

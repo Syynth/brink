@@ -1,0 +1,3 @@
+Direct call: 42.
+Explicit call: 10.
+Partial then call: 17.
