@@ -19,3 +19,12 @@ Fill pump.js's CONFIG from these when running the pump on this repo.
 ## Merge trains
 - Unique TRAIN_WT per wave (e.g. /tmp/pump-merge-train-brink-w4).
 - npm "Version Packages" bot PR merges LAST — but do not starve it: if a consumer is waiting on a released fix, merge it immediately (the 0.9.1 lesson). Bot force-pushes don't trigger CI — close/reopen to kick, or admin-merge version-only PRs.
+
+## RULES additions (waves 4–5 lessons, 2026-07-14)
+- Every call-dispatch path (direct fn-value call, CallValue, divert-target variable call) must independently enforce arity/argc in gradual mode.
+- When an opcode operand doesn't carry a count needed for correctness, add the operand — never derive it from arity math.
+- Value-stack imbalance from mis-dispatch is silent corruption (no end-of-turn balance detector): verify new dispatch paths leave no stray values.
+- Before claiming "the checker catches this per §spec" in comments/docs, read the actual check path — don't assert guarantees the implementation doesn't provide.
+- When replacing verbatim-passthrough rendering with structured re-rendering, audit for trivia (comments) attached as non-field siblings — passthrough removal silently drops them.
+- When fixing a scope/resolution bug on one access path, grep all sibling paths sharing the resolve function (write/assign, inc-dec, dotted access) before closing the class.
+- Don't add defensive branches the caller's guard makes unreachable — dead branches mask real fallthrough.
