@@ -636,7 +636,17 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
     )
 }
 
-fn lookup_by_name(index: &SymbolIndex, name: &str, kinds: &[SymbolKind]) -> Option<DefinitionId> {
+/// `pub(crate)`: reused by `signature.rs` (issue #712) to resolve a `#fn`
+/// creation-site target to its declaring knot when computing a VAR/CONST
+/// global's declaration-derived `fn(T…): R` type — the same "function knot
+/// by bare name" lookup [`resolve_function`] itself does first, without
+/// needing this pass's locals/scope machinery (a `#fn` target at global-
+/// initializer position has no enclosing body to scope against).
+pub(crate) fn lookup_by_name(
+    index: &SymbolIndex,
+    name: &str,
+    kinds: &[SymbolKind],
+) -> Option<DefinitionId> {
     let ids = index.by_name.get(name)?;
     for id in ids {
         if let Some(info) = index.symbols.get(id)

@@ -1499,6 +1499,155 @@ mod tests {
         );
     }
 
+    // ── T1c follow-up (issue #712): declaration-derived Ty::Fn for global
+    //    VARs (docs/t1c-spec.md §4) ───────────────────────────────────
+
+    /// Same worked example as `HEAL`, but the fn value itself is a *global*
+    /// (`VAR heal_player = #fn(heal, player_hp)`), not a local temp — the
+    /// exact shape #712 closes: a global's declaration-derived signature
+    /// must carry `Ty::Fn` so a call *through the global directly* type-
+    /// checks under strict instead of escaping as Unknown.
+    const HEAL_GLOBAL: &str = "=== function heal(ref hp: int, amount: int): int ===\n\
+         ~ hp = hp + amount\n~ return hp\n\
+         VAR player_hp = 10\n\
+         VAR heal_player = #fn(heal, player_hp)\n";
+
+    #[test]
+    fn well_typed_call_through_a_global_fn_value_is_clean_under_strict() {
+        let (hir, index, res) = build(&format!(
+            "{HEAL_GLOBAL}=== main ===\n~ temp result: int = heal_player(5)\n-> DONE\n"
+        ));
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn arity_mismatch_through_a_global_fn_value_is_a_typed_mismatch_error() {
+        let (hir, index, res) = build(&format!(
+            "{HEAL_GLOBAL}=== main ===\n~ temp r: int = heal_player(5, 6)\n-> DONE\n"
+        ));
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E063);
+        assert!(diags[0].message.contains("2 argument"), "{diags:?}");
+    }
+
+    #[test]
+    fn argument_type_mismatch_through_a_global_fn_value_is_a_typed_mismatch_error() {
+        let (hir, index, res) = build(&format!(
+            "{HEAL_GLOBAL}=== main ===\n~ temp r: int = heal_player(\"lots\")\n-> DONE\n"
+        ));
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn explicitly_annotated_global_fn_value_wins_over_an_unannotated_target() {
+        // `identity` carries no param/return annotations at all, so the
+        // `#fn(identity)` initializer alone would infer an all-`Unknown`
+        // row — but `f`'s own `fn(int): int` annotation must win (the same
+        // TM-2 firewall rule `value_type` already applies), so the
+        // wrong-typed call below is still caught, not silently waved
+        // through as an Unknown-escape.
+        let (hir, index, res) = build(
+            "=== function identity(x) ===\n~ return x\n\
+             VAR f: fn(int): int = #fn(identity)\n\
+             === main ===\n~ temp r: int = f(\"x\")\n-> DONE\n",
+        );
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn cross_signature_reassignment_through_globals_is_a_conflicted_escape() {
+        // Two globals with genuinely incompatible `fn(T…): R` shapes; a
+        // temp bound from one and reassigned from the other joins to a
+        // `Ty::Fn` row carrying `Conflicted` components (the pre-existing
+        // #627 pointwise Fn×Fn unify — no new unify logic needed here),
+        // which the ordinary temp Conflicted-escape check (`E066`) already
+        // catches once the globals themselves carry real `Ty::Fn`s instead
+        // of both escaping as `Unknown` (which would `unify` to `Unknown`,
+        // not `Conflicted`, silently hiding the disagreement).
+        let (hir, index, res) = build(
+            "=== function heal(ref hp: int, amount: int): int ===\n\
+             ~ hp = hp + amount\n~ return hp\n\
+             === function greet(name: string): string ===\n~ return name\n\
+             VAR player_hp = 10\n\
+             VAR heal_fn = #fn(heal, player_hp)\n\
+             VAR greet_fn = #fn(greet)\n\
+             === main ===\n~ temp f = heal_fn\n~ f = greet_fn\n~ temp r = f(1)\n-> DONE\n",
+        );
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E066 && d.message.contains("temp `f`")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn global_fn_value_call_checks_never_surface_under_gradual() {
+        let parsed = brink_syntax::parse(&format!(
+            "{HEAL_GLOBAL}=== main ===\n~ temp r: int = heal_player(5, 6)\n-> DONE\n"
+        ));
+        let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let opts = crate::AnalysisOptions {
+            dialect: crate::Dialect::Brink,
+            ..crate::AnalysisOptions::default()
+        };
+        let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            !result.diagnostics.iter().any(|d| matches!(
+                d.code,
+                DiagnosticCode::E063 | DiagnosticCode::E065 | DiagnosticCode::E066
+            )),
+            "gradual must never surface value-call checks: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn strict_global_fn_value_mismatch_fires_through_the_real_pipeline() {
+        // analyze_with_options -> finish_analysis -> whole_project_
+        // diagnostics -> strict::check — the real production entry point
+        // (`brink-compiler`/IDE), not just the `infer_project`/`check`
+        // units above.
+        let parsed = brink_syntax::parse(&format!(
+            "{HEAL_GLOBAL}=== main ===\n~ temp r: int = heal_player(\"x\")\n-> DONE\n"
+        ));
+        let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let opts = crate::AnalysisOptions {
+            dialect: crate::Dialect::Brink,
+            types: TypePolicy::Strict,
+            ..crate::AnalysisOptions::default()
+        };
+        let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "{:?}",
+            result.diagnostics
+        );
+    }
+
     // ── TM-4b structs wiring (docs/typed-mode-spec.md §6) ──────────────
 
     #[test]
