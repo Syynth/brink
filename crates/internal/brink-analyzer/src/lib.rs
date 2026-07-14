@@ -36,6 +36,7 @@ pub use infer::{
     ValueCallKind, call_edges, def_body, infer_project, inferable_defs, inferable_defs_from_index,
     referenced_globals, scc_graph, solve_scc, unify, unify_all,
 };
+pub use manifest::{ModuleMap, ResolvedModule};
 pub use signature::{Sig, signature};
 pub use strict::{TypePolicy, effective_severity};
 
@@ -102,6 +103,23 @@ pub struct AnalysisResult {
 #[must_use]
 pub fn symbol_index(files: &[(FileId, &SymbolManifest)]) -> (Arc<SymbolIndex>, Vec<Diagnostic>) {
     let (index, diagnostics) = manifest::merge_manifests(files);
+    (Arc::new(index), diagnostics)
+}
+
+/// The merged symbol index with `DefinitionId`s qualified by each file's
+/// **declared** module (M-1, docs/modules-spec.md §5).
+///
+/// Identical to [`symbol_index`] for undeclared stem-modules (the entire
+/// pre-modules corpus) — byte-identical `DefinitionId`s — and qualifies
+/// names by module only for files carrying `#@module`. `brink-db`'s
+/// `symbol_index_query` builds the [`ModuleMap`] from file stems,
+/// `#@module` declarations, and the INCLUDE graph, then calls this.
+#[must_use]
+pub fn symbol_index_with_modules(
+    files: &[(FileId, &SymbolManifest)],
+    modules: &ModuleMap,
+) -> (Arc<SymbolIndex>, Vec<Diagnostic>) {
+    let (index, diagnostics) = manifest::merge_manifests_with_modules(files, modules);
     (Arc::new(index), diagnostics)
 }
 

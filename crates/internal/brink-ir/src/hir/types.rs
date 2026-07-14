@@ -55,6 +55,25 @@ pub struct HirFile {
     pub externals: Vec<ExternalDecl>,
     /// `INCLUDE` sites (for cross-file resolution by the analyzer).
     pub includes: Vec<IncludeSite>,
+    /// The file's explicit `#@module(name)` declaration, if any (M-1,
+    /// docs/modules-spec.md §1). `None` means the file is an *undeclared*
+    /// stem-module — its module name is its file stem and identity hashing
+    /// stays byte-identical to the pre-modules derivation. `Some` names the
+    /// module explicitly and opts the file into the declared-module world
+    /// (module-qualified `DefinitionId`s, §5). The name argument is
+    /// validated (non-empty, single occurrence) during lowering; the range
+    /// covers the whole directive tag for the dialect gate (`#@module` is
+    /// brink-only) and diagnostics.
+    pub module: Option<ModuleDecl>,
+}
+
+/// A file's explicit `#@module(name)` declaration (M-1, modules-spec §1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleDecl {
+    /// The declared module name (the argument to `#@module(…)`).
+    pub name: String,
+    /// Source range of the whole `#@module(…)` directive tag.
+    pub range: TextRange,
 }
 
 // ─── Containers ─────────────────────────────────────────────────────
@@ -1338,6 +1357,19 @@ pub enum DiagnosticCode {
     /// independent of type-checking policy or whether the shape name even
     /// resolves.
     E084,
+
+    // ── M-1 modules (docs/modules-spec.md §1/§5) ──────────────────
+    /// An *undeclared* file whose module (its file stem) collides with a
+    /// *declared* module's name (`#@module(name)` elsewhere). Accidental
+    /// membership with mixed visibility defaults is the one footgun the
+    /// module model forbids (modules-spec §1). Fix: declare the file with
+    /// the same `#@module(name)`, or rename it.
+    E085,
+    /// A malformed `#@module(…)` directive: a missing or empty name
+    /// argument, or a second `#@module` in the same file. `#@module`
+    /// takes exactly one non-empty module name and appears at most once
+    /// per file (modules-spec §1).
+    E086,
 }
 
 impl DiagnosticCode {
@@ -1429,6 +1461,8 @@ impl DiagnosticCode {
             Self::E082 => "E082",
             Self::E083 => "E083",
             Self::E084 => "E084",
+            Self::E085 => "E085",
+            Self::E086 => "E086",
         }
     }
 
@@ -1527,6 +1561,12 @@ impl DiagnosticCode {
             Self::E082 => "block-scoped temp referenced after its block has closed",
             Self::E083 => "VAR/CONST declaration default is not a compile-time-constant expression",
             Self::E084 => "struct construction literal supplies a duplicate field",
+            Self::E085 => {
+                "file's module (its stem) collides with a declared module of the same name"
+            }
+            Self::E086 => {
+                "`#@module` requires exactly one module name and may appear at most once per file"
+            }
         }
     }
 
@@ -1639,6 +1679,8 @@ impl DiagnosticCode {
             "E082" => Some(Self::E082),
             "E083" => Some(Self::E083),
             "E084" => Some(Self::E084),
+            "E085" => Some(Self::E085),
+            "E086" => Some(Self::E086),
             _ => None,
         }
     }

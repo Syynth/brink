@@ -155,6 +155,12 @@ fn lower_source_file(
     }
     let root_content = lower_weave_body(file.syntax(), scope, sink);
 
+    // M-1 (docs/modules-spec.md §1): a file-level `#@module(name)`
+    // directive declares the module explicitly. Absent, the file is an
+    // undeclared stem-module (identity hashing stays byte-identical).
+    let module = super::directive::file_module_declaration(file.syntax(), sink)
+        .map(|(name, range)| crate::ModuleDecl { name, range });
+
     HirFile {
         root_content,
         knots,
@@ -164,5 +170,6 @@ fn lower_source_file(
         structs,
         externals,
         includes,
+        module,
     }
 }

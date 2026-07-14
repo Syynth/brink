@@ -258,7 +258,31 @@ pub(crate) fn symbol_index_query(
         .iter()
         .map(|f| (f.file_id(db), &lowered_query(db, *f).manifest))
         .collect();
-    brink_analyzer::symbol_index(&manifest_refs)
+
+    // M-1 (docs/modules-spec.md §1/§5): resolve every file's module —
+    // stem default, `#@module` override, INCLUDE inheritance — so symbol
+    // identity can be qualified by declared module. Undeclared stem-modules
+    // (the entire pre-modules corpus) resolve to non-qualifying entries, so
+    // their `DefinitionId`s stay byte-identical.
+    let module_inputs: Vec<crate::modules::FileModuleInput> = files
+        .iter()
+        .map(|f| crate::modules::FileModuleInput {
+            file: f.file_id(db),
+            stem: crate::modules::file_stem(f.path(db)).to_string(),
+            declared: lowered_query(db, *f)
+                .hir
+                .module
+                .as_ref()
+                .map(|m| m.name.clone()),
+        })
+        .collect();
+    let (module_map, module_diags) =
+        crate::modules::resolve_modules(&module_inputs, include_graph_query(db, project));
+
+    let (index, mut diagnostics) =
+        brink_analyzer::symbol_index_with_modules(&manifest_refs, &module_map);
+    diagnostics.extend(module_diags);
+    (index, diagnostics)
 }
 
 /// The early-cutoff projection of the symbol index used by resolution:
