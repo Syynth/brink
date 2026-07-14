@@ -592,11 +592,16 @@ Bravo content.
 /// Background analysis (`analysis_loop`, #599) runs on a separate tokio task
 /// woken by a `Notify`, so its diagnostics can arrive after a same-id
 /// round-trip response — unlike per-file parse diagnostics, which publish
-/// synchronously inside `did_open`. This polls with bounded round-trips
-/// (a dummy `documentSymbol` request per round) instead of a fixed sleep, so
-/// it settles as soon as the background pass publishes, and never hangs:
-/// the round count is capped, matching the project's "guard against
-/// unbounded growth" rule for any polling/accumulation loop.
+/// synchronously inside `did_open`. Rather than polling for a fixed number
+/// of rounds (#695 — that flaked under load: a slow/contended machine could
+/// blow through the deadline before the background pass ever completed),
+/// this waits for the server's own `$/brink/backgroundAnalysisComplete`
+/// completion signal, fired unconditionally at the end of every pass — the
+/// wait condition is "the background analysis actually finished a pass that
+/// includes our file", not "some wall-clock budget elapsed". A generous
+/// message-count hard cap remains as a backstop against a genuine hang/
+/// regression (never firing, or never including the file), matching the
+/// project's "guard against unbounded growth" rule for polling loops.
 fn diagnostics_after_background_analysis(dialect: Option<&str>, source: &str) -> Vec<Value> {
     diagnostics_after_background_analysis_with_types(dialect, None, source)
 }
@@ -610,11 +615,14 @@ fn diagnostics_after_background_analysis_with_types(
     types: Option<&str>,
     source: &str,
 ) -> Vec<Value> {
-    // Bounded polling: the background analysis pass is cheap (no real I/O),
-    // so it settles within a handful of round-trips; cap at 40 rounds
-    // (~a few hundred ms worst case) so a genuine regression fails fast
-    // instead of hanging.
-    const MAX_ROUNDS: u64 = 40;
+    // Condition-driven wait (#695): the settling condition is the server's
+    // own `$/brink/backgroundAnalysisComplete` signal reporting a pass whose
+    // db snapshot already includes our (single, just-opened) file — not a
+    // fixed number of rounds or a sleep. `MAX_MESSAGES` is a generous hard
+    // cap purely as a backstop against a genuine hang/regression (the signal
+    // never arriving), matching the project's "guard against unbounded
+    // growth" rule; it is not the intended exit path.
+    const MAX_MESSAGES: u64 = 2000;
 
     let bin = env!("CARGO_BIN_EXE_brink-lsp");
 
@@ -681,30 +689,31 @@ fn diagnostics_after_background_analysis_with_types(
     );
 
     let mut last_diags_for_uri: Vec<Value> = Vec::new();
-    for round in 0..MAX_ROUNDS {
-        let id = 100 + round;
-        send(
-            &mut stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "method": "textDocument/documentSymbol",
-                "params": {
-                    "textDocument": { "uri": file_uri }
-                }
-            }),
-        );
-        let (_resp, notifications) = recv_response(&mut stdout, id);
-        for n in &notifications {
-            if n["method"] == "textDocument/publishDiagnostics" && n["params"]["uri"] == file_uri {
-                last_diags_for_uri = n["params"]["diagnostics"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default();
+    let mut settled = false;
+    for _ in 0..MAX_MESSAGES {
+        let msg = recv(&mut stdout);
+        if msg["method"] == "textDocument/publishDiagnostics" && msg["params"]["uri"] == file_uri {
+            last_diags_for_uri = msg["params"]["diagnostics"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+        } else if msg["method"] == "$/brink/backgroundAnalysisComplete" {
+            // A pass triggered by server startup (`initialized`) can race
+            // ahead of our `didOpen` and report `file_count == 0` — keep
+            // waiting until a pass actually reflects the file we opened.
+            let file_count = msg["params"]["file_count"].as_u64().unwrap_or(0);
+            if file_count >= 1 {
+                settled = true;
+                break;
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
     }
+
+    assert!(
+        settled,
+        "background analysis never signaled completion for {file_uri} \
+         within {MAX_MESSAGES} messages"
+    );
 
     drop(stdin);
     drop(stdout);
