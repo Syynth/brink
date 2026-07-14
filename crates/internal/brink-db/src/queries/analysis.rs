@@ -18,12 +18,15 @@
 //   genuinely per-file diagnostic contributors (validate, dialect_gate,
 //   annotation content checks) behind a thin whole-project aggregator, so a
 //   body edit re-runs only the edited file's own contributor.
-// - [`whole_project_diagnostics_query`] — the passes that genuinely need
-//   cross-file state (external_check against the host manifest, and under
-//   `types = strict`, `strict::check`, which needs a whole-project
-//   `InferenceResult`) — reading the narrow [`resolutions_index_query`]
-//   projection and the already-FG-2/FG-2.1-narrowed `type_inference_query`,
-//   never the diagnostics-laden bundle.
+// - [`whole_project_diagnostics_query`] — now a thin aggregator (issue
+//   #750, FG-3 completion): the external-check family is decomposed into
+//   [`inline_docs_query`] / [`external_meta_query`] /
+//   [`call_site_metas_query`] and the per-file [`value_meta_query`] /
+//   [`call_site_diagnostics_query`]; only the M-2 modules pass and the
+//   strict typed-mode pass remain genuinely whole-project — reading the
+//   narrow [`resolutions_index_query`] projection and the
+//   already-FG-2/FG-2.1-narrowed `type_inference_query`, never the
+//   diagnostics-laden bundle.
 // - [`analysis_diagnostics_query`] — the DIAGNOSTICS half: every diagnostic
 //   source merged, in the same order `finish_analysis` produces them, so
 //   `db.analysis()` stays output-identical to the monolithic
@@ -39,13 +42,15 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use brink_analyzer::AnalysisResult;
+use brink_analyzer::{AnalysisResult, ExternalCheckSeverity, SymbolMeta, TypePolicy};
 use brink_format::DefinitionId;
-use brink_ir::{Diagnostic, FileId, HirFile, ResolutionMap, SymbolIndex, SymbolManifest};
+use brink_ir::{
+    Diagnostic, DocBlock, FileId, HirFile, ResolutionMap, SymbolIndex, SymbolKind, SymbolManifest,
+};
 
 use super::{
-    ProjectInput, SourceFile, lowered_query, resolution_index_query, resolve_query,
-    symbol_index_query, type_inference_query,
+    ProjectInput, SourceFile, inference_index_query, lowered_query, resolution_index_query,
+    resolve_query, symbol_index_query, type_inference_query,
 };
 
 /// Index + resolutions, aggregated across every file's [`resolve_query`]
@@ -138,22 +143,147 @@ pub(crate) fn contributor_diagnostics_query(
     out
 }
 
+/// The project-wide inline `///` doc merge (issue #750 / FG-3 completion —
+/// [`brink_analyzer::project_inline_docs`]), keyed by `(kind, declared
+/// name)`. Reads every file's manifest, but the output is range-free
+/// ([`DocBlock`] carries parsed doc content only), so any edit that leaves
+/// every `///` block intact backdates this memo — the `Eq`-cutoff seam
+/// between per-file manifest churn and the doc-consuming enrichment passes
+/// ([`external_meta_query`], [`value_meta_query`]).
+#[salsa::tracked(returns(ref))]
+pub(crate) fn inline_docs_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> Arc<BTreeMap<(SymbolKind, String), DocBlock>> {
+    let manifest_inputs: Vec<(FileId, &SymbolManifest)> = project
+        .files(db)
+        .iter()
+        .map(|f| (f.file_id(db), &lowered_query(db, *f).manifest))
+        .collect();
+    Arc::new(brink_analyzer::project_inline_docs(&manifest_inputs))
+}
+
+/// The index-driven half of the external-check family (issue #750 / FG-3
+/// completion — [`brink_analyzer::external_meta_diagnostics`]): host-
+/// manifest enrichment + checks for externals (`E039`/`E040`) plus
+/// knot/stitch doc enrichment. Reads the *full ranged* [`symbol_index_query`]
+/// (diagnostic spans need real ranges) and [`inline_docs_query`] — never any
+/// file's HIR, which is the decomposition's point: the pre-#750 shape ran
+/// this inside a query that also walked every file's HIR, so any body edit
+/// re-ran the whole family. Cheap to re-execute (proportional to
+/// externals/callables, no HIR walk); its range-free `symbol_meta` half
+/// backdates dependents via [`call_site_metas_query`].
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ExternalMeta {
+    pub symbol_meta: BTreeMap<DefinitionId, SymbolMeta>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+#[salsa::tracked(returns(ref))]
+pub(crate) fn external_meta_query(db: &dyn salsa::Database, project: ProjectInput) -> ExternalMeta {
+    let (index, _diags) = symbol_index_query(db, project);
+    let inline_docs = inline_docs_query(db, project);
+    let opts = project.analysis_options(db);
+    let (symbol_meta, diagnostics) =
+        brink_analyzer::external_meta_diagnostics(index, inline_docs, opts);
+    ExternalMeta {
+        symbol_meta,
+        diagnostics,
+    }
+}
+
+/// Name-keyed external metas for the call-site checks (issue #750 / FG-3
+/// completion — [`brink_analyzer::call_site_metas`]): the range-free
+/// projection of [`external_meta_query`]'s enrichment map, filtered to
+/// `SymbolKind::External`. This is the cutoff seam guarding every file's
+/// [`call_site_diagnostics_query`] memo (the `resolution_index` playbook):
+/// a body edit shifts declaration ranges → the full index changes →
+/// [`external_meta_query`] re-executes — but as long as no external's
+/// *content* (docs/manifest/params) changed, this projection comes out
+/// `Eq`, and every other file's call-site memo stays fully validated
+/// without re-executing. `Arc`-wrapped for the same pointer-identity
+/// reason as [`per_file_diagnostics_query`].
+#[salsa::tracked]
+pub(crate) fn call_site_metas_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> Arc<BTreeMap<String, SymbolMeta>> {
+    let (index, _diags) = symbol_index_query(db, project);
+    let ext = external_meta_query(db, project);
+    Arc::new(brink_analyzer::call_site_metas(index, &ext.symbol_meta))
+}
+
+/// One file's VAR/CONST/LIST initializer/doc enrichment (issue #750 / FG-3
+/// completion — [`brink_analyzer::file_value_meta`]): purely presentational
+/// `symbol_meta` entries, no diagnostics. Reads only this file's own
+/// `lowered_query`, the range-zeroed [`inference_index_query`] projection
+/// (the pass reads `by_name` + `kind`, never a symbol's range — see the
+/// analyzer seam's doc), and [`inline_docs_query`] — so a body edit in file
+/// Y leaves file X's memo fully validated (same `Arc`), not re-executed.
+#[salsa::tracked]
+pub(crate) fn value_meta_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+) -> Arc<BTreeMap<DefinitionId, SymbolMeta>> {
+    let hir = &lowered_query(db, file).hir;
+    let index = inference_index_query(db, project);
+    let inline_docs = inline_docs_query(db, project);
+    Arc::new(brink_analyzer::file_value_meta(
+        file.file_id(db),
+        hir,
+        index,
+        inline_docs,
+    ))
+}
+
+/// One file's external call-site literal checks (`E041`/`E042`) — issue
+/// #750 / FG-3 completion, [`brink_analyzer::file_call_site_diagnostics`].
+/// Reads only this file's own `lowered_query` plus the range-free
+/// [`call_site_metas_query`] projection, so a body edit in file Y leaves
+/// file X's memo fully validated (same `Arc`), not re-executed — the last
+/// per-file HIR walk `finish_analysis` still ran project-wide. Empty when
+/// the `external_check` severity is `Off` (the same gate the monolithic
+/// path applies before walking any file).
+#[salsa::tracked]
+pub(crate) fn call_site_diagnostics_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+) -> Arc<Vec<Diagnostic>> {
+    if project.analysis_options(db).external_check == ExternalCheckSeverity::Off {
+        return Arc::new(Vec::new());
+    }
+    let metas = call_site_metas_query(db, project);
+    let hir = &lowered_query(db, file).hir;
+    Arc::new(brink_analyzer::file_call_site_diagnostics(
+        file.file_id(db),
+        hir,
+        &metas,
+    ))
+}
+
 /// Whole-project diagnostics + `symbol_meta` (issue #632 / FG-3 design doc
-/// §1 — [`brink_analyzer::whole_project_diagnostics`]): the passes that
-/// genuinely need cross-file state — host-manifest enrichment/checks
-/// (`external_check`) and, under `types = strict`, the strict typed-mode
-/// checks. Reads [`resolutions_index_query`] for index/resolutions (never
-/// the diagnostics-laden `analysis_query`) and, under `types = strict` +
-/// `dialect = brink`, the already-memoized, FG-2/FG-2.1-narrowed
-/// `type_inference_query` — the same TM-3 wiring `analysis_query` used to
-/// own directly, moved here unchanged (issue #632's fence: no strict-mode
-/// *behavior* change, only its query wiring). Still walks every file's HIR
-/// (`full_refs`) — `external_check` and strict checking both genuinely need
-/// the whole project, per the design doc's exemption list.
+/// §1), now a thin aggregator (issue #750 / FG-3 completion) over the
+/// decomposed external-check family — [`external_meta_query`] + per-file
+/// [`value_meta_query`] / [`call_site_diagnostics_query`] — plus the two
+/// genuinely whole-project passes left: the M-2 module import/visibility
+/// checks ([`brink_analyzer::module_diagnostics`], which need every file's
+/// HIR plus the project-wide resolutions) and, under `types = strict`, the
+/// strict typed-mode checks ([`brink_analyzer::strict_diagnostics`], which
+/// need a whole-project [`InferenceResult`] — the FG-4-era candidate for a
+/// per-SCC-reading split, out of #750's scope). The aggregation loops are
+/// salsa memo lookups, not HIR walks: a body edit in file Y re-runs only
+/// Y's own value-meta/call-site contributors (plus the modules pass, which
+/// post-dates #750's decomposition — M-1/M-2 landed while this slice was in
+/// flight and is per-file-splittable follow-up work if it ever shows up
+/// hot).
+///
+/// [`InferenceResult`]: brink_analyzer::InferenceResult
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct WholeProjectDiagnostics {
     pub diagnostics: Vec<Diagnostic>,
-    pub symbol_meta: BTreeMap<DefinitionId, brink_analyzer::SymbolMeta>,
+    pub symbol_meta: BTreeMap<DefinitionId, SymbolMeta>,
 }
 
 #[salsa::tracked(returns(ref))]
@@ -161,36 +291,62 @@ pub(crate) fn whole_project_diagnostics_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
 ) -> WholeProjectDiagnostics {
-    let files = project.files(db);
+    let opts = project.analysis_options(db);
     let resolved = resolutions_index_query(db, project);
-    let full_refs: Vec<(FileId, &HirFile, &SymbolManifest)> = files
+    let hir_refs: Vec<(FileId, &HirFile)> = project
+        .files(db)
         .iter()
-        .map(|f| {
-            let lowered = lowered_query(db, *f);
-            (f.file_id(db), &lowered.hir, &lowered.manifest)
-        })
+        .map(|f| (f.file_id(db), &lowered_query(db, *f).hir))
         .collect();
 
-    let opts = project.analysis_options(db);
-    // TM-3 (docs/typed-mode-spec.md §9-step-3): under `types = strict` +
-    // `dialect = brink`, reuse the already-memoized, FG-narrowed
-    // `type_inference_query` instead of letting `whole_project_diagnostics`
-    // recompute inference from scratch via `infer_project` — this is the
-    // "inference finally has a consumer" seam the per-def/per-SCC
-    // decomposition (FG-2, FG-2.1) exists for: a warm re-analyze after an
-    // edit only re-solves the SCC(s) that edit actually touched, not the
-    // whole project.
-    let strict_inference = (opts.dialect == brink_analyzer::Dialect::Brink
-        && opts.types == brink_analyzer::TypePolicy::Strict)
-        .then(|| type_inference_query(db, project).as_ref());
+    // M-2 module import + visibility checks (docs/modules-spec.md
+    // §2/§4/§7), first in diagnostic order (matching
+    // `whole_project_diagnostics`'s monolithic composition).
+    let mut diagnostics =
+        brink_analyzer::module_diagnostics(&hir_refs, &resolved.index, &resolved.resolutions);
 
-    let (diagnostics, symbol_meta) = brink_analyzer::whole_project_diagnostics(
-        &full_refs,
-        &resolved.index,
-        &resolved.resolutions,
-        opts,
-        strict_inference,
-    );
+    // TM-3 strict typed-mode pass (docs/typed-mode-spec.md §9-step-3),
+    // second in diagnostic order. Under `types = strict` + `dialect =
+    // brink`, reuse the already-memoized, FG-narrowed
+    // `type_inference_query` instead of letting the analyzer recompute
+    // inference from scratch via `infer_project` — the "inference finally
+    // has a consumer" seam the per-def/per-SCC decomposition (FG-2, FG-2.1)
+    // exists for. Gradual mode (the default) skips this block entirely.
+    if opts.types == TypePolicy::Strict {
+        let strict_inference = (opts.dialect == brink_analyzer::Dialect::Brink)
+            .then(|| type_inference_query(db, project).as_ref());
+        diagnostics.extend(brink_analyzer::strict_diagnostics(
+            &hir_refs,
+            &resolved.index,
+            &resolved.resolutions,
+            opts,
+            strict_inference,
+        ));
+    }
+
+    // Externals + callables (index-driven, memoized without HIR deps), then
+    // per-file value metas (file order), then per-file call-site checks
+    // (file order) — exactly `brink_analyzer::whole_project_diagnostics`'s
+    // own composition order.
+    let ext = external_meta_query(db, project);
+    diagnostics.extend(ext.diagnostics.iter().cloned());
+    let mut symbol_meta = ext.symbol_meta.clone();
+
+    for file in project.files(db) {
+        symbol_meta.extend(
+            value_meta_query(db, project, *file)
+                .iter()
+                .map(|(k, v)| (*k, v.clone())),
+        );
+    }
+    for file in project.files(db) {
+        diagnostics.extend(
+            call_site_diagnostics_query(db, project, *file)
+                .iter()
+                .cloned(),
+        );
+    }
+
     WholeProjectDiagnostics {
         diagnostics,
         symbol_meta,
