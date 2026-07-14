@@ -18,12 +18,26 @@
  * key listener, and tears them all down in `dispose()` (the code-actions.ts
  * teardown pattern) — an open prompt must never leak when the editor unmounts.
  *
+ * OFF THE PAINT PATH (#722): `query` is a synchronous wasm call and can run
+ * long (collision/breakage analysis) under load. The debounce timer no longer
+ * calls it inline — it flips the badge into a "pending" state synchronously
+ * (so that paints before the heavy call runs) and defers the actual call to
+ * the next idle slot via {@link scheduleIdleWork}. An Enter (or force click)
+ * that lands while a query is in flight for the current name does not force
+ * a synchronous call either; it sets a "commit requested" flag and the commit
+ * completes once the deferred query resolves — the apply/force path is
+ * effectively disabled until then. `query` itself stays a plain synchronous
+ * function (unchanged signature) so callers — including tests — keep the
+ * existing synchronous API; only the *scheduling* of the call changed.
+ *
+
  * The DOM reuses the `brink-inline-rename-*` classes so both flows share one
  * stylesheet (rename-prompt.css); the styling is name-prompt-generic.
  */
 
 import type { StructuralResult } from "@brink/wasm-types";
 import { isSafeRename, breakageCount, breakageEntries } from "./breakage.js";
+import { scheduleIdleWork, cancelIdleWork, type IdleHandle } from "./idle-schedule.js";
 
 /** Context handed to a host `onBreakage` override. */
 export interface InlineNameBreakageContext {
@@ -86,6 +100,17 @@ export class InlineNameInput {
   private report: HTMLElement | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private lastResult: StructuralResult | null = null;
+  /** Handle for the deferred (off-paint-path) query call, if one is in
+   *  flight; see the OFF THE PAINT PATH note above. */
+  private idleHandle: IdleHandle | null = null;
+  /** The name a deferred query is currently in flight for, or null when idle. */
+  private pendingName: string | null = null;
+  /** True while `pendingName`'s query is in flight — surfaced as the badge's
+   *  pending state, and gates the apply/force path. */
+  private pending = false;
+  /** Set by `confirm()` (Enter) or a force click when it lands mid-flight;
+   *  consumed once the in-flight query resolves to finish the commit. */
+  private commitRequested = false;
   private reportOpen = false;
   private disposed = false;
   private readonly cache = new Map<string, StructuralResult>();
@@ -126,6 +151,9 @@ export class InlineNameInput {
     badge.hidden = true;
     badge.setAttribute("aria-label", "Show breakage report");
     badge.addEventListener("click", () => this.toggleReport());
+    // Belt-and-suspenders: `disabled` already blocks native clicks while
+    // pending, but a synthetic dispatchEvent (tests, some assistive tech
+    // shims) can bypass that — toggleReport() itself also gates on pending.
 
     const report = document.createElement("div");
     report.className = "brink-inline-rename-report";
@@ -152,47 +180,114 @@ export class InlineNameInput {
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       this.timer = null;
-      this.runQuery();
+      this.startLiveQuery();
     }, QUERY_DEBOUNCE_MS);
   }
 
-  /** Run (or replay from cache) the breakage query for the current input. */
-  private runQuery(): StructuralResult | null {
+  /** Debounce settle for a live (typing-driven) query: resolves from cache
+   *  synchronously, else kicks off a deferred query via {@link beginQuery}. */
+  private startLiveQuery(): void {
     const input = this.input;
-    if (input === null) return null;
+    if (input === null) return;
     const name = input.value.trim();
     if (name === "" || name === this.options.initialValue) {
+      this.abandonPending();
       this.lastResult = null;
       this.updateBadge(null);
-      return null;
+      return;
     }
-    let result = this.cache.get(name);
-    if (result === undefined) {
+    this.beginQuery(name);
+  }
+
+  /**
+   * Resolve `name`'s breakage result — from cache synchronously, or by
+   * kicking off (or joining an already in-flight) deferred query. Marks the
+   * UI pending *before* the heavy call runs so a paint can land first; see
+   * the OFF THE PAINT PATH note on the class doc comment.
+   */
+  private beginQuery(name: string): void {
+    const cached = this.cache.get(name);
+    if (cached !== undefined) {
+      this.resolveQuery(name, cached);
+      return;
+    }
+    if (this.pending && this.pendingName === name) return; // already in flight
+    if (this.idleHandle !== null) {
+      cancelIdleWork(this.idleHandle);
+      this.idleHandle = null;
+    }
+    this.pending = true;
+    this.pendingName = name;
+    this.updateBadge(this.lastResult);
+    this.idleHandle = scheduleIdleWork(() => {
+      this.idleHandle = null;
       let queried: StructuralResult | null;
       try {
         queried = this.options.query(name);
       } catch {
-        this.lastResult = null;
-        this.updateBadge(null);
-        return null;
+        queried = null;
       }
-      if (queried === null) {
-        this.lastResult = null;
-        this.updateBadge(null);
-        return null;
-      }
-      result = queried;
-      this.cache.set(name, result);
-    }
-    this.lastResult = result;
-    this.updateBadge(result);
-    return result;
+      this.resolveQuery(name, queried);
+    });
   }
 
-  /** Refresh the "⚠ breaks N" badge; hidden when safe (N = 0). */
+  /** Cancel any in-flight deferred query without resolving it (input reverted
+   *  to empty/unchanged while it was pending). */
+  private abandonPending(): void {
+    if (this.idleHandle !== null) {
+      cancelIdleWork(this.idleHandle);
+      this.idleHandle = null;
+    }
+    this.pending = false;
+    this.pendingName = null;
+  }
+
+  /** Land a resolved (possibly deferred, possibly cached) query result for
+   *  `name`, then finish any commit that was requested while it was pending. */
+  private resolveQuery(name: string, result: StructuralResult | null): void {
+    this.pending = false;
+    this.pendingName = null;
+    if (result === null) {
+      this.lastResult = null;
+      this.updateBadge(null);
+    } else {
+      this.cache.set(name, result);
+      this.lastResult = result;
+      this.updateBadge(result);
+    }
+    if (!this.commitRequested) return;
+    this.commitRequested = false;
+    // Drop a stale commit request: the user kept typing before this query
+    // resolved, so `name` no longer matches the live input. A fresh Enter
+    // re-issues against whatever is current.
+    const input = this.input;
+    if (input !== null && input.value.trim() === name && result !== null) {
+      this.settleCommit(result, name);
+    }
+  }
+
+  /** Refresh the "⚠ breaks N" badge (hidden when safe) or its pending state. */
   private updateBadge(result: StructuralResult | null): void {
     const badge = this.badge;
     if (badge === null) return;
+    if (this.pending) {
+      badge.hidden = false;
+      badge.disabled = true;
+      badge.setAttribute("aria-busy", "true");
+      badge.classList.add("brink-inline-rename-badge--pending");
+      badge.textContent = "…";
+      // Disable (don't tear down) an already-open report's force button —
+      // it reflects a name that's now stale — until the fresh result lands.
+      const force = this.report?.querySelector<HTMLButtonElement>(".brink-inline-rename-force");
+      if (force) {
+        force.disabled = true;
+        force.setAttribute("aria-busy", "true");
+      }
+      return;
+    }
+    badge.disabled = false;
+    badge.removeAttribute("aria-busy");
+    badge.classList.remove("brink-inline-rename-badge--pending");
     if (result === null || isSafeRename(result)) {
       badge.hidden = true;
       this.closeReport();
@@ -205,6 +300,7 @@ export class InlineNameInput {
   }
 
   private toggleReport(): void {
+    if (this.pending) return;
     if (this.reportOpen) this.closeReport();
     else if (this.lastResult !== null && !isSafeRename(this.lastResult)) {
       this.renderReport(this.lastResult);
@@ -293,7 +389,14 @@ export class InlineNameInput {
     }
   }
 
-  /** Enter: commit a safe result; surface the report (focus force) when unsafe. */
+  /**
+   * Enter: commit a safe result; surface the report (focus force) when
+   * unsafe. When no cached result exists yet, this does NOT force a
+   * synchronous query — it requests a commit and defers to
+   * {@link beginQuery}/{@link resolveQuery}, same as a live debounce settle,
+   * so Enter never blocks the keystroke on the analysis. The apply path is
+   * effectively disabled (nothing commits) until that resolves.
+   */
   private confirm(): void {
     const input = this.input;
     if (input === null) return;
@@ -307,16 +410,22 @@ export class InlineNameInput {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    const result = this.runQuery();
-    if (result === null) {
-      this.cancel();
+    const cached = this.cache.get(name);
+    if (cached !== undefined) {
+      this.settleCommit(cached, name);
       return;
     }
+    this.commitRequested = true;
+    this.beginQuery(name);
+  }
+
+  /** Finish a confirm once a result is available: commit a safe result, or
+   *  surface the report (focusing the explicit override) when unsafe. */
+  private settleCommit(result: StructuralResult, name: string): void {
     if (isSafeRename(result)) {
       this.commit(result, name);
       return;
     }
-    // Unsafe — surface the report and focus the explicit override.
     if (!this.reportOpen) this.renderReport(result);
     else {
       const force = this.report?.querySelector<HTMLButtonElement>(".brink-inline-rename-force");
@@ -348,6 +457,13 @@ export class InlineNameInput {
       clearTimeout(this.timer);
       this.timer = null;
     }
+    if (this.idleHandle !== null) {
+      cancelIdleWork(this.idleHandle);
+      this.idleHandle = null;
+    }
+    this.pending = false;
+    this.pendingName = null;
+    this.commitRequested = false;
     this.input?.removeEventListener("keydown", this.keyHandler);
     this.root?.remove();
     this.root = null;
