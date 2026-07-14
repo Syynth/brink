@@ -996,9 +996,9 @@ mod module_tests {
             "#@module(quest)\n== ambush ==\n#@private\nGotcha!\n-> DONE\n".to_owned(),
         );
         let town = db.set_file(
-                "town.ink",
-                "#@module(town)\n== square ==\nHi\n-> ambush\n".to_owned(),
-            );
+            "town.ink",
+            "#@module(town)\n== square ==\nHi\n-> ambush\n".to_owned(),
+        );
 
         let codes: Vec<_> = db
             .diagnostics(town)
@@ -1024,9 +1024,9 @@ mod module_tests {
             "#@module(quest)\n== ambush ==\n#@public\nGotcha!\n-> DONE\n".to_owned(),
         );
         let town = db.set_file(
-                "town.ink",
-                "#@module(town)\n== square ==\nHi\n-> ambush\n".to_owned(),
-            );
+            "town.ink",
+            "#@module(town)\n== square ==\nHi\n-> ambush\n".to_owned(),
+        );
 
         let codes: Vec<_> = db
             .diagnostics(town)
@@ -1045,9 +1045,9 @@ mod module_tests {
     fn self_import_is_e090_through_db() {
         let mut db = ProjectDb::new();
         let f = db.set_file(
-                "quest.ink",
-                "#@module(quest)\nIMPORT quest\n== start ==\nHi\n-> DONE\n".to_owned(),
-            );
+            "quest.ink",
+            "#@module(quest)\nIMPORT quest\n== start ==\nHi\n-> DONE\n".to_owned(),
+        );
 
         let codes: Vec<_> = db
             .diagnostics(f)

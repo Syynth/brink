@@ -23,8 +23,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use brink_ir::{
-    Diagnostic, DiagnosticCode, FileId, HirFile, ResolutionMap, SymbolIndex, SymbolKind,
-    Visibility,
+    Diagnostic, DiagnosticCode, FileId, HirFile, ResolutionMap, SymbolIndex, SymbolKind, Visibility,
 };
 
 /// The importable top-level kinds (modules-spec §2): "all top-level public
@@ -90,9 +89,7 @@ pub fn check(
         // stem-module (`None`), it is "the same file" (each undeclared file
         // is its own singleton module).
         let in_module = match &target.module {
-            Some(tmod) => {
-                file_module.get(&r.file).and_then(Option::as_ref) == Some(tmod)
-            }
+            Some(tmod) => file_module.get(&r.file).and_then(Option::as_ref) == Some(tmod),
             None => r.file == target.file,
         };
         if !in_module {

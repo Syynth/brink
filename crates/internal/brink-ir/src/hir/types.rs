@@ -1571,6 +1571,10 @@ impl DiagnosticCode {
 
     /// Short human-readable title for this diagnostic code.
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a flat one-arm-per-code message table that necessarily grows with the diagnostic set"
+    )]
     pub fn title(self) -> &'static str {
         match self {
             Self::E001 => "knot is missing a name",
