@@ -29,7 +29,7 @@ use brink_analyzer::AnalysisResult;
 use brink_format::DefinitionId;
 use brink_ir::hir::visit::{self, HirVisitor};
 use brink_ir::{
-    Assignment, BlockStmt, Expr, FnLiteral, HirFile, IfStmt, Stmt, SymbolInfo, SymbolKind,
+    Assignment, BlockStmt, Expr, FileId, FnLiteral, HirFile, IfStmt, Stmt, SymbolInfo, SymbolKind,
 };
 use rowan::TextRange;
 
@@ -65,7 +65,7 @@ pub fn fn_value_slot_signature(
         SymbolKind::Temp => find_temp_declared_init(hir, info.range),
         _ => None,
     };
-    let assigned = find_last_assigned_fn_literal(hir, analysis, info.id);
+    let assigned = find_last_assigned_fn_literal(hir, analysis, info.id, info.file);
 
     // A later assignment (if any) is the more current static picture; fall
     // back to the declaration's own initializer otherwise.
@@ -73,7 +73,7 @@ pub fn fn_value_slot_signature(
     let Expr::FnLiteral(fl) = init else {
         return None;
     };
-    render_fn_literal(analysis, &fl)
+    render_fn_literal(analysis, &fl, info.file)
 }
 
 /// Find the initializer of the `~ temp name = …` declaration whose *name*
@@ -122,10 +122,12 @@ fn find_last_assigned_fn_literal(
     hir: &HirFile,
     analysis: &AnalysisResult,
     def: DefinitionId,
+    file: FileId,
 ) -> Option<Expr> {
     struct Finder<'a> {
         analysis: &'a AnalysisResult,
         def: DefinitionId,
+        file: FileId,
         found: Option<Expr>,
     }
     impl Finder<'_> {
@@ -140,7 +142,7 @@ fn find_last_assigned_fn_literal(
                 .analysis
                 .resolutions
                 .iter()
-                .any(|r| r.range == p.range && r.target == self.def);
+                .any(|r| r.file == self.file && r.range == p.range && r.target == self.def);
             if targets_def {
                 self.found = Some(assignment.value.clone());
             }
@@ -188,6 +190,7 @@ fn find_last_assigned_fn_literal(
     let mut finder = Finder {
         analysis,
         def,
+        file,
         found: None,
     };
     visit::visit(hir, &mut finder);
@@ -238,11 +241,18 @@ fn find_temp_in_if_stmt(i: &IfStmt, range: TextRange) -> Option<Expr> {
 /// param row (so a renamed/reordered param — including a stale rehydrated
 /// value's shape mismatch — is a non-issue here: hover always reads the
 /// live signature, unlike a saved runtime closure).
-fn render_fn_literal(analysis: &AnalysisResult, fl: &FnLiteral) -> Option<String> {
+///
+/// `file` scopes the resolution lookup to the slot's own file: `resolutions`
+/// is a project-wide `Vec<ResolvedRef>` and `range` is only a per-file byte
+/// offset, so an unscoped range-only match can hit a same-range reference in
+/// another file in a multi-file `INCLUDE` project (matching every sibling
+/// lookup in this crate — see `navigation.rs::find_def_at_offset`,
+/// `hover.rs`).
+fn render_fn_literal(analysis: &AnalysisResult, fl: &FnLiteral, file: FileId) -> Option<String> {
     let target_def = analysis
         .resolutions
         .iter()
-        .find(|r| r.range == fl.target.range)
+        .find(|r| r.file == file && r.range == fl.target.range)
         .map(|r| r.target)?;
     let target_info = analysis.index.symbols.get(&target_def)?;
     let target_name = fl
@@ -283,6 +293,28 @@ mod tests {
         let analysis = session.analysis().expect("analysis");
         let hir = session.hir(file_id).expect("hir");
         let pos = u32::try_from(src.find(needle).expect("needle present")).expect("offset");
+        let info = find_def_at_offset(analysis, file_id, TextSize::from(pos))?;
+        fn_value_slot_signature(analysis, hir, info)
+    }
+
+    /// Like [`signature_at`], but loads a multi-file project (`files`, each
+    /// `(path, source)`, loaded in order) and queries the *last* file for
+    /// `needle`. Used to prove the file-scoped resolution lookups in
+    /// [`render_fn_literal`](super::render_fn_literal) and
+    /// [`find_last_assigned_fn_literal`](super::find_last_assigned_fn_literal)
+    /// aren't fooled by a same-`TextRange` resolution living in a different
+    /// file of the project-wide `resolutions` vec.
+    fn signature_at_multi(files: &[(&str, &str)], needle: &str) -> Option<String> {
+        let mut session = IdeSession::new();
+        let mut file_id = None;
+        for (path, src) in files {
+            file_id = Some(session.update_and_analyze(path, (*src).to_string()));
+        }
+        let file_id = file_id.expect("at least one file");
+        let (_, last_src) = files.last().expect("at least one file");
+        let analysis = session.analysis().expect("analysis");
+        let hir = session.hir(file_id).expect("hir");
+        let pos = u32::try_from(last_src.find(needle).expect("needle present")).expect("offset");
         let info = find_def_at_offset(analysis, file_id, TextSize::from(pos))?;
         fn_value_slot_signature(analysis, hir, info)
     }
@@ -388,5 +420,101 @@ VAR player_hp = 10
 ~ return x + x
 ";
         assert!(signature_at(src, "g = bind").is_none());
+    }
+
+    #[test]
+    fn cross_file_range_collision_does_not_mismatch_the_target_function() {
+        // `lib.ink` binds an unrelated `fake(a, b, c)` at the *exact* byte
+        // range (within its own file — same start AND same length, so the
+        // `TextRange`s are literally equal) that `main.ink`'s `#fn(heal, …)`
+        // target token occupies within *its* file. `ResolvedRef::range` is
+        // only a per-file byte offset, so an unscoped
+        // `resolutions.iter().find(|r| r.range == fl.target.range)` can
+        // match `lib.ink`'s entry instead of `main.ink`'s own — rendering
+        // the wrong function's signature. Regression for the review finding
+        // on `render_fn_literal` (must filter `r.file == info.file`, same
+        // convention as `navigation.rs::find_def_at_offset` / `hover.rs`).
+        let lib_ink = "\
+VAR x = 0
+
+// xxxxxxxxxxxxxxxxxxxx
+~ temp t = #fn(fake, x)
+-> END
+
+=== function fake(a, b, c) ===
+~ return a + b + c
+";
+        let main_ink = "\
+VAR player_hp = 10
+VAR healer = 0
+
+~ healer = #fn(heal, player_hp)
+-> END
+
+=== function heal(ref hp, amount) ===
+~ hp = hp + amount
+~ return hp
+";
+        let sig = signature_at_multi(
+            &[("lib.ink", lib_ink), ("main.ink", main_ink)],
+            "healer = #fn",
+        )
+        .expect("fn-value slot signature");
+        assert_eq!(
+            sig, "fn heal(ref hp = player_hp, amount)",
+            "must resolve against main.ink's own target, not lib.ink's same-range fake decoy"
+        );
+    }
+
+    #[test]
+    fn cross_file_shared_global_assignment_does_not_leak_across_files() {
+        // `main.ink` declares the shared global `healer` and correctly
+        // assigns it `#fn(heal, …)`. It also has an unrelated `target`
+        // variable's assignment whose *target path range* is engineered to
+        // coincide exactly (same start AND same length as `healer`, 6
+        // bytes) with `lib.ink`'s own — separate — assignment of the *same*
+        // shared `healer` global. Without a `r.file == info.file` filter,
+        // `resolutions.iter().any(|r| r.range == p.range && r.target ==
+        // self.def)` can be satisfied by `lib.ink`'s entry when checking
+        // `main.ink`'s `target` statement, wrongly treating it as a (later,
+        // so "most current") assignment to `healer` and returning
+        // `wrong_fn`'s signature instead of the real `heal` binding.
+        // Regression for the review finding on
+        // `find_last_assigned_fn_literal`.
+        let lib_ink = "\
+// xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+~ healer = #fn(heal_lib, player_hp)
+-> END
+
+=== function heal_lib(x, y, z) ===
+~ return x + y + z
+";
+        let main_ink = "\
+INCLUDE lib.ink
+VAR player_hp = 10
+VAR healer = 0
+VAR target = 0
+
+~ healer = #fn(heal, player_hp)
+~ target = #fn(wrong_fn, player_hp)
+-> END
+
+=== function heal(ref hp, amount) ===
+~ hp = hp + amount
+~ return hp
+
+=== function wrong_fn(a, b, c) ===
+~ return a + b + c
+";
+        let sig = signature_at_multi(
+            &[("lib.ink", lib_ink), ("main.ink", main_ink)],
+            "healer = #fn",
+        )
+        .expect("fn-value slot signature");
+        assert_eq!(
+            sig, "fn heal(ref hp = player_hp, amount)",
+            "the genuine main.ink assignment to healer must win, not the coincidental \
+             same-range target statement"
+        );
     }
 }
