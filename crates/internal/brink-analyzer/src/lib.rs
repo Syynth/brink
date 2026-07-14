@@ -39,6 +39,7 @@ pub use infer::{
     referenced_globals, scc_graph, solve_scc, unify, unify_all,
 };
 pub use manifest::{ModuleMap, ResolvedModule};
+pub use resolve::ImportScope;
 pub use signature::{Sig, signature};
 pub use strict::{TypePolicy, effective_severity};
 
@@ -140,8 +141,9 @@ pub fn resolve(
     file: FileId,
     manifest: &SymbolManifest,
     index: &SymbolIndex,
+    scope: &ImportScope,
 ) -> (Arc<ResolutionMap>, Vec<Diagnostic>) {
-    let (map, diagnostics) = resolve::resolve_file(index, file, manifest);
+    let (map, diagnostics) = resolve::resolve_file(index, scope, file, manifest);
     (Arc::new(map), diagnostics)
 }
 
@@ -166,8 +168,15 @@ pub fn analyze_with_options(
 
     let (index, mut diagnostics) = symbol_index(&manifest_inputs);
     let mut resolutions = ResolutionMap::new();
-    for &(file_id, manifest) in &manifest_inputs {
-        let (file_map, file_diags) = resolve(file_id, manifest, &index);
+    for &(file_id, hir, manifest) in files {
+        // Import-scoped resolution (M-2d, issue #790). This whole-project
+        // convenience path uses the non-module-qualified `symbol_index`, so
+        // every symbol carries `module: None` and the scope is inert (flat
+        // resolution) — but building it from the file's own HIR keeps this
+        // path honest and mirrors the real `brink-db` pipeline, which feeds
+        // the INCLUDE-resolved module.
+        let scope = ImportScope::new(hir.module.as_ref().map(|m| m.name.clone()), &hir.imports);
+        let (file_map, file_diags) = resolve(file_id, manifest, &index, &scope);
         resolutions.extend(Arc::unwrap_or_clone(file_map));
         diagnostics.extend(file_diags);
     }

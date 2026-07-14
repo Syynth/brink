@@ -1390,37 +1390,36 @@ mod module_tests {
     }
 
     /// Two **different** declared modules exporting the same public knot
-    /// name is a hard error (`E096`) under `dialect = brink` — reported at
-    /// *both* definitions' spans, through the same `symbol_index_query`
-    /// path the compiler/studio read.
+    /// name now **coexist** under `dialect = brink` (M-2d, issue #790 —
+    /// the E096 stopgap relaxed): no diagnostic, and both definitions land
+    /// in the index, through the same `symbol_index_query` path the
+    /// compiler/studio read.
     #[test]
-    fn cross_declared_module_duplicate_knot_is_e096_under_brink() {
+    fn cross_declared_module_duplicate_knot_coexists_under_brink() {
         let mut db = ProjectDb::new();
         db.set_analysis_options(brink_opts());
-        let quest = db.set_file(
+        db.set_file(
             "quest.ink",
             "#@module(quest)\n== start ==\n#@public\nHi from quest\n-> DONE\n".to_owned(),
         );
-        let town = db.set_file(
+        db.set_file(
             "town.ink",
             "#@module(town)\n== start ==\n#@public\nHi from town\n-> DONE\n".to_owned(),
         );
 
         let diags = db.symbol_index_diagnostics();
-        let e096: Vec<_> = diags
-            .iter()
-            .filter(|d| d.code == DiagnosticCode::E096)
-            .collect();
-        assert_eq!(
-            e096.len(),
-            2,
-            "expected one E096 per colliding definition (both spans), got {e096:?}"
+        assert!(
+            diags.iter().all(|d| d.code != DiagnosticCode::E096),
+            "E096 is relaxed — cross-declared-module homonyms must coexist, got {diags:?}"
         );
-        let files: std::collections::BTreeSet<_> = e096.iter().map(|d| d.file).collect();
+        // Both public `start` knots survive in the index under the shared
+        // bare name — the raw material import-scoped resolution binds
+        // per-importer.
+        let index = db.symbol_index();
         assert_eq!(
-            files,
-            std::collections::BTreeSet::from([quest, town]),
-            "the two E096 diagnostics must land on each definition's own file/span"
+            index.by_name.get("start").map(Vec::len),
+            Some(2),
+            "both modules' `start` knots must be indexed"
         );
     }
 
@@ -1506,6 +1505,153 @@ mod module_tests {
         assert!(
             !codes.contains(&DiagnosticCode::E096),
             "strict-ink must never see E096, got {codes:?}"
+        );
+    }
+
+    /// The M-2d flagship (issue #790): two modules each export a public
+    /// `ambush`; two files each bare-import a *different* one. Import-scoped
+    /// resolution binds each file's `-> ambush` to the module it imported —
+    /// not to the flat duplicate-winner — and the whole project compiles
+    /// clean (no E025 import-required, no E096). Driven through the real
+    /// `ProjectDb`/`resolve_query` path the compiler reads.
+    #[test]
+    fn two_modules_export_ambush_each_file_binds_its_own() {
+        let mut db = ProjectDb::new();
+        db.set_analysis_options(brink_opts());
+        db.set_file(
+            "quest_a.ink",
+            "#@module(quest_a)\n== ambush ==\n#@public\nFrom A\n-> DONE\n".to_owned(),
+        );
+        db.set_file(
+            "quest_b.ink",
+            "#@module(quest_b)\n== ambush ==\n#@public\nFrom B\n-> DONE\n".to_owned(),
+        );
+        let main_a = db.set_file(
+            "main_a.ink",
+            "IMPORT { ambush } FROM quest_a\n-> ambush\n".to_owned(),
+        );
+        let main_b = db.set_file(
+            "main_b.ink",
+            "IMPORT { ambush } FROM quest_b\n-> ambush\n".to_owned(),
+        );
+
+        // The two `ambush` knots coexist, module-qualified.
+        let index = db.symbol_index();
+        let ambush_ids = index.by_name.get("ambush").expect("both ambush knots");
+        assert_eq!(ambush_ids.len(), 2, "both modules' `ambush` are indexed");
+        let module_of = |target: brink_format::DefinitionId| -> Option<String> {
+            index
+                .symbols
+                .get(&target)
+                .and_then(|info| info.module.clone())
+        };
+
+        // Each importing file's `-> ambush` binds to the module it imported.
+        let targets = |file| -> Vec<brink_format::DefinitionId> {
+            let (map, _diags) = db.resolve(file).expect("file resolves");
+            map.iter().map(|r| r.target).collect()
+        };
+        let a_targets = targets(main_a);
+        assert!(
+            a_targets
+                .iter()
+                .any(|&t| module_of(t).as_deref() == Some("quest_a")),
+            "main_a's `ambush` must bind to module quest_a, got {:?}",
+            a_targets.iter().map(|&t| module_of(t)).collect::<Vec<_>>()
+        );
+        assert!(
+            !a_targets
+                .iter()
+                .any(|&t| module_of(t).as_deref() == Some("quest_b")),
+            "main_a must NOT bind quest_b's `ambush`"
+        );
+
+        let b_targets = targets(main_b);
+        assert!(
+            b_targets
+                .iter()
+                .any(|&t| module_of(t).as_deref() == Some("quest_b")),
+            "main_b's `ambush` must bind to module quest_b"
+        );
+        assert!(
+            !b_targets
+                .iter()
+                .any(|&t| module_of(t).as_deref() == Some("quest_a")),
+            "main_b must NOT bind quest_a's `ambush`"
+        );
+
+        // The whole project compiles clean: no import-required error, no
+        // stopgap collision error, on any file.
+        for file in [main_a, main_b] {
+            let diags = db.diagnostics(file).expect("diagnostics");
+            assert!(
+                diags
+                    .iter()
+                    .all(|d| d.code != DiagnosticCode::E025 && d.code != DiagnosticCode::E096),
+                "import-scoped resolution must leave the correctly-imported file clean, got {diags:?}"
+            );
+        }
+    }
+
+    /// `ImportScope` granularity regression (issue #790 review): a bare
+    /// `IMPORT { other } FROM quest_a` must not license `quest_a`'s *other*
+    /// public exports — only the name actually named. Two modules each
+    /// export public `ambush`; the referring file bare-imports an unrelated
+    /// name from `quest_a` and bare-imports `ambush` itself only from
+    /// `quest_b`. Before the fix, `ImportScope` collapsed every import to
+    /// just its module name, so `quest_a` counted as "imported" for *any*
+    /// name — `-> ambush` could silently mis-resolve to `quest_a.ambush`
+    /// and then draw a spurious `E025` telling the author to import `ambush`
+    /// from `quest_a`, on a program that should compile clean. Resolution
+    /// and the `E025` checker must agree at (module, name) granularity for
+    /// bare imports.
+    #[test]
+    fn bare_import_is_name_precise_no_spurious_e025() {
+        let mut db = ProjectDb::new();
+        db.set_analysis_options(brink_opts());
+        db.set_file(
+            "quest_a.ink",
+            "#@module(quest_a)\n== ambush ==\n#@public\nFrom A\n-> DONE\n== other ==\n#@public\nOther A\n-> DONE\n".to_owned(),
+        );
+        db.set_file(
+            "quest_b.ink",
+            "#@module(quest_b)\n== ambush ==\n#@public\nFrom B\n-> DONE\n".to_owned(),
+        );
+        let main = db.set_file(
+            "main.ink",
+            "IMPORT { other } FROM quest_a\nIMPORT { ambush } FROM quest_b\n-> ambush\n".to_owned(),
+        );
+
+        let index = db.symbol_index();
+        let module_of = |target: brink_format::DefinitionId| -> Option<String> {
+            index
+                .symbols
+                .get(&target)
+                .and_then(|info| info.module.clone())
+        };
+
+        let (map, _diags) = db.resolve(main).expect("file resolves");
+        let targets: Vec<brink_format::DefinitionId> = map.iter().map(|r| r.target).collect();
+        assert!(
+            targets
+                .iter()
+                .any(|&t| module_of(t).as_deref() == Some("quest_b")),
+            "bare-importing `ambush` from quest_b must bind it to quest_b, got {:?}",
+            targets.iter().map(|&t| module_of(t)).collect::<Vec<_>>()
+        );
+        assert!(
+            !targets
+                .iter()
+                .any(|&t| module_of(t).as_deref() == Some("quest_a")),
+            "bare-importing only `other` from quest_a must NOT license quest_a's `ambush`, got {:?}",
+            targets.iter().map(|&t| module_of(t)).collect::<Vec<_>>()
+        );
+
+        let diags = db.diagnostics(main).expect("diagnostics");
+        assert!(
+            diags.iter().all(|d| d.code != DiagnosticCode::E025),
+            "a correctly bare-imported `ambush` must never draw a spurious E025 \
+             pointing at the unrelated module that only imported a different name, got {diags:?}"
         );
     }
 }

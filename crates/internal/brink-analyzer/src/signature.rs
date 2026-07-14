@@ -167,7 +167,18 @@ fn declared_fn_type(
         .map(|s| s.text.as_str())
         .collect::<Vec<_>>()
         .join(".");
-    let target_def = lookup_by_name(index, &target_name, &[SymbolKind::Knot])?;
+    // Signature typing of a global `#fn` initializer has no per-file import
+    // context (no enclosing body), so it looks the target up flatly (M-2d
+    // import scoping — issue #790 — is inert here: a single-candidate knot
+    // hits `lookup_by_name`'s fast path and resolves identically; only the
+    // new multi-declared-module homonym case, not reachable from a typed
+    // `#fn` target today, would differ).
+    let target_def = lookup_by_name(
+        index,
+        &crate::resolve::ImportScope::default(),
+        &target_name,
+        &[SymbolKind::Knot],
+    )?;
     let target_info = index.symbols.get(&target_def)?;
     if target_info.detail.as_deref() != Some("function") {
         return None;
