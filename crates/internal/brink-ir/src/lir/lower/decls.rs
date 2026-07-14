@@ -28,6 +28,18 @@ pub fn collect_globals(
         for cst in &hir_file.constants {
             if let Some(id) = lookup_global(index, &cst.name.text, SymbolKind::Constant) {
                 let name = names.intern(&cst.name.text);
+                // #692: a bare non-constant reference/call as the *whole*
+                // default (not nested inside a collection/struct/fn literal,
+                // which do their own E075/E076/E077 checks one level in) is
+                // a real compile error, never a silent `Null` fold.
+                if !is_const_foldable_decl_default(&cst.value, index, resolutions, file_id) {
+                    diagnostics.push(Diagnostic {
+                        file: file_id,
+                        range: cst.ptr.text_range(),
+                        message: DiagnosticCode::E083.title().to_string(),
+                        code: DiagnosticCode::E083,
+                    });
+                }
                 let default = eval_const_expr(
                     &cst.value,
                     index,
@@ -53,6 +65,16 @@ pub fn collect_globals(
         for var in &hir_file.variables {
             if let Some(id) = lookup_global(index, &var.name.text, SymbolKind::Variable) {
                 let name = names.intern(&var.name.text);
+                // #692: same top-level constness check as the CONST pass
+                // above.
+                if !is_const_foldable_decl_default(&var.value, index, resolutions, file_id) {
+                    diagnostics.push(Diagnostic {
+                        file: file_id,
+                        range: var.ptr.text_range(),
+                        message: DiagnosticCode::E083.title().to_string(),
+                        code: DiagnosticCode::E083,
+                    });
+                }
                 let default = eval_const_expr(
                     &var.value,
                     index,
@@ -532,6 +554,72 @@ fn is_const_foldable_kind(expr: &hir::Expr) -> bool {
         // is already a targeted E052 at `eval_const_expr`'s own arm; as an
         // array/map element it reports the standard E077.
         | hir::Expr::FnLiteral(_) => false,
+    }
+}
+
+/// #692: can this source expression *kind* ever be a compile-time constant
+/// at the top level of a `VAR`/`CONST` declaration default (the whole
+/// default, not an element nested inside a collection/struct/fn literal)?
+/// Sibling check to [`is_const_foldable_kind`], which governs collection
+/// *elements* one level in; this one governs the position `eval_const_expr`
+/// itself is called from directly (`collect_globals`'s two call sites).
+///
+/// The one place this genuinely differs from `is_const_foldable_kind`:
+/// `Expr::Path` is resolved here, because at this position (unlike a
+/// collection element, #679 scope notes) the issue this fixes (#692) is
+/// exactly a bare reference to another `VAR` — `SymbolKind::Variable` is
+/// never a compile-time constant (global mutable state doesn't exist yet
+/// during the const-fold pass) — while a reference to a `CONST`/list
+/// item/knot/stitch/function *is*, same as `eval_const_expr`'s own arm
+/// already treats it. An unresolved path leaves the analyzer's own
+/// unresolved-reference diagnostic (E024/E025) to stand — not double-
+/// reported here.
+///
+/// `Expr::Prefix`/`Expr::Infix` recurse (a wrapped non-constant, e.g.
+/// `VAR x = -f()` or `VAR x = 1 + someVar`, is still a bare top-level
+/// default, not a collection element). Collection/struct/fn literals do
+/// their own per-element checking one level in (`E075`/`E076`/`E077`), and
+/// a bare `#fn(…)` *is* a supported constant default (T1c-2) — both report
+/// `true` here to avoid double-reporting.
+///
+/// Exhaustive on purpose: a new `hir::Expr` variant must decide its
+/// top-level declaration-default story here instead of silently inheriting
+/// `true`.
+fn is_const_foldable_decl_default(
+    expr: &hir::Expr,
+    index: &SymbolIndex,
+    resolutions: &ResolutionLookup,
+    file: FileId,
+) -> bool {
+    match expr {
+        hir::Expr::Int(_)
+        | hir::Expr::Float(_)
+        | hir::Expr::Bool(_)
+        | hir::Expr::String(_)
+        | hir::Expr::Null
+        | hir::Expr::DivertTarget(_)
+        | hir::Expr::ListLiteral(_)
+        | hir::Expr::ArrayLiteral(_)
+        | hir::Expr::MapLiteral(_)
+        | hir::Expr::StructLiteral(_)
+        | hir::Expr::FnLiteral(_) => true,
+        hir::Expr::Path(path) => !matches!(
+            resolutions
+                .resolve(file, path.range)
+                .and_then(|id| index.symbols.get(&id)),
+            Some(info) if info.kind == SymbolKind::Variable
+        ),
+        hir::Expr::Prefix(_, inner) => {
+            is_const_foldable_decl_default(inner, index, resolutions, file)
+        }
+        hir::Expr::Infix(lhs, _, rhs) => {
+            is_const_foldable_decl_default(lhs, index, resolutions, file)
+                && is_const_foldable_decl_default(rhs, index, resolutions, file)
+        }
+        hir::Expr::Postfix(..)
+        | hir::Expr::Call(..)
+        | hir::Expr::Index(_)
+        | hir::Expr::FieldAccess(_) => false,
     }
 }
 

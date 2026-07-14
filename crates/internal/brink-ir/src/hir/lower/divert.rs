@@ -30,10 +30,13 @@ impl LowerDivert for ast::DivertNode {
 
         // Thread start: `<- target`
         if let Some(thread) = self.thread_start() {
-            if let Some(ts) = lower_thread_target(&thread, scope, sink) {
-                return Ok(Stmt::ThreadStart(ts));
+            // The parser always creates a PATH node (empty on error + E037),
+            // so lower_thread_target always returns Some (lane-A audit, #709:
+            // E013 is unreachable).
+            match lower_thread_target(&thread, scope, sink) {
+                Some(ts) => return Ok(Stmt::ThreadStart(ts)),
+                None => unreachable!("parser guarantees PATH node in ThreadStart"),
             }
-            return Err(sink.diagnose(range, DiagnosticCode::E013));
         }
 
         // Tunnel call: `-> target ->`
