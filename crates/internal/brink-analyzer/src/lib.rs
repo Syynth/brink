@@ -7,6 +7,7 @@
 
 mod annotations;
 mod conversions;
+mod determinism;
 mod dialect_gate;
 mod external_check;
 mod fn_values;
