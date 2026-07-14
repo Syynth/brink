@@ -155,6 +155,12 @@ pub enum RuntimeError {
     /// malformed bytecode, not an author-triggerable condition.
     #[error("literal pool index {0} out of range")]
     InvalidLiteralIndex(u32),
+    /// A `NameId` (container/address-path name) referenced an index outside
+    /// `StoryData::name_table` — malformed bytecode, not an
+    /// author-triggerable condition. Caught at link time, before any of the
+    /// name is used to build path lookup tables.
+    #[error("name id {0} out of range")]
+    InvalidNameId(u16),
 
     // ── TM-4 records (docs/typed-mode-spec.md §6 / value-model-spec §11c) ──
     /// `RecordNew(shape_id)` referenced a shape id outside the compiled

@@ -12,6 +12,18 @@ use crate::program::{
     StructShapeEntry,
 };
 
+/// Look up a `NameId` in `StoryData::name_table`, failing cleanly on an
+/// out-of-range index instead of panicking. `NameId`s embedded in
+/// malformed/adversarial bytecode are not guaranteed to be in range — this
+/// is the linker's own validation, the sanctioned way for such a program to
+/// stop (never an unchecked index panic).
+fn resolve_name(data: &StoryData, name_id: NameId) -> Result<String, RuntimeError> {
+    data.name_table
+        .get(name_id.0 as usize)
+        .cloned()
+        .ok_or(RuntimeError::InvalidNameId(name_id.0))
+}
+
 /// Link a [`StoryData`] into an executable [`Program`].
 ///
 /// Builds lookup tables mapping [`DefinitionId`]s to flat array indices.
@@ -181,7 +193,7 @@ pub fn link(
         address_by_path.reserve(data.containers.len());
         for (i, cdef) in data.containers.iter().enumerate() {
             if let Some(name_id) = cdef.name {
-                let name = data.name_table[name_id.0 as usize].clone();
+                let name = resolve_name(data, name_id)?;
                 address_by_path.insert(
                     name,
                     PathTarget {
@@ -200,7 +212,7 @@ pub fn link(
             // Resolve the target through the address map; skip anything
             // unresolvable (defensive — should not happen for valid output).
             if let Some(&(idx, offset)) = address_map.get(&ap.target) {
-                let name = data.name_table[ap.path.0 as usize].clone();
+                let name = resolve_name(data, ap.path)?;
                 address_by_path.insert(
                     name,
                     PathTarget {
@@ -215,15 +227,12 @@ pub fn link(
 
     // Compiled `#@local` knot/stitch defaults — the base layer of policy
     // resolution. Sorted by path so a knot expands before its stitches.
-    let mut local_scope_defaults: Vec<(String, DefinitionId)> = data
-        .containers
-        .iter()
-        .filter(|c| c.local)
-        .filter_map(|c| {
-            c.name
-                .map(|n| (data.name_table[n.0 as usize].clone(), c.id))
-        })
-        .collect();
+    let mut local_scope_defaults: Vec<(String, DefinitionId)> = Vec::new();
+    for cdef in data.containers.iter().filter(|c| c.local) {
+        if let Some(n) = cdef.name {
+            local_scope_defaults.push((resolve_name(data, n)?, cdef.id));
+        }
+    }
     local_scope_defaults.sort();
 
     let program = Program {
@@ -246,4 +255,39 @@ pub fn link(
         struct_shapes,
     };
     Ok((program, line_tables))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression for a fuzzer-discovered panic (`vm_no_panic`, PR #672
+    /// workstream C): a `NameId` outside `StoryData::name_table`'s range —
+    /// reachable from arbitrary/malformed `.inkb` bytes, not just
+    /// well-formed compiler output — indexed the table directly and
+    /// panicked (`index out of bounds`). Linking such a program must fail
+    /// cleanly instead.
+    fn story_with_out_of_range_address_path_name() -> StoryData {
+        let mut data = brink_compiler::compile("main.ink", |_p| {
+            Ok("=== knot ===\nHello.\n-> END\n".to_owned())
+        })
+        .unwrap()
+        .data;
+        assert!(
+            !data.address_paths.is_empty(),
+            "compiler output should carry an address_paths table"
+        );
+        data.address_paths[0].path = NameId(u16::MAX);
+        data
+    }
+
+    #[test]
+    fn link_rejects_out_of_range_address_path_name_id() {
+        let data = story_with_out_of_range_address_path_name();
+        let result = link(&data);
+        assert!(
+            matches!(result, Err(RuntimeError::InvalidNameId(id)) if id == u16::MAX),
+            "out-of-range NameId must not link"
+        );
+    }
 }
