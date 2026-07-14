@@ -52,7 +52,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use brink_format::DefinitionId;
 use brink_ir::{
-    Block, ContainerPtr, FileId, HirFile, Param, ResolutionMap, SymbolIndex, SymbolKind, TypeExpr,
+    Block, ContainerPtr, FileId, HirFile, HostManifest, Param, ResolutionMap, SymbolIndex,
+    SymbolKind, TypeExpr,
 };
 use rowan::TextRange;
 
@@ -229,11 +230,12 @@ fn index_resolutions_by_file(
 fn collect_globals(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
+    manifest: Option<&HostManifest>,
 ) -> BTreeMap<DefinitionId, Ty> {
     let mut globals: BTreeMap<DefinitionId, Ty> = BTreeMap::new();
     for (&id, info) in &index.symbols {
         if matches!(info.kind, SymbolKind::Variable | SymbolKind::Constant)
-            && let Some(sig) = crate::signature::signature(id, index, files)
+            && let Some(sig) = crate::signature::signature(id, index, files, manifest)
         {
             if let Some(vt) = sig.value_type {
                 globals.insert(id, Ty::from(vt));
@@ -307,6 +309,12 @@ struct ProjectCtx<'a> {
     /// param/return/temp annotations inside [`body::infer_def_body`]).
     list_names: BTreeSet<String>,
     struct_names: BTreeSet<String>,
+    /// Declared handle-kind names from the registered `HostManifest`
+    /// (T1d-2b, issue #774, docs/t1d-spec.md §3) — computed once per
+    /// context, same shape as `list_names`/`struct_names`, so `handle<K>`
+    /// param/return/temp annotations resolve during body inference too, not
+    /// just at the `signature()`/annotation-firewall seam.
+    handle_names: BTreeSet<String>,
 }
 
 impl<'a> ProjectCtx<'a> {
@@ -315,6 +323,7 @@ impl<'a> ProjectCtx<'a> {
         globals: &'a BTreeMap<DefinitionId, Ty>,
         by_file: &'a BTreeMap<FileId, BTreeMap<(u32, u32), DefinitionId>>,
         inferable: &'a BTreeSet<DefinitionId>,
+        manifest: Option<&HostManifest>,
     ) -> Self {
         Self {
             index,
@@ -323,6 +332,7 @@ impl<'a> ProjectCtx<'a> {
             inferable,
             list_names: crate::annotations::declared_list_names(index),
             struct_names: crate::annotations::declared_struct_names(index),
+            handle_names: crate::annotations::declared_handle_kinds(manifest),
         }
     }
 
@@ -340,6 +350,7 @@ impl<'a> ProjectCtx<'a> {
             inferable: self.inferable,
             list_names: &self.list_names,
             struct_names: &self.struct_names,
+            handle_names: &self.handle_names,
         }
     }
 }
@@ -457,20 +468,25 @@ fn solve_batches(
 /// Pure function of already-computed inputs (`index`/`resolutions`, the
 /// same shape `finish_analysis`/`signature` take) — safe to call directly in
 /// tests, and the exact function `type_inference_query` wraps for salsa
-/// memoization.
+/// memoization. `manifest` (T1d-2b, issue #774): the registered host
+/// manifest, threaded through to `signature()`/annotation resolution so
+/// `handle<K>` param/return/temp annotations resolve to `Ty::Handle(K)`
+/// during body inference — `None` degrades to an empty handle-kind set,
+/// same posture as every other manifest-driven check.
 #[must_use]
 pub fn infer_project(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
+    manifest: Option<&HostManifest>,
 ) -> InferenceResult {
     let by_file = index_resolutions_by_file(resolutions);
-    let globals = collect_globals(files, index);
+    let globals = collect_globals(files, index, manifest);
     let defs = collect_defs(files, index);
     let inferable: BTreeSet<DefinitionId> = defs.iter().map(|d| d.id).collect();
     let by_id: BTreeMap<DefinitionId, &Def<'_>> = defs.iter().map(|d| (d.id, d)).collect();
 
-    let ctx = ProjectCtx::new(index, &globals, &by_file, &inferable);
+    let ctx = ProjectCtx::new(index, &globals, &by_file, &inferable, manifest);
 
     let graph = build_call_graph(&defs, &ctx);
     let batches = topo_order(&graph);
@@ -568,6 +584,14 @@ pub fn def_body(
 /// `collect_globals` is dropped entirely — pass 1 discards every computed
 /// type (spec §5), so a permanently-empty globals map is behavior-identical
 /// and strictly cheaper.
+///
+/// `manifest` (T1d-2b, issue #774): threaded through to `ProjectCtx` for the
+/// same reason every other per-def FG-2 seam now carries it — `call_edges`
+/// discards every computed type (only the *set* of call targets survives),
+/// so which handle kinds are registered can never change this function's
+/// output; the parameter exists so `brink-db`'s `call_edges_query` doesn't
+/// need a second, differently-shaped code path just to reach the manifest
+/// `referenced_globals`/`solve_scc` also need.
 #[must_use]
 pub fn call_edges(
     def: DefinitionId,
@@ -575,6 +599,7 @@ pub fn call_edges(
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
     inferable: &BTreeSet<DefinitionId>,
+    manifest: Option<&HostManifest>,
 ) -> BTreeSet<DefinitionId> {
     let by_file = index_resolutions_by_file(resolutions);
     let defs = collect_defs(declaring_file_hir, index);
@@ -582,7 +607,7 @@ pub fn call_edges(
         return BTreeSet::new();
     };
     let empty_globals: BTreeMap<DefinitionId, Ty> = BTreeMap::new();
-    let ctx = ProjectCtx::new(index, &empty_globals, &by_file, inferable);
+    let ctx = ProjectCtx::new(index, &empty_globals, &by_file, inferable, manifest);
     let no_sigs: BTreeMap<DefinitionId, InferredSig> = BTreeMap::new();
     let body_ctx = ctx.body_ctx(d, &no_sigs);
     infer_def_body(d, &body_ctx).calls
@@ -600,12 +625,20 @@ pub fn call_edges(
 /// spec's Ruling 1 tradeoff note). Also the per-def global *read set* a
 /// future T2 effect row needs — named and shaped for that reuse now, no
 /// speculative machinery added.
+///
+/// `manifest` (T1d-2b, issue #774): same rationale as [`call_edges`]'s own
+/// parameter — this pass discards every computed type too (only the
+/// *referenced-def-id set* survives), so it can never change this
+/// function's output; threaded so `brink-db`'s `referenced_globals_query`
+/// shares one uniform per-def-seam shape with `call_edges_query`/
+/// `solve_scc_query`.
 #[must_use]
 pub fn referenced_globals(
     def: DefinitionId,
     declaring_file_hir: &[(FileId, &HirFile)],
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
+    manifest: Option<&HostManifest>,
 ) -> BTreeSet<DefinitionId> {
     let by_file = index_resolutions_by_file(resolutions);
     let defs = collect_defs(declaring_file_hir, index);
@@ -614,7 +647,7 @@ pub fn referenced_globals(
     };
     let empty_globals: BTreeMap<DefinitionId, Ty> = BTreeMap::new();
     let empty_inferable: BTreeSet<DefinitionId> = BTreeSet::new();
-    let ctx = ProjectCtx::new(index, &empty_globals, &by_file, &empty_inferable);
+    let ctx = ProjectCtx::new(index, &empty_globals, &by_file, &empty_inferable, manifest);
     let no_sigs: BTreeMap<DefinitionId, InferredSig> = BTreeMap::new();
     let body_ctx = ctx.body_ctx(d, &no_sigs);
     infer_def_body(d, &body_ctx).referenced_globals
@@ -640,7 +673,29 @@ pub fn referenced_globals(
 /// fixpoint mechanics below — only how the read-only context feeding it is
 /// assembled, and how narrow the salsa dependency edges recording that
 /// assembly turn out to be.
+///
+/// `manifest` (T1d-2b, issue #774): the registered host manifest, threaded
+/// through to `ProjectCtx` so a `handle<K>` param/return/temp annotation
+/// resolves to `Ty::Handle(K)` here too — this is the seam that makes
+/// strict-mode handle-kind rejection reachable end-to-end (docs/t1d-spec.md
+/// §3, the #767 acceptance criterion): once two locals of different
+/// declared handle kinds are unified together (e.g. compared or
+/// reassigned), the #627 lattice already folds them to `Ty::Conflicted`,
+/// which `strict::check`'s existing `E066` classification reports — this
+/// function is what was missing to let a genuine `Ty::Handle` ever reach
+/// that lattice from body-usage inference at all. `brink-db`'s
+/// `solve_scc_query` reads it off `project.analysis_options(db)`, the same
+/// coarse project-wide dependency shape `per_file_diagnostics_query`
+/// already reads `host_manifest` at.
 #[must_use]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the FG-2 per-SCC solve boundary (issue #631) — each parameter is an \
+              independently-narrowed input `brink-db`'s solve_scc_query assembles from its \
+              own per-def salsa queries; bundling them into a struct would just move the same \
+              seven-field shape one level down for no clarity gain, and this is the one call \
+              site (the salsa wrapper) plus tests, not a widely-called API"
+)]
 pub fn solve_scc(
     batch: &BTreeSet<DefinitionId>,
     defs: &[Def<'_>],
@@ -649,13 +704,14 @@ pub fn solve_scc(
     globals: &BTreeMap<DefinitionId, Ty>,
     inferable: &BTreeSet<DefinitionId>,
     mut known_sigs: BTreeMap<DefinitionId, InferredSig>,
+    manifest: Option<&HostManifest>,
 ) -> (
     BTreeMap<DefinitionId, InferredSig>,
     BTreeMap<DefinitionId, BodyTypes>,
 ) {
     let by_file = index_resolutions_by_file(resolutions);
     let by_id: BTreeMap<DefinitionId, &Def<'_>> = defs.iter().map(|d| (d.id, d)).collect();
-    let ctx = ProjectCtx::new(index, globals, &by_file, inferable);
+    let ctx = ProjectCtx::new(index, globals, &by_file, inferable, manifest);
 
     let bodies = solve_one_batch(batch, &by_id, &ctx, &mut known_sigs);
     let signatures: BTreeMap<DefinitionId, InferredSig> = batch
@@ -695,7 +751,7 @@ mod tests {
     fn param_type_inferred_from_arithmetic_use() {
         // A knot whose param is used arithmetically against an int literal.
         let (hir, index, res) = build("=== heal(hp) ===\n~ temp x = hp + 1\n-> DONE\n");
-        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None);
         let sig = sig_of(&result, &index, "heal");
         assert_eq!(sig.params, vec![Ty::Int]);
     }
@@ -703,7 +759,7 @@ mod tests {
     #[test]
     fn param_type_inferred_from_comparison_with_float_literal() {
         let (hir, index, res) = build("=== spend(gold) ===\n{gold > 1.5:\n  ok\n}\n-> DONE\n");
-        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None);
         let sig = sig_of(&result, &index, "spend");
         assert_eq!(sig.params, vec![Ty::Float]);
     }
@@ -718,7 +774,7 @@ mod tests {
         // this def never made it into `defs` — no signature, no body types,
         // total silent skip.
         let (hir, index, res) = build("= heal(hp)\n~ temp x = hp + 1\n-> DONE\n");
-        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None);
         let sig = sig_of(&result, &index, "heal");
         assert_eq!(sig.params, vec![Ty::Int]);
     }
@@ -734,7 +790,7 @@ mod tests {
              === knot_a(gold) ===\n{gold > 1.5:\n  ok\n}\n-> stitch_a ->\n\
              = stitch_a(silver)\n~ temp y = silver + 1\n-> DONE\n",
         );
-        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None);
         assert_eq!(sig_of(&result, &index, "intro").params, vec![Ty::Int]);
         assert_eq!(sig_of(&result, &index, "knot_a").params, vec![Ty::Float]);
         let stitch_a_id = index
@@ -753,7 +809,7 @@ mod tests {
     #[test]
     fn unused_param_is_unknown_and_legal() {
         let (hir, index, res) = build("=== noop(x) ===\nHello.\n-> DONE\n");
-        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None);
         let sig = sig_of(&result, &index, "noop");
         assert_eq!(sig.params, vec![Ty::Unknown]);
     }
@@ -761,7 +817,7 @@ mod tests {
     #[test]
     fn return_type_inferred_from_return_statement() {
         let (hir, index, res) = build("=== function double(x) ===\n~ return x + x\n");
-        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None);
         let sig = sig_of(&result, &index, "double");
         // `x` only ever appears added to itself — Unknown stays Unknown
         // under `unify(Unknown, Unknown) == Unknown`; the *return type*
@@ -774,7 +830,7 @@ mod tests {
         let (hir, index, res) = build(
             "=== main ===\n~ temp v = 1\n~ use_it(v)\n-> DONE\n=== use_it(n) ===\n{n > 2.5:\n  big\n}\n-> DONE\n",
         );
-        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None);
         let use_it = sig_of(&result, &index, "use_it");
         assert_eq!(use_it.params, vec![Ty::Float]);
         // `main`'s own local `v` isn't a param, so we check it via `bodies`.
@@ -804,7 +860,7 @@ mod tests {
             "=== function ping(n) ===\n{n > 0:\n  ~ return pong(n - 1)\n}\n~ return n\n\
              === function pong(n) ===\n{n > 0.5:\n  ~ return ping(n - 1)\n}\n~ return n\n",
         );
-        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None);
         let ping_sig = sig_of(&result, &index, "ping");
         let pong_sig = sig_of(&result, &index, "pong");
         assert_eq!(
@@ -835,7 +891,7 @@ mod tests {
             "=== function ping(n) ===\n{n == 0:\n  ~ return 0.0\n}\n~ return pong(n - 1)\n\
              === function pong(n) ===\n~ return ping(n)\n",
         );
-        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None);
         let ping_sig = sig_of(&result, &index, "ping");
         let pong_sig = sig_of(&result, &index, "pong");
         assert_eq!(ping_sig.return_ty, Ty::Float);
@@ -846,7 +902,7 @@ mod tests {
     fn intrinsic_len_types_int() {
         let (hir, index, res) =
             build("=== main ===\n~ temp arr = #[1, 2, 3]\n~ temp n = len(arr)\n-> DONE\n");
-        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None);
         let main_id = index
             .by_name
             .get("main")
@@ -863,8 +919,8 @@ mod tests {
         let src = "=== function fib(n) ===\n{n < 2.0:\n  ~ return n\n}\n~ return fib(n - 1) + fib(n - 2)\n";
         let (hir_a, index_a, res_a) = build(src);
         let (hir_b, index_b, res_b) = build(src);
-        let a = infer_project(&[(FileId(0), &hir_a)], &index_a, &res_a);
-        let b = infer_project(&[(FileId(0), &hir_b)], &index_b, &res_b);
+        let a = infer_project(&[(FileId(0), &hir_a)], &index_a, &res_a, None);
+        let b = infer_project(&[(FileId(0), &hir_b)], &index_b, &res_b, None);
         assert_eq!(a, b, "same input must infer identical types every run");
     }
 
@@ -878,7 +934,7 @@ mod tests {
         let (hir, index, res) = build(
             "=== conflict_case(hp) ===\n{hp > 5:\n  ok\n}\n{hp == \"no\":\n  no\n}\n-> DONE\n",
         );
-        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None);
         let sig = sig_of(&result, &index, "conflict_case");
         assert_eq!(sig.params, vec![Ty::Conflicted]);
     }
@@ -899,11 +955,11 @@ mod tests {
             "=== conflict_rev(hp) ===\n{hp == \"no\":\n  no\n}\n{hp > 5:\n  ok\n}\n-> DONE\n";
 
         let (hir_f, index_f, res_f) = build(forward);
-        let result_f = infer_project(&[(FileId(0), &hir_f)], &index_f, &res_f);
+        let result_f = infer_project(&[(FileId(0), &hir_f)], &index_f, &res_f, None);
         let sig_f = sig_of(&result_f, &index_f, "conflict_fwd");
 
         let (hir_r, index_r, res_r) = build(reversed);
-        let result_r = infer_project(&[(FileId(0), &hir_r)], &index_r, &res_r);
+        let result_r = infer_project(&[(FileId(0), &hir_r)], &index_r, &res_r, None);
         let sig_r = sig_of(&result_r, &index_r, "conflict_rev");
 
         assert_eq!(sig_f.params, vec![Ty::Conflicted], "int-then-string order");
@@ -935,7 +991,7 @@ mod tests {
             "=== function ping(n) ===\n{n == 0:\n  ~ return \"done\"\n}\n~ return pong(n - 1)\n\
              === function pong(n) ===\n{n == 0:\n  ~ return 1\n}\n~ return ping(n - 1)\n",
         );
-        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None);
         let ping_sig = sig_of(&result, &index, "ping");
         let pong_sig = sig_of(&result, &index, "pong");
         assert_eq!(ping_sig.return_ty, Ty::Conflicted);
@@ -954,7 +1010,7 @@ mod tests {
              VAR player_hp = 10\n\
              === main ===\n~ temp heal_player = #fn(heal, player_hp)\n-> DONE\n",
         );
-        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None);
         let main_id = index
             .by_name
             .get("main")
@@ -975,7 +1031,7 @@ mod tests {
             "=== function double(x) ===\n~ return x * 2\n\
              === main ===\n~ temp f = #fn(double)\n-> DONE\n",
         );
-        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None);
         let main_id = index
             .by_name
             .get("main")
@@ -992,7 +1048,7 @@ mod tests {
     #[test]
     fn fn_literal_with_unresolvable_target_stays_unknown() {
         let (hir, index, res) = build("=== main ===\n~ temp f = #fn(nowhere)\n-> DONE\n");
-        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None);
         let main_id = index
             .by_name
             .get("main")
@@ -1009,7 +1065,7 @@ mod tests {
     #[test]
     fn annotated_but_unconstrained_param_overlays_to_the_annotation_type() {
         let (hir, index, res) = build("=== noop(x: int) ===\nHello.\n-> DONE\n");
-        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None);
         let sig = sig_of(&result, &index, "noop");
         assert_eq!(sig.params, vec![Ty::Int]);
     }
@@ -1020,7 +1076,7 @@ mod tests {
     #[test]
     fn overlay_never_replaces_a_concrete_body_derivation() {
         let (hir, index, res) = build("=== heal(hp: string) ===\n{hp > 1:\n  ok\n}\n-> DONE\n");
-        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None);
         let sig = sig_of(&result, &index, "heal");
         assert_eq!(sig.params, vec![Ty::Int], "body derivation wins");
     }
@@ -1030,7 +1086,7 @@ mod tests {
         // `return hp` types Unknown from the body alone (nothing pins hp
         // before the return); the `): int` annotation overlays it.
         let (hir, index, res) = build("=== function passthru(hp): int ===\n~ return hp\n");
-        let result = infer_project(&[(FileId(0), &hir)], &index, &res);
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None);
         let sig = sig_of(&result, &index, "passthru");
         assert_eq!(sig.return_ty, Ty::Int);
     }
@@ -1057,13 +1113,13 @@ mod tests {
             .expect("use_it");
 
         let inferable = inferable_defs_from_index(&index);
-        let edges = call_edges(main_id, &files, &index, &res, &inferable);
+        let edges = call_edges(main_id, &files, &index, &res, &inferable, None);
         assert_eq!(
             edges,
             BTreeSet::from([use_it_id]),
             "main's only call edge is to use_it"
         );
-        let leaf_edges = call_edges(use_it_id, &files, &index, &res, &inferable);
+        let leaf_edges = call_edges(use_it_id, &files, &index, &res, &inferable, None);
         assert!(leaf_edges.is_empty(), "use_it calls nothing");
     }
 
@@ -1073,7 +1129,7 @@ mod tests {
         let files = [(FileId(0), &hir)];
         let bogus = DefinitionId::new(brink_format::DefinitionTag::Address, 0xDEAD_BEEF);
         let inferable = inferable_defs_from_index(&index);
-        assert!(call_edges(bogus, &files, &index, &res, &inferable).is_empty());
+        assert!(call_edges(bogus, &files, &index, &res, &inferable, None).is_empty());
     }
 
     // ─── Lazy per-reference globals (FG-2.1, issue #638) ───────────────
@@ -1128,7 +1184,7 @@ mod tests {
             .copied()
             .expect("max_gold");
 
-        let global_refs = referenced_globals(spend_id, &files, &index, &res);
+        let global_refs = referenced_globals(spend_id, &files, &index, &res, None);
         assert_eq!(
             global_refs,
             BTreeSet::from([gold_id, max_gold_id]),
@@ -1146,7 +1202,7 @@ mod tests {
             .and_then(|ids| ids.first())
             .copied()
             .expect("main");
-        assert!(referenced_globals(main_id, &files, &index, &res).is_empty());
+        assert!(referenced_globals(main_id, &files, &index, &res, None).is_empty());
     }
 
     #[test]
@@ -1186,7 +1242,7 @@ mod tests {
         let (hir, index, res) = build(src);
         let files = [(FileId(0), &hir)];
 
-        let monolithic = infer_project(&files, &index, &res);
+        let monolithic = infer_project(&files, &index, &res, None);
 
         // Compose: call_edges per def -> merged CallGraph -> scc_graph ->
         // solve_scc per component, threading known_sigs in dependency order
@@ -1199,7 +1255,7 @@ mod tests {
         let mut graph = CallGraph::new();
         for &def in &defs {
             graph.add_node(def);
-            for callee in call_edges(def, &files, &index, &res, &defs) {
+            for callee in call_edges(def, &files, &index, &res, &defs, None) {
                 graph.add_edge(def, callee);
             }
         }
@@ -1231,11 +1287,11 @@ mod tests {
             // collect_globals's whole-project scan.
             let mut global_ids: BTreeSet<DefinitionId> = BTreeSet::new();
             for &id in batch {
-                global_ids.extend(referenced_globals(id, &files, &index, &res));
+                global_ids.extend(referenced_globals(id, &files, &index, &res, None));
             }
             let mut globals: BTreeMap<DefinitionId, Ty> = BTreeMap::new();
             for gid in global_ids {
-                if let Some(sig) = crate::signature::signature(gid, &index, &files)
+                if let Some(sig) = crate::signature::signature(gid, &index, &files, None)
                     && let Some(vt) = sig.value_type
                 {
                     globals.insert(gid, Ty::from(vt));
@@ -1250,6 +1306,7 @@ mod tests {
                 &globals,
                 &defs,
                 known_sigs.clone(),
+                None,
             );
             known_sigs.extend(sigs.iter().map(|(k, v)| (*k, v.clone())));
             signatures.extend(sigs);

@@ -247,7 +247,7 @@ fn signature_matches_direct_analyzer_call() {
         ) {
             continue;
         }
-        let expected = brink_analyzer::signature(*def, &index, &hir_refs);
+        let expected = brink_analyzer::signature(*def, &index, &hir_refs, None);
         let got = db.signature(*def);
         assert_eq!(got, expected, "signature mismatch for {def:?}");
         checked += 1;

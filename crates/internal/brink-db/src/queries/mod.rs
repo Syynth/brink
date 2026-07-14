@@ -390,6 +390,14 @@ pub(crate) struct DefKey<'db> {
 /// down to the one matching `SourceFile` before calling `lowered_query`
 /// means the only per-file dependency recorded is the declaring file's own —
 /// a body edit elsewhere in the project no longer invalidates this memo.
+///
+/// **Manifest dependency (T1d-2b, issue #774, docs/t1d-spec.md §3).** Also
+/// reads `project.analysis_options(db).host_manifest` so `handle<K>`
+/// annotations resolve to `Ty::Handle(K)` here — the registered manifest is
+/// project-wide, host-set config, not derived from any file's edits, so
+/// reading it is the same coarse dependency shape `per_file_diagnostics_query`
+/// already reads `host_manifest` at, not a reintroduction of whole-project
+/// per-file churn.
 #[salsa::tracked]
 pub(crate) fn signature_query<'db>(
     db: &'db dyn salsa::Database,
@@ -405,7 +413,8 @@ pub(crate) fn signature_query<'db>(
         .filter(|f| f.file_id(db) == declaring_file)
         .map(|f| (f.file_id(db), &lowered_query(db, *f).hir))
         .collect();
-    brink_analyzer::signature(def_id, index, &hir_refs)
+    let opts = project.analysis_options(db);
+    brink_analyzer::signature(def_id, index, &hir_refs, opts.host_manifest.as_ref())
 }
 
 // ─── Layer 2/3: type inference (TM-1, advisory-only) ──────────────────
@@ -526,6 +535,14 @@ pub(crate) fn def_body_query<'db>(
 /// exactly the same declaring-file-only dependency edge
 /// [`def_body_query`] uses). Also the per-def global *read set* a future T2
 /// effect row needs — see `brink_analyzer::referenced_globals`'s docs.
+///
+/// Passes `None` for `brink_analyzer::referenced_globals`'s manifest
+/// parameter (T1d-2b, issue #774) deliberately: this pass discards every
+/// computed type (only the referenced-def-id *set* survives), so a
+/// registered manifest can never change its output — reading
+/// `project.analysis_options(db)` here would only add a needless
+/// project-wide invalidation edge to the FG-2.1 narrow per-def dependency
+/// this query exists to keep narrow, for zero behavioral benefit.
 #[salsa::tracked]
 pub(crate) fn referenced_globals_query<'db>(
     db: &'db dyn salsa::Database,
@@ -551,6 +568,7 @@ pub(crate) fn referenced_globals_query<'db>(
         &[(declaring_file, hir)],
         index,
         resolutions,
+        None,
     ))
 }
 
@@ -566,6 +584,12 @@ pub(crate) fn referenced_globals_query<'db>(
 /// project file's — plus the index-sourced [`inferable_defs_query`]. No
 /// globals map at all (pass 1 discards every computed type; see
 /// `brink_analyzer::call_edges`'s docs).
+///
+/// Passes `None` for `brink_analyzer::call_edges`'s manifest parameter
+/// (T1d-2b, issue #774) — same rationale as [`referenced_globals_query`]:
+/// pass 1 discards every computed type, so the manifest can never change
+/// this query's output, and reading `project.analysis_options(db)` here
+/// would only widen this per-def query's dependency edge for no benefit.
 #[salsa::tracked]
 pub(crate) fn call_edges_query<'db>(
     db: &'db dyn salsa::Database,
@@ -593,6 +617,7 @@ pub(crate) fn call_edges_query<'db>(
         index,
         resolutions,
         inferable,
+        None,
     ))
 }
 
@@ -666,6 +691,22 @@ pub(crate) struct SolvedScc {
 /// existing per-declaring-file [`signature_query`] (never a whole-project
 /// globals scan). `inferable`: the same index-sourced
 /// [`inferable_defs_query`] `call_edges_query` uses.
+///
+/// **Manifest dependency (T1d-2b, issue #774, docs/t1d-spec.md §3).** Also
+/// reads `project.analysis_options(db).host_manifest`, threaded to
+/// [`brink_analyzer::solve_scc`] so a `handle<K>` param/return/temp
+/// annotation resolves to `Ty::Handle(K)` during the per-SCC body-uses
+/// solve — the seam that makes strict-mode handle-kind rejection reachable
+/// end-to-end (the #767 acceptance criterion): once two locals of
+/// different declared handle kinds are unified together, the #627 lattice
+/// folds them to `Ty::Conflicted`, and `strict::check`'s pre-existing
+/// `E066` classification reports it — this query is what was missing to
+/// let a genuine `Ty::Handle` ever reach that lattice from body-usage
+/// inference through the salsa-memoized pipeline. Same coarse project-wide
+/// dependency shape [`signature_query`]/`per_file_diagnostics_query`
+/// already read `host_manifest` at — unlike [`call_edges_query`]/
+/// [`referenced_globals_query`] (whose *outputs* the manifest can never
+/// change), this query's output genuinely depends on it.
 #[salsa::tracked]
 pub(crate) fn solve_scc_query<'db>(
     db: &'db dyn salsa::Database,
@@ -746,6 +787,7 @@ pub(crate) fn solve_scc_query<'db>(
         }
     }
 
+    let opts = project.analysis_options(db);
     let (signatures, bodies) = brink_analyzer::solve_scc(
         batch,
         &defs,
@@ -754,6 +796,7 @@ pub(crate) fn solve_scc_query<'db>(
         &globals,
         inferable,
         known_sigs,
+        opts.host_manifest.as_ref(),
     );
     Arc::new(SolvedScc { signatures, bodies })
 }
