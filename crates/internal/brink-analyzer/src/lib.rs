@@ -12,6 +12,7 @@ mod external_check;
 mod fn_values;
 mod infer;
 mod manifest;
+mod modules;
 mod resolve;
 mod signature;
 mod strict;
@@ -267,6 +268,12 @@ pub fn whole_project_diagnostics(
     let hir_inputs: Vec<(FileId, &HirFile)> = files.iter().map(|&(id, hir, _)| (id, hir)).collect();
 
     let mut diagnostics = Vec::new();
+
+    // M-2 (docs/modules-spec.md §2/§4/§7): import well-formedness + cross-
+    // module `#@private` reference enforcement. Purely additive — every
+    // trigger needs an `IMPORT`/`#@private`/`#@public` construct absent from
+    // the pre-modules world, so the oracle/tier1 corpus is untouched.
+    diagnostics.extend(modules::check(&hir_inputs, index, resolutions));
 
     // TM-3 strict typed-mode policy (docs/typed-mode-spec.md §1/§9-step-3).
     // `types = strict` requires `dialect = brink` — a config error (`E064`)

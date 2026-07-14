@@ -470,6 +470,8 @@ mod tests {
             externals: Vec::new(),
             includes: Vec::new(),
             module: None,
+            imports: Vec::new(),
+            visibility: Vec::new(),
         }
     }
 

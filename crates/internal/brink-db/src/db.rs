@@ -983,4 +983,167 @@ mod module_tests {
             "expected E085 stem collision, got {codes:?}"
         );
     }
+
+    /// End-to-end reachability for M-2 cross-module visibility (§4/§7): a
+    /// `#@private` knot in declared module `quest`, diverted to from a
+    /// different declared module `town`, surfaces `E087` through the same
+    /// production diagnostics path the compiler/studio read.
+    #[test]
+    fn private_cross_module_reference_is_e087_through_db() {
+        let mut db = ProjectDb::new();
+        db.set_file(
+            "quest.ink",
+            "#@module(quest)\n== ambush ==\n#@private\nGotcha!\n-> DONE\n".to_owned(),
+        );
+        let town = db.set_file(
+            "town.ink",
+            "#@module(town)\n== square ==\nHi\n-> ambush\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(town)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E087),
+            "expected E087 private-cross-module reference, got {codes:?}"
+        );
+    }
+
+    /// An explicitly `#@public` knot in another declared module, diverted to
+    /// from outside, does not trip the private-reference check (E087 is
+    /// visibility-keyed). (A declared module defaults private, §4, so the
+    /// export must opt in with `#@public`.)
+    #[test]
+    fn public_cross_module_reference_is_not_e087() {
+        let mut db = ProjectDb::new();
+        db.set_file(
+            "quest.ink",
+            "#@module(quest)\n== ambush ==\n#@public\nGotcha!\n-> DONE\n".to_owned(),
+        );
+        let town = db.set_file(
+            "town.ink",
+            "#@module(town)\n== square ==\nHi\n-> ambush\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(town)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            !codes.contains(&DiagnosticCode::E087),
+            "public cross-module reference must not be E087, got {codes:?}"
+        );
+    }
+
+    /// A module importing itself surfaces `E090` through the db.
+    #[test]
+    fn self_import_is_e090_through_db() {
+        let mut db = ProjectDb::new();
+        let f = db.set_file(
+            "quest.ink",
+            "#@module(quest)\nIMPORT quest\n== start ==\nHi\n-> DONE\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(f)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E090),
+            "expected E090 self-import, got {codes:?}"
+        );
+    }
+
+    /// A bare import naming a definition the (declared) module does not
+    /// publicly export surfaces `E088`; a repeated local name surfaces
+    /// `E089`.
+    #[test]
+    fn unresolved_and_duplicate_bare_import_through_db() {
+        let mut db = ProjectDb::new();
+        db.set_file(
+            "quest.ink",
+            "#@module(quest)\n== ambush ==\n#@public\nHi\n-> DONE\n".to_owned(),
+        );
+        // `ambush` twice (duplicate local name) and `nope` (not exported).
+        let town = db.set_file(
+            "town.ink",
+            "#@module(town)\nIMPORT { ambush, ambush, nope } FROM quest\n== square ==\nHi\n-> DONE\n"
+                .to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(town)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E089),
+            "expected E089 duplicate import, got {codes:?}"
+        );
+        assert!(
+            codes.contains(&DiagnosticCode::E088),
+            "expected E088 unresolved import, got {codes:?}"
+        );
+    }
+
+    /// A file that belongs to a declared module but declares no top-level
+    /// symbols of its own (only root content) must still resolve to that
+    /// module — a referrer in the *same* declared module referencing a
+    /// `#@private` sibling def must not be wrongly flagged `E087` just
+    /// because the referrer's own module couldn't be derived from its
+    /// (nonexistent) symbols.
+    #[test]
+    fn symbol_less_file_in_same_module_is_not_e087() {
+        let mut db = ProjectDb::new();
+        db.set_file(
+            "a.ink",
+            "#@module(town)\n== square ==\n#@private\nGotcha!\n-> DONE\n".to_owned(),
+        );
+        // `b.ink` declares the same module but has only root content — no
+        // knot/VAR/CONST/LIST/STRUCT of its own.
+        let b = db.set_file("b.ink", "#@module(town)\n-> square\n".to_owned());
+
+        let codes: Vec<_> = db
+            .diagnostics(b)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            !codes.contains(&DiagnosticCode::E087),
+            "same-module reference from a symbol-less file must not be E087, got {codes:?}"
+        );
+    }
+
+    /// A symbol-less file (only root content) that imports its own declared
+    /// module must still trip `E090` self-import — the same derivation gap
+    /// that caused the `E087` false positive above also caused this false
+    /// negative (the referrer's own module resolved to `None`).
+    #[test]
+    fn symbol_less_file_self_import_is_e090() {
+        let mut db = ProjectDb::new();
+        let f = db.set_file(
+            "quest.ink",
+            "#@module(quest)\nIMPORT quest\n-> DONE\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(f)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E090),
+            "expected E090 self-import from a symbol-less file, got {codes:?}"
+        );
+    }
 }

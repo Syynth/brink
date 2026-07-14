@@ -388,6 +388,8 @@ mod tests {
             detail: Some("function".to_owned()),
             scope: None,
             param_detail: None,
+            module: None,
+            visibility: brink_ir::Visibility::Public,
         };
         let plain_knot = brink_ir::SymbolInfo {
             detail: None,

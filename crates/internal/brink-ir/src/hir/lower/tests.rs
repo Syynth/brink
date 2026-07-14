@@ -824,3 +824,70 @@ fn unknown_file_level_directive_still_errors_e045() {
         "expected E045, got {diags:?}"
     );
 }
+
+// ─── M-2 imports + visibility (docs/modules-spec.md §2/§4) ───────────
+
+#[test]
+fn import_qualified_form_extracted() {
+    let (hir, diags) = lower_hir("IMPORT quest_3\nHi\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.imports.len(), 1);
+    assert_eq!(hir.imports[0].module, "quest_3");
+    assert!(!hir.imports[0].bare);
+    assert!(hir.imports[0].items.is_empty());
+}
+
+#[test]
+fn import_bare_list_with_alias_extracted() {
+    let (hir, diags) = lower_hir("IMPORT { ambush, guard_talk AS gt } FROM quest_3\nHi\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.imports.len(), 1);
+    let imp = &hir.imports[0];
+    assert_eq!(imp.module, "quest_3");
+    assert!(imp.bare);
+    assert_eq!(imp.items.len(), 2);
+    assert_eq!(imp.items[0].name, "ambush");
+    assert_eq!(imp.items[0].alias, None);
+    assert_eq!(imp.items[0].local_name(), "ambush");
+    assert_eq!(imp.items[1].name, "guard_talk");
+    assert_eq!(imp.items[1].alias.as_deref(), Some("gt"));
+    assert_eq!(imp.items[1].local_name(), "gt");
+}
+
+#[test]
+fn private_directive_marks_var_visibility() {
+    let (manifest, diags) = lower_full("#@private\nVAR secret = 0\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(
+        manifest.variables[0].visibility,
+        Some(crate::VisibilityMark::Private)
+    );
+}
+
+#[test]
+fn public_directive_marks_knot_visibility() {
+    let (manifest, diags) = lower_full("== guard ==\n#@public\nHalt!\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(
+        manifest.knots[0].visibility,
+        Some(crate::VisibilityMark::Public)
+    );
+}
+
+#[test]
+fn visibility_directives_collected_for_gate() {
+    let (hir, _diags) = lower_hir("#@private\nVAR secret = 0\n");
+    assert_eq!(hir.visibility.len(), 1);
+    assert_eq!(hir.visibility[0].mark, crate::VisibilityMark::Private);
+    // Erasure: the directive never becomes a content tag.
+    assert!(all_content_tags(&hir).is_empty());
+}
+
+#[test]
+fn conflicting_visibility_directives_is_e093() {
+    let (_manifest, diags) = lower_full("#@private\n#@public\nVAR x = 0\n");
+    assert!(
+        codes(&diags).contains(&DiagnosticCode::E093),
+        "expected E093, got {diags:?}"
+    );
+}

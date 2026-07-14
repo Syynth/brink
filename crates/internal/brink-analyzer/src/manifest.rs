@@ -5,8 +5,27 @@ use std::hash::{Hash, Hasher};
 use brink_format::{DefinitionId, DefinitionTag};
 use brink_ir::{
     Diagnostic, DiagnosticCode, FileId, LocalSymbol, Scope, SymbolIndex, SymbolInfo, SymbolKind,
-    SymbolManifest,
+    SymbolManifest, Visibility, VisibilityMark,
 };
+
+/// Apply declaration-flips-default (modules-spec §4) to an explicit
+/// `#@private`/`#@public` override, returning the effective [`Visibility`]
+/// and whether the override was *redundant* (restated the module default).
+///
+/// A declared module (`declared == true`) defaults private; an undeclared
+/// stem-module defaults public.
+fn effective_visibility(declared: bool, mark: Option<VisibilityMark>) -> (Visibility, bool) {
+    let default = if declared {
+        Visibility::Private
+    } else {
+        Visibility::Public
+    };
+    match mark {
+        None => (default, false),
+        Some(VisibilityMark::Private) => (Visibility::Private, default == Visibility::Private),
+        Some(VisibilityMark::Public) => (Visibility::Public, default == Visibility::Public),
+    }
+}
 
 /// A file's resolved module (M-1, docs/modules-spec.md §1/§5).
 ///
@@ -130,6 +149,21 @@ fn insert_symbol(
     let hash = hash_qualified_name(module, &sym.name, tag);
     let id = DefinitionId::new(tag, hash);
 
+    // Effective visibility (declaration-flips-default, modules-spec §4): a
+    // *declared* module (`module.is_some()`) defaults private; an undeclared
+    // stem-module defaults public. A `#@private`/`#@public` override flips
+    // that; restating the default is a redundant-override warning (`E092`).
+    let declared = module.is_some();
+    let (visibility, redundant) = effective_visibility(declared, sym.visibility);
+    if redundant {
+        diagnostics.push(Diagnostic {
+            file,
+            range: sym.range,
+            message: format!("{}: `{}`", DiagnosticCode::E092.title(), sym.name),
+            code: DiagnosticCode::E092,
+        });
+    }
+
     index.symbols.insert(
         id,
         SymbolInfo {
@@ -142,6 +176,8 @@ fn insert_symbol(
             detail: sym.detail.clone(),
             scope: None,
             param_detail: None,
+            module: module.map(str::to_string),
+            visibility,
         },
     );
     index.by_name.entry(sym.name.clone()).or_default().push(id);
@@ -186,6 +222,9 @@ fn insert_local(index: &mut SymbolIndex, file: FileId, local: &LocalSymbol) {
             detail: None,
             scope: Some(local.scope.clone()),
             param_detail: local.param_detail.clone(),
+            // Locals are never module-qualified and always module-internal.
+            module: None,
+            visibility: Visibility::Private,
         },
     );
     index
@@ -267,6 +306,7 @@ mod tests {
             range: range(offset, name.len() as u32),
             params: Vec::new(),
             detail: None,
+            visibility: None,
         }
     }
 
