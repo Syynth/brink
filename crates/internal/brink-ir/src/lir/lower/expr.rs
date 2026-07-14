@@ -828,8 +828,11 @@ fn lower_t1b_stdlib_call(
         // args are appended to its bound-arg row (consuming the head of its
         // remaining param row) and a new function value is returned. Lowers
         // to `BindValue(argc)`; over-binding and a non-function callee are
-        // runtime faults at the op (the checker catches them statically under
-        // `types = strict` per §4).
+        // runtime faults at the op. Strict-mode static checking of this
+        // explicit intrinsic form is not yet wired (it does not route through
+        // the `Ty::Fn` value-call machinery like `#fn(...)` sites do), so the
+        // runtime fault is the only backstop here today, same as `call`
+        // (see `resolve.rs::is_t1b_stdlib_name`).
         "bind" => {
             if args.is_empty() {
                 ctx.diagnostics.push(crate::Diagnostic {
