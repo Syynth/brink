@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -7,116 +8,104 @@ use brink_ir::{
     SymbolManifest,
 };
 
+/// A file's resolved module (M-1, docs/modules-spec.md §1/§5).
+///
+/// Computed upstream (in `brink-db`, where file stems, `#@module`
+/// declarations, and the INCLUDE graph are all known) and threaded into
+/// the symbol index so `DefinitionId` hashing can qualify names by
+/// module. Only a **declared** module (`#@module(name)` present) qualifies
+/// identity; an undeclared stem-module contributes nothing to the hash, so
+/// the entire pre-modules corpus keeps byte-identical `DefinitionId`s.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedModule {
+    /// The module's name (stem for undeclared, `#@module` argument for
+    /// declared).
+    pub name: String,
+    /// `true` when the file (or its INCLUDE head) carries `#@module`.
+    pub declared: bool,
+}
+
+/// Map from file to its resolved module. Absent entries (and undeclared
+/// modules) hash by bare name — byte-identical to the pre-modules scheme.
+pub type ModuleMap = BTreeMap<FileId, ResolvedModule>;
+
 /// Merge per-file symbol manifests into a unified symbol index.
 ///
 /// Returns the index and any diagnostics (e.g. duplicate definitions).
+/// Names hash by bare name (no module qualification) — the pre-modules
+/// behavior. Use [`merge_manifests_with_modules`] to qualify identity by
+/// declared module.
 pub fn merge_manifests(files: &[(FileId, &SymbolManifest)]) -> (SymbolIndex, Vec<Diagnostic>) {
+    merge_manifests_with_modules(files, &ModuleMap::new())
+}
+
+/// Merge per-file symbol manifests, qualifying `DefinitionId`s by each
+/// file's **declared** module (M-1, docs/modules-spec.md §5).
+///
+/// A file whose [`ResolvedModule::declared`] is `true` hashes its symbol
+/// names as `(module, name)`; every other file (undeclared stem-modules,
+/// or files absent from `modules`) hashes by bare name, byte-identically
+/// to [`merge_manifests`]. This is the byte-identity guarantee the whole
+/// pre-modules corpus relies on.
+pub fn merge_manifests_with_modules(
+    files: &[(FileId, &SymbolManifest)],
+    modules: &ModuleMap,
+) -> (SymbolIndex, Vec<Diagnostic>) {
     let mut index = SymbolIndex::default();
     let mut diagnostics = Vec::new();
 
     for &(file_id, manifest) in files {
-        for sym in &manifest.knots {
-            insert_symbol(
-                &mut index,
-                &mut diagnostics,
-                file_id,
-                sym,
-                SymbolKind::Knot,
-                DiagnosticCode::E022,
-            );
-        }
-        for sym in &manifest.stitches {
-            insert_symbol(
-                &mut index,
-                &mut diagnostics,
-                file_id,
-                sym,
-                SymbolKind::Stitch,
-                DiagnosticCode::E022,
-            );
-        }
-        for sym in &manifest.variables {
-            insert_symbol(
-                &mut index,
-                &mut diagnostics,
-                file_id,
-                sym,
-                SymbolKind::Variable,
-                DiagnosticCode::E023,
-            );
-        }
-        for sym in &manifest.constants {
-            insert_symbol(
-                &mut index,
-                &mut diagnostics,
-                file_id,
-                sym,
-                SymbolKind::Constant,
-                DiagnosticCode::E023,
-            );
-        }
-        for sym in &manifest.lists {
-            insert_symbol(
-                &mut index,
-                &mut diagnostics,
-                file_id,
-                sym,
-                SymbolKind::List,
-                DiagnosticCode::E023,
-            );
-        }
-        for sym in &manifest.structs {
-            insert_symbol(
-                &mut index,
-                &mut diagnostics,
-                file_id,
-                sym,
-                SymbolKind::Struct,
-                DiagnosticCode::E023,
-            );
-        }
-        for sym in &manifest.externals {
-            insert_symbol(
-                &mut index,
-                &mut diagnostics,
-                file_id,
-                sym,
-                SymbolKind::External,
-                DiagnosticCode::E023,
-            );
-        }
-        for sym in &manifest.labels {
-            insert_symbol(
-                &mut index,
-                &mut diagnostics,
-                file_id,
-                sym,
-                SymbolKind::Label,
-                DiagnosticCode::E022,
-            );
-        }
-        for sym in &manifest.list_items {
-            insert_symbol(
-                &mut index,
-                &mut diagnostics,
-                file_id,
-                sym,
-                SymbolKind::ListItem,
-                DiagnosticCode::E026,
-            );
-        }
-        for local in &manifest.locals {
-            insert_local(&mut index, file_id, local);
-        }
+        // Only a *declared* module qualifies identity; undeclared
+        // stem-modules (and files absent from `modules`) hash bare.
+        let module = modules
+            .get(&file_id)
+            .filter(|m| m.declared)
+            .map(|m| m.name.as_str());
+        insert_file_symbols(&mut index, &mut diagnostics, file_id, module, manifest);
     }
 
     (index, diagnostics)
+}
+
+/// Insert every symbol declared in one file's manifest, qualifying named
+/// declarations by `module` (M-1). Locals stay unqualified (`LocalVar`,
+/// container-scoped, never serialized).
+fn insert_file_symbols(
+    index: &mut SymbolIndex,
+    diagnostics: &mut Vec<Diagnostic>,
+    file_id: FileId,
+    module: Option<&str>,
+    manifest: &SymbolManifest,
+) {
+    use DiagnosticCode::{E022, E023, E026};
+    use SymbolKind::{Constant, External, Knot, Label, List, ListItem, Stitch, Struct, Variable};
+
+    let groups: [(&[brink_ir::DeclaredSymbol], SymbolKind, DiagnosticCode); 9] = [
+        (&manifest.knots, Knot, E022),
+        (&manifest.stitches, Stitch, E022),
+        (&manifest.variables, Variable, E023),
+        (&manifest.constants, Constant, E023),
+        (&manifest.lists, List, E023),
+        (&manifest.structs, Struct, E023),
+        (&manifest.externals, External, E023),
+        (&manifest.labels, Label, E022),
+        (&manifest.list_items, ListItem, E026),
+    ];
+    for (syms, kind, dup_code) in groups {
+        for sym in syms {
+            insert_symbol(index, diagnostics, file_id, module, sym, kind, dup_code);
+        }
+    }
+    for local in &manifest.locals {
+        insert_local(index, file_id, local);
+    }
 }
 
 fn insert_symbol(
     index: &mut SymbolIndex,
     diagnostics: &mut Vec<Diagnostic>,
     file: FileId,
+    module: Option<&str>,
     sym: &brink_ir::DeclaredSymbol,
     kind: SymbolKind,
     dup_code: DiagnosticCode,
@@ -138,7 +127,7 @@ fn insert_symbol(
     }
 
     let tag = kind.definition_tag();
-    let hash = hash_name(&sym.name, tag);
+    let hash = hash_qualified_name(module, &sym.name, tag);
     let id = DefinitionId::new(tag, hash);
 
     index.symbols.insert(
@@ -206,9 +195,29 @@ fn insert_local(index: &mut SymbolIndex, file: FileId, local: &LocalSymbol) {
         .push(id);
 }
 
+/// Hash a bare (unqualified) symbol name. Equivalent to
+/// `hash_qualified_name(None, name, tag)` — retained for the local-var
+/// path, whose scope-qualified names are never module-qualified in M-1.
 fn hash_name(name: &str, tag: DefinitionTag) -> u64 {
+    hash_qualified_name(None, name, tag)
+}
+
+/// Hash a symbol name, optionally qualified by its **declared** module
+/// (M-1, docs/modules-spec.md §5).
+///
+/// The identity gate: `hash_qualified_name(None, name, tag)` writes the
+/// hasher in the exact order the pre-modules `hash_name` did — `tag` then
+/// `name` — so every undeclared stem-module symbol hashes to a
+/// byte-identical `DefinitionId`. A declared module folds its name in
+/// *before* the symbol name; `str`'s `Hash` impl self-delimits (a `0xff`
+/// sentinel after the bytes), so `(module="ab", name="c")` can never
+/// collide with `(module="a", name="bc")`.
+fn hash_qualified_name(module: Option<&str>, name: &str, tag: DefinitionTag) -> u64 {
     let mut hasher = DefaultHasher::new();
     tag.hash(&mut hasher);
+    if let Some(module) = module {
+        module.hash(&mut hasher);
+    }
     name.hash(&mut hasher);
     hasher.finish()
 }
@@ -246,7 +255,7 @@ mod tests {
     use brink_ir::{DeclaredSymbol, DiagnosticCode, FileId, SymbolManifest};
     use rowan::{TextRange, TextSize};
 
-    use super::merge_manifests;
+    use super::{ModuleMap, ResolvedModule, merge_manifests, merge_manifests_with_modules};
 
     fn range(offset: u32, len: u32) -> TextRange {
         TextRange::new(TextSize::new(offset), TextSize::new(offset + len))
@@ -325,5 +334,121 @@ mod tests {
         let (_index, diags) = merge_manifests(&files);
 
         assert!(diags.is_empty(), "expected no diagnostics: {diags:?}");
+    }
+
+    // ── M-1 identity gate (docs/modules-spec.md §5) ──────────────────
+
+    fn sample_manifest() -> SymbolManifest {
+        let mut m = SymbolManifest::default();
+        m.knots.push(sym("start", 0));
+        m.stitches.push(sym("start.middle", 20));
+        m.variables.push(sym("score", 60));
+        m.lists.push(sym("colors", 90));
+        m.list_items.push(sym("colors.red", 110));
+        m
+    }
+
+    /// THE critical gate: an undeclared stem-module (the entire pre-modules
+    /// corpus) must hash to byte-identical `DefinitionId`s. Proven two ways:
+    /// (1) qualifying with an *undeclared* module is equivalent to no
+    /// qualification, and (2) the merge is bit-for-bit equal to the
+    /// pre-modules `merge_manifests`.
+    #[test]
+    fn undeclared_module_definition_ids_are_byte_identical() {
+        let manifest = sample_manifest();
+        let files = vec![(FileId(0), &manifest)];
+
+        // (1) Baseline — the pre-modules derivation (no module map).
+        let (baseline, _) = merge_manifests(&files);
+
+        // (2) An *undeclared* stem-module entry must not qualify.
+        let mut modules = ModuleMap::new();
+        modules.insert(
+            FileId(0),
+            ResolvedModule {
+                name: "story".to_string(),
+                declared: false,
+            },
+        );
+        let (with_undeclared, _) = merge_manifests_with_modules(&files, &modules);
+
+        // (3) A file absent from the map must also stay bare.
+        let (with_empty, _) = merge_manifests_with_modules(&files, &ModuleMap::new());
+
+        let mut base_ids: Vec<_> = baseline.symbols.keys().map(|id| id.to_raw()).collect();
+        base_ids.sort_unstable();
+        for other in [&with_undeclared, &with_empty] {
+            let mut ids: Vec<_> = other.symbols.keys().map(|id| id.to_raw()).collect();
+            ids.sort_unstable();
+            assert_eq!(
+                ids, base_ids,
+                "undeclared / absent module must produce byte-identical DefinitionIds"
+            );
+        }
+    }
+
+    /// Known-good pinned ids: hardcoded raw `DefinitionId`s for the sample
+    /// symbols under the bare (pre-modules) scheme. If any hashing input or
+    /// order ever changes, these literals break — the tripwire that would
+    /// have caught a silent regeneration of every checked-in `.inkb`.
+    #[test]
+    fn known_good_bare_definition_ids() {
+        let manifest = sample_manifest();
+        let files = vec![(FileId(0), &manifest)];
+        let (index, _) = merge_manifests(&files);
+
+        let id_of = |name: &str| -> u64 {
+            index
+                .by_name
+                .get(name)
+                .and_then(|ids| ids.first())
+                .map(|id| id.to_raw())
+                .expect("symbol present")
+        };
+
+        // These are the raw ids produced by `hash(tag, name)` — the exact
+        // derivation checked-in artifacts and saved games depend on. If any
+        // hashing input or write order regresses, these literals break.
+        assert_eq!(id_of("start"), 0x01e2_25d7_2013_19eb);
+        assert_eq!(id_of("start.middle"), 0x015d_6dc8_e16e_aef6);
+        assert_eq!(id_of("score"), 0x0293_4ea0_c935_6d8d);
+        assert_eq!(id_of("colors"), 0x03ab_176e_5431_d3b4);
+        assert_eq!(id_of("colors.red"), 0x04c5_e205_8cad_67b3);
+    }
+
+    /// A *declared* module qualifies identity — its ids differ from bare.
+    #[test]
+    fn declared_module_changes_definition_ids() {
+        let manifest = sample_manifest();
+        let files = vec![(FileId(0), &manifest)];
+        let (bare, _) = merge_manifests(&files);
+
+        let mut modules = ModuleMap::new();
+        modules.insert(
+            FileId(0),
+            ResolvedModule {
+                name: "quest".to_string(),
+                declared: true,
+            },
+        );
+        let (qualified, _) = merge_manifests_with_modules(&files, &modules);
+
+        let bare_start = bare.by_name.get("start").and_then(|v| v.first()).copied();
+        let q_start = qualified
+            .by_name
+            .get("start")
+            .and_then(|v| v.first())
+            .copied();
+        assert!(bare_start.is_some() && q_start.is_some());
+        assert_ne!(
+            bare_start, q_start,
+            "a declared module must qualify (change) the DefinitionId"
+        );
+        // Same tag byte though — only the hash portion moves.
+        assert_eq!(
+            bare_start.unwrap().tag(),
+            q_start.unwrap().tag(),
+            "qualification changes the hash, not the tag"
+        );
     }
 }

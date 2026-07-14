@@ -209,6 +209,7 @@ fn empty_hir() -> HirFile {
         structs: Vec::new(),
         externals: Vec::new(),
         includes: Vec::new(),
+        module: None,
     }
 }
 

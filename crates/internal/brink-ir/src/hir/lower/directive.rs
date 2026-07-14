@@ -192,11 +192,137 @@ pub(super) fn in_leading_body_run(tl: &ast::TagLine) -> bool {
 }
 
 /// Is this directive line in a position that an owner consumes (a
-/// declaration lookback or a knot/stitch leading run)? Used by the
-/// tag-line chokepoint to decide between silent erasure (an owner
-/// reports any problems) and `E045`.
+/// declaration lookback, a knot/stitch leading run, or a file-level
+/// `#@module` at the top of the file)? Used by the tag-line chokepoint
+/// to decide between silent erasure (an owner reports any problems) and
+/// `E045`.
 pub(super) fn is_consumed_position(tl: &ast::TagLine) -> bool {
-    attached_declaration(tl).is_some() || in_leading_body_run(tl)
+    attached_declaration(tl).is_some() || in_leading_body_run(tl) || is_file_module_line(tl)
+}
+
+/// The single directive on a pure-directive line, if the line carries
+/// exactly one.
+fn sole_directive(tl: &ast::TagLine) -> Option<ParsedDirective> {
+    match scan_tag_line(tl) {
+        TagLineClass::Directives(mut dirs) if dirs.len() == 1 => dirs.pop(),
+        _ => None,
+    }
+}
+
+/// Is this tag line a file-level `#@module(…)` directive — a pure
+/// directive line whose single directive is `@module`, sitting in the
+/// leading run at the top of the file (only trivia / tag lines / empty
+/// lines precede it under the `SOURCE_FILE` root)?
+///
+/// This is the one file-level directive placement M-1 recognizes
+/// (docs/modules-spec.md §1); every other file-level directive stays an
+/// `E045` misplacement error, per the reserved-`@`-namespace rule.
+pub(super) fn is_file_module_line(tl: &ast::TagLine) -> bool {
+    let Some(dir) = sole_directive(tl) else {
+        return false;
+    };
+    if dir.name != "module" {
+        return false;
+    }
+    let Some(parent) = tl.syntax().parent() else {
+        return false;
+    };
+    if parent.kind() != SyntaxKind::SOURCE_FILE {
+        return false;
+    }
+    // Nothing but trivia / tag lines / empty lines before it.
+    let mut cursor = tl.syntax().prev_sibling_or_token();
+    while let Some(el) = cursor {
+        match el {
+            rowan::NodeOrToken::Token(tok) => {
+                if !is_trivia(tok.kind()) {
+                    return false;
+                }
+                cursor = tok.prev_sibling_or_token();
+            }
+            rowan::NodeOrToken::Node(node) => {
+                if !matches!(node.kind(), SyntaxKind::TAG_LINE | SyntaxKind::EMPTY_LINE) {
+                    return false;
+                }
+                cursor = node.prev_sibling_or_token();
+            }
+        }
+    }
+    true
+}
+
+/// Extract and validate the file's `#@module(name)` declaration, if any.
+///
+/// Scans direct children of the `SOURCE_FILE` root for file-level
+/// `#@module` directive lines (via [`is_file_module_line`]) and returns
+/// the first valid `(name, range)`. Malformed forms diagnose:
+///
+/// - a dynamic (`#@module({expr})`) argument → `E046`;
+/// - a missing / empty name argument (`#@module`, `#@module()`) → `E086`;
+/// - a second `#@module` anywhere in the file → `E086`.
+///
+/// The name is the balanced text between the parentheses, trimmed. The
+/// brink-dialect gate (`#@module` is a brink extension) is applied later
+/// by the analyzer over the returned range.
+pub(super) fn file_module_declaration(
+    source_file: &SyntaxNode,
+    sink: &mut impl LowerSink,
+) -> Option<(String, TextRange)> {
+    let mut found: Option<(String, TextRange)> = None;
+    for child in source_file.children() {
+        let Some(tl) = ast::TagLine::cast(child) else {
+            continue;
+        };
+        if !is_file_module_line(&tl) {
+            continue;
+        }
+        let Some(dir) = sole_directive(&tl) else {
+            continue;
+        };
+        if dir.dynamic {
+            sink.diagnose(dir.range, DiagnosticCode::E046);
+            continue;
+        }
+        let Some(name) = module_directive_name(&tl) else {
+            sink.diagnose(dir.range, DiagnosticCode::E086);
+            continue;
+        };
+        if found.is_some() {
+            // A second `#@module` in the file — duplicate declaration.
+            sink.diagnose(dir.range, DiagnosticCode::E086);
+            continue;
+        }
+        found = Some((name, dir.range));
+    }
+    found
+}
+
+/// Parse the balanced text argument of a `@module(name)` directive tag,
+/// returning the trimmed name if it is non-empty.
+fn module_directive_name(tl: &ast::TagLine) -> Option<String> {
+    let tags = tl.tags()?;
+    let tag = tags.tags().next()?;
+    // Reconstruct the tag's literal text (tokens after the leading `#`).
+    let mut text = String::new();
+    let mut first = true;
+    for child in tag.syntax().children_with_tokens() {
+        if let rowan::NodeOrToken::Token(tok) = child {
+            if first && tok.kind() == SyntaxKind::HASH {
+                first = false;
+                continue;
+            }
+            first = false;
+            text.push_str(tok.text());
+        } else {
+            first = false;
+        }
+    }
+    let trimmed = text.trim();
+    let rest = trimmed.strip_prefix('@')?;
+    let after_name = rest.trim_start_matches(|c: char| c != '(');
+    let inner = after_name.strip_prefix('(')?.strip_suffix(')')?;
+    let name = inner.trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// Collect the directives from the directive lines immediately

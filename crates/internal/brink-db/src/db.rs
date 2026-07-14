@@ -885,3 +885,102 @@ mod type_inference_tests {
         assert_eq!(body.params[0].1.display(), "int");
     }
 }
+
+#[cfg(test)]
+mod module_tests {
+    //! M-1 modules (docs/modules-spec.md §1/§5): end-to-end reachability of
+    //! module-qualified identity through the same public `ProjectDb`
+    //! symbol-index surface the compiler (and IDE) use — the path that feeds
+    //! codegen and the checked-in `.inkb`.
+    use super::ProjectDb;
+    use brink_ir::DiagnosticCode;
+
+    fn knot_id(db: &ProjectDb, name: &str) -> u64 {
+        db.symbol_index()
+            .by_name
+            .get(name)
+            .and_then(|ids| ids.first())
+            .map(|id| id.to_raw())
+            .expect("knot indexed")
+    }
+
+    #[test]
+    fn undeclared_file_keeps_bare_identity() {
+        // The identity gate, exercised through the real db pipeline: an
+        // undeclared single-file module hashes exactly as a bare-name build.
+        // Byte-exact identity of a knot in an undeclared file is pinned in
+        // the analyzer's `known_good_bare_definition_ids`; here we prove the
+        // db path itself resolves an undeclared file to a *non-qualifying*
+        // module — two undeclared files with different stems hash the knot
+        // identically (the stem never enters the hash).
+        let mut one = ProjectDb::new();
+        one.set_file("story.ink", "== start ==\nHi\n-> DONE\n".to_owned());
+        let mut other = ProjectDb::new();
+        other.set_file("elsewhere.ink", "== start ==\nHi\n-> DONE\n".to_owned());
+        assert_eq!(
+            knot_id(&one, "start"),
+            knot_id(&other, "start"),
+            "two undeclared files (different stems) hash the knot identically"
+        );
+    }
+
+    #[test]
+    fn declared_module_qualifies_identity_through_db() {
+        let mut bare = ProjectDb::new();
+        bare.set_file("story.ink", "== start ==\nHi\n-> DONE\n".to_owned());
+
+        let mut declared = ProjectDb::new();
+        declared.set_file(
+            "story.ink",
+            "#@module(quest)\n== start ==\nHi\n-> DONE\n".to_owned(),
+        );
+
+        assert_ne!(
+            knot_id(&bare, "start"),
+            knot_id(&declared, "start"),
+            "declaring a module must qualify (change) the knot's DefinitionId"
+        );
+    }
+
+    #[test]
+    fn included_file_inherits_module_identity() {
+        // Standalone `part.ink` (undeclared) vs the same file INCLUDE-glued
+        // under a declaring head — the included knot's identity must follow
+        // the head's module.
+        let mut standalone = ProjectDb::new();
+        standalone.set_file("part.ink", "== helper ==\nHi\n-> DONE\n".to_owned());
+
+        let mut glued = ProjectDb::new();
+        glued.set_file(
+            "head.ink",
+            "#@module(quest)\nINCLUDE part.ink\n-> helper\n".to_owned(),
+        );
+        glued.set_file("part.ink", "== helper ==\nHi\n-> DONE\n".to_owned());
+        glued.set_entry("head.ink");
+
+        assert_ne!(
+            knot_id(&standalone, "helper"),
+            knot_id(&glued, "helper"),
+            "an INCLUDE-glued file inherits the includer's declared module"
+        );
+    }
+
+    #[test]
+    fn stem_collision_with_declared_module_is_e085_through_db() {
+        let mut db = ProjectDb::new();
+        // `a.ink` declares module `shared`; `shared.ink` is an undeclared
+        // file whose stem is *also* `shared` — the forbidden footgun.
+        db.set_file("a.ink", "#@module(shared)\n== a_knot ==\nHi\n".to_owned());
+        db.set_file("shared.ink", "== other ==\nHi\n".to_owned());
+
+        let codes: Vec<_> = db
+            .symbol_index_diagnostics()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E085),
+            "expected E085 stem collision, got {codes:?}"
+        );
+    }
+}

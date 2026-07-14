@@ -469,6 +469,7 @@ mod tests {
             structs: Vec::new(),
             externals: Vec::new(),
             includes: Vec::new(),
+            module: None,
         }
     }
 

@@ -758,3 +758,69 @@ fn unannotated_const_lowers_to_none() {
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(hir.constants[0].annotation, None);
 }
+
+// ── M-1 modules: `#@module(name)` directive (docs/modules-spec.md §1) ──
+
+#[test]
+fn file_module_directive_recognized_and_erased() {
+    let (hir, diags) = lower_hir("#@module(quest)\n== start ==\nHi\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let module = hir.module.as_ref().expect("module declared");
+    assert_eq!(module.name, "quest");
+    // Erasure: the directive never becomes a content tag.
+    assert!(
+        all_content_tags(&hir).is_empty(),
+        "the #@module directive must not leak into content tags"
+    );
+}
+
+#[test]
+fn plain_file_has_no_module_declaration() {
+    let (hir, diags) = lower_hir("== start ==\nHi\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.module, None);
+}
+
+#[test]
+fn module_directive_after_leading_comment_still_recognized() {
+    let (hir, diags) = lower_hir("// header\n#@module(quest)\nHi\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.module.map(|m| m.name), Some("quest".to_string()));
+}
+
+#[test]
+fn module_directive_without_name_is_e086() {
+    let (hir, diags) = lower_hir("#@module\nHi\n");
+    assert_eq!(hir.module, None);
+    assert!(
+        codes(&diags).contains(&DiagnosticCode::E086),
+        "expected E086, got {diags:?}"
+    );
+}
+
+#[test]
+fn module_directive_empty_name_is_e086() {
+    let (hir, diags) = lower_hir("#@module()\nHi\n");
+    assert_eq!(hir.module, None);
+    assert!(codes(&diags).contains(&DiagnosticCode::E086));
+}
+
+#[test]
+fn duplicate_module_directive_is_e086() {
+    let (hir, diags) = lower_hir("#@module(quest)\n#@module(other)\nHi\n");
+    // First declaration wins; the second is the duplicate error.
+    assert_eq!(hir.module.map(|m| m.name), Some("quest".to_string()));
+    assert!(codes(&diags).contains(&DiagnosticCode::E086));
+}
+
+#[test]
+fn unknown_file_level_directive_still_errors_e045() {
+    // Only `#@module` is a valid file-level directive; anything else at
+    // file scope stays an E045 misplacement (reserved-@-namespace rule).
+    let (hir, diags) = lower_hir("#@bogus\nHi\n");
+    assert_eq!(hir.module, None);
+    assert!(
+        codes(&diags).contains(&DiagnosticCode::E045),
+        "expected E045, got {diags:?}"
+    );
+}
