@@ -1,8 +1,9 @@
 # Effects & ECS scheduling — the T2 round
 
-Status: **foundations RULED** (sitting 1, 2026-07-13 — see the
-decision-log entry of the same date); the author-facing surface
-cluster (§10) stays OPEN for sitting 2. Prereqs: value-model spec
+Status: **language surface fully RULED** (sitting 1, 2026-07-13:
+foundations; sitting 2, 2026-07-14: author-facing surface — see the
+decision-log entries of those dates). Remaining OPEN items are
+host-side only (§10 tail). Prereqs: value-model spec
 (ratified), typed-mode spec (shipped), T1c spec (ratified; T1c-2+ in
 flight). Implementation waits for the fine-grained salsa substrate
 (#623 ruling: per-def effect rows must not ship on coarse
@@ -152,19 +153,33 @@ The row table extends **only at load boundaries**, with
 verified-or-vouched entries — this is the invariant that keeps
 scheduling sound as content loads.
 
-## 10. OPEN — sitting 2 (the author-facing surface)
+## 10. The author-facing surface — RULED (sitting 2, 2026-07-14)
 
-1. **Freeze syntax**: `#@effects(reads: gold, writes: alarm, calls:
-   audio)` on entry points vs a compiler-emitted lockfile vs both.
-2. **Drift policy**: declared must equal inferred vs inferred ⊆
-   declared (headroom allowed, error on exceedance only).
-3. **Entry-point definition**: `#@entry`-marked only, every knot, or
-   host-manifest-listed.
-4. **Manifest grammar**: concrete capability-declaration surface
-   (entity-granular capabilities: syntax space reserved, not
-   designed).
-5. **Reactive-sleep API shape** in bevy-brink (component on the flow
-   entity vs host callback registry).
+- **No lockfile.** Inference is deterministic from source — there is
+  no reproducibility problem for a pin artifact to solve. The shipped
+  `.inkb` rows are the frozen record; a checked-in generated row file
+  is rejected as compiler output cosplaying as input.
+- **The only contract is the optional inline assertion**:
+  `#@effects(reads: gold, calls: audio)` declares an upper bound;
+  inference exceeding it is a compile error. `#@effects(pure)` is
+  sugar for the empty row (the tooling-trust case). Nothing else
+  errors or warns — there is no drift policy because there is nothing
+  to drift against. Drift *visibility* is tooling: a `brink ide`
+  effects-diff subcommand (CI-surfaceable as a PR comment) and IDE
+  hover.
+- **Default-public entry set.** Every knot/stitch ships its row — no
+  `#@entry` marker exists (play-from-here already makes any knot a
+  host entry). `#@private` opts out: not an entry point, row stays
+  internal, host lookup fails at load. Its full visibility semantics
+  belong to the **modules round** (the host is "outside every
+  module" — one visibility concept, both axes). #657's effects half
+  is closed by this; its types half stands (manifest-listed
+  host-callable functions require annotations).
+
+**Still OPEN — host-side sitting** (schedule when bevy-brink
+implementation nears): manifest capability grammar (entity-granular
+syntax space reserved), reactive-sleep API shape (component on the
+flow entity vs host callback registry).
 
 ## 11. Invariants and non-goals
 
