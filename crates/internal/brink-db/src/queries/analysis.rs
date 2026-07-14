@@ -86,10 +86,15 @@ pub(crate) fn resolutions_index_query(
 /// checks. Reads only this file's own `lowered_query`/`resolve_query`, plus
 /// the narrow, cutoff-friendly [`resolution_index_query`] projection (for
 /// annotation content checks' declared-`LIST`-name lookup — range-free, so
-/// it doesn't reintroduce whole-project churn). Never another file's HIR: a
-/// body edit in file Y leaves file X's memo fully validated (same
-/// `Arc`/pointer), not re-executed. `Arc`-wrapped for the same pointer-
-/// identity reason as [`ResolvedProject`].
+/// it doesn't reintroduce whole-project churn) and the registered host
+/// manifest (T1d-2, docs/t1d-spec.md §3 — `handle<K>` annotation content
+/// checks' declared-handle-kind lookup). The manifest is project-wide,
+/// host-set config, not derived from any file's edits — reading it here is
+/// the same coarse, range-free dependency shape as `dialect`, already read
+/// two lines below, so it doesn't reintroduce the whole-project churn FG-3
+/// eliminated. Never another file's HIR: a body edit in file Y leaves file
+/// X's memo fully validated (same `Arc`/pointer), not re-executed.
+/// `Arc`-wrapped for the same pointer-identity reason as [`ResolvedProject`].
 #[salsa::tracked]
 pub(crate) fn per_file_diagnostics_query(
     db: &dyn salsa::Database,
@@ -100,13 +105,14 @@ pub(crate) fn per_file_diagnostics_query(
     let hir = &lowered_query(db, file).hir;
     let (file_resolutions, _diags) = resolve_query(db, project, file);
     let index = resolution_index_query(db, project);
-    let dialect = project.analysis_options(db).dialect;
+    let opts = project.analysis_options(db);
     Arc::new(brink_analyzer::per_file_diagnostics(
         file_id,
         hir,
         file_resolutions,
         index,
-        dialect,
+        opts.dialect,
+        opts.host_manifest.as_ref(),
     ))
 }
 

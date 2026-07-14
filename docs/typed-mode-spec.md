@@ -68,7 +68,10 @@ no-return functions (assigning a `void` call is an error in strict
 mode). Type names are lowercase nominals: `int`, `float`, `bool`,
 `string`, `divert`, `list<L>` (nominal per LIST declaration),
 `array<T>`, `map<K, V>`, `fn(T…): R` (function values, for the
-unfrozen T1c), plus declared struct names.
+unfrozen T1c), `handle<K>` (T1d-2, docs/t1d-spec.md §3 — this spec's
+first amendment: `K` names a handle kind declared in the external
+manifest's host semantic-type vocabulary — not an ink-source
+declaration like `LIST`/`STRUCT`), plus declared struct names.
 
 ## 4. Coercion lattice in strict mode — PROPOSED
 
