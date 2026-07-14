@@ -36,6 +36,7 @@ use bevy_ecs::observer::On;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Commands, In, Query, Res, ResMut};
 use bevy_ecs::world::World;
+use bevy_log::warn;
 use brink_format::Value;
 use brink_runtime::{Program, SaveState};
 use serde::Serialize;
@@ -252,7 +253,24 @@ impl<K: HandleKind> ErasedHandleRegistry for RegistryOps<K> {
             .iter()
             .filter_map(|(id, resource)| {
                 let key = reg.implementor.save_key(world, resource)?;
-                let key = serde_json::to_value(&key).ok()?;
+                let key = match serde_json::to_value(&key) {
+                    Ok(key) => key,
+                    Err(err) => {
+                        // Distinct from a deliberate `save_key -> None`
+                        // (chosen ephemerality): this is a real failure to
+                        // serialize a `SaveKey` the implementor *did*
+                        // produce (e.g. a non-finite f32 field — serde_json
+                        // errors on NaN/Inf). Surfacing it here rather than
+                        // silently dropping the token keeps it from being
+                        // laundered into "the kind chose ephemerality" on
+                        // load (dropped-construct-needs-a-diagnostic).
+                        warn!(
+                            "brink: handle kind {:?} id {id} failed to serialize its SaveKey ({err}); omitting from snapshot (will rehydrate as dead_ephemeral)"
+                            , K::KIND
+                        );
+                        return None;
+                    }
+                };
                 Some(HandleSaveEntry { id: *id, key })
             })
             .collect()
@@ -267,8 +285,29 @@ impl<K: HandleKind> ErasedHandleRegistry for RegistryOps<K> {
         let mut outcome = KindRehydrateOutcome::default();
         let by_id: BTreeMap<u64, &serde_json::Value> =
             persisted.iter().map(|e| (e.id, &e.key)).collect();
+        // Reserve id space across every id this kind knows about at load
+        // time — referenced (still named by ink state, even if it turns
+        // out dead-by-resolve or dead-ephemeral below) or persisted
+        // (previously minted, even if not currently referenced). This must
+        // happen unconditionally, before branching on outcome, because
+        // dead/ephemeral tokens remain live in ink state by this module's
+        // own design: their ids are still referenced even though nothing
+        // is rebound under them. `next_id` isn't itself persisted (it's
+        // reconstructed each load), so if we only bumped it on the
+        // `Some(resource)` branch, a later `mint` could reallocate a
+        // still-referenced dead token's id to an unrelated resource —
+        // silently violating token identity (a stale token would start
+        // dereferencing to the wrong resource).
+        let reserve_through = referenced
+            .iter()
+            .copied()
+            .chain(persisted.iter().map(|e| e.id))
+            .max();
         world.resource_scope(
             |world, mut reg: bevy_ecs::change_detection::Mut<HandleRegistry<K>>| {
+                if let Some(max_id) = reserve_through {
+                    reg.next_id = reg.next_id.max(max_id + 1);
+                }
                 for &id in referenced {
                     let Some(key_json) = by_id.get(&id) else {
                         // No persisted entry: dead_ephemeral, handled by the caller
@@ -276,13 +315,25 @@ impl<K: HandleKind> ErasedHandleRegistry for RegistryOps<K> {
                         // `persisted`).
                         continue;
                     };
-                    let resolved = serde_json::from_value::<K::SaveKey>((*key_json).clone())
-                        .ok()
-                        .and_then(|key| reg.implementor.resolve(world, &key));
+                    let resolved = match serde_json::from_value::<K::SaveKey>((*key_json).clone())
+                    {
+                        Ok(key) => reg.implementor.resolve(world, &key),
+                        Err(err) => {
+                            // Schema drift, not a normal "recipe no longer
+                            // resolves" outcome: the persisted JSON doesn't
+                            // even deserialize as this kind's `SaveKey`
+                            // any more. Surface it rather than silently
+                            // folding it into dead_by_resolve.
+                            warn!(
+                                "brink: handle kind {:?} id {id} failed to deserialize its persisted SaveKey ({err}); treating as dead_by_resolve"
+                                , K::KIND
+                            );
+                            None
+                        }
+                    };
                     match resolved {
                         Some(resource) => {
                             reg.live.insert(id, resource);
-                            reg.next_id = reg.next_id.max(id + 1);
                             outcome.rebound.push(id);
                         }
                         None => outcome.dead_by_resolve.push(id),
@@ -1182,6 +1233,124 @@ mod tests {
         assert_eq!(report.dead_ephemeral, vec![("Transient".to_string(), id)]);
         assert!(report.rebound.is_empty());
         assert!(report.dead_by_resolve.is_empty());
+    }
+
+    // ── next_id reservation across dead/ephemeral tokens (review finding) ──
+    //
+    // Dead/ephemeral tokens stay live in ink state by this module's design
+    // (only the registry's right-hand side rebinds; ink state is
+    // untouched). If a later `mint` were free to reallocate such a token's
+    // id, a fresh unrelated resource would silently start answering to the
+    // stale token — a token-identity violation. These prove `next_id` is
+    // reserved past every id `load_handles` saw, regardless of which
+    // outcome bucket that id landed in.
+
+    #[test]
+    fn mint_after_load_does_not_collide_with_dead_by_resolve_token() {
+        let (program, _tables, _ctx) =
+            compile_test_story("VAR npc_ref = 0\nVAR Npc = 0\nHi.\n-> DONE\n");
+        let mut world = World::new();
+        world.insert_resource(HandleKinds::<()>::default());
+        world.insert_resource(AliveNpcs(Set::from(["abc".to_string()])));
+        world.insert_resource(HandleRegistry::<NpcKind>::new(NpcKind));
+        world
+            .resource_mut::<HandleKinds<()>>()
+            .kinds
+            .insert(NpcKind::KIND, Box::new(RegistryOps::<NpcKind>::default()));
+
+        let kind = program.name_id("Npc").expect("interned");
+        // Only token minted so far: id 0.
+        let dead_id = world
+            .resource_mut::<HandleRegistry<NpcKind>>()
+            .mint(NpcState {
+                guid: "abc".to_string(),
+            });
+        assert_eq!(dead_id, 0);
+        let persisted = save_handles::<()>(&world);
+
+        // The NPC is gone by load time: resolve returns None ->
+        // dead_by_resolve. The old registry entry doesn't survive a real
+        // process restart either.
+        world.resource_mut::<AliveNpcs>().0.clear();
+        world
+            .resource_mut::<HandleRegistry<NpcKind>>()
+            .remove(dead_id);
+
+        // Ink global still holds `handle{Npc,0}`.
+        let referenced = referencing("npc_ref", Value::handle(kind, dead_id));
+        let report = load_handles::<()>(
+            &mut world,
+            &program,
+            &referenced,
+            &persisted,
+            RehydrationPolicy::Lenient,
+        )
+        .expect("lenient load never errors");
+        assert_eq!(report.dead_by_resolve, vec![("Npc".to_string(), dead_id)]);
+
+        // A later mint must not reallocate id 0 — the still-referenced
+        // dead token's id — to this unrelated resource.
+        let minted_id = world
+            .resource_mut::<HandleRegistry<NpcKind>>()
+            .mint(NpcState {
+                guid: "def".to_string(),
+            });
+        assert_ne!(
+            minted_id, dead_id,
+            "mint after load must not collide with a dead-by-resolve token's id \
+             still referenced by ink state"
+        );
+    }
+
+    #[test]
+    fn mint_after_load_does_not_collide_with_dead_ephemeral_token() {
+        let (program, _tables, _ctx) =
+            compile_test_story("VAR t_ref = 0\nVAR Transient = 0\nHi.\n-> DONE\n");
+        let mut world = World::new();
+        world.insert_resource(HandleKinds::<()>::default());
+        world.insert_resource(HandleRegistry::<TransientKind>::new(TransientKind));
+        world.resource_mut::<HandleKinds<()>>().kinds.insert(
+            TransientKind::KIND,
+            Box::new(RegistryOps::<TransientKind>::default()),
+        );
+
+        let kind = program.name_id("Transient").expect("interned");
+        // Only token minted so far: id 0. `save_key` always returns None,
+        // so nothing is ever persisted for this kind — this id never even
+        // reaches `by_id`, exercising the `continue` (no persisted entry)
+        // branch of `rebind_selected`.
+        let dead_id = world
+            .resource_mut::<HandleRegistry<TransientKind>>()
+            .mint(());
+        assert_eq!(dead_id, 0);
+        let persisted = save_handles::<()>(&world);
+        assert!(!persisted.entries.contains_key("Transient"));
+
+        // Ink global still holds `handle{Transient,0}`.
+        let referenced = referencing("t_ref", Value::handle(kind, dead_id));
+        let report = load_handles::<()>(
+            &mut world,
+            &program,
+            &referenced,
+            &persisted,
+            RehydrationPolicy::Lenient,
+        )
+        .expect("lenient load never errors");
+        assert_eq!(
+            report.dead_ephemeral,
+            vec![("Transient".to_string(), dead_id)]
+        );
+
+        // A later mint must not reallocate id 0 — the still-referenced
+        // dead-ephemeral token's id.
+        let minted_id = world
+            .resource_mut::<HandleRegistry<TransientKind>>()
+            .mint(());
+        assert_ne!(
+            minted_id, dead_id,
+            "mint after load must not collide with a dead-ephemeral token's id \
+             still referenced by ink state"
+        );
     }
 
     #[test]
