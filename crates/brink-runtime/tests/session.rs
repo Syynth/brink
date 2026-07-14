@@ -137,6 +137,7 @@ fn journal_roundtrips_with_collection_values() {
     journal.checkpoint = Some(SaveState {
         version: brink_format::SAVE_FORMAT_VERSION,
         globals,
+        global_ids: Default::default(),
         visits: vec![],
         turns: vec![],
         turn_index: 3,
@@ -659,6 +660,7 @@ fn mutation_mid_turn_is_rejected() {
     let save = SaveState {
         version: brink_format::SAVE_FORMAT_VERSION,
         globals: Default::default(),
+        global_ids: Default::default(),
         visits: vec![],
         turns: vec![],
         turn_index: 0,

@@ -31,6 +31,21 @@ pub struct SaveState {
     pub version: u16,
     /// Global variables by name. `BTreeMap` for deterministic serialization.
     pub globals: BTreeMap<String, Value>,
+    /// Each saved global's compiled `DefinitionId` at save time, keyed by
+    /// the same name as [`Self::globals`] (M-3 rehydration miss-path lookup,
+    /// `docs/modules-spec.md` §5). A VAR/CONST/LIST living in a **declared**
+    /// module hashes its identity as `(module, name)`, so a bare name alone
+    /// can't reconstruct the id a `#@was` alias-table entry was compiled
+    /// against — this is the "module qualifier" the miss path needs,
+    /// round-tripped as the id itself rather than the module name, so no
+    /// hashing scheme has to be re-derived at load time. Consulted only when
+    /// a saved global's name no longer matches any current global slot;
+    /// absent entries (older saves predating this field) simply fall back
+    /// to the pre-M-3 unknown-global report, same tolerant-of-patches
+    /// behavior as before. `#[serde(default)]` so an older save missing
+    /// this field entirely still deserializes.
+    #[serde(default)]
+    pub global_ids: BTreeMap<String, DefinitionId>,
     /// Visit counts by scope id, sorted by id for deterministic output.
     pub visits: Vec<VisitEntry>,
     /// Turn-since counts by scope id, sorted by id.
@@ -120,6 +135,7 @@ mod tests {
         let save = SaveState {
             version: SAVE_FORMAT_VERSION,
             globals,
+            global_ids: BTreeMap::new(),
             visits: Vec::new(),
             turns: Vec::new(),
             turn_index: 0,

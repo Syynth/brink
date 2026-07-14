@@ -158,6 +158,21 @@ impl Program {
         self.global_map.contains_key(&id)
     }
 
+    /// Whether `id` names a live list item in the current program — the
+    /// list-item half of the M-3 rehydration miss-path check (`docs/modules-spec.md`
+    /// §5), mirroring [`knows_address`](Self::knows_address)/[`knows_global`](Self::knows_global)
+    /// for the ids embedded in a saved `Value::List` (active items).
+    pub(crate) fn knows_list_item(&self, id: DefinitionId) -> bool {
+        self.list_item_map.contains_key(&id)
+    }
+
+    /// Whether `id` names a live list definition in the current program —
+    /// the list-origin half of the M-3 rehydration miss-path check, for the
+    /// ids embedded in a saved `Value::List`'s `origins`.
+    pub(crate) fn knows_list_def(&self, id: DefinitionId) -> bool {
+        self.list_def_map.contains_key(&id)
+    }
+
     /// M-3 rehydration miss-path lookup (`docs/modules-spec.md` §5): given
     /// an `id` the current program doesn't recognize, consult the compiled
     /// `#@was` alias table for its current identity. Callers still need to
@@ -421,6 +436,16 @@ impl Program {
     /// Variable name for a global slot index.
     pub(crate) fn global_slot_name(&self, idx: usize) -> Option<&str> {
         self.globals.get(idx).map(|slot| self.name(slot.name))
+    }
+
+    /// Compiled `DefinitionId` for a global slot index — the identity
+    /// `save_state` round-trips into `SaveState::global_ids` so the M-3
+    /// rehydration miss path (`docs/modules-spec.md` §5) can recover a
+    /// renamed VAR/CONST/LIST global's *save-time* id (declared-module
+    /// identity is `(module, name)`-hashed, so the bare name alone can't
+    /// reconstruct it) and look it up in the compiled alias table.
+    pub(crate) fn global_id(&self, idx: usize) -> Option<DefinitionId> {
+        self.globals.get(idx).map(|slot| slot.id)
     }
 
     /// Variable name for a global's defining `DefinitionId` (e.g. a
