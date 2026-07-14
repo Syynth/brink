@@ -3,7 +3,7 @@
 //!
 //! Runs in the whole-project pass, where every file's `IMPORT` list (HIR)
 //! and the merged symbol index (each [`SymbolInfo`] now carrying its module
-//! and effective visibility, §4) are both available. Two jobs:
+//! and effective visibility, §4) are both available. Four jobs:
 //!
 //! - **Import well-formedness**: self-import (`E090`), a name brought into
 //!   scope twice (`E089`), and a bare `IMPORT { name } FROM mod` naming a
@@ -14,16 +14,32 @@
 //!   `#@private` def in an undeclared file referenced from another file just
 //!   as for a declared module — but never for the pre-modules world, where
 //!   every definition is `Public` (declaration-flips-default, §4).
+//! - **Import-required resolution** (M-2c, §2 — "names cross module
+//!   boundaries only via import"): a reference that resolves to a *public*
+//!   definition in another **declared** module which the referring file did
+//!   not `IMPORT` is `E025` (did-you-mean-`IMPORT` flavor). The restriction
+//!   is keyed on the *target's* module being declared, so it never fires for
+//!   the undeclared legacy soup — a plain multi-file `INCLUDE` project (no
+//!   `#@module`) is one big default-public module and every cross-file bare
+//!   reference keeps resolving byte-identically (§3). Only genuinely
+//!   multi-*declared*-module projects are constrained.
+//! - **Qualified ambiguity** (`E091`, §2): a `IMPORT mod` (qualified) whose
+//!   module name also names a definition visible bare in the same file — so
+//!   `mod.y` could mean either module-qualified access or field/member
+//!   access on the definition. Fixed with an alias; flagged at the import.
 //!
 //! Compat: this pass only ever *adds* diagnostics, and every trigger
-//! requires a `#@private`/`#@public`/`IMPORT` construct that no strict-ink
-//! or existing brink-tier1 story contains — so the oracle and tier1 corpus
-//! see nothing.
+//! requires a `#@module`/`#@private`/`#@public`/`IMPORT` construct that no
+//! strict-ink or existing brink-tier1 story contains — so the oracle and
+//! tier1 corpus see nothing. In particular the `E025` import-required check
+//! keys off a **declared** target module, absent from the entire pre-modules
+//! corpus, so resolution stays byte-identical there.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use brink_ir::{
-    Diagnostic, DiagnosticCode, FileId, HirFile, ResolutionMap, SymbolIndex, SymbolKind, Visibility,
+    Diagnostic, DiagnosticCode, FileId, HirFile, ResolutionMap, SymbolIndex, SymbolInfo,
+    SymbolKind, Visibility,
 };
 
 /// The importable top-level kinds (modules-spec §2): "all top-level public
@@ -81,6 +97,205 @@ fn file_modules_and_exports(
     (file_module, declared_exports)
 }
 
+/// Is the referring file inside the target's module?
+///
+/// For a **declared** target module, "same declared module name"; for an
+/// undeclared stem-module (`None`), "the same file" (each undeclared file is
+/// its own singleton module). Shared by the E087 and E025 cross-module
+/// checks so they agree on the module boundary.
+fn referrer_in_target_module(
+    file_module: &BTreeMap<FileId, Option<String>>,
+    target: &SymbolInfo,
+    ref_file: FileId,
+) -> bool {
+    match &target.module {
+        Some(tmod) => file_module.get(&ref_file).and_then(Option::as_ref) == Some(tmod),
+        None => ref_file == target.file,
+    }
+}
+
+/// Per-file import coverage: the set of modules imported qualified
+/// (`IMPORT mod`) and the set of `(module, source_name)` pairs brought in by
+/// bare imports (`IMPORT { name } FROM mod`). Together these decide whether a
+/// cross-module public reference is licensed (M-2c, §2).
+///
+/// Keyed by [`FileId`]; a file with no imports simply has no entry.
+/// `BTreeMap`/`BTreeSet` throughout — nothing here iterates in a way that
+/// feeds output ordering, but the deterministic containers keep the pass
+/// order-insensitive by construction.
+type ImportCoverage<'a> = (
+    BTreeMap<FileId, BTreeSet<&'a str>>,
+    BTreeMap<FileId, BTreeSet<(&'a str, &'a str)>>,
+);
+
+fn import_coverage<'a>(files: &'a [(FileId, &'a HirFile)]) -> ImportCoverage<'a> {
+    let mut qualified: BTreeMap<FileId, BTreeSet<&str>> = BTreeMap::new();
+    let mut bare: BTreeMap<FileId, BTreeSet<(&str, &str)>> = BTreeMap::new();
+    for &(file_id, hir) in files {
+        for import in &hir.imports {
+            if import.bare {
+                for item in &import.items {
+                    bare.entry(file_id)
+                        .or_default()
+                        .insert((import.module.as_str(), item.name.as_str()));
+                }
+            } else {
+                qualified
+                    .entry(file_id)
+                    .or_default()
+                    .insert(import.module.as_str());
+            }
+        }
+    }
+    (qualified, bare)
+}
+
+/// Does `ref_file` import `name` from declared module `module` — either by
+/// bare-importing that exact name from it, or by importing the module
+/// qualified (which licenses `module.name` access to any of its exports)?
+fn import_covers(
+    qualified: &BTreeMap<FileId, BTreeSet<&str>>,
+    bare: &BTreeMap<FileId, BTreeSet<(&str, &str)>>,
+    ref_file: FileId,
+    module: &str,
+    name: &str,
+) -> bool {
+    if qualified
+        .get(&ref_file)
+        .is_some_and(|mods| mods.contains(module))
+    {
+        return true;
+    }
+    bare.get(&ref_file)
+        .is_some_and(|pairs| pairs.contains(&(module, name)))
+}
+
+/// Is there a definition named `name` visible **bare** in `file_id` — a
+/// top-level symbol in this file's own module? Used to detect the
+/// qualified-import ambiguity (`E091`): a `IMPORT mod` collides when `mod` is
+/// also such a definition.
+///
+/// Deterministic: `by_name` is a direct keyed lookup, and the candidate id
+/// list is scanned membership-only (no order-dependent output).
+fn symbol_visible_bare_in_file(
+    index: &SymbolIndex,
+    file_module: &BTreeMap<FileId, Option<String>>,
+    file_id: FileId,
+    name: &str,
+) -> bool {
+    let Some(ids) = index.by_name.get(name) else {
+        return false;
+    };
+    ids.iter().any(|id| {
+        index.symbols.get(id).is_some_and(|info| {
+            // Bare-visible definitions are ordinary top-level names in the
+            // same module; locals never participate in qualified access.
+            !matches!(info.kind, SymbolKind::Param | SymbolKind::Temp)
+                && referrer_in_target_module(file_module, info, file_id)
+        })
+    })
+}
+
+/// Cross-module reference gating (`E087` private / `E025` import-required).
+///
+/// Every resolved reference whose target lies outside the referrer's module
+/// is gated: a `#@private` target is `E087` unconditionally; a *public*
+/// target in another **declared** module is `E025` unless the referring file
+/// imported it (bare name from that module, or the module qualified). A
+/// same-module reference, or a public target in the undeclared legacy soup
+/// (`module == None`), is always bare-legal and never flagged (§2/§3).
+fn check_cross_module_refs(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+    file_module: &BTreeMap<FileId, Option<String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let (qualified_imports, bare_imports) = import_coverage(files);
+
+    for r in resolutions {
+        let Some(target) = index.symbols.get(&r.target) else {
+            continue;
+        };
+        // Locals are always same-file and module-internal — never a
+        // cross-module concern.
+        if matches!(target.kind, SymbolKind::Param | SymbolKind::Temp) {
+            continue;
+        }
+        // A same-module reference is always bare-legal (§2) — nothing to
+        // enforce.
+        if referrer_in_target_module(file_module, target, r.file) {
+            continue;
+        }
+        match target.visibility {
+            // A `#@private` def referenced from outside its module: E087,
+            // regardless of imports (private never crosses, §4).
+            Visibility::Private => {
+                diagnostics.push(Diagnostic {
+                    file: r.file,
+                    range: r.range,
+                    message: format!("{}: `{}`", DiagnosticCode::E087.title(), target.name),
+                    code: DiagnosticCode::E087,
+                });
+            }
+            // A *public* def in another **declared** module (M-2c, §2): a
+            // reference is legal only if this file imported it. Undeclared
+            // target modules (`None`) are the permeable legacy soup and are
+            // never gated, keeping the pre-modules corpus byte-identical.
+            Visibility::Public => {
+                if let Some(tmod) = &target.module
+                    && !import_covers(
+                        &qualified_imports,
+                        &bare_imports,
+                        r.file,
+                        tmod,
+                        &target.name,
+                    )
+                {
+                    diagnostics.push(Diagnostic {
+                        file: r.file,
+                        range: r.range,
+                        message: format!(
+                            "unresolved cross-module reference `{name}` — add `IMPORT {{ {name} }} FROM {module}` or `IMPORT {module}` (see modules-spec §2)",
+                            name = target.name,
+                            module = tmod,
+                        ),
+                        code: DiagnosticCode::E025,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Qualified module-vs-definition ambiguity (`E091`, §2): a `IMPORT mod`
+/// (qualified) whose module name also names a definition visible bare in the
+/// same file makes `mod.y` ambiguous. Flagged at the import's module token.
+fn check_qualified_ambiguity(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    file_module: &BTreeMap<FileId, Option<String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for &(file_id, hir) in files {
+        for import in &hir.imports {
+            // Only the qualified form (`IMPORT mod`) introduces a module name
+            // into value position where it can collide with a definition.
+            if import.bare {
+                continue;
+            }
+            if symbol_visible_bare_in_file(index, file_module, file_id, &import.module) {
+                diagnostics.push(Diagnostic {
+                    file: file_id,
+                    range: import.module_range,
+                    message: format!("{}: `{}`", DiagnosticCode::E091.title(), import.module),
+                    code: DiagnosticCode::E091,
+                });
+            }
+        }
+    }
+}
+
 /// Run the M-2 import + visibility checks.
 #[must_use]
 pub fn check(
@@ -92,36 +307,8 @@ pub fn check(
 
     let (file_module, declared_exports) = file_modules_and_exports(files, index);
 
-    // ── Cross-module visibility (E087) ──────────────────────────────
-    for r in resolutions {
-        let Some(target) = index.symbols.get(&r.target) else {
-            continue;
-        };
-        // Locals are always same-file and module-internal — never a
-        // cross-module concern.
-        if matches!(target.kind, SymbolKind::Param | SymbolKind::Temp) {
-            continue;
-        }
-        if target.visibility != Visibility::Private {
-            continue;
-        }
-        // Is the referrer inside the target's module? For a declared module,
-        // that is "same declared module name"; for an undeclared
-        // stem-module (`None`), it is "the same file" (each undeclared file
-        // is its own singleton module).
-        let in_module = match &target.module {
-            Some(tmod) => file_module.get(&r.file).and_then(Option::as_ref) == Some(tmod),
-            None => r.file == target.file,
-        };
-        if !in_module {
-            diagnostics.push(Diagnostic {
-                file: r.file,
-                range: r.range,
-                message: format!("{}: `{}`", DiagnosticCode::E087.title(), target.name),
-                code: DiagnosticCode::E087,
-            });
-        }
-    }
+    check_cross_module_refs(files, index, resolutions, &file_module, &mut diagnostics);
+    check_qualified_ambiguity(files, index, &file_module, &mut diagnostics);
 
     // ── Import well-formedness (E088/E089/E090) ─────────────────────
     for &(file_id, hir) in files {
