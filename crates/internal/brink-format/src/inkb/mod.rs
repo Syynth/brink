@@ -291,6 +291,7 @@ mod tests {
         for tag in 0x01u8..=0x0C {
             assert!(SectionKind::from_u8(tag).is_ok());
         }
-        assert!(SectionKind::from_u8(0x0E).is_ok(), "AliasTable (M-3)");
+        assert!(SectionKind::from_u8(0x0E).is_ok(), "Visibility (M-2b)");
+        assert!(SectionKind::from_u8(0x0F).is_ok(), "AliasTable (M-3)");
     }
 }

@@ -70,8 +70,11 @@ fn roundtrip_visibility_section() {
 
 #[test]
 fn visibility_section_omitted_when_empty() {
-    // The all-public common case: no Visibility section, no version bump, so
-    // pre-modules stories stay byte-identical.
+    // The all-public common case: no Visibility section, so an all-public
+    // story's offset table stays at the mandatory `SECTION_COUNT` entries —
+    // Visibility itself needs no version bump. (The whole-file `VERSION` is
+    // 5 regardless, because of the unrelated *mandatory* M-3 `AliasTable`
+    // section — see `roundtrip_alias_table`/`missing_alias_table_section_decodes_empty`.)
     let data = i001_data();
     assert!(data.private_defs.is_empty());
 
@@ -85,7 +88,7 @@ fn visibility_section_omitted_when_empty() {
             .iter()
             .any(|s| s.kind == SectionKind::Visibility)
     );
-    assert_eq!(index.version, 4);
+    assert_eq!(index.version, 5);
 }
 
 // ── v4 collection value encoding (#526) ─────────────────────────────────────
@@ -190,7 +193,7 @@ fn roundtrip_handle_valued_globals() {
 }
 
 /// M-3 `AliasTable` section (`docs/modules-spec.md` §5, format section tag
-/// `0x0E`): write→read identity for the compiled `#@was` alias table —
+/// `0x0F`): write→read identity for the compiled `#@was` alias table —
 /// several entries of mixed `DefinitionTag`s (a knot rename and a global
 /// var rename both produce entries; their tags differ), proving the
 /// section round-trips through the binary format byte-for-byte.
