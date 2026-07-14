@@ -443,7 +443,7 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::TunnelCall(id) => write!(w, "tunnel_call {id}"),
         Opcode::TunnelReturn => write!(w, "tunnel_return"),
         Opcode::TunnelCallVariable => write!(w, "tunnel_call_variable"),
-        Opcode::CallVariable => write!(w, "call_variable"),
+        Opcode::CallVariable(argc) => write!(w, "call_variable argc={argc}"),
 
         // Threads
         Opcode::ThreadCall(id) => write!(w, "thread_call {id}"),
@@ -561,6 +561,7 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
             bound_count,
         } => write!(w, "make_closure {target} bound={bound_count}"),
         Opcode::CallValue(argc) => write!(w, "call_value argc={argc}"),
+        Opcode::BindValue(argc) => write!(w, "bind_value argc={argc}"),
     }
 }
 

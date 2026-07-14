@@ -227,7 +227,7 @@ const CONVERT_STRING: u8 = 0xD5;
 // live emission of the reserved function-value surface (`docs/t1c-spec.md`
 // §11 T1c-2).
 //   0xD6 PushFnRef(DefinitionId)          0xD7 MakeClosure(env descriptor)
-//   0xD8 CallValue(argc)
+//   0xD8 CallValue(argc)                   0xD9 BindValue(argc)
 // `PushFnRef` pushes the zero-bound `Value::FnRef`. `MakeClosure`'s operand is
 // the target `DefinitionId` then a u16-counted descriptor of `{NameId, kind
 // u8 (0=val,1=ref)}` entries — one per bound arg, in declared order — and it
@@ -236,9 +236,18 @@ const CONVERT_STRING: u8 = 0xD5;
 // `argc` supplied (val-only) args below it, dispatching through the function
 // value (`docs/t1c-spec.md` §3): non-function callee / wrong arity /
 // rehydration mismatch / cross-flow ref-`#@local` are turn-terminating faults.
+// `BindValue(argc)` (T1c-3, `bind(f, args…)` stdlib intrinsic) pops the callee
+// (top of stack) then the `argc` supplied (val-only) args below it and returns
+// a *new* function value with those args appended to the callee's bound-arg
+// row (val-only currying — consuming the head of the remaining param row). The
+// newly bound entries take their name/mode from the target's own signature at
+// the appended positions (always `val`, since `ref` params are bound away at
+// creation). Faults (turn-terminating): callee is not a function value;
+// binding more args than the target has remaining params.
 const PUSH_FN_REF: u8 = 0xD6;
 const MAKE_CLOSURE: u8 = 0xD7;
 const CALL_VALUE: u8 = 0xD8;
+const BIND_VALUE: u8 = 0xD9;
 
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
@@ -515,7 +524,16 @@ pub enum Opcode {
     TunnelCall(DefinitionId),
     TunnelReturn,
     TunnelCallVariable,
-    CallVariable,
+    /// Call through a variable holding either a divert target (classic ink
+    /// function-via-variable) or a function value (T1c-2 direct-call form
+    /// `f(args…)`) — both share this dispatch site. `argc` is the exact
+    /// number of args codegen pushed before the callee at this call site
+    /// (never derived from the resolved target's arity at runtime — issue
+    /// #721: doing so made a gradual-mode direct-call arity mismatch leave
+    /// a stray value on the stack instead of faulting). The divert-target
+    /// arm ignores `argc` (unchanged oracle-verified behavior); the
+    /// function-value arm pops exactly `argc` supplied args.
+    CallVariable(u8),
 
     // ── Threads ─────────────────────────────────────────────────────────
     ThreadCall(DefinitionId),
@@ -696,6 +714,16 @@ pub enum Opcode {
     /// entry's name/mode no longer matches the current signature; the callee
     /// `ref`-binds a `#@local` and is invoked from a non-creating flow.
     CallValue(u8),
+    /// `[arg_0, …, arg_{argc-1}, callee]` → new function value. The
+    /// `bind(f, args…)` stdlib intrinsic (T1c-3, `docs/t1c-spec.md` §3):
+    /// pop the callee function value then the `argc` supplied (val-only)
+    /// args, append them to the callee's bound-arg row (val-only currying,
+    /// consuming the head of the remaining param row), and push the new
+    /// function value. The appended entries take their param name/mode from
+    /// the target's signature (always `val`). Faults (turn-terminating):
+    /// callee is not a function value; `bound + argc` exceeds the target's
+    /// declared arity.
+    BindValue(u8),
 
     // ── Lifecycle ───────────────────────────────────────────────────────
     Done,
@@ -847,7 +875,10 @@ impl Opcode {
             }
             Self::TunnelReturn => write_u8(buf, TUNNEL_RETURN),
             Self::TunnelCallVariable => write_u8(buf, TUNNEL_CALL_VARIABLE),
-            Self::CallVariable => write_u8(buf, CALL_VARIABLE),
+            Self::CallVariable(argc) => {
+                write_u8(buf, CALL_VARIABLE);
+                write_u8(buf, argc);
+            }
 
             // Threads
             Self::ThreadCall(id) => {
@@ -1012,6 +1043,10 @@ impl Opcode {
                 write_u8(buf, CALL_VALUE);
                 write_u8(buf, argc);
             }
+            Self::BindValue(argc) => {
+                write_u8(buf, BIND_VALUE);
+                write_u8(buf, argc);
+            }
 
             // Lifecycle
             Self::Done => write_u8(buf, DONE),
@@ -1103,7 +1138,7 @@ impl Opcode {
             TUNNEL_CALL => Self::TunnelCall(read_def_id(buf, offset)?),
             TUNNEL_RETURN => Self::TunnelReturn,
             TUNNEL_CALL_VARIABLE => Self::TunnelCallVariable,
-            CALL_VARIABLE => Self::CallVariable,
+            CALL_VARIABLE => Self::CallVariable(read_u8(buf, offset)?),
 
             // Threads
             THREAD_CALL => Self::ThreadCall(read_def_id(buf, offset)?),
@@ -1222,6 +1257,7 @@ impl Opcode {
                 bound_count: read_u8(buf, offset)?,
             },
             CALL_VALUE => Self::CallValue(read_u8(buf, offset)?),
+            BIND_VALUE => Self::BindValue(read_u8(buf, offset)?),
 
             // Lifecycle
             DONE => Self::Done,
@@ -1372,7 +1408,8 @@ mod tests {
         roundtrip(&Opcode::TunnelCall(test_id()));
         roundtrip(&Opcode::TunnelReturn);
         roundtrip(&Opcode::TunnelCallVariable);
-        roundtrip(&Opcode::CallVariable);
+        roundtrip(&Opcode::CallVariable(0));
+        roundtrip(&Opcode::CallVariable(3));
     }
 
     #[test]

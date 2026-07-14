@@ -1,7 +1,8 @@
 use crate::SyntaxKind::{
-    ASSIGNMENT, BREAK_STMT, CONTINUE_STMT, DOT, ELSE_CLAUSE, EOF, EQ, EXPR_STMT, FOR_STMT, IDENT,
-    IDENTIFIER, IF_STMT, INDEX_EXPR, KW_ELSE, KW_RETURN, KW_TEMP, L_BRACE, L_BRACKET, LOGIC_LINE,
-    MINUS_EQ, NEWLINE, PLUS_EQ, R_BRACE, R_BRACKET, RETURN_STMT, STMT_BLOCK, TEMP_DECL, WHILE_STMT,
+    ASSIGNMENT, BREAK_STMT, CONTINUE_STMT, DOT, ELSE_CLAUSE, EOF, EQ, EXPR_STMT, FIELD_ACCESS_EXPR,
+    FOR_STMT, IDENT, IDENTIFIER, IF_STMT, INDEX_EXPR, KW_ELSE, KW_RETURN, KW_TEMP, L_BRACE,
+    L_BRACKET, LOGIC_LINE, MINUS_EQ, NEWLINE, PLUS_EQ, R_BRACE, R_BRACKET, RETURN_STMT, STMT_BLOCK,
+    TEMP_DECL, WHILE_STMT,
 };
 
 use super::Parser;
@@ -46,29 +47,42 @@ pub(crate) fn logic_line(p: &mut Parser<'_, '_>) {
     p.finish_node();
 }
 
-/// Check if an indexable lvalue (`ident`, `ident.path`, `ident[i]`, chained)
-/// is followed by an assignment operator (=, +=, -=). Must not confuse `=`
-/// in `== knot ==` or bare `=` in stitch headers.
+/// Check if an indexable lvalue (`ident`, `ident.path`, `ident[i]`, chained,
+/// or a mixed `ident[i].field` — issue #674) is followed by an assignment
+/// operator (=, +=, -=). Must not confuse `=` in `== knot ==` or bare `=` in
+/// stitch headers.
 fn is_assignment_ahead(p: &Parser<'_, '_>) -> bool {
     let mut i = 1; // nth(0) is already known to be IDENT by the caller
     while p.nth(i) == DOT && p.nth(i + 1) == IDENT {
         i += 2;
     }
-    while p.nth(i) == L_BRACKET {
-        i += 1;
-        let mut depth = 1i32;
-        loop {
-            match p.nth(i) {
-                L_BRACKET => depth += 1,
-                R_BRACKET => depth -= 1,
-                EOF | NEWLINE => return false, // unterminated — not an assignment
-                _ => {}
-            }
+    // A bare dotted-path prefix is already consumed above; any further
+    // `[…]`/`.field` postfixes here only ever follow an index (an
+    // unambiguous `arr[i].field` mixed chain — see `indexable_lvalue`'s
+    // doc), so it's safe to interleave the two postfix kinds freely.
+    loop {
+        if p.nth(i) == L_BRACKET {
             i += 1;
-            if depth == 0 {
-                break;
+            let mut depth = 1i32;
+            loop {
+                match p.nth(i) {
+                    L_BRACKET => depth += 1,
+                    R_BRACKET => depth -= 1,
+                    EOF | NEWLINE => return false, // unterminated — not an assignment
+                    _ => {}
+                }
+                i += 1;
+                if depth == 0 {
+                    break;
+                }
             }
+            continue;
         }
+        if p.nth(i) == DOT && p.nth(i + 1) == IDENT {
+            i += 2;
+            continue;
+        }
+        break;
     }
     let next = p.nth(i);
     matches!(next, EQ | PLUS_EQ | MINUS_EQ) && !(next == EQ && p.nth(i + 1) == EQ)
@@ -118,16 +132,41 @@ fn assignment(p: &mut Parser<'_, '_>) {
     p.finish_node();
 }
 
-/// Parse a path, then any trailing postfix index chain (`a[0]`, `grid[y][x]`)
-/// — the shared shape between an expression-position `INDEX_EXPR` and an
-/// assignment lvalue (T1b §4).
+/// Parse a path, then any trailing postfix index/field chain (`a[0]`,
+/// `grid[y][x]`, `arr[i].field` — issue #674) — the shared shape between an
+/// expression-position postfix chain and an assignment lvalue (T1b §4,
+/// extended for TM-4c mixed field/index writes).
+///
+/// A `.field` immediately after an `INDEX_EXPR` mirrors the general
+/// expression grammar's `FIELD_ACCESS_EXPR` postfix (see
+/// `expression::expression_bp`'s postfix loop doc) — unambiguous here for
+/// the same reason it is there: a bare dotted `ident.ident…` prefix is
+/// already consumed whole by `divert::path` above, so any `.field` this
+/// loop sees only ever follows an index, never a plain path segment. LIR
+/// still rejects the resulting `FieldAccessExpr` target as a chained/mixed
+/// write (`E074`, the T1e boundary) — this only fixes the *grammar* so that
+/// diagnostic is reachable instead of a generic parse error.
 fn indexable_lvalue(p: &mut Parser<'_, '_>) {
     let checkpoint = p.checkpoint();
     super::divert::path(p);
-    while p.current() == L_BRACKET {
-        p.start_node_at(checkpoint, INDEX_EXPR);
-        super::expression::index_bracket(p);
-        p.finish_node();
+    loop {
+        if p.current() == L_BRACKET {
+            p.start_node_at(checkpoint, INDEX_EXPR);
+            super::expression::index_bracket(p);
+            p.finish_node();
+            continue;
+        }
+        if p.current() == DOT && p.nth(1) == IDENT {
+            p.start_node_at(checkpoint, FIELD_ACCESS_EXPR);
+            p.bump(); // .
+            p.skip_ws();
+            p.start_node(IDENTIFIER);
+            p.bump(); // field name
+            p.finish_node();
+            p.finish_node();
+            continue;
+        }
+        break;
     }
 }
 

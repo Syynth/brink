@@ -1442,3 +1442,9 @@
 - **SYSTEM:** process
 - **WHAT:** Multi-agent parallel work uses the vendored autonomous-pump skill (.claude/skills/autonomous-pump + BRINK-CONFIG.md) rather than ad-hoc Agent-tool dispatch — waves get the full process: manifest, watcher, merge train, wave-boundary reconciliation. Single one-off agents may still be dispatched directly.
 - **WHY:** The pump process is where the operational lessons live (foreground gates, stall detection, sequential merge train, reconciliation of findings into issues); ad-hoc dispatch reproduces the briefs but silently drops the process safety net.
+
+## Struct construction literals: source-order evaluation, duplicate field is a compile error
+- **WHEN:** 2026-07-14
+- **SYSTEM:** language design (#605 typed mode / TM-4 surface; issues #675/#676)
+- **WHAT:** (1) Construction-literal initializers (`Point#{y: g(), x: f()}`) evaluate in **source order** (left-to-right as written), not shape-declaration order; codegen reorders values into shape offsets AFTER evaluation. (2) A duplicate field in a construction literal is a **compile error** (next free E-code), replacing the current silent drop of the first initializer's side effect.
+- **WHY:** Left-to-right matches every other expression's evaluation order in the language — least author surprise, and side-effect order stays what the author wrote; shape order is a memory-layout concern that belongs to codegen, not semantics. Duplicate-field-errors is the no-silent-garbage posture applied at compile time.

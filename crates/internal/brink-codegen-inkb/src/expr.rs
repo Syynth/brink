@@ -96,7 +96,14 @@ impl ContainerEmitter<'_> {
                     self.emit_call_arg(arg);
                 }
                 self.emit(Opcode::GetGlobal(*target));
-                self.emit_fragment_wrapped(display, Opcode::CallVariable);
+                self.emit_fragment_wrapped(
+                    display,
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "a call supplies <=255 args"
+                    )]
+                    Opcode::CallVariable(args.len() as u8),
+                );
             }
 
             lir::Expr::CallVariableTemp { slot, args, .. } => {
@@ -104,7 +111,14 @@ impl ContainerEmitter<'_> {
                     self.emit_call_arg(arg);
                 }
                 self.emit(Opcode::GetTemp(*slot));
-                self.emit_fragment_wrapped(display, Opcode::CallVariable);
+                self.emit_fragment_wrapped(
+                    display,
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "a call supplies <=255 args"
+                    )]
+                    Opcode::CallVariable(args.len() as u8),
+                );
             }
 
             lir::Expr::CallBuiltin { builtin, args } => {
@@ -142,6 +156,24 @@ impl ContainerEmitter<'_> {
                         reason = "a call supplies <=255 args"
                     )]
                     Opcode::CallValue(args.len() as u8),
+                );
+            }
+
+            lir::Expr::BindValue { callee, args } => {
+                // Same stack shape as `CallValue`: push the supplied args
+                // (bottom), then the callee (top). `BindValue` returns a new
+                // function value rather than entering the target, so it never
+                // produces localized output — no fragment wrapping needed.
+                for arg in args {
+                    self.emit_expr(arg, false);
+                }
+                self.emit_expr(callee, false);
+                self.emit(
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "a bind supplies <=255 args"
+                    )]
+                    Opcode::BindValue(args.len() as u8),
                 );
             }
 

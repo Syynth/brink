@@ -1407,6 +1407,88 @@ impl FlowInstance {
         self.drive_function_eval::<R>(program, line_tables, context, handler, resolver)
     }
 
+    /// Evaluate an ink **function value** (`FnRef`/`Closure`) from engine
+    /// code — the host callback-invocation surface (T1c-3,
+    /// `docs/t1c-spec.md` §6). A function value crosses to the host as an
+    /// opaque token `{DefinitionId, env}`; the host never dereferences the
+    /// env — invocation always re-enters the VM here and is journaled
+    /// exactly like [`begin_function_eval`](Self::begin_function_eval).
+    ///
+    /// `callee` must be a [`Value::FnRef`] / [`Value::Closure`]; `args`
+    /// supply the remaining (val-only) params after the value's bound
+    /// prefix. The same fault set as in-story dispatch applies — non-function
+    /// callee, wrong arity, rehydration mismatch, cross-flow ref-`#@local`
+    /// (`docs/t1c-spec.md` §3/§6) — surfaced as the `Err` here rather than as
+    /// a turn-terminating story fault, since this is out-of-band evaluation.
+    ///
+    /// Like [`begin_function_eval`](Self::begin_function_eval) this does not
+    /// advance the player-visible story (output isolated, transcript
+    /// untouched, no visit-count increment) and pauses on world-access
+    /// externals — resume with
+    /// [`resume_function_eval`](Self::resume_function_eval).
+    ///
+    /// # Errors
+    /// - [`AlreadyEvaluatingFunction`](RuntimeError::AlreadyEvaluatingFunction)
+    ///   if an evaluation is already in progress on this flow.
+    /// - The function-value dispatch faults above (via
+    ///   `vm::prepare_fn_value_call`), before any frame is pushed.
+    /// - The same evaluation errors as
+    ///   [`begin_function_eval`](Self::begin_function_eval).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "mirrors begin_function_eval: the VM environment plus the callee value and args"
+    )]
+    pub fn begin_function_value_eval<R: StoryRng>(
+        &mut self,
+        program: &Program,
+        line_tables: &[Vec<brink_format::LineEntry>],
+        context: &mut (impl ContextAccess + ?Sized),
+        handler: &dyn ExternalFnHandler,
+        callee: &Value,
+        args: &[Value],
+        resolver: Option<&dyn PluralResolver>,
+    ) -> Result<FunctionEval, RuntimeError> {
+        if self.eval.is_some() {
+            return Err(RuntimeError::AlreadyEvaluatingFunction);
+        }
+
+        // Validate + assemble the full arg row (bound prefix then supplied)
+        // through the shared dispatch path, so a bad callee faults *before*
+        // any boundary frame or capture scope is set up — no partial state.
+        let (container_idx, _target, full_args) =
+            vm::prepare_fn_value_call(program, callee, args.to_vec())?;
+
+        let value_floor = self.flow.value_stack.len();
+        let choice_floor = self.flow.pending_choices.len();
+
+        self.flow.output.begin_capture();
+        let output_start = self.flow.output.target_len();
+        let boundary = CallFrame {
+            return_address: None,
+            temps: Vec::new(),
+            container_stack: vec![ContainerPosition {
+                container_idx,
+                offset: 0,
+            }],
+            frame_type: CallFrameType::FunctionEvalFromGame,
+            external_fn_id: None,
+            function_output_start: Some(output_start),
+        };
+        self.flow.current_thread_mut().call_stack.push(boundary);
+        self.stats.frames_pushed += 1;
+
+        // Pass the full arg row (bound prefix then supplied) onto the value
+        // stack in declaration order — the prologue binds it exactly as an
+        // in-story call would.
+        self.flow.value_stack.extend_from_slice(&full_args);
+
+        self.eval = Some(EvalState {
+            value_floor,
+            choice_floor,
+        });
+        self.drive_function_eval::<R>(program, line_tables, context, handler, resolver)
+    }
+
     /// Resume a function evaluation that paused on
     /// [`FunctionEval::AwaitingExternal`], after the pending external has
     /// been resolved via [`resolve_external`](Self::resolve_external).

@@ -536,12 +536,34 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
             SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label => {
                 lir::Expr::VisitCount(info.id)
             }
-            // Temps not caught by temp_slot above are forward-referenced
-            // (used before their declaration). Inklecate emits a get_global
-            // for these, which fails at link time because no such global
-            // exists. We reproduce the same behavior so the linker errors.
-            // Hash the variable name the same way the converter does
-            // (DefaultHasher on the name string → GlobalVar tag).
+            // Temps not caught by temp_slot above are either (a) a classic
+            // (non-block) temp used before its declaring statement — a
+            // genuine forward reference, matching inklecate's own behavior
+            // of emitting a get_global that fails at link time (reproduced
+            // below by hashing the name the same way the converter does:
+            // DefaultHasher on the name string → GlobalVar tag) — or (b) a
+            // T1b block-scoped temp (`~ { … }`) referenced after its
+            // `push_block_scope`/`pop_block_scope` bracket has already
+            // closed (#680 RCA: this is the actual defect — see E082).
+            // `block_scoped_temp_names` (populated by `declare_block_local`,
+            // never cleared) distinguishes the two: a name that was ever a
+            // block-scoped local can never legitimately reach this fallback
+            // any other way, since `temp_slot` already checks every open
+            // block scope first.
+            SymbolKind::Temp if ctx.block_scoped_temp_names.contains(&name) => {
+                ctx.diagnostics.push(crate::Diagnostic {
+                    file: ctx.file,
+                    range: path.range,
+                    message: format!(
+                        "{}: `{name}` was declared in a `~ {{ … }}` block that has already \
+                         closed — block-scoped temps (docs/t1b-surface-spec.md §2) are only \
+                         visible for the rest of their own block",
+                        crate::DiagnosticCode::E082.title(),
+                    ),
+                    code: crate::DiagnosticCode::E082,
+                });
+                lir::Expr::Null
+            }
             SymbolKind::Temp => {
                 use brink_format::{DefinitionId, DefinitionTag};
                 use std::collections::hash_map::DefaultHasher;
@@ -801,6 +823,37 @@ fn lower_t1b_stdlib_call(
                 args: supplied,
             })
         }
+        // T1c-3 (docs/t1c-spec.md §3): `bind(f, args…)` — val-only currying
+        // over an existing function value. `f` is the callee; the remaining
+        // args are appended to its bound-arg row (consuming the head of its
+        // remaining param row) and a new function value is returned. Lowers
+        // to `BindValue(argc)`; over-binding and a non-function callee are
+        // runtime faults at the op. Strict-mode static checking of this
+        // explicit intrinsic form is not yet wired (it does not route through
+        // the `Ty::Fn` value-call machinery like `#fn(...)` sites do), so the
+        // runtime fault is the only backstop here today, same as `call`
+        // (see `resolve.rs::is_t1b_stdlib_name`).
+        "bind" => {
+            if args.is_empty() {
+                ctx.diagnostics.push(crate::Diagnostic {
+                    file: ctx.file,
+                    range: call_range,
+                    message: format!(
+                        "{}: `bind` needs at least the callee function value \
+                         (`bind(f, args…)`)",
+                        crate::DiagnosticCode::E031.title(),
+                    ),
+                    code: crate::DiagnosticCode::E031,
+                });
+                return Some(lir::Expr::Null);
+            }
+            let callee = lower_expr(&args[0], ctx);
+            let supplied = args[1..].iter().map(|a| lower_expr(a, ctx)).collect();
+            Some(lir::Expr::BindValue {
+                callee: Box::new(callee),
+                args: supplied,
+            })
+        }
         _ => None,
     }
 }
@@ -828,6 +881,7 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "float"
             | "string"
             | "call"
+            | "bind"
     )
 }
 
@@ -849,6 +903,31 @@ pub(super) fn lower_call_args(
                             return lir::CallArg::RefTemp(slot, name_id);
                         }
                         if let Some(info) = ctx.resolve_path(path.range) {
+                            // A T1b block-scoped temp (`~ { … }`) passed by
+                            // `ref` after its own block has closed — same
+                            // #680 RCA as `lower_path`'s `SymbolKind::Temp`
+                            // arm. Without this check `info.id` (the temp's
+                            // `LocalVar`-tagged id, never registered as a
+                            // real global) would be emitted as a
+                            // `RefGlobal`, faulting at runtime as
+                            // `UnresolvedGlobal` with no compile diagnostic.
+                            if info.kind == SymbolKind::Temp
+                                && ctx.block_scoped_temp_names.contains(&name)
+                            {
+                                ctx.diagnostics.push(crate::Diagnostic {
+                                    file: ctx.file,
+                                    range: path.range,
+                                    message: format!(
+                                        "{}: `{name}` was declared in a `~ {{ … }}` block that \
+                                         has already closed — block-scoped temps \
+                                         (docs/t1b-surface-spec.md §2) are only visible for \
+                                         the rest of their own block",
+                                        crate::DiagnosticCode::E082.title(),
+                                    ),
+                                    code: crate::DiagnosticCode::E082,
+                                });
+                                return lir::CallArg::Value(lir::Expr::Null);
+                            }
                             let id = if info.kind == SymbolKind::List {
                                 list_def_to_global_var(info.id)
                             } else {

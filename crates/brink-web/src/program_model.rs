@@ -402,7 +402,7 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         Opcode::TunnelCall(id) => format!("tunnel_call {}", r.path(*id)),
         Opcode::TunnelReturn => "tunnel_return".to_owned(),
         Opcode::TunnelCallVariable => "tunnel_call_variable".to_owned(),
-        Opcode::CallVariable => "call_variable".to_owned(),
+        Opcode::CallVariable(argc) => format!("call_variable argc={argc}"),
 
         // Threads
         Opcode::ThreadCall(id) => format!("thread_call {}", r.path(*id)),
@@ -522,6 +522,7 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
             bound_count,
         } => format!("make_closure {} bound={bound_count}", r.path(*target)),
         Opcode::CallValue(argc) => format!("call_value argc={argc}"),
+        Opcode::BindValue(argc) => format!("bind_value argc={argc}"),
     }
 }
 

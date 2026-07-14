@@ -198,6 +198,20 @@ pub struct LowerCtx<'a> {
     /// name (docs/t1b-surface-spec.md §2) without disturbing the outer
     /// slot's storage.
     pub block_scopes: Vec<Vec<(String, u16)>>,
+    /// Every name ever declared via [`LowerCtx::declare_block_local`] in
+    /// this frame — i.e. every T1b block-scoped `temp`/`for`-loop-variable
+    /// name, whether or not its `~ { … }` block is still open. Unlike
+    /// `block_scopes`, entries are never removed on `pop_block_scope`.
+    ///
+    /// Distinguishes, at the point `lower_path`/`lower_call_args` fall
+    /// through to the "temp not currently visible" case, a genuine classic
+    /// (non-block) forward reference (used before its declaring `~ temp`
+    /// statement — inklecate-compat: emits a phantom `get_global` that
+    /// faults at link time) from a block-scoped temp referenced *after* its
+    /// own block has already closed (#680 RCA) — the latter is a real
+    /// authoring error and gets its own diagnostic (E082) instead of
+    /// silently resolving to the wrong global slot.
+    pub block_scoped_temp_names: std::collections::HashSet<String>,
     /// Diagnostics produced during lowering — historically just warnings
     /// (the T1b block-scoped-temp shadow warning, E054), but also
     /// Error-severity ones now (E055/E056 mutator checks, E057
@@ -314,6 +328,7 @@ impl<'a> LowerCtx<'a> {
     /// never empty in practice; self-heals (opens a scope) rather than
     /// using a denied `expect`/`unwrap` if that invariant is ever violated.
     pub fn declare_block_local(&mut self, name: String, slot: u16) {
+        self.block_scoped_temp_names.insert(name.clone());
         if self.block_scopes.is_empty() {
             self.block_scopes.push(Vec::new());
         }

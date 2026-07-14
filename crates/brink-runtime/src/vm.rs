@@ -739,9 +739,13 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
             });
             stats.frames_pushed += 1;
         }
-        Opcode::CallVariable => {
+        Opcode::CallVariable(argc) => {
             let val = flow.pop_value()?;
             match val {
+                // Classic divert-target-variable call (oracle path, unchanged):
+                // the target's own prologue self-consumes its declared params
+                // off the stack, so `argc` is not needed here — untouched by
+                // #721.
                 Value::DivertTarget(id) => {
                     let idx = program
                         .resolve_target(id)
@@ -772,21 +776,19 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 }
                 // T1c (docs/t1c-spec.md §3): the **direct** call form `f(args…)`
                 // where `f` holds a function value dispatches through the same
-                // `CallVariable` site (the codegen for `f(args)` pushes the
-                // supplied args, then the callee, then `CallVariable`) — the
-                // divert-target arm above stays the oracle path, this arm is
-                // inert for it. Without an `argc` operand the supplied count is
-                // *derived* from the target arity minus the bound prefix, so a
-                // gradual-mode arity mismatch on the direct form degrades to
-                // the target prologue's existing behavior (strict mode catches
-                // it at compile time, spec §4); the explicit `call(f, args…)`
-                // form (`CallValue(argc)`) carries the argc and faults exactly.
+                // `CallVariable` site (codegen pushes the supplied args, then
+                // the callee, then `CallVariable(argc)`) — the divert-target
+                // arm above stays the oracle path, this arm is inert for it.
+                // `argc` is the exact count codegen pushed at *this* call site
+                // (issue #721: never derive it from the resolved target's
+                // arity — that made the pop count trivially match `enter_fn_
+                // value`'s arity check, so a gradual-mode arity mismatch left
+                // a stray value on the stack instead of faulting). Popping the
+                // wire-carried `argc` here means a real mismatch surfaces as
+                // `FunctionValueArity` from `enter_fn_value`, exactly like the
+                // explicit `call(f, args…)` form (`CallValue(argc)`).
                 Value::FnRef(_) | Value::Closure(_) => {
-                    let bound = fn_value_bound_len(&val);
-                    let (target_idx, _) = fn_value_target_idx(&val, program)?;
-                    let supplied_count =
-                        (program.container(target_idx).param_count as usize).saturating_sub(bound);
-                    let supplied = pop_values(flow, supplied_count)?;
+                    let supplied = pop_values(flow, argc as usize)?;
                     enter_fn_value(flow, program, context, stats, &val, supplied)?;
                 }
                 other => {
@@ -864,6 +866,19 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                     return Err(RuntimeError::NotCallable(value_type_name(&other)));
                 }
             }
+        }
+        // T1c-3 (docs/t1c-spec.md §3): `bind(f, args…)` — val-only currying
+        // over an existing function value. Pop the callee (top) then the
+        // `argc` supplied args below it, append them to the callee's bound-arg
+        // row (consuming the head of its remaining param row), and push the
+        // new function value. A non-function callee or over-binding (more
+        // args than the target has remaining params) is a turn-terminating
+        // fault — never a silently truncated or garbage row.
+        Opcode::BindValue(argc) => {
+            let callee = flow.pop_value()?;
+            let supplied = pop_values(flow, argc as usize)?;
+            let bound = bind_fn_value(program, &callee, supplied)?;
+            flow.value_stack.push(bound);
         }
         Opcode::TunnelReturn => {
             // The eval block before ->-> pushes either void (normal
@@ -1153,15 +1168,6 @@ fn pop_values(flow: &mut Flow, n: usize) -> Result<Vec<Value>, RuntimeError> {
     Ok(flow.value_stack.split_off(len - n))
 }
 
-/// Bound-prefix length of a function value (`0` for a zero-bound `FnRef` or a
-/// non-function value).
-fn fn_value_bound_len(v: &Value) -> usize {
-    match v {
-        Value::Closure(c) => c.env.len(),
-        _ => 0,
-    }
-}
-
 /// Resolve a function value to its target container index and fn token. A
 /// non-function value is a `NotCallable` fault (spec §3).
 fn fn_value_target_idx(v: &Value, program: &Program) -> Result<(u32, DefinitionId), RuntimeError> {
@@ -1178,19 +1184,78 @@ fn mode_str(is_ref: bool) -> &'static str {
     if is_ref { "ref" } else { "val" }
 }
 
-/// Dispatch through a function value (T1c, docs/t1c-spec.md §3/§6): validate the
-/// bound env against the *current* signature (rehydration), check arity, guard
-/// the cross-flow ref-`#@local` fault, then push the full arg row (bound prefix
-/// in declared order, then the supplied val-only args) and enter the target
-/// exactly like a plain [`Call`](Opcode::Call).
-fn enter_fn_value(
-    flow: &mut Flow,
+/// `bind(f, supplied…)` (T1c-3, docs/t1c-spec.md §3): produce a new function
+/// value with `supplied` appended to `callee`'s bound-arg row. The appended
+/// entries are always `val` (the remaining params after the bound prefix are
+/// val-only by construction — `ref` params are bound away at creation), taking
+/// their param name from the target's signature at the appended position for
+/// rehydration-check parity with `#fn`/`MakeClosure`. Faults: a non-function
+/// callee (`NotCallable`); binding more args than the target has remaining
+/// params (`FunctionValueArity` — over-binding, never a truncated row).
+fn bind_fn_value(
     program: &Program,
-    context: &mut (impl ContextAccess + ?Sized),
-    stats: &mut Stats,
     callee: &Value,
     supplied: Vec<Value>,
-) -> Result<(), RuntimeError> {
+) -> Result<Value, RuntimeError> {
+    let (idx, target) = fn_value_target_idx(callee, program)?;
+    let arity = program.container(idx).param_count as usize;
+    let params = program.container_params(idx);
+
+    // Existing bound prefix (zero for a bare `FnRef`).
+    let existing: &[brink_format::ClosureEnvEntry] = match callee {
+        Value::Closure(c) => c.env.as_slice(),
+        _ => &[],
+    };
+    let bound = existing.len();
+
+    // Over-binding is a fault (§3): bound + supplied must not exceed arity.
+    if bound + supplied.len() > arity {
+        return Err(RuntimeError::FunctionValueArity {
+            expected: arity,
+            got: bound + supplied.len(),
+            bound,
+            supplied: supplied.len(),
+        });
+    }
+
+    let mut env = Vec::with_capacity(bound + supplied.len());
+    env.extend_from_slice(existing);
+    for (i, payload) in supplied.into_iter().enumerate() {
+        // Name/mode from the target's signature at the appended position.
+        // The remaining params are val-only, so `is_ref` is false here; we
+        // still read the recorded mode so a (malformed) `ref` param faults
+        // cleanly at invoke via the shared rehydration check rather than
+        // silently misbinding.
+        let (name, is_ref) = params
+            .get(bound + i)
+            .map_or((brink_format::NameId(0), false), |p| (p.name, p.is_ref));
+        env.push(brink_format::ClosureEnvEntry {
+            name,
+            is_ref,
+            payload,
+        });
+    }
+
+    Ok(Value::closure(target, env))
+}
+
+/// Validate a function-value call and assemble its full argument row (T1c,
+/// docs/t1c-spec.md §3/§6). Runs the §6 rehydration check (each bound entry's
+/// name + mode must still match the current signature at the same position),
+/// the §3 arity check (`bound + supplied == declared arity`), and the §3
+/// cross-flow ref-`#@local` guard, then returns the target container index,
+/// its fn token, and the full argument row (bound prefix in declared order,
+/// then the supplied val-only args).
+///
+/// Shared by in-story dispatch ([`enter_fn_value`]) and host-directed
+/// evaluation ([`FlowInstance::begin_function_value_eval`](crate::story::FlowInstance::begin_function_value_eval))
+/// so both paths enforce the identical fault set — never a silent misbinding
+/// on one path only.
+pub(crate) fn prepare_fn_value_call(
+    program: &Program,
+    callee: &Value,
+    supplied: Vec<Value>,
+) -> Result<(u32, DefinitionId, Vec<Value>), RuntimeError> {
     let (idx, target) = fn_value_target_idx(callee, program)?;
     let arity = program.container(idx).param_count as usize;
     let params = program.container_params(idx);
@@ -1252,13 +1317,34 @@ fn enter_fn_value(
         }
     }
 
-    // Push the full arg row: bound prefix (declared order) then the supplied
-    // val args. The target's prologue pops them (DeclareTemp, in reverse) into
-    // its param slots.
+    // Assemble the full arg row: bound prefix (declared order) then the
+    // supplied val args. The target's prologue pops them (DeclareTemp, in
+    // reverse) into its param slots.
+    let mut full = Vec::with_capacity(bound + supplied.len());
     for entry in env {
-        flow.value_stack.push(entry.payload.clone());
+        full.push(entry.payload.clone());
     }
-    for v in supplied {
+    full.extend(supplied);
+    Ok((idx, target, full))
+}
+
+/// Dispatch through a function value (T1c, docs/t1c-spec.md §3/§6): validate the
+/// bound env against the *current* signature (rehydration), check arity, guard
+/// the cross-flow ref-`#@local` fault, then push the full arg row (bound prefix
+/// in declared order, then the supplied val-only args) and enter the target
+/// exactly like a plain [`Call`](Opcode::Call).
+fn enter_fn_value(
+    flow: &mut Flow,
+    program: &Program,
+    context: &mut (impl ContextAccess + ?Sized),
+    stats: &mut Stats,
+    callee: &Value,
+    supplied: Vec<Value>,
+) -> Result<(), RuntimeError> {
+    let (idx, target, full_args) = prepare_fn_value_call(program, callee, supplied)?;
+
+    // Push the full arg row (bound prefix then supplied val args).
+    for v in full_args {
         flow.value_stack.push(v);
     }
 

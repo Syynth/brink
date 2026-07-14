@@ -148,6 +148,26 @@ fn compile_missing_included_file() {
     );
 }
 
+/// A bare `INCLUDE` with no path lowers to an empty `FILE_PATH` node and the
+/// parser's E037 ("expected file path") diagnostic. Discovery must not
+/// attempt to read the empty path (which would surface a raw `Io` error and
+/// swallow the diagnostic before it reaches the user) — see #708.
+#[test]
+fn compile_bare_include_reports_e037_not_io_error() {
+    let files: HashMap<&str, &str> = HashMap::from([("main.ink", "INCLUDE\nHello!\n")]);
+
+    let err = compile_mem("main.ink", &files).unwrap_err();
+    assert!(
+        matches!(err, brink_compiler::CompileError::Diagnostics(_)),
+        "expected a Diagnostics(E037) compile error, got: {err}"
+    );
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E037"),
+        "expected E037 (expected file path) among diagnostics, got: {codes:?}"
+    );
+}
+
 // ── compile_path (disk-based) ───────────────────────────────────────
 
 #[test]
