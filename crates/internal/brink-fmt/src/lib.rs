@@ -1293,51 +1293,19 @@ fn render_struct_decl(node: &SyntaxNode, base_indent: &str, config: &FormatConfi
     // Multiline struct: format like a block.
     let mut out = String::new();
     out.push_str(base_indent);
-
-    // Extract the struct name from the IDENTIFIER child.
-    let struct_name = node
-        .children()
-        .find(|c| c.kind() == SyntaxKind::IDENTIFIER)
-        .and_then(|id| {
-            id.children_with_tokens().find_map(|e| {
-                if let NodeOrToken::Token(tok) = e
-                    && tok.kind() == SyntaxKind::IDENT
-                {
-                    Some(tok.text().to_string())
-                } else {
-                    None
-                }
-            })
-        })
-        .unwrap_or_else(|| "Unknown".to_string());
-
     out.push_str("STRUCT ");
-    out.push_str(&struct_name);
+    out.push_str(&struct_decl_name(node));
     out.push_str(" = #{\n");
 
-    if fields.is_empty() {
-        // Empty struct.
+    // Field indent is base_indent + one level of the file's configured
+    // indent (unlike logic blocks which use hardcoded 4 spaces).
+    let field_indent = format!("{base_indent}{}", indent_str(config, 1));
+    let (Some(open_offset), Some(close_offset)) = (opening_brace, closing_brace) else {
         out.push_str(base_indent);
         out.push_str("}\n");
         return out;
-    }
-
-    // Format each field with proper indentation (one level in from the struct)
-    // and trailing comma. Field indent is base_indent + one level of the file's
-    // configured indent (unlike logic blocks which use hardcoded 4 spaces).
-    let field_indent = format!("{base_indent}{}", indent_str(config, 1));
-    for field in fields {
-        out.push_str(&field_indent);
-
-        // Extract field name and type from STRUCT_FIELD_DECL.
-        // Join all tokens into a single-spaced string, collapsing whitespace.
-        let field_text = join_token_text(field.descendants_with_tokens());
-        out.push_str(&field_text);
-
-        // Add trailing comma for all fields in multiline.
-        out.push(',');
-        out.push('\n');
-    }
+    };
+    render_struct_body_multiline(node, open_offset, close_offset, &field_indent, &mut out);
 
     // Close the struct.
     out.push_str(base_indent);
@@ -1345,15 +1313,9 @@ fn render_struct_decl(node: &SyntaxNode, base_indent: &str, config: &FormatConfi
     out
 }
 
-/// Format a single-line STRUCT declaration: `STRUCT Name = #{field: type, …}`.
-/// Collapses all whitespace and ensures canonical spacing: single space after colon.
-fn format_struct_decl_single_line(node: &SyntaxNode, base_indent: &str) -> String {
-    let mut out = String::new();
-    out.push_str(base_indent);
-
-    // Extract the struct name.
-    let struct_name = node
-        .children()
+/// Extract the struct name from a `STRUCT_DECL`'s `IDENTIFIER` child.
+fn struct_decl_name(node: &SyntaxNode) -> String {
+    node.children()
         .find(|c| c.kind() == SyntaxKind::IDENTIFIER)
         .and_then(|id| {
             id.children_with_tokens().find_map(|e| {
@@ -1366,26 +1328,135 @@ fn format_struct_decl_single_line(node: &SyntaxNode, base_indent: &str) -> Strin
                 }
             })
         })
-        .unwrap_or_else(|| "Unknown".to_string());
+        .unwrap_or_else(|| "Unknown".to_string())
+}
 
+/// Render every field declaration and comment directly inside a multiline
+/// `STRUCT_DECL` body, in source order, with trailing commas on each field.
+/// Comments are direct children of `STRUCT_DECL` (see
+/// `skip_struct_body_trivia` in the parser) rather than living inside any
+/// field node, so — mirroring `render_stmt_block` — this walks the node's
+/// direct children/tokens between the braces instead of iterating field
+/// nodes alone; that preserves leading, interleaved, and same-line trailing
+/// comments.
+fn render_struct_body_multiline(
+    node: &SyntaxNode,
+    open_offset: rowan::TextSize,
+    close_offset: rowan::TextSize,
+    field_indent: &str,
+    out: &mut String,
+) {
+    let mut newline_run: u32 = 0;
+    let mut has_emitted = false;
+    for elem in node
+        .children_with_tokens()
+        .skip_while(|e| e.text_range().end() <= open_offset)
+        .take_while(|e| e.text_range().start() < close_offset)
+    {
+        match elem {
+            NodeOrToken::Token(tok) => match tok.kind() {
+                SyntaxKind::NEWLINE => newline_run += 1,
+                SyntaxKind::LINE_COMMENT | SyntaxKind::BLOCK_COMMENT => {
+                    let text = tok.text().trim_end();
+                    if has_emitted && newline_run == 0 {
+                        // Trailing comment on the same physical line as the
+                        // previous field/comment — stays attached to it.
+                        if out.ends_with('\n') {
+                            out.pop();
+                        }
+                        out.push(' ');
+                        out.push_str(text);
+                        out.push('\n');
+                    } else {
+                        if newline_run >= 2 {
+                            out.push('\n');
+                        }
+                        out.push_str(field_indent);
+                        out.push_str(text);
+                        out.push('\n');
+                    }
+                    has_emitted = true;
+                    newline_run = 0;
+                }
+                _ => {}
+            },
+            NodeOrToken::Node(n) if n.kind() == SyntaxKind::STRUCT_FIELD_DECL => {
+                if newline_run >= 2 {
+                    out.push('\n');
+                }
+                newline_run = 0;
+                out.push_str(field_indent);
+                let field_text = join_token_text(n.descendants_with_tokens());
+                out.push_str(&field_text);
+                out.push(',');
+                out.push('\n');
+                has_emitted = true;
+            }
+            NodeOrToken::Node(_) => {}
+        }
+    }
+}
+
+/// Format a single-line STRUCT declaration: `STRUCT Name = #{field: type, …}`.
+/// Collapses all whitespace and ensures canonical spacing: single space after colon.
+fn format_struct_decl_single_line(node: &SyntaxNode, base_indent: &str) -> String {
+    let mut out = String::new();
+    out.push_str(base_indent);
     out.push_str("STRUCT ");
-    out.push_str(&struct_name);
+    out.push_str(&struct_decl_name(node));
     out.push_str(" = #{");
 
-    // Collect field declarations.
-    let fields: Vec<SyntaxNode> = node
-        .children()
-        .filter(|c| c.kind() == SyntaxKind::STRUCT_FIELD_DECL)
-        .collect();
-
-    for (i, field) in fields.iter().enumerate() {
-        if i > 0 {
-            out.push_str(", ");
+    // Comments are direct children of `STRUCT_DECL` (see
+    // `skip_struct_body_trivia` in the parser), not children of any field
+    // node — a single-line struct can only contain `BLOCK_COMMENT`s (a
+    // `LINE_COMMENT` forces a `NEWLINE`, which would make the struct
+    // multiline), but they still need to be preserved rather than dropped.
+    let opening_brace = node
+        .children_with_tokens()
+        .find(|e| e.kind() == SyntaxKind::L_BRACE)
+        .map(|e| e.text_range().start());
+    let closing_brace = node.children_with_tokens().find_map(|e| {
+        if e.kind() == SyntaxKind::R_BRACE {
+            Some(e.text_range().start())
+        } else {
+            None
         }
+    });
 
-        // Extract field name and type, formatting as `name: type` with single
-        // space after the colon. Collapse runs of whitespace in the type itself.
-        format_struct_field_for_single_line(field, &mut out);
+    if let (Some(open_offset), Some(close_offset)) = (opening_brace, closing_brace) {
+        let mut has_field = false;
+        let mut has_content = false;
+        for elem in node
+            .children_with_tokens()
+            .skip_while(|e| e.text_range().end() <= open_offset)
+            .take_while(|e| e.text_range().start() < close_offset)
+        {
+            match elem {
+                NodeOrToken::Node(n) if n.kind() == SyntaxKind::STRUCT_FIELD_DECL => {
+                    if has_field {
+                        out.push_str(", ");
+                    } else if has_content {
+                        out.push(' ');
+                    }
+                    format_struct_field_for_single_line(&n, &mut out);
+                    has_field = true;
+                    has_content = true;
+                }
+                NodeOrToken::Token(tok)
+                    if matches!(
+                        tok.kind(),
+                        SyntaxKind::LINE_COMMENT | SyntaxKind::BLOCK_COMMENT
+                    ) =>
+                {
+                    if has_content {
+                        out.push(' ');
+                    }
+                    out.push_str(tok.text().trim());
+                    has_content = true;
+                }
+                _ => {}
+            }
+        }
     }
 
     out.push_str("}\n");
@@ -2096,5 +2167,104 @@ mod tests {
         let once = fmt(input);
         assert_eq!(once, expected);
         assert_eq!(fmt(&once), once, "formatting is idempotent");
+    }
+
+    // `skip_struct_body_trivia` (brink-syntax parser/declaration.rs) bumps
+    // `LINE_COMMENT`/`BLOCK_COMMENT` tokens as direct children of
+    // `STRUCT_DECL`, not as children of any `STRUCT_FIELD_DECL`. The
+    // multiline and single-line renderers both need to walk the node's own
+    // children (like `render_stmt_block` does for logic blocks) rather than
+    // iterating fields alone, or these comments are silently dropped.
+
+    #[test]
+    fn struct_decl_multiline_preserves_trailing_same_line_comment() {
+        let input = "STRUCT Point = #{\n    x: float, // the x coord\n    y: float,\n}\n";
+        let expected = "STRUCT Point = #{\n  x: float, // the x coord\n  y: float,\n}\n";
+        let once = fmt(input);
+        assert_eq!(
+            once, expected,
+            "a same-line trailing comment must stay attached to its field"
+        );
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn struct_decl_multiline_preserves_leading_comment() {
+        let input = "STRUCT Point = #{\n    // header comment\n    x: float,\n    y: float,\n}\n";
+        let expected = "STRUCT Point = #{\n  // header comment\n  x: float,\n  y: float,\n}\n";
+        let once = fmt(input);
+        assert_eq!(
+            once, expected,
+            "a standalone comment before the first field must be preserved"
+        );
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn struct_decl_multiline_preserves_interleaved_comment() {
+        let input = "STRUCT Point = #{\n    x: float,\n    // between fields\n    y: float,\n}\n";
+        let expected = "STRUCT Point = #{\n  x: float,\n  // between fields\n  y: float,\n}\n";
+        let once = fmt(input);
+        assert_eq!(
+            once, expected,
+            "a standalone comment between fields must be preserved"
+        );
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    // NOTE: this test drives `render_struct_decl` directly against the
+    // parsed `STRUCT_DECL` node rather than going through `fmt()`/`format()`.
+    // `mark_block_comments` (in this file, pre-existing and out of scope for
+    // this fix) marks *any* physical line containing a `BLOCK_COMMENT` token
+    // anywhere in its subtree as a pure `LineKind::BlockComment` line — that
+    // pre-empts `classify_node`'s `STRUCT_DECL` arm before `render_struct_decl`
+    // ever runs, for any single-line construct with an inline block comment
+    // (not struct-specific). A single-line `STRUCT` can only carry
+    // `BLOCK_COMMENT`s (a `LINE_COMMENT` forces a `NEWLINE`, making the
+    // struct multiline), so every single-line-with-comment case trips this
+    // separate bug via the full `fmt()` pipeline. Flagged separately; this
+    // test exercises the renderer fix in isolation instead.
+    fn render_struct_decl_only(source: &str) -> String {
+        let parsed = brink_syntax::parse(source);
+        let node = parsed
+            .syntax()
+            .children()
+            .find(|c| c.kind() == SyntaxKind::STRUCT_DECL)
+            .expect("source must parse to a single STRUCT_DECL");
+        render_struct_decl(&node, "", &FormatConfig::default())
+    }
+
+    #[test]
+    fn struct_decl_single_line_preserves_leading_interleaved_and_trailing_comments() {
+        let leading = render_struct_decl_only("STRUCT Point = #{/* lead */ x: float, y: float}\n");
+        assert_eq!(leading, "STRUCT Point = #{/* lead */ x: float, y: float}\n");
+
+        let interleaved =
+            render_struct_decl_only("STRUCT Point = #{x: float, /* mid */ y: float}\n");
+        assert_eq!(
+            interleaved,
+            "STRUCT Point = #{x: float /* mid */, y: float}\n"
+        );
+
+        let trailing =
+            render_struct_decl_only("STRUCT Point = #{x: float, y: float /* trail */}\n");
+        assert_eq!(
+            trailing,
+            "STRUCT Point = #{x: float, y: float /* trail */}\n"
+        );
+    }
+
+    #[test]
+    fn struct_decl_empty_multiline_collapses_to_single_line() {
+        // An empty struct body has no fields, so `is_multiline` (which
+        // requires at least one field) is always false — an empty struct
+        // written across multiple lines collapses to the canonical
+        // single-line empty form. This is intentional: there is no field
+        // content to justify a multiline layout.
+        let input = "STRUCT Empty = #{\n}\n";
+        let expected = "STRUCT Empty = #{}\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
     }
 }
