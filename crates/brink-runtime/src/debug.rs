@@ -150,6 +150,56 @@ impl<'p> NameResolver<'p> {
                 format!("temp[{slot}]@{frame_depth}")
             }
             Value::FragmentRef(idx) => format!("<fragment {idx}>"),
+            Value::Array(items) => {
+                let parts: Vec<String> = items.iter().map(|v| self.format_value(v)).collect();
+                format!("[{}]", parts.join(", "))
+            }
+            Value::Map(map) => {
+                let parts: Vec<String> = map
+                    .iter()
+                    .map(|(k, v)| format!("{}: {}", format_map_key(k), self.format_value(v)))
+                    .collect();
+                format!("{{{}}}", parts.join(", "))
+            }
+            Value::Record { shape, fields } => {
+                let parts: Vec<String> = fields.iter().map(|v| self.format_value(v)).collect();
+                format!("Record#{}{{{}}}", shape.0, parts.join(", "))
+            }
+            // Function values (T1c, #700). Debug rendering resolves the target
+            // path where possible and shows the bound env; the author-facing
+            // `string(f)` display form (spec §5) lands in T1c-3.
+            Value::FnRef(target) => match self.def_path(*target) {
+                Some(p) => format!("fn {p}"),
+                None => "fn ?".to_owned(),
+            },
+            Value::Closure(c) => {
+                let name = self.def_path(c.target).unwrap_or("?");
+                let parts: Vec<String> = c
+                    .env
+                    .iter()
+                    .map(|e| {
+                        let mode = if e.is_ref { "ref" } else { "val" };
+                        format!("{mode} {}", self.format_value(&e.payload))
+                    })
+                    .collect();
+                format!("fn {name}({})", parts.join(", "))
+            }
+            // Handle values (T1d, `docs/t1d-spec.md` §6). Same display form
+            // as the runtime's authoritative `string(h)` (`value_ops::stringify`):
+            // `handle <Kind>#<id>`, resolved via the program's name table.
+            Value::Handle { kind, id } => {
+                let kind_name = self.program.name_checked(*kind).unwrap_or("?");
+                format!("handle {kind_name}#{id}")
+            }
         }
+    }
+}
+
+/// Format a map key for debug display.
+fn format_map_key(key: &brink_format::MapKey) -> String {
+    match key {
+        brink_format::MapKey::Int(n) => n.to_string(),
+        brink_format::MapKey::Str(s) => format!("\"{s}\""),
+        brink_format::MapKey::Bool(b) => b.to_string(),
     }
 }

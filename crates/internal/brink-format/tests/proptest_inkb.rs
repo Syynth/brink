@@ -1,10 +1,10 @@
 #![allow(clippy::unwrap_used)]
 
 use brink_format::{
-    AddressPath, ContainerDef, CountingFlags, DefinitionId, DefinitionTag, ExternalFnDef,
-    GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, NameId, PluralCategory,
-    ScopeLineTable, SectionKind, SelectKey, SlotInfo, SourceLocation, StoryData, Value, ValueType,
-    read_inkb, read_inkb_index, write_inkb,
+    AddressPath, ClosureEnvEntry, ContainerDef, CountingFlags, DefinitionId, DefinitionTag,
+    ExternalFnDef, GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, MapKey,
+    NameId, OrderedMap, PluralCategory, ScopeLineTable, SectionKind, SelectKey, ShapeId, SlotInfo,
+    SourceLocation, StoryData, Value, ValueType, read_inkb, read_inkb_index, write_inkb,
 };
 use proptest::prelude::*;
 
@@ -119,10 +119,38 @@ fn arb_value_type() -> impl Strategy<Value = ValueType> {
         Just(ValueType::String),
         Just(ValueType::DivertTarget),
         Just(ValueType::Null),
+        Just(ValueType::FnRef),
+        Just(ValueType::Closure),
+        // Collection/record value types (value-model-spec §4; issue #672
+        // workstream B item 2 — these were missing from the declared-type
+        // side of this fuzzer even though `arb_value` below can now produce
+        // `Array`/`Map`/`Record` payloads).
+        Just(ValueType::Array),
+        Just(ValueType::Map),
+        Just(ValueType::Record),
+        // T1d handle value type (docs/t1d-spec.md §2): `arb_value` below can
+        // now produce a `Handle` payload, same rationale as the collection
+        // types above.
+        Just(ValueType::Handle),
     ]
 }
 
-fn arb_value() -> impl Strategy<Value = Value> {
+fn arb_map_key() -> impl Strategy<Value = MapKey> {
+    prop_oneof![
+        any::<i32>().prop_map(MapKey::Int),
+        ".*".prop_map(|s: String| MapKey::Str(s.into())),
+        any::<bool>().prop_map(MapKey::Bool),
+    ]
+}
+
+/// Leaf values (never recurse). `arb_value` below extends this with
+/// `Array`/`Map`/`Record` — the value-model-spec §4 collection types — so
+/// `write_read_roundtrip` actually exercises the encode/decode path for
+/// `GlobalVarDef::default_value` holding a nested collection (issue #672
+/// workstream B item 2, "value -> inkb bytes -> value == identity"). Bounded
+/// via `prop_recursive` (depth 3, up to 16 total nodes, width 4 per
+/// collection) so generated cases stay small and shrinkable.
+fn arb_value_leaf() -> impl Strategy<Value = Value> {
     prop_oneof![
         any::<i32>().prop_map(Value::Int),
         any::<f32>().prop_map(Value::Float),
@@ -130,7 +158,50 @@ fn arb_value() -> impl Strategy<Value = Value> {
         ".*".prop_map(|s: String| Value::String(s.into())),
         arb_def_id().prop_map(Value::DivertTarget),
         Just(Value::Null),
+        // T1c function values (#700): a `#fn(…)` baked into a declaration
+        // default reaches the wire as a global's `default_value`.
+        arb_def_id().prop_map(Value::FnRef),
+        arb_closure(),
+        // T1d handle values (docs/t1d-spec.md §2): the reserved `VAL_HANDLE`
+        // tag's first emission — round-tripped here like every other value
+        // tag.
+        (arb_name_id(), any::<u64>()).prop_map(|(kind, id)| Value::handle(kind, id)),
     ]
+}
+
+fn arb_value() -> impl Strategy<Value = Value> {
+    arb_value_leaf().prop_recursive(3, 16, 4, |inner| {
+        prop_oneof![
+            prop::collection::vec(inner.clone(), 0..4).prop_map(Value::array),
+            prop::collection::vec((arb_map_key(), inner.clone()), 0..4).prop_map(|entries| {
+                let mut map = OrderedMap::new();
+                for (key, value) in entries {
+                    map.insert(key, value);
+                }
+                Value::map(map)
+            }),
+            (any::<u32>(), prop::collection::vec(inner, 0..4))
+                .prop_map(|(shape, fields)| Value::record(ShapeId(shape), fields)),
+        ]
+    })
+}
+
+/// A `Value::Closure` with a small bound-env of `val` (`Int` snapshot) and
+/// `ref` (`VariablePointer`) entries — the two payload shapes T1c produces.
+fn arb_closure() -> impl Strategy<Value = Value> {
+    let entry = (arb_name_id(), any::<bool>(), arb_def_id(), any::<i32>()).prop_map(
+        |(name, is_ref, cell, n)| ClosureEnvEntry {
+            name,
+            is_ref,
+            payload: if is_ref {
+                Value::VariablePointer(cell)
+            } else {
+                Value::Int(n)
+            },
+        },
+    );
+    (arb_def_id(), prop::collection::vec(entry, 0..4))
+        .prop_map(|(target, env)| Value::closure(target, env))
 }
 
 fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ScopeLineTable)> {
@@ -152,6 +223,7 @@ fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ScopeLineT
                     counting_flags,
                     path_hash: 0,
                     param_count,
+                    params: Vec::new(),
                     local,
                 };
                 let lt = ScopeLineTable {
@@ -247,6 +319,8 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                     address_paths,
                     name_table,
                     list_literals: vec![],
+                    literal_pool: vec![],
+                    struct_shapes: vec![],
                     source_checksum: 0,
                 }
             },
@@ -271,10 +345,10 @@ proptest! {
         prop_assert_eq!(index.file_size as usize, buf.len());
 
         // Correct version.
-        prop_assert_eq!(index.version, 3);
+        prop_assert_eq!(index.version, 4);
 
-        // Exactly 10 sections in canonical order.
-        prop_assert_eq!(index.sections.len(), 10);
+        // Exactly 11 sections in canonical order.
+        prop_assert_eq!(index.sections.len(), 12);
         prop_assert_eq!(index.sections[0].kind, SectionKind::NameTable);
         prop_assert_eq!(index.sections[1].kind, SectionKind::Variables);
         prop_assert_eq!(index.sections[2].kind, SectionKind::ListDefs);
@@ -285,6 +359,7 @@ proptest! {
         prop_assert_eq!(index.sections[7].kind, SectionKind::Labels);
         prop_assert_eq!(index.sections[8].kind, SectionKind::ListLiterals);
         prop_assert_eq!(index.sections[9].kind, SectionKind::AddressPaths);
+        prop_assert_eq!(index.sections[10].kind, SectionKind::LiteralPool);
 
         let header_size = u32::try_from(index.header_size()).unwrap();
 

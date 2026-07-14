@@ -1,10 +1,23 @@
 //! Dump recorded episodes to see what the harness captures.
 #![expect(clippy::unwrap_used, clippy::print_stderr)]
 
-use brink_test_harness::{ExploreConfig, explore, record_from_ink_json};
+use brink_test_harness::{ExploreConfig, RunConfig, explore, record};
 
 fn load(path: &str) -> String {
     std::fs::read_to_string(path).unwrap()
+}
+
+/// Compile a `.ink` fixture, link, and record an episode with the given inputs.
+fn record_from_ink(ink_path: &str, inputs: &[usize]) -> brink_test_harness::Episode {
+    let data = brink_compiler::compile_path(std::path::Path::new(ink_path))
+        .unwrap()
+        .data;
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let config = RunConfig {
+        inputs: inputs.to_vec(),
+        max_steps: 10_000,
+    };
+    record(&std::sync::Arc::new(program), line_tables, &config)
 }
 
 fn print_episode(ep: &brink_test_harness::Episode, label: &str) {
@@ -48,8 +61,10 @@ fn print_episode(ep: &brink_test_harness::Episode, label: &str) {
 
 #[test]
 fn dump_minimal() {
-    let json = load("../../../tests/tier1/basics/I001-minimal-story/story.ink.json");
-    let ep = record_from_ink_json(&json, &[]);
+    let ep = record_from_ink(
+        "../../../tests/tier1/basics/I001-minimal-story/story.ink",
+        &[],
+    );
     print_episode(&ep, "I001 — minimal story (no choices)");
 
     // Also dump as JSON to verify serde roundtrip
@@ -66,10 +81,10 @@ fn dump_minimal() {
 
 #[test]
 fn dump_once_only_json() {
-    let json = load(
-        "../../../tests/tier1/choices/I079-once-only-choices-can-link-back-to-self/story.ink.json",
+    let ep = record_from_ink(
+        "../../../tests/tier1/choices/I079-once-only-choices-can-link-back-to-self/story.ink",
+        &[0, 0],
     );
-    let ep = record_from_ink_json(&json, &[0, 0]);
     let serialized = serde_json::to_string_pretty(&ep).unwrap();
     eprintln!("── I079 JSON ──");
     eprintln!("{serialized}");
@@ -81,34 +96,36 @@ fn dump_once_only_json() {
 
 #[test]
 fn dump_once_only_choices() {
-    let json = load(
-        "../../../tests/tier1/choices/I079-once-only-choices-can-link-back-to-self/story.ink.json",
-    );
     // Choose first, then first again → fallback fires → end
-    let ep = record_from_ink_json(&json, &[0, 0]);
+    let ep = record_from_ink(
+        "../../../tests/tier1/choices/I079-once-only-choices-can-link-back-to-self/story.ink",
+        &[0, 0],
+    );
     print_episode(&ep, "I079 — once-only choices [0, 0]");
 }
 
 #[test]
 fn dump_tower_of_hanoi_3() {
-    let json = load("../../../tests/tier3/lists/tower-of-hanoi/story.ink.json");
     let input_str = load("../../../tests/tier3/lists/tower-of-hanoi/input.txt");
     let inputs: Vec<usize> = input_str
         .lines()
         .filter(|l| !l.is_empty())
         .filter_map(|l| l.trim().parse().ok())
         .collect();
-    let ep = record_from_ink_json(&json, &inputs);
+    let ep = record_from_ink(
+        "../../../tests/tier3/lists/tower-of-hanoi/story.ink",
+        &inputs,
+    );
     print_episode(&ep, "Tower of Hanoi (3 discs)");
 }
 
 #[test]
 fn dump_explore_once_only() {
-    let json = load(
-        "../../../tests/tier1/choices/I079-once-only-choices-can-link-back-to-self/story.ink.json",
-    );
-    let ink: brink_json::InkJson = serde_json::from_str(&json).unwrap();
-    let data = brink_converter::convert(&ink).unwrap();
+    let data = brink_compiler::compile_path(std::path::Path::new(
+        "../../../tests/tier1/choices/I079-once-only-choices-can-link-back-to-self/story.ink",
+    ))
+    .unwrap()
+    .data;
     let (program, line_tables) = brink_runtime::link(&data).unwrap();
 
     let config = ExploreConfig {

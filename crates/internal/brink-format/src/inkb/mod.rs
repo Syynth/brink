@@ -31,13 +31,15 @@ pub use read::{
     read_inkb, read_inkb_index, read_section_address_paths, read_section_addresses,
     read_section_containers, read_section_externals, read_section_line_tables,
     read_section_list_defs, read_section_list_items, read_section_list_literals,
-    read_section_name_table, read_section_variables,
+    read_section_literal_pool, read_section_name_table, read_section_struct_shapes,
+    read_section_variables,
 };
 pub use write::{
     assemble_inkb, write_inkb, write_section_address_paths, write_section_addresses,
     write_section_containers, write_section_externals, write_section_line_tables,
     write_section_list_defs, write_section_list_items, write_section_list_literals,
-    write_section_name_table, write_section_variables,
+    write_section_literal_pool, write_section_name_table, write_section_struct_shapes,
+    write_section_variables,
 };
 
 use core::ops::Range;
@@ -54,13 +56,16 @@ pub(crate) const MAGIC: &[u8; 4] = b"INKB";
 /// v2 added `ContainerDef::param_count` to the Containers section.
 /// v3 added the `local` scope bit to `GlobalVarDef` (Variables section) and
 /// `ContainerDef` (Containers section) — see `docs/directive-annotations-spec.md`.
-pub(crate) const VERSION: u16 = 3;
+/// v4 added the collection value tags `VAL_ARRAY`/`VAL_MAP` (tree encoding) and
+/// froze the reserved Tier-1 value-tag/section/opcode surface (the §9 one-bump
+/// rule of `docs/value-model-spec.md`) — see `docs/format-v4-rfc.md`.
+pub(crate) const VERSION: u16 = 4;
 /// Fixed-size preamble: magic + version + section count + reserved + file size + checksum.
 pub(crate) const HEADER_PREAMBLE: usize = 16;
 /// Each offset table entry: kind(1) + reserved(3) + offset(4)
 pub(crate) const SECTION_ENTRY_SIZE: usize = 8;
 /// Number of sections in the current format.
-pub(crate) const SECTION_COUNT: u8 = 10;
+pub(crate) const SECTION_COUNT: u8 = 12;
 
 // Value type tags
 pub(crate) const VAL_INT: u8 = 0x00;
@@ -72,6 +77,31 @@ pub(crate) const VAL_DIVERT_TARGET: u8 = 0x05;
 pub(crate) const VAL_NULL: u8 = 0x06;
 pub(crate) const VAL_VAR_POINTER: u8 = 0x07;
 pub(crate) const VAL_FRAGMENT_REF: u8 = 0x08;
+// v4 collection tags (`docs/format-v4-rfc.md` §1). Tree encoding: sharing is
+// not preserved on the wire — a snapshot serializes as a plain nested tree.
+pub(crate) const VAL_ARRAY: u8 = 0x09;
+pub(crate) const VAL_MAP: u8 = 0x0A;
+// TM-4 (`docs/typed-mode-spec.md` §6 / `docs/value-model-spec.md` §11c):
+// closed-shape records. `docs/format-v4-rfc.md` §1: `ShapeId (u32 into
+// StructShapes), then field values in shape order`.
+pub(crate) const VAL_RECORD: u8 = 0x0F;
+// T1c (`docs/t1c-spec.md` §6, `docs/format-v4-rfc.md` §1): function values.
+// `VAL_FN_REF` = the zero-bound case (a `DefinitionId`); `VAL_CLOSURE` =
+// `DefinitionId`, u16 env count, then env entries `{NameId, kind u8 (0=val,
+// 1=ref), value}`. Numeric assignments were frozen by the one-bump rule; this
+// PR (T1c-2) materializes them.
+pub(crate) const VAL_FN_REF: u8 = 0x0B;
+pub(crate) const VAL_CLOSURE: u8 = 0x0C;
+// T1d (`docs/t1d-spec.md` §2, `docs/format-v4-rfc.md` §1): opaque
+// host-resource tokens. `kind NameId, u64 id` — no live pointer, no
+// dedicated opcode; handles enter the script world only via bindings.
+pub(crate) const VAL_HANDLE: u8 = 0x0D;
+
+// Reserved v4 value tags — numeric assignments frozen by the one-bump rule,
+// emitted by nothing in 4.0 (each is materialized when its milestone lands,
+// still under VERSION 4). The strict reader rejects them until then because no
+// `Value` variant exists to decode into. See `docs/format-v4-rfc.md` §1:
+//   0x0E VAL_PROJECTION (T1e)
 
 // LineContent tags
 pub(crate) const LINE_PLAIN: u8 = 0x00;
@@ -112,7 +142,28 @@ pub enum SectionKind {
     Labels = 0x08,
     ListLiterals = 0x09,
     AddressPaths = 0x0A,
+    /// T1b `LiteralPool` (`docs/format-v4-rfc.md` §2): content-hash
+    /// deduplicated constant values referenced by `PushLiteral(idx)`.
+    /// Additive alongside `ListLiterals` — see the T1b-2 PR description for
+    /// why the RFC's `ListLiterals` absorption is deferred, not done here.
+    LiteralPool = 0x0B,
+    /// TM-4 `StructShapes` (`docs/typed-mode-spec.md` §6): one entry per
+    /// declared `STRUCT` — shape id, name, ordered field names. Reserved
+    /// (count always 0) through 4.0; this PR lands the section's real
+    /// encoding at the format layer only — nothing in the compiler emits a
+    /// non-empty table yet (see the PR description's scope note).
+    StructShapes = 0x0C,
 }
+
+// Reserved v4 section kinds — numeric assignments frozen by the §9 one-bump
+// rule (`docs/format-v4-rfc.md` §2 "Sections"), emitted by nothing in 4.0.
+// Deliberately NOT a `SectionKind` variant: `from_u8` has no match arm for
+// this, so the strict reader keeps rejecting it (`InvalidSectionKind`) until
+// its milestone lands and a real variant is added, the same discipline
+// `StructShapes` itself followed before this PR.
+//   0x0D EffectRows    — reserved, count always 0 in 4.0, section-locally
+//                        versioned so T2 can define the row encoding without
+//                        another format bump
 
 impl SectionKind {
     pub(crate) fn from_u8(tag: u8) -> Result<Self, DecodeError> {
@@ -127,6 +178,8 @@ impl SectionKind {
             0x08 => Ok(Self::Labels),
             0x09 => Ok(Self::ListLiterals),
             0x0A => Ok(Self::AddressPaths),
+            0x0B => Ok(Self::LiteralPool),
+            0x0C => Ok(Self::StructShapes),
             _ => Err(DecodeError::InvalidSectionKind(tag)),
         }
     }
@@ -184,4 +237,28 @@ pub(crate) fn safe_capacity(
     let remaining = buf_len.saturating_sub(offset);
     let max_possible = remaining.checked_div(min_element_size).unwrap_or(remaining);
     count.min(max_possible)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `EffectRows` (0x0D, `docs/format-v4-rfc.md` §2) is numbered but
+    /// deliberately not a `SectionKind` variant — the strict reader must keep
+    /// rejecting it until its milestone lands. `LiteralPool` (0x0B)
+    /// graduated to a real section in T1b-2 (#570); `StructShapes` (0x0C)
+    /// graduates here (TM-4, #620).
+    #[test]
+    fn from_u8_rejects_reserved_v4_sections() {
+        let tag = 0x0Du8;
+        let err = SectionKind::from_u8(tag).unwrap_err();
+        assert_eq!(err, DecodeError::InvalidSectionKind(tag));
+    }
+
+    #[test]
+    fn from_u8_accepts_all_current_sections() {
+        for tag in 0x01u8..=0x0C {
+            assert!(SectionKind::from_u8(tag).is_ok());
+        }
+    }
 }

@@ -1525,3 +1525,89 @@ fn error_missing_operand() {
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
 }
+
+// ── O. T1c function values (docs/t1c-spec.md §2) ────────────────────
+
+#[test]
+fn fn_literal_target_only() {
+    assert_equivalent(
+        parse("~ f = #fn(heal)\n"),
+        cst!(SOURCE_FILE {
+            LOGIC_LINE {
+                ASSIGNMENT [EQ] {
+                    PATH
+                    FN_LITERAL [HASH, IDENT, L_PAREN, R_PAREN] {
+                        PATH
+                    }
+                }
+            }
+        }),
+    );
+}
+
+#[test]
+fn fn_literal_target_and_args() {
+    assert_equivalent(
+        parse("~ f = #fn(heal, player_hp, 5)\n"),
+        cst!(SOURCE_FILE {
+            LOGIC_LINE {
+                ASSIGNMENT [EQ] {
+                    PATH
+                    FN_LITERAL [HASH, IDENT, L_PAREN, COMMA, COMMA, R_PAREN] {
+                        PATH
+                        PATH
+                        INTEGER_LIT
+                    }
+                }
+            }
+        }),
+    );
+}
+
+#[test]
+fn fn_literal_error_missing_rparen() {
+    let src = "~ f = #fn(heal, 5\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(
+        !p.errors().is_empty(),
+        "expected parse error for missing `)` in #fn literal"
+    );
+}
+
+#[test]
+fn fn_literal_error_non_name_target() {
+    // `#fn(1)` — the target must be a static name, not an expression
+    // (docs/t1c-spec.md §2: "a static reference, not an expression").
+    let src = "~ f = #fn(1)\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(
+        !p.errors().is_empty(),
+        "expected parse error for a non-name #fn target"
+    );
+}
+
+#[test]
+fn fuzz_fn_literal_after_unflushed_whitespace_in_multiline_block() {
+    // Regression for a fuzzer-discovered panic (parse_lossless): a
+    // `MULTILINE_BLOCK`'s `conditional_with_expr_standalone` path calls
+    // `expression()` without first flushing trivia via `skip_ws()`.
+    // `skip_blank_lines`'s own `current() == NEWLINE` loop guard is
+    // trivia-skipping-aware, so it under-reports when a leading
+    // `WHITESPACE` token still needs flushing — leaving `self.pos` sitting
+    // on that `WHITESPACE` when `expression()` → `atom()` dispatches into
+    // `fn_literal` on the (correctly trivia-skip-detected) `#fn(` ahead.
+    // `fn_literal`'s first `bump()` then consumes the *whitespace* instead
+    // of the sigil `#`, desyncing every subsequent `bump_assert` call by
+    // one token and firing `bump_assert(IDENT)` on an actual `HASH` —
+    // `debug_assert_eq!` panic in debug builds. The parser must degrade to
+    // a parse error instead of panicking here.
+    let src = "{\n #fn(";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(
+        !p.errors().is_empty(),
+        "expected recovery errors, not a panic"
+    );
+}

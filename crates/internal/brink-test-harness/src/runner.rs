@@ -223,57 +223,6 @@ pub fn record(
     }
 }
 
-/// Convenience: parse ink.json, convert, link, and record an episode.
-pub fn record_from_ink_json(json_str: &str, inputs: &[usize]) -> Episode {
-    let ink: brink_json::InkJson = match serde_json::from_str(json_str) {
-        Ok(ink) => ink,
-        Err(e) => {
-            return Episode {
-                steps: Vec::new(),
-                outcome: Outcome::Error(format!("json parse error: {e}")),
-                choice_path: Vec::new(),
-                initial_state: StateSnapshot {
-                    globals: Vec::new(),
-                },
-            };
-        }
-    };
-
-    let data = match brink_converter::convert(&ink) {
-        Ok(data) => data,
-        Err(e) => {
-            return Episode {
-                steps: Vec::new(),
-                outcome: Outcome::Error(format!("convert error: {e}")),
-                choice_path: Vec::new(),
-                initial_state: StateSnapshot {
-                    globals: Vec::new(),
-                },
-            };
-        }
-    };
-
-    let (program, line_tables) = match brink_runtime::link(&data) {
-        Ok(p) => p,
-        Err(e) => {
-            return Episode {
-                steps: Vec::new(),
-                outcome: Outcome::Error(format!("link error: {e}")),
-                choice_path: Vec::new(),
-                initial_state: StateSnapshot {
-                    globals: Vec::new(),
-                },
-            };
-        }
-    };
-
-    let config = RunConfig {
-        inputs: inputs.to_vec(),
-        max_steps: 10_000,
-    };
-    record(&std::sync::Arc::new(program), line_tables, &config)
-}
-
 /// Quick text-only output from a program with pre-supplied choice inputs.
 pub fn run_text(
     program: std::sync::Arc<Program>,
@@ -312,14 +261,4 @@ pub fn run_text(
     }
 
     Err("exceeded 10000 steps".into())
-}
-
-/// Convenience: parse ink.json, convert, link, and run for text output.
-pub fn run_text_from_ink_json(json_str: &str, inputs: &[usize]) -> Result<String, String> {
-    let ink: brink_json::InkJson =
-        serde_json::from_str(json_str).map_err(|e| format!("json parse error: {e}"))?;
-    let data = brink_converter::convert(&ink).map_err(|e| format!("convert error: {e}"))?;
-    let (program, line_tables) =
-        brink_runtime::link(&data).map_err(|e| format!("link error: {e}"))?;
-    run_text(std::sync::Arc::new(program), line_tables, inputs)
 }

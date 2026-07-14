@@ -179,8 +179,10 @@ Some text.
 }
 
 #[test]
-#[ignore = "flaky — intermittent failures in CI and local runs"]
 fn diagnostics_for_scene1_ink() {
+    // Backstop cap on the wait loop below — see that loop's comment.
+    const MAX_MESSAGES: u64 = 2000;
+
     let bin = env!("CARGO_BIN_EXE_brink-lsp");
 
     let mut child = std::process::Command::new(bin)
@@ -239,29 +241,36 @@ fn diagnostics_for_scene1_ink() {
         }),
     );
 
-    // Send a dummy request so we can collect notifications that arrived
-    // between didOpen and this response.
-    send(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/documentSymbol",
-            "params": {
-                "textDocument": { "uri": file_uri }
-            }
-        }),
+    // Wait for a background pass covering the file to complete. The settling
+    // condition is the `$/brink/backgroundAnalysisComplete` signal (#695) —
+    // NOT "at least one publishDiagnostics arrived". scene1.ink is a *clean*
+    // file, and the server suppresses an empty first publish for a
+    // never-published file (`DiagnosticsPublisher`, #615, matching the
+    // background loop's long-standing behavior), so a correct run legitimately
+    // emits ZERO diagnostics for it. Requiring a publish is exactly what hung
+    // this test once empty publishes were suppressed. Collect any diagnostics
+    // publishes that do arrive, for reporting. The message cap is only a
+    // backstop against a genuine hang/regression.
+    let mut diag_notifications: Vec<Value> = Vec::new();
+    let mut analysis_done = false;
+    for _ in 0..MAX_MESSAGES {
+        let msg = recv(&mut stdout);
+        if msg["method"] == "textDocument/publishDiagnostics" && msg["params"]["uri"] == file_uri {
+            diag_notifications.push(msg);
+        } else if msg["method"] == "$/brink/backgroundAnalysisComplete"
+            && msg["params"]["file_count"].as_u64().unwrap_or(0) >= 1
+        {
+            analysis_done = true;
+            break;
+        }
+    }
+    assert!(
+        analysis_done,
+        "background analysis never signaled completion for {file_uri} \
+         within {MAX_MESSAGES} messages"
     );
 
-    let (_symbols_resp, notifications) = recv_response(&mut stdout, 2);
-
-    // Find publishDiagnostics notifications
-    let diag_notifications: Vec<&Value> = notifications
-        .iter()
-        .filter(|n| n["method"] == "textDocument/publishDiagnostics")
-        .collect();
-
-    // Print diagnostics for inspection
+    // Report whatever diagnostics were published (may be none — see above).
     for note in &diag_notifications {
         let diags = note["params"]["diagnostics"]
             .as_array()
@@ -287,13 +296,6 @@ fn diagnostics_for_scene1_ink() {
         }
     }
 
-    // Assert we got at least one publishDiagnostics notification
-    assert!(
-        !diag_notifications.is_empty(),
-        "expected at least one publishDiagnostics notification"
-    );
-
-    // For now, just report what we got. We can tighten assertions later.
     let all_diags: Vec<&Value> = diag_notifications
         .iter()
         .flat_map(|n| n["params"]["diagnostics"].as_array().unwrap().iter())
@@ -582,4 +584,279 @@ Bravo content.
     drop(stdin);
     drop(stdout);
     let _ = child.wait();
+}
+
+/// Run an LSP session with the given `initializationOptions.dialect` (or
+/// `None` to omit it, exercising the `StrictInk` default), open `source`,
+/// and return the diagnostics from the *last background-analysis*
+/// `publishDiagnostics` notification observed for that file's URI.
+///
+/// Background analysis (`analysis_loop`, #599) runs on a separate tokio task
+/// woken by a `Notify`, so its diagnostics can arrive after a same-id
+/// round-trip response — unlike per-file parse diagnostics, which publish
+/// synchronously inside `did_open`. Rather than polling for a fixed number
+/// of rounds (#695 — that flaked under load: a slow/contended machine could
+/// blow through the deadline before the background pass ever completed),
+/// this waits for the server's own `$/brink/backgroundAnalysisComplete`
+/// completion signal, fired unconditionally at the end of every pass — the
+/// wait condition is "the background analysis actually finished a pass that
+/// includes our file", not "some wall-clock budget elapsed". A generous
+/// message-count hard cap remains as a backstop against a genuine hang/
+/// regression (never firing, or never including the file), matching the
+/// project's "guard against unbounded growth" rule for polling loops.
+///
+/// Only *version-less* publishes count toward the returned diagnostics
+/// (#615). The `did_open` handler's own per-file publish (parse + lowering
+/// only — no analyzer diagnostics) runs on the notification-handler task,
+/// concurrently with the background loop. When the `initialized`-triggered
+/// pass snapshots the db after `didOpen`'s content update, it reports
+/// `file_count == 1` and publishes the full analysis set — but under CI
+/// load, the delayed per-file publish could land on the wire *between*
+/// that pass's publish and its completion signal, so "last publish before
+/// the completion" observed the parse-only set and analyzer-diagnostic
+/// assertions flaked. The server tags per-file publishes with the client
+/// document version (`PublishDiagnosticsParams.version`); background
+/// publishes carry none (they analyze a db snapshot, not a specific
+/// client document version), so filtering to version-less publishes is
+/// order-insensitive: whichever way the tasks interleave, the last
+/// background publish before the first file-covering completion is that
+/// pass's analysis set (or absent, meaning the set is empty — the
+/// background loop suppresses never-published empty sets).
+fn diagnostics_after_background_analysis(dialect: Option<&str>, source: &str) -> Vec<Value> {
+    diagnostics_after_background_analysis_with_types(dialect, None, source)
+}
+
+/// Same as [`diagnostics_after_background_analysis`], but also sets
+/// `initializationOptions.types` (`"strict"`/`"gradual"`, or `None` to omit
+/// it, exercising the `Gradual` default) — #660's LSP-side counterpart of
+/// the `dialect` option.
+fn diagnostics_after_background_analysis_with_types(
+    dialect: Option<&str>,
+    types: Option<&str>,
+    source: &str,
+) -> Vec<Value> {
+    // Condition-driven wait (#695): the settling condition is the server's
+    // own `$/brink/backgroundAnalysisComplete` signal reporting a pass whose
+    // db snapshot already includes our (single, just-opened) file — not a
+    // fixed number of rounds or a sleep. `MAX_MESSAGES` is a generous hard
+    // cap purely as a backstop against a genuine hang/regression (the signal
+    // never arriving), matching the project's "guard against unbounded
+    // growth" rule; it is not the intended exit path.
+    const MAX_MESSAGES: u64 = 2000;
+
+    let bin = env!("CARGO_BIN_EXE_brink-lsp");
+
+    let mut child = Command::new(bin)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start brink-lsp");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    let mut init_params = json!({
+        "capabilities": {},
+        "rootUri": null,
+    });
+    if dialect.is_some() || types.is_some() {
+        let mut opts = serde_json::Map::new();
+        if let Some(d) = dialect {
+            opts.insert("dialect".to_string(), json!(d));
+        }
+        if let Some(t) = types {
+            opts.insert("types".to_string(), json!(t));
+        }
+        init_params["initializationOptions"] = Value::Object(opts);
+    }
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": init_params,
+        }),
+    );
+    let (_init_resp, _) = recv_response(&mut stdout, 1);
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }),
+    );
+
+    let file_uri = "file:///tmp/dialect_test_story.ink";
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "ink",
+                    "version": 1,
+                    "text": source,
+                }
+            }
+        }),
+    );
+
+    let mut last_diags_for_uri: Vec<Value> = Vec::new();
+    let mut settled = false;
+    for _ in 0..MAX_MESSAGES {
+        let msg = recv(&mut stdout);
+        if msg["method"] == "textDocument/publishDiagnostics"
+            && msg["params"]["uri"] == file_uri
+            // Versioned publishes are `did_open`'s per-file (parse/lowering
+            // only) set, which can interleave anywhere relative to the
+            // background pass — only version-less background-analysis
+            // publishes are the subject here (#615, see helper docs).
+            && msg["params"]["version"].is_null()
+        {
+            last_diags_for_uri = msg["params"]["diagnostics"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+        } else if msg["method"] == "$/brink/backgroundAnalysisComplete" {
+            // A pass triggered by server startup (`initialized`) can race
+            // ahead of our `didOpen` and report `file_count == 0` — keep
+            // waiting until a pass actually reflects the file we opened.
+            let file_count = msg["params"]["file_count"].as_u64().unwrap_or(0);
+            if file_count >= 1 {
+                settled = true;
+                break;
+            }
+        }
+    }
+
+    assert!(
+        settled,
+        "background analysis never signaled completion for {file_uri} \
+         within {MAX_MESSAGES} messages"
+    );
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+
+    last_diags_for_uri
+}
+
+/// #599: the background `analysis_loop` must analyze under the
+/// client-declared dialect, not always default to `StrictInk`. A
+/// brink-dialect session must NOT see `E051` for valid brink-extension
+/// syntax (postfix indexing) — before the fix, `analysis_loop` called bare
+/// `brink_analyzer::analyze` with no `AnalysisOptions`, so this always
+/// spuriously fired regardless of the declared dialect.
+#[test]
+fn background_analysis_uses_declared_brink_dialect_no_e051() {
+    let source = "\
+VAR a = 0
+VAR x = 0
+== start ==
+~ x = a[0]
+Hello.
+-> DONE
+";
+    let diags = diagnostics_after_background_analysis(Some("brink"), source);
+    let e051: Vec<&Value> = diags
+        .iter()
+        .filter(|d| d["code"].as_str() == Some("E051"))
+        .collect();
+    assert!(
+        e051.is_empty(),
+        "brink-dialect session should not see E051 for extension syntax, got: {diags:?}"
+    );
+}
+
+/// #599 counterpart: a strict-ink session (explicit `"strict-ink"`, and
+/// separately the default with no `dialect` declared at all) must still
+/// flag the same construct as `E051` — the fix must not blanket-disable the
+/// gate, only thread through the client's actual choice.
+#[test]
+fn background_analysis_uses_declared_strict_ink_dialect_still_flags_e051() {
+    let source = "\
+VAR a = 0
+VAR x = 0
+== start ==
+~ x = a[0]
+Hello.
+-> DONE
+";
+    for dialect in [Some("strict-ink"), None] {
+        let diags = diagnostics_after_background_analysis(dialect, source);
+        let e051: Vec<&Value> = diags
+            .iter()
+            .filter(|d| d["code"].as_str() == Some("E051"))
+            .collect();
+        assert!(
+            !e051.is_empty(),
+            "strict-ink session (dialect={dialect:?}) should still flag E051 \
+             for extension syntax, got: {diags:?}"
+        );
+    }
+}
+
+/// #660: the background `analysis_loop` must analyze under the
+/// client-declared TM-3 typed-mode policy, not always default to `Gradual`.
+/// `types = strict` under the default `strict-ink` dialect is a
+/// project-level config error (`E064`) — the LSP surface must reach this the
+/// same way the compiler CLI's `--types strict` does. Before #660,
+/// `initialize` had no `types` handler at all, so this option was silently
+/// ignored.
+#[test]
+fn background_analysis_uses_declared_strict_types_flags_e064_without_brink_dialect() {
+    let source = "-> END\n";
+    let diags = diagnostics_after_background_analysis_with_types(None, Some("strict"), source);
+    let e064: Vec<&Value> = diags
+        .iter()
+        .filter(|d| d["code"].as_str() == Some("E064"))
+        .collect();
+    assert!(
+        !e064.is_empty(),
+        "types=strict + dialect=strict-ink (default): expected E064, got: {diags:?}"
+    );
+}
+
+/// #660 counterpart: `types = strict` + `dialect = brink` turns on the
+/// Unknown-escape check (`E065`) — proving the LSP plumbing reaches the real
+/// strict-mode checks, not just the config-error path.
+#[test]
+fn background_analysis_uses_declared_strict_types_with_brink_dialect_flags_e065() {
+    let source = "=== noop(x) ===\nHello.\n-> DONE\n";
+    let diags =
+        diagnostics_after_background_analysis_with_types(Some("brink"), Some("strict"), source);
+    let e065: Vec<&Value> = diags
+        .iter()
+        .filter(|d| d["code"].as_str() == Some("E065"))
+        .collect();
+    assert!(
+        !e065.is_empty(),
+        "types=strict + dialect=brink: expected E065 on unused param `x`, got: {diags:?}"
+    );
+}
+
+/// #660: the default `types` (no `initializationOptions.types` at all, i.e.
+/// `Gradual`) must NOT flag the same unused-param construct as `E065` — the
+/// handler must not blanket-enable strict checks, only thread through the
+/// client's actual choice.
+#[test]
+fn background_analysis_default_types_does_not_flag_e065() {
+    let source = "=== noop(x) ===\nHello.\n-> DONE\n";
+    let diags = diagnostics_after_background_analysis_with_types(Some("brink"), None, source);
+    let e065: Vec<&Value> = diags
+        .iter()
+        .filter(|d| d["code"].as_str() == Some("E065"))
+        .collect();
+    assert!(
+        e065.is_empty(),
+        "default types (gradual) must not flag E065: {diags:?}"
+    );
 }

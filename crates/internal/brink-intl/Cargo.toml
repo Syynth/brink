@@ -19,8 +19,7 @@ thiserror = { workspace = true }
 xliff2 = { workspace = true }
 
 [dev-dependencies]
-brink-converter = { path = "../brink-converter" }
-brink-json = { path = "../brink-json" }
+brink-compiler = { path = "../../brink-compiler" }
 brink-runtime = { path = "../../brink-runtime" }
 insta = { workspace = true, features = ["json"] }
 serde_json = { workspace = true }

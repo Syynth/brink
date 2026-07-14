@@ -29,6 +29,7 @@ pub fn symbol_kind_to_lsp(kind: brink_ir::SymbolKind) -> lsp_types::SymbolKind {
         brink_ir::SymbolKind::List => lsp_types::SymbolKind::ENUM,
         brink_ir::SymbolKind::ListItem => lsp_types::SymbolKind::ENUM_MEMBER,
         brink_ir::SymbolKind::Label => lsp_types::SymbolKind::KEY,
+        brink_ir::SymbolKind::Struct => lsp_types::SymbolKind::STRUCT,
     }
 }
 

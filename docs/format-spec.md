@@ -10,6 +10,8 @@ The `.inkb` and `.inkl` formats carry a `(MAGIC, VERSION)` header; the reader **
 
 Today these are **regenerable build artifacts** — produced from `.ink` on every compile, never decoupled from the compiler that made them — so the policy is deliberately simple: **regenerate on mismatch; no multi-version readers.** Maintaining back-compat parsers for bytes nobody persists would be premature complexity.
 
+**`.inkb` version history:** v2 added `ContainerDef::param_count`; v3 added the `local` scope bit to variables and containers; **v4** added the collection value tags `Array`/`Map` (tree encoding) and froze the reserved Tier-1 value-tag/section/opcode surface in a single planned bump (the §9 one-bump rule of `docs/value-model-spec.md`; RFC `docs/format-v4-rfc.md`). Per that rule, the remaining Tier-1 milestones (function values, handles, projections) add data using encodings already specified at v4 and do **not** bump the version — the writer and reader evolve together within VERSION 4 as each milestone's compiler surface begins emitting the reserved tags.
+
 This is distinct from the **save format** (`SAVE_FORMAT_VERSION`, `save.rs`), which *is* durable — written by players and expected to survive runtime updates — and is therefore *tolerant* by design (`LoadReport` reports what it couldn't apply rather than failing). Program metadata such as container layout does not affect save compatibility: saves reference visit counts and variables by `DefinitionId`, not by container byte layout.
 
 **When to revisit:** the single-version policy holds until a compiled artifact is first **shipped or cached decoupled from its compiler** — e.g. a game bundles a prebuilt `.inkb` against an independently-updating runtime, or the studio persists compiled bytes across versions. At that point, prefer making sections **length-framed and append-only (TLV-style)** — new fields always appended, sections self-describing — so an older reader can skip what it doesn't recognize, rather than maintaining N full parsers. (The container section's length-prefixed bytecode is already partway there.) Make that call when the first durable consumer appears, not before.
@@ -36,9 +38,8 @@ The linker resolves all `DefinitionId` references uniformly to compact runtime i
 | `0x03` | List definition | Name, items (name + ordinal each) |
 | `0x04` | List item | Origin list `DefinitionId`, ordinal, name |
 | `0x05` | External function | Name, arg count, optional fallback `DefinitionId` |
+| `0x06` | Struct declaration (TM-4b) | Compiler-side only — `brink-analyzer`'s `SymbolIndex` bookkeeping for a `STRUCT` name (duplicate detection, goto-def, resolution). Never serialized to `.inkb`; the runtime-facing shape identity is the separate `ShapeId`/`StructShapes` space (§ StructShapes section, tag `0x0C`), populated once TM-4c's codegen lowers struct constructs. |
 | `0x07` | Local variable | Params and temps — scoped to a container, not serialized in bytecode |
-
-Note: tag `0x06` is unassigned.
 
 ## Addresses (tag `0x01`)
 
@@ -65,7 +66,7 @@ Each container has a primary address (tag `0x01`) plus a `ContainerDef` with:
   - Bit 1: `TURNS` — record which turn it was visited on
   - Bit 2: `COUNT_START_ONLY` — only count when entering at the start, not when re-entering mid-container
 - **Path hash** — `i32`, sum of char values from the container's ink path string. Used to seed the RNG for shuffle sequences.
-- **Param count** — `u8`, the number of parameters the container declares (a parameterized knot/stitch/function, e.g. `=== call(action, present) ===` has 2; `0` for the vast majority). The prologue binds them with that many leading `DeclareTemp`s. Lets the runtime arity-check a host-directed parameterized entry (`choose_path_string_with_args`) and `call_function`. The **converter** reference pipeline leaves this `0` (inklecate's JSON doesn't expose it); only the brink compiler populates the true count.
+- **Param count** — `u8`, the number of parameters the container declares (a parameterized knot/stitch/function, e.g. `=== call(action, present) ===` has 2; `0` for the vast majority). The prologue binds them with that many leading `DeclareTemp`s. Lets the runtime arity-check a host-directed parameterized entry (`choose_path_string_with_args`) and `call_function`. (Historical: `.inkb` files built by the retired converter reference pipeline left this `0` — inklecate's JSON didn't expose it.)
 - **Scope id** — `DefinitionId` of the lexical scope this container belongs to. For knots and stitches, `scope_id == id` (they ARE the scope). For gathers, choice targets, inline sequence wrappers, and other compiler-internal containers, `scope_id` is the enclosing knot or stitch. Used by the linker to associate containers with their scope's line table.
 
 ### Container hierarchy
@@ -98,7 +99,7 @@ Each variable definition has:
 
 `VAR` declarations are mutable globals. `CONST` declarations are immutable globals — they always exist in the format (visible, inspectable, debuggable). The compiler may inline CONST values as a build-time optimization controlled by a compiler flag, but the definition is always present. Attempting to `SetGlobal` on an immutable variable is a runtime error.
 
-Temporary variables (`temp`) have no format-level definition. They are call-frame-local — created by a `DeclareTemp` opcode during execution, stored in the current call frame's temp slot array, and discarded when the frame pops. Temp slot indices are assigned by the compiler/converter across the entire knot/function scope (including all child containers reached by flow entry), not per-container.
+Temporary variables (`temp`) have no format-level definition. They are call-frame-local — created by a `DeclareTemp` opcode during execution, stored in the current call frame's temp slot array, and discarded when the frame pops. Temp slot indices are assigned by the compiler across the entire knot/function scope (including all child containers reached by flow entry), not per-container.
 
 ### Bytecode instructions for variables
 
@@ -191,9 +192,9 @@ Int(i32) | Float(f32) | Bool(bool) | String(Rc<str>) | List(Rc<ListValue>) | Div
 
 `DivertTarget` holds a `DefinitionId` pointing to a container — used for variable divert targets (`VAR x = -> some_knot`).
 
-`VariablePointer(DefinitionId)` — a pointer to a global variable, used for `ref` parameters that target globals. The converter emits `PushVarPointer` to create these.
+`VariablePointer(DefinitionId)` — a pointer to a global variable, used for `ref` parameters that target globals. The compiler emits `PushVarPointer` to create these.
 
-`TempPointer { slot: u16, frame_depth: u16 }` — a runtime-only pointer to a temp variable in a specific call frame, used for `ref` parameters that target temps. The converter emits `PushTempPointer(slot)`, and the runtime resolves it to `TempPointer { slot, frame_depth: current_frame }` at execution time. `TempPointer` never appears in `.inkb` files — it exists only on the value stack and in call-frame temp slots during execution.
+`TempPointer { slot: u16, frame_depth: u16 }` — a runtime-only pointer to a temp variable in a specific call frame, used for `ref` parameters that target temps. The compiler emits `PushTempPointer(slot)`, and the runtime resolves it to `TempPointer { slot, frame_depth: current_frame }` at execution time. `TempPointer` never appears in `.inkb` files — it exists only on the value stack and in call-frame temp slots during execution.
 
 **Pointer semantics:** When a temp slot holds a `VariablePointer` or `TempPointer`, `SetTemp` writes through to the pointed-to location (global or target frame's temp) and `GetTemp` auto-dereferences to the pointed-to value. `GetTempRaw` pushes the raw value without dereferencing. `PushTempPointer` flattens double-indirection: if the temp already holds a pointer (`VariablePointer` or `TempPointer`), the existing pointer is pushed as-is rather than wrapping it in another `TempPointer`. This ensures nested ref passthrough (e.g., `fn_a(ref x)` calling `fn_b(ref x)`) works correctly.
 
@@ -386,6 +387,65 @@ The instruction set is organized into categories. Opcode byte values are defined
 
 Note: opcodes `0xB3` and `0xB4` are unassigned. List union and except are handled by `Add` and `Subtract` respectively, which are overloaded for list operands.
 
+#### Collection operations (`0xBE`–`0xC9`, reserved)
+
+Named in `docs/format-v4-rfc.md` §3 "Collections (T1a)"; numeric assignments
+are frozen by the §9 one-bump rule, contiguous and adjacent to List
+operations above. Not `Opcode` variants yet — there is no decode match arm
+for these bytes, so the strict reader rejects them (`UnknownOpcode`) until
+the T1a compiler surface begins emitting them.
+
+| Opcode | Description |
+|--------|-------------|
+| `0xBE` `ArrayNew(n)` | Pop `n` values, push a new array |
+| `0xBF` `MapNew(n)` | Pop `2n` values (key/value pairs), push a new map |
+| `0xC0` `IndexGet` | Pop index, pop collection, push element |
+| `0xC1` `IndexSet` | Pop value, pop index, pop collection, push updated collection |
+| `0xC2` `Len` | Pop collection, push length |
+| `0xC3` `MapGet` | Pop key, pop map, push value |
+| `0xC4` `MapInsert` | Pop value, pop key, pop map, push updated map |
+| `0xC5` `MapRemove` | Pop key, pop map, push updated map |
+| `0xC6` `MapContains` | Pop key, pop map, push whether map contains key |
+| `0xC7` `Keys` | Pop map, push array of keys |
+| `0xC8` `Values` | Pop map, push array of values |
+| `0xC9` `PushLiteral(u32)` | Push pooled literal by `LiteralPool` index; absorbs `PushList`/`ListLiterals` |
+
+Sharing-discipline ops (`TakeVar`, `StoreVarIfNew`, `EqVars` —
+`docs/value-model-spec.md` §6) and later Tier-1 opcode groups (functions,
+handles, projections, records — RFC §3) are named in the RFC but out of this
+reservation; each gets its own contiguous block, numbered when its own
+milestone lands.
+
+#### Sharing-discipline operations (`0xCA`–`0xCD`)
+
+Named in `docs/format-v4-rfc.md` §3 "Sharing discipline (T1a)"; semantics in
+`docs/value-model-spec.md` §5, §6, and §9. Numeric assignments are frozen by
+the §9 one-bump rule, contiguous and adjacent to the collection block above.
+`TakeGlobal`/`TakeTemp` are live as of T1b-4 (#576) — the RFC's generic
+`TakeVar(slot)` split into its two concrete slot kinds (a global
+`DefinitionId` and a temp `u16` don't share an operand encoding, so one
+opcode can't cover both). `StoreVarIfNew`/`EqVars` remain reserved (no
+`Opcode` variant — `decode`'s catch-all still rejects `0xCB`/`0xCC` as
+`UnknownOpcode`) until their own milestone.
+
+| Opcode | Description |
+|--------|-------------|
+| `0xCA` `TakeGlobal(DefinitionId)` | Move the value out of the named global, leaving `Null` behind — the take-half of the take → `make_mut` → write-back RMW discipline that closes the indexed-write COW cliff (value-model spec §5). No auto-dereference (mirrors `GetGlobal`/`SetGlobal` — a `ref`-param pointer lives in a temp, never a global). |
+| `0xCB` `StoreVarIfNew` (reserved) | Optional store-time keep-old-Arc cutoff: skip the write if the new value is structurally equal to the existing one (value-model spec §6) |
+| `0xCC` `EqVars(a, b)` (reserved) | Fused compare of two variable slots (peephole over `LoadVar a; LoadVar b; Eq`), with optional ref-collapse on equality (value-model spec §6) |
+| `0xCD` `TakeTemp(slot)` | Move the value out of the temp slot, leaving `Null` behind — `TakeGlobal`'s temp-slot counterpart. Auto-dereferences like `GetTemp`: if the slot holds a `VariablePointer`/`TempPointer` (a `ref` parameter), the *pointed-to* location is taken and left `Null`, while the pointer itself stays in the slot untouched. |
+
+`StoreVarIfNew`/`EqVars` are optional peephole/sharing optimizations, never
+required for correctness — v1 ships with just the `ptr_eq` equality fast
+path (spec §6). `TakeGlobal`/`TakeTemp` are load-bearing for the loop-append
+performance claim in spec §5 but never required for *correctness* either —
+the compiler's fallback (ordinary `GetGlobal`/`GetTemp` clone-based RMW,
+still used for chained indexed assignment, T1b-4 PR description) produces
+identical observable results, just without the O(1)-amortized guarantee.
+Later Tier-1 opcode groups (functions, handles, projections, records — RFC
+§3) remain named in the RFC but out of this reservation; each gets its own
+contiguous block, numbered when its own milestone lands.
+
 #### String eval (`0xE0`–`0xE1`)
 
 | Opcode | Description |
@@ -441,7 +501,7 @@ Note: opcodes `0xB3` and `0xB4` are unassigned. List union and except are handle
 Offset  Size   Field
 ------  -----  ------
 0       4      Magic: b"INKB"
-4       2      Version: u16 LE (= 1)
+4       2      Version: u16 LE (= 4)
 6       1      Section count: u8 (N entries in offset table)
 7       1      Reserved: 0x00
 8       4      File size: u32 LE (total bytes)
@@ -470,19 +530,50 @@ Each offset table entry (8 bytes):
 | `0x07` | Line tables | Per scope: `DefinitionId` + line entries (content + source hash + slot info + audio ref + source location each). The `DefinitionId` here is the lexical scope (knot/stitch), not a container. |
 | `0x08` | Labels | Per entry: address `DefinitionId` + container `DefinitionId` + byte offset |
 | `0x09` | List literals | Per entry: `ListValue` (items + origins) |
+| `0x0A` | Address paths | Per entry: qualified-path hash → target `DefinitionId` |
+
+**Reserved v4 sections** — numeric assignments are frozen by the §9 one-bump
+rule (`docs/format-v4-rfc.md` §2 "Sections") but not `SectionKind` variants
+yet — the strict reader rejects an offset-table entry tagged with one of
+these (`InvalidSectionKind`) until each section's milestone lands and adds a
+real variant + `from_u8` arm, the same discipline the reserved v4 value tags
+below already follow. `0x0B` `LiteralPool` (T1a; content-hash-deduplicated
+constant pool, absorbs `List literals` — `PushList` retires in favor of
+`PushLiteral(idx)` when the collection opcodes land), `0x0C` `StructShapes`
+(reserved, count always 0 in 4.0), `0x0D` `EffectRows` (reserved, count
+always 0 in 4.0, section-locally versioned so T2 can define the row encoding
+without another format bump).
 
 #### Value type tags in `.inkb`
 
-| Tag | Type |
-|-----|------|
-| `0x00` | Int |
-| `0x01` | Float |
-| `0x02` | Bool |
-| `0x03` | String |
-| `0x04` | List |
-| `0x05` | DivertTarget |
-| `0x06` | Null |
-| `0x07` | VariablePointer |
+| Tag | Type | Encoding |
+|-----|------|----------|
+| `0x00` | Int | `i32` LE |
+| `0x01` | Float | `f32` LE |
+| `0x02` | Bool | `u8` (0/1) |
+| `0x03` | String | length-prefixed UTF-8 |
+| `0x04` | List | item `DefinitionId`s + origin `DefinitionId`s |
+| `0x05` | DivertTarget | `DefinitionId` |
+| `0x06` | Null | (none) |
+| `0x07` | VariablePointer | `DefinitionId` |
+| `0x08` | FragmentRef | `u32` fragment index |
+| `0x09` | Array | `u32` len, then that many recursively-encoded values (v4) |
+| `0x0A` | Map | `u32` len, then that many `(key, value)` pairs **in insertion order** (v4) |
+
+**v4 collections** (`Array`/`Map`) use a plain tree encoding — a length prefix
+followed by recursively-encoded children. `Arc` sharing is **not** preserved on
+the wire (`docs/value-model-spec.md` §5); a snapshot serializes as a plain
+nested tree. Map keys are restricted to the scalar domain `int`/`string`/`bool`
+and are written with the corresponding scalar tag (`0x00`/`0x03`/`0x02`); the
+strict reader rejects any other key tag. Insertion order is semantic. The same
+tag surface is shared by the runtime transcript (`.brkt`) value encoding.
+
+**Reserved v4 value tags** — numeric assignments are frozen by the §9 one-bump
+rule but emitted by nothing in 4.0 (each is materialized when its Tier-1
+milestone lands, still under VERSION 4). The strict reader rejects them until
+then. `0x0B` `FnRef` (T1c), `0x0C` `Closure` (T1c), `0x0D` `Handle` (T1d),
+`0x0E` `Projection` (T1e), `0x0F` `Record` (reserved, typed-dialect era). See
+`docs/format-v4-rfc.md` §1 for their encodings.
 
 `TempPointer` is never serialized — it is runtime-only. During `.inkb` encoding, a `TempPointer` value is written as `Null`.
 

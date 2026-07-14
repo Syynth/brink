@@ -1,10 +1,14 @@
 use crate::SyntaxKind::{
-    COMMA, CONST_DECL, EQ, EXTERNAL_DECL, FILE_PATH, FUNCTION_PARAM_LIST, IDENT, IDENTIFIER,
-    INCLUDE_STMT, INTEGER, KW_CONST, KW_EXTERNAL, KW_INCLUDE, KW_LIST, KW_VAR, L_PAREN, LIST_DECL,
-    LIST_DEF, LIST_MEMBER, LIST_MEMBER_OFF, LIST_MEMBER_ON, NEWLINE, R_PAREN, VAR_DECL,
+    COLON, COMMA, CONST_DECL, EQ, EXTERNAL_DECL, FILE_PATH, FUNCTION_PARAM_LIST, HASH, IDENT,
+    IDENTIFIER, IMPORT_ITEM, IMPORT_LIST, IMPORT_MODULE, IMPORT_STMT, INCLUDE_STMT, INTEGER,
+    KW_CONST, KW_EXTERNAL, KW_IMPORT, KW_INCLUDE, KW_LIST, KW_VAR, L_BRACE, L_PAREN, LIST_DECL,
+    LIST_DEF, LIST_MEMBER, LIST_MEMBER_OFF, LIST_MEMBER_ON, NEWLINE, R_BRACE, R_PAREN, STRUCT_DECL,
+    STRUCT_FIELD_DECL, VAR_DECL,
 };
 
 use super::Parser;
+use super::expression::skip_balanced;
+use super::types::{at_type_annotation, type_annotation, type_expr};
 
 /// Parse `INCLUDE filepath\n`.
 ///
@@ -30,6 +34,96 @@ pub(crate) fn include_statement(p: &mut Parser<'_, '_>) {
     if p.at(NEWLINE) {
         p.bump();
     }
+    p.finish_node();
+}
+
+/// Parse an `IMPORT` statement (M-2, docs/modules-spec.md §2), both forms:
+///
+/// ```text
+/// import_statement = { "IMPORT" ~ INLINE_WS+ ~ (import_list ~ "FROM" ~ module | module) ~ NEWLINE }
+/// import_list      = { "{" ~ import_item ~ ("," ~ import_item)* ~ "}" }
+/// import_item      = { identifier ~ ("AS" ~ identifier)? }
+/// module           = { identifier }
+/// ```
+///
+/// `FROM`/`AS` are contextual soft keywords (plain `IDENT`s everywhere
+/// else); only `IMPORT` is a reserved token. Grammar is always superset-
+/// parsed; the brink-dialect gate rejects the whole statement under
+/// strict-ink downstream (the `#@module` precedent).
+pub(crate) fn import_statement(p: &mut Parser<'_, '_>) {
+    p.start_node(IMPORT_STMT);
+    p.bump(); // KW_IMPORT
+    p.skip_ws();
+
+    if p.at(L_BRACE) {
+        // Bare form: `IMPORT { a, b AS c } FROM mod`.
+        import_list(p);
+        p.skip_ws();
+        if p.at_kw_text("FROM") {
+            p.bump(); // contextual `FROM`
+        } else {
+            p.error("expected `FROM` after import list".into());
+        }
+        p.skip_ws();
+        import_module(p);
+    } else {
+        // Qualified form: `IMPORT mod`.
+        import_module(p);
+    }
+
+    if p.at(NEWLINE) {
+        p.bump();
+    }
+    p.finish_node();
+}
+
+/// Parse the `{ a, b AS c }` name list of a bare-form import.
+fn import_list(p: &mut Parser<'_, '_>) {
+    p.start_node(IMPORT_LIST);
+    p.bump(); // L_BRACE
+    p.skip_ws();
+    if !p.at(R_BRACE) {
+        import_item(p);
+        loop {
+            p.skip_ws();
+            if !p.eat(COMMA) {
+                break;
+            }
+            p.skip_ws();
+            if p.at(R_BRACE) {
+                break; // trailing comma tolerated
+            }
+            import_item(p);
+        }
+    }
+    p.skip_ws();
+    p.expect(R_BRACE);
+    p.finish_node();
+}
+
+/// Parse one `name` or `name AS alias` import item.
+fn import_item(p: &mut Parser<'_, '_>) {
+    p.start_node(IMPORT_ITEM);
+    p.start_node(IDENTIFIER);
+    p.expect_ident_or_keyword();
+    p.finish_node();
+    p.skip_ws();
+    if p.at_kw_text("AS") {
+        p.bump(); // contextual `AS`
+        p.skip_ws();
+        p.start_node(IDENTIFIER);
+        p.expect_ident_or_keyword();
+        p.finish_node();
+    }
+    p.finish_node();
+}
+
+/// Parse the module name of an import (both forms).
+fn import_module(p: &mut Parser<'_, '_>) {
+    p.start_node(IMPORT_MODULE);
+    p.start_node(IDENTIFIER);
+    p.expect_ident_or_keyword();
+    p.finish_node();
     p.finish_node();
 }
 
@@ -96,6 +190,11 @@ pub(crate) fn var_declaration(p: &mut Parser<'_, '_>) {
     p.start_node(IDENTIFIER);
     p.expect(IDENT);
     p.finish_node();
+    // Optional type annotation (TM-2, docs/typed-mode-spec.md §3):
+    // `VAR name: type = expr`.
+    if at_type_annotation(p) {
+        type_annotation(p);
+    }
     p.skip_ws();
     p.expect(EQ);
     p.skip_ws();
@@ -107,6 +206,10 @@ pub(crate) fn var_declaration(p: &mut Parser<'_, '_>) {
 }
 
 /// Parse `CONST ident = expr\n`.
+///
+/// ```text
+/// const_declaration = { "CONST" ~ INLINE_WS+ ~ identifier ~ type_annotation? ~ INLINE_WS* ~ "=" ~ INLINE_WS* ~ expression ~ NEWLINE }
+/// ```
 pub(crate) fn const_declaration(p: &mut Parser<'_, '_>) {
     p.start_node(CONST_DECL);
     p.bump(); // KW_CONST
@@ -114,6 +217,11 @@ pub(crate) fn const_declaration(p: &mut Parser<'_, '_>) {
     p.start_node(IDENTIFIER);
     p.expect(IDENT);
     p.finish_node();
+    // Optional type annotation (TM-2, docs/typed-mode-spec.md §3, "optional
+    // anywhere"): `CONST name: type = expr`.
+    if at_type_annotation(p) {
+        type_annotation(p);
+    }
     p.skip_ws();
     p.expect(EQ);
     p.skip_ws();
@@ -197,11 +305,120 @@ fn list_member(p: &mut Parser<'_, '_>) {
     p.finish_node();
 }
 
+/// Parse `STRUCT Name = #{ field: type, … }\n` (TM-4b,
+/// docs/typed-mode-spec.md §6, decl syntax amended PR #622).
+///
+/// The body takes the same braced `#{…}` shape as the construction literal,
+/// with types in value position — single-line legal, trailing comma
+/// allowed. Top-level only (unlike `VAR`/`CONST`/`LIST`, which C# allows at
+/// any statement level) — a struct shape is a project-wide type
+/// declaration, not knot-body state.
+///
+/// ```text
+/// struct_declaration = { "STRUCT" ~ IDENT ~ "=" ~ "#" ~ "{" ~ struct_field_decl_list? ~ "}" ~ NEWLINE }
+/// struct_field_decl_list = { struct_field_decl ~ ("," ~ struct_field_decl)* ~ ","? }
+/// struct_field_decl = { IDENT ~ ":" ~ type_expr }
+/// ```
+pub(crate) fn struct_declaration(p: &mut Parser<'_, '_>) {
+    p.start_node(STRUCT_DECL);
+    p.bump(); // "STRUCT" (IDENT, contextual — see `at_struct_decl`)
+    p.skip_ws();
+    p.start_node(IDENTIFIER);
+    p.expect(IDENT);
+    p.finish_node();
+    p.skip_ws();
+    p.expect(EQ);
+    p.skip_ws();
+    p.expect(HASH);
+    p.skip_ws();
+    p.bump_assert(L_BRACE);
+    if p.at_depth_limit() {
+        p.error("nesting depth limit exceeded".into());
+        skip_balanced(p, L_BRACE, R_BRACE);
+        p.finish_node();
+        return;
+    }
+    p.depth += 1;
+    skip_struct_body_trivia(p);
+    if p.current() != R_BRACE {
+        struct_field_decl(p);
+        loop {
+            skip_struct_body_trivia(p);
+            if !p.eat(COMMA) {
+                break;
+            }
+            skip_struct_body_trivia(p);
+            if p.current() == R_BRACE {
+                break; // trailing comma
+            }
+            struct_field_decl(p);
+        }
+    }
+    skip_struct_body_trivia(p);
+    p.expect(R_BRACE);
+    p.depth -= 1;
+    p.skip_ws();
+    if p.at(NEWLINE) {
+        p.bump();
+    }
+    p.finish_node();
+}
+
+/// Consume whitespace/comment trivia interleaved with `NEWLINE`s — unlike
+/// every other brace-delimited construct in this grammar (`#{…}` map
+/// literals, `~ { … }` blocks), a `STRUCT` declaration's body is legal
+/// across multiple physical lines (docs/typed-mode-spec.md §6: "single-line
+/// form is legal for short structs"; multi-line is the common case). Plain
+/// `Parser::skip_ws` never eats `NEWLINE` (it terminates lines/delimits
+/// blocks everywhere else in the grammar) — this is the one place a
+/// `NEWLINE` between two struct-body tokens is itself just layout. Every
+/// `NEWLINE` consumed here still lands as a token in the `STRUCT_DECL`
+/// subtree, so the source round-trips losslessly.
+fn skip_struct_body_trivia(p: &mut Parser<'_, '_>) {
+    loop {
+        p.skip_ws();
+        if p.current() == NEWLINE {
+            p.bump();
+        } else {
+            break;
+        }
+    }
+}
+
+/// `field : type_expr` — one field of a `STRUCT` declaration's body.
+fn struct_field_decl(p: &mut Parser<'_, '_>) {
+    p.start_node(STRUCT_FIELD_DECL);
+    p.start_node(IDENTIFIER);
+    p.expect_ident_or_keyword();
+    p.finish_node();
+    p.skip_ws();
+    p.expect(COLON);
+    p.skip_ws();
+    type_expr(p);
+    p.finish_node();
+}
+
+/// Returns `true` if the current token starts a `STRUCT` declaration
+/// (TM-4b) — a contextual (soft) keyword check like T1b's `if`/`while`/
+/// `for`: `STRUCT` stays a plain `IDENT` everywhere else, so an existing
+/// knot/variable/function named `STRUCT` is byte-for-byte unaffected. Full
+/// four-token lookahead (`STRUCT` `IDENT` `=` `#{`) disambiguates from any
+/// other use of the bare word. (Struct construction literals need no such
+/// helper — `expression.rs`'s atom parser peeks `IDENT` `#` `{` inline,
+/// which is unambiguous in expression position.)
+pub(crate) fn at_struct_decl(p: &Parser<'_, '_>) -> bool {
+    p.at_kw_text("STRUCT")
+        && p.nth(1) == IDENT
+        && p.nth(2) == EQ
+        && p.nth(3) == HASH
+        && p.nth(4) == L_BRACE
+}
+
 /// Returns `true` if the current token starts a declaration.
 pub(crate) fn at_declaration(p: &Parser<'_, '_>) -> bool {
     matches!(
         p.current(),
-        KW_INCLUDE | KW_EXTERNAL | KW_VAR | KW_CONST | KW_LIST
+        KW_INCLUDE | KW_IMPORT | KW_EXTERNAL | KW_VAR | KW_CONST | KW_LIST
     )
 }
 
@@ -216,6 +433,7 @@ pub(crate) fn at_inline_declaration(p: &Parser<'_, '_>) -> bool {
 pub(crate) fn declaration(p: &mut Parser<'_, '_>) {
     match p.current() {
         KW_INCLUDE => include_statement(p),
+        KW_IMPORT => import_statement(p),
         KW_EXTERNAL => external_declaration(p),
         KW_VAR => var_declaration(p),
         KW_CONST => const_declaration(p),

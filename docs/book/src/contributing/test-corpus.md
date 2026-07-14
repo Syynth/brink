@@ -20,10 +20,10 @@ Each test case is a directory containing:
 | File | Description |
 |------|-------------|
 | `story.ink` | The ink source file (ground truth) |
-| `story.ink.json` | Inklecate-compiled JSON output (reference) |
+| `story.ink.json` | Inklecate-compiled JSON output (kept only for oracle regeneration) |
 | `episodes/*.episode.json` | Recorded play-throughs with expected output |
 
-An episode records a sequence of continues and choice selections with the expected text output at each step. The test harness runs both pipelines (native compiler and converter) against each episode and compares results.
+An episode records a sequence of continues and choice selections with the expected text output at each step. The test harness compiles the `.ink` source with the native compiler, replays each episode, and compares the output turn-by-turn against the recording.
 
 ## Running corpus tests
 

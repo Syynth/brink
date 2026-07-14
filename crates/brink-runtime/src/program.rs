@@ -4,7 +4,7 @@ use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use brink_format::{CountingFlags, DefinitionId, ListValue, NameId, Value};
+use brink_format::{CountingFlags, DefinitionId, ListValue, NameId, ShapeId, Value};
 
 use crate::collections::Map as HashMap;
 
@@ -33,6 +33,9 @@ pub struct Program {
     pub(crate) root_idx: u32,
     /// List literal values referenced by `PushList(idx)`.
     pub(crate) list_literals: Vec<ListValue>,
+    /// The T1b literal pool: constant collection values referenced by
+    /// `PushLiteral(idx)` (`docs/format-v4-rfc.md` §2).
+    pub(crate) literal_pool: Vec<Value>,
     /// Per-item metadata keyed by item `DefinitionId`.
     pub(crate) list_item_map: HashMap<DefinitionId, ListItemEntry>,
     /// List definitions indexed by position.
@@ -47,6 +50,24 @@ pub struct Program {
     /// The base layer of `WorldPolicy` resolution
     /// (`docs/directive-annotations-spec.md`).
     pub(crate) local_scope_defaults: Vec<(String, DefinitionId)>,
+    /// TM-4 `StructShapes` table (`docs/typed-mode-spec.md` §6), indexed by
+    /// `ShapeId` — every `RecordNew`/`RecordGetDyn`/`RecordSetDyn` opcode
+    /// looks a shape up here for its field count and field-name → offset
+    /// mapping. Empty until a compiler milestone emits `STRUCT`
+    /// declarations.
+    pub(crate) struct_shapes: Vec<StructShapeEntry>,
+}
+
+/// Runtime metadata for one declared struct shape.
+pub(crate) struct StructShapeEntry {
+    #[expect(
+        dead_code,
+        reason = "carried for debugging/inspection parity with other entries"
+    )]
+    pub name: NameId,
+    /// Declared field names, in shape order — the same order
+    /// [`brink_format::Value::Record`]'s flat field vector follows.
+    pub fields: Vec<NameId>,
 }
 
 pub(crate) struct LinkedContainer {
@@ -56,6 +77,11 @@ pub(crate) struct LinkedContainer {
     pub path_hash: i32,
     /// Number of declared parameters (for arity-checking host-directed entry).
     pub param_count: u8,
+    /// Per-parameter name/mode metadata, in declared order (T1c, #700).
+    /// Empty for containers the converter produced or that declare no params;
+    /// used by function-value dispatch to validate a rehydrated closure's
+    /// bound env against the current signature.
+    pub params: Vec<brink_format::ParamMeta>,
     /// Index into `Program.line_tables` for this container's scope line table.
     pub scope_table_idx: u32,
 }
@@ -147,6 +173,27 @@ impl Program {
         &self.name_table[id.0 as usize]
     }
 
+    /// Look up a name by id, returning `None` if the id is out of range. Used
+    /// by function-value rehydration (T1c, #700): a closure loaded from a save
+    /// produced against a *different* compile can carry a `NameId` that no
+    /// longer indexes this program's table — treated as a mismatch (fault),
+    /// never a panic.
+    ///
+    /// Public (T1d, `docs/t1d-spec.md` §6): the same "index by id, `None` if
+    /// out of range" contract a host needs to resolve a [`brink_format::Value::Handle`]'s
+    /// `kind` to its manifest-declared name — e.g. for dev-tooling display or
+    /// a host-side capability check. `bevy-brink` re-exports `Program`
+    /// (decision 2026-07-10), so this is reachable from engine code without a
+    /// direct `brink-runtime` dependency.
+    pub fn name_checked(&self, id: NameId) -> Option<&str> {
+        self.name_table.get(id.0 as usize).map(String::as_str)
+    }
+
+    /// Access a container's per-parameter name/mode metadata (T1c, #700).
+    pub(crate) fn container_params(&self, idx: u32) -> &[brink_format::ParamMeta] {
+        &self.containers[idx as usize].params
+    }
+
     /// Look up a global slot index.
     pub(crate) fn resolve_global(&self, id: DefinitionId) -> Option<u32> {
         self.global_map.get(&id).copied()
@@ -214,6 +261,20 @@ impl Program {
     /// Get a list literal by index.
     pub(crate) fn list_literal(&self, idx: u16) -> &ListValue {
         &self.list_literals[idx as usize]
+    }
+
+    /// Get a T1b literal pool entry by index. `None` on an out-of-range
+    /// index (malformed bytecode) rather than panicking — the VM turns
+    /// this into a `RuntimeError`, never a crash.
+    pub(crate) fn literal_pool_entry(&self, idx: u32) -> Option<&Value> {
+        self.literal_pool.get(idx as usize)
+    }
+
+    /// Look up a `STRUCT` shape's runtime metadata by `ShapeId`. `None` on an
+    /// out-of-range id (malformed bytecode) rather than panicking — mirrors
+    /// [`literal_pool_entry`](Self::literal_pool_entry).
+    pub(crate) fn struct_shape(&self, shape: ShapeId) -> Option<&StructShapeEntry> {
+        self.struct_shapes.get(shape.0 as usize)
     }
 
     /// Look up a list item's metadata.
@@ -411,11 +472,13 @@ mod find_address_tests {
             address_by_path,
             root_idx: 0,
             list_literals: Vec::new(),
+            literal_pool: Vec::new(),
             list_item_map: HashMap::new(),
             list_defs: Vec::new(),
             list_def_map: HashMap::new(),
             external_fns: HashMap::new(),
             local_scope_defaults: Vec::new(),
+            struct_shapes: Vec::new(),
         }
     }
 

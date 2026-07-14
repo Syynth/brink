@@ -12,7 +12,7 @@ brink --help
 | Command | Description |
 |---------|-------------|
 | [`compile`](./compile.md) | Compile `.ink` source to `.inkb` or `.inkt` |
-| [`convert`](./convert.md) | Convert between ink formats (`.ink.json`, `.inkb`, `.inkt`) |
+| [`convert`](./convert.md) | Convert between ink formats (`.inkb`, `.inkt`) |
 | [`play`](./play.md) | Play an ink story interactively or in batch mode |
 | [`ide`](./ide.md) | Scriptable IDE queries & refactors (navigation, references, rename, structural refactors) |
 | [`export-xliff`](../localization/xliff.md) | Export a story's line tables as an XLIFF 2.0 file for translation |

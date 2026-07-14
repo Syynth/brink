@@ -30,6 +30,32 @@ pub trait ContextAccess {
     fn global(&self, idx: u32) -> &Value;
     fn set_global(&mut self, idx: u32, value: Value);
 
+    /// Move a global's current value out, leaving [`Value::Null`] behind —
+    /// the take-half of the take → `make_mut` → write-back RMW discipline
+    /// (`docs/value-model-spec.md` §5) that closes the indexed-write COW
+    /// cliff: reading a collection via [`global`](Self::global) clones its
+    /// `Arc` (bumping the refcount `array_make_mut`/`map_make_mut` checks),
+    /// so a subsequent in-place mutation always sees itself as "shared" and
+    /// COW-copies. Taking instead of cloning means a slot that's the *sole*
+    /// owner of its value stays the sole owner all the way to the mutate
+    /// site, so the mutation completes in place — O(1) amortized instead of
+    /// O(n) per write in a loop.
+    ///
+    /// Default implementation: clone + null out — always correct (identical
+    /// observable result to `GetGlobal` followed by `SetGlobal(Null)`), just
+    /// not free of the extra `Arc` clone. [`World`](crate::world::World),
+    /// whose globals are a flat `Vec<Value>`, overrides this with a real
+    /// [`core::mem::replace`] move. [`ContextView`](crate::world::ContextView)
+    /// delegates to `World::take_global` for `World`-scoped units (the
+    /// common case every oracle-corpus program exercises) and falls back to
+    /// this default for `Local`-scoped units, whose per-flow override map
+    /// can't move out of an immutable frozen-base ancestor.
+    fn take_global(&mut self, idx: u32) -> Value {
+        let v = self.global(idx).clone();
+        self.set_global(idx, Value::Null);
+        v
+    }
+
     fn visit_count(&self, id: DefinitionId) -> u32;
     fn increment_visit(&mut self, id: DefinitionId);
     /// Set a visit count directly, rather than incrementing it. Used by
@@ -107,6 +133,19 @@ impl<C: ContextAccess> ContextAccess for ObservedContext<'_, '_, C> {
     fn set_global(&mut self, idx: u32, value: Value) {
         self.context.set_global(idx, value.clone());
         self.observer.on_set_global(idx, &value);
+    }
+
+    /// Deliberately does **not** notify the observer: `take_global` is an
+    /// internal RMW implementation detail (the slot transiently holds
+    /// `Value::Null` mid-statement, never a state a host or journal should
+    /// ever see — value-model-spec §3's sharing-unobservable law extends to
+    /// this VM-internal bookkeeping too). The RMW's real semantic write is
+    /// the later `set_global` call that writes the final (mutated, or on a
+    /// mid-RMW fault, restored/`Null`) value back — that one fires
+    /// `on_set_global` exactly as before.
+    #[inline]
+    fn take_global(&mut self, idx: u32) -> Value {
+        self.context.take_global(idx)
     }
 
     #[inline]

@@ -355,6 +355,20 @@ export class DocumentSessions {
     }
     this.applyPendingReveal(slot);
 
+    // #518 (follow-up to #494): deliverCompile refreshes only the views
+    // mounted when the result lands — for a viewless slot the refresh is
+    // dropped, not queued. A view mounting after that delivery would show
+    // whatever its overlay field last held: the create()-time seed on a
+    // fresh state, or — when the cached EditorState is reused above —
+    // whatever was current at unmount, since create() never re-runs. A
+    // passive load never compiles again, so nothing else would repaint it.
+    // Self-serve the missed refresh here: the slot's handle was (re)opened
+    // above, so the projection read is live at mount time. The trigger set
+    // is {compile-deliver} ∪ {view-mount-after-a-deliver}.
+    if (this.lastCompileDelivered !== null) {
+      refreshHirOverlay(view);
+    }
+
     return () => {
       this.unmountSlot(slot, { snapshot: true });
     };
@@ -1147,7 +1161,10 @@ export class DocumentSessions {
     // overlay's StateField would keep its (possibly empty) seed until the
     // next doc change (#494). Re-read the projection in every mounted view —
     // the initial debounced compile after a passive load lands here, which
-    // is what makes the overlay paint without the user typing.
+    // is what makes the overlay paint without the user typing. Slots without
+    // a view are handled by the mount-time refresh in mountView (#518):
+    // `lastCompileDelivered` set above is what tells a later mount that it
+    // missed this loop.
     for (const slot of this.slots.values()) {
       if (slot.view !== null) refreshHirOverlay(slot.view);
     }

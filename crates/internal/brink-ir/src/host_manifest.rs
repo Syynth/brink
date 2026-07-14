@@ -175,6 +175,12 @@ impl TypeRef {
 }
 
 /// The underlying base types ink values can take at an external boundary.
+///
+/// `Handle` (T1d-2, docs/t1d-spec.md §3) is a distinct category from the
+/// scalar bases above: a `SemanticTypeDef { base: Handle, .. }` entry doesn't
+/// specialize a primitive (the way `switch_id` specializes `int`) — its
+/// `name` field *is* the declared handle-kind name (e.g. `AudioInstance`),
+/// the nominal vocabulary `handle<K>` type annotations resolve `K` against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BaseType {
@@ -183,6 +189,9 @@ pub enum BaseType {
     Float,
     Bool,
     Void,
+    /// A host-resource handle kind (T1d-2) — this type def's `name` is the
+    /// kind name itself, not a specialization label.
+    Handle,
 }
 
 impl BaseType {
@@ -195,6 +204,7 @@ impl BaseType {
             "float" => Some(Self::Float),
             "bool" => Some(Self::Bool),
             "void" => Some(Self::Void),
+            "handle" => Some(Self::Handle),
             _ => None,
         }
     }
@@ -253,7 +263,7 @@ pub struct DocBlock {
 
 #[cfg(test)]
 mod value_source_tests {
-    use super::{SemanticTypeDef, ValueSource};
+    use super::{BaseType, SemanticTypeDef, ValueSource};
 
     #[test]
     fn static_value_source_json_roundtrip() {
@@ -290,5 +300,21 @@ mod value_source_tests {
         let none: SemanticTypeDef =
             serde_json::from_str(r#"{ "name": "x", "base": "int" }"#).expect("parse bare");
         assert!(none.values.is_none());
+    }
+
+    #[test]
+    fn handle_base_json_roundtrip() {
+        // The host authors this JSON (e.g. via `setHostManifest`); lock the
+        // wire shape for `"base": "handle"` the same way the other base
+        // keywords are locked above — the with-manifest handle<K> path
+        // depends on this JSON -> BaseType::Handle deserialization, not just
+        // on constructing BaseType::Handle directly in Rust.
+        let def: SemanticTypeDef =
+            serde_json::from_str(r#"{ "name": "AudioInstance", "base": "handle" }"#)
+                .expect("parse handle base");
+        assert_eq!(def.name, "AudioInstance");
+        assert_eq!(def.base, BaseType::Handle);
+
+        assert_eq!(BaseType::from_keyword("handle"), Some(BaseType::Handle));
     }
 }

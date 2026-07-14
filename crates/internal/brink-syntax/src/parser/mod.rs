@@ -9,8 +9,10 @@ mod knot;
 mod logic;
 mod story;
 mod tag;
+mod types;
 
 use crate::SyntaxKind::{self, COLON, EOF, ERROR, IDENT, L_BRACE, NEWLINE, PIPE, R_BRACE};
+// `IDENT` above is also used by `at_kw_text`/`nth_text` (soft-keyword lookup).
 use crate::lexer;
 use rowan::GreenNode;
 
@@ -305,6 +307,28 @@ impl<'t, 'c> Parser<'t, 'c> {
         self.tokens.get(self.pos + n).map_or(EOF, |&(k, _)| k)
     }
 
+    /// The source text of the `n`-th non-trivia token ahead (skipping
+    /// trivia), or `""` past end-of-file. Used to recognize T1b's
+    /// contextual block keywords (`if`, `while`, `for`, `in`, `break`,
+    /// `continue`) without reserving them globally — they stay plain
+    /// `IDENT` tokens everywhere outside a `~ { … }` block, so existing ink
+    /// content using those words as identifiers is byte-for-byte unaffected.
+    fn nth_text(&self, n: usize) -> &'t str {
+        let start = self.non_trivia.partition_point(|&idx| idx < self.pos);
+        let target = start + n;
+        if target < self.non_trivia.len() {
+            self.tokens[self.non_trivia[target]].1
+        } else {
+            ""
+        }
+    }
+
+    /// Returns `true` if the current token is `IDENT` with exactly this text
+    /// — a contextual (soft) keyword check. See [`Parser::nth_text`].
+    fn at_kw_text(&self, text: &str) -> bool {
+        self.current() == IDENT && self.nth_text(0) == text
+    }
+
     /// Returns `true` if the current non-trivia token matches `kind`.
     fn at(&self, kind: SyntaxKind) -> bool {
         self.current() == kind
@@ -331,9 +355,23 @@ impl<'t, 'c> Parser<'t, 'c> {
         }
     }
 
-    /// Bump the current token, asserting its kind matches `kind`.
+    /// Bump the current token, which every call site's own dispatch has
+    /// already checked (via `nth`) to be `kind`.
+    ///
+    /// That check can be invalidated by trivia a caller forgot to flush
+    /// with `skip_ws()` before dispatching: `nth`/`current` skip trivia for
+    /// lookahead, but `self.pos` — and so this raw `bump()` — does not move
+    /// until something actually consumes it. A mismatch here is therefore a
+    /// parser bug, not a property of the input, but malformed/adversarial
+    /// input must never turn a parser bug into a panic. Degrade to a parse
+    /// error and still consume one token, preserving the forward-progress
+    /// invariant every caller relies on (no `bump_assert` call site may
+    /// become a stuck point that only the top-level `source_file` recovery
+    /// loop can un-stick).
     fn bump_assert(&mut self, kind: SyntaxKind) {
-        debug_assert_eq!(self.nth_raw(0), kind);
+        if self.nth_raw(0) != kind {
+            self.error(format!("expected {kind:?}"));
+        }
         self.bump();
     }
 

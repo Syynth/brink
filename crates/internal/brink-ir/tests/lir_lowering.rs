@@ -13,11 +13,24 @@ use brink_ir::{FileId, HirFile, SymbolManifest};
 /// Parse ink source → HIR lower → analyze → LIR lower. Returns the full Program.
 fn lower_ink(source: &str) -> lir::Program {
     let (program, _warnings) = lower_ink_with_warnings(source);
-    program
+    // unwrap: `lower_to_program` only returns `None` when the
+    // residual-extension backstop fires (E053) — this helper's callers all
+    // pass plain ink, so this should never be `None`.
+    program.unwrap()
 }
 
 /// Parse ink source → HIR lower → analyze → LIR lower. Returns program + warnings.
-fn lower_ink_with_warnings(source: &str) -> (lir::Program, Vec<brink_ir::Diagnostic>) {
+fn lower_ink_with_warnings(source: &str) -> (Option<lir::Program>, Vec<brink_ir::Diagnostic>) {
+    lower_ink_with_type_mode(source, lir::TypeMode::Gradual)
+}
+
+/// [`lower_ink_with_warnings`] with an explicit `types` policy — TM-4c
+/// (#666) tests exercising the strict-only static-offset path need this;
+/// every other caller gets the gradual default.
+fn lower_ink_with_type_mode(
+    source: &str,
+    type_mode: lir::TypeMode,
+) -> (Option<lir::Program>, Vec<brink_ir::Diagnostic>) {
     let parsed = brink_syntax::parse(source);
     let tree = parsed.tree();
     let file_id = FileId(0);
@@ -32,11 +45,12 @@ fn lower_ink_with_warnings(source: &str) -> (lir::Program, Vec<brink_ir::Diagnos
     let result = brink_analyzer::analyze(&files_for_analysis);
 
     let files_for_lir: Vec<(FileId, &HirFile)> = vec![(file_id, &hir)];
-    lir::lower_to_program(
+    lir::lower_to_program_with_type_mode(
         &files_for_lir,
         &result.index,
         &result.resolutions,
         &std::collections::HashMap::new(),
+        type_mode,
     )
 }
 
@@ -378,6 +392,361 @@ fn var_negative_default() {
     let p = lower_ink("VAR n = -42\n");
     let g = find_global(&p, "n");
     assert!(matches!(g.default, lir::ConstValue::Int(-42)));
+}
+
+// ─── #673: collection/struct literal declaration defaults ───────────
+//
+// `eval_const_expr` (decls) previously had no arm for `ArrayLiteral`/
+// `MapLiteral`/`StructLiteral` and fell through to `ConstValue::Null` with
+// no diagnostic. These fixtures deliberately do NOT use the `VAR p = 0` +
+// reassignment workaround idiom (`tests/tier1-brink/nested-index-
+// assignment/story.ink`'s precedent) — the literal is the declaration's
+// actual default.
+
+#[test]
+fn var_array_literal_default_folds_to_const_array_not_null() {
+    let p = lower_ink("VAR arr = #[1, 2, 3]\n");
+    let g = find_global(&p, "arr");
+    match &g.default {
+        lir::ConstValue::Array(items) => {
+            assert_eq!(
+                items,
+                &[
+                    lir::ConstValue::Int(1),
+                    lir::ConstValue::Int(2),
+                    lir::ConstValue::Int(3),
+                ]
+            );
+        }
+        other => panic!("expected ConstValue::Array, got {other:?} (silent Null regression)"),
+    }
+}
+
+#[test]
+fn var_map_literal_default_folds_to_const_map_not_null() {
+    let p = lower_ink("VAR m = #{\"a\": 1, \"b\": 2}\n");
+    let g = find_global(&p, "m");
+    match &g.default {
+        lir::ConstValue::Map(entries) => {
+            assert_eq!(
+                entries,
+                &[
+                    (
+                        lir::ConstMapKey::Str("a".to_string()),
+                        lir::ConstValue::Int(1)
+                    ),
+                    (
+                        lir::ConstMapKey::Str("b".to_string()),
+                        lir::ConstValue::Int(2)
+                    ),
+                ]
+            );
+        }
+        other => panic!("expected ConstValue::Map, got {other:?} (silent Null regression)"),
+    }
+}
+
+#[test]
+fn const_array_literal_default_folds_to_const_array() {
+    // The issue names both VAR and CONST declaration defaults.
+    let p = lower_ink("CONST arr = #[9, 8]\n");
+    let g = find_global(&p, "arr");
+    assert!(!g.mutable);
+    match &g.default {
+        lir::ConstValue::Array(items) => {
+            assert_eq!(items, &[lir::ConstValue::Int(9), lir::ConstValue::Int(8)]);
+        }
+        other => panic!("expected ConstValue::Array, got {other:?}"),
+    }
+}
+
+#[test]
+fn nested_array_literal_default_folds_recursively() {
+    let p = lower_ink("VAR grid = #[#[1, 2], #[3, 4]]\n");
+    let g = find_global(&p, "grid");
+    match &g.default {
+        lir::ConstValue::Array(items) => {
+            assert_eq!(
+                items,
+                &[
+                    lir::ConstValue::Array(vec![lir::ConstValue::Int(1), lir::ConstValue::Int(2)]),
+                    lir::ConstValue::Array(vec![lir::ConstValue::Int(3), lir::ConstValue::Int(4)]),
+                ]
+            );
+        }
+        other => panic!("expected nested ConstValue::Array, got {other:?}"),
+    }
+}
+
+#[test]
+fn struct_literal_default_is_a_real_compile_error_not_silent_null() {
+    let source =
+        "STRUCT Point = #{\n    x: float,\n    y: float,\n}\n\nVAR p = Point#{x: 1.0, y: 2.0}\n";
+    let (program, diagnostics) = lower_ink_with_warnings(source);
+    // Lowering is still total (matches E055/E056/E073/E074's existing
+    // "diagnostic doesn't stop `Some(program)`" convention) — the caller
+    // above `lower_to_program` (brink-db's `lir_query`) is what turns an
+    // Error-severity diagnostic into a blocked compile.
+    let program = program.expect("lowering stays total; severity partitioning happens upstream");
+    let g = find_global(&program, "p");
+    assert!(
+        matches!(g.default, lir::ConstValue::Null),
+        "struct defaults have no ConstValue representation yet — expected Null, got {:?}",
+        g.default
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E075),
+        "expected non-suppressible E075 for a struct literal VAR default, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn map_literal_default_with_non_scalar_key_is_a_real_compile_error() {
+    // Float is not in the ratified map-key domain (int/string/bool) —
+    // mid-story `MapNew` faults on this at runtime; a declaration default
+    // has no runtime construction step to fault at, so this must be a
+    // compile-time diagnostic, not a silently-dropped entry.
+    let source = "VAR m = #{3.5: 1}\n";
+    let (program, diagnostics) = lower_ink_with_warnings(source);
+    let program = program.expect("lowering stays total");
+    let g = find_global(&program, "m");
+    assert!(
+        matches!(&g.default, lir::ConstValue::Map(entries) if entries.is_empty()),
+        "expected the invalid-key entry to be dropped from the map, got {:?}",
+        g.default
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E076),
+        "expected non-suppressible E076 for a non-scalar map key in a VAR default, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn array_literal_default_with_non_constant_element_is_a_real_compile_error() {
+    // #679 review: a function call can never constant-fold — before E077
+    // the element recursed into `eval_const_expr`'s catch-all and silently
+    // became `Null`, #673's silent-Null bug one level down inside the
+    // literal. Keyed off the source expr *kind* (a call), not the folded
+    // result.
+    let source = "VAR arr = #[f(), 2]\n\n=== function f()\n~ return 1\n";
+    let (program, diagnostics) = lower_ink_with_warnings(source);
+    let program = program.expect("lowering stays total");
+    let g = find_global(&program, "arr");
+    assert!(
+        matches!(
+            &g.default,
+            lir::ConstValue::Array(items)
+                if items.as_slice() == [lir::ConstValue::Null, lir::ConstValue::Int(2)]
+        ),
+        "the never-constant element still folds to Null (now diagnosed, not silent), got {:?}",
+        g.default
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E077),
+        "expected non-suppressible E077 for a non-constant array element in a VAR default, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn map_literal_default_with_non_constant_value_is_a_real_compile_error() {
+    // #679 review: same E077 story as the array-element test, for a map
+    // *value*. (A never-constant map *key* is already E076 — it folds to
+    // Null, outside the scalar key domain.)
+    let source = "VAR m = #{\"a\": f()}\n\n=== function f()\n~ return 1\n";
+    let (program, diagnostics) = lower_ink_with_warnings(source);
+    let program = program.expect("lowering stays total");
+    let g = find_global(&program, "m");
+    assert!(
+        matches!(
+            &g.default,
+            lir::ConstValue::Map(entries)
+                if entries.as_slice()
+                    == [(
+                        lir::ConstMapKey::Str("a".to_string()),
+                        lir::ConstValue::Null
+                    )]
+        ),
+        "the never-constant value still folds to Null (now diagnosed, not silent), got {:?}",
+        g.default
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E077),
+        "expected non-suppressible E077 for a non-constant map value in a VAR default, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn nested_array_literal_with_non_constant_element_propagates_e077() {
+    // #679 review, nested case: the outer element is itself a literal (a
+    // constant-foldable *kind*), so the outer check passes and the E077
+    // must come from the recursion into the inner literal's own
+    // per-element check — the hole must not reopen one level down.
+    let source = "VAR grid = #[#[f()], #[2]]\n\n=== function f()\n~ return 1\n";
+    let (program, diagnostics) = lower_ink_with_warnings(source);
+    let program = program.expect("lowering stays total");
+    let g = find_global(&program, "grid");
+    assert!(
+        matches!(
+            &g.default,
+            lir::ConstValue::Array(items)
+                if items.as_slice()
+                    == [
+                        lir::ConstValue::Array(vec![lir::ConstValue::Null]),
+                        lir::ConstValue::Array(vec![lir::ConstValue::Int(2)]),
+                    ]
+        ),
+        "the nested never-constant element still folds to Null (now diagnosed), got {:?}",
+        g.default
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E077),
+        "expected E077 to propagate out of the nested literal, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn constant_infix_array_element_does_not_false_positive_e077() {
+    // The E077 check recurses through Prefix/Infix — `1 + 2` and `-3` are
+    // constant-foldable kinds and must not be flagged.
+    let source = "VAR arr = #[1 + 2, -3]\n";
+    let (program, diagnostics) = lower_ink_with_warnings(source);
+    let program = program.expect("lowering stays total");
+    let g = find_global(&program, "arr");
+    assert!(
+        matches!(
+            &g.default,
+            lir::ConstValue::Array(items)
+                if items.as_slice() == [lir::ConstValue::Int(3), lir::ConstValue::Int(-3)]
+        ),
+        "constant infix/prefix elements fold for real, got {:?}",
+        g.default
+    );
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E077),
+        "constant-foldable elements must not trip E077, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn const_reference_array_element_folds_and_does_not_false_positive_e077() {
+    // A `CONST` reference is a `Path` — a constant-foldable kind. It must
+    // resolve through `const_values` to the real value and must not trip
+    // E077 (the check is keyed off the source expr kind, and `Path`
+    // constness depends on resolution — deliberately not flagged).
+    let source = "CONST SOME_CONST = 7\nVAR arr = #[SOME_CONST, 2]\n";
+    let (program, diagnostics) = lower_ink_with_warnings(source);
+    let program = program.expect("lowering stays total");
+    let g = find_global(&program, "arr");
+    assert!(
+        matches!(
+            &g.default,
+            lir::ConstValue::Array(items)
+                if items.as_slice() == [lir::ConstValue::Int(7), lir::ConstValue::Int(2)]
+        ),
+        "CONST-reference element folds to the constant's value, got {:?}",
+        g.default
+    );
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E077),
+        "a CONST-reference element must not trip E077, got {diagnostics:?}"
+    );
+}
+
+// ── #743: bare VAR reference nested one level inside a declaration-default
+// collection/fn literal — the residue #679's scope notes flagged and #692/
+// E083 deliberately left alone. `is_const_foldable_kind` now resolves a
+// nested `Path` the same way `is_const_foldable_decl_default` resolves the
+// top-level one: `SymbolKind::Variable` is never a compile-time constant, so
+// it reports the standard E077 instead of silently folding to `Null`.
+
+#[test]
+fn var_reference_array_element_is_now_a_real_compile_error() {
+    let source = "VAR a = 1\nVAR arr = #[a]\n";
+    let (program, diagnostics) = lower_ink_with_warnings(source);
+    let program = program.expect("lowering stays total");
+    let g = find_global(&program, "arr");
+    assert!(
+        matches!(
+            &g.default,
+            lir::ConstValue::Array(items) if items.as_slice() == [lir::ConstValue::Null]
+        ),
+        "the never-constant VAR-reference element still folds to Null (now diagnosed, not silent), got {:?}",
+        g.default
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E077),
+        "expected non-suppressible E077 for a VAR-reference array element in a VAR default, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn var_reference_map_value_is_now_a_real_compile_error() {
+    let source = "VAR a = 1\nVAR m = #{\"k\": a}\n";
+    let (program, diagnostics) = lower_ink_with_warnings(source);
+    let program = program.expect("lowering stays total");
+    let g = find_global(&program, "m");
+    assert!(
+        matches!(
+            &g.default,
+            lir::ConstValue::Map(entries)
+                if entries.as_slice()
+                    == [(lir::ConstMapKey::Str("k".to_string()), lir::ConstValue::Null)]
+        ),
+        "the never-constant VAR-reference value still folds to Null (now diagnosed, not silent), got {:?}",
+        g.default
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E077),
+        "expected non-suppressible E077 for a VAR-reference map value in a VAR default, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn var_reference_bound_fn_val_arg_is_now_a_real_compile_error() {
+    // `eval_const_fn_literal`'s `val` branch previously called
+    // `eval_const_expr` with no `is_const_foldable_kind` gate at all — a
+    // bare VAR reference bound by value silently folded to `Null` inside
+    // the closure's `env`, zero diagnostic.
+    let source = "=== function heal(hp) ===\n~ return hp + 1\n\nVAR g = 5\nVAR f = #fn(heal, g)\n";
+    let (program, diagnostics) = lower_ink_with_warnings(source);
+    let program = program.expect("lowering stays total");
+    let g = find_global(&program, "f");
+    assert!(
+        matches!(
+            &g.default,
+            lir::ConstValue::Closure { env, .. }
+                if matches!(
+                    env.as_slice(),
+                    [lir::ConstClosureEntry::Val { value: lir::ConstValue::Null, .. }]
+                )
+        ),
+        "the never-constant VAR-reference bound val arg still folds to Null (now diagnosed, not silent), got {:?}",
+        g.default
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E077),
+        "expected non-suppressible E077 for a VAR-reference #fn bound val arg in a VAR default, got {diagnostics:?}"
+    );
 }
 
 // ─── Lists ──────────────────────────────────────────────────────────
@@ -2949,5 +3318,890 @@ fn temp_visible_in_choice_body_after_gather() {
     assert!(
         !has_get_global(&p.root),
         "program has no VAR — should have no GetGlobal expressions",
+    );
+}
+
+// ─── T1b-2 (#570): LogicBlock/Index lower for real, no dialect gate needed ──
+//
+// `lower_ink_with_warnings` deliberately mirrors a caller that (like a
+// suppressed dialect gate) never checks `brink_analyzer::analyze`'s
+// diagnostics before lowering to LIR. Through T1b-1, a `LogicBlock`/`Index`/…
+// HIR node reaching `lower_to_program` this way would panic via
+// `debug_assert!` in debug builds and silently drop data (`None` /
+// `lir::Expr::Null`) in release builds — caught by the (now-retired) E053
+// backstop, which refused to produce a program at all (#572 review). T1b-2
+// replaces that rejection with real lowering, so these HIR node kinds are no
+// longer "residual" — this test now proves the opposite of its T1b-1
+// version: the program lowers successfully and correctly.
+
+#[test]
+fn logic_block_lowers_without_a_dialect_gate_in_the_loop() {
+    let (program, _diags) =
+        lower_ink_with_warnings("Hello\n~ {\ntemp x = 0\nx = x + 1\n}\nWorld\n");
+    let program = program.expect("LogicBlock should lower to a real program in T1b-2");
+    assert!(!program.root.body.is_empty());
+}
+
+#[test]
+fn index_expression_lowers_without_a_dialect_gate_in_the_loop() {
+    let (program, _diags) = lower_ink_with_warnings("VAR a = 5\n~ x = a[0]\n");
+    let program = program.expect("Index expression should lower to a real program in T1b-2");
+    assert!(!program.root.body.is_empty());
+}
+
+// ─── #578: LogicBlock inside an un-lifted inline conditional/sequence ──────
+//
+// `hir::normalize_file` (called unconditionally by `lower_to_program`) lifts
+// every `InlineConditional`/`InlineSequence` it finds in a block's own
+// `Stmt::Content` parts into a top-level `Stmt::Conditional`/`Stmt::Sequence`
+// — the safe path that reaches `lower_stmt` via `lower_block_with_children`,
+// which explicitly dispatches `hir::Stmt::LogicBlock`. But normalization
+// only walks `Block.stmts` (root/knot/stitch bodies, choice bodies,
+// continuations) — it never touches a `Choice`'s own display text
+// (`start_content`/`bracket_content`/`inner_content`), which LIR lowering
+// feeds straight to `content::lower_content` regardless. A multiline
+// branched conditional embedded in choice text (e.g. `* Pick {cond: - a:
+// ~{...} - b: ...}`) therefore keeps its `InlineConditional` shape all the
+// way to `content::lower_inline_block`, and if a branch contains a `~ { … }`
+// T1b block, that reached `stmts::lower_stmt`'s `debug_assert!`-guarded
+// "should be dispatched by lower_block_with_children" arm — panicking in
+// debug builds, silently dropping the block's statements in release.
+#[test]
+fn logic_block_in_choice_text_inline_conditional_lowers_without_panicking() {
+    let src = "VAR x = 1\n* Pick {x > 0:\n- true: ~ { x = x + 1 }\n- else: ~ { x = x - 1 }\n}\n    -> END\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let program =
+        program.expect("choice-text LogicBlock should lower to a real program, not panic/drop");
+
+    // Prove the LogicBlock's `Assign` statements actually made it into the
+    // lowered choice's display text (not silently dropped): find the
+    // top-level ChoiceSet, dig into its one choice's `start_content`, and
+    // confirm the `InlineConditional`'s branches carry `Stmt::Assign`.
+    let Some(lir::Stmt::ChoiceSet(cs)) = program
+        .root
+        .body
+        .iter()
+        .find(|s| matches!(s, lir::Stmt::ChoiceSet(_)))
+    else {
+        panic!("expected a ChoiceSet in the root body");
+    };
+    assert_eq!(cs.choices.len(), 1);
+    let start_content = cs.choices[0]
+        .start_content
+        .as_ref()
+        .expect("choice should have start_content (the inline conditional's text)");
+    let has_assign_in_branches = start_content.parts.iter().any(|p| {
+        let lir::ContentPart::InlineConditional(cond) = p else {
+            return false;
+        };
+        cond.branches
+            .iter()
+            .any(|b| b.body.iter().any(|s| matches!(s, lir::Stmt::Assign { .. })))
+    });
+    assert!(
+        has_assign_in_branches,
+        "expected the LogicBlock's Assign statements spliced into the \
+         InlineConditional's branches, not dropped"
+    );
+}
+
+#[test]
+fn logic_block_second_inline_construct_on_a_content_line_lowers() {
+    // Two inline logics on one content line: the first (`{x}`) is a plain
+    // interpolation, so `lower_multiline_block_from_inline`'s "is it the
+    // first inline logic AND promotable" check fails on it and the whole
+    // line falls through to the generic content-parts path — the second
+    // inline logic (the multiline conditional with LogicBlock branches)
+    // becomes an un-lifted `ContentPart::InlineConditional` too, independent
+    // of the choice-text case above.
+    let src =
+        "VAR x = 1\nHello {x} and {x > 0:\n- true: ~ { x = x + 1 }\n- else: ~ { x = x - 1 }\n}\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let program = program.expect("should lower to a real program, not panic/drop");
+    assert!(!program.root.body.is_empty());
+}
+
+// ─── #577: break/continue outside a loop is a targeted compile error ──────
+//
+// Previously `~ { break }`/`~ { continue }` with no enclosing `while`/`for`
+// lowered unconditionally to `lir::Stmt::LogicBreak`/`LogicContinue`, and
+// codegen's `container.rs` silently degraded the resulting unguarded jump
+// to `Opcode::Nop` (`self.loop_stack.is_empty()`) instead of ever surfacing
+// an error. `blocks::lower_block_stmt` now rejects it at LIR-lowering time
+// (E057, Error severity) and skips emitting the statement — a real,
+// non-suppressible compile error (`brink-db`'s `lir_query` gates `program:
+// None` on any Error-severity LIR diagnostic, bypassing `// brink-disable-
+// all`, which only covers analysis-phase diagnostics), not a cosmetic note.
+
+fn find_e057(diags: &[brink_ir::Diagnostic]) -> Option<&brink_ir::Diagnostic> {
+    diags
+        .iter()
+        .find(|d| d.code == brink_ir::DiagnosticCode::E057)
+}
+
+#[test]
+fn break_outside_any_loop_emits_e057_error_and_is_not_lowered() {
+    let (program, diags) = lower_ink_with_warnings("Hello\n~ {\nbreak\n}\n");
+    let e057 = find_e057(&diags).expect("expected E057 for break outside a loop");
+    assert_eq!(e057.code.severity(), brink_ir::Severity::Error);
+    let program = program.expect("lower_to_program is total — it still returns Some");
+    assert!(
+        !program
+            .root
+            .body
+            .iter()
+            .any(|s| matches!(s, lir::Stmt::LogicBreak)),
+        "the unguarded break must not be lowered to a LogicBreak statement"
+    );
+}
+
+#[test]
+fn continue_outside_any_loop_emits_e057_error_and_is_not_lowered() {
+    let (program, diags) = lower_ink_with_warnings("Hello\n~ {\ncontinue\n}\n");
+    let e057 = find_e057(&diags).expect("expected E057 for continue outside a loop");
+    assert_eq!(e057.code.severity(), brink_ir::Severity::Error);
+    let program = program.expect("lower_to_program is total — it still returns Some");
+    assert!(
+        !program
+            .root
+            .body
+            .iter()
+            .any(|s| matches!(s, lir::Stmt::LogicContinue)),
+        "the unguarded continue must not be lowered to a LogicContinue statement"
+    );
+}
+
+#[test]
+fn break_after_a_while_loop_at_the_same_depth_still_errors() {
+    // `loop_depth` must be decremented back to 0 on exiting the while body —
+    // a break textually after the loop (sibling, not nested) is still an
+    // error, proving the counter doesn't leak across sibling statements.
+    let (_program, diags) =
+        lower_ink_with_warnings("Hello\n~ {\ntemp x = 0\nwhile x < 3 {\nx = x + 1\n}\nbreak\n}\n");
+    assert!(
+        find_e057(&diags).is_some(),
+        "expected E057 for a break textually after (not inside) the loop"
+    );
+}
+
+#[test]
+fn break_inside_if_inside_while_is_allowed() {
+    // `if`/`else` nesting inside a loop body must not reset loop_depth —
+    // break/continue reached through conditional nesting is still valid.
+    let (program, diags) = lower_ink_with_warnings(
+        "Hello\n~ {\ntemp x = 0\nwhile x < 3 {\nif x == 1 {\nbreak\n}\nx = x + 1\n}\n}\n",
+    );
+    assert!(
+        find_e057(&diags).is_none(),
+        "break nested in if-inside-while must not error: {diags:?}"
+    );
+    let program = program.expect("should lower to a real program");
+    assert!(!program.root.body.is_empty());
+}
+
+#[test]
+fn continue_inside_for_loop_is_allowed() {
+    let (program, diags) = lower_ink_with_warnings(
+        "VAR a = #[1, 2, 3]\n~ {\nfor v in a {\nif v == 2 {\ncontinue\n}\n}\n}\n",
+    );
+    assert!(find_e057(&diags).is_none(), "unexpected E057: {diags:?}");
+    let program = program.expect("should lower to a real program");
+    assert!(!program.root.body.is_empty());
+}
+
+// ─── #581: collection mutator arity mismatch is a targeted compile error ──
+//
+// `push`/`insert`/`remove` called with the wrong argument count used to
+// share the generic warning-severity E031 with ordinary function-call arity
+// checking, and — because E031 never blocked compilation — the malformed
+// mutator statement silently vanished from the lowered bytecode (nothing
+// pushed to `out`, `try_lower_mutator_stmt` still returned `true`). E058 is
+// Error-severity and names the expected signature.
+
+fn find_e058(diags: &[brink_ir::Diagnostic]) -> Option<&brink_ir::Diagnostic> {
+    diags
+        .iter()
+        .find(|d| d.code == brink_ir::DiagnosticCode::E058)
+}
+
+#[test]
+fn push_wrong_arity_emits_e058_naming_the_signature() {
+    let (_program, diags) = lower_ink_with_warnings("VAR a = #[1]\n~ push(a)\n");
+    let e058 = find_e058(&diags).expect("expected E058 for push with 1 argument");
+    assert_eq!(e058.code.severity(), brink_ir::Severity::Error);
+    assert!(
+        e058.message.contains("push(container, value)"),
+        "message should name the expected signature: {}",
+        e058.message
+    );
+}
+
+#[test]
+fn insert_wrong_arity_emits_e058_naming_the_signature() {
+    let (_program, diags) = lower_ink_with_warnings("VAR a = #[1]\n~ insert(a, 0)\n");
+    let e058 = find_e058(&diags).expect("expected E058 for insert with 2 arguments");
+    assert!(
+        e058.message
+            .contains("insert(container, key_or_index, value)"),
+        "message should name the expected signature: {}",
+        e058.message
+    );
+}
+
+#[test]
+fn remove_wrong_arity_emits_e058_naming_the_signature() {
+    let (_program, diags) = lower_ink_with_warnings("VAR a = #[1]\n~ remove(a, 0, 1)\n");
+    let e058 = find_e058(&diags).expect("expected E058 for remove with 3 arguments");
+    assert!(
+        e058.message.contains("remove(container, key_or_index)"),
+        "message should name the expected signature: {}",
+        e058.message
+    );
+}
+
+#[test]
+fn mutator_correct_arity_no_e058() {
+    let (program, diags) = lower_ink_with_warnings(
+        "VAR a = #[1]\n~ {\npush(a, 2)\ninsert(a, 0, 9)\nremove(a, 0)\n}\n",
+    );
+    assert!(find_e058(&diags).is_none(), "unexpected E058: {diags:?}");
+    let program = program.expect("should lower to a real program");
+    assert!(!program.root.body.is_empty());
+}
+
+#[test]
+fn pure_function_call_arity_still_uses_e031_not_e058() {
+    // Ordinary (non-mutator) function-call arity checking is untouched by
+    // #581 — only push/insert/remove route through E058.
+    let (_program, diags) =
+        lower_ink_with_warnings("~ temp x = f(1)\n== function f(a, b) ==\n~ return a + b\n");
+    assert!(
+        find_e058(&diags).is_none(),
+        "pure function arity mismatch must not use E058: {diags:?}"
+    );
+}
+
+// ─── #585: nested choice inside an un-lifted inline conditional (sibling
+// of #578, live-reproduced) ─────────────────────────────────────────────
+//
+// `stmts::lower_stmt`'s `ChoiceSet`/`LabeledBlock`/`Conditional`/`Sequence`
+// arm is reached the exact same way #578's `LogicBlock` arm was: a
+// multiline conditional embedded in a *choice's own* display/bracket/inner
+// text (`content::lower_inline_block`'s doc comment) keeps its
+// `InlineConditional` shape all the way to LIR lowering instead of being
+// lifted to a top-level `Stmt::Conditional` — but unlike `LogicBlock`, a
+// nested choice inside one of that inline conditional's branches can't be
+// "properly routed" in place: a `ChoiceSet` needs an addressable child
+// container for the runtime to divert into on selection, and
+// `lower_inline_block` (unlike `lower_block_with_children`) has no way to
+// hand a child container back to its caller. Before this fix that reached
+// `lower_stmt`'s `debug_assert!(false, …)` arm — a panic in debug builds,
+// a silent drop in release. It now emits a real, non-suppressible E059
+// compile error and drops just the malformed nested statement (not the
+// whole program).
+
+fn find_e059(diags: &[brink_ir::Diagnostic]) -> Option<&brink_ir::Diagnostic> {
+    diags
+        .iter()
+        .find(|d| d.code == brink_ir::DiagnosticCode::E059)
+}
+
+#[test]
+fn nested_choice_in_choice_text_inline_conditional_emits_e059_not_panic() {
+    // The reproducing input: a top-level choice ("Pick") whose own display
+    // text is a multiline `{x > 0: ... }` conditional, one branch of which
+    // contains a *nested* `*` choice — never lifted out of choice text by
+    // HIR normalization (`content::lower_inline_block`'s doc comment).
+    let src =
+        "VAR x = 1\n* Pick {x > 0:\n- true: * nested\n    -> END\n- else: text\n}\n    -> END\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    let e059 = find_e059(&diags).expect("expected E059 for the nested un-lifted choice");
+    assert_eq!(e059.code.severity(), brink_ir::Severity::Error);
+    assert!(
+        e059.message.contains("nested choice"),
+        "message should name the offending construct: {}",
+        e059.message
+    );
+    // `lower_to_program` stays total (like E057/E058) — it still returns a
+    // program, just without the malformed nested statement.
+    let program = program.expect("lower_to_program is total — it still returns Some");
+    assert!(!program.root.body.is_empty());
+}
+
+#[test]
+fn nested_sequence_in_choice_text_inline_conditional_emits_e059_not_panic() {
+    // A multiline sequence nested the same way as the `ChoiceSet` case
+    // above — proves the `Sequence` sub-arm (which, unlike `ChoiceSet`,
+    // carries its own `AstPtr`) is exercised too, not just asserted by
+    // analogy.
+    let src = "VAR x = 1\n* Pick {x > 0:\n- true:\n{stopping:\n- one\n- two\n}\n- else: text\n}\n    -> END\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    let e059 = find_e059(&diags).expect("expected E059 for the nested un-lifted sequence");
+    assert_eq!(e059.code.severity(), brink_ir::Severity::Error);
+    let program = program.expect("lower_to_program is total — it still returns Some");
+    assert!(!program.root.body.is_empty());
+}
+
+// ─── TM-4c (#666): structs LIR + codegen ────────────────────────────────
+//
+// Construction, field reads, and single-level field writes all lower for
+// real now (TM-4b/#665 only landed grammar+HIR+analyzer, diagnostics-only).
+// E072 (the old "reject everything" backstop) is retired; E073 (unresolved
+// shape at construction) and E074 (chained/mixed field-write projection)
+// are its narrower TM-4c replacements — still real, non-suppressible
+// diagnostics, mirroring the E053-backstop discipline.
+
+fn find_diag(
+    diags: &[brink_ir::Diagnostic],
+    code: brink_ir::DiagnosticCode,
+) -> Option<&brink_ir::Diagnostic> {
+    diags.iter().find(|d| d.code == code)
+}
+
+/// A `RecordNew`'s decoded parts: `(shape_id, fields, prelude)` — see
+/// `lir::Expr::RecordNew`'s own doc for what `fields`/`prelude` mean.
+type RecordNewParts<'a> = (
+    u32,
+    &'a [lir::Expr],
+    &'a [(u16, brink_format::NameId, lir::Expr)],
+);
+
+fn find_record_new(expr: &lir::Expr) -> Option<RecordNewParts<'_>> {
+    match expr {
+        lir::Expr::RecordNew {
+            shape_id,
+            fields,
+            prelude,
+        } => Some((*shape_id, fields, prelude)),
+        _ => None,
+    }
+}
+
+/// Resolve a `RecordNew` field to the actual initializer expression it was
+/// built from: the well-formed path's `fields` entries are `GetTemp` reads
+/// of a `prelude` slot (#676 source-order staging), so this chases that
+/// indirection back to the staged expression; the fault path's `fields`
+/// entries are already the raw initializer, returned as-is.
+fn resolve_field<'a>(
+    field: &'a lir::Expr,
+    prelude: &'a [(u16, brink_format::NameId, lir::Expr)],
+) -> &'a lir::Expr {
+    match field {
+        lir::Expr::GetTemp(slot, _) => prelude
+            .iter()
+            .find(|(s, _, _)| s == slot)
+            .map_or(field, |(_, _, e)| e),
+        _ => field,
+    }
+}
+
+fn declare_temp_value(stmt: &lir::Stmt) -> Option<&lir::Expr> {
+    match stmt {
+        lir::Stmt::DeclareTemp { value: Some(v), .. } => Some(v),
+        _ => None,
+    }
+}
+
+#[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "exact literal from source (1.0/2.0), not a computed value"
+)]
+fn struct_literal_lowers_to_record_new_in_shape_order() {
+    let src = "STRUCT Point = #{x: float, y: float}\n~ temp p = Point#{y: 2.0, x: 1.0}\nHello.\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.severity() != brink_ir::Severity::Error),
+        "{diags:?}"
+    );
+    let program = program.expect("struct constructs lower for real under TM-4c");
+    assert_eq!(program.struct_shapes.len(), 1);
+    assert_eq!(program.struct_shapes[0].fields.len(), 2);
+
+    let value = program
+        .root
+        .body
+        .iter()
+        .find_map(declare_temp_value)
+        .expect("temp p := Point#{...} should be a DeclareTemp");
+    let (shape_id, fields, prelude) =
+        find_record_new(value).expect("Point#{...} should lower to RecordNew");
+    assert_eq!(shape_id, program.struct_shapes[0].id);
+    // `fields` is reordered into shape decl order (x, y) despite being
+    // written y, x — each entry is a `GetTemp` read of a `prelude` slot,
+    // resolved back to its staged value here.
+    assert!(matches!(
+        resolve_field(&fields[0], prelude),
+        lir::Expr::Float(f) if *f == 1.0
+    ));
+    assert!(matches!(
+        resolve_field(&fields[1], prelude),
+        lir::Expr::Float(f) if *f == 2.0
+    ));
+    // `prelude` itself is staged in **source** order (#676): y (2.0) first,
+    // then x (1.0) — the author's left-to-right order, not shape order.
+    assert_eq!(prelude.len(), 2, "one staged slot per supplied initializer");
+    assert!(matches!(prelude[0].2, lir::Expr::Float(f) if f == 2.0));
+    assert!(matches!(prelude[1].2, lir::Expr::Float(f) if f == 1.0));
+}
+
+#[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "exact literal from source (1.0/2.0/3.0), not a computed value"
+)]
+fn duplicate_field_still_stages_every_initializer_no_silent_drop() {
+    // #675's LIR-level defense-in-depth: `structs::check_duplicates` (E084)
+    // is what normally stops this from compiling at all, but this test
+    // proves lowering itself never silently drops an initializer's side
+    // effect even under suppression — both `x` initializers get staged
+    // into `prelude` (hence both would still be evaluated at runtime),
+    // even though only the *last* one's value (2.0, last-wins) ends up
+    // placed in the record. `E084` itself is an analyzer diagnostic this
+    // LIR-only harness never surfaces — covered instead by
+    // `brink-analyzer`'s own unit tests and the `e0xx_diagnostics` pipeline
+    // suite.
+    let src = "STRUCT Point = #{x: float, y: float}\n\
+        ~ temp p = Point#{x: 1.0, x: 2.0, y: 3.0}\nHello.\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.severity() != brink_ir::Severity::Error),
+        "{diags:?}"
+    );
+    let program = program.expect("struct constructs still lower for real under TM-4c");
+    let value = program
+        .root
+        .body
+        .iter()
+        .find_map(declare_temp_value)
+        .expect("temp p := Point#{...} should be a DeclareTemp");
+    let (_shape_id, fields, prelude) =
+        find_record_new(value).expect("Point#{...} should lower to RecordNew");
+    assert_eq!(
+        prelude.len(),
+        3,
+        "every supplied initializer is staged, including the shadowed duplicate"
+    );
+    // The winning (last-wins) `x` initializer's value (2.0) is what
+    // actually lands in the record at offset 0.
+    assert!(matches!(
+        resolve_field(&fields[0], prelude),
+        lir::Expr::Float(f) if *f == 2.0
+    ));
+}
+
+#[test]
+fn field_access_on_construction_literal_lowers_to_record_get() {
+    let src = "STRUCT Point = #{x: float}\n~ temp v = Point#{x: 1.0}.x\nHello.\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.severity() != brink_ir::Severity::Error),
+        "{diags:?}"
+    );
+    let program = program.expect("field access lowers for real under TM-4c");
+    let value = program
+        .root
+        .body
+        .iter()
+        .find_map(declare_temp_value)
+        .expect("temp v := Point#{...}.x should be a DeclareTemp");
+    assert!(matches!(value, lir::Expr::RecordGet { base, .. } if find_record_new(base).is_some()));
+}
+
+#[test]
+fn resolution_fallback_field_access_lowers_to_record_get_dyn() {
+    // The ambiguous `p.x` shape (ordinary dotted `Path`, not the
+    // `FieldAccessExpr` grammar) — `brink-analyzer`'s resolution fallback
+    // resolves it to the variable `p` via a multi-segment path (TM-4b);
+    // LIR lowering must produce the equivalent `RecordGet` chain, not
+    // silently load `p` and drop `.x`. `p` holds an int here (gradual mode
+    // never checks this statically), so `static_offset` must be `None` — a
+    // by-name op, which faults cleanly at runtime instead of trusting an
+    // unproven offset.
+    let src = "VAR p = 0\n~ temp y = p.x\nHello.\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.severity() != brink_ir::Severity::Error),
+        "{diags:?}"
+    );
+    let program = program.expect("ambiguous-path field access lowers cleanly");
+    let value = program
+        .root
+        .body
+        .iter()
+        .find_map(declare_temp_value)
+        .expect("temp y := p.x should be a DeclareTemp");
+    match value {
+        lir::Expr::RecordGet {
+            base,
+            static_offset,
+            ..
+        } => {
+            assert!(matches!(**base, lir::Expr::GetGlobal(_)));
+            assert_eq!(
+                *static_offset, None,
+                "gradual mode never emits static offsets"
+            );
+        }
+        _ => panic!("expected RecordGet"),
+    }
+}
+
+#[test]
+fn ordinary_dotted_path_still_lowers_as_a_static_visit_count() {
+    // A genuine static path (`knot.stitch`) must never be reinterpreted as
+    // field access — only the TM-4b fallback case (resolved to
+    // Variable/Constant/Param/Temp via a multi-segment path) is. A bare
+    // knot/stitch reference used as a *value* (not a divert target) means
+    // its visit count in ink semantics (`SymbolKind::Knot | Stitch | Label`
+    // → `Expr::VisitCount`) — the key property under test is that it's
+    // never a `RecordGet`.
+    let src =
+        "=== knot ===\n= stitch\nHello.\n-> DONE\n=== main ===\n~ temp x = knot.stitch\n-> DONE\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.severity() != brink_ir::Severity::Error),
+        "{diags:?}"
+    );
+    let program = program.expect("ordinary dotted path must lower cleanly");
+    let main_knot = program
+        .root
+        .children
+        .iter()
+        .find(|c| c.name.as_deref() == Some("main"))
+        .expect("the `main` knot should exist as a root child container");
+    let value = main_knot
+        .body
+        .iter()
+        .find_map(declare_temp_value)
+        .expect("temp x := knot.stitch should be a DeclareTemp");
+    assert!(
+        matches!(value, lir::Expr::VisitCount(_)),
+        "a static dotted path must never become a RecordGet"
+    );
+}
+
+#[test]
+fn unresolved_struct_shape_at_construction_emits_e073() {
+    let src = "~ temp p = Bogus#{x: 1}\nHello.\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    let e073 = find_diag(&diags, brink_ir::DiagnosticCode::E073)
+        .expect("expected E073 for an unresolved struct shape reaching LIR");
+    assert_eq!(e073.code.severity(), brink_ir::Severity::Error);
+    // `lower_to_program` stays total (like E053/E057/E058) — it still
+    // returns a program; `brink-db`'s `lir_query` is what turns an
+    // Error-severity LIR diagnostic into `program: None` for compilation
+    // purposes, not `lower_to_program` itself.
+    program.expect("lower_to_program is total — it still returns Some");
+}
+
+#[test]
+fn chained_field_write_emits_e074() {
+    let src = "STRUCT Inner = #{v: float}\nSTRUCT Outer = #{inner: Inner}\n\
+        VAR o = Outer#{inner: Inner#{v: 1.0}}\n~ o.inner.v = 2.0\nHello.\n";
+    let (_program, diags) = lower_ink_with_warnings(src);
+    let e074 = find_diag(&diags, brink_ir::DiagnosticCode::E074)
+        .expect("expected E074 for a chained field write (o.inner.v = ...)");
+    assert_eq!(e074.code.severity(), brink_ir::Severity::Error);
+}
+
+#[test]
+fn mixed_index_then_field_write_emits_e074() {
+    // #674: `arr[i].field = v` (an `Index`-based root followed by a
+    // `.field` write) now parses as a real `FIELD_ACCESS_EXPR` assignment
+    // target (the grammar gap tracked in the NOTE this test replaces —
+    // formerly a generic E015 parse error, PR #665/#668's pre-existing
+    // gap). LIR still fences it off as a chained/mixed field write: this
+    // pins that `E074` actually fires end-to-end through the parser, not
+    // just by code-review inspection of `try_lower_field_assignment`'s
+    // `hir::Expr::FieldAccess` branch (blocks.rs).
+    let src = "VAR arr = #[1, 2, 3]\n~ arr[0].x = 2.0\nHello.\n";
+    let (_program, diags) = lower_ink_with_warnings(src);
+    let e074 = find_diag(&diags, brink_ir::DiagnosticCode::E074).expect(
+        "expected E074 for a mixed index-then-field write (arr[0].x = ...), now reachable \
+         through the parser",
+    );
+    assert_eq!(e074.code.severity(), brink_ir::Severity::Error);
+}
+
+#[test]
+fn single_level_field_write_lowers_via_take_make_mut_write_back() {
+    // #673: a struct literal is no longer a legal VAR *declaration default*
+    // (that now emits a real E075 diagnostic, not a silent Null) — this
+    // test's actual concern is the RMW field-write desugaring, so `p` gets
+    // a scalar placeholder default (no TM-2 annotation here, so `types =
+    // gradual`'s advisory-only E063 is the worst this scalar/struct
+    // mismatch could trigger) and the real `Point` value is constructed via
+    // assignment, same as `tests/tier1-brink/struct-construct-read-write/
+    // story.ink`'s established pattern.
+    let src = "STRUCT Point = #{x: float, y: float}\nVAR p = 0\n\
+        ~ p = Point#{x: 1.0, y: 2.0}\n~ p.x = 9.0\nHello.\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.severity() != brink_ir::Severity::Error),
+        "{diags:?}"
+    );
+    let program = program.expect("single-level field write lowers for real");
+    // The RMW desugaring produces a TakeGlobal(p) somewhere, feeding a
+    // RecordSet, whose result is written back into the p global.
+    let has_take_then_record_set = program.root.body.iter().any(|s| {
+        matches!(
+            s,
+            lir::Stmt::Assign {
+                value: lir::Expr::RecordSet { base, .. },
+                ..
+            } if matches!(**base, lir::Expr::TakeTemp(..) | lir::Expr::TakeGlobal(_))
+        )
+    });
+    assert!(
+        has_take_then_record_set,
+        "expected a TakeGlobal/TakeTemp feeding a RecordSet"
+    );
+    let writes_back_to_p = program.root.body.iter().any(|s| {
+        matches!(
+            s,
+            lir::Stmt::Assign {
+                target: lir::AssignTarget::Global(_),
+                ..
+            }
+        )
+    });
+    assert!(
+        writes_back_to_p,
+        "expected a write-back Assign into a global"
+    );
+}
+
+#[test]
+fn gradual_construction_field_mismatch_uses_fault_sentinel_shape_id() {
+    // Missing declared field `y` — under `types = gradual` (the default;
+    // strict would already be E069, a compile error) this must still lower
+    // to *something* the VM can execute deterministically: the
+    // construction-fault sentinel `RecordNew` (see
+    // `expr::lower_struct_literal`'s doc) rather than a stack-desyncing
+    // partial construction.
+    let src = "STRUCT Point = #{x: float, y: float}\n~ temp p = Point#{x: 1.0}\nHello.\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.severity() != brink_ir::Severity::Error),
+        "{diags:?}"
+    );
+    let program = program.expect("gradual mismatch still lowers, faulting at runtime instead");
+    let value = program
+        .root
+        .body
+        .iter()
+        .find_map(declare_temp_value)
+        .expect("temp p := Point#{...} should be a DeclareTemp");
+    let (shape_id, fields, prelude) =
+        find_record_new(value).expect("mismatched construction should still be a RecordNew");
+    assert_eq!(shape_id, u32::MAX, "sentinel shape id signals the fault");
+    assert_eq!(
+        fields.len(),
+        1,
+        "the one supplied initializer is still evaluated"
+    );
+    assert!(
+        prelude.is_empty(),
+        "the fault path's fields are already source order — no staging needed"
+    );
+}
+
+#[test]
+fn strict_mode_known_shape_field_read_uses_static_offset() {
+    // #673: `VAR p: Point = Point#{...}` used to be exactly the pattern
+    // `eval_const_expr` silently dropped to `Null` — now a real E075. `p`
+    // gets the same `VAR p: Point = 0` + assignment shape
+    // `tm4c_structs_codegen.rs`'s `strict_and_gradual_produce_equivalent_
+    // output_for_well_formed_program` already establishes (a scalar
+    // placeholder default under a struct annotation doesn't trip E063 —
+    // that fixture already proves it compiles clean under strict): shape
+    // resolution for the static-offset decision is driven purely by the
+    // TM-2 annotation (`structs::build_global_shape_map` reads
+    // `var.annotation`, never the default expression), so the placeholder
+    // default doesn't affect what this test actually checks.
+    let src = "STRUCT Point = #{x: float, y: float}\nVAR p: Point = 0\n\
+        ~ p = Point#{x: 1.0, y: 2.0}\n~ temp v = p.y\nHello.\n";
+    let (program, diags) = lower_ink_with_type_mode(src, lir::TypeMode::Strict);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.severity() != brink_ir::Severity::Error),
+        "{diags:?}"
+    );
+    let program = program.expect("struct-typed VAR under strict lowers cleanly");
+    let value = program
+        .root
+        .body
+        .iter()
+        .find_map(declare_temp_value)
+        .expect("temp v := p.y should be a DeclareTemp");
+    match value {
+        lir::Expr::RecordGet { static_offset, .. } => {
+            assert_eq!(*static_offset, Some(1), "y is field offset 1 in Point");
+        }
+        _ => panic!("expected RecordGet"),
+    }
+}
+
+#[test]
+fn gradual_mode_never_emits_static_offset_even_with_annotation() {
+    // Same source as the strict test above, but under `types = gradual`
+    // (the default) — the annotation is "optional seasoning" there, never
+    // enforced, so trusting it for a static offset would be unsound (see
+    // `expr::static_offset_for`'s doc). Must fall back to the by-name op.
+    // #673: same fixture rewrite as
+    // `strict_mode_known_shape_field_read_uses_static_offset` above — a
+    // struct literal is no longer legal as the declaration default itself
+    // (real E075 now), so `p` gets a scalar placeholder default and the
+    // annotation stays for this test's actual point (the annotation being
+    // *ignored* under gradual).
+    let src = "STRUCT Point = #{x: float, y: float}\nVAR p: Point = 0\n\
+        ~ p = Point#{x: 1.0, y: 2.0}\n~ temp v = p.y\nHello.\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.severity() != brink_ir::Severity::Error),
+        "{diags:?}"
+    );
+    let program = program.expect("struct-typed VAR under gradual lowers cleanly");
+    let value = program
+        .root
+        .body
+        .iter()
+        .find_map(declare_temp_value)
+        .expect("temp v := p.y should be a DeclareTemp");
+    match value {
+        lir::Expr::RecordGet { static_offset, .. } => {
+            assert_eq!(*static_offset, None);
+        }
+        _ => panic!("expected RecordGet"),
+    }
+}
+
+// ── #680 RCA: block-scoped temp read after its block closes (E082) ───────
+//
+// #680 was filed as "a `ref`-argument call co-occurring with a `temp` decl
+// in the same `~ { }` block resolves to the wrong global slot
+// (UnresolvedGlobal)". Root-causing the reporter's minimal repro against
+// current `main` shows the `ref`-argument call is a red herring: it
+// reproduces with *no* ref call at all, and does *not* reproduce for the
+// literal "ref call + temp decl in the same block" shape alone. The actual
+// trigger is reading a T1b block-scoped `temp` (`~ { … }`) from *outside*
+// its own block — LIR lowering's fallback for "temp not currently visible"
+// (`lower_path`'s `SymbolKind::Temp` arm, kept for inklecate-compat
+// classic-temp forward-reference emulation) previously caught this case
+// too, silently emitting a phantom hashed `GetGlobal`/`RefGlobal` id that
+// was never registered as a real global — exactly the reported
+// `UnresolvedGlobal` fault, with zero compile diagnostic. This matches the
+// `tests/tier1-brink/annotations-mixed` fixture's own account of the bug
+// (docs comment there: rewritten from a `~ { … }` block to standalone `~`
+// logic lines "specifically to avoid tripping this bug").
+
+#[test]
+fn block_scoped_temp_read_after_block_closes_is_e082_not_a_silent_phantom_global() {
+    let src = "VAR gold = 100\n~ {\n    temp name = \"hero\"\n}\n{name}\n-> END\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    let e082 = find_diag(&diags, brink_ir::DiagnosticCode::E082)
+        .expect("expected E082 for a block-scoped temp read after its block closed");
+    assert_eq!(e082.code.severity(), brink_ir::Severity::Error);
+    // `lower_to_program` is total — it still returns `Some` even with an
+    // Error-severity diagnostic recorded (the `brink-db` `lir_query` layer
+    // is what refuses to hand back a `Program`, not `lower_to_program`
+    // itself, matching the E057/E059 precedent above).
+    let program = program.expect("lower_to_program is total — it still returns Some");
+    // The pre-fix behavior emitted `Expr::GetGlobal(<hash of "name">)` here
+    // — a `DefinitionId` never present in `program.globals` (only `gold`
+    // is). Confirm that phantom id is gone: `gold` is still the only
+    // global, and it never masquerades as the temp's storage.
+    assert_eq!(program.globals.len(), 1);
+    assert_eq!(program.globals[0].id, find_global(&program, "gold").id);
+}
+
+#[test]
+fn block_scoped_temp_passed_by_ref_after_block_closes_is_e082() {
+    // Same defect, reached through `lower_call_args`'s `ref`-argument path
+    // instead of `lower_path` — `name` is passed by `ref` to `heal` after
+    // its declaring block has closed.
+    let src = "VAR gold = 100\n~ {\n    temp name = \"hero\"\n}\n~ heal(name)\nDone.\n-> END\n\n\
+               === function heal(ref hp) ===\n~ return hp\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    let e082 = find_diag(&diags, brink_ir::DiagnosticCode::E082)
+        .expect("expected E082 for an out-of-scope block temp passed by ref");
+    assert_eq!(e082.code.severity(), brink_ir::Severity::Error);
+    assert!(
+        program.is_some(),
+        "lower_to_program is total — it still returns Some"
+    );
+}
+
+#[test]
+fn ref_argument_call_with_temp_decl_in_the_same_block_compiles_clean() {
+    // The issue's literal minimal repro shape — a `ref`-argument call
+    // co-occurring with a `temp` decl in the same `~ { … }` block — with the
+    // temp used only inside its own block (never read after the block
+    // closes). This must compile with no E082 and resolve `gold`'s `ref`
+    // argument to the real global slot, proving the fix doesn't regress the
+    // shape #680 was originally filed against.
+    let src = "VAR gold = 100\n~ {\n    temp x = 1\n    heal(gold)\n}\nDone.\n-> END\n\n\
+               === function heal(ref hp) ===\n~ return hp\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        find_diag(&diags, brink_ir::DiagnosticCode::E082).is_none(),
+        "temp used only within its own block must never trigger E082: {diags:?}"
+    );
+    let program = program.expect("well-formed program lowers cleanly");
+    let gold_id = find_global(&program, "gold").id;
+    let heal = find_child(&program.root, "heal");
+    let call = program
+        .root
+        .body
+        .iter()
+        .find_map(|s| match s {
+            lir::Stmt::ExprStmt(e @ lir::Expr::Call { .. }) => Some(e),
+            _ => None,
+        })
+        .expect("heal(gold) should lower to an ExprStmt(Call)");
+    match call {
+        lir::Expr::Call { target, args } => {
+            assert_eq!(*target, heal.id);
+            assert_eq!(args.len(), 1);
+            match &args[0] {
+                lir::CallArg::RefGlobal(id) => assert_eq!(*id, gold_id),
+                lir::CallArg::RefTemp(..) => panic!("expected RefGlobal(gold), got RefTemp"),
+                lir::CallArg::Value(_) => panic!("expected RefGlobal(gold), got Value"),
+            }
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn block_scoped_temp_visible_for_the_rest_of_its_own_block_no_false_positive() {
+    // Nested scopes (an `if` inside the block) must still see the outer
+    // block's temp — E082 is only for reads *after* the declaring block has
+    // fully closed, never for a live nested scope.
+    let src = "VAR gold = 100\n~ {\n    temp name = \"hero\"\n    if gold > 0 {\n        temp y = name\n    }\n}\nDone.\n-> END\n";
+    let (_program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        find_diag(&diags, brink_ir::DiagnosticCode::E082).is_none(),
+        "a nested scope must still see the outer block's live temp: {diags:?}"
     );
 }

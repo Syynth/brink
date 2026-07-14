@@ -6,13 +6,13 @@ use pest_derive::Parser;
 use crate::counting::CountingFlags;
 use crate::definition::{
     AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef, ScopeLineTable, SlotInfo, SourceLocation,
+    ListItemDef, ParamMeta, ScopeLineTable, SlotInfo, SourceLocation,
 };
 use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::opcode::{ChoiceFlags, Opcode, SequenceKind};
 use crate::story::StoryData;
-use crate::value::{ListValue, Value, ValueType};
+use crate::value::{ClosureEnvEntry, ListValue, MapKey, OrderedMap, ShapeId, Value, ValueType};
 
 #[derive(Parser)]
 #[grammar = "inkt/inkt.pest"]
@@ -79,6 +79,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
     let mut containers = Vec::new();
     let mut line_tables = Vec::new();
     let mut list_literals = Vec::new();
+    let mut literal_pool = Vec::new();
     let mut source_checksum = 0u32;
 
     for inner in pair.into_inner() {
@@ -96,6 +97,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
             Rule::addresses => addresses = parse_addresses(inner)?,
             Rule::address_paths => address_paths = parse_address_paths(inner)?,
             Rule::list_literals => list_literals = parse_list_literals(inner)?,
+            Rule::literal_pool => literal_pool = parse_literal_pool(inner)?,
             Rule::container => {
                 let (container, lt) = parse_container(inner)?;
                 let is_scope_owner = container.scope_id == container.id;
@@ -125,6 +127,11 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
         address_paths,
         name_table,
         list_literals,
+        literal_pool,
+        // TM-4 `StructShapes`: not yet round-tripped through the `.inkt`
+        // textual format (always empty in this PR — nothing emits a
+        // non-empty table). See the format-spec doc note.
+        struct_shapes: Vec::new(),
         source_checksum,
     })
 }
@@ -221,6 +228,12 @@ fn parse_value_type(pair: P<'_>) -> Result<ValueType, InktParseError> {
         "temp_pointer" => Ok(ValueType::TempPointer),
         "fragment_ref" => Ok(ValueType::FragmentRef),
         "null" => Ok(ValueType::Null),
+        "array" => Ok(ValueType::Array),
+        "map" => Ok(ValueType::Map),
+        "handle" => Ok(ValueType::Handle),
+        "record" => Ok(ValueType::Record),
+        "fn_ref" => Ok(ValueType::FnRef),
+        "closure" => Ok(ValueType::Closure),
         _ => Err(err(&pair, format!("unknown value type: {s}"))),
     }
 }
@@ -272,6 +285,14 @@ fn parse_value(pair: P<'_>, type_hint: Option<ValueType>) -> Result<Value, InktP
         Rule::def_id => Ok(Value::DivertTarget(parse_def_id(inner)?)),
         Rule::null_value => Ok(Value::Null),
         Rule::list_value => parse_list_value(inner),
+        Rule::array_value => {
+            let mut items = Vec::new();
+            for child in inner.into_inner() {
+                items.push(parse_value(child, None)?);
+            }
+            Ok(Value::array(items))
+        }
+        Rule::map_value => parse_map_value(inner),
         Rule::var_pointer_value => {
             let id_pair = inner.into_inner().next().ok_or_else(|| InktParseError {
                 message: "expected def_id in var_pointer".into(),
@@ -293,11 +314,141 @@ fn parse_value(pair: P<'_>, type_hint: Option<ValueType>) -> Result<Value, InktP
             })?;
             Ok(Value::FragmentRef(idx))
         }
+        // Handle values (T1d, `docs/t1d-spec.md` §2): `(handle <kind> <id>)`
+        // — reader lands with the writer in this same PR (never repeat the
+        // #742 write/read asymmetry).
+        Rule::handle_value => parse_handle_value(inner),
+        // T1c function values (docs/t1c-spec.md §1/§6) — the read-side legs
+        // paired with `write_value`'s `record`/`fn_ref`/`closure` atoms
+        // (issue #742: writer/reader must stay in sync, dump-parity rule).
+        Rule::record_value => parse_record_value(inner),
+        Rule::fn_ref_value => {
+            let id_pair = inner.into_inner().next().ok_or_else(|| InktParseError {
+                message: "expected def_id in fn_ref".into(),
+                line: 0,
+                col: 0,
+            })?;
+            Ok(Value::FnRef(parse_def_id(id_pair)?))
+        }
+        Rule::closure_value => parse_closure_value(inner),
         _ => Err(err(
             &inner,
             format!("unexpected value rule: {:?}", inner.as_rule()),
         )),
     }
+}
+
+/// Parse a `handle_value` node (`"(" ~ "handle" ~ integer ~ integer ~ ")"`)
+/// into a [`Value::handle`] (T1d, `docs/t1d-spec.md` §2).
+fn parse_handle_value(pair: P<'_>) -> Result<Value, InktParseError> {
+    let mut parts = pair.into_inner();
+    let kind_pair = parts.next().ok_or_else(|| InktParseError {
+        message: "expected kind integer in handle".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let kind = parse_u16(&kind_pair)?;
+    let id_pair = parts.next().ok_or_else(|| InktParseError {
+        message: "expected id integer in handle".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let id: u64 = id_pair
+        .as_str()
+        .parse()
+        .map_err(|_| err(&id_pair, "invalid handle id"))?;
+    Ok(Value::handle(NameId(kind), id))
+}
+
+/// Parse a `map_value` node (`(map (key value)…)`) into a [`Value::Map`].
+fn parse_map_value(pair: P<'_>) -> Result<Value, InktParseError> {
+    let mut map = OrderedMap::new();
+    for entry in pair.into_inner() {
+        if entry.as_rule() != Rule::map_entry {
+            continue;
+        }
+        let mut children = entry.into_inner();
+        let key_pair = children.next().ok_or_else(|| InktParseError {
+            message: "expected map key".into(),
+            line: 0,
+            col: 0,
+        })?;
+        let value_pair = children.next().ok_or_else(|| InktParseError {
+            message: "expected map value".into(),
+            line: 0,
+            col: 0,
+        })?;
+        let key = parse_map_key(key_pair)?;
+        let value = parse_value(value_pair, None)?;
+        map.insert(key, value);
+    }
+    Ok(Value::map(map))
+}
+
+/// Parse a `record_value` node (`(record <shape> <field>…)`) into a
+/// [`Value::Record`] — the read-side leg paired with `write_value`'s
+/// `(record …)` atom (issue #742).
+fn parse_record_value(pair: P<'_>) -> Result<Value, InktParseError> {
+    let mut children = pair.into_inner();
+    let shape_pair = children.next().ok_or_else(|| InktParseError {
+        message: "expected shape id in record".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let shape_id: u32 = shape_pair.as_str().parse().map_err(|_| InktParseError {
+        message: "invalid record shape id".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let mut fields = Vec::new();
+    for field in children {
+        fields.push(parse_value(field, None)?);
+    }
+    Ok(Value::record(ShapeId(shape_id), fields))
+}
+
+/// Parse a `closure_value` node (`(closure <target> (val|ref <name> <value>)…)`)
+/// into a [`Value::Closure`] — the read-side leg paired with `write_value`'s
+/// `(closure …)` atom (issue #742).
+fn parse_closure_value(pair: P<'_>) -> Result<Value, InktParseError> {
+    let mut children = pair.into_inner();
+    let target_pair = children.next().ok_or_else(|| InktParseError {
+        message: "expected def_id in closure".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let target = parse_def_id(target_pair)?;
+    let mut env = Vec::new();
+    for entry in children {
+        if entry.as_rule() != Rule::closure_entry {
+            continue;
+        }
+        let mut ei = entry.into_inner();
+        let mode = ei.next().ok_or_else(|| InktParseError {
+            message: "expected mode in closure entry".into(),
+            line: 0,
+            col: 0,
+        })?;
+        let is_ref = mode.as_str() == "ref";
+        let name_int = ei.next().ok_or_else(|| InktParseError {
+            message: "expected name id in closure entry".into(),
+            line: 0,
+            col: 0,
+        })?;
+        let name = NameId(parse_u16(&name_int)?);
+        let payload_pair = ei.next().ok_or_else(|| InktParseError {
+            message: "expected payload value in closure entry".into(),
+            line: 0,
+            col: 0,
+        })?;
+        let payload = parse_value(payload_pair, None)?;
+        env.push(ClosureEnvEntry {
+            name,
+            is_ref,
+            payload,
+        });
+    }
+    Ok(Value::closure(target, env))
 }
 
 fn parse_list_value(pair: P<'_>) -> Result<Value, InktParseError> {
@@ -325,6 +476,43 @@ fn parse_list_value(pair: P<'_>) -> Result<Value, InktParseError> {
     }
 
     Ok(Value::List(ListValue { items, origins }.into()))
+}
+
+/// Parse a `map_key` node (`string | integer | bool_value`) into a
+/// [`MapKey`] — the ratified scalar key domain (value-model-spec §4).
+fn parse_map_key(pair: P<'_>) -> Result<MapKey, InktParseError> {
+    let inner = pair.into_inner().next().ok_or_else(|| InktParseError {
+        message: "empty map key".into(),
+        line: 0,
+        col: 0,
+    })?;
+    match inner.as_rule() {
+        Rule::string => Ok(MapKey::Str(unescape_string(inner.as_str()).into())),
+        Rule::integer => {
+            let n: i32 = inner
+                .as_str()
+                .parse()
+                .map_err(|_| err(&inner, "invalid integer map key"))?;
+            Ok(MapKey::Int(n))
+        }
+        Rule::bool_value => Ok(MapKey::Bool(inner.as_str() == "true")),
+        _ => Err(err(
+            &inner,
+            format!("unexpected map key rule: {:?}", inner.as_rule()),
+        )),
+    }
+}
+
+// ── Literal pool ─────────────────────────────────────────────────────────────
+
+fn parse_literal_pool(pair: P<'_>) -> Result<Vec<Value>, InktParseError> {
+    let mut pool = Vec::new();
+    for entry in pair.into_inner() {
+        if entry.as_rule() == Rule::value {
+            pool.push(parse_value(entry, None)?);
+        }
+    }
+    Ok(pool)
 }
 
 // ── Lists ───────────────────────────────────────────────────────────────────
@@ -585,6 +773,10 @@ fn parse_list_literal_entry(pair: P<'_>) -> Result<ListValue, InktParseError> {
 
 // ── Containers ──────────────────────────────────────────────────────────────
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one-arm-per-field container parser; splitting would scatter the field table"
+)]
 fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktParseError> {
     let mut inner = pair.into_inner();
     let id = parse_def_id(inner.next().ok_or_else(|| InktParseError {
@@ -596,6 +788,7 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
     let mut counting_flags = CountingFlags::empty();
     let mut path_hash = 0i32;
     let mut param_count = 0u8;
+    let mut params: Vec<ParamMeta> = Vec::new();
     let mut local = false;
     let mut lines = Vec::new();
     let mut bytecode = Vec::new();
@@ -646,7 +839,8 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
                 })?;
             }
             Rule::params_field => {
-                let val = child.into_inner().next().ok_or_else(|| InktParseError {
+                let mut fields = child.into_inner();
+                let val = fields.next().ok_or_else(|| InktParseError {
                     message: "expected integer in params".into(),
                     line: 0,
                     col: 0,
@@ -656,6 +850,29 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
                     line: 0,
                     col: 0,
                 })?;
+                // Per-param name/mode metadata (T1c, #700): `(val id)` / `(ref
+                // id)` entries after the count, in declared order.
+                for meta in fields {
+                    if meta.as_rule() != Rule::param_meta {
+                        continue;
+                    }
+                    let mut mi = meta.into_inner();
+                    let mode = mi.next().ok_or_else(|| InktParseError {
+                        message: "expected mode in param_meta".into(),
+                        line: 0,
+                        col: 0,
+                    })?;
+                    let is_ref = mode.as_str() == "ref";
+                    let name_int = mi.next().ok_or_else(|| InktParseError {
+                        message: "expected name id in param_meta".into(),
+                        line: 0,
+                        col: 0,
+                    })?;
+                    params.push(ParamMeta {
+                        name: NameId(parse_u16(&name_int)?),
+                        is_ref,
+                    });
+                }
             }
             Rule::local_flag => local = true,
             Rule::lines_field => {
@@ -676,6 +893,10 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
         counting_flags,
         path_hash,
         param_count,
+        // Per-param name/mode metadata (T1c, #700), reconstructed from the
+        // `(params N (mode id)…)` dump so the `.inkt` round-trip is lossless
+        // (matches the binary `.inkb` path used by persistence/rehydration).
+        params,
         local,
     };
     let line_table = ScopeLineTable { scope_id, lines };
@@ -1073,7 +1294,17 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         )?)),
         "tunnel_return" => Ok(Opcode::TunnelReturn),
         "tunnel_call_variable" => Ok(Opcode::TunnelCallVariable),
-        "call_variable" => Ok(Opcode::CallVariable),
+        "call_variable" => {
+            // "argc=N" is parsed as a kv_operand. Extract the value after "=".
+            let kv_str = operand_str(&operands, 0, mnemonic)?;
+            let argc_str = kv_str.strip_prefix("argc=").unwrap_or(kv_str);
+            let argc: u8 = argc_str.parse().map_err(|_| InktParseError {
+                message: format!("invalid argc in call_variable: {kv_str}"),
+                line: 0,
+                col: 0,
+            })?;
+            Ok(Opcode::CallVariable(argc))
+        }
 
         // Threads
         "thread_call" => Ok(Opcode::ThreadCall(parse_operand_def_id(
@@ -1183,6 +1414,28 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         "list_range" => Ok(Opcode::ListRange),
         "list_from_int" => Ok(Opcode::ListFromInt),
         "list_random" => Ok(Opcode::ListRandom),
+
+        // Collections (T1b)
+        "array_new" => Ok(Opcode::ArrayNew(parse_operand_u32(&operands, 0, mnemonic)?)),
+        "map_new" => Ok(Opcode::MapNew(parse_operand_u32(&operands, 0, mnemonic)?)),
+        "index_get" => Ok(Opcode::IndexGet),
+        "index_set" => Ok(Opcode::IndexSet),
+        "collection_len" => Ok(Opcode::CollectionLen),
+        "map_get" => Ok(Opcode::MapGet),
+        "map_insert" => Ok(Opcode::MapInsert),
+        "map_remove" => Ok(Opcode::MapRemove),
+        "map_contains" => Ok(Opcode::MapContains),
+        "collection_keys" => Ok(Opcode::CollectionKeys),
+        "collection_values" => Ok(Opcode::CollectionValues),
+        "push_literal" => Ok(Opcode::PushLiteral(parse_operand_u32(
+            &operands, 0, mnemonic,
+        )?)),
+
+        // Sharing discipline (T1b-4)
+        "take_global" => Ok(Opcode::TakeGlobal(parse_operand_def_id(
+            &operands, 0, mnemonic,
+        )?)),
+        "take_temp" => Ok(Opcode::TakeTemp(parse_operand_u16(&operands, 0, mnemonic)?)),
 
         // Lifecycle
         "done" => Ok(Opcode::Done),
@@ -1317,6 +1570,15 @@ fn parse_operand_u16(operands: &[P<'_>], idx: usize, context: &str) -> Result<u1
     let s = operand_str(operands, idx, context)?;
     s.parse().map_err(|_| InktParseError {
         message: format!("invalid u16 operand for {context}: {s}"),
+        line: 0,
+        col: 0,
+    })
+}
+
+fn parse_operand_u32(operands: &[P<'_>], idx: usize, context: &str) -> Result<u32, InktParseError> {
+    let s = operand_str(operands, idx, context)?;
+    s.parse().map_err(|_| InktParseError {
+        message: format!("invalid u32 operand for {context}: {s}"),
         line: 0,
         col: 0,
     })

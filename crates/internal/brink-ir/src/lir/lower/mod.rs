@@ -1,12 +1,14 @@
+mod blocks;
 mod content;
 mod context;
 mod decls;
 mod expr;
 mod recognize;
 mod stmts;
+mod structs;
 mod temps;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use brink_format::CountingFlags;
 
@@ -17,6 +19,46 @@ use crate::symbols::{ResolutionMap, SymbolIndex};
 use super::types as lir;
 use context::{LowerCtx, NameTable, ResolutionLookup, TempMap};
 
+pub use context::TypeMode;
+
+/// Defensive backstop for `brink-analyzer`'s dialect gate (E051/E052).
+///
+/// `brink-syntax` always parses the full superset grammar and `brink-ir`
+/// always lowers it to HIR; whether T1b brink-extension constructs
+/// (`~ { … }` logic blocks, `#[…]`/`#{…}` sigil literals, postfix indexing)
+/// are *allowed* is decided by the dialect gate, which runs as an
+/// *analysis* diagnostic. Analysis diagnostics are suppressible
+/// (`// brink-disable-all` / line directives — see `crate::suppressions`),
+/// so "the gate already rejected this" is not provably true by the time
+/// `lower_to_program` runs: a suppressed gate lets a residual
+/// `LogicBlock`/`ArrayLiteral`/`MapLiteral`/`Index` HIR node flow in here.
+///
+/// Scan for that and refuse to lower rather than falling through to the
+/// `lower_stmt`/`lower_expr` fallback arms, which would otherwise silently
+/// drop the construct (`None`) or replace it with `Null` — a real data-loss
+/// bug, not just a `debug_assert!` that's a no-op in release builds. See
+/// #572 review.
+/// T1b-2 (#570) retirement note: through T1b-1, this module ran a
+/// non-suppressible pre-scan (E053) that refused to lower a `LogicBlock`/
+/// `ArrayLiteral`/`MapLiteral`/`Index` HIR node reaching here — a defensive
+/// backstop for `brink-analyzer`'s dialect gate (E051/E052), which is a
+/// *suppressible* analysis diagnostic (`// brink-disable-all`), because the
+/// T1b-1 fallback arms for these node kinds were `debug_assert!`-guarded
+/// stubs that silently dropped data (`None`) or corrupted it (`Null`) in
+/// release builds if the gate was bypassed (#572 review).
+///
+/// T1b-2 replaces that rejection with real lowering for all four node kinds
+/// (`blocks::lower_logic_block` below; `expr::lower_expr`'s
+/// `ArrayLiteral`/`MapLiteral`/`Index` arms) — the correctness hazard the
+/// backstop existed to catch (silent drop/corruption) no longer exists,
+/// because there is no longer a "residual" case: every brink-extension HIR
+/// node now lowers to a correct program under both dialects. `strict-ink`
+/// enforcement is unchanged and rests solely on E051 (as with every other
+/// suppressible diagnostic in this codebase) — see the T1b-2 PR description.
+/// A *future* extension construct that lands parse/HIR-only again (as this
+/// one briefly did) should reintroduce a scoped version of this backstop
+/// for exactly its own node kind(s), not resurrect this one.
+///
 /// Lower analyzed HIR into a resolved LIR `Program`.
 ///
 /// All references are resolved — the returned `Program` is self-contained
@@ -33,7 +75,35 @@ pub fn lower_to_program(
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
     file_paths: &HashMap<FileId, String>,
-) -> (lir::Program, Vec<crate::Diagnostic>) {
+) -> (Option<lir::Program>, Vec<crate::Diagnostic>) {
+    lower_to_program_with_type_mode(
+        files,
+        index,
+        resolutions,
+        file_paths,
+        context::TypeMode::Gradual,
+    )
+}
+
+/// [`lower_to_program`] with an explicit `types` policy (TM-4c,
+/// `docs/typed-mode-spec.md` §6) — `brink-db`'s `lir_query` is the one
+/// caller that has a real project policy to hand in (`project.
+/// analysis_options(db).types`, mapped to `context::TypeMode`); every other
+/// caller (tests, the JSON backend driver) gets the gradual default via
+/// [`lower_to_program`], which is always semantically valid — gradual never
+/// emits a static-offset op gated on `types = strict` (see `expr::
+/// known_shape`'s doc).
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal API, no need to generalize"
+)]
+pub fn lower_to_program_with_type_mode(
+    files: &[(FileId, &hir::HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+    file_paths: &HashMap<FileId, String>,
+    type_mode: context::TypeMode,
+) -> (Option<lir::Program>, Vec<crate::Diagnostic>) {
     // ── Step 0: Normalize HIR (pre-LIR regularization) ──────────
     let mut normalized: Vec<(FileId, hir::HirFile)> = files
         .iter()
@@ -63,6 +133,17 @@ pub fn lower_to_program(
     globals.extend(list_globals);
     let externals = decls::collect_externals(files, index, &mut names);
 
+    // TM-4c (`docs/typed-mode-spec.md` §6): whole-program struct-shape data,
+    // built once and shared read-only by every `LowerCtx` — see
+    // `lower::structs`' module doc.
+    let shape_table = structs::build_shape_table(files, &mut names);
+    let global_shapes = structs::build_global_shape_map(files, index, &shape_table);
+    let struct_ctx = context::StructCtx {
+        shapes: &shape_table,
+        global_shapes: &global_shapes,
+        type_mode,
+    };
+
     // ── Step 3: Lower containers as a tree ──────────────────────────
     let root = lower_root(
         files,
@@ -72,27 +153,33 @@ pub fn lower_to_program(
         root_id,
         &mut ids,
         file_paths,
+        &mut lir_diagnostics,
+        &struct_ctx,
     );
 
     // ── Step 4: Counting flags ──────────────────────────────────────
     let mut root = root;
     apply_counting_flags(&mut root, &globals);
 
+    let struct_shapes = structs::struct_shape_defs(&shape_table);
+
     (
-        lir::Program {
+        Some(lir::Program {
             root,
             globals,
             lists,
             list_items,
             externals,
             name_table: names.into_entries(),
-        },
+            struct_shapes,
+        }),
         lir_diagnostics,
     )
 }
 
 // ─── Tree-building lowering ─────────────────────────────────────────
 
+#[expect(clippy::too_many_arguments)]
 fn lower_root(
     files: &[(FileId, &hir::HirFile)],
     resolutions: &ResolutionLookup,
@@ -101,6 +188,8 @@ fn lower_root(
     root_id: brink_format::DefinitionId,
     ids: &mut context::IdAllocator,
     file_paths: &HashMap<FileId, String>,
+    diagnostics: &mut Vec<crate::Diagnostic>,
+    structs: &context::StructCtx<'_>,
 ) -> lir::Container {
     let mut body = Vec::new();
     let mut children = Vec::new();
@@ -108,6 +197,10 @@ fn lower_root(
     // Allocate temp slots for root content (top-level ~ temp declarations).
     let root_blocks: Vec<&hir::Block> = files.iter().map(|(_, hir)| &hir.root_content).collect();
     let temp_map = temps::alloc_temps(&[], &[], &root_blocks);
+    // Shared across every file's root content — the root is one frame, so
+    // block-scoped slots must not restart per file (see `LowerCtx::
+    // next_block_slot` doc).
+    let mut block_slot = temp_map.total_slots();
 
     for &(file_id, hir_file) in files {
         let mut ctx = make_ctx(
@@ -121,6 +214,9 @@ fn lower_root(
             String::new(),
             &[],
             file_paths,
+            &mut block_slot,
+            diagnostics,
+            structs,
         );
         let mut cc = 0;
         let mut gc = 0;
@@ -142,6 +238,8 @@ fn lower_root(
                 ids,
                 root_id,
                 file_paths,
+                diagnostics,
+                structs,
             ));
         }
     }
@@ -165,7 +263,7 @@ fn lower_root(
         body,
         children,
         counting_flags: CountingFlags::empty(),
-        temp_slot_count: 0,
+        temp_slot_count: block_slot,
         labeled: false,
         inline: false,
         is_function: false,
@@ -184,6 +282,8 @@ fn lower_knot(
     ids: &mut context::IdAllocator,
     root_id: brink_format::DefinitionId,
     file_paths: &HashMap<FileId, String>,
+    diagnostics: &mut Vec<crate::Diagnostic>,
+    structs: &context::StructCtx<'_>,
 ) -> lir::Container {
     let knot_name = &knot.name.text;
     let knot_id = lookup_container_id(index, knot_name).unwrap_or(root_id);
@@ -194,8 +294,11 @@ fn lower_knot(
     }
 
     let temp_map = temps::alloc_temps(&knot.params, &knot.stitches, &scope_blocks);
-    let temp_count = temp_map.total_slots();
     let params = lower_params(&knot.params, names, &temp_map);
+    // Shared across the knot body + every one of its stitches — they share
+    // one call frame, so block-scoped slots must not restart per stitch
+    // (see `LowerCtx::next_block_slot` doc).
+    let mut block_slot = temp_map.total_slots();
 
     let knot_param_names: Vec<&str> = knot.params.iter().map(|p| p.name.text.as_str()).collect();
     let mut ctx = make_ctx(
@@ -209,6 +312,9 @@ fn lower_knot(
         knot_name.clone(),
         &knot_param_names,
         file_paths,
+        &mut block_slot,
+        diagnostics,
+        structs,
     );
     let mut cc = 0;
     let mut gc = 0;
@@ -228,6 +334,9 @@ fn lower_knot(
             ids,
             root_id,
             file_paths,
+            &mut block_slot,
+            diagnostics,
+            structs,
         ));
     }
 
@@ -253,7 +362,7 @@ fn lower_knot(
         body: final_body,
         children,
         counting_flags: CountingFlags::empty(),
-        temp_slot_count: temp_count,
+        temp_slot_count: block_slot,
         labeled: false,
         inline: false,
         is_function: knot.is_function,
@@ -273,6 +382,9 @@ fn lower_stitch(
     ids: &mut context::IdAllocator,
     root_id: brink_format::DefinitionId,
     file_paths: &HashMap<FileId, String>,
+    block_slot: &mut u16,
+    diagnostics: &mut Vec<crate::Diagnostic>,
+    structs: &context::StructCtx<'_>,
 ) -> lir::Container {
     let stitch_name = &stitch.name.text;
     let stitch_path = format!("{}.{stitch_name}", knot.name.text);
@@ -292,6 +404,9 @@ fn lower_stitch(
         stitch_path,
         &stitch_param_names,
         file_paths,
+        block_slot,
+        diagnostics,
+        structs,
     );
     let mut cc = 0;
     let mut gc = 0;
@@ -624,6 +739,43 @@ fn lower_block_with_children(
                 children.append(&mut ctx.pending_children);
                 pos += 1;
             }
+            hir::Stmt::LogicBlock(lb) => {
+                // T1b `~ { … }` block (docs/t1b-surface-spec.md §2) — pure
+                // logic, spliced directly into the enclosing container's
+                // flat statement sequence (never a child container: block
+                // bodies never contain weave concepts, so there's nothing
+                // that needs container isolation).
+                stmts.extend(blocks::lower_logic_block(&lb.stmts, ctx));
+                pos += 1;
+            }
+
+            // A classic (non-block) `~ p.field = expr` logic line (TM-4c,
+            // docs/typed-mode-spec.md §6) — same single-level RMW
+            // desugaring `~ { … }` block statements use, splicing
+            // possibly-multiple `lir::Stmt`s here since `stmts::lower_stmt`'s
+            // `Option<Stmt>` return can't express that. Falls through to the
+            // ordinary `stmts::lower_stmt` path (the `_` arm below) for
+            // every other assignment (plain variable, indexed).
+            hir::Stmt::Assignment(assign)
+                if blocks::try_lower_field_assignment(assign, ctx, &mut stmts) =>
+            {
+                children.append(&mut ctx.pending_children);
+                pos += 1;
+            }
+
+            // A classic (non-block) `~ push(a, v)` logic line — same
+            // mutator recognition/RMW desugaring `~ { … }` block statements
+            // use (docs/t1b-surface-spec.md §5), splicing possibly-multiple
+            // `lir::Stmt`s here since `stmts::lower_stmt`'s `Option<Stmt>`
+            // return can't express that. Falls through to the ordinary
+            // `stmts::lower_stmt` path (the `_` arm below) for every other
+            // expression statement, including a shadowed `push`/`insert`/
+            // `remove` user function.
+            hir::Stmt::ExprStmt(expr) if blocks::try_lower_mutator_stmt(expr, ctx, &mut stmts) => {
+                children.append(&mut ctx.pending_children);
+                pos += 1;
+            }
+
             _ => {
                 if let Some(s) = stmts::lower_stmt(stmt, ctx) {
                     stmts.push(s);
@@ -911,6 +1063,9 @@ fn make_ctx<'a>(
     scope_path: String,
     param_names: &[&str],
     file_paths: &'a HashMap<FileId, String>,
+    next_block_slot: &'a mut u16,
+    diagnostics: &'a mut Vec<crate::Diagnostic>,
+    structs: &'a context::StructCtx<'a>,
 ) -> LowerCtx<'a> {
     LowerCtx {
         file,
@@ -925,6 +1080,13 @@ fn make_ctx<'a>(
         file_paths,
         root_id,
         choice_gather_target: None,
+        next_block_slot,
+        block_scopes: Vec::new(),
+        block_scoped_temp_names: HashSet::new(),
+        diagnostics,
+        loop_depth: 0,
+        structs,
+        temp_shapes: HashMap::new(),
     }
 }
 

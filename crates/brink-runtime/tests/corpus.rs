@@ -1,13 +1,11 @@
 //! Transcript comparison harness for the test corpus.
 //!
 //! Walks `tests/tier1/`, and for each test case with `transcript.txt` and
-//! `mode = "runtime"` in `metadata.toml`, converts and runs the story,
+//! `mode = "runtime"` in `metadata.toml`, compiles and runs the story,
 //! comparing output against the expected transcript.
 
 use std::path::{Path, PathBuf};
 
-use brink_converter::convert;
-use brink_json::InkJson;
 use brink_runtime::{DotNetRng, Line, Story};
 
 /// Format text with per-line tags inserted after each tagged line.
@@ -48,12 +46,12 @@ fn format_text_with_tags(text: &str, tags: &[Vec<String>], output: &mut String) 
     }
 }
 
-/// Run a story from an ink.json file with the given choice inputs.
-fn run_story_from_json(json_str: &str, inputs: &[usize]) -> Result<String, String> {
+/// Compile and run a story from a `.ink` file with the given choice inputs.
+fn run_story_from_ink(ink_path: &Path, inputs: &[usize]) -> Result<String, String> {
     use std::fmt::Write;
-    let ink: InkJson =
-        serde_json::from_str(json_str).map_err(|e| format!("json parse error: {e}"))?;
-    let data = convert(&ink).map_err(|e| format!("convert error: {e}"))?;
+    let data = brink_compiler::compile_path(ink_path)
+        .map_err(|e| format!("compile error: {e}"))?
+        .data;
     let (program, line_tables) =
         brink_runtime::link(&data).map_err(|e| format!("link error: {e}"))?;
     let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
@@ -155,9 +153,9 @@ fn walk_dir(dir: &Path, cases: &mut Vec<PathBuf>) {
         let path = entry.path();
         if path.is_dir() {
             // Check if this directory is a test case.
-            let json_path = path.join("story.ink.json");
+            let ink_path = path.join("story.ink");
             let transcript_path = path.join("transcript.txt");
-            if json_path.exists() && transcript_path.exists() {
+            if ink_path.exists() && transcript_path.exists() {
                 cases.push(path.clone());
             }
             walk_dir(&path, cases);
@@ -195,15 +193,14 @@ fn run_corpus(tier: &str) {
             continue;
         }
 
-        let json_path = case_dir.join("story.ink.json");
+        let ink_path = case_dir.join("story.ink");
         let transcript_path = case_dir.join("transcript.txt");
         let input_path = case_dir.join("input.txt");
 
-        let json_str = std::fs::read_to_string(&json_path).unwrap();
         let expected = std::fs::read_to_string(&transcript_path).unwrap();
         let inputs = parse_inputs(&input_path);
 
-        let result = std::panic::catch_unwind(|| run_story_from_json(&json_str, &inputs));
+        let result = std::panic::catch_unwind(|| run_story_from_ink(&ink_path, &inputs));
         let result = match result {
             Ok(r) => r,
             Err(e) => {

@@ -1,0 +1,3 @@
+Healed to 15.
+Healed again to 18.
+HP cell is now 18.

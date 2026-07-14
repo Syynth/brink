@@ -20,6 +20,10 @@ use crate::{SyntaxNode, SyntaxToken};
 
 ast_node!(SourceFile, SOURCE_FILE);
 ast_node!(IncludeStmt, INCLUDE_STMT);
+ast_node!(ImportStmt, IMPORT_STMT);
+ast_node!(ImportList, IMPORT_LIST);
+ast_node!(ImportItem, IMPORT_ITEM);
+ast_node!(ImportModule, IMPORT_MODULE);
 ast_node!(FilePath, FILE_PATH);
 ast_node!(ExternalDecl, EXTERNAL_DECL);
 
@@ -112,6 +116,44 @@ ast_node!(ArgList, ARG_LIST);
 ast_node!(DivertTargetExpr, DIVERT_TARGET_EXPR);
 ast_node!(ListExpr, LIST_EXPR);
 
+// ── T1b superset: sigil literals + indexing (docs/t1b-surface-spec.md §3-4) ──
+
+ast_node!(ArrayLiteral, ARRAY_LITERAL);
+ast_node!(MapLiteral, MAP_LITERAL);
+ast_node!(MapEntry, MAP_ENTRY);
+ast_node!(IndexExpr, INDEX_EXPR);
+
+// ── T1b superset: multi-line `~ { … }` blocks (docs/t1b-surface-spec.md §2) ──
+
+ast_node!(StmtBlock, STMT_BLOCK);
+ast_node!(IfStmt, IF_STMT);
+ast_node!(ElseClause, ELSE_CLAUSE);
+ast_node!(WhileStmt, WHILE_STMT);
+ast_node!(ForStmt, FOR_STMT);
+ast_node!(BreakStmt, BREAK_STMT);
+ast_node!(ContinueStmt, CONTINUE_STMT);
+ast_node!(ExprStmt, EXPR_STMT);
+
+// ── TM-2 inline type annotations (docs/typed-mode-spec.md §3) ────────
+
+ast_node!(TypeAnnotation, TYPE_ANNOTATION);
+ast_node!(TypeExpr, TYPE_EXPR);
+ast_node!(TypeName, TYPE_NAME);
+ast_node!(TypeGeneric, TYPE_GENERIC);
+ast_node!(TypeFn, TYPE_FN);
+
+// ── TM-4b structs (docs/typed-mode-spec.md §6) ────────────────────────
+
+ast_node!(StructDecl, STRUCT_DECL);
+ast_node!(StructFieldDecl, STRUCT_FIELD_DECL);
+ast_node!(StructLiteral, STRUCT_LITERAL);
+ast_node!(StructFieldInit, STRUCT_FIELD_INIT);
+ast_node!(FieldAccessExpr, FIELD_ACCESS_EXPR);
+
+// ── T1c function values (docs/t1c-spec.md §2) ─────────────────────────
+
+ast_node!(FnLiteral, FN_LITERAL);
+
 // ── Diverts ──────────────────────────────────────────────────────────
 
 ast_node!(DivertNode, DIVERT_NODE);
@@ -120,6 +162,90 @@ ast_node!(DivertTargetWithArgs, DIVERT_TARGET_WITH_ARGS);
 ast_node!(ThreadStart, THREAD_START);
 ast_node!(TunnelOnwardsNode, TUNNEL_ONWARDS_NODE);
 ast_node!(TunnelCallNode, TUNNEL_CALL_NODE);
+
+// ── TM-2 inline type annotations (docs/typed-mode-spec.md §3) ────────
+
+impl TypeAnnotation {
+    /// The annotated type expression after `:`.
+    pub fn type_expr(&self) -> Option<TypeExpr> {
+        support::child(&self.syntax)
+    }
+}
+
+/// What a [`TypeExpr`] wraps — exactly one of these per node.
+pub enum TypeExprKind {
+    Name(TypeName),
+    Generic(TypeGeneric),
+    Fn(TypeFn),
+}
+
+impl TypeExpr {
+    /// The single child this type expression wraps.
+    ///
+    /// `None` only for a malformed/error-recovered `TYPE_EXPR` (e.g. an
+    /// empty annotation at the parser's nesting depth limit) — every
+    /// well-formed one always has exactly one of these.
+    pub fn kind(&self) -> Option<TypeExprKind> {
+        if let Some(n) = support::child::<TypeName>(&self.syntax) {
+            Some(TypeExprKind::Name(n))
+        } else if let Some(g) = support::child::<TypeGeneric>(&self.syntax) {
+            Some(TypeExprKind::Generic(g))
+        } else {
+            support::child::<TypeFn>(&self.syntax).map(TypeExprKind::Fn)
+        }
+    }
+}
+
+impl TypeName {
+    pub fn identifier(&self) -> Option<Identifier> {
+        support::child(&self.syntax)
+    }
+
+    /// The bare type name text (e.g. `"int"`, `"void"`, or an unrecognized
+    /// name — grammar accepts any identifier; validity is a semantic check).
+    pub fn name(&self) -> Option<String> {
+        self.identifier().and_then(|id| id.name())
+    }
+}
+
+impl TypeGeneric {
+    pub fn identifier(&self) -> Option<Identifier> {
+        support::child(&self.syntax)
+    }
+
+    /// The generic head name (e.g. `"list"`, `"array"`, `"map"`).
+    pub fn name(&self) -> Option<String> {
+        self.identifier().and_then(|id| id.name())
+    }
+
+    /// The type arguments in source order (e.g. `[K, V]` for `map<K, V>`).
+    pub fn args(&self) -> impl Iterator<Item = TypeExpr> {
+        support::children(&self.syntax)
+    }
+}
+
+impl TypeFn {
+    /// Every `TYPE_EXPR` child in source order: the last is the return type,
+    /// every earlier one is a parameter type.
+    fn type_exprs(&self) -> Vec<TypeExpr> {
+        support::children(&self.syntax).collect()
+    }
+
+    /// Parameter types, in declaration order.
+    pub fn params(&self) -> Vec<TypeExpr> {
+        let mut exprs = self.type_exprs();
+        if exprs.is_empty() {
+            return exprs;
+        }
+        exprs.pop(); // drop the return type
+        exprs
+    }
+
+    /// The return type after `:`.
+    pub fn return_type(&self) -> Option<TypeExpr> {
+        self.type_exprs().pop()
+    }
+}
 
 // ── Identifiers ──────────────────────────────────────────────────────
 
@@ -167,6 +293,22 @@ pub enum Expr {
     Path(Path),
     ListExpr(ListExpr),
     DivertTarget(DivertTargetExpr),
+    /// `#[expr, …]` — array sigil literal (T1b §3, brink extension).
+    ArrayLiteral(ArrayLiteral),
+    /// `#{key: expr, …}` — map sigil literal (T1b §3, brink extension).
+    MapLiteral(MapLiteral),
+    /// `base[index]` — postfix indexing (T1b §4, brink extension).
+    Index(IndexExpr),
+    /// `Name#{field: expr, …}` — struct construction literal (TM-4b,
+    /// docs/typed-mode-spec.md §6, brink extension).
+    StructLiteral(StructLiteral),
+    /// `base.field` — postfix field access (TM-4b, docs/typed-mode-spec.md
+    /// §6, brink extension). Only produced where the dotted-`PATH` grammar
+    /// doesn't already cover the shape — see `FIELD_ACCESS_EXPR`'s doc.
+    FieldAccess(FieldAccessExpr),
+    /// `#fn(target, args…)` — function-value creation (T1c,
+    /// docs/t1c-spec.md §2, brink extension).
+    FnLiteral(FnLiteral),
 }
 
 impl std::fmt::Debug for Expr {
@@ -197,6 +339,12 @@ impl crate::ast::AstNode for Expr {
                 | SyntaxKind::PATH
                 | SyntaxKind::LIST_EXPR
                 | SyntaxKind::DIVERT_TARGET_EXPR
+                | SyntaxKind::ARRAY_LITERAL
+                | SyntaxKind::MAP_LITERAL
+                | SyntaxKind::INDEX_EXPR
+                | SyntaxKind::STRUCT_LITERAL
+                | SyntaxKind::FIELD_ACCESS_EXPR
+                | SyntaxKind::FN_LITERAL
         )
     }
 
@@ -214,6 +362,12 @@ impl crate::ast::AstNode for Expr {
             SyntaxKind::PATH => Path::cast(node).map(Expr::Path),
             SyntaxKind::LIST_EXPR => ListExpr::cast(node).map(Expr::ListExpr),
             SyntaxKind::DIVERT_TARGET_EXPR => DivertTargetExpr::cast(node).map(Expr::DivertTarget),
+            SyntaxKind::ARRAY_LITERAL => ArrayLiteral::cast(node).map(Expr::ArrayLiteral),
+            SyntaxKind::MAP_LITERAL => MapLiteral::cast(node).map(Expr::MapLiteral),
+            SyntaxKind::INDEX_EXPR => IndexExpr::cast(node).map(Expr::Index),
+            SyntaxKind::STRUCT_LITERAL => StructLiteral::cast(node).map(Expr::StructLiteral),
+            SyntaxKind::FIELD_ACCESS_EXPR => FieldAccessExpr::cast(node).map(Expr::FieldAccess),
+            SyntaxKind::FN_LITERAL => FnLiteral::cast(node).map(Expr::FnLiteral),
             _ => None,
         }
     }
@@ -232,6 +386,12 @@ impl crate::ast::AstNode for Expr {
             Expr::Path(n) => n.syntax(),
             Expr::ListExpr(n) => n.syntax(),
             Expr::DivertTarget(n) => n.syntax(),
+            Expr::ArrayLiteral(n) => n.syntax(),
+            Expr::MapLiteral(n) => n.syntax(),
+            Expr::Index(n) => n.syntax(),
+            Expr::StructLiteral(n) => n.syntax(),
+            Expr::FieldAccess(n) => n.syntax(),
+            Expr::FnLiteral(n) => n.syntax(),
         }
     }
 }
@@ -282,6 +442,11 @@ impl SourceFile {
         support::children(&self.syntax)
     }
 
+    /// `IMPORT` statements (M-2, docs/modules-spec.md §2). Top-level only.
+    pub fn imports(&self) -> impl Iterator<Item = ImportStmt> {
+        support::children(&self.syntax)
+    }
+
     pub fn externals(&self) -> impl Iterator<Item = ExternalDecl> {
         support::children(&self.syntax)
     }
@@ -299,6 +464,14 @@ impl SourceFile {
     }
 
     pub fn list_decls(&self) -> impl Iterator<Item = ListDecl> {
+        support::children(&self.syntax)
+    }
+
+    /// `STRUCT` declarations (TM-4b, docs/typed-mode-spec.md §6) — unlike
+    /// `VAR`/`CONST`/`LIST` (which C# allows at any statement level, so
+    /// callers walk `.descendants()` for those), a struct shape is
+    /// top-level only, so a direct-children scan is exact.
+    pub fn struct_decls(&self) -> impl Iterator<Item = StructDecl> {
         support::children(&self.syntax)
     }
 
@@ -324,6 +497,53 @@ impl SourceFile {
 impl IncludeStmt {
     pub fn file_path(&self) -> Option<FilePath> {
         support::child(&self.syntax)
+    }
+}
+
+// ── ImportStmt (M-2, docs/modules-spec.md §2) ────────────────────────
+
+impl ImportStmt {
+    /// The `{ … }` name list, present only for the bare form
+    /// (`IMPORT { a } FROM mod`). Absent for the qualified form
+    /// (`IMPORT mod`).
+    pub fn list(&self) -> Option<ImportList> {
+        support::child(&self.syntax)
+    }
+
+    /// The imported module name node (present in both forms).
+    pub fn module(&self) -> Option<ImportModule> {
+        support::child(&self.syntax)
+    }
+}
+
+impl ImportList {
+    pub fn items(&self) -> impl Iterator<Item = ImportItem> {
+        support::children(&self.syntax)
+    }
+}
+
+impl ImportItem {
+    /// The imported name (first identifier) and its optional alias (the
+    /// identifier after `AS`). The list has one entry with no alias, or two
+    /// with `[name, alias]`.
+    fn identifiers(&self) -> impl Iterator<Item = Identifier> {
+        support::children(&self.syntax)
+    }
+
+    /// The imported definition's own name.
+    pub fn name(&self) -> Option<String> {
+        self.identifiers().next().and_then(|id| id.name())
+    }
+
+    /// The local alias (`AS gt`), if any.
+    pub fn alias(&self) -> Option<String> {
+        self.identifiers().nth(1).and_then(|id| id.name())
+    }
+}
+
+impl ImportModule {
+    pub fn name(&self) -> Option<String> {
+        support::child::<Identifier>(&self.syntax).and_then(|id| id.name())
     }
 }
 
@@ -386,6 +606,12 @@ impl KnotHeader {
     pub fn params(&self) -> Option<KnotParams> {
         support::child(&self.syntax)
     }
+
+    /// The return type annotation after the params (TM-2, docs/typed-mode-spec.md
+    /// §3: `): type ===`), if present.
+    pub fn return_type(&self) -> Option<TypeAnnotation> {
+        support::child(&self.syntax)
+    }
 }
 
 // ── KnotBody ─────────────────────────────────────────────────────────
@@ -445,6 +671,12 @@ impl KnotParamDecl {
 
     pub fn name(&self) -> Option<String> {
         self.identifier().and_then(|id| id.name())
+    }
+
+    /// The parameter's type annotation (TM-2, docs/typed-mode-spec.md §3:
+    /// `name: type`), if present.
+    pub fn type_annotation(&self) -> Option<TypeAnnotation> {
+        support::child(&self.syntax)
     }
 }
 
@@ -526,6 +758,12 @@ impl LogicLine {
     pub fn assignment(&self) -> Option<Assignment> {
         support::child(&self.syntax)
     }
+
+    /// The T1b `~ { … }` multi-line block body, if this logic line opens one
+    /// (docs/t1b-surface-spec.md §2) rather than a single statement.
+    pub fn stmt_block(&self) -> Option<StmtBlock> {
+        support::child(&self.syntax)
+    }
 }
 
 // ── TagLine ──────────────────────────────────────────────────────────
@@ -564,6 +802,12 @@ impl TempDecl {
         self.identifier().and_then(|id| id.name())
     }
 
+    /// The ascription's type annotation (TM-2, docs/typed-mode-spec.md §3:
+    /// `~ temp name: type = expr`), if present.
+    pub fn type_annotation(&self) -> Option<TypeAnnotation> {
+        support::child(&self.syntax)
+    }
+
     pub fn eq_token(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, EQ)
     }
@@ -592,6 +836,331 @@ impl Assignment {
     /// Returns the right-hand side value expression (the second `Expr` child).
     pub fn value(&self) -> Option<Expr> {
         self.syntax.children().filter_map(Expr::cast).nth(1)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// T1b superset: multi-line `~ { … }` blocks (docs/t1b-surface-spec.md §2)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// A single statement inside a `~ { … }` block body.
+///
+/// Deliberately excludes every weave concept (content, choices, diverts,
+/// gathers, threads) — the seam rule from docs/t1b-surface-spec.md §2:
+/// blocks compute, weave flows.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum BlockStmt {
+    TempDecl(TempDecl),
+    Assignment(Assignment),
+    Return(ReturnStmt),
+    If(IfStmt),
+    While(WhileStmt),
+    For(ForStmt),
+    Break(BreakStmt),
+    Continue(ContinueStmt),
+    ExprStmt(ExprStmt),
+}
+
+impl std::fmt::Debug for BlockStmt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.syntax(), f)
+    }
+}
+
+impl crate::ast::AstNode for BlockStmt {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        matches!(
+            kind,
+            SyntaxKind::TEMP_DECL
+                | SyntaxKind::ASSIGNMENT
+                | SyntaxKind::RETURN_STMT
+                | SyntaxKind::IF_STMT
+                | SyntaxKind::WHILE_STMT
+                | SyntaxKind::FOR_STMT
+                | SyntaxKind::BREAK_STMT
+                | SyntaxKind::CONTINUE_STMT
+                | SyntaxKind::EXPR_STMT
+        )
+    }
+
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        match node.kind() {
+            SyntaxKind::TEMP_DECL => TempDecl::cast(node).map(BlockStmt::TempDecl),
+            SyntaxKind::ASSIGNMENT => Assignment::cast(node).map(BlockStmt::Assignment),
+            SyntaxKind::RETURN_STMT => ReturnStmt::cast(node).map(BlockStmt::Return),
+            SyntaxKind::IF_STMT => IfStmt::cast(node).map(BlockStmt::If),
+            SyntaxKind::WHILE_STMT => WhileStmt::cast(node).map(BlockStmt::While),
+            SyntaxKind::FOR_STMT => ForStmt::cast(node).map(BlockStmt::For),
+            SyntaxKind::BREAK_STMT => BreakStmt::cast(node).map(BlockStmt::Break),
+            SyntaxKind::CONTINUE_STMT => ContinueStmt::cast(node).map(BlockStmt::Continue),
+            SyntaxKind::EXPR_STMT => ExprStmt::cast(node).map(BlockStmt::ExprStmt),
+            _ => None,
+        }
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        match self {
+            BlockStmt::TempDecl(n) => n.syntax(),
+            BlockStmt::Assignment(n) => n.syntax(),
+            BlockStmt::Return(n) => n.syntax(),
+            BlockStmt::If(n) => n.syntax(),
+            BlockStmt::While(n) => n.syntax(),
+            BlockStmt::For(n) => n.syntax(),
+            BlockStmt::Break(n) => n.syntax(),
+            BlockStmt::Continue(n) => n.syntax(),
+            BlockStmt::ExprStmt(n) => n.syntax(),
+        }
+    }
+}
+
+// ── StmtBlock ────────────────────────────────────────────────────────
+
+impl StmtBlock {
+    /// The statements in this block, in source order.
+    pub fn stmts(&self) -> impl Iterator<Item = BlockStmt> {
+        support::children(&self.syntax)
+    }
+}
+
+// ── IfStmt ───────────────────────────────────────────────────────────
+
+impl IfStmt {
+    /// The condition expression (the first `Expr` child).
+    pub fn condition(&self) -> Option<Expr> {
+        self.syntax.children().find_map(Expr::cast)
+    }
+
+    /// The `{ … }` body executed when the condition holds.
+    pub fn body(&self) -> Option<StmtBlock> {
+        support::child(&self.syntax)
+    }
+
+    /// The `else` arm, if present.
+    pub fn else_clause(&self) -> Option<ElseClause> {
+        support::child(&self.syntax)
+    }
+}
+
+// ── ElseClause ───────────────────────────────────────────────────────
+
+impl ElseClause {
+    /// The nested `if` for an `else if` chain, if this is one.
+    pub fn if_stmt(&self) -> Option<IfStmt> {
+        support::child(&self.syntax)
+    }
+
+    /// The `{ … }` body for a bare `else`, if this is one (mutually
+    /// exclusive with [`ElseClause::if_stmt`]).
+    pub fn body(&self) -> Option<StmtBlock> {
+        support::child(&self.syntax)
+    }
+}
+
+// ── WhileStmt ────────────────────────────────────────────────────────
+
+impl WhileStmt {
+    pub fn condition(&self) -> Option<Expr> {
+        self.syntax.children().find_map(Expr::cast)
+    }
+
+    pub fn body(&self) -> Option<StmtBlock> {
+        support::child(&self.syntax)
+    }
+}
+
+// ── ForStmt ──────────────────────────────────────────────────────────
+
+impl ForStmt {
+    /// The loop variable name.
+    pub fn identifier(&self) -> Option<Identifier> {
+        support::child(&self.syntax)
+    }
+
+    pub fn name(&self) -> Option<String> {
+        self.identifier().and_then(|id| id.name())
+    }
+
+    /// The iterable expression (after `in`).
+    pub fn iterable(&self) -> Option<Expr> {
+        self.syntax.children().find_map(Expr::cast)
+    }
+
+    pub fn body(&self) -> Option<StmtBlock> {
+        support::child(&self.syntax)
+    }
+}
+
+// ── ExprStmt ─────────────────────────────────────────────────────────
+
+impl ExprStmt {
+    pub fn expr(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// T1b superset: sigil literals + indexing (docs/t1b-surface-spec.md §3-4)
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── ArrayLiteral ─────────────────────────────────────────────────────
+
+impl ArrayLiteral {
+    pub fn elements(&self) -> impl Iterator<Item = Expr> {
+        support::children(&self.syntax)
+    }
+}
+
+// ── MapLiteral ───────────────────────────────────────────────────────
+
+impl MapLiteral {
+    pub fn entries(&self) -> impl Iterator<Item = MapEntry> {
+        support::children(&self.syntax)
+    }
+}
+
+// ── MapEntry ─────────────────────────────────────────────────────────
+
+impl MapEntry {
+    /// The key expression (the first `Expr` child).
+    pub fn key(&self) -> Option<Expr> {
+        self.syntax.children().find_map(Expr::cast)
+    }
+
+    /// The value expression (the second `Expr` child).
+    pub fn value(&self) -> Option<Expr> {
+        self.syntax.children().filter_map(Expr::cast).nth(1)
+    }
+}
+
+// ── IndexExpr ────────────────────────────────────────────────────────
+
+impl IndexExpr {
+    /// The base being indexed (the first `Expr` child) — `a` in `a[i]`.
+    pub fn base(&self) -> Option<Expr> {
+        self.syntax.children().find_map(Expr::cast)
+    }
+
+    /// The index expression (the second `Expr` child) — `i` in `a[i]`.
+    pub fn index(&self) -> Option<Expr> {
+        self.syntax.children().filter_map(Expr::cast).nth(1)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// TM-4b structs (docs/typed-mode-spec.md §6)
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── StructDecl ───────────────────────────────────────────────────────
+
+impl StructDecl {
+    pub fn identifier(&self) -> Option<Identifier> {
+        support::child(&self.syntax)
+    }
+
+    pub fn name(&self) -> Option<String> {
+        self.identifier().and_then(|id| id.name())
+    }
+
+    /// The declared fields, in source order.
+    pub fn fields(&self) -> impl Iterator<Item = StructFieldDecl> {
+        support::children(&self.syntax)
+    }
+}
+
+// ── StructFieldDecl ──────────────────────────────────────────────────
+
+impl StructFieldDecl {
+    pub fn identifier(&self) -> Option<Identifier> {
+        support::child(&self.syntax)
+    }
+
+    pub fn name(&self) -> Option<String> {
+        self.identifier().and_then(|id| id.name())
+    }
+
+    /// The field's declared type (value position — mirrors the
+    /// construction literal's field-init value position, §6).
+    pub fn type_expr(&self) -> Option<TypeExpr> {
+        support::child(&self.syntax)
+    }
+}
+
+// ── StructLiteral ────────────────────────────────────────────────────
+
+impl StructLiteral {
+    /// The leading shape-name identifier (e.g. `Point` in `Point#{…}`).
+    pub fn identifier(&self) -> Option<Identifier> {
+        support::child(&self.syntax)
+    }
+
+    pub fn shape_name(&self) -> Option<String> {
+        self.identifier().and_then(|id| id.name())
+    }
+
+    /// The field initializers, in source order.
+    pub fn fields(&self) -> impl Iterator<Item = StructFieldInit> {
+        support::children(&self.syntax)
+    }
+}
+
+// ── StructFieldInit ──────────────────────────────────────────────────
+
+impl StructFieldInit {
+    pub fn identifier(&self) -> Option<Identifier> {
+        support::child(&self.syntax)
+    }
+
+    pub fn name(&self) -> Option<String> {
+        self.identifier().and_then(|id| id.name())
+    }
+
+    /// The initializer expression after `:`.
+    pub fn value(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+}
+
+// ── FieldAccessExpr ──────────────────────────────────────────────────
+
+impl FieldAccessExpr {
+    /// The expression being accessed (the first, and only, `Expr` child) —
+    /// `base` in `base.field`.
+    pub fn base(&self) -> Option<Expr> {
+        self.syntax.children().find_map(Expr::cast)
+    }
+
+    /// The field name identifier after `.`.
+    pub fn field(&self) -> Option<Identifier> {
+        support::child(&self.syntax)
+    }
+
+    pub fn field_name(&self) -> Option<String> {
+        self.field().and_then(|id| id.name())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// T1c function values (docs/t1c-spec.md §2)
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── FnLiteral ────────────────────────────────────────────────────────
+
+impl FnLiteral {
+    /// The static target path (the first `PATH` child) — `heal` in
+    /// `#fn(heal, hp)`. `None` on malformed input (`#fn()`, `#fn(1)`).
+    pub fn target(&self) -> Option<Path> {
+        support::child(&self.syntax)
+    }
+
+    /// The bound-argument expressions after the target, in source order.
+    /// The target `PATH` is itself castable to `Expr::Path`, so this skips
+    /// the first `Expr` child iff it is that target node.
+    pub fn args(&self) -> impl Iterator<Item = Expr> {
+        let target_node = self.target().map(|t| t.syntax().clone());
+        self.syntax
+            .children()
+            .filter_map(Expr::cast)
+            .filter(move |e| Some(e.syntax()) != target_node.as_ref())
     }
 }
 
@@ -1285,6 +1854,12 @@ impl VarDecl {
         self.identifier().and_then(|id| id.name())
     }
 
+    /// The declared type annotation (TM-2, docs/typed-mode-spec.md §3:
+    /// `VAR name: type = expr`), if present.
+    pub fn type_annotation(&self) -> Option<TypeAnnotation> {
+        support::child(&self.syntax)
+    }
+
     /// Returns the initializer expression after `=`.
     pub fn value(&self) -> Option<Expr> {
         support::child(&self.syntax)
@@ -1300,6 +1875,12 @@ impl ConstDecl {
 
     pub fn name(&self) -> Option<String> {
         self.identifier().and_then(|id| id.name())
+    }
+
+    /// The declared type annotation (TM-2, docs/typed-mode-spec.md §3:
+    /// `CONST name: type = expr`), if present.
+    pub fn type_annotation(&self) -> Option<TypeAnnotation> {
+        support::child(&self.syntax)
     }
 
     /// Returns the initializer expression after `=`.

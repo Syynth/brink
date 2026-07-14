@@ -1,0 +1,1 @@
+hero has 110 gold at rate 1.5.

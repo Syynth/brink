@@ -1,10 +1,11 @@
 use crate::SyntaxKind::{
-    self, AMP_AMP, BANG, BANG_EQ, BANG_QUESTION, BOOLEAN_LIT, CARET, COMMA, DIVERT,
-    DIVERT_TARGET_EXPR, DOT, EOF, EQ_EQ, FLOAT, FLOAT_LIT, FUNCTION_CALL, GT, GT_EQ, IDENT,
-    IDENTIFIER, INFIX_EXPR, INTEGER, INTEGER_LIT, KW_AND, KW_FALSE, KW_HAS, KW_HASNT, KW_MOD,
-    KW_NOT, KW_OR, KW_TRUE, L_BRACE, L_PAREN, LIST_EXPR, LT, LT_EQ, MINUS, MINUS_EQ, NEWLINE,
-    PAREN_EXPR, PERCENT, PIPE, PLUS, PLUS_EQ, POSTFIX_EXPR, PREFIX_EXPR, QUESTION, QUOTE, R_PAREN,
-    SLASH, STAR, STRING_LIT,
+    self, AMP_AMP, ARRAY_LITERAL, BANG, BANG_EQ, BANG_QUESTION, BOOLEAN_LIT, CARET, COLON, COMMA,
+    DIVERT, DIVERT_TARGET_EXPR, DOT, EOF, EQ_EQ, FIELD_ACCESS_EXPR, FLOAT, FLOAT_LIT, FN_LITERAL,
+    FUNCTION_CALL, GT, GT_EQ, HASH, IDENT, IDENTIFIER, INDEX_EXPR, INFIX_EXPR, INTEGER,
+    INTEGER_LIT, KW_AND, KW_FALSE, KW_HAS, KW_HASNT, KW_MOD, KW_NOT, KW_OR, KW_TRUE, L_BRACE,
+    L_BRACKET, L_PAREN, LIST_EXPR, LT, LT_EQ, MAP_ENTRY, MAP_LITERAL, MINUS, MINUS_EQ, NEWLINE,
+    PAREN_EXPR, PERCENT, PIPE, PLUS, PLUS_EQ, POSTFIX_EXPR, PREFIX_EXPR, QUESTION, QUOTE, R_BRACE,
+    R_BRACKET, R_PAREN, SLASH, STAR, STRING_LIT, STRUCT_FIELD_INIT, STRUCT_LITERAL,
 };
 
 use super::Parser;
@@ -106,6 +107,39 @@ fn expression_bp(p: &mut Parser<'_, '_>, min_bp: Prec) {
             continue;
         }
 
+        // Postfix indexing: `a[0]`, `m["k"]`, chained `grid[y][x]` (T1b §4).
+        // Follows any primary expression — no clash with choice-label
+        // brackets, which never immediately follow an expression here.
+        if p.current() == L_BRACKET {
+            p.start_node_at(checkpoint, INDEX_EXPR);
+            index_bracket(p);
+            p.finish_node();
+            continue;
+        }
+
+        // Postfix field access: `base.field` (TM-4b, docs/typed-mode-spec.md
+        // §6). Only reached where the existing dotted-`PATH` grammar doesn't
+        // already cover the shape: a bare `ident.ident…` chain is greedily
+        // consumed whole by `divert::path` inside `atom()`, so by the time
+        // this loop runs there is no leftover `.field` to see — that
+        // ambiguous case (`p.x` where `p` might be a variable *or* the head
+        // of a static dotted path like `knot.stitch`) is resolved by
+        // `brink-analyzer`'s resolution fallback, not by new grammar. This
+        // arm only fires after a non-`PATH` primary — a `STRUCT_LITERAL`, an
+        // `INDEX_EXPR`, a parenthesized/call expression — where `.field` is
+        // unambiguously field access. Chains (`base.field.field2`) fall out
+        // for free: the loop just runs again.
+        if p.current() == DOT && p.nth(1) == IDENT {
+            p.start_node_at(checkpoint, FIELD_ACCESS_EXPR);
+            p.bump(); // .
+            p.skip_ws();
+            p.start_node(IDENTIFIER);
+            p.bump(); // field name
+            p.finish_node();
+            p.finish_node();
+            continue;
+        }
+
         // `||` — two adjacent PIPE tokens = logical OR
         if p.current() == PIPE && p.nth_raw(1) == PIPE {
             let (prec, right_assoc) = (Prec::Or, false);
@@ -170,11 +204,19 @@ fn atom(p: &mut Parser<'_, '_>) -> bool {
             true
         }
 
-        // Identifier -- could be function_call or plain identifier
+        // Identifier -- could be function_call, a struct construction
+        // literal, or a plain (possibly dotted) identifier
         IDENT => {
             // function_call = ident ( args )
             if p.nth(1) == L_PAREN {
                 function_call(p);
+            } else if p.nth(1) == HASH && p.nth(2) == L_BRACE {
+                // Name#{field: expr, …} — struct construction literal
+                // (TM-4b, docs/typed-mode-spec.md §6). Self-identifying via
+                // the leading shape name — unambiguous with the dotted-path
+                // `IDENT` arm below, since a bare path never has `#{`
+                // immediately following its first segment.
+                struct_literal(p);
             } else {
                 // dotted_identifier
                 super::divert::path(p);
@@ -206,7 +248,256 @@ fn atom(p: &mut Parser<'_, '_>) -> bool {
             true
         }
 
+        // Function-value creation `#fn(name, args…)` (T1c §2) — expression
+        // position only, same sigil-family rule as the collection literals
+        // below. `fn` is a contextual (soft) keyword: a plain IDENT whose
+        // text is checked here, so `fn` stays usable as an ordinary
+        // identifier everywhere else.
+        HASH if p.nth(1) == IDENT && p.nth_text(1) == "fn" && p.nth(2) == L_PAREN => {
+            fn_literal(p);
+            true
+        }
+
+        // Sigil collection literals (T1b §3) — expression position only.
+        // Unambiguous: `#` never begins an expression in vanilla ink, and in
+        // prose position `#` is always claimed by `tag::tags` before
+        // expression parsing runs (docs/t1b-surface-spec.md §3).
+        HASH if p.nth(1) == L_BRACKET => {
+            array_literal(p);
+            true
+        }
+        HASH if p.nth(1) == L_BRACE => {
+            map_literal(p);
+            true
+        }
+
         _ => false,
+    }
+}
+
+/// `[ index ]` — one link of a postfix indexing chain (T1b §4): `a[0]`,
+/// chained `grid[y][x]`. Depth-guarded like [`paren_expr`] since nested
+/// index brackets recurse through `expression()`. `pub(crate)` so
+/// `logic::indexed_lvalue` can build the same `INDEX_EXPR` shape for
+/// indexed-assignment lvalues (`a[0] = v`).
+pub(crate) fn index_bracket(p: &mut Parser<'_, '_>) {
+    p.bump(); // [
+    if p.at_depth_limit() {
+        p.error("nesting depth limit exceeded".into());
+        skip_balanced(p, L_BRACKET, R_BRACKET);
+        return;
+    }
+    p.depth += 1;
+    p.skip_ws();
+    expression(p);
+    p.skip_ws();
+    p.expect(R_BRACKET);
+    p.depth -= 1;
+}
+
+/// `#[expr, expr, …]` — array sigil literal (T1b §3). Trailing comma and
+/// the empty form `#[]` are both accepted.
+fn array_literal(p: &mut Parser<'_, '_>) {
+    p.start_node(ARRAY_LITERAL);
+    p.bump(); // #
+    p.skip_ws();
+    p.bump_assert(L_BRACKET);
+    if p.at_depth_limit() {
+        p.error("nesting depth limit exceeded".into());
+        skip_balanced(p, L_BRACKET, R_BRACKET);
+        p.finish_node();
+        return;
+    }
+    p.depth += 1;
+    p.skip_ws();
+    if p.current() != R_BRACKET {
+        expression(p);
+        loop {
+            p.skip_ws();
+            if !p.eat(COMMA) {
+                break;
+            }
+            p.skip_ws();
+            if p.current() == R_BRACKET {
+                break; // trailing comma
+            }
+            expression(p);
+        }
+    }
+    p.skip_ws();
+    p.expect(R_BRACKET);
+    p.depth -= 1;
+    p.finish_node();
+}
+
+/// `#{key: expr, key: expr, …}` — map sigil literal (T1b §3). Trailing
+/// comma and the empty form `#{}` are both accepted. Key expressions are
+/// parsed generally here; the ratified key-domain restriction (int/string/
+/// bool) is an analyzer/runtime concern, not a grammar one.
+fn map_literal(p: &mut Parser<'_, '_>) {
+    p.start_node(MAP_LITERAL);
+    p.bump(); // #
+    p.skip_ws();
+    p.bump_assert(L_BRACE);
+    if p.at_depth_limit() {
+        p.error("nesting depth limit exceeded".into());
+        skip_balanced(p, L_BRACE, R_BRACE);
+        p.finish_node();
+        return;
+    }
+    p.depth += 1;
+    p.skip_ws();
+    if p.current() != R_BRACE {
+        map_entry(p);
+        loop {
+            p.skip_ws();
+            if !p.eat(COMMA) {
+                break;
+            }
+            p.skip_ws();
+            if p.current() == R_BRACE {
+                break; // trailing comma
+            }
+            map_entry(p);
+        }
+    }
+    p.skip_ws();
+    p.expect(R_BRACE);
+    p.depth -= 1;
+    p.finish_node();
+}
+
+/// `key : expr` — one entry of a map literal.
+fn map_entry(p: &mut Parser<'_, '_>) {
+    p.start_node(MAP_ENTRY);
+    expression(p);
+    p.skip_ws();
+    p.expect(COLON);
+    p.skip_ws();
+    expression(p);
+    p.finish_node();
+}
+
+/// `Name#{field: expr, …}` — struct construction literal (TM-4b,
+/// docs/typed-mode-spec.md §6). Trailing comma and the empty form
+/// `Name#{}` are both accepted, mirroring [`map_literal`]'s shape exactly
+/// (the decl body mirrors this same shape, with types in value position).
+fn struct_literal(p: &mut Parser<'_, '_>) {
+    p.start_node(STRUCT_LITERAL);
+    p.start_node(IDENTIFIER);
+    p.bump(); // shape name (IDENT)
+    p.finish_node();
+    p.skip_ws();
+    p.bump_assert(HASH);
+    p.skip_ws();
+    p.bump_assert(L_BRACE);
+    if p.at_depth_limit() {
+        p.error("nesting depth limit exceeded".into());
+        skip_balanced(p, L_BRACE, R_BRACE);
+        p.finish_node();
+        return;
+    }
+    p.depth += 1;
+    p.skip_ws();
+    if p.current() != R_BRACE {
+        struct_field_init(p);
+        loop {
+            p.skip_ws();
+            if !p.eat(COMMA) {
+                break;
+            }
+            p.skip_ws();
+            if p.current() == R_BRACE {
+                break; // trailing comma
+            }
+            struct_field_init(p);
+        }
+    }
+    p.skip_ws();
+    p.expect(R_BRACE);
+    p.depth -= 1;
+    p.finish_node();
+}
+
+/// `#fn(target, args…)` — function-value creation (T1c §2). `target` is a
+/// (possibly dotted) static path — a name, never an expression; `args…` are
+/// ordinary expressions binding a prefix of the target's declared params.
+/// Trailing comma accepted, mirroring the sibling sigil literals. The
+/// zero-arg form `#fn(name)` is legal grammar (legal semantics iff the
+/// target has no `ref` params — an analyzer concern, E080).
+fn fn_literal(p: &mut Parser<'_, '_>) {
+    p.start_node(FN_LITERAL);
+    p.bump(); // #
+    p.skip_ws();
+    p.bump_assert(IDENT); // the contextual `fn` keyword
+    p.skip_ws();
+    p.bump_assert(L_PAREN);
+    if p.at_depth_limit() {
+        p.error("nesting depth limit exceeded".into());
+        skip_balanced(p, L_PAREN, R_PAREN);
+        p.finish_node();
+        return;
+    }
+    p.depth += 1;
+    p.skip_ws();
+    if p.current() != R_PAREN {
+        if p.at_ident_or_keyword() {
+            super::divert::path(p);
+        } else {
+            p.error("expected function name".into());
+        }
+        loop {
+            p.skip_ws();
+            if !p.eat(COMMA) {
+                break;
+            }
+            p.skip_ws();
+            if p.current() == R_PAREN {
+                break; // trailing comma
+            }
+            expression(p);
+        }
+    }
+    p.skip_ws();
+    p.expect(R_PAREN);
+    p.depth -= 1;
+    p.finish_node();
+}
+
+/// `field: expr` — one entry of a struct construction literal.
+fn struct_field_init(p: &mut Parser<'_, '_>) {
+    p.start_node(STRUCT_FIELD_INIT);
+    p.start_node(IDENTIFIER);
+    p.expect_ident_or_keyword();
+    p.finish_node();
+    p.skip_ws();
+    p.expect(COLON);
+    p.skip_ws();
+    expression(p);
+    p.finish_node();
+}
+
+/// Error recovery: skip tokens until the matching `close` (the `open` token
+/// has already been consumed) or EOF. Used when a depth-limited nested
+/// construct bails out early — mirrors [`paren_expr`]'s recovery loop.
+pub(crate) fn skip_balanced(p: &mut Parser<'_, '_>, open: SyntaxKind, close: SyntaxKind) {
+    let mut depth = 1u32;
+    while !p.at_eof() && depth > 0 {
+        let k = p.current();
+        if k == open {
+            depth += 1;
+            p.bump();
+        } else if k == close {
+            depth -= 1;
+            if depth > 0 {
+                p.bump();
+            }
+        } else {
+            p.bump();
+        }
+    }
+    if p.current() == close {
+        p.bump();
     }
 }
 

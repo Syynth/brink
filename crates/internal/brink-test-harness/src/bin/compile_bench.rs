@@ -17,6 +17,19 @@
 //! 4. **Per-stage breakdown** for the synthetic project, cold and warm:
 //!    parse+HIR / analyze / diagnostics / LIR / codegen, timed at the same
 //!    seams the production driver already has.
+//! 5. **Warm recompile under `types = strict`** (issue #632 / FG-3): the
+//!    same one-line-edit warm loop as (3), but with `dialect = brink` +
+//!    `types = strict` set on the persistent db before the edit loop —
+//!    TM-3 (#619, PR #656) wired `finish_analysis` to run `strict::check` +
+//!    `annotations::mismatches` through the memoized `type_inference_query`
+//!    under this policy, so this is FG-3's first slice with a *measurable*
+//!    warm-path consumer: `analysis_query`'s decomposition (per-file
+//!    `validate`/`dialect_gate`/annotation-content contributors, split off from the
+//!    whole-project passes) should keep this row from scaling with project
+//!    size the way the pre-FG-3 bundled `analysis_query` did. Reported
+//!    alongside (3)'s gradual-mode numbers as the before/after comparison
+//!    the issue asks for — same project shape, same edit, only the
+//!    `AnalysisOptions` differ.
 //!
 //! Stability over rigor: medians of N runs (default 5), fixed deterministic
 //! inputs, one stable greppable row per metric. Run with:
@@ -35,6 +48,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use brink_analyzer::{AnalysisOptions, Dialect, TypePolicy};
 use brink_driver::Driver;
 use brink_ir::FileId;
 
@@ -66,6 +80,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     bench_synthetic_cold(&project, &stats, runs)?;
     bench_synthetic_stages_cold(&project, runs);
     bench_synthetic_warm(&project, runs)?;
+    bench_synthetic_warm_strict(&project, runs)?;
 
     Ok(())
 }
@@ -480,10 +495,18 @@ fn staged_back_half(driver: &mut Driver, entry: FileId) -> Result<StageMs, Strin
         &analysis.resolutions,
         &file_paths,
     );
+    let Some(program) = program else {
+        return Err(
+            "unexpected LIR lowering failure during staged run: residual-extension backstop \
+             fired (E053) — a T1b brink-extension HIR node reached LIR lowering"
+                .to_string(),
+        );
+    };
     let lir_lower = ms(start);
 
     let start = Instant::now();
-    let data = brink_codegen_inkb::emit(&program);
+    let data = brink_codegen_inkb::emit(&program)
+        .map_err(|e| format!("unexpected codegen failure during staged run: {e}"))?;
     let codegen = ms(start);
     // Keep the output alive to here so codegen cannot be optimized out.
     std::hint::black_box(&data);
@@ -655,6 +678,103 @@ fn bench_synthetic_warm(project: &BTreeMap<String, String>, runs: usize) -> Resu
     );
     row(
         "synthetic_warm.full_recompile",
+        "update_file .. codegen (StoryData)",
+        &full,
+    );
+    Ok(())
+}
+
+// ── 5. Warm recompile under types = strict (issue #632 / FG-3) ────────
+
+/// Same warm one-line-edit loop as [`bench_synthetic_warm`], but with
+/// `dialect = brink` + `types = strict` set on the persistent db before the
+/// edit loop starts — the before/after comparison the issue requires,
+/// isolating the `AnalysisOptions` policy as the only variable (same
+/// synthetic project, same edit, same stage seams). The generated project
+/// has no knot params/temps/function-return annotations, so strict mode's
+/// escape checks (`E065`/`E066`) find nothing to flag and the project still
+/// compiles clean — this measures the *cost* of running the strict path,
+/// not a diagnostics-heavy detour.
+///
+/// TM-3 (#619, PR #656) is the "real consumer" this issue names: under
+/// `types = strict`, `finish_analysis` runs `strict::check` +
+/// `annotations::mismatches` via the memoized `type_inference_query`, so
+/// `reanalyze_ide_strict` is the row that shows whether the FG-3
+/// decomposition (per-file `validate`/`dialect_gate`/annotation-content
+/// contributors, split off from the whole-project passes `analysis_query`
+/// used to bundle them with) keeps a one-file edit's cost from scaling with
+/// the other `SYN_FILES - 1` untouched files.
+fn bench_synthetic_warm_strict(
+    project: &BTreeMap<String, String>,
+    runs: usize,
+) -> Result<(), String> {
+    let mut driver = Driver::new();
+    driver
+        .discover("main.ink", read_from(project))
+        .map_err(|e| format!("warm setup discovery failed: {e}"))?;
+    let entry = driver
+        .db()
+        .file_id("main.ink")
+        .ok_or_else(|| "warm setup: main.ink missing after discovery".to_string())?;
+    driver.set_analysis_options(AnalysisOptions {
+        dialect: Dialect::Brink,
+        types: TypePolicy::Strict,
+        ..AnalysisOptions::default()
+    });
+    let mut db = driver.into_db();
+
+    let edit_path = format!("file_{EDIT_FILE:02}.ink");
+    let mut update = Vec::with_capacity(runs);
+    let mut reanalyze = Vec::with_capacity(runs);
+    let mut analyze = Vec::with_capacity(runs);
+    let mut diagnostics = Vec::with_capacity(runs);
+    let mut full = Vec::with_capacity(runs);
+
+    // Offset the revision counter from `bench_synthetic_warm`'s so both
+    // benches never happen to compare identical edit content.
+    let mut revision: u64 = 1000;
+    for _ in 0..runs {
+        revision += 1;
+        let edited = generate_file(EDIT_FILE, revision);
+        let mut d = Driver::from_db(db);
+
+        let start = Instant::now();
+        d.db_mut().update_file(&edit_path, edited);
+        let update_ms = ms(start);
+
+        let stages = staged_back_half(&mut d, entry)?;
+
+        update.push(update_ms);
+        analyze.push(stages.analyze);
+        diagnostics.push(stages.diagnostics);
+        reanalyze.push(update_ms + stages.analyze);
+        full.push(update_ms + stages.total());
+
+        db = d.into_db();
+    }
+
+    row(
+        "synthetic_warm_strict.update_file",
+        "1-line edit, per-knot HIR cache",
+        &update,
+    );
+    row(
+        "synthetic_warm_strict.reanalyze_ide",
+        "update_file + analyze, types=strict",
+        &reanalyze,
+    );
+    row(
+        "synthetic_warm_strict.stage.analyze",
+        "cross-file analysis incl. strict::check",
+        &analyze,
+    );
+    row(
+        "synthetic_warm_strict.stage.diagnostics",
+        "collect+partition diagnostics",
+        &diagnostics,
+    );
+    row(
+        "synthetic_warm_strict.full_recompile",
         "update_file .. codegen (StoryData)",
         &full,
     );

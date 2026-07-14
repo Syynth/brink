@@ -8,18 +8,18 @@ use crate::codec::{
 };
 use crate::definition::{
     AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef, ScopeLineTable,
+    ListItemDef, ScopeLineTable, StructShapeDef,
 };
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::story::StoryData;
-use crate::value::{ListValue, Value, ValueType};
+use crate::value::{ListValue, MapKey, Value, ValueType};
 
 use super::{
     CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HEADER_PREAMBLE, KEY_CARDINAL,
     KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN, LINE_TEMPLATE, MAGIC, PART_LITERAL,
-    PART_SELECT, PART_SLOT, SECTION_COUNT, SECTION_ENTRY_SIZE, SectionKind, VAL_BOOL,
-    VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FRAGMENT_REF, VAL_INT, VAL_LIST, VAL_NULL, VAL_STRING,
-    VAL_VAR_POINTER, VERSION,
+    PART_SELECT, PART_SLOT, SECTION_COUNT, SECTION_ENTRY_SIZE, SectionKind, VAL_ARRAY, VAL_BOOL,
+    VAL_CLOSURE, VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT,
+    VAL_LIST, VAL_MAP, VAL_NULL, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION,
 };
 
 // ── Tier 1: Full story write ────────────────────────────────────────────────
@@ -45,8 +45,10 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
         SectionKind::Labels,
         SectionKind::ListLiterals,
         SectionKind::AddressPaths,
+        SectionKind::LiteralPool,
+        SectionKind::StructShapes,
     ];
-    let mut section_offsets = [0u32; 10];
+    let mut section_offsets = [0u32; 12];
 
     // 1. NameTable
     section_offsets[0] = (buf.len() - base) as u32;
@@ -87,6 +89,14 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
     // 10. AddressPaths
     section_offsets[9] = (buf.len() - base) as u32;
     write_section_address_paths(&story.address_paths, buf);
+
+    // 11. LiteralPool
+    section_offsets[10] = (buf.len() - base) as u32;
+    write_section_literal_pool(&story.literal_pool, buf);
+
+    // 12. StructShapes (TM-4)
+    section_offsets[11] = (buf.len() - base) as u32;
+    write_section_struct_shapes(&story.struct_shapes, buf);
 
     let file_size = (buf.len() - base) as u32;
     let checksum = crc32(&buf[base + header_size..]);
@@ -255,6 +265,16 @@ fn encode_value_type(vt: ValueType, buf: &mut Vec<u8>) {
         // TempPointer is runtime-only and should never appear in .inkb files.
         ValueType::FragmentRef => VAL_FRAGMENT_REF,
         ValueType::TempPointer | ValueType::Null => VAL_NULL,
+        // Collection value types (v4, `docs/format-v4-rfc.md` §1).
+        ValueType::Array => VAL_ARRAY,
+        ValueType::Map => VAL_MAP,
+        // TM-4 record value type (v4, reserved tag graduated this PR).
+        ValueType::Record => VAL_RECORD,
+        // T1c function value types (v4, materialized in #700).
+        ValueType::FnRef => VAL_FN_REF,
+        ValueType::Closure => VAL_CLOSURE,
+        // T1d handle value type (v4, reserved tag graduated this PR).
+        ValueType::Handle => VAL_HANDLE,
     };
     write_u8(buf, tag);
 }
@@ -305,6 +325,84 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
         Value::TempPointer { .. } | Value::Null => {
             write_u8(buf, VAL_NULL);
         }
+        // Collections encode as trees (v4, `docs/format-v4-rfc.md` §1): a length
+        // prefix then the recursively-encoded elements / key-value pairs. Arc
+        // sharing is deliberately not preserved on the wire (value-model-spec §5).
+        Value::Array(items) => {
+            write_u8(buf, VAL_ARRAY);
+            write_u32(buf, items.len() as u32);
+            for item in items.iter() {
+                encode_value(item, buf);
+            }
+        }
+        Value::Map(map) => {
+            write_u8(buf, VAL_MAP);
+            write_u32(buf, map.len() as u32);
+            // Insertion order is semantic (keys restricted to int/string/bool).
+            for (key, val) in map.iter() {
+                encode_map_key(key, buf);
+                encode_value(val, buf);
+            }
+        }
+        // TM-4 (`docs/format-v4-rfc.md` §1): `ShapeId` then field values in
+        // shape order — no field names on the wire (they live once, in the
+        // `StructShapes` section entry the shape id references).
+        Value::Record { shape, fields } => {
+            write_u8(buf, VAL_RECORD);
+            write_u32(buf, shape.0);
+            write_u32(buf, fields.len() as u32);
+            for field in fields.iter() {
+                encode_value(field, buf);
+            }
+        }
+        // Function values (T1c, `docs/format-v4-rfc.md` §1). `FnRef` is just
+        // the fn token; `Closure` adds a u16-counted env of `{NameId, kind u8,
+        // value}` entries — the named/moded env is the redundancy rehydration
+        // validation reads (spec §6).
+        Value::FnRef(target) => {
+            write_u8(buf, VAL_FN_REF);
+            write_def_id(buf, *target);
+        }
+        Value::Closure(c) => {
+            write_u8(buf, VAL_CLOSURE);
+            write_def_id(buf, c.target);
+            write_u16(buf, c.env.len() as u16);
+            for entry in &c.env {
+                write_u16(buf, entry.name.0);
+                write_u8(buf, u8::from(entry.is_ref));
+                encode_value(&entry.payload, buf);
+            }
+        }
+        // Handle values (T1d, `docs/format-v4-rfc.md` §1: `kind NameId, u64
+        // id`). First emission of this reserved tag — the wire form is frozen
+        // by the RFC, materialized here. No opcode ever pushes one; a handle
+        // reaches this encoder only as a binding-produced global default or a
+        // literal-pool entry supplied by a future manifest-aware pipeline.
+        Value::Handle { kind, id } => {
+            write_u8(buf, VAL_HANDLE);
+            write_u16(buf, kind.0);
+            write_u64(buf, *id);
+        }
+    }
+}
+
+/// Encode a [`MapKey`] using the scalar `VAL_*` tag surface it maps onto
+/// (`int`/`string`/`bool` — the v1 key domain, `docs/value-model-spec.md` §4).
+/// Self-describing so the reader can reject a non-scalar key tag.
+fn encode_map_key(key: &MapKey, buf: &mut Vec<u8>) {
+    match key {
+        MapKey::Int(n) => {
+            write_u8(buf, VAL_INT);
+            write_i32(buf, *n);
+        }
+        MapKey::Str(s) => {
+            write_u8(buf, VAL_STRING);
+            write_str(buf, s);
+        }
+        MapKey::Bool(b) => {
+            write_u8(buf, VAL_BOOL);
+            write_u8(buf, u8::from(*b));
+        }
     }
 }
 
@@ -342,6 +440,36 @@ pub fn write_section_list_literals(list_literals: &[ListValue], buf: &mut Vec<u8
     }
 }
 
+/// Write the T1b literal pool section (no header framing) — a flat list of
+/// content-hash-deduplicated constant [`Value`]s referenced by
+/// `PushLiteral(idx)` (`docs/format-v4-rfc.md` §2). Each entry uses the
+/// existing generic `encode_value` (the same recursive `VAL_ARRAY`/`VAL_MAP`
+/// tree encoding as a `GlobalVarDef` default).
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_literal_pool(literal_pool: &[Value], buf: &mut Vec<u8>) {
+    write_u32(buf, literal_pool.len() as u32);
+    for v in literal_pool {
+        encode_value(v, buf);
+    }
+}
+
+/// Write the TM-4 `StructShapes` section (no header framing): one entry per
+/// declared `STRUCT` — shape id, name, then its ordered field `NameId`s
+/// (`docs/format-v4-rfc.md` §2). Empty (count 0) until a compiler milestone
+/// emits struct declarations — see the PR description's scope note.
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_struct_shapes(struct_shapes: &[StructShapeDef], buf: &mut Vec<u8>) {
+    write_u32(buf, struct_shapes.len() as u32);
+    for shape in struct_shapes {
+        write_u32(buf, shape.id.0);
+        write_u16(buf, shape.name.0);
+        write_u16(buf, shape.fields.len() as u16);
+        for field in &shape.fields {
+            write_u16(buf, field.0);
+        }
+    }
+}
+
 fn encode_external(ext: &ExternalFnDef, buf: &mut Vec<u8>) {
     write_def_id(buf, ext.id);
     write_u16(buf, ext.name.0);
@@ -374,6 +502,13 @@ fn encode_container(c: &ContainerDef, buf: &mut Vec<u8>) {
     write_i32(buf, c.path_hash);
     write_u8(buf, c.param_count);
     write_u8(buf, u8::from(c.local));
+    // Per-param name/mode metadata (T1c, `docs/t1c-spec.md` §6). Additive
+    // trailing field: a `0` count for the common no-param container.
+    write_u16(buf, c.params.len() as u16);
+    for p in &c.params {
+        write_u16(buf, p.name.0);
+        write_u8(buf, u8::from(p.is_ref));
+    }
     write_u32(buf, c.bytecode.len() as u32);
     buf.extend_from_slice(&c.bytecode);
 }

@@ -13,9 +13,12 @@ use brink_format::{
     PluralCategory, PluralResolver, SelectKey, Value,
 };
 
+use crate::collection_ops;
+use crate::conversion_ops;
 use crate::error::RuntimeError;
 use crate::list_ops;
 use crate::program::Program;
+use crate::record_ops;
 use crate::state::ContextAccess;
 use crate::story::{CallFrame, CallFrameType, ContainerPosition, Flow, PendingChoice, Stats};
 use crate::value_ops::{self, BinaryOp};
@@ -457,6 +460,75 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 .unwrap_or(Value::Null);
             flow.value_stack.push(val);
         }
+        // ── Sharing discipline (T1b-4, docs/value-model-spec.md §5) ────
+        Opcode::TakeGlobal(id) => {
+            // No auto-dereference — mirrors `GetGlobal`/`SetGlobal`: a
+            // ref-param pointer lives in a *temp*, never in a global slot
+            // itself.
+            let idx = program
+                .resolve_global(id)
+                .ok_or(RuntimeError::UnresolvedGlobal(id))?;
+            let val = context.take_global(idx);
+            flow.value_stack.push(val);
+        }
+        Opcode::TakeTemp(slot) => {
+            // Auto-dereference, mirroring `GetTemp`: if the temp holds a
+            // pointer, take from the *pointed-to* location and leave it
+            // `Null` — the pointer itself stays in this slot untouched (a
+            // `ref` param must keep pointing at its target for the rest of
+            // the call, exactly like `GetTemp`/`SetTemp`'s write-through).
+            let thread = flow.current_thread();
+            let frame = thread
+                .call_stack
+                .last()
+                .ok_or(RuntimeError::CallStackUnderflow)?;
+            let current = frame
+                .temps
+                .get(slot as usize)
+                .cloned()
+                .unwrap_or(Value::Null);
+            match current {
+                Value::VariablePointer(target_id) => {
+                    let global_idx = program
+                        .resolve_global(target_id)
+                        .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
+                    let taken = context.take_global(global_idx);
+                    flow.value_stack.push(taken);
+                }
+                Value::TempPointer {
+                    slot: target_slot,
+                    frame_depth,
+                } => {
+                    let thread = flow.current_thread_mut();
+                    let target = thread
+                        .call_stack
+                        .get_mut(frame_depth as usize)
+                        .ok_or(RuntimeError::CallStackUnderflow)?;
+                    let ti = target_slot as usize;
+                    while target.temps.len() <= ti {
+                        target.temps.push(Value::Null);
+                    }
+                    #[expect(clippy::indexing_slicing, reason = "padded to ti + 1 above")]
+                    let taken = mem::replace(&mut target.temps[ti], Value::Null);
+                    flow.value_stack.push(taken);
+                }
+                _ => {
+                    let thread = flow.current_thread_mut();
+                    let frame = thread
+                        .call_stack
+                        .last_mut()
+                        .ok_or(RuntimeError::CallStackUnderflow)?;
+                    let idx = slot as usize;
+                    while frame.temps.len() <= idx {
+                        frame.temps.push(Value::Null);
+                    }
+                    #[expect(clippy::indexing_slicing, reason = "padded to idx + 1 above")]
+                    let taken = mem::replace(&mut frame.temps[idx], Value::Null);
+                    flow.value_stack.push(taken);
+                }
+            }
+        }
+
         Opcode::PushTempPointer(slot) => {
             // Push a pointer to a temp variable. If the temp already holds
             // a pointer (VariablePointer or TempPointer), flatten through
@@ -667,39 +739,146 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
             });
             stats.frames_pushed += 1;
         }
-        Opcode::CallVariable => {
+        Opcode::CallVariable(argc) => {
             let val = flow.pop_value()?;
-            let Value::DivertTarget(id) = val else {
-                return Err(RuntimeError::TypeError(
-                    "call_variable requires DivertTarget".into(),
-                ));
-            };
-            let idx = program
-                .resolve_target(id)
-                .map(|(idx, _)| idx)
-                .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+            match val {
+                // Classic divert-target-variable call (oracle path, unchanged):
+                // the target's own prologue self-consumes its declared params
+                // off the stack, so `argc` is not needed here — untouched by
+                // #721.
+                Value::DivertTarget(id) => {
+                    let idx = program
+                        .resolve_target(id)
+                        .map(|(idx, _)| idx)
+                        .ok_or(RuntimeError::UnresolvedDefinition(id))?;
 
-            let counting_flags = program.container(idx).counting_flags;
-            if counting_flags.contains(CountingFlags::VISITS) {
-                context.increment_visit(id);
-                context.set_turn_count(id, context.turn_index());
+                    let counting_flags = program.container(idx).counting_flags;
+                    if counting_flags.contains(CountingFlags::VISITS) {
+                        context.increment_visit(id);
+                        context.set_turn_count(id, context.turn_index());
+                    }
+
+                    let output_start = flow.output.target_len();
+                    let current_pos = current_position(flow)?;
+                    let thread = flow.current_thread_mut();
+                    thread.call_stack.push(CallFrame {
+                        return_address: Some(current_pos),
+                        temps: Vec::new(),
+                        container_stack: vec![ContainerPosition {
+                            container_idx: idx,
+                            offset: 0,
+                        }],
+                        frame_type: CallFrameType::Function,
+                        external_fn_id: None,
+                        function_output_start: Some(output_start),
+                    });
+                    stats.frames_pushed += 1;
+                }
+                // T1c (docs/t1c-spec.md §3): the **direct** call form `f(args…)`
+                // where `f` holds a function value dispatches through the same
+                // `CallVariable` site (codegen pushes the supplied args, then
+                // the callee, then `CallVariable(argc)`) — the divert-target
+                // arm above stays the oracle path, this arm is inert for it.
+                // `argc` is the exact count codegen pushed at *this* call site
+                // (issue #721: never derive it from the resolved target's
+                // arity — that made the pop count trivially match `enter_fn_
+                // value`'s arity check, so a gradual-mode arity mismatch left
+                // a stray value on the stack instead of faulting). Popping the
+                // wire-carried `argc` here means a real mismatch surfaces as
+                // `FunctionValueArity` from `enter_fn_value`, exactly like the
+                // explicit `call(f, args…)` form (`CallValue(argc)`).
+                Value::FnRef(_) | Value::Closure(_) => {
+                    let supplied = pop_values(flow, argc as usize)?;
+                    enter_fn_value(flow, program, context, stats, &val, supplied)?;
+                }
+                other => {
+                    return Err(RuntimeError::NotCallable(value_type_name(&other)));
+                }
             }
-
-            let output_start = flow.output.target_len();
-            let current_pos = current_position(flow)?;
-            let thread = flow.current_thread_mut();
-            thread.call_stack.push(CallFrame {
-                return_address: Some(current_pos),
-                temps: Vec::new(),
-                container_stack: vec![ContainerPosition {
-                    container_idx: idx,
-                    offset: 0,
-                }],
-                frame_type: CallFrameType::Function,
-                external_fn_id: None,
-                function_output_start: Some(output_start),
-            });
-            stats.frames_pushed += 1;
+        }
+        // ── Function values (T1c, docs/t1c-spec.md §3/§6, #700) ──────────
+        Opcode::PushFnRef(id) => {
+            flow.value_stack.push(Value::FnRef(id));
+        }
+        Opcode::MakeClosure {
+            target,
+            bound_count,
+        } => {
+            let (idx, _) = program
+                .resolve_target(target)
+                .ok_or(RuntimeError::UnresolvedDefinition(target))?;
+            let params = program.container_params(idx);
+            let n = bound_count as usize;
+            // Pop the bound args (pushed in declared order; top is the last).
+            let mut popped = pop_values(flow, n)?; // now in declared order
+            let mut env = Vec::with_capacity(n);
+            for (i, payload) in popped.drain(..).enumerate() {
+                // Names/modes come from the target's signature (single source
+                // of truth the rehydration check reads back against).
+                let (name, is_ref) = params
+                    .get(i)
+                    .map_or((brink_format::NameId(0), false), |p| (p.name, p.is_ref));
+                env.push(brink_format::ClosureEnvEntry {
+                    name,
+                    is_ref,
+                    payload,
+                });
+            }
+            flow.value_stack.push(Value::closure(target, env));
+        }
+        Opcode::CallValue(argc) => {
+            let callee = flow.pop_value()?;
+            match callee {
+                Value::FnRef(_) | Value::Closure(_) => {
+                    let supplied = pop_values(flow, argc as usize)?;
+                    enter_fn_value(flow, program, context, stats, &callee, supplied)?;
+                }
+                // A divert-target callee (`call(f)` where `f` is a divert var)
+                // dispatches like `CallVariable` — jump into the target,
+                // ignoring `argc` (diverts don't take value args this way).
+                Value::DivertTarget(id) => {
+                    let idx = program
+                        .resolve_target(id)
+                        .map(|(idx, _)| idx)
+                        .ok_or(RuntimeError::UnresolvedDefinition(id))?;
+                    let counting_flags = program.container(idx).counting_flags;
+                    if counting_flags.contains(CountingFlags::VISITS) {
+                        context.increment_visit(id);
+                        context.set_turn_count(id, context.turn_index());
+                    }
+                    let output_start = flow.output.target_len();
+                    let current_pos = current_position(flow)?;
+                    let thread = flow.current_thread_mut();
+                    thread.call_stack.push(CallFrame {
+                        return_address: Some(current_pos),
+                        temps: Vec::new(),
+                        container_stack: vec![ContainerPosition {
+                            container_idx: idx,
+                            offset: 0,
+                        }],
+                        frame_type: CallFrameType::Function,
+                        external_fn_id: None,
+                        function_output_start: Some(output_start),
+                    });
+                    stats.frames_pushed += 1;
+                }
+                other => {
+                    return Err(RuntimeError::NotCallable(value_type_name(&other)));
+                }
+            }
+        }
+        // T1c-3 (docs/t1c-spec.md §3): `bind(f, args…)` — val-only currying
+        // over an existing function value. Pop the callee (top) then the
+        // `argc` supplied args below it, append them to the callee's bound-arg
+        // row (consuming the head of its remaining param row), and push the
+        // new function value. A non-function callee or over-binding (more
+        // args than the target has remaining params) is a turn-terminating
+        // fault — never a silently truncated or garbage row.
+        Opcode::BindValue(argc) => {
+            let callee = flow.pop_value()?;
+            let supplied = pop_values(flow, argc as usize)?;
+            let bound = bind_fn_value(program, &callee, supplied)?;
+            flow.value_stack.push(bound);
         }
         Opcode::TunnelReturn => {
             // The eval block before ->-> pushes either void (normal
@@ -902,6 +1081,32 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         Opcode::ListFromInt => list_ops::list_from_int(flow, program)?,
         Opcode::ListRandom => list_ops::list_random::<R>(flow, context)?,
 
+        // ── Collections (T1b) ────────────────────────────────────────
+        Opcode::ArrayNew(n) => collection_ops::array_new(flow, n)?,
+        Opcode::MapNew(n) => collection_ops::map_new(flow, n)?,
+        Opcode::IndexGet => collection_ops::index_get(flow)?,
+        Opcode::IndexSet => collection_ops::index_set(flow)?,
+        Opcode::CollectionLen => collection_ops::collection_len(flow)?,
+        Opcode::MapGet => collection_ops::map_get(flow)?,
+        Opcode::MapInsert => collection_ops::map_insert(flow)?,
+        Opcode::MapRemove => collection_ops::map_remove(flow)?,
+        Opcode::MapContains => collection_ops::map_contains(flow)?,
+        Opcode::CollectionKeys => collection_ops::collection_keys(flow)?,
+        Opcode::CollectionValues => collection_ops::collection_values(flow)?,
+        Opcode::PushLiteral(idx) => collection_ops::push_literal(flow, program, idx)?,
+
+        // ── Records (TM-4) ────────────────────────────────────────────
+        Opcode::RecordNew(shape_id) => record_ops::record_new(flow, program, shape_id)?,
+        Opcode::RecordGetDyn(name_id) => record_ops::record_get_dyn(flow, program, name_id)?,
+        Opcode::RecordSetDyn(name_id) => record_ops::record_set_dyn(flow, program, name_id)?,
+        Opcode::RecordGet(offset) => record_ops::record_get(flow, offset)?,
+        Opcode::RecordSet(offset) => record_ops::record_set(flow, offset)?,
+
+        // ── Conversion intrinsics (TM-3 completion, #659) ────────────
+        Opcode::ConvertInt => conversion_ops::convert_to_int(flow)?,
+        Opcode::ConvertFloat => conversion_ops::convert_to_float(flow)?,
+        Opcode::ConvertString => conversion_ops::convert_to_string(flow, program)?,
+
         // ── External functions ──────────────────────────────────────
         Opcode::CallExternal(fn_id, arg_count) => {
             // Pop arguments from the value stack.
@@ -927,6 +1132,245 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
     }
 
     Ok(Stepped::Continue)
+}
+
+// ── Function values (T1c, docs/t1c-spec.md §3/§6, #700) ──────────────────────
+
+/// Human-readable type name for a runtime value — used by the function-value
+/// dispatch faults (mirrors the per-module `type_name` helpers).
+fn value_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Int(_) => "int",
+        Value::Float(_) => "float",
+        Value::Bool(_) => "bool",
+        Value::String(_) => "string",
+        Value::List(_) => "list",
+        Value::DivertTarget(_) => "divert_target",
+        Value::VariablePointer(_) => "var_pointer",
+        Value::TempPointer { .. } => "temp_pointer",
+        Value::Null => "null",
+        Value::FragmentRef(_) => "fragment_ref",
+        Value::Array(_) => "array",
+        Value::Map(_) => "map",
+        Value::Record { .. } => "record",
+        Value::FnRef(_) | Value::Closure(_) => "fn",
+        Value::Handle { .. } => "handle",
+    }
+}
+
+/// Pop `n` values off the value stack, returned in **push order** — index `0`
+/// is the deepest of the popped run, index `n-1` was on top. Errors on
+/// underflow rather than silently truncating.
+fn pop_values(flow: &mut Flow, n: usize) -> Result<Vec<Value>, RuntimeError> {
+    let len = flow.value_stack.len();
+    if len < n {
+        return Err(RuntimeError::StackUnderflow);
+    }
+    Ok(flow.value_stack.split_off(len - n))
+}
+
+/// Resolve a function value to its target container index and fn token. A
+/// non-function value is a `NotCallable` fault (spec §3).
+fn fn_value_target_idx(v: &Value, program: &Program) -> Result<(u32, DefinitionId), RuntimeError> {
+    let target = v
+        .fn_target()
+        .ok_or_else(|| RuntimeError::NotCallable(value_type_name(v)))?;
+    let (idx, _) = program
+        .resolve_target(target)
+        .ok_or(RuntimeError::UnresolvedDefinition(target))?;
+    Ok((idx, target))
+}
+
+fn mode_str(is_ref: bool) -> &'static str {
+    if is_ref { "ref" } else { "val" }
+}
+
+/// `bind(f, supplied…)` (T1c-3, docs/t1c-spec.md §3): produce a new function
+/// value with `supplied` appended to `callee`'s bound-arg row. The appended
+/// entries are always `val` (the remaining params after the bound prefix are
+/// val-only by construction — `ref` params are bound away at creation), taking
+/// their param name from the target's signature at the appended position for
+/// rehydration-check parity with `#fn`/`MakeClosure`. Faults: a non-function
+/// callee (`NotCallable`); binding more args than the target has remaining
+/// params (`FunctionValueArity` — over-binding, never a truncated row).
+fn bind_fn_value(
+    program: &Program,
+    callee: &Value,
+    supplied: Vec<Value>,
+) -> Result<Value, RuntimeError> {
+    let (idx, target) = fn_value_target_idx(callee, program)?;
+    let arity = program.container(idx).param_count as usize;
+    let params = program.container_params(idx);
+
+    // Existing bound prefix (zero for a bare `FnRef`).
+    let existing: &[brink_format::ClosureEnvEntry] = match callee {
+        Value::Closure(c) => c.env.as_slice(),
+        _ => &[],
+    };
+    let bound = existing.len();
+
+    // Over-binding is a fault (§3): bound + supplied must not exceed arity.
+    if bound + supplied.len() > arity {
+        return Err(RuntimeError::FunctionValueArity {
+            expected: arity,
+            got: bound + supplied.len(),
+            bound,
+            supplied: supplied.len(),
+        });
+    }
+
+    let mut env = Vec::with_capacity(bound + supplied.len());
+    env.extend_from_slice(existing);
+    for (i, payload) in supplied.into_iter().enumerate() {
+        // Name/mode from the target's signature at the appended position.
+        // The remaining params are val-only, so `is_ref` is false here; we
+        // still read the recorded mode so a (malformed) `ref` param faults
+        // cleanly at invoke via the shared rehydration check rather than
+        // silently misbinding.
+        let (name, is_ref) = params
+            .get(bound + i)
+            .map_or((brink_format::NameId(0), false), |p| (p.name, p.is_ref));
+        env.push(brink_format::ClosureEnvEntry {
+            name,
+            is_ref,
+            payload,
+        });
+    }
+
+    Ok(Value::closure(target, env))
+}
+
+/// Validate a function-value call and assemble its full argument row (T1c,
+/// docs/t1c-spec.md §3/§6). Runs the §6 rehydration check (each bound entry's
+/// name + mode must still match the current signature at the same position),
+/// the §3 arity check (`bound + supplied == declared arity`), and the §3
+/// cross-flow ref-`#@local` guard, then returns the target container index,
+/// its fn token, and the full argument row (bound prefix in declared order,
+/// then the supplied val-only args).
+///
+/// Shared by in-story dispatch ([`enter_fn_value`]) and host-directed
+/// evaluation ([`FlowInstance::begin_function_value_eval`](crate::story::FlowInstance::begin_function_value_eval))
+/// so both paths enforce the identical fault set — never a silent misbinding
+/// on one path only.
+pub(crate) fn prepare_fn_value_call(
+    program: &Program,
+    callee: &Value,
+    supplied: Vec<Value>,
+) -> Result<(u32, DefinitionId, Vec<Value>), RuntimeError> {
+    let (idx, target) = fn_value_target_idx(callee, program)?;
+    let arity = program.container(idx).param_count as usize;
+    let params = program.container_params(idx);
+
+    let empty_env: &[brink_format::ClosureEnvEntry] = &[];
+    let env = match callee {
+        Value::Closure(c) => c.env.as_slice(),
+        _ => empty_env,
+    };
+
+    // Rehydration validation (§6): each bound entry's name + mode must still
+    // match the current signature at the same position. A closure saved against
+    // an earlier compile that renamed / reordered / re-moded a param faults
+    // here — a defined fault, never a silent misbinding.
+    for (i, entry) in env.iter().enumerate() {
+        let Some(p) = params.get(i) else {
+            return Err(RuntimeError::FunctionValueRehydrationMismatch(format!(
+                "bound param #{i} no longer exists on the target signature"
+            )));
+        };
+        if p.name != entry.name || p.is_ref != entry.is_ref {
+            let want = program.name_checked(p.name).unwrap_or("?");
+            let got = program.name_checked(entry.name).unwrap_or("?");
+            return Err(RuntimeError::FunctionValueRehydrationMismatch(format!(
+                "bound param #{i} was `{got}` ({}) but the target now declares `{want}` ({})",
+                mode_str(entry.is_ref),
+                mode_str(p.is_ref),
+            )));
+        }
+    }
+
+    // Arity (§3): bound + supplied must exactly equal the declared arity.
+    let bound = env.len();
+    let got = bound + supplied.len();
+    if got != arity {
+        return Err(RuntimeError::FunctionValueArity {
+            expected: arity,
+            got,
+            bound,
+            supplied: supplied.len(),
+        });
+    }
+
+    // Cross-flow ref-`#@local` fault (§3, #597): a `ref`-bound flow-private
+    // cell can only be dereferenced safely from its creating flow. T1c ships
+    // the fault instead of creating-flow identity, so invoking a closure that
+    // `ref`-binds a `#@local` global faults — never a silent cross-flow
+    // misbinding. A `ref`-bound World `VAR` is shared and invokes freely.
+    for entry in env {
+        if entry.is_ref
+            && let Value::VariablePointer(id) = &entry.payload
+            && program
+                .resolve_global(*id)
+                .is_some_and(|slot| program.global_is_local(slot))
+        {
+            return Err(RuntimeError::FunctionValueCrossFlowLocal(
+                program.global_var_name(*id).unwrap_or("?").to_owned(),
+            ));
+        }
+    }
+
+    // Assemble the full arg row: bound prefix (declared order) then the
+    // supplied val args. The target's prologue pops them (DeclareTemp, in
+    // reverse) into its param slots.
+    let mut full = Vec::with_capacity(bound + supplied.len());
+    for entry in env {
+        full.push(entry.payload.clone());
+    }
+    full.extend(supplied);
+    Ok((idx, target, full))
+}
+
+/// Dispatch through a function value (T1c, docs/t1c-spec.md §3/§6): validate the
+/// bound env against the *current* signature (rehydration), check arity, guard
+/// the cross-flow ref-`#@local` fault, then push the full arg row (bound prefix
+/// in declared order, then the supplied val-only args) and enter the target
+/// exactly like a plain [`Call`](Opcode::Call).
+fn enter_fn_value(
+    flow: &mut Flow,
+    program: &Program,
+    context: &mut (impl ContextAccess + ?Sized),
+    stats: &mut Stats,
+    callee: &Value,
+    supplied: Vec<Value>,
+) -> Result<(), RuntimeError> {
+    let (idx, target, full_args) = prepare_fn_value_call(program, callee, supplied)?;
+
+    // Push the full arg row (bound prefix then supplied val args).
+    for v in full_args {
+        flow.value_stack.push(v);
+    }
+
+    // Enter the target (identical frame setup to `Opcode::Call`).
+    let counting_flags = program.container(idx).counting_flags;
+    if counting_flags.contains(CountingFlags::VISITS) {
+        context.increment_visit(target);
+        context.set_turn_count(target, context.turn_index());
+    }
+    let output_start = flow.output.target_len();
+    let current_pos = current_position(flow)?;
+    let thread = flow.current_thread_mut();
+    thread.call_stack.push(CallFrame {
+        return_address: Some(current_pos),
+        temps: Vec::new(),
+        container_stack: vec![ContainerPosition {
+            container_idx: idx,
+            offset: 0,
+        }],
+        frame_type: CallFrameType::Function,
+        external_fn_id: None,
+        function_output_start: Some(output_start),
+    });
+    stats.frames_pushed += 1;
+    Ok(())
 }
 
 fn resolve_line(

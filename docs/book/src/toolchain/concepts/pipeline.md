@@ -43,9 +43,3 @@ Per-file HIR plus analysis resolutions are lowered into a unified LIR (Low-level
 |----------|-------------|
 | `compile_path(path)` | Full pipeline from a file path |
 | `compile(entry, read_file)` | Full pipeline with a custom file reader (for WASM, tests) |
-| `compile_to_json(entry, read_file)` | Stop at LIR, emit `.ink.json` format (for diffing against inklecate) |
-| `compile_string_to_json(source)` | Quick JSON emit from a source string |
-
-## Converter pipeline
-
-A separate pipeline exists for processing inklecate's output: `.ink.json` -> parse (`brink-json`) -> convert (`brink-converter`) -> `StoryData`. This is the known-good reference used for validating the native compiler's output.

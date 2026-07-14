@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/brink-*", "crates/brink", "crates/bevy-brink", "crates/internal/*"]
-exclude = ["crates/internal/brink-syntax/fuzz", "crates/internal/brink-format/fuzz", "benchmarks/tools/gen-input", "benchmarks/drivers/brink-loop", "crates/zed-brink"]
+exclude = ["crates/internal/brink-syntax/fuzz", "crates/internal/brink-format/fuzz", "crates/brink-runtime/fuzz", "benchmarks/tools/gen-input", "benchmarks/drivers/brink-loop", "crates/zed-brink"]
 resolver = "2"
 
 [workspace.package]
@@ -88,9 +88,7 @@ proc-macro2 = "1"
 bevy-brink-derive = { path = "crates/internal/bevy-brink-derive", version = "0.0.11" }
 brink-analyzer = { path = "crates/internal/brink-analyzer", version = "0.0.11" }
 brink-codegen-inkb = { path = "crates/internal/brink-codegen-inkb", version = "0.0.11" }
-brink-codegen-json = { path = "crates/internal/brink-codegen-json", version = "0.0.11" }
 brink-compiler = { path = "crates/brink-compiler", version = "0.0.11" }
-brink-converter = { path = "crates/internal/brink-converter", version = "0.0.11" }
 brink-db = { path = "crates/internal/brink-db", version = "0.0.11" }
 brink-driver = { path = "crates/internal/brink-driver", version = "0.0.11" }
 brink-fmt = { path = "crates/internal/brink-fmt", version = "0.0.11" }
@@ -98,7 +96,6 @@ brink-format = { path = "crates/internal/brink-format", version = "0.0.11" }
 brink-ide = { path = "crates/internal/brink-ide", version = "0.0.11" }
 brink-intl = { path = "crates/internal/brink-intl", version = "0.0.11" }
 brink-ir = { path = "crates/internal/brink-ir", version = "0.0.11" }
-brink-json = { path = "crates/internal/brink-json", version = "0.0.11" }
 brink-runtime = { path = "crates/brink-runtime", version = "0.0.11" }
 brink-syntax = { path = "crates/internal/brink-syntax", version = "0.0.11" }
 # Unpublished (dev-only): no version, so `cargo publish` strips it from dependents.

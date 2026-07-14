@@ -158,11 +158,10 @@ fn full_roundtrip_through_xml() {
 
 #[test]
 fn generate_and_compile_xliff() {
-    let json_text =
-        include_str!("../../../../tests/tier1/basics/I001-minimal-story/story.ink.json");
-    let json_text = json_text.strip_prefix('\u{feff}').unwrap_or(json_text);
-    let story: brink_json::InkJson = serde_json::from_str(json_text).unwrap();
-    let data = brink_converter::convert(&story).unwrap();
+    let src = include_str!("../../../../tests/tier1/basics/I001-minimal-story/story.ink");
+    let data = brink_compiler::compile("story.ink", |_p| Ok(src.to_owned()))
+        .unwrap()
+        .data;
 
     // Generate XLIFF
     let doc = generate_locale(&data, 0x1234, "en", None);
@@ -235,11 +234,10 @@ fn regeneration_preserves_translations() {
     }
 
     // "Recompile" with one new line and one changed line
-    let json_text =
-        include_str!("../../../../tests/tier1/basics/I001-minimal-story/story.ink.json");
-    let json_text = json_text.strip_prefix('\u{feff}').unwrap_or(json_text);
-    let story: brink_json::InkJson = serde_json::from_str(json_text).unwrap();
-    let data = brink_converter::convert(&story).unwrap();
+    let src = include_str!("../../../../tests/tier1/basics/I001-minimal-story/story.ink");
+    let data = brink_compiler::compile("story.ink", |_p| Ok(src.to_owned()))
+        .unwrap()
+        .data;
 
     let result = regenerate_locale(&data, 0x5678, "en", &existing).unwrap();
 

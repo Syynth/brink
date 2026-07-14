@@ -67,6 +67,9 @@ pub fn resolve_file(
             RefKind::List => {
                 resolve_list_ref(index, file_id, uref, &mut map, &mut diagnostics);
             }
+            RefKind::Struct => {
+                resolve_struct_ref(index, file_id, uref, &mut map, &mut diagnostics);
+            }
         }
     }
 
@@ -292,6 +295,30 @@ fn lookup_variable(
         return VarResult::Found(id);
     }
 
+    // 11. TM-4b resolution fallback (docs/typed-mode-spec.md §6): every
+    // static dotted-path interpretation above (steps 3-10: list items,
+    // lists, knots/stitches, labels — "ink's static dotted paths... resolved
+    // first and win") has failed. If the path has more than one segment and
+    // its *head* segment alone resolves to a local (param/temp) or a global
+    // variable/constant, this is field access on that variable
+    // (`p.x`/`p.x.y`) rather than an unresolved static path — the resolved
+    // target is the head variable itself; the trailing segment(s) are field
+    // names carried structurally by the HIR `Path`, not by this resolution.
+    // Struct field-name validity (does `x` exist on `p`'s declared shape?) is
+    // a separate construction-time concern (`brink-analyzer::structs`), not
+    // resolution's. A single-segment path can never reach here having
+    // already failed steps 1-2 above (which already check locals/globals for
+    // the *whole* path), so this never fires for a bare variable reference.
+    if let Some((head, _rest)) = path.split_once('.') {
+        if let Some(id) = lookup_local_in_scope(locals, head, &uref.scope) {
+            return VarResult::Found(id);
+        }
+        if let Some(id) = lookup_by_name(index, head, &[SymbolKind::Variable, SymbolKind::Constant])
+        {
+            return VarResult::Found(id);
+        }
+    }
+
     VarResult::NotFound
 }
 
@@ -359,6 +386,20 @@ fn resolve_function(
             range: uref.range,
             target: id,
         });
+        return;
+    }
+
+    // T1b stdlib slice 1 (docs/t1b-surface-spec.md §5): `len`/`keys`/
+    // `values`/`contains`/`push`/`insert`/`remove` with no matching user
+    // symbol are the brink-dialect builtins, handled at LIR lowering —
+    // same "skip resolution, no diagnostic here" treatment as
+    // `is_builtin_function` above. Dialect-agnostic at this layer (an
+    // author-defined symbol of the same name always wins regardless of
+    // dialect, matched by the lookups above before this is reached);
+    // `strict-ink` rejection of an unresolved use is a separate diagnostic
+    // (`brink-analyzer::dialect_gate`, which — unlike this resolution pass —
+    // does know the dialect).
+    if is_t1b_stdlib_name(path) {
         return;
     }
 
@@ -457,6 +498,36 @@ fn resolve_list_ref(
     ));
 }
 
+/// Resolve a struct construction literal's leading shape name (`Name#{…}`,
+/// TM-4b, docs/typed-mode-spec.md §6) against declared `SymbolKind::Struct`
+/// symbols. Always a bare (undotted) name — the construction-literal grammar
+/// only ever puts a single identifier before `#{` — so this is a direct
+/// by-name lookup, no hierarchical/qualified fallback chain like diverts or
+/// variables need.
+fn resolve_struct_ref(
+    index: &SymbolIndex,
+    file_id: FileId,
+    uref: &brink_ir::UnresolvedRef,
+    map: &mut ResolutionMap,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let path = &uref.path;
+    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Struct]) {
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
+        return;
+    }
+    diagnostics.push(unresolved_diag(
+        file_id,
+        uref.range,
+        path,
+        DiagnosticCode::E068,
+    ));
+}
+
 // ─── Lookup helpers ─────────────────────────────────────────────────
 
 /// Look up a local variable (param or temp) by bare name within the given
@@ -531,7 +602,65 @@ pub(crate) fn is_builtin_function(name: &str) -> bool {
     )
 }
 
-fn lookup_by_name(index: &SymbolIndex, name: &str, kinds: &[SymbolKind]) -> Option<DefinitionId> {
+/// T1b stdlib slice 1 function names (`docs/t1b-surface-spec.md` §5) plus
+/// the TM-3-completion pure conversion intrinsics `int`/`float`/`string`
+/// (`docs/typed-mode-spec.md` §4, maintainer ruling 2026-07-13, issue #659,
+/// "per the stdlib slice-1 pattern"): lowercase free functions,
+/// brink-dialect-gated. Kept in sync by hand with `brink_ir`'s
+/// LIR-lowering copy of this same list (`lir::lower::expr::
+/// is_t1b_stdlib_name`) — the crates don't share a dependency edge for this
+/// purpose in the analysis → codegen direction, mirroring the existing
+/// `is_builtin_function`/`recognize_builtin` split for the classic uppercase
+/// ink intrinsics above.
+///
+/// Unlike `is_builtin_function`, a name in this list is *not* unconditionally
+/// treated as reserved: `resolve_function`'s lookup chain (externals, knots,
+/// lists, variables, locals) always runs first, so an author-defined symbol
+/// of the same name resolves normally — shadowing the builtin (§5's
+/// ruling) — and only a resolution *failure* additionally checks this list
+/// before falling back to the builtin (silently, no diagnostic) instead of
+/// emitting E025.
+pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
+    matches!(
+        name,
+        "len"
+            | "keys"
+            | "values"
+            | "contains"
+            | "push"
+            | "insert"
+            | "remove"
+            | "int"
+            | "float"
+            | "string"
+            // T1c call forms (docs/t1c-spec.md §3): `call(f, args…)` (explicit
+            // invocation) and `bind(f, args…)` (val-only currying) are
+            // brink-dialect stdlib names so an unresolved use isn't E025 —
+            // they lower to `CallValue`/`BindValue` and dispatch through a
+            // function value. `bind` is effect-transparent (copies the value's
+            // row); its typing rule (consume the head of the param row) is
+            // wired into the checker (issue #733, `infer::body::
+            // check_bind_value`) — under `types = strict` a known `Ty::Fn`
+            // callee is statically checked (over-binding is `E063`); an
+            // `Unknown`/`Conflicted` callee still escapes as `E065`/`E066`.
+            // Gradual mode is unaffected: the runtime fault stays the
+            // backstop for both `call` and `bind`, exactly as before.
+            | "call"
+            | "bind"
+    )
+}
+
+/// `pub(crate)`: reused by `signature.rs` (issue #712) to resolve a `#fn`
+/// creation-site target to its declaring knot when computing a VAR/CONST
+/// global's declaration-derived `fn(T…): R` type — the same "function knot
+/// by bare name" lookup [`resolve_function`] itself does first, without
+/// needing this pass's locals/scope machinery (a `#fn` target at global-
+/// initializer position has no enclosing body to scope against).
+pub(crate) fn lookup_by_name(
+    index: &SymbolIndex,
+    name: &str,
+    kinds: &[SymbolKind],
+) -> Option<DefinitionId> {
     let ids = index.by_name.get(name)?;
     for id in ids {
         if let Some(info) = index.symbols.get(id)
@@ -670,6 +799,7 @@ mod tests {
                 range: r,
                 params: Vec::new(),
                 detail: None,
+                visibility: None,
             });
             offset += name.len() as u32 + 1;
         }
@@ -680,6 +810,7 @@ mod tests {
                 range: r,
                 params: Vec::new(),
                 detail: None,
+                visibility: None,
             });
             offset += name.len() as u32 + 1;
         }
@@ -690,6 +821,7 @@ mod tests {
                 range: r,
                 params: Vec::new(),
                 detail: None,
+                visibility: None,
             });
             offset += name.len() as u32 + 1;
         }
@@ -700,6 +832,7 @@ mod tests {
                 range: r,
                 params: Vec::new(),
                 detail: None,
+                visibility: None,
             });
             offset += list_name.len() as u32 + 1;
             for &item in items {
@@ -710,6 +843,7 @@ mod tests {
                     range: r,
                     params: Vec::new(),
                     detail: None,
+                    visibility: None,
                 });
                 offset += item.len() as u32 + 1;
             }
@@ -721,6 +855,7 @@ mod tests {
                 range: r,
                 params: Vec::new(),
                 detail: None,
+                visibility: None,
             });
             offset += name.len() as u32 + 1;
         }
@@ -731,6 +866,7 @@ mod tests {
                 range: r,
                 params: Vec::new(),
                 detail: None,
+                visibility: None,
             });
             offset += name.len() as u32 + 1;
         }
@@ -876,6 +1012,7 @@ mod tests {
             range: range(0, 3),
             params: Vec::new(),
             detail: None,
+            visibility: None,
         });
         a.locals.push(LocalSymbol {
             name: "t".to_string(),
@@ -894,6 +1031,7 @@ mod tests {
             range: range(100, 3),
             params: Vec::new(),
             detail: None,
+            visibility: None,
         }); // duplicate name -> E022, not indexed
         b.unresolved
             .push(uref("t", RefKind::Variable, Some("dup"), None));
@@ -1077,6 +1215,7 @@ mod tests {
             range: r,
             params,
             detail: Some("function".to_string()),
+            visibility: None,
         });
         manifest.unresolved = unresolved;
         manifest
@@ -1165,6 +1304,7 @@ mod tests {
                 is_divert: false,
             }],
             detail: None,
+            visibility: None,
         });
         manifest.unresolved.push(uref_with_args(
             "print",
@@ -1180,5 +1320,150 @@ mod tests {
         assert_eq!(resolutions.len(), 1);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code, DiagnosticCode::E031);
+    }
+
+    // ── TM-4b resolution fallback (docs/typed-mode-spec.md §6) ─────────
+    //
+    // End-to-end (parse -> HIR lower -> merge_manifests -> resolve_file)
+    // rather than the hand-built `make_manifest` fixtures above: the
+    // precedence claim is about how a *real* dotted `Path` — produced by
+    // the actual parser/lowering pipeline, not a synthesized
+    // `UnresolvedRef` — resolves, so the fixture needs the real pipeline to
+    // be a faithful test of the claim.
+
+    /// Parse -> HIR lower -> `merge_manifests` -> `resolve_file` (the real
+    /// production pipeline). Each fixture below is written to produce
+    /// exactly one resolvable reference (the LHS of `~ y = …` is an
+    /// undeclared `y`, so it stays unresolved — diagnosed, not resolved —
+    /// and `-> DONE` is handled specially at the HIR level, never a
+    /// resolvable reference), so `resolutions` always has exactly one entry:
+    /// the dotted/bare reference under test.
+    fn build_real(src: &str) -> (SymbolIndex, ResolutionMap) {
+        let parsed = brink_syntax::parse(src);
+        let (_hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let (index, _diag) = merge_manifests(&[(FileId(0), &manifest)]);
+        let (resolutions, _diag) = resolve_file(&index, FileId(0), &manifest);
+        (index, resolutions)
+    }
+
+    /// The `SymbolKind` a reference spanning exactly `needle` (the first
+    /// occurrence of that substring in `src`) resolved to. Ink's own
+    /// lowering can register additional bookkeeping references beyond the
+    /// one under test (e.g. an implicit fallthrough divert when a knot's
+    /// only content is its first stitch) — matching by the reference's
+    /// exact source span, rather than assuming `resolutions` has exactly
+    /// one entry, is robust to that noise.
+    fn resolved_kind_at(
+        src: &str,
+        index: &SymbolIndex,
+        resolutions: &ResolutionMap,
+        needle: &str,
+    ) -> SymbolKind {
+        // The *last* occurrence — every fixture below places the reference
+        // under test after any same-named declaration.
+        let start = src
+            .rfind(needle)
+            .expect("needle not found in fixture source");
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "test fixture offsets fit in u32"
+        )]
+        let range = rowan::TextRange::new(
+            rowan::TextSize::from(start as u32),
+            rowan::TextSize::from((start + needle.len()) as u32),
+        );
+        let target = resolutions
+            .iter()
+            .find(|r| r.range == range)
+            .expect("no resolution spanning the needle's exact range")
+            .target;
+        index
+            .symbols
+            .get(&target)
+            .expect("resolved target missing from index")
+            .kind
+    }
+
+    #[test]
+    fn resolution_fallback_static_dotted_path_wins_over_a_colliding_variable_name() {
+        // §6's own precedence claim: "ink's static dotted paths (knot.stitch,
+        // List.Item) are resolved first and win". `knot` here is BOTH the
+        // head of a real stitch path (`knot.stitch`) AND the name of a
+        // declared variable — the static path must win, resolving `knot.x`
+        // to the stitch, not falling back to field access on the variable.
+        let src = "VAR knot = 0\n=== knot ===\n= x\nHello.\n-> DONE\n\
+                   === main ===\n~ y = knot.x\n-> DONE\n";
+        let (index, resolutions) = build_real(src);
+        assert_eq!(
+            resolved_kind_at(src, &index, &resolutions, "knot.x"),
+            SymbolKind::Stitch,
+            "the static `knot.x` stitch path must win over the colliding `knot` variable"
+        );
+    }
+
+    #[test]
+    fn resolution_fallback_resolves_to_head_variable_when_no_static_path_matches() {
+        // No knot/stitch/list/label named `p` or `p.x` exists — the fallback
+        // resolves `p.x` to the variable `p` itself (field access on it),
+        // not an unresolved reference.
+        let src = "VAR p = 0\n=== main ===\n~ y = p.x\n-> DONE\n";
+        let (index, resolutions) = build_real(src);
+        assert_eq!(
+            resolved_kind_at(src, &index, &resolutions, "p.x"),
+            SymbolKind::Variable
+        );
+    }
+
+    #[test]
+    fn resolution_fallback_resolves_to_head_param() {
+        // Same fallback, but the head is a knot parameter rather than a
+        // global — the fallback checks locals (params/temps) first, per
+        // `lookup_variable`'s existing local-shadows-global ordering.
+        let src = "=== main(p) ===\n~ y = p.x\n-> DONE\n";
+        let (index, resolutions) = build_real(src);
+        assert_eq!(
+            resolved_kind_at(src, &index, &resolutions, "p.x"),
+            SymbolKind::Param
+        );
+    }
+
+    #[test]
+    fn resolution_fallback_does_not_apply_to_a_single_segment_path() {
+        // A bare `p` (no dot at all) must resolve exactly as it always has
+        // — the fallback is gated on `path.contains('.')` and must never
+        // fire for an ordinary single-segment variable reference.
+        let src = "VAR p = 0\n=== main ===\n~ y = p\n-> DONE\n";
+        let (index, resolutions) = build_real(src);
+        assert_eq!(
+            resolved_kind_at(src, &index, &resolutions, "p"),
+            SymbolKind::Variable
+        );
+    }
+
+    #[test]
+    fn struct_literal_resolves_shape_name_to_the_declared_struct() {
+        let src = "STRUCT Point = #{x: float}\n=== main ===\n~ p = Point#{x: 1.0}\n-> DONE\n";
+        let (index, resolutions) = build_real(src);
+        assert_eq!(
+            resolved_kind_at(src, &index, &resolutions, "Point"),
+            SymbolKind::Struct
+        );
+    }
+
+    #[test]
+    fn struct_literal_unresolved_shape_name_is_e068() {
+        let src = "=== main ===\n~ p = Bogus#{x: 1}\n-> DONE\n";
+        let parsed = brink_syntax::parse(src);
+        let (_hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let (index, _diag) = merge_manifests(&[(FileId(0), &manifest)]);
+        let (resolutions, diags) = resolve_file(&index, FileId(0), &manifest);
+        assert!(
+            resolutions.is_empty(),
+            "no resolution for an undeclared shape: {resolutions:?}"
+        );
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E068),
+            "{diags:?}"
+        );
     }
 }

@@ -7,6 +7,7 @@ use super::super::directive::{DirectiveTarget, apply_scope_directives, directive
 use super::super::doc_comment::{DocPolicy, parse_doc_comment};
 use super::super::expr::LowerExpr;
 use super::super::helpers::name_from_ident;
+use super::super::types::lower_type_annotation;
 use super::DeclareSymbols;
 use crate::{DiagnosticCode, Expr, SymbolKind, VarDecl};
 
@@ -38,15 +39,24 @@ impl DeclareSymbols for ast::VarDecl {
             Expr::Null
         };
 
-        // `#@local` directive line(s) immediately above the declaration.
+        // `#@local` and `#@private`/`#@public` directive line(s) immediately
+        // above the declaration.
         let dirs = directives_before(self.syntax());
         let is_local = apply_scope_directives(&dirs, DirectiveTarget::Var, sink);
+        if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
+            sink.set_visibility(SymbolKind::Variable, &name.text, vis);
+        }
+
+        let annotation = self
+            .type_annotation()
+            .and_then(|ta| lower_type_annotation(&ta));
 
         Ok(VarDecl {
             ptr: ast::AstPtr::new(self),
             name,
             value,
             is_local,
+            annotation,
         })
     }
 }

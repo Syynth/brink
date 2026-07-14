@@ -29,5 +29,5 @@
 pub mod lower;
 mod types;
 
-pub use lower::lower_to_program;
+pub use lower::{TypeMode, lower_to_program, lower_to_program_with_type_mode};
 pub use types::*;

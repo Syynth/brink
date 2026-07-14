@@ -30,6 +30,30 @@ pub struct Program {
     /// names, variable names, list names, etc. — anything the runtime
     /// needs as a string for debugging, host binding, or inspection.
     pub name_table: Vec<String>,
+
+    /// TM-4c (`docs/typed-mode-spec.md` §6): every declared `STRUCT` shape,
+    /// in the order [`lower_to_program`](super::lower_to_program) assigned
+    /// their ids (topological file order, then source declaration order
+    /// within a file — deterministic, never a `HashMap` iteration order).
+    /// `StructShapeDef::id` indexes this `Vec` directly (`id as usize ==`
+    /// its own position), so codegen can hand it straight to
+    /// `brink_format::StoryData::struct_shapes`.
+    pub struct_shapes: Vec<StructShapeDef>,
+}
+
+/// One declared `STRUCT` shape (TM-4c). Mirrors
+/// `brink_format::StructShapeDef` field-for-field; codegen maps this 1:1
+/// into that format type. Kept as its own `brink-ir`-local type rather than
+/// reusing `brink_format::StructShapeDef` directly, matching this module's
+/// existing convention ([`GlobalDef`] vs. `brink_format::GlobalVarDef`,
+/// etc.) of never committing the LIR to a specific backend's wire shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructShapeDef {
+    pub id: u32,
+    pub name: NameId,
+    /// Declared fields, in shape declaration order — the order
+    /// `RecordNew`/`RecordGet`/`RecordSet` offsets index into.
+    pub fields: Vec<NameId>,
 }
 
 // ─── Definitions ─────────────────────────────────────────────────────
@@ -91,6 +115,47 @@ pub enum ConstValue {
     },
     DivertTarget(DefinitionId),
     Null,
+    /// A compile-time-constant array (all elements constant-foldable),
+    /// destined for the T1b literal pool (`docs/format-v4-rfc.md` §2).
+    Array(Vec<ConstValue>),
+    /// A compile-time-constant map (all keys/values constant-foldable).
+    /// Keys are restricted to the ratified scalar domain by construction —
+    /// [`ConstMapKey`] has no variant for anything else.
+    Map(Vec<(ConstMapKey, ConstValue)>),
+    /// A zero-bound function value baked into a declaration default
+    /// (`VAR f = #fn(name)`), T1c — `docs/t1c-spec.md` §2/§6.
+    FnRef(DefinitionId),
+    /// A bound function value baked into a declaration default
+    /// (`VAR f = #fn(name, args…)`), T1c. `env` is the bound prefix in
+    /// declared order.
+    Closure {
+        target: DefinitionId,
+        env: Vec<ConstClosureEntry>,
+    },
+}
+
+/// One bound-arg entry of a compile-time-constant [`ConstValue::Closure`].
+/// The param `name` is kept as a string (not a `NameId`) because it is
+/// interned into the story name table at codegen — `const_to_value` dedups it
+/// against the target's param names that are already in the table.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConstClosureEntry {
+    /// A `val` param bound to a compile-time snapshot.
+    Val { name: String, value: ConstValue },
+    /// A `ref` param bound to a durable cell (a global `VAR`) — codegens to a
+    /// `VariablePointer`.
+    Ref { name: String, cell: DefinitionId },
+}
+
+/// A compile-time-constant map key — the ratified scalar domain
+/// (value-model-spec §4: int/string/bool). Kept distinct from [`ConstValue`]
+/// so an invalid key type is a *type error at construction*, not a runtime
+/// possibility to guard against when emitting the literal pool.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConstMapKey {
+    Int(i32),
+    Str(String),
+    Bool(bool),
 }
 
 // ─── Containers ──────────────────────────────────────────────────────
@@ -261,6 +326,36 @@ pub enum Stmt {
     /// divert on the same line). JSON backend emits `"\n"`, bytecode backend
     /// emits `EmitNewline` opcode.
     EndOfLine,
+
+    // ── T1b logic blocks (docs/t1b-surface-spec.md §2) ──────────────
+    //
+    // `~ { … }` blocks are pure logic — no weave concepts (content, choices,
+    // diverts, gathers, threads) ever appear in these bodies; `if`/`else`
+    // reuse `Stmt::Conditional` above (identical shape: a list of
+    // `(Option<condition>, body)` branches, no sub-containers needed since
+    // block bodies never contain choices).
+    /// `while cond { … }`. Compiles to a flat backward-jump loop in the
+    /// enclosing container's own bytecode (no child container) — loops run
+    /// under the existing VM step limit like all bytecode.
+    LogicWhile(LogicWhile),
+    /// `break` — jump past the innermost enclosing `LogicWhile`.
+    LogicBreak,
+    /// `continue` — jump to the innermost enclosing `LogicWhile`'s condition
+    /// re-check.
+    LogicContinue,
+}
+
+/// A `while cond { … }` loop body (T1b).
+#[derive(Clone)]
+pub struct LogicWhile {
+    pub condition: Expr,
+    pub body: Vec<Stmt>,
+    /// Statements that run after `body` completes each iteration, before the
+    /// condition re-check — also where `continue` jumps to. Empty for an
+    /// author-written `while`; the `for`-loop desugar (§2: `for x in arr`)
+    /// puts the index increment here so `continue` still advances the loop
+    /// instead of infinite-looping.
+    pub post: Vec<Stmt>,
 }
 
 /// The resolved target of an assignment.
@@ -486,6 +581,15 @@ pub enum Expr {
     GetGlobal(DefinitionId),
     /// Read a temp variable by slot index and name.
     GetTemp(u16, NameId),
+    /// Move a global's current value out, leaving `Value::Null` behind —
+    /// the take-half of the take → `make_mut` → write-back RMW discipline
+    /// (`docs/value-model-spec.md` §5). Never produced by ordinary
+    /// expression lowering; only by indexed-assignment/mutator RMW
+    /// desugaring's bare-variable fast path (`lir::lower::blocks`).
+    TakeGlobal(DefinitionId),
+    /// Move a temp's current value out, leaving `Value::Null` behind —
+    /// `TakeGlobal`'s temp-slot counterpart. Same production sites.
+    TakeTemp(u16, NameId),
     /// The visit count of a container (knot/stitch/label name used
     /// in expression context).
     VisitCount(DefinitionId),
@@ -531,6 +635,161 @@ pub enum Expr {
         builtin: BuiltinFn,
         args: Vec<Expr>,
     },
+
+    // ── Function values (T1c, docs/t1c-spec.md §2/§3) ───────────────
+    /// `#fn(target, bound…)` — create a function value. With no bound args
+    /// this codegens to `PushFnRef` (a zero-bound `FnRef`); with bound args
+    /// to `MakeClosure` (a `Closure`). `bound` is the bound prefix in declared
+    /// order — a `ref` param is a [`CallArg::RefGlobal`] (a captured durable
+    /// cell), a `val` param a [`CallArg::Value`] snapshot.
+    MakeFnValue {
+        target: DefinitionId,
+        bound: Vec<CallArg>,
+    },
+    /// Call *through* a function value: the direct form `f(args…)` where `f`
+    /// holds a fn value, and the explicit `call(f, args…)` form. `callee`
+    /// evaluates to the function value; `args` are the supplied (val-only)
+    /// remaining params. Codegens to `CallValue(argc)`.
+    CallValue {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+    },
+    /// `bind(f, args…)` — the val-only currying stdlib intrinsic (T1c-3,
+    /// docs/t1c-spec.md §3). `callee` evaluates to the function value being
+    /// curried; `args` are the val-only args appended to its bound-arg row
+    /// (consuming the head of its remaining param row). Codegens to
+    /// `BindValue(argc)`; over-binding is a runtime fault at the op.
+    BindValue {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+    },
+
+    // ── Collections (T1b, docs/t1b-surface-spec.md §3-4) ────────────
+    /// A compile-time-constant collection literal — emitted via the V4
+    /// literal pool (`PushLiteral(idx)`), deduplicated at codegen.
+    ConstLiteral(ConstValue),
+    /// `#[e0, e1, …]` where at least one element is not constant-foldable —
+    /// evaluates each element then `ArrayNew(n)`.
+    ArrayNew(Vec<Expr>),
+    /// `#{k0: v0, …}` where at least one entry is not constant-foldable —
+    /// evaluates each key/value pair then `MapNew(n)` (n = pair count).
+    MapNew(Vec<(Expr, Expr)>),
+    /// `base[index]` (read). Turn-terminating fault on out-of-bounds array
+    /// index or missing map key (value-model-spec §6).
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
+    },
+    /// `IndexSet` as an expression: evaluates `base`, `index`, `value` and
+    /// pushes the *updated* container — the take → `make_mut` → write-back
+    /// primitive that indexed-assignment lowering composes (`docs/t1b-
+    /// surface-spec.md` §4). Never produced by ordinary expression lowering;
+    /// only by indexed-assignment desugaring.
+    IndexSet {
+        base: Box<Expr>,
+        index: Box<Expr>,
+        value: Box<Expr>,
+    },
+    /// `[container]` → `Int` length. Internal — used by `for`-loop lowering
+    /// over arrays; not surfaced to authors until the `len()` stdlib
+    /// function lands (T1b-3).
+    CollectionLen(Box<Expr>),
+    /// `[map]` → `Array` of keys in insertion order. Internal — used by
+    /// `for`-loop lowering over maps; not surfaced to authors until the
+    /// `keys()` stdlib function lands (T1b-3).
+    CollectionKeys(Box<Expr>),
+    /// `[map]` → `Array` of values in insertion order. The `values()`
+    /// stdlib pure function (T1b-3, `docs/t1b-surface-spec.md` §5).
+    CollectionValues(Box<Expr>),
+    /// `[container, needle]` → `Bool`. The `contains(x, v)` stdlib pure
+    /// function (T1b-3, §5) — arrays: element containment; maps: key
+    /// containment.
+    CollectionContains {
+        container: Box<Expr>,
+        needle: Box<Expr>,
+    },
+    /// `IndexSet`'s sibling for the `push`/`insert` stdlib mutators (T1b-3,
+    /// §5): evaluates `base`, `key`, `value` and pushes the *updated*
+    /// container — arrays: `Vec::insert(key, value)` (key is an index,
+    /// `<= len` inclusive so `push(a, v)` can lower to `insert(a, len(a),
+    /// v)`); maps: insert-or-overwrite by key. Never produced by ordinary
+    /// expression lowering; only by the mutator-statement desugaring
+    /// (`lir::lower::blocks`), which follows the same take → `make_mut` →
+    /// write-back RMW discipline `IndexSet` uses.
+    CollectionInsert {
+        base: Box<Expr>,
+        key: Box<Expr>,
+        value: Box<Expr>,
+    },
+    /// `IndexSet`'s sibling for the `remove` stdlib mutator (T1b-3, §5):
+    /// evaluates `base`, `key` and pushes the *updated* container — arrays:
+    /// `Vec::remove(key)` (key is an index, `< len`); maps: remove by key
+    /// (no-op if absent). Never produced by ordinary expression lowering;
+    /// only by the mutator-statement desugaring.
+    CollectionRemove {
+        base: Box<Expr>,
+        key: Box<Expr>,
+    },
+
+    // ── Records (TM-4c, `docs/typed-mode-spec.md` §6) ───────────────
+    /// `Name#{field: expr, …}` construction. `fields` is in the exact order
+    /// `RecordNew`'s VM opcode expects the values pushed — the shape's
+    /// *declaration* order for a well-formed literal, or source order for
+    /// the construction-fault sentinel path (`lower_struct_literal`'s doc).
+    /// `prelude` runs first (source order — the author's left-to-right
+    /// order), staging every supplied initializer's value into a synthetic
+    /// temp slot *before* any `fields` entry is pushed — codegen emits each
+    /// `prelude` triple as `<expr bytecode>; DeclareTemp(slot)` in order,
+    /// then `fields` (which, on the well-formed path, are `GetTemp` reads
+    /// of those slots reordered into shape order). This decouples
+    /// evaluation order from placement order (issue #676): shape order is
+    /// a memory-layout concern for `fields`, never an evaluation-order one.
+    /// Empty on the construction-fault path, where `fields` already *is*
+    /// source order and no reordering — hence no staging — is needed.
+    RecordNew {
+        shape_id: u32,
+        fields: Vec<Expr>,
+        prelude: Vec<(u16, NameId, Expr)>,
+    },
+    /// `base.field` (read). `static_offset: Some(offset)` when
+    /// `brink-ir`'s LIR lowering proved `base`'s shape at compile time
+    /// (construction-literal chains, or a `types = strict` project's
+    /// struct-typed `VAR`/`temp` annotation — see typed-mode-spec §6);
+    /// codegen emits the static `RecordGet` offset op then, the by-name
+    /// `RecordGetDyn` otherwise. `field` is always populated (even when
+    /// `static_offset` is `Some`) so codegen/tooling never needs the
+    /// `struct_shapes` table just to describe this node.
+    RecordGet {
+        base: Box<Expr>,
+        field: NameId,
+        static_offset: Option<u16>,
+    },
+    /// `RecordGet`'s RMW write-back sibling — the primitive single-level
+    /// `p.field = expr` lowering composes (mirrors `IndexSet`): evaluates
+    /// `base`, `value` and pushes the *updated* record. Never produced by
+    /// ordinary expression lowering; only by field-assignment desugaring.
+    RecordSet {
+        base: Box<Expr>,
+        field: NameId,
+        static_offset: Option<u16>,
+        value: Box<Expr>,
+    },
+
+    // ── TM-3 completion: conversion intrinsics (typed-mode-spec §4,
+    // maintainer ruling 2026-07-13, issue #659) ─────────────────────────
+    /// `int(x)` pure conversion intrinsic. Domains: `Int` (identity),
+    /// `Float` (truncate toward zero, matching vanilla ink's `INT()`
+    /// exactly), `Bool` (`true` → 1, `false` → 0), `String` (parse).
+    /// Turn-terminating fault on parse failure or an out-of-domain input
+    /// (divert/LIST/array/map/record) — value-model-spec §11c.
+    ConvertInt(Box<Expr>),
+    /// `float(x)` pure conversion intrinsic. Domains: `Float` (identity),
+    /// `Int` (widen), `Bool` (`true` → 1.0, `false` → 0.0), `String`
+    /// (parse). Same fault domain as `ConvertInt`.
+    ConvertFloat(Box<Expr>),
+    /// `string(x)` pure conversion intrinsic — display form, identical to
+    /// interpolation. Total over every value; never faults.
+    ConvertString(Box<Expr>),
 }
 
 impl Expr {

@@ -13,6 +13,17 @@
 //! a from-scratch discovery would not — that difference is pre-existing
 //! LSP-vs-compiler behavior, not what this harness tests).
 //!
+//! Remove/re-add churn (#536): some steps on multi-file projects tombstone
+//! a non-entry file (`remove_file`), pull `story_data()` with the file
+//! absent (exercising missing-INCLUDE resolution against a tombstoned
+//! input), then re-add the path with mutated content before the compare —
+//! so every comparison still sees the full file set. The re-added path must
+//! reuse its original `FileId` (durable path→id identity), which is exactly
+//! what keeps the incremental ids aligned with the fresh db's and lets the
+//! bit-identical assertion double as the tombstone-purity check: any stale
+//! memo surviving the remove/re-add round-trip diverges from the fresh
+//! compile.
+//!
 //! Bounded: `EDITS_PER_PROJECT` edits over a fixed project list; every step
 //! is a small-project compile, so the whole test stays well under the
 //! workspace's test-time budget and cannot hang (no loops without bounds).
@@ -106,7 +117,7 @@ fn mutate(rng: &mut Lcg, original: &str, current: &str, step: u64) -> String {
         return current.to_owned();
     }
 
-    let op = rng.pick(6);
+    let op = rng.pick(7);
     let at = safe[rng.pick(safe.len())];
     let mut out: Vec<String> = lines.iter().map(|&l| l.to_owned()).collect();
     match op {
@@ -129,6 +140,33 @@ fn mutate(rng: &mut Lcg, original: &str, current: &str, step: u64) -> String {
         // Insert a temp declaration (locals-in-index exercise; may be
         // invalid at top level, which exercises the diagnostics path).
         4 => out.insert(at, format!("~ temp fz_{step} = {}", rng.pick(9))),
+        // VAR/CONST initializer edit (FG-2.1, issue #638): mutate a
+        // declared global's initializer value in place, when the chosen
+        // line happens to be one — exercises the lazy-globals edge
+        // (`referenced_globals`/`signature_query`'s narrow `BodyCtx.globals`
+        // map, Ruling 1) under incremental-equals-fresh. A body edit is
+        // already covered by the other ops; this specifically targets the
+        // *declaration* a body's global lookup resolves through. Falls back
+        // to a plain line insert if this line isn't a VAR/CONST decl (still
+        // a valid, bounded mutation either way).
+        5 => {
+            let trimmed = out[at].trim_start();
+            let keyword = if trimmed.starts_with("VAR ") {
+                Some("VAR")
+            } else if trimmed.starts_with("CONST ") {
+                Some("CONST")
+            } else {
+                None
+            };
+            match keyword.and_then(|kw| {
+                trimmed[kw.len() + 1..]
+                    .split_once('=')
+                    .map(|(name, _)| (kw, name))
+            }) {
+                Some((kw, name)) => out[at] = format!("{kw} {name}= {}", rng.pick(999)),
+                None => out.insert(at, format!("A fuzzed line, step {step}.")),
+            }
+        }
         // Revert the file to its original content.
         _ => return original.to_owned(),
     }
@@ -157,9 +195,44 @@ fn story_bytes(product: &brink_driver::CompileProduct) -> Option<Vec<u8>> {
     })
 }
 
+/// FG-3 (issue #632): assert the decomposed `analysis_query` family agrees
+/// between a long-lived incremental db and a from-scratch one — the
+/// RESOLUTIONS/INDEX half (`resolutions_index()`) and every file's per-file
+/// diagnostic contributors (`per_file_diagnostics(file)`). Extracted from
+/// the main fuzz loop to keep it under clippy's line-count lint.
+fn assert_fg3_families_match(
+    db: &ProjectDb,
+    fresh_db: &ProjectDb,
+    project: &str,
+    paths: &[String],
+    step: u64,
+) {
+    assert_eq!(
+        *db.resolutions_index(),
+        *fresh_db.resolutions_index(),
+        "{project}: resolutions_index() diverged from fresh compile after edit {step}"
+    );
+    for path in paths {
+        let incremental_id = db.file_id(path);
+        let fresh_id = fresh_db.file_id(path);
+        assert_eq!(
+            incremental_id, fresh_id,
+            "{project}: file id for {path} diverged between incremental and fresh"
+        );
+        if let Some(id) = incremental_id {
+            assert_eq!(
+                db.per_file_diagnostics(id),
+                fresh_db.per_file_diagnostics(id),
+                "{project}: per_file_diagnostics({path}) diverged from fresh compile after edit {step}"
+            );
+        }
+    }
+}
+
 #[test]
 fn incremental_story_data_equals_fresh_compile() {
     let root = workspace_root().join("tests");
+    let mut churn_steps = 0usize;
 
     for (p_idx, project) in PROJECTS.iter().enumerate() {
         let dir = root.join(project);
@@ -174,14 +247,49 @@ fn incremental_story_data_equals_fresh_compile() {
         }
         db.set_entry("story.ink").expect("story.ink present");
 
+        // Non-entry files are eligible for remove/re-add churn (#536); the
+        // entry must stay present so `story_data()` is always comparable.
+        let churnable: Vec<String> = paths
+            .iter()
+            .filter(|p| *p != "story.ink")
+            .cloned()
+            .collect();
+
         // Baseline: before any edit, incremental == fresh.
         let mut rng = Lcg::new(0x5EED_0501 + p_idx as u64);
         for step in 0..=EDITS_PER_PROJECT {
             if step > 0 {
-                let path = &paths[rng.pick(paths.len())];
-                let edited = mutate(&mut rng, &originals[path], &current[path], step);
-                current.insert(path.clone(), edited.clone());
-                db.update_file(path, edited);
+                let churn = !churnable.is_empty() && rng.pick(4) == 0;
+                if churn {
+                    churn_steps += 1;
+                    // Remove a file, pull the pipeline with it absent, then
+                    // re-add it (with fresh content) before the compare.
+                    let path = churnable[rng.pick(churnable.len())].clone();
+                    let id_before = db.file_id(&path);
+                    db.remove_file(&path);
+                    assert_eq!(
+                        db.file_id(&path),
+                        None,
+                        "{project}: removed file still visible"
+                    );
+                    // Exercise the query graph in the removed state — any
+                    // INCLUDE of this path must now miss. Output is not
+                    // compared here (the file set differs from `current`).
+                    let _ = db.story_data().expect("entry still set");
+                    let edited = mutate(&mut rng, &originals[&path], &current[&path], step);
+                    current.insert(path.clone(), edited.clone());
+                    let id_after = db.set_file(&path, edited);
+                    assert_eq!(
+                        Some(id_after),
+                        id_before,
+                        "{project}: re-added path must reuse its FileId (step {step})"
+                    );
+                } else {
+                    let path = &paths[rng.pick(paths.len())];
+                    let edited = mutate(&mut rng, &originals[path], &current[path], step);
+                    current.insert(path.clone(), edited.clone());
+                    db.update_file(path, edited);
+                }
             }
 
             let incremental = db.story_data().expect("entry set");
@@ -197,6 +305,64 @@ fn incremental_story_data_equals_fresh_compile() {
                 story_bytes(fresh),
                 "{project}: serialized StoryData differs after edit {step}"
             );
+
+            // FG-3 (#632): the decomposed analysis_query family — the
+            // RESOLUTIONS/INDEX half and every file's per-file diagnostic
+            // contributors — must agree between the long-lived incremental
+            // db and a from-scratch one, the same equivalence gate FG-1/FG-2
+            // carry for their own new query families (design doc §7's
+            // explicit sweep-every-new-family ask).
+            assert_fg3_families_match(&db, &fresh_db, project, &paths, step);
+
+            // FG-1 (#630): the per-def `signature(def)` query must agree
+            // between the long-lived incremental db and a from-scratch one,
+            // for every non-local def — the equivalence gate the design doc
+            // asks incremental_fuzz to carry for the narrowed dependency
+            // edge (declaring-file-only, not every project file's HIR).
+            //
+            // FG-2 (#631): extend the same equivalence gate to the new
+            // per-def/per-SCC inference views — `inferred_signature(def)`
+            // and `infer_body(def)` — per the design doc §7's explicit ask
+            // to sweep every new per-def family into this harness.
+            let mut defs: Vec<_> = db
+                .symbol_index()
+                .symbols
+                .iter()
+                .filter(|(_, info)| {
+                    !matches!(
+                        info.kind,
+                        brink_ir::SymbolKind::Param | brink_ir::SymbolKind::Temp
+                    )
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            defs.sort();
+            for def in defs {
+                assert_eq!(
+                    db.signature(def),
+                    fresh_db.signature(def),
+                    "{project}: signature({def:?}) diverged from fresh compile after edit {step}"
+                );
+                assert_eq!(
+                    db.inferred_signature(def),
+                    fresh_db.inferred_signature(def),
+                    "{project}: inferred_signature({def:?}) diverged from fresh compile after edit {step}"
+                );
+                assert_eq!(
+                    db.infer_body(def),
+                    fresh_db.infer_body(def),
+                    "{project}: infer_body({def:?}) diverged from fresh compile after edit {step}"
+                );
+            }
         }
     }
+
+    // The remove/re-add coverage (#536) must actually run: the seeded
+    // driver hits the churn arm on the multi-file projects every time, and
+    // this assertion keeps that coverage from silently vanishing if the
+    // project list or edit mix changes.
+    assert!(
+        churn_steps > 0,
+        "no remove/re-add churn steps executed — #536 coverage lost"
+    );
 }

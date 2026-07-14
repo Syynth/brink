@@ -7,20 +7,23 @@ use crate::codec::{crc32, read_def_id, read_i32, read_str, read_u8, read_u16, re
 use crate::counting::CountingFlags;
 use crate::definition::{
     AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef, ScopeLineTable, SlotInfo, SourceLocation,
+    ListItemDef, ParamMeta, ScopeLineTable, SlotInfo, SourceLocation, StructShapeDef,
 };
 use crate::id::NameId;
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::opcode::DecodeError;
 use crate::story::StoryData;
-use crate::value::{ListValue, Value, ValueType};
+use crate::value::{
+    ClosureEnvEntry, ListValue, MAX_DECODE_DEPTH, MapKey, OrderedMap, ShapeId, Value, ValueType,
+};
 
 use super::{
     CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HEADER_PREAMBLE, InkbIndex,
     KEY_CARDINAL, KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN, LINE_TEMPLATE, MAGIC,
-    PART_LITERAL, PART_SELECT, PART_SLOT, SECTION_ENTRY_SIZE, SectionEntry, SectionKind, VAL_BOOL,
-    VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FRAGMENT_REF, VAL_INT, VAL_LIST, VAL_NULL, VAL_STRING,
-    VAL_VAR_POINTER, VERSION, safe_capacity,
+    PART_LITERAL, PART_SELECT, PART_SLOT, SECTION_ENTRY_SIZE, SectionEntry, SectionKind, VAL_ARRAY,
+    VAL_BOOL, VAL_CLOSURE, VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE,
+    VAL_INT, VAL_LIST, VAL_MAP, VAL_NULL, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION,
+    safe_capacity,
 };
 
 // ── Tier 1: Full story read ─────────────────────────────────────────────────
@@ -49,6 +52,8 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
     let addresses = read_section_addresses(buf, &index)?;
     let list_literals = read_section_list_literals(buf, &index)?;
     let address_paths = read_section_address_paths(buf, &index)?;
+    let literal_pool = read_section_literal_pool(buf, &index)?;
+    let struct_shapes = read_section_struct_shapes(buf, &index)?;
 
     Ok(StoryData {
         containers,
@@ -61,6 +66,8 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
         address_paths,
         name_table,
         list_literals,
+        literal_pool,
+        struct_shapes,
         source_checksum: index.checksum,
     })
 }
@@ -306,7 +313,7 @@ fn decode_global_var(buf: &[u8], off: &mut usize) -> Result<GlobalVarDef, Decode
     let id = read_def_id(buf, off)?;
     let name = NameId(read_u16(buf, off)?);
     let value_type = decode_value_type(buf, off)?;
-    let default_value = decode_value(buf, off)?;
+    let default_value = decode_value(buf, off, 0)?;
     let mutable = read_u8(buf, off)? != 0;
     let local = read_u8(buf, off)? != 0;
     Ok(GlobalVarDef {
@@ -331,11 +338,20 @@ fn decode_value_type(buf: &[u8], off: &mut usize) -> Result<ValueType, DecodeErr
         VAL_VAR_POINTER => Ok(ValueType::VariablePointer),
         VAL_FRAGMENT_REF => Ok(ValueType::FragmentRef),
         VAL_NULL => Ok(ValueType::Null),
+        VAL_ARRAY => Ok(ValueType::Array),
+        VAL_MAP => Ok(ValueType::Map),
+        VAL_RECORD => Ok(ValueType::Record),
+        VAL_FN_REF => Ok(ValueType::FnRef),
+        VAL_CLOSURE => Ok(ValueType::Closure),
+        VAL_HANDLE => Ok(ValueType::Handle),
         _ => Err(DecodeError::InvalidValueType(tag)),
     }
 }
 
-fn decode_value(buf: &[u8], off: &mut usize) -> Result<Value, DecodeError> {
+fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, DecodeError> {
+    if depth > MAX_DECODE_DEPTH {
+        return Err(DecodeError::MaxDepthExceeded(MAX_DECODE_DEPTH));
+    }
     let tag = read_u8(buf, off)?;
     match tag {
         VAL_INT => Ok(Value::Int(read_i32(buf, off)?)),
@@ -366,6 +382,72 @@ fn decode_value(buf: &[u8], off: &mut usize) -> Result<Value, DecodeError> {
         VAL_VAR_POINTER => Ok(Value::VariablePointer(read_def_id(buf, off)?)),
         VAL_FRAGMENT_REF => Ok(Value::FragmentRef(read_u32(buf, off)?)),
         VAL_NULL => Ok(Value::Null),
+        VAL_ARRAY => {
+            let len = read_u32(buf, off)? as usize;
+            // Each element is at least one tag byte, so `len` can't exceed the
+            // remaining bytes — cap the pre-allocation against crafted inputs.
+            let mut items = Vec::with_capacity(safe_capacity(len, buf.len(), *off, 1));
+            for _ in 0..len {
+                items.push(decode_value(buf, off, depth + 1)?);
+            }
+            Ok(Value::array(items))
+        }
+        VAL_MAP => {
+            let len = read_u32(buf, off)? as usize;
+            let mut map = OrderedMap::with_capacity(safe_capacity(len, buf.len(), *off, 2));
+            for _ in 0..len {
+                let key = decode_map_key(buf, off)?;
+                let val = decode_value(buf, off, depth + 1)?;
+                map.insert(key, val);
+            }
+            Ok(Value::map(map))
+        }
+        VAL_RECORD => {
+            let shape = ShapeId(read_u32(buf, off)?);
+            let len = read_u32(buf, off)? as usize;
+            let mut fields = Vec::with_capacity(safe_capacity(len, buf.len(), *off, 1));
+            for _ in 0..len {
+                fields.push(decode_value(buf, off, depth + 1)?);
+            }
+            Ok(Value::record(shape, fields))
+        }
+        // Function values (T1c, `docs/format-v4-rfc.md` §1).
+        VAL_FN_REF => Ok(Value::FnRef(read_def_id(buf, off)?)),
+        VAL_CLOSURE => {
+            let target = read_def_id(buf, off)?;
+            let count = read_u16(buf, off)? as usize;
+            let mut env = Vec::with_capacity(safe_capacity(count, buf.len(), *off, 4));
+            for _ in 0..count {
+                let name = NameId(read_u16(buf, off)?);
+                let is_ref = read_u8(buf, off)? != 0;
+                let payload = decode_value(buf, off, depth + 1)?;
+                env.push(ClosureEnvEntry {
+                    name,
+                    is_ref,
+                    payload,
+                });
+            }
+            Ok(Value::closure(target, env))
+        }
+        // Handle values (T1d, `docs/format-v4-rfc.md` §1).
+        VAL_HANDLE => {
+            let kind = NameId(read_u16(buf, off)?);
+            let id = read_u64(buf, off)?;
+            Ok(Value::handle(kind, id))
+        }
+        _ => Err(DecodeError::InvalidValueType(tag)),
+    }
+}
+
+/// Decode a [`MapKey`] written by `encode_map_key`: a scalar `VAL_*` tag
+/// (`int`/`string`/`bool`) then its payload. The strict reader rejects any
+/// other tag — only the v1 key domain is permitted (`docs/value-model-spec.md` §4).
+fn decode_map_key(buf: &[u8], off: &mut usize) -> Result<MapKey, DecodeError> {
+    let tag = read_u8(buf, off)?;
+    match tag {
+        VAL_INT => Ok(MapKey::Int(read_i32(buf, off)?)),
+        VAL_STRING => Ok(MapKey::Str(read_str(buf, off)?.into())),
+        VAL_BOOL => Ok(MapKey::Bool(read_u8(buf, off)? != 0)),
         _ => Err(DecodeError::InvalidValueType(tag)),
     }
 }
@@ -423,6 +505,48 @@ pub fn read_section_list_literals(
     Ok(literals)
 }
 
+/// Read the T1b literal pool from a complete `.inkb` file using its index.
+/// Absent section (older-shaped buffer within the same version) decodes as
+/// empty, mirroring [`read_section_list_literals`].
+pub fn read_section_literal_pool(buf: &[u8], index: &InkbIndex) -> Result<Vec<Value>, DecodeError> {
+    let Some(range) = index.section_range(SectionKind::LiteralPool) else {
+        return Ok(Vec::new());
+    };
+    let mut off = range.start;
+    let count = read_u32(buf, &mut off)? as usize;
+    let mut pool = Vec::with_capacity(safe_capacity(count, buf.len(), off, 1));
+    for _ in 0..count {
+        pool.push(decode_value(buf, &mut off, 0)?);
+    }
+    Ok(pool)
+}
+
+/// Read the TM-4 `StructShapes` section from a complete `.inkb` file using
+/// its index. Absent section decodes as empty, mirroring
+/// [`read_section_literal_pool`].
+pub fn read_section_struct_shapes(
+    buf: &[u8],
+    index: &InkbIndex,
+) -> Result<Vec<StructShapeDef>, DecodeError> {
+    let Some(range) = index.section_range(SectionKind::StructShapes) else {
+        return Ok(Vec::new());
+    };
+    let mut off = range.start;
+    let count = read_u32(buf, &mut off)? as usize;
+    let mut shapes = Vec::with_capacity(safe_capacity(count, buf.len(), off, 8));
+    for _ in 0..count {
+        let id = ShapeId(read_u32(buf, &mut off)?);
+        let name = NameId(read_u16(buf, &mut off)?);
+        let field_count = read_u16(buf, &mut off)? as usize;
+        let mut fields = Vec::with_capacity(safe_capacity(field_count, buf.len(), off, 2));
+        for _ in 0..field_count {
+            fields.push(NameId(read_u16(buf, &mut off)?));
+        }
+        shapes.push(StructShapeDef { id, name, fields });
+    }
+    Ok(shapes)
+}
+
 fn decode_external(buf: &[u8], off: &mut usize) -> Result<ExternalFnDef, DecodeError> {
     let id = read_def_id(buf, off)?;
     let name = NameId(read_u16(buf, off)?);
@@ -455,6 +579,14 @@ fn decode_container(buf: &[u8], off: &mut usize) -> Result<ContainerDef, DecodeE
     let path_hash = read_i32(buf, off)?;
     let param_count = read_u8(buf, off)?;
     let local = read_u8(buf, off)? != 0;
+    // Per-param name/mode metadata (T1c, `docs/t1c-spec.md` §6).
+    let param_meta_count = read_u16(buf, off)? as usize;
+    let mut params = Vec::with_capacity(safe_capacity(param_meta_count, buf.len(), *off, 3));
+    for _ in 0..param_meta_count {
+        let name = NameId(read_u16(buf, off)?);
+        let is_ref = read_u8(buf, off)? != 0;
+        params.push(ParamMeta { name, is_ref });
+    }
 
     let bytecode_len = read_u32(buf, off)? as usize;
     if *off + bytecode_len > buf.len() {
@@ -471,6 +603,7 @@ fn decode_container(buf: &[u8], off: &mut usize) -> Result<ContainerDef, DecodeE
         counting_flags,
         path_hash,
         param_count,
+        params,
         local,
     })
 }

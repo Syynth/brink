@@ -9,6 +9,13 @@ const KEYWORDS: &[&str] = &[
     "INCLUDE", "EXTERNAL", "VAR", "CONST", "LIST", "temp", "return", "ref", "true", "false", "not",
     "and", "or", "mod", "has", "hasnt", "else", "function", "stopping", "cycle", "shuffle", "once",
     "DONE", "END", "TODO",
+    // T1b contextual block keywords (docs/t1b-surface-spec.md §2) are soft —
+    // legal identifiers everywhere except at block-statement-start position.
+    // Excluded here purely so the generic `arb_ident()` generator used
+    // throughout this file doesn't occasionally land on the one position
+    // where they shadow, which would be a spurious property-test failure,
+    // not a parser bug.
+    "if", "while", "for", "break", "continue", "in",
 ];
 
 const NUM_CASES: u32 = 512;
@@ -68,9 +75,56 @@ fn arb_expr() -> impl Strategy<Value = String> {
             (inner.clone(), arb_infix_op(), inner.clone())
                 .prop_map(|(l, op, r)| format!("{l} {op} {r}")),
             // Function call
-            (arb_ident(), inner).prop_map(|(name, arg)| format!("{name}({arg})")),
+            (arb_ident(), inner.clone()).prop_map(|(name, arg)| format!("{name}({arg})")),
+            // T1b §3: array sigil literal `#[…]`
+            prop::collection::vec(inner.clone(), 0..=3)
+                .prop_map(|items| format!("#[{}]", items.join(", "))),
+            // T1b §3: map sigil literal `#{…}`
+            prop::collection::vec((arb_ident(), inner.clone()), 0..=3).prop_map(|entries| {
+                let body = entries
+                    .iter()
+                    .map(|(k, v)| format!("\"{k}\": {v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("#{{{body}}}")
+            }),
+            // T1b §4: postfix indexing `base[index]`
+            (inner.clone(), inner.clone()).prop_map(|(base, idx)| format!("{base}[{idx}]")),
+            // T1c §2: `#fn(target, args…)` function-value creation literal —
+            // joins the `#[…]`/`#{…}` sigil family. The target is always a
+            // bare name (never an expression, per the grammar), so this
+            // doesn't recurse on `inner` for the target position, only for
+            // the bound args.
+            (arb_ident(), prop::collection::vec(inner, 0..=2))
+                .prop_map(|(name, args)| format_fn_literal(&name, &args)),
         ]
     })
+}
+
+/// Render `#fn(target, args…)` — a bare `#fn(target)` with no trailing
+/// comma when `args` is empty (matching the grammar's zero-bound-args shape,
+/// e.g. `#fn(double)`), `#fn(target, a, b, …)` otherwise.
+fn format_fn_literal(name: &str, args: &[String]) -> String {
+    if args.is_empty() {
+        format!("#fn({name})")
+    } else {
+        format!("#fn({name}, {})", args.join(", "))
+    }
+}
+
+/// `#fn(target, args…)` — same recursive-arg shape as the `arb_expr` arm
+/// above, generated standalone (T1c, docs/t1c-spec.md §2) so it can be fuzzed
+/// as a top-level statement, not only nested inside a larger expression.
+fn arb_fn_literal() -> impl Strategy<Value = String> {
+    (arb_ident(), prop::collection::vec(arb_expr(), 0..=3))
+        .prop_map(|(name, args)| format_fn_literal(&name, &args))
+}
+
+/// `~ temp f = #fn(target, args…)` — a `#fn` literal in the one statement
+/// position every other `arb_*_line` strategy above already covers for
+/// ordinary expressions (`arb_logic_line`'s `~ temp x = expr` arm).
+fn arb_fn_literal_temp_decl() -> impl Strategy<Value = String> {
+    (arb_ident(), arb_fn_literal()).prop_map(|(name, fl)| format!("~ temp {name} = {fl}\n"))
 }
 
 fn arb_infix_op() -> impl Strategy<Value = &'static str> {
@@ -181,7 +235,48 @@ fn arb_logic_line() -> impl Strategy<Value = String> {
         (arb_ident(), arb_expr()).prop_map(|(name, e)| format!("~ temp {name} = {e}\n")),
         // ~ x = expr
         (arb_ident(), arb_expr()).prop_map(|(name, e)| format!("~ {name} = {e}\n")),
+        // ~ x[idx] = expr — T1b §4 indexed assignment
+        (arb_ident(), arb_expr(), arb_expr())
+            .prop_map(|(name, idx, e)| format!("~ {name}[{idx}] = {e}\n")),
     ]
+}
+
+// ── T1b multi-line `~ { … }` block strategy (docs/t1b-surface-spec.md §2) ────
+
+/// One non-nesting statement inside a block body.
+fn arb_block_simple_stmt() -> impl Strategy<Value = String> {
+    prop_oneof![
+        (arb_ident(), arb_expr()).prop_map(|(name, e)| format!("temp {name} = {e}")),
+        (arb_ident(), arb_expr()).prop_map(|(name, e)| format!("{name} = {e}")),
+        (arb_ident(), arb_expr(), arb_expr())
+            .prop_map(|(name, idx, e)| format!("{name}[{idx}] = {e}")),
+        arb_expr().prop_map(|e| format!("return {e}")),
+        Just("return".to_string()),
+        Just("break".to_string()),
+        Just("continue".to_string()),
+        arb_ident().prop_map(|name| format!("{name}()")),
+    ]
+}
+
+/// One statement inside a block body — a simple statement, or one level of
+/// `if`/`if-else`/`while`/`for` wrapping a simple statement.
+fn arb_block_stmt() -> impl Strategy<Value = String> {
+    prop_oneof![
+        3 => arb_block_simple_stmt(),
+        1 => (arb_expr(), arb_block_simple_stmt())
+            .prop_map(|(cond, s)| format!("if {cond} {{\n{s}\n}}")),
+        1 => (arb_expr(), arb_block_simple_stmt(), arb_block_simple_stmt())
+            .prop_map(|(cond, s1, s2)| format!("if {cond} {{\n{s1}\n}} else {{\n{s2}\n}}")),
+        1 => (arb_expr(), arb_block_simple_stmt())
+            .prop_map(|(cond, s)| format!("while {cond} {{\n{s}\n}}")),
+        1 => (arb_ident(), arb_expr(), arb_block_simple_stmt())
+            .prop_map(|(var, iter, s)| format!("for {var} in {iter} {{\n{s}\n}}")),
+    ]
+}
+
+fn arb_block_logic_line() -> impl Strategy<Value = String> {
+    prop::collection::vec(arb_block_stmt(), 1..=4)
+        .prop_map(|stmts| format!("~ {{\n{}\n}}\n", stmts.join("\n")))
 }
 
 fn arb_content_with_inline() -> impl Strategy<Value = String> {
@@ -241,6 +336,139 @@ fn arb_const_decl() -> impl Strategy<Value = String> {
 
 fn arb_simple_value() -> impl Strategy<Value = String> {
     prop_oneof![arb_integer(), arb_float(), arb_string_lit(),]
+}
+
+// ── TM-2 type annotation strategy (depth-bounded, docs/typed-mode-spec.md
+// §3) ──────────────────────────────────────────────────────────────────
+
+fn arb_type_leaf() -> impl Strategy<Value = String> {
+    prop_oneof![
+        Just("int".to_string()),
+        Just("float".to_string()),
+        Just("bool".to_string()),
+        Just("string".to_string()),
+        Just("divert".to_string()),
+        Just("void".to_string()),
+        // Exercises the "unknown type name" surface too. `fn` is excluded:
+        // it's a contextual keyword in type position (starts a `fn(...):
+        // ...` function type — see `parser::types::type_fn`), so landing on
+        // it bare would be a spurious property-test failure, not a bug.
+        arb_ident().prop_filter("must not be the `fn` contextual keyword", |s| s != "fn"),
+    ]
+}
+
+fn arb_type_expr() -> impl Strategy<Value = String> {
+    arb_type_leaf().prop_recursive(2, 8, 3, |inner| {
+        prop_oneof![
+            inner.clone().prop_map(|t| format!("array<{t}>")),
+            (inner.clone(), inner.clone()).prop_map(|(k, v)| format!("map<{k}, {v}>")),
+            inner.clone().prop_map(|t| format!("list<{t}>")),
+            prop::collection::vec(inner.clone(), 0..=3).prop_map(|params| format!(
+                "fn({}): {}",
+                params.join(", "),
+                "int"
+            )),
+        ]
+    })
+}
+
+fn arb_var_decl_typed() -> impl Strategy<Value = String> {
+    (arb_ident(), arb_type_expr(), arb_simple_value())
+        .prop_map(|(name, ty, val)| format!("VAR {name}: {ty} = {val}\n"))
+}
+
+/// #641: CONST mirrors VAR's typed-declaration strategy.
+fn arb_const_decl_typed() -> impl Strategy<Value = String> {
+    (arb_ident(), arb_type_expr(), arb_simple_value())
+        .prop_map(|(name, ty, val)| format!("CONST {name}: {ty} = {val}\n"))
+}
+
+fn arb_temp_decl_typed() -> impl Strategy<Value = String> {
+    (arb_ident(), arb_type_expr(), arb_ident())
+        .prop_map(|(name, ty, val)| format!("~ temp {name}: {ty} = {val}\n"))
+}
+
+/// A deliberately narrow body generator for the TM-2 knot-header tests
+/// below — `arb_body()` (via `arb_content_with_inline`) can produce
+/// content-line/inline-logic combinations that are a pre-existing,
+/// unrelated generator edge case (not a TM-2 regression); these tests only
+/// need *some* well-formed body to follow a typed header, not full body
+/// coverage (already exercised by `story_roundtrip` et al.).
+fn arb_typed_test_body() -> impl Strategy<Value = String> {
+    prop::collection::vec(arb_content_line(), 1..=3).prop_map(|lines| lines.join(""))
+}
+
+// ── TM-4b structs (docs/typed-mode-spec.md §6) ────────────────────────
+
+/// A struct field name distinct from the shape/base identifiers used
+/// alongside it in the same generated snippet — avoids a field literally
+/// named `fn` (a contextual type keyword) tripping up unrelated grammar,
+/// mirroring `arb_type_leaf`'s own filter.
+fn arb_field_name() -> impl Strategy<Value = String> {
+    arb_ident().prop_filter("must not be the `fn` contextual keyword", |s| s != "fn")
+}
+
+/// `STRUCT Name = #{field: type, …}` — single-line body (the multi-line
+/// case is covered by hand-written unit tests; the property-test generator
+/// stays single-line so `arb_field_name`/`arb_type_leaf` combinations don't
+/// need newline-aware joining).
+fn arb_struct_decl() -> impl Strategy<Value = String> {
+    (
+        arb_ident(),
+        prop::collection::vec((arb_field_name(), arb_type_leaf()), 0..=4),
+    )
+        .prop_map(|(name, fields)| {
+            let body = fields
+                .iter()
+                .map(|(f, t)| format!("{f}: {t}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("STRUCT {name} = #{{{body}}}\n")
+        })
+}
+
+/// `Name#{field: expr, …}` — struct construction literal, generated as a
+/// `~` assignment so it parses in expression position.
+fn arb_struct_literal() -> impl Strategy<Value = String> {
+    (
+        arb_ident(),
+        prop::collection::vec((arb_field_name(), arb_simple_value()), 0..=4),
+    )
+        .prop_map(|(shape, fields)| {
+            let body = fields
+                .iter()
+                .map(|(f, v)| format!("{f}: {v}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("~ p = {shape}#{{{body}}}\n")
+        })
+}
+
+/// `~ x = Name#{…}.field` — postfix field access after a struct literal
+/// (the unambiguous new grammar; a bare `ident.ident` chain stays a `PATH`,
+/// exercised separately by the existing dotted-path generators).
+fn arb_field_access() -> impl Strategy<Value = String> {
+    (arb_ident(), arb_field_name(), arb_field_name()).prop_map(
+        |(shape, init_field, access_field)| {
+            format!("~ x = {shape}#{{{init_field}: 1}}.{access_field}\n")
+        },
+    )
+}
+
+fn arb_knot_header_typed() -> impl Strategy<Value = String> {
+    (
+        arb_ident(),
+        prop::collection::vec((arb_ident(), arb_type_expr()), 0..=3),
+        arb_type_expr(),
+    )
+        .prop_map(|(name, params, ret)| {
+            let params = params
+                .iter()
+                .map(|(n, t)| format!("{n}: {t}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("=== function {name}({params}): {ret} ===\n")
+        })
 }
 
 fn arb_list_decl() -> impl Strategy<Value = String> {
@@ -375,6 +603,12 @@ proptest! {
     }
 
     #[test]
+    fn block_logic_line_roundtrip(input in arb_block_logic_line()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
     fn content_with_inline_roundtrip(input in arb_content_with_inline()) {
         let parsed = parse(&input);
         prop_assert_eq!(parsed.syntax().text().to_string(), input);
@@ -384,6 +618,227 @@ proptest! {
     fn var_decl_roundtrip(input in arb_var_decl()) {
         let parsed = parse(&input);
         prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    // ── TM-2 type annotations (docs/typed-mode-spec.md §3) ────────────
+
+    #[test]
+    fn var_decl_typed_roundtrip(input in arb_var_decl_typed()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn var_decl_typed_no_errors(input in arb_var_decl_typed()) {
+        let parsed = parse(&input);
+        prop_assert!(
+            parsed.errors().is_empty(),
+            "parse errors for input: {:?}\nerrors: {:?}",
+            input, parsed.errors(),
+        );
+    }
+
+    #[test]
+    fn var_decl_typed_produces_type_annotation(input in arb_var_decl_typed()) {
+        let parsed = parse(&input);
+        prop_assert!(has_node_kind(&parsed.syntax(), SyntaxKind::TYPE_ANNOTATION));
+    }
+
+    #[test]
+    fn const_decl_typed_roundtrip(input in arb_const_decl_typed()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn const_decl_typed_no_errors(input in arb_const_decl_typed()) {
+        let parsed = parse(&input);
+        prop_assert!(
+            parsed.errors().is_empty(),
+            "parse errors for input: {:?}\nerrors: {:?}",
+            input, parsed.errors(),
+        );
+    }
+
+    #[test]
+    fn const_decl_typed_produces_type_annotation(input in arb_const_decl_typed()) {
+        let parsed = parse(&input);
+        prop_assert!(has_node_kind(&parsed.syntax(), SyntaxKind::TYPE_ANNOTATION));
+    }
+
+    #[test]
+    fn temp_decl_typed_roundtrip(input in arb_temp_decl_typed()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn temp_decl_typed_no_errors(input in arb_temp_decl_typed()) {
+        let parsed = parse(&input);
+        prop_assert!(
+            parsed.errors().is_empty(),
+            "parse errors for input: {:?}\nerrors: {:?}",
+            input, parsed.errors(),
+        );
+    }
+
+    #[test]
+    fn knot_header_typed_roundtrip((header, body) in (arb_knot_header_typed(), arb_typed_test_body())) {
+        let input = format!("{header}{body}");
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn knot_header_typed_no_errors((header, body) in (arb_knot_header_typed(), arb_typed_test_body())) {
+        let input = format!("{header}{body}");
+        let parsed = parse(&input);
+        prop_assert!(
+            parsed.errors().is_empty(),
+            "parse errors for input: {:?}\nerrors: {:?}",
+            input, parsed.errors(),
+        );
+    }
+
+    /// Never panics on any type-annotated input — extends the grammar fuzz
+    /// coverage (docs/t1b-surface-spec.md §6 pattern) to TM-2's superset
+    /// grammar: the parser must never crash, in either dialect (the parser
+    /// itself is dialect-agnostic — dialect gating happens at analysis).
+    #[test]
+    fn type_annotated_input_never_panics(input in prop_oneof![
+        arb_var_decl_typed(),
+        arb_const_decl_typed(),
+        arb_temp_decl_typed(),
+        (arb_knot_header_typed(), arb_typed_test_body()).prop_map(|(h, b)| format!("{h}{b}")),
+    ]) {
+        let _ = parse(&input);
+    }
+
+    // ── TM-4b structs (docs/typed-mode-spec.md §6) ────────────────────
+
+    #[test]
+    fn struct_decl_roundtrip(input in arb_struct_decl()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn struct_decl_no_errors(input in arb_struct_decl()) {
+        let parsed = parse(&input);
+        prop_assert!(
+            parsed.errors().is_empty(),
+            "parse errors for input: {:?}\nerrors: {:?}",
+            input, parsed.errors(),
+        );
+    }
+
+    #[test]
+    fn struct_decl_produces_struct_decl_node(input in arb_struct_decl()) {
+        let parsed = parse(&input);
+        prop_assert!(has_node_kind(&parsed.syntax(), SyntaxKind::STRUCT_DECL));
+    }
+
+    #[test]
+    fn struct_literal_roundtrip(input in arb_struct_literal()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn struct_literal_no_errors(input in arb_struct_literal()) {
+        let parsed = parse(&input);
+        prop_assert!(
+            parsed.errors().is_empty(),
+            "parse errors for input: {:?}\nerrors: {:?}",
+            input, parsed.errors(),
+        );
+    }
+
+    #[test]
+    fn struct_literal_produces_struct_literal_node(input in arb_struct_literal()) {
+        let parsed = parse(&input);
+        prop_assert!(has_node_kind(&parsed.syntax(), SyntaxKind::STRUCT_LITERAL));
+    }
+
+    #[test]
+    fn field_access_roundtrip(input in arb_field_access()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn field_access_no_errors(input in arb_field_access()) {
+        let parsed = parse(&input);
+        prop_assert!(
+            parsed.errors().is_empty(),
+            "parse errors for input: {:?}\nerrors: {:?}",
+            input, parsed.errors(),
+        );
+    }
+
+    #[test]
+    fn field_access_produces_field_access_expr_node(input in arb_field_access()) {
+        let parsed = parse(&input);
+        prop_assert!(has_node_kind(&parsed.syntax(), SyntaxKind::FIELD_ACCESS_EXPR));
+    }
+
+    /// Never panics on any TM-4b struct input, in either dialect — extends
+    /// the grammar fuzz coverage (docs/t1b-surface-spec.md §6 pattern,
+    /// docs/typed-mode-spec.md §6) the same way TM-2's
+    /// `type_annotated_input_never_panics` does.
+    #[test]
+    fn struct_input_never_panics(input in prop_oneof![
+        arb_struct_decl(),
+        arb_struct_literal(),
+        arb_field_access(),
+    ]) {
+        let _ = parse(&input);
+    }
+
+    // ── T1c (docs/t1c-spec.md §2/§9/§11): `#fn(target, args…)` function-value
+    // creation literal — joins the `#[…]`/`#{…}` sigil family, so it gets the
+    // same lossless-roundtrip / no-errors / node-kind / never-panics coverage
+    // those literals already have. "Grammar fuzzing extends to `#fn` in both
+    // dialects" (spec §9): the parser is dialect-agnostic by construction
+    // (dialect gating happens at analysis, matching TM-2's and TM-4b's own
+    // `never_panics` precedent), so this fuzzes it once, at the parser layer.
+
+    #[test]
+    fn fn_literal_temp_decl_roundtrip(input in arb_fn_literal_temp_decl()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn fn_literal_temp_decl_no_errors(input in arb_fn_literal_temp_decl()) {
+        let parsed = parse(&input);
+        prop_assert!(
+            parsed.errors().is_empty(),
+            "parse errors for input: {:?}\nerrors: {:?}",
+            input, parsed.errors(),
+        );
+    }
+
+    #[test]
+    fn fn_literal_temp_decl_produces_fn_literal_node(input in arb_fn_literal_temp_decl()) {
+        let parsed = parse(&input);
+        prop_assert!(has_node_kind(&parsed.syntax(), SyntaxKind::FN_LITERAL));
+    }
+
+    /// Never panics on any `#fn` input, standalone or nested inside a larger
+    /// expression (`arb_expr`'s own `#fn` arm, exercised transitively via
+    /// every `arb_logic_line`/`arb_block_stmt`/`arb_story` fuzz run above) —
+    /// extends the grammar fuzz coverage the same way TM-2's
+    /// `type_annotated_input_never_panics` and TM-4b's `struct_input_never_panics`
+    /// do. The parser itself is dialect-agnostic, so this covers both
+    /// dialects by construction — dialect gating (E051 under strict-ink) is
+    /// an analysis-layer concern, never a parse-layer one.
+    #[test]
+    fn fn_literal_input_never_panics(input in prop_oneof![
+        arb_fn_literal(),
+        arb_fn_literal_temp_decl(),
+    ]) {
+        let _ = parse(&input);
     }
 
     #[test]
@@ -468,6 +923,22 @@ proptest! {
 
     #[test]
     fn logic_line_no_errors(input in arb_logic_line()) {
+        let parsed = parse(&input);
+        let root = parsed.syntax();
+        prop_assert!(
+            !has_error_nodes(&root),
+            "ERROR node found in CST for input: {:?}\nTree:\n{:#?}",
+            input, root,
+        );
+        prop_assert!(
+            parsed.errors().is_empty(),
+            "parse errors for input: {:?}\nerrors: {:?}",
+            input, parsed.errors(),
+        );
+    }
+
+    #[test]
+    fn block_logic_line_no_errors(input in arb_block_logic_line()) {
         let parsed = parse(&input);
         let root = parsed.syntax();
         prop_assert!(

@@ -1014,11 +1014,13 @@ fn test_dummy_program() -> Program {
         address_by_path: HashMap::new(),
         root_idx: 0,
         list_literals: vec![],
+        literal_pool: vec![],
         list_item_map: HashMap::new(),
         list_defs: vec![],
         list_def_map: HashMap::new(),
         external_fns: HashMap::new(),
         local_scope_defaults: Vec::new(),
+        struct_shapes: Vec::new(),
     }
 }
 
@@ -1504,6 +1506,7 @@ mod tests {
                 counting_flags: CountingFlags::empty(),
                 path_hash: 0,
                 param_count: 0,
+                params: Vec::new(),
                 scope_table_idx: 0,
             }],
             address_map: HashMap::new(),
@@ -1515,11 +1518,13 @@ mod tests {
             address_by_path: HashMap::new(),
             root_idx: 0,
             list_literals: vec![],
+            literal_pool: vec![],
             list_item_map: HashMap::new(),
             list_defs: vec![],
             list_def_map: HashMap::new(),
             external_fns: HashMap::new(),
             local_scope_defaults: Vec::new(),
+            struct_shapes: Vec::new(),
         };
 
         let line_tables = vec![vec![LineEntry {

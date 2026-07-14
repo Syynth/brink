@@ -109,6 +109,7 @@ fn arb_manifest() -> impl Strategy<Value = SymbolManifest> {
                         range: range(offset, name.len() as u32),
                         params: Vec::new(),
                         detail: None,
+                        visibility: None,
                     });
                     offset += name.len() as u32 + 1;
                 }
@@ -119,6 +120,7 @@ fn arb_manifest() -> impl Strategy<Value = SymbolManifest> {
                         range: range(offset, name.len() as u32),
                         params: Vec::new(),
                         detail: None,
+                        visibility: None,
                     });
                     offset += name.len() as u32 + 1;
                 }
@@ -129,6 +131,7 @@ fn arb_manifest() -> impl Strategy<Value = SymbolManifest> {
                         range: range(offset, list_name.len() as u32),
                         params: Vec::new(),
                         detail: None,
+                        visibility: None,
                     });
                     offset += list_name.len() as u32 + 1;
 
@@ -139,6 +142,7 @@ fn arb_manifest() -> impl Strategy<Value = SymbolManifest> {
                             range: range(offset, item.len() as u32),
                             params: Vec::new(),
                             detail: None,
+                            visibility: None,
                         });
                         offset += item.len() as u32 + 1;
                     }
@@ -150,6 +154,7 @@ fn arb_manifest() -> impl Strategy<Value = SymbolManifest> {
                         range: range(offset, name.len() as u32),
                         params: Vec::new(),
                         detail: None,
+                        visibility: None,
                     });
                     offset += name.len() as u32 + 1;
                 }
@@ -206,8 +211,12 @@ fn empty_hir() -> HirFile {
         variables: Vec::new(),
         constants: Vec::new(),
         lists: Vec::new(),
+        structs: Vec::new(),
         externals: Vec::new(),
         includes: Vec::new(),
+        module: None,
+        imports: Vec::new(),
+        visibility: Vec::new(),
     }
 }
 
@@ -357,6 +366,7 @@ proptest! {
                 range: range(0, name.len() as u32),
                         params: Vec::new(),
                         detail: None,
+                        visibility: None,
                     }],
             ..Default::default()
         };
@@ -366,6 +376,7 @@ proptest! {
                 range: range(100, name.len() as u32),
                         params: Vec::new(),
                         detail: None,
+                        visibility: None,
                     }],
             ..Default::default()
         };
@@ -402,6 +413,7 @@ proptest! {
                 range: range(0, name.len() as u32),
                         params: Vec::new(),
                         detail: None,
+                        visibility: None,
                     }],
             ..Default::default()
         };
@@ -411,6 +423,7 @@ proptest! {
                 range: range(100, name.len() as u32),
                         params: Vec::new(),
                         detail: None,
+                        visibility: None,
                     }],
             ..Default::default()
         };
@@ -455,6 +468,7 @@ proptest! {
                 range: range(offset, name.len() as u32),
                         params: Vec::new(),
                         detail: None,
+                        visibility: None,
                     });
             offset += name.len() as u32 + 1;
         }

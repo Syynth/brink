@@ -26,6 +26,39 @@ jobs:
           persist-credentials: false
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - run: cargo check --workspace
+      # The wasm-side test modules (`wasm_bindgen_test`) were compiled by no
+      # CI job — only the lib was ever checked for wasm32 — so they bitrotted
+      # invisibly when PR #654's module split broke their `super::` paths
+      # (#672 lane G finding). Compile them here; the `wasm-test` job below
+      # actually *executes* them (#672 workstream D).
+      - run: cargo check -p brink-web --all-targets --target wasm32-unknown-unknown
+
+  # Executes the `#[wasm_bindgen_test]` suite under Node (the `check` job
+  # above only type-checks it for wasm32 — it never ran, so PR #620's
+  # Record→null marshal regression would not have been caught by any CI
+  # job). All 49 tests here go through `web_sys::console::*` at most — no
+  # `window`/`document`/`fetch`/storage — so Node's built-in `console`
+  # satisfies every dependency and no headless browser is needed. If this
+  # job proves flaky in practice, drop it from branch-protection's required
+  # list rather than deleting it (#672 workstream D).
+  wasm-test:
+    name: Wasm Tests (brink-web)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
+        # Pin the version (matching the `frontend` job below): the default
+        # `latest` queries the GitHub API for the newest release and breaks
+        # under API rate limiting (HTML, not JSON).
+        with:
+          version: v0.14.0
+      - run: wasm-pack test --node crates/brink-web
 
   test:
     name: Test
@@ -90,6 +123,66 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2
         with:
           command: check
+
+  # Bounded fuzz smoke runs (#672 workstream C) — not continuous fuzzing
+  # campaigns. Each target gets a fresh ephemeral corpus dir (uncommitted;
+  # new finds land there, never in the committed seed corpus under
+  # `fuzz/seeds/<target>/`) plus the curated seeds, and a short
+  # `-max_total_time` budget. This catches panics/hangs in the parser and
+  # the VM's malformed-bytecode handling cheaply on every PR; a real
+  # coverage-guided campaign is a local/scheduled concern, not a per-PR one.
+  #
+  # One job per target (matrix, fail-fast: false) rather than sequential
+  # steps in a shared job: a crash in one target must not skip the others —
+  # sequential steps stop at the first failing step, silently leaving later
+  # targets (e.g. the VM's vm_no_panic) unexercised while CI still reports
+  # red for an unrelated reason.
+  #
+  # `-seed=` is pinned per target so the mutation sequence explored each
+  # run is reproducible for a given corpus/binary — libFuzzer's default
+  # randomized seed would otherwise let each PR (including unrelated ones)
+  # explore a different slice of the input space and risk surfacing a fresh
+  # shallow crash as a flake, in tension with #672 workstream F's zero-flake
+  # mandate.
+  fuzz:
+    name: Fuzz (smoke) — ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: parse_no_panic
+            crate_dir: crates/internal/brink-syntax/fuzz
+            seed_dir: seeds/ink
+          - target: parse_lossless
+            crate_dir: crates/internal/brink-syntax/fuzz
+            seed_dir: seeds/ink
+          - target: vm_no_panic
+            crate_dir: crates/brink-runtime/fuzz
+            seed_dir: seeds/vm_no_panic
+    # Hard backstop independent of the target's own `-max_total_time`
+    # budget (30s of intended fuzz time) — if a target ever fails to
+    # self-terminate, the job dies here instead of burning CI minutes
+    # silently.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: fuzz-${{ matrix.target }}
+      - name: Install nightly + cargo-fuzz
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --locked
+      - name: Fuzz ${{ matrix.target }}
+        working-directory: ${{ matrix.crate_dir }}
+        run: |
+          mkdir -p corpus/${{ matrix.target }}
+          cargo +nightly fuzz run ${{ matrix.target }} corpus/${{ matrix.target }} ${{ matrix.seed_dir }} -- -seed=1 -max_total_time=30 -max_len=8192
 
   book:
     name: Book
@@ -185,6 +278,8 @@ jobs:
         run: pnpm --filter @brink-lang/studio typecheck
       - name: Unit tests (vitest)
         run: pnpm --filter @brink-lang/studio test
+      - name: Unit tests (vitest, @brink-lang/web wrapper)
+        run: pnpm --filter @brink-lang/web test
 
   # The Playwright suite is the CI wall-clock long pole (#402): ~384 tests at
   # ~5m40s serial. Sharded across independent runners; each shard rebuilds the

@@ -91,6 +91,53 @@ pub fn signature_help(
     })
 }
 
+/// Like [`signature_help`], but additionally recognizes a call to a T1b
+/// stdlib slice 1 function (docs/t1b-surface-spec.md §5) when no analyzer
+/// symbol resolves the name — gated to [`brink_analyzer::Dialect::Brink`]
+/// only, mirroring [`crate::completion::stdlib_completions`]'s "never
+/// offered in `StrictInk`" rule. An author-defined symbol of the same name
+/// always wins (checked first, via the same lookup [`signature_help`] uses),
+/// matching §5's shadow-with-warning rule.
+///
+/// A mutator's first parameter renders as `name: lvalue` (§5's
+/// lvalue-mutator rule), producing e.g. `push(a: lvalue, v)` for `push` —
+/// the exact shape docs/t1b-surface-spec.md §5 and the issue text call out.
+#[must_use]
+pub fn signature_help_with_dialect(
+    analysis: &AnalysisResult,
+    source: &str,
+    byte_offset: usize,
+    dialect: brink_analyzer::Dialect,
+) -> Option<SignatureInfo> {
+    if let Some(sig) = signature_help(analysis, source, byte_offset) {
+        return Some(sig);
+    }
+    if dialect != brink_analyzer::Dialect::Brink {
+        return None;
+    }
+    let (func_name, active_param) = find_call_context(source, byte_offset)?;
+    let f = crate::stdlib::stdlib_fn(&func_name)?;
+
+    let parameters: Vec<ParamLabel> = f
+        .params
+        .iter()
+        .map(|p| ParamLabel { label: p.label() })
+        .collect();
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "active param index fits in u32"
+    )]
+    let active = active_param.min(f.params.len().saturating_sub(1)) as u32;
+
+    Some(SignatureInfo {
+        label: f.signature_label(),
+        documentation: Some(f.doc.to_owned()),
+        parameters,
+        active_parameter: active,
+    })
+}
+
 /// One pickable value for an argument (Tier 3 static value source, #174).
 pub struct ArgumentValueCompletion {
     /// The literal inserted into source (e.g. `"5"`).
@@ -154,7 +201,7 @@ pub fn argument_value_completions(
 mod tests {
     use crate::session::IdeSession;
 
-    use super::signature_help;
+    use super::{signature_help, signature_help_with_dialect};
 
     #[test]
     fn signature_help_shows_inline_types() {
@@ -339,5 +386,80 @@ mod tests {
         assert_eq!(values.len(), 2);
         assert_eq!(values[0].label, "Potion");
         assert_eq!(values[1].value, "1");
+    }
+
+    // ── Stdlib slice 1 signature help (#589) ────────────────────────────
+
+    #[test]
+    fn stdlib_mutator_signature_help_shows_lvalue_rule_in_brink_dialect() {
+        let src = "~ push(inventory, \"sword\")\n-> END\n";
+        let mut session = IdeSession::new();
+        session.update_and_analyze("test.ink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        let offset = src.find("push(").expect("call present") + "push(".len();
+        let sig =
+            signature_help_with_dialect(analysis, src, offset, brink_analyzer::Dialect::Brink)
+                .expect("stdlib signature help");
+        assert_eq!(sig.label, "push(a: lvalue, v)");
+        assert_eq!(sig.parameters[0].label, "a: lvalue");
+        assert_eq!(sig.parameters[1].label, "v");
+        assert_eq!(sig.active_parameter, 0);
+    }
+
+    #[test]
+    fn stdlib_signature_help_tracks_active_parameter() {
+        let src = "~ insert(m, \"k\", 1)\n-> END\n";
+        let mut session = IdeSession::new();
+        session.update_and_analyze("test.ink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        let offset = src.find("\"k\"").expect("second arg present");
+        let sig =
+            signature_help_with_dialect(analysis, src, offset, brink_analyzer::Dialect::Brink)
+                .expect("stdlib signature help");
+        assert_eq!(sig.label, "insert(x: lvalue, k_or_i, v)");
+        assert_eq!(sig.active_parameter, 1);
+    }
+
+    #[test]
+    fn stdlib_signature_help_never_offered_in_strict_ink() {
+        let src = "~ push(inventory, \"sword\")\n-> END\n";
+        let mut session = IdeSession::new();
+        session.update_and_analyze("test.ink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        let offset = src.find("push(").expect("call present") + "push(".len();
+        assert!(
+            signature_help_with_dialect(analysis, src, offset, brink_analyzer::Dialect::StrictInk)
+                .is_none(),
+            "strict-ink must never see stdlib signature help"
+        );
+    }
+
+    #[test]
+    fn author_defined_function_shadows_stdlib_signature_help() {
+        // A user-defined `push` knot must win over the stdlib fallback,
+        // exactly like `signature_help` already resolves it — the dialect
+        // fallback only kicks in when nothing resolved.
+        let src = "\
+== function push(a, v) ==
+~ return a
+== main ==
+~ temp x = push(1, 2)
+-> END
+";
+        let mut session = IdeSession::new();
+        session.update_and_analyze("test.ink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        let offset = src.rfind("push(1, 2)").expect("call present") + "push(".len();
+        let sig =
+            signature_help_with_dialect(analysis, src, offset, brink_analyzer::Dialect::Brink)
+                .expect("signature help");
+        assert_eq!(
+            sig.label, "push(a, v)",
+            "the user's own push, not the stdlib mutator"
+        );
     }
 }

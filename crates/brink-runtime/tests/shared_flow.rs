@@ -4,18 +4,14 @@
 
 #![expect(clippy::unwrap_used, clippy::panic)]
 
-use brink_converter::convert;
-use brink_json::InkJson;
 use brink_runtime::{DotNetRng, Line, Story};
 
 fn story_from(case: &str) -> (brink_runtime::Program, Vec<Vec<brink_format::LineEntry>>) {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/tier1")
         .join(case)
-        .join("story.ink.json");
-    let json = std::fs::read_to_string(&path).unwrap();
-    let ink: InkJson = serde_json::from_str(&json).unwrap();
-    let data = convert(&ink).unwrap();
+        .join("story.ink");
+    let data = brink_compiler::compile_path(&path).unwrap().data;
     brink_runtime::link(&data).unwrap()
 }
 

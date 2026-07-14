@@ -30,7 +30,9 @@
 
 extern crate alloc;
 
+mod collection_ops;
 mod collections;
+mod conversion_ops;
 mod debug;
 mod error;
 mod external_policy;
@@ -39,6 +41,7 @@ mod list_ops;
 mod locale;
 mod output;
 mod program;
+mod record_ops;
 mod replay;
 pub mod rng;
 mod save;

@@ -7,11 +7,13 @@ pub mod dir_rename;
 pub mod document;
 pub mod extract;
 pub mod file_rename;
+pub mod fn_value_hover;
 pub mod folding;
 pub mod formatting;
 pub mod hir_projection;
 pub mod hover;
 pub mod include_block;
+mod inferred_types;
 pub mod inlay_hints;
 pub mod line_context;
 pub mod line_convert;
@@ -21,6 +23,7 @@ pub mod rename;
 pub mod semantic_tokens;
 pub mod session;
 pub mod signature;
+pub mod stdlib;
 pub mod story_graph;
 pub mod structural_delete;
 pub mod structural_move;
@@ -30,6 +33,7 @@ pub mod trivia;
 
 pub use completion::{
     CompletionContext, CursorScope, cursor_scope, detect_completion_context, is_visible_in_context,
+    stdlib_completion_context, stdlib_completions,
 };
 
 /// Author-time host value cache (Tier 3, #174): `host`-source semantic types →
@@ -41,6 +45,6 @@ pub type HostValues = std::collections::HashMap<String, Vec<brink_ir::ValueItem>
 pub use formatting::{format_region, sort_knots_in_source, sort_stitches_in_knot};
 pub use line_index::LineIndex;
 pub use text::{
-    builtin_hover_text, diff_to_edits, doc_extended_start, find_call_context, word_at_offset,
-    word_range_at_offset,
+    builtin_hover_text, diff_to_edits, doc_extended_start, find_call_context, stdlib_hover_text,
+    word_at_offset, word_range_at_offset,
 };

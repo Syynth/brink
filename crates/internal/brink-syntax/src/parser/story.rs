@@ -41,6 +41,15 @@ fn top_level_statement(p: &mut Parser<'_, '_>) {
         super::declaration::declaration(p);
         return;
     }
+    // TM-4b (docs/typed-mode-spec.md §6): `STRUCT Name = #{ … }` is a
+    // contextual top-level declaration (`STRUCT` stays a plain `IDENT`
+    // everywhere else) — checked after the hard-keyword declarations above,
+    // same position T1b's contextual block keywords would occupy if they
+    // were ever top-level.
+    if super::declaration::at_struct_decl(p) {
+        super::declaration::struct_declaration(p);
+        return;
+    }
     line(p);
 }
 

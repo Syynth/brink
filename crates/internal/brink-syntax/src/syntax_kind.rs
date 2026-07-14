@@ -43,6 +43,9 @@ pub enum SyntaxKind {
     KW_DONE,
     KW_END,
     KW_TODO,
+    /// `IMPORT` — module import statement (brink extension, M-2,
+    /// docs/modules-spec.md §2). `FROM`/`AS` stay contextual `IDENT`s.
+    KW_IMPORT,
 
     // ── Punctuation / operator tokens ────────────────────────────
     /// `=`
@@ -145,6 +148,14 @@ pub enum SyntaxKind {
     // ── Node kinds (parser) ──────────────────────────────────────
     SOURCE_FILE,
     INCLUDE_STMT,
+    /// `IMPORT { a, b AS c } FROM mod` or `IMPORT mod` (M-2).
+    IMPORT_STMT,
+    /// The `{ … }` name list of a bare-form import.
+    IMPORT_LIST,
+    /// One `name` or `name AS alias` entry in an import list.
+    IMPORT_ITEM,
+    /// The module name of an import (both forms).
+    IMPORT_MODULE,
     FILE_PATH,
     EXTERNAL_DECL,
     KNOT_DEF,
@@ -228,6 +239,90 @@ pub enum SyntaxKind {
     BOOLEAN_LIT,
     ERROR,
 
+    // ── T1b superset grammar (docs/t1b-surface-spec.md) ────────────
+    // Multi-line `~ { … }` logic blocks (§2). Parse-only in T1b-1 — every
+    // node below is dialect-gated at analysis and never reaches LIR.
+    /// `{ stmt* }` — a braced statement list. Used for the top-level
+    /// `~ { … }` block body and every nested `if`/`while`/`for` body.
+    STMT_BLOCK,
+    /// `if cond { … } (else …)?`. `if`/`else if` are contextual keywords
+    /// (plain `IDENT` tokens) — see `parser::logic`.
+    IF_STMT,
+    /// The `else` arm of an `IF_STMT`: either a nested `IF_STMT` (else-if)
+    /// or a bare `STMT_BLOCK` (else).
+    ELSE_CLAUSE,
+    /// `while cond { … }`.
+    WHILE_STMT,
+    /// `for name in expr { … }`.
+    FOR_STMT,
+    /// `break`.
+    BREAK_STMT,
+    /// `continue`.
+    CONTINUE_STMT,
+    /// A bare expression statement inside a block (function/external calls).
+    EXPR_STMT,
+    /// `#[expr, …]` — array sigil literal (§3). Expression position only.
+    ARRAY_LITERAL,
+    /// `#{key: expr, …}` — map sigil literal (§3). Expression position only.
+    MAP_LITERAL,
+    /// One `key: expr` pair inside a `MAP_LITERAL`.
+    MAP_ENTRY,
+    /// `base[index]` — postfix indexing, chainable (§4).
+    INDEX_EXPR,
+
+    // ── TM-2 inline type annotations (docs/typed-mode-spec.md §3) ──
+    // `name: type` after params/VAR/temp declarations, `): type ===` return
+    // position. Superset grammar — always parses; dialect-gated (E051 under
+    // strict-ink) at analysis, same pattern as T1b.
+    /// `: type_expr` — one annotation, attached after an identifier (param,
+    /// `VAR`/`temp` name) or a knot header's params (return position).
+    TYPE_ANNOTATION,
+    /// A type expression: wraps exactly one of `TYPE_NAME`, `TYPE_GENERIC`,
+    /// or `TYPE_FN`.
+    TYPE_EXPR,
+    /// A bare nominal type name (`int`, `float`, `bool`, `string`, `divert`,
+    /// `void`, or an unrecognized identifier — semantic validity is an
+    /// analyzer concern, not a grammar one).
+    TYPE_NAME,
+    /// `name<type_expr, …>` — `list<L>`, `array<T>`, `map<K, V>`.
+    TYPE_GENERIC,
+    /// `fn(type_expr, …): type_expr` — function type. Parses in T1b/TM-2;
+    /// types as reserved until T1c.
+    TYPE_FN,
+
+    // ── TM-4b structs (docs/typed-mode-spec.md §6) ─────────────────
+    // `STRUCT Name = #{ field: type, … }` declaration, `Name#{field: expr, …}`
+    // construction literal, postfix `.field` access. Superset grammar —
+    // always parses (dialect-gated at analysis, same T1b/TM-2 pattern);
+    // `STRUCT` is a contextual (soft) keyword recognized only at top-level
+    // declaration-start position (`STRUCT` `IDENT` `=` `#` `{`), so it never
+    // reserves the word elsewhere. LIR lowering rejects every construct
+    // below — codegen lands with TM-4c (#666).
+    /// `STRUCT Name = #{ field: type, … }`. Top-level only.
+    STRUCT_DECL,
+    /// One `field: type` pair inside a `STRUCT_DECL`'s body.
+    STRUCT_FIELD_DECL,
+    /// `Name#{field: expr, …}` — struct construction literal. Expression
+    /// position only, like `ARRAY_LITERAL`/`MAP_LITERAL`.
+    STRUCT_LITERAL,
+    /// One `field: expr` pair inside a `STRUCT_LITERAL`.
+    STRUCT_FIELD_INIT,
+    /// `base.field` — postfix field access. Only used where the existing
+    /// dotted-`PATH` grammar doesn't already cover the shape (e.g. after a
+    /// `STRUCT_LITERAL`, an `INDEX_EXPR`, or a parenthesized expression); a
+    /// bare `ident.ident` chain still parses as one `PATH` node and the
+    /// static-path-vs-field-access ambiguity is resolved by
+    /// `brink-analyzer`'s resolution fallback (typed-mode-spec §6), not here.
+    FIELD_ACCESS_EXPR,
+
+    // ── T1c function values (docs/t1c-spec.md §2) ──────────────────
+    /// `#fn(target, args…)` — function-value creation (partial application
+    /// over a named function). Joins the `#[…]`/`#{…}`/`Name#{…}` sigil
+    /// family: expression position only — in prose position `#` still opens
+    /// a tag, unchanged. Superset grammar — always parses; dialect-gated
+    /// (E051 under strict-ink) at analysis, same pattern as T1b/TM-4b.
+    FN_LITERAL,
+
     // Not a real kind — used only for `rowan::Language::kind_to_raw` bounds.
     #[doc(hidden)]
     __LAST,
@@ -268,6 +363,7 @@ impl SyntaxKind {
                 | Self::KW_DONE
                 | Self::KW_END
                 | Self::KW_TODO
+                | Self::KW_IMPORT
                 | Self::EQ
                 | Self::PLUS_EQ
                 | Self::MINUS_EQ
@@ -363,6 +459,7 @@ impl SyntaxKind {
                 | Self::KW_DONE
                 | Self::KW_END
                 | Self::KW_TODO
+                | Self::KW_IMPORT
         )
     }
 }
