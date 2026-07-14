@@ -1492,6 +1492,24 @@ pub enum DiagnosticCode {
     /// migrate; likely a stale directive left over from a previous rename
     /// (warning, modules-spec §5/§7).
     E095,
+
+    // ── M-2c cross-module collisions (issue #784, decision-log
+    // "Cross-module name collisions" 2026-07-14) ────────────────────────
+    /// Two *declared* modules (`#@module(name)`, different names) each
+    /// define a same-name, same-kind symbol. Escalated from the
+    /// `E022`/`E023`/`E026` inklecate-compat duplicate warning to a hard
+    /// error under `dialect = brink` only: flat resolution (unchanged by
+    /// this stopgap — true import-scoped resolution is #790's job) binds a
+    /// bare name to whichever declared-module definition merge happens to
+    /// see first, so two declared modules sharing a name make that binding
+    /// silently order-dependent for one of them. A duplicate *within* one
+    /// module (same declared module name across its files, or any
+    /// undeclared/legacy file) keeps the existing warning — this code
+    /// fires only when both colliding definitions' owning files declared
+    /// *different* modules. Reported once per colliding definition (both
+    /// spans), under `strict-ink` this code never fires (compat corpus
+    /// untouched).
+    E096,
 }
 
 impl DiagnosticCode {
@@ -1594,6 +1612,7 @@ impl DiagnosticCode {
             Self::E093 => "E093",
             Self::E094 => "E094",
             Self::E095 => "E095",
+            Self::E096 => "E096",
         }
     }
 
@@ -1715,6 +1734,7 @@ impl DiagnosticCode {
             Self::E093 => "conflicting or repeated visibility directives on one declaration",
             Self::E094 => "`#@was` requires exactly one non-empty old-name argument",
             Self::E095 => "`#@was` names the definition's own current name — nothing to migrate",
+            Self::E096 => "duplicate definition declared in two different modules",
         }
     }
 
@@ -1840,6 +1860,7 @@ impl DiagnosticCode {
             "E093" => Some(Self::E093),
             "E094" => Some(Self::E094),
             "E095" => Some(Self::E095),
+            "E096" => Some(Self::E096),
             _ => None,
         }
     }

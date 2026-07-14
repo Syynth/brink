@@ -115,12 +115,16 @@ pub fn symbol_index(files: &[(FileId, &SymbolManifest)]) -> (Arc<SymbolIndex>, V
 /// names by module only for files carrying `#@module`. `brink-db`'s
 /// `symbol_index_query` builds the [`ModuleMap`] from file stems,
 /// `#@module` declarations, and the INCLUDE graph, then calls this.
+///
+/// `dialect` gates the M-2c cross-declared-module duplicate escalation
+/// (issue #784): see [`manifest::merge_manifests_with_modules`].
 #[must_use]
 pub fn symbol_index_with_modules(
     files: &[(FileId, &SymbolManifest)],
     modules: &ModuleMap,
+    dialect: Dialect,
 ) -> (Arc<SymbolIndex>, Vec<Diagnostic>) {
-    let (index, diagnostics) = manifest::merge_manifests_with_modules(files, modules);
+    let (index, diagnostics) = manifest::merge_manifests_with_modules(files, modules, dialect);
     (Arc::new(index), diagnostics)
 }
 
