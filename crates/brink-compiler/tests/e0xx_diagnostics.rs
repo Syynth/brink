@@ -1,4 +1,4 @@
-//! E0xx pipeline-level coverage audit (#672, lane A).
+//! E0xx pipeline-level coverage audit (#672, lane A) + hygiene follow-up (#709).
 //!
 //! One direct, minimal fixture per `DiagnosticCode`, proven to fire through
 //! the real pipeline (`brink_compiler::compile_with_options` — parse → HIR
@@ -15,32 +15,31 @@
 //! - E051 — `tests/t1b_dialect_gate.rs`
 //! - E063, E064, E065, E066, E067 — `tests/tm3_strict_policy.rs`
 //!
-//! Codes with **no test at all** because no source input can make them fire
-//! through the pipeline (suspected-dead; see the #672 lane-A audit report —
-//! findings, not test targets):
+//! Codes retired as unreachable (lane-A audit findings + hygiene follow-up
+//! #709; see enum docs for rationale):
 //!
-//! - E011 — the parser always materializes a `FILE_PATH` node (possibly
-//!   empty) inside `INCLUDE_STMT` and reports a missing path as E037
-//!   (`parser/declaration.rs::include_statement`), so `lower_include`'s
-//!   `ok_or(E011)` never triggers.
-//! - E013 / E018 — `parser/divert.rs::path` always creates a `PATH` node
-//!   (empty on error + E037), so `ThreadStart::target()` /
-//!   `DivertTargetExpr::target()` are never `None`.
-//! - E019 — the parser only builds a `CHOICE` node after seeing a bullet
-//!   token, so a bullet-less choice CST cannot exist.
-//! - E028 — no production emit site; a circular INCLUDE surfaces as
-//!   `CompileError::CircularInclude` from discovery instead (covered in
-//!   `tests/driver.rs::compile_circular_includes_detected`).
-//! - E052 / E053 — both retired: the LIR backstop was replaced by real
-//!   lowering; no production emit site remains. E053 went with T1b-2 (#570);
-//!   E052 was revived by T1c-1 (#699) as the `#fn(…)` not-yet-implemented
-//!   lowering fence and retired again by T1c-2 (#700), which lands real
-//!   `#fn(…)` lowering (expression position and declaration defaults). Both
-//!   are reserved-not-reused.
+//! - E011 — RETIRED — the parser always materializes a `FILE_PATH` node
+//!   inside `INCLUDE_STMT`; reports E037 on error. Code moved to
+//!   `include.rs::lower_include` as an unreachable!(…) branch.
+//! - E013 — RETIRED — `parser/divert.rs::path` always creates a `PATH` node;
+//!   `ThreadStart::target()` never returns None. Code moved to
+//!   `divert.rs::lower_divert` as an unreachable!(…) branch.
+//! - E018 — RETIRED — `parser/divert.rs::path` always creates a `PATH` node;
+//!   `DivertTargetExpr::target()` never returns None. Code moved to
+//!   `expr/references.rs::DivertTargetExpr` as an unreachable!(…) branch.
+//! - E019 — RETIRED — the parser only builds a `CHOICE` node after a bullet
+//!   token; bullet-less choices cannot exist in the CST. Code moved to
+//!   `choice.rs::lower_choice` as an unreachable!(…) branch.
+//! - E028 — RETIRED — circular INCLUDE is detected at discovery and surfaces
+//!   as `CompileError::CircularInclude`, not a per-construct diagnostic.
+//! - E052 — RETIRED (T1c-2, #700) — `#fn(…)` now lowers for real; former
+//!   lowering fence is obsolete. Reserved, not reused.
+//! - E053 — RETIRED (T1b-2, #570) — T1b brink-extension HIR nodes now lower
+//!   for real; former LIR backstop is obsolete. Reserved, not reused.
 //! - E060 — emitted only when codegen rejects a `Program` violating an
 //!   invariant an earlier stage guarantees (a compiler bug by definition);
 //!   not constructible from source.
-//! - E072 — retired (TM-4c, #666), documented as reserved-not-reused.
+//! - E072 — RETIRED (TM-4c, #666), documented as reserved-not-reused.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

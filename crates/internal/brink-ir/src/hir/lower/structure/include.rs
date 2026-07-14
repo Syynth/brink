@@ -1,18 +1,23 @@
 //! Include lowering: `lower_include`.
 
-use brink_syntax::ast::{self, AstNode, AstPtr};
+use brink_syntax::ast::{self, AstPtr};
 
-use crate::{DiagnosticCode, IncludeSite};
+use crate::IncludeSite;
 
 use super::super::context::{LowerSink, Lowered};
 
+#[expect(clippy::unnecessary_wraps)]
 pub(super) fn lower_include(
     inc: &ast::IncludeStmt,
-    sink: &mut impl LowerSink,
+    _sink: &mut impl LowerSink,
 ) -> Lowered<IncludeSite> {
-    let file_path = inc
-        .file_path()
-        .ok_or_else(|| sink.diagnose(inc.syntax().text_range(), DiagnosticCode::E011))?;
+    // The parser always materializes a FILE_PATH node inside INCLUDE_STMT
+    // (possibly empty) and reports E037 if it's missing. So file_path() is
+    // guaranteed to return Some (lane-A audit, #709: E011 is unreachable).
+    let Some(file_path) = inc.file_path() else {
+        // Unreachable: parser always creates FILE_PATH. E011 is retired.
+        unreachable!("parser guarantees FILE_PATH node in INCLUDE_STMT")
+    };
     let raw = file_path.text();
     let cleaned = raw
         .strip_prefix('"')

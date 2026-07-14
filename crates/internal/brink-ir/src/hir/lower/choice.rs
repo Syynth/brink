@@ -6,7 +6,7 @@ use brink_syntax::SyntaxKind;
 use brink_syntax::ast::{self, AstNode, AstPtr, SyntaxNodePtr};
 
 use crate::{
-    Block, Choice, Content, ContentPart, DiagnosticCode, Divert, Expr, InfixOp, Stmt, SymbolKind,
+    Block, Choice, Content, ContentPart, Divert, Expr, InfixOp, Stmt, SymbolKind,
     Tag,
 };
 
@@ -30,10 +30,12 @@ pub trait LowerChoice {
 )]
 impl LowerChoice for ast::Choice {
     fn lower_choice(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Choice> {
-        let range = self.syntax().text_range();
-        let bullets = self
-            .bullets()
-            .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E019))?;
+        // The parser only builds a CHOICE node after seeing a bullet token,
+        // so self.bullets() always returns Some (lane-A audit, #709: E019 is
+        // unreachable).
+        let Some(bullets) = self.bullets() else {
+            unreachable!("parser guarantees bullets in CHOICE node")
+        };
         let is_sticky = bullets.is_sticky();
 
         let label = self.label().and_then(|l| name_from_ident(&l.identifier()?));
