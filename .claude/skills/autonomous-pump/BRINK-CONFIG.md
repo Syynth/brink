@@ -28,3 +28,8 @@ Fill pump.js's CONFIG from these when running the pump on this repo.
 - When replacing verbatim-passthrough rendering with structured re-rendering, audit for trivia (comments) attached as non-field siblings — passthrough removal silently drops them.
 - When fixing a scope/resolution bug on one access path, grep all sibling paths sharing the resolve function (write/assign, inc-dec, dotted access) before closing the class.
 - Don't add defensive branches the caller's guard makes unreachable — dead branches mask real fallthrough.
+
+## Disk rule (2026-07-14 incident: 68G of invisible variant caches)
+- Agents must use ONLY the provided shared CARGO_TARGET_DIR or the worktree-local ./target (which dies with the worktree). NEVER mint variant /tmp cache dirs (pump-cargo-target-brink-issueN / -fuzz / -prN / verify-target-*) — they defeat boundary sweeps and accumulated 68G across three waves. If the shared cache misbehaves (stale sibling binaries, phantom errors), `cargo clean -p <crate>` it or fall back to ./target; never a third path.
+- Review agents needing to run code clone into the worktree they were given or /tmp/brink-review-<pr> and DELETE it before returning.
+- Boundary sweep checklist: worktrees (all completed waves) → /tmp/pump-* glob (not exact path) → /tmp/brink-* clones → shared cache if no wave imminent.

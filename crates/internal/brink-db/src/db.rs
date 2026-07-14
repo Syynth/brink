@@ -14,8 +14,8 @@ use tracing::debug;
 use crate::queries::{
     BrinkDatabase, CompileProduct, DefKey, LirProduct, ProjectInput, ResolvedProject, SourceFile,
     analysis_query, call_site_diagnostics_query, call_site_metas_query, diagnostics_query,
-    include_graph_query, infer_body_query, inferred_signature_query, lir_query, lowered_query,
-    parse_query, per_file_diagnostics_query, resolutions_index_query, resolve_query,
+    has_errors_query, include_graph_query, infer_body_query, inferred_signature_query, lir_query,
+    lowered_query, parse_query, per_file_diagnostics_query, resolutions_index_query, resolve_query,
     signature_query, story_data_query, suppressions_query, symbol_index_query,
     type_diagnostics_query, type_inference_query, value_meta_query,
 };
@@ -433,6 +433,18 @@ impl ProjectDb {
     pub fn lir_product(&self) -> Option<&LirProduct> {
         self.project.entry(&self.salsa)?;
         Some(lir_query(&self.salsa, self.project))
+    }
+
+    /// Whether the project has at least one Error-severity diagnostic after
+    /// suppression filtering (issue #791 / FG-4a) — the narrow boolean
+    /// projection [`lir_product`](Self::lir_product)'s gate reads instead of
+    /// the full diagnostics vector. `false` (never `None`) when no entry
+    /// point is set, matching `partition_diagnostics`'s empty-`errors`
+    /// default in that case. Exposed for the dependency-edge tests; a
+    /// diagnostics-content edit that leaves this boolean unchanged proves
+    /// the cutoff seam backdated.
+    pub fn has_errors(&self) -> bool {
+        has_errors_query(&self.salsa, self.project)
     }
 
     /// Whole-project compile to [`brink_format::StoryData`] (layer 3,
@@ -1280,6 +1292,37 @@ mod module_tests {
             codes.contains(&DiagnosticCode::E088),
             "expected E088 unresolved import, got {codes:?}"
         );
+    }
+
+    /// A single file declaring `#@module(quest)` whose knots reference
+    /// sibling definitions bare (issue #795): a self-reference inside the
+    /// declared module must never be E087, no matter which of the file's
+    /// symbols the index's `HashMap` happens to yield first (locals carry
+    /// `module: None` and must not poison the file's module attribution).
+    /// The bug was nondeterministic — repeated fresh-db runs (fresh
+    /// `HashMap` seeds each time) cover the iteration-order space; the
+    /// order-independent analyzer-level regression lives in
+    /// `brink-analyzer`'s `modules::tests`.
+    #[test]
+    fn single_file_declared_module_self_reference_is_not_e087() {
+        for _ in 0..16 {
+            let mut db = ProjectDb::new();
+            let f = db.set_file(
+                "main.ink",
+                "#@module(quest)\nVAR target = -> ambush\n-> ambush\n== ambush ==\n~ temp x = 1\nGotcha!\n-> reader\n== reader ==\nDone.\n-> DONE\n".to_owned(),
+            );
+
+            let codes: Vec<_> = db
+                .diagnostics(f)
+                .unwrap_or_default()
+                .iter()
+                .map(|d| d.code)
+                .collect();
+            assert!(
+                !codes.contains(&DiagnosticCode::E087),
+                "same-module self-reference must not be E087, got {codes:?}"
+            );
+        }
     }
 
     /// A file that belongs to a declared module but declares no top-level

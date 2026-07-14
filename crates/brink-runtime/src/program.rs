@@ -158,6 +158,21 @@ impl Program {
         self.global_map.contains_key(&id)
     }
 
+    /// Whether `id` names a live list item in the current program — the
+    /// list-item half of the M-3 rehydration miss-path check (`docs/modules-spec.md`
+    /// §5), mirroring [`knows_address`](Self::knows_address)/[`knows_global`](Self::knows_global)
+    /// for the ids embedded in a saved `Value::List` (active items).
+    pub(crate) fn knows_list_item(&self, id: DefinitionId) -> bool {
+        self.list_item_map.contains_key(&id)
+    }
+
+    /// Whether `id` names a live list definition in the current program —
+    /// the list-origin half of the M-3 rehydration miss-path check, for the
+    /// ids embedded in a saved `Value::List`'s `origins`.
+    pub(crate) fn knows_list_def(&self, id: DefinitionId) -> bool {
+        self.list_def_map.contains_key(&id)
+    }
+
     /// M-3 rehydration miss-path lookup (`docs/modules-spec.md` §5): given
     /// an `id` the current program doesn't recognize, consult the compiled
     /// `#@was` alias table for its current identity. Callers still need to
@@ -343,6 +358,19 @@ impl Program {
             .is_some_and(|id| self.is_private(id))
     }
 
+    /// Whether the container at `idx` is `#@private`. Used by
+    /// [`FlowInstance::begin_function_eval`](crate::FlowInstance::begin_function_eval)/
+    /// [`begin_function_value_eval`](crate::FlowInstance::begin_function_value_eval),
+    /// which receive an already-resolved `container_idx` rather than a name
+    /// (the caller resolves it, typically via [`find_address`](Self::find_address),
+    /// before entering the VM boundary). Out-of-range indices are not
+    /// private — an invalid index is the caller's bug, reported elsewhere.
+    pub(crate) fn container_is_private(&self, idx: u32) -> bool {
+        self.containers
+            .get(idx as usize)
+            .is_some_and(|c| self.is_private(c.id))
+    }
+
     /// Build the initial globals vector from slot defaults.
     pub fn global_defaults(&self) -> Vec<Value> {
         self.globals.iter().map(|s| s.default.clone()).collect()
@@ -442,6 +470,16 @@ impl Program {
     /// Variable name for a global slot index.
     pub(crate) fn global_slot_name(&self, idx: usize) -> Option<&str> {
         self.globals.get(idx).map(|slot| self.name(slot.name))
+    }
+
+    /// Compiled `DefinitionId` for a global slot index — the identity
+    /// `save_state` round-trips into `SaveState::global_ids` so the M-3
+    /// rehydration miss path (`docs/modules-spec.md` §5) can recover a
+    /// renamed VAR/CONST/LIST global's *save-time* id (declared-module
+    /// identity is `(module, name)`-hashed, so the bare name alone can't
+    /// reconstruct it) and look it up in the compiled alias table.
+    pub(crate) fn global_id(&self, idx: usize) -> Option<DefinitionId> {
+        self.globals.get(idx).map(|slot| slot.id)
     }
 
     /// Variable name for a global's defining `DefinitionId` (e.g. a
