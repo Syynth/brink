@@ -5,10 +5,7 @@
 use brink_syntax::SyntaxKind;
 use brink_syntax::ast::{self, AstNode, AstPtr, SyntaxNodePtr};
 
-use crate::{
-    Block, Choice, Content, ContentPart, Divert, Expr, InfixOp, Stmt, SymbolKind,
-    Tag,
-};
+use crate::{Block, Choice, Content, ContentPart, Divert, Expr, InfixOp, Stmt, SymbolKind, Tag};
 
 use super::backbone::{BodyChild, classify_body_child};
 use super::content::{ContentAccumulator, DirectBackend, lower_content_node_children, lower_tags};
