@@ -747,6 +747,18 @@ pub(crate) struct SolvedScc {
 /// already read `host_manifest` at — unlike [`call_edges_query`]/
 /// [`referenced_globals_query`] (whose *outputs* the manifest can never
 /// change), this query's output genuinely depends on it.
+///
+/// **`inline_docs` dependency (issue #805).** Also reads [`inline_docs_query`]
+/// — the same project-wide merged `///` doc-comment memo [`external_meta_query`]
+/// already reads — and threads it to [`brink_analyzer::solve_scc`] so an
+/// `EXTERNAL` documented purely inline (no matching registered
+/// `ManifestExternal`) now seeds a `known_sigs` entry too, and so a
+/// registered/inline param or return type naming a *scalar* semantic type
+/// (not just a `handle<K>` kind) resolves to its own base `Ty`. Range-free
+/// (`DocBlock` carries no source spans), so this doesn't reintroduce the
+/// whole-project-HIR churn FG-2/FG-2.1 eliminated — a doc-content-preserving
+/// edit backdates through `inline_docs_query`'s own `Eq` cutoff exactly like
+/// every other reader of that memo.
 #[salsa::tracked]
 pub(crate) fn solve_scc_query<'db>(
     db: &'db dyn salsa::Database,
@@ -828,6 +840,7 @@ pub(crate) fn solve_scc_query<'db>(
     }
 
     let opts = project.analysis_options(db);
+    let inline_docs = inline_docs_query(db, project);
     let (signatures, bodies) = brink_analyzer::solve_scc(
         batch,
         &defs,
@@ -837,6 +850,7 @@ pub(crate) fn solve_scc_query<'db>(
         inferable,
         known_sigs,
         opts.host_manifest.as_ref(),
+        inline_docs,
     );
     Arc::new(SolvedScc { signatures, bodies })
 }

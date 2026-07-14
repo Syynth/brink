@@ -315,12 +315,20 @@ pub(crate) fn whole_project_diagnostics_query(
     if opts.types == TypePolicy::Strict {
         let strict_inference = (opts.dialect == brink_analyzer::Dialect::Brink)
             .then(|| type_inference_query(db, project).as_ref());
+        // `strict_inference` is always `Some` here whenever `dialect =
+        // brink` (the only case `strict_diagnostics`'s own fallback would
+        // otherwise run `infer_project`), so `inline_docs_query` is read
+        // for uniformity with the pure path's signature (issue #805) —
+        // `type_inference_query` -> `solve_scc_query` already reads the
+        // same memo for the actual `EXTERNAL`-signature seeding.
+        let inline_docs = inline_docs_query(db, project);
         diagnostics.extend(brink_analyzer::strict_diagnostics(
             &hir_refs,
             &resolved.index,
             &resolved.resolutions,
             opts,
             strict_inference,
+            inline_docs,
         ));
     }
 
