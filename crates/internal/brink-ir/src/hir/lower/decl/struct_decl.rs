@@ -40,6 +40,12 @@ impl DeclareSymbols for ast::StructDecl {
             doc,
         );
 
+        // `#@private`/`#@public` visibility (M-2: STRUCTs are importable, §2).
+        let dirs = super::super::directive::directives_before(self.syntax());
+        if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
+            sink.set_visibility(crate::SymbolKind::Struct, &name.text, vis);
+        }
+
         let fields: Vec<StructFieldDecl> = self
             .fields()
             .filter_map(|f| lower_struct_field_decl(&f, range, sink))

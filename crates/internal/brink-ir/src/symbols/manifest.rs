@@ -47,6 +47,9 @@ pub struct DeclaredSymbol {
     pub params: Vec<super::ParamInfo>,
     /// Additional detail (e.g. "function" for function knots).
     pub detail: Option<String>,
+    /// Explicit `#@private`/`#@public` override on the declaration, if any
+    /// (M-2, docs/modules-spec.md §4). `None` means "module default".
+    pub visibility: Option<super::VisibilityMark>,
 }
 
 /// A local variable (param or temp) scoped to a container.

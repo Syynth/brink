@@ -92,12 +92,16 @@ pub(crate) const VAL_RECORD: u8 = 0x0F;
 // PR (T1c-2) materializes them.
 pub(crate) const VAL_FN_REF: u8 = 0x0B;
 pub(crate) const VAL_CLOSURE: u8 = 0x0C;
+// T1d (`docs/t1d-spec.md` §2, `docs/format-v4-rfc.md` §1): opaque
+// host-resource tokens. `kind NameId, u64 id` — no live pointer, no
+// dedicated opcode; handles enter the script world only via bindings.
+pub(crate) const VAL_HANDLE: u8 = 0x0D;
 
 // Reserved v4 value tags — numeric assignments frozen by the one-bump rule,
 // emitted by nothing in 4.0 (each is materialized when its milestone lands,
 // still under VERSION 4). The strict reader rejects them until then because no
 // `Value` variant exists to decode into. See `docs/format-v4-rfc.md` §1:
-//   0x0D VAL_HANDLE     (T1d)   0x0E VAL_PROJECTION (T1e)
+//   0x0E VAL_PROJECTION (T1e)
 
 // LineContent tags
 pub(crate) const LINE_PLAIN: u8 = 0x00;

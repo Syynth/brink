@@ -1,6 +1,6 @@
 {
   "name": "@brink-lang/web",
-  "version": "0.10.1",
+  "version": "0.11.0",
   "description": "The brink ink-language compiler, IDE session, and story runtime for the web (WebAssembly): compile .ink source, drive stories, and power editor tooling from JavaScript/TypeScript.",
   "license": "MIT",
   "type": "module",

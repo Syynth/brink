@@ -1,5 +1,30 @@
 # @brink-lang/studio
 
+## 0.8.3
+
+### Patch Changes
+
+- Updated dependencies [8a3635d]
+- Updated dependencies [34951ec]
+- Updated dependencies [81ddfa7]
+- Updated dependencies [9c58d6e]
+- Updated dependencies [f68c094]
+- Updated dependencies [b9ad39f]
+- Updated dependencies [b7b7eb0]
+- Updated dependencies [d29671d]
+- Updated dependencies [ca45425]
+- Updated dependencies [abc369a]
+- Updated dependencies [30e09f9]
+- Updated dependencies [2541c08]
+- Updated dependencies [5b07740]
+- Updated dependencies [d02c4e2]
+- Updated dependencies [20d2bfa]
+- Updated dependencies [d38fa08]
+- Updated dependencies [9bef954]
+- Updated dependencies [1e71455]
+- Updated dependencies [c9475df]
+  - @brink-lang/web@0.11.0
+
 ## 0.8.2
 
 ### Patch Changes

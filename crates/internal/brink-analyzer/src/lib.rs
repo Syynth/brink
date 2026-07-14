@@ -12,6 +12,7 @@ mod external_check;
 mod fn_values;
 mod infer;
 mod manifest;
+mod modules;
 mod resolve;
 mod signature;
 mod strict;
@@ -36,6 +37,7 @@ pub use infer::{
     ValueCallKind, call_edges, def_body, infer_project, inferable_defs, inferable_defs_from_index,
     referenced_globals, scc_graph, solve_scc, unify, unify_all,
 };
+pub use manifest::{ModuleMap, ResolvedModule};
 pub use signature::{Sig, signature};
 pub use strict::{TypePolicy, effective_severity};
 
@@ -105,6 +107,23 @@ pub fn symbol_index(files: &[(FileId, &SymbolManifest)]) -> (Arc<SymbolIndex>, V
     (Arc::new(index), diagnostics)
 }
 
+/// The merged symbol index with `DefinitionId`s qualified by each file's
+/// **declared** module (M-1, docs/modules-spec.md §5).
+///
+/// Identical to [`symbol_index`] for undeclared stem-modules (the entire
+/// pre-modules corpus) — byte-identical `DefinitionId`s — and qualifies
+/// names by module only for files carrying `#@module`. `brink-db`'s
+/// `symbol_index_query` builds the [`ModuleMap`] from file stems,
+/// `#@module` declarations, and the INCLUDE graph, then calls this.
+#[must_use]
+pub fn symbol_index_with_modules(
+    files: &[(FileId, &SymbolManifest)],
+    modules: &ModuleMap,
+) -> (Arc<SymbolIndex>, Vec<Diagnostic>) {
+    let (index, diagnostics) = manifest::merge_manifests_with_modules(files, modules);
+    (Arc::new(index), diagnostics)
+}
+
 /// Resolve one file's references against the project-wide symbol index.
 ///
 /// Query-shaped seam for the scripting substrate (spec §4, layer 2 —
@@ -165,9 +184,13 @@ pub fn analyze_with_options(
 ///   resolution record always carries the file the reference itself lives
 ///   in, never another file's — so `file_resolutions` need only be this
 ///   file's own slice.
-/// - [`annotations::check`]'s only cross-file input is the project's
-///   declared `LIST` names, itself derivable from a range-free index
-///   projection (`declared_list_names` reads no symbol's range).
+/// - [`annotations::check`]'s cross-file inputs are the project's declared
+///   `LIST`/`STRUCT` names (derivable from a range-free index projection —
+///   `declared_list_names`/`declared_struct_names` read no symbol's range)
+///   and, for `handle<K>` (T1d-2, docs/t1d-spec.md §3), the registered host
+///   manifest — project-wide, host-set config, not file-edit-derived, so
+///   reading it here is the same coarse dependency shape `dialect` already
+///   is, not a reintroduction of whole-project churn.
 ///
 /// This is the query-shaped seam `brink-db`'s `per_file_diagnostics_query`
 /// wraps: a body edit in file Y leaves file X's per-file contributor memo
@@ -179,6 +202,7 @@ pub fn per_file_diagnostics(
     file_resolutions: &ResolutionMap,
     index: &SymbolIndex,
     dialect: Dialect,
+    host_manifest: Option<&HostManifest>,
 ) -> Vec<Diagnostic> {
     let files = [(file, hir)];
     let mut out = validate::validate(&files);
@@ -188,7 +212,7 @@ pub fn per_file_diagnostics(
     // by `dialect_gate` (E051), and critiquing the inside of rejected
     // syntax is noise (maintainer ruling 2026-07-13).
     if dialect == Dialect::Brink {
-        out.extend(annotations::check(&files, index));
+        out.extend(annotations::check(&files, index, host_manifest));
         // T1c `#fn` creation-site checks (E079/E080/E081) follow the same
         // brink-only rule: under `strict-ink` the literal is already
         // rejected whole (E051). Per-file by the same argument as
@@ -339,6 +363,25 @@ pub fn file_call_site_diagnostics(
     external_check::check_call_sites(&[(file, hir)], &name_to_meta)
 }
 
+/// The M-2 module import + visibility checks (docs/modules-spec.md
+/// §2/§4/§7): import well-formedness and cross-module `#@private`
+/// reference enforcement. Purely additive — every trigger needs an
+/// `IMPORT`/`#@private`/`#@public` construct absent from the pre-modules
+/// world, so the oracle/tier1 corpus is untouched. Genuinely whole-project
+/// (reads every file's HIR plus the project-wide resolutions to walk
+/// cross-module references), so it stays a whole-project pass in
+/// `brink-db`'s decomposed `whole_project_diagnostics_query` rather than
+/// gaining a per-file split here (issue #750 / FG-3 completion rebase note;
+/// a per-file slice is possible FG-4-era work if module churn is ever hot).
+#[must_use]
+pub fn module_diagnostics(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+) -> Vec<Diagnostic> {
+    modules::check(files, index, resolutions)
+}
+
 /// The strict typed-mode pass (docs/typed-mode-spec.md §1/§9-step-3),
 /// extracted from `whole_project_diagnostics`'s body (issue #750 / FG-3
 /// completion) so `brink-db` can run it without also paying for the
@@ -372,7 +415,13 @@ pub fn strict_diagnostics(
                 owned_inference = infer::infer_project(files, index, resolutions);
                 &owned_inference
             };
-            diagnostics.extend(strict::check(files, index, inference, resolutions));
+            diagnostics.extend(strict::check(
+                files,
+                index,
+                inference,
+                resolutions,
+                opts.host_manifest.as_ref(),
+            ));
         }
     }
     diagnostics
@@ -381,8 +430,8 @@ pub fn strict_diagnostics(
 /// Whole-project diagnostic contributors that genuinely need cross-file
 /// state (issue #632 / FG-3 design doc §1), now composed of the same
 /// per-pass seams `brink-db`'s decomposed queries wrap (issue #750 / FG-3
-/// completion) — [`strict_diagnostics`], [`external_meta_diagnostics`],
-/// per-file [`file_value_meta`], and per-file
+/// completion) — [`module_diagnostics`], [`strict_diagnostics`],
+/// [`external_meta_diagnostics`], per-file [`file_value_meta`], and per-file
 /// [`file_call_site_diagnostics`] behind [`call_site_metas`] — in exactly
 /// the pre-split order, so the query-composed result is identical to this
 /// monolithic one by construction (pinned by `query_equivalence.rs`).
@@ -414,10 +463,19 @@ pub fn whole_project_diagnostics(
         .collect();
     let hir_inputs: Vec<(FileId, &HirFile)> = files.iter().map(|&(id, hir, _)| (id, hir)).collect();
 
+    // M-2 module import + visibility checks (docs/modules-spec.md
+    // §2/§4/§7), first in diagnostic order.
+    let mut diagnostics = module_diagnostics(&hir_inputs, index, resolutions);
+
     // TM-3 strict typed-mode policy. Gradual mode returns empty here —
     // byte-identical, forever.
-    let mut diagnostics =
-        strict_diagnostics(&hir_inputs, index, resolutions, opts, strict_inference);
+    diagnostics.extend(strict_diagnostics(
+        &hir_inputs,
+        index,
+        resolutions,
+        opts,
+        strict_inference,
+    ));
 
     // Host-manifest enrichment + checks (tooling/author-time only) — the
     // index-driven half: externals (E039/E040), then callables.
@@ -484,6 +542,7 @@ pub fn finish_analysis(
             &file_resolutions,
             &index,
             opts.dialect,
+            opts.host_manifest.as_ref(),
         ));
     }
 

@@ -3,18 +3,20 @@
 //! This module produces `HirFile`, `Knot`, `Stitch`, and `IncludeSite` and
 //! is the entry point for the full lowering pipeline.
 
+mod import;
 mod include;
 mod knot;
 mod stitch;
 
 use brink_syntax::ast::{self, AstNode};
 
-use crate::{Block, FileId, HirFile, IncludeSite, Knot, SymbolManifest};
+use crate::{Block, FileId, HirFile, Import, IncludeSite, Knot, SymbolManifest};
 
 use super::block::lower_weave_body;
 use super::context::{EffectSink, LowerScope, LowerSink};
 use super::decl::DeclareSymbols;
 
+use import::lower_import;
 use include::lower_include;
 use knot::lower_knot;
 use stitch::lower_top_level_stitch;
@@ -155,6 +157,17 @@ fn lower_source_file(
     }
     let root_content = lower_weave_body(file.syntax(), scope, sink);
 
+    // M-1 (docs/modules-spec.md §1): a file-level `#@module(name)`
+    // directive declares the module explicitly. Absent, the file is an
+    // undeclared stem-module (identity hashing stays byte-identical).
+    let module = super::directive::file_module_declaration(file.syntax(), sink)
+        .map(|(name, range)| crate::ModuleDecl { name, range });
+
+    // M-2 (docs/modules-spec.md §2/§4): `IMPORT` statements and the
+    // `#@private`/`#@public` directive occurrences (for the dialect gate).
+    let imports: Vec<Import> = file.imports().map(|i| lower_import(&i)).collect();
+    let visibility = super::directive::collect_visibility_directives(file.syntax());
+
     HirFile {
         root_content,
         knots,
@@ -164,5 +177,8 @@ fn lower_source_file(
         structs,
         externals,
         includes,
+        module,
+        imports,
+        visibility,
     }
 }

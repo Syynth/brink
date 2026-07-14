@@ -115,11 +115,12 @@ pub fn scan_ident(bytes: &[u8], mut pos: usize) -> usize {
 pub fn classify_keyword(text: &str) -> SyntaxKind {
     use SyntaxKind::{
         IDENT, KW_AND, KW_CONST, KW_CYCLE, KW_DONE, KW_ELSE, KW_END, KW_EXTERNAL, KW_FALSE,
-        KW_FUNCTION, KW_HAS, KW_HASNT, KW_INCLUDE, KW_LIST, KW_MOD, KW_NOT, KW_ONCE, KW_OR, KW_REF,
-        KW_RETURN, KW_SHUFFLE, KW_STOPPING, KW_TEMP, KW_TODO, KW_TRUE, KW_VAR,
+        KW_FUNCTION, KW_HAS, KW_HASNT, KW_IMPORT, KW_INCLUDE, KW_LIST, KW_MOD, KW_NOT, KW_ONCE,
+        KW_OR, KW_REF, KW_RETURN, KW_SHUFFLE, KW_STOPPING, KW_TEMP, KW_TODO, KW_TRUE, KW_VAR,
     };
     match text {
         "INCLUDE" => KW_INCLUDE,
+        "IMPORT" => KW_IMPORT,
         "EXTERNAL" => KW_EXTERNAL,
         "VAR" => KW_VAR,
         "CONST" => KW_CONST,

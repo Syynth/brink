@@ -642,21 +642,96 @@ fn var_declaration_default_referencing_a_const_is_still_valid() {
     );
 }
 
+// ── #743: bare VAR reference nested one level inside a declaration-default
+// collection/struct/fn literal — the residue #679's scope notes flagged and
+// #692/E083 deliberately left alone (E083 governs only the *whole* default,
+// not a construct nested one level in). `is_const_foldable_kind` (the
+// element-level twin of `is_const_foldable_decl_default`) now resolves a
+// nested `Path` the same way: a `SymbolKind::Variable` reference is never a
+// compile-time constant, so it reports the standard `E077`, same as any
+// other never-foldable element kind, instead of silently folding to `Null`
+// with zero diagnostic.
+
 #[test]
-fn var_reference_nested_inside_an_array_default_is_deliberately_unchanged() {
-    // #679 scope notes: a bare `Path`-to-`Variable` *nested inside* a
-    // collection literal is a pre-existing, separately-tracked gap that
-    // #692 does not touch — `is_const_foldable_kind` (governing array/map
-    // elements) still treats `Path` as unconditionally foldable, so this
-    // must keep compiling with no E083 (nor any other diagnostic) here.
+fn var_reference_nested_inside_an_array_default_is_now_a_real_compile_error() {
     let source = "VAR a = 1\nVAR arr = #[a]\nHello.\n-> END\n";
+    let err = compile_brink(source)
+        .expect_err("a VAR reference nested inside an array default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E077),
+        "expected E077, got {diags:?}"
+    );
+}
+
+#[test]
+fn var_reference_nested_inside_a_map_value_default_is_a_real_compile_error() {
+    let source = "VAR a = 1\nVAR m = #{\"k\": a}\nHello.\n-> END\n";
+    let err = compile_brink(source)
+        .expect_err("a VAR reference nested inside a map value default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E077),
+        "expected E077, got {diags:?}"
+    );
+}
+
+#[test]
+fn var_reference_nested_inside_a_struct_field_default_is_still_e075() {
+    // A struct construction literal used as a declaration default is
+    // unconditionally E075 regardless of field content (`ConstValue` has no
+    // record variant at all — #673) — a bare `VAR` field reference never
+    // reaches the `E077` arm because the whole literal is already rejected.
+    // Direct fixture proving the "struct field" position #743 names is
+    // covered, not silently folded.
+    let source = "STRUCT Point = #{\n    x: float,\n}\n\nVAR a = 1.0\nVAR p = Point#{x: a}\nHello.\n-> END\n";
+    let err = compile_brink(source)
+        .expect_err("a VAR reference nested inside a struct field default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E075),
+        "expected E075, got {diags:?}"
+    );
+}
+
+#[test]
+fn var_reference_nested_inside_a_bound_fn_val_arg_default_is_a_real_compile_error() {
+    // `#fn(name, args…)`'s `val`-bound args are the fourth nested position
+    // #743 names — `eval_const_fn_literal`'s `val` branch previously called
+    // `eval_const_expr` directly with no `is_const_foldable_kind` gate at
+    // all, so a bare `VAR` reference bound by value silently folded to
+    // `Null` with zero diagnostic.
+    let source = "=== function heal(hp) ===\n~ return hp + 1\n\nVAR g = 5\nVAR f = #fn(heal, g)\nHello.\n-> END\n";
+    let err = compile_brink(source)
+        .expect_err("a VAR reference bound by value in a #fn default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E077),
+        "expected E077, got {diags:?}"
+    );
+}
+
+#[test]
+fn const_reference_nested_inside_an_array_default_still_compiles_clean() {
+    // Anti-regression: a `CONST` reference is a resolved `Path` that is
+    // *not* `SymbolKind::Variable` — it must keep folding for real via
+    // `const_values`, same as before #743, with no E077 false positive.
+    let source = "CONST a = 1\nVAR arr = #[a]\nHello.\n-> END\n";
     let out = compile_brink(source)
-        .expect("a VAR reference nested inside an array default must still compile");
+        .expect("a CONST reference nested inside an array default must still compile");
     assert!(
         !out.warnings
             .iter()
-            .any(|d| d.code == brink_compiler::DiagnosticCode::E083),
-        "unexpected E083, got {:?}",
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E077),
+        "unexpected E077, got {:?}",
         out.warnings
     );
 }

@@ -103,6 +103,28 @@ pub fn check(
         for s in &hir.structs {
             v.flag(s.ptr.text_range(), "`STRUCT` declaration");
         }
+        // M-1 (docs/modules-spec.md §3): `#@module(name)` is brink-only —
+        // `IMPORT`/`#@module`/`#@private`/`#@public` are the dialect-gated
+        // module surface (INCLUDE stays ungated). Under strict-ink the
+        // directive degrades to an inert tag in inklecate, so the superset
+        // parse always succeeds and rejection lands here as the standard
+        // E051-class diagnostic.
+        if let Some(module) = &hir.module {
+            v.flag(module.range, "`#@module` declaration");
+        }
+        // M-2 (docs/modules-spec.md §2/§4): `IMPORT` and `#@private`/
+        // `#@public` complete the dialect-gated module surface. Same
+        // superset-parse-then-reject shape as `#@module`.
+        for import in &hir.imports {
+            v.flag(import.range, "`IMPORT` statement");
+        }
+        for vis in &hir.visibility {
+            let name = match vis.mark {
+                brink_ir::VisibilityMark::Private => "`#@private` directive",
+                brink_ir::VisibilityMark::Public => "`#@public` directive",
+            };
+            v.flag(vis.range, name);
+        }
     }
     out
 }
@@ -280,6 +302,23 @@ mod tests {
     #[test]
     fn brink_dialect_does_not_flag_block_since_it_lowers_in_t1b_2() {
         let hir = lower_src("~ {\ntemp x = 0\n}\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::Brink);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn strict_ink_flags_module_directive() {
+        // M-1 (docs/modules-spec.md §3): `#@module` is brink-only.
+        let hir = lower_src("#@module(quest)\nHi\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::E051);
+        assert!(diags[0].message.contains("#@module"));
+    }
+
+    #[test]
+    fn brink_dialect_allows_module_directive() {
+        let hir = lower_src("#@module(quest)\nHi\n");
         let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::Brink);
         assert!(diags.is_empty(), "{diags:?}");
     }
@@ -532,6 +571,33 @@ mod tests {
     fn brink_dialect_does_not_flag_struct_literal_or_field_access() {
         let hir =
             lower_src("STRUCT Point = #{x: float, y: float}\n~ x = Point#{x: 1.0, y: 2.0}.x\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::Brink);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    // ─── M-2 module surface (docs/modules-spec.md §2/§4) ─────────────
+
+    #[test]
+    fn strict_ink_flags_import() {
+        let hir = lower_src("IMPORT quest_3\nHi\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E051);
+        assert!(diags[0].message.contains("IMPORT"));
+    }
+
+    #[test]
+    fn strict_ink_flags_visibility_directive() {
+        let hir = lower_src("#@private\nVAR secret = 0\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E051);
+        assert!(diags[0].message.contains("#@private"));
+    }
+
+    #[test]
+    fn brink_dialect_does_not_flag_module_surface() {
+        let hir = lower_src("IMPORT quest_3\n#@private\nVAR secret = 0\nHi\n");
         let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::Brink);
         assert!(diags.is_empty(), "{diags:?}");
     }

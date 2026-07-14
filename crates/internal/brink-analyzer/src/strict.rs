@@ -146,15 +146,21 @@ pub fn config_error(
 /// pass needs it to resolve a call-site's `Path` back to the def it targets
 /// (the same range→`DefinitionId` lookup `infer::body` builds its own
 /// per-file projection of).
+///
+/// `manifest`: the registered host manifest (T1d-2, docs/t1d-spec.md §3) —
+/// the `handle<K>` annotation-firewall vocabulary source, threaded through
+/// to [`check_escapes`] and `annotations::mismatches`. `None` degrades to an
+/// empty handle-kind set, same posture as every other manifest-driven check.
 #[must_use]
 pub fn check(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
     inference: &InferenceResult,
     resolutions: &ResolutionMap,
+    manifest: Option<&brink_ir::HostManifest>,
 ) -> Vec<brink_ir::Diagnostic> {
-    let mut out = check_escapes(files, index, inference);
-    out.extend(annotations::mismatches(files, index, inference));
+    let mut out = check_escapes(files, index, inference, manifest);
+    out.extend(annotations::mismatches(files, index, inference, manifest));
     out.extend(check_void_assignments(files, index, resolutions));
     // T1c (docs/t1c-spec.md §4/§8): calls through function values are
     // statically checked under strict — the facts inference already
@@ -179,9 +185,9 @@ fn check_escapes(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
     inference: &InferenceResult,
+    manifest: Option<&brink_ir::HostManifest>,
 ) -> Vec<brink_ir::Diagnostic> {
-    let list_names = annotations::declared_list_names(index);
-    let struct_names = annotations::declared_struct_names(index);
+    let names = annotations::TypeNames::new(index, manifest);
     let mut out = Vec::new();
     for &(file, hir) in files {
         for knot in &hir.knots {
@@ -199,8 +205,7 @@ fn check_escapes(
                     knot.return_type.as_ref(),
                     &knot.params,
                     &knot.body,
-                    &list_names,
-                    &struct_names,
+                    &names,
                     inference,
                     &mut out,
                 );
@@ -219,8 +224,7 @@ fn check_escapes(
                         None,
                         &stitch.params,
                         &stitch.body,
-                        &list_names,
-                        &struct_names,
+                        &names,
                         inference,
                         &mut out,
                     );
@@ -241,8 +245,7 @@ fn check_def(
     return_type: Option<&TypeExpr>,
     params: &[brink_ir::Param],
     body: &Block,
-    list_names: &std::collections::BTreeSet<String>,
-    struct_names: &std::collections::BTreeSet<String>,
+    names: &annotations::TypeNames,
     inference: &InferenceResult,
     out: &mut Vec<brink_ir::Diagnostic>,
 ) {
@@ -262,7 +265,7 @@ fn check_def(
         let annotated = p
             .annotation
             .as_ref()
-            .is_some_and(|ann| annotations::resolve(ann, list_names, struct_names).is_some());
+            .is_some_and(|ann| annotations::resolve(ann, names).is_some());
         let ty = sig.params.get(i).unwrap_or(&Ty::Unknown);
         emit_escape(
             file,
@@ -280,9 +283,8 @@ fn check_def(
     if is_function {
         let is_void = return_type
             .is_some_and(|rt| matches!(rt, TypeExpr::Named { name, .. } if name == "void"));
-        let annotated = is_void
-            || return_type
-                .is_some_and(|rt| annotations::resolve(rt, list_names, struct_names).is_some());
+        let annotated =
+            is_void || return_type.is_some_and(|rt| annotations::resolve(rt, names).is_some());
         if !is_void {
             emit_escape(
                 file,
@@ -300,7 +302,7 @@ fn check_def(
     // the same way a param annotation does (Unknown-escape only, per above).
     let param_names: std::collections::BTreeSet<&str> =
         params.iter().map(|p| p.name.text.as_str()).collect();
-    let temp_decls = collect_temps(body, list_names, struct_names);
+    let temp_decls = collect_temps(body, names);
     for (name, ty) in &body_types.locals {
         if param_names.contains(name.as_str()) {
             continue; // already checked above, positionally + annotation-aware
@@ -398,9 +400,21 @@ fn classify(ty: &Ty) -> Escape {
         // TM-4b (docs/typed-mode-spec.md §6): "struct-typed slots are
         // concrete for E065/E066 purposes" — a resolved `Ty::Struct` is as
         // clean as any other nominal (`Ty::List`'s existing precedent).
-        Ty::Int | Ty::Float | Ty::Bool | Ty::String | Ty::Divert | Ty::List(_) | Ty::Struct(_) => {
-            Escape::Clean
-        }
+        // T1d-2 (docs/t1d-spec.md §3): a resolved `Ty::Handle` is equally
+        // concrete — reusing TM-3's existing E065/E066 vocabulary is exactly
+        // the spec's "strict kind-checking via existing TM-3 machinery, no
+        // new codes" ruling. A *cross-kind* mismatch never reaches this
+        // function as `Ty::Handle` at all — `unify` already folds it to
+        // `Ty::Conflicted` at the point the two kinds meet, so it's caught
+        // by the `Ty::Conflicted` arm above, not here.
+        Ty::Int
+        | Ty::Float
+        | Ty::Bool
+        | Ty::String
+        | Ty::Divert
+        | Ty::List(_)
+        | Ty::Struct(_)
+        | Ty::Handle(_) => Escape::Clean,
     }
 }
 
@@ -813,31 +827,25 @@ struct TempDecl {
 /// nesting (`ChoiceSet`/`Conditional`/`Sequence`/`LabeledBlock`/inline
 /// content) plus the closed T1b `~ { … }` `BlockStmt` tree, which needs its
 /// own hand-recursion (see `dialect_gate`'s module doc on why).
-fn collect_temps(
-    body: &Block,
-    list_names: &std::collections::BTreeSet<String>,
-    struct_names: &std::collections::BTreeSet<String>,
-) -> BTreeMap<String, TempDecl> {
+fn collect_temps(body: &Block, names: &annotations::TypeNames) -> BTreeMap<String, TempDecl> {
     let mut out = BTreeMap::new();
-    collect_temps_block(body, list_names, struct_names, &mut out);
+    collect_temps_block(body, names, &mut out);
     out
 }
 
 fn collect_temps_block(
     block: &Block,
-    list_names: &std::collections::BTreeSet<String>,
-    struct_names: &std::collections::BTreeSet<String>,
+    names: &annotations::TypeNames,
     out: &mut BTreeMap<String, TempDecl>,
 ) {
     for stmt in &block.stmts {
-        collect_temps_stmt(stmt, list_names, struct_names, out);
+        collect_temps_stmt(stmt, names, out);
     }
 }
 
 fn collect_temps_stmt(
     stmt: &Stmt,
-    list_names: &std::collections::BTreeSet<String>,
-    struct_names: &std::collections::BTreeSet<String>,
+    names: &annotations::TypeNames,
     out: &mut BTreeMap<String, TempDecl>,
 ) {
     match stmt {
@@ -845,7 +853,7 @@ fn collect_temps_stmt(
             let annotation_ty = t
                 .annotation
                 .as_ref()
-                .and_then(|te| annotations::resolve(te, list_names, struct_names));
+                .and_then(|te| annotations::resolve(te, names));
             out.insert(
                 t.name.text.clone(),
                 TempDecl {
@@ -856,34 +864,34 @@ fn collect_temps_stmt(
         }
         Stmt::ChoiceSet(cs) => {
             for choice in &cs.choices {
-                collect_temps_block(&choice.body, list_names, struct_names, out);
+                collect_temps_block(&choice.body, names, out);
                 if let Some(c) = &choice.start_content {
-                    collect_temps_content(c, list_names, struct_names, out);
+                    collect_temps_content(c, names, out);
                 }
                 if let Some(c) = &choice.bracket_content {
-                    collect_temps_content(c, list_names, struct_names, out);
+                    collect_temps_content(c, names, out);
                 }
                 if let Some(c) = &choice.inner_content {
-                    collect_temps_content(c, list_names, struct_names, out);
+                    collect_temps_content(c, names, out);
                 }
             }
-            collect_temps_block(&cs.continuation, list_names, struct_names, out);
+            collect_temps_block(&cs.continuation, names, out);
         }
-        Stmt::LabeledBlock(b) => collect_temps_block(b, list_names, struct_names, out),
+        Stmt::LabeledBlock(b) => collect_temps_block(b, names, out),
         Stmt::Conditional(c) => {
             for branch in &c.branches {
-                collect_temps_block(&branch.body, list_names, struct_names, out);
+                collect_temps_block(&branch.body, names, out);
             }
         }
         Stmt::Sequence(s) => {
             for branch in &s.branches {
-                collect_temps_block(branch, list_names, struct_names, out);
+                collect_temps_block(branch, names, out);
             }
         }
-        Stmt::Content(c) => collect_temps_content(c, list_names, struct_names, out),
+        Stmt::Content(c) => collect_temps_content(c, names, out),
         Stmt::LogicBlock(lb) => {
             for bs in &lb.stmts {
-                collect_temps_block_stmt(bs, list_names, struct_names, out);
+                collect_temps_block_stmt(bs, names, out);
             }
         }
         Stmt::Divert(_)
@@ -898,20 +906,19 @@ fn collect_temps_stmt(
 
 fn collect_temps_content(
     content: &Content,
-    list_names: &std::collections::BTreeSet<String>,
-    struct_names: &std::collections::BTreeSet<String>,
+    names: &annotations::TypeNames,
     out: &mut BTreeMap<String, TempDecl>,
 ) {
     for part in &content.parts {
         match part {
             ContentPart::InlineConditional(c) => {
                 for branch in &c.branches {
-                    collect_temps_block(&branch.body, list_names, struct_names, out);
+                    collect_temps_block(&branch.body, names, out);
                 }
             }
             ContentPart::InlineSequence(s) => {
                 for branch in &s.branches {
-                    collect_temps_block(branch, list_names, struct_names, out);
+                    collect_temps_block(branch, names, out);
                 }
             }
             ContentPart::Interpolation(_)
@@ -924,8 +931,7 @@ fn collect_temps_content(
 
 fn collect_temps_block_stmt(
     bs: &BlockStmt,
-    list_names: &std::collections::BTreeSet<String>,
-    struct_names: &std::collections::BTreeSet<String>,
+    names: &annotations::TypeNames,
     out: &mut BTreeMap<String, TempDecl>,
 ) {
     match bs {
@@ -933,7 +939,7 @@ fn collect_temps_block_stmt(
             let annotation_ty = t
                 .annotation
                 .as_ref()
-                .and_then(|te| annotations::resolve(te, list_names, struct_names));
+                .and_then(|te| annotations::resolve(te, names));
             out.insert(
                 t.name.text.clone(),
                 TempDecl {
@@ -942,15 +948,15 @@ fn collect_temps_block_stmt(
                 },
             );
         }
-        BlockStmt::If(i) => collect_temps_if(i, list_names, struct_names, out),
+        BlockStmt::If(i) => collect_temps_if(i, names, out),
         BlockStmt::While(w) => {
             for s in &w.body {
-                collect_temps_block_stmt(s, list_names, struct_names, out);
+                collect_temps_block_stmt(s, names, out);
             }
         }
         BlockStmt::For(f) => {
             for s in &f.body {
-                collect_temps_block_stmt(s, list_names, struct_names, out);
+                collect_temps_block_stmt(s, names, out);
             }
         }
         BlockStmt::Assignment(_)
@@ -963,18 +969,17 @@ fn collect_temps_block_stmt(
 
 fn collect_temps_if(
     i: &IfStmt,
-    list_names: &std::collections::BTreeSet<String>,
-    struct_names: &std::collections::BTreeSet<String>,
+    names: &annotations::TypeNames,
     out: &mut BTreeMap<String, TempDecl>,
 ) {
     for s in &i.body {
-        collect_temps_block_stmt(s, list_names, struct_names, out);
+        collect_temps_block_stmt(s, names, out);
     }
     match &i.else_branch {
-        Some(ElseBranch::ElseIf(inner)) => collect_temps_if(inner, list_names, struct_names, out),
+        Some(ElseBranch::ElseIf(inner)) => collect_temps_if(inner, names, out),
         Some(ElseBranch::Else(stmts)) => {
             for s in stmts {
-                collect_temps_block_stmt(s, list_names, struct_names, out);
+                collect_temps_block_stmt(s, names, out);
             }
         }
         None => {}
@@ -1025,7 +1030,7 @@ mod tests {
     fn unused_param_escapes_as_unknown() {
         let (hir, index, res) = build("=== noop(x) ===\nHello.\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E065);
         assert!(diags[0].message.contains('x'));
@@ -1035,8 +1040,48 @@ mod tests {
     fn annotated_unused_param_is_exempt_from_unknown_escape() {
         let (hir, index, res) = build("=== noop(x: int) ===\nHello.\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(diags.is_empty(), "annotation supplies the type: {diags:?}");
+    }
+
+    /// T1d-2 (docs/t1d-spec.md §3): a `handle<K>`-annotated, otherwise-unused
+    /// param is exempt from `E065` the same way any other resolvable
+    /// annotation is — "strict kind-checking via existing TM-3 machinery",
+    /// reusing the annotation-firewall exemption path, no new code needed.
+    /// Reachable only when the manifest declaring `K` is registered — with
+    /// none registered, the annotation doesn't resolve and the slot escapes
+    /// as `Unknown` exactly like an unrecognized type name would.
+    #[test]
+    fn annotated_handle_param_is_exempt_from_unknown_escape_when_kind_is_registered() {
+        let (hir, index, res) = build("=== noop(x: handle<AudioInstance>) ===\nHello.\n-> DONE\n");
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let manifest = brink_ir::HostManifest {
+            types: vec![brink_ir::SemanticTypeDef {
+                name: "AudioInstance".to_string(),
+                base: brink_ir::BaseType::Handle,
+                constraint: None,
+                values: None,
+                widget: None,
+            }],
+            ..Default::default()
+        };
+        let diags = check(
+            &[(FileId(0), &hir)],
+            &index,
+            &inference,
+            &res,
+            Some(&manifest),
+        );
+        assert!(diags.is_empty(), "annotation supplies the type: {diags:?}");
+    }
+
+    #[test]
+    fn handle_param_escapes_as_unknown_with_no_manifest_registered() {
+        let (hir, index, res) = build("=== noop(x: handle<AudioInstance>) ===\nHello.\n-> DONE\n");
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E065);
     }
 
     #[test]
@@ -1044,7 +1089,7 @@ mod tests {
         // spec §5's own worked example.
         let (hir, index, res) = build("=== main ===\n~ temp x = #[]\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E065);
     }
@@ -1055,7 +1100,7 @@ mod tests {
         // the binding" — following that advice must silence the error.
         let (hir, index, res) = build("=== main ===\n~ temp x: array<int> = #[]\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(diags.is_empty(), "ascription supplies the type: {diags:?}");
     }
 
@@ -1063,7 +1108,7 @@ mod tests {
     fn unannotated_function_return_escapes_as_unknown() {
         let (hir, index, res) = build("=== function noop() ===\nHello.\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E065);
         assert!(diags[0].message.contains("return"));
@@ -1073,7 +1118,7 @@ mod tests {
     fn void_annotated_function_return_is_exempt() {
         let (hir, index, res) = build("=== function noop(): void ===\n~ return\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -1083,7 +1128,7 @@ mod tests {
         // regardless of whether the body ever exercises `~ return`.
         let (hir, index, res) = build("=== main ===\nHello.\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -1095,7 +1140,7 @@ mod tests {
             "=== conflict_case(hp) ===\n{hp > 5:\n  ok\n}\n{hp == \"no\":\n  no\n}\n-> DONE\n",
         );
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E066);
     }
@@ -1109,7 +1154,7 @@ mod tests {
             "=== conflict_case(hp: int) ===\n{hp > 5:\n  ok\n}\n{hp == \"no\":\n  no\n}\n-> DONE\n",
         );
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E066);
     }
@@ -1121,7 +1166,7 @@ mod tests {
         // catches it through the nesting.
         let (hir, index, res) = build("=== main ===\n~ temp x = #[1, \"a\"]\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E066);
     }
@@ -1134,7 +1179,7 @@ mod tests {
         // must never escape — the type resolves cleanly to a concrete `int`.
         let (hir, index, res) = build("=== main ===\nVAR gold = 5\n{gold:\n  rich\n}\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -1142,7 +1187,7 @@ mod tests {
     fn int_to_float_join_survives_strict_with_no_escape() {
         let (hir, index, res) = build("=== spend(gold) ===\n{gold > 1.5:\n  ok\n}\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             diags.is_empty(),
             "int->float directional join is clean: {diags:?}"
@@ -1155,7 +1200,7 @@ mod tests {
     fn check_wires_in_e063_mismatches() {
         let (hir, index, res) = build("=== heal(hp: string) ===\n{hp > 1:\n  ok\n}\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             diags.iter().any(|d| d.code == DiagnosticCode::E063),
             "{diags:?}"
@@ -1173,11 +1218,11 @@ mod tests {
 
         let (hir_f, index_f, res_f) = build(forward);
         let inference_f = crate::infer_project(&[(FileId(0), &hir_f)], &index_f, &res_f);
-        let diags_f = check(&[(FileId(0), &hir_f)], &index_f, &inference_f, &res_f);
+        let diags_f = check(&[(FileId(0), &hir_f)], &index_f, &inference_f, &res_f, None);
 
         let (hir_r, index_r, res_r) = build(reversed);
         let inference_r = crate::infer_project(&[(FileId(0), &hir_r)], &index_r, &res_r);
-        let diags_r = check(&[(FileId(0), &hir_r)], &index_r, &inference_r, &res_r);
+        let diags_r = check(&[(FileId(0), &hir_r)], &index_r, &inference_r, &res_r, None);
 
         assert_eq!(codes(&diags_f), vec![DiagnosticCode::E066]);
         assert_eq!(codes(&diags_r), vec![DiagnosticCode::E066]);
@@ -1189,7 +1234,7 @@ mod tests {
             "=== function heal(hp: int): int ===\n~ temp bonus: int = 5\n~ return hp + bonus\n",
         );
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -1236,7 +1281,7 @@ mod tests {
              === main ===\n~ temp x = noop()\n-> DONE\n",
         );
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             diags.iter().any(|d| d.code == DiagnosticCode::E067),
             "{diags:?}"
@@ -1250,7 +1295,7 @@ mod tests {
              === main ===\n~ gold = noop()\n-> DONE\n",
         );
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             diags.iter().any(|d| d.code == DiagnosticCode::E067),
             "{diags:?}"
@@ -1264,7 +1309,7 @@ mod tests {
              === main ===\n~ noop()\n-> DONE\n",
         );
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             !diags.iter().any(|d| d.code == DiagnosticCode::E067),
             "statement-position void call must never be flagged: {diags:?}"
@@ -1278,7 +1323,7 @@ mod tests {
              === main ===\n~ temp x: int = give()\n-> DONE\n",
         );
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             !diags.iter().any(|d| d.code == DiagnosticCode::E067),
             "{diags:?}"
@@ -1327,7 +1372,7 @@ mod tests {
              ~ temp result: int = heal_player(5)\n-> DONE\n"
         ));
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -1340,7 +1385,7 @@ mod tests {
              === main ===\n~ temp f = #fn(scale)\n~ temp r: float = f(2)\n-> DONE\n",
         );
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -1351,7 +1396,7 @@ mod tests {
              ~ temp r: int = f(5, 6)\n-> DONE\n"
         ));
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E063);
         assert!(diags[0].message.contains("2 argument"), "{diags:?}");
@@ -1364,7 +1409,7 @@ mod tests {
              ~ temp r: int = f(\"lots\")\n-> DONE\n"
         ));
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             diags
                 .iter()
@@ -1382,7 +1427,7 @@ mod tests {
              ~ temp r: int = f(1.5)\n-> DONE\n"
         ));
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             diags
                 .iter()
@@ -1398,7 +1443,7 @@ mod tests {
         // type is Unknown/Conflicted, that is an escape error").
         let (hir, index, res) = build("=== main(g) ===\n~ temp r = g(1)\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             diags.iter().any(|d| d.code == DiagnosticCode::E065
                 && d.message.contains("called as a function value")),
@@ -1411,7 +1456,7 @@ mod tests {
         let (hir, index, res) =
             build("=== main ===\n~ temp f = 1\n{f == \"x\":\n  no\n}\n~ temp r = f(5)\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             diags.iter().any(|d| d.code == DiagnosticCode::E066
                 && d.message.contains("called as a function value")),
@@ -1423,7 +1468,7 @@ mod tests {
     fn calling_a_known_non_fn_value_is_a_typed_mismatch_error() {
         let (hir, index, res) = build("=== main ===\n~ temp n = 5\n~ temp r = n(1)\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             diags
                 .iter()
@@ -1440,7 +1485,7 @@ mod tests {
         let (hir, index, res) =
             build("=== function apply(cb: fn(int): int, x: int): int ===\n~ return cb(x)\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -1449,7 +1494,7 @@ mod tests {
         let (hir, index, res) =
             build("=== function apply(cb: fn(int): int): int ===\n~ return cb(\"nope\")\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             diags
                 .iter()
@@ -1525,7 +1570,7 @@ mod tests {
             "{HEAL_GLOBAL}=== main ===\n~ temp result: int = heal_player(5)\n-> DONE\n"
         ));
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -1535,7 +1580,7 @@ mod tests {
             "{HEAL_GLOBAL}=== main ===\n~ temp r: int = heal_player(5, 6)\n-> DONE\n"
         ));
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E063);
         assert!(diags[0].message.contains("2 argument"), "{diags:?}");
@@ -1547,7 +1592,7 @@ mod tests {
             "{HEAL_GLOBAL}=== main ===\n~ temp r: int = heal_player(\"lots\")\n-> DONE\n"
         ));
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             diags
                 .iter()
@@ -1570,7 +1615,7 @@ mod tests {
              === main ===\n~ temp r: int = f(\"x\")\n-> DONE\n",
         );
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             diags
                 .iter()
@@ -1599,7 +1644,7 @@ mod tests {
              === main ===\n~ temp f = heal_fn\n~ f = greet_fn\n~ temp r = f(1)\n-> DONE\n",
         );
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             diags
                 .iter()
@@ -1666,7 +1711,7 @@ mod tests {
              ~ temp result: int = call(f, 5)\n-> DONE\n"
         ));
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -1677,7 +1722,7 @@ mod tests {
              ~ temp r: int = call(f, 5, 6)\n-> DONE\n"
         ));
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             diags
                 .iter()
@@ -1693,7 +1738,7 @@ mod tests {
              ~ temp r: int = call(f, \"lots\")\n-> DONE\n"
         ));
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             diags
                 .iter()
@@ -1706,7 +1751,7 @@ mod tests {
     fn unknown_callee_in_explicit_call_is_an_escape_error() {
         let (hir, index, res) = build("=== main(g) ===\n~ temp r = call(g, 1)\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             diags.iter().any(|d| d.code == DiagnosticCode::E065
                 && d.message.contains("called as a function value")),
@@ -1721,7 +1766,7 @@ mod tests {
         let (hir, index, res) =
             build("=== function apply(cb: fn(int): int, x: int): int ===\n~ return call(cb, x)\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -1735,7 +1780,7 @@ mod tests {
              ~ temp g = bind(f, 5)\n~ temp r: int = call(g)\n-> DONE\n"
         ));
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -1748,7 +1793,7 @@ mod tests {
              ~ temp g = bind(f, 5, 6)\n-> DONE\n"
         ));
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             diags.iter().any(|d| d.code == DiagnosticCode::E063
                 && d.message.contains("supplies 2")
@@ -1764,7 +1809,7 @@ mod tests {
              ~ temp g = bind(f, \"lots\")\n-> DONE\n"
         ));
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             diags
                 .iter()
@@ -1777,7 +1822,7 @@ mod tests {
     fn unknown_callee_in_bind_is_an_escape_error() {
         let (hir, index, res) = build("=== main(g) ===\n~ temp b = bind(g, 1)\n-> DONE\n");
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             diags.iter().any(|d| d.code == DiagnosticCode::E065
                 && d.message.contains("called as a function value")),
@@ -1791,7 +1836,7 @@ mod tests {
             "=== main ===\n~ temp f = 1\n{f == \"x\":\n  no\n}\n~ temp b = bind(f, 1)\n-> DONE\n",
         );
         let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(
             diags.iter().any(|d| d.code == DiagnosticCode::E066
                 && d.message.contains("called as a function value")),

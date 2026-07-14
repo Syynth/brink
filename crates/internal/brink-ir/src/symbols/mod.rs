@@ -9,6 +9,7 @@ mod index;
 mod manifest;
 
 pub use index::{
-    ParamInfo, ResolutionMap, ResolvedRef, Scope, SymbolIndex, SymbolInfo, SymbolKind,
+    ParamInfo, ResolutionMap, ResolvedRef, Scope, SymbolIndex, SymbolInfo, SymbolKind, Visibility,
+    VisibilityMark,
 };
 pub use manifest::{DeclaredSymbol, LocalSymbol, RefKind, SymbolManifest, UnresolvedRef};

@@ -61,6 +61,23 @@ pub(super) struct BodyCtx<'a> {
     pub struct_names: &'a BTreeSet<String>,
 }
 
+impl BodyCtx<'_> {
+    /// A [`crate::annotations::TypeNames`] bundle for this ctx's
+    /// annotation-resolution call sites. `handles` is always empty here: no
+    /// `HostManifest` reaches `ProjectCtx`/`infer_project` in this slice
+    /// (T1d-2, docs/t1d-spec.md §3 — see `signature()`'s matching note),
+    /// so a `handle<K>` annotation on a param/return/temp never resolves
+    /// during body inference yet — it degrades to the same "unresolved"
+    /// treatment any other unrecognized name gets, not a silent drop.
+    fn type_names(&self) -> crate::annotations::TypeNames {
+        crate::annotations::TypeNames {
+            lists: self.list_names.clone(),
+            structs: self.struct_names.clone(),
+            handles: BTreeSet::new(),
+        }
+    }
+}
+
 /// The result of walking one definition's body.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct BodyResult {
@@ -108,12 +125,13 @@ pub(super) struct BodyResult {
 /// derivations, and a genuinely conflicted body still comes out
 /// `Conflicted` (E066) — the #627 lattice is untouched.
 pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyResult {
+    let names = ctx.type_names();
     let annotated: BTreeMap<String, Ty> = def
         .params
         .iter()
         .filter_map(|p| {
             let te = p.annotation.as_ref()?;
-            let ty = crate::annotations::resolve(te, ctx.list_names, ctx.struct_names)?;
+            let ty = crate::annotations::resolve(te, &names)?;
             Some((p.name.text.clone(), ty))
         })
         .collect();
@@ -152,7 +170,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
 
     let return_ty = if pass.return_ty.is_unknown() {
         def.return_annotation
-            .and_then(|te| crate::annotations::resolve(te, ctx.list_names, ctx.struct_names))
+            .and_then(|te| crate::annotations::resolve(te, &names))
             .unwrap_or(pass.return_ty)
     } else {
         pass.return_ty
@@ -253,8 +271,7 @@ impl InferPass<'_, '_> {
     /// map (same role as a param annotation — see the field's doc).
     fn register_ascription(&mut self, t: &brink_ir::TempDecl) {
         if let Some(te) = &t.annotation
-            && let Some(ty) =
-                crate::annotations::resolve(te, self.ctx.list_names, self.ctx.struct_names)
+            && let Some(ty) = crate::annotations::resolve(te, &self.ctx.type_names())
         {
             self.annotated.insert(t.name.text.clone(), ty);
         }

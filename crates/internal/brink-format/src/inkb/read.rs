@@ -21,8 +21,9 @@ use super::{
     CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HEADER_PREAMBLE, InkbIndex,
     KEY_CARDINAL, KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN, LINE_TEMPLATE, MAGIC,
     PART_LITERAL, PART_SELECT, PART_SLOT, SECTION_ENTRY_SIZE, SectionEntry, SectionKind, VAL_ARRAY,
-    VAL_BOOL, VAL_CLOSURE, VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_INT,
-    VAL_LIST, VAL_MAP, VAL_NULL, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION, safe_capacity,
+    VAL_BOOL, VAL_CLOSURE, VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE,
+    VAL_INT, VAL_LIST, VAL_MAP, VAL_NULL, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION,
+    safe_capacity,
 };
 
 // ── Tier 1: Full story read ─────────────────────────────────────────────────
@@ -342,6 +343,7 @@ fn decode_value_type(buf: &[u8], off: &mut usize) -> Result<ValueType, DecodeErr
         VAL_RECORD => Ok(ValueType::Record),
         VAL_FN_REF => Ok(ValueType::FnRef),
         VAL_CLOSURE => Ok(ValueType::Closure),
+        VAL_HANDLE => Ok(ValueType::Handle),
         _ => Err(DecodeError::InvalidValueType(tag)),
     }
 }
@@ -426,6 +428,12 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Deco
                 });
             }
             Ok(Value::closure(target, env))
+        }
+        // Handle values (T1d, `docs/format-v4-rfc.md` §1).
+        VAL_HANDLE => {
+            let kind = NameId(read_u16(buf, off)?);
+            let id = read_u64(buf, off)?;
+            Ok(Value::handle(kind, id))
         }
         _ => Err(DecodeError::InvalidValueType(tag)),
     }
