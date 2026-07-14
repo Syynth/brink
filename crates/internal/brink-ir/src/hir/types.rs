@@ -1290,6 +1290,25 @@ pub enum DiagnosticCode {
     /// was never registered as a real global — a runtime-only
     /// `UnresolvedGlobal` fault with no compile diagnostic.
     E082,
+
+    // ── TM-5 struct construction literals (docs/typed-mode-spec.md §6,
+    // decision-log "Struct construction literals: source-order evaluation,
+    // duplicate field is a compile error" 2026-07-14, issues #675/#676) ──
+    /// A struct construction literal (`Name#{…}`) supplies the same field
+    /// name more than once. Previously a silent last-wins: only the final
+    /// initializer's value was placed, and — because the well-formed
+    /// `RecordNew` lowering path discarded every non-placed lowered
+    /// expression tree wholesale — an earlier duplicate's initializer
+    /// (including any observable side effect, e.g. a function call) never
+    /// actually ran at all, with no diagnostic (#675's RCA). Now a real
+    /// compile error naming the repeated field, under both
+    /// `types = gradual` and `types = strict` — unlike `E069`/`E070`/
+    /// `E071` (which need a resolved shape to check missing/extra/mistyped
+    /// fields against, and are strict-mode-only), a duplicate field is a
+    /// structural authoring mistake detectable from the literal alone,
+    /// independent of type-checking policy or whether the shape name even
+    /// resolves.
+    E083,
 }
 
 impl DiagnosticCode {
@@ -1379,6 +1398,7 @@ impl DiagnosticCode {
             Self::E080 => "E080",
             Self::E081 => "E081",
             Self::E082 => "E082",
+            Self::E083 => "E083",
         }
     }
 
@@ -1478,6 +1498,7 @@ impl DiagnosticCode {
             Self::E080 => "#fn ref parameter is not bound to a durable cell at creation",
             Self::E081 => "#fn binds more arguments than the target declares",
             Self::E082 => "block-scoped temp referenced after its block has closed",
+            Self::E083 => "struct construction literal supplies a duplicate field",
         }
     }
 
@@ -1588,6 +1609,7 @@ impl DiagnosticCode {
             "E080" => Some(Self::E080),
             "E081" => Some(Self::E081),
             "E082" => Some(Self::E082),
+            "E083" => Some(Self::E083),
             _ => None,
         }
     }
