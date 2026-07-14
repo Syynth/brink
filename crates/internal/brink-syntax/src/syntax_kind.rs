@@ -43,6 +43,9 @@ pub enum SyntaxKind {
     KW_DONE,
     KW_END,
     KW_TODO,
+    /// `IMPORT` — module import statement (brink extension, M-2,
+    /// docs/modules-spec.md §2). `FROM`/`AS` stay contextual `IDENT`s.
+    KW_IMPORT,
 
     // ── Punctuation / operator tokens ────────────────────────────
     /// `=`
@@ -145,6 +148,14 @@ pub enum SyntaxKind {
     // ── Node kinds (parser) ──────────────────────────────────────
     SOURCE_FILE,
     INCLUDE_STMT,
+    /// `IMPORT { a, b AS c } FROM mod` or `IMPORT mod` (M-2).
+    IMPORT_STMT,
+    /// The `{ … }` name list of a bare-form import.
+    IMPORT_LIST,
+    /// One `name` or `name AS alias` entry in an import list.
+    IMPORT_ITEM,
+    /// The module name of an import (both forms).
+    IMPORT_MODULE,
     FILE_PATH,
     EXTERNAL_DECL,
     KNOT_DEF,
@@ -352,6 +363,7 @@ impl SyntaxKind {
                 | Self::KW_DONE
                 | Self::KW_END
                 | Self::KW_TODO
+                | Self::KW_IMPORT
                 | Self::EQ
                 | Self::PLUS_EQ
                 | Self::MINUS_EQ
@@ -447,6 +459,7 @@ impl SyntaxKind {
                 | Self::KW_DONE
                 | Self::KW_END
                 | Self::KW_TODO
+                | Self::KW_IMPORT
         )
     }
 }
