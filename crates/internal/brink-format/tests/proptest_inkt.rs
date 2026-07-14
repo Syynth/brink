@@ -3,8 +3,9 @@
 
 use brink_format::{
     AddressPath, ContainerDef, CountingFlags, DefinitionId, DefinitionTag, ExternalFnDef,
-    GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, ListValue, NameId,
-    Opcode, PluralCategory, ScopeLineTable, SelectKey, SlotInfo, SourceLocation, StoryData, Value,
+    GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, ListValue, MapKey,
+    NameId, Opcode, OrderedMap, PluralCategory, ScopeLineTable, SelectKey, SlotInfo,
+    SourceLocation, StoryData, Value,
 };
 use proptest::prelude::*;
 
@@ -125,7 +126,22 @@ fn arb_inkt_float() -> impl Strategy<Value = f32> {
     ]
 }
 
-fn arb_value() -> impl Strategy<Value = Value> {
+fn arb_map_key() -> impl Strategy<Value = MapKey> {
+    prop_oneof![
+        any::<i32>().prop_map(MapKey::Int),
+        "[^\"\\\\\x00]*".prop_map(|s: String| MapKey::Str(s.into())),
+        any::<bool>().prop_map(MapKey::Bool),
+    ]
+}
+
+/// Leaf values (never recurse) — mirrors `proptest_inkb.rs`'s split. `Record`/
+/// `FnRef`/`Closure` are deliberately excluded here: the `.inkt` grammar
+/// (`src/inkt/inkt.pest`) has no `record_value`/`fn_ref_value`/
+/// `closure_value` rule, so `write_inkt` can emit text for those variants
+/// that `read_inkt` cannot parse back — a write/read asymmetry, not a
+/// round-trip law this suite can assert (tracked as a scope note; see the
+/// PR description for issue #672 workstream B).
+fn arb_value_leaf() -> impl Strategy<Value = Value> {
     prop_oneof![
         any::<i32>().prop_map(Value::Int),
         arb_inkt_float().prop_map(Value::Float),
@@ -139,6 +155,25 @@ fn arb_value() -> impl Strategy<Value = Value> {
         )
             .prop_map(|(items, origins)| Value::List(ListValue { items, origins }.into())),
     ]
+}
+
+/// `Array`/`Map` (value-model-spec §4) nested to a bounded depth — the
+/// `.inkt` reader's `array_value`/`map_value` rules support both, so this
+/// closes the "value -> inkt text -> value == identity" law (issue #672
+/// workstream B item 2) for collections, not just scalars.
+fn arb_value() -> impl Strategy<Value = Value> {
+    arb_value_leaf().prop_recursive(3, 16, 4, |inner| {
+        prop_oneof![
+            prop::collection::vec(inner.clone(), 0..4).prop_map(Value::array),
+            prop::collection::vec((arb_map_key(), inner), 0..4).prop_map(|entries| {
+                let mut map = OrderedMap::new();
+                for (key, value) in entries {
+                    map.insert(key, value);
+                }
+                Value::map(map)
+            }),
+        ]
+    })
 }
 
 /// Generate valid opcodes (not random bytes).

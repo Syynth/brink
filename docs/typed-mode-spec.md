@@ -139,7 +139,7 @@ STRUCT Point = #{                          // decl body MIRRORS the literal:
   concern for the compiled `RecordNew` push order; it never governs when
   an initializer's side effect fires.
 - **A duplicate field in a construction literal is a compile error**
-  (`E083`) under both `types = gradual` and `types = strict` — the
+  (`E084`) under both `types = gradual` and `types = strict` — the
   repeated occurrence's initializer, including any side effect, is not
   silently dropped (same ruling, issue #675).
 

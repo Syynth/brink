@@ -355,9 +355,23 @@ impl<'t, 'c> Parser<'t, 'c> {
         }
     }
 
-    /// Bump the current token, asserting its kind matches `kind`.
+    /// Bump the current token, which every call site's own dispatch has
+    /// already checked (via `nth`) to be `kind`.
+    ///
+    /// That check can be invalidated by trivia a caller forgot to flush
+    /// with `skip_ws()` before dispatching: `nth`/`current` skip trivia for
+    /// lookahead, but `self.pos` — and so this raw `bump()` — does not move
+    /// until something actually consumes it. A mismatch here is therefore a
+    /// parser bug, not a property of the input, but malformed/adversarial
+    /// input must never turn a parser bug into a panic. Degrade to a parse
+    /// error and still consume one token, preserving the forward-progress
+    /// invariant every caller relies on (no `bump_assert` call site may
+    /// become a stuck point that only the top-level `source_file` recovery
+    /// loop can un-stick).
     fn bump_assert(&mut self, kind: SyntaxKind) {
-        debug_assert_eq!(self.nth_raw(0), kind);
+        if self.nth_raw(0) != kind {
+            self.error(format!("expected {kind:?}"));
+        }
         self.bump();
     }
 

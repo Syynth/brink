@@ -31,7 +31,7 @@
 //! against a shape that doesn't exist has no declared fields to check
 //! against.
 //!
-//! [`check_duplicates`] (`E083`, issue #675) is a fourth, *policy-
+//! [`check_duplicates`] (`E084`, issue #675) is a fourth, *policy-
 //! independent* check: a construction literal supplying the same field
 //! name more than once is flagged under both `types = gradual` and
 //! `types = strict` — it doesn't need the shape to resolve, so it's wired
@@ -135,7 +135,7 @@ impl HirVisitor for ConstructionVisitor<'_> {
     }
 }
 
-/// Duplicate-field diagnostic (`E083`, issue #675) — unlike [`check`]'s
+/// Duplicate-field diagnostic (`E084`, issue #675) — unlike [`check`]'s
 /// missing/extra/mistyped diagnostics above, this doesn't need the shape to
 /// resolve (a repeated field name is detectable from the literal's own
 /// field list alone) and runs under *both* `types` policies: a duplicate
@@ -205,10 +205,10 @@ fn check_literal_duplicates(sl: &StructLiteral, file: FileId, out: &mut Vec<Diag
                 range: name.range,
                 message: format!(
                     "{}: field `{}` is initialized more than once",
-                    DiagnosticCode::E083.title(),
+                    DiagnosticCode::E084.title(),
                     name.text
                 ),
-                code: DiagnosticCode::E083,
+                code: DiagnosticCode::E084,
             });
         }
     }
@@ -499,17 +499,17 @@ mod tests {
         assert_eq!(diags[0].code, DiagnosticCode::E071);
     }
 
-    // ─── check_duplicates (E083, issue #675) ──────────────────────────
+    // ─── check_duplicates (E084, issue #675) ──────────────────────────
 
     #[test]
-    fn duplicate_field_is_e083_naming_the_field() {
+    fn duplicate_field_is_e084_naming_the_field() {
         let (hir, _index) = build(
             "STRUCT Point = #{x: float, y: float}\n\
              === main ===\n~ p = Point#{x: 1.0, x: 2.0, y: 3.0}\n-> DONE\n",
         );
         let diags = check_duplicates(&[(FileId(0), &hir)]);
         assert_eq!(diags.len(), 1, "{diags:?}");
-        assert_eq!(diags[0].code, DiagnosticCode::E083);
+        assert_eq!(diags[0].code, DiagnosticCode::E084);
         assert!(diags[0].message.contains('x'), "{:?}", diags[0].message);
     }
 
@@ -543,7 +543,7 @@ mod tests {
         let (hir, _index) = build("=== main ===\n~ p = Bogus#{x: 1, x: 2}\n-> DONE\n");
         let diags = check_duplicates(&[(FileId(0), &hir)]);
         assert_eq!(diags.len(), 1, "{diags:?}");
-        assert_eq!(diags[0].code, DiagnosticCode::E083);
+        assert_eq!(diags[0].code, DiagnosticCode::E084);
     }
 
     #[test]
@@ -551,7 +551,7 @@ mod tests {
         let (hir, _index) = build("STRUCT Point = #{x: float}\nVAR p = Point#{x: 1.0, x: 2.0}\n");
         let diags = check_duplicates(&[(FileId(0), &hir)]);
         assert_eq!(diags.len(), 1, "{diags:?}");
-        assert_eq!(diags[0].code, DiagnosticCode::E083);
+        assert_eq!(diags[0].code, DiagnosticCode::E084);
     }
 
     #[test]
@@ -562,6 +562,6 @@ mod tests {
         );
         let diags = check_duplicates(&[(FileId(0), &hir)]);
         assert_eq!(diags.len(), 2, "{diags:?}");
-        assert!(diags.iter().all(|d| d.code == DiagnosticCode::E083));
+        assert!(diags.iter().all(|d| d.code == DiagnosticCode::E084));
     }
 }

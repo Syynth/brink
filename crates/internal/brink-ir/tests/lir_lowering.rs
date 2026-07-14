@@ -3672,13 +3672,13 @@ fn struct_literal_lowers_to_record_new_in_shape_order() {
     reason = "exact literal from source (1.0/2.0/3.0), not a computed value"
 )]
 fn duplicate_field_still_stages_every_initializer_no_silent_drop() {
-    // #675's LIR-level defense-in-depth: `structs::check_duplicates` (E083)
+    // #675's LIR-level defense-in-depth: `structs::check_duplicates` (E084)
     // is what normally stops this from compiling at all, but this test
     // proves lowering itself never silently drops an initializer's side
     // effect even under suppression — both `x` initializers get staged
     // into `prelude` (hence both would still be evaluated at runtime),
     // even though only the *last* one's value (2.0, last-wins) ends up
-    // placed in the record. `E083` itself is an analyzer diagnostic this
+    // placed in the record. `E084` itself is an analyzer diagnostic this
     // LIR-only harness never surfaces — covered instead by
     // `brink-analyzer`'s own unit tests and the `e0xx_diagnostics` pipeline
     // suite.

@@ -167,7 +167,7 @@ const CONSTRUCTION_FAULT_SHAPE_ID: u32 = u32::MAX;
 ///   only then pushes `fields` in shape order, decoupling evaluation order
 ///   from placement order. A duplicate field name (last-wins on placement)
 ///   is a compile error under normal operation (`structs::check_duplicates`'
-///   `E083`); this loop still stages *every* supplied initializer (not just
+///   `E084`); this loop still stages *every* supplied initializer (not just
 ///   the winning last one), so a shadowed duplicate's side effect still
 ///   fires even under `// brink-disable-all` suppression — never a silent
 ///   drop (issue #675).
