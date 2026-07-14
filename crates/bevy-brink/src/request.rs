@@ -901,6 +901,7 @@ mod tests {
         let mut save = brink_runtime::SaveState {
             version: brink_runtime::SAVE_FORMAT_VERSION,
             globals: std::collections::BTreeMap::new(),
+            global_ids: std::collections::BTreeMap::new(),
             visits: Vec::new(),
             turns: Vec::new(),
             turn_index: 0,
@@ -1025,6 +1026,7 @@ mod tests {
         let mut save = brink_runtime::SaveState {
             version: brink_runtime::SAVE_FORMAT_VERSION,
             globals: std::collections::BTreeMap::new(),
+            global_ids: std::collections::BTreeMap::new(),
             visits: Vec::new(),
             turns: Vec::new(),
             turn_index: 0,
