@@ -1290,6 +1290,25 @@ pub enum DiagnosticCode {
     /// was never registered as a real global — a runtime-only
     /// `UnresolvedGlobal` fault with no compile diagnostic.
     E082,
+
+    // ── Declaration-default constness, top level (issue #692, sibling to
+    // #673/#679's collection-element E075/E076/E077) ─────────────────────
+    /// A scalar `VAR`/`CONST` declaration default whose *source expression
+    /// kind* can never be a compile-time constant — a bare reference to
+    /// another `VAR` (`VAR x = someOtherVar`) or a function call
+    /// (`VAR x = f()`), including either wrapped in a prefix/infix
+    /// operation. `eval_const_expr`'s `Path` arm (`SymbolKind::Variable`)
+    /// and its catch-all previously folded both silently to `Null` with no
+    /// diagnostic — the same silent-fold bug #673/#679 fixed one level
+    /// down, inside array/map/struct literals, left unfixed at this top
+    /// level. Keyed off the source expression kind, never the folded
+    /// result, same as `E077`. Does not fire for a `Path` nested inside a
+    /// collection/struct/fn literal (array element, map value, struct
+    /// field, `#fn` argument) — those recurse through their own existing
+    /// `E075`/`E076`/`E077` per-element checks one level in, which
+    /// deliberately still leave a `VAR`-reference gap unchanged (#679 scope
+    /// notes) pending its own follow-up.
+    E083,
 }
 
 impl DiagnosticCode {
@@ -1379,6 +1398,7 @@ impl DiagnosticCode {
             Self::E080 => "E080",
             Self::E081 => "E081",
             Self::E082 => "E082",
+            Self::E083 => "E083",
         }
     }
 
@@ -1478,6 +1498,7 @@ impl DiagnosticCode {
             Self::E080 => "#fn ref parameter is not bound to a durable cell at creation",
             Self::E081 => "#fn binds more arguments than the target declares",
             Self::E082 => "block-scoped temp referenced after its block has closed",
+            Self::E083 => "VAR/CONST declaration default is not a compile-time-constant expression",
         }
     }
 
@@ -1588,6 +1609,7 @@ impl DiagnosticCode {
             "E080" => Some(Self::E080),
             "E081" => Some(Self::E081),
             "E082" => Some(Self::E082),
+            "E083" => Some(Self::E083),
             _ => None,
         }
     }
