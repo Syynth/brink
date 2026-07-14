@@ -2014,7 +2014,18 @@ impl EditorSession {
         };
 
         let abs_offset = self.to_absolute(path, view, offset);
-        let actions = brink_ide::code_actions::code_actions(source, abs_offset as usize);
+        let mut actions = brink_ide::code_actions::code_actions(source, abs_offset as usize);
+
+        // Auto-import quick-fix (M-4, modules-spec §2/§9): a cursor on an
+        // out-of-scope module reference (`E025`) offers an `AddImport` action.
+        // Session-aware (needs the whole-project module view), so it is merged
+        // here rather than in the source-only `code_actions` path; it resolves
+        // through the same `resolve_code_action` seam as a pure source rewrite.
+        actions.extend(brink_ide::import_fix::import_actions(
+            self.session.db(),
+            file_id,
+            abs_offset,
+        ));
 
         let items: Vec<CodeActionJs> = actions
             .iter()
