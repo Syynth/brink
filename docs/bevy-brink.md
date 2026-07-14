@@ -221,6 +221,18 @@ an interactive window.
   `BrinkTranscript<M>` auto-renders from the flow's runtime transcript.
 - ✅ Headless example `crates/bevy-brink/examples/engine_bindings.rs`
   demonstrating the engine↔ink facility end-to-end.
+- ✅ **T1d-3 handle integration** (`crates/bevy-brink/src/handle.rs`,
+  `docs/t1d-spec.md` §4): the `HandleKind` trait (two-halved SaveKey
+  keying/resolution), per-kind `HandleRegistry<K>` + the type-erased
+  `HandleKinds<M>` index, `register_handle_kind`, `save_handles`/
+  `load_handles` (token→SaveKey persistence beside `SaveState`, the
+  `RehydrationReport` four-bucket outcome, `Lenient`/`StrictKinds`
+  policy), the `is_valid(h)` binding (auto-registered by `BrinkPlugin`),
+  the opt-in `BrinkDeadHandleDeref` telemetry event, `HandleEntityRemap`
+  (`EntityMapper` integration), registry GC at `-> DONE` sweeps
+  (`gc_on_turn_done`, auto-wired), and the dev-only
+  `HandleRetentionMetrics<M>` snapshot-retention counters. Book section:
+  `docs/book/src/integrations/bevy/handles.md`.
 
 ## What is verified working (by user observation)
 
