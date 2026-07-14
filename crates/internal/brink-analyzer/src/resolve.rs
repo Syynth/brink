@@ -799,6 +799,7 @@ mod tests {
                 range: r,
                 params: Vec::new(),
                 detail: None,
+                visibility: None,
             });
             offset += name.len() as u32 + 1;
         }
@@ -809,6 +810,7 @@ mod tests {
                 range: r,
                 params: Vec::new(),
                 detail: None,
+                visibility: None,
             });
             offset += name.len() as u32 + 1;
         }
@@ -819,6 +821,7 @@ mod tests {
                 range: r,
                 params: Vec::new(),
                 detail: None,
+                visibility: None,
             });
             offset += name.len() as u32 + 1;
         }
@@ -829,6 +832,7 @@ mod tests {
                 range: r,
                 params: Vec::new(),
                 detail: None,
+                visibility: None,
             });
             offset += list_name.len() as u32 + 1;
             for &item in items {
@@ -839,6 +843,7 @@ mod tests {
                     range: r,
                     params: Vec::new(),
                     detail: None,
+                    visibility: None,
                 });
                 offset += item.len() as u32 + 1;
             }
@@ -850,6 +855,7 @@ mod tests {
                 range: r,
                 params: Vec::new(),
                 detail: None,
+                visibility: None,
             });
             offset += name.len() as u32 + 1;
         }
@@ -860,6 +866,7 @@ mod tests {
                 range: r,
                 params: Vec::new(),
                 detail: None,
+                visibility: None,
             });
             offset += name.len() as u32 + 1;
         }
@@ -1005,6 +1012,7 @@ mod tests {
             range: range(0, 3),
             params: Vec::new(),
             detail: None,
+            visibility: None,
         });
         a.locals.push(LocalSymbol {
             name: "t".to_string(),
@@ -1023,6 +1031,7 @@ mod tests {
             range: range(100, 3),
             params: Vec::new(),
             detail: None,
+            visibility: None,
         }); // duplicate name -> E022, not indexed
         b.unresolved
             .push(uref("t", RefKind::Variable, Some("dup"), None));
@@ -1206,6 +1215,7 @@ mod tests {
             range: r,
             params,
             detail: Some("function".to_string()),
+            visibility: None,
         });
         manifest.unresolved = unresolved;
         manifest
@@ -1294,6 +1304,7 @@ mod tests {
                 is_divert: false,
             }],
             detail: None,
+            visibility: None,
         });
         manifest.unresolved.push(uref_with_args(
             "print",

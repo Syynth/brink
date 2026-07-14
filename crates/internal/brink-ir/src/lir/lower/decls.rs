@@ -364,7 +364,7 @@ fn eval_const_array_literal(
 ) -> lir::ConstValue {
     let mut items = Vec::with_capacity(arr.elements.len());
     for e in &arr.elements {
-        if !is_const_foldable_kind(e) {
+        if !is_const_foldable_kind(e, index, resolutions, file) {
             diagnostics.push(Diagnostic {
                 file,
                 range: arr.ptr.text_range(),
@@ -405,7 +405,7 @@ fn eval_const_map_literal(
 ) -> lir::ConstValue {
     let mut entries = Vec::with_capacity(map.entries.len());
     for (k, v) in &map.entries {
-        if !is_const_foldable_kind(v) {
+        if !is_const_foldable_kind(v, index, resolutions, file) {
             diagnostics.push(Diagnostic {
                 file,
                 range: map.ptr.text_range(),
@@ -499,6 +499,19 @@ fn eval_const_fn_literal(
             };
             env.push(lir::ConstClosureEntry::Ref { name, cell });
         } else {
+            // #743: a `val` bound arg is exactly an array-element/map-value
+            // position one level inside the `#fn(…)` literal — same E077
+            // non-constant-kind check, so a bare `VAR` reference or a
+            // never-foldable kind (call, index, field access, …) bound by
+            // value no longer silently folds to `Null` with zero diagnostic.
+            if !is_const_foldable_kind(arg, index, resolutions, file) {
+                diagnostics.push(Diagnostic {
+                    file,
+                    range: fl.ptr.text_range(),
+                    message: DiagnosticCode::E077.title().to_string(),
+                    code: DiagnosticCode::E077,
+                });
+            }
             let value = eval_const_expr(arg, index, resolutions, file, const_values, diagnostics);
             env.push(lir::ConstClosureEntry::Val { name, value });
         }
@@ -509,43 +522,62 @@ fn eval_const_fn_literal(
     }
 }
 
-/// #679 review: can this source expression *kind* ever constant-fold in a
-/// declaration default? `false` means `eval_const_expr` is guaranteed to
-/// land in a `Null` fallthrough — a function call, postfix indexing, field
-/// access, or `++`/`--` has no compile-time evaluation and no runtime
-/// construction step left to defer to, so an array element / map value of
-/// that kind is a real compile error (`E077`), #673's silent-`Null` bug one
-/// level down inside the literal.
+/// #679 review (#743 closed the `Path`-to-`Variable` residue): can this
+/// source expression *kind* ever constant-fold in a declaration default?
+/// `false` means `eval_const_expr` is guaranteed to land in a `Null`
+/// fallthrough — a function call, postfix indexing, field access, or
+/// `++`/`--` has no compile-time evaluation and no runtime construction step
+/// left to defer to, so an array element / map value / struct field / `#fn`
+/// bound `val` arg of that kind is a real compile error (`E077`), #673's
+/// silent-`Null` bug one level down inside the literal.
 ///
 /// Deliberately keyed off the expression kind, never the folded result:
 ///
 /// - `Expr::Null` is HIR error recovery (or a missing initializer), not
 ///   author-writable source — folding it to `Null` is correct and already
 ///   diagnosed upstream, so it must not double-report here.
-/// - `Expr::Path` constness depends on what the path resolves to; a bare
-///   reference to another `VAR` folding to `Null` is the pre-existing,
-///   separately-tracked gap #679's scope notes name, and its behavior is
-///   deliberately unchanged.
+/// - `Expr::Path` constness depends on what the path resolves to — same
+///   resolution `is_const_foldable_decl_default` does one level up: a bare
+///   reference to another `VAR` (`SymbolKind::Variable`) is never a
+///   compile-time constant one level in either (#743; #679's scope notes
+///   originally left this nested case unchanged, tracked separately and
+///   now closed), while a reference to a `CONST`/list item/knot/stitch/
+///   function still folds for real. An unresolved path leaves the
+///   analyzer's own unresolved-reference diagnostic (E024/E025) to stand —
+///   not double-reported here, so it stays foldable.
 /// - Collection/struct literals recurse through their own `eval_const_*`
 ///   arms, which do their own per-element checking (`E075`/`E076`/`E077`).
 ///
 /// Exhaustive on purpose: a new `hir::Expr` variant must decide its
 /// declaration-default story here instead of silently inheriting `true`.
-fn is_const_foldable_kind(expr: &hir::Expr) -> bool {
+fn is_const_foldable_kind(
+    expr: &hir::Expr,
+    index: &SymbolIndex,
+    resolutions: &ResolutionLookup,
+    file: FileId,
+) -> bool {
     match expr {
         hir::Expr::Int(_)
         | hir::Expr::Float(_)
         | hir::Expr::Bool(_)
         | hir::Expr::String(_)
         | hir::Expr::Null
-        | hir::Expr::Path(_)
         | hir::Expr::DivertTarget(_)
         | hir::Expr::ListLiteral(_)
         | hir::Expr::ArrayLiteral(_)
         | hir::Expr::MapLiteral(_)
         | hir::Expr::StructLiteral(_) => true,
-        hir::Expr::Prefix(_, inner) => is_const_foldable_kind(inner),
-        hir::Expr::Infix(lhs, _, rhs) => is_const_foldable_kind(lhs) && is_const_foldable_kind(rhs),
+        hir::Expr::Path(path) => !matches!(
+            resolutions
+                .resolve(file, path.range)
+                .and_then(|id| index.symbols.get(&id)),
+            Some(info) if info.kind == SymbolKind::Variable
+        ),
+        hir::Expr::Prefix(_, inner) => is_const_foldable_kind(inner, index, resolutions, file),
+        hir::Expr::Infix(lhs, _, rhs) => {
+            is_const_foldable_kind(lhs, index, resolutions, file)
+                && is_const_foldable_kind(rhs, index, resolutions, file)
+        }
         hir::Expr::Postfix(..)
         | hir::Expr::Call(..)
         | hir::Expr::Index(_)

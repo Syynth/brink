@@ -12,6 +12,7 @@ mod external_check;
 mod fn_values;
 mod infer;
 mod manifest;
+mod modules;
 mod resolve;
 mod signature;
 mod strict;
@@ -36,6 +37,7 @@ pub use infer::{
     ValueCallKind, call_edges, def_body, infer_project, inferable_defs, inferable_defs_from_index,
     referenced_globals, scc_graph, solve_scc, unify, unify_all,
 };
+pub use manifest::{ModuleMap, ResolvedModule};
 pub use signature::{Sig, signature};
 pub use strict::{TypePolicy, effective_severity};
 
@@ -105,6 +107,23 @@ pub fn symbol_index(files: &[(FileId, &SymbolManifest)]) -> (Arc<SymbolIndex>, V
     (Arc::new(index), diagnostics)
 }
 
+/// The merged symbol index with `DefinitionId`s qualified by each file's
+/// **declared** module (M-1, docs/modules-spec.md §5).
+///
+/// Identical to [`symbol_index`] for undeclared stem-modules (the entire
+/// pre-modules corpus) — byte-identical `DefinitionId`s — and qualifies
+/// names by module only for files carrying `#@module`. `brink-db`'s
+/// `symbol_index_query` builds the [`ModuleMap`] from file stems,
+/// `#@module` declarations, and the INCLUDE graph, then calls this.
+#[must_use]
+pub fn symbol_index_with_modules(
+    files: &[(FileId, &SymbolManifest)],
+    modules: &ModuleMap,
+) -> (Arc<SymbolIndex>, Vec<Diagnostic>) {
+    let (index, diagnostics) = manifest::merge_manifests_with_modules(files, modules);
+    (Arc::new(index), diagnostics)
+}
+
 /// Resolve one file's references against the project-wide symbol index.
 ///
 /// Query-shaped seam for the scripting substrate (spec §4, layer 2 —
@@ -165,9 +184,13 @@ pub fn analyze_with_options(
 ///   resolution record always carries the file the reference itself lives
 ///   in, never another file's — so `file_resolutions` need only be this
 ///   file's own slice.
-/// - [`annotations::check`]'s only cross-file input is the project's
-///   declared `LIST` names, itself derivable from a range-free index
-///   projection (`declared_list_names` reads no symbol's range).
+/// - [`annotations::check`]'s cross-file inputs are the project's declared
+///   `LIST`/`STRUCT` names (derivable from a range-free index projection —
+///   `declared_list_names`/`declared_struct_names` read no symbol's range)
+///   and, for `handle<K>` (T1d-2, docs/t1d-spec.md §3), the registered host
+///   manifest — project-wide, host-set config, not file-edit-derived, so
+///   reading it here is the same coarse dependency shape `dialect` already
+///   is, not a reintroduction of whole-project churn.
 ///
 /// This is the query-shaped seam `brink-db`'s `per_file_diagnostics_query`
 /// wraps: a body edit in file Y leaves file X's per-file contributor memo
@@ -179,6 +202,7 @@ pub fn per_file_diagnostics(
     file_resolutions: &ResolutionMap,
     index: &SymbolIndex,
     dialect: Dialect,
+    host_manifest: Option<&HostManifest>,
 ) -> Vec<Diagnostic> {
     let files = [(file, hir)];
     let mut out = validate::validate(&files);
@@ -188,7 +212,7 @@ pub fn per_file_diagnostics(
     // by `dialect_gate` (E051), and critiquing the inside of rejected
     // syntax is noise (maintainer ruling 2026-07-13).
     if dialect == Dialect::Brink {
-        out.extend(annotations::check(&files, index));
+        out.extend(annotations::check(&files, index, host_manifest));
         // T1c `#fn` creation-site checks (E079/E080/E081) follow the same
         // brink-only rule: under `strict-ink` the literal is already
         // rejected whole (E051). Per-file by the same argument as
@@ -245,6 +269,12 @@ pub fn whole_project_diagnostics(
 
     let mut diagnostics = Vec::new();
 
+    // M-2 (docs/modules-spec.md §2/§4/§7): import well-formedness + cross-
+    // module `#@private` reference enforcement. Purely additive — every
+    // trigger needs an `IMPORT`/`#@private`/`#@public` construct absent from
+    // the pre-modules world, so the oracle/tier1 corpus is untouched.
+    diagnostics.extend(modules::check(&hir_inputs, index, resolutions));
+
     // TM-3 strict typed-mode policy (docs/typed-mode-spec.md §1/§9-step-3).
     // `types = strict` requires `dialect = brink` — a config error (`E064`)
     // otherwise, reported alone (nothing else strict-specific runs against a
@@ -265,7 +295,13 @@ pub fn whole_project_diagnostics(
                 owned_inference = infer::infer_project(&hir_inputs, index, resolutions);
                 &owned_inference
             };
-            diagnostics.extend(strict::check(&hir_inputs, index, inference, resolutions));
+            diagnostics.extend(strict::check(
+                &hir_inputs,
+                index,
+                inference,
+                resolutions,
+                opts.host_manifest.as_ref(),
+            ));
         }
     }
 
@@ -362,6 +398,7 @@ pub fn finish_analysis(
             &file_resolutions,
             &index,
             opts.dialect,
+            opts.host_manifest.as_ref(),
         ));
     }
 

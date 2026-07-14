@@ -81,10 +81,15 @@ pub(super) fn lower_knot(
     scope.current_knot = None;
     scope.current_stitch = None;
 
-    // `#@local` directive line(s) in the leading tag-line run of the body.
+    // `#@local` and `#@private`/`#@public` directive line(s) in the leading
+    // tag-line run of the body.
     let is_local = knot.body().is_some_and(|b| {
         let dirs = leading_body_directives(b.syntax());
-        apply_scope_directives(&dirs, DirectiveTarget::Knot, sink)
+        let local = apply_scope_directives(&dirs, DirectiveTarget::Knot, sink);
+        if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
+            sink.set_visibility(crate::SymbolKind::Knot, &name_text, vis);
+        }
+        local
     });
 
     let return_type = header

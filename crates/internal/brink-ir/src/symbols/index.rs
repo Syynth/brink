@@ -17,6 +17,34 @@ pub struct SymbolIndex {
     pub by_name: HashMap<String, Vec<DefinitionId>>,
 }
 
+/// Explicit visibility override on a declaration, from a `#@private` /
+/// `#@public` directive (M-2, docs/modules-spec.md §4).
+///
+/// `None` on a declaration means "no override — take the module's default".
+/// The *effective* [`Visibility`] is computed downstream by the analyzer,
+/// which knows each file's declared-ness (including INCLUDE inheritance) and
+/// so can apply declaration-flips-default (§4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisibilityMark {
+    Private,
+    Public,
+}
+
+/// Effective visibility of a definition (M-2, docs/modules-spec.md §4) —
+/// who may *reference the name*.
+///
+/// `Public` names cross module boundaries via `IMPORT`; `Private` names are
+/// module-internal (and the host is outside every module). Computed by
+/// declaration-flips-default: a *declared* module defaults `Private`, an
+/// *undeclared* stem-module defaults `Public`, and a per-definition
+/// [`VisibilityMark`] overrides that default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Visibility {
+    #[default]
+    Public,
+    Private,
+}
+
 /// Metadata for a resolved symbol.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SymbolInfo {
@@ -38,6 +66,15 @@ pub struct SymbolInfo {
     pub scope: Option<Scope>,
     /// For `Param` symbols: ref/divert metadata from the parent declaration.
     pub param_detail: Option<ParamInfo>,
+    /// The declaring file's module name, `Some` only for a **declared**
+    /// module (`#@module`, including INCLUDE inheritance). `None` for an
+    /// undeclared stem-module — the permeable legacy world (M-2,
+    /// docs/modules-spec.md §2/§4). Cross-module import enforcement keys off
+    /// this: a reference into a declared module needs an `IMPORT`.
+    pub module: Option<String>,
+    /// Effective visibility (declaration-flips-default, §4). `Public` for
+    /// the entire pre-modules world.
+    pub visibility: Visibility,
 }
 
 /// Parameter metadata for hover/signature help.

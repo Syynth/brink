@@ -20,6 +20,10 @@ use crate::{SyntaxNode, SyntaxToken};
 
 ast_node!(SourceFile, SOURCE_FILE);
 ast_node!(IncludeStmt, INCLUDE_STMT);
+ast_node!(ImportStmt, IMPORT_STMT);
+ast_node!(ImportList, IMPORT_LIST);
+ast_node!(ImportItem, IMPORT_ITEM);
+ast_node!(ImportModule, IMPORT_MODULE);
 ast_node!(FilePath, FILE_PATH);
 ast_node!(ExternalDecl, EXTERNAL_DECL);
 
@@ -438,6 +442,11 @@ impl SourceFile {
         support::children(&self.syntax)
     }
 
+    /// `IMPORT` statements (M-2, docs/modules-spec.md §2). Top-level only.
+    pub fn imports(&self) -> impl Iterator<Item = ImportStmt> {
+        support::children(&self.syntax)
+    }
+
     pub fn externals(&self) -> impl Iterator<Item = ExternalDecl> {
         support::children(&self.syntax)
     }
@@ -488,6 +497,53 @@ impl SourceFile {
 impl IncludeStmt {
     pub fn file_path(&self) -> Option<FilePath> {
         support::child(&self.syntax)
+    }
+}
+
+// ── ImportStmt (M-2, docs/modules-spec.md §2) ────────────────────────
+
+impl ImportStmt {
+    /// The `{ … }` name list, present only for the bare form
+    /// (`IMPORT { a } FROM mod`). Absent for the qualified form
+    /// (`IMPORT mod`).
+    pub fn list(&self) -> Option<ImportList> {
+        support::child(&self.syntax)
+    }
+
+    /// The imported module name node (present in both forms).
+    pub fn module(&self) -> Option<ImportModule> {
+        support::child(&self.syntax)
+    }
+}
+
+impl ImportList {
+    pub fn items(&self) -> impl Iterator<Item = ImportItem> {
+        support::children(&self.syntax)
+    }
+}
+
+impl ImportItem {
+    /// The imported name (first identifier) and its optional alias (the
+    /// identifier after `AS`). The list has one entry with no alias, or two
+    /// with `[name, alias]`.
+    fn identifiers(&self) -> impl Iterator<Item = Identifier> {
+        support::children(&self.syntax)
+    }
+
+    /// The imported definition's own name.
+    pub fn name(&self) -> Option<String> {
+        self.identifiers().next().and_then(|id| id.name())
+    }
+
+    /// The local alias (`AS gt`), if any.
+    pub fn alias(&self) -> Option<String> {
+        self.identifiers().nth(1).and_then(|id| id.name())
+    }
+}
+
+impl ImportModule {
+    pub fn name(&self) -> Option<String> {
+        support::child::<Identifier>(&self.syntax).and_then(|id| id.name())
     }
 }
 

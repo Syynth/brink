@@ -56,6 +56,15 @@ pub enum Ty {
     /// exactly the *remaining* (unbound) params a call through the value
     /// must supply.
     Fn(Vec<Ty>, Box<Ty>),
+    /// A host-resource handle value, nominal per its manifest-declared kind
+    /// name (T1d-2, docs/t1d-spec.md §3: `handle<K>` — mirrors `List`'s
+    /// "nominal per LIST declaration" precedent, but the vocabulary lives in
+    /// the external manifest, not ink source). Two handle types unify only
+    /// when the kind names match exactly; a cross-kind pair is a genuine
+    /// structural mismatch and joins to `Conflicted` (#627 lattice) — a
+    /// binding declared `handle<AudioInstance>` and one declared
+    /// `handle<Timer>` are as incompatible as `int` and `string`.
+    Handle(String),
     /// Not (yet) resolved to a concrete type — legal in this slice (spec
     /// §2: "unresolved -> Unknown, which is LEGAL"). Acts as the join
     /// identity: `unify(Unknown, x) == x`.
@@ -105,6 +114,7 @@ impl Ty {
                     .join(", ");
                 format!("fn({row}): {}", ret.display())
             }
+            Ty::Handle(kind) => format!("handle<{kind}>"),
             Ty::Unknown => "Unknown".to_string(),
             Ty::Conflicted => "Conflicted".to_string(),
         }
@@ -162,12 +172,15 @@ impl Ord for Ty {
                 Ty::Map(_, _) => 7,
                 Ty::Struct(_) => 8,
                 Ty::Fn(..) => 9,
-                Ty::Unknown => 10,
-                Ty::Conflicted => 11,
+                Ty::Handle(_) => 10,
+                Ty::Unknown => 11,
+                Ty::Conflicted => 12,
             }
         }
         match (self, other) {
-            (Ty::List(a), Ty::List(b)) | (Ty::Struct(a), Ty::Struct(b)) => a.cmp(b),
+            (Ty::List(a), Ty::List(b))
+            | (Ty::Struct(a), Ty::Struct(b))
+            | (Ty::Handle(a), Ty::Handle(b)) => a.cmp(b),
             (Ty::Array(a), Ty::Array(b)) => a.cmp(b),
             (Ty::Map(k1, v1), Ty::Map(k2, v2)) => k1.cmp(k2).then_with(|| v1.cmp(v2)),
             (Ty::Fn(p1, r1), Ty::Fn(p2, r2)) => p1.cmp(p2).then_with(|| r1.cmp(r2)),
@@ -224,6 +237,11 @@ pub fn unify(a: &Ty, b: &Ty) -> Ty {
             p1.iter().zip(p2).map(|(x, y)| unify(x, y)).collect(),
             Box::new(unify(r1, r2)),
         ),
+        // Falls through for e.g. `(Ty::Handle(a), Ty::Handle(b))` with
+        // `a != b` (T1d-2, #627 lattice): the `x == y` arm above already
+        // handles same-kind handles, so two different kinds — as
+        // structurally incompatible as `int` vs `string` — land here, same
+        // as every other cross-nominal mismatch.
         _ => Ty::Conflicted,
     }
 }
@@ -471,5 +489,63 @@ mod tests {
             "fn(int, string): bool"
         );
         assert_eq!(fn_ty(&[], Ty::Float).display(), "fn(): float");
+    }
+
+    // ─── T1d-2 `Ty::Handle` (docs/t1d-spec.md §3) ──────────────────────
+
+    #[test]
+    fn handle_same_kind_unifies_to_itself() {
+        let h = Ty::Handle("AudioInstance".to_string());
+        assert_eq!(unify(&h, &h), h);
+        assert_eq!(unify(&Ty::Unknown, &h), h);
+        assert_eq!(unify(&h, &Ty::Unknown), h);
+    }
+
+    #[test]
+    fn handle_cross_kind_is_conflicted_not_unknown() {
+        // #627 lattice: a genuinely different handle kind is a structural
+        // mismatch, exactly like `int` vs `string` — never a silent
+        // `Unknown` degradation.
+        let a = Ty::Handle("AudioInstance".to_string());
+        let b = Ty::Handle("Timer".to_string());
+        assert_eq!(unify(&a, &b), Ty::Conflicted);
+        assert_eq!(unify(&b, &a), Ty::Conflicted);
+    }
+
+    #[test]
+    fn handle_vs_other_concrete_type_is_conflicted() {
+        let h = Ty::Handle("AudioInstance".to_string());
+        assert_eq!(unify(&h, &Ty::Int), Ty::Conflicted);
+        assert_eq!(unify(&Ty::String, &h), Ty::Conflicted);
+        assert_eq!(unify(&h, &Ty::Array(Box::new(Ty::Int))), Ty::Conflicted);
+    }
+
+    #[test]
+    fn handle_conflicted_absorbs_everything() {
+        let h = Ty::Handle("AudioInstance".to_string());
+        assert_eq!(unify(&Ty::Conflicted, &h), Ty::Conflicted);
+        assert_eq!(unify(&h, &Ty::Conflicted), Ty::Conflicted);
+    }
+
+    #[test]
+    fn handle_display_carries_the_kind_name() {
+        assert_eq!(
+            Ty::Handle("AudioInstance".to_string()).display(),
+            "handle<AudioInstance>"
+        );
+    }
+
+    #[test]
+    fn fn_composes_with_handle_typed_params() {
+        // Ty::Fn composition with handle-typed params (T1d-2): the
+        // pre-existing pointwise Fn unify needs no special-casing — each
+        // row slot unifies via the generic `unify` recursion, so a
+        // handle-typed param slot behaves exactly like any other Ty.
+        let a = fn_ty(&[Ty::Handle("AudioInstance".to_string())], Ty::Bool);
+        let b = fn_ty(&[Ty::Handle("AudioInstance".to_string())], Ty::Bool);
+        assert_eq!(unify(&a, &b), a);
+
+        let mismatched = fn_ty(&[Ty::Handle("Timer".to_string())], Ty::Bool);
+        assert_eq!(unify(&a, &mismatched), fn_ty(&[Ty::Conflicted], Ty::Bool));
     }
 }

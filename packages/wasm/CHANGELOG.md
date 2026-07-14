@@ -1,5 +1,359 @@
 # @brink-lang/web
 
+## 0.11.0
+
+### Minor Changes
+
+- c9475df: Added `EditorSessionHandle.setLanguageDialect(value)` and
+  `EditorSessionHandle.setTypePolicy(value)` (#693), mirroring
+  `setSemanticTypeCheck`/`setExternalCheck`. The raw
+  `WasmEditorSession.set_language_dialect` (#611) and
+  `WasmEditorSession.set_type_policy` (#660) wasm levers existed, but
+  `EditorSessionHandle` — the surface `@brink-lang/web` consumers actually
+  use — exposed neither, so no JS caller could opt into the brink dialect or
+  the typed-mode policy at all (every new construct raised `E051` with no
+  opt-in path). `setLanguageDialect("brink" | "strict-ink")` and
+  `setTypePolicy("strict" | "gradual")` now delegate to the wasm session and
+  bump the generation counter, same as every other mutating call on the
+  handle.
+
+### Patch Changes
+
+- 8a3635d: Fixed formatter line classification for constructs containing inline
+  `/* … */` block comments (observable via `format_document`). The line
+  classifier used to mark any physical line containing a block-comment
+  token anywhere in its subtree as a pure comment line, which skipped the
+  line's real construct entirely:
+
+  - a single-line `STRUCT Point = #{x: float, /* mid */ y: float}` was
+    passed through verbatim instead of being normalized by the struct
+    renderer;
+  - a block comment on a multiline struct's `#{ /* c */` opening line (or
+    a `~ { /* c */` logic-block opening line) caused the entire body to
+    lose its indentation;
+  - a one-liner `~ x = 5 /* foo */` logic line skipped `~`-spacing
+    normalization.
+
+  A single-line block comment nested inside a construct whose renderer
+  handles comments itself (struct bodies, `~ { … }` block bodies, plain
+  `~` logic lines) is now left to that construct's formatting.
+  Free-floating comments — banners, multi-line comments, and comments
+  outside those regions (e.g. `STRUCT Point /* c */ = #{…}` or trailing
+  after a block's closing `}`) — keep the verbatim treatment.
+
+- 34951ec: Fixed the formatter silently dropping a comment attached to a
+  `~ { … }` logic block outside its body (observable via
+  `format_document`). A comment that is a direct child of the logic line —
+  trailing after the closing brace (`} /* note */`, `} // note`) or
+  leading between `~` and `{` (`~ /* c */ {`) — was deleted, because the
+  block body was rebuilt from the inner statement block alone. The block
+  renderer now emits leading comments on the header line and trailing
+  comments on the closing line. A leading comment on the opening line no
+  longer de-indents the body to column 0, and a single-line block that
+  carries a trailing comment now expands to the canonical multiline form
+  (matching the comment-free case) instead of being frozen verbatim.
+- 81ddfa7: Fixed a fuzzer-discovered parser bug (PR #672 workstream C's new
+  `parse_lossless` fuzz target, which builds with debug-assertions on):
+  a `bump_assert` invariant inside the parser could fire on legitimately
+  reachable token sequences — e.g. an un-flushed `WHITESPACE` token
+  still sitting at the parse position when `conditional_with_expr_standalone`
+  dispatches into `expression()` on a `#fn(...)`/sigil-literal expression
+  inside a `MULTILINE_BLOCK` — crashing the parser with a
+  `debug_assert_eq!` panic in debug builds. In release builds (including
+  the shipped `@brink-lang/web` wasm), the same mismatch compiled away
+  silently: the parser consumed the unexpected token with no diagnostic
+  at all, corrupting the tree instead of erroring.
+
+  `bump_assert` now always emits a proper parse error on a mismatch, in
+  every build profile. Observable through `@brink-lang/web`: compiling
+  ink source that hits this token-position edge case no longer panics in
+  debug tooling, and — this is the real production-facing change — no
+  longer silently mis-parses in the shipped wasm build; it now returns a
+  normal `ok: false` result with a recovery-error diagnostic, like any
+  other malformed input.
+
+- 9c58d6e: Fixed a fuzzer-discovered linker panic (PR #672 workstream C's new
+  `vm_no_panic` fuzz target for malformed `.inkb`, previously masked by
+  a CI job structure that never actually ran it — see the accompanying
+  CI fix — now caught on its first real run). `link()` indexed
+  `StoryData::name_table` with a container/address-path `NameId` taken
+  straight from the input bytecode with no bounds check; an out-of-range
+  `NameId` panicked with `index out of bounds`.
+
+  `link()` now returns `RuntimeError::InvalidNameId` on an out-of-range
+  `NameId` instead of panicking. Observable through `@brink-lang/web`:
+  `new StoryRunner(story_bytes)` (and every other entry point that links
+  caller-supplied `.inkb` bytes) no longer panics/traps the wasm module
+  on malformed/corrupted input — it returns a normal error result, like
+  any other malformed input.
+
+- f68c094: `brink-fmt`'s `STRUCT` declaration formatting (TM-4b) no longer silently
+  drops comments living inside the struct body. Observable through
+  `@brink-lang/web` via the `FormatKnot` code action
+  (`brink_ide::code_actions::format_region` → `brink_fmt::format`):
+
+  - Multiline `STRUCT` bodies now preserve leading, interleaved, and
+    same-line trailing comments between/around fields instead of dropping
+    them.
+  - Single-line `STRUCT` bodies preserve interleaved block comments instead
+    of dropping them.
+  - Removed an unreachable dead branch in the multiline struct renderer.
+
+- b9ad39f: Fixed (#674): the brink-dialect assignment-target grammar now recognizes
+  an `Index` base for a `.field` write — `arr[i].field = v` parses as a real
+  assignment target instead of failing with a generic "expression is missing
+  an operand" (E015) parse error. The compiler still rejects this shape (a
+  chained/mixed field write, T1e) but now reports the intended `E074`
+  diagnostic — "chained field-write projection (p.a.b = v) is not
+  supported" — pointing at the target expression, matching the diagnostic
+  `o.inner.v = 2.0` already got. Observable through editor/compile
+  diagnostics for `.ink` source under `dialect = brink`; no change to
+  `p.field = v` (single-level, still lowers via RMW take/make_mut/write-back)
+  or to plain `arr[i] = v` indexed assignment.
+- b7b7eb0: Struct construction literals (`Name#{field: expr, …}`, TM-4c): fixes #675
+  and #676 per the ruling in decision-log "Struct construction literals:
+  source-order evaluation, duplicate field is a compile error" (2026-07-14).
+
+  - (#676) Initializers now evaluate in **source** order (left-to-right as
+    written), not the shape's declaration order — codegen reorders only the
+    already-evaluated _values_ into shape offsets afterward. Previously, when
+    the author's field order differed from the shape's declaration order and
+    two or more initializers had observable side effects, those effects fired
+    in shape order instead of source order.
+  - (#675) A duplicate field in a construction literal is now a real compile
+    error (`E084`), naming the repeated field, under both `types = gradual`
+    and `types = strict`. Previously a duplicate silently kept the last
+    initializer's value while the earlier, shadowed initializer's expression
+    — including any side effect — was dropped without lowering it at all.
+
+  Observable through `@brink-lang/web`: `compile_project`/`compile_fragment`
+  now return a diagnostic (`E084`) for a construction literal with a
+  duplicate field, and the compiled bytecode for a well-formed literal whose
+  source field order differs from its shape's declared order now evaluates
+  initializers in the order the author wrote them.
+
+- d29671d: RCA'd #680 ("`ref`-argument call co-occurring with a `temp` decl in the
+  same `~ { }` block resolves to the wrong global slot"): the `ref`-argument
+  call was a red herring — the actual defect is reading a T1b block-scoped
+  `temp` (`~ { … }`) from _outside_ its own block. LIR lowering's fallback
+  for "temp not currently visible" (kept for inklecate-compat forward-
+  reference emulation of classic, non-block temps) previously caught this
+  case too, silently compiling to a phantom global id that was never
+  registered — a runtime-only `UnresolvedGlobal` fault with no compile
+  diagnostic.
+
+  Observable through editor diagnostics: referencing a block-scoped `temp`
+  (by value or by `ref` argument) after its `~ { … }`/`while`/`for`/`if`
+  block has already closed is now a real, non-suppressible compile error
+  (`E082`) instead of a silent runtime fault. A `ref`-argument call
+  co-occurring with a `temp` decl in the _same_ block — the issue's literal
+  repro shape — was already correct and is unaffected.
+
+- ca45425: Fixed #692: a scalar `VAR`/`CONST` declaration default whose _whole_
+  value is a non-constant reference or call (`VAR x = someOtherVar`,
+  `VAR x = f()` — including either wrapped in a prefix/infix operation,
+  e.g. `VAR x = -f()`) previously folded silently to `Null` through
+  `eval_const_expr`'s `Path` (`SymbolKind::Variable`) arm and its
+  catch-all, with zero diagnostic. This is the same silent-fold bug
+  #673/#679 fixed one level down inside array/map/struct declaration-
+  default literals (`E075`/`E076`/`E077`), left unfixed at this bare
+  top-level scalar position.
+
+  Observable through `@brink-lang/web`: compiling such a declaration
+  default now surfaces a real, non-suppressible compile error (`E083`)
+  instead of silently producing a `Null` global. A `VAR`/`CONST`
+  referencing another `CONST`, or a `Path` reference nested _inside_ a
+  collection/struct/fn literal, is unaffected (the latter remains the
+  pre-existing, separately-tracked gap #679's scope notes named).
+
+- abc369a: T1c-2 (#700): function values (`#fn(…)`) now lower, execute, and persist —
+  the first live use of the V4-reserved `PushFnRef`/`MakeClosure`/`CallValue`
+  opcodes and `VAL_FN_REF`/`VAL_CLOSURE` value tags. Observable through
+  `@brink-lang/web`:
+
+  - **Program model + disassembly**: a `#fn(…)` baked into a declaration
+    default renders as a function-value (`fn <path>(…)`) rather than
+    erroring or showing `null`, and the new opcodes disassemble
+    (`push_fn_ref` / `make_closure` / `call_value`).
+  - **Speculation / eval-function results**: a function value crosses the
+    typed-value JSON boundary as an opaque token (`{ "type": "fn", target,
+bound }`) — the host never dereferences the env (spec §6); the
+    callback-invocation surface lands in T1c-3.
+  - **Runtime dispatch**: calling a function value (direct `f(args…)` or
+    explicit `call(f, args…)`) works; a non-function callee, a wrong-arity
+    explicit call, a rehydration mismatch (a saved closure whose target
+    param was renamed/re-moded after a recompile), or invoking a closure
+    that `ref`-binds a flow-private `#@local` cell are turn-terminating
+    faults — never silent garbage.
+  - **Persistence**: function values save/load as ordinary values (save
+    state, journal, speculation snapshots); `ref`-bound cells round-trip
+    losslessly through the transcript codec.
+
+  The `#inkb` wire format gains per-container parameter name/mode metadata
+  (an additive trailing field) so a rehydrated closure can be validated
+  against the current signature.
+
+- 30e09f9: T1c-3 (#701): the `bind`/`call` function-value stdlib, the authoritative
+  display form, and structural equality land — all observable through
+  `@brink-lang/web`:
+
+  - **`bind(f, args…)` stdlib intrinsic**: val-only currying over an existing
+    function value — consumes the head of the remaining param row and returns
+    a new function value (lowercase, brink-dialect-gated, author-shadowable
+    with the E035-class warning, effect-transparent). Lowers to the new
+    `bind_value` opcode (`0xD9`), which disassembles alongside `call_value`.
+    Over-binding more args than the target has remaining params, or binding a
+    non-function value, is a turn-terminating fault (spec §3).
+  - **Display form**: `string(f)` and `{f}` interpolation now render the stable
+    signature-like form — `fn heal(ref hp = player_hp, amount)` (bound `val`
+    args print their value, bound `ref` args print the captured cell name,
+    unbound params print bare). This is a permanently observable surface (spec
+    §5), property-tested for stability.
+  - **Structural equality**: `==`/`!=` on two function values compare
+    structurally (same fn token + equal bound rows); any ordering operator
+    (`<`, `>=`, …) is a runtime fault in gradual mode / a type error in strict
+    (spec §5). Function values remain rejected as map keys.
+
+  Crates-only work (bevy-brink also gains the host callback-invocation surface,
+  `call_ink_function_value`), but the runtime-observable behavior above flows
+  through `@brink-lang/web`, so it carries a patch per the wasm-observable rule.
+
+- 2541c08: T1c-4 (#702) mechanical tail — corpus growth, a new "Function Values" book
+  chapter, and IDE polish. Only the IDE polish is observable through
+  `@brink-lang/web`:
+
+  - **Hover on a fn-value slot** (a `VAR`/`CONST`/`temp` bound directly to a
+    `#fn(target, args…)` literal, at its declaration or a later plain
+    assignment) now shows the bound signature display form — the same
+    `fn heal(ref hp = player_hp, amount)` shape `string(f)` renders at
+    runtime (spec §5), built statically from the HIR. Every other hover case
+    is unchanged; a slot never bound to a direct `#fn(...)` literal (a
+    `bind()` result, a copy of another variable, an ordinary value) shows
+    nothing extra, same as before.
+  - **Completion after `#fn(`** now offers only statically-named function
+    definitions (the same shape `#fn`'s E079 creation-site check requires),
+    not the generic value-symbol list every other call-argument position
+    offers. Completion everywhere else (including `#fn(name, ` — past the
+    first argument) is unchanged.
+
+  Crates-only otherwise: the tier1-brink corpus wing grows (a triple-level
+  `bind`-of-`bind` chain, a wrong-typed-argument fault, the cross-flow
+  `#@local` `ref`-bind fault, and save/load with a live function value inside
+  an array/map), and grammar fuzzing extends to `#fn` in both dialects
+  (parser is dialect-agnostic, so this is parser-layer coverage) — none of
+  this changes any wasm-observable behavior.
+
+- 5b07740: Fix #708: a bare `INCLUDE` (no path) no longer aborts compilation with a
+  raw I/O error. Discovery now skips the empty include path the parser
+  already flagged, so the parser's `E037` ("expected file path")
+  diagnostic reaches the caller. Observable through `@brink-lang/web`:
+  `compile_project`/`compile_fragment`/editor compiles on a project
+  containing a bare `INCLUDE` now return `ok: false` with an `E037`
+  warning entry (placed on the offending line) instead of a generic
+  `error: "I/O error: file not found: …"` string with no source location.
+- d02c4e2: T1c follow-up (#712): a global `VAR`/`CONST` initialized with `#fn(...)`
+  (or annotated `fn(T…): R`) now carries its declaration-derived `Ty::Fn`
+  through to call-position checking under `types = strict`, instead of
+  escaping as `Unknown`. Observable through editor diagnostics:
+
+  - Calling directly through such a global (`heal_player(5)`, no local temp
+    in between) type-checks against the target's known signature: arity/
+    argument-type mismatches report `E063` exactly as they already did for a
+    `#fn(...)`-initialized local temp.
+  - An explicit `VAR f: fn(int): int = …` annotation on the global now wins
+    over inference, matching the existing annotation-wins firewall rule.
+  - Reassigning a fn-typed local from two globals with genuinely
+    incompatible signatures still reports the pre-existing `E066`
+    (Conflicted-escape) — previously masked because both globals silently
+    escaped as `Unknown`, which unified without a conflict.
+  - Gradual mode is unaffected — these checks only ever run under
+    `types = strict`.
+
+- 20d2bfa: T1c-2 completion gap fix (#721): the direct-call form `f(args…)` — where
+  `f` is a variable/temp holding a function value — dispatches through the
+  same `call_variable` opcode as the classic divert-target-variable call.
+  That opcode carried no argument count, so the popped-arg count for the
+  function-value arm was derived from the resolved target's arity instead
+  of the count actually supplied at the call site; a gradual-mode arity
+  mismatch on the direct form could leave a stray value on the stack
+  instead of faulting.
+
+  `call_variable` now carries an explicit `argc` operand (codegen emits the
+  exact count pushed at that call site; the divert-target-variable-call arm
+  ignores it, unchanged). Observable through `@brink-lang/web`:
+
+  - **Disassembly**: `call_variable` now renders as `call_variable
+argc=<n>` in program-model output.
+  - **Runtime dispatch**: a wrong-arity direct call `f(args…)` now faults
+    with the same `FunctionValueArity` turn-terminating fault as the
+    explicit `call(f, args…)` form, instead of risking a corrupted value
+    stack.
+
+- d38fa08: Fixed #743: a bare `VAR` reference _nested one level inside_ a
+  `VAR`/`CONST` declaration-default collection/struct/`#fn` literal — an
+  array element, a map value, a struct field, or an `#fn(name, args…)`
+  bound `val` arg — previously folded silently to `Null` through
+  `eval_const_expr`'s `Path` (`SymbolKind::Variable`) arm, with zero
+  diagnostic. This is the residue #679's scope notes flagged and #692/
+  `E083` deliberately left alone (`E083` governs only the _whole_
+  top-level default, not a construct nested one level in).
+
+  Observable through `@brink-lang/web`: compiling such a nested `VAR`
+  reference (array element / map value / `#fn` bound `val` arg) now
+  surfaces the existing, non-suppressible `E077` — the same code
+  `#673`/`#679` already use for any other never-constant nested element
+  kind — instead of silently producing a `Null` entry. A struct field
+  was already covered (any struct literal used as a declaration default
+  is unconditionally `E075`, regardless of field content). A `Path`
+  reference resolving to a `CONST`/list item/knot/stitch/function is
+  unaffected — it still folds for real.
+
+- 9bef954: T1d-1 (#757): `Value::Handle` — the runtime + format spine for opaque
+  host-resource tokens (`docs/t1d-spec.md` §2/§6), the first emission of the
+  V4-reserved `VAL_HANDLE` wire tag. No literal syntax and no new opcode —
+  handles enter the script world only via bindings. Observable through
+  `@brink-lang/web`:
+
+  - **Native binding-argument marshal** (`value_to_js`): a handle passed as
+    an argument to a JS-implemented external now crosses as a plain object
+    `{ kind, id }` (`kind` the raw manifest `NameId`, `id` a decimal string
+    so a full-range `u64` never loses precision as an `f64`) instead of
+    silently folding to `null` (the #667 wildcard-arm hazard class).
+    Deliberately **not** reconstructed by `js_to_value` — letting any JS
+    object shaped `{kind, id}` become a real `Handle` would let a binding
+    forge a capability token out of thin air.
+  - **Speculation / eval-function results** (`value_to_typed_js`): a handle
+    crosses the typed-value JSON boundary as `{ type: "handle", kind, id }`
+    — `kind` resolved to its manifest name where possible (`"?"` for a stale
+    `NameId`), `id` as a decimal string for the same precision reason.
+  - **Program model / disassembly**: a handle default value (reachable once
+    T1d-2 wires manifest-aware bindings into declaration defaults) renders
+    as `handle <Kind>#<id>`, not `null`.
+
+  Runtime-side (not directly `@brink-lang/web`-observable, but load-bearing
+  for the above): `Value::Handle { kind: NameId, id: u64 }` with token
+  equality (`kind == kind && id == id`), no ordering (any `<`/`>`/`<=`/`>=`
+  is a runtime `TypeError` fault), and never a legal map key. `string(h)`
+  displays as `handle <Kind>#<id>`. Handles save/load and journal-replay as
+  ordinary values. The `.inkt` textual format gains a matching `(handle
+<kind> <id>)` atom and `:handle` declared-type keyword, both with a real
+  reader landing in this same PR (the #742 write/read-asymmetry class this
+  PR does not repeat for its own new atom).
+
+- 1e71455: Added the M-1 module name model (docs/modules-spec.md §1/§5): every `.ink`
+  file is a module named by its stem, and a file-level `#@module(name)`
+  directive declares the module explicitly. `DefinitionId`s are now hashed
+  as `(module, name)` for **declared** modules; INCLUDE-glued files inherit
+  their includer's module. An undeclared file whose stem collides with a
+  declared module's name is a compile error (`E085`), and a malformed
+  `#@module` (missing/empty name, or a second declaration) is `E086`.
+  `#@module` is brink-dialect-only — under strict-ink it is rejected with
+  the standard `E051`-class diagnostic.
+
+  Identity is unchanged for the entire pre-modules world: an undeclared
+  stem-module contributes nothing to the hash, so every existing story's
+  `DefinitionId`s — and every saved game — stay byte-identical.
+
 ## 0.10.1
 
 ### Patch Changes

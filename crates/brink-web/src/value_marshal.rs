@@ -62,6 +62,32 @@ pub(crate) fn value_to_js(v: &Value) -> JsValue {
             }
             arr.into()
         }
+        // A handle (T1d, `docs/t1d-spec.md` §2/§6) is a host-boundary
+        // primitive — the whole point of the type is to cross into binding
+        // code, so it must never fall into the `null` wildcard below (the
+        // #667 Record-to-null hazard class this arm exists to close). No
+        // `Program` is available at this layer (unlike `value_to_typed_js`,
+        // the lossless JSON boundary), so `kind` crosses as its raw
+        // `NameId` — a JS binding cannot resolve the kind *name* here, only
+        // pass the token back verbatim to another binding call. `id`
+        // crosses as a decimal string, not a `number`: a full-range `u64`
+        // would silently lose precision above 2^53 as an `f64` (the same
+        // lossiness class documented on the `Map` arm above), and a token's
+        // whole point is exact equality, never arithmetic.
+        Value::Handle { kind, id } => {
+            let obj = js_sys::Object::new();
+            let _ = js_sys::Reflect::set(
+                &obj,
+                &JsValue::from_str("kind"),
+                &JsValue::from_f64(f64::from(kind.0)),
+            );
+            let _ = js_sys::Reflect::set(
+                &obj,
+                &JsValue::from_str("id"),
+                &JsValue::from_str(&id.to_string()),
+            );
+            obj.into()
+        }
         _ => JsValue::NULL,
     }
 }
@@ -495,6 +521,21 @@ mod map_key_diagnostic_tests {
 /// [`Value::Array`] and a plain object a [`Value::Map`] (string keys, in JS
 /// property order — value-model-spec §8), each converted recursively.
 /// Functions and other exotic objects → `Null`.
+///
+/// **Deliberately does not reconstruct [`Value::Handle`]** from a
+/// `{kind, id}`-shaped object: a plain object with those two properties
+/// falls through to the generic `Map` case above like any other object.
+/// This is not a coverage gap — it is the T1d security invariant made
+/// concrete (`docs/t1d-spec.md` §7: "handles are true object-capability
+/// tokens... possession is authority"; the RFC's "no literal syntax" rule).
+/// If this function forged a `Handle` from any JS object matching that
+/// shape, a JS binding (or, worse, injected page script in the pure-web
+/// deployment) could mint a fake capability token out of thin air just by
+/// returning `{kind: 3, id: 42}` from any binding call — no possession
+/// required. Only Rust-side binding code that already holds a real
+/// `Value::Handle` (or the manifest/kind-vocabulary machinery T1d-2/T1d-3
+/// add) may construct one; that is enforced by `Value::handle` staying a
+/// plain constructor with no `js_to_value` counterpart, not by a check here.
 pub(crate) fn js_to_value(js: &JsValue) -> Value {
     if js.is_null() || js.is_undefined() {
         return Value::Null;
@@ -772,6 +813,55 @@ mod value_marshal_wasm_tests {
         // Functions are objects but carry no data — they must not become maps.
         let f = js_sys::Function::new_no_args("return 1");
         assert_eq!(js_to_value(&f), Value::Null);
+    }
+
+    // ── Handle marshal (T1d, docs/t1d-spec.md §2/§6) ────────────────────────
+    //
+    // The #667 wildcard-arm hazard class: a Handle must never fall through
+    // `value_to_js`'s trailing `_ => JsValue::NULL` arm the way a Record once
+    // did (PR #664). These lock the marshaled encoding as faithful (kind/id
+    // both readable back out, exactly) and document the deliberate
+    // asymmetry with `js_to_value` (see that function's doc comment).
+
+    #[wasm_bindgen_test]
+    fn handle_marshals_to_a_non_null_object_not_a_map_wildcard() {
+        let h = Value::handle(brink_format::NameId(7), 42);
+        let js = value_to_js(&h);
+        assert!(!js.is_null(), "Handle must not marshal to null");
+        assert!(js.is_object());
+        assert!(
+            !js_sys::Array::is_array(&js),
+            "Handle marshals to a plain object, not an array"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn handle_marshal_round_trips_kind_and_id_losslessly() {
+        // The marshaled encoding carries kind (as its raw NameId) and id (as
+        // an exact decimal string, not an f64 `number`, so no u64 magnitude
+        // loses precision) — readable back out via plain JS property access.
+        let h = Value::handle(brink_format::NameId(7), u64::MAX);
+        let js = value_to_js(&h);
+        let kind = js_sys::Reflect::get(&js, &JsValue::from_str("kind")).expect("kind");
+        assert_eq!(kind.as_f64(), Some(7.0));
+        let id = js_sys::Reflect::get(&js, &JsValue::from_str("id")).expect("id");
+        assert_eq!(
+            id.as_string().as_deref(),
+            Some(u64::MAX.to_string().as_str())
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn handle_marshaled_object_does_not_reconstruct_via_js_to_value() {
+        // Deliberate asymmetry (js_to_value's doc comment): a marshaled
+        // handle read back through js_to_value is a plain Map, not a Handle
+        // — reconstructing a Handle from an arbitrary JS-shaped object would
+        // let any binding forge a capability token.
+        let h = Value::handle(brink_format::NameId(1), 99);
+        let js = value_to_js(&h);
+        let back = js_to_value(&js);
+        assert!(back.as_handle().is_none());
+        assert!(back.as_map().is_some());
     }
 }
 

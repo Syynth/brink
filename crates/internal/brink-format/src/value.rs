@@ -54,6 +54,8 @@ pub enum ValueType {
     FnRef,
     /// A function value with a bound-arg prefix ([`Value::Closure`]) — T1c.
     Closure,
+    /// An opaque host-resource token ([`Value::Handle`]) — T1d.
+    Handle,
 }
 
 /// A runtime value in the ink VM.
@@ -143,6 +145,38 @@ pub enum Value {
     /// both of which fall out of the derived per-entry comparison because a
     /// `ref` payload is a `VariablePointer` (compared by its `DefinitionId`).
     Closure(Arc<ClosureValue>),
+    /// An opaque host-resource token (`docs/t1d-spec.md` §1/§2, wire tag
+    /// `VAL_HANDLE`). Host resources (entities, audio instances, assets,
+    /// timers) enter the script world as `Handle` tokens: `{kind, id}`
+    /// scalars with value semantics — copied like ints, serializable,
+    /// compared by token. No live pointer ever lives in a `Value`;
+    /// dereferencing happens only host-side, against the host's registry,
+    /// inside bindings (the sharing-unobservable dogma applies verbatim — a
+    /// handle is a *name*, re-bound at a defined seam).
+    ///
+    /// `kind` is a [`NameId`] into the compiled story's manifest-declared
+    /// kind vocabulary (analyzer-side, not the format — the format ships
+    /// only the token shape, `docs/format-v4-rfc.md` §2). `id` is an opaque
+    /// `u64` the host allocates; the script never interprets it.
+    ///
+    /// A no-payload scalar (`Copy`-cheap: `NameId` + `u64`); no `Arc`
+    /// needed. Structural equality is token equality (`kind == kind && id
+    /// == id`, §6) — no ordering exists (any `<`/`>`/`<=`/`>=` is a runtime
+    /// fault in gradual mode, a compile error under the typed dialect), and
+    /// a handle is never a legal map key (the domain stays
+    /// int/string/bool — same restriction as function values).
+    ///
+    /// **No literal syntax and no dedicated opcode construct this value —
+    /// handles enter the script world only via bindings** (`docs/t1d-spec.md`
+    /// §2 RULED). This variant, its wire encoding, and its `.inkt` atom
+    /// exist so a handle received from a binding can flow through globals,
+    /// collections, saves, and the transcript like any other value.
+    Handle {
+        /// The manifest-declared kind name (analyzer-side vocabulary).
+        kind: NameId,
+        /// The host-allocated token id. Opaque to the script.
+        id: u64,
+    },
 }
 
 /// The payload of a [`Value::Closure`] — the fn token plus its bound-arg
@@ -191,6 +225,7 @@ impl Value {
             Self::Record { .. } => ValueType::Record,
             Self::FnRef(_) => ValueType::FnRef,
             Self::Closure(_) => ValueType::Closure,
+            Self::Handle { .. } => ValueType::Handle,
         }
     }
 
@@ -290,6 +325,23 @@ impl Value {
     pub fn as_closure(&self) -> Option<&Arc<ClosureValue>> {
         match self {
             Self::Closure(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// Build a [`Handle`](Self::Handle) token from a kind and host-allocated
+    /// id (T1d, `docs/t1d-spec.md` §2). Note: this constructor is a plain
+    /// value builder, not a capability mint — the invariant that handles
+    /// only ever originate from a binding is enforced by the compiler (no
+    /// literal syntax, no opcode constructs this value), not by this type.
+    pub fn handle(kind: NameId, id: u64) -> Self {
+        Self::Handle { kind, id }
+    }
+
+    /// Borrow the `(kind, id)` pair if this value is a [`Handle`](Self::Handle).
+    pub fn as_handle(&self) -> Option<(NameId, u64)> {
+        match self {
+            Self::Handle { kind, id } => Some((*kind, *id)),
             _ => None,
         }
     }
@@ -414,6 +466,14 @@ impl PartialEq for Value {
             // derived `PartialEq`.
             (Self::FnRef(a), Self::FnRef(b)) => a == b,
             (Self::Closure(a), Self::Closure(b)) => Arc::ptr_eq(a, b) || a == b,
+            // Handle equality (T1d, docs/t1d-spec.md §6): token equality —
+            // same kind and same id, nothing else. No ordering exists (there
+            // is no `PartialOrd`/`Ord` impl for `Value`), and a handle is
+            // never a legal map key (`MapKey::from_value` has no `Handle`
+            // arm, so it falls through to `None` for this variant).
+            (Self::Handle { kind: ka, id: ida }, Self::Handle { kind: kb, id: idb }) => {
+                ka == kb && ida == idb
+            }
             _ => false,
         }
     }
@@ -1025,6 +1085,59 @@ mod tests {
         let v = Value::array(vec![
             Value::map(inner_map),
             Value::array(vec![Value::map(OrderedMap::new())]),
+            Value::Null,
+        ]);
+        assert_eq!(json_round_trip(&v), v);
+    }
+
+    // ── Handle (T1d, docs/t1d-spec.md §2/§6) ────────────────────────────────
+
+    #[test]
+    fn handle_value_type_and_constructor() {
+        let h = Value::handle(NameId(3), 42);
+        assert_eq!(h.value_type(), ValueType::Handle);
+        assert_eq!(h.as_handle(), Some((NameId(3), 42)));
+        assert!(Value::Int(0).as_handle().is_none());
+    }
+
+    #[test]
+    fn handle_equality_is_token_equality() {
+        // Same kind, same id: equal.
+        assert_eq!(Value::handle(NameId(1), 42), Value::handle(NameId(1), 42));
+        // Same id, different kind: not equal — kind is part of the token.
+        assert_ne!(Value::handle(NameId(1), 42), Value::handle(NameId(2), 42));
+        // Same kind, different id: not equal.
+        assert_ne!(Value::handle(NameId(1), 1), Value::handle(NameId(1), 2));
+        // A Handle is never equal to any other variant, even with a
+        // coincidentally matching id (compare against a DivertTarget encoding
+        // the same raw bits).
+        assert_ne!(
+            Value::handle(NameId(1), 42),
+            Value::DivertTarget(DefinitionId::new(DefinitionTag::Address, 42))
+        );
+    }
+
+    #[test]
+    fn handle_is_not_a_legal_map_key() {
+        // MapKey's domain is int/string/bool (value-model-spec §4); Handle
+        // has no `MapKey::from_value` arm and falls through to `None`.
+        assert_eq!(MapKey::from_value(&Value::handle(NameId(1), 42)), None);
+    }
+
+    #[test]
+    fn handle_serde_round_trip_is_structural() {
+        let v = Value::handle(NameId(7), u64::MAX);
+        let back = json_round_trip(&v);
+        assert_eq!(back, v);
+        assert_eq!(back.value_type(), ValueType::Handle);
+        assert_eq!(back.as_handle(), Some((NameId(7), u64::MAX)));
+    }
+
+    #[test]
+    fn handle_nested_in_collection_serde_round_trip() {
+        let v = Value::array(vec![
+            Value::handle(NameId(1), 1),
+            Value::handle(NameId(2), 2),
             Value::Null,
         ]);
         assert_eq!(json_round_trip(&v), v);

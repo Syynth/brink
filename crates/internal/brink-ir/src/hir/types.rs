@@ -55,6 +55,82 @@ pub struct HirFile {
     pub externals: Vec<ExternalDecl>,
     /// `INCLUDE` sites (for cross-file resolution by the analyzer).
     pub includes: Vec<IncludeSite>,
+    /// The file's explicit `#@module(name)` declaration, if any (M-1,
+    /// docs/modules-spec.md §1). `None` means the file is an *undeclared*
+    /// stem-module — its module name is its file stem and identity hashing
+    /// stays byte-identical to the pre-modules derivation. `Some` names the
+    /// module explicitly and opts the file into the declared-module world
+    /// (module-qualified `DefinitionId`s, §5). The name argument is
+    /// validated (non-empty, single occurrence) during lowering; the range
+    /// covers the whole directive tag for the dialect gate (`#@module` is
+    /// brink-only) and diagnostics.
+    pub module: Option<ModuleDecl>,
+    /// `IMPORT` statements (M-2, docs/modules-spec.md §2). Brink-dialect
+    /// only — the dialect gate rejects each under strict-ink. Empty for the
+    /// entire pre-modules world.
+    pub imports: Vec<Import>,
+    /// Every `#@private` / `#@public` visibility directive occurrence in the
+    /// file (M-2, docs/modules-spec.md §4), for the dialect gate (E051 under
+    /// strict-ink). The *effective* per-definition visibility travels the
+    /// manifest path (`DeclaredSymbol::visibility`) to the symbol index.
+    pub visibility: Vec<VisibilityDirective>,
+}
+
+/// A file's explicit `#@module(name)` declaration (M-1, modules-spec §1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleDecl {
+    /// The declared module name (the argument to `#@module(…)`).
+    pub name: String,
+    /// Source range of the whole `#@module(…)` directive tag.
+    pub range: TextRange,
+}
+
+/// An `IMPORT` statement (M-2, docs/modules-spec.md §2), both forms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Import {
+    /// The imported module name.
+    pub module: String,
+    /// Source range of the module-name token.
+    pub module_range: TextRange,
+    /// The bare-form name list (`IMPORT { a, b AS c } FROM mod`). Empty for
+    /// the qualified form (`IMPORT mod`), which brings only the module name
+    /// into scope for `module.name` access.
+    pub items: Vec<ImportItem>,
+    /// `true` for the bare form (has a `{ … }` list, even if empty);
+    /// distinguishes an empty bare list from the qualified form.
+    pub bare: bool,
+    /// Source range of the whole `IMPORT …` statement.
+    pub range: TextRange,
+}
+
+/// One `name` or `name AS alias` entry in a bare-form import list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportItem {
+    /// The imported definition's own (source-module) name.
+    pub name: String,
+    /// The local alias (`AS gt`), if any. Absent means the name is bound
+    /// under its own spelling.
+    pub alias: Option<String>,
+    /// Source range of the item.
+    pub range: TextRange,
+}
+
+impl ImportItem {
+    /// The name this import binds locally — the alias if present, else the
+    /// imported name.
+    #[must_use]
+    pub fn local_name(&self) -> &str {
+        self.alias.as_deref().unwrap_or(&self.name)
+    }
+}
+
+/// A `#@private` / `#@public` directive occurrence (M-2, modules-spec §4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibilityDirective {
+    /// Which visibility the directive requests.
+    pub mark: crate::VisibilityMark,
+    /// Source range of the directive tag.
+    pub range: TextRange,
 }
 
 // ─── Containers ─────────────────────────────────────────────────────
@@ -1241,19 +1317,28 @@ pub enum DiagnosticCode {
     /// construction step to fault at, so this is the compile-time
     /// equivalent — a real error, never a silent `Null`.
     E076,
-    /// An array element or map value in a `VAR`/`CONST` declaration default
-    /// has a source expression kind that can never constant-fold — a
-    /// function call, postfix indexing, field access, or `++`/`--`. A
-    /// declaration default is baked into `StoryData` at compile time, so
-    /// there is no runtime construction step left to evaluate the element
-    /// at; without this diagnostic the element recursed into
-    /// `eval_const_expr`'s catch-all and silently became `Null` — #673's
-    /// silent-`Null` bug one level down, inside the literal (#679 review).
-    /// Keyed off the source expression *kind*, never the folded result: an
-    /// `Expr::Null` produced by HIR error recovery must not double-report,
-    /// and a bare `Path` reference (whose constness depends on resolution —
-    /// the pre-existing, separately-tracked gap #679's scope notes name)
-    /// keeps its existing behavior.
+    /// An array element, map value, struct field, or `#fn` bound `val` arg
+    /// nested inside a `VAR`/`CONST` declaration default has a source
+    /// expression kind that can never constant-fold — a function call,
+    /// postfix indexing, field access, `++`/`--`, or (#743) a bare
+    /// reference to another `VAR`. A declaration default is baked into
+    /// `StoryData` at compile time, so there is no runtime construction
+    /// step left to evaluate the element at; without this diagnostic the
+    /// element recursed into `eval_const_expr`'s `Path`
+    /// (`SymbolKind::Variable`) arm or catch-all and silently became `Null`
+    /// — #673's silent-`Null` bug one level down, inside the literal (#679
+    /// review; the `Path`-to-`Variable` case one level in was left
+    /// deliberately unchanged there and closed by #743). Keyed off the
+    /// source expression *kind*, never the folded result: an `Expr::Null`
+    /// produced by HIR error recovery must not double-report, and a `Path`
+    /// resolving to a `CONST`/list item/knot/stitch/function still folds
+    /// for real and is not flagged — only a resolved `SymbolKind::Variable`
+    /// (or an unresolved path, left to the analyzer's own diagnostic) is
+    /// exempt from the fold-for-real behavior, matching
+    /// `is_const_foldable_decl_default`'s top-level twin (`E083`). (A
+    /// struct literal nested at this position is unconditionally `E075`
+    /// regardless of field content — `ConstValue` has no record variant at
+    /// all — so a bad field inside it never reaches this arm.)
     E077,
     // ── TM-3 completion: conversion intrinsics (docs/typed-mode-spec.md
     // §4, maintainer ruling 2026-07-13, issue #659) ──────────────────────
@@ -1338,6 +1423,51 @@ pub enum DiagnosticCode {
     /// independent of type-checking policy or whether the shape name even
     /// resolves.
     E084,
+
+    // ── M-1 modules (docs/modules-spec.md §1/§5) ──────────────────
+    /// An *undeclared* file whose module (its file stem) collides with a
+    /// *declared* module's name (`#@module(name)` elsewhere). Accidental
+    /// membership with mixed visibility defaults is the one footgun the
+    /// module model forbids (modules-spec §1). Fix: declare the file with
+    /// the same `#@module(name)`, or rename it.
+    E085,
+    /// A malformed `#@module(…)` directive: a missing or empty name
+    /// argument, or a second `#@module` in the same file. `#@module`
+    /// takes exactly one non-empty module name and appears at most once
+    /// per file (modules-spec §1).
+    E086,
+
+    // ── M-2 imports + visibility (docs/modules-spec.md §2/§4/§7) ───
+    /// A reference resolves to a `#@private` definition in another module.
+    /// Private names are module-internal; the referrer is outside that
+    /// module. Fix: make the definition `#@public` and `IMPORT` it, or move
+    /// the reference into the module (modules-spec §4/§7).
+    E087,
+    /// A bare-form `IMPORT { name } FROM mod` names a definition that the
+    /// *declared* module `mod` does not publicly export. Only enforced
+    /// against declared modules — an import naming an unknown/undeclared
+    /// module is not itself flagged by this code, since this module's
+    /// export set isn't visible to the check (modules-spec §2/§7).
+    E088,
+    /// An `IMPORT` brings the same local name into scope twice (a repeated
+    /// bare import, or two imports whose names/aliases collide) — the
+    /// reference would be ambiguous (modules-spec §2/§7).
+    E089,
+    /// An `IMPORT` names the importing file's own module — a module cannot
+    /// import itself; its own names are already bare (modules-spec §2/§7).
+    E090,
+    /// A qualified access `a.b` is ambiguous: `a` is both a module imported
+    /// in this file and a visible definition. Fix with an `AS` alias — no
+    /// silent precedence (modules-spec §2/§7).
+    E091,
+    /// A `#@public`/`#@private` override that restates the module's default
+    /// (e.g. `#@public` in an undeclared module, `#@private` in a declared
+    /// one) — redundant, no effect (warning, modules-spec §4/§7).
+    E092,
+    /// Conflicting or repeated visibility directives on one declaration
+    /// (both `#@private` and `#@public`, or the same one twice). A
+    /// declaration takes at most one visibility directive (modules-spec §4).
+    E093,
 }
 
 impl DiagnosticCode {
@@ -1429,11 +1559,24 @@ impl DiagnosticCode {
             Self::E082 => "E082",
             Self::E083 => "E083",
             Self::E084 => "E084",
+            Self::E085 => "E085",
+            Self::E086 => "E086",
+            Self::E087 => "E087",
+            Self::E088 => "E088",
+            Self::E089 => "E089",
+            Self::E090 => "E090",
+            Self::E091 => "E091",
+            Self::E092 => "E092",
+            Self::E093 => "E093",
         }
     }
 
     /// Short human-readable title for this diagnostic code.
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a flat one-arm-per-code message table that necessarily grows with the diagnostic set"
+    )]
     pub fn title(self) -> &'static str {
         match self {
             Self::E001 => "knot is missing a name",
@@ -1518,7 +1661,7 @@ impl DiagnosticCode {
                 "map literal key in a VAR/CONST declaration default is not a compile-time-constant scalar (int/string/bool)"
             }
             Self::E077 => {
-                "array element or map value in a VAR/CONST declaration default is not a compile-time-constant expression"
+                "array element, map value, or #fn bound value argument in a VAR/CONST declaration default is not a compile-time-constant expression"
             }
             Self::E078 => "int()/float() argument is outside the permissive numeric+bool domain",
             Self::E079 => "#fn target is not a statically-named function definition",
@@ -1527,6 +1670,23 @@ impl DiagnosticCode {
             Self::E082 => "block-scoped temp referenced after its block has closed",
             Self::E083 => "VAR/CONST declaration default is not a compile-time-constant expression",
             Self::E084 => "struct construction literal supplies a duplicate field",
+            Self::E085 => {
+                "file's module (its stem) collides with a declared module of the same name"
+            }
+            Self::E086 => {
+                "`#@module` requires exactly one module name and may appear at most once per file"
+            }
+            Self::E087 => "reference to a `#@private` definition in another module",
+            Self::E088 => {
+                "bare `IMPORT { name } FROM mod` names a definition the declared module does not export"
+            }
+            Self::E089 => "`IMPORT` brings the same name into scope more than once",
+            Self::E090 => "a module cannot `IMPORT` itself",
+            Self::E091 => {
+                "qualified access is ambiguous: the name is both an imported module and a definition"
+            }
+            Self::E092 => "redundant `#@public`/`#@private` — restates the module default",
+            Self::E093 => "conflicting or repeated visibility directives on one declaration",
         }
     }
 
@@ -1546,7 +1706,8 @@ impl DiagnosticCode {
             | Self::E038
             | Self::E043
             | Self::E054
-            | Self::E063 => Severity::Warning,
+            | Self::E063
+            | Self::E092 => Severity::Warning,
             _ => Severity::Error,
         }
     }
@@ -1639,6 +1800,15 @@ impl DiagnosticCode {
             "E082" => Some(Self::E082),
             "E083" => Some(Self::E083),
             "E084" => Some(Self::E084),
+            "E085" => Some(Self::E085),
+            "E086" => Some(Self::E086),
+            "E087" => Some(Self::E087),
+            "E088" => Some(Self::E088),
+            "E089" => Some(Self::E089),
+            "E090" => Some(Self::E090),
+            "E091" => Some(Self::E091),
+            "E092" => Some(Self::E092),
+            "E093" => Some(Self::E093),
             _ => None,
         }
     }

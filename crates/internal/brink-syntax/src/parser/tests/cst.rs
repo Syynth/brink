@@ -361,6 +361,43 @@ fn include_statement() {
 }
 
 #[test]
+fn import_statement_qualified() {
+    assert_equivalent(
+        parse("IMPORT quest_3\n"),
+        cst!(SOURCE_FILE {
+            IMPORT_STMT {
+                IMPORT_MODULE {
+                    IDENTIFIER
+                }
+            }
+        }),
+    );
+}
+
+#[test]
+fn import_statement_bare_list() {
+    assert_equivalent(
+        parse("IMPORT { ambush, guard_talk AS gt } FROM quest_3\n"),
+        cst!(SOURCE_FILE {
+            IMPORT_STMT {
+                IMPORT_LIST {
+                    IMPORT_ITEM {
+                        IDENTIFIER
+                    }
+                    IMPORT_ITEM {
+                        IDENTIFIER
+                        IDENTIFIER
+                    }
+                }
+                IMPORT_MODULE {
+                    IDENTIFIER
+                }
+            }
+        }),
+    );
+}
+
+#[test]
 fn external_declaration() {
     assert_equivalent(
         parse("EXTERNAL greet(name)\n"),

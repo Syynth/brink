@@ -179,8 +179,10 @@ Some text.
 }
 
 #[test]
-#[ignore = "flaky — intermittent failures in CI and local runs"]
 fn diagnostics_for_scene1_ink() {
+    // Backstop cap on the wait loop below — see that loop's comment.
+    const MAX_MESSAGES: u64 = 2000;
+
     let bin = env!("CARGO_BIN_EXE_brink-lsp");
 
     let mut child = std::process::Command::new(bin)
@@ -239,29 +241,36 @@ fn diagnostics_for_scene1_ink() {
         }),
     );
 
-    // Send a dummy request so we can collect notifications that arrived
-    // between didOpen and this response.
-    send(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "textDocument/documentSymbol",
-            "params": {
-                "textDocument": { "uri": file_uri }
-            }
-        }),
+    // Wait for a background pass covering the file to complete. The settling
+    // condition is the `$/brink/backgroundAnalysisComplete` signal (#695) —
+    // NOT "at least one publishDiagnostics arrived". scene1.ink is a *clean*
+    // file, and the server suppresses an empty first publish for a
+    // never-published file (`DiagnosticsPublisher`, #615, matching the
+    // background loop's long-standing behavior), so a correct run legitimately
+    // emits ZERO diagnostics for it. Requiring a publish is exactly what hung
+    // this test once empty publishes were suppressed. Collect any diagnostics
+    // publishes that do arrive, for reporting. The message cap is only a
+    // backstop against a genuine hang/regression.
+    let mut diag_notifications: Vec<Value> = Vec::new();
+    let mut analysis_done = false;
+    for _ in 0..MAX_MESSAGES {
+        let msg = recv(&mut stdout);
+        if msg["method"] == "textDocument/publishDiagnostics" && msg["params"]["uri"] == file_uri {
+            diag_notifications.push(msg);
+        } else if msg["method"] == "$/brink/backgroundAnalysisComplete"
+            && msg["params"]["file_count"].as_u64().unwrap_or(0) >= 1
+        {
+            analysis_done = true;
+            break;
+        }
+    }
+    assert!(
+        analysis_done,
+        "background analysis never signaled completion for {file_uri} \
+         within {MAX_MESSAGES} messages"
     );
 
-    let (_symbols_resp, notifications) = recv_response(&mut stdout, 2);
-
-    // Find publishDiagnostics notifications
-    let diag_notifications: Vec<&Value> = notifications
-        .iter()
-        .filter(|n| n["method"] == "textDocument/publishDiagnostics")
-        .collect();
-
-    // Print diagnostics for inspection
+    // Report whatever diagnostics were published (may be none — see above).
     for note in &diag_notifications {
         let diags = note["params"]["diagnostics"]
             .as_array()
@@ -287,13 +296,6 @@ fn diagnostics_for_scene1_ink() {
         }
     }
 
-    // Assert we got at least one publishDiagnostics notification
-    assert!(
-        !diag_notifications.is_empty(),
-        "expected at least one publishDiagnostics notification"
-    );
-
-    // For now, just report what we got. We can tighten assertions later.
     let all_diags: Vec<&Value> = diag_notifications
         .iter()
         .flat_map(|n| n["params"]["diagnostics"].as_array().unwrap().iter())
@@ -586,8 +588,8 @@ Bravo content.
 
 /// Run an LSP session with the given `initializationOptions.dialect` (or
 /// `None` to omit it, exercising the `StrictInk` default), open `source`,
-/// and return the diagnostics from the *last* `publishDiagnostics`
-/// notification observed for that file's URI.
+/// and return the diagnostics from the *last background-analysis*
+/// `publishDiagnostics` notification observed for that file's URI.
 ///
 /// Background analysis (`analysis_loop`, #599) runs on a separate tokio task
 /// woken by a `Notify`, so its diagnostics can arrive after a same-id
@@ -602,6 +604,24 @@ Bravo content.
 /// message-count hard cap remains as a backstop against a genuine hang/
 /// regression (never firing, or never including the file), matching the
 /// project's "guard against unbounded growth" rule for polling loops.
+///
+/// Only *version-less* publishes count toward the returned diagnostics
+/// (#615). The `did_open` handler's own per-file publish (parse + lowering
+/// only — no analyzer diagnostics) runs on the notification-handler task,
+/// concurrently with the background loop. When the `initialized`-triggered
+/// pass snapshots the db after `didOpen`'s content update, it reports
+/// `file_count == 1` and publishes the full analysis set — but under CI
+/// load, the delayed per-file publish could land on the wire *between*
+/// that pass's publish and its completion signal, so "last publish before
+/// the completion" observed the parse-only set and analyzer-diagnostic
+/// assertions flaked. The server tags per-file publishes with the client
+/// document version (`PublishDiagnosticsParams.version`); background
+/// publishes carry none (they analyze a db snapshot, not a specific
+/// client document version), so filtering to version-less publishes is
+/// order-insensitive: whichever way the tasks interleave, the last
+/// background publish before the first file-covering completion is that
+/// pass's analysis set (or absent, meaning the set is empty — the
+/// background loop suppresses never-published empty sets).
 fn diagnostics_after_background_analysis(dialect: Option<&str>, source: &str) -> Vec<Value> {
     diagnostics_after_background_analysis_with_types(dialect, None, source)
 }
@@ -692,7 +712,14 @@ fn diagnostics_after_background_analysis_with_types(
     let mut settled = false;
     for _ in 0..MAX_MESSAGES {
         let msg = recv(&mut stdout);
-        if msg["method"] == "textDocument/publishDiagnostics" && msg["params"]["uri"] == file_uri {
+        if msg["method"] == "textDocument/publishDiagnostics"
+            && msg["params"]["uri"] == file_uri
+            // Versioned publishes are `did_open`'s per-file (parse/lowering
+            // only) set, which can interleave anywhere relative to the
+            // background pass — only version-less background-analysis
+            // publishes are the subject here (#615, see helper docs).
+            && msg["params"]["version"].is_null()
+        {
             last_diags_for_uri = msg["params"]["diagnostics"]
                 .as_array()
                 .cloned()
