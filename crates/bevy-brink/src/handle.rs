@@ -897,6 +897,7 @@ mod tests {
             turn_index: 0,
             rng_seed: 0,
             previous_random: 0,
+            global_ids: BTreeMap::new(),
         }
     }
 
