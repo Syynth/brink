@@ -639,8 +639,12 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             // they lower to `CallValue`/`BindValue` and dispatch through a
             // function value. `bind` is effect-transparent (copies the value's
             // row); its typing rule (consume the head of the param row) is
-            // gradual-advisory (Unknown) here, the runtime fault being the
-            // backstop, exactly as `call` is.
+            // wired into the checker (issue #733, `infer::body::
+            // check_bind_value`) — under `types = strict` a known `Ty::Fn`
+            // callee is statically checked (over-binding is `E063`); an
+            // `Unknown`/`Conflicted` callee still escapes as `E065`/`E066`.
+            // Gradual mode is unaffected: the runtime fault stays the
+            // backstop for both `call` and `bind`, exactly as before.
             | "call"
             | "bind"
     )

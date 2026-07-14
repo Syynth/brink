@@ -493,6 +493,13 @@ fn check_value_calls(
                         ),
                         brink_ir::DiagnosticCode::E063,
                     ),
+                    ValueCallKind::OverBind { available, got } => (
+                        format!(
+                            "`bind` through `{callee}` supplies {got} argument(s) but only \
+                             {available} parameter(s) remain in its known type"
+                        ),
+                        brink_ir::DiagnosticCode::E063,
+                    ),
                 };
                 out.push(brink_ir::Diagnostic {
                     file,
@@ -1643,6 +1650,224 @@ mod tests {
                 .diagnostics
                 .iter()
                 .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "{:?}",
+            result.diagnostics
+        );
+    }
+
+    // ── T1c follow-up (issue #733): call()/bind() explicit intrinsic forms
+    //    wired into the same strict checker as direct calls / #fn (docs/
+    //    t1c-spec.md §3/§4) ───────────────────────────────────────────────
+
+    #[test]
+    fn well_typed_explicit_call_through_a_fn_value_is_clean_under_strict() {
+        let (hir, index, res) = build(&format!(
+            "{HEAL}=== main ===\n~ temp f = #fn(heal, player_hp)\n\
+             ~ temp result: int = call(f, 5)\n-> DONE\n"
+        ));
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn explicit_call_arity_mismatch_is_a_typed_mismatch_error() {
+        let (hir, index, res) = build(&format!(
+            "{HEAL}=== main ===\n~ temp f = #fn(heal, player_hp)\n\
+             ~ temp r: int = call(f, 5, 6)\n-> DONE\n"
+        ));
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("2 argument")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn explicit_call_argument_type_mismatch_is_a_typed_mismatch_error() {
+        let (hir, index, res) = build(&format!(
+            "{HEAL}=== main ===\n~ temp f = #fn(heal, player_hp)\n\
+             ~ temp r: int = call(f, \"lots\")\n-> DONE\n"
+        ));
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_callee_in_explicit_call_is_an_escape_error() {
+        let (hir, index, res) = build("=== main(g) ===\n~ temp r = call(g, 1)\n-> DONE\n");
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E065
+                && d.message.contains("called as a function value")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn annotated_fn_typed_param_is_callable_through_explicit_call_under_strict() {
+        // Same boundary-annotation firewall as the direct-call form (spec
+        // §4), reached through `call(cb, …)` instead of `cb(…)`.
+        let (hir, index, res) =
+            build("=== function apply(cb: fn(int): int, x: int): int ===\n~ return call(cb, x)\n");
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn well_typed_bind_consumes_the_head_of_the_param_row() {
+        // `bind` consumes only the head it's given (spec §3): `f`'s
+        // remaining row is `fn(int): int` (`amount`); binding `5` leaves
+        // `fn(): int`, callable with no further args.
+        let (hir, index, res) = build(&format!(
+            "{HEAL}=== main ===\n~ temp f = #fn(heal, player_hp)\n\
+             ~ temp g = bind(f, 5)\n~ temp r: int = call(g)\n-> DONE\n"
+        ));
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn over_binding_more_than_the_remaining_param_row_is_a_typed_mismatch_error() {
+        // `f`'s remaining row has one param (`amount`); binding two is an
+        // over-bind, not an arity mismatch — `bind` never truncates.
+        let (hir, index, res) = build(&format!(
+            "{HEAL}=== main ===\n~ temp f = #fn(heal, player_hp)\n\
+             ~ temp g = bind(f, 5, 6)\n-> DONE\n"
+        ));
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E063
+                && d.message.contains("supplies 2")
+                && d.message.contains("1 parameter")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn bind_argument_type_mismatch_is_a_typed_mismatch_error() {
+        let (hir, index, res) = build(&format!(
+            "{HEAL}=== main ===\n~ temp f = #fn(heal, player_hp)\n\
+             ~ temp g = bind(f, \"lots\")\n-> DONE\n"
+        ));
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_callee_in_bind_is_an_escape_error() {
+        let (hir, index, res) = build("=== main(g) ===\n~ temp b = bind(g, 1)\n-> DONE\n");
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E065
+                && d.message.contains("called as a function value")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn conflicted_callee_in_bind_is_a_conflicted_escape_error() {
+        let (hir, index, res) = build(
+            "=== main ===\n~ temp f = 1\n{f == \"x\":\n  no\n}\n~ temp b = bind(f, 1)\n-> DONE\n",
+        );
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res);
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E066
+                && d.message.contains("called as a function value")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn explicit_call_and_bind_checks_never_surface_under_gradual() {
+        // The real production gate (mirrors `fn_value_call_checks_never_
+        // surface_under_gradual`): `finish_analysis` only calls
+        // `strict::check` under `types = strict` — `call`/`bind` stay
+        // advisory under gradual, the runtime fault their backstop.
+        let parsed = brink_syntax::parse(&format!(
+            "{HEAL}=== main ===\n~ temp f = #fn(heal, player_hp)\n\
+             ~ temp r: int = call(f, 5, 6)\n~ temp g = bind(f, \"lots\")\n-> DONE\n"
+        ));
+        let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let opts = crate::AnalysisOptions {
+            dialect: crate::Dialect::Brink,
+            ..crate::AnalysisOptions::default()
+        };
+        let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            !result.diagnostics.iter().any(|d| matches!(
+                d.code,
+                DiagnosticCode::E063 | DiagnosticCode::E065 | DiagnosticCode::E066
+            )),
+            "gradual must never surface call()/bind() value-call checks: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn strict_explicit_call_mismatch_fires_through_the_real_pipeline() {
+        // analyze_with_options -> finish_analysis -> whole_project_
+        // diagnostics -> strict::check — the wiring, not just the unit.
+        let parsed = brink_syntax::parse(&format!(
+            "{HEAL}=== main ===\n~ temp f = #fn(heal, player_hp)\n\
+             ~ temp r: int = call(f, \"x\")\n-> DONE\n"
+        ));
+        let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let opts = crate::AnalysisOptions {
+            dialect: crate::Dialect::Brink,
+            types: TypePolicy::Strict,
+            ..crate::AnalysisOptions::default()
+        };
+        let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "{:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn strict_bind_over_bind_fires_through_the_real_pipeline() {
+        let parsed = brink_syntax::parse(&format!(
+            "{HEAL}=== main ===\n~ temp f = #fn(heal, player_hp)\n\
+             ~ temp g = bind(f, 5, 6)\n-> DONE\n"
+        ));
+        let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let opts = crate::AnalysisOptions {
+            dialect: crate::Dialect::Brink,
+            types: TypePolicy::Strict,
+            ..crate::AnalysisOptions::default()
+        };
+        let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("supplies 2")),
             "{:?}",
             result.diagnostics
         );

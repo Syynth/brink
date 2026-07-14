@@ -816,8 +816,14 @@ fn lower_t1b_stdlib_call(
         // T1c (docs/t1c-spec.md §3): the explicit call form `call(f, args…)` —
         // dispatch through a function value where the callee is itself an
         // expression. `f` is the callee; the remaining args are the supplied
-        // (val-only) params. Lowers to `CallValue(argc)`; the dispatch, arity
-        // and type faults live at the runtime op.
+        // (val-only) params. Lowers to `CallValue(argc)`; the runtime op is
+        // the gradual-mode backstop (dispatch, arity, type faults). Under
+        // `types = strict` this form is now statically checked too (issue
+        // #733): `brink_analyzer::infer::body::infer_intrinsic` routes `call`
+        // through the same `Ty::Fn` value-call machinery as `#fn(...)`/direct
+        // calls (`check_value_call`), so a strict author reaches the runtime
+        // fault only through a genuinely `Unknown`/`Conflicted` callee (an
+        // escape error, `E065`/`E066`).
         "call" => {
             if args.is_empty() {
                 ctx.diagnostics.push(crate::Diagnostic {
@@ -844,11 +850,15 @@ fn lower_t1b_stdlib_call(
         // args are appended to its bound-arg row (consuming the head of its
         // remaining param row) and a new function value is returned. Lowers
         // to `BindValue(argc)`; over-binding and a non-function callee are
-        // runtime faults at the op. Strict-mode static checking of this
-        // explicit intrinsic form is not yet wired (it does not route through
-        // the `Ty::Fn` value-call machinery like `#fn(...)` sites do), so the
-        // runtime fault is the only backstop here today, same as `call`
-        // (see `resolve.rs::is_t1b_stdlib_name`).
+        // runtime faults at the op — the gradual-mode backstop. Under
+        // `types = strict` this form is now statically checked too (issue
+        // #733): `brink_analyzer::infer::body::infer_intrinsic` routes `bind`
+        // through `check_bind_value` (the "consume the head of the param
+        // row" rule applied to a known `Ty::Fn` callee — over-binding
+        // becomes a compile-time `E063`, same code family as the direct-call
+        // arg/arity mismatches); `Unknown`/`Conflicted` callees still escape
+        // as `E065`/`E066`, same as `call` (see `resolve.rs::
+        // is_t1b_stdlib_name`).
         "bind" => {
             if args.is_empty() {
                 ctx.diagnostics.push(crate::Diagnostic {
