@@ -18,6 +18,7 @@ brink-ide = { workspace = true }
 brink-ir = { workspace = true }
 brink-syntax = { workspace = true }
 rowan.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tower-lsp.workspace = true
@@ -25,7 +26,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
-serde.workspace = true
 serde_json.workspace = true
 
 [lints]

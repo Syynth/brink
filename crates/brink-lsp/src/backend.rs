@@ -1680,6 +1680,39 @@ fn ranges_overlap(a: &Range, b: &Range) -> bool {
 
 // ── Background analysis loop ────────────────────────────────────────
 
+/// Test-visible signal that a background [`analysis_loop`] pass has
+/// completed and its diagnostics (if any) have been published.
+///
+/// Fired unconditionally at the end of every pass — unlike
+/// `textDocument/publishDiagnostics`, which [`publish_if_changed`] suppresses
+/// when the new diagnostics are empty and nothing was previously published,
+/// so a test asserting the *absence* of a diagnostic would never observe a
+/// notification at all. Integration tests await this instead of polling a
+/// fixed wall-clock deadline (#695).
+///
+/// Uses the `$/` LSP method prefix reserved for protocol-implementation-
+/// dependent messages: per spec, a client that doesn't understand it should
+/// silently ignore it, so this is safe to send unconditionally in the real
+/// server, not just under test.
+enum BackgroundAnalysisComplete {}
+
+impl tower_lsp::lsp_types::notification::Notification for BackgroundAnalysisComplete {
+    type Params = BackgroundAnalysisCompleteParams;
+
+    const METHOD: &'static str = "$/brink/backgroundAnalysisComplete";
+}
+
+/// Params for [`BackgroundAnalysisComplete`].
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+struct BackgroundAnalysisCompleteParams {
+    /// Number of files included in this pass's db snapshot. A test that
+    /// just opened exactly one file can wait for `file_count >= 1` to know
+    /// the pass reflects that file, without racing on wall-clock timing
+    /// against an earlier (e.g. startup-triggered) pass that ran before the
+    /// file was opened.
+    file_count: usize,
+}
+
 /// Background task that runs per-project cross-file analysis outside the db lock.
 ///
 /// Woken by `trigger.notify_one()` whenever a file changes. Uses `yield_now()`
@@ -1777,6 +1810,7 @@ pub async fn analysis_loop(
         let _ = tx.send(Some(Arc::clone(&result)));
 
         // Publish diagnostics for all affected files
+        let file_count = file_meta.len();
         publish_all_diagnostics(
             &client,
             &result,
@@ -1786,6 +1820,13 @@ pub async fn analysis_loop(
             &last_published,
         )
         .await;
+
+        // Test-visible completion signal (#695) — see `BackgroundAnalysisComplete`.
+        client
+            .send_notification::<BackgroundAnalysisComplete>(BackgroundAnalysisCompleteParams {
+                file_count,
+            })
+            .await;
     }
 }
 

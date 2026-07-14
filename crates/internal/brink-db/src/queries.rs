@@ -917,12 +917,20 @@ pub(crate) fn solve_scc_query<'db>(
     for &member in batch {
         global_ids.extend(referenced_globals_query(db, project, DefKey::new(db, member)).iter());
     }
+    // `value_type` covers the scalar/list/divert domain; `fn_type` (T1c
+    // follow-up, issue #712) covers `Ty::Fn` separately, since
+    // `InferredType` has no `Fn` form (`brink_analyzer::Sig::fn_type`'s
+    // doc) — mirrors `brink_analyzer::infer::collect_globals`'s own
+    // fallback exactly, so this narrowed path stays composed-equals-
+    // monolithic with it.
     let mut globals: BTreeMap<DefinitionId, brink_analyzer::Ty> = BTreeMap::new();
     for gid in global_ids {
-        if let Some(sig) = signature_query(db, project, DefKey::new(db, gid))
-            && let Some(vt) = sig.value_type
-        {
-            globals.insert(gid, brink_analyzer::Ty::from(vt));
+        if let Some(sig) = signature_query(db, project, DefKey::new(db, gid)) {
+            if let Some(vt) = sig.value_type {
+                globals.insert(gid, brink_analyzer::Ty::from(vt));
+            } else if let Some(ft) = sig.fn_type.clone() {
+                globals.insert(gid, ft);
+            }
         }
     }
 
