@@ -173,6 +173,10 @@ impl<'a> Resolver<'a> {
                     .collect();
                 format!("fn {}({})", self.path(c.target), parts.join(", "))
             }
+            // Handle values (T1d, `docs/t1d-spec.md` §6): no literal syntax
+            // constructs one, but this arm keeps `format_value` exhaustive —
+            // same display form as the runtime's authoritative `string(h)`.
+            Value::Handle { kind, id } => format!("handle {}#{id}", self.name(*kind)),
         }
     }
 }

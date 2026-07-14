@@ -76,6 +76,10 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
             prop::collection::vec(arb_closure_env_entry(), 0..3)
         )
             .prop_map(|(target, env)| Value::closure(target, env)),
+        // Handle values (T1d, docs/t1d-spec.md §2): the #746 List-gap class
+        // this generator is written to avoid — every `Value` variant, this
+        // one included, must be reachable from `arb_value_full`.
+        (arb_name_id(), any::<u64>()).prop_map(|(kind, id)| Value::handle(kind, id)),
     ]
 }
 

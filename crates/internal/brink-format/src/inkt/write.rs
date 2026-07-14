@@ -617,6 +617,7 @@ fn value_type_name(vt: ValueType) -> &'static str {
         ValueType::Record => "record",
         ValueType::FnRef => "fn_ref",
         ValueType::Closure => "closure",
+        ValueType::Handle => "handle",
     }
 }
 
@@ -696,6 +697,10 @@ fn write_value(w: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
             }
             write!(w, ")")
         }
+        // Handle values (T1d, `docs/t1d-spec.md` §2): `(handle <kind> <id>)`
+        // — kind as its raw NameId (the human-readable kind name lives in the
+        // name table, resolved by tooling that has it, not by this dump).
+        Value::Handle { kind, id } => write!(w, "(handle {} {id})", kind.0),
     }
 }
 

@@ -1260,19 +1260,28 @@ pub enum DiagnosticCode {
     /// construction step to fault at, so this is the compile-time
     /// equivalent — a real error, never a silent `Null`.
     E076,
-    /// An array element or map value in a `VAR`/`CONST` declaration default
-    /// has a source expression kind that can never constant-fold — a
-    /// function call, postfix indexing, field access, or `++`/`--`. A
-    /// declaration default is baked into `StoryData` at compile time, so
-    /// there is no runtime construction step left to evaluate the element
-    /// at; without this diagnostic the element recursed into
-    /// `eval_const_expr`'s catch-all and silently became `Null` — #673's
-    /// silent-`Null` bug one level down, inside the literal (#679 review).
-    /// Keyed off the source expression *kind*, never the folded result: an
-    /// `Expr::Null` produced by HIR error recovery must not double-report,
-    /// and a bare `Path` reference (whose constness depends on resolution —
-    /// the pre-existing, separately-tracked gap #679's scope notes name)
-    /// keeps its existing behavior.
+    /// An array element, map value, struct field, or `#fn` bound `val` arg
+    /// nested inside a `VAR`/`CONST` declaration default has a source
+    /// expression kind that can never constant-fold — a function call,
+    /// postfix indexing, field access, `++`/`--`, or (#743) a bare
+    /// reference to another `VAR`. A declaration default is baked into
+    /// `StoryData` at compile time, so there is no runtime construction
+    /// step left to evaluate the element at; without this diagnostic the
+    /// element recursed into `eval_const_expr`'s `Path`
+    /// (`SymbolKind::Variable`) arm or catch-all and silently became `Null`
+    /// — #673's silent-`Null` bug one level down, inside the literal (#679
+    /// review; the `Path`-to-`Variable` case one level in was left
+    /// deliberately unchanged there and closed by #743). Keyed off the
+    /// source expression *kind*, never the folded result: an `Expr::Null`
+    /// produced by HIR error recovery must not double-report, and a `Path`
+    /// resolving to a `CONST`/list item/knot/stitch/function still folds
+    /// for real and is not flagged — only a resolved `SymbolKind::Variable`
+    /// (or an unresolved path, left to the analyzer's own diagnostic) is
+    /// exempt from the fold-for-real behavior, matching
+    /// `is_const_foldable_decl_default`'s top-level twin (`E083`). (A
+    /// struct literal nested at this position is unconditionally `E075`
+    /// regardless of field content — `ConstValue` has no record variant at
+    /// all — so a bad field inside it never reaches this arm.)
     E077,
     // ── TM-3 completion: conversion intrinsics (docs/typed-mode-spec.md
     // §4, maintainer ruling 2026-07-13, issue #659) ──────────────────────
@@ -1552,7 +1561,7 @@ impl DiagnosticCode {
                 "map literal key in a VAR/CONST declaration default is not a compile-time-constant scalar (int/string/bool)"
             }
             Self::E077 => {
-                "array element or map value in a VAR/CONST declaration default is not a compile-time-constant expression"
+                "array element, map value, or #fn bound value argument in a VAR/CONST declaration default is not a compile-time-constant expression"
             }
             Self::E078 => "int()/float() argument is outside the permissive numeric+bool domain",
             Self::E079 => "#fn target is not a statically-named function definition",

@@ -18,8 +18,8 @@ use super::{
     CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HEADER_PREAMBLE, KEY_CARDINAL,
     KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN, LINE_TEMPLATE, MAGIC, PART_LITERAL,
     PART_SELECT, PART_SLOT, SECTION_COUNT, SECTION_ENTRY_SIZE, SectionKind, VAL_ARRAY, VAL_BOOL,
-    VAL_CLOSURE, VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_INT, VAL_LIST,
-    VAL_MAP, VAL_NULL, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION,
+    VAL_CLOSURE, VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT,
+    VAL_LIST, VAL_MAP, VAL_NULL, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION,
 };
 
 // ── Tier 1: Full story write ────────────────────────────────────────────────
@@ -273,6 +273,8 @@ fn encode_value_type(vt: ValueType, buf: &mut Vec<u8>) {
         // T1c function value types (v4, materialized in #700).
         ValueType::FnRef => VAL_FN_REF,
         ValueType::Closure => VAL_CLOSURE,
+        // T1d handle value type (v4, reserved tag graduated this PR).
+        ValueType::Handle => VAL_HANDLE,
     };
     write_u8(buf, tag);
 }
@@ -370,6 +372,16 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
                 write_u8(buf, u8::from(entry.is_ref));
                 encode_value(&entry.payload, buf);
             }
+        }
+        // Handle values (T1d, `docs/format-v4-rfc.md` §1: `kind NameId, u64
+        // id`). First emission of this reserved tag — the wire form is frozen
+        // by the RFC, materialized here. No opcode ever pushes one; a handle
+        // reaches this encoder only as a binding-produced global default or a
+        // literal-pool entry supplied by a future manifest-aware pipeline.
+        Value::Handle { kind, id } => {
+            write_u8(buf, VAL_HANDLE);
+            write_u16(buf, kind.0);
+            write_u64(buf, *id);
         }
     }
 }

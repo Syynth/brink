@@ -184,6 +184,13 @@ impl<'p> NameResolver<'p> {
                     .collect();
                 format!("fn {name}({})", parts.join(", "))
             }
+            // Handle values (T1d, `docs/t1d-spec.md` §6). Same display form
+            // as the runtime's authoritative `string(h)` (`value_ops::stringify`):
+            // `handle <Kind>#<id>`, resolved via the program's name table.
+            Value::Handle { kind, id } => {
+                let kind_name = self.program.name_checked(*kind).unwrap_or("?");
+                format!("handle {kind_name}#{id}")
+            }
         }
     }
 }
