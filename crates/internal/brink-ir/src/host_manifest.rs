@@ -263,7 +263,7 @@ pub struct DocBlock {
 
 #[cfg(test)]
 mod value_source_tests {
-    use super::{SemanticTypeDef, ValueSource};
+    use super::{BaseType, SemanticTypeDef, ValueSource};
 
     #[test]
     fn static_value_source_json_roundtrip() {
@@ -300,5 +300,21 @@ mod value_source_tests {
         let none: SemanticTypeDef =
             serde_json::from_str(r#"{ "name": "x", "base": "int" }"#).expect("parse bare");
         assert!(none.values.is_none());
+    }
+
+    #[test]
+    fn handle_base_json_roundtrip() {
+        // The host authors this JSON (e.g. via `setHostManifest`); lock the
+        // wire shape for `"base": "handle"` the same way the other base
+        // keywords are locked above — the with-manifest handle<K> path
+        // depends on this JSON -> BaseType::Handle deserialization, not just
+        // on constructing BaseType::Handle directly in Rust.
+        let def: SemanticTypeDef =
+            serde_json::from_str(r#"{ "name": "AudioInstance", "base": "handle" }"#)
+                .expect("parse handle base");
+        assert_eq!(def.name, "AudioInstance");
+        assert_eq!(def.base, BaseType::Handle);
+
+        assert_eq!(BaseType::from_keyword("handle"), Some(BaseType::Handle));
     }
 }
