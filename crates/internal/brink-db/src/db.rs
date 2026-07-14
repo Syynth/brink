@@ -1042,11 +1042,43 @@ mod module_tests {
     }
 
     /// An explicitly `#@public` knot in another declared module, diverted to
-    /// from outside, does not trip the private-reference check (E087 is
-    /// visibility-keyed). (A declared module defaults private, §4, so the
-    /// export must opt in with `#@public`.)
+    /// from a file that **imports** it, resolves cleanly — no E087 (public,
+    /// visibility-keyed) and no E025 (the import licenses the crossing, §2).
     #[test]
-    fn public_cross_module_reference_is_not_e087() {
+    fn imported_public_cross_module_reference_is_clean() {
+        let mut db = ProjectDb::new();
+        db.set_file(
+            "quest.ink",
+            "#@module(quest)\n== ambush ==\n#@public\nGotcha!\n-> DONE\n".to_owned(),
+        );
+        let town = db.set_file(
+            "town.ink",
+            "#@module(town)\nIMPORT { ambush } FROM quest\n== square ==\nHi\n-> ambush\n"
+                .to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(town)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            !codes.contains(&DiagnosticCode::E087),
+            "public cross-module reference must not be E087, got {codes:?}"
+        );
+        assert!(
+            !codes.contains(&DiagnosticCode::E025),
+            "an imported public cross-module reference must not be E025, got {codes:?}"
+        );
+    }
+
+    /// M-2c (§2): a *public* knot in another **declared** module, referenced
+    /// from a file that did **not** `IMPORT` it, is `E025` — names cross
+    /// module boundaries only via import. Bringing the name in (bare import)
+    /// clears it (proven by `imported_public_cross_module_reference_is_clean`).
+    #[test]
+    fn public_cross_module_reference_without_import_is_e025() {
         let mut db = ProjectDb::new();
         db.set_file(
             "quest.ink",
@@ -1064,8 +1096,135 @@ mod module_tests {
             .map(|d| d.code)
             .collect();
         assert!(
-            !codes.contains(&DiagnosticCode::E087),
-            "public cross-module reference must not be E087, got {codes:?}"
+            codes.contains(&DiagnosticCode::E025),
+            "a non-imported public cross-module reference must be E025, got {codes:?}"
+        );
+    }
+
+    /// The qualified import form (`IMPORT quest`) also licenses references to
+    /// the module's exports — no E025.
+    #[test]
+    fn qualified_import_licenses_cross_module_reference() {
+        let mut db = ProjectDb::new();
+        db.set_file(
+            "quest.ink",
+            "#@module(quest)\n== ambush ==\n#@public\nGotcha!\n-> DONE\n".to_owned(),
+        );
+        let town = db.set_file(
+            "town.ink",
+            "#@module(town)\nIMPORT quest\n== square ==\nHi\n-> ambush\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(town)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            !codes.contains(&DiagnosticCode::E025),
+            "a qualified import must license the crossing, got {codes:?}"
+        );
+    }
+
+    /// The import-required restriction is keyed on the *target's* module being
+    /// **declared**: a plain multi-file project with no `#@module` anywhere is
+    /// one big default-public module (§3), so a cross-*file* bare reference
+    /// keeps resolving with no E025 — the byte-identical legacy guarantee.
+    #[test]
+    fn cross_file_reference_in_undeclared_project_is_not_e025() {
+        let mut db = ProjectDb::new();
+        // `main.ink` INCLUDEs `helpers.ink`; neither declares a module.
+        db.set_file(
+            "helpers.ink",
+            "== helper ==\nHelping.\n-> DONE\n".to_owned(),
+        );
+        let main = db.set_file(
+            "main.ink",
+            "INCLUDE helpers.ink\n== start ==\nHi\n-> helper\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(main)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            !codes.contains(&DiagnosticCode::E025),
+            "an undeclared multi-file project must not trip the import gate, got {codes:?}"
+        );
+    }
+
+    /// M-2c (§2): a `IMPORT quest` (qualified) whose module name also names a
+    /// knot visible bare in the same file makes `quest.y` ambiguous — `E091`.
+    #[test]
+    fn qualified_import_colliding_with_definition_is_e091() {
+        let mut db = ProjectDb::new();
+        db.set_file(
+            "quest.ink",
+            "#@module(quest)\n== ambush ==\n#@public\nGotcha!\n-> DONE\n".to_owned(),
+        );
+        // `town` has its own knot named `quest` AND imports module `quest`.
+        let town = db.set_file(
+            "town.ink",
+            "#@module(town)\nIMPORT quest\n== quest ==\nHi\n-> DONE\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(town)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E091),
+            "expected E091 qualified module-vs-definition ambiguity, got {codes:?}"
+        );
+    }
+
+    /// The `E092` redundant-override warning is reachable end-to-end: a
+    /// `#@private` on a definition in a **declared** module restates that
+    /// module's private-by-default (§4), so it is redundant.
+    #[test]
+    fn redundant_private_in_declared_module_is_e092() {
+        let mut db = ProjectDb::new();
+        let f = db.set_file(
+            "quest.ink",
+            "#@module(quest)\n== ambush ==\n#@private\nHi\n-> DONE\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(f)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E092),
+            "expected E092 redundant-override warning, got {codes:?}"
+        );
+    }
+
+    /// A `#@public` on a definition in an **undeclared** stem-module restates
+    /// the public-by-default (§4) — also redundant (`E092`).
+    #[test]
+    fn redundant_public_in_undeclared_module_is_e092() {
+        let mut db = ProjectDb::new();
+        let f = db.set_file(
+            "story.ink",
+            "== ambush ==\n#@public\nHi\n-> DONE\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(f)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E092),
+            "expected E092 redundant-override warning, got {codes:?}"
         );
     }
 
