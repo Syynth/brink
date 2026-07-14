@@ -139,6 +139,22 @@
 .brink-studio .brink-inline-rename-badge[hidden] {
   display: none;
 }
+/* Pending (#722): the badge while the (deferred) breakage analysis is in
+   flight — a neutral "checking" state, distinct from the warning verdict. */
+.brink-studio .brink-inline-rename-badge--pending {
+  border-color: var(--bs-border);
+  color: var(--bs-fg-muted);
+  background: var(--bs-panel-bg);
+  cursor: default;
+}
+.brink-studio .brink-inline-rename-badge:disabled {
+  cursor: default;
+  opacity: 0.8;
+}
+.brink-studio .brink-inline-rename-force:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
 
 /* The expanded inline breakage report — a block beneath the input row. */
 .brink-studio .brink-inline-rename-report {

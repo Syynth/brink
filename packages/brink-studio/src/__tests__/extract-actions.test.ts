@@ -98,7 +98,7 @@ interface Applied {
 
 /** A view wired with the code-actions + extract-prompt extensions;
  *  `computeExtract` is stubbed so the test controls the verdict. */
-function mount(verdict: (name: string) => StructuralResult) {
+function mount(verdict: (name: string) => StructuralResult | null) {
   const computes: Array<{ kind: string; start: number; end: number; name: string }> = [];
   const applied: Applied[] = [];
   const view = new EditorView({
@@ -173,7 +173,7 @@ describe("extract widget flow", () => {
     view.destroy();
   });
 
-  it("choosing Extract to knot opens the name prompt → computes → applies (safe)", () => {
+  it("choosing Extract to knot opens the name prompt → computes → applies (safe)", async () => {
     const { view, computes, applied } = mount(() => safe("scene"));
     selectBody(view);
     const menu = openMenu(view);
@@ -184,6 +184,11 @@ describe("extract widget flow", () => {
     input.value = "scene";
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 
+    // The compute call is deferred off the paint path (#722) — nothing has
+    // run yet right after Enter; wait a tick for it to settle.
+    expect(computes).toHaveLength(0);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
     expect(computes).toHaveLength(1);
     expect(computes[0]).toMatchObject({ kind: "knot", name: "scene" });
     expect(applied).toHaveLength(1);
@@ -193,7 +198,7 @@ describe("extract widget flow", () => {
     view.destroy();
   });
 
-  it("an unsafe extract surfaces the breakage report and applies only on force", () => {
+  it("an unsafe extract surfaces the breakage report and applies only on force", async () => {
     const { view, applied } = mount((name) => unsafe(name));
     selectBody(view);
     const menu = openMenu(view);
@@ -201,6 +206,8 @@ describe("extract widget flow", () => {
     const input = promptInput();
     input.value = "calc";
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    // The compute call is deferred off the paint path (#722); wait a tick.
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     // No immediate apply — the report is shown instead.
     expect(applied).toHaveLength(0);
@@ -214,6 +221,30 @@ describe("extract widget flow", () => {
     force.click();
     expect(applied).toHaveLength(1);
     expect(applied[0]).toMatchObject({ kind: "function", name: "calc" });
+    view.destroy();
+  });
+
+  it("Enter on a null compute result cancels the prompt (#722 review)", async () => {
+    // computeExtract returns null on an op error (name collision, header
+    // crossing, illegal function body — see extract-actions.ts's doc
+    // comment: "A `null` return ... cancels the prompt"). The deferred
+    // (#722) query path must preserve that: Enter should tear the prompt
+    // down, not leave it open in a dead pending state.
+    const { view, computes } = mount(() => null);
+    selectBody(view);
+    const menu = openMenu(view);
+    menuItem(menu, "Extract to knot").click();
+    const input = promptInput();
+    input.value = "scene";
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+    // Deferred off the paint path (#722) — wait a tick for it to settle.
+    expect(computes).toHaveLength(0);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(computes).toHaveLength(1);
+    // The prompt must be torn down, not stuck showing a pending "…" badge.
+    expect(document.querySelector(".brink-inline-rename-input")).toBeNull();
     view.destroy();
   });
 

@@ -557,6 +557,110 @@ fn map_literal_declaration_default_with_non_constant_value_is_a_real_compile_err
     );
 }
 
+// ── #692: bare non-constant scalar VAR/CONST declaration default ────────
+//
+// Sibling of the #673/#679 collection-element fixes above: a scalar
+// `VAR`/`CONST` default whose *whole* value is a non-constant reference or
+// call — not nested inside an array/map/struct/fn literal — previously
+// silently folded to `Null` through `eval_const_expr`'s `Path`
+// (`SymbolKind::Variable`) arm or its catch-all, with zero diagnostic. Now a
+// real, non-suppressible compile error (E083) through the full
+// `compile_with_options` entry point.
+
+#[test]
+fn var_declaration_default_referencing_another_var_is_a_real_compile_error() {
+    let source = "VAR a = 1\nVAR b = a\nHello.\n-> END\n";
+    let err = compile_brink(source)
+        .expect_err("a bare VAR-to-VAR declaration default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E083),
+        "expected E083, got {diags:?}"
+    );
+}
+
+#[test]
+fn var_declaration_default_calling_a_function_is_a_real_compile_error() {
+    let source = "VAR x = f()\nHello.\n-> END\n\n=== function f()\n~ return 1\n";
+    let err = compile_brink(source)
+        .expect_err("a bare function-call declaration default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E083),
+        "expected E083, got {diags:?}"
+    );
+}
+
+#[test]
+fn const_declaration_default_referencing_a_var_is_a_real_compile_error() {
+    let source = "VAR a = 1\nCONST b = a\nHello.\n-> END\n";
+    let err = compile_brink(source)
+        .expect_err("a bare VAR-reference CONST declaration default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E083),
+        "expected E083, got {diags:?}"
+    );
+}
+
+#[test]
+fn var_declaration_default_with_non_constant_wrapped_in_prefix_is_a_real_compile_error() {
+    // Still a bare top-level default, not a collection element — `-f()`
+    // recurses through the `Prefix` arm and must report the same E083 as an
+    // unwrapped call.
+    let source = "VAR x = -f()\nHello.\n-> END\n\n=== function f()\n~ return 1\n";
+    let err = compile_brink(source)
+        .expect_err("a non-constant prefix-wrapped declaration default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E083),
+        "expected E083, got {diags:?}"
+    );
+}
+
+#[test]
+fn var_declaration_default_referencing_a_const_is_still_valid() {
+    // No false positive: `SymbolKind::Constant` (unlike `Variable`) is a
+    // genuine compile-time constant — `eval_const_expr`'s own `Path` arm
+    // already resolves it via `const_values`.
+    let source = "CONST a = 1\nVAR b = a\nHello.\n-> END\n";
+    let out = compile_brink(source).expect("VAR referencing a CONST default must still compile");
+    assert!(
+        !out.warnings
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E083),
+        "unexpected E083, got {:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn var_reference_nested_inside_an_array_default_is_deliberately_unchanged() {
+    // #679 scope notes: a bare `Path`-to-`Variable` *nested inside* a
+    // collection literal is a pre-existing, separately-tracked gap that
+    // #692 does not touch — `is_const_foldable_kind` (governing array/map
+    // elements) still treats `Path` as unconditionally foldable, so this
+    // must keep compiling with no E083 (nor any other diagnostic) here.
+    let source = "VAR a = 1\nVAR arr = #[a]\nHello.\n-> END\n";
+    let out = compile_brink(source)
+        .expect("a VAR reference nested inside an array default must still compile");
+    assert!(
+        !out.warnings
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E083),
+        "unexpected E083, got {:?}",
+        out.warnings
+    );
+}
+
 #[test]
 fn mutator_used_in_expression_position_is_a_compile_error() {
     // Mutators return nothing (§5) — using the "result" is invalid.
