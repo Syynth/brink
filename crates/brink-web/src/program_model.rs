@@ -522,6 +522,7 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
             bound_count,
         } => format!("make_closure {} bound={bound_count}", r.path(*target)),
         Opcode::CallValue(argc) => format!("call_value argc={argc}"),
+        Opcode::BindValue(argc) => format!("bind_value argc={argc}"),
     }
 }
 

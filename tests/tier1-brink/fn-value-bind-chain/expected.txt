@@ -1,0 +1,6 @@
+Chained bind: 6.
+Rebind from g: 51.
+Display g: fn add3(a = 1, b, c).
+Display healer: fn heal(ref hp = world_hp, amount).
+Curried ref call: 15.
+HP after: 15.
