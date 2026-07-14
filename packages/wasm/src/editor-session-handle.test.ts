@@ -8,6 +8,13 @@ import { describe, it, expect, vi } from "vitest";
 // `setExternalCheck`'s shape exactly, including the `bump()`
 // cache-invalidation.
 //
+// Issue #693 found the same gap for `set_language_dialect` (#611) and
+// `set_type_policy` (#660): the raw `#[wasm_bindgen]` methods existed on
+// `WasmEditorSession`, but `EditorSessionHandle` exposed neither, so no JS
+// caller of `@brink-lang/web` could enable the brink dialect or the typed
+// mode policy at all. `setLanguageDialect`/`setTypePolicy` follow the same
+// forward + bump pattern.
+//
 // `brink-web` (the wasm-pack output) is replaced with a call-recording stub
 // so this stays a pure wrapper-layer test: it pins the passthrough wiring
 // (method exists, forwards its argument, bumps `generation`), not wasm
@@ -21,6 +28,12 @@ const hoisted = vi.hoisted(() => {
     }
     set_external_check(level: unknown): void {
       calls.push({ method: "set_external_check", args: [level] });
+    }
+    set_language_dialect(value: unknown): void {
+      calls.push({ method: "set_language_dialect", args: [value] });
+    }
+    set_type_policy(value: unknown): void {
+      calls.push({ method: "set_type_policy", args: [value] });
     }
   }
   return { calls, EditorSessionStub };
@@ -70,6 +83,42 @@ describe("EditorSessionHandle wasm-lever passthroughs", () => {
 
     expect(hoisted.calls).toEqual([
       { method: "set_external_check", args: ["off"] },
+    ]);
+    expect(handle.generation).toBe(before + 1);
+  });
+
+  it("exposes setLanguageDialect (#693: the lever was unreachable without it)", () => {
+    const handle = new EditorSessionHandle();
+    expect(typeof handle.setLanguageDialect).toBe("function");
+  });
+
+  it("forwards setLanguageDialect to set_language_dialect and bumps generation", () => {
+    hoisted.calls.length = 0;
+    const handle = new EditorSessionHandle();
+    const before = handle.generation;
+
+    handle.setLanguageDialect("brink");
+
+    expect(hoisted.calls).toEqual([
+      { method: "set_language_dialect", args: ["brink"] },
+    ]);
+    expect(handle.generation).toBe(before + 1);
+  });
+
+  it("exposes setTypePolicy (#693: the lever was unreachable without it)", () => {
+    const handle = new EditorSessionHandle();
+    expect(typeof handle.setTypePolicy).toBe("function");
+  });
+
+  it("forwards setTypePolicy to set_type_policy and bumps generation", () => {
+    hoisted.calls.length = 0;
+    const handle = new EditorSessionHandle();
+    const before = handle.generation;
+
+    handle.setTypePolicy("strict");
+
+    expect(hoisted.calls).toEqual([
+      { method: "set_type_policy", args: ["strict"] },
     ]);
     expect(handle.generation).toBe(before + 1);
   });
