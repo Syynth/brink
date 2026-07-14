@@ -2605,6 +2605,21 @@ impl<R: StoryRng> Story<R> {
         name: &str,
         entry_point: DefinitionId,
     ) -> Result<(), RuntimeError> {
+        // M-2b: refuse host-driven entry into a `#@private` knot/stitch while
+        // visibility enforcement is on (`docs/modules-spec.md` §4 boundary
+        // rule 2). Mirrors `check_entry_visibility`'s refusal on the named
+        // `choose_path_string` path — a host holding a `DefinitionId` (this
+        // by-id entry point) must not be able to bypass it. Checked before
+        // any other error path so a private target reports as private, not
+        // as "already exists" or "unresolved" (#803).
+        if self.enforce_visibility
+            && self.program.has_private_defs()
+            && self.program.is_private(entry_point)
+        {
+            return Err(RuntimeError::PrivateAccess {
+                name: format!("{entry_point}"),
+            });
+        }
         if self.instances.contains_key(name) {
             return Err(RuntimeError::FlowAlreadyExists(name.to_owned()));
         }
@@ -2692,6 +2707,20 @@ impl<R: StoryRng> Story<R> {
         name: &str,
         container_idx: Option<u32>,
     ) -> Result<(), RuntimeError> {
+        // M-2b: same by-id refusal as `spawn_flow` (#803) — a resolved
+        // `container_idx` (e.g. from `Program::find_address`, as the wasm
+        // `spawn_flow` binding in `brink-web` does) must not bypass the
+        // named-lookup refusal either. `None` targets the root, which is
+        // never private.
+        if let Some(idx) = container_idx
+            && self.enforce_visibility
+            && self.program.has_private_defs()
+            && self.program.container_is_private(idx)
+        {
+            return Err(RuntimeError::PrivateAccess {
+                name: format!("{}", self.program.container(idx).id),
+            });
+        }
         if self.shared_instances.contains_key(name) || self.instances.contains_key(name) {
             return Err(RuntimeError::FlowAlreadyExists(name.to_owned()));
         }
