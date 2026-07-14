@@ -356,8 +356,8 @@ impl ContainerEmitter<'_> {
         if s.parts.len() == 1
             && let lir::StringPart::Literal(text) = &s.parts[0]
         {
-            let name_id = self.intern_string(text);
-            self.emit(Opcode::PushString(name_id.0));
+            // FG-4b: leave the operand symbolic; the link phase resolves it.
+            self.emit_push_string(text);
             return;
         }
 
