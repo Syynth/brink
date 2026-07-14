@@ -116,6 +116,11 @@ test.describe("knot/stitch rename (#305)", () => {
   });
 
   test("a colliding rename shows the breakage report; Force overrides", async ({ page }) => {
+    // The Enter-triggered rename runs the collision analysis synchronously in
+    // wasm on the main thread before the report can mount — under CI's
+    // parallel workers that occasionally exceeds the default 5s expect
+    // timeout (#696). Widen the budget for this test and the specific wait.
+    test.slow();
     await page.goto("/");
     await page.waitForSelector(".brink-binder-knot", { timeout: 8000 });
 
@@ -125,16 +130,19 @@ test.describe("knot/stitch rename (#305)", () => {
     await page.keyboard.press("Enter");
 
     // Safe-by-default: the rename is blocked and the report is shown instead.
+    // Wait on the actual UI condition (the report mounting) with a timeout
+    // sized for the wasm analysis, not the default — never a fixed sleep.
     const report = page.locator(".brink-rename-report");
-    await expect(report).toBeVisible();
+    await expect(report).toBeVisible({ timeout: 20000 });
     await expect(report).toContainText(/would break/i);
     await expect(report.locator(".brink-rename-diag")).not.toHaveCount(0);
     // Still not applied — `threshold` is intact.
     await expect(binderKnot(page, "threshold")).toHaveCount(1);
 
     // Force overrides; the report closes and the rename applies (now two `intro`).
+    // Same wasm-bound apply path — give it the same generous, condition-based budget.
     await page.locator(".brink-rename-force").click();
-    await expect(report).toBeHidden();
+    await expect(report).toBeHidden({ timeout: 20000 });
     await expect(binderKnot(page, "threshold")).toHaveCount(0);
     await expect(binderKnot(page, "intro")).toHaveCount(2);
   });
