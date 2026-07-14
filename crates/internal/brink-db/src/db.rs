@@ -1093,4 +1093,57 @@ mod module_tests {
             "expected E088 unresolved import, got {codes:?}"
         );
     }
+
+    /// A file that belongs to a declared module but declares no top-level
+    /// symbols of its own (only root content) must still resolve to that
+    /// module — a referrer in the *same* declared module referencing a
+    /// `#@private` sibling def must not be wrongly flagged `E087` just
+    /// because the referrer's own module couldn't be derived from its
+    /// (nonexistent) symbols.
+    #[test]
+    fn symbol_less_file_in_same_module_is_not_e087() {
+        let mut db = ProjectDb::new();
+        db.set_file(
+            "a.ink",
+            "#@module(town)\n== square ==\n#@private\nGotcha!\n-> DONE\n".to_owned(),
+        );
+        // `b.ink` declares the same module but has only root content — no
+        // knot/VAR/CONST/LIST/STRUCT of its own.
+        let b = db.set_file("b.ink", "#@module(town)\n-> square\n".to_owned());
+
+        let codes: Vec<_> = db
+            .diagnostics(b)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            !codes.contains(&DiagnosticCode::E087),
+            "same-module reference from a symbol-less file must not be E087, got {codes:?}"
+        );
+    }
+
+    /// A symbol-less file (only root content) that imports its own declared
+    /// module must still trip `E090` self-import — the same derivation gap
+    /// that caused the `E087` false positive above also caused this false
+    /// negative (the referrer's own module resolved to `None`).
+    #[test]
+    fn symbol_less_file_self_import_is_e090() {
+        let mut db = ProjectDb::new();
+        let f = db.set_file(
+            "quest.ink",
+            "#@module(quest)\nIMPORT quest\n-> DONE\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(f)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E090),
+            "expected E090 self-import from a symbol-less file, got {codes:?}"
+        );
+    }
 }

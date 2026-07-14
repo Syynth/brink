@@ -41,22 +41,25 @@ fn is_importable(kind: SymbolKind) -> bool {
     )
 }
 
-/// Run the M-2 import + visibility checks.
-#[must_use]
-pub fn check(
+/// Per-file declared module name (`Some` only for a *declared* module,
+/// shared across a multi-file module; `None` for an undeclared
+/// stem-module), plus the public top-level exports per declared module (for
+/// bare-import validation).
+///
+/// The module map is derived primarily from any symbol the file declares —
+/// every symbol in a file shares that file's module by construction — with a
+/// fallback to the file's own HIR `#@module(…)` declaration for a file that
+/// declares no top-level symbols of its own (only root content), which
+/// otherwise never appears in `index.symbols` and would wrongly resolve to
+/// "no module" (`None`).
+fn file_modules_and_exports(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
-    resolutions: &ResolutionMap,
-) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
-
-    // Per-file declared module name (`Some` only for a *declared* module,
-    // shared across a multi-file module; `None` for an undeclared
-    // stem-module). Derived from any symbol the file declares — every symbol
-    // in a file shares that file's module by construction.
+) -> (
+    BTreeMap<FileId, Option<String>>,
+    BTreeMap<String, BTreeSet<String>>,
+) {
     let mut file_module: BTreeMap<FileId, Option<String>> = BTreeMap::new();
-    // Public top-level exports per declared module, for bare-import
-    // validation.
     let mut declared_exports: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for info in index.symbols.values() {
         file_module.entry(info.file).or_insert(info.module.clone());
@@ -70,6 +73,24 @@ pub fn check(
                 .insert(info.name.clone());
         }
     }
+    for &(file_id, hir) in files {
+        file_module
+            .entry(file_id)
+            .or_insert_with(|| hir.module.as_ref().map(|decl| decl.name.clone()));
+    }
+    (file_module, declared_exports)
+}
+
+/// Run the M-2 import + visibility checks.
+#[must_use]
+pub fn check(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    let (file_module, declared_exports) = file_modules_and_exports(files, index);
 
     // ── Cross-module visibility (E087) ──────────────────────────────
     for r in resolutions {

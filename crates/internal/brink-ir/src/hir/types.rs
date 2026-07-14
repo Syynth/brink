@@ -1443,9 +1443,11 @@ pub enum DiagnosticCode {
     /// module. Fix: make the definition `#@public` and `IMPORT` it, or move
     /// the reference into the module (modules-spec §4/§7).
     E087,
-    /// An `IMPORT` names a module that does not exist, or a bare-form
-    /// `IMPORT { name } FROM mod` names a definition that module does not
-    /// export (modules-spec §2/§7).
+    /// A bare-form `IMPORT { name } FROM mod` names a definition that the
+    /// *declared* module `mod` does not publicly export. Only enforced
+    /// against declared modules — an import naming an unknown/undeclared
+    /// module is not itself flagged by this code, since this module's
+    /// export set isn't visible to the check (modules-spec §2/§7).
     E088,
     /// An `IMPORT` brings the same local name into scope twice (a repeated
     /// bare import, or two imports whose names/aliases collide) — the
@@ -1675,7 +1677,9 @@ impl DiagnosticCode {
                 "`#@module` requires exactly one module name and may appear at most once per file"
             }
             Self::E087 => "reference to a `#@private` definition in another module",
-            Self::E088 => "`IMPORT` names a module or definition that does not exist",
+            Self::E088 => {
+                "bare `IMPORT { name } FROM mod` names a definition the declared module does not export"
+            }
             Self::E089 => "`IMPORT` brings the same name into scope more than once",
             Self::E090 => "a module cannot `IMPORT` itself",
             Self::E091 => {
