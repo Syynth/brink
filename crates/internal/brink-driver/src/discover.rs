@@ -40,6 +40,15 @@ where
         // Discover INCLUDEs
         if let Some(hir) = db.hir(file_id) {
             for include in &hir.includes {
+                // A bare `INCLUDE` (no path) lowers to an `IncludeSite` with
+                // an empty `file_path` — the parser already flagged this as
+                // E037 ("expected file path"). Reading the empty path here
+                // would surface an `Io` error before that diagnostic ever
+                // reaches the user, so skip it and let discovery continue.
+                if include.file_path.is_empty() {
+                    debug!(from = path, "skipping empty INCLUDE path (E037)");
+                    continue;
+                }
                 let resolved = resolve_include_path(&path, &include.file_path);
                 if !seen.contains(&resolved) {
                     debug!(from = path, include = resolved, "discovered INCLUDE");
