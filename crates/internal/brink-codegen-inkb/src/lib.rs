@@ -1,8 +1,11 @@
 //! Bytecode backend: LIR → `StoryData`.
 
+mod chunk;
 mod container;
 mod content;
 mod expr;
+
+pub use chunk::{ContainerChunk, NameRef, Relocation, UNRESOLVED_NAME_ID};
 
 use std::collections::HashMap;
 
@@ -71,7 +74,7 @@ fn collapse_whitespace(s: &str) -> String {
 /// `brink-ir::lir::lower` ever hands back) always succeeds.
 pub fn emit(program: &lir::Program) -> Result<StoryData, CodegenError> {
     let mut state = EmitState {
-        containers: Vec::new(),
+        chunks: Vec::new(),
         addresses: Vec::new(),
         address_paths: Vec::new(),
         scope_line_tables: HashMap::new(),
@@ -112,8 +115,21 @@ pub fn emit(program: &lir::Program) -> Result<StoryData, CodegenError> {
         .collect();
     line_tables.sort_by_key(|lt| lt.scope_id.to_raw());
 
+    // Link phase (FG-4b): resolve each chunk's symbolic name-reference
+    // relocations against the now-fully-assembled name table and patch the
+    // placeholder operands in place. The name index is complete — every
+    // `PushString` symbol was interned as its relocation was recorded (see
+    // `ContainerEmitter::emit_push_string`) — so a miss is a real defect,
+    // surfaced by `ContainerChunk::link` rather than silently dropped.
+    let name_index = &state.name_index;
+    let containers = state
+        .chunks
+        .into_iter()
+        .map(|c| c.link(|s| name_index.get(s).copied()))
+        .collect::<Result<Vec<_>, _>>()?;
+
     Ok(StoryData {
-        containers: state.containers,
+        containers,
         line_tables,
         variables,
         list_defs,
@@ -150,7 +166,11 @@ fn build_struct_shapes(shapes: &[lir::StructShapeDef]) -> Vec<StructShapeDef> {
 // ─── Emission state ─────────────────────────────────────────────────
 
 struct EmitState {
-    containers: Vec<ContainerDef>,
+    /// Per-container codegen chunks (FG-4b): each holds a `ContainerDef`
+    /// whose bytecode carries [`UNRESOLVED_NAME_ID`] placeholders at every
+    /// name-reference site, plus the symbolic relocation table the link
+    /// phase in [`emit`] resolves. Pushed in container-walk order.
+    chunks: Vec<ContainerChunk>,
     addresses: Vec<AddressDef>,
     /// Qualified-path → target table (scope containers + author labels).
     address_paths: Vec<AddressPath>,
@@ -209,6 +229,10 @@ struct ContainerEmitter<'a> {
     /// Shared with every other `ContainerEmitter` created during the same
     /// `emit()` call (see `EmitState::errors`).
     errors: &'a mut Vec<CodegenError>,
+    /// FG-4b symbolic name-reference patch sites into this container's
+    /// `bytecode`. Populated by [`Self::emit_push_string`]; drained into the
+    /// container's [`ContainerChunk`] by `walk_container`.
+    relocations: Vec<Relocation>,
 }
 
 /// Jump-patch bookkeeping for one open `LogicWhile` (innermost = top of
@@ -235,7 +259,30 @@ impl<'a> ContainerEmitter<'a> {
             in_conditional_branch: false,
             loop_stack: Vec::new(),
             errors: &mut state.errors,
+            relocations: Vec::new(),
         }
+    }
+
+    /// Emit a `PushString` whose `NameId` operand is left *symbolic*
+    /// (FG-4b): the string is interned into the story name table now — so
+    /// the table's contents and ordering are byte-for-byte identical to
+    /// eager resolution — but the bytecode carries an [`UNRESOLVED_NAME_ID`]
+    /// placeholder and a [`Relocation`] recording the symbolic reference.
+    /// The link phase in [`emit`] resolves the symbol against the assembled
+    /// name table and patches the operand (see [`chunk`]).
+    fn emit_push_string(&mut self, text: &str) {
+        // Intern eagerly to fix this string's position in the name table:
+        // the link phase looks the same string up, so the patched operand
+        // equals what pre-chunk codegen wrote inline. The assigned id is
+        // deliberately not baked into the chunk — the chunk stays symbolic.
+        self.intern_string(text);
+        self.emit(Opcode::PushString(UNRESOLVED_NAME_ID));
+        #[expect(clippy::cast_possible_truncation)]
+        let offset = (self.bytecode.len() - 2) as u32;
+        self.relocations.push(Relocation {
+            offset,
+            name: NameRef::Symbol(text.to_string()),
+        });
     }
 
     #[expect(clippy::needless_pass_by_value)]
@@ -415,6 +462,9 @@ fn walk_container(
         None
     };
 
+    // Take the symbolic relocation table before the emitter's bytecode is
+    // moved into the def; the chunk carries both (FG-4b).
+    let relocations = core::mem::take(&mut emitter.relocations);
     let def = ContainerDef {
         id: container.id,
         scope_id,
@@ -441,7 +491,7 @@ fn walk_container(
             .collect(),
         local: container.local,
     };
-    state.containers.push(def);
+    state.chunks.push(ContainerChunk { def, relocations });
 
     // Primary address: every container is addressable by its own id.
     state.addresses.push(AddressDef {
