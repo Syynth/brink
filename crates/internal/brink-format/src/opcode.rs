@@ -120,6 +120,107 @@ const MAX: u8 = 0x96;
 // External fns
 const CALL_EXTERNAL: u8 = 0xA0;
 
+// v4 collection opcodes (`docs/format-v4-rfc.md` §3 "Collections (T1a)") —
+// numeric assignments frozen by the §9 one-bump rule, contiguous and
+// adjacent to the existing List ops block below. Live as of T1b-2 (#570):
+// `Opcode` variants + VM execution exist for the whole block, though only a
+// subset (`ArrayNew`, `MapNew`, `IndexGet`, `IndexSet`, `Len`, `Keys`,
+// `PushLiteral`) is emitted by the compiler in T1b-2 — the map-mutator ops
+// (`MapGet`, `MapInsert`, `MapRemove`, `MapContains`, `Values`) become
+// compiler-reachable when the stdlib slice (T1b-3, `docs/t1b-surface-spec.md`
+// §5) lands, matching the RFC's "inert until each milestone's compiler work
+// emits them" discipline.
+//   0xBE ArrayNew(n)     0xBF MapNew(n)        0xC0 IndexGet
+//   0xC1 IndexSet        0xC2 Len              0xC3 MapGet
+//   0xC4 MapInsert       0xC5 MapRemove        0xC6 MapContains
+//   0xC7 Keys            0xC8 Values           0xC9 PushLiteral(u32)
+const ARRAY_NEW: u8 = 0xBE;
+const MAP_NEW: u8 = 0xBF;
+const INDEX_GET: u8 = 0xC0;
+const INDEX_SET: u8 = 0xC1;
+const COLLECTION_LEN: u8 = 0xC2;
+const MAP_GET: u8 = 0xC3;
+const MAP_INSERT: u8 = 0xC4;
+const MAP_REMOVE: u8 = 0xC5;
+const MAP_CONTAINS: u8 = 0xC6;
+const COLLECTION_KEYS: u8 = 0xC7;
+const COLLECTION_VALUES: u8 = 0xC8;
+const PUSH_LITERAL: u8 = 0xC9;
+// `PushLiteral(u32)` is the T1b `LiteralPool` reference opcode (RFC §2).
+// `PushList`/`ListLiterals` are unaffected by this PR — the RFC's absorption
+// of `ListLiterals` into `LiteralPool` is a separate, larger migration (see
+// PR description scopeNotes) that would require regenerating every checked-in
+// oracle `.inkb` fixture; out of scope here by construction (nothing in this
+// PR touches `PushList`/`ListLiterals` emission or decoding).
+//
+// Sharing-discipline ops (`TakeVar`, `StoreVarIfNew`, `EqVars`) and later
+// Tier-1 groups (functions, handles, projections, records) remain named in
+// the RFC but out of this reservation — each gets its own contiguous block,
+// numbered when its own issue lands.
+
+// v4 sharing-discipline opcodes (`docs/format-v4-rfc.md` §3 "Sharing
+// discipline (T1a)"; semantics in `docs/value-model-spec.md` §5/§6) —
+// numeric assignments frozen by the §9 one-bump rule, contiguous and
+// adjacent to the collection block above. Live as of T1b-4 (#576):
+//   0xCA TakeGlobal(DefinitionId)   0xCB StoreVarIfNew (reserved)
+//   0xCC EqVars(a, b) (reserved)    0xCD TakeTemp(u16)
+// `TakeGlobal`/`TakeTemp` are the RFC's generic `TakeVar(slot)` split into
+// its two concrete slot kinds (global `DefinitionId` vs temp `u16` — they
+// don't share an operand encoding, so one opcode can't cover both): each
+// moves the slot's current value out and leaves `Value::Null` behind — the
+// take-half of the take → `make_mut` → write-back RMW discipline (spec §5)
+// that closes the indexed-write COW cliff. `TakeTemp` mirrors `GetTemp`'s
+// pointer auto-dereference (`ref` params): if the temp holds a
+// `VariablePointer`/`TempPointer`, the *pointed-to* location is taken, not
+// the pointer value itself (see `vm.rs`'s `Opcode::TakeTemp` arm).
+// `TakeGlobal` does not auto-dereference — `GetGlobal`/`SetGlobal` don't
+// either, since ref-params live in temps, never in globals themselves.
+// `0xCD` is claimed fresh, adjacent to this block, rather than reusing
+// `0xCB`/`0xCC` — those stay reserved for `StoreVarIfNew`/`EqVars` exactly
+// as the RFC named them; splitting `TakeVar` doesn't touch their
+// numbering. `StoreVarIfNew` and `EqVars` remain reserved (comments only,
+// no `Opcode` variants — `decode`'s catch-all keeps rejecting both bytes)
+// — the optional ref-collapsing sites from spec §6 (store-time keep-old-Arc
+// cutoff; fused compare with optional collapse on structural equality),
+// pure peephole optimizations, never required for correctness. Later
+// Tier-1 groups (functions, handles, projections, records) remain named in
+// the RFC but out of this reservation — each gets its own contiguous
+// block, numbered when its own issue lands.
+const TAKE_GLOBAL: u8 = 0xCA;
+const TAKE_TEMP: u8 = 0xCD;
+
+// v4 record opcodes (TM-4, `docs/typed-mode-spec.md` §6; named but
+// numerically unallocated in `docs/format-v4-rfc.md` §3 — "design the exact
+// encoding against the reserved space" — assigned here) — contiguous and
+// adjacent to the sharing-discipline block above:
+//   0xCE RecordNew(ShapeId)      0xCF RecordGetDyn(NameId)
+//   0xD0 RecordSetDyn(NameId)    0xD1 RecordGet(offset)
+//   0xD2 RecordSet(offset)
+// `RecordNew`/`RecordGetDyn`/`RecordSetDyn` (PR #620/TM-4 foundation) are the
+// by-name field ops every dialect can use correctly. `RecordGet`/`RecordSet`
+// (TM-4c, #666) are the static-offset field ops, the strict-mode-only
+// performance payoff typed-mode-spec §6 anticipates: `brink-ir`'s LIR
+// lowering only emits them when a field access's record shape is proven at
+// compile time (see `docs/typed-mode-spec.md` §6 and the TM-4c PR
+// description) — the operand is a flat `u16` index into the record's own
+// field vector, checked only against that vector's bounds at runtime (no
+// shape re-verification — the "offset" payoff is skipping exactly that
+// lookup), so out-of-range is a turn-terminating fault
+// (`RuntimeError::RecordFieldOffsetOutOfRange`), never UB/panic.
+const RECORD_NEW: u8 = 0xCE;
+const RECORD_GET_DYN: u8 = 0xCF;
+const RECORD_SET_DYN: u8 = 0xD0;
+const RECORD_GET: u8 = 0xD1;
+const RECORD_SET: u8 = 0xD2;
+
+// TM-3 completion conversion intrinsics (`docs/typed-mode-spec.md` §4,
+// maintainer ruling 2026-07-13, issue #659) — contiguous and adjacent to the
+// record block above, this PR's own reservation (no prior RFC allocation for
+// these three; the record block's own "assigned here" precedent applies).
+const CONVERT_INT: u8 = 0xD3;
+const CONVERT_FLOAT: u8 = 0xD4;
+const CONVERT_STRING: u8 = 0xD5;
+
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
 const LIST_NOT_CONTAINS: u8 = 0xB1;
@@ -272,6 +373,10 @@ pub enum DecodeError {
     BadInklMagic([u8; 4]),
     /// `.inkl` version is not supported.
     UnsupportedInklVersion(u8),
+    /// `VAL_ARRAY`/`VAL_MAP` nesting exceeded the decoder's recursion-depth
+    /// cap (see `MAX_DECODE_DEPTH`). Guards against crafted files of deeply
+    /// nested single-element collections stack-overflowing the reader.
+    MaxDepthExceeded(usize),
 }
 
 impl fmt::Display for DecodeError {
@@ -313,6 +418,9 @@ impl fmt::Display for DecodeError {
             }
             Self::BadInklMagic(m) => write!(f, "bad .inkl magic: {m:02x?}"),
             Self::UnsupportedInklVersion(v) => write!(f, "unsupported .inkl version: {v}"),
+            Self::MaxDepthExceeded(limit) => {
+                write!(f, "value nesting exceeded max decode depth ({limit})")
+            }
         }
     }
 }
@@ -454,6 +562,96 @@ pub enum Opcode {
     ListRange,
     ListFromInt,
     ListRandom,
+
+    // ── Collections (T1b, `docs/format-v4-rfc.md` §3 "Collections (T1a)") ─
+    /// `[elem_0, …, elem_{n-1}]` → `Array([elem_0, …, elem_{n-1}])`.
+    ArrayNew(u32),
+    /// `[k_0, v_0, …, k_{n-1}, v_{n-1}]` → `Map({k_0: v_0, …})` (insertion
+    /// order = argument order; a repeated key keeps its first position and
+    /// takes the last value, matching `OrderedMap::insert`).
+    MapNew(u32),
+    /// `[container, index]` → element/value. Turn-terminating fault on
+    /// out-of-bounds array index or missing map key (value-model-spec §6).
+    IndexGet,
+    /// `[container, index, value]` → updated container (take → `make_mut` →
+    /// write-back). Turn-terminating fault on out-of-bounds array index or
+    /// missing map key — no silent growth on write-past-end (spec §6).
+    IndexSet,
+    /// `[container]` → `Int(len)`. Array or map.
+    CollectionLen,
+    /// `[map, key]` → value. Turn-terminating fault on missing key.
+    MapGet,
+    /// `[map, key, value]` → updated map (insert-or-overwrite; unlike
+    /// `IndexSet`, a missing key is not a fault — this is the stdlib
+    /// `insert()` mutator's primitive).
+    MapInsert,
+    /// `[map, key]` → updated map with `key` removed (no-op if absent).
+    MapRemove,
+    /// `[map, key]` → `Bool`.
+    MapContains,
+    /// `[map]` → `Array` of keys in insertion order.
+    CollectionKeys,
+    /// `[map]` → `Array` of values in insertion order.
+    CollectionValues,
+    /// `LiteralPool[idx]` → cloned value (an `Arc` bump for collections).
+    PushLiteral(u32),
+
+    // ── Sharing discipline (T1b-4, `docs/format-v4-rfc.md` §3) ──────────
+    /// Move a global's current value out, leaving `Value::Null` behind —
+    /// the take-half of the take → `make_mut` → write-back RMW discipline
+    /// (value-model-spec §5). No stack input; pushes the taken value.
+    /// Unlike `GetGlobal`, never auto-dereferences (globals can't hold
+    /// `ref`-param pointers — those live in temps).
+    TakeGlobal(DefinitionId),
+    /// Move a temp's current value out, leaving `Value::Null` behind —
+    /// mirrors `TakeGlobal` for temp slots. Auto-dereferences like
+    /// `GetTemp`: if the temp holds a `VariablePointer`/`TempPointer`, the
+    /// *pointed-to* location is taken (and left `Null`), not the pointer
+    /// value itself, which stays in this slot untouched.
+    TakeTemp(u16),
+
+    // ── Records (TM-4, `docs/typed-mode-spec.md` §6) ─────────────────────
+    /// `[field_0, …, field_{n-1}]` → `Record` (n = the shape's declared
+    /// field count, looked up from `StructShapes`; fields popped/assigned in
+    /// shape declaration order). The `u32` operand is the `ShapeId`.
+    RecordNew(u32),
+    /// `[record]` → field value, looked up by name (`NameId` operand) in the
+    /// record's own shape. Turn-terminating fault if the shape has no field
+    /// by that name (value-model-spec §11c).
+    RecordGetDyn(u16),
+    /// `[record, value]` → updated record (take → `make_mut` → write-back),
+    /// field selected by name (`NameId` operand). Turn-terminating fault if
+    /// the shape has no field by that name.
+    RecordSetDyn(u16),
+    /// `[record]` → field value, looked up by flat offset into the record's
+    /// own field vector (TM-4c, `docs/typed-mode-spec.md` §6 static-offset
+    /// payoff). Emitted only when the record's shape is compile-time known
+    /// (`types = strict`); turn-terminating fault if the offset is out of
+    /// range for the popped record's field count — no shape re-check.
+    RecordGet(u16),
+    /// `[record, value]` → updated record (take → `make_mut` → write-back),
+    /// field selected by flat offset (TM-4c). Turn-terminating fault if the
+    /// offset is out of range.
+    RecordSet(u16),
+
+    // ── Conversion intrinsics (TM-3 completion, `docs/typed-mode-spec.md`
+    // §4, maintainer ruling 2026-07-13, issue #659) ──────────────────────
+    /// `[x]` → `Int`. The `int(x)` pure conversion intrinsic: `Int`
+    /// (identity), `Float` (truncate toward zero, matching vanilla ink's
+    /// `INT()`), `Bool` (`true` → 1, `false` → 0), `String` (parse).
+    /// Turn-terminating fault on a string that fails to parse, or on any
+    /// value outside this permissive numeric+bool domain (divert targets,
+    /// LIST values, arrays, maps, records) — value-model-spec §11c.
+    ConvertInt,
+    /// `[x]` → `Float`. The `float(x)` pure conversion intrinsic: `Float`
+    /// (identity), `Int` (widen), `Bool` (`true` → 1.0, `false` → 0.0),
+    /// `String` (parse). Same fault domain as `ConvertInt`.
+    ConvertFloat,
+    /// `[x]` → `String`. The `string(x)` pure conversion intrinsic: display
+    /// form, identical to interpolation (`{x}`) — total over every `Value`,
+    /// never faults (typed-mode-spec §4: "display is universal, not a
+    /// coercion").
+    ConvertString,
 
     // ── Lifecycle ───────────────────────────────────────────────────────
     Done,
@@ -693,6 +891,66 @@ impl Opcode {
             Self::ListFromInt => write_u8(buf, LIST_FROM_INT),
             Self::ListRandom => write_u8(buf, LIST_RANDOM),
 
+            // Collections
+            Self::ArrayNew(n) => {
+                write_u8(buf, ARRAY_NEW);
+                write_u32(buf, n);
+            }
+            Self::MapNew(n) => {
+                write_u8(buf, MAP_NEW);
+                write_u32(buf, n);
+            }
+            Self::IndexGet => write_u8(buf, INDEX_GET),
+            Self::IndexSet => write_u8(buf, INDEX_SET),
+            Self::CollectionLen => write_u8(buf, COLLECTION_LEN),
+            Self::MapGet => write_u8(buf, MAP_GET),
+            Self::MapInsert => write_u8(buf, MAP_INSERT),
+            Self::MapRemove => write_u8(buf, MAP_REMOVE),
+            Self::MapContains => write_u8(buf, MAP_CONTAINS),
+            Self::CollectionKeys => write_u8(buf, COLLECTION_KEYS),
+            Self::CollectionValues => write_u8(buf, COLLECTION_VALUES),
+            Self::PushLiteral(idx) => {
+                write_u8(buf, PUSH_LITERAL);
+                write_u32(buf, idx);
+            }
+
+            // Sharing discipline
+            Self::TakeGlobal(id) => {
+                write_u8(buf, TAKE_GLOBAL);
+                write_def_id(buf, id);
+            }
+            Self::TakeTemp(idx) => {
+                write_u8(buf, TAKE_TEMP);
+                write_u16(buf, idx);
+            }
+
+            // Records
+            Self::RecordNew(shape_id) => {
+                write_u8(buf, RECORD_NEW);
+                write_u32(buf, shape_id);
+            }
+            Self::RecordGetDyn(name_id) => {
+                write_u8(buf, RECORD_GET_DYN);
+                write_u16(buf, name_id);
+            }
+            Self::RecordSetDyn(name_id) => {
+                write_u8(buf, RECORD_SET_DYN);
+                write_u16(buf, name_id);
+            }
+            Self::RecordGet(offset) => {
+                write_u8(buf, RECORD_GET);
+                write_u16(buf, offset);
+            }
+            Self::RecordSet(offset) => {
+                write_u8(buf, RECORD_SET);
+                write_u16(buf, offset);
+            }
+
+            // Conversion intrinsics (TM-3 completion, #659)
+            Self::ConvertInt => write_u8(buf, CONVERT_INT),
+            Self::ConvertFloat => write_u8(buf, CONVERT_FLOAT),
+            Self::ConvertString => write_u8(buf, CONVERT_STRING),
+
             // Lifecycle
             Self::Done => write_u8(buf, DONE),
             Self::Yield => write_u8(buf, YIELD),
@@ -864,6 +1122,36 @@ impl Opcode {
             LIST_RANGE => Self::ListRange,
             LIST_FROM_INT => Self::ListFromInt,
             LIST_RANDOM => Self::ListRandom,
+
+            // Collections
+            ARRAY_NEW => Self::ArrayNew(read_u32(buf, offset)?),
+            MAP_NEW => Self::MapNew(read_u32(buf, offset)?),
+            INDEX_GET => Self::IndexGet,
+            INDEX_SET => Self::IndexSet,
+            COLLECTION_LEN => Self::CollectionLen,
+            MAP_GET => Self::MapGet,
+            MAP_INSERT => Self::MapInsert,
+            MAP_REMOVE => Self::MapRemove,
+            MAP_CONTAINS => Self::MapContains,
+            COLLECTION_KEYS => Self::CollectionKeys,
+            COLLECTION_VALUES => Self::CollectionValues,
+            PUSH_LITERAL => Self::PushLiteral(read_u32(buf, offset)?),
+
+            // Sharing discipline
+            TAKE_GLOBAL => Self::TakeGlobal(read_def_id(buf, offset)?),
+            TAKE_TEMP => Self::TakeTemp(read_u16(buf, offset)?),
+
+            // Records
+            RECORD_NEW => Self::RecordNew(read_u32(buf, offset)?),
+            RECORD_GET_DYN => Self::RecordGetDyn(read_u16(buf, offset)?),
+            RECORD_SET_DYN => Self::RecordSetDyn(read_u16(buf, offset)?),
+            RECORD_GET => Self::RecordGet(read_u16(buf, offset)?),
+            RECORD_SET => Self::RecordSet(read_u16(buf, offset)?),
+
+            // Conversion intrinsics (TM-3 completion, #659)
+            CONVERT_INT => Self::ConvertInt,
+            CONVERT_FLOAT => Self::ConvertFloat,
+            CONVERT_STRING => Self::ConvertString,
 
             // Lifecycle
             DONE => Self::Done,
@@ -1134,6 +1422,56 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_collections() {
+        for op in [
+            Opcode::ArrayNew(0),
+            Opcode::ArrayNew(1),
+            Opcode::ArrayNew(u32::MAX),
+            Opcode::MapNew(0),
+            Opcode::MapNew(3),
+            Opcode::IndexGet,
+            Opcode::IndexSet,
+            Opcode::CollectionLen,
+            Opcode::MapGet,
+            Opcode::MapInsert,
+            Opcode::MapRemove,
+            Opcode::MapContains,
+            Opcode::CollectionKeys,
+            Opcode::CollectionValues,
+            Opcode::PushLiteral(0),
+            Opcode::PushLiteral(u32::MAX),
+        ] {
+            roundtrip(&op);
+        }
+    }
+
+    /// The collection opcode block is contiguous (`docs/format-v4-rfc.md`
+    /// §3): `0xBE`-`0xC9` inclusive, no gaps, no overlap with the adjacent
+    /// list-ops block (`0xB0`-`0xBD`) or the lifecycle block (`0xF0`+).
+    #[test]
+    fn collection_opcode_block_is_contiguous_and_matches_rfc_layout() {
+        let expected: [(u8, Opcode); 12] = [
+            (0xBE, Opcode::ArrayNew(0)),
+            (0xBF, Opcode::MapNew(0)),
+            (0xC0, Opcode::IndexGet),
+            (0xC1, Opcode::IndexSet),
+            (0xC2, Opcode::CollectionLen),
+            (0xC3, Opcode::MapGet),
+            (0xC4, Opcode::MapInsert),
+            (0xC5, Opcode::MapRemove),
+            (0xC6, Opcode::MapContains),
+            (0xC7, Opcode::CollectionKeys),
+            (0xC8, Opcode::CollectionValues),
+            (0xC9, Opcode::PushLiteral(0)),
+        ];
+        for (byte, op) in expected {
+            let mut buf = Vec::new();
+            op.encode(&mut buf);
+            assert_eq!(buf[0], byte, "{op:?} encoded to unexpected discriminant");
+        }
+    }
+
+    #[test]
     fn roundtrip_lifecycle() {
         for op in [Opcode::Done, Opcode::Yield, Opcode::End, Opcode::Nop] {
             roundtrip(&op);
@@ -1158,6 +1496,130 @@ mod tests {
         let mut offset = 0;
         let err = Opcode::decode(&buf, &mut offset).unwrap_err();
         assert_eq!(err, DecodeError::UnknownOpcode(0xFF));
+    }
+
+    /// The v4 collection opcode block (`0xBE`-`0xC9`, `docs/format-v4-rfc.md`
+    /// §3 "Collections (T1a)") went live in T1b-2 (#570) — every byte in the
+    /// block now decodes to a real `Opcode` variant (superseding the T1a-era
+    /// "still rejected" test this replaces). `ArrayNew`/`MapNew`/
+    /// `PushLiteral` carry a `u32` operand so a bare 1-byte buffer isn't
+    /// enough for those three; this asserts every discriminant byte decodes
+    /// to *some* `Opcode` (not `UnknownOpcode`), operand length aside.
+    #[test]
+    fn collection_opcode_block_no_longer_rejected() {
+        for disc in 0xBEu8..=0xC9u8 {
+            // Pad with zero bytes so the 4-byte `u32` operand opcodes
+            // (`ArrayNew`/`MapNew`/`PushLiteral`) have enough to decode too.
+            let buf = [disc, 0, 0, 0, 0];
+            let mut offset = 0;
+            let result = Opcode::decode(&buf, &mut offset);
+            assert!(
+                !matches!(result, Err(DecodeError::UnknownOpcode(_))),
+                "0x{disc:02x} should decode to a real Opcode, got {result:?}"
+            );
+        }
+    }
+
+    /// `StoreVarIfNew`/`EqVars` (`0xCB`-`0xCC`, `docs/format-v4-rfc.md` §3
+    /// "Sharing discipline (T1a)") stay numbered but deliberately not wired
+    /// into `Opcode` — the strict reader must keep rejecting both bytes
+    /// until their own milestone lands (spec §6's optional ref-collapsing
+    /// sites, not part of T1b-4/#576).
+    #[test]
+    fn decode_reserved_sharing_discipline_opcodes_still_rejected() {
+        for disc in 0xCBu8..=0xCCu8 {
+            let buf = [disc];
+            let mut offset = 0;
+            let err = Opcode::decode(&buf, &mut offset).unwrap_err();
+            assert_eq!(err, DecodeError::UnknownOpcode(disc));
+        }
+    }
+
+    /// `TakeGlobal`/`TakeTemp` (`0xCA`, `0xCD` — T1b-4/#576) round-trip
+    /// through encode/decode.
+    #[test]
+    fn roundtrip_take_opcodes() {
+        roundtrip(&Opcode::TakeGlobal(global_id()));
+        roundtrip(&Opcode::TakeTemp(0));
+        roundtrip(&Opcode::TakeTemp(u16::MAX));
+    }
+
+    /// `TakeGlobal`/`TakeTemp` land at the exact bytes the RFC comment in
+    /// `opcode.rs` documents — `0xCA` (splitting the RFC's generic
+    /// `TakeVar(slot)`) and `0xCD` (freshly claimed, adjacent to the
+    /// reserved block, leaving `0xCB`/`0xCC` untouched for
+    /// `StoreVarIfNew`/`EqVars`).
+    #[test]
+    fn take_opcodes_land_at_documented_bytes() {
+        let mut buf = Vec::new();
+        Opcode::TakeGlobal(global_id()).encode(&mut buf);
+        assert_eq!(buf[0], 0xCA);
+
+        let mut buf = Vec::new();
+        Opcode::TakeTemp(0).encode(&mut buf);
+        assert_eq!(buf[0], 0xCD);
+    }
+
+    /// All five record opcodes (`0xCE`-`0xD2` — TM-4/TM-4c) round-trip
+    /// through encode/decode at their documented bytes.
+    #[test]
+    fn roundtrip_record_opcodes() {
+        roundtrip(&Opcode::RecordNew(0));
+        roundtrip(&Opcode::RecordNew(u32::MAX));
+        roundtrip(&Opcode::RecordGetDyn(0));
+        roundtrip(&Opcode::RecordGetDyn(u16::MAX));
+        roundtrip(&Opcode::RecordSetDyn(0));
+        roundtrip(&Opcode::RecordSetDyn(u16::MAX));
+        roundtrip(&Opcode::RecordGet(0));
+        roundtrip(&Opcode::RecordGet(u16::MAX));
+        roundtrip(&Opcode::RecordSet(0));
+        roundtrip(&Opcode::RecordSet(u16::MAX));
+
+        let mut buf = Vec::new();
+        Opcode::RecordNew(1).encode(&mut buf);
+        assert_eq!(buf[0], 0xCE);
+
+        let mut buf = Vec::new();
+        Opcode::RecordGetDyn(1).encode(&mut buf);
+        assert_eq!(buf[0], 0xCF);
+
+        let mut buf = Vec::new();
+        Opcode::RecordSetDyn(1).encode(&mut buf);
+        assert_eq!(buf[0], 0xD0);
+
+        let mut buf = Vec::new();
+        Opcode::RecordGet(1).encode(&mut buf);
+        assert_eq!(buf[0], 0xD1);
+
+        let mut buf = Vec::new();
+        Opcode::RecordSet(1).encode(&mut buf);
+        assert_eq!(buf[0], 0xD2);
+    }
+
+    /// The three TM-3-completion conversion-intrinsic opcodes (`0xD3`-`0xD5`
+    /// — issue #659) round-trip and sit contiguous and adjacent to the
+    /// record block, matching the reservation comment above `CONVERT_INT`.
+    #[test]
+    fn roundtrip_conversion_opcodes() {
+        for op in [
+            Opcode::ConvertInt,
+            Opcode::ConvertFloat,
+            Opcode::ConvertString,
+        ] {
+            roundtrip(&op);
+        }
+
+        let mut buf = Vec::new();
+        Opcode::ConvertInt.encode(&mut buf);
+        assert_eq!(buf[0], 0xD3);
+
+        let mut buf = Vec::new();
+        Opcode::ConvertFloat.encode(&mut buf);
+        assert_eq!(buf[0], 0xD4);
+
+        let mut buf = Vec::new();
+        Opcode::ConvertString.encode(&mut buf);
+        assert_eq!(buf[0], 0xD5);
     }
 
     #[test]

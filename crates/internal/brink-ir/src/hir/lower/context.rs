@@ -182,6 +182,7 @@ impl LowerSink for EffectSink {
             SymbolKind::Variable => self.manifest.variables.push(sym),
             SymbolKind::Constant => self.manifest.constants.push(sym),
             SymbolKind::List => self.manifest.lists.push(sym),
+            SymbolKind::Struct => self.manifest.structs.push(sym),
             SymbolKind::External => self.manifest.externals.push(sym),
             SymbolKind::Label => self.manifest.labels.push(sym),
             SymbolKind::ListItem => self.manifest.list_items.push(sym),

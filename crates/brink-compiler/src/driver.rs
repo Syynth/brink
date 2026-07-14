@@ -6,7 +6,7 @@ use brink_driver::{AnalysisOptions, Driver};
 use brink_ir::Diagnostic;
 use tracing::info;
 
-use crate::{CompileError, CompileOutput, LirOutput, ResolvedDiagnostic};
+use crate::{CompileError, CompileOutput, ResolvedDiagnostic};
 
 /// Resolve a `FileId`-keyed [`Diagnostic`] to a [`ResolvedDiagnostic`] carrying
 /// the file's source path. Must run while `driver` is still alive, since it
@@ -58,51 +58,6 @@ where
     Ok((driver, entry_id))
 }
 
-/// Run the full compilation pipeline through LIR lowering.
-fn compile_lir<F>(
-    entry: &str,
-    read_file: F,
-    options: AnalysisOptions,
-) -> Result<LirOutput, CompileError>
-where
-    F: FnMut(&str) -> Result<String, io::Error>,
-{
-    let (driver, _entry_id) = prepare_driver(entry, read_file, options)?;
-
-    let product = driver.db().lir_product().cloned().unwrap_or_default();
-
-    let Some(program) = product.program else {
-        let mut all = product.errors;
-        all.extend(product.warnings);
-        return Err(CompileError::Diagnostics(resolve_diagnostics(&driver, all)));
-    };
-
-    info!(globals = program.globals.len(), "LIR lowering complete");
-
-    // Resolve FileId→path at the boundary, while the driver's map is alive.
-    let warnings = resolve_diagnostics(&driver, product.warnings);
-    Ok(LirOutput {
-        program: std::sync::Arc::unwrap_or_clone(program),
-        warnings,
-    })
-}
-
-/// Compile to LIR — public for the JSON backend.
-pub fn compile_to_lir<F>(entry: &str, read_file: F) -> Result<LirOutput, CompileError>
-where
-    F: FnMut(&str) -> Result<String, io::Error>,
-{
-    compile_lir(entry, read_file, AnalysisOptions::default())
-}
-
-/// Run the full compilation pipeline.
-pub fn compile<F>(entry: &str, read_file: F) -> Result<CompileOutput, CompileError>
-where
-    F: FnMut(&str) -> Result<String, io::Error>,
-{
-    compile_with_options(entry, read_file, AnalysisOptions::default())
-}
-
 /// Run the full compilation pipeline with explicit analysis options — e.g. a
 /// registered host-capability manifest and its external-check severity, so
 /// manifest-driven diagnostics surface in the compile output.
@@ -133,7 +88,7 @@ where
     };
 
     Ok(CompileOutput {
-        data: brink_codegen_inkb::emit(&program),
+        data: brink_codegen_inkb::emit(&program)?,
         warnings: resolve_diagnostics(&driver, product.warnings),
     })
 }

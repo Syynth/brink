@@ -3,12 +3,11 @@
 //! Golden pipeline test for I078: `* [Option]\n    Text`
 //!
 //! Spells out the expected data structure at each compilation stage —
-//! HIR, LIR, and JSON — then asserts the actual output matches.
+//! HIR and LIR — then asserts the actual output matches.
 
 use brink_ir::hir::{self, HirFile};
 use brink_ir::lir::{self, ContainerKind};
 use brink_ir::{FileId, SymbolManifest};
-use serde_json::Value;
 
 const SOURCE: &str = "*   [Option]\n    Text\n";
 
@@ -209,7 +208,9 @@ fn lower_lir(source: &str) -> lir::Program {
         &result.resolutions,
         &std::collections::HashMap::new(),
     );
-    program
+    // unwrap: SOURCE is plain ink, so the residual-extension backstop
+    // (E053) never fires and `program` is always `Some`.
+    program.unwrap()
 }
 
 #[test]
@@ -312,75 +313,4 @@ fn i078_lir() {
     assert!(p.lists.is_empty());
     assert!(p.list_items.is_empty());
     assert!(p.externals.is_empty());
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// Stage 3: JSON (must match inklecate reference exactly)
-// ═══════════════════════════════════════════════════════════════════════
-//
-// Expected JSON (from inklecate):
-//
-//   {
-//     "inkVersion": 21,
-//     "root": [
-//       [
-//         "ev", "str", "^Option", "/str", "/ev",
-//         { "*": "0.c-0", "flg": 20 },
-//         {
-//           "c-0": ["\n", "^Text", "\n", { "->": "0.g-0" }, { "#f": 5 }],
-//           "g-0": ["done", null]
-//         }
-//       ],
-//       "done",
-//       null
-//     ],
-//     "listDefs": {}
-//   }
-//
-// Key observations:
-//   - No outer container wrapper — bracket-only choice goes inline
-//   - flg: 20 = ONCE_ONLY (0x10) | HAS_CHOICE_ONLY_CONTENT (0x04)
-//     (NOT HAS_START_CONTENT — there is no start content)
-//   - c-0 body starts with "\n" (newline after choice selection)
-//   - c-0 has "#f": 5 = VISITS | COUNT_START_ONLY
-//   - g-0 is just ["done", null]
-//   - "*": "0.c-0" — path prefixed with "0." (root inner container index)
-
-#[test]
-fn i078_json() {
-    let our_json = brink_compiler::compile_string_to_json(SOURCE).expect("should compile");
-
-    let our_value: Value = serde_json::to_value(&our_json).unwrap();
-
-    let ref_json = serde_json::json!({
-        "inkVersion": 21,
-        "root": [
-            [
-                "ev", "str", "^Option", "/str", "/ev",
-                { "*": "0.c-0", "flg": 20 },
-                {
-                    "c-0": ["\n", "^Text", "\n", { "->": "0.g-0" }, { "#f": 5 }],
-                    "g-0": ["done", null]
-                }
-            ],
-            "done",
-            null
-        ],
-        "listDefs": {}
-    });
-
-    if our_value != ref_json {
-        let our_pretty = serde_json::to_string_pretty(&our_value).unwrap();
-        let ref_pretty = serde_json::to_string_pretty(&ref_json).unwrap();
-
-        std::fs::write("/tmp/brink_i078_ours.json", &our_pretty).unwrap();
-        std::fs::write("/tmp/brink_i078_ref.json", &ref_pretty).unwrap();
-
-        panic!(
-            "I078 JSON mismatch.\n\
-             Files written to /tmp/brink_i078_{{ours,ref}}.json\n\n\
-             Expected:\n{ref_pretty}\n\n\
-             Got:\n{our_pretty}"
-        );
-    }
 }

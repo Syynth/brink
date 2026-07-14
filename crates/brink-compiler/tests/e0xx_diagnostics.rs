@@ -1,0 +1,750 @@
+//! E0xx pipeline-level coverage audit (#672, lane A).
+//!
+//! One direct, minimal fixture per `DiagnosticCode`, proven to fire through
+//! the real pipeline (`brink_compiler::compile_with_options` — parse → HIR
+//! lower → analyze → LIR lower → codegen), never through a unit call on the
+//! emitting function. Each test asserts the code fires *at the expected
+//! span*: the diagnostic's range must start inside the offending construct.
+//!
+//! Codes deliberately absent here (covered by other pipeline-level suites,
+//! kept in one place each per the one-fix-one-commit discipline):
+//!
+//! - E012, E029, E030, E033 — `tests/driver.rs`
+//! - E031, E035, E054, E055, E056, E075, E076, E077, E078 —
+//!   `brink-test-harness/tests/tier1_brink.rs`
+//! - E051 — `tests/t1b_dialect_gate.rs`
+//! - E063, E064, E065, E066, E067 — `tests/tm3_strict_policy.rs`
+//!
+//! Codes with **no test at all** because no source input can make them fire
+//! through the pipeline (suspected-dead; see the #672 lane-A audit report —
+//! findings, not test targets):
+//!
+//! - E011 — the parser always materializes a `FILE_PATH` node (possibly
+//!   empty) inside `INCLUDE_STMT` and reports a missing path as E037
+//!   (`parser/declaration.rs::include_statement`), so `lower_include`'s
+//!   `ok_or(E011)` never triggers.
+//! - E013 / E018 — `parser/divert.rs::path` always creates a `PATH` node
+//!   (empty on error + E037), so `ThreadStart::target()` /
+//!   `DivertTargetExpr::target()` are never `None`.
+//! - E019 — the parser only builds a `CHOICE` node after seeing a bullet
+//!   token, so a bullet-less choice CST cannot exist.
+//! - E028 — no production emit site; a circular INCLUDE surfaces as
+//!   `CompileError::CircularInclude` from discovery instead (covered in
+//!   `tests/driver.rs::compile_circular_includes_detected`).
+//! - E053 — retired by T1b-2 (#570): the LIR backstop was replaced by real
+//!   lowering; no production emit site remains. (E052, formerly listed
+//!   alongside it, was **revived by T1c-1 (#699)** as the `#fn(…)`
+//!   not-yet-implemented lowering fence — tested below and, for the
+//!   VAR-declaration-default path, in
+//!   `brink-test-harness/tests/tier1_brink.rs`.)
+//! - E060 — emitted only when codegen rejects a `Program` violating an
+//!   invariant an earlier stage guarantees (a compiler bug by definition);
+//!   not constructible from source.
+//! - E072 — retired (TM-4c, #666), documented as reserved-not-reused.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::collections::HashMap;
+
+use brink_compiler::{AnalysisOptions, DiagnosticCode, Dialect, TypePolicy};
+use brink_ir::host_manifest::{
+    BaseType, Constraint, HostManifest, ManifestExternal, ManifestParam, SemanticTypeDef, TypeRef,
+};
+
+// ─── Harness ─────────────────────────────────────────────────────────
+
+fn compile(
+    source: &str,
+    options: AnalysisOptions,
+) -> Result<brink_compiler::CompileOutput, brink_compiler::CompileError> {
+    let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
+    brink_compiler::compile_with_options(
+        "main.ink",
+        |path| {
+            files.get(path).map(|s| (*s).to_string()).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("file not found: {path}"),
+                )
+            })
+        },
+        options,
+    )
+}
+
+fn default_options() -> AnalysisOptions {
+    AnalysisOptions::default()
+}
+
+fn brink_options() -> AnalysisOptions {
+    AnalysisOptions {
+        dialect: Dialect::Brink,
+        ..AnalysisOptions::default()
+    }
+}
+
+fn strict_options() -> AnalysisOptions {
+    AnalysisOptions {
+        dialect: Dialect::Brink,
+        types: TypePolicy::Strict,
+        ..AnalysisOptions::default()
+    }
+}
+
+fn errors_of(err: brink_compiler::CompileError) -> Vec<brink_compiler::ResolvedDiagnostic> {
+    match err {
+        brink_compiler::CompileError::Diagnostics(diags) => diags,
+        other => panic!("expected Diagnostics error, got {other:?}"),
+    }
+}
+
+/// Byte offset of the `n`-th (0-based) occurrence of `needle` in `source`.
+fn find_nth(source: &str, needle: &str, n: usize) -> usize {
+    let mut from = 0;
+    for _ in 0..n {
+        let hit = source[from..]
+            .find(needle)
+            .unwrap_or_else(|| panic!("occurrence of {needle:?} not found"));
+        from += hit + needle.len();
+    }
+    from + source[from..]
+        .find(needle)
+        .unwrap_or_else(|| panic!("occurrence of {needle:?} not found"))
+}
+
+/// Assert some diagnostic with `code` starts inside the `n`-th occurrence of
+/// `needle` (inclusive of its end offset — several parser-recovery
+/// diagnostics point at the position immediately after the construct).
+fn assert_code_at_nth(
+    diags: &[brink_compiler::ResolvedDiagnostic],
+    code: DiagnosticCode,
+    source: &str,
+    needle: &str,
+    n: usize,
+) {
+    let pos = find_nth(source, needle, n);
+    let end = pos + needle.len();
+    assert!(
+        diags.iter().any(|d| {
+            let start = usize::from(d.range.start());
+            d.code == code && pos <= start && start <= end
+        }),
+        "expected {} starting inside {needle:?} (bytes {pos}..{end}), got: {:?}",
+        code.as_str(),
+        diags
+            .iter()
+            .map(|d| format!("{}@{:?}", d.code.as_str(), d.range))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Compile expecting failure; assert `code` fires at `needle`'s span.
+fn assert_error_at(source: &str, options: AnalysisOptions, code: DiagnosticCode, needle: &str) {
+    let err = compile(source, options)
+        .map(|_| ())
+        .expect_err(&format!("expected {} to fail the compile", code.as_str()));
+    let diags = errors_of(err);
+    assert_code_at_nth(&diags, code, source, needle, 0);
+}
+
+/// Compile expecting success; assert `code` fires as a warning at `needle`.
+fn assert_warning_at(source: &str, options: AnalysisOptions, code: DiagnosticCode, needle: &str) {
+    let out = compile(source, options).unwrap_or_else(|e| {
+        panic!(
+            "{} is warning-severity — compile must succeed, got {e:?}",
+            code.as_str()
+        )
+    });
+    assert_code_at_nth(&out.warnings, code, source, needle, 0);
+}
+
+// ─── Containers (E001–E003) ──────────────────────────────────────────
+
+#[test]
+fn e001_knot_missing_name() {
+    assert_error_at(
+        "== ==\nHello\n",
+        default_options(),
+        DiagnosticCode::E001,
+        "== ==",
+    );
+}
+
+#[test]
+fn e002_stitch_missing_name() {
+    let source = "== k ==\n= \nHi\n-> END\n";
+    assert_error_at(source, default_options(), DiagnosticCode::E002, "= \n");
+}
+
+#[test]
+fn e003_parameter_missing_name() {
+    // A literal where a parameter name must be.
+    assert_error_at(
+        "== k(3) ==\nHi\n",
+        default_options(),
+        DiagnosticCode::E003,
+        "(3)",
+    );
+}
+
+// ─── Declarations (E004–E010) ────────────────────────────────────────
+
+#[test]
+fn e004_var_missing_name() {
+    assert_error_at(
+        "VAR = 1\nHi\n",
+        default_options(),
+        DiagnosticCode::E004,
+        "VAR = 1",
+    );
+}
+
+#[test]
+fn e005_var_missing_initializer() {
+    assert_error_at(
+        "VAR x\nHi\n",
+        default_options(),
+        DiagnosticCode::E005,
+        "VAR x",
+    );
+}
+
+#[test]
+fn e006_const_missing_name() {
+    assert_error_at(
+        "CONST = 1\nHi\n",
+        default_options(),
+        DiagnosticCode::E006,
+        "CONST = 1",
+    );
+}
+
+#[test]
+fn e007_const_missing_initializer() {
+    assert_error_at(
+        "CONST c =\nHi\n",
+        default_options(),
+        DiagnosticCode::E007,
+        "CONST c =",
+    );
+}
+
+#[test]
+fn e008_list_missing_name() {
+    assert_error_at(
+        "LIST = a, b\nHi\n",
+        default_options(),
+        DiagnosticCode::E008,
+        "LIST = a, b",
+    );
+}
+
+#[test]
+fn e009_list_member_missing_name() {
+    // `()` where a member name must be.
+    assert_error_at(
+        "LIST l = a, (), b\nHi\n",
+        default_options(),
+        DiagnosticCode::E009,
+        "()",
+    );
+}
+
+#[test]
+fn e010_external_missing_name() {
+    assert_error_at(
+        "EXTERNAL (x)\nHi\n",
+        default_options(),
+        DiagnosticCode::E010,
+        "EXTERNAL (x)",
+    );
+}
+
+// ─── Control flow / logic lines (E014) ───────────────────────────────
+
+#[test]
+fn e014_bare_tilde_logic_line_warns() {
+    assert_warning_at("~\nHi\n", default_options(), DiagnosticCode::E014, "~");
+}
+
+// ─── Expressions (E015–E017, E020, E021) ─────────────────────────────
+
+#[test]
+fn e015_expression_missing_operand() {
+    assert_error_at(
+        "~ temp x = 1 +\nHi\n",
+        default_options(),
+        DiagnosticCode::E015,
+        "1 +",
+    );
+}
+
+#[test]
+fn e016_unsupported_operator() {
+    // The parser accepts `+=`/`-=` as infix operators (Pratt table,
+    // `Prec::Assign`) but HIR lowering has no `InfixOp` mapping for them
+    // outside a logic-line assignment head.
+    assert_error_at(
+        "VAR x = 1\n~ temp y = x += 2\nHi\n",
+        default_options(),
+        DiagnosticCode::E016,
+        "x += 2",
+    );
+}
+
+#[test]
+fn e017_struct_field_missing_name() {
+    // A struct construction field with no name — the field-init arm of the
+    // E017 "missing a name" family.
+    assert_error_at(
+        "STRUCT P = #{x: int}\n~ temp p = P#{: 1}\nHi\n",
+        brink_options(),
+        DiagnosticCode::E017,
+        ": 1}",
+    );
+}
+
+#[test]
+fn e020_inline_conditional_missing_condition() {
+    assert_error_at(
+        "{: yes | no}\nHi\n",
+        default_options(),
+        DiagnosticCode::E020,
+        ": yes | no",
+    );
+}
+
+#[test]
+fn e021_inline_sequence_without_branches() {
+    // A shuffle annotation with no branches at all.
+    assert_error_at("{~}\nHi\n", default_options(), DiagnosticCode::E021, "~");
+}
+
+// ─── Cross-file analysis (E022–E027) ─────────────────────────────────
+
+#[test]
+fn e022_duplicate_knot_warns() {
+    let source = "== k ==\nA\n-> END\n== k ==\nB\n-> END\n-> k\n";
+    let out = compile(source, default_options()).expect("duplicate knot is a warning");
+    // The warning points at the *second* definition's name.
+    assert_code_at_nth(&out.warnings, DiagnosticCode::E022, source, "== k ==", 1);
+}
+
+#[test]
+fn e023_duplicate_variable_warns() {
+    let source = "VAR x = 1\nVAR x = 2\nHi\n";
+    assert_warning_at(source, default_options(), DiagnosticCode::E023, "VAR x = 2");
+}
+
+#[test]
+fn e024_unresolved_divert_target() {
+    assert_error_at(
+        "-> nowhere\n",
+        default_options(),
+        DiagnosticCode::E024,
+        "nowhere",
+    );
+}
+
+#[test]
+fn e025_unresolved_variable_reference() {
+    assert_error_at(
+        "~ temp t = missing\nHi\n",
+        default_options(),
+        DiagnosticCode::E025,
+        "missing",
+    );
+}
+
+#[test]
+fn e026_duplicate_list_item_warns() {
+    let source = "LIST l = a, a\nHi\n";
+    assert_warning_at(source, default_options(), DiagnosticCode::E026, ", a");
+}
+
+#[test]
+fn e027_ambiguous_bare_list_item_reference() {
+    let source = "LIST l1 = shared\nLIST l2 = shared\n~ temp t = shared\nHi\n";
+    let err = compile(source, default_options()).map(|_| ()).unwrap_err();
+    let diags = errors_of(err);
+    // The ambiguous *reference* is the third `shared`.
+    assert_code_at_nth(&diags, DiagnosticCode::E027, source, "shared", 2);
+}
+
+// ─── Structural validation (E032, E034, E036, E037) ──────────────────
+
+#[test]
+fn e032_return_outside_function() {
+    assert_error_at(
+        "~ return\nHi\n",
+        default_options(),
+        DiagnosticCode::E032,
+        "return",
+    );
+}
+
+#[test]
+fn e034_all_fallback_choice_set_warns() {
+    let source = "== k ==\nHi\n* -> done\n== done ==\n-> END\n-> k\n";
+    assert_warning_at(source, default_options(), DiagnosticCode::E034, "* -> done");
+}
+
+#[test]
+fn e036_unmet_brink_expect() {
+    assert_error_at(
+        "// brink-expect E025\nHello\n",
+        default_options(),
+        DiagnosticCode::E036,
+        "// brink-expect E025",
+    );
+}
+
+#[test]
+fn e037_syntax_error() {
+    assert_error_at(
+        "{ unclosed\nHi\n",
+        default_options(),
+        DiagnosticCode::E037,
+        "unclosed",
+    );
+}
+
+// ─── Doc comments (E038, E043) ───────────────────────────────────────
+
+#[test]
+fn e038_malformed_doc_tag_warns() {
+    let source = "/// @kind bogus\nEXTERNAL ping(x)\nHi\n";
+    assert_warning_at(
+        source,
+        default_options(),
+        DiagnosticCode::E038,
+        "/// @kind bogus",
+    );
+}
+
+#[test]
+fn e043_inapplicable_doc_tag_warns() {
+    // `@param` on a VAR — well-formed, wrong declaration kind.
+    let source = "/// @param x {int}\nVAR health = 100\nHi\n";
+    assert_warning_at(
+        source,
+        default_options(),
+        DiagnosticCode::E043,
+        "/// @param x {int}",
+    );
+}
+
+// ─── Host manifest (E039–E042) ───────────────────────────────────────
+
+fn manifest_external(name: &str, params: &[(&str, &str)]) -> ManifestExternal {
+    ManifestExternal {
+        name: name.to_string(),
+        params: params
+            .iter()
+            .map(|(p, ty)| ManifestParam {
+                name: (*p).to_string(),
+                ty: TypeRef((*ty).to_string()),
+            })
+            .collect(),
+        returns: TypeRef::default(),
+        kind: brink_ir::host_manifest::ExternalKind::default(),
+        doc: None,
+        widgets: vec![],
+        path: Vec::new(),
+    }
+}
+
+#[test]
+fn e039_manifest_arity_mismatch() {
+    // ink declares 1 param; the registered manifest lists 2.
+    let options = AnalysisOptions {
+        host_manifest: Some(HostManifest {
+            externals: vec![manifest_external("ping", &[("a", "string"), ("b", "int")])],
+            types: vec![],
+        }),
+        ..AnalysisOptions::default()
+    };
+    assert_error_at(
+        "EXTERNAL ping(x)\nHi\n",
+        options,
+        DiagnosticCode::E039,
+        "ping(x)",
+    );
+}
+
+#[test]
+fn e040_unknown_semantic_type() {
+    // Policy-conditional: fires only under
+    // `SemanticTypeDiagnosticSeverity::Error` (default is Tolerant).
+    let options = AnalysisOptions {
+        semantic_type_check: brink_analyzer::SemanticTypeDiagnosticSeverity::Error,
+        ..AnalysisOptions::default()
+    };
+    assert_error_at(
+        "/// @param x {bogus_type}\nEXTERNAL ping(x)\nHi\n",
+        options,
+        DiagnosticCode::E040,
+        "ping(x)",
+    );
+}
+
+fn direction_manifest() -> HostManifest {
+    HostManifest {
+        externals: vec![manifest_external("walk", &[("dir", "direction")])],
+        types: vec![SemanticTypeDef {
+            name: "direction".to_string(),
+            base: BaseType::String,
+            constraint: Some(Constraint::Enum {
+                values: vec!["north".to_string(), "south".to_string()],
+            }),
+            values: None,
+            widget: None,
+        }],
+    }
+}
+
+#[test]
+fn e041_external_argument_type_mismatch() {
+    let options = AnalysisOptions {
+        host_manifest: Some(direction_manifest()),
+        ..AnalysisOptions::default()
+    };
+    assert_error_at(
+        "EXTERNAL walk(dir)\n~ walk(5)\nHi\n",
+        options,
+        DiagnosticCode::E041,
+        "walk(5)",
+    );
+}
+
+#[test]
+fn e042_external_argument_out_of_domain() {
+    let options = AnalysisOptions {
+        host_manifest: Some(direction_manifest()),
+        ..AnalysisOptions::default()
+    };
+    assert_error_at(
+        "EXTERNAL walk(dir)\n~ walk(\"west\")\nHi\n",
+        options,
+        DiagnosticCode::E042,
+        "walk(\"west\")",
+    );
+}
+
+// ─── Directives `#@…` (E044–E050) ────────────────────────────────────
+
+#[test]
+fn e044_unknown_directive() {
+    assert_error_at(
+        "#@locale\nVAR mood = 0\nHi\n",
+        default_options(),
+        DiagnosticCode::E044,
+        "#@locale",
+    );
+}
+
+#[test]
+fn e045_directive_without_valid_target() {
+    assert_error_at(
+        "#@local\njust text\n",
+        default_options(),
+        DiagnosticCode::E045,
+        "#@local",
+    );
+}
+
+#[test]
+fn e046_dynamic_directive() {
+    assert_error_at(
+        "#@{x}\nVAR mood = 0\nHi\n",
+        default_options(),
+        DiagnosticCode::E046,
+        "#@{x}",
+    );
+}
+
+#[test]
+fn e047_directive_mixed_with_plain_tag() {
+    assert_error_at(
+        "#@local # art.png\nVAR mood = 0\nHi\n",
+        default_options(),
+        DiagnosticCode::E047,
+        "#@local # art.png",
+    );
+}
+
+#[test]
+fn e048_duplicate_directive() {
+    let source = "#@local\n#@local\nVAR mood = 0\nHi\n";
+    let err = compile(source, default_options()).map(|_| ()).unwrap_err();
+    let diags = errors_of(err);
+    // The duplicate is the second `#@local`.
+    assert_code_at_nth(&diags, DiagnosticCode::E048, source, "#@local", 1);
+}
+
+#[test]
+fn e049_directive_unsupported_on_target() {
+    assert_error_at(
+        "#@local\nCONST max = 3\nHi\n",
+        default_options(),
+        DiagnosticCode::E049,
+        "#@local",
+    );
+}
+
+#[test]
+fn e050_directive_with_arguments() {
+    assert_error_at(
+        "#@local(now)\nVAR mood = 0\nHi\n",
+        default_options(),
+        DiagnosticCode::E050,
+        "#@local(now)",
+    );
+}
+
+// ─── T1b logic blocks / stdlib (E057–E059) ───────────────────────────
+
+#[test]
+fn e057_break_outside_loop() {
+    assert_error_at(
+        "~ {\n    break\n}\nHi\n",
+        brink_options(),
+        DiagnosticCode::E057,
+        "break",
+    );
+}
+
+#[test]
+fn e058_mutator_arity_mismatch() {
+    assert_error_at(
+        "VAR arr = 0\n~ {\n    arr = #[]\n    push(arr)\n}\nHi\n",
+        brink_options(),
+        DiagnosticCode::E058,
+        "push(arr)",
+    );
+}
+
+#[test]
+fn e059_weave_nested_in_inline_content() {
+    // A nested `*` choice inside a choice's own display-text conditional —
+    // structurally cannot hold a child container (#585 backstop family).
+    assert_error_at(
+        "VAR x = 1\n* Pick {x > 0:\n- true: * nested\n    -> END\n- else: text\n}\n    -> END\n",
+        default_options(),
+        DiagnosticCode::E059,
+        "* nested",
+    );
+}
+
+// ─── Type annotations (E061; E062 retired by T1c-1 — brink dialect only) ──
+
+#[test]
+fn e061_unknown_type_name_in_annotation() {
+    assert_error_at(
+        "VAR x: Foo = 1\nHi\n",
+        brink_options(),
+        DiagnosticCode::E061,
+        "Foo",
+    );
+}
+
+#[test]
+fn e062_retired_fn_type_annotation_is_legal_since_t1c1() {
+    // T1c-1 (#699, docs/t1c-spec.md §4): `fn(T…): R` is a legal type form —
+    // E062 is retired (reserved, never reused) and must not fire anywhere.
+    let out = compile("VAR f: fn(int): int = 0\nHi\n", brink_options())
+        .expect("a fn-type annotation compiles cleanly since T1c-1");
+    assert!(
+        !out.warnings.iter().any(|d| d.code == DiagnosticCode::E062),
+        "E062 is retired and must never fire: {:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn e062_retired_fn_type_annotation_actually_resolves_under_strict() {
+    // Absence alone could mean the annotation was silently ignored — prove
+    // it resolves to a real checker type: under `types = strict`, `cb`'s
+    // ONLY constraint is its `fn(int): int` annotation, so this compiles
+    // clean iff the annotation genuinely carries the fn type (otherwise
+    // `cb` escapes as Unknown, E065, and the call through it can't check).
+    let source = "=== function apply(cb: fn(int): int): int ===\n~ return cb(1)\nHi\n-> END\n";
+    let out = compile(source, strict_options());
+    assert!(
+        out.is_ok(),
+        "fn-typed boundary annotation must resolve and check under strict: {:?}",
+        out.err()
+    );
+}
+
+// ─── T1c-1 lowering fence (E052 — revived by #699) ───────────────────
+
+#[test]
+fn e052_fn_literal_not_yet_implemented_at_lowering() {
+    // A well-formed `#fn` creation site under dialect=brink parses, gates,
+    // and type-checks in T1c-1 but has no LIR/codegen story until T1c-2 —
+    // the non-suppressible lowering fence is the one error left.
+    assert_error_at(
+        "=== function double(x) ===\n~ return x + x\n\n~ temp f = #fn(double, 1)\nHi\n",
+        brink_options(),
+        DiagnosticCode::E052,
+        "#fn(double, 1)",
+    );
+}
+
+// ─── Structs (E068–E071, E073, E074) ─────────────────────────────────
+
+const POINT_SRC: &str = "STRUCT Point = #{\n    x: float,\n    y: float,\n}\n";
+
+#[test]
+fn e068_undeclared_struct_shape() {
+    let source = format!("{POINT_SRC}~ temp p = Nope#{{x: 1.0}}\nHi\n");
+    assert_error_at(&source, brink_options(), DiagnosticCode::E068, "Nope");
+}
+
+#[test]
+fn e069_strict_construction_missing_field() {
+    let source = format!("{POINT_SRC}~ temp p = Point#{{x: 1.0}}\nHi\n");
+    assert_error_at(
+        &source,
+        strict_options(),
+        DiagnosticCode::E069,
+        "Point#{x: 1.0}",
+    );
+}
+
+#[test]
+fn e070_strict_construction_extra_field() {
+    let source = format!("{POINT_SRC}~ temp p = Point#{{x: 1.0, y: 2.0, z: 3.0}}\nHi\n");
+    assert_error_at(&source, strict_options(), DiagnosticCode::E070, "z: 3.0");
+}
+
+#[test]
+fn e071_strict_construction_mistyped_field() {
+    let source = format!("{POINT_SRC}~ temp p = Point#{{x: \"oops\", y: 2.0}}\nHi\n");
+    assert_error_at(
+        &source,
+        strict_options(),
+        DiagnosticCode::E071,
+        "x: \"oops\"",
+    );
+}
+
+#[test]
+fn e073_unresolved_shape_reaches_lir_when_e068_suppressed() {
+    // The non-suppressible LIR backstop: `// brink-disable-all` suppresses
+    // the analyzer's E068, so the unresolved shape reaches LIR lowering.
+    let source = format!("// brink-disable-all\n{POINT_SRC}~ temp p = Nope#{{x: 1.0}}\nHi\n");
+    assert_error_at(
+        &source,
+        brink_options(),
+        DiagnosticCode::E073,
+        "Nope#{x: 1.0}",
+    );
+}
+
+#[test]
+fn e074_chained_field_write_projection() {
+    let source = "STRUCT Inner = #{v: int}\nSTRUCT Outer = #{inner: Inner}\nVAR o = 0\n~ {\n    o = Outer#{inner: Inner#{v: 1}}\n    o.inner.v = 2\n}\nHi\n";
+    assert_error_at(source, brink_options(), DiagnosticCode::E074, "o.inner.v");
+}

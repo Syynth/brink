@@ -49,6 +49,8 @@ pub struct HirFile {
     pub constants: Vec<ConstDecl>,
     /// `LIST` declarations.
     pub lists: Vec<ListDecl>,
+    /// `STRUCT` declarations (TM-4b, docs/typed-mode-spec.md §6).
+    pub structs: Vec<StructDecl>,
     /// `EXTERNAL` declarations.
     pub externals: Vec<ExternalDecl>,
     /// `INCLUDE` sites (for cross-file resolution by the analyzer).
@@ -93,6 +95,11 @@ pub struct Knot {
     /// the body. Covers the whole definition subtree at runtime policy
     /// resolution (`docs/directive-annotations-spec.md`).
     pub is_local: bool,
+    /// The function-header return type annotation (TM-2, docs/typed-mode-spec.md
+    /// §3: `): type ===`), brink-dialect-gated syntax. `None` when absent —
+    /// not the same as an explicit `void`, which lowers as
+    /// `TypeExpr::Named { name: "void" }` like every other nominal.
+    pub return_type: Option<TypeExpr>,
 }
 
 /// A stitch definition within a knot.
@@ -115,6 +122,52 @@ pub struct Param {
     pub is_ref: bool,
     /// `->` parameter — tunnel return divert target.
     pub is_divert: bool,
+    /// The parameter's type annotation (TM-2, docs/typed-mode-spec.md §3:
+    /// `name: type`), brink-dialect-gated syntax.
+    pub annotation: Option<TypeExpr>,
+}
+
+// ─── TM-2 inline type annotations (docs/typed-mode-spec.md §3) ──────
+//
+// Superset grammar surface — always lowered to HIR regardless of dialect
+// (mirrors the T1b pattern); `brink-analyzer::dialect_gate` is where
+// `strict-ink` rejection (E051) happens. Nominal grammar only: no struct
+// names yet (TM-4), `Fn` parses but types as reserved until T1c.
+
+/// A parsed type annotation expression.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeExpr {
+    /// A bare nominal name: `int`, `float`, `bool`, `string`, `divert`,
+    /// `void`, or an unrecognized identifier (flagged by a targeted
+    /// diagnostic — declared struct names arrive in TM-4).
+    Named { name: String, range: TextRange },
+    /// `name<args…>` — `list<L>`, `array<T>`, `map<K, V>`, or an
+    /// unrecognized generic head.
+    Generic {
+        name: String,
+        args: Vec<TypeExpr>,
+        range: TextRange,
+    },
+    /// `fn(params…): ret` — a function type (unfrozen with T1c-1, #699:
+    /// resolves to the checker's `Ty::Fn`; the row is val-only — refs are
+    /// bound away at `#fn` creation, docs/t1c-spec.md §4).
+    Fn {
+        params: Vec<TypeExpr>,
+        ret: Box<TypeExpr>,
+        range: TextRange,
+    },
+}
+
+impl TypeExpr {
+    /// The full source range of this type expression.
+    #[must_use]
+    pub fn range(&self) -> TextRange {
+        match self {
+            Self::Named { range, .. } | Self::Generic { range, .. } | Self::Fn { range, .. } => {
+                *range
+            }
+        }
+    }
 }
 
 // ─── Block and statements ───────────────────────────────────────────
@@ -163,6 +216,75 @@ pub enum Stmt {
     ExprStmt(Expr),
     /// End-of-line marker — marks the end of a content output line.
     EndOfLine,
+    /// `~ { … }` — a T1b multi-line logic block (brink extension; parse-only
+    /// in T1b-1, docs/t1b-surface-spec.md §2). Never lowers to LIR — gated
+    /// out by `brink-analyzer`'s dialect check under both dialects.
+    LogicBlock(LogicBlock),
+}
+
+// ─── T1b superset: multi-line `~ { … }` blocks ──────────────────────
+//
+// Deliberately a CLOSED set of statement kinds with no variant for any
+// weave concept (content, choices, diverts, gathers, threads) — the seam
+// rule from docs/t1b-surface-spec.md §2 is enforced by construction here,
+// not by a runtime check: `BlockStmt` simply has nowhere to put a weave
+// node.
+
+/// A `~ { … }` multi-line logic block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogicBlock {
+    pub ptr: SyntaxNodePtr,
+    pub stmts: Vec<BlockStmt>,
+}
+
+/// A single statement inside a `~ { … }` block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockStmt {
+    TempDecl(TempDecl),
+    Assignment(Assignment),
+    Return(Return),
+    If(IfStmt),
+    While(WhileStmt),
+    For(ForStmt),
+    Break(SyntaxNodePtr),
+    Continue(SyntaxNodePtr),
+    /// A bare expression statement (function/external calls).
+    ExprStmt(Expr),
+}
+
+/// `if cond { … } (else …)?`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IfStmt {
+    pub ptr: SyntaxNodePtr,
+    pub condition: Expr,
+    pub body: Vec<BlockStmt>,
+    pub else_branch: Option<ElseBranch>,
+}
+
+/// The `else` arm of an [`IfStmt`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ElseBranch {
+    /// `else if cond { … }` — a nested `if`.
+    ElseIf(Box<IfStmt>),
+    /// `else { … }`.
+    Else(Vec<BlockStmt>),
+}
+
+/// `while cond { … }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhileStmt {
+    pub ptr: SyntaxNodePtr,
+    pub condition: Expr,
+    pub body: Vec<BlockStmt>,
+}
+
+/// `for name in expr { … }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForStmt {
+    pub ptr: SyntaxNodePtr,
+    pub var_name: Name,
+    pub iterable: Expr,
+    pub body: Vec<BlockStmt>,
 }
 
 // ─── Weave structure ────────────────────────────────────────────────
@@ -409,6 +531,88 @@ pub enum Expr {
 
     /// Function call (`func(args)`).
     Call(Path, Vec<Expr>),
+
+    /// `#[expr, …]` — array sigil literal (brink extension, T1b §3).
+    ArrayLiteral(ArrayLiteral),
+    /// `#{key: expr, …}` — map sigil literal (brink extension, T1b §3).
+    MapLiteral(MapLiteral),
+    /// `base[index]` — postfix indexing (brink extension, T1b §4).
+    Index(IndexExpr),
+    /// `Name#{field: expr, …}` — struct construction literal (brink
+    /// extension, TM-4b, docs/typed-mode-spec.md §6).
+    StructLiteral(StructLiteral),
+    /// `base.field` — postfix field access (brink extension, TM-4b,
+    /// docs/typed-mode-spec.md §6). Only produced for the unambiguous
+    /// grammar shape (a non-`Path` base); a bare `ident.ident` chain still
+    /// lowers as `Expr::Path` — the resolution fallback that disambiguates
+    /// "static path" from "field access on a variable" is
+    /// `brink-analyzer`'s job (§6: "ink's static dotted paths... resolved
+    /// first and win").
+    FieldAccess(FieldAccessExpr),
+    /// `#fn(target, args…)` — function-value creation (brink extension,
+    /// T1c, docs/t1c-spec.md §2): partial application over the statically
+    /// named function `target`, binding a prefix of its declared params.
+    FnLiteral(FnLiteral),
+}
+
+/// `#fn(target, args…)`. `ptr` lets the dialect gate point its diagnostic
+/// at the exact literal, matching the sibling sigil-literal shapes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FnLiteral {
+    pub ptr: SyntaxNodePtr,
+    /// The static target path — a name (possibly dotted), never an
+    /// expression. Whether it resolves to a function definition is
+    /// `brink-analyzer`'s creation-site check (E079), not this shape's.
+    pub target: Path,
+    /// Bound-argument expressions, in source order — a prefix of the
+    /// target's declared param row (over-binding is E081; `ref`-param
+    /// binding discipline is E080).
+    pub args: Vec<Expr>,
+}
+
+/// `Name#{field: expr, …}`. `ptr` lets the dialect gate point its
+/// diagnostic at the exact literal, matching `ArrayLiteral`/`MapLiteral`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructLiteral {
+    pub ptr: SyntaxNodePtr,
+    pub shape: Name,
+    /// Field initializers, in source order — construction validity
+    /// (missing/extra/mistyped fields) is `brink-analyzer`'s job, not this
+    /// shape's.
+    pub fields: Vec<(Name, Expr)>,
+}
+
+/// `base.field`, chainable (`base.field.field2` lowers as nested
+/// `FieldAccessExpr`, same pattern as [`IndexExpr`]'s `grid[y][x]`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldAccessExpr {
+    pub ptr: SyntaxNodePtr,
+    pub base: Box<Expr>,
+    pub field: Name,
+}
+
+/// `#[expr, …]` — carries a `ptr` (unlike the plain literal variants above)
+/// so the T1b dialect gate can point its diagnostic at the exact literal,
+/// not just the enclosing statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArrayLiteral {
+    pub ptr: SyntaxNodePtr,
+    pub elements: Vec<Expr>,
+}
+
+/// `#{key: expr, …}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MapLiteral {
+    pub ptr: SyntaxNodePtr,
+    pub entries: Vec<(Expr, Expr)>,
+}
+
+/// `base[index]`, chainable (`grid[y][x]` lowers as nested `IndexExpr`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexExpr {
+    pub ptr: SyntaxNodePtr,
+    pub base: Box<Expr>,
+    pub index: Box<Expr>,
 }
 
 /// Float stored as raw bits so it can derive Eq.
@@ -531,6 +735,25 @@ pub fn display_expr(expr: &Expr) -> String {
             }
             format!("{name}(...)")
         }
+        Expr::ArrayLiteral(_) => "#[...]".to_string(),
+        Expr::MapLiteral(_) => "#{...}".to_string(),
+        Expr::Index(idx) => format!("{}[{}]", display_expr(&idx.base), display_expr(&idx.index)),
+        Expr::StructLiteral(sl) => format!("{}#{{...}}", sl.shape.text),
+        Expr::FieldAccess(fa) => format!("{}.{}", display_expr(&fa.base), fa.field.text),
+        Expr::FnLiteral(fl) => {
+            let mut name = String::new();
+            for (i, seg) in fl.target.segments.iter().enumerate() {
+                if i > 0 {
+                    name.push('.');
+                }
+                name.push_str(&seg.text);
+            }
+            if fl.args.is_empty() {
+                format!("#fn({name})")
+            } else {
+                format!("#fn({name}, ...)")
+            }
+        }
     }
 }
 
@@ -592,6 +815,9 @@ pub struct VarDecl {
     /// Marked flow-private via a `#@local` directive line above the
     /// declaration (`docs/directive-annotations-spec.md`).
     pub is_local: bool,
+    /// The declared type annotation (TM-2, docs/typed-mode-spec.md §3:
+    /// `VAR name: type = expr`), brink-dialect-gated syntax.
+    pub annotation: Option<TypeExpr>,
 }
 
 /// `CONST x = expr`
@@ -600,6 +826,9 @@ pub struct ConstDecl {
     pub ptr: AstPtr<ast::ConstDecl>,
     pub name: Name,
     pub value: Expr,
+    /// The declared type annotation (TM-2, docs/typed-mode-spec.md §3:
+    /// `CONST name: type = expr`), brink-dialect-gated syntax.
+    pub annotation: Option<TypeExpr>,
 }
 
 /// `~ temp x = expr`
@@ -608,6 +837,11 @@ pub struct TempDecl {
     pub ptr: AstPtr<ast::TempDecl>,
     pub name: Name,
     pub value: Option<Expr>,
+    /// The ascription's type annotation (TM-2, docs/typed-mode-spec.md §3:
+    /// `~ temp name: type = expr`), brink-dialect-gated syntax. HIR/parse
+    /// surface only in this slice — not yet wired into body inference (that
+    /// would touch `infer::body::BodyCtx`, out of scope per #638).
+    pub annotation: Option<TypeExpr>,
 }
 
 /// `~ x = expr` or `~ x += expr`
@@ -642,6 +876,31 @@ pub struct ListMember {
     pub value: Option<i32>,
     /// Whether this member is active by default (wrapped in parens).
     pub is_active: bool,
+}
+
+// ─── TM-4b structs (docs/typed-mode-spec.md §6) ─────────────────────
+//
+// Superset grammar surface — always lowered to HIR regardless of dialect
+// (mirrors the T1b/TM-2 pattern); `brink-analyzer::dialect_gate` is where
+// `strict-ink` rejection (E051) happens. LIR lowering rejects every
+// construct below with a targeted diagnostic — codegen lands with TM-4c.
+
+/// `STRUCT Name = #{ field: type, … }`. Top-level only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructDecl {
+    pub ptr: AstPtr<ast::StructDecl>,
+    pub name: Name,
+    /// Declared fields, in source order — the same order
+    /// `brink_format`'s `Value::Record` flat field vector will follow once
+    /// TM-4c's codegen assigns a `ShapeId`.
+    pub fields: Vec<StructFieldDecl>,
+}
+
+/// One `field: type` pair inside a [`StructDecl`]'s body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructFieldDecl {
+    pub name: Name,
+    pub ty: TypeExpr,
 }
 
 /// `EXTERNAL fn_name(param1, param2)`
@@ -810,6 +1069,212 @@ pub enum DiagnosticCode {
     E049,
     /// Directive does not take arguments or trailing text.
     E050,
+
+    // ── T1b dialect gate (docs/t1b-surface-spec.md §1) ────────────
+    /// A brink-extension construct (block, sigil literal, indexing) was
+    /// used under the `strict-ink` dialect.
+    E051,
+    /// A brink-extension construct parses and analyzes cleanly under the
+    /// `brink` dialect, but its LIR lowering hasn't landed yet. Originally
+    /// minted for T1b-1 (every T1b construct lowers since T1b-2, #570); now
+    /// fires for `#fn(…)` function values, whose lowering lands in T1c-2
+    /// (docs/t1c-spec.md §11).
+    E052,
+    /// Internal error: a T1b brink-extension HIR node (`LogicBlock`,
+    /// `ArrayLiteral`, `MapLiteral`, `Index`) reached LIR lowering. The
+    /// dialect gate (E051/E052) should have rejected it first, but that
+    /// gate is a suppressible analysis diagnostic — this is the
+    /// non-suppressible backstop that fires when the gate was suppressed
+    /// (e.g. `// brink-disable-all`).
+    E053,
+    /// A block-scoped `temp` (`~ { … }`, docs/t1b-surface-spec.md §2) or
+    /// `for` loop variable shadows an already-visible temp/param — either an
+    /// enclosing `~ { … }` block scope or an outer classic `~ temp`.
+    E054,
+
+    // ── T1b stdlib slice 1 (docs/t1b-surface-spec.md §5) ──────────────
+    /// `push`/`insert`/`remove`'s first argument is not an lvalue (a
+    /// variable, temp, or indexed path) — mutators require a place to
+    /// write the mutated container back into.
+    E055,
+    /// `push`/`insert`/`remove` was used in expression position — they
+    /// return nothing and are only valid as a statement.
+    E056,
+
+    // ── T1b logic blocks (docs/t1b-surface-spec.md §2) ────────────────
+    /// `break`/`continue` used outside any enclosing `while`/`for` loop.
+    E057,
+    /// Collection mutator (`push`/`insert`/`remove`) called with the wrong
+    /// number of arguments — a targeted compile error naming the expected
+    /// signature (replaces the generic `E031` warning + silently-dropped
+    /// RMW lowering, RULED 2026-07-12, see `docs/decision-log.md`).
+    E058,
+
+    // ── Weave-in-inline-content backstop (sibling of #578, #585) ──────
+    /// A choice set, labeled gather block, multi-line conditional, or
+    /// sequence was found nested inside inline content (e.g. a choice's own
+    /// display/bracket/inner text) where it would need a child container
+    /// that position structurally cannot hold.
+    E059,
+
+    // ── Codegen defense-in-depth backstop (#586) ──────────────────────
+    /// `brink-codegen-inkb` refused to emit bytecode for a `Program` that
+    /// violates an invariant an earlier, non-suppressible compiler stage is
+    /// supposed to guarantee (currently: an out-of-loop `LogicBreak`/
+    /// `LogicContinue`, normally rejected at `E057`). Reaching this from a
+    /// normal compile is a compiler bug, not an authoring mistake — this
+    /// code exists so that bug fails loudly instead of silently corrupting
+    /// bytecode.
+    E060,
+
+    // ── TM-2 inline type annotations (docs/typed-mode-spec.md §3) ────
+    /// A type annotation names something that isn't a recognized nominal
+    /// type (`int`/`float`/`bool`/`string`/`divert`/`void`), a `list<L>`
+    /// naming a declared `LIST`, `array<T>`, or `map<K, V>` — declared
+    /// struct names arrive in TM-4.
+    E061,
+    /// RETIRED (T1c-1, #699): previously "`fn(T…): R` function-type
+    /// annotation used — parses, but types as reserved until T1c". T1c
+    /// unfroze the form (docs/t1c-spec.md §4: "boundary annotations gain
+    /// the `fn(T…): R` form"), so it now resolves to a real checker type.
+    /// Code kept reserved, not reused, for diagnostic-code stability — no
+    /// longer emitted by any pass.
+    E062,
+    /// A param/return/`VAR` type annotation disagrees with the type
+    /// TM-1's body inference would otherwise derive. Advisory only in this
+    /// slice (gradual policy) — strict-mode severity is TM-3's call.
+    E063,
+
+    // ── TM-3 strict typed-mode policy (docs/typed-mode-spec.md §1/§9-3) ──
+    /// `types = strict` was requested but the project's dialect isn't
+    /// `brink` — strict typing is a brink-dialect extension (its annotation
+    /// syntax is extension syntax), so `types = strict` + `dialect =
+    /// strict-ink` is a config error, not a per-construct diagnostic.
+    E064,
+    /// Under `types = strict`, a def's inferred signature or body slot
+    /// (param, return, or temp) resolved to `Unknown` after the SCC
+    /// fixpoint with no annotation to supply a concrete type — "annotate or
+    /// restructure" (spec §1). Legal under `types = gradual`.
+    E065,
+    /// Under `types = strict`, a def's inferred signature or body slot
+    /// resolved to `Ty::Conflicted` (#627) — the body's own uses disagree
+    /// on the slot's type. Legal (advisory-only, unreported) under `types =
+    /// gradual`.
+    E066,
+    /// Under `types = strict`, a `~ x = f()` / `~ temp x = f()` assigns the
+    /// result of a call whose resolved def is a `void`-returning function
+    /// (docs/typed-mode-spec.md §3: "assigning a `void` call is an error in
+    /// strict mode"). Only the assignment/temp-decl's RHS *root* call is
+    /// checked — a statement-position call (`~ f()`) or a call nested inside
+    /// interpolation is never flagged. Never emitted under `types = gradual`.
+    E067,
+
+    // ── TM-4b structs (docs/typed-mode-spec.md §6) ────────────────────
+    /// A struct construction literal's leading shape name (`Name#{…}`)
+    /// doesn't name any declared `STRUCT`.
+    E068,
+    /// Under `types = strict`, a struct construction literal omits a
+    /// declared field — names the missing field.
+    E069,
+    /// A struct construction literal supplies a field the shape doesn't
+    /// declare — names the extra field.
+    E070,
+    /// Under `types = strict`, a struct construction literal's field
+    /// initializer disagrees with the field's declared type — names the
+    /// field.
+    E071,
+    /// RETIRED (TM-4c, #666): previously a non-suppressible backstop
+    /// rejecting *every* struct construct/field access reaching LIR
+    /// lowering, back when codegen for structs didn't exist yet. Structs
+    /// now lower for real (`E073` is TM-4c's narrower replacement
+    /// backstop). Code kept reserved, not reused, for diagnostic-code
+    /// stability — no longer emitted by any pass.
+    E072,
+    /// Non-suppressible defense-in-depth backstop, mirroring `E053`/`E060`/
+    /// (former) `E072`: a struct construction literal referencing a shape
+    /// name that doesn't resolve to any declared `STRUCT` reached LIR
+    /// lowering. Reaching this from a normal compile means
+    /// `brink-analyzer`'s `resolve::resolve_struct_ref` diagnostic (`E068`)
+    /// was suppressed (`// brink-disable-all`), not a compiler bug on its
+    /// own — `RecordNew` needs a real `ShapeId` at compile time; there is no
+    /// dynamic "construct with unknown shape" concept in this design.
+    E073,
+    /// A field-write target (`p.field = expr`) is a *chained* projection —
+    /// `p.a.b = v` or a mixed `p.a[i].b = v` — never a bare `ident.field`
+    /// on a resolvable root. TM-4c ships single-level field writes only
+    /// (mirrors `lower_indexed_assignment`'s `n == 1` fast path); chained
+    /// writes are an explicit, permanent T1e boundary (`docs/
+    /// typed-mode-spec.md` §6), not a "not implemented yet" gap — this is a
+    /// real, reachable, non-suppressible diagnostic authors can hit by
+    /// writing ordinary (if currently unsupported) ink, not a defensive
+    /// backstop for a suppressed analysis diagnostic.
+    E074,
+
+    // ── decls constant-folding backstops (#673) ───────────────────────
+    /// A struct construction literal (`Name#{…}`) appears as a `VAR`/`CONST`
+    /// declaration's default. `eval_const_expr` (`brink-ir::lir::lower::
+    /// decls`) has no compile-time representation for a record value — a
+    /// global's default is baked into `StoryData` at compile time, so there
+    /// is no runtime construction path to defer to the way a mid-story
+    /// `p = Point#{…}` assignment has. A real, non-suppressible compile
+    /// error (never a silent `Null`) until declaration-default structs get
+    /// a design (`ConstValue` would need a struct-carrying variant).
+    E075,
+    /// A map literal used as a `VAR`/`CONST` declaration default has a key
+    /// that isn't a compile-time-constant scalar in the ratified map-key
+    /// domain (int/string/bool — value-model-spec §4). Mid-story map
+    /// construction (`MapNew`) faults on this at runtime
+    /// (`InvalidMapKeyType`); a declaration default has no runtime
+    /// construction step to fault at, so this is the compile-time
+    /// equivalent — a real error, never a silent `Null`.
+    E076,
+    /// An array element or map value in a `VAR`/`CONST` declaration default
+    /// has a source expression kind that can never constant-fold — a
+    /// function call, postfix indexing, field access, or `++`/`--`. A
+    /// declaration default is baked into `StoryData` at compile time, so
+    /// there is no runtime construction step left to evaluate the element
+    /// at; without this diagnostic the element recursed into
+    /// `eval_const_expr`'s catch-all and silently became `Null` — #673's
+    /// silent-`Null` bug one level down, inside the literal (#679 review).
+    /// Keyed off the source expression *kind*, never the folded result: an
+    /// `Expr::Null` produced by HIR error recovery must not double-report,
+    /// and a bare `Path` reference (whose constness depends on resolution —
+    /// the pre-existing, separately-tracked gap #679's scope notes name)
+    /// keeps its existing behavior.
+    E077,
+    // ── TM-3 completion: conversion intrinsics (docs/typed-mode-spec.md
+    // §4, maintainer ruling 2026-07-13, issue #659) ──────────────────────
+    /// Under `types = strict`, an unresolved (builtin, not author-shadowed)
+    /// call to `int(x)`/`float(x)` where `x` is statically a divert-target,
+    /// LIST, array, map, or struct construction literal — outside the
+    /// permissive numeric+bool domain (ruling 2: "compile error under
+    /// `types = strict`, runtime fault under gradual"). `string(x)` accepts
+    /// every type and is never checked here.
+    E078,
+
+    // ── T1c function values (docs/t1c-spec.md §2/§8, issue #699) ─────
+    /// `#fn(name, …)`'s target does not resolve to a statically-named
+    /// function definition (`=== function name ===`) — it resolved to a
+    /// variable/list/external/label/non-function knot or stitch, or it
+    /// names a builtin/stdlib intrinsic (which has no definition to take a
+    /// token of). Only fires under `dialect = brink` — under `strict-ink`
+    /// the whole literal is already rejected as extension syntax (E051),
+    /// and content diagnostics on rejected syntax are noise (the TM-2
+    /// suppression precedent, maintainer ruling 2026-07-13).
+    E079,
+    /// A `ref` param of a `#fn` target is not bound in the creation-site
+    /// prefix, or is bound to a non-durable lvalue. All `ref` params must
+    /// be bound at creation, and each must capture a durable cell — a
+    /// global `VAR` (flow-local `#@local` VARs included); a `temp`/param
+    /// is a compile error (temps die with the frame, value-model §11), a
+    /// `CONST` is not a mutable cell, and any rvalue/field projection is
+    /// not a cell at all.
+    E080,
+    /// `#fn(name, args…)` binds more arguments than the target declares —
+    /// the bound-arg row is a *prefix* of the declared param row
+    /// (docs/t1c-spec.md §2: "binding more args than the target declares
+    /// is a compile error").
+    E081,
 }
 
 impl DiagnosticCode {
@@ -867,6 +1332,37 @@ impl DiagnosticCode {
             Self::E048 => "E048",
             Self::E049 => "E049",
             Self::E050 => "E050",
+            Self::E051 => "E051",
+            Self::E052 => "E052",
+            Self::E053 => "E053",
+            Self::E054 => "E054",
+            Self::E055 => "E055",
+            Self::E056 => "E056",
+            Self::E057 => "E057",
+            Self::E058 => "E058",
+            Self::E059 => "E059",
+            Self::E060 => "E060",
+            Self::E061 => "E061",
+            Self::E062 => "E062",
+            Self::E063 => "E063",
+            Self::E064 => "E064",
+            Self::E065 => "E065",
+            Self::E066 => "E066",
+            Self::E067 => "E067",
+            Self::E068 => "E068",
+            Self::E069 => "E069",
+            Self::E070 => "E070",
+            Self::E071 => "E071",
+            Self::E072 => "E072",
+            Self::E073 => "E073",
+            Self::E074 => "E074",
+            Self::E075 => "E075",
+            Self::E076 => "E076",
+            Self::E077 => "E077",
+            Self::E078 => "E078",
+            Self::E079 => "E079",
+            Self::E080 => "E080",
+            Self::E081 => "E081",
         }
     }
 
@@ -924,6 +1420,47 @@ impl DiagnosticCode {
             Self::E048 => "duplicate directive",
             Self::E049 => "directive not supported on this target",
             Self::E050 => "directive does not take arguments",
+            Self::E051 => "brink extension used under strict-ink dialect",
+            Self::E052 => "brink extension not yet implemented",
+            Self::E053 => {
+                "internal: brink extension reached LIR lowering (dialect gate suppressed)"
+            }
+            Self::E054 => "block-scoped temp shadows an already-visible temp",
+            Self::E055 => "collection mutator's first argument is not an lvalue",
+            Self::E056 => "collection mutator used in expression position",
+            Self::E057 => "break/continue outside a loop",
+            Self::E058 => "collection mutator argument count mismatch",
+            Self::E059 => "choice/gather construct nested inside inline content",
+            Self::E060 => "internal codegen error",
+            Self::E061 => "unknown type name in annotation",
+            Self::E062 => "retired (T1c-1) — fn(T…): R annotations now resolve for real",
+            Self::E063 => "type annotation disagrees with inferred type",
+            Self::E064 => "strict types require the brink dialect",
+            Self::E065 => "type escapes strict inference as Unknown",
+            Self::E066 => "type is Conflicted under strict inference",
+            Self::E067 => "assigning the result of a void function",
+            Self::E068 => "struct construction literal names an undeclared STRUCT",
+            Self::E069 => "struct construction literal is missing a declared field",
+            Self::E070 => "struct construction literal supplies an undeclared field",
+            Self::E071 => "struct construction literal field disagrees with the declared type",
+            Self::E072 => "retired (TM-4c) — struct constructs now lower for real",
+            Self::E073 => {
+                "struct construction literal names an unresolved STRUCT shape at LIR lowering"
+            }
+            Self::E074 => "chained field-write projection (p.a.b = v) is not supported",
+            Self::E075 => {
+                "struct construction literal is not supported as a VAR/CONST declaration default"
+            }
+            Self::E076 => {
+                "map literal key in a VAR/CONST declaration default is not a compile-time-constant scalar (int/string/bool)"
+            }
+            Self::E077 => {
+                "array element or map value in a VAR/CONST declaration default is not a compile-time-constant expression"
+            }
+            Self::E078 => "int()/float() argument is outside the permissive numeric+bool domain",
+            Self::E079 => "#fn target is not a statically-named function definition",
+            Self::E080 => "#fn ref parameter is not bound to a durable cell at creation",
+            Self::E081 => "#fn binds more arguments than the target declares",
         }
     }
 
@@ -941,7 +1478,9 @@ impl DiagnosticCode {
             | Self::E034
             | Self::E035
             | Self::E038
-            | Self::E043 => Severity::Warning,
+            | Self::E043
+            | Self::E054
+            | Self::E063 => Severity::Warning,
             _ => Severity::Error,
         }
     }
@@ -1000,6 +1539,37 @@ impl DiagnosticCode {
             "E048" => Some(Self::E048),
             "E049" => Some(Self::E049),
             "E050" => Some(Self::E050),
+            "E051" => Some(Self::E051),
+            "E052" => Some(Self::E052),
+            "E053" => Some(Self::E053),
+            "E054" => Some(Self::E054),
+            "E055" => Some(Self::E055),
+            "E056" => Some(Self::E056),
+            "E057" => Some(Self::E057),
+            "E058" => Some(Self::E058),
+            "E059" => Some(Self::E059),
+            "E060" => Some(Self::E060),
+            "E061" => Some(Self::E061),
+            "E062" => Some(Self::E062),
+            "E063" => Some(Self::E063),
+            "E064" => Some(Self::E064),
+            "E065" => Some(Self::E065),
+            "E066" => Some(Self::E066),
+            "E067" => Some(Self::E067),
+            "E068" => Some(Self::E068),
+            "E069" => Some(Self::E069),
+            "E070" => Some(Self::E070),
+            "E071" => Some(Self::E071),
+            "E072" => Some(Self::E072),
+            "E073" => Some(Self::E073),
+            "E074" => Some(Self::E074),
+            "E075" => Some(Self::E075),
+            "E076" => Some(Self::E076),
+            "E077" => Some(Self::E077),
+            "E078" => Some(Self::E078),
+            "E079" => Some(Self::E079),
+            "E080" => Some(Self::E080),
+            "E081" => Some(Self::E081),
             _ => None,
         }
     }

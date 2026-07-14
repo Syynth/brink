@@ -749,6 +749,7 @@ fn stmt_extent(stmt: &Stmt) -> Option<TextRange> {
         Stmt::Conditional(c) => Some(c.ptr.text_range()),
         Stmt::Sequence(s) => Some(s.ptr.text_range()),
         Stmt::ExprStmt(_) | Stmt::EndOfLine => None,
+        Stmt::LogicBlock(lb) => Some(lb.ptr.text_range()),
     }
 }
 
@@ -839,6 +840,79 @@ VAR name = \"x\"
                 .iter()
                 .any(|s| s.kind == SpanKind::VarDecl && s.def_id.is_some()),
             "VAR decl span with def_id"
+        );
+    }
+
+    // ── TM-2 inline type annotations (docs/typed-mode-spec.md §3) ──────
+    //
+    // The IDE pipeline (parse → HIR → analyze → project) must not crash on
+    // annotated sources — this is a superset-grammar/HIR extension the
+    // projection layer never inspects (it walks knots/params/vars by their
+    // pre-existing shape), so the assertion here is really "this whole
+    // pipeline runs to completion and still finds the same spans a
+    // consumer (hover, go-to-def) would have found without annotations".
+
+    #[test]
+    fn ide_pipeline_does_not_crash_on_annotated_sources_and_still_projects_spans() {
+        let src = "\
+VAR gold: int = 100
+CONST max_gold: int = 999
+LIST Weathers = sunny, (rainy)
+=== function heal(ref hp: int, amount: float): bool ===
+~ temp bonus: string = \"none\"
+~ return true
+= aftermath
+~ temp w: list<Weathers> = sunny
+-> DONE
+";
+        let p = project(src);
+
+        assert!(
+            p.spans
+                .iter()
+                .any(|s| s.kind == SpanKind::VarDecl && s.def_id.is_some()),
+            "annotated VAR decl still projects with a def_id"
+        );
+        assert!(
+            p.spans
+                .iter()
+                .any(|s| s.kind == SpanKind::ConstDecl && s.def_id.is_some()),
+            "annotated CONST decl still projects with a def_id"
+        );
+        assert!(
+            p.spans
+                .iter()
+                .any(|s| s.kind == SpanKind::Knot && s.def_id.is_some()),
+            "the function knot with param/return annotations still projects"
+        );
+        assert!(
+            p.spans.iter().any(|s| s.kind == SpanKind::Param),
+            "annotated params still project"
+        );
+        assert!(
+            p.spans.iter().any(|s| s.kind == SpanKind::TempDecl),
+            "annotated/ascribed temps still project"
+        );
+    }
+
+    #[test]
+    fn ide_pipeline_does_not_crash_on_reserved_and_unknown_type_annotations() {
+        // `fn(...)` (reserved until T1c) and an unrecognized name both
+        // produce analyzer diagnostics (E062/E061), not a panic anywhere
+        // in the pipeline.
+        let src = "VAR cb: fn(int): bool = 0\nVAR p: Frobnicator = 0\nCONST bad: Frobnicator = 0\n";
+        let p = project(src);
+        assert!(
+            p.spans
+                .iter()
+                .any(|s| s.kind == SpanKind::VarDecl && s.def_id.is_some()),
+            "VAR decls with reserved/unknown annotations still project"
+        );
+        assert!(
+            p.spans
+                .iter()
+                .any(|s| s.kind == SpanKind::ConstDecl && s.def_id.is_some()),
+            "CONST decl with an unknown annotation still projects"
         );
     }
 

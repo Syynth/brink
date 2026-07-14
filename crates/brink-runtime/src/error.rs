@@ -5,7 +5,7 @@ use alloc::string::String;
 use brink_format::{DecodeError, DefinitionId};
 
 /// Errors that can occur during story linking or execution.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum RuntimeError {
     #[error("bytecode decode error: {0}")]
     Decode(#[from] DecodeError),
@@ -122,5 +122,83 @@ pub enum RuntimeError {
         expected: u8,
         /// Arguments the host supplied.
         got: usize,
+    },
+
+    // ── T1b collections (docs/value-model-spec.md §11c) ──────────────
+    //
+    // Out-of-bounds/missing-key reads and writes are turn-terminating
+    // runtime faults — total operations with no silent growth on
+    // write-past-end (`docs/t1b-surface-spec.md` §4). Propagating as
+    // `RuntimeError` (rather than a special in-band value) is exactly what
+    // "turn-terminating" already means in this VM: it unwinds `step()`,
+    // ending the current turn, the same mechanism `DivisionByZero` uses.
+    /// Array index read/write out of bounds (`0 <= index < len` required).
+    #[error("array index {index} out of bounds (len {len})")]
+    IndexOutOfBounds { index: i32, len: usize },
+    /// Map key read/write on a key that isn't present. Indexed *write*
+    /// (`m[k] = v`) requires the key to already exist — it never inserts;
+    /// use the `insert()` stdlib mutator (T1b-3) to add a new key.
+    #[error("map has no key {key}")]
+    MapKeyNotFound { key: String },
+    /// `a[i]`/`a[i] = v`/`m[k]`/`m[k] = v` where `a`/`m` isn't an
+    /// `Array`/`Map`.
+    #[error("cannot index into a {0} value")]
+    NotIndexable(&'static str),
+    /// Array index expression didn't evaluate to an `Int`.
+    #[error("array index must be an int, got {0}")]
+    InvalidArrayIndex(&'static str),
+    /// Map key expression evaluated to a type outside the ratified key
+    /// domain (int/string/bool — value-model-spec §4).
+    #[error("map key must be int, string, or bool, got {0}")]
+    InvalidMapKeyType(&'static str),
+    /// `PushLiteral(idx)` referenced an index outside the literal pool —
+    /// malformed bytecode, not an author-triggerable condition.
+    #[error("literal pool index {0} out of range")]
+    InvalidLiteralIndex(u32),
+
+    // ── TM-4 records (docs/typed-mode-spec.md §6 / value-model-spec §11c) ──
+    /// `RecordNew(shape_id)` referenced a shape id outside the compiled
+    /// `StructShapes` table — malformed bytecode.
+    #[error("struct shape id {0} out of range")]
+    InvalidShapeId(u32),
+    /// `RecordGetDyn`/`RecordSetDyn` on a value that isn't a `Record`.
+    #[error("cannot access a field on a {0} value")]
+    NotARecord(&'static str),
+    /// `RecordGetDyn`/`RecordSetDyn` named a field the record's shape
+    /// doesn't declare — a compile-time typo under strict mode (surfaced as
+    /// a diagnostic there) or a genuine dynamic mismatch under gradual mode,
+    /// both turn-terminating at runtime (spec §11c pattern).
+    #[error("struct has no field {0:?}")]
+    RecordFieldNotFound(String),
+    /// `RecordGet(offset)`/`RecordSet(offset)` (TM-4c static-offset field
+    /// ops) with an offset outside the popped record's own field vector.
+    /// These ops never re-check the record's shape (that's the payoff over
+    /// `RecordGetDyn`/`RecordSetDyn`) — only the field count is verified, so
+    /// this is the sole fault this pair can produce, malformed bytecode or
+    /// otherwise.
+    #[error("struct field offset {offset} out of range (record has {len} fields)")]
+    RecordFieldOffsetOutOfRange { offset: u16, len: usize },
+
+    // ── TM-3 completion: conversion intrinsics (docs/typed-mode-spec.md
+    // §4, maintainer ruling 2026-07-13, issue #659) ──────────────────────
+    /// `int(x)`/`float(x)` where `x` is a `String` that fails to parse as
+    /// the target numeric type. Turn-terminating fault — no
+    /// zero-defaulting, no silent garbage (ruling 1: "Parse failure is a
+    /// turn-terminating fault... like a missing map key"). Unlike this,
+    /// the classic uppercase `INT()`/`FLOAT()` builtins keep their
+    /// pre-existing silent-0 legacy behavior (`value_ops::cast_to_int`/
+    /// `cast_to_float`) — untouched, oracle-byte-identical, a distinct
+    /// code path.
+    #[error("cannot parse {input:?} as {target}")]
+    ConversionParseFailure { target: &'static str, input: String },
+    /// `int(x)`/`float(x)` where `x` is outside the permissive
+    /// numeric+bool domain (divert targets, LIST values, arrays, maps,
+    /// records) — compile error under `types = strict` (`brink-analyzer`'s
+    /// intrinsic typing/domain check), turn-terminating fault under
+    /// `types = gradual` (ruling 2).
+    #[error("cannot convert a {got} value to {target}")]
+    InvalidConversionDomain {
+        target: &'static str,
+        got: &'static str,
     },
 }

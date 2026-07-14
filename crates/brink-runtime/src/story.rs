@@ -2872,12 +2872,11 @@ mod tests {
     use crate::link;
 
     fn load_i079_program() -> (crate::Program, Vec<Vec<brink_format::LineEntry>>) {
-        let json_str = std::fs::read_to_string(
-            "../../tests/tier1/choices/I079-once-only-choices-can-link-back-to-self/story.ink.json",
-        )
-        .unwrap();
-        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
-        let data = brink_converter::convert(&ink).unwrap();
+        let data = brink_compiler::compile_path(std::path::Path::new(
+            "../../tests/tier1/choices/I079-once-only-choices-can-link-back-to-self/story.ink",
+        ))
+        .unwrap()
+        .data;
         link(&data).unwrap()
     }
 
@@ -3051,12 +3050,11 @@ mod tests {
     // ── Choice thread forking ──────────────────────────────────────────
 
     fn load_i083_program() -> (crate::Program, Vec<Vec<brink_format::LineEntry>>) {
-        let json_str = std::fs::read_to_string(
-            "../../tests/tier1/choices/I083-choice-thread-forking/story.ink.json",
-        )
-        .unwrap();
-        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
-        let data = brink_converter::convert(&ink).unwrap();
+        let data = brink_compiler::compile_path(std::path::Path::new(
+            "../../tests/tier1/choices/I083-choice-thread-forking/story.ink",
+        ))
+        .unwrap()
+        .data;
         link(&data).unwrap()
     }
 
@@ -3130,18 +3128,20 @@ mod tests {
     // ── Tags ──────────────────────────────────────────────────────────
 
     fn load_tags_program() -> (crate::Program, Vec<Vec<brink_format::LineEntry>>) {
-        let json_str =
-            std::fs::read_to_string("../../tests/tier3/tags/tags/story.ink.json").unwrap();
-        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
-        let data = brink_converter::convert(&ink).unwrap();
+        let data = brink_compiler::compile_path(std::path::Path::new(
+            "../../tests/tier3/tags/tags/story.ink",
+        ))
+        .unwrap()
+        .data;
         link(&data).unwrap()
     }
 
     fn load_tags_in_choice_program() -> (crate::Program, Vec<Vec<brink_format::LineEntry>>) {
-        let json_str =
-            std::fs::read_to_string("../../tests/tier3/tags/tagsInChoice/story.ink.json").unwrap();
-        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
-        let data = brink_converter::convert(&ink).unwrap();
+        let data = brink_compiler::compile_path(std::path::Path::new(
+            "../../tests/tier3/tags/tagsInChoice/story.ink",
+        ))
+        .unwrap()
+        .data;
         link(&data).unwrap()
     }
 
@@ -3175,11 +3175,11 @@ mod tests {
     // ── Thread support ──────────────────────────────────────────────────
 
     fn load_i091_program() -> (crate::Program, Vec<Vec<brink_format::LineEntry>>) {
-        let json_str =
-            std::fs::read_to_string("../../tests/tier1/choices/I091-choice-count/story.ink.json")
-                .unwrap();
-        let ink: brink_json::InkJson = serde_json::from_str(&json_str).unwrap();
-        let data = brink_converter::convert(&ink).unwrap();
+        let data = brink_compiler::compile_path(std::path::Path::new(
+            "../../tests/tier1/choices/I091-choice-count/story.ink",
+        ))
+        .unwrap()
+        .data;
         link(&data).unwrap()
     }
 

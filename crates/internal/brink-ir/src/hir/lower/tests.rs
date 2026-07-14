@@ -582,3 +582,179 @@ fn plain_tag_lines_are_unaffected() {
     let tags = all_content_tags(&hir);
     assert_eq!(tags.len(), 2, "both plain tags survive: {tags:?}");
 }
+
+// ─── TM-2 inline type annotations (docs/typed-mode-spec.md §3) ──────
+
+#[test]
+fn param_annotation_lowers_to_named_type_expr() {
+    let (hir, diags) = lower_hir("=== heal(hp: int) ===\n~ return\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let knot = &hir.knots[0];
+    assert_eq!(knot.params.len(), 1);
+    match &knot.params[0].annotation {
+        Some(TypeExpr::Named { name, .. }) => assert_eq!(name, "int"),
+        other => panic!("expected Named(\"int\"), got {other:?}"),
+    }
+}
+
+#[test]
+fn unannotated_param_lowers_to_none() {
+    let (hir, diags) = lower_hir("=== heal(hp) ===\n~ return\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.knots[0].params[0].annotation, None);
+}
+
+#[test]
+fn return_type_annotation_lowers_onto_knot() {
+    let (hir, diags) = lower_hir("=== function heal(hp) ===\n~ return hp\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    // No annotation declared — must be `None`, not a synthesized `Unknown`.
+    assert_eq!(hir.knots[0].return_type, None);
+
+    let (hir2, diags2) = lower_hir("=== function heal(hp): int ===\n~ return hp\n");
+    assert!(diags2.is_empty(), "unexpected diagnostics: {diags2:?}");
+    match &hir2.knots[0].return_type {
+        Some(TypeExpr::Named { name, .. }) => assert_eq!(name, "int"),
+        other => panic!("expected Named(\"int\"), got {other:?}"),
+    }
+}
+
+#[test]
+fn void_return_type_lowers_to_named_void_not_none() {
+    // `void` is an explicit annotation, distinct from "no annotation
+    // declared" (`None`) — both mean "nothing meaningful returned" to a
+    // human, but only one is a parsed `TypeExpr` a consumer can inspect.
+    let (hir, diags) = lower_hir("=== function noop(): void ===\n~ return\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    match &hir.knots[0].return_type {
+        Some(TypeExpr::Named { name, .. }) => assert_eq!(name, "void"),
+        other => panic!("expected Named(\"void\"), got {other:?}"),
+    }
+}
+
+#[test]
+fn stitch_header_never_carries_a_return_type() {
+    // `= stitch` headers have no return-type grammar position (TM-2 §3
+    // scopes `): type ===` to `== knot ==` headers) — a promoted top-level
+    // stitch's `Knot.return_type` is always `None`.
+    let (hir, diags) = lower_hir("=== camp ===\nText.\n= fire\nMore.\n-> DONE\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let camp = hir.knots.iter().find(|k| k.name.text == "camp").unwrap();
+    assert_eq!(camp.return_type, None);
+    assert_eq!(camp.stitches[0].name.text, "fire");
+}
+
+#[test]
+fn var_annotation_lowers_onto_var_decl() {
+    let (hir, diags) = lower_hir("VAR gold: int = 100\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    match &hir.variables[0].annotation {
+        Some(TypeExpr::Named { name, .. }) => assert_eq!(name, "int"),
+        other => panic!("expected Named(\"int\"), got {other:?}"),
+    }
+}
+
+#[test]
+fn unannotated_var_lowers_to_none() {
+    let (hir, diags) = lower_hir("VAR gold = 100\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.variables[0].annotation, None);
+}
+
+#[test]
+fn temp_ascription_lowers_onto_temp_decl() {
+    let (hir, diags) = lower_hir("~ temp name: string = \"who\"\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    match &hir.root_content.stmts[0] {
+        Stmt::TempDecl(td) => match &td.annotation {
+            Some(TypeExpr::Named { name, .. }) => assert_eq!(name, "string"),
+            other => panic!("expected Named(\"string\"), got {other:?}"),
+        },
+        other => panic!("expected TempDecl, got {other:?}"),
+    }
+}
+
+#[test]
+fn block_scoped_temp_ascription_lowers_onto_block_temp_decl() {
+    // The T1b `~ { … }` block-statement path shares `ast::TempDecl` with
+    // the classic `~ temp` form — same grammar, same HIR lowering.
+    let (hir, diags) = lower_hir("~ {\ntemp x: int = 1\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    match &hir.root_content.stmts[0] {
+        Stmt::LogicBlock(lb) => match &lb.stmts[0] {
+            BlockStmt::TempDecl(td) => match &td.annotation {
+                Some(TypeExpr::Named { name, .. }) => assert_eq!(name, "int"),
+                other => panic!("expected Named(\"int\"), got {other:?}"),
+            },
+            other => panic!("expected TempDecl, got {other:?}"),
+        },
+        other => panic!("expected LogicBlock, got {other:?}"),
+    }
+}
+
+#[test]
+fn generic_list_and_map_annotations_lower_with_args() {
+    let (hir, diags) = lower_hir("VAR w: list<Weathers> = 0\nVAR m: map<string, int> = 0\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    match &hir.variables[0].annotation {
+        Some(TypeExpr::Generic { name, args, .. }) => {
+            assert_eq!(name, "list");
+            assert_eq!(args.len(), 1);
+            assert!(matches!(&args[0], TypeExpr::Named { name, .. } if name == "Weathers"));
+        }
+        other => panic!("expected Generic(\"list\", ...), got {other:?}"),
+    }
+    match &hir.variables[1].annotation {
+        Some(TypeExpr::Generic { name, args, .. }) => {
+            assert_eq!(name, "map");
+            assert_eq!(args.len(), 2);
+        }
+        other => panic!("expected Generic(\"map\", ...), got {other:?}"),
+    }
+}
+
+#[test]
+fn fn_type_annotation_lowers_with_params_and_return() {
+    let (hir, diags) = lower_hir("VAR cb: fn(int, int): bool = 0\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    match &hir.variables[0].annotation {
+        Some(TypeExpr::Fn { params, ret, .. }) => {
+            assert_eq!(params.len(), 2);
+            assert!(matches!(**ret, TypeExpr::Named { ref name, .. } if name == "bool"));
+        }
+        other => panic!("expected Fn, got {other:?}"),
+    }
+}
+
+#[test]
+fn unknown_type_name_still_lowers_without_diagnostics() {
+    // HIR lowering is purely structural — validity checking (unknown
+    // names, `fn` reservation) is `brink-analyzer`'s job (E061/E062), not
+    // this layer's (mirrors the T1b dialect-gate split).
+    let (hir, diags) = lower_hir("VAR p: Frobnicator = 0\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    match &hir.variables[0].annotation {
+        Some(TypeExpr::Named { name, .. }) => assert_eq!(name, "Frobnicator"),
+        other => panic!("expected Named(\"Frobnicator\"), got {other:?}"),
+    }
+}
+
+#[test]
+fn const_annotation_lowers_onto_const_decl() {
+    // #641: mirrors `var_annotation_lowers_onto_var_decl` — CONST accepts
+    // a type annotation end to end, same as VAR (typed-mode-spec.md §3,
+    // "optional anywhere").
+    let (hir, diags) = lower_hir("CONST speed: float = 0.5\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    match &hir.constants[0].annotation {
+        Some(TypeExpr::Named { name, .. }) => assert_eq!(name, "float"),
+        other => panic!("expected Named(\"float\"), got {other:?}"),
+    }
+}
+
+#[test]
+fn unannotated_const_lowers_to_none() {
+    let (hir, diags) = lower_hir("CONST speed = 0.5\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.constants[0].annotation, None);
+}

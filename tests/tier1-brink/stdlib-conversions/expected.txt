@@ -1,0 +1,3 @@
+int(2.9) = 2, int(-2.9) = -2, int("42") = 42, int(true) = 1, int(false) = 0, int(7) = 7
+float(3) = 3, float("2.5") = 2.5, float(true) = 1, float(false) = 0, float(1.25) = 1.25
+string(42) = 42, string(3.14) = 3.14, string(true) = true, string("hi") = hi, string(arr) = [1, 2, 3]

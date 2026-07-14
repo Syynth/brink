@@ -36,8 +36,9 @@
 //! walkers that never look at expressions pay nothing for the expression tree.
 
 use super::types::{
-    Block, Choice, ChoiceSet, CondKind, Conditional, Content, ContentPart, DivertTarget, Expr,
-    HirFile, Knot, Sequence, Stitch, Stmt, StringPart,
+    Block, BlockStmt, Choice, ChoiceSet, CondKind, Conditional, Content, ContentPart, DivertTarget,
+    ElseBranch, Expr, ForStmt, HirFile, IfStmt, Knot, LogicBlock, Sequence, Stitch, Stmt,
+    StringPart, WhileStmt,
 };
 
 /// Where a visited [`Content`] sits in the tree.
@@ -180,8 +181,78 @@ fn walk_stmt(stmt: &Stmt, ctx: ContentContext, v: &mut impl HirVisitor) {
         Stmt::Sequence(s) => walk_sequence(s, ctx, v),
         Stmt::ExprStmt(e) => walk_expr(e, v),
         Stmt::EndOfLine => {}
+        Stmt::LogicBlock(lb) => walk_logic_block(lb, v),
     }
     v.exit_stmt(stmt);
+}
+
+// ─── T1b `~ { … }` blocks ────────────────────────────────────────────
+//
+// `BlockStmt` is a closed set with no weave variant, so this sub-walk never
+// calls back into `walk_stmt`/`walk_content`/`enter_choice` etc. — only
+// expressions and nested block statements.
+
+fn walk_logic_block(lb: &LogicBlock, v: &mut impl HirVisitor) {
+    for bs in &lb.stmts {
+        walk_block_stmt(bs, v);
+    }
+}
+
+fn walk_block_stmt(bs: &BlockStmt, v: &mut impl HirVisitor) {
+    match bs {
+        BlockStmt::TempDecl(t) => {
+            if let Some(e) = &t.value {
+                walk_expr(e, v);
+            }
+        }
+        BlockStmt::Assignment(a) => {
+            walk_expr(&a.target, v);
+            walk_expr(&a.value, v);
+        }
+        BlockStmt::Return(r) => {
+            if let Some(e) = &r.value {
+                walk_expr(e, v);
+            }
+            for e in &r.onwards_args {
+                walk_expr(e, v);
+            }
+        }
+        BlockStmt::If(i) => walk_if_stmt(i, v),
+        BlockStmt::While(w) => walk_while_stmt(w, v),
+        BlockStmt::For(f) => walk_for_stmt(f, v),
+        BlockStmt::Break(_) | BlockStmt::Continue(_) => {}
+        BlockStmt::ExprStmt(e) => walk_expr(e, v),
+    }
+}
+
+fn walk_if_stmt(i: &IfStmt, v: &mut impl HirVisitor) {
+    walk_expr(&i.condition, v);
+    for s in &i.body {
+        walk_block_stmt(s, v);
+    }
+    match &i.else_branch {
+        Some(ElseBranch::ElseIf(inner)) => walk_if_stmt(inner, v),
+        Some(ElseBranch::Else(stmts)) => {
+            for s in stmts {
+                walk_block_stmt(s, v);
+            }
+        }
+        None => {}
+    }
+}
+
+fn walk_while_stmt(w: &WhileStmt, v: &mut impl HirVisitor) {
+    walk_expr(&w.condition, v);
+    for s in &w.body {
+        walk_block_stmt(s, v);
+    }
+}
+
+fn walk_for_stmt(f: &ForStmt, v: &mut impl HirVisitor) {
+    walk_expr(&f.iterable, v);
+    for s in &f.body {
+        walk_block_stmt(s, v);
+    }
 }
 
 fn walk_target(target: &DivertTarget, v: &mut impl HirVisitor) {
@@ -275,6 +346,37 @@ fn walk_expr(expr: &Expr, v: &mut impl HirVisitor) {
         | Expr::Path(_)
         | Expr::DivertTarget(_)
         | Expr::ListLiteral(_) => {}
+        Expr::ArrayLiteral(a) => {
+            for e in &a.elements {
+                walk_expr(e, v);
+            }
+        }
+        Expr::MapLiteral(m) => {
+            for (k, val) in &m.entries {
+                walk_expr(k, v);
+                walk_expr(val, v);
+            }
+        }
+        Expr::Index(idx) => {
+            walk_expr(&idx.base, v);
+            walk_expr(&idx.index, v);
+        }
+        Expr::StructLiteral(sl) => {
+            for (_name, val) in &sl.fields {
+                walk_expr(val, v);
+            }
+        }
+        Expr::FieldAccess(fa) => {
+            walk_expr(&fa.base, v);
+        }
+        // T1c `#fn(target, args…)`: the target is a static `Path` field
+        // (not an `Expr` child, same as `Call`'s path); only the bound
+        // arguments descend.
+        Expr::FnLiteral(fl) => {
+            for arg in &fl.args {
+                walk_expr(arg, v);
+            }
+        }
     }
 }
 

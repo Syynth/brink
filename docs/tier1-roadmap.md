@@ -42,7 +42,15 @@ shared prefixes). First emission of T1a opcodes; brink-native test
 corpus grows a Tier-1 wing (no oracle exists for new surface — spec +
 property tests carry it, per the standing divergence discipline).
 
-### T1c — functions as values, closures
+### TM — typed mode (inserted 2026-07-12, #605 ruling)
+
+Strict types, inferred internally (mono-HM per SCC), declared at
+boundaries; inline annotation syntax (brink dialect); structs
+(`Value::Record`) land here. Spec: `docs/typed-mode-spec.md`. Slices
+TM-1..TM-5; sequencing ruling: **types → T1c → effects**. T1c below is
+held until TM's spine lands (its rulings are logged and stand).
+
+### T1c — functions as values, partial application (formerly "closures")
 
 Function tokens; closure values `{fn, env}` with capture-list grammar;
 `val`/`ref` env rows (durable-cell restriction enforced by the

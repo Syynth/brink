@@ -271,6 +271,7 @@ fn stmt_range(stmt: &Stmt) -> Option<rowan::TextRange> {
         Stmt::Sequence(s) => Some(s.ptr.text_range()),
         Stmt::LabeledBlock(b) => b.label.as_ref().map(|l| l.range),
         Stmt::ExprStmt(_) | Stmt::EndOfLine => None,
+        Stmt::LogicBlock(lb) => Some(lb.ptr.text_range()),
     }
 }
 
@@ -328,6 +329,7 @@ mod tests {
             variables: Vec::new(),
             constants: Vec::new(),
             lists: Vec::new(),
+            structs: Vec::new(),
             externals: Vec::new(),
             includes: Vec::new(),
         }
@@ -373,6 +375,7 @@ mod tests {
             },
             stitches: Vec::new(),
             is_local: false,
+            return_type: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -403,6 +406,7 @@ mod tests {
             },
             stitches: Vec::new(),
             is_local: false,
+            return_type: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -435,6 +439,7 @@ mod tests {
             },
             stitches: Vec::new(),
             is_local: false,
+            return_type: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -478,6 +483,7 @@ mod tests {
             },
             stitches: Vec::new(),
             is_local: false,
+            return_type: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -516,6 +522,7 @@ mod tests {
             },
             stitches: Vec::new(),
             is_local: false,
+            return_type: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -567,6 +574,7 @@ mod tests {
             },
             stitches: Vec::new(),
             is_local: false,
+            return_type: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -620,6 +628,7 @@ mod tests {
             },
             stitches: Vec::new(),
             is_local: false,
+            return_type: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -672,6 +681,7 @@ mod tests {
             },
             stitches: Vec::new(),
             is_local: false,
+            return_type: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -734,6 +744,7 @@ mod tests {
             },
             stitches: Vec::new(),
             is_local: false,
+            return_type: None,
         });
 
         let files = vec![(FileId(0), &hir)];

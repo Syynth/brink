@@ -7,7 +7,7 @@
 
 mod driver;
 
-pub use brink_driver::AnalysisOptions;
+pub use brink_driver::{AnalysisOptions, Dialect, TypePolicy};
 pub use brink_ir::{DiagnosticCode, FileId};
 
 use brink_format::StoryData;
@@ -49,12 +49,6 @@ pub struct CompileOutput {
     pub warnings: Vec<ResolvedDiagnostic>,
 }
 
-/// Successful LIR compilation output, including any non-fatal warnings.
-pub struct LirOutput {
-    pub program: brink_ir::lir::Program,
-    pub warnings: Vec<ResolvedDiagnostic>,
-}
-
 /// Compile an ink story from an entry-point file path.
 ///
 /// Reads files from disk, follows INCLUDEs, and runs the full compilation
@@ -63,6 +57,19 @@ pub fn compile_path(path: &Path) -> Result<CompileOutput, CompileError> {
     compile(path.to_string_lossy().as_ref(), |p| {
         std::fs::read_to_string(p).map_err(|e| io::Error::new(e.kind(), format!("{p}: {e}")))
     })
+}
+
+/// Compile an ink story from an entry-point file path with explicit analysis
+/// options — e.g. the T1b `--dialect` flag (`AnalysisOptions::dialect`).
+pub fn compile_path_with_options(
+    path: &Path,
+    options: AnalysisOptions,
+) -> Result<CompileOutput, CompileError> {
+    compile_with_options(
+        path.to_string_lossy().as_ref(),
+        |p| std::fs::read_to_string(p).map_err(|e| io::Error::new(e.kind(), format!("{p}: {e}"))),
+        options,
+    )
 }
 
 /// Compile an ink story with caller-provided file reading.
@@ -74,7 +81,7 @@ pub fn compile<F>(entry: &str, read_file: F) -> Result<CompileOutput, CompileErr
 where
     F: FnMut(&str) -> Result<String, io::Error>,
 {
-    driver::compile(entry, read_file)
+    driver::compile_with_options(entry, read_file, AnalysisOptions::default())
 }
 
 /// Compile with explicit analysis options — e.g. a registered host-capability
@@ -92,22 +99,6 @@ where
     driver::compile_with_options(entry, read_file, options)
 }
 
-/// Compile an ink story to the ink.json format (same as inklecate output).
-///
-/// Useful for diffing brink's output against the reference compiler.
-pub fn compile_to_json<F>(entry: &str, read_file: F) -> Result<brink_json::InkJson, CompileError>
-where
-    F: FnMut(&str) -> Result<String, io::Error>,
-{
-    let lir_output = driver::compile_to_lir(entry, read_file)?;
-    Ok(brink_codegen_json::emit(&lir_output.program))
-}
-
-/// Compile ink source from a string to the ink.json format.
-pub fn compile_string_to_json(source: &str) -> Result<brink_json::InkJson, CompileError> {
-    compile_to_json("<string>", |_| Ok(source.to_string()))
-}
-
 /// Errors that can occur during compilation.
 #[derive(Debug, thiserror::Error)]
 pub enum CompileError {
@@ -120,6 +111,12 @@ pub enum CompileError {
     /// Circular INCLUDE dependency detected.
     #[error("circular INCLUDE dependency: {0}")]
     CircularInclude(String),
+    /// Codegen (`brink-codegen-inkb`) refused a `Program` that violates an
+    /// invariant an earlier compiler stage is supposed to guarantee — a
+    /// compiler bug, not an authoring mistake. See
+    /// `brink_codegen_inkb::CodegenError` and #586.
+    #[error("internal codegen error: {0}")]
+    Codegen(#[from] brink_codegen_inkb::CodegenError),
 }
 
 impl From<brink_driver::DiscoverError> for CompileError {

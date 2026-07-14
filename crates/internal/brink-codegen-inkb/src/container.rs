@@ -3,7 +3,7 @@
 use brink_format::{ChoiceFlags, Opcode, SequenceKind};
 use brink_ir::lir;
 
-use crate::ContainerEmitter;
+use crate::{CodegenError, ContainerEmitter, LoopCtx};
 
 impl ContainerEmitter<'_> {
     pub(super) fn emit_body(&mut self, stmts: &[lir::Stmt]) {
@@ -12,6 +12,10 @@ impl ContainerEmitter<'_> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one match arm per LIR Stmt variant; splitting would obscure the dispatch"
+    )]
     fn emit_stmt(&mut self, stmt: &lir::Stmt) {
         match stmt {
             lir::Stmt::EmitContent(content) => self.emit_content(content),
@@ -126,6 +130,118 @@ impl ContainerEmitter<'_> {
             lir::Stmt::EndOfLine => {
                 self.emit(Opcode::EmitNewline);
             }
+
+            lir::Stmt::LogicWhile(w) => self.emit_logic_while(w),
+
+            lir::Stmt::LogicBreak => {
+                // Patched to land just after the whole loop once it's fully
+                // emitted (`emit_logic_while`). LIR lowering (E057,
+                // `brink-ir::lir::lower::blocks`) rejects `break` outside
+                // any loop and never emits this statement in that case — it
+                // is a non-suppressible LIR-lowering-time compile error, not
+                // a suppressible analysis diagnostic, so a well-formed
+                // `Program` never contains an unguarded `LogicBreak`. Trust
+                // that invariant the same way every other statement in this
+                // file trusts LIR is well-formed (no other arm here
+                // defensively re-checks its input) — see #577 review, which
+                // replaced a silent `Nop` degradation with a real, upstream
+                // error path (E057).
+                //
+                // That upstream guarantee is enforced by a *different*
+                // compiler stage, though, and codegen has no way to verify
+                // it structurally beyond this checkpoint — "safe today only
+                // by construction" (#586 review). If a future or
+                // refactored LIR producer (or, as here, a hand-assembled
+                // `Program` in a test) ever hands codegen a `LogicBreak`
+                // with an empty `loop_stack` anyway, there is no patch
+                // target for the jump this statement would otherwise emit:
+                // silently falling through to `Opcode::Jump(0)` would
+                // corrupt the bytecode with a jump to the start of the
+                // container, indistinguishable from a valid jump. Fail
+                // loudly instead — and skip emitting the dangling jump
+                // placeholder entirely, so no unpatched opcode ever lands
+                // in the output.
+                if self.loop_stack.is_empty() {
+                    self.errors.push(CodegenError::new(
+                        "codegen: `break` (LogicBreak) reached codegen outside any loop \
+                         context — LIR lowering (E057) should have rejected this before it \
+                         reached codegen; refusing to emit an unpatched jump (#586)",
+                    ));
+                } else {
+                    let site = self.emit_jump_placeholder(Opcode::Jump(0));
+                    if let Some(ctx) = self.loop_stack.last_mut() {
+                        ctx.break_patches.push(site);
+                    }
+                }
+            }
+
+            lir::Stmt::LogicContinue => {
+                // See `LogicBreak` above — identical reasoning, `continue`'s
+                // own jump target.
+                if self.loop_stack.is_empty() {
+                    self.errors.push(CodegenError::new(
+                        "codegen: `continue` (LogicContinue) reached codegen outside any loop \
+                         context — LIR lowering (E057) should have rejected this before it \
+                         reached codegen; refusing to emit an unpatched jump (#586)",
+                    ));
+                } else {
+                    let site = self.emit_jump_placeholder(Opcode::Jump(0));
+                    if let Some(ctx) = self.loop_stack.last_mut() {
+                        ctx.continue_patches.push(site);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Compile a `while`/desugared-`for` loop to a flat backward-jump loop
+    /// in the same container's bytecode — no child container, since block
+    /// bodies never contain choices/gathers that would need one.
+    ///
+    /// ```text
+    /// loop_start: <condition>
+    ///             JumpIfFalse loop_end   ; jf_exit
+    ///             <body>                 ; break -> loop_end, continue -> post_start
+    /// post_start: <post>                 ; empty for a plain `while`
+    ///             Jump loop_start
+    /// loop_end:
+    /// ```
+    #[expect(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+    fn emit_logic_while(&mut self, w: &lir::LogicWhile) {
+        let loop_start = self.bytecode.len();
+        self.emit_expr(&w.condition, false);
+        let jf_exit = self.emit_jump_placeholder(Opcode::JumpIfFalse(0));
+
+        self.loop_stack.push(LoopCtx {
+            break_patches: Vec::new(),
+            continue_patches: Vec::new(),
+        });
+        self.emit_body(&w.body);
+        let LoopCtx {
+            break_patches,
+            continue_patches,
+        } = self.loop_stack.pop().unwrap_or(LoopCtx {
+            break_patches: Vec::new(),
+            continue_patches: Vec::new(),
+        });
+        // `continue` lands here, right before `post` — for a plain `while`
+        // (`post` empty) that's exactly the backward jump below, i.e.
+        // "re-check the condition"; for a desugared `for`, that's the index
+        // increment, so `continue` still advances the loop instead of
+        // spinning forever.
+        for site in continue_patches {
+            self.patch_jump(site);
+        }
+        self.emit_body(&w.post);
+
+        // Backward jump to re-check the condition.
+        let relative = loop_start as i32 - (self.bytecode.len() as i32 + 5);
+        self.emit(Opcode::Jump(relative));
+
+        // `loop_end`: both the false-condition exit and every `break` land here.
+        self.patch_jump(jf_exit);
+        for site in break_patches {
+            self.patch_jump(site);
         }
     }
 

@@ -3,22 +3,29 @@
 use std::path::Path;
 
 use brink_format::{
-    DecodeError, SectionKind, assemble_inkb, read_inkb, read_inkb_index, read_section_addresses,
-    read_section_containers, read_section_externals, read_section_line_tables,
-    read_section_list_defs, read_section_list_items, read_section_list_literals,
-    read_section_name_table, read_section_variables, write_inkb, write_section_address_paths,
-    write_section_addresses, write_section_containers, write_section_externals,
-    write_section_line_tables, write_section_list_defs, write_section_list_items,
-    write_section_list_literals, write_section_name_table, write_section_variables,
+    DecodeError, MAX_DECODE_DEPTH, SectionKind, assemble_inkb, read_inkb, read_inkb_index,
+    read_section_addresses, read_section_containers, read_section_externals,
+    read_section_line_tables, read_section_list_defs, read_section_list_items,
+    read_section_list_literals, read_section_literal_pool, read_section_name_table,
+    read_section_variables, write_inkb, write_section_address_paths, write_section_addresses,
+    write_section_containers, write_section_externals, write_section_line_tables,
+    write_section_list_defs, write_section_list_items, write_section_list_literals,
+    write_section_literal_pool, write_section_name_table, write_section_struct_shapes,
+    write_section_variables,
 };
-use brink_json::InkJson;
+
+fn i001_data() -> brink_format::StoryData {
+    // Compile from an in-memory string with a fixed entry name so the
+    // embedded source path (and thus snapshots) stay machine-independent.
+    let src = include_str!("../../../../tests/tier1/basics/I001-minimal-story/story.ink");
+    brink_compiler::compile("story.ink", |_p| Ok(src.to_owned()))
+        .unwrap()
+        .data
+}
 
 #[test]
 fn roundtrip_i001_minimal_story() {
-    let json_text =
-        include_str!("../../../../tests/tier1/basics/I001-minimal-story/story.ink.json");
-    let story: InkJson = serde_json::from_str(json_text).unwrap();
-    let data = brink_converter::convert(&story).unwrap();
+    let data = i001_data();
 
     let mut buf = Vec::new();
     write_inkb(&data, &mut buf);
@@ -28,12 +35,215 @@ fn roundtrip_i001_minimal_story() {
     assert_eq!(data, recovered);
 }
 
+// ── v4 collection value encoding (#526) ─────────────────────────────────────
+//
+// The v4 format serializes `Value::Array`/`Value::Map` as trees in the
+// Variables section (and everywhere else `encode_value` is reached). No opcode
+// emits a collection literal yet — that is T1b — so this test hand-injects
+// collection-valued globals and round-trips the whole `.inkb`, proving the new
+// tag arms encode and decode structurally (insertion order + scalar key types
+// preserved) instead of the pre-v4 fold-to-`VAL_NULL` placeholder.
+#[test]
+fn roundtrip_collection_valued_globals() {
+    use brink_format::{
+        DefinitionId, DefinitionTag, GlobalVarDef, MapKey, NameId, OrderedMap, Value, ValueType,
+    };
+
+    let mut data = i001_data();
+    let next_id = data.variables.len() as u64;
+
+    // A nested array: [1, "two", [true, null]].
+    let arr = Value::array(vec![
+        Value::Int(1),
+        Value::String("two".into()),
+        Value::array(vec![Value::Bool(true), Value::Null]),
+    ]);
+    // A map with all three scalar key kinds in a deliberately non-sorted order,
+    // nesting an array value.
+    let map: OrderedMap = [
+        (MapKey::from("hp"), Value::Int(30)),
+        (
+            MapKey::from(7),
+            Value::array(vec![Value::Int(1), Value::Int(2)]),
+        ),
+        (MapKey::from(true), Value::String("flag".into())),
+    ]
+    .into_iter()
+    .collect();
+
+    data.variables.push(GlobalVarDef {
+        id: DefinitionId::new(DefinitionTag::GlobalVar, next_id),
+        name: NameId(0),
+        value_type: ValueType::Array,
+        default_value: arr,
+        mutable: true,
+        local: false,
+    });
+    data.variables.push(GlobalVarDef {
+        id: DefinitionId::new(DefinitionTag::GlobalVar, next_id + 1),
+        name: NameId(0),
+        value_type: ValueType::Map,
+        default_value: Value::map(map),
+        mutable: true,
+        local: false,
+    });
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
+    assert_eq!(data, recovered);
+}
+
+// ── Recursion-depth cap on VAL_ARRAY/VAL_MAP decode (#553, #561, #562) ──────
+//
+// `decode_value` recurses into itself for VAL_ARRAY/VAL_MAP children with no
+// depth limit. A crafted `.inkb` of nested single-element arrays (~5
+// bytes/level) can stack-overflow the reader. These tests hand-build a
+// `Value` nested exactly at, and one past, the reader's cap
+// (`brink_format::MAX_DECODE_DEPTH` — the single canonical definition shared
+// by every `decode_value` implementation, #561) and prove the reader accepts
+// the former unchanged and rejects the latter with a proper `DecodeError`
+// instead of overflowing the stack. Both the `VAL_ARRAY` recursion branch and
+// the parallel `VAL_MAP` branch are exercised at the boundary (#562).
+
+/// A `Value` wrapped in `depth` single-element arrays around a scalar leaf,
+/// matching the issue's "nested single-element arrays" shape.
+fn nested_array(depth: usize) -> brink_format::Value {
+    use brink_format::Value;
+    let mut v = Value::Int(42);
+    for _ in 0..depth {
+        v = Value::array(vec![v]);
+    }
+    v
+}
+
+/// A `Value` wrapped in `depth` single-entry maps around a scalar leaf —
+/// the `VAL_MAP` analogue of [`nested_array`], exercising the parallel map
+/// recursion branch in `decode_value` (#562).
+fn nested_map(depth: usize) -> brink_format::Value {
+    use brink_format::{MapKey, OrderedMap, Value};
+    let mut v = Value::Int(42);
+    for _ in 0..depth {
+        let mut map = OrderedMap::with_capacity(1);
+        map.insert(MapKey::Int(0), v);
+        v = Value::map(map);
+    }
+    v
+}
+
+fn story_with_default_value(value: brink_format::Value) -> brink_format::StoryData {
+    use brink_format::{DefinitionId, DefinitionTag, GlobalVarDef, NameId, ValueType};
+
+    let mut data = i001_data();
+    let next_id = data.variables.len() as u64;
+    data.variables.push(GlobalVarDef {
+        id: DefinitionId::new(DefinitionTag::GlobalVar, next_id),
+        name: NameId(0),
+        value_type: ValueType::Array,
+        default_value: value,
+        mutable: true,
+        local: false,
+    });
+    data
+}
+
+#[test]
+fn decode_value_accepts_max_depth_nesting() {
+    let value = nested_array(MAX_DECODE_DEPTH);
+    let data = story_with_default_value(value.clone());
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let recovered = read_inkb(&buf).expect("depth exactly at cap must decode");
+    assert_eq!(recovered.variables.last().unwrap().default_value, value);
+}
+
+#[test]
+fn decode_value_rejects_beyond_max_depth() {
+    let value = nested_array(MAX_DECODE_DEPTH + 1);
+    let data = story_with_default_value(value);
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    assert!(matches!(
+        read_inkb(&buf),
+        Err(DecodeError::MaxDepthExceeded(MAX_DECODE_DEPTH))
+    ));
+}
+
+#[test]
+fn decode_value_rejects_deeply_crafted_nesting() {
+    // The actual attack scenario the issue describes: a much deeper chain
+    // than any legitimate story would produce (well beyond the cap, but
+    // shallow enough that constructing/encoding the fixture itself — which
+    // has no depth cap, by design; only the untrusted-input decode path is
+    // guarded — doesn't hit unrelated recursion limits). The reader must
+    // reject it promptly rather than recursing hundreds of frames deep.
+    let value = nested_array(8 * MAX_DECODE_DEPTH);
+    let data = story_with_default_value(value);
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    assert!(matches!(
+        read_inkb(&buf),
+        Err(DecodeError::MaxDepthExceeded(MAX_DECODE_DEPTH))
+    ));
+}
+
+// ── #562: parallel VAL_MAP recursion branch at the boundary ────────────────
+
+#[test]
+fn decode_value_accepts_max_depth_map_nesting() {
+    let value = nested_map(MAX_DECODE_DEPTH);
+    let data = story_with_default_value(value.clone());
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let recovered = read_inkb(&buf).expect("map depth exactly at cap must decode");
+    assert_eq!(recovered.variables.last().unwrap().default_value, value);
+}
+
+#[test]
+fn decode_value_rejects_beyond_max_depth_map_nesting() {
+    let value = nested_map(MAX_DECODE_DEPTH + 1);
+    let data = story_with_default_value(value);
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    assert!(matches!(
+        read_inkb(&buf),
+        Err(DecodeError::MaxDepthExceeded(MAX_DECODE_DEPTH))
+    ));
+}
+
+// The strict reader rejects any version but 4 — a future v5 artifact is not
+// silently accepted (the version check runs ahead of the content checksum).
+#[test]
+fn strict_reader_rejects_non_v4_version() {
+    let data = i001_data();
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+    assert!(read_inkb(&buf).is_ok(), "v4 buffer reads cleanly");
+
+    // Bump the on-wire version field (bytes 4..6, LE) to 5.
+    buf[4] = 5;
+    buf[5] = 0;
+    assert!(
+        matches!(read_inkb(&buf), Err(DecodeError::UnsupportedVersion(5))),
+        "a v5 artifact must be rejected as UnsupportedVersion(5)"
+    );
+}
+
 #[test]
 fn snapshot_i001_inkb_bytes() {
-    let json_text =
-        include_str!("../../../../tests/tier1/basics/I001-minimal-story/story.ink.json");
-    let story: InkJson = serde_json::from_str(json_text).unwrap();
-    let data = brink_converter::convert(&story).unwrap();
+    let data = i001_data();
 
     let mut buf = Vec::new();
     write_inkb(&data, &mut buf);
@@ -75,17 +285,15 @@ fn format_hex(bytes: &[u8]) -> String {
     out
 }
 
-fn collect_ink_json_files(dir: &Path) -> Vec<std::path::PathBuf> {
+fn collect_story_ink_files(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
     if dir.is_dir() {
         for entry in std::fs::read_dir(dir).unwrap() {
             let entry = entry.unwrap();
             let path = entry.path();
             if path.is_dir() {
-                files.extend(collect_ink_json_files(&path));
-            } else if path.extension().is_some_and(|e| e == "json")
-                && path.to_str().is_some_and(|s| s.contains(".ink.json"))
-            {
+                files.extend(collect_story_ink_files(&path));
+            } else if path.file_name().is_some_and(|n| n == "story.ink") {
                 files.push(path);
             }
         }
@@ -106,25 +314,20 @@ fn inkb_roundtrip_corpus_smoke() {
         .unwrap()
         .join("tests");
 
-    let files = collect_ink_json_files(&tests_dir);
+    let files = collect_story_ink_files(&tests_dir);
     assert!(
         !files.is_empty(),
-        "no .ink.json files found in {tests_dir:?}"
+        "no story.ink files found in {tests_dir:?}"
     );
 
     let mut failures = Vec::new();
 
     for path in &files {
-        let json_text = std::fs::read_to_string(path).unwrap();
-        let json_text = json_text.strip_prefix('\u{feff}').unwrap_or(&json_text);
-
-        let Ok(story): Result<InkJson, _> = serde_json::from_str(json_text) else {
+        // Some corpus stories intentionally do not compile — skip those.
+        let Ok(output) = brink_compiler::compile_path(path) else {
             continue;
         };
-
-        let Ok(data) = brink_converter::convert(&story) else {
-            continue;
-        };
+        let data = output.data;
 
         let mut buf = Vec::new();
         write_inkb(&data, &mut buf);
@@ -155,10 +358,7 @@ fn inkb_roundtrip_corpus_smoke() {
 // ── New tests for sectioned header ──────────────────────────────────────────
 
 fn make_test_data() -> brink_format::StoryData {
-    let json_text =
-        include_str!("../../../../tests/tier1/basics/I001-minimal-story/story.ink.json");
-    let story: InkJson = serde_json::from_str(json_text).unwrap();
-    brink_converter::convert(&story).unwrap()
+    i001_data()
 }
 
 #[test]
@@ -168,9 +368,9 @@ fn index_parsing() {
     write_inkb(&data, &mut buf);
 
     let index = read_inkb_index(&buf).unwrap();
-    assert_eq!(index.version, 3);
+    assert_eq!(index.version, 4);
     assert_eq!(index.file_size as usize, buf.len());
-    assert_eq!(index.sections.len(), 10);
+    assert_eq!(index.sections.len(), 12);
 
     // Sections are in canonical order.
     assert_eq!(index.sections[0].kind, SectionKind::NameTable);
@@ -183,9 +383,11 @@ fn index_parsing() {
     assert_eq!(index.sections[7].kind, SectionKind::Labels);
     assert_eq!(index.sections[8].kind, SectionKind::ListLiterals);
     assert_eq!(index.sections[9].kind, SectionKind::AddressPaths);
+    assert_eq!(index.sections[10].kind, SectionKind::LiteralPool);
+    assert_eq!(index.sections[11].kind, SectionKind::StructShapes);
 
-    // Header size is 16 + 8*10 = 96.
-    assert_eq!(index.header_size(), 96);
+    // Header size is 16 + 8*12 = 112.
+    assert_eq!(index.header_size(), 112);
 
     // First section starts right after header.
     assert_eq!(index.sections[0].offset as usize, index.header_size());
@@ -255,6 +457,32 @@ fn section_level_roundtrip() {
 
     let list_literals = read_section_list_literals(&buf, &index).unwrap();
     assert_eq!(list_literals, data.list_literals);
+
+    let literal_pool = read_section_literal_pool(&buf, &index).unwrap();
+    assert_eq!(literal_pool, data.literal_pool);
+}
+
+/// The T1b literal pool round-trips through `.inkb`, including nested
+/// array/map entries (the whole point of the section — `docs/format-v4-rfc.md`
+/// §2).
+#[test]
+fn literal_pool_roundtrip_with_collections() {
+    use brink_format::{MapKey, OrderedMap, Value};
+
+    let mut data = i001_data();
+    let mut inner_map = OrderedMap::new();
+    inner_map.insert(MapKey::from("hp"), Value::Int(10));
+    inner_map.insert(MapKey::from(true), Value::String("flag".into()));
+    data.literal_pool = vec![
+        Value::array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        Value::map(inner_map),
+        Value::array(vec![Value::array(vec![]), Value::Null]),
+    ];
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+    let recovered = read_inkb(&buf).unwrap();
+    assert_eq!(recovered.literal_pool, data.literal_pool);
 }
 
 #[test]
@@ -313,6 +541,12 @@ fn assemble_inkb_equivalence() {
     let mut ap_buf = Vec::new();
     write_section_address_paths(&data.address_paths, &mut ap_buf);
 
+    let mut literal_pool_buf = Vec::new();
+    write_section_literal_pool(&data.literal_pool, &mut literal_pool_buf);
+
+    let mut struct_shapes_buf = Vec::new();
+    write_section_struct_shapes(&data.struct_shapes, &mut struct_shapes_buf);
+
     let mut assembled = Vec::new();
     assemble_inkb(
         &[
@@ -326,6 +560,8 @@ fn assemble_inkb_equivalence() {
             (SectionKind::Labels, &label_buf),
             (SectionKind::ListLiterals, &list_lit_buf),
             (SectionKind::AddressPaths, &ap_buf),
+            (SectionKind::LiteralPool, &literal_pool_buf),
+            (SectionKind::StructShapes, &struct_shapes_buf),
         ],
         &mut assembled,
     );
@@ -407,6 +643,8 @@ fn roundtrip_line_entry_with_audio_ref() {
         address_paths: vec![],
         name_table: vec!["root".to_string()],
         list_literals: vec![],
+        literal_pool: vec![],
+        struct_shapes: vec![],
         source_checksum: 0,
     };
 

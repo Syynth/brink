@@ -61,6 +61,7 @@ pub fn classify_body_child(node: &brink_syntax::SyntaxNode) -> BodyChild {
         | SyntaxKind::VAR_DECL
         | SyntaxKind::CONST_DECL
         | SyntaxKind::LIST_DECL
+        | SyntaxKind::STRUCT_DECL
         | SyntaxKind::EXTERNAL_DECL
         | SyntaxKind::INCLUDE_STMT
         | SyntaxKind::STRAY_CLOSING_BRACE

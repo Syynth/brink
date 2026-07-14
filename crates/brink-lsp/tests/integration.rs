@@ -583,3 +583,244 @@ Bravo content.
     drop(stdout);
     let _ = child.wait();
 }
+
+/// Run an LSP session with the given `initializationOptions.dialect` (or
+/// `None` to omit it, exercising the `StrictInk` default), open `source`,
+/// and return the diagnostics from the *last* `publishDiagnostics`
+/// notification observed for that file's URI.
+///
+/// Background analysis (`analysis_loop`, #599) runs on a separate tokio task
+/// woken by a `Notify`, so its diagnostics can arrive after a same-id
+/// round-trip response — unlike per-file parse diagnostics, which publish
+/// synchronously inside `did_open`. This polls with bounded round-trips
+/// (a dummy `documentSymbol` request per round) instead of a fixed sleep, so
+/// it settles as soon as the background pass publishes, and never hangs:
+/// the round count is capped, matching the project's "guard against
+/// unbounded growth" rule for any polling/accumulation loop.
+fn diagnostics_after_background_analysis(dialect: Option<&str>, source: &str) -> Vec<Value> {
+    diagnostics_after_background_analysis_with_types(dialect, None, source)
+}
+
+/// Same as [`diagnostics_after_background_analysis`], but also sets
+/// `initializationOptions.types` (`"strict"`/`"gradual"`, or `None` to omit
+/// it, exercising the `Gradual` default) — #660's LSP-side counterpart of
+/// the `dialect` option.
+fn diagnostics_after_background_analysis_with_types(
+    dialect: Option<&str>,
+    types: Option<&str>,
+    source: &str,
+) -> Vec<Value> {
+    // Bounded polling: the background analysis pass is cheap (no real I/O),
+    // so it settles within a handful of round-trips; cap at 40 rounds
+    // (~a few hundred ms worst case) so a genuine regression fails fast
+    // instead of hanging.
+    const MAX_ROUNDS: u64 = 40;
+
+    let bin = env!("CARGO_BIN_EXE_brink-lsp");
+
+    let mut child = Command::new(bin)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start brink-lsp");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    let mut init_params = json!({
+        "capabilities": {},
+        "rootUri": null,
+    });
+    if dialect.is_some() || types.is_some() {
+        let mut opts = serde_json::Map::new();
+        if let Some(d) = dialect {
+            opts.insert("dialect".to_string(), json!(d));
+        }
+        if let Some(t) = types {
+            opts.insert("types".to_string(), json!(t));
+        }
+        init_params["initializationOptions"] = Value::Object(opts);
+    }
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": init_params,
+        }),
+    );
+    let (_init_resp, _) = recv_response(&mut stdout, 1);
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }),
+    );
+
+    let file_uri = "file:///tmp/dialect_test_story.ink";
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "ink",
+                    "version": 1,
+                    "text": source,
+                }
+            }
+        }),
+    );
+
+    let mut last_diags_for_uri: Vec<Value> = Vec::new();
+    for round in 0..MAX_ROUNDS {
+        let id = 100 + round;
+        send(
+            &mut stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "textDocument/documentSymbol",
+                "params": {
+                    "textDocument": { "uri": file_uri }
+                }
+            }),
+        );
+        let (_resp, notifications) = recv_response(&mut stdout, id);
+        for n in &notifications {
+            if n["method"] == "textDocument/publishDiagnostics" && n["params"]["uri"] == file_uri {
+                last_diags_for_uri = n["params"]["diagnostics"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+
+    last_diags_for_uri
+}
+
+/// #599: the background `analysis_loop` must analyze under the
+/// client-declared dialect, not always default to `StrictInk`. A
+/// brink-dialect session must NOT see `E051` for valid brink-extension
+/// syntax (postfix indexing) — before the fix, `analysis_loop` called bare
+/// `brink_analyzer::analyze` with no `AnalysisOptions`, so this always
+/// spuriously fired regardless of the declared dialect.
+#[test]
+fn background_analysis_uses_declared_brink_dialect_no_e051() {
+    let source = "\
+VAR a = 0
+VAR x = 0
+== start ==
+~ x = a[0]
+Hello.
+-> DONE
+";
+    let diags = diagnostics_after_background_analysis(Some("brink"), source);
+    let e051: Vec<&Value> = diags
+        .iter()
+        .filter(|d| d["code"].as_str() == Some("E051"))
+        .collect();
+    assert!(
+        e051.is_empty(),
+        "brink-dialect session should not see E051 for extension syntax, got: {diags:?}"
+    );
+}
+
+/// #599 counterpart: a strict-ink session (explicit `"strict-ink"`, and
+/// separately the default with no `dialect` declared at all) must still
+/// flag the same construct as `E051` — the fix must not blanket-disable the
+/// gate, only thread through the client's actual choice.
+#[test]
+fn background_analysis_uses_declared_strict_ink_dialect_still_flags_e051() {
+    let source = "\
+VAR a = 0
+VAR x = 0
+== start ==
+~ x = a[0]
+Hello.
+-> DONE
+";
+    for dialect in [Some("strict-ink"), None] {
+        let diags = diagnostics_after_background_analysis(dialect, source);
+        let e051: Vec<&Value> = diags
+            .iter()
+            .filter(|d| d["code"].as_str() == Some("E051"))
+            .collect();
+        assert!(
+            !e051.is_empty(),
+            "strict-ink session (dialect={dialect:?}) should still flag E051 \
+             for extension syntax, got: {diags:?}"
+        );
+    }
+}
+
+/// #660: the background `analysis_loop` must analyze under the
+/// client-declared TM-3 typed-mode policy, not always default to `Gradual`.
+/// `types = strict` under the default `strict-ink` dialect is a
+/// project-level config error (`E064`) — the LSP surface must reach this the
+/// same way the compiler CLI's `--types strict` does. Before #660,
+/// `initialize` had no `types` handler at all, so this option was silently
+/// ignored.
+#[test]
+fn background_analysis_uses_declared_strict_types_flags_e064_without_brink_dialect() {
+    let source = "-> END\n";
+    let diags = diagnostics_after_background_analysis_with_types(None, Some("strict"), source);
+    let e064: Vec<&Value> = diags
+        .iter()
+        .filter(|d| d["code"].as_str() == Some("E064"))
+        .collect();
+    assert!(
+        !e064.is_empty(),
+        "types=strict + dialect=strict-ink (default): expected E064, got: {diags:?}"
+    );
+}
+
+/// #660 counterpart: `types = strict` + `dialect = brink` turns on the
+/// Unknown-escape check (`E065`) — proving the LSP plumbing reaches the real
+/// strict-mode checks, not just the config-error path.
+#[test]
+fn background_analysis_uses_declared_strict_types_with_brink_dialect_flags_e065() {
+    let source = "=== noop(x) ===\nHello.\n-> DONE\n";
+    let diags =
+        diagnostics_after_background_analysis_with_types(Some("brink"), Some("strict"), source);
+    let e065: Vec<&Value> = diags
+        .iter()
+        .filter(|d| d["code"].as_str() == Some("E065"))
+        .collect();
+    assert!(
+        !e065.is_empty(),
+        "types=strict + dialect=brink: expected E065 on unused param `x`, got: {diags:?}"
+    );
+}
+
+/// #660: the default `types` (no `initializationOptions.types` at all, i.e.
+/// `Gradual`) must NOT flag the same unused-param construct as `E065` — the
+/// handler must not blanket-enable strict checks, only thread through the
+/// client's actual choice.
+#[test]
+fn background_analysis_default_types_does_not_flag_e065() {
+    let source = "=== noop(x) ===\nHello.\n-> DONE\n";
+    let diags = diagnostics_after_background_analysis_with_types(Some("brink"), None, source);
+    let e065: Vec<&Value> = diags
+        .iter()
+        .filter(|d| d["code"].as_str() == Some("E065"))
+        .collect();
+    assert!(
+        e065.is_empty(),
+        "default types (gradual) must not flag E065: {diags:?}"
+    );
+}

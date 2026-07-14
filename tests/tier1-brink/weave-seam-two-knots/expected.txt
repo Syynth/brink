@@ -1,0 +1,3 @@
+Start counter is 1.
+Middle counter is 11.
+End counter is 111.

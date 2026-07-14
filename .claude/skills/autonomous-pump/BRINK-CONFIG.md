@@ -1,0 +1,21 @@
+# Brink-specific pump configuration (proven values, waves 1–3, 2026-07-11)
+
+Fill pump.js's CONFIG from these when running the pump on this repo.
+
+## Gates
+- **Rust (default GATE)**: `cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && cargo test -p brink-test-harness --test oracle_snapshots`
+- **TS entries (gate override)**: `wasm-pack build crates/brink-web --target web --out-dir www/pkg && pnpm install --frozen-lockfile && pnpm --filter @brink-lang/editor typecheck && pnpm --filter @brink-lang/studio typecheck && pnpm --filter @brink-lang/studio test && pnpm --filter @brink-lang/editor build`
+- CACHE prefix: `export CARGO_TARGET_DIR=/tmp/pump-cargo-target-brink` — ⚠ this cache reached 53GiB and caused two ENOSPC incidents (see #533): bound it, sweep it between waves, and have the pre-flight measure it explicitly.
+
+## House rules (RULES seed — earned, don't drop)
+- Oracle ratchet is sacred on any crates PR: run oracle_snapshots, report CASES/EPISODES verbatim; 5,577 episodes must not move.
+- Any PR changing behavior observable through @brink-lang/web needs a @brink-lang/web patch changeset (even crates-only PRs). Changesets name ONLY real public packages; never name external consumer projects.
+- When adding a method to a raw wasm/native session type, add the parallel public wrapper method (incl. cache-invalidation calls) — internal-only levers are dead code for consumers.
+- Run ALL gates as FOREGROUND blocking commands; never park the task waiting on a backgrounded run (four separate agents stalled on this).
+- Never add app.register_type for #[derive(Reflect)] types; never touch .github/workflows/release.yml; VM tests must not hang (keep step limits).
+- Studio work is dropped; issues below ~#300 are presumed stale and need justification.
+- If an issue's own body says needs-design/deferred, DECLINE and report — do not implement architecture unilaterally (the #458 precedent).
+
+## Merge trains
+- Unique TRAIN_WT per wave (e.g. /tmp/pump-merge-train-brink-w4).
+- npm "Version Packages" bot PR merges LAST — but do not starve it: if a consumer is waiting on a released fix, merge it immediately (the 0.9.1 lesson). Bot force-pushes don't trigger CI — close/reopen to kick, or admin-merge version-only PRs.

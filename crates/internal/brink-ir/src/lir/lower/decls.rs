@@ -4,6 +4,7 @@ use crate::symbols::{SymbolIndex, SymbolKind};
 use crate::{Diagnostic, DiagnosticCode, FileId, hir};
 
 use super::context::{NameTable, ResolutionLookup};
+use super::expr::const_value_to_map_key;
 use super::lir;
 
 /// Collect global variable/constant definitions from HIR files.
@@ -187,7 +188,11 @@ pub fn collect_externals(
     externals
 }
 
-fn lookup_global(index: &SymbolIndex, name: &str, kind: SymbolKind) -> Option<DefinitionId> {
+pub(super) fn lookup_global(
+    index: &SymbolIndex,
+    name: &str,
+    kind: SymbolKind,
+) -> Option<DefinitionId> {
     index.by_name.get(name).and_then(|ids| {
         ids.iter()
             .find(|&&id| index.symbols.get(&id).is_some_and(|info| info.kind == kind))
@@ -295,7 +300,200 @@ pub fn eval_const_expr(
             }
             lir::ConstValue::List { items, origins }
         }
+        // #673: `VAR`/`CONST arr = #[…]` — see `eval_const_array_literal`'s
+        // doc.
+        hir::Expr::ArrayLiteral(arr) => {
+            eval_const_array_literal(arr, index, resolutions, file, const_values, diagnostics)
+        }
+        // #673: `VAR`/`CONST m = #{…}` — see `eval_const_map_literal`'s doc.
+        hir::Expr::MapLiteral(map) => {
+            eval_const_map_literal(map, index, resolutions, file, const_values, diagnostics)
+        }
+        // #673: `VAR`/`CONST p = Name#{…}` — see `eval_const_struct_literal`'s
+        // doc.
+        hir::Expr::StructLiteral(sl) => eval_const_struct_literal(sl, file, diagnostics),
+        // T1c-1: `VAR f = #fn(…)` — see `eval_const_fn_literal`'s doc.
+        hir::Expr::FnLiteral(fl) => eval_const_fn_literal(fl, file, diagnostics),
         _ => lir::ConstValue::Null,
+    }
+}
+
+/// #673: constant-fold a literal-only array default into a real
+/// `ConstValue::Array`, exactly the representation `build_globals`
+/// (brink-codegen-inkb) already materializes into `Value::array` for any
+/// global default; this is wiring `decls` into a codegen path that already
+/// exists for expression-position array literals (`expr::lower_array_
+/// literal`), not new collection semantics. Elements recurse through
+/// `eval_const_expr` itself (not `expr::try_const_fold`) so a constant
+/// reference nested inside the array (`#[SOME_CONST, 2]`) resolves via
+/// `const_values`, same as a bare scalar default would. An element whose
+/// source expression kind can never constant-fold is a real compile error
+/// (`E077`), never a silently-`Null` element — see
+/// [`is_const_foldable_kind`].
+fn eval_const_array_literal(
+    arr: &hir::ArrayLiteral,
+    index: &SymbolIndex,
+    resolutions: &ResolutionLookup,
+    file: FileId,
+    const_values: &std::collections::HashMap<DefinitionId, lir::ConstValue>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> lir::ConstValue {
+    let mut items = Vec::with_capacity(arr.elements.len());
+    for e in &arr.elements {
+        if !is_const_foldable_kind(e) {
+            diagnostics.push(Diagnostic {
+                file,
+                range: arr.ptr.text_range(),
+                message: DiagnosticCode::E077.title().to_string(),
+                code: DiagnosticCode::E077,
+            });
+        }
+        items.push(eval_const_expr(
+            e,
+            index,
+            resolutions,
+            file,
+            const_values,
+            diagnostics,
+        ));
+    }
+    lir::ConstValue::Array(items)
+}
+
+/// #673: same constant-folding story as [`eval_const_array_literal`], for
+/// `ConstValue::Map`. A key that doesn't fold into the ratified map-key
+/// domain (int/string/bool) is a real compile error (`E076`), not a silent
+/// drop of that entry — unlike `expr::lower_map_literal`'s expression-
+/// position twin, a declaration default has no `MapNew` runtime-
+/// construction step left to fault at, so this is the compile-time
+/// equivalent of that runtime fault. A *value* whose source expression
+/// kind can never constant-fold is likewise a real compile error (`E077`),
+/// never a silently-`Null` entry — see [`is_const_foldable_kind`]. (A
+/// never-constant *key* already lands in the `E076` arm: it folds to
+/// `Null`, which is outside the scalar key domain.)
+fn eval_const_map_literal(
+    map: &hir::MapLiteral,
+    index: &SymbolIndex,
+    resolutions: &ResolutionLookup,
+    file: FileId,
+    const_values: &std::collections::HashMap<DefinitionId, lir::ConstValue>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> lir::ConstValue {
+    let mut entries = Vec::with_capacity(map.entries.len());
+    for (k, v) in &map.entries {
+        if !is_const_foldable_kind(v) {
+            diagnostics.push(Diagnostic {
+                file,
+                range: map.ptr.text_range(),
+                message: DiagnosticCode::E077.title().to_string(),
+                code: DiagnosticCode::E077,
+            });
+        }
+        let key_val = eval_const_expr(k, index, resolutions, file, const_values, diagnostics);
+        let value = eval_const_expr(v, index, resolutions, file, const_values, diagnostics);
+        match const_value_to_map_key(key_val) {
+            Some(key) => entries.push((key, value)),
+            None => {
+                diagnostics.push(Diagnostic {
+                    file,
+                    range: map.ptr.text_range(),
+                    message: DiagnosticCode::E076.title().to_string(),
+                    code: DiagnosticCode::E076,
+                });
+            }
+        }
+    }
+    lir::ConstValue::Map(entries)
+}
+
+/// #673: `ConstValue` has no record-carrying variant (adding one is a format
+/// question outside this fix's fence, per the issue), and unlike
+/// arrays/maps there is no existing codegen path to reuse: a global's
+/// default is baked into `StoryData` at compile time, with no `RecordNew`
+/// runtime construction step for a declaration default to defer to the way
+/// a mid-story `p = Point#{…}` assignment has. A real, non-suppressible
+/// compile error (`E075`) replaces the silent `Null` fallthrough — the
+/// minimum-acceptable fix direction the issue names for exactly this case.
+fn eval_const_struct_literal(
+    sl: &hir::StructLiteral,
+    file: FileId,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> lir::ConstValue {
+    diagnostics.push(Diagnostic {
+        file,
+        range: sl.ptr.text_range(),
+        message: DiagnosticCode::E075.title().to_string(),
+        code: DiagnosticCode::E075,
+    });
+    lir::ConstValue::Null
+}
+
+/// T1c-1: `VAR f = #fn(…)` — function values don't lower anywhere yet
+/// (T1c-2, docs/t1c-spec.md §11), and a declaration default has no runtime
+/// construction step to defer to regardless. A real compile error (E052,
+/// same "not yet implemented" class as the expression-position rejection in
+/// `expr::reject_fn_literal`), never a silent `Null` default.
+fn eval_const_fn_literal(
+    fl: &hir::FnLiteral,
+    file: FileId,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> lir::ConstValue {
+    diagnostics.push(Diagnostic {
+        file,
+        range: fl.ptr.text_range(),
+        message: "`#fn(…)` function values are not yet implemented in this slice — \
+                  creation type-checks (T1c-1) but lowering/execution lands in T1c-2"
+            .to_owned(),
+        code: DiagnosticCode::E052,
+    });
+    lir::ConstValue::Null
+}
+
+/// #679 review: can this source expression *kind* ever constant-fold in a
+/// declaration default? `false` means `eval_const_expr` is guaranteed to
+/// land in a `Null` fallthrough — a function call, postfix indexing, field
+/// access, or `++`/`--` has no compile-time evaluation and no runtime
+/// construction step left to defer to, so an array element / map value of
+/// that kind is a real compile error (`E077`), #673's silent-`Null` bug one
+/// level down inside the literal.
+///
+/// Deliberately keyed off the expression kind, never the folded result:
+///
+/// - `Expr::Null` is HIR error recovery (or a missing initializer), not
+///   author-writable source — folding it to `Null` is correct and already
+///   diagnosed upstream, so it must not double-report here.
+/// - `Expr::Path` constness depends on what the path resolves to; a bare
+///   reference to another `VAR` folding to `Null` is the pre-existing,
+///   separately-tracked gap #679's scope notes name, and its behavior is
+///   deliberately unchanged.
+/// - Collection/struct literals recurse through their own `eval_const_*`
+///   arms, which do their own per-element checking (`E075`/`E076`/`E077`).
+///
+/// Exhaustive on purpose: a new `hir::Expr` variant must decide its
+/// declaration-default story here instead of silently inheriting `true`.
+fn is_const_foldable_kind(expr: &hir::Expr) -> bool {
+    match expr {
+        hir::Expr::Int(_)
+        | hir::Expr::Float(_)
+        | hir::Expr::Bool(_)
+        | hir::Expr::String(_)
+        | hir::Expr::Null
+        | hir::Expr::Path(_)
+        | hir::Expr::DivertTarget(_)
+        | hir::Expr::ListLiteral(_)
+        | hir::Expr::ArrayLiteral(_)
+        | hir::Expr::MapLiteral(_)
+        | hir::Expr::StructLiteral(_) => true,
+        hir::Expr::Prefix(_, inner) => is_const_foldable_kind(inner),
+        hir::Expr::Infix(lhs, _, rhs) => is_const_foldable_kind(lhs) && is_const_foldable_kind(rhs),
+        hir::Expr::Postfix(..)
+        | hir::Expr::Call(..)
+        | hir::Expr::Index(_)
+        | hir::Expr::FieldAccess(_)
+        // T1c-1: `#fn(…)` never constant-folds — as a declaration default it
+        // is already a targeted E052 at `eval_const_expr`'s own arm; as an
+        // array/map element it reports the standard E077.
+        | hir::Expr::FnLiteral(_) => false,
     }
 }
 

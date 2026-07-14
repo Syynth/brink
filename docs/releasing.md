@@ -14,8 +14,7 @@ dependency closure must be on the registry. We publish the closure.
 `brink-compiler`, `brink-cli`, `brink-lsp`, plus every internal crate in their
 closures (`brink-format`, `brink-syntax`, `brink-ir`, `brink-analyzer`,
 `brink-db`, `brink-driver`, `brink-fmt`, `brink-ide`, `brink-intl`,
-`brink-json`, `brink-converter`, `brink-codegen-inkb`, `brink-codegen-json`,
-`bevy-brink-derive`, `xliff2`).
+`brink-codegen-inkb`, `bevy-brink-derive`, `xliff2`).
 
 The internal crates carry **no semver guarantees** — depend on the front doors,
 not on these directly.

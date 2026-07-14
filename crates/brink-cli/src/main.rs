@@ -16,6 +16,48 @@ struct Cli {
     command: Option<Commands>,
 }
 
+/// CLI-facing mirror of `brink_compiler::Dialect` (docs/t1b-surface-spec.md
+/// §1) — a separate type so `brink-analyzer` doesn't need a `clap` dependency
+/// just for argument parsing.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum DialectArg {
+    /// Reject brink-extension syntax with a targeted diagnostic (default).
+    StrictInk,
+    /// Accept brink-extension syntax: logic blocks (`~ { … }`), collection
+    /// literals (`#[…]`/`#{…}`), and indexing (T1b-1 through T1b-3).
+    Brink,
+}
+
+impl From<DialectArg> for brink_compiler::Dialect {
+    fn from(arg: DialectArg) -> Self {
+        match arg {
+            DialectArg::StrictInk => brink_compiler::Dialect::StrictInk,
+            DialectArg::Brink => brink_compiler::Dialect::Brink,
+        }
+    }
+}
+
+/// CLI-facing mirror of `brink_compiler::TypePolicy` (docs/typed-mode-spec.md
+/// §1/§9-step-3, TM-3) — same rationale as [`DialectArg`], a plain `clap`
+/// surface distinct from the analyzer's own enum.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum TypesArg {
+    /// `Unknown` unifies with anything; annotations are optional (default).
+    Gradual,
+    /// `Unknown`/`Conflicted` escapes are compile errors; requires
+    /// `dialect = brink`.
+    Strict,
+}
+
+impl From<TypesArg> for brink_compiler::TypePolicy {
+    fn from(arg: TypesArg) -> Self {
+        match arg {
+            TypesArg::Gradual => brink_compiler::TypePolicy::Gradual,
+            TypesArg::Strict => brink_compiler::TypePolicy::Strict,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Compile an .ink story (native pipeline)
@@ -25,10 +67,25 @@ enum Commands {
         /// Output file (format inferred from extension, defaults to stdout as .inkt)
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Compiler dialect (docs/t1b-surface-spec.md §1). `strict-ink`
+        /// (default) rejects brink-extension syntax (`~ { … }` blocks,
+        /// `#[…]`/`#{…}` sigil literals, indexing) with a targeted
+        /// diagnostic; `brink` accepts and compiles the syntax (T1b-2 and
+        /// T1b-3 are live). Mount-time only:
+        /// never embedded in `.inkb`, never delivered to the runtime.
+        #[arg(long, value_enum, default_value_t = DialectArg::StrictInk)]
+        dialect: DialectArg,
+        /// Typed-mode policy (docs/typed-mode-spec.md §1, TM-3). `gradual`
+        /// (default) is today's behavior, byte-identical forever. `strict`
+        /// makes `Unknown`/`Conflicted`-escaping inference a compile error
+        /// and requires `--dialect brink` (a config error otherwise).
+        /// Mount-time only: never embedded in `.inkb`.
+        #[arg(long, value_enum, default_value_t = TypesArg::Gradual)]
+        types: TypesArg,
     },
-    /// Convert between ink formats (.ink.json, .inkb, .inkt)
+    /// Convert between ink formats (.inkb, .inkt)
     Convert {
-        /// Input file (.ink.json, .inkb, or .inkt)
+        /// Input file (.ink, .inkb, or .inkt)
         input: PathBuf,
         /// Output file (format inferred from extension, defaults to stdout as .inkt)
         #[arg(short, long)]
@@ -36,7 +93,7 @@ enum Commands {
     },
     /// Export line tables from a compiled story as XLIFF 2.0
     ExportXliff {
-        /// Input story file (.inkb, .ink.json, or .inkt)
+        /// Input story file (.inkb, .ink, or .inkt)
         input: PathBuf,
         /// BCP 47 source language tag (e.g. "en")
         #[arg(long, default_value = "en")]
@@ -91,7 +148,7 @@ enum Commands {
     },
     /// Play an ink story interactively
     Play {
-        /// Story file (.ink source, .ink.json, .inkb, or .inkt)
+        /// Story file (.ink source, .inkb, or .inkt)
         file: PathBuf,
         /// Read choice inputs from a file (one 1-indexed choice per line)
         #[arg(short, long)]
@@ -110,7 +167,7 @@ enum Commands {
     Replay {
         /// Transcript file (.brkt)
         transcript: PathBuf,
-        /// Story file (.ink source, .ink.json, .inkb, or .inkt)
+        /// Story file (.ink source, .inkb, or .inkt)
         #[arg(short, long)]
         story: PathBuf,
         /// Locale overlay file (.inkl) to apply before rendering
@@ -142,97 +199,106 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     if let Some(command) = cli.command {
-        match command {
-            Commands::Compile { input, output } => {
-                if let Err(e) = run_compile(&input, output.as_deref()) {
-                    tracing::error!("{e}");
-                    return ExitCode::FAILURE;
-                }
+        return run_command(command);
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn run_command(command: Commands) -> ExitCode {
+    match command {
+        Commands::Compile {
+            input,
+            output,
+            dialect,
+            types,
+        } => {
+            if let Err(e) = run_compile(&input, output.as_deref(), dialect.into(), types.into()) {
+                tracing::error!("{e}");
+                return ExitCode::FAILURE;
             }
-            Commands::Convert { input, output } => {
-                if let Err(e) = run_convert(&input, output.as_deref()) {
-                    tracing::error!("{e}");
-                    return ExitCode::FAILURE;
-                }
-            }
-            Commands::ExportXliff {
-                input,
-                src_lang,
-                trg_lang,
-                output,
-            } => {
-                if let Err(e) =
-                    run_export_xliff(&input, &src_lang, trg_lang.as_deref(), output.as_deref())
-                {
-                    tracing::error!("{e}");
-                    return ExitCode::FAILURE;
-                }
-            }
-            Commands::CompileLocale {
-                base,
-                xliff,
-                locale,
-                output,
-            } => {
-                if let Err(e) = run_compile_locale(&base, &xliff, &locale, &output) {
-                    tracing::error!("{e}");
-                    return ExitCode::FAILURE;
-                }
-            }
-            Commands::RegenerateXliff {
-                base,
-                existing,
-                src_lang,
-                output,
-            } => {
-                if let Err(e) = run_regenerate_xliff(&base, &existing, &src_lang, output.as_deref())
-                {
-                    tracing::error!("{e}");
-                    return ExitCode::FAILURE;
-                }
-            }
-            Commands::Fmt {
-                files,
-                check,
-                stdin,
-            } => {
-                if let Err(e) = run_fmt(&files, check, stdin) {
-                    tracing::error!("{e}");
-                    return ExitCode::FAILURE;
-                }
-            }
-            Commands::Play {
-                file,
-                input,
-                speed,
-                locale,
-                save_transcript,
-            } => {
-                let locale_refs: Vec<&std::path::Path> =
-                    locale.iter().map(PathBuf::as_path).collect();
-                if let Err(e) = run_play(
-                    &file,
-                    input.as_deref(),
-                    speed,
-                    &locale_refs,
-                    save_transcript.as_deref(),
-                ) {
-                    tracing::error!("{e}");
-                    return ExitCode::FAILURE;
-                }
-            }
-            Commands::Replay {
-                transcript,
-                story,
-                locale,
-            } => {
-                if let Err(e) = run_replay(&transcript, &story, locale.as_deref()) {
-                    tracing::error!("{e}");
-                    return ExitCode::FAILURE;
-                }
-            }
-            Commands::Ide { command } => return ide::run(&command),
         }
+        Commands::Convert { input, output } => {
+            if let Err(e) = run_convert(&input, output.as_deref()) {
+                tracing::error!("{e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        Commands::ExportXliff {
+            input,
+            src_lang,
+            trg_lang,
+            output,
+        } => {
+            if let Err(e) =
+                run_export_xliff(&input, &src_lang, trg_lang.as_deref(), output.as_deref())
+            {
+                tracing::error!("{e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        Commands::CompileLocale {
+            base,
+            xliff,
+            locale,
+            output,
+        } => {
+            if let Err(e) = run_compile_locale(&base, &xliff, &locale, &output) {
+                tracing::error!("{e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        Commands::RegenerateXliff {
+            base,
+            existing,
+            src_lang,
+            output,
+        } => {
+            if let Err(e) = run_regenerate_xliff(&base, &existing, &src_lang, output.as_deref()) {
+                tracing::error!("{e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        Commands::Fmt {
+            files,
+            check,
+            stdin,
+        } => {
+            if let Err(e) = run_fmt(&files, check, stdin) {
+                tracing::error!("{e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        Commands::Play {
+            file,
+            input,
+            speed,
+            locale,
+            save_transcript,
+        } => {
+            let locale_refs: Vec<&std::path::Path> = locale.iter().map(PathBuf::as_path).collect();
+            if let Err(e) = run_play(
+                &file,
+                input.as_deref(),
+                speed,
+                &locale_refs,
+                save_transcript.as_deref(),
+            ) {
+                tracing::error!("{e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        Commands::Replay {
+            transcript,
+            story,
+            locale,
+        } => {
+            if let Err(e) = run_replay(&transcript, &story, locale.as_deref()) {
+                tracing::error!("{e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        Commands::Ide { command } => return ide::run(&command),
     }
 
     ExitCode::SUCCESS
@@ -241,8 +307,15 @@ fn main() -> ExitCode {
 fn run_compile(
     input: &std::path::Path,
     output: Option<&std::path::Path>,
+    dialect: brink_compiler::Dialect,
+    types: brink_compiler::TypePolicy,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let output_result = brink_compiler::compile_path(input)?;
+    let options = brink_compiler::AnalysisOptions {
+        dialect,
+        types,
+        ..brink_compiler::AnalysisOptions::default()
+    };
+    let output_result = brink_compiler::compile_path_with_options(input, options)?;
     for w in &output_result.warnings {
         tracing::warn!("[{}] {}", w.code.as_str(), w.message);
     }
@@ -295,11 +368,12 @@ fn load_story_data(
         let text = std::fs::read_to_string(input)?;
         Ok(brink_format::read_inkt(&text)?)
     } else {
-        // Assume ink.json
-        let json_text = std::fs::read_to_string(input)?;
-        let json_text = json_text.strip_prefix('\u{feff}').unwrap_or(&json_text);
-        let story: brink_json::InkJson = serde_json::from_str(json_text)?;
-        Ok(brink_converter::convert(&story)?)
+        Err(format!(
+            "unsupported story format: {} (expected .ink, .inkb, or .inkt; \
+             .ink.json ingestion was retired — compile the .ink source instead)",
+            input.display()
+        )
+        .into())
     }
 }
 

@@ -1,6 +1,8 @@
 # brink convert
 
-Convert between ink formats. This uses the **converter** pipeline (`brink-converter`), which processes inklecate's JSON output rather than compiling from `.ink` source. Use `brink compile` for native compilation — see [The Two Pipelines](../concepts/two-pipelines.md) for which you want.
+Convert a compiled story between brink's own formats — binary (`.inkb`) and
+textual disassembly (`.inkt`). It also accepts raw `.ink` source, which is
+compiled in-memory first (equivalent to `brink compile`).
 
 Input format is inferred from the file extension; output defaults to `.inkt` on stdout.
 
@@ -18,18 +20,18 @@ brink convert <INPUT> [--output <OUTPUT>]
 
 | Extension | Format | Description |
 |-----------|--------|-------------|
-| `.ink.json` | inklecate JSON | Output from the reference ink compiler |
+| `.ink` | ink source | Compiled in-memory via the native pipeline (input only) |
 | `.inkb` | Binary bytecode | brink's native binary format |
 | `.inkt` | Textual bytecode | Human-readable disassembly |
 
 ## Examples
 
 ```sh
-# Disassemble ink.json to readable bytecode (stdout)
-brink convert story.ink.json
+# Disassemble binary to readable bytecode (stdout)
+brink convert story.inkb
 
-# Convert ink.json to binary
-brink convert story.ink.json -o story.inkb
+# Round-trip textual bytecode back to binary
+brink convert story.inkt -o story.inkb
 
 # Disassemble binary to text
 brink convert story.inkb -o story.inkt

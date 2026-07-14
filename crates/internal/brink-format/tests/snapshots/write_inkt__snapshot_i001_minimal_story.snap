@@ -10,35 +10,20 @@ expression: buf
 
   (addresses
     (address $01_406ea523c53def -> $01_406ea523c53def +0)
-    (address $01_6647014fb554e5 -> $01_6647014fb554e5 +0)
-    (address $01_ab1ed7229c18b5 -> $01_ab1ed7229c18b5 +0)
+  )
+
+  (address_paths
+    (path 0 -> $01_406ea523c53def)
   )
 
   (container $01_406ea523c53def
     (name 0)
     (lines
-      0 "Hello, world!" @626e7681b4e2e7bc
+      0 "Hello, world!" @626e7681b4e2e7bc (source "story.ink" 0..14)
     )
-    (code
-      enter_container $01_6647014fb554e5
-      done
-    )
-  )
-
-  (container $01_6647014fb554e5
-    (scope $01_406ea523c53def)
-    (path_hash 48)
     (code
       emit_line 0 0
       emit_newline
-      enter_container $01_ab1ed7229c18b5
-    )
-  )
-
-  (container $01_ab1ed7229c18b5
-    (scope $01_406ea523c53def)
-    (path_hash 144)
-    (code
       done
     )
   )

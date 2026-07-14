@@ -7,6 +7,7 @@ use super::super::directive::{DirectiveTarget, apply_scope_directives, directive
 use super::super::doc_comment::{DocPolicy, parse_doc_comment};
 use super::super::expr::LowerExpr;
 use super::super::helpers::name_from_ident;
+use super::super::types::lower_type_annotation;
 use super::DeclareSymbols;
 use crate::{ConstDecl, DiagnosticCode, Expr, SymbolKind};
 
@@ -46,10 +47,15 @@ impl DeclareSymbols for ast::ConstDecl {
         let dirs = directives_before(self.syntax());
         let _ = apply_scope_directives(&dirs, DirectiveTarget::Const, sink);
 
+        let annotation = self
+            .type_annotation()
+            .and_then(|ta| lower_type_annotation(&ta));
+
         Ok(ConstDecl {
             ptr: ast::AstPtr::new(self),
             name,
             value,
+            annotation,
         })
     }
 }

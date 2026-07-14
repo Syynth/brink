@@ -12,6 +12,7 @@ use super::super::context::{LowerScope, LowerSink, Lowered};
 use super::super::directive::{DirectiveTarget, apply_scope_directives, leading_body_directives};
 use super::super::doc_comment::{DocPolicy, parse_doc_comment};
 use super::super::helpers::{make_name, name_from_ident};
+use super::super::types::lower_type_annotation;
 use super::stitch::lower_stitch;
 
 use crate::symbols::LocalSymbol;
@@ -86,6 +87,10 @@ pub(super) fn lower_knot(
         apply_scope_directives(&dirs, DirectiveTarget::Knot, sink)
     });
 
+    let return_type = header
+        .return_type()
+        .and_then(|ta| lower_type_annotation(&ta));
+
     Ok(Knot {
         ptr: ContainerPtr::Knot(AstPtr::new(knot)),
         name,
@@ -94,6 +99,7 @@ pub(super) fn lower_knot(
         body,
         stitches,
         is_local,
+        return_type,
     })
 }
 
@@ -158,9 +164,13 @@ fn lower_param(p: &ast::KnotParamDecl, sink: &mut impl LowerSink) -> Lowered<Par
         .identifier()
         .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E003))?;
     let name = name_from_ident(&ident).ok_or_else(|| sink.diagnose(range, DiagnosticCode::E003))?;
+    let annotation = p
+        .type_annotation()
+        .and_then(|ta| lower_type_annotation(&ta));
     Ok(Param {
         name,
         is_ref: p.is_ref(),
         is_divert: p.is_divert(),
+        annotation,
     })
 }

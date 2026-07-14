@@ -1,8 +1,8 @@
 //! Integration tests for [`StorySession`]: the journaling, replayable session
 //! wrapper (#370 + #371 snapshots).
 //!
-//! Programs are built from the known-good `.ink.json` converter reference
-//! pipeline. Every stepping loop is bounded — VM tests must not hang.
+//! Programs are compiled from `.ink` fixtures with the brink compiler.
+//! Every stepping loop is bounded — VM tests must not hang.
 
 #![expect(
     clippy::unwrap_used,
@@ -16,31 +16,29 @@
 
 use std::path::Path;
 
-use brink_converter::convert;
 use brink_format::{ListValue, SaveState, Value};
-use brink_json::InkJson;
 use brink_runtime::{
     DotNetRng, EventKind, ExternalFnHandler, ExternalReplayMode, ExternalResult, FailReason, Line,
-    Program, ReplayOutcome, ReplayWarning, SESSION_JOURNAL_CAP, SessionError, SessionJournal,
-    StepOutcome, Story, StorySession, diff,
+    OutputPart, Program, ReplayOutcome, ReplayWarning, SESSION_JOURNAL_CAP, SessionError,
+    SessionJournal, StepOutcome, Story, StorySession, diff,
 };
 
-/// Link a program from a tier `.ink.json` fixture path (relative to the repo).
+/// Link a program from a tier `.ink` fixture path (relative to the repo),
+/// compiled with the brink compiler.
 fn link_fixture(rel: &str) -> (Program, Vec<Vec<brink_format::LineEntry>>) {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join(rel);
-    let json =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    let ink: InkJson = serde_json::from_str(&json).unwrap();
-    let data = convert(&ink).unwrap();
+    let data = brink_compiler::compile_path(&path)
+        .unwrap_or_else(|e| panic!("compile {}: {e}", path.display()))
+        .data;
     brink_runtime::link(&data).unwrap()
 }
 
-const CHOICE_STORY: &str = "tests/tier1/choices/I084-sticky-choices-stay-sticky/story.ink.json";
-const LIST_STORY: &str = "tests/tier2/lists/I067-list-save-load/story.ink.json";
-const EXTERNAL_STORY: &str = "tests/tier3/runtime/external-function-1-arg-v1/story.ink.json";
-const FUNCTION_STORY: &str = "tests/tier2/function/func-none/story.ink.json";
+const CHOICE_STORY: &str = "tests/tier1/choices/I084-sticky-choices-stay-sticky/story.ink";
+const LIST_STORY: &str = "tests/tier2/lists/I067-list-save-load/story.ink";
+const EXTERNAL_STORY: &str = "tests/tier3/runtime/external-function-1-arg-v1/story.ink";
+const FUNCTION_STORY: &str = "tests/tier2/function/func-none/story.ink";
 
 /// Bounded run of a session to its first choice set (or terminal). Returns the
 /// collected text.
@@ -88,6 +86,79 @@ fn journal_roundtrips_with_tagged_list_value() {
     // The list result round-trips exactly (no lossy null-ing).
     if let EventKind::External { result, .. } = &back.events[0].kind {
         assert_eq!(result, &list);
+    } else {
+        panic!("expected External event");
+    }
+}
+
+// ── Journal round-trip with collection values (T1a-3 / #525) ─────────────────
+//
+// The journal is the durable replay artifact: an external that returns a
+// collection, a host `set_var` of a collection, and a checkpoint `SaveState`
+// holding a collection global must all survive serialization as trees. No
+// opcode emits a collection yet, so this uses hand-constructed values (the
+// value-model spec's discipline for the inert-opcode phase) — the point is
+// that when T1b *does* emit them, the journal path is already lossless.
+#[test]
+fn journal_roundtrips_with_collection_values() {
+    use brink_format::{MapKey, OrderedMap};
+
+    let mut journal = SessionJournal::new(0xFEED_FACE, None);
+
+    // An external that returns a map (e.g. a world query yielding a record).
+    let stats: OrderedMap = [
+        (MapKey::from("hp"), Value::Int(30)),
+        (MapKey::from("mp"), Value::Int(12)),
+    ]
+    .into_iter()
+    .collect();
+    let stats_value = Value::map(stats);
+    journal
+        .events
+        .push(brink_runtime::JournalEvent::new(EventKind::External {
+            name: "query_stats".to_owned(),
+            args: vec![Value::from("hero")],
+            result: stats_value.clone(),
+        }));
+
+    // A host set_var of an array.
+    let party = Value::array(vec![Value::from("hero"), Value::from("mage")]);
+    journal
+        .events
+        .push(brink_runtime::JournalEvent::new(EventKind::SetVar {
+            name: "party".to_owned(),
+            value: party.clone(),
+        }));
+
+    // A checkpoint SaveState whose globals hold a nested collection.
+    let mut globals = std::collections::BTreeMap::new();
+    globals.insert("party".to_owned(), party.clone());
+    globals.insert("stats".to_owned(), stats_value.clone());
+    journal.checkpoint = Some(SaveState {
+        version: brink_format::SAVE_FORMAT_VERSION,
+        globals,
+        visits: vec![],
+        turns: vec![],
+        turn_index: 3,
+        rng_seed: 1,
+        previous_random: 0,
+    });
+
+    let json = serde_json::to_string(&journal).unwrap();
+    assert!(
+        json.contains("Map"),
+        "map value must serialize tagged: {json}"
+    );
+    assert!(
+        json.contains("Array"),
+        "array value must serialize tagged: {json}"
+    );
+    let back: SessionJournal = serde_json::from_str(&json).unwrap();
+    // Whole-journal structural equality proves every tree round-tripped,
+    // including the checkpoint globals.
+    assert_eq!(back, journal);
+    if let EventKind::External { result, .. } = &back.events[0].kind {
+        assert_eq!(result, &stats_value);
     } else {
         panic!("expected External event");
     }
@@ -225,6 +296,81 @@ fn divergence_choice_out_of_range_truncates_and_parks() {
 }
 
 // ── Recorded vs live external modes ──────────────────────────────────────────
+
+/// Returns a collection from `externalFunction` — a world-query binding
+/// yielding a list of results is the motivating shape (value-model-spec §8).
+struct CollectionExternal;
+
+impl ExternalFnHandler for CollectionExternal {
+    fn call(&self, name: &str, _args: &[Value]) -> ExternalResult {
+        if name == "externalFunction" {
+            ExternalResult::Resolved(Value::array(vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+            ]))
+        } else {
+            ExternalResult::Fallback
+        }
+    }
+}
+
+/// End-to-end (#526 charter amendment #2): a binding returns a collection, an
+/// inline `{externalFunction(1)}` emits it (via `Opcode::EmitValue` →
+/// `OutputPart::ValueRef`), and the persisted transcript round-trips the
+/// collection through the v4 tree encoding. Bounded — VM tests must not hang.
+#[test]
+fn external_collection_survives_transcript_round_trip() {
+    let (program, tables) = link_fixture(EXTERNAL_STORY);
+    let program = std::sync::Arc::new(program);
+    let checksum = program.source_checksum();
+
+    let handler = CollectionExternal;
+    let mut session =
+        StorySession::<DotNetRng>::new(Story::new(std::sync::Arc::clone(&program), tables), None);
+    let mut steps = 0;
+    loop {
+        steps += 1;
+        assert!(steps < 1000, "step budget");
+        match session.advance_with(&handler).unwrap() {
+            StepOutcome::Line(l) if l.is_terminal() => break,
+            StepOutcome::Line(_) => {}
+            StepOutcome::AwaitingExternal => panic!("handler resolves inline"),
+        }
+    }
+
+    let story = session.story();
+    let parts = story.transcript();
+    let fragments = story.fragments();
+
+    // The inline `{externalFunction(1)}` is a template slot, so the emitted
+    // array lands as a `ValueRef` inside a captured fragment (not a top-level
+    // part). Scan both surfaces for it.
+    let expected = Value::array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+    let find_array = |ps: &[OutputPart], fs: &[brink_runtime::Fragment]| -> Option<Value> {
+        ps.iter()
+            .chain(fs.iter().flat_map(|f| f.parts.iter()))
+            .find_map(|p| match p {
+                OutputPart::ValueRef(v @ Value::Array(_)) => Some(v.clone()),
+                _ => None,
+            })
+    };
+    assert_eq!(
+        find_array(parts, fragments).as_ref(),
+        Some(&expected),
+        "the inline external return should be emitted as a ValueRef(Array)"
+    );
+
+    // Persist and reload: the collection survives the .brkt round-trip.
+    let bytes = brink_runtime::transcript::write_transcript(parts, checksum, fragments);
+    let data = brink_runtime::transcript::read_transcript(&bytes).unwrap();
+    assert_eq!(data.source_checksum, checksum);
+    assert_eq!(
+        find_array(&data.parts, &data.fragments),
+        Some(expected),
+        "the array must decode structurally after the transcript round-trip"
+    );
+}
 
 /// Returns a fixed int for `externalFunction`, counting invocations so a test
 /// can prove "recorded" replay does NOT re-invoke.

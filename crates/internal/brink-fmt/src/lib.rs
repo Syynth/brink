@@ -6,6 +6,8 @@
 //! indentation depth for every source line.
 
 use brink_ir::hir;
+use brink_syntax::ParseError;
+use brink_syntax::SyntaxElement;
 use brink_syntax::SyntaxNode;
 use brink_syntax::syntax_kind::SyntaxKind;
 use rowan::NodeOrToken;
@@ -48,7 +50,7 @@ pub fn format(source: &str, config: &FormatConfig) -> String {
     let line_starts = build_line_starts(source);
     let depth_map = build_depth_map(source, &line_starts, &hir_file);
 
-    let lines = classify_lines(source, &root, &depth_map);
+    let lines = classify_lines(source, &root, parse.errors(), &depth_map);
     render(source, &lines, config)
 }
 
@@ -225,7 +227,16 @@ fn walk_stmt_for_depth(
                 walk_block_for_depth(branch, depth + 1, line_starts, depth_map);
             }
         }
-        brink_ir::Stmt::ExprStmt(_) | brink_ir::Stmt::EndOfLine => {}
+        // T1b `~ { … }` blocks (docs/t1b-surface-spec.md §2, brink
+        // extension): the `~ {` line's own depth (i.e. where the block sits
+        // relative to the surrounding knot/choice/gather structure) is
+        // inherited from context by `propagate_depth`, same as
+        // `ExprStmt`/`EndOfLine` — HIR doesn't tag it directly. Indentation
+        // of the block's *internals* (nested statements, `if`/`while`/`for`
+        // bodies) is computed separately at the CST level by
+        // `render_logic_block` (#573), not through this depth map.
+        brink_ir::Stmt::ExprStmt(_) | brink_ir::Stmt::EndOfLine | brink_ir::Stmt::LogicBlock(_) => {
+        }
     }
 }
 
@@ -244,6 +255,7 @@ fn stmt_start_line(stmt: &brink_ir::Stmt, line_starts: &[usize]) -> Option<usize
         brink_ir::Stmt::Conditional(c) => c.ptr.text_range(),
         brink_ir::Stmt::Sequence(s) => s.ptr.text_range(),
         brink_ir::Stmt::ExprStmt(_) | brink_ir::Stmt::EndOfLine => return None,
+        brink_ir::Stmt::LogicBlock(lb) => lb.ptr.text_range(),
     };
     let offset: usize = range.start().into();
     Some(line_for_offset(line_starts, offset))
@@ -323,8 +335,12 @@ fn propagate_depth(source: &str, line_starts: &[usize], depth_map: &mut [u32]) {
 enum LineKind {
     KnotHeader,
     StitchHeader,
-    Choice { depth: u32 },
-    Gather { depth: u32 },
+    Choice {
+        depth: u32,
+    },
+    Gather {
+        depth: u32,
+    },
     Logic,
     Content,
     Tag,
@@ -333,6 +349,27 @@ enum LineKind {
     Comment,
     BlockComment,
     Other,
+    /// A T1b `~ { … }` multi-line block (docs/t1b-surface-spec.md §2, brink
+    /// extension). This line is the block's opening `~ {` line; every
+    /// physical line the block spans (through the trailing newline after
+    /// the closing `}`) becomes [`LineKind::Skip`], and `logic_block_node`
+    /// carries the `LOGIC_LINE` CST node so `render()` can walk its
+    /// `STMT_BLOCK` and reindent the internals (#573).
+    LogicBlock,
+    /// A T1b `~ { … }` multi-line block whose CST subtree contains a parse
+    /// error (#603) — mid-edit or otherwise malformed input. Reindenting it
+    /// with `render_logic_block` assumes well-formed structure and can
+    /// corrupt it (a trailing comment swallowing the next line's `{`,
+    /// spurious blank lines and broken idempotence around a multi-line call,
+    /// a mangled lone `else`/brace line). This line and every physical line
+    /// through the trailing newline after the block's closing `}` (or EOF,
+    /// if the `}` itself is what's missing) are widened into a single
+    /// byte-for-byte verbatim span — the pre-#602 behavior — for this block
+    /// only; well-formed blocks still go through [`LineKind::LogicBlock`].
+    LogicBlockVerbatim,
+    /// A line already emitted as part of a preceding [`LineKind::LogicBlock`]
+    /// or [`LineKind::LogicBlockVerbatim`] span — renders nothing.
+    Skip,
 }
 
 #[derive(Debug)]
@@ -344,10 +381,18 @@ struct ClassifiedLine {
     end: usize,
     /// Indentation depth from HIR structure.
     depth: u32,
+    /// The `LOGIC_LINE` CST node for a [`LineKind::LogicBlock`] line —
+    /// `None` for every other kind.
+    logic_block_node: Option<SyntaxNode>,
 }
 
 /// Classify every line in the source by walking the CST, using HIR depth map.
-fn classify_lines(source: &str, root: &SyntaxNode, depth_map: &[u32]) -> Vec<ClassifiedLine> {
+fn classify_lines(
+    source: &str,
+    root: &SyntaxNode,
+    errors: &[ParseError],
+    depth_map: &[u32],
+) -> Vec<ClassifiedLine> {
     let line_starts = build_line_starts(source);
     let line_count = line_starts.len();
 
@@ -375,6 +420,7 @@ fn classify_lines(source: &str, root: &SyntaxNode, depth_map: &[u32]) -> Vec<Cla
                 start,
                 end,
                 depth: depth_map.get(i).copied().unwrap_or(0),
+                logic_block_node: None,
             }
         })
         .collect();
@@ -383,7 +429,7 @@ fn classify_lines(source: &str, root: &SyntaxNode, depth_map: &[u32]) -> Vec<Cla
     mark_block_comments(root, &line_starts, &mut lines);
 
     // Walk CST to classify line kinds (but depth comes from HIR).
-    classify_node(root, &line_starts, &mut lines);
+    classify_node(root, &line_starts, errors, &mut lines);
 
     // Check for lines that are still Blank but have non-whitespace content.
     for line in &mut lines {
@@ -415,7 +461,12 @@ fn mark_block_comments(root: &SyntaxNode, line_starts: &[usize], lines: &mut [Cl
 }
 
 /// Walk CST to classify line kinds. Depth is already set from HIR.
-fn classify_node(node: &SyntaxNode, line_starts: &[usize], lines: &mut [ClassifiedLine]) {
+fn classify_node(
+    node: &SyntaxNode,
+    line_starts: &[usize],
+    errors: &[ParseError],
+    lines: &mut [ClassifiedLine],
+) {
     for child in node.children() {
         let start_offset: usize = child.text_range().start().into();
         let line_idx = line_for_offset(line_starts, start_offset);
@@ -443,17 +494,32 @@ fn classify_node(node: &SyntaxNode, line_starts: &[usize], lines: &mut [Classifi
                     lines[line_idx].kind = LineKind::Choice { depth };
                     // HIR depth already set for choices.
                 }
-                classify_node(&child, line_starts, lines);
+                classify_node(&child, line_starts, errors, lines);
             }
             SyntaxKind::GATHER => {
                 let depth = gather_depth(&child);
                 if line_idx < lines.len() {
                     lines[line_idx].kind = LineKind::Gather { depth };
                 }
-                classify_node(&child, line_starts, lines);
+                classify_node(&child, line_starts, errors, lines);
             }
             SyntaxKind::LOGIC_LINE => {
-                if line_idx < lines.len() {
+                // T1b `~ { … }` multi-line blocks (docs/t1b-surface-spec.md
+                // §2, brink extension) span several physical lines —
+                // reindent them as a unit via `render_logic_block` (#573)
+                // rather than classifying each inner physical line. But
+                // first: if this block's own subtree contains a parse error
+                // (#603 — mid-edit or otherwise malformed input),
+                // `render_logic_block` assumes well-formed structure and can
+                // corrupt it, so bail to the pre-#602 verbatim pass-through
+                // for this block only.
+                if child.children().any(|c| c.kind() == SyntaxKind::STMT_BLOCK) {
+                    if subtree_has_parse_error(child.text_range(), errors) {
+                        mark_verbatim_span(&child, line_starts, lines);
+                    } else {
+                        mark_logic_block_span(&child, line_starts, lines);
+                    }
+                } else if line_idx < lines.len() {
                     lines[line_idx].kind = LineKind::Logic;
                 }
             }
@@ -477,6 +543,22 @@ fn classify_node(node: &SyntaxNode, line_starts: &[usize], lines: &mut [Classifi
                     lines[line_idx].depth = 0;
                 }
             }
+            // TM-4b (docs/typed-mode-spec.md §6): unlike `VAR`/`CONST`/`LIST`
+            // (always single physical line), a `STRUCT` decl body is legal
+            // across multiple lines ("single-line form is legal for short
+            // structs" implies multi-line is the common case). Every other
+            // `LineKind` here assumes one physical line per CST node; a
+            // generic per-line `Declaration`/`Other` treatment would `trim()`
+            // and reindent each continuation line independently, silently
+            // discarding the author's own field indentation. Pass the whole
+            // node through byte-for-byte instead — the same verbatim
+            // discipline `mark_verbatim_span` already gives a malformed
+            // `~ { … }` block. Reformatting a `STRUCT` body "like a block"
+            // (§6) is deferred to a follow-up; verbatim keeps output
+            // idempotent and non-lossy in the meantime.
+            SyntaxKind::STRUCT_DECL => {
+                mark_verbatim_span(&child, line_starts, lines);
+            }
             SyntaxKind::EMPTY_LINE => {
                 if line_idx < lines.len() {
                     lines[line_idx].kind = LineKind::Blank;
@@ -487,15 +569,85 @@ fn classify_node(node: &SyntaxNode, line_starts: &[usize], lines: &mut [Classifi
             | SyntaxKind::STITCH_DEF
             | SyntaxKind::STITCH_BODY
             | SyntaxKind::SOURCE_FILE => {
-                classify_node(&child, line_starts, lines);
+                classify_node(&child, line_starts, errors, lines);
             }
             _ => {
                 if is_comment_only(&child) && line_idx < lines.len() {
                     lines[line_idx].kind = LineKind::Comment;
                 }
-                classify_node(&child, line_starts, lines);
+                classify_node(&child, line_starts, errors, lines);
             }
         }
+    }
+}
+
+/// Mark every physical line spanned by `node` (a T1b `~ { … }` multi-line
+/// block's `LOGIC_LINE`) as belonging to a single reindented unit: the first
+/// line becomes [`LineKind::LogicBlock`] carrying `node` itself (so `render()`
+/// can walk its `STMT_BLOCK` and reindent), and every subsequent physical
+/// line spanned (through the trailing newline after the closing `}`, which
+/// the parser always includes in the `LOGIC_LINE` node) becomes
+/// [`LineKind::Skip`] so it renders nothing of its own.
+fn mark_logic_block_span(node: &SyntaxNode, line_starts: &[usize], lines: &mut [ClassifiedLine]) {
+    let range = node.text_range();
+    let start_line = line_for_offset(line_starts, range.start().into());
+    let end_line = line_for_offset(line_starts, range.end().into());
+    if start_line >= lines.len() {
+        return;
+    }
+    lines[start_line].kind = LineKind::LogicBlock;
+    lines[start_line].logic_block_node = Some(node.clone());
+    let last = end_line.min(lines.len() - 1);
+    for line in &mut lines[start_line + 1..=last] {
+        line.kind = LineKind::Skip;
+    }
+}
+
+/// Does any parse error touch or fall inside `range`? Used to decide whether
+/// a `~ { … }` block's subtree is well-formed enough for `render_logic_block`
+/// to reindent (#603).
+///
+/// This checks [`brink_syntax::Parse::errors`] rather than scanning the
+/// subtree for `ERROR` CST nodes: not every recovery path wraps a node.
+/// `Parser::expect` (a missing expected token, e.g. an absent closing `}`
+/// or `IDENT`) records a `ParseError` with a zero-length range at the point
+/// the token was expected, without inserting an `ERROR` node — scanning for
+/// `ERROR` nodes alone would miss it. `TextRange::intersect` treats a
+/// zero-length range that merely touches `range`'s boundary as a hit too
+/// (`Some` with an empty range), which is what we want here: a missing `}`
+/// at the very end of the block is still a reason not to trust its
+/// structure.
+fn subtree_has_parse_error(range: rowan::TextRange, errors: &[ParseError]) -> bool {
+    errors.iter().any(|e| range.intersect(e.range).is_some())
+}
+
+/// Mark every physical line spanned by `node` (a T1b `~ { … }` multi-line
+/// block's `LOGIC_LINE` whose CST subtree contains a parse error, #603) as a
+/// verbatim pass-through: the first line's `start`/`end` are widened to cover
+/// the node's *entire* text range (through the trailing newline after the
+/// closing `}`, which the parser always includes in the `LOGIC_LINE` node —
+/// or through EOF, if the `}` itself is what's missing), and every
+/// subsequent line spanned becomes [`LineKind::Skip`] so it renders nothing
+/// of its own. This is the pre-#602 behavior for `~ { … }` blocks, applied
+/// here only when the block's own subtree isn't well-formed enough to trust
+/// `render_logic_block`'s structural assumptions.
+fn mark_verbatim_span(node: &SyntaxNode, line_starts: &[usize], lines: &mut [ClassifiedLine]) {
+    let range = node.text_range();
+    let start_line = line_for_offset(line_starts, range.start().into());
+    let end_line = line_for_offset(line_starts, range.end().into());
+    if start_line >= lines.len() {
+        return;
+    }
+    lines[start_line].kind = LineKind::LogicBlockVerbatim;
+    // Anchor to the physical line start, not the `~` offset — otherwise an
+    // indented block's first line is dedented while its body keeps its
+    // indentation (review finding on #610).
+    lines[start_line].start = line_starts[start_line];
+    lines[start_line].end = range.end().into();
+    lines[start_line].logic_block_node = None;
+    let last = end_line.min(lines.len() - 1);
+    for line in &mut lines[start_line + 1..=last] {
+        line.kind = LineKind::Skip;
     }
 }
 
@@ -578,6 +730,11 @@ fn render(source: &str, lines: &[ClassifiedLine], config: &FormatConfig) -> Stri
                 out.push('\n');
                 continue;
             }
+            // Already emitted as part of a preceding `LogicBlock` or
+            // `LogicBlockVerbatim` span (T1b `~ { … }` block,
+            // docs/t1b-surface-spec.md §2) — nothing to do, and it must not
+            // reset `consecutive_blanks` or count as a line of its own.
+            LineKind::Skip => continue,
             _ => {}
         }
 
@@ -636,7 +793,25 @@ fn render(source: &str, lines: &[ClassifiedLine], config: &FormatConfig) -> Stri
                 out.push_str(raw.trim_end());
                 out.push('\n');
             }
-            LineKind::Blank | LineKind::BlockComment => unreachable!(),
+            // Reindent the whole `~ { … }` block as a unit: `logic_block_node`
+            // is the `LOGIC_LINE` CST node (see `mark_logic_block_span`);
+            // `render_logic_block` walks its `STMT_BLOCK` recursively,
+            // computing indentation independently of `raw`.
+            LineKind::LogicBlock => {
+                if let Some(node) = &line.logic_block_node {
+                    let base_indent = indent_str(config, line.depth);
+                    out.push_str(&render_logic_block(node, &base_indent));
+                }
+            }
+            // `raw` already spans the whole node through its own trailing
+            // newline (see `mark_verbatim_span`) — push it byte-for-byte,
+            // with no extra trim/indent/newline. This block's subtree has a
+            // parse error (#603), so its structure can't be trusted enough
+            // to reindent.
+            LineKind::LogicBlockVerbatim => {
+                out.push_str(raw);
+            }
+            LineKind::Blank | LineKind::BlockComment | LineKind::Skip => unreachable!(),
         }
     }
 
@@ -785,9 +960,259 @@ fn format_logic(raw: &str) -> String {
     }
 }
 
+// ── T1b `~ { … }` block rendering (docs/t1b-surface-spec.md §2, #573) ──
+//
+// Indentation-aware reformatting of multi-line logic block internals: block
+// body one level in from the `~` line, nested `if`/`while`/`for` bodies one
+// further level each, opening brace on its statement's line, closing brace
+// on its own line at the parent's depth, one statement per line, comments
+// and blank lines preserved in place. This operates purely on the CST — it
+// never touches HIR — since indentation here is a syntactic property and
+// T1b blocks are dialect-gated before lowering ever sees them.
+//
+// The nesting step is a fixed 4 spaces per level regardless of the file's
+// configured `FormatConfig::indent` (which continues to govern the *outer*
+// placement of the `~` line itself, e.g. inside a knot or choice body) — the
+// ruled acceptance criteria for #573 specifies "4-space indent per nesting
+// level" for block internals as its own convention, distinct from the
+// surrounding weave's indent style.
+
+/// One nesting step inside a `~ { … }` block, appended to the block's own
+/// outer `base_indent` (which already accounts for knot/choice/gather depth
+/// via `FormatConfig::indent`).
+fn block_indent(base_indent: &str, level: u32) -> String {
+    format!("{base_indent}{}", " ".repeat((level * 4) as usize))
+}
+
+/// Join a stream of CST elements into single-line text: real token text is
+/// emitted byte-for-byte (so string-literal content is never touched), and
+/// any run of `WHITESPACE`/`NEWLINE` trivia between two real tokens collapses
+/// to exactly one space. Mid-statement comments (rare — e.g. inside a
+/// parenthesized expression) are kept verbatim with a single space on each
+/// side. Node boundaries are transparent; only tokens contribute text.
+fn join_token_text(elems: impl Iterator<Item = SyntaxElement>) -> String {
+    let mut out = String::new();
+    let mut pending_space = false;
+    for elem in elems {
+        let NodeOrToken::Token(tok) = elem else {
+            continue;
+        };
+        match tok.kind() {
+            SyntaxKind::WHITESPACE | SyntaxKind::NEWLINE => {
+                if !out.is_empty() {
+                    pending_space = true;
+                }
+            }
+            SyntaxKind::LINE_COMMENT | SyntaxKind::BLOCK_COMMENT => {
+                if pending_space || !out.is_empty() {
+                    out.push(' ');
+                }
+                out.push_str(tok.text());
+                pending_space = true;
+            }
+            _ => {
+                if pending_space {
+                    out.push(' ');
+                    pending_space = false;
+                }
+                out.push_str(tok.text());
+            }
+        }
+    }
+    out
+}
+
+/// Render a single-line block statement (`TEMP_DECL`, `ASSIGNMENT`,
+/// `RETURN_STMT`, `BREAK_STMT`, `CONTINUE_STMT`, `EXPR_STMT`, or any other
+/// node kind reached defensively) as flat, single-spaced text — every token
+/// under `node`, recursively, joined per `join_token_text`.
+fn render_flat_stmt_text(node: &SyntaxNode) -> String {
+    join_token_text(node.descendants_with_tokens())
+}
+
+/// Reconstruct the header expression text of an `IF_STMT`/`WHILE_STMT`/
+/// `FOR_STMT` node — everything between its leading keyword token and its
+/// body `STMT_BLOCK` (a condition for `if`/`while`, or `name in expr` for
+/// `for`) — collapsed to single-spaced flat text via `join_token_text`.
+fn header_expr_text(node: &SyntaxNode) -> String {
+    let Some(first) = node.children_with_tokens().next() else {
+        return String::new();
+    };
+    let first_end = first.text_range().end();
+    let Some(body) = node.children().find(|c| c.kind() == SyntaxKind::STMT_BLOCK) else {
+        return String::new();
+    };
+    let body_start = body.text_range().start();
+    join_token_text(
+        node.descendants_with_tokens()
+            .filter(|e| e.text_range().start() >= first_end && e.text_range().start() < body_start),
+    )
+}
+
+/// Render a `~ { … }` block's `LOGIC_LINE` node — the header `~ {`, the
+/// reindented body, and the closing `}` — as a complete, newline-terminated
+/// string. `base_indent` is the outer depth of the `~` line itself.
+fn render_logic_block(node: &SyntaxNode, base_indent: &str) -> String {
+    let mut out = String::new();
+    out.push_str(base_indent);
+    out.push_str("~ {\n");
+    if let Some(body) = node.children().find(|c| c.kind() == SyntaxKind::STMT_BLOCK) {
+        render_stmt_block(&body, base_indent, 1, &mut out);
+    }
+    out.push_str(base_indent);
+    out.push_str("}\n");
+    out
+}
+
+/// Render every statement, comment, and blank line directly inside a
+/// `STMT_BLOCK` at `level` (nesting steps in from `base_indent`). Consecutive
+/// blank lines collapse to one, matching the rest of the formatter; a
+/// same-line trailing comment (no intervening `NEWLINE` token) stays attached
+/// to the line it follows instead of becoming its own line.
+fn render_stmt_block(block: &SyntaxNode, base_indent: &str, level: u32, out: &mut String) {
+    let indent = block_indent(base_indent, level);
+    let mut newline_run: u32 = 0;
+    let mut has_emitted = false;
+
+    for child in block.children_with_tokens() {
+        match child {
+            NodeOrToken::Token(tok) => match tok.kind() {
+                SyntaxKind::NEWLINE => newline_run += 1,
+                SyntaxKind::LINE_COMMENT | SyntaxKind::BLOCK_COMMENT => {
+                    let text = tok.text().trim_end();
+                    if has_emitted && newline_run == 0 {
+                        // Trailing comment on the same physical line as the
+                        // previous statement/comment — stays attached to it.
+                        if out.ends_with('\n') {
+                            out.pop();
+                        }
+                        out.push(' ');
+                        out.push_str(text);
+                        out.push('\n');
+                    } else {
+                        if newline_run >= 2 {
+                            out.push('\n');
+                        }
+                        out.push_str(&indent);
+                        out.push_str(text);
+                        out.push('\n');
+                    }
+                    has_emitted = true;
+                    newline_run = 0;
+                }
+                // Braces, whitespace, and anything unrecognized: dropped —
+                // indentation is re-rendered from structure.
+                _ => {}
+            },
+            NodeOrToken::Node(n) => {
+                if newline_run >= 2 {
+                    out.push('\n');
+                }
+                newline_run = 0;
+                render_block_stmt(&n, base_indent, level, out);
+                has_emitted = true;
+            }
+        }
+    }
+
+    // A blank line immediately before the closing `}` is preserved too.
+    if newline_run >= 2 {
+        out.push('\n');
+    }
+}
+
+/// Dispatch one statement node inside a `STMT_BLOCK`. `if`/`while`/`for`
+/// recurse (their bodies are themselves `STMT_BLOCK`s at `level + 1`);
+/// everything else is a single-line statement.
+fn render_block_stmt(node: &SyntaxNode, base_indent: &str, level: u32, out: &mut String) {
+    match node.kind() {
+        SyntaxKind::IF_STMT => render_if_stmt(node, base_indent, level, false, out),
+        SyntaxKind::WHILE_STMT => render_header_stmt(node, base_indent, level, "while", out),
+        SyntaxKind::FOR_STMT => render_header_stmt(node, base_indent, level, "for", out),
+        _ => {
+            out.push_str(&block_indent(base_indent, level));
+            out.push_str(&render_flat_stmt_text(node));
+            out.push('\n');
+        }
+    }
+}
+
+/// Render `if cond { … } (else if cond { … })* (else { … })?`. `chained` is
+/// `true` for an else-if's nested `IF_STMT` — it continues on the previous
+/// line (`} else `) instead of starting a fresh indented line.
+fn render_if_stmt(
+    node: &SyntaxNode,
+    base_indent: &str,
+    level: u32,
+    chained: bool,
+    out: &mut String,
+) {
+    if !chained {
+        out.push_str(&block_indent(base_indent, level));
+    }
+    out.push_str("if ");
+    out.push_str(&header_expr_text(node));
+    out.push_str(" {\n");
+    if let Some(body) = node.children().find(|c| c.kind() == SyntaxKind::STMT_BLOCK) {
+        render_stmt_block(&body, base_indent, level + 1, out);
+    }
+    out.push_str(&block_indent(base_indent, level));
+    out.push('}');
+
+    if let Some(else_clause) = node
+        .children()
+        .find(|c| c.kind() == SyntaxKind::ELSE_CLAUSE)
+    {
+        if let Some(nested_if) = else_clause
+            .children()
+            .find(|c| c.kind() == SyntaxKind::IF_STMT)
+        {
+            out.push_str(" else ");
+            render_if_stmt(&nested_if, base_indent, level, true, out);
+            return;
+        }
+        if let Some(else_body) = else_clause
+            .children()
+            .find(|c| c.kind() == SyntaxKind::STMT_BLOCK)
+        {
+            out.push_str(" else {\n");
+            render_stmt_block(&else_body, base_indent, level + 1, out);
+            out.push_str(&block_indent(base_indent, level));
+            out.push('}');
+        }
+    }
+    out.push('\n');
+}
+
+/// Render `while cond { … }` or `for name in expr { … }` — the shared shape
+/// of a keyword, a header expression, and a `STMT_BLOCK` body.
+fn render_header_stmt(
+    node: &SyntaxNode,
+    base_indent: &str,
+    level: u32,
+    keyword: &str,
+    out: &mut String,
+) {
+    out.push_str(&block_indent(base_indent, level));
+    out.push_str(keyword);
+    out.push(' ');
+    let header = header_expr_text(node);
+    if !header.is_empty() {
+        out.push_str(&header);
+        out.push(' ');
+    }
+    out.push_str("{\n");
+    if let Some(body) = node.children().find(|c| c.kind() == SyntaxKind::STMT_BLOCK) {
+        render_stmt_block(&body, base_indent, level + 1, out);
+    }
+    out.push_str(&block_indent(base_indent, level));
+    out.push_str("}\n");
+}
+
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[expect(clippy::panic)]
 mod tests {
     use super::*;
 
@@ -962,6 +1387,349 @@ mod tests {
         assert_eq!(first, second, "formatting should be idempotent");
     }
 
+    // ── TM-2 inline type annotations (docs/typed-mode-spec.md §3) ───────
+    //
+    // The knot-header/declaration/logic-line renderers are single-line
+    // token-collapsing passes over the raw physical-line text (see
+    // `format_knot_header`/`format_logic`/`LineKind::Declaration`'s own
+    // docs) — a `:` is just another non-whitespace token to them, so
+    // annotations format "for free" through the exact same code path
+    // exercised for every other knot header/declaration/logic line. These
+    // tests pin that down explicitly rather than relying on it implicitly.
+
+    #[test]
+    fn param_and_return_type_annotations_normalize_whitespace() {
+        assert_eq!(
+            fmt("===function heal(hp:int,amount:  int)  :  int===\n~ return hp\n"),
+            "=== function heal(hp:int,amount: int) : int ===\n  ~ return hp\n"
+        );
+    }
+
+    #[test]
+    fn var_type_annotation_formats_verbatim_modulo_trailing_whitespace() {
+        assert_eq!(fmt("VAR gold: int = 100   \n"), "VAR gold: int = 100\n");
+    }
+
+    #[test]
+    fn const_type_annotation_formats_verbatim_modulo_trailing_whitespace() {
+        // #641: CONST mirrors VAR — same single-line declaration renderer,
+        // no dedicated formatting code.
+        assert_eq!(
+            fmt("CONST speed: float = 0.5   \n"),
+            "CONST speed: float = 0.5\n"
+        );
+    }
+
+    #[test]
+    fn temp_ascription_normalizes_whitespace_like_any_other_logic_line() {
+        assert_eq!(
+            fmt("=== knot ===\n~   temp   name:string=who\n"),
+            "=== knot ===\n  ~ temp   name:string=who\n"
+        );
+    }
+
+    #[test]
+    fn type_annotations_are_idempotent() {
+        for input in [
+            "=== function heal(hp: int, amount: int): int ===\n~ return hp\n",
+            "VAR gold: int = 100\n",
+            "=== knot ===\n~ temp name: string = who\n",
+            "VAR w: list<Weathers> = 0\nVAR m: map<string, int> = 0\n",
+            "VAR cb: fn(int, int): bool = 0\n",
+            "CONST speed: float = 0.5\n",
+        ] {
+            let first = fmt(input);
+            let second = fmt(&first);
+            assert_eq!(
+                first, second,
+                "type-annotated formatting should be idempotent for {input:?}"
+            );
+        }
+    }
+
+    // ── T1b `~ { … }` blocks: indentation-aware reformatting ────────────
+    // (docs/t1b-surface-spec.md §2, ruled acceptance criteria on #573)
+
+    #[test]
+    fn block_at_root_reindents_nesting() {
+        // Flat, unindented input — the formatter must reindent it, not
+        // pass it through (that was the superseded T1b-1 placeholder, #569).
+        let input = "~ {\ntemp x = 0\nif x > 0 {\nx = x - 1\n}\n}\n";
+        let expected = "~ {\n    temp x = 0\n    if x > 0 {\n        x = x - 1\n    }\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn block_with_while_and_for_reindents_nesting() {
+        let input =
+            "~ {\nwhile x > 0 {\nx = x - 1\n}\nfor item in list {\ntotal = total + item\n}\n}\n";
+        let expected = "~ {\n    while x > 0 {\n        x = x - 1\n    }\n    for item in list {\n        total = total + item\n    }\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn block_collapses_messy_spacing_and_reindents() {
+        // Ragged original indentation/spacing is normalized: 4 spaces per
+        // nesting level, single space between tokens — but token content
+        // (identifiers, literals) is never altered.
+        let input = "~ {\n    temp x   =   0  \nif x > 0 {\n\tx = x - 1\n}\n}\n";
+        let expected = "~ {\n    temp x = 0\n    if x > 0 {\n        x = x - 1\n    }\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn block_preserves_string_literal_internal_spacing() {
+        // `join_token_text` must only collapse whitespace *between* tokens —
+        // never characters inside a STRING_TEXT token's own content.
+        let input = "~ {\ntemp msg = \"hello   world\"\n}\n";
+        let expected = "~ {\n    temp msg = \"hello   world\"\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn block_inside_knot_indents_relative_to_knot() {
+        // The `~ {` line's own depth still comes from the surrounding
+        // structure (knot body = depth 1, 2-space `FormatConfig::default()`
+        // step) — the block's *internal* nesting is a separate, fixed
+        // 4-space step layered on top of that outer indent.
+        let input =
+            "=== start ===\nContent\n~ {\ntemp x = 0\nif x > 0 {\nx = x - 1\n}\n}\nMore content\n";
+        let expected = "=== start ===\n  Content\n  ~ {\n      temp x = 0\n      if x > 0 {\n          x = x - 1\n      }\n  }\n  More content\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn single_line_logic_line_still_reformatted() {
+        // Only the T1b multi-line block form goes through the block
+        // renderer — ordinary `~` logic lines keep normal behavior.
+        assert_eq!(fmt("~   x = 5\n"), "~ x = 5\n");
+    }
+
+    #[test]
+    fn block_does_not_disturb_surrounding_lines() {
+        let input = "Before\n~ {\ntemp x = 0\n}\nAfter\n";
+        let expected = "Before\n~ {\n    temp x = 0\n}\nAfter\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn block_one_statement_per_line_even_when_source_is_compact() {
+        // "One statement per line" is a hard rule — even a single-physical-
+        // line block body gets expanded to one statement per rendered line.
+        let input = "~ {\ntemp x = 0\nx = x + 1\nx = x + 1\n}\n";
+        let expected = "~ {\n    temp x = 0\n    x = x + 1\n    x = x + 1\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn block_else_if_chain_braces_stay_on_statement_line() {
+        let input = "~ {\nif a {\nx = 1\n} else if b {\nx = 2\n} else {\nx = 3\n}\n}\n";
+        let expected = "~ {\n    if a {\n        x = 1\n    } else if b {\n        x = 2\n    } else {\n        x = 3\n    }\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn block_leading_comment_attaches_to_following_statement_depth() {
+        let input = "~ {\n// explain x\ntemp x = 0\nif x > 0 {\n// explain the decrement\nx = x - 1\n}\n}\n";
+        let expected = "~ {\n    // explain x\n    temp x = 0\n    if x > 0 {\n        // explain the decrement\n        x = x - 1\n    }\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn block_trailing_comment_stays_on_its_statement_line() {
+        let input = "~ {\ntemp x = 0 // starts at zero\nx = x + 1\n}\n";
+        let expected = "~ {\n    temp x = 0 // starts at zero\n    x = x + 1\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn block_trailing_comment_before_closing_brace() {
+        // A comment with nothing following it in the block stays at the
+        // block's own depth (there is no "following statement" to attach
+        // to), not the parent's depth of the closing `}`.
+        let input = "~ {\ntemp x = 0\n// done\n}\n";
+        let expected = "~ {\n    temp x = 0\n    // done\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn block_blank_lines_preserved_between_statements() {
+        let input = "~ {\ntemp x = 0\n\ntemp y = 1\n}\n";
+        let expected = "~ {\n    temp x = 0\n\n    temp y = 1\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn block_multiple_consecutive_blank_lines_collapse_to_one() {
+        let input = "~ {\ntemp x = 0\n\n\n\ntemp y = 1\n}\n";
+        let expected = "~ {\n    temp x = 0\n\n    temp y = 1\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn block_blank_line_before_closing_brace_preserved() {
+        let input = "~ {\ntemp x = 0\n\n}\n";
+        let expected = "~ {\n    temp x = 0\n\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn block_idempotent_after_reindenting_messy_input() {
+        let input = "~ {\n  temp x=0\n  if x>0{\nx = x - 1\n     }\n\n\n  temp y = 1\n}\n";
+        let first = fmt(input);
+        let second = fmt(&first);
+        assert_eq!(first, second, "block formatting should be idempotent");
+    }
+
+    #[test]
+    fn block_break_continue_lossless() {
+        let input = "~ {\ntemp i = 0\nwhile true {\ni = i + 1\nif i > 10 {\nbreak\n}\nif i mod 2 == 0 {\ncontinue\n}\n}\n}\n";
+        let expected = "~ {\n    temp i = 0\n    while true {\n        i = i + 1\n        if i > 10 {\n            break\n        }\n        if i mod 2 == 0 {\n            continue\n        }\n    }\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
+    #[test]
+    fn block_parse_error_indented_first_line_keeps_indent() {
+        // A knot-nested (indented) malformed block must stay verbatim
+        // INCLUDING the first line's leading indentation — the span anchors
+        // to the physical line start, not the `~` token offset.
+        let input =
+            "=== knot ===\n  ~ {\n      temp y = 1\n      if y > 0 // note\n      { y = 2 }\n  }\n";
+        let out = fmt(input);
+        assert!(
+            out.contains("\n  ~ {\n"),
+            "first line of the verbatim block must keep its leading indent, got:\n{out}"
+        );
+        assert_eq!(fmt(&out), out, "verbatim bail-out must stay idempotent");
+    }
+
+    fn tier1_brink_fixture(name: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../tests/tier1-brink")
+            .join(name)
+            .join("story.ink");
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read fixture {}: {e}", path.display()))
+    }
+
+    #[test]
+    fn tier1_brink_fixtures_already_formatted_round_trip_unchanged() {
+        // These fixtures are already hand-written in the target style (4
+        // spaces per block nesting level) — formatting them must be a no-op,
+        // and re-formatting the result must be idempotent.
+        for name in [
+            "if-else-chain",
+            "while-loop",
+            "for-in-array",
+            "break-continue",
+            "stdlib-mutator-nested-lvalue",
+            "nested-index-assignment",
+        ] {
+            let source = tier1_brink_fixture(name);
+            let first = fmt(&source);
+            assert_eq!(first, source, "fixture {name} should round-trip unchanged");
+            let second = fmt(&first);
+            assert_eq!(first, second, "fixture {name} should format idempotently");
+        }
+    }
+
+    #[test]
+    fn tier1_brink_fixtures_idempotent_from_deindented_input() {
+        // Strip the fixtures' own indentation and confirm the formatter
+        // still converges to a fixed point (and does so in one pass).
+        for name in [
+            "if-else-chain",
+            "while-loop",
+            "for-in-array",
+            "break-continue",
+        ] {
+            let source = tier1_brink_fixture(name);
+            let stripped: String = source
+                .lines()
+                .map(str::trim_start)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let stripped = format!("{stripped}\n");
+            let first = fmt(&stripped);
+            let second = fmt(&first);
+            assert_eq!(
+                first, second,
+                "fixture {name} should converge to a fixed point"
+            );
+        }
+    }
+
+    // ── #603: parse errors inside `~ { … }` blocks bail to verbatim ─────
+    // `render_logic_block` assumes a well-formed CST subtree; mid-edit or
+    // otherwise malformed blocks must instead pass through byte-for-byte
+    // (the pre-#602 `~ { … }` behavior) rather than being corrupted.
+
+    #[test]
+    fn block_parse_error_comment_before_brace_stays_verbatim() {
+        // Repro (a): a trailing `//` comment between the `if` condition and
+        // its opening `{` produces a parse error (the grammar treats the
+        // real `{` on the next line as an unexpected token, wrapping it in
+        // an `ERROR` node) — `header_expr_text` used to inline the comment
+        // right before the ` {`, commenting the brace itself out. Verbatim
+        // pass-through must leave the source untouched.
+        let input = "~ {\nif x>0 // note\n{\nx = 1\n}\n}\n";
+        assert_eq!(
+            fmt(input),
+            input,
+            "malformed block must pass through verbatim"
+        );
+    }
+
+    #[test]
+    fn block_parse_error_multiline_call_stays_verbatim_and_idempotent() {
+        // Repro (b): a multi-line call missing a comma is a parse error
+        // (ERROR node wraps the unexpected token) — the old code injected
+        // spurious blank lines and wasn't idempotent.
+        let input = "~ {\nfoo(\n  1,\n  2\n\nbar()\n}\n";
+        let first = fmt(input);
+        assert_eq!(first, input, "malformed block must pass through verbatim");
+        let second = fmt(&first);
+        assert_eq!(first, second, "verbatim pass-through must be idempotent");
+    }
+
+    #[test]
+    fn block_parse_error_lone_else_stays_verbatim() {
+        // Repro (c): a lone `else` with no preceding `if {` on the same
+        // construct is a parse error (ERROR node wraps the stray `else`
+        // keyword) — the old code mangled it into a bare statement line
+        // with mismatched braces.
+        let input = "~ {\nif x {\nelse\n}\n}\n";
+        assert_eq!(
+            fmt(input),
+            input,
+            "malformed block must pass through verbatim"
+        );
+    }
+
+    #[test]
+    fn block_parse_error_missing_closing_brace_stays_verbatim() {
+        // A missing expected token (here: the block's own closing `}`) is
+        // recorded as a `ParseError` with a zero-length range at EOF but
+        // does *not* insert an `ERROR` CST node — `subtree_has_parse_error`
+        // must catch this via `Parse::errors()`, not by scanning for `ERROR`
+        // nodes alone.
+        let input = "~ {\ntemp x = 0\n";
+        assert_eq!(
+            fmt(input),
+            input,
+            "malformed block must pass through verbatim"
+        );
+    }
+
+    #[test]
+    fn block_well_formed_still_reindents_alongside_malformed_sibling() {
+        // A parse error in one `~ { … }` block must not disable reindenting
+        // for a well-formed block elsewhere in the same file.
+        let input = "~ {\nif x {\nelse\n}\n}\nContent\n~ {\ntemp y   =   1\n}\n";
+        let expected = "~ {\nif x {\nelse\n}\n}\nContent\n~ {\n    temp y = 1\n}\n";
+        assert_eq!(fmt(input), expected);
+    }
+
     #[test]
     fn tabs_indent_knot() {
         let input = "=== myknot ===\nContent\n";
@@ -1052,5 +1820,46 @@ mod tests {
 
         let result = fmt(input);
         assert_eq!(result, expected);
+    }
+
+    // ── TM-4b structs (docs/typed-mode-spec.md §6) ────────────────────
+    //
+    // Verbatim pass-through (see `STRUCT_DECL`'s `classify_node` arm) — a
+    // `STRUCT` body is legal across multiple physical lines, unlike every
+    // other `Declaration`-classified node, so it gets the same
+    // whole-node-verbatim treatment `mark_verbatim_span` gives a malformed
+    // `~ { … }` block rather than the generic per-line trim/reindent.
+
+    #[test]
+    fn struct_decl_single_line_is_idempotent() {
+        let input = "STRUCT Point = #{x: float, y: float}\n";
+        let once = fmt(input);
+        assert_eq!(once, input, "single-line struct decl stays verbatim");
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn struct_decl_multiline_is_idempotent_and_preserves_field_indentation() {
+        let input = "STRUCT Point = #{\n    x: float,\n    y: float,\n}\n";
+        let once = fmt(input);
+        assert_eq!(
+            once, input,
+            "multiline struct decl must round-trip byte-for-byte, indentation included"
+        );
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn struct_decl_followed_by_ordinary_content_formats_normally() {
+        // The `STRUCT_DECL` span itself stays verbatim; everything after it
+        // still goes through the ordinary formatter rules (blank line
+        // before a knot header, body content indented one level) —
+        // verbatim is scoped to the decl's own node, not "the rest of the
+        // file after any struct decl".
+        let input = "STRUCT Point = #{\n    x: float,\n}\n=== main ===\nHello.\n-> DONE\n";
+        let expected = "STRUCT Point = #{\n    x: float,\n}\n\n=== main ===\n  Hello.\n  -> DONE\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
     }
 }

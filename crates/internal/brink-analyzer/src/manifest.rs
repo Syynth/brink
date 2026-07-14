@@ -65,6 +65,16 @@ pub fn merge_manifests(files: &[(FileId, &SymbolManifest)]) -> (SymbolIndex, Vec
                 DiagnosticCode::E023,
             );
         }
+        for sym in &manifest.structs {
+            insert_symbol(
+                &mut index,
+                &mut diagnostics,
+                file_id,
+                sym,
+                SymbolKind::Struct,
+                DiagnosticCode::E023,
+            );
+        }
         for sym in &manifest.externals {
             insert_symbol(
                 &mut index,
@@ -147,11 +157,21 @@ fn insert_symbol(
     );
     index.by_name.entry(sym.name.clone()).or_default().push(id);
 
-    // Warn if the symbol name shadows a built-in function.
+    // Warn if the symbol name shadows a built-in function — the classic
+    // uppercase ink intrinsics (`is_builtin_function`) or a T1b stdlib
+    // slice 1 / TM-3-completion lowercase free function
+    // (`is_t1b_stdlib_name`, docs/t1b-surface-spec.md §5 +
+    // docs/typed-mode-spec.md §4 — "an author-defined function with the
+    // same name shadows the builtin, with a warning diagnostic"). Fired
+    // dialect-agnostically here, same as the existing uppercase check: under
+    // `strict-ink` the T1b names aren't reserved at all, so the warning is
+    // merely informational (harmless, matches existing precedent for the
+    // uppercase set, which also doesn't consult dialect).
     if matches!(
         kind,
         SymbolKind::Knot | SymbolKind::Variable | SymbolKind::Constant | SymbolKind::External
-    ) && crate::resolve::is_builtin_function(&sym.name)
+    ) && (crate::resolve::is_builtin_function(&sym.name)
+        || crate::resolve::is_t1b_stdlib_name(&sym.name))
     {
         diagnostics.push(Diagnostic {
             file,

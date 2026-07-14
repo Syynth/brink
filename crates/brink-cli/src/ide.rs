@@ -509,6 +509,7 @@ fn kind_name(k: SymbolKind) -> &'static str {
         SymbolKind::Label => "label",
         SymbolKind::Param => "param",
         SymbolKind::Temp => "temp",
+        SymbolKind::Struct => "struct",
     }
 }
 
@@ -1000,6 +1001,7 @@ fn run_hover(addr: &Address, opts: &CommonOpts) -> Result<ExitCode, String> {
         .collect();
     let info = hover(
         &project.analysis,
+        db,
         sym.file,
         source,
         sym.range.start(),

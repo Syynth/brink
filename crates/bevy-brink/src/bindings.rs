@@ -1221,6 +1221,74 @@ mod tests {
         assert_eq!(handler.queued_len(), 0, "failed parse buffers nothing");
     }
 
+    /// The snapshot-only contract (value-model-spec §8/§10): a binding receives
+    /// argument values by shared reference. Cloning one is an O(1) Arc snapshot,
+    /// and any mutation forks via copy-on-write, so a binding can never mutate
+    /// script state through an argument — the host holds a frozen snapshot, not
+    /// a live handle. This locks that guarantee at the bevy-brink binding
+    /// surface for collection values specifically.
+    #[test]
+    fn binding_arg_is_a_snapshot_not_a_mutable_handle() {
+        let mut app = App::new();
+        // Clone the incoming array (a snapshot), mutate the clone, and report
+        // its new length. The caller's array must be untouched.
+        app.bind_brink_fn::<(), _, _>("append_len", |args| {
+            let mut snap = args.first().cloned().unwrap_or(Value::Null);
+            match snap.array_make_mut() {
+                Some(items) => {
+                    items.push(Value::Int(99));
+                    #[expect(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                    Value::Int(items.len() as i32)
+                }
+                None => Value::Int(-1),
+            }
+        });
+        let bindings = app.world().resource::<BrinkBindings<()>>();
+        let handler = bindings.handler();
+
+        let original = Value::array(vec![Value::Int(1), Value::Int(2)]);
+        // Pass `original` itself (by shared ref) — not a pre-made clone — so the
+        // only copy the binding can obtain is the snapshot it clones internally.
+        match handler.call("append_len", std::slice::from_ref(&original)) {
+            ExternalResult::Resolved(Value::Int(3)) => {}
+            other => panic!("expected Resolved(Int(3)), got {other:?}"),
+        }
+        assert_eq!(
+            original.as_array().expect("array").as_slice(),
+            &[Value::Int(1), Value::Int(2)],
+            "binding mutated only its snapshot; the caller's value is unchanged",
+        );
+    }
+
+    /// A collection round-trips through a binding return unchanged — the
+    /// `R: Into<Value>` return path carries `Array`/`Map` values (a snapshot
+    /// handed back to the script), not just scalars.
+    #[test]
+    fn binding_can_return_a_collection_snapshot() {
+        use brink_format::{MapKey, OrderedMap};
+
+        let mut app = App::new();
+        app.bind_brink_fn::<(), _, _>("make_map", |_args| {
+            let m: OrderedMap = [
+                (MapKey::from("a"), Value::Int(1)),
+                (MapKey::from("b"), Value::Int(2)),
+            ]
+            .into_iter()
+            .collect();
+            Value::map(m)
+        });
+        let bindings = app.world().resource::<BrinkBindings<()>>();
+        let handler = bindings.handler();
+        match handler.call("make_map", &[]) {
+            ExternalResult::Resolved(v) => {
+                let map = v.as_map().expect("returned a map");
+                assert_eq!(map.len(), 2);
+                assert_eq!(map.get(&MapKey::from("a")), Some(&Value::Int(1)));
+            }
+            other => panic!("expected Resolved(map), got {other:?}"),
+        }
+    }
+
     /// End-to-end: a pure-fn binding's return value is inlined into story
     /// text by the real VM.
     #[test]

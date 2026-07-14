@@ -3,19 +3,20 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use brink_format::{DefinitionId, StoryData};
+use brink_format::{DefinitionId, NameId, StoryData};
 
 use crate::collections::{Map as HashMap, map_with_capacity};
 use crate::error::RuntimeError;
 use crate::program::{
     ExternalFnEntry, GlobalSlot, LinkedContainer, ListDefEntry, ListItemEntry, PathTarget, Program,
+    StructShapeEntry,
 };
 
 /// Link a [`StoryData`] into an executable [`Program`].
 ///
 /// Builds lookup tables mapping [`DefinitionId`]s to flat array indices.
-/// The root container is `containers[0]` by convention — both the converter
-/// and the brink compiler emit the root first.
+/// The root container is `containers[0]` by convention — the brink compiler
+/// emits the root first.
 #[expect(clippy::cast_possible_truncation, clippy::too_many_lines)]
 pub fn link(
     data: &StoryData,
@@ -127,6 +128,28 @@ pub fn link(
     // Clone list literals.
     let list_literals = data.list_literals.clone();
 
+    // Clone the T1b literal pool (`PushLiteral(idx)` targets).
+    let literal_pool = data.literal_pool.clone();
+
+    // Build the TM-4 struct shape table, indexed by `ShapeId` (contiguous
+    // small-integer ids assigned at codegen time — a plain `Vec` indexed by
+    // `shape.0` mirrors `literal_pool`'s `u32`-indexed layout, no `HashMap`
+    // involved).
+    let mut struct_shapes: Vec<StructShapeEntry> = Vec::with_capacity(data.struct_shapes.len());
+    for shape in &data.struct_shapes {
+        let idx = shape.id.0 as usize;
+        if struct_shapes.len() <= idx {
+            struct_shapes.resize_with(idx + 1, || StructShapeEntry {
+                name: NameId(0),
+                fields: Vec::new(),
+            });
+        }
+        struct_shapes[idx] = StructShapeEntry {
+            name: shape.name,
+            fields: shape.fields.clone(),
+        };
+    }
+
     // Build external function map.
     let mut external_fns = map_with_capacity(data.externals.len());
     for ext in &data.externals {
@@ -213,11 +236,13 @@ pub fn link(
         address_by_path,
         root_idx,
         list_literals,
+        literal_pool,
         list_item_map,
         list_defs,
         list_def_map,
         external_fns,
         local_scope_defaults,
+        struct_shapes,
     };
     Ok((program, line_tables))
 }

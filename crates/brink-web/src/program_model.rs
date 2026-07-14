@@ -136,6 +136,25 @@ impl<'a> Resolver<'a> {
             Value::VariablePointer(id) => format!("ref {}", self.gname(*id)),
             Value::TempPointer { slot, frame_depth } => format!("temp[{slot}]@{frame_depth}"),
             Value::FragmentRef(idx) => format!("<fragment {idx}>"),
+            // Collections are runtime-only until T1b emits their opcodes, so
+            // these arms are unreachable and JS-unobservable in this version.
+            Value::Array(items) => {
+                let parts: Vec<String> = items.iter().map(|v| self.format_value(v)).collect();
+                format!("[{}]", parts.join(", "))
+            }
+            Value::Map(map) => {
+                let parts: Vec<String> = map
+                    .iter()
+                    .map(|(k, v)| format!("{k:?}: {}", self.format_value(v)))
+                    .collect();
+                format!("{{{}}}", parts.join(", "))
+            }
+            // TM-4 records: same "runtime-only, no compiler surface yet"
+            // rationale as the collection arms above.
+            Value::Record { shape, fields } => {
+                let parts: Vec<String> = fields.iter().map(|v| self.format_value(v)).collect();
+                format!("Record#{}{{{}}}", shape.0, parts.join(", "))
+            }
         }
     }
 }
@@ -432,6 +451,24 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         Opcode::ListFromInt => "list_from_int".to_owned(),
         Opcode::ListRandom => "list_random".to_owned(),
 
+        // Collections (T1b)
+        Opcode::ArrayNew(n) => format!("array_new {n}"),
+        Opcode::MapNew(n) => format!("map_new {n}"),
+        Opcode::IndexGet => "index_get".to_owned(),
+        Opcode::IndexSet => "index_set".to_owned(),
+        Opcode::CollectionLen => "collection_len".to_owned(),
+        Opcode::MapGet => "map_get".to_owned(),
+        Opcode::MapInsert => "map_insert".to_owned(),
+        Opcode::MapRemove => "map_remove".to_owned(),
+        Opcode::MapContains => "map_contains".to_owned(),
+        Opcode::CollectionKeys => "collection_keys".to_owned(),
+        Opcode::CollectionValues => "collection_values".to_owned(),
+        Opcode::PushLiteral(idx) => format!("push_literal {idx}"),
+
+        // Sharing discipline (T1b-4)
+        Opcode::TakeGlobal(id) => format!("take_global {id}"),
+        Opcode::TakeTemp(idx) => format!("take_temp {idx}"),
+
         // Lifecycle
         Opcode::Done => "done".to_owned(),
         Opcode::Yield => "yield".to_owned(),
@@ -447,6 +484,18 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
 
         // Debug
         Opcode::SourceLocation(line, col) => format!("source_location {line}:{col}"),
+
+        // Records (TM-4)
+        Opcode::RecordNew(shape_id) => format!("record_new {shape_id}"),
+        Opcode::RecordGetDyn(name_id) => format!("record_get_dyn {name_id}"),
+        Opcode::RecordSetDyn(name_id) => format!("record_set_dyn {name_id}"),
+        Opcode::RecordGet(offset) => format!("record_get {offset}"),
+        Opcode::RecordSet(offset) => format!("record_set {offset}"),
+
+        // Conversion intrinsics (TM-3 completion, #659)
+        Opcode::ConvertInt => "convert_int".to_owned(),
+        Opcode::ConvertFloat => "convert_float".to_owned(),
+        Opcode::ConvertString => "convert_string".to_owned(),
     }
 }
 

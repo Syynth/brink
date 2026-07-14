@@ -12,6 +12,16 @@ pub enum DefinitionTag {
     ListDef = 0x03,
     ListItem = 0x04,
     ExternalFn = 0x05,
+    /// A `STRUCT` shape declaration (TM-4b, `docs/typed-mode-spec.md` §6).
+    /// Compiler-side bookkeeping only — the analyzer's `SymbolIndex` needs a
+    /// stable `DefinitionId` for a struct name like every other declared
+    /// symbol (duplicate detection, goto-def, resolution), but this tag is
+    /// never serialized to `.inkb`: the runtime-facing shape identity is the
+    /// separate `ShapeId`/`StructShapes` space `brink-format::value` already
+    /// reserves, which TM-4c's codegen populates once struct constructs
+    /// lower to bytecode. Until then a `StructDef`-tagged id never reaches
+    /// the linker.
+    StructDef = 0x06,
     /// Params and temps — scoped to a container, not serialized in bytecode.
     LocalVar = 0x07,
 }
@@ -25,6 +35,7 @@ impl DefinitionTag {
             0x03 => Some(Self::ListDef),
             0x04 => Some(Self::ListItem),
             0x05 => Some(Self::ExternalFn),
+            0x06 => Some(Self::StructDef),
             0x07 => Some(Self::LocalVar),
             _ => None,
         }
@@ -145,10 +156,17 @@ mod tests {
             DefinitionTag::ListDef,
             DefinitionTag::ListItem,
             DefinitionTag::ExternalFn,
+            DefinitionTag::StructDef,
+            DefinitionTag::LocalVar,
         ] {
             let id = DefinitionId::new(tag, 42);
             assert_eq!(id.tag(), tag);
         }
+    }
+
+    #[test]
+    fn struct_def_tag_roundtrips_through_from_u8() {
+        assert_eq!(DefinitionTag::from_u8(0x06), Some(DefinitionTag::StructDef));
     }
 
     #[test]

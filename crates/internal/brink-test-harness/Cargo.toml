@@ -10,8 +10,6 @@ publish = false
 [dependencies]
 brink-runtime = { workspace = true, features = ["testing"] }
 brink-format = { workspace = true, features = ["inkt"] }
-brink-converter = { workspace = true }
-brink-json = { workspace = true }
 brink-compiler = { workspace = true }
 # For the compile_bench bin (#498): stage-level timing through the production
 # driver's own seams (discover / analyze / diagnostics / LIR / codegen).
@@ -23,13 +21,17 @@ brink-codegen-inkb = { workspace = true }
 # explicit opt-in to salsa's `salsa_unstable` introspection surface (see that
 # crate's Cargo.toml) — no other consumer in the workspace enables it.
 brink-db = { workspace = true, features = ["memory-introspection"] }
+# For the compile_bench bin's synthetic strict-mode warm run (issue #632 /
+# FG-3): `AnalysisOptions`/`Dialect`/`TypePolicy` to configure `types =
+# strict` on the persistent db before the edit loop.
+brink-analyzer = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
+proptest = { workspace = true }
 brink-syntax = { path = "../brink-syntax" }
-brink-analyzer = { path = "../brink-analyzer" }
 
 [lints]
 workspace = true

@@ -8,6 +8,8 @@ use rowan::TextRange;
 use crate::FileId;
 use crate::symbols::{ResolutionMap, SymbolIndex, SymbolInfo};
 
+use super::structs::{GlobalShapeMap, ShapeTable};
+
 // ─── Resolution lookup ──────────────────────────────────────────────
 
 /// O(1) lookup from `(FileId, TextRange)` to the resolved `DefinitionId`.
@@ -123,6 +125,32 @@ fn hash_path(path: &str) -> u64 {
     hasher.finish()
 }
 
+// ─── TM-4c struct-shape context ─────────────────────────────────────
+
+/// The project's `types` policy, as seen by LIR lowering (TM-4c,
+/// `docs/typed-mode-spec.md` §6/§1). A local, minimal mirror of
+/// `brink-analyzer`'s `TypePolicy` — `brink-ir` sits *below*
+/// `brink-analyzer` in the crate graph (`brink-analyzer` depends on
+/// `brink-ir`, never the reverse), so it cannot name that type directly;
+/// `brink-db`'s `lir_query` maps `TypePolicy` to this enum at the one call
+/// site that threads it into [`lower_to_program`](super::lower_to_program).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TypeMode {
+    #[default]
+    Gradual,
+    Strict,
+}
+
+/// Whole-program struct-shape data, built once before any container is
+/// lowered and shared (read-only) by every [`LowerCtx`] — see
+/// `lower::structs`' module doc for what each field is and the soundness
+/// argument for why [`TypeMode::Strict`] gates static-offset emission.
+pub struct StructCtx<'a> {
+    pub shapes: &'a ShapeTable,
+    pub global_shapes: &'a GlobalShapeMap,
+    pub type_mode: TypeMode,
+}
+
 // ─── Lower context ──────────────────────────────────────────────────
 
 /// Shared context threaded through all lowering functions.
@@ -153,6 +181,57 @@ pub struct LowerCtx<'a> {
     /// regardless of whether they're entered via `enter_container`
     /// (structured) or `goto` (ink divert).
     pub choice_gather_target: Option<brink_format::DefinitionId>,
+    /// Next free temp slot for T1b block-scoped locals (explicit `temp`
+    /// declarations inside `~ { … }`, `for` loop variables, and
+    /// compiler-synthesized temps for indexed-assignment/for-loop
+    /// desugaring). Shared by mutable reference across an entire frame
+    /// (a knot body + all its stitches, or the whole root scope across
+    /// files) — the same threading discipline as `ids` — so two block
+    /// scopes that share a call frame never collide on a slot number.
+    /// Seeded to the classic `TempMap`'s `total_slots()` for that frame.
+    pub next_block_slot: &'a mut u16,
+    /// Stack of open `~ { … }` lexical scopes. Each frame holds
+    /// `(name, slot)` pairs for locals declared in that scope, innermost
+    /// last. [`LowerCtx::temp_slot`] searches this stack (innermost first)
+    /// before falling back to the classic flat `temps` map, so a
+    /// block-scoped `temp` correctly shadows an outer temp of the same
+    /// name (docs/t1b-surface-spec.md §2) without disturbing the outer
+    /// slot's storage.
+    pub block_scopes: Vec<Vec<(String, u16)>>,
+    /// Diagnostics produced during lowering — historically just warnings
+    /// (the T1b block-scoped-temp shadow warning, E054), but also
+    /// Error-severity ones now (E055/E056 mutator checks, E057
+    /// break/continue-outside-loop, E058 mutator arity). Severity is read
+    /// from `DiagnosticCode::severity()`, not from which list a diagnostic
+    /// was pushed to — `brink-db`'s `lir_query` partitions this Vec by
+    /// severity and refuses to hand back a `Program` (gates `program:
+    /// None`, bypassing `// brink-disable-all` suppression entirely, unlike
+    /// analysis-phase diagnostics) when any Error-severity one is present,
+    /// so pushing here is a real, non-suppressible compile error, not a
+    /// cosmetic note. Shared by mutable reference across an entire
+    /// `lower_to_program` call — the same threading discipline as
+    /// `ids`/`next_block_slot` — and returned alongside the program.
+    pub diagnostics: &'a mut Vec<crate::Diagnostic>,
+    /// Depth of `while`/`for` loop nesting the current T1b block-statement
+    /// lowering position is inside — incremented/decremented around
+    /// `while`/`for` body lowering in `blocks::lower_block_stmt`. Zero
+    /// outside any loop; used to reject `break`/`continue` at depth 0
+    /// (E057) instead of emitting an unguarded `LogicBreak`/`LogicContinue`
+    /// that codegen has no jump target for (see #577 review).
+    pub loop_depth: u32,
+    /// TM-4c (`docs/typed-mode-spec.md` §6): the whole-program struct-shape
+    /// data (shape table, `types` policy, global struct-typed VAR/CONST
+    /// annotations) — shared, read-only, identical across every `LowerCtx`
+    /// in a single `lower_to_program` call.
+    pub structs: &'a StructCtx<'a>,
+    /// TM-4c: temp slots (this frame only — reset per `LowerCtx`, exactly
+    /// like `visible_temps`) whose declaring `TempDecl`'s TM-2 annotation
+    /// names a declared struct — the temp-local half of the "compile-time
+    /// known shape" story `expr::known_shape` chases (`structs::
+    /// GlobalShapeMap` is the global half). Keyed by slot, not name, so a
+    /// block-scoped shadow of an outer temp of the same name still maps to
+    /// its own (correct) shape.
+    pub temp_shapes: std::collections::HashMap<u16, String>,
 }
 
 impl<'a> LowerCtx<'a> {
@@ -169,11 +248,77 @@ impl<'a> LowerCtx<'a> {
 
     /// Look up a name in the temp map for the current scope.
     /// Only returns a slot if the temp has been declared (is visible).
+    ///
+    /// Checks open T1b block scopes first (innermost frame first, most
+    /// recent declaration within a frame first) so a block-scoped `temp`
+    /// correctly shadows an outer temp of the same name; outside any block
+    /// (`block_scopes` empty) this is exactly the pre-T1b lookup.
     pub fn temp_slot(&self, name: &str) -> Option<u16> {
+        if let Some(slot) = self.lookup_block_local(name) {
+            return Some(slot);
+        }
         if self.visible_temps.contains(name) {
             self.temps.get(name)
         } else {
             None
+        }
+    }
+
+    /// Search the open block-scope stack for `name`, innermost first.
+    fn lookup_block_local(&self, name: &str) -> Option<u16> {
+        for frame in self.block_scopes.iter().rev() {
+            if let Some(&(_, slot)) = frame.iter().rev().find(|(n, _)| n == name) {
+                return Some(slot);
+            }
+        }
+        None
+    }
+
+    /// Open a new T1b lexical block scope (`~ { … }`, or an `if`/`while`/
+    /// `for` body nested within one). Must be paired with
+    /// [`pop_block_scope`](Self::pop_block_scope).
+    pub fn push_block_scope(&mut self) {
+        self.block_scopes.push(Vec::new());
+    }
+
+    /// Close the innermost T1b lexical block scope. Locals declared in it
+    /// stop shadowing once popped.
+    pub fn pop_block_scope(&mut self) {
+        self.block_scopes.pop();
+    }
+
+    /// Allocate a fresh temp slot for a T1b block-scoped local (explicit or
+    /// compiler-synthesized). Never reused/deduped by name — that's exactly
+    /// what makes shadowing safe.
+    pub fn alloc_block_slot(&mut self) -> u16 {
+        let slot = *self.next_block_slot;
+        *self.next_block_slot += 1;
+        slot
+    }
+
+    /// Whether `name` is already visible as a temp/param — either an open
+    /// T1b block scope (innermost first) or the classic flat scope (knot/
+    /// stitch params + `~ temp` declarations seen so far in source order).
+    /// The shadow-warning check (`docs/t1b-surface-spec.md` §2, E054) uses
+    /// this: declaring a block-scoped `temp` with a name that's already
+    /// visible — from an enclosing block *or* an outer classic temp — is a
+    /// shadow.
+    pub fn is_name_visible(&self, name: &str) -> bool {
+        self.lookup_block_local(name).is_some() || self.visible_temps.contains(name)
+    }
+
+    /// Bind `name` to `slot` in the innermost open block scope.
+    ///
+    /// Every T1b local is declared while lowering a `~ { … }`/`if`/`while`/
+    /// `for` body, all of which push a scope first, so `block_scopes` is
+    /// never empty in practice; self-heals (opens a scope) rather than
+    /// using a denied `expect`/`unwrap` if that invariant is ever violated.
+    pub fn declare_block_local(&mut self, name: String, slot: u16) {
+        if self.block_scopes.is_empty() {
+            self.block_scopes.push(Vec::new());
+        }
+        if let Some(frame) = self.block_scopes.last_mut() {
+            frame.push((name, slot));
         }
     }
 
@@ -182,6 +327,38 @@ impl<'a> LowerCtx<'a> {
     /// though the temp hasn't been marked visible yet.
     pub fn temp_slot_raw(&self, name: &str) -> Option<u16> {
         self.temps.get(name)
+    }
+
+    /// TM-4c: record that temp `slot` was declared with a TM-2 annotation
+    /// naming struct shape `shape_name`.
+    pub fn set_temp_shape(&mut self, slot: u16, shape_name: String) {
+        self.temp_shapes.insert(slot, shape_name);
+    }
+
+    /// TM-4c: if `annotation` is a `Named` type naming a declared struct,
+    /// record it as `slot`'s known shape (`set_temp_shape`) — the one call
+    /// every `TempDecl` lowering site (classic and block-scoped) makes right
+    /// after allocating/resolving the temp's own slot, so `expr::known_shape`
+    /// can later chase a struct-typed `temp`'s reads/writes to a static
+    /// offset under `types = strict`.
+    pub fn record_temp_annotation(&mut self, slot: u16, annotation: Option<&crate::hir::TypeExpr>) {
+        if let Some(crate::hir::TypeExpr::Named { name, .. }) = annotation
+            && self.structs.shapes.get(name).is_some()
+        {
+            self.set_temp_shape(slot, name.clone());
+        }
+    }
+
+    /// TM-4c: the declared struct shape name for temp `slot`, if its
+    /// `TempDecl` carried a struct-typed TM-2 annotation.
+    pub fn temp_shape(&self, slot: u16) -> Option<&str> {
+        self.temp_shapes.get(&slot).map(String::as_str)
+    }
+
+    /// TM-4c: the declared struct shape name for a resolved global `VAR`/
+    /// `CONST`, if its TM-2 annotation named a declared struct.
+    pub fn global_shape(&self, id: DefinitionId) -> Option<&str> {
+        self.structs.global_shapes.get(&id).map(String::as_str)
     }
 
     /// Qualify a label name with the current scope path.

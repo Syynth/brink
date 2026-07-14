@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use brink_analyzer::AnalysisResult;
+use brink_analyzer::{AnalysisOptions, AnalysisResult, Dialect, TypePolicy};
 use brink_syntax::ast::AstNode;
 use tokio::sync::{Notify, watch};
 use tower_lsp::jsonrpc::Result;
@@ -71,6 +71,41 @@ impl ProjectAnalyses {
     }
 }
 
+/// Client-declared, authoring-time-only compiler policy knobs: the T1b
+/// dialect (docs/t1b-surface-spec.md §1, #589) and the TM-3 typed-mode
+/// policy (docs/typed-mode-spec.md §1, #660). Bundled into one struct
+/// (rather than two loose `Arc<Mutex<_>>` constructor params) because they
+/// share identical lifetime/mutability characteristics — both are read once
+/// from `initialize`'s `initializationOptions`, then shared unchanged
+/// between the foreground `Backend` and the background `analysis_loop` task
+/// for the life of the session. `Clone` is shallow (`Arc` clone): every
+/// clone reads/writes the same underlying state.
+#[derive(Clone)]
+pub struct LanguageOptions {
+    /// `"brink"` or `"strict-ink"`; defaults to `StrictInk`, matching
+    /// `AnalysisOptions::default()`. Tooling-only — gates whether stdlib
+    /// slice 1 completion/signature help are offered (#589), and (#599)
+    /// feeds `analysis_loop` so its diagnostics analyze under the
+    /// client-declared dialect too, instead of always defaulting to
+    /// `StrictInk`.
+    dialect: Arc<Mutex<Dialect>>,
+    /// `"strict"` or `"gradual"`; defaults to `Gradual`, matching
+    /// `AnalysisOptions::default()`. Mirrors `dialect` exactly (#660: PR
+    /// #656 left this reachable only via the compiler CLI's `--types
+    /// strict`, never via the IDE/LSP surface) — feeds `analysis_loop` so
+    /// its diagnostics analyze under the client-declared types policy too.
+    types: Arc<Mutex<TypePolicy>>,
+}
+
+impl LanguageOptions {
+    pub fn new() -> Self {
+        Self {
+            dialect: Arc::new(Mutex::new(Dialect::default())),
+            types: Arc::new(Mutex::new(TypePolicy::default())),
+        }
+    }
+}
+
 pub struct Backend {
     client: Client,
     db: Arc<Mutex<brink_db::ProjectDb>>,
@@ -79,6 +114,7 @@ pub struct Backend {
     generation: Arc<AtomicU64>,
     last_published: Arc<Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>>,
     workspace_roots: Arc<Mutex<Vec<PathBuf>>>,
+    language: LanguageOptions,
 }
 
 impl Backend {
@@ -91,6 +127,7 @@ impl Backend {
         last_published: Arc<
             Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>,
         >,
+        language: LanguageOptions,
     ) -> Self {
         Self {
             client,
@@ -100,7 +137,17 @@ impl Backend {
             generation,
             last_published,
             workspace_roots: Arc::new(Mutex::new(Vec::new())),
+            language,
         }
+    }
+
+    /// The registered T1b compiler dialect (defaults to `StrictInk`, poisoned-
+    /// lock-safe via `map_or_else` — never panics on a poisoned mutex).
+    fn dialect(&self) -> Dialect {
+        self.language
+            .dialect
+            .lock()
+            .map_or_else(|_| Dialect::default(), |g| *g)
     }
 
     fn uri_to_path(uri: &Url) -> Option<String> {
@@ -266,6 +313,25 @@ fn lock_db(db: &Arc<Mutex<brink_db::ProjectDb>>) -> std::sync::MutexGuard<'_, br
     }
 }
 
+/// Map a domain `InlayHintKind` to the LSP's own (`PARAMETER`/`TYPE` are the
+/// only two the spec defines). TM-5's new `InferredType` kind is a type
+/// hint, not a parameter-name hint — an explicit arm here rather than a
+/// blanket default, so a future new variant fails to compile instead of
+/// silently inheriting `PARAMETER` (CLAUDE.md's wildcard-arm rule).
+fn lsp_inlay_hint_kind(
+    kind: &brink_ide::inlay_hints::InlayHintKind,
+) -> tower_lsp::lsp_types::InlayHintKind {
+    match kind {
+        brink_ide::inlay_hints::InlayHintKind::Parameter
+        | brink_ide::inlay_hints::InlayHintKind::Value => {
+            tower_lsp::lsp_types::InlayHintKind::PARAMETER
+        }
+        brink_ide::inlay_hints::InlayHintKind::InferredType => {
+            tower_lsp::lsp_types::InlayHintKind::TYPE
+        }
+    }
+}
+
 /// Snapshot of analysis + per-file data needed for navigation handlers.
 struct NavigationSnapshot {
     analysis: Arc<AnalysisResult>,
@@ -307,6 +373,28 @@ impl Backend {
     }
 }
 
+/// Read `initializationOptions.<key>` as a string and, if present, write the
+/// mapped value into `slot` (poisoned-lock-safe — a poisoned mutex silently
+/// keeps its prior value rather than panicking). Shared by `initialize`'s
+/// `dialect` and `types` (#660) handlers, which differ only in the key name
+/// and the string→enum mapping.
+fn apply_initialization_option<T: Copy>(
+    params: &InitializeParams,
+    key: &str,
+    slot: &Mutex<T>,
+    map: impl FnOnce(&str) -> T,
+) {
+    if let Some(requested) = params
+        .initialization_options
+        .as_ref()
+        .and_then(|opts| opts.get(key))
+        .and_then(|v| v.as_str())
+        && let Ok(mut guard) = slot.lock()
+    {
+        *guard = map(requested);
+    }
+}
+
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
@@ -331,6 +419,28 @@ impl LanguageServer for Backend {
         if let Ok(mut ws) = self.workspace_roots.lock() {
             *ws = roots;
         }
+
+        // T1b compiler dialect (docs/t1b-surface-spec.md §1, #589): an
+        // authoring-time/tooling input, read once from
+        // `initializationOptions.dialect` ("brink" or "strict-ink"; any
+        // other value, or absence, keeps the `StrictInk` default). Gates
+        // stdlib slice 1 completion/signature help only — see the `dialect`
+        // field's doc comment.
+        apply_initialization_option(&params, "dialect", &self.language.dialect, |v| match v {
+            "brink" => Dialect::Brink,
+            _ => Dialect::StrictInk,
+        });
+
+        // TM-3 typed-mode policy (docs/typed-mode-spec.md §1, #660): read
+        // once from `initializationOptions.types` ("strict" or "gradual";
+        // any other value, or absence, keeps the `Gradual` default), mirroring
+        // the `dialect` handling directly above. `Strict` requires
+        // `dialect = brink` (a config-error diagnostic otherwise, `E064`) —
+        // the client's responsibility, same as the compiler CLI.
+        apply_initialization_option(&params, "types", &self.language.types, |v| match v {
+            "strict" => TypePolicy::Strict,
+            _ => TypePolicy::Gradual,
+        });
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
@@ -718,8 +828,13 @@ impl LanguageServer for Backend {
         let idx = LineIndex::new(&snap.source);
         let offset = convert::to_text_size(params.text_document_position_params.position, &idx);
 
+        // TM-5 (#621): a brief, transient lock — `db.infer_body`/
+        // `inferred_signature` are the FG-narrowed per-def fallback hover
+        // reads when a param/temp/signature position has no declared type.
+        let db = lock_db(&self.db);
         let Some(info) = brink_ide::hover::hover(
             &snap.analysis,
+            &db,
             snap.file_id,
             &snap.source,
             offset,
@@ -727,6 +842,7 @@ impl LanguageServer for Backend {
         ) else {
             return Ok(None);
         };
+        drop(db);
 
         let hover_range = info.range.map(|r| convert::to_lsp_range(r, &idx));
 
@@ -759,9 +875,12 @@ impl LanguageServer for Backend {
         let offset = idx.offset(pos.line, pos.character);
         let byte_offset: usize = offset.into();
 
-        let Some(sig) =
-            brink_ide::signature::signature_help(&snap.analysis, &snap.source, byte_offset)
-        else {
+        let Some(sig) = brink_ide::signature::signature_help_with_dialect(
+            &snap.analysis,
+            &snap.source,
+            byte_offset,
+            self.dialect(),
+        ) else {
             return Ok(None);
         };
 
@@ -840,6 +959,14 @@ impl LanguageServer for Backend {
                 continue;
             }
             items.push(make_completion_item(info, None));
+        }
+
+        // Stdlib slice 1 completion (docs/t1b-surface-spec.md §5, #589) —
+        // brink dialect only ("never offered in StrictInk"); an
+        // author-defined symbol of the same name is already offered above
+        // (shadowing, per §5), so this only adds names.
+        for f in brink_ide::stdlib_completions(&ctx, self.dialect()) {
+            items.push(make_stdlib_completion_item(f));
         }
 
         // Add synthetic DONE/END for divert context.
@@ -1343,7 +1470,10 @@ impl LanguageServer for Backend {
         };
 
         let projection = brink_ide::hir_projection::project_hir_structural(hir, source);
-        let domain_ranges = brink_ide::folding::folding_ranges(hir, source, &projection);
+        let mut domain_ranges = brink_ide::folding::folding_ranges(hir, source, &projection);
+        // `~ { … }` blocks + nested control bodies (docs/t1b-surface-spec.md
+        // §2, #589) — a separate pass, see `block_folds`'s doc comment.
+        domain_ranges.extend(brink_ide::folding::block_folds(hir, source));
 
         let ranges = domain_ranges
             .into_iter()
@@ -1384,12 +1514,20 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
         let root = parse.tree();
-        drop(db);
 
         // The LSP has no host-value push channel (#174) — static value labels
         // still resolve from the manifest; `host`-source labels need none.
-        let domain_hints =
-            brink_ide::inlay_hints::inlay_hints(root.syntax(), &snap.analysis, request_range, None);
+        // TM-5 (#621): `db` stays locked through this call — inlay hints now
+        // also read `db.infer_body` for unannotated `temp` decls.
+        let domain_hints = brink_ide::inlay_hints::inlay_hints(
+            root.syntax(),
+            &snap.analysis,
+            &db,
+            file_id,
+            request_range,
+            None,
+        );
+        drop(db);
 
         if domain_hints.is_empty() {
             return Ok(None);
@@ -1402,7 +1540,7 @@ impl LanguageServer for Backend {
                 LspInlayHint {
                     position: Position::new(line, col),
                     label: InlayHintLabel::String(h.label),
-                    kind: Some(tower_lsp::lsp_types::InlayHintKind::PARAMETER),
+                    kind: Some(lsp_inlay_hint_kind(&h.kind)),
                     text_edits: None,
                     tooltip: None,
                     padding_left: None,
@@ -1473,6 +1611,7 @@ fn make_completion_item(
         brink_ir::SymbolKind::List => CompletionItemKind::ENUM,
         brink_ir::SymbolKind::ListItem => CompletionItemKind::ENUM_MEMBER,
         brink_ir::SymbolKind::Label => CompletionItemKind::REFERENCE,
+        brink_ir::SymbolKind::Struct => CompletionItemKind::STRUCT,
     };
 
     let detail = match info.kind {
@@ -1490,6 +1629,25 @@ fn make_completion_item(
         label: label_override.unwrap_or_else(|| info.name.clone()),
         kind: Some(kind),
         detail,
+        ..Default::default()
+    }
+}
+
+/// Build a `CompletionItem` for a T1b stdlib slice 1 function
+/// (docs/t1b-surface-spec.md §5, #589) — signature as `detail` (the
+/// lvalue-mutator rule renders right there, e.g. `push(a: lvalue, v)`), the
+/// one-line semantics as markdown documentation.
+fn make_stdlib_completion_item(f: &brink_ide::stdlib::StdlibFn) -> CompletionItem {
+    CompletionItem {
+        label: f.name.to_owned(),
+        kind: Some(CompletionItemKind::FUNCTION),
+        detail: Some(f.signature_label()),
+        documentation: Some(tower_lsp::lsp_types::Documentation::MarkupContent(
+            MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: f.doc.to_owned(),
+            },
+        )),
         ..Default::default()
     }
 }
@@ -1528,6 +1686,13 @@ fn ranges_overlap(a: &Range, b: &Range) -> bool {
 /// to coalesce rapid edits, then snapshots analysis inputs under the lock,
 /// runs per-project analysis without holding the lock, and publishes diagnostics
 /// for all files whose diagnostic set changed.
+///
+/// `language` is the same [`LanguageOptions`] `Backend` holds (#599, #660) —
+/// `initialize`'s `initializationOptions.dialect`/`.types` handlers write
+/// into its shared `Arc<Mutex<_>>`s, and this loop re-reads both every
+/// iteration so a client that (re-)declares either gets diagnostics
+/// analyzed under the current values on the very next background pass, with
+/// no separate propagation step needed.
 pub async fn analysis_loop(
     db: Arc<Mutex<brink_db::ProjectDb>>,
     _generation: Arc<AtomicU64>,
@@ -1535,11 +1700,27 @@ pub async fn analysis_loop(
     tx: watch::Sender<Option<Arc<ProjectAnalyses>>>,
     client: Client,
     last_published: Arc<Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>>,
+    language: LanguageOptions,
 ) {
     loop {
         trigger.notified().await;
         // Coalesce rapid edits — yield so any queued notifications collapse
         tokio::task::yield_now().await;
+
+        // Re-read the declared dialect + types policy each iteration
+        // (poisoned-lock-safe, mirrors `Backend::dialect()`) so a client that
+        // changes either mid-session is picked up on the next pass.
+        let opts = AnalysisOptions {
+            dialect: language
+                .dialect
+                .lock()
+                .map_or_else(|_| Dialect::default(), |g| *g),
+            types: language
+                .types
+                .lock()
+                .map_or_else(|_| TypePolicy::default(), |g| *g),
+            ..AnalysisOptions::default()
+        };
 
         // Snapshot inputs under lock
         let (projects, file_meta, per_file_diags, file_suppressions) = {
@@ -1571,7 +1752,7 @@ pub async fn analysis_loop(
                 .iter()
                 .map(|(id, hir, manifest)| (*id, hir, manifest))
                 .collect();
-            let result = brink_analyzer::analyze(&file_refs);
+            let result = brink_analyzer::analyze_with_options(&file_refs, &opts);
             by_root.insert(*root, Arc::new(result));
 
             let members: Vec<_> = inputs.iter().map(|(id, _, _)| *id).collect();

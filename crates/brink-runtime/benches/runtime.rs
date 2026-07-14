@@ -1,16 +1,16 @@
 use std::fmt;
 use std::sync::Arc;
 
-use brink_converter::convert;
+use brink_compiler::{AnalysisOptions, Dialect};
 use brink_format::StoryData;
-use brink_json::InkJson;
 use brink_runtime::{DotNetRng, Line, Program, Stats, Story};
 
 // ── Scenarios ────────────────────────────────────────────────────────────────
 
 struct Scenario {
     name: &'static str,
-    json: &'static str,
+    /// `.ink` entry point, relative to this crate's manifest dir.
+    ink: &'static str,
     inputs: Vec<usize>,
 }
 
@@ -20,17 +20,25 @@ impl fmt::Display for Scenario {
     }
 }
 
-const MINIMAL_JSON: &str =
-    include_str!("../../../tests/tier1/basics/I001-minimal-story/story.ink.json");
+const MINIMAL_INK: &str = "../../tests/tier1/basics/I001-minimal-story/story.ink";
 
-const HANOI_3_JSON: &str = include_str!("../../../tests/tier3/lists/tower-of-hanoi/story.ink.json");
+const HANOI_3_INK: &str = "../../tests/tier3/lists/tower-of-hanoi/story.ink";
 const HANOI_3_INPUT: &str = include_str!("../../../tests/tier3/lists/tower-of-hanoi/input.txt");
 
-const HANOI_10_JSON: &str = include_str!("../../../benchmarks/stories/hanoi-10/story.ink.json");
+const HANOI_10_INK: &str = "../../benchmarks/stories/hanoi-10/story.ink";
 const HANOI_10_INPUT: &str = include_str!("../../../benchmarks/stories/hanoi-10/input.txt");
 
-const CRUCIBLE_8_JSON: &str = include_str!("../../../benchmarks/stories/crucible-8/story.ink.json");
+const CRUCIBLE_8_INK: &str = "../../benchmarks/stories/crucible-8/story.ink";
 const CRUCIBLE_8_INPUT: &str = include_str!("../../../benchmarks/stories/crucible-8/input.txt");
+
+/// Loop-append (issue #576, `docs/value-model-spec.md` §5's "one cliff")
+/// benchmark: 10k sequential `push`es onto a freshly-created array in one
+/// `~ { … }` block — brink-dialect only (no strict-ink/oracle equivalent;
+/// see the `.ink` file's header comment for the before/after cliff this
+/// isolates). Not part of `scenarios()`/`Scenario` (those all compile under
+/// the default strict-ink dialect via `compile_story`) — `loop_append_bench`
+/// below is a standalone `#[divan::bench]` using `compile_story_brink`.
+const LOOP_APPEND_10K_INK: &str = "../../benchmarks/stories/loop-append-10k/story.ink";
 
 #[expect(clippy::unwrap_used)]
 fn parse_inputs(s: &str) -> Vec<usize> {
@@ -47,22 +55,22 @@ fn scenarios() -> &'static [Scenario] {
             vec![
                 Scenario {
                     name: "minimal",
-                    json: MINIMAL_JSON,
+                    ink: MINIMAL_INK,
                     inputs: vec![],
                 },
                 Scenario {
                     name: "hanoi-3",
-                    json: HANOI_3_JSON,
+                    ink: HANOI_3_INK,
                     inputs: parse_inputs(HANOI_3_INPUT),
                 },
                 Scenario {
                     name: "hanoi-10",
-                    json: HANOI_10_JSON,
+                    ink: HANOI_10_INK,
                     inputs: parse_inputs(HANOI_10_INPUT),
                 },
                 Scenario {
                     name: "crucible-8",
-                    json: CRUCIBLE_8_JSON,
+                    ink: CRUCIBLE_8_INK,
                     inputs: parse_inputs(CRUCIBLE_8_INPUT),
                 },
             ]
@@ -73,9 +81,24 @@ fn scenarios() -> &'static [Scenario] {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 #[expect(clippy::unwrap_used)]
-fn parse_and_convert(json: &str) -> StoryData {
-    let ink: InkJson = serde_json::from_str(json).unwrap();
-    convert(&ink).unwrap()
+fn compile_story(ink_rel: &str) -> StoryData {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(ink_rel);
+    brink_compiler::compile_path(&path).unwrap().data
+}
+
+/// Like [`compile_story`] but under the brink dialect (`push`/`~ { … }`
+/// blocks are T1b extensions, invisible to the default strict-ink
+/// compile) — used only by [`LOOP_APPEND_10K_INK`].
+#[expect(clippy::unwrap_used)]
+fn compile_story_brink(ink_rel: &str) -> StoryData {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(ink_rel);
+    let options = AnalysisOptions {
+        dialect: Dialect::Brink,
+        ..AnalysisOptions::default()
+    };
+    brink_compiler::compile_path_with_options(&path, options)
+        .unwrap()
+        .data
 }
 
 #[expect(clippy::unwrap_used)]
@@ -117,36 +140,32 @@ fn run_to_completion(
 
 // ── Benchmark groups ─────────────────────────────────────────────────────────
 
-mod converter_bench {
-    use super::{InkJson, Scenario, convert, scenarios};
+mod compiler_bench {
+    use super::{Scenario, compile_story, scenarios};
 
     #[divan::bench(args = scenarios())]
-    #[expect(clippy::unwrap_used)]
-    fn convert_json(bencher: divan::Bencher, scenario: &Scenario) {
-        bencher.bench_local(|| {
-            let ink: InkJson = serde_json::from_str(scenario.json).unwrap();
-            convert(&ink).unwrap()
-        });
+    fn compile(bencher: divan::Bencher, scenario: &Scenario) {
+        bencher.bench_local(|| compile_story(scenario.ink));
     }
 }
 
 mod linker_bench {
-    use super::{Scenario, parse_and_convert, scenarios};
+    use super::{Scenario, compile_story, scenarios};
 
     #[divan::bench(args = scenarios())]
     #[expect(clippy::unwrap_used)]
     fn link(bencher: divan::Bencher, scenario: &Scenario) {
-        let data = parse_and_convert(scenario.json);
+        let data = compile_story(scenario.ink);
         bencher.bench_local(|| brink_runtime::link(&data).unwrap());
     }
 }
 
 mod runtime_step {
-    use super::{Scenario, parse_and_convert, run_to_completion, scenarios};
+    use super::{Scenario, compile_story, run_to_completion, scenarios};
 
     #[divan::bench(args = scenarios())]
     fn run(bencher: divan::Bencher, scenario: &Scenario) {
-        let data = parse_and_convert(scenario.json);
+        let data = compile_story(scenario.ink);
         #[expect(clippy::unwrap_used)]
         let (program, line_tables) = brink_runtime::link(&data).unwrap();
         let program = std::sync::Arc::new(program);
@@ -154,13 +173,33 @@ mod runtime_step {
     }
 }
 
+/// Loop-append (issue #576) benchmark: isolates the RMW-mutate cost alone
+/// (link once, run repeatedly), matching `runtime_step`'s granularity —
+/// the compile step is brink-dialect-specific setup, not part of what this
+/// benchmark measures. Before #576, this scenario is O(n^2) in the push
+/// count (10k re-COWs of an up-to-10k-element array); after #576, O(n)
+/// amortized. See the PR description for measured before/after numbers
+/// (`docs/value-model-spec.md` §5 predicts, this benchmark verifies).
+mod loop_append_bench {
+    use super::{LOOP_APPEND_10K_INK, compile_story_brink, run_to_completion};
+
+    #[divan::bench]
+    fn push_10k(bencher: divan::Bencher) {
+        let data = compile_story_brink(LOOP_APPEND_10K_INK);
+        #[expect(clippy::unwrap_used)]
+        let (program, line_tables) = brink_runtime::link(&data).unwrap();
+        let program = std::sync::Arc::new(program);
+        bencher.bench_local(|| run_to_completion(&program, line_tables.clone(), &[]));
+    }
+}
+
 mod end_to_end {
-    use super::{Scenario, parse_and_convert, run_to_completion, scenarios};
+    use super::{Scenario, compile_story, run_to_completion, scenarios};
 
     #[divan::bench(args = scenarios())]
     fn full_pipeline(bencher: divan::Bencher, scenario: &Scenario) {
         bencher.bench_local(|| {
-            let data = parse_and_convert(scenario.json);
+            let data = compile_story(scenario.ink);
             #[expect(clippy::unwrap_used)]
             let (program, line_tables) = brink_runtime::link(&data).unwrap();
             let program = std::sync::Arc::new(program);
@@ -170,8 +209,8 @@ mod end_to_end {
 
     #[divan::bench(args = scenarios())]
     #[expect(clippy::unwrap_used)]
-    fn preconverted(bencher: divan::Bencher, scenario: &Scenario) {
-        let data = parse_and_convert(scenario.json);
+    fn precompiled(bencher: divan::Bencher, scenario: &Scenario) {
+        let data = compile_story(scenario.ink);
         bencher.bench_local(|| {
             let (program, line_tables) = brink_runtime::link(&data).unwrap();
             let program = std::sync::Arc::new(program);
@@ -182,7 +221,7 @@ mod end_to_end {
 
 #[expect(clippy::unwrap_used, clippy::print_stderr)]
 fn print_hanoi_10_stats() {
-    let data = parse_and_convert(HANOI_10_JSON);
+    let data = compile_story(HANOI_10_INK);
     let (program, line_tables) = brink_runtime::link(&data).unwrap();
     let program = std::sync::Arc::new(program);
     let inputs = parse_inputs(HANOI_10_INPUT);
@@ -208,7 +247,7 @@ fn print_hanoi_10_stats() {
 
 #[expect(clippy::unwrap_used, clippy::print_stderr)]
 fn print_crucible_8_stats() {
-    let data = parse_and_convert(CRUCIBLE_8_JSON);
+    let data = compile_story(CRUCIBLE_8_INK);
     let (program, line_tables) = brink_runtime::link(&data).unwrap();
     let program = std::sync::Arc::new(program);
     let inputs = parse_inputs(CRUCIBLE_8_INPUT);

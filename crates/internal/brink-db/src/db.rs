@@ -1,7 +1,9 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use brink_analyzer::{AnalysisOptions, AnalysisResult, Sig};
+use brink_analyzer::{
+    AnalysisOptions, AnalysisResult, BodyTypes, InferenceResult, InferredSig, Sig,
+};
 use brink_format::DefinitionId;
 use brink_ir::suppressions::Suppressions;
 use brink_ir::{Diagnostic, FileId, HirFile, ResolutionMap, SymbolIndex, SymbolManifest};
@@ -10,9 +12,11 @@ use salsa::Setter as _;
 use tracing::debug;
 
 use crate::queries::{
-    BrinkDatabase, CompileProduct, DefKey, LirProduct, ProjectInput, SourceFile, analysis_query,
-    diagnostics_query, include_graph_query, lir_query, lowered_query, parse_query, resolve_query,
-    signature_query, story_data_query, suppressions_query, symbol_index_query,
+    BrinkDatabase, CompileProduct, DefKey, LirProduct, ProjectInput, ResolvedProject, SourceFile,
+    analysis_query, diagnostics_query, include_graph_query, infer_body_query,
+    inferred_signature_query, lir_query, lowered_query, parse_query, per_file_diagnostics_query,
+    resolutions_index_query, resolve_query, signature_query, story_data_query, suppressions_query,
+    symbol_index_query, type_diagnostics_query, type_inference_query,
 };
 
 /// Stateful incremental project database.
@@ -26,9 +30,19 @@ use crate::queries::{
 pub struct ProjectDb {
     salsa: BrinkDatabase,
     project: ProjectInput,
+    /// Live files only — every public accessor reads through this map, so
+    /// tombstoned inputs (see `retired`) are invisible to consumers.
     files: HashMap<FileId, SourceFile>,
     path_to_id: HashMap<String, FileId>,
     id_to_path: HashMap<FileId, String>,
+    /// Tombstoned salsa inputs from removed files, keyed by path — the
+    /// durable path→`FileId` identity store (#536). Salsa never forgets an
+    /// input, so [`remove_file`](Self::remove_file) parks the `SourceFile`
+    /// here (text cleared) instead of dropping the handle; re-adding the
+    /// same path reinstates it, reusing its original `FileId` so the old
+    /// per-file memos are overwritten in place rather than leaking as
+    /// permanently unreachable dead entries (rust-analyzer precedent).
+    retired: HashMap<String, SourceFile>,
     next_id: u32,
 }
 
@@ -43,29 +57,52 @@ impl ProjectDb {
             files: HashMap::new(),
             path_to_id: HashMap::new(),
             id_to_path: HashMap::new(),
+            retired: HashMap::new(),
             next_id: 0,
         }
     }
 
     /// Add or replace a file. An existing file's text is overwritten in
     /// place (an input write); derived queries recompute lazily on next read.
+    ///
+    /// Path→`FileId` identity is durable (#536): re-adding a path that was
+    /// previously [`remove_file`](Self::remove_file)d reinstates its original
+    /// `FileId` and salsa input, so per-file memos are overwritten in place
+    /// instead of accumulating under freshly-minted dead ids.
     pub fn set_file(&mut self, path: &str, source: String) -> FileId {
-        let file_id = self.get_or_create_id(path);
-
-        if let Some(&file) = self.files.get(&file_id) {
-            file.set_text(&mut self.salsa).to(source);
-        } else {
-            let file = SourceFile::new(&self.salsa, file_id, path.to_string(), source);
-            self.files.insert(file_id, file);
-            // Ids are allocated monotonically, so pushing keeps the project
-            // file list sorted by `FileId`.
-            let mut list = self.project.files(&self.salsa).clone();
-            list.push(file);
-            self.project.set_files(&mut self.salsa).to(list);
+        if let Some(&id) = self.path_to_id.get(path) {
+            if let Some(&file) = self.files.get(&id) {
+                file.set_text(&mut self.salsa).to(source);
+            }
+            debug!(path, id = id.0, "set_file complete");
+            return id;
         }
 
-        debug!(path, id = file_id.0, "set_file complete");
-        file_id
+        // Reinstate a tombstoned input if this path existed before,
+        // otherwise mint a fresh id + input.
+        let file = if let Some(file) = self.retired.remove(path) {
+            file.set_text(&mut self.salsa).to(source);
+            file
+        } else {
+            let id = FileId(self.next_id);
+            self.next_id += 1;
+            SourceFile::new(&self.salsa, id, path.to_string(), source)
+        };
+        let id = file.file_id(&self.salsa);
+        self.path_to_id.insert(path.to_string(), id);
+        self.id_to_path.insert(id, path.to_string());
+        self.files.insert(id, file);
+
+        // A reinstated `FileId` can be smaller than later-minted ids, so a
+        // plain push would break the list's `FileId` ordering — insert at
+        // the sorted position instead.
+        let mut list = self.project.files(&self.salsa).clone();
+        let pos = list.partition_point(|f| f.file_id(&self.salsa).0 < id.0);
+        list.insert(pos, file);
+        self.project.set_files(&mut self.salsa).to(list);
+
+        debug!(path, id = id.0, "set_file complete");
+        id
     }
 
     /// Incrementally update a file. Identical to [`set_file`](Self::set_file):
@@ -75,10 +112,20 @@ impl ProjectDb {
     }
 
     /// Remove a file from the database.
+    ///
+    /// The salsa input is tombstoned, not forgotten (#536): salsa can never
+    /// reclaim an input or the memos keyed on it, so the `SourceFile` is
+    /// parked in `retired` with its text cleared (releasing the source and
+    /// invalidating stale derived memos) while dropping out of the project
+    /// file list and every path/id map. From a consumer's view the file is
+    /// gone — enumeration, lookups, and INCLUDE resolution behave exactly as
+    /// if it never existed; re-adding the path reuses its original `FileId`.
     pub fn remove_file(&mut self, path: &str) {
         if let Some(id) = self.path_to_id.remove(path) {
             self.id_to_path.remove(&id);
-            if self.files.remove(&id).is_some() {
+            if let Some(file) = self.files.remove(&id) {
+                file.set_text(&mut self.salsa).to(String::new());
+                self.retired.insert(path.to_string(), file);
                 let list: Vec<SourceFile> = self
                     .project
                     .files(&self.salsa)
@@ -294,12 +341,62 @@ impl ProjectDb {
         analysis_query(&self.salsa, self.project)
     }
 
+    /// Index + resolutions, no diagnostics (issue #632 / FG-3 — the
+    /// RESOLUTIONS/INDEX half of [`analysis`](Self::analysis), split off
+    /// from the diagnostics half so a diagnostics-only `AnalysisOptions`
+    /// edit leaves this `Arc`'s pointer identity untouched).
+    pub fn resolutions_index(&self) -> Arc<ResolvedProject> {
+        resolutions_index_query(&self.salsa, self.project)
+    }
+
+    /// One file's per-file diagnostic contributors — structural validation,
+    /// the dialect gate, and (brink dialect only) annotation-content checks
+    /// (issue #632 / FG-3). `None` for an unknown file id. A body edit in a
+    /// *different* file leaves this `Arc`'s pointer identity untouched.
+    pub fn per_file_diagnostics(&self, id: FileId) -> Option<Arc<Vec<Diagnostic>>> {
+        let file = *self.files.get(&id)?;
+        Some(per_file_diagnostics_query(&self.salsa, self.project, file))
+    }
+
     /// Per-file diagnostics including this file's share of analysis
     /// diagnostics (layer 3, `diagnostics(FileId)`). Raw — no suppression
     /// filtering.
     pub fn diagnostics(&self, id: FileId) -> Option<&[Diagnostic]> {
         let file = self.files.get(&id)?;
         Some(diagnostics_query(&self.salsa, self.project, *file).as_slice())
+    }
+
+    /// Whole-project type inference (TM-1, typed-mode-spec §2/§9 step 1).
+    /// Advisory-only substrate: `infer_body`/`type_diagnostics` are thin
+    /// per-def/per-file views over this. Lazy — nothing in `story_data`,
+    /// `lir_product`, or `diagnostics` reads it, so calling this (directly
+    /// or via `infer_body`/`type_diagnostics`) is the only thing that
+    /// triggers the underlying computation.
+    pub fn type_inference(&self) -> &InferenceResult {
+        type_inference_query(&self.salsa, self.project)
+    }
+
+    /// Per-def inferred body types (`infer_body(def)`). `None` for a def
+    /// with no inferable body (not a knot/stitch, or an unknown id).
+    pub fn infer_body(&self, def: DefinitionId) -> Option<Arc<BodyTypes>> {
+        infer_body_query(&self.salsa, self.project, DefKey::new(&self.salsa, def))
+    }
+
+    /// Per-def inferred signature (`inferred_signature(def)`, FG-2 issue
+    /// #631) — the firewall-facing per-def view: params + return type only,
+    /// no locals, no ranges. This is the boundary TM-2's annotation-override
+    /// consumer reads. `None` for a def with no inferable body (not a
+    /// knot/stitch, or an unknown id) — same `None` contract as
+    /// [`signature`](Self::signature)/[`infer_body`](Self::infer_body).
+    pub fn inferred_signature(&self, def: DefinitionId) -> Option<Arc<InferredSig>> {
+        inferred_signature_query(&self.salsa, self.project, DefKey::new(&self.salsa, def))
+    }
+
+    /// Per-file type diagnostics (`type_diagnostics(FileId)`). Advisory-only
+    /// in this slice — always empty (see `type_diagnostics_query`'s docs).
+    pub fn type_diagnostics(&self, id: FileId) -> Option<&[Diagnostic]> {
+        let file = self.files.get(&id)?;
+        Some(type_diagnostics_query(&self.salsa, self.project, *file).as_slice())
     }
 
     /// Whole-project LIR lowering (layer 3). `None` until an entry point is
@@ -330,17 +427,6 @@ impl ProjectDb {
 
     fn include_graph(&self) -> &crate::include_graph::IncludeGraph {
         include_graph_query(&self.salsa, self.project)
-    }
-
-    fn get_or_create_id(&mut self, path: &str) -> FileId {
-        if let Some(&id) = self.path_to_id.get(path) {
-            return id;
-        }
-        let id = FileId(self.next_id);
-        self.next_id += 1;
-        self.path_to_id.insert(path.to_string(), id);
-        self.id_to_path.insert(id, path.to_string());
-        id
     }
 }
 
@@ -513,6 +599,135 @@ mod path_tests {
 }
 
 #[cfg(test)]
+mod remove_readd_tests {
+    use super::ProjectDb;
+    use brink_ir::FileId;
+
+    #[test]
+    fn readd_reuses_original_file_id() {
+        let mut db = ProjectDb::new();
+        let a = db.set_file("a.ink", "== ka ==\ntext\n".to_owned());
+        let b = db.set_file("b.ink", "== kb ==\ntext\n".to_owned());
+        assert_eq!(a, FileId(0));
+        assert_eq!(b, FileId(1));
+
+        db.remove_file("a.ink");
+        let a2 = db.set_file("a.ink", "== ka2 ==\ntext\n".to_owned());
+        assert_eq!(a2, a, "re-added path must reuse its original FileId");
+
+        // A genuinely new path still gets a fresh id — reuse never aliases.
+        let c = db.set_file("c.ink", "== kc ==\ntext\n".to_owned());
+        assert_eq!(c, FileId(2));
+
+        // The project file list stays sorted by FileId even though the
+        // reinstated id (0) is smaller than the ids minted after it.
+        let ids: Vec<FileId> = db.file_ids().collect();
+        assert_eq!(ids, vec![a, b, c]);
+        let meta_ids: Vec<FileId> = db
+            .file_metadata()
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        assert_eq!(meta_ids, vec![a, b, c]);
+    }
+
+    #[test]
+    fn removed_file_is_invisible_to_every_accessor() {
+        let mut db = ProjectDb::new();
+        db.set_file("main.ink", "INCLUDE sub.ink\n-> DONE\n".to_owned());
+        let sub = db.set_file("sub.ink", "== s ==\ntext\n-> DONE\n".to_owned());
+
+        db.remove_file("sub.ink");
+
+        assert_eq!(db.file_id("sub.ink"), None);
+        assert_eq!(db.file_path(sub), None);
+        assert!(db.file_ids().all(|id| id != sub));
+        assert!(db.file_metadata().iter().all(|(id, _, _)| *id != sub));
+        assert!(db.analysis_inputs().iter().all(|(id, _, _)| *id != sub));
+        assert!(db.source(sub).is_none());
+        assert!(db.parse(sub).is_none());
+        assert!(db.hir(sub).is_none());
+        assert!(db.manifest(sub).is_none());
+        assert!(db.diagnostics(sub).is_none());
+        assert!(db.suppressions(sub).is_none());
+        assert!(db.resolve(sub).is_none());
+    }
+
+    #[test]
+    fn removed_include_matches_never_added_diagnostics() {
+        let source = "INCLUDE sub.ink\n-> s\n";
+
+        // Db where sub.ink existed and was removed.
+        let mut removed = ProjectDb::new();
+        removed.set_file("main.ink", source.to_owned());
+        removed.set_file("sub.ink", "== s ==\ntext\n-> DONE\n".to_owned());
+        removed.set_entry("main.ink");
+        // Pull through the whole pipeline while sub.ink is live, so the
+        // removed-state read below exercises invalidation, not a cold start.
+        assert!(removed.story_data().is_some());
+        removed.remove_file("sub.ink");
+
+        // Db where sub.ink never existed (main.ink gets FileId(0) in both).
+        let mut fresh = ProjectDb::new();
+        fresh.set_file("main.ink", source.to_owned());
+        fresh.set_entry("main.ink");
+
+        let main_removed = removed.file_id("main.ink").expect("main");
+        let main_fresh = fresh.file_id("main.ink").expect("main");
+        assert_eq!(main_removed, main_fresh);
+        assert_eq!(
+            removed.diagnostics(main_removed),
+            fresh.diagnostics(main_fresh),
+            "a removed INCLUDE target must diagnose exactly like a missing one"
+        );
+        assert_eq!(
+            removed.story_data().map(|p| p.errors.clone()),
+            fresh.story_data().map(|p| p.errors.clone()),
+        );
+    }
+
+    #[test]
+    fn readd_recomputes_from_new_content() {
+        let mut db = ProjectDb::new();
+        let id = db.set_file("a.ink", "== old_knot ==\ntext\n-> DONE\n".to_owned());
+        // Materialize memos for the original content.
+        assert!(
+            db.manifest(id)
+                .is_some_and(|m| m.knots.iter().any(|k| k.name == "old_knot"))
+        );
+
+        db.remove_file("a.ink");
+        let id2 = db.set_file("a.ink", "== new_knot ==\ntext\n-> DONE\n".to_owned());
+        assert_eq!(id2, id);
+
+        let manifest = db.manifest(id).expect("manifest after re-add");
+        assert!(
+            manifest.knots.iter().any(|k| k.name == "new_knot"),
+            "re-added content must win over stale memos"
+        );
+        assert!(
+            !manifest.knots.iter().any(|k| k.name == "old_knot"),
+            "old content must not survive the tombstone round-trip"
+        );
+        assert_eq!(db.source(id), Some("== new_knot ==\ntext\n-> DONE\n"));
+    }
+
+    #[test]
+    fn remove_clears_entry_and_readd_does_not_restore_it() {
+        let mut db = ProjectDb::new();
+        db.set_file("main.ink", "-> DONE\n".to_owned());
+        db.set_entry("main.ink");
+        assert!(db.entry().is_some());
+
+        db.remove_file("main.ink");
+        assert_eq!(db.entry(), None);
+
+        db.set_file("main.ink", "-> DONE\n".to_owned());
+        assert_eq!(db.entry(), None, "re-add must not silently restore entry");
+    }
+}
+
+#[cfg(test)]
 mod reachable_tests {
     use super::ProjectDb;
 
@@ -583,5 +798,90 @@ mod reachable_tests {
         assert!(reachable.contains(&a));
         assert!(reachable.contains(&b));
         assert_eq!(reachable.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod type_inference_tests {
+    use super::ProjectDb;
+    use brink_ir::SymbolKind;
+
+    /// End-to-end reachability proof (TM-1, #617): `infer_body`/
+    /// `type_inference` are reachable through the same public `ProjectDb`
+    /// surface every other query surfaces through, and return a real
+    /// inferred type for a param whose body use pins it — not a stub.
+    #[test]
+    fn infer_body_is_reachable_through_project_db() {
+        let mut db = ProjectDb::new();
+        db.set_file(
+            "main.ink",
+            "=== heal(hp) ===\n~ temp x = hp + 1\n-> DONE\n".to_owned(),
+        );
+        db.set_entry("main.ink");
+
+        let index = db.symbol_index();
+        let heal = index
+            .by_name
+            .get("heal")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("heal knot indexed");
+        assert_eq!(
+            index.symbols.get(&heal).map(|i| i.kind),
+            Some(SymbolKind::Knot)
+        );
+
+        let body = db.infer_body(heal).expect("heal has an inferable body");
+        assert_eq!(body.params.len(), 1);
+        assert_eq!(body.params[0].0, "hp");
+        assert_eq!(body.params[0].1.display(), "int");
+
+        // Same view via the whole-project result and via `type_diagnostics`
+        // (advisory-only: empty, but reachable and correctly shaped).
+        assert!(db.type_inference().signatures.contains_key(&heal));
+        let main = db.file_id("main.ink").expect("main");
+        assert_eq!(db.type_diagnostics(main), Some(&[][..]));
+    }
+
+    #[test]
+    fn infer_body_is_none_for_a_non_callable_def() {
+        let mut db = ProjectDb::new();
+        db.set_file("main.ink", "VAR gold = 10\n-> DONE\n".to_owned());
+        let index = db.symbol_index();
+        let gold = index
+            .by_name
+            .get("gold")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("gold indexed");
+        assert_eq!(db.infer_body(gold), None, "a VAR has no inferable body");
+    }
+
+    #[test]
+    fn type_inference_is_independent_of_the_compile_path() {
+        // Pulling every other query surface (diagnostics, story_data) first
+        // — neither reads `type_inference_query` (see its module docs), so
+        // this exercises `infer_body` cold, after, and must still return the
+        // same correct result: nothing about the compile path's query graph
+        // secretly depends on inference having (or not having) run yet.
+        let mut db = ProjectDb::new();
+        db.set_file(
+            "main.ink",
+            "=== heal(hp) ===\n~ temp x = hp + 1\n-> DONE\n".to_owned(),
+        );
+        db.set_entry("main.ink");
+        let main = db.file_id("main.ink").expect("main");
+        let _ = db.diagnostics(main);
+        let _ = db.story_data();
+
+        let index = db.symbol_index();
+        let heal = index
+            .by_name
+            .get("heal")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("heal knot indexed");
+        let body = db.infer_body(heal).expect("heal has an inferable body");
+        assert_eq!(body.params[0].1.display(), "int");
     }
 }

@@ -2080,7 +2080,6 @@ version = "0.0.11"
 dependencies = [
  "brink-analyzer",
  "brink-compiler",
- "brink-converter",
  "brink-db",
  "brink-driver",
  "brink-fmt",
@@ -2088,7 +2087,6 @@ dependencies = [
  "brink-ide",
  "brink-intl",
  "brink-ir",
- "brink-json",
  "brink-runtime",
  "clap",
  "ratatui",
@@ -2109,25 +2107,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "brink-codegen-json"
-version = "0.0.11"
-dependencies = [
- "brink-format",
- "brink-ir",
- "brink-json",
-]
-
-[[package]]
 name = "brink-compiler"
 version = "0.0.11"
 dependencies = [
  "brink-analyzer",
  "brink-codegen-inkb",
- "brink-codegen-json",
  "brink-driver",
  "brink-format",
  "brink-ir",
- "brink-json",
  "brink-runtime",
  "brink-syntax",
  "brink-test-harness",
@@ -2135,17 +2122,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tracing",
-]
-
-[[package]]
-name = "brink-converter"
-version = "0.0.11"
-dependencies = [
- "brink-format",
- "brink-json",
- "insta",
- "serde_json",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2189,8 +2165,7 @@ name = "brink-format"
 version = "0.0.11"
 dependencies = [
  "bitflags 2.13.0",
- "brink-converter",
- "brink-json",
+ "brink-compiler",
  "insta",
  "pest",
  "pest_derive",
@@ -2222,9 +2197,8 @@ dependencies = [
 name = "brink-intl"
 version = "0.0.11"
 dependencies = [
- "brink-converter",
+ "brink-compiler",
  "brink-format",
- "brink-json",
  "brink-runtime",
  "icu_locale_core",
  "icu_plurals",
@@ -2253,17 +2227,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "brink-json"
-version = "0.0.11"
-dependencies = [
- "bitflags 2.13.0",
- "insta",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "brink-lsp"
 version = "0.0.11"
 dependencies = [
@@ -2288,9 +2251,7 @@ name = "brink-runtime"
 version = "0.0.11"
 dependencies = [
  "brink-compiler",
- "brink-converter",
  "brink-format",
- "brink-json",
  "divan",
  "serde",
  "serde_json",
@@ -2313,15 +2274,14 @@ dependencies = [
  "brink-analyzer",
  "brink-codegen-inkb",
  "brink-compiler",
- "brink-converter",
  "brink-db",
  "brink-driver",
  "brink-format",
  "brink-ir",
- "brink-json",
  "brink-runtime",
  "brink-syntax",
  "insta",
+ "proptest",
  "serde",
  "serde_json",
 ]

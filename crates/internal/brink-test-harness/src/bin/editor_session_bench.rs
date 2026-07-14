@@ -31,12 +31,15 @@
 //! - **Churn** (15%): toggle one scratch slot: add a fresh scratch file
 //!   (bumping its own revision counter, so re-adding a path never reuses old
 //!   content) or remove the currently-present one, rewriting `main.ink`'s
-//!   `INCLUDE` list either way. `ProjectDb::set_file` mints a *new* `FileId`
-//!   for a path that was previously removed (`remove_file` only forgets
-//!   `ProjectDb`'s own path→id mapping) — salsa's old `SourceFile` input and
-//!   every memo keyed on its old id are never reachable again but are never
-//!   reclaimed either. This is the harness's most direct probe of session
-//!   memory growth.
+//!   `INCLUDE` list either way. Path→`FileId` identity is durable (#536):
+//!   `remove_file` tombstones the salsa `SourceFile` input (text cleared,
+//!   invisible to every consumer) and re-adding the path reinstates it under
+//!   its original id, so per-file memos are overwritten in place. Struct and
+//!   memo counts must therefore stay *flat* under churn — bounded by the
+//!   number of distinct paths ever seen, not by churn count. This is the
+//!   harness's most direct probe of session memory growth (it caught the
+//!   pre-#536 leak, where every re-add minted a new id and stranded the old
+//!   memo column forever).
 //!
 //! Every edit re-pulls diagnostics for the touched file (an LSP publishing
 //! diagnostics after a keystroke); every [`STORY_DATA_EVERY`]th edit also
@@ -171,8 +174,9 @@ struct Session {
     scratch_present: [bool; SCRATCH_SLOTS],
     scratch_variant: [u64; SCRATCH_SLOTS],
     /// Total number of absent -> present transitions across all scratch
-    /// slots — each one mints a fresh `FileId`/`SourceFile` (see module
-    /// docs), so this is the expected lower bound on struct-table growth.
+    /// slots. Since #536 (durable path→`FileId` identity) re-adds reinstate
+    /// the slot's original `SourceFile` input, so this count must NOT show
+    /// up as struct-table growth — only the first add of each slot does.
     scratch_ever_added: usize,
 }
 

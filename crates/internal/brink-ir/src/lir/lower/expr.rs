@@ -88,7 +88,386 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
         hir::Expr::Postfix(inner, op) => lir::Expr::Postfix(Box::new(lower_expr(inner, ctx)), *op),
 
         hir::Expr::Call(path, args) => lower_call(path, args, ctx),
+
+        // T1b sigil collection literals + postfix indexing
+        // (docs/t1b-surface-spec.md §3-4). A literal lowers to the V4
+        // literal pool (`lir::Expr::ConstLiteral`, deduplicated at codegen)
+        // when every element/entry is constant-foldable, else to the
+        // runtime construction opcodes (`ArrayNew`/`MapNew`).
+        hir::Expr::ArrayLiteral(arr) => lower_array_literal(arr, ctx),
+        hir::Expr::MapLiteral(map) => lower_map_literal(map, ctx),
+        hir::Expr::Index(idx) => lir::Expr::Index {
+            base: Box::new(lower_expr(&idx.base, ctx)),
+            index: Box::new(lower_expr(&idx.index, ctx)),
+        },
+
+        // TM-4c structs (docs/typed-mode-spec.md §6): construction, field
+        // reads, and (through the RMW helpers in `blocks`/`stmts`) field
+        // writes all lower for real — see `lower_struct_literal`/
+        // `lower_field_access`'s own docs.
+        hir::Expr::StructLiteral(sl) => lower_struct_literal(sl, ctx),
+        hir::Expr::FieldAccess(fa) => lower_field_access(fa, ctx),
+
+        // T1c-1 (docs/t1c-spec.md §11): `#fn(…)` function values parse,
+        // gate, and type-check in this slice, but their LIR/codegen/VM
+        // story is T1c-2 — see [`reject_fn_literal`].
+        hir::Expr::FnLiteral(fl) => reject_fn_literal(fl, ctx),
     }
+}
+
+/// T1c-1 lowering fence (docs/t1c-spec.md §11 build sequencing): `#fn(…)`
+/// has grammar, HIR, dialect gating, creation-site diagnostics, and typing
+/// in this slice — LIR emission (`PushFnRef`/`MakeClosure`), dispatch, and
+/// persistence land in T1c-2. Until then, a `#fn` reaching LIR lowering is
+/// a real, targeted, **non-suppressible** compile error (E052, the
+/// designated "brink extension not yet implemented" class) — never a silent
+/// drop (house rule: silent drops are always bugs). Bound-argument
+/// subexpressions are still lowered for their own diagnostics' sake; the
+/// result is discarded along with the whole expression.
+fn reject_fn_literal(fl: &hir::FnLiteral, ctx: &mut LowerCtx<'_>) -> lir::Expr {
+    for arg in &fl.args {
+        lower_expr(arg, ctx);
+    }
+    ctx.diagnostics.push(crate::Diagnostic {
+        file: ctx.file,
+        range: fl.ptr.text_range(),
+        message: "`#fn(…)` function values are not yet implemented in this slice — \
+                  creation type-checks (T1c-1) but lowering/execution lands in T1c-2"
+            .to_owned(),
+        code: crate::DiagnosticCode::E052,
+    });
+    lir::Expr::Null
+}
+
+/// A sentinel `ShapeId` that never names a real declared shape — `Program::
+/// struct_shapes` is populated by [`super::structs::build_shape_table`]
+/// with dense ids starting at `0`, so no real project comes remotely close
+/// to `u32::MAX` shapes. Used only by [`lower_struct_literal`]'s gradual
+/// construction-fault path.
+const CONSTRUCTION_FAULT_SHAPE_ID: u32 = u32::MAX;
+
+/// `Name#{field: expr, …}` construction (TM-4c, `docs/typed-mode-spec.md`
+/// §6). Every initializer is lowered — and therefore evaluated — exactly
+/// once, in **source** order (the order the author wrote them), regardless
+/// of which path below is taken.
+///
+/// - **Well-formed** (every declared field has exactly one initializer, no
+///   extra names): reorders the *already-lowered* expression trees into the
+///   shape's *declaration* order for `RecordNew` (the VM's required push
+///   order). **Evaluation-order caveat**: because each field's `lir::Expr`
+///   is placed, not re-evaluated, codegen will evaluate them in shape order
+///   at emission time, not source order — when the author's field order
+///   differs from the shape's declared order *and* more than one
+///   initializer has an observable side effect (a function call, an
+///   external, `TURNS_SINCE`, …), those side effects fire in shape order.
+///   The LIR has no local-binding expression node (an `Expr::Let`-shaped
+///   construct) to stage a source-order-evaluated value ahead of a later
+///   shape-order placement without one — introducing one is out of TM-4c's
+///   scope (flagged in the PR description's scope notes). Field
+///   initializers with observable side effects are expected to be rare in
+///   practice; this divergence is deliberate and documented, not a silent
+///   miscompile — construction *values* are always correct regardless.
+/// - **Mismatched** (a missing declared field, or an initializer for a name
+///   the shape doesn't declare): value-model-spec §11c's gradual
+///   construction-fault path. Reachable under `types = gradual` (the only
+///   policy that compiles this far — under `types = strict` it's already
+///   `E069`/`E070`, a compile error, unless that diagnostic was suppressed,
+///   in which case this is the non-suppressible runtime backstop). Emits
+///   every supplied initializer (source order, still evaluated for its side
+///   effects) followed by `RecordNew(CONSTRUCTION_FAULT_SHAPE_ID)` — the VM's
+///   `record_new` looks up the shape *before* popping any values, so an
+///   always-invalid `ShapeId` deterministically turn-terminates via the
+///   already-existing `RuntimeError::InvalidShapeId` fault (no new opcode or
+///   runtime code needed; see `record_ops::record_new`).
+fn lower_struct_literal(sl: &hir::StructLiteral, ctx: &mut LowerCtx<'_>) -> lir::Expr {
+    let structs = ctx.structs;
+    let Some(shape) = structs.shapes.get(&sl.shape.text) else {
+        for (_name, val) in &sl.fields {
+            lower_expr(val, ctx);
+        }
+        return reject_unresolved_struct_shape(sl.ptr.text_range(), ctx);
+    };
+
+    let mut placed: Vec<Option<lir::Expr>> = vec![None; shape.fields.len()];
+    let mut source_order: Vec<lir::Expr> = Vec::with_capacity(sl.fields.len());
+    let mut has_extra = false;
+    for (name, val) in &sl.fields {
+        let lowered = lower_expr(val, ctx);
+        match shape.field(&name.text) {
+            Some((offset, _)) => {
+                if let Some(slot) = placed.get_mut(offset as usize) {
+                    *slot = Some(lowered.clone());
+                }
+            }
+            None => has_extra = true,
+        }
+        source_order.push(lowered);
+    }
+    let has_missing = placed.iter().any(Option::is_none);
+
+    if has_extra || has_missing {
+        return lir::Expr::RecordNew {
+            shape_id: CONSTRUCTION_FAULT_SHAPE_ID,
+            fields: source_order,
+        };
+    }
+
+    // `has_missing == false` just proved every slot is `Some` — `unwrap_or`
+    // rather than `unwrap` anyway (denied in production code; guarded, not
+    // asserted, per the E053-backstop lesson): a future refactor that
+    // weakens that proof degrades to a well-formed-but-wrong `Null` field
+    // instead of a panic.
+    lir::Expr::RecordNew {
+        shape_id: shape.id,
+        fields: placed
+            .into_iter()
+            .map(|f| f.unwrap_or(lir::Expr::Null))
+            .collect(),
+    }
+}
+
+/// `base.field` (read) — TM-4c. Chainable: `o.inner.v` lowers as nested
+/// `FieldAccessExpr`, and [`known_shape`] chases the chain through declared
+/// nested-struct field types (no type inference — see that function's doc)
+/// to decide `static_offset` eligibility at every hop, not just the first.
+fn lower_field_access(fa: &hir::FieldAccessExpr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
+    let static_offset = static_offset_for(&fa.base, &fa.field.text, ctx);
+    let field = ctx.names.intern(&fa.field.text);
+    let base = lower_expr(&fa.base, ctx);
+    lir::Expr::RecordGet {
+        base: Box::new(base),
+        field,
+        static_offset,
+    }
+}
+
+/// TM-4c "compile-time known shape" — see `lower::structs`' module doc for
+/// the full soundness argument. Only ever returns `Some` under `types =
+/// strict`: a struct-typed annotation is trustworthy *only* because
+/// strict-mode's own type checking (E065/E066, `docs/typed-mode-spec.md`
+/// §1) rejects a program where the annotation could lie; under `types =
+/// gradual` nothing enforces it, so this always returns `None` there and
+/// field ops fall back to the always-correct by-name form.
+fn static_offset_for(base: &hir::Expr, field_name: &str, ctx: &LowerCtx<'_>) -> Option<u16> {
+    if ctx.structs.type_mode != crate::lir::TypeMode::Strict {
+        return None;
+    }
+    let shape_name = known_shape(base, ctx)?;
+    let shape = ctx.structs.shapes.get(&shape_name)?;
+    shape.field(field_name).map(|(offset, _)| offset)
+}
+
+/// Chase `expr` to a compile-time-known struct shape name, if any — the
+/// entire "known shape" story is: a construction literal (trivially known),
+/// a `Path` naming a struct-typed `VAR`/`CONST`/`temp` (TM-2 annotation,
+/// tracked in `structs::GlobalShapeMap`/`LowerCtx::temp_shapes`), or a
+/// `FieldAccess` whose base has a known shape *and* whose accessed field is
+/// itself declared with a struct-typed annotation (chases through nested
+/// struct fields using only the shape table — never type inference, and
+/// never anything requiring `brink-analyzer`, which `brink-ir` cannot
+/// depend on). Every other expression (a call, an index, a literal-typed
+/// value, …) returns `None` — always safe, just misses the optimization.
+fn known_shape(expr: &hir::Expr, ctx: &LowerCtx<'_>) -> Option<String> {
+    match expr {
+        hir::Expr::StructLiteral(sl) => ctx
+            .structs
+            .shapes
+            .get(&sl.shape.text)
+            .map(|_| sl.shape.text.clone()),
+        hir::Expr::Path(path) => {
+            let name = path_to_string(path);
+            if let Some(slot) = ctx.temp_slot(&name) {
+                ctx.temp_shape(slot).map(str::to_string)
+            } else {
+                let info = ctx.resolve_path(path.range)?;
+                ctx.global_shape(info.id).map(str::to_string)
+            }
+        }
+        hir::Expr::FieldAccess(fa) => {
+            let base_shape = known_shape(&fa.base, ctx)?;
+            let shape = ctx.structs.shapes.get(&base_shape)?;
+            let (_, nested) = shape.field(&fa.field.text)?;
+            nested.map(str::to_string)
+        }
+        _ => None,
+    }
+}
+
+/// Non-suppressible backstop for a struct construction literal referencing
+/// a shape name that doesn't resolve to any declared `STRUCT` (TM-4c,
+/// `docs/typed-mode-spec.md` §6) — `RecordNew` needs a real `ShapeId` at
+/// compile time, so this can't defer to a runtime path the way a field
+/// access can. Mirrors the E053-backstop discipline (#572 review): a real,
+/// Error-severity `Diagnostic` pushed into `ctx.diagnostics`, which
+/// `brink-db`'s `lir_query` partitions by severity independently of
+/// analysis-phase suppression — reaching this from a normal compile means
+/// `brink-analyzer`'s `resolve::resolve_struct_ref` diagnostic (`E068`) was
+/// suppressed (`// brink-disable-all`), not a compiler bug on its own.
+fn reject_unresolved_struct_shape(range: rowan::TextRange, ctx: &mut LowerCtx<'_>) -> lir::Expr {
+    ctx.diagnostics.push(crate::Diagnostic {
+        file: ctx.file,
+        range,
+        message: crate::DiagnosticCode::E073.title().to_string(),
+        code: crate::DiagnosticCode::E073,
+    });
+    lir::Expr::Null
+}
+
+fn lower_array_literal(arr: &hir::ArrayLiteral, ctx: &mut LowerCtx<'_>) -> lir::Expr {
+    let folded: Option<Vec<lir::ConstValue>> = arr.elements.iter().map(try_const_fold).collect();
+    if let Some(items) = folded {
+        return lir::Expr::ConstLiteral(lir::ConstValue::Array(items));
+    }
+    lir::Expr::ArrayNew(arr.elements.iter().map(|e| lower_expr(e, ctx)).collect())
+}
+
+fn lower_map_literal(map: &hir::MapLiteral, ctx: &mut LowerCtx<'_>) -> lir::Expr {
+    let folded: Option<Vec<(lir::ConstMapKey, lir::ConstValue)>> = map
+        .entries
+        .iter()
+        .map(|(k, v)| {
+            let key = try_const_fold(k).and_then(const_value_to_map_key)?;
+            let value = try_const_fold(v)?;
+            Some((key, value))
+        })
+        .collect();
+    if let Some(entries) = folded {
+        return lir::Expr::ConstLiteral(lir::ConstValue::Map(entries));
+    }
+    lir::Expr::MapNew(
+        map.entries
+            .iter()
+            .map(|(k, v)| (lower_expr(k, ctx), lower_expr(v, ctx)))
+            .collect(),
+    )
+}
+
+/// Attempt to fold a HIR expression into a [`lir::ConstValue`] — the T1b
+/// literal-pool eligibility test. Only genuinely constant syntax folds
+/// (literals, `null`, non-interpolated strings, nested constant array/map
+/// literals); any variable reference, call, or operator bails out to the
+/// runtime-construction path (`ArrayNew`/`MapNew`).
+fn try_const_fold(expr: &hir::Expr) -> Option<lir::ConstValue> {
+    match expr {
+        hir::Expr::Int(n) => Some(lir::ConstValue::Int(*n)),
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "f64->f32 is intentional per ink spec, matches lower_expr's Float arm"
+        )]
+        hir::Expr::Float(bits) => Some(lir::ConstValue::Float(bits.to_f64() as f32)),
+        hir::Expr::Bool(b) => Some(lir::ConstValue::Bool(*b)),
+        hir::Expr::Null => Some(lir::ConstValue::Null),
+        hir::Expr::String(s) => {
+            // Only a single non-interpolated literal part folds; anything
+            // with `{expr}` interpolation is not compile-time-constant.
+            match s.parts.as_slice() {
+                [hir::StringPart::Literal(text)] => Some(lir::ConstValue::String(text.clone())),
+                [] => Some(lir::ConstValue::String(String::new())),
+                _ => None,
+            }
+        }
+        hir::Expr::ArrayLiteral(arr) => {
+            let items: Option<Vec<lir::ConstValue>> =
+                arr.elements.iter().map(try_const_fold).collect();
+            items.map(lir::ConstValue::Array)
+        }
+        hir::Expr::MapLiteral(map) => {
+            let entries: Option<Vec<(lir::ConstMapKey, lir::ConstValue)>> = map
+                .entries
+                .iter()
+                .map(|(k, v)| {
+                    let key = try_const_fold(k).and_then(const_value_to_map_key)?;
+                    let value = try_const_fold(v)?;
+                    Some((key, value))
+                })
+                .collect();
+            entries.map(lir::ConstValue::Map)
+        }
+        _ => None,
+    }
+}
+
+/// Narrow a folded [`lir::ConstValue`] to the ratified map-key domain
+/// (int/string/bool). A statically-visible non-key type (float, null,
+/// array, map) returns `None` — shared by two callers with different
+/// fallbacks for that case: [`lower_map_literal`]'s expression-position path
+/// falls back to the `MapNew` runtime path (key-domain validation happens at
+/// `MapNew` construction time instead, a turn-terminating fault); `decls`'s
+/// `eval_const_expr` (#673) has no runtime construction step for a
+/// declaration default to fall back to, so it reports `None` as a real
+/// compile error (`E076`) instead.
+pub(super) fn const_value_to_map_key(v: lir::ConstValue) -> Option<lir::ConstMapKey> {
+    match v {
+        lir::ConstValue::Int(n) => Some(lir::ConstMapKey::Int(n)),
+        lir::ConstValue::String(s) => Some(lir::ConstMapKey::Str(s)),
+        lir::ConstValue::Bool(b) => Some(lir::ConstMapKey::Bool(b)),
+        _ => None,
+    }
+}
+
+/// TM-4c (`docs/typed-mode-spec.md` §6): lower a multi-segment dotted
+/// `Path` that `brink-analyzer`'s resolution fallback resolved to a
+/// variable/constant/param/temp (the "ambiguous path" case — `p.x` parses
+/// as one dotted `Path`, same grammar node as `knot.stitch`, and only the
+/// analyzer's resolution disambiguates "field access on a variable" from
+/// "static dotted address") — into the equivalent `RecordGet` chain
+/// `lower_field_access` would produce for the unambiguous `base.field`
+/// grammar. `head_info` is the already-resolved head symbol
+/// (`path.segments[0]`); every subsequent segment is a field hop.
+fn lower_ambiguous_dotted_path(
+    path: &hir::Path,
+    head_info: &crate::symbols::SymbolInfo,
+    ctx: &mut LowerCtx<'_>,
+) -> lir::Expr {
+    let Some(head_name) = path.segments.first().map(|n| n.text.clone()) else {
+        // Structurally unreachable — the caller already established
+        // `path.segments.len() > 1`. Guarded, not asserted, per the
+        // E053-backstop lesson: never let a future refactor turn this into
+        // a silent corruption.
+        return lir::Expr::Null;
+    };
+
+    let (mut expr, mut current_shape) = match head_info.kind {
+        SymbolKind::Variable | SymbolKind::Constant => (
+            lir::Expr::GetGlobal(head_info.id),
+            ctx.global_shape(head_info.id).map(str::to_string),
+        ),
+        SymbolKind::Param | SymbolKind::Temp => {
+            let Some(slot) = ctx.temp_slot(&head_name) else {
+                return lir::Expr::Null;
+            };
+            let name_id = ctx.names.intern(&head_name);
+            (
+                lir::Expr::GetTemp(slot, name_id),
+                ctx.temp_shape(slot).map(str::to_string),
+            )
+        }
+        // The caller only reaches here for these four kinds.
+        _ => return lir::Expr::Null,
+    };
+
+    for seg in &path.segments[1..] {
+        let shape_info = current_shape
+            .as_deref()
+            .and_then(|s| ctx.structs.shapes.get(s));
+        let static_offset = if ctx.structs.type_mode == crate::lir::TypeMode::Strict {
+            shape_info.and_then(|s| s.field(&seg.text)).map(|(o, _)| o)
+        } else {
+            None
+        };
+        let nested_shape = shape_info
+            .and_then(|s| s.field(&seg.text))
+            .and_then(|(_, nested)| nested.map(str::to_string));
+        let field = ctx.names.intern(&seg.text);
+        expr = lir::Expr::RecordGet {
+            base: Box::new(expr),
+            field,
+            static_offset,
+        };
+        current_shape = nested_shape;
+    }
+
+    expr
 }
 
 fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
@@ -101,6 +480,21 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
 
     // Resolve via resolution map
     if let Some(info) = ctx.resolve_path(path.range) {
+        // TM-4b resolution fallback (docs/typed-mode-spec.md §6): a
+        // multi-segment `Path` resolving to a variable/constant/param/temp
+        // can only mean the analyzer's fallback kicked in (every dotted
+        // symbol name this resolution map otherwise produces for those four
+        // kinds is single-segment) — i.e. `p.x` field access on `p`, not a
+        // static dotted path. TM-4c (#666): lowers for real, as an
+        // equivalent `RecordGet` chain — see `lower_ambiguous_dotted_path`.
+        if path.segments.len() > 1
+            && matches!(
+                info.kind,
+                SymbolKind::Variable | SymbolKind::Constant | SymbolKind::Param | SymbolKind::Temp
+            )
+        {
+            return lower_ambiguous_dotted_path(path, info, ctx);
+        }
         match info.kind {
             SymbolKind::Variable | SymbolKind::Constant => lir::Expr::GetGlobal(info.id),
             SymbolKind::List => {
@@ -154,9 +548,14 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
                 let global_id = DefinitionId::new(DefinitionTag::GlobalVar, hasher.finish());
                 lir::Expr::GetGlobal(global_id)
             }
-            // Params should already be caught by temp_slot above;
-            // externals used as values are meaningless — fall back to null.
-            SymbolKind::External | SymbolKind::Param => lir::Expr::Null,
+            // Params should already be caught by temp_slot above; externals
+            // used as values are meaningless; a bare `Expr::Path` never
+            // resolves to a struct shape name either — a struct construction
+            // literal's shape name is registered as `RefKind::Struct`
+            // (TM-4b), a disjoint resolution pass from the
+            // `RefKind::Variable` one that reaches `lower_path` here (kept
+            // only for match exhaustiveness). All three fall back to null.
+            SymbolKind::External | SymbolKind::Param | SymbolKind::Struct => lir::Expr::Null,
         }
     } else {
         lir::Expr::Null
@@ -240,6 +639,8 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
                 }
             }
         }
+    } else if let Some(expr) = lower_t1b_stdlib_call(&name, args, path.range, ctx) {
+        expr
     } else {
         tracing::error!(
             "ICE: unresolved call to `{name}` — analyzer marked as builtin but \
@@ -247,6 +648,153 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
         );
         lir::Expr::Null
     }
+}
+
+/// Recognize a T1b stdlib call (`docs/t1b-surface-spec.md` §5) reached with
+/// no resolved symbol. An author-defined function of the same name always
+/// wins — `lower_call`'s `ctx.resolve_path` branch above already handles
+/// that (the existing external/knot/list/variable lookup chain resolves a
+/// shadowing user symbol exactly like any other call; `brink-analyzer`'s
+/// symbol-declaration pass separately warns on the shadow, E035); this is
+/// only the "no shadow, genuinely the builtin" fallback.
+///
+/// Dialect-agnostic at this layer, matching the T1b-2 precedent (every
+/// brink-extension construct lowers to a correct program regardless of
+/// dialect; `strict-ink` enforcement is a separate analysis diagnostic —
+/// `brink-analyzer`'s dialect gate, extended in T1b-3 to flag an unresolved
+/// call to one of these names under `strict-ink`).
+///
+/// `push`/`insert`/`remove` (the mutators) are statement-only — recognized
+/// and fully lowered by `blocks::try_lower_mutator_stmt` *before* a call
+/// expression ever reaches here. Reaching here with one of those three names
+/// means the author used it in expression position (`~ x = push(a, v)`),
+/// which is invalid since mutators return nothing (§5) — E056.
+fn lower_t1b_stdlib_call(
+    name: &str,
+    args: &[hir::Expr],
+    call_range: rowan::TextRange,
+    ctx: &mut LowerCtx<'_>,
+) -> Option<lir::Expr> {
+    if !is_t1b_stdlib_name(name) {
+        return None;
+    }
+    let arity_ok = |ctx: &mut LowerCtx<'_>, expected: usize| -> bool {
+        if args.len() == expected {
+            true
+        } else {
+            ctx.diagnostics.push(crate::Diagnostic {
+                file: ctx.file,
+                range: call_range,
+                message: format!(
+                    "{}: `{name}` expects {expected} argument(s), got {}",
+                    crate::DiagnosticCode::E031.title(),
+                    args.len(),
+                ),
+                code: crate::DiagnosticCode::E031,
+            });
+            false
+        }
+    };
+
+    match name {
+        "len" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::CollectionLen(Box::new(lower_expr(
+                &args[0], ctx,
+            ))))
+        }
+        "keys" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::CollectionKeys(Box::new(lower_expr(
+                &args[0], ctx,
+            ))))
+        }
+        "values" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::CollectionValues(Box::new(lower_expr(
+                &args[0], ctx,
+            ))))
+        }
+        "contains" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::CollectionContains {
+                container: Box::new(lower_expr(&args[0], ctx)),
+                needle: Box::new(lower_expr(&args[1], ctx)),
+            })
+        }
+        "push" | "insert" | "remove" => {
+            ctx.diagnostics.push(crate::Diagnostic {
+                file: ctx.file,
+                range: call_range,
+                message: format!(
+                    "{}: `{name}` mutates its first argument and returns nothing — it can \
+                     only be used as a statement, not an expression",
+                    crate::DiagnosticCode::E056.title(),
+                ),
+                code: crate::DiagnosticCode::E056,
+            });
+            Some(lir::Expr::Null)
+        }
+        // TM-3 completion (docs/typed-mode-spec.md §4, maintainer ruling
+        // 2026-07-13, issue #659): `int(x)`/`float(x)`/`string(x)` pure
+        // conversion intrinsics. Fault semantics (parse failure,
+        // out-of-domain input) live entirely at the runtime op — this
+        // lowering just recognizes the call shape.
+        "int" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::ConvertInt(Box::new(lower_expr(&args[0], ctx))))
+        }
+        "float" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::ConvertFloat(Box::new(lower_expr(&args[0], ctx))))
+        }
+        "string" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::ConvertString(Box::new(lower_expr(
+                &args[0], ctx,
+            ))))
+        }
+        _ => None,
+    }
+}
+
+/// The T1b stdlib slice 1 function names (`docs/t1b-surface-spec.md` §5)
+/// plus the TM-3-completion pure conversion intrinsics (`docs/
+/// typed-mode-spec.md` §4, issue #659) — brink-dialect-gated free functions,
+/// all sharing the same resolution-fallback/shadowing/dialect-gate
+/// machinery (the #659 ruling: "per the stdlib slice-1 pattern"). Kept in
+/// sync by hand with `brink_analyzer::resolve::is_t1b_stdlib_name` — the two
+/// crates don't share a dependency edge for this purpose (mirrors the
+/// existing `recognize_builtin`/`is_builtin_function` split for the classic
+/// uppercase ink intrinsics).
+pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
+    matches!(
+        name,
+        "len"
+            | "keys"
+            | "values"
+            | "contains"
+            | "push"
+            | "insert"
+            | "remove"
+            | "int"
+            | "float"
+            | "string"
+    )
 }
 
 pub(super) fn lower_call_args(

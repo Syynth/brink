@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{Notify, watch};
 use tower_lsp::{LspService, Server};
 
-use crate::backend::Backend;
+use crate::backend::{Backend, LanguageOptions};
 
 #[tokio::main]
 async fn main() {
@@ -25,6 +25,12 @@ async fn main() {
     let trigger = Arc::new(Notify::new());
     let (analysis_tx, analysis_rx) = watch::channel(None);
     let last_published = Arc::new(Mutex::new(HashMap::new()));
+    // Client-declared dialect + TM-3 typed-mode policy (#599, #660):
+    // `initialize`'s `initializationOptions` handlers write into these
+    // shared `Arc<Mutex<_>>`s, and both the foreground `Backend` and the
+    // background `analysis_loop` task read them, so live diagnostics
+    // analyze under the same client-declared policy as everything else.
+    let language = LanguageOptions::new();
 
     let (service, socket) = LspService::new(|client| {
         // Spawn the background analysis loop
@@ -35,6 +41,7 @@ async fn main() {
             analysis_tx,
             client.clone(),
             Arc::clone(&last_published),
+            language.clone(),
         ));
 
         Backend::new(
@@ -44,6 +51,7 @@ async fn main() {
             Arc::clone(&trigger),
             Arc::clone(&generation),
             Arc::clone(&last_published),
+            language.clone(),
         )
     });
     Server::new(stdin, stdout, socket).serve(service).await;
