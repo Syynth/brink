@@ -56,6 +56,15 @@ pub struct Program {
     /// mapping. Empty until a compiler milestone emits `STRUCT`
     /// declarations.
     pub(crate) struct_shapes: Vec<StructShapeEntry>,
+    /// M-2b (`docs/modules-spec.md` §4): the set of `#@private` definition
+    /// ids. Used only to refuse host **semantic** access (variable get/set,
+    /// entry lookup, function eval) — the VM and host **persistence** never
+    /// consult it, so private state still executes and still saves/loads.
+    /// Empty (and never consulted) for the all-public pre-modules world.
+    /// Sorted ascending by raw id (the linker sorts it), so membership is a
+    /// `binary_search` — no set type needed for a list that is typically empty
+    /// or tiny, and `no_std`-clean.
+    pub(crate) private_defs: Vec<DefinitionId>,
 }
 
 /// Runtime metadata for one declared struct shape.
@@ -87,7 +96,8 @@ pub(crate) struct LinkedContainer {
 }
 
 pub(crate) struct GlobalSlot {
-    #[expect(dead_code, reason = "needed for save/load serialization and debugging")]
+    /// The global's `DefinitionId` — used by save/load and by M-2b
+    /// visibility enforcement ([`Program::global_is_private`]).
     pub id: DefinitionId,
     pub name: NameId,
     pub default: Value,
@@ -241,6 +251,37 @@ impl Program {
         self.address_by_path
             .get(path)
             .map(|t| self.containers[t.container_idx as usize].param_count)
+    }
+
+    // ── Visibility (`#@private` — M-2b, docs/modules-spec.md §4) ────────────
+
+    /// Whether the compiler marked any definition `#@private`. `false` for the
+    /// entire pre-modules / all-public world — the fast path where visibility
+    /// enforcement is a single boolean check that skips every lookup below.
+    pub(crate) fn has_private_defs(&self) -> bool {
+        !self.private_defs.is_empty()
+    }
+
+    /// Whether the definition `id` was declared `#@private`.
+    pub(crate) fn is_private(&self, id: DefinitionId) -> bool {
+        self.private_defs
+            .binary_search_by_key(&id.to_raw(), |d| d.to_raw())
+            .is_ok()
+    }
+
+    /// Whether the global at slot `idx` is `#@private`.
+    pub(crate) fn global_is_private(&self, idx: u32) -> bool {
+        self.globals
+            .get(idx as usize)
+            .is_some_and(|slot| self.is_private(slot.id))
+    }
+
+    /// Whether the named entry point (knot/stitch/function path) is
+    /// `#@private`. Unknown paths are treated as not-private — resolution
+    /// failure is reported by the caller's own "not found" path, not here.
+    pub(crate) fn path_is_private(&self, path: &str) -> bool {
+        self.find_path_target(path)
+            .is_some_and(|id| self.is_private(id))
     }
 
     /// Build the initial globals vector from slot defaults.
@@ -479,6 +520,7 @@ mod find_address_tests {
             external_fns: HashMap::new(),
             local_scope_defaults: Vec::new(),
             struct_shapes: Vec::new(),
+            private_defs: Vec::new(),
         }
     }
 

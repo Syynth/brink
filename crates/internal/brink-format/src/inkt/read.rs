@@ -80,6 +80,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
     let mut line_tables = Vec::new();
     let mut list_literals = Vec::new();
     let mut literal_pool = Vec::new();
+    let mut private_defs = Vec::new();
     let mut source_checksum = 0u32;
 
     for inner in pair.into_inner() {
@@ -98,6 +99,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
             Rule::address_paths => address_paths = parse_address_paths(inner)?,
             Rule::list_literals => list_literals = parse_list_literals(inner)?,
             Rule::literal_pool => literal_pool = parse_literal_pool(inner)?,
+            Rule::visibility => private_defs = parse_visibility(inner)?,
             Rule::container => {
                 let (container, lt) = parse_container(inner)?;
                 let is_scope_owner = container.scope_id == container.id;
@@ -132,6 +134,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
         // textual format (always empty in this PR — nothing emits a
         // non-empty table). See the format-spec doc note.
         struct_shapes: Vec::new(),
+        private_defs,
         source_checksum,
     })
 }
@@ -704,6 +707,21 @@ fn parse_address_entry(pair: P<'_>) -> Result<AddressDef, InktParseError> {
         container_id,
         byte_offset,
     })
+}
+
+fn parse_visibility(pair: P<'_>) -> Result<Vec<DefinitionId>, InktParseError> {
+    let mut ids = Vec::new();
+    for entry in pair.into_inner() {
+        if entry.as_rule() == Rule::private_entry {
+            let id_pair = entry.into_inner().next().ok_or_else(|| InktParseError {
+                message: "expected def_id in private entry".into(),
+                line: 1,
+                col: 1,
+            })?;
+            ids.push(parse_def_id(id_pair)?);
+        }
+    }
+    Ok(ids)
 }
 
 fn parse_address_paths(pair: P<'_>) -> Result<Vec<AddressPath>, InktParseError> {

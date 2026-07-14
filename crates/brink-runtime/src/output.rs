@@ -1021,6 +1021,7 @@ fn test_dummy_program() -> Program {
         external_fns: HashMap::new(),
         local_scope_defaults: Vec::new(),
         struct_shapes: Vec::new(),
+        private_defs: Vec::new(),
     }
 }
 
@@ -1525,6 +1526,7 @@ mod tests {
             external_fns: HashMap::new(),
             local_scope_defaults: Vec::new(),
             struct_shapes: Vec::new(),
+            private_defs: Vec::new(),
         };
 
         let line_tables = vec![vec![LineEntry {

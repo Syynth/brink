@@ -124,6 +124,22 @@ pub enum RuntimeError {
         got: usize,
     },
 
+    /// A host **semantic** access (variable get/set, entry lookup, function
+    /// eval) targeted a `#@private` definition while visibility enforcement
+    /// was on (M-2b, `docs/modules-spec.md` §4 boundary rule 2). The host is
+    /// outside every module. Dev tooling (play-from-here) opts out via
+    /// [`Story::set_visibility_enforcement`](crate::Story::set_visibility_enforcement).
+    /// Persistence (save/load/journal/replay) is unaffected — it never routes
+    /// through the enforced surface.
+    #[error(
+        "'{name}' is #@private and cannot be accessed by the host \
+         (dev tooling may override visibility enforcement)"
+    )]
+    PrivateAccess {
+        /// The private definition's name or path, as the host supplied it.
+        name: String,
+    },
+
     // ── T1b collections (docs/value-model-spec.md §11c) ──────────────
     //
     // Out-of-bounds/missing-key reads and writes are turn-terminating

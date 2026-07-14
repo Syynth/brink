@@ -531,6 +531,7 @@ Each offset table entry (8 bytes):
 | `0x08` | Labels | Per entry: address `DefinitionId` + container `DefinitionId` + byte offset |
 | `0x09` | List literals | Per entry: `ListValue` (items + origins) |
 | `0x0A` | Address paths | Per entry: qualified-path hash → target `DefinitionId` |
+| `0x0E` | Visibility (M-2b) | Per entry: the `DefinitionId` of a `#@private` definition, sorted ascending. **Optional** — omitted when empty. See below. |
 
 **Reserved v4 sections** — numeric assignments are frozen by the §9 one-bump
 rule (`docs/format-v4-rfc.md` §2 "Sections") but not `SectionKind` variants
@@ -543,6 +544,21 @@ constant pool, absorbs `List literals` — `PushList` retires in favor of
 (reserved, count always 0 in 4.0), `0x0D` `EffectRows` (reserved, count
 always 0 in 4.0, section-locally versioned so T2 can define the row encoding
 without another format bump).
+
+**`Visibility` section (`0x0E`, M-2b)** — carries per-definition visibility
+(`docs/modules-spec.md` §4): a `u32` count followed by the `DefinitionId` of
+every `#@private` definition, sorted ascending. It is the complement encoding
+— public is the default, private names are enumerated — mirroring how
+`#@local` scope defaults are carried. **The writer omits the section entirely
+when there are no private definitions**, so the whole all-public / pre-modules
+world stays byte-identical and this section needs **no VERSION bump**: it is
+purely additive and self-framed in the offset table (a reader tolerates its
+absence, decoding to an empty set — the append-only-section evolution this
+spec recommends). The runtime builds a lookup set from it to refuse host
+*semantic* access (variable get/set, entry lookup, function eval) to private
+defs; host *persistence* (save/load/journal/replay) never consults it and sees
+everything (§4 boundary rule 2). `0x0D` is reserved for `EffectRows`, so this
+takes the next free tag, `0x0E`.
 
 #### Value type tags in `.inkb`
 
