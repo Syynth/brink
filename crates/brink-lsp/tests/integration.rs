@@ -586,8 +586,8 @@ Bravo content.
 
 /// Run an LSP session with the given `initializationOptions.dialect` (or
 /// `None` to omit it, exercising the `StrictInk` default), open `source`,
-/// and return the diagnostics from the *last* `publishDiagnostics`
-/// notification observed for that file's URI.
+/// and return the diagnostics from the *last background-analysis*
+/// `publishDiagnostics` notification observed for that file's URI.
 ///
 /// Background analysis (`analysis_loop`, #599) runs on a separate tokio task
 /// woken by a `Notify`, so its diagnostics can arrive after a same-id
@@ -602,6 +602,24 @@ Bravo content.
 /// message-count hard cap remains as a backstop against a genuine hang/
 /// regression (never firing, or never including the file), matching the
 /// project's "guard against unbounded growth" rule for polling loops.
+///
+/// Only *version-less* publishes count toward the returned diagnostics
+/// (#615). The `did_open` handler's own per-file publish (parse + lowering
+/// only — no analyzer diagnostics) runs on the notification-handler task,
+/// concurrently with the background loop. When the `initialized`-triggered
+/// pass snapshots the db after `didOpen`'s content update, it reports
+/// `file_count == 1` and publishes the full analysis set — but under CI
+/// load, the delayed per-file publish could land on the wire *between*
+/// that pass's publish and its completion signal, so "last publish before
+/// the completion" observed the parse-only set and analyzer-diagnostic
+/// assertions flaked. The server tags per-file publishes with the client
+/// document version (`PublishDiagnosticsParams.version`); background
+/// publishes carry none (they analyze a db snapshot, not a specific
+/// client document version), so filtering to version-less publishes is
+/// order-insensitive: whichever way the tasks interleave, the last
+/// background publish before the first file-covering completion is that
+/// pass's analysis set (or absent, meaning the set is empty — the
+/// background loop suppresses never-published empty sets).
 fn diagnostics_after_background_analysis(dialect: Option<&str>, source: &str) -> Vec<Value> {
     diagnostics_after_background_analysis_with_types(dialect, None, source)
 }
@@ -692,7 +710,14 @@ fn diagnostics_after_background_analysis_with_types(
     let mut settled = false;
     for _ in 0..MAX_MESSAGES {
         let msg = recv(&mut stdout);
-        if msg["method"] == "textDocument/publishDiagnostics" && msg["params"]["uri"] == file_uri {
+        if msg["method"] == "textDocument/publishDiagnostics"
+            && msg["params"]["uri"] == file_uri
+            // Versioned publishes are `did_open`'s per-file (parse/lowering
+            // only) set, which can interleave anywhere relative to the
+            // background pass — only version-less background-analysis
+            // publishes are the subject here (#615, see helper docs).
+            && msg["params"]["version"].is_null()
+        {
             last_diags_for_uri = msg["params"]["diagnostics"]
                 .as_array()
                 .cloned()

@@ -158,7 +158,19 @@ impl Backend {
 
     /// Publish per-file diagnostics (parse + lowering only, no analysis).
     /// This gives instant syntax error feedback without waiting for background analysis.
-    async fn publish_perfile_diagnostics(&self, uri: &Url, path: &str) {
+    ///
+    /// `version` is the client document version this set was computed from,
+    /// when the triggering notification carries one (`didOpen`/`didChange`).
+    /// Passing it through in `PublishDiagnosticsParams.version` is what the
+    /// protocol intends, and it also distinguishes these per-file publishes
+    /// from background [`analysis_loop`] publishes (which analyze a db
+    /// snapshot, not a specific client document version, and so send no
+    /// version). Integration tests rely on that distinction: this publish
+    /// runs on the notification-handler task and can land on the wire
+    /// *between* a background pass's publish and that pass's
+    /// [`BackgroundAnalysisComplete`] signal (#615), so a test waiting for
+    /// background-analysis diagnostics must be able to ignore it.
+    async fn publish_perfile_diagnostics(&self, uri: &Url, path: &str, version: Option<i32>) {
         let lsp_diags = {
             let db = lock_db(&self.db);
             let Some(file_id) = db.file_id(path) else {
@@ -187,7 +199,7 @@ impl Backend {
         };
 
         self.client
-            .publish_diagnostics(uri.clone(), lsp_diags, None)
+            .publish_diagnostics(uri.clone(), lsp_diags, version)
             .await;
     }
 
@@ -632,8 +644,12 @@ impl LanguageServer for Backend {
         // Chase INCLUDE directives — load referenced files from disk
         self.chase_includes(&path);
 
-        self.publish_perfile_diagnostics(&params.text_document.uri, &path)
-            .await;
+        self.publish_perfile_diagnostics(
+            &params.text_document.uri,
+            &path,
+            Some(params.text_document.version),
+        )
+        .await;
         self.trigger_analysis();
     }
 
@@ -658,8 +674,12 @@ impl LanguageServer for Backend {
             db.update_file(&path, change.text);
         }
 
-        self.publish_perfile_diagnostics(&params.text_document.uri, &path)
-            .await;
+        self.publish_perfile_diagnostics(
+            &params.text_document.uri,
+            &path,
+            Some(params.text_document.version),
+        )
+        .await;
         self.trigger_analysis();
     }
 
@@ -675,7 +695,9 @@ impl LanguageServer for Backend {
             db.update_file(&path, text);
         }
 
-        self.publish_perfile_diagnostics(&params.text_document.uri, &path)
+        // `DidSaveTextDocumentParams` carries no document version, so this
+        // publish can't be version-tagged like didOpen/didChange's.
+        self.publish_perfile_diagnostics(&params.text_document.uri, &path, None)
             .await;
         self.trigger_analysis();
     }
