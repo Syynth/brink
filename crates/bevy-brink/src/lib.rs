@@ -37,6 +37,7 @@ mod call;
 mod event;
 mod flow;
 mod globals;
+mod handle;
 mod input;
 mod line_tables;
 mod locale;
@@ -122,6 +123,12 @@ pub use flow::{Advance, BrinkFlow};
 pub use globals::{
     BrinkContext, BrinkGlobals, BrinkWorldPolicy, flow_context_view, load_flow_state,
     save_flow_state,
+};
+pub use handle::{
+    BrinkDeadHandleDeref, BrinkHandleAppExt, HandleEntityRemap, HandleKind, HandleKinds,
+    HandleLoadError, HandleRegistry, HandleRetentionMetrics, HandleSaveEntry, HandleSaveState,
+    KindRetention, RehydrationPolicy, RehydrationReport, gc_on_turn_done, is_valid_system,
+    load_handles, save_handles,
 };
 pub use input::digit_key_to_choice_index;
 pub use line_tables::BrinkLocale;

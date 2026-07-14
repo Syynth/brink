@@ -252,6 +252,27 @@ impl Program {
         self.name_table.get(id.0 as usize).map(String::as_str)
     }
 
+    /// Reverse of [`name_checked`](Self::name_checked): look up the
+    /// [`NameId`] a string interns to in this program's name table, if any.
+    ///
+    /// Public (T1d-3, `docs/t1d-spec.md` §4): a host minting a
+    /// [`brink_format::Value::Handle`] from a binding (e.g. `spawn_timer()`
+    /// returning a fresh `handle<Timer>`) needs the compiled program's
+    /// `NameId` for the manifest-declared kind name (`"Timer"`) to build the
+    /// token — the wire form carries only the interned id, never the string.
+    /// `None` means this compile never interned that name (e.g. no
+    /// `handle<Timer>`-typed signature or annotation anywhere in the source
+    /// graph), so no token of that kind can be minted against this program.
+    /// Linear scan, same cost class as [`global_index`](Self::global_index).
+    #[must_use]
+    pub fn name_id(&self, name: &str) -> Option<NameId> {
+        self.name_table
+            .iter()
+            .position(|n| n == name)
+            .and_then(|i| u16::try_from(i).ok())
+            .map(NameId)
+    }
+
     /// Access a container's per-parameter name/mode metadata (T1c, #700).
     pub(crate) fn container_params(&self, idx: u32) -> &[brink_format::ParamMeta] {
         &self.containers[idx as usize].params
