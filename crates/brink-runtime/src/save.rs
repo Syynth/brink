@@ -45,13 +45,14 @@
 //! output is a hard requirement independent of container layout.
 
 use alloc::borrow::ToOwned;
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use brink_format::{
-    ClosureEnvEntry, ClosureValue, CountingFlags, DefinitionId, LoadReport, OrderedMap,
+    ClosureEnvEntry, ClosureValue, CountingFlags, DefinitionId, ListValue, LoadReport, OrderedMap,
     SAVE_FORMAT_VERSION, SaveState, Value, VisitEntry,
 };
 
@@ -73,11 +74,24 @@ use crate::story::Story;
 pub fn save_state<C: ContextAccess + ?Sized>(program: &Program, ctx: &C) -> SaveState {
     let resolver = NameResolver::new(program);
 
-    let globals = (0..program.global_count())
+    let globals: BTreeMap<String, Value> = (0..program.global_count())
         .filter_map(|idx| {
             program
                 .global_slot_name(idx as usize)
                 .map(|name| (name.to_owned(), ctx.global(idx).clone()))
+        })
+        .collect();
+
+    // M-3 (docs/modules-spec.md §5): each global's compiled `DefinitionId`
+    // at save time, so a later miss-path lookup (a renamed VAR/CONST/LIST —
+    // declared-module identity is `(module, name)`-hashed, so the bare name
+    // alone doesn't recover it) can consult the alias table directly. See
+    // `load_state`'s doc comment.
+    let global_ids: BTreeMap<String, DefinitionId> = (0..program.global_count())
+        .filter_map(|idx| {
+            let name = program.global_slot_name(idx as usize)?;
+            let id = program.global_id(idx as usize)?;
+            Some((name.to_owned(), id))
         })
         .collect();
 
@@ -112,6 +126,7 @@ pub fn save_state<C: ContextAccess + ?Sized>(program: &Program, ctx: &C) -> Save
     SaveState {
         version: SAVE_FORMAT_VERSION,
         globals,
+        global_ids,
         visits,
         turns,
         turn_index: ctx.turn_index(),
@@ -141,6 +156,17 @@ pub fn save_state<C: ContextAccess + ?Sized>(program: &Program, ctx: &C) -> Save
 /// ordinary content edit with no `#@was` stays exactly as silent as before
 /// M-3) surfaces a teaching message in [`LoadReport::unresolved_renames`].
 ///
+/// A saved global whose **own name** no longer matches any current global
+/// slot gets the same treatment before being dropped: `save.global_ids`
+/// carries the name's save-time `DefinitionId` (declared-module identity is
+/// `(module, name)`-hashed, so the bare name string alone can't reconstruct
+/// it — this is what makes a VAR/CONST/LIST rename inside a *declared*
+/// module different from a bare knot rename), which is looked up in the
+/// alias table exactly like an address/global-pointer id. A resolved rename
+/// rebinds silently to the renamed slot; still unresolved (no id recorded —
+/// an older save predating this field — or no matching alias) falls back to
+/// [`LoadReport::unknown_globals`], same as before M-3.
+///
 /// Writes go through [`ContextAccess`], so on a `ContextView` they route by
 /// scope exactly like any other write: a `World`-scoped unit lands in the
 /// shared `World`, a `Local`-scoped unit in the flow's own `FlowLocal`
@@ -163,7 +189,19 @@ pub fn load_state<C: ContextAccess + ?Sized>(
                 };
                 ctx.set_global(idx, value);
             }
-            None => report.unknown_globals.push(name.clone()),
+            None => {
+                if let Some(idx) = rebind_global_name(program, renames_matter, save, name) {
+                    let value = rebind_value(program, value, &mut report);
+                    ctx.set_global(idx, value);
+                } else {
+                    if renames_matter && save.global_ids.contains_key(name) {
+                        report
+                            .unresolved_renames
+                            .push(teach_was_message("global variable", name));
+                    }
+                    report.unknown_globals.push(name.clone());
+                }
+            }
         }
     }
 
@@ -205,6 +243,28 @@ fn rebind_address_key(
     id
 }
 
+/// Resolve a saved global's own name against the current program's alias
+/// table, when its bare name no longer matches any live global slot
+/// (`load_state`'s doc comment). Looks up the name's save-time
+/// `DefinitionId` in `save.global_ids`, resolves it through the alias
+/// table, and — if the resolved id names a live global slot — returns that
+/// slot's index. `None` when there's nothing to attempt (`renames_matter`
+/// is `false`, or the save predates `global_ids`) or the lookup doesn't
+/// land on a live slot.
+fn rebind_global_name(
+    program: &Program,
+    renames_matter: bool,
+    save: &SaveState,
+    name: &str,
+) -> Option<u32> {
+    if !renames_matter {
+        return None;
+    }
+    let old_id = *save.global_ids.get(name)?;
+    let new_id = program.resolve_alias(old_id)?;
+    program.resolve_global(new_id)
+}
+
 /// Resolve a single address-space id (container/scope/label) against the
 /// current program, falling back to the alias table on a direct miss.
 /// Returns the id to use and whether it's still unresolved after that (no
@@ -232,6 +292,32 @@ fn rebind_global(program: &Program, id: DefinitionId) -> (DefinitionId, bool) {
     }
     match program.resolve_alias(id) {
         Some(new_id) => (new_id, !program.knows_global(new_id)),
+        None => (id, true),
+    }
+}
+
+/// Resolve a list-item id (one of a `Value::List`'s active items) the same
+/// way [`rebind_address`] resolves a container/address id, against the
+/// list-item namespace instead.
+fn rebind_list_item(program: &Program, id: DefinitionId) -> (DefinitionId, bool) {
+    if program.knows_list_item(id) {
+        return (id, false);
+    }
+    match program.resolve_alias(id) {
+        Some(new_id) => (new_id, !program.knows_list_item(new_id)),
+        None => (id, true),
+    }
+}
+
+/// Resolve a list-definition id (one of a `Value::List`'s `origins`) the
+/// same way [`rebind_address`] resolves a container/address id, against the
+/// list-definition namespace instead.
+fn rebind_list_def(program: &Program, id: DefinitionId) -> (DefinitionId, bool) {
+    if program.knows_list_def(id) {
+        return (id, false);
+    }
+    match program.resolve_alias(id) {
+        Some(new_id) => (new_id, !program.knows_list_def(new_id)),
         None => (id, true),
     }
 }
@@ -294,13 +380,46 @@ fn rebind_value_global_id(
     new_id
 }
 
+/// Rebind a list-item id found inside a saved `Value::List`'s active items,
+/// same discipline as [`rebind_value_address_id`].
+fn rebind_value_list_item_id(
+    program: &Program,
+    id: DefinitionId,
+    report: &mut LoadReport,
+) -> DefinitionId {
+    let (new_id, unresolved) = rebind_list_item(program, id);
+    if unresolved {
+        report
+            .unresolved_renames
+            .push(teach_was_message_for_id("list item", id));
+    }
+    new_id
+}
+
+/// Rebind a list-definition id found inside a saved `Value::List`'s
+/// `origins`, same discipline as [`rebind_value_address_id`].
+fn rebind_value_list_def_id(
+    program: &Program,
+    id: DefinitionId,
+    report: &mut LoadReport,
+) -> DefinitionId {
+    let (new_id, unresolved) = rebind_list_def(program, id);
+    if unresolved {
+        report
+            .unresolved_renames
+            .push(teach_was_message_for_id("list definition", id));
+    }
+    new_id
+}
+
 /// Recursively rebind M-3 alias-table ids embedded anywhere inside a saved
 /// `Value` — divert targets, fn tokens, closure targets and their `ref` env
-/// entries, and any of those nested inside an array/map/record. A value
-/// with no rename-affected id anywhere in it round-trips unchanged (modulo
-/// the `Arc` rebuild collections/records always pay here — load is a
-/// one-shot reconciliation, not a hot path, so the simpler always-recurse
-/// shape wins over threading a "did anything change" flag through).
+/// entries, list items/origins inside a `Value::List`, and any of those
+/// nested inside an array/map/record. A value with no rename-affected id
+/// anywhere in it round-trips unchanged (modulo the `Arc` rebuild
+/// collections/records always pay here — load is a one-shot reconciliation,
+/// not a hot path, so the simpler always-recurse shape wins over threading a
+/// "did anything change" flag through).
 fn rebind_value(program: &Program, value: &Value, report: &mut LoadReport) -> Value {
     match value {
         Value::DivertTarget(id) => Value::DivertTarget(rebind_value_address_id(
@@ -313,6 +432,18 @@ fn rebind_value(program: &Program, value: &Value, report: &mut LoadReport) -> Va
         Value::VariablePointer(id) => {
             Value::VariablePointer(rebind_value_global_id(program, *id, report))
         }
+        Value::List(list) => Value::List(Arc::new(ListValue {
+            items: list
+                .items
+                .iter()
+                .map(|id| rebind_value_list_item_id(program, *id, report))
+                .collect(),
+            origins: list
+                .origins
+                .iter()
+                .map(|id| rebind_value_list_def_id(program, *id, report))
+                .collect(),
+        })),
         Value::Closure(c) => {
             let target = rebind_value_address_id(program, "fn token", c.target, report);
             let env = c

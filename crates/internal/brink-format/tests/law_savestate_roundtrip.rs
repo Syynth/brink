@@ -31,7 +31,7 @@ mod law_support;
 
 use std::collections::BTreeMap;
 
-use brink_format::{SAVE_FORMAT_VERSION, SaveState, Value, VisitEntry};
+use brink_format::{DefinitionId, SAVE_FORMAT_VERSION, SaveState, Value, VisitEntry};
 use law_support::{arb_def_id, arb_value_full};
 use proptest::prelude::*;
 
@@ -59,9 +59,25 @@ fn arb_globals() -> impl Strategy<Value = BTreeMap<String, Value>> {
     )
 }
 
+/// `global_ids` keyed the same way as `arb_globals` — M-3's per-global
+/// save-time `DefinitionId` (`docs/modules-spec.md` §5), independent of
+/// which names actually appear in `globals` (a stale/mismatched entry must
+/// still round-trip byte-for-byte; `load_state` tolerates one missing a
+/// counterpart in `globals`).
+fn arb_global_ids() -> impl Strategy<Value = BTreeMap<String, DefinitionId>> {
+    prop::collection::vec(("[a-zA-Z_][a-zA-Z0-9_]{0,12}", arb_def_id()), 0..6).prop_map(|entries| {
+        let mut ids = BTreeMap::new();
+        for (name, id) in entries {
+            ids.insert(name, id);
+        }
+        ids
+    })
+}
+
 fn arb_save_state() -> impl Strategy<Value = SaveState> {
     (
         arb_globals(),
+        arb_global_ids(),
         prop::collection::vec(arb_visit_entry(), 0..6),
         prop::collection::vec(arb_visit_entry(), 0..6),
         any::<u32>(),
@@ -69,14 +85,17 @@ fn arb_save_state() -> impl Strategy<Value = SaveState> {
         any::<i32>(),
     )
         .prop_map(
-            |(globals, visits, turns, turn_index, rng_seed, previous_random)| SaveState {
-                version: SAVE_FORMAT_VERSION,
-                globals,
-                visits,
-                turns,
-                turn_index,
-                rng_seed,
-                previous_random,
+            |(globals, global_ids, visits, turns, turn_index, rng_seed, previous_random)| {
+                SaveState {
+                    version: SAVE_FORMAT_VERSION,
+                    globals,
+                    global_ids,
+                    visits,
+                    turns,
+                    turn_index,
+                    rng_seed,
+                    previous_random,
+                }
             },
         )
 }
@@ -109,6 +128,7 @@ proptest! {
         let save = SaveState {
             version: SAVE_FORMAT_VERSION,
             globals,
+            global_ids: BTreeMap::new(),
             visits: Vec::new(),
             turns: Vec::new(),
             turn_index: 0,

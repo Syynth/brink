@@ -1294,6 +1294,37 @@ mod module_tests {
         );
     }
 
+    /// A single file declaring `#@module(quest)` whose knots reference
+    /// sibling definitions bare (issue #795): a self-reference inside the
+    /// declared module must never be E087, no matter which of the file's
+    /// symbols the index's `HashMap` happens to yield first (locals carry
+    /// `module: None` and must not poison the file's module attribution).
+    /// The bug was nondeterministic — repeated fresh-db runs (fresh
+    /// `HashMap` seeds each time) cover the iteration-order space; the
+    /// order-independent analyzer-level regression lives in
+    /// `brink-analyzer`'s `modules::tests`.
+    #[test]
+    fn single_file_declared_module_self_reference_is_not_e087() {
+        for _ in 0..16 {
+            let mut db = ProjectDb::new();
+            let f = db.set_file(
+                "main.ink",
+                "#@module(quest)\nVAR target = -> ambush\n-> ambush\n== ambush ==\n~ temp x = 1\nGotcha!\n-> reader\n== reader ==\nDone.\n-> DONE\n".to_owned(),
+            );
+
+            let codes: Vec<_> = db
+                .diagnostics(f)
+                .unwrap_or_default()
+                .iter()
+                .map(|d| d.code)
+                .collect();
+            assert!(
+                !codes.contains(&DiagnosticCode::E087),
+                "same-module self-reference must not be E087, got {codes:?}"
+            );
+        }
+    }
+
     /// A file that belongs to a declared module but declares no top-level
     /// symbols of its own (only root content) must still resolve to that
     /// module — a referrer in the *same* declared module referencing a
