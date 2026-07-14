@@ -1527,7 +1527,7 @@ impl DiagnosticCode {
                 "map literal key in a VAR/CONST declaration default is not a compile-time-constant scalar (int/string/bool)"
             }
             Self::E077 => {
-                "array element or map value in a VAR/CONST declaration default is not a compile-time-constant expression"
+                "array element, map value, or #fn bound value argument in a VAR/CONST declaration default is not a compile-time-constant expression"
             }
             Self::E078 => "int()/float() argument is outside the permissive numeric+bool domain",
             Self::E079 => "#fn target is not a statically-named function definition",
