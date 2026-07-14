@@ -453,6 +453,17 @@ fn classify_lines(
 }
 
 /// Mark lines inside block comments as `BlockComment`.
+///
+/// A line marked `BlockComment` renders verbatim (`trim_end` only), and
+/// `classify_node` skips any construct starting on it. That's right for
+/// free-floating comments (banners, multi-line comments, comments the parser
+/// split a content line around), but wrong for a comment nested inside a
+/// construct whose renderer handles comments itself — marking the line would
+/// pre-empt the construct's classification entirely (a single-line
+/// `STRUCT Point = #{x: float, /* mid */ y: float}` never reached
+/// `render_struct_decl`; a comment on a `#{` or `~ {` opening line dedented
+/// the whole body). [`comment_handled_by_construct`] decides which comments
+/// to leave to their construct.
 fn mark_block_comments(root: &SyntaxNode, line_starts: &[usize], lines: &mut [ClassifiedLine]) {
     for token in root.descendants_with_tokens() {
         if let NodeOrToken::Token(tok) = token
@@ -460,12 +471,71 @@ fn mark_block_comments(root: &SyntaxNode, line_starts: &[usize], lines: &mut [Cl
         {
             let start_line = line_for_offset(line_starts, tok.text_range().start().into());
             let end_line = line_for_offset(line_starts, tok.text_range().end().into());
+            if start_line == end_line && comment_handled_by_construct(&tok) {
+                continue;
+            }
             let last = end_line.min(lines.len() - 1);
             for line in &mut lines[start_line..=last] {
                 line.kind = LineKind::BlockComment;
             }
         }
     }
+}
+
+/// Is this single-line `BLOCK_COMMENT` token inside a region that a
+/// construct's own renderer preserves? If so, `mark_block_comments` must not
+/// mark its line — the construct's `classify_node` arm takes over and its
+/// renderer emits the comment itself. The regions are deliberately exact:
+/// anywhere the answer is wrongly `true`, the renderer silently drops the
+/// comment (it only walks the region listed here); anywhere wrongly `false`,
+/// the line just stays verbatim (safe, the pre-fix behavior).
+///
+/// Multi-line comments never qualify (the caller checks): the `Logic` arm
+/// classifies only the construct's first physical line, so a comment
+/// spanning further lines must keep the verbatim treatment.
+fn comment_handled_by_construct(tok: &brink_syntax::SyntaxToken) -> bool {
+    let Some(parent) = tok.parent() else {
+        return false;
+    };
+    for anc in parent.ancestors() {
+        match anc.kind() {
+            // Inside a `~ { … }` body: `render_stmt_block` emits comments
+            // among statements and `join_token_text` (statement/header text)
+            // keeps mid-statement comments — everything is covered.
+            //
+            // Reaching LOGIC_LINE instead means the comment is a direct child
+            // of the logic line, outside any STMT_BLOCK (an in-block comment
+            // matched STMT_BLOCK first). Both forms preserve those:
+            // `format_logic` re-emits the whole raw `~ expr` line, comment
+            // included, and `render_logic_block` emits a leading (`~ /* c */
+            // {`) or trailing (`} /* c */`) direct-child comment on the
+            // block's header/closing line.
+            SyntaxKind::STMT_BLOCK | SyntaxKind::LOGIC_LINE => return true,
+            // `render_struct_decl` / `format_struct_decl_single_line` walk
+            // only the region strictly between `#{` and `}` (comments there
+            // are direct children of `STRUCT_DECL`, see the parser's
+            // `skip_struct_body_trivia`). A comment outside the braces
+            // (e.g. `STRUCT Point /* c */ = #{…}`) would be dropped.
+            SyntaxKind::STRUCT_DECL => {
+                let open = anc
+                    .children_with_tokens()
+                    .find(|e| e.kind() == SyntaxKind::L_BRACE)
+                    .map(|e| e.text_range().end());
+                let close = anc
+                    .children_with_tokens()
+                    .find(|e| e.kind() == SyntaxKind::R_BRACE)
+                    .map(|e| e.text_range().start());
+                return match (open, close) {
+                    (Some(open), Some(close)) => {
+                        tok.text_range().start() >= open && tok.text_range().end() <= close
+                    }
+                    _ => false,
+                };
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Walk CST to classify line kinds. Depth is already set from HIR.
@@ -1085,15 +1155,58 @@ fn header_expr_text(node: &SyntaxNode) -> String {
 /// Render a `~ { … }` block's `LOGIC_LINE` node — the header `~ {`, the
 /// reindented body, and the closing `}` — as a complete, newline-terminated
 /// string. `base_indent` is the outer depth of the `~` line itself.
+///
+/// Comments and blank lines *inside* the block are emitted by
+/// `render_stmt_block`. But a comment that is a direct child of the
+/// `LOGIC_LINE` itself sits *outside* the `STMT_BLOCK` — either between `~`
+/// and `{` (a leading comment) or after the closing `}` (a trailing comment)
+/// — and would be silently dropped since the body is rebuilt from the
+/// `STMT_BLOCK` alone. Emit leading comments on the header line
+/// (`~ /* c */ {`) and trailing comments on the closing line (`} /* c */`)
+/// so `} // note` survives.
 fn render_logic_block(node: &SyntaxNode, base_indent: &str) -> String {
+    let body = node.children().find(|c| c.kind() == SyntaxKind::STMT_BLOCK);
+    let block_start = body.as_ref().map(|b| b.text_range().start());
+
+    let mut leading: Vec<String> = Vec::new();
+    let mut trailing: Vec<String> = Vec::new();
+    for elem in node.children_with_tokens() {
+        let NodeOrToken::Token(tok) = elem else {
+            continue;
+        };
+        if !matches!(
+            tok.kind(),
+            SyntaxKind::LINE_COMMENT | SyntaxKind::BLOCK_COMMENT
+        ) {
+            continue;
+        }
+        // A comment before the `STMT_BLOCK` is leading; anything else
+        // (including the no-block degenerate case) is trailing.
+        if block_start.is_some_and(|start| tok.text_range().start() < start) {
+            leading.push(tok.text().trim().to_owned());
+        } else {
+            trailing.push(tok.text().trim().to_owned());
+        }
+    }
+
     let mut out = String::new();
     out.push_str(base_indent);
-    out.push_str("~ {\n");
-    if let Some(body) = node.children().find(|c| c.kind() == SyntaxKind::STMT_BLOCK) {
-        render_stmt_block(&body, base_indent, 1, &mut out);
+    out.push('~');
+    for comment in &leading {
+        out.push(' ');
+        out.push_str(comment);
+    }
+    out.push_str(" {\n");
+    if let Some(body) = &body {
+        render_stmt_block(body, base_indent, 1, &mut out);
     }
     out.push_str(base_indent);
-    out.push_str("}\n");
+    out.push('}');
+    for comment in &trailing {
+        out.push(' ');
+        out.push_str(comment);
+    }
+    out.push('\n');
     out
 }
 
@@ -2212,18 +2325,12 @@ mod tests {
         assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
     }
 
-    // NOTE: this test drives `render_struct_decl` directly against the
-    // parsed `STRUCT_DECL` node rather than going through `fmt()`/`format()`.
-    // `mark_block_comments` (in this file, pre-existing and out of scope for
-    // this fix) marks *any* physical line containing a `BLOCK_COMMENT` token
-    // anywhere in its subtree as a pure `LineKind::BlockComment` line — that
-    // pre-empts `classify_node`'s `STRUCT_DECL` arm before `render_struct_decl`
-    // ever runs, for any single-line construct with an inline block comment
-    // (not struct-specific). A single-line `STRUCT` can only carry
-    // `BLOCK_COMMENT`s (a `LINE_COMMENT` forces a `NEWLINE`, making the
-    // struct multiline), so every single-line-with-comment case trips this
-    // separate bug via the full `fmt()` pipeline. Flagged separately; this
-    // test exercises the renderer fix in isolation instead.
+    // Drives `render_struct_decl` directly against the parsed `STRUCT_DECL`
+    // node to exercise the renderer in isolation from line classification.
+    // (The full `fmt()` pipeline reaches it too since
+    // `comment_handled_by_construct` leaves in-brace comments to the
+    // STRUCT_DECL arm — see
+    // `struct_decl_single_line_with_inline_block_comment_is_normalized`.)
     fn render_struct_decl_only(source: &str) -> String {
         let parsed = brink_syntax::parse(source);
         let node = parsed
@@ -2252,6 +2359,176 @@ mod tests {
             trailing,
             "STRUCT Point = #{x: float, y: float /* trail */}\n"
         );
+    }
+
+    // ── Inline block comments must not pre-empt construct classification ──
+    //
+    // `mark_block_comments` used to mark ANY physical line containing a
+    // `BLOCK_COMMENT` token anywhere in its subtree as a pure
+    // `LineKind::BlockComment` line, which made `classify_node` skip the
+    // line's real construct (`STRUCT_DECL`, `LOGIC_LINE`) entirely — the
+    // line rendered verbatim instead of through the construct's own
+    // comment-aware renderer. These tests pin the fixed behavior: a
+    // single-line block comment nested inside a comment-aware construct is
+    // that construct's business.
+
+    #[test]
+    fn struct_decl_single_line_with_inline_block_comment_is_normalized() {
+        // Extra whitespace proves the line goes through
+        // `format_struct_decl_single_line` rather than the verbatim
+        // block-comment path (which would leave it untouched).
+        let input = "STRUCT   Point =  #{x:   float, /* mid */ y: float}\n";
+        let expected = "STRUCT Point = #{x: float /* mid */, y: float}\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn struct_decl_multiline_with_block_comment_on_opening_line_keeps_field_indent() {
+        // The comment on the `#{` line used to mark the whole first line as
+        // a block-comment line, skipping the STRUCT_DECL arm — the fields
+        // lost their indentation entirely.
+        let input = "STRUCT Point = #{ /* c */\n    x: float,\n}\n";
+        let expected = "STRUCT Point = #{\n  /* c */\n  x: float,\n}\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn logic_line_with_trailing_block_comment_is_normalized() {
+        let input = "~x = 5 /* foo */\n";
+        let expected = "~ x = 5 /* foo */\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn logic_block_with_comment_on_opening_line_keeps_body_indent() {
+        // Same failure mode as the struct case, for T1b `~ { … }` blocks:
+        // the comment after `{` used to skip the LOGIC_LINE arm and the
+        // block body lost its indentation.
+        let input = "~ { /* c */\n    x = 5\n}\n";
+        let expected = "~ {\n    /* c */\n    x = 5\n}\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    // ── Comments outside the STMT_BLOCK on a `~ { … }` line ──
+    //
+    // A comment that is a direct child of the `LOGIC_LINE` itself — between
+    // `~` and `{`, or trailing after the closing `}` — sits outside the
+    // `STMT_BLOCK` the body is rebuilt from. It used to be silently dropped
+    // (`render_logic_block` walked only the `STMT_BLOCK`). It is now emitted
+    // on the header/closing line.
+
+    #[test]
+    fn logic_block_trailing_block_comment_after_close_is_preserved() {
+        let input = "~ {\n    x = 5\n} /* c */\n";
+        let expected = "~ {\n    x = 5\n} /* c */\n";
+        let once = fmt(input);
+        assert_eq!(once, expected, "trailing block comment must not be dropped");
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn logic_block_trailing_line_comment_after_close_is_preserved() {
+        let input = "~ {\n    x = 5\n} // c\n";
+        let expected = "~ {\n    x = 5\n} // c\n";
+        let once = fmt(input);
+        assert_eq!(once, expected, "trailing line comment must not be dropped");
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn logic_block_multiple_trailing_comments_after_close_are_preserved() {
+        let input = "~ {\n    x = 5\n} /* a */ /* b */\n";
+        let expected = "~ {\n    x = 5\n} /* a */ /* b */\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn logic_block_leading_comment_between_tilde_and_brace_is_preserved() {
+        // The comment sits before the `{`; it used to mark the whole opening
+        // line as a block-comment line, skipping classification and
+        // de-indenting the body to column 0.
+        let input = "~ /* c */ {\n    x = 5\n}\n";
+        let expected = "~ /* c */ {\n    x = 5\n}\n";
+        let once = fmt(input);
+        assert_eq!(
+            once, expected,
+            "leading comment must be kept, body re-indented"
+        );
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn logic_block_leading_and_trailing_comments_both_preserved() {
+        let input = "~ /* lead */ {\n    x = 5\n} /* trail */\n";
+        let expected = "~ /* lead */ {\n    x = 5\n} /* trail */\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn logic_block_single_line_with_trailing_comment_expands_and_keeps_comment() {
+        // A single-line `~ { … }` block always expands to multi-line (like
+        // the no-comment case `~ { x = 5 }` → `~ {\n    x = 5\n}\n`); the
+        // trailing comment rides along on the closing line rather than
+        // pinning the whole line to a verbatim single-line form.
+        let input = "~ { x = 5 } /* c */\n";
+        let expected = "~ {\n    x = 5\n} /* c */\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn logic_block_trailing_comment_preserved_inside_knot_with_indent() {
+        // The block is nested one level inside a knot, so the trailing
+        // comment must ride the closing `}`'s indented line.
+        let input = "== k ==\n~ {\n    x = 5\n} /* c */\n-> DONE\n";
+        let expected = "=== k ===\n  ~ {\n      x = 5\n  } /* c */\n  -> DONE\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    // Lines where the comment is NOT inside a comment-aware construct's
+    // handled region keep the verbatim block-comment treatment — classifying
+    // them would drop the comment (renderers only walk the construct node)
+    // or disturb parser-fragmented lines.
+
+    #[test]
+    fn block_comment_lines_outside_comment_aware_constructs_stay_verbatim() {
+        // Standalone banner (single- and multi-line).
+        for src in [
+            "/* banner */\nHello\n",
+            "/* line one\n   line two */\nHello\n",
+            // Leading comment before a construct on the same line: the
+            // comment is a direct child of SOURCE_FILE, outside the
+            // construct node — classification would drop it.
+            "/* c */ ~ x = 5\n",
+            "/* c */ STRUCT Point = #{x: float}\n",
+            // Comment outside a struct's braces: the struct renderers only
+            // walk the region between `{` and `}`.
+            "STRUCT Point /* c */ = #{x: float}\n",
+            // Multi-line comment inside a plain logic line: the Logic arm
+            // only renders the first physical line.
+            "~ x = 5 + /* multi\nline */ 6\n",
+            // Content line split by the parser around the comment.
+            "Hello /* hi */ world\n",
+        ] {
+            let once = fmt(src);
+            assert_eq!(once, src, "must stay verbatim: {src:?}");
+            assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+        }
     }
 
     #[test]
