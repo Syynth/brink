@@ -124,6 +124,50 @@ jobs:
         with:
           command: check
 
+  # Bounded fuzz smoke runs (#672 workstream C) — not continuous fuzzing
+  # campaigns. Each target gets a fresh ephemeral corpus dir (uncommitted;
+  # new finds land there, never in the committed seed corpus under
+  # `fuzz/seeds/<target>/`) plus the curated seeds, and a short
+  # `-max_total_time` budget. This catches panics/hangs in the parser and
+  # the VM's malformed-bytecode handling cheaply on every PR; a real
+  # coverage-guided campaign is a local/scheduled concern, not a per-PR one.
+  fuzz:
+    name: Fuzz (smoke)
+    runs-on: ubuntu-latest
+    # Hard backstop independent of each target's own `-max_total_time`
+    # budget (3 targets × 30s = 90s of intended fuzz time) — if a target
+    # ever fails to self-terminate, the job dies here instead of burning
+    # CI minutes silently.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: fuzz
+      - name: Install nightly + cargo-fuzz
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --locked
+      - name: Fuzz brink-syntax parse_no_panic
+        working-directory: crates/internal/brink-syntax/fuzz
+        run: |
+          mkdir -p corpus/parse_no_panic
+          cargo +nightly fuzz run parse_no_panic corpus/parse_no_panic seeds/ink -- -max_total_time=30 -max_len=8192
+      - name: Fuzz brink-syntax parse_lossless
+        working-directory: crates/internal/brink-syntax/fuzz
+        run: |
+          mkdir -p corpus/parse_lossless
+          cargo +nightly fuzz run parse_lossless corpus/parse_lossless seeds/ink -- -max_total_time=30 -max_len=8192
+      - name: Fuzz brink-runtime vm_no_panic (malformed .inkb into the VM)
+        working-directory: crates/brink-runtime/fuzz
+        run: |
+          mkdir -p corpus/vm_no_panic
+          cargo +nightly fuzz run vm_no_panic corpus/vm_no_panic seeds/vm_no_panic -- -max_total_time=30 -max_len=8192
+
   book:
     name: Book
     runs-on: ubuntu-latest
