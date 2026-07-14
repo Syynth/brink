@@ -65,6 +65,15 @@ pub struct HirFile {
     /// covers the whole directive tag for the dialect gate (`#@module` is
     /// brink-only) and diagnostics.
     pub module: Option<ModuleDecl>,
+    /// `IMPORT` statements (M-2, docs/modules-spec.md §2). Brink-dialect
+    /// only — the dialect gate rejects each under strict-ink. Empty for the
+    /// entire pre-modules world.
+    pub imports: Vec<Import>,
+    /// Every `#@private` / `#@public` visibility directive occurrence in the
+    /// file (M-2, docs/modules-spec.md §4), for the dialect gate (E051 under
+    /// strict-ink). The *effective* per-definition visibility travels the
+    /// manifest path (`DeclaredSymbol::visibility`) to the symbol index.
+    pub visibility: Vec<VisibilityDirective>,
 }
 
 /// A file's explicit `#@module(name)` declaration (M-1, modules-spec §1).
@@ -73,6 +82,54 @@ pub struct ModuleDecl {
     /// The declared module name (the argument to `#@module(…)`).
     pub name: String,
     /// Source range of the whole `#@module(…)` directive tag.
+    pub range: TextRange,
+}
+
+/// An `IMPORT` statement (M-2, docs/modules-spec.md §2), both forms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Import {
+    /// The imported module name.
+    pub module: String,
+    /// Source range of the module-name token.
+    pub module_range: TextRange,
+    /// The bare-form name list (`IMPORT { a, b AS c } FROM mod`). Empty for
+    /// the qualified form (`IMPORT mod`), which brings only the module name
+    /// into scope for `module.name` access.
+    pub items: Vec<ImportItem>,
+    /// `true` for the bare form (has a `{ … }` list, even if empty);
+    /// distinguishes an empty bare list from the qualified form.
+    pub bare: bool,
+    /// Source range of the whole `IMPORT …` statement.
+    pub range: TextRange,
+}
+
+/// One `name` or `name AS alias` entry in a bare-form import list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportItem {
+    /// The imported definition's own (source-module) name.
+    pub name: String,
+    /// The local alias (`AS gt`), if any. Absent means the name is bound
+    /// under its own spelling.
+    pub alias: Option<String>,
+    /// Source range of the item.
+    pub range: TextRange,
+}
+
+impl ImportItem {
+    /// The name this import binds locally — the alias if present, else the
+    /// imported name.
+    #[must_use]
+    pub fn local_name(&self) -> &str {
+        self.alias.as_deref().unwrap_or(&self.name)
+    }
+}
+
+/// A `#@private` / `#@public` directive occurrence (M-2, modules-spec §4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibilityDirective {
+    /// Which visibility the directive requests.
+    pub mark: crate::VisibilityMark,
+    /// Source range of the directive tag.
     pub range: TextRange,
 }
 
@@ -1379,6 +1436,36 @@ pub enum DiagnosticCode {
     /// takes exactly one non-empty module name and appears at most once
     /// per file (modules-spec §1).
     E086,
+
+    // ── M-2 imports + visibility (docs/modules-spec.md §2/§4/§7) ───
+    /// A reference resolves to a `#@private` definition in another module.
+    /// Private names are module-internal; the referrer is outside that
+    /// module. Fix: make the definition `#@public` and `IMPORT` it, or move
+    /// the reference into the module (modules-spec §4/§7).
+    E087,
+    /// An `IMPORT` names a module that does not exist, or a bare-form
+    /// `IMPORT { name } FROM mod` names a definition that module does not
+    /// export (modules-spec §2/§7).
+    E088,
+    /// An `IMPORT` brings the same local name into scope twice (a repeated
+    /// bare import, or two imports whose names/aliases collide) — the
+    /// reference would be ambiguous (modules-spec §2/§7).
+    E089,
+    /// An `IMPORT` names the importing file's own module — a module cannot
+    /// import itself; its own names are already bare (modules-spec §2/§7).
+    E090,
+    /// A qualified access `a.b` is ambiguous: `a` is both a module imported
+    /// in this file and a visible definition. Fix with an `AS` alias — no
+    /// silent precedence (modules-spec §2/§7).
+    E091,
+    /// A `#@public`/`#@private` override that restates the module's default
+    /// (e.g. `#@public` in an undeclared module, `#@private` in a declared
+    /// one) — redundant, no effect (warning, modules-spec §4/§7).
+    E092,
+    /// Conflicting or repeated visibility directives on one declaration
+    /// (both `#@private` and `#@public`, or the same one twice). A
+    /// declaration takes at most one visibility directive (modules-spec §4).
+    E093,
 }
 
 impl DiagnosticCode {
@@ -1472,6 +1559,13 @@ impl DiagnosticCode {
             Self::E084 => "E084",
             Self::E085 => "E085",
             Self::E086 => "E086",
+            Self::E087 => "E087",
+            Self::E088 => "E088",
+            Self::E089 => "E089",
+            Self::E090 => "E090",
+            Self::E091 => "E091",
+            Self::E092 => "E092",
+            Self::E093 => "E093",
         }
     }
 
@@ -1576,6 +1670,15 @@ impl DiagnosticCode {
             Self::E086 => {
                 "`#@module` requires exactly one module name and may appear at most once per file"
             }
+            Self::E087 => "reference to a `#@private` definition in another module",
+            Self::E088 => "`IMPORT` names a module or definition that does not exist",
+            Self::E089 => "`IMPORT` brings the same name into scope more than once",
+            Self::E090 => "a module cannot `IMPORT` itself",
+            Self::E091 => {
+                "qualified access is ambiguous: the name is both an imported module and a definition"
+            }
+            Self::E092 => "redundant `#@public`/`#@private` — restates the module default",
+            Self::E093 => "conflicting or repeated visibility directives on one declaration",
         }
     }
 
@@ -1595,7 +1698,8 @@ impl DiagnosticCode {
             | Self::E038
             | Self::E043
             | Self::E054
-            | Self::E063 => Severity::Warning,
+            | Self::E063
+            | Self::E092 => Severity::Warning,
             _ => Severity::Error,
         }
     }
@@ -1690,6 +1794,13 @@ impl DiagnosticCode {
             "E084" => Some(Self::E084),
             "E085" => Some(Self::E085),
             "E086" => Some(Self::E086),
+            "E087" => Some(Self::E087),
+            "E088" => Some(Self::E088),
+            "E089" => Some(Self::E089),
+            "E090" => Some(Self::E090),
+            "E091" => Some(Self::E091),
+            "E092" => Some(Self::E092),
+            "E093" => Some(Self::E093),
             _ => None,
         }
     }

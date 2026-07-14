@@ -615,6 +615,7 @@ fn classify_node(
             | SyntaxKind::CONST_DECL
             | SyntaxKind::LIST_DECL
             | SyntaxKind::INCLUDE_STMT
+            | SyntaxKind::IMPORT_STMT
             | SyntaxKind::EXTERNAL_DECL => {
                 if line_idx < lines.len() {
                     lines[line_idx].kind = LineKind::Declaration;

@@ -747,6 +747,7 @@ mod tests {
                 })
                 .collect(),
             detail: None,
+            visibility: None,
         });
         merge_manifests(&[(FileId(0), &m)]).0
     }
@@ -1100,12 +1101,14 @@ mod tests {
                 is_divert: false,
             }],
             detail: Some("function".to_string()),
+            visibility: None,
         });
         m.stitches.push(DeclaredSymbol {
             name: "hub.market".to_string(),
             range: TextRange::new(TextSize::new(10), TextSize::new(16)),
             params: Vec::new(),
             detail: None,
+            visibility: None,
         });
         merge_manifests(&[(FileId(0), &m)]).0
     }
@@ -1409,6 +1412,8 @@ mod tests {
             externals: Vec::new(),
             includes: Vec::new(),
             module: None,
+            imports: Vec::new(),
+            visibility: Vec::new(),
         }
     }
 

@@ -251,6 +251,40 @@ pub(super) fn is_file_module_line(tl: &ast::TagLine) -> bool {
     true
 }
 
+/// Collect every `#@private` / `#@public` directive occurrence in the file,
+/// for the dialect gate (M-2, docs/modules-spec.md §4). A flat pass over all
+/// directive tag lines — attachment to a specific declaration is handled
+/// separately via the declaration owners (`DeclaredSymbol::visibility`); the
+/// gate only needs each occurrence's range and requested visibility.
+pub(super) fn collect_visibility_directives(
+    source_file: &SyntaxNode,
+) -> Vec<crate::VisibilityDirective> {
+    use crate::VisibilityMark;
+    let mut out = Vec::new();
+    for node in source_file.descendants() {
+        let Some(tl) = ast::TagLine::cast(node) else {
+            continue;
+        };
+        let Some(tags) = tl.tags() else {
+            continue;
+        };
+        for tag in tags.tags() {
+            if let Some(dir) = parse_directive_tag(&tag) {
+                let mark = match dir.name.as_str() {
+                    "private" => VisibilityMark::Private,
+                    "public" => VisibilityMark::Public,
+                    _ => continue,
+                };
+                out.push(crate::VisibilityDirective {
+                    mark,
+                    range: dir.range,
+                });
+            }
+        }
+    }
+    out
+}
+
 /// Extract and validate the file's `#@module(name)` declaration, if any.
 ///
 /// Scans direct children of the `SOURCE_FILE` root for file-level
@@ -421,6 +455,10 @@ pub(super) fn apply_scope_directives(
     for d in dirs {
         if d.dynamic {
             sink.diagnose(d.range, DiagnosticCode::E046);
+        } else if d.name == "private" || d.name == "public" {
+            // Visibility directives (M-2, modules-spec §4) — handled by
+            // [`visibility_from_directives`]; not an unknown-directive error
+            // here.
         } else if d.name != "local" {
             sink.diagnose(d.range, DiagnosticCode::E044);
         } else if !d.bare {
@@ -434,4 +472,40 @@ pub(super) fn apply_scope_directives(
         }
     }
     is_local
+}
+
+/// Interpret the `#@private` / `#@public` visibility directives among a
+/// declaration's collected directives (M-2, docs/modules-spec.md §4).
+///
+/// Returns the explicit override, or `None` when neither is present (take
+/// the module default). Both directives must be bare (`#@private`, no args);
+/// a non-bare form is `E050`, a dynamic argument `E046`. Supplying *both*
+/// `#@private` and `#@public`, or repeating one, is a conflict (`E093`) —
+/// the first wins. Validity of the override against the module default
+/// (redundant-override warning `E092`) is checked later by the analyzer,
+/// which knows the file's declared-ness.
+pub(super) fn visibility_from_directives(
+    dirs: &[ParsedDirective],
+    sink: &mut impl LowerSink,
+) -> Option<crate::VisibilityMark> {
+    use crate::VisibilityMark;
+    let mut chosen: Option<VisibilityMark> = None;
+    for d in dirs {
+        let mark = match d.name.as_str() {
+            "private" => VisibilityMark::Private,
+            "public" => VisibilityMark::Public,
+            _ => continue,
+        };
+        if d.dynamic {
+            sink.diagnose(d.range, DiagnosticCode::E046);
+        } else if !d.bare {
+            sink.diagnose(d.range, DiagnosticCode::E050);
+        } else if chosen.is_some() {
+            // A second visibility directive — conflict or repeat.
+            sink.diagnose(d.range, DiagnosticCode::E093);
+        } else {
+            chosen = Some(mark);
+        }
+    }
+    chosen
 }
