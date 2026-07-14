@@ -329,8 +329,11 @@ export class LocalSessionProvider implements SessionProvider {
       this.programChecksum = this.programModel?.checksum ?? null;
 
       // A secondary "play from here" session jumps to its entry point before
-      // revealing — no persisted restore (it doesn't persist).
+      // revealing — no persisted restore (it doesn't persist). It is a dev
+      // affordance, so it overrides #@private visibility enforcement (M-2b):
+      // the entry point may be a private knot.
       if (this.startPath) {
+        session.setDevVisibilityOverride(true);
         session.goToPath(this.startPath.path, ...this.startPath.args);
         this.reveal();
         return;
@@ -386,8 +389,12 @@ export class LocalSessionProvider implements SessionProvider {
     this.status = "running";
     this.transcript = [];
     this.choices = [];
-    // Re-navigate a "play from here" session to its entry on restart.
-    if (this.startPath) this.session.goToPath(this.startPath.path, ...this.startPath.args);
+    // Re-navigate a "play from here" session to its entry on restart — still a
+    // dev affordance, so keep the #@private visibility override on (M-2b).
+    if (this.startPath) {
+      this.session.setDevVisibilityOverride(true);
+      this.session.goToPath(this.startPath.path, ...this.startPath.args);
+    }
     this.reveal();
   }
 

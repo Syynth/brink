@@ -42,6 +42,14 @@ pub struct ResolvedModule {
     pub name: String,
     /// `true` when the file (or its INCLUDE head) carries `#@module`.
     pub declared: bool,
+    /// The module's old name, from a `#@was(old_name)` on **any** file
+    /// sharing this resolved module (M-3, docs/modules-spec.md §5) —
+    /// aggregated by `brink-db::modules::resolve_modules` so every file in
+    /// a multi-file module sees the same rename regardless of which file
+    /// declared it. `None` for a module with no recorded rename, and
+    /// always `None` for an undeclared stem-module (scoped to declared
+    /// modules only — see `ModuleDecl::was`'s doc).
+    pub was: Option<String>,
 }
 
 /// Map from file to its resolved module. Absent entries (and undeclared
@@ -76,14 +84,34 @@ pub fn merge_manifests_with_modules(
     for &(file_id, manifest) in files {
         // Only a *declared* module qualifies identity; undeclared
         // stem-modules (and files absent from `modules`) hash bare.
-        let module = modules
-            .get(&file_id)
-            .filter(|m| m.declared)
-            .map(|m| m.name.as_str());
+        let resolved = modules.get(&file_id).filter(|m| m.declared);
+        let module = ModuleCtx {
+            name: resolved.map(|m| m.name.as_str()),
+            // M-3 (docs/modules-spec.md §5): the module's old name, if any
+            // file sharing it declared `#@was` —
+            // `brink-db::modules::resolve_modules` aggregates this onto
+            // every file's `ResolvedModule` already, so a single per-file
+            // lookup here sees it regardless of which file in a multi-file
+            // module carried the directive.
+            was: resolved.and_then(|m| m.was.as_deref()),
+        };
         insert_file_symbols(&mut index, &mut diagnostics, file_id, module, manifest);
     }
 
     (index, diagnostics)
+}
+
+/// A file's resolved module, bundled for the `insert_*` helpers below
+/// (keeps their argument count under clippy's limit — `module` and
+/// `module_was` are always passed together).
+#[derive(Clone, Copy)]
+struct ModuleCtx<'a> {
+    /// The **declared** module's current name; `None` for an undeclared
+    /// stem-module (identity hashes bare).
+    name: Option<&'a str>,
+    /// The module's old name from a `#@was` (M-3, docs/modules-spec.md
+    /// §5), if any file sharing this module recorded one.
+    was: Option<&'a str>,
 }
 
 /// Insert every symbol declared in one file's manifest, qualifying named
@@ -93,7 +121,7 @@ fn insert_file_symbols(
     index: &mut SymbolIndex,
     diagnostics: &mut Vec<Diagnostic>,
     file_id: FileId,
-    module: Option<&str>,
+    module: ModuleCtx<'_>,
     manifest: &SymbolManifest,
 ) {
     use DiagnosticCode::{E022, E023, E026};
@@ -124,7 +152,7 @@ fn insert_symbol(
     index: &mut SymbolIndex,
     diagnostics: &mut Vec<Diagnostic>,
     file: FileId,
-    module: Option<&str>,
+    module: ModuleCtx<'_>,
     sym: &brink_ir::DeclaredSymbol,
     kind: SymbolKind,
     dup_code: DiagnosticCode,
@@ -146,14 +174,15 @@ fn insert_symbol(
     }
 
     let tag = kind.definition_tag();
-    let hash = hash_qualified_name(module, &sym.name, tag);
+    let hash = hash_qualified_name(module.name, &sym.name, tag);
     let id = DefinitionId::new(tag, hash);
 
     // Effective visibility (declaration-flips-default, modules-spec §4): a
-    // *declared* module (`module.is_some()`) defaults private; an undeclared
-    // stem-module defaults public. A `#@private`/`#@public` override flips
-    // that; restating the default is a redundant-override warning (`E092`).
-    let declared = module.is_some();
+    // *declared* module (`module.name.is_some()`) defaults private; an
+    // undeclared stem-module defaults public. A `#@private`/`#@public`
+    // override flips that; restating the default is a redundant-override
+    // warning (`E092`).
+    let declared = module.name.is_some();
     let (visibility, redundant) = effective_visibility(declared, sym.visibility);
     if redundant {
         diagnostics.push(Diagnostic {
@@ -176,11 +205,32 @@ fn insert_symbol(
             detail: sym.detail.clone(),
             scope: None,
             param_detail: None,
-            module: module.map(str::to_string),
+            module: module.name.map(str::to_string),
             visibility,
         },
     );
     index.by_name.entry(sym.name.clone()).or_default().push(id);
+
+    // M-3 (docs/modules-spec.md §5): compiled alias-table entries. Additive
+    // and independent — a definition-level `#@was` and a module-level
+    // `#@was` on the same symbol both produce an entry (each aliasing a
+    // *different* stale identity to the same current `id`); the rarer case
+    // of both renamed **simultaneously** (old module + old name together)
+    // is a known gap, not covered by either entry alone.
+    if let Some((old_name, _range)) = &sym.was {
+        let old_hash = hash_qualified_name(module.name, old_name, tag);
+        index.aliases.push(brink_format::AliasEntry {
+            old: DefinitionId::new(tag, old_hash),
+            new: id,
+        });
+    }
+    if let Some(old_module) = module.was {
+        let old_hash = hash_qualified_name(Some(old_module), &sym.name, tag);
+        index.aliases.push(brink_format::AliasEntry {
+            old: DefinitionId::new(tag, old_hash),
+            new: id,
+        });
+    }
 
     // Warn if the symbol name shadows a built-in function — the classic
     // uppercase ink intrinsics (`is_builtin_function`) or a T1b stdlib
@@ -307,6 +357,7 @@ mod tests {
             params: Vec::new(),
             detail: None,
             visibility: None,
+            was: None,
         }
     }
 
@@ -408,6 +459,7 @@ mod tests {
             ResolvedModule {
                 name: "story".to_string(),
                 declared: false,
+                was: None,
             },
         );
         let (with_undeclared, _) = merge_manifests_with_modules(&files, &modules);
@@ -469,6 +521,7 @@ mod tests {
             ResolvedModule {
                 name: "quest".to_string(),
                 declared: true,
+                was: None,
             },
         );
         let (qualified, _) = merge_manifests_with_modules(&files, &modules);

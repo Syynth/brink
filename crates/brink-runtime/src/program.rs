@@ -4,7 +4,7 @@ use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use brink_format::{CountingFlags, DefinitionId, ListValue, NameId, ShapeId, Value};
+use brink_format::{AliasEntry, CountingFlags, DefinitionId, ListValue, NameId, ShapeId, Value};
 
 use crate::collections::Map as HashMap;
 
@@ -56,6 +56,19 @@ pub struct Program {
     /// mapping. Empty until a compiler milestone emits `STRUCT`
     /// declarations.
     pub(crate) struct_shapes: Vec<StructShapeEntry>,
+    /// M-2b (`docs/modules-spec.md` §4): the set of `#@private` definition
+    /// ids. Used only to refuse host **semantic** access (variable get/set,
+    /// entry lookup, function eval) — the VM and host **persistence** never
+    /// consult it, so private state still executes and still saves/loads.
+    /// Empty (and never consulted) for the all-public pre-modules world.
+    /// Sorted ascending by raw id (the linker sorts it), so membership is a
+    /// `binary_search` — no set type needed for a list that is typically empty
+    /// or tiny, and `no_std`-clean.
+    pub(crate) private_defs: Vec<DefinitionId>,
+    /// M-3 (`docs/modules-spec.md` §5): the compiled `#@was` alias table,
+    /// sorted by `old` — [`Program::resolve_alias`] binary-searches it.
+    /// Empty for every story that uses no `#@was`.
+    pub(crate) alias_table: Vec<AliasEntry>,
 }
 
 /// Runtime metadata for one declared struct shape.
@@ -87,7 +100,8 @@ pub(crate) struct LinkedContainer {
 }
 
 pub(crate) struct GlobalSlot {
-    #[expect(dead_code, reason = "needed for save/load serialization and debugging")]
+    /// The global's `DefinitionId` — used by save/load and by M-2b
+    /// visibility enforcement ([`Program::global_is_private`]).
     pub id: DefinitionId,
     pub name: NameId,
     pub default: Value,
@@ -129,6 +143,40 @@ impl Program {
     /// Resolve any target (container or address) to `(container_idx, byte_offset)`.
     pub(crate) fn resolve_target(&self, id: DefinitionId) -> Option<(u32, usize)> {
         self.address_map.get(&id).copied()
+    }
+
+    /// Whether `id` names a live container/address in the current program
+    /// (a knot/stitch/label or a synthetic child address) — the "does this
+    /// still resolve directly" half of the M-3 rehydration miss-path check
+    /// (`docs/modules-spec.md` §5).
+    pub(crate) fn knows_address(&self, id: DefinitionId) -> bool {
+        self.address_map.contains_key(&id)
+    }
+
+    /// Whether `id` names a live global slot in the current program.
+    pub(crate) fn knows_global(&self, id: DefinitionId) -> bool {
+        self.global_map.contains_key(&id)
+    }
+
+    /// M-3 rehydration miss-path lookup (`docs/modules-spec.md` §5): given
+    /// an `id` the current program doesn't recognize, consult the compiled
+    /// `#@was` alias table for its current identity. Callers still need to
+    /// check whether the returned id itself resolves — an alias chain is
+    /// never followed (the compiler always emits `old -> new` against the
+    /// definition's *current* id, never `old -> old2`).
+    pub(crate) fn resolve_alias(&self, old: DefinitionId) -> Option<DefinitionId> {
+        self.alias_table
+            .binary_search_by_key(&old, |e| e.old)
+            .ok()
+            .map(|idx| self.alias_table[idx].new)
+    }
+
+    /// Whether this program carries any `#@was`-derived alias-table
+    /// entries at all. Gates `load_state`'s miss-path reporting: an
+    /// ordinary content edit with no rename directive stays exactly as
+    /// silent as it was before M-3.
+    pub(crate) fn has_aliases(&self) -> bool {
+        !self.alias_table.is_empty()
     }
 
     /// Resolve a definition ID to `(container_idx, byte_offset)`.
@@ -262,6 +310,37 @@ impl Program {
         self.address_by_path
             .get(path)
             .map(|t| self.containers[t.container_idx as usize].param_count)
+    }
+
+    // ── Visibility (`#@private` — M-2b, docs/modules-spec.md §4) ────────────
+
+    /// Whether the compiler marked any definition `#@private`. `false` for the
+    /// entire pre-modules / all-public world — the fast path where visibility
+    /// enforcement is a single boolean check that skips every lookup below.
+    pub(crate) fn has_private_defs(&self) -> bool {
+        !self.private_defs.is_empty()
+    }
+
+    /// Whether the definition `id` was declared `#@private`.
+    pub(crate) fn is_private(&self, id: DefinitionId) -> bool {
+        self.private_defs
+            .binary_search_by_key(&id.to_raw(), |d| d.to_raw())
+            .is_ok()
+    }
+
+    /// Whether the global at slot `idx` is `#@private`.
+    pub(crate) fn global_is_private(&self, idx: u32) -> bool {
+        self.globals
+            .get(idx as usize)
+            .is_some_and(|slot| self.is_private(slot.id))
+    }
+
+    /// Whether the named entry point (knot/stitch/function path) is
+    /// `#@private`. Unknown paths are treated as not-private — resolution
+    /// failure is reported by the caller's own "not found" path, not here.
+    pub(crate) fn path_is_private(&self, path: &str) -> bool {
+        self.find_path_target(path)
+            .is_some_and(|id| self.is_private(id))
     }
 
     /// Build the initial globals vector from slot defaults.
@@ -500,6 +579,8 @@ mod find_address_tests {
             external_fns: HashMap::new(),
             local_scope_defaults: Vec::new(),
             struct_shapes: Vec::new(),
+            private_defs: Vec::new(),
+            alias_table: Vec::new(),
         }
     }
 

@@ -175,6 +175,8 @@ mod tests {
             external_fns: HashMap::new(),
             local_scope_defaults: Vec::new(),
             struct_shapes: vec![],
+            private_defs: Vec::new(),
+            alias_table: Vec::new(),
         }
     }
 

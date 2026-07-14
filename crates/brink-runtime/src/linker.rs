@@ -235,6 +235,20 @@ pub fn link(
     }
     local_scope_defaults.sort();
 
+    // M-2b (`docs/modules-spec.md` §4): the `#@private` definition set, used
+    // only to refuse host semantic access. Empty for the all-public world.
+    // Sorted so `Program::is_private` can binary-search (the compiler already
+    // emits it sorted; re-sort defensively for hand-built/legacy `StoryData`).
+    let mut private_defs: Vec<DefinitionId> = data.private_defs.clone();
+    private_defs.sort_by_key(|d| d.to_raw());
+
+    // M-3 (`docs/modules-spec.md` §5): the compiled alias table, sorted by
+    // `old` for `Program::resolve_alias`'s binary search. Sorted again here
+    // rather than trusted as-is — malformed/adversarial `.inkb` bytes are
+    // not guaranteed to preserve the compiler's ordering invariant.
+    let mut alias_table = data.alias_table.clone();
+    alias_table.sort_unstable();
+
     let program = Program {
         containers,
         address_map,
@@ -253,6 +267,8 @@ pub fn link(
         external_fns,
         local_scope_defaults,
         struct_shapes,
+        private_defs,
+        alias_table,
     };
     Ok((program, line_tables))
 }

@@ -1845,6 +1845,13 @@ pub struct Story<R: StoryRng = FastRng> {
     /// studio/host state — not persisted in a [`StorySnapshot`].
     shared_instances: HashMap<String, FlowInstance>,
     resolver: Option<Box<dyn PluralResolver>>,
+    /// Whether host **semantic** access to `#@private` definitions is refused
+    /// (M-2b, `docs/modules-spec.md` §4 boundary rule 2). `true` by default —
+    /// production hosts respect visibility. Dev tooling (play-from-here) sets
+    /// it `false` via [`set_visibility_enforcement`](Self::set_visibility_enforcement)
+    /// to start flows at private knots. No effect on stories without any
+    /// `#@private` definition (the fast path short-circuits on that).
+    enforce_visibility: bool,
     _rng: PhantomData<R>,
 }
 
@@ -1859,6 +1866,7 @@ impl<R: StoryRng> Clone for Story<R> {
             instances: self.instances.clone(),
             shared_instances: self.shared_instances.clone(),
             resolver: None,
+            enforce_visibility: self.enforce_visibility,
             _rng: PhantomData,
         }
     }
@@ -1890,8 +1898,29 @@ impl<R: StoryRng> Story<R> {
             instances: HashMap::new(),
             shared_instances: HashMap::new(),
             resolver: None,
+            enforce_visibility: true,
             _rng: PhantomData,
         }
+    }
+
+    /// Enable or disable host visibility enforcement (M-2b,
+    /// `docs/modules-spec.md` §4 boundary rule 3). Enforcement is **on** by
+    /// default: host semantic access (variable get/set, entry lookup,
+    /// function eval) to a `#@private` definition returns
+    /// [`RuntimeError::PrivateAccess`] (or `None`/`false` for the infallible
+    /// get/set). Dev tooling — editors, debug hosts, the play-from-here
+    /// affordance — calls this with `false` to start flows at private knots
+    /// and inspect private state. This is a host capability, not a language
+    /// switch; the compiled program is identical either way. Persistence
+    /// (save/load/journal/replay) ignores this flag entirely.
+    pub fn set_visibility_enforcement(&mut self, enforce: bool) {
+        self.enforce_visibility = enforce;
+    }
+
+    /// Whether host visibility enforcement is currently on (default `true`).
+    #[must_use]
+    pub fn visibility_enforced(&self) -> bool {
+        self.enforce_visibility
     }
 
     /// Set the plural resolver for Select resolution in localized lines.
@@ -2022,17 +2051,38 @@ impl<R: StoryRng> Story<R> {
 
     /// Read a global variable's current value by name. `None` if no global
     /// with that name is declared. Reads the default flow's context.
+    ///
+    /// Returns `None` for a `#@private` variable while visibility enforcement
+    /// is on (M-2b) — the host is outside every module, so a private name is
+    /// not host-visible. Dev tooling opts out via
+    /// [`set_visibility_enforcement`](Self::set_visibility_enforcement).
     pub fn variable(&self, name: &str) -> Option<&Value> {
         let idx = self.program.global_index(name)?;
+        if self.enforce_visibility
+            && self.program.has_private_defs()
+            && self.program.global_is_private(idx)
+        {
+            return None;
+        }
         Some(ContextAccess::global(&self.default_context, idx))
     }
 
     /// Set a global variable by name, returning `false` (no-op) if no global
     /// with that name is declared. Ink globals are dynamically typed, so the
     /// host is responsible for passing a sensibly-typed value.
+    ///
+    /// Returns `false` (no write) for a `#@private` variable while visibility
+    /// enforcement is on (M-2b). Dev tooling opts out via
+    /// [`set_visibility_enforcement`](Self::set_visibility_enforcement).
     pub fn set_variable(&mut self, name: &str, value: Value) -> bool {
         match self.program.global_index(name) {
             Some(idx) => {
+                if self.enforce_visibility
+                    && self.program.has_private_defs()
+                    && self.program.global_is_private(idx)
+                {
+                    return false;
+                }
                 ContextAccess::set_global(&mut self.default_context, idx, value);
                 true
             }
@@ -2105,6 +2155,17 @@ impl<R: StoryRng> Story<R> {
         args: &[Value],
         handler: &dyn ExternalFnHandler,
     ) -> Result<Value, RuntimeError> {
+        // M-2b: refuse host-driven evaluation of a `#@private` function while
+        // enforcement is on. Checked before resolution details so a private
+        // name reports as private, not as "not found".
+        if self.enforce_visibility
+            && self.program.has_private_defs()
+            && self.program.path_is_private(name)
+        {
+            return Err(RuntimeError::PrivateAccess {
+                name: name.to_owned(),
+            });
+        }
         let container_idx = self
             .program
             .find_address(name)
@@ -2195,6 +2256,10 @@ impl<R: StoryRng> Story<R> {
             // starts with none.
             shared_instances: HashMap::new(),
             resolver: None,
+            // Enforcement is a host capability, not persisted state — a
+            // reattached story defaults to enforcing; the host re-applies a
+            // dev override if it wants one.
+            enforce_visibility: true,
             _rng: PhantomData,
         }
     }
@@ -2331,9 +2396,26 @@ impl<R: StoryRng> Story<R> {
     /// [`AlreadyEvaluatingFunction`](RuntimeError::AlreadyEvaluatingFunction)
     /// if an engine→ink function evaluation is in progress.
     pub fn choose_path_string(&mut self, path: &str) -> Result<(), RuntimeError> {
+        self.check_entry_visibility(path)?;
         let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
         self.default
             .choose_path_string(&self.program, &mut view, path)
+    }
+
+    /// M-2b: refuse a host-driven entry into a `#@private` knot/stitch while
+    /// visibility enforcement is on. Shared by both `choose_path_string`
+    /// entry points. Dev tooling (play-from-here) disables enforcement via
+    /// [`set_visibility_enforcement`](Self::set_visibility_enforcement).
+    fn check_entry_visibility(&self, path: &str) -> Result<(), RuntimeError> {
+        if self.enforce_visibility
+            && self.program.has_private_defs()
+            && self.program.path_is_private(path)
+        {
+            return Err(RuntimeError::PrivateAccess {
+                name: path.to_owned(),
+            });
+        }
+        Ok(())
     }
 
     /// Move the default flow's play head to a parameterized knot/stitch,
@@ -2351,6 +2433,7 @@ impl<R: StoryRng> Story<R> {
         path: &str,
         args: &[Value],
     ) -> Result<(), RuntimeError> {
+        self.check_entry_visibility(path)?;
         let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
         self.default
             .choose_path_string_with_args(&self.program, &mut view, path, args)

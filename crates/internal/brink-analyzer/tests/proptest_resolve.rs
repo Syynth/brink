@@ -63,6 +63,20 @@ fn arb_ref_kind() -> impl Strategy<Value = RefKind> {
 
 /// Strategy that generates a manifest with 1-5 knots, 0-3 variables,
 /// 0-2 lists with items, and 0-8 unresolved refs that may or may not match.
+/// A `DeclaredSymbol` with only name/range set — every other field at its
+/// "nothing declared" default. Shared by every `arb_manifest` construction
+/// site below to keep the strategy closure short.
+fn decl_sym(name: String, range: TextRange) -> DeclaredSymbol {
+    DeclaredSymbol {
+        name,
+        range,
+        params: Vec::new(),
+        detail: None,
+        visibility: None,
+        was: None,
+    }
+}
+
 fn arb_manifest() -> impl Strategy<Value = SymbolManifest> {
     (
         prop::collection::vec(arb_ident(), 1..=5), // knot names
@@ -104,58 +118,39 @@ fn arb_manifest() -> impl Strategy<Value = SymbolManifest> {
                 let mut offset = 0u32;
 
                 for name in &knots {
-                    manifest.knots.push(DeclaredSymbol {
-                        name: name.clone(),
-                        range: range(offset, name.len() as u32),
-                        params: Vec::new(),
-                        detail: None,
-                        visibility: None,
-                    });
+                    manifest
+                        .knots
+                        .push(decl_sym(name.clone(), range(offset, name.len() as u32)));
                     offset += name.len() as u32 + 1;
                 }
 
                 for name in &vars {
-                    manifest.variables.push(DeclaredSymbol {
-                        name: name.clone(),
-                        range: range(offset, name.len() as u32),
-                        params: Vec::new(),
-                        detail: None,
-                        visibility: None,
-                    });
+                    manifest
+                        .variables
+                        .push(decl_sym(name.clone(), range(offset, name.len() as u32)));
                     offset += name.len() as u32 + 1;
                 }
 
                 for (list_name, items) in &lists {
-                    manifest.lists.push(DeclaredSymbol {
-                        name: list_name.clone(),
-                        range: range(offset, list_name.len() as u32),
-                        params: Vec::new(),
-                        detail: None,
-                        visibility: None,
-                    });
+                    manifest.lists.push(decl_sym(
+                        list_name.clone(),
+                        range(offset, list_name.len() as u32),
+                    ));
                     offset += list_name.len() as u32 + 1;
 
                     for item in items {
                         let qualified = format!("{list_name}.{item}");
-                        manifest.list_items.push(DeclaredSymbol {
-                            name: qualified,
-                            range: range(offset, item.len() as u32),
-                            params: Vec::new(),
-                            detail: None,
-                            visibility: None,
-                        });
+                        manifest
+                            .list_items
+                            .push(decl_sym(qualified, range(offset, item.len() as u32)));
                         offset += item.len() as u32 + 1;
                     }
                 }
 
                 for name in &externals {
-                    manifest.externals.push(DeclaredSymbol {
-                        name: name.clone(),
-                        range: range(offset, name.len() as u32),
-                        params: Vec::new(),
-                        detail: None,
-                        visibility: None,
-                    });
+                    manifest
+                        .externals
+                        .push(decl_sym(name.clone(), range(offset, name.len() as u32)));
                     offset += name.len() as u32 + 1;
                 }
 
@@ -217,6 +212,7 @@ fn empty_hir() -> HirFile {
         module: None,
         imports: Vec::new(),
         visibility: Vec::new(),
+        was_directives: Vec::new(),
     }
 }
 
@@ -367,6 +363,7 @@ proptest! {
                         params: Vec::new(),
                         detail: None,
                         visibility: None,
+                        was: None,
                     }],
             ..Default::default()
         };
@@ -377,6 +374,7 @@ proptest! {
                         params: Vec::new(),
                         detail: None,
                         visibility: None,
+                        was: None,
                     }],
             ..Default::default()
         };
@@ -414,6 +412,7 @@ proptest! {
                         params: Vec::new(),
                         detail: None,
                         visibility: None,
+                        was: None,
                     }],
             ..Default::default()
         };
@@ -424,6 +423,7 @@ proptest! {
                         params: Vec::new(),
                         detail: None,
                         visibility: None,
+                        was: None,
                     }],
             ..Default::default()
         };
@@ -469,6 +469,7 @@ proptest! {
                         params: Vec::new(),
                         detail: None,
                         visibility: None,
+                        was: None,
                     });
             offset += name.len() as u32 + 1;
         }

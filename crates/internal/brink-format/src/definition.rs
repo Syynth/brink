@@ -158,6 +158,22 @@ pub struct StructShapeDef {
     pub fields: Vec<NameId>,
 }
 
+/// One old→new `DefinitionId` rename record (M-3, `docs/modules-spec.md`
+/// §5): the compiler emits one of these per `#@was(old_name)` directive —
+/// on a module, one entry per definition the renamed module currently
+/// owns; on a single definition, one entry for it. Rehydration
+/// (`brink-runtime`'s `load_state`) consults the table **only on the miss
+/// path**: a saved fn token, divert value, or visit-count key that the
+/// current program doesn't recognize is looked up here before being
+/// treated as genuinely gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AliasEntry {
+    /// The identity a save from before the rename may still carry.
+    pub old: DefinitionId,
+    /// The definition's current identity.
+    pub new: DefinitionId,
+}
+
 /// A single list item definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ListItemDef {

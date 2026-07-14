@@ -58,6 +58,11 @@ pub struct WebSession {
     always_deferred: std::collections::BTreeSet<String>,
     /// Reentrancy guard, mirroring `StoryRunner::busy`.
     busy: Cell<bool>,
+    /// The M-2b dev-tooling visibility override (play-from-here) — mirrors
+    /// `StoryRunner::dev_visibility_override`. When `true`, host semantic
+    /// access to `#@private` definitions is allowed (enforcement off).
+    /// Re-applied across `restart`/`reload`. Default `false`.
+    dev_visibility_override: Cell<bool>,
     /// The `ReplayOutcome` JSON produced by the most recent `restore`/`reload`
     /// on this session, if any — wasm constructors/`&mut self` methods can
     /// only return one value, so `restore`'s outcome is stashed here for
@@ -100,6 +105,7 @@ impl WebSession {
             always_deferred: deferred.unwrap_or_default().into_iter().collect(),
             busy: Cell::new(false),
             last_replay_outcome: RefCell::new(None),
+            dev_visibility_override: Cell::new(false),
         })
     }
 
@@ -352,6 +358,22 @@ impl WebSession {
             .map_err(|e| JsError::new(&format!("set_var error: {e}")))
     }
 
+    /// Enable the M-2b dev-tooling visibility override (play-from-here). When
+    /// `allow` is `true`, host semantic access to `#@private` definitions —
+    /// `getVar`/`setVar`, `goToPath`, `callFunction` — is permitted:
+    /// enforcement is off. The studio sets this on a "play from here" session
+    /// so it can start a flow at a private knot. Applies immediately and is
+    /// re-applied across `restart`/`reload`. Default off. Mirrors
+    /// `StoryRunner::set_dev_visibility_override`. See `docs/modules-spec.md`
+    /// §4 boundary rule 3.
+    #[wasm_bindgen(js_name = setDevVisibilityOverride)]
+    pub fn set_dev_visibility_override(&self, allow: bool) {
+        self.dev_visibility_override.set(allow);
+        if let Some(session) = self.session.borrow_mut().as_mut() {
+            session.story_mut().set_visibility_enforcement(!allow);
+        }
+    }
+
     /// Move the play head to a path (turn-boundary only, journaled).
     #[expect(
         clippy::needless_pass_by_value,
@@ -521,6 +543,10 @@ impl WebSession {
         if let Some(s) = self.seed.get() {
             story.set_rng_seed(s);
         }
+        // A dev session stays a dev session across hot-reload (play-from-here).
+        if self.dev_visibility_override.get() {
+            story.set_visibility_enforcement(false);
+        }
         let (session, outcome) = brink_runtime::StorySession::replay(
             story,
             &journal,
@@ -559,6 +585,10 @@ impl WebSession {
         );
         if let Some(s) = self.seed.get() {
             story.set_rng_seed(s);
+        }
+        // A dev session stays a dev session across restart (play-from-here).
+        if self.dev_visibility_override.get() {
+            story.set_visibility_enforcement(false);
         }
         let seed64 = self.seed.get().map(seed_to_journal_u64);
         *self.session.borrow_mut() = Some(brink_runtime::StorySession::new(story, seed64));
@@ -600,6 +630,7 @@ impl WebSession {
                 always_deferred: std::collections::BTreeSet::new(),
                 busy: Cell::new(false),
                 last_replay_outcome: RefCell::new(None),
+                dev_visibility_override: Cell::new(false),
             },
             outcome,
         ))

@@ -125,6 +125,14 @@ pub fn check(
             };
             v.flag(vis.range, name);
         }
+        // M-3 (docs/modules-spec.md §5): `#@was` is brink-only, same
+        // superset-parse-then-reject shape as `#@module`/`#@private`/
+        // `#@public`. One flat flag per occurrence (module-level and
+        // definition-level alike) — `hir.was_directives` already covers
+        // every placement.
+        for range in &hir.was_directives {
+            v.flag(*range, "`#@was` directive");
+        }
     }
     out
 }

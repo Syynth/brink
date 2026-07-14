@@ -335,6 +335,7 @@ mod tests {
             module: None,
             imports: Vec::new(),
             visibility: Vec::new(),
+            was_directives: Vec::new(),
         }
     }
 

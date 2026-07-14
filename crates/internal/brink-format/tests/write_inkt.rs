@@ -33,6 +33,27 @@ fn roundtrip_i001_minimal_story() {
     assert_eq!(data, recovered);
 }
 
+#[test]
+fn visibility_roundtrips_through_inkt() {
+    use brink_format::{DefinitionId, DefinitionTag};
+
+    let mut data = i001_data();
+    let mut private_defs = vec![
+        DefinitionId::new(DefinitionTag::GlobalVar, 3),
+        DefinitionId::new(DefinitionTag::Address, 7),
+    ];
+    private_defs.sort_by_key(|id| id.to_raw());
+    data.private_defs = private_defs.clone();
+
+    let mut buf = String::new();
+    brink_format::write_inkt(&data, &mut buf).unwrap();
+    assert!(buf.contains("(visibility"), "inkt text: {buf}");
+
+    let recovered = brink_format::read_inkt(&buf).unwrap();
+    assert_eq!(recovered.private_defs, private_defs);
+    assert_eq!(data, recovered);
+}
+
 /// The T1b literal pool round-trips through `.inkt` text, including nested
 /// array/map entries — this also exercises the `array_value`/`map_value`
 /// grammar rules added alongside it, which fix a pre-existing gap: `Value`
@@ -211,6 +232,40 @@ fn global_with_fn_ref_default_roundtrips() {
 
     let recovered = brink_format::read_inkt(&buf).unwrap();
     assert_eq!(recovered.variables, data.variables);
+}
+
+/// M-3 (`docs/modules-spec.md` §5): the `AliasTable` section
+/// (`(alias_table (alias <old> -> <new>)…)`) round-trips through `.inkt`
+/// text.
+#[test]
+fn alias_table_roundtrips() {
+    use brink_format::{AliasEntry, DefinitionId, DefinitionTag};
+
+    let mut data = i001_data();
+    data.alias_table = vec![
+        AliasEntry {
+            old: DefinitionId::new(DefinitionTag::Address, 0x01),
+            new: DefinitionId::new(DefinitionTag::Address, 0x02),
+        },
+        AliasEntry {
+            old: DefinitionId::new(DefinitionTag::GlobalVar, 0x03),
+            new: DefinitionId::new(DefinitionTag::GlobalVar, 0x04),
+        },
+    ];
+
+    let mut buf = String::new();
+    brink_format::write_inkt(&data, &mut buf).unwrap();
+    assert!(
+        buf.contains("(alias $01_00000000000001 -> $01_00000000000002)"),
+        "{buf}"
+    );
+    assert!(
+        buf.contains("(alias $02_00000000000003 -> $02_00000000000004)"),
+        "{buf}"
+    );
+
+    let recovered = brink_format::read_inkt(&buf).unwrap();
+    assert_eq!(recovered.alias_table, data.alias_table);
 }
 
 /// #742: a `Closure` default (`(closure <def_id> (val|ref <name> <value>)…)`)

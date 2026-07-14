@@ -50,6 +50,10 @@ pub struct DeclaredSymbol {
     /// Explicit `#@private`/`#@public` override on the declaration, if any
     /// (M-2, docs/modules-spec.md §4). `None` means "module default".
     pub visibility: Option<super::VisibilityMark>,
+    /// The definition's old name and directive range, from a `#@was(old_name)`
+    /// attached to this declaration (M-3, docs/modules-spec.md §5). `None`
+    /// means no rename recorded.
+    pub was: Option<(String, TextRange)>,
 }
 
 /// A local variable (param or temp) scoped to a container.

@@ -34,6 +34,7 @@ function fakeSession(overrides: Record<string, unknown> = {}): Record<string, un
     restart: vi.fn(),
     free: vi.fn(),
     goToPath: vi.fn(),
+    setDevVisibilityOverride: vi.fn(),
     debugSnapshot: vi.fn(() => null),
     onJournalDirty: vi.fn(() => () => {}),
     exportJournal: vi.fn(() => ({ version: 1, program_checksum: 0, events: [], truncated: false })),

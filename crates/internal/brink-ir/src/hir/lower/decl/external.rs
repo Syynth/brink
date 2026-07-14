@@ -65,6 +65,15 @@ impl DeclareSymbols for ast::ExternalDecl {
         if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
             sink.set_visibility(SymbolKind::External, &name.text, vis);
         }
+        if let Some((old_name, was_range)) =
+            super::super::directive::was_from_directives(&dirs, sink)
+        {
+            if old_name == name.text {
+                sink.diagnose(was_range, DiagnosticCode::E095);
+            } else {
+                sink.set_was(SymbolKind::External, &name.text, old_name, was_range);
+            }
+        }
 
         Ok(ExternalDecl {
             ptr: ast::AstPtr::new(self),

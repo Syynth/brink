@@ -7,9 +7,10 @@ use crate::codec::{
     crc32, write_def_id, write_i32, write_str, write_u8, write_u16, write_u32, write_u64,
 };
 use crate::definition::{
-    AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef, ScopeLineTable, StructShapeDef,
+    AddressDef, AddressPath, AliasEntry, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry,
+    ListDef, ListItemDef, ScopeLineTable, StructShapeDef,
 };
+use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::story::StoryData;
 use crate::value::{ListValue, MapKey, Value, ValueType};
@@ -28,75 +29,93 @@ use super::{
 #[expect(clippy::cast_possible_truncation)]
 pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
     let base = buf.len();
-    let header_size = HEADER_PREAMBLE + SECTION_COUNT as usize * SECTION_ENTRY_SIZE;
+
+    // The `Visibility` section (M-2b, tag `0x0E`) is **optional**: emitted
+    // only when the story has `#@private` definitions. All-public stories —
+    // the entire pre-modules world — omit it, so their offset table stays
+    // at `SECTION_COUNT` entries (which now includes the mandatory M-3
+    // `AliasTable` section, always present — possibly empty — from v5
+    // onward; see `SectionKind::AliasTable`).
+    let has_visibility = !story.private_defs.is_empty();
+    let section_count = SECTION_COUNT as usize + usize::from(has_visibility);
+    let header_size = HEADER_PREAMBLE + section_count * SECTION_ENTRY_SIZE;
 
     // Write placeholder header (zeros) — we'll patch it after writing sections.
     buf.resize(base + header_size, 0);
 
-    // Track section offsets as we write each section.
-    let section_kinds = [
+    // Track (kind, offset) pairs as we write each section, in canonical
+    // tag order. The offset table is self-describing (count + per-entry tag),
+    // so a conditionally-omitted section is fully readable.
+    let mut sections: Vec<(SectionKind, u32)> = Vec::with_capacity(section_count);
+
+    macro_rules! section {
+        ($kind:expr, $write:expr) => {{
+            let offset = (buf.len() - base) as u32;
+            $write;
+            sections.push(($kind, offset));
+        }};
+    }
+
+    section!(
         SectionKind::NameTable,
+        write_section_name_table(&story.name_table, buf)
+    );
+    section!(
         SectionKind::Variables,
+        write_section_variables(&story.variables, buf)
+    );
+    section!(
         SectionKind::ListDefs,
+        write_section_list_defs(&story.list_defs, buf)
+    );
+    section!(
         SectionKind::ListItems,
+        write_section_list_items(&story.list_items, buf)
+    );
+    section!(
         SectionKind::Externals,
+        write_section_externals(&story.externals, buf)
+    );
+    section!(
         SectionKind::Containers,
+        write_section_containers(&story.containers, buf)
+    );
+    section!(
         SectionKind::LineTables,
+        write_section_line_tables(&story.line_tables, buf)
+    );
+    section!(
         SectionKind::Labels,
+        write_section_addresses(&story.addresses, buf)
+    );
+    section!(
         SectionKind::ListLiterals,
+        write_section_list_literals(&story.list_literals, buf)
+    );
+    section!(
         SectionKind::AddressPaths,
+        write_section_address_paths(&story.address_paths, buf)
+    );
+    section!(
         SectionKind::LiteralPool,
+        write_section_literal_pool(&story.literal_pool, buf)
+    );
+    section!(
         SectionKind::StructShapes,
-    ];
-    let mut section_offsets = [0u32; 12];
-
-    // 1. NameTable
-    section_offsets[0] = (buf.len() - base) as u32;
-    write_section_name_table(&story.name_table, buf);
-
-    // 2. Variables
-    section_offsets[1] = (buf.len() - base) as u32;
-    write_section_variables(&story.variables, buf);
-
-    // 3. ListDefs
-    section_offsets[2] = (buf.len() - base) as u32;
-    write_section_list_defs(&story.list_defs, buf);
-
-    // 4. ListItems
-    section_offsets[3] = (buf.len() - base) as u32;
-    write_section_list_items(&story.list_items, buf);
-
-    // 5. Externals
-    section_offsets[4] = (buf.len() - base) as u32;
-    write_section_externals(&story.externals, buf);
-
-    // 6. Containers
-    section_offsets[5] = (buf.len() - base) as u32;
-    write_section_containers(&story.containers, buf);
-
-    // 7. LineTables
-    section_offsets[6] = (buf.len() - base) as u32;
-    write_section_line_tables(&story.line_tables, buf);
-
-    // 8. Addresses (Labels section)
-    section_offsets[7] = (buf.len() - base) as u32;
-    write_section_addresses(&story.addresses, buf);
-
-    // 9. ListLiterals
-    section_offsets[8] = (buf.len() - base) as u32;
-    write_section_list_literals(&story.list_literals, buf);
-
-    // 10. AddressPaths
-    section_offsets[9] = (buf.len() - base) as u32;
-    write_section_address_paths(&story.address_paths, buf);
-
-    // 11. LiteralPool
-    section_offsets[10] = (buf.len() - base) as u32;
-    write_section_literal_pool(&story.literal_pool, buf);
-
-    // 12. StructShapes (TM-4)
-    section_offsets[11] = (buf.len() - base) as u32;
-    write_section_struct_shapes(&story.struct_shapes, buf);
+        write_section_struct_shapes(&story.struct_shapes, buf)
+    );
+    if has_visibility {
+        section!(
+            SectionKind::Visibility,
+            write_section_visibility(&story.private_defs, buf)
+        );
+    }
+    // AliasTable (M-3) is mandatory — always present (possibly empty) from
+    // v5 onward, unlike the optional `Visibility` section above.
+    section!(
+        SectionKind::AliasTable,
+        write_section_alias_table(&story.alias_table, buf)
+    );
 
     let file_size = (buf.len() - base) as u32;
     let checksum = crc32(&buf[base + header_size..]);
@@ -105,18 +124,18 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
     let h = &mut buf[base..];
     h[0..4].copy_from_slice(MAGIC);
     h[4..6].copy_from_slice(&VERSION.to_le_bytes());
-    h[6] = SECTION_COUNT;
+    h[6] = section_count as u8;
     h[7] = 0; // reserved
     h[8..12].copy_from_slice(&file_size.to_le_bytes());
     h[12..16].copy_from_slice(&checksum.to_le_bytes());
 
-    for (i, kind) in section_kinds.iter().enumerate() {
+    for (i, (kind, offset)) in sections.iter().enumerate() {
         let entry_base = HEADER_PREAMBLE + i * SECTION_ENTRY_SIZE;
         h[entry_base] = *kind as u8;
         h[entry_base + 1] = 0; // reserved
         h[entry_base + 2] = 0;
         h[entry_base + 3] = 0;
-        h[entry_base + 4..entry_base + 8].copy_from_slice(&section_offsets[i].to_le_bytes());
+        h[entry_base + 4..entry_base + 8].copy_from_slice(&offset.to_le_bytes());
     }
 }
 
@@ -239,6 +258,17 @@ pub fn write_section_address_paths(address_paths: &[AddressPath], buf: &mut Vec<
     for ap in address_paths {
         write_u16(buf, ap.path.0);
         write_def_id(buf, ap.target);
+    }
+}
+
+/// Write the visibility section (no header framing): a count followed by the
+/// `DefinitionId` of every `#@private` definition (M-2b). Callers only emit
+/// this section when `private_defs` is non-empty.
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_visibility(private_defs: &[DefinitionId], buf: &mut Vec<u8>) {
+    write_u32(buf, private_defs.len() as u32);
+    for id in private_defs {
+        write_def_id(buf, *id);
     }
 }
 
@@ -467,6 +497,25 @@ pub fn write_section_struct_shapes(struct_shapes: &[StructShapeDef], buf: &mut V
         for field in &shape.fields {
             write_u16(buf, field.0);
         }
+    }
+}
+
+/// Section-local encoding version for `AliasTable` (`docs/modules-spec.md`
+/// §5) — independent of the `.inkb` format `VERSION`, so the row encoding
+/// can change without another whole-format bump.
+pub(crate) const ALIAS_TABLE_SECTION_VERSION: u8 = 1;
+
+/// Write the M-3 `AliasTable` section (no header framing): a one-byte
+/// section-local version, then a flat list of old→new `DefinitionId` pairs
+/// (`docs/modules-spec.md` §5). Entries are written in the order given —
+/// callers sort by `old` for the runtime's binary-search lookup.
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_alias_table(entries: &[AliasEntry], buf: &mut Vec<u8>) {
+    write_u8(buf, ALIAS_TABLE_SECTION_VERSION);
+    write_u32(buf, entries.len() as u32);
+    for entry in entries {
+        write_def_id(buf, entry.old);
+        write_def_id(buf, entry.new);
     }
 }
 

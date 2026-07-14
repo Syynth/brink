@@ -3,7 +3,7 @@
 
 WHITESPACE = _{ " " | "\t" | NEWLINE }
 
-story = { SOI ~ "(" ~ "story" ~ story_checksum? ~ name_table? ~ globals? ~ lists? ~ list_items? ~ externals? ~ addresses? ~ address_paths? ~ list_literals? ~ literal_pool? ~ container* ~ ")" ~ EOI }
+story = { SOI ~ "(" ~ "story" ~ story_checksum? ~ name_table? ~ globals? ~ lists? ~ list_items? ~ externals? ~ addresses? ~ address_paths? ~ list_literals? ~ literal_pool? ~ visibility? ~ alias_table? ~ container* ~ ")" ~ EOI }
 story_checksum = { "checksum=" ~ hex_literal }
 
 // ── Name table ──────────────────────────────────────────────────────────────
@@ -49,6 +49,11 @@ address_entry = { "(" ~ "address" ~ def_id ~ "->" ~ def_id ~ "+" ~ integer ~ ")"
 address_paths = { "(" ~ "address_paths" ~ address_path_entry* ~ ")" }
 address_path_entry = { "(" ~ "path" ~ integer ~ "->" ~ def_id ~ ")" }
 
+// ── Alias table (M-3, docs/modules-spec.md §5) ────────────────────────────────
+
+alias_table = { "(" ~ "alias_table" ~ alias_entry* ~ ")" }
+alias_entry = { "(" ~ "alias" ~ def_id ~ "->" ~ def_id ~ ")" }
+
 // ── List literals ────────────────────────────────────────────────────────────
 
 list_literals = { "(" ~ "list_literals" ~ list_literal_entry* ~ ")" }
@@ -57,6 +62,11 @@ list_literal_entry = { "(" ~ "list" ~ list_value_items ~ list_value_origins ~ ")
 // ── Literal pool (T1b, docs/format-v4-rfc.md §2) ─────────────────────────────
 
 literal_pool = { "(" ~ "literal_pool" ~ value* ~ ")" }
+
+// ── Visibility (M-2b, docs/modules-spec.md §4) ───────────────────────────────
+
+visibility = { "(" ~ "visibility" ~ private_entry* ~ ")" }
+private_entry = { "(" ~ "private" ~ def_id ~ ")" }
 
 // ── Containers ──────────────────────────────────────────────────────────────
 

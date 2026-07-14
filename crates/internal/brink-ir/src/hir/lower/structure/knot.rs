@@ -89,6 +89,15 @@ pub(super) fn lower_knot(
         if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
             sink.set_visibility(crate::SymbolKind::Knot, &name_text, vis);
         }
+        if let Some((old_name, was_range)) =
+            super::super::directive::was_from_directives(&dirs, sink)
+        {
+            if old_name == name_text {
+                sink.diagnose(was_range, DiagnosticCode::E095);
+            } else {
+                sink.set_was(crate::SymbolKind::Knot, &name_text, old_name, was_range);
+            }
+        }
         local
     });
 
