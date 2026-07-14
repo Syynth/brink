@@ -1182,7 +1182,17 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         )?)),
         "tunnel_return" => Ok(Opcode::TunnelReturn),
         "tunnel_call_variable" => Ok(Opcode::TunnelCallVariable),
-        "call_variable" => Ok(Opcode::CallVariable),
+        "call_variable" => {
+            // "argc=N" is parsed as a kv_operand. Extract the value after "=".
+            let kv_str = operand_str(&operands, 0, mnemonic)?;
+            let argc_str = kv_str.strip_prefix("argc=").unwrap_or(kv_str);
+            let argc: u8 = argc_str.parse().map_err(|_| InktParseError {
+                message: format!("invalid argc in call_variable: {kv_str}"),
+                line: 0,
+                col: 0,
+            })?;
+            Ok(Opcode::CallVariable(argc))
+        }
 
         // Threads
         "thread_call" => Ok(Opcode::ThreadCall(parse_operand_def_id(

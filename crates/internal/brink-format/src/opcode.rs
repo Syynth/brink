@@ -515,7 +515,16 @@ pub enum Opcode {
     TunnelCall(DefinitionId),
     TunnelReturn,
     TunnelCallVariable,
-    CallVariable,
+    /// Call through a variable holding either a divert target (classic ink
+    /// function-via-variable) or a function value (T1c-2 direct-call form
+    /// `f(args…)`) — both share this dispatch site. `argc` is the exact
+    /// number of args codegen pushed before the callee at this call site
+    /// (never derived from the resolved target's arity at runtime — issue
+    /// #721: doing so made a gradual-mode direct-call arity mismatch leave
+    /// a stray value on the stack instead of faulting). The divert-target
+    /// arm ignores `argc` (unchanged oracle-verified behavior); the
+    /// function-value arm pops exactly `argc` supplied args.
+    CallVariable(u8),
 
     // ── Threads ─────────────────────────────────────────────────────────
     ThreadCall(DefinitionId),
@@ -847,7 +856,10 @@ impl Opcode {
             }
             Self::TunnelReturn => write_u8(buf, TUNNEL_RETURN),
             Self::TunnelCallVariable => write_u8(buf, TUNNEL_CALL_VARIABLE),
-            Self::CallVariable => write_u8(buf, CALL_VARIABLE),
+            Self::CallVariable(argc) => {
+                write_u8(buf, CALL_VARIABLE);
+                write_u8(buf, argc);
+            }
 
             // Threads
             Self::ThreadCall(id) => {
@@ -1103,7 +1115,7 @@ impl Opcode {
             TUNNEL_CALL => Self::TunnelCall(read_def_id(buf, offset)?),
             TUNNEL_RETURN => Self::TunnelReturn,
             TUNNEL_CALL_VARIABLE => Self::TunnelCallVariable,
-            CALL_VARIABLE => Self::CallVariable,
+            CALL_VARIABLE => Self::CallVariable(read_u8(buf, offset)?),
 
             // Threads
             THREAD_CALL => Self::ThreadCall(read_def_id(buf, offset)?),
@@ -1372,7 +1384,8 @@ mod tests {
         roundtrip(&Opcode::TunnelCall(test_id()));
         roundtrip(&Opcode::TunnelReturn);
         roundtrip(&Opcode::TunnelCallVariable);
-        roundtrip(&Opcode::CallVariable);
+        roundtrip(&Opcode::CallVariable(0));
+        roundtrip(&Opcode::CallVariable(3));
     }
 
     #[test]
