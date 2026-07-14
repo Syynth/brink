@@ -16,9 +16,14 @@
 //! [`resolutions_index_query`] (index + resolutions, no diagnostics),
 //! [`per_file_diagnostics_query`]/[`contributor_diagnostics_query`] (the
 //! per-file validate/dialect_gate/annotation-content split),
-//! [`whole_project_diagnostics_query`] (`external_check` + strict, still
-//! whole-project), and [`analysis_diagnostics_query`] (every diagnostic
-//! source, merged). See the "FG-3" section below for the full rationale.
+//! [`whole_project_diagnostics_query`] (now a thin aggregator — issue #750
+//! decomposed the external-check family into [`inline_docs_query`] /
+//! [`external_meta_query`] / [`call_site_metas_query`] and the per-file
+//! [`value_meta_query`] / [`call_site_diagnostics_query`]; only the M-2
+//! modules pass and the strict typed-mode pass remain genuinely
+//! whole-project), and
+//! [`analysis_diagnostics_query`] (every diagnostic source, merged). See
+//! the "FG-3" section below for the full rationale.
 //!
 //! Layer 3 (lowering/codegen, whole-project in this slice): [`lir_query`],
 //! [`story_data_query`], and the per-file [`diagnostics_query`] — both now
@@ -69,8 +74,10 @@ mod analysis;
 
 pub use analysis::ResolvedProject;
 pub(crate) use analysis::{
-    analysis_diagnostics_query, analysis_query, contributor_diagnostics_query, diagnostics_query,
-    per_file_diagnostics_query, resolutions_index_query, whole_project_diagnostics_query,
+    analysis_diagnostics_query, analysis_query, call_site_diagnostics_query, call_site_metas_query,
+    contributor_diagnostics_query, diagnostics_query, external_meta_query, inline_docs_query,
+    per_file_diagnostics_query, resolutions_index_query, value_meta_query,
+    whole_project_diagnostics_query,
 };
 
 // ─── Database ────────────────────────────────────────────────────────
@@ -126,6 +133,21 @@ impl Default for BrinkDatabase {
                 .ingredient::<resolutions_index_query>()
                 .ingredient::<per_file_diagnostics_query>()
                 .ingredient::<contributor_diagnostics_query>()
+                // FG-3 completion (issue #750): the external-check family,
+                // decomposed. inline_docs_query (project doc merge, Eq
+                // cutoff) + external_meta_query (index-driven E039/E040 +
+                // enrichment, no HIR) + call_site_metas_query (the
+                // range-free name→meta cutoff seam) feed the per-file
+                // value_meta_query / call_site_diagnostics_query, so a body
+                // edit in file Y re-runs only Y's own value-meta and
+                // call-site walks; whole_project_diagnostics_query is now a
+                // thin aggregator (plus the genuinely whole-project M-2
+                // modules pass and strict pass).
+                .ingredient::<inline_docs_query>()
+                .ingredient::<external_meta_query>()
+                .ingredient::<call_site_metas_query>()
+                .ingredient::<value_meta_query>()
+                .ingredient::<call_site_diagnostics_query>()
                 .ingredient::<whole_project_diagnostics_query>()
                 .ingredient::<analysis_diagnostics_query>()
                 .ingredient::<analysis_query>()
@@ -368,6 +390,14 @@ pub(crate) struct DefKey<'db> {
 /// down to the one matching `SourceFile` before calling `lowered_query`
 /// means the only per-file dependency recorded is the declaring file's own —
 /// a body edit elsewhere in the project no longer invalidates this memo.
+///
+/// **Manifest dependency (T1d-2b, issue #774, docs/t1d-spec.md §3).** Also
+/// reads `project.analysis_options(db).host_manifest` so `handle<K>`
+/// annotations resolve to `Ty::Handle(K)` here — the registered manifest is
+/// project-wide, host-set config, not derived from any file's edits, so
+/// reading it is the same coarse dependency shape `per_file_diagnostics_query`
+/// already reads `host_manifest` at, not a reintroduction of whole-project
+/// per-file churn.
 #[salsa::tracked]
 pub(crate) fn signature_query<'db>(
     db: &'db dyn salsa::Database,
@@ -383,7 +413,8 @@ pub(crate) fn signature_query<'db>(
         .filter(|f| f.file_id(db) == declaring_file)
         .map(|f| (f.file_id(db), &lowered_query(db, *f).hir))
         .collect();
-    brink_analyzer::signature(def_id, index, &hir_refs)
+    let opts = project.analysis_options(db);
+    brink_analyzer::signature(def_id, index, &hir_refs, opts.host_manifest.as_ref())
 }
 
 // ─── Layer 2/3: type inference (TM-1, advisory-only) ──────────────────
@@ -504,6 +535,14 @@ pub(crate) fn def_body_query<'db>(
 /// exactly the same declaring-file-only dependency edge
 /// [`def_body_query`] uses). Also the per-def global *read set* a future T2
 /// effect row needs — see `brink_analyzer::referenced_globals`'s docs.
+///
+/// Passes `None` for `brink_analyzer::referenced_globals`'s manifest
+/// parameter (T1d-2b, issue #774) deliberately: this pass discards every
+/// computed type (only the referenced-def-id *set* survives), so a
+/// registered manifest can never change its output — reading
+/// `project.analysis_options(db)` here would only add a needless
+/// project-wide invalidation edge to the FG-2.1 narrow per-def dependency
+/// this query exists to keep narrow, for zero behavioral benefit.
 #[salsa::tracked]
 pub(crate) fn referenced_globals_query<'db>(
     db: &'db dyn salsa::Database,
@@ -529,6 +568,7 @@ pub(crate) fn referenced_globals_query<'db>(
         &[(declaring_file, hir)],
         index,
         resolutions,
+        None,
     ))
 }
 
@@ -544,6 +584,12 @@ pub(crate) fn referenced_globals_query<'db>(
 /// project file's — plus the index-sourced [`inferable_defs_query`]. No
 /// globals map at all (pass 1 discards every computed type; see
 /// `brink_analyzer::call_edges`'s docs).
+///
+/// Passes `None` for `brink_analyzer::call_edges`'s manifest parameter
+/// (T1d-2b, issue #774) — same rationale as [`referenced_globals_query`]:
+/// pass 1 discards every computed type, so the manifest can never change
+/// this query's output, and reading `project.analysis_options(db)` here
+/// would only widen this per-def query's dependency edge for no benefit.
 #[salsa::tracked]
 pub(crate) fn call_edges_query<'db>(
     db: &'db dyn salsa::Database,
@@ -571,6 +617,7 @@ pub(crate) fn call_edges_query<'db>(
         index,
         resolutions,
         inferable,
+        None,
     ))
 }
 
@@ -644,6 +691,22 @@ pub(crate) struct SolvedScc {
 /// existing per-declaring-file [`signature_query`] (never a whole-project
 /// globals scan). `inferable`: the same index-sourced
 /// [`inferable_defs_query`] `call_edges_query` uses.
+///
+/// **Manifest dependency (T1d-2b, issue #774, docs/t1d-spec.md §3).** Also
+/// reads `project.analysis_options(db).host_manifest`, threaded to
+/// [`brink_analyzer::solve_scc`] so a `handle<K>` param/return/temp
+/// annotation resolves to `Ty::Handle(K)` during the per-SCC body-uses
+/// solve — the seam that makes strict-mode handle-kind rejection reachable
+/// end-to-end (the #767 acceptance criterion): once two locals of
+/// different declared handle kinds are unified together, the #627 lattice
+/// folds them to `Ty::Conflicted`, and `strict::check`'s pre-existing
+/// `E066` classification reports it — this query is what was missing to
+/// let a genuine `Ty::Handle` ever reach that lattice from body-usage
+/// inference through the salsa-memoized pipeline. Same coarse project-wide
+/// dependency shape [`signature_query`]/`per_file_diagnostics_query`
+/// already read `host_manifest` at — unlike [`call_edges_query`]/
+/// [`referenced_globals_query`] (whose *outputs* the manifest can never
+/// change), this query's output genuinely depends on it.
 #[salsa::tracked]
 pub(crate) fn solve_scc_query<'db>(
     db: &'db dyn salsa::Database,
@@ -724,6 +787,7 @@ pub(crate) fn solve_scc_query<'db>(
         }
     }
 
+    let opts = project.analysis_options(db);
     let (signatures, bodies) = brink_analyzer::solve_scc(
         batch,
         &defs,
@@ -732,6 +796,7 @@ pub(crate) fn solve_scc_query<'db>(
         &globals,
         inferable,
         known_sigs,
+        opts.host_manifest.as_ref(),
     );
     Arc::new(SolvedScc { signatures, bodies })
 }

@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use brink_format::DefinitionId;
 use brink_ir::hir::{Expr, HirFile};
-use brink_ir::{FileId, ParamInfo, SymbolIndex, SymbolKind};
+use brink_ir::{FileId, HostManifest, ParamInfo, SymbolIndex, SymbolKind};
 
 use crate::annotations::resolve as resolve_annotation;
 use crate::external_check::{InferredType, infer_literal_type};
@@ -136,6 +136,7 @@ fn declared_fn_type(
     index: &SymbolIndex,
     files: &[(FileId, &HirFile)],
     names: &crate::annotations::TypeNames,
+    manifest: Option<&HostManifest>,
 ) -> Option<Ty> {
     // Annotation wins over inference (TM-2 firewall) — same rule as
     // `value_type_with_annotation_override`, but reading the full `Ty`
@@ -187,7 +188,7 @@ fn declared_fn_type(
     // signature only (never its body) — `#fn` targets are always knots, so
     // this never re-enters the `Variable`/`Constant` arms that call
     // `declared_fn_type` in the first place.
-    let target_sig = signature(target_def, index, files)?;
+    let target_sig = signature(target_def, index, files, manifest)?;
     let remaining: Vec<Ty> = target_sig
         .param_annotations
         .iter()
@@ -215,6 +216,7 @@ pub fn signature(
     def: DefinitionId,
     index: &SymbolIndex,
     files: &[(FileId, &HirFile)],
+    manifest: Option<&HostManifest>,
 ) -> Option<Arc<Sig>> {
     let info = index.symbols.get(&def)?;
     let hir = files
@@ -231,15 +233,17 @@ pub fn signature(
         // `list<L>`/declared-struct annotations resolve nominally against
         // every declared `LIST`/`STRUCT` in the project (spec §2/§3, TM-4b
         // §6) — computed lazily, only when this def actually has a
-        // knot/stitch/var to annotate below. No `HostManifest` reaches
-        // `signature()` in this slice (T1d-2, docs/t1d-spec.md §3 —
-        // threading a manifest through the salsa-memoized per-def
-        // `signature_query` is deliberately out of scope, see the PR
-        // description), so `handle<K>` annotations never resolve through
-        // this seam yet — `TypeNames::new` with `None` degrades to an empty
+        // knot/stitch/var to annotate below. T1d-2b (issue #774): the
+        // registered `HostManifest` now reaches `signature()` too (threaded
+        // by `brink-db`'s per-def `signature_query`, the same coarse
+        // project-wide dependency shape `per_file_diagnostics_query` already
+        // reads `host_manifest` at), so `handle<K>` annotations resolve
+        // against the manifest's declared kind vocabulary here exactly like
+        // `list<L>`/`STRUCT` resolve against the project's declared names —
+        // `None` (no manifest registered) still degrades to an empty
         // handle-kind set, same "unresolved -> silent" contract every other
         // unrecognized name already gets.
-        let names = || crate::annotations::TypeNames::new(index, None);
+        let names = || crate::annotations::TypeNames::new(index, manifest);
         match info.kind {
             SymbolKind::Variable => {
                 if let Some(v) = hir.variables.iter().find(|v| v.name.text == info.name) {
@@ -253,8 +257,14 @@ pub fn signature(
                     // T1c follow-up (issue #712): `Ty::Fn` has no
                     // `InferredType` home, so it's carried on its own field
                     // — see `Sig::fn_type`.
-                    fn_type =
-                        declared_fn_type(&v.value, v.annotation.as_ref(), index, files, &names());
+                    fn_type = declared_fn_type(
+                        &v.value,
+                        v.annotation.as_ref(),
+                        index,
+                        files,
+                        &names(),
+                        manifest,
+                    );
                 }
             }
             SymbolKind::Constant => {
@@ -267,8 +277,14 @@ pub fn signature(
                         &names(),
                     );
                     // T1c follow-up (issue #712) — see the `Variable` arm.
-                    fn_type =
-                        declared_fn_type(&c.value, c.annotation.as_ref(), index, files, &names());
+                    fn_type = declared_fn_type(
+                        &c.value,
+                        c.annotation.as_ref(),
+                        index,
+                        files,
+                        &names(),
+                        manifest,
+                    );
                 }
             }
             SymbolKind::Knot => {
