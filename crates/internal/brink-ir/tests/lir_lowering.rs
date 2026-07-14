@@ -3743,17 +3743,24 @@ fn chained_field_write_emits_e074() {
     assert_eq!(e074.code.severity(), brink_ir::Severity::Error);
 }
 
-// NOTE (scopeNotes): a mixed chain written as `arr[i].field = v` (an
-// `Index`-based root followed by a `.field` write) cannot be exercised
-// end-to-end through the parser today — `arr[0].x = 2.0` fails to parse as
-// an *assignment* at all (a pre-existing grammar gap: the `.field` postfix
-// grammar's assignment-target position doesn't yet recognize an `Index`
-// base, producing a generic "expression is missing an operand" (E015)
-// parse error instead of a `FieldAccessExpr` target) — a PR #665/#668
-// grammar-layer issue, out of TM-4c's scope. `try_lower_field_assignment`'s
-// `hir::Expr::FieldAccess` branch (blocks.rs) still rejects that shape with
-// E074 by inspection — verified by code review, not by an integration test
-// here, since the grammar can't produce the input yet.
+#[test]
+fn mixed_index_then_field_write_emits_e074() {
+    // #674: `arr[i].field = v` (an `Index`-based root followed by a
+    // `.field` write) now parses as a real `FIELD_ACCESS_EXPR` assignment
+    // target (the grammar gap tracked in the NOTE this test replaces —
+    // formerly a generic E015 parse error, PR #665/#668's pre-existing
+    // gap). LIR still fences it off as a chained/mixed field write: this
+    // pins that `E074` actually fires end-to-end through the parser, not
+    // just by code-review inspection of `try_lower_field_assignment`'s
+    // `hir::Expr::FieldAccess` branch (blocks.rs).
+    let src = "VAR arr = #[1, 2, 3]\n~ arr[0].x = 2.0\nHello.\n";
+    let (_program, diags) = lower_ink_with_warnings(src);
+    let e074 = find_diag(&diags, brink_ir::DiagnosticCode::E074).expect(
+        "expected E074 for a mixed index-then-field write (arr[0].x = ...), now reachable \
+         through the parser",
+    );
+    assert_eq!(e074.code.severity(), brink_ir::Severity::Error);
+}
 
 #[test]
 fn single_level_field_write_lowers_via_take_make_mut_write_back() {

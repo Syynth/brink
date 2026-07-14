@@ -100,6 +100,34 @@ fn block_indexed_assignment() {
     check("~ {\ngrid[y][x] = v\n}\n");
 }
 
+/// `arr[i].field = v` — a mixed index-then-field lvalue (issue #674). The
+/// grammar must recognize this as an `ASSIGNMENT`, not fall through to a
+/// bare expression followed by a dangling `= v`. LIR still rejects it as a
+/// chained/mixed field write (`E074`) — this test only pins the grammar.
+#[test]
+fn block_index_then_field_assignment() {
+    check("~ {\narr[i].x = 2.0\n}\n");
+}
+
+/// Same shape, compound assignment operator.
+#[test]
+fn block_index_then_field_compound_assignment() {
+    check("~ {\narr[i].x += 1.0\n}\n");
+}
+
+/// The classic top-level `~` logic line (not a `~ { … }` block) must accept
+/// the same lvalue shape.
+#[test]
+fn top_level_index_then_field_assignment() {
+    check("~ arr[i].x = 2.0\n");
+}
+
+/// Chained further: `arr[i].x[j] = v` — index, field, index again.
+#[test]
+fn block_index_field_index_assignment() {
+    check("~ {\narr[i].x[j] = v\n}\n");
+}
+
 #[test]
 fn block_array_literal_for_loop() {
     check("~ {\nfor item in #[1, 2, 3] {\ntotal = total + item\n}\n}\n");
@@ -120,6 +148,17 @@ fn block_keywords_are_contextual_not_reserved() {
 #[test]
 fn insta_block() {
     let p = parse("~ {\ntemp x = 0\nif x > 0 {\nx = x - 1\n}\n}\n");
+    insta::assert_snapshot!(format!("{:#?}", p.syntax()));
+}
+
+/// `arr[i].x = 2.0` (issue #674) — pins the CST shape: an `ASSIGNMENT`
+/// target of `FIELD_ACCESS_EXPR { INDEX_EXPR { … }, IDENTIFIER }`, mirroring
+/// the equivalent expression-position shape (see
+/// `insta_field_access_after_struct_literal` in the expression test suite).
+#[test]
+fn insta_index_then_field_assignment() {
+    let p = parse("~ arr[i].x = 2.0\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     insta::assert_snapshot!(format!("{:#?}", p.syntax()));
 }
 
