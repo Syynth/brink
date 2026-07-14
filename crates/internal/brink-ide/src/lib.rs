@@ -7,6 +7,7 @@ pub mod dir_rename;
 pub mod document;
 pub mod extract;
 pub mod file_rename;
+pub mod fn_value_hover;
 pub mod folding;
 pub mod formatting;
 pub mod hir_projection;

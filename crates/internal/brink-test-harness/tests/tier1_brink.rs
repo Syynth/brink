@@ -366,6 +366,7 @@ fn every_case_directory_has_a_test() {
         "fn-value-call-forms",
         "fn-value-ref-mutation",
         "fn-value-bind-chain",
+        "fn-value-bind-triple-chain",
         "ref-call-with-block-temp",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
@@ -1266,6 +1267,21 @@ fn fn_value_bind_chains_and_display_form() {
     assert_case("fn-value-bind-chain");
 }
 
+// ── T1c-4 (#702): mechanical tail — deeper bind-of-bind corpus growth ────
+
+#[test]
+fn fn_value_bind_of_bind_fully_curries_to_a_zero_arg_call() {
+    // `fn-value-bind-chain` already proves a two-level bind-of-bind
+    // (`g = bind(f, 1)`, `h = bind(g, 2)`). This goes one level further —
+    // three chained `bind` calls over a `ref`-bound three-param target,
+    // each currying one more `val` param, until the bound row exactly
+    // matches the declared arity and the final call supplies zero
+    // additional arguments (`h()`). Proves `bind`'s "consume the head of
+    // the remaining param row" rule composes cleanly across an arbitrary
+    // chain depth, not just two links.
+    assert_case("fn-value-bind-triple-chain");
+}
+
 // ── T1c-2 (#700): gradual-mode dispatch faults (spec §3) ────────────────
 
 /// Run a brink program to completion, returning the first runtime error (if
@@ -1366,6 +1382,51 @@ fn direct_call_with_too_few_args_is_a_turn_terminating_fault() {
     assert!(
         matches!(err, brink_runtime::RuntimeError::FunctionValueArity { .. }),
         "expected FunctionValueArity, got {err:?}"
+    );
+}
+
+// ── T1c-4 (#702): mechanical tail — the remaining fault categories ───────
+//
+// docs/t1c-spec.md §3: "calling a non-function value, or calling with wrong
+// arity or a wrong-typed argument, is a turn-terminating runtime fault" plus
+// the cross-flow ref-`#@local` fault. Non-fn-callee and arity are covered
+// above (T1c-2/T1c-3); these two round out the fault-category checklist.
+
+#[test]
+fn calling_through_a_fn_value_with_a_wrong_typed_argument_is_a_turn_terminating_fault() {
+    // Gradual mode has no fn-value-specific static arg-type check at the
+    // call boundary (spec §3/§4 — that's strict mode's job, and strict-mode
+    // call/bind checking is explicitly out of this pass's scope, #733) — a
+    // wrong-typed argument flows into the body and faults there exactly like
+    // an ordinary direct call would. `square`'s `x * x` faults on a string
+    // argument (`string_op` only defines `Add`/`Equal`/`NotEqual`).
+    let src = "~ temp d = #fn(square)\n~ temp r = d(\"nope\")\nUnreachable {r}.\n-> END\n\n\
+               === function square(x) ===\n~ return x * x\n";
+    let err = run_expecting_fault(src).expect("wrong-typed argument must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::TypeError(_)),
+        "expected TypeError, got {err:?}"
+    );
+}
+
+#[test]
+fn invoking_a_closure_that_ref_binds_a_local_cell_is_a_cross_flow_fault() {
+    // spec §3/#597: a closure that `ref`-binds a `#@local` flow-private cell
+    // is a turn-terminating fault on invocation — T1c ships this instead of
+    // tracking creating-flow identity. `prepare_fn_value_call`'s guard reads
+    // the bound cell's compiled scope bit unconditionally (no creating-flow
+    // identity exists yet to compare against), so a single-flow story
+    // exercises the fault directly — no second flow needed.
+    let src = "#@local\nVAR mood = 10\n\n\
+               ~ temp healer = #fn(heal, mood)\n~ temp r = healer(5)\nUnreachable {r}.\n-> END\n\n\
+               === function heal(ref hp, amount) ===\n~ hp = hp + amount\n~ return hp\n";
+    let err = run_expecting_fault(src).expect("ref-binding a #@local cell must fault on invoke");
+    assert!(
+        matches!(
+            err,
+            brink_runtime::RuntimeError::FunctionValueCrossFlowLocal(_)
+        ),
+        "expected FunctionValueCrossFlowLocal, got {err:?}"
     );
 }
 
@@ -1556,4 +1617,120 @@ Result {r}.
         ),
         "expected FunctionValueRehydrationMismatch, got {err:?}"
     );
+}
+
+// ── T1c-4 (#702): mechanical tail — save/load with fn values *inside* a
+// collection ────────────────────────────────────────────────────────────
+//
+// `fn_value_save_load_invoke_equals_direct_invoke` above proves a fn value
+// held directly in a scalar global survives save/load. Spec §6 makes no
+// carve-out by container — "function values save like every other value" —
+// so this proves the same roundtrip for a fn value sitting *inside* an
+// array and a map, matching the collections' own existing COW/value-copy
+// save/load coverage (`Value::Array`/`Value::Map` have no special-cased
+// serialization path; a `Value::Closure` element rides along like any other
+// element).
+
+/// Same shape as `SAVE_LOAD_SRC` but the global holds an *array* of two fn
+/// values (`#[#fn(double), #fn(double)]`) rather than a bare fn value —
+/// `invoke` reads one element into a `temp` (a plain array index, not a
+/// chained `arr[i](args)` call expression) and calls it from there.
+const SAVE_LOAD_ARRAY_SRC: &str = "\
+=== function double(x) ===
+~ return x + x
+
+VAR stored = 0
+
+=== setup ===
+~ stored = #[#fn(double), #fn(double)]
+Set up.
+-> DONE
+
+=== invoke ===
+~ temp f = stored[1]
+~ temp r = f(21)
+Result {r}.
+-> END
+";
+
+#[test]
+fn fn_value_inside_an_array_save_load_invoke_equals_direct_invoke() {
+    let (program, tables) = compile_and_link(SAVE_LOAD_ARRAY_SRC);
+
+    let mut direct = Story::<DotNetRng>::new(std::sync::Arc::clone(&program), tables.clone());
+    direct.choose_path_string("setup").expect("goto setup");
+    let _ = run_to_end(&mut direct);
+    direct.choose_path_string("invoke").expect("goto invoke");
+    let direct_out = run_to_end(&mut direct);
+
+    let mut src = Story::<DotNetRng>::new(std::sync::Arc::clone(&program), tables.clone());
+    src.choose_path_string("setup").expect("goto setup");
+    let _ = run_to_end(&mut src);
+    let saved = src.save_state();
+
+    let mut loaded = Story::<DotNetRng>::new(program, tables);
+    let report = loaded.load_state(&saved);
+    assert!(
+        report.is_clean(),
+        "save round-trip should reconcile cleanly: {report:?}"
+    );
+    loaded.choose_path_string("invoke").expect("goto invoke");
+    let loaded_out = run_to_end(&mut loaded);
+
+    assert_eq!(
+        direct_out, loaded_out,
+        "save→load→invoke must equal direct invoke for a fn value inside an array",
+    );
+    assert_eq!(loaded_out, "Result 42.\n");
+}
+
+/// Same shape again, a *map* keyed by name instead of an array indexed by
+/// position — proves the roundtrip isn't array-specific.
+const SAVE_LOAD_MAP_SRC: &str = "\
+=== function double(x) ===
+~ return x + x
+
+VAR stored = 0
+
+=== setup ===
+~ stored = #{\"double\": #fn(double)}
+Set up.
+-> DONE
+
+=== invoke ===
+~ temp f = stored[\"double\"]
+~ temp r = f(21)
+Result {r}.
+-> END
+";
+
+#[test]
+fn fn_value_inside_a_map_save_load_invoke_equals_direct_invoke() {
+    let (program, tables) = compile_and_link(SAVE_LOAD_MAP_SRC);
+
+    let mut direct = Story::<DotNetRng>::new(std::sync::Arc::clone(&program), tables.clone());
+    direct.choose_path_string("setup").expect("goto setup");
+    let _ = run_to_end(&mut direct);
+    direct.choose_path_string("invoke").expect("goto invoke");
+    let direct_out = run_to_end(&mut direct);
+
+    let mut src = Story::<DotNetRng>::new(std::sync::Arc::clone(&program), tables.clone());
+    src.choose_path_string("setup").expect("goto setup");
+    let _ = run_to_end(&mut src);
+    let saved = src.save_state();
+
+    let mut loaded = Story::<DotNetRng>::new(program, tables);
+    let report = loaded.load_state(&saved);
+    assert!(
+        report.is_clean(),
+        "save round-trip should reconcile cleanly: {report:?}"
+    );
+    loaded.choose_path_string("invoke").expect("goto invoke");
+    let loaded_out = run_to_end(&mut loaded);
+
+    assert_eq!(
+        direct_out, loaded_out,
+        "save→load→invoke must equal direct invoke for a fn value inside a map",
+    );
+    assert_eq!(loaded_out, "Result 42.\n");
 }
