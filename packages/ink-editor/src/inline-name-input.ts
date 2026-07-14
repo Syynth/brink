@@ -261,9 +261,16 @@ export class InlineNameInput {
     // resolved, so `name` no longer matches the live input. A fresh Enter
     // re-issues against whatever is current.
     const input = this.input;
-    if (input !== null && input.value.trim() === name && result !== null) {
-      this.settleCommit(result, name);
+    if (input === null || input.value.trim() !== name) return;
+    if (result === null) {
+      // No result (query error, e.g. name collision/header crossing/illegal
+      // body): restore the pre-#722 semantics — Enter on a null result
+      // cancels the prompt instead of leaving it open in a dead pending
+      // state (see #722 review).
+      this.cancel();
+      return;
     }
+    this.settleCommit(result, name);
   }
 
   /** Refresh the "⚠ breaks N" badge (hidden when safe) or its pending state. */
