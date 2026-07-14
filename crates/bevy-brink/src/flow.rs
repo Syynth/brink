@@ -90,6 +90,23 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
         self.inner.choose(context, index)
     }
 
+    /// Control whether visibility enforcement is active. When `false`,
+    /// private (`#@private`) definitions can be accessed, enabling
+    /// "play from here" and similar dev-time workflows. Default is `true`.
+    ///
+    /// This mirrors [`FlowInstance::set_visibility_enforcement`] for
+    /// Bevy-integrated flows.
+    pub fn set_visibility_enforcement(&mut self, enforce: bool) {
+        self.inner.set_visibility_enforcement(enforce);
+    }
+
+    /// Whether visibility enforcement is currently on for this flow.
+    /// Returns `true` by default (private definitions are inaccessible).
+    #[must_use]
+    pub fn visibility_enforced(&self) -> bool {
+        self.inner.visibility_enforced()
+    }
+
     /// Step the VM by one line and queue the corresponding observer
     /// event ([`BrinkLineDelivered`], [`BrinkChoicesPresented`],
     /// [`BrinkTurnDone`], or [`BrinkStoryEnded`]) for the entity.
@@ -306,7 +323,7 @@ pub(crate) fn emit_event<M: Send + Sync + 'static>(
 mod tests {
     use super::*;
     use crate::BrinkFlowRequest;
-    use crate::test_support::{add_story_assets, compile_test_story, make_test_app};
+    use crate::test_support::{add_story_assets, compile_test_story, compile_test_story_brink, make_test_app};
     use bevy_app::Update;
     use bevy_asset::Assets;
     use bevy_ecs::prelude::*;
@@ -636,6 +653,52 @@ mod tests {
         app.update();
         let recorded = app.world().resource::<LogReader>().0.clone();
         assert_eq!(recorded, vec![1]);
+    }
+
+    /// Test that `set_visibility_enforcement` and `visibility_enforced`
+    /// control access to private definitions. With enforcement on (default),
+    /// private knots are rejected. With enforcement off, they're allowed.
+    #[test]
+    fn visibility_enforcement_controls_private_access() {
+        let (program, tables, ctx) = compile_test_story_brink(
+            "#@private\nVAR secret = 5\n\
+             == start ==\nPublic\n-> DONE\n\
+             == private_knot ==\n#@private\nSecret\n-> DONE\n",
+        );
+        let mut app = make_test_app();
+        let story = add_story_assets(&mut app, program, tables, ctx);
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+
+        app.update();
+
+        // Get a mutable reference to the BrinkFlow and test enforcement
+        let mut flow = app
+            .world_mut()
+            .get_mut::<BrinkFlow<()>>(entity)
+            .expect("entity should have BrinkFlow");
+
+        // By default, visibility enforcement should be on
+        assert!(
+            flow.visibility_enforced(),
+            "visibility enforcement should be on by default"
+        );
+
+        // Disable visibility enforcement
+        flow.set_visibility_enforcement(false);
+        assert!(
+            !flow.visibility_enforced(),
+            "visibility enforcement should be off after set_visibility_enforcement(false)"
+        );
+
+        // Re-enable it
+        flow.set_visibility_enforcement(true);
+        assert!(
+            flow.visibility_enforced(),
+            "visibility enforcement should be back on after set_visibility_enforcement(true)"
+        );
     }
 
     /// Sanity test: when only the asset event fires (with content
