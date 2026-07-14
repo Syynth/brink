@@ -322,6 +322,19 @@ impl Program {
             .is_some_and(|id| self.is_private(id))
     }
 
+    /// Whether the container at `idx` is `#@private`. Used by
+    /// [`FlowInstance::begin_function_eval`](crate::FlowInstance::begin_function_eval)/
+    /// [`begin_function_value_eval`](crate::FlowInstance::begin_function_value_eval),
+    /// which receive an already-resolved `container_idx` rather than a name
+    /// (the caller resolves it, typically via [`find_address`](Self::find_address),
+    /// before entering the VM boundary). Out-of-range indices are not
+    /// private — an invalid index is the caller's bug, reported elsewhere.
+    pub(crate) fn container_is_private(&self, idx: u32) -> bool {
+        self.containers
+            .get(idx as usize)
+            .is_some_and(|c| self.is_private(c.id))
+    }
+
     /// Build the initial globals vector from slot defaults.
     pub fn global_defaults(&self) -> Vec<Value> {
         self.globals.iter().map(|s| s.default.clone()).collect()
