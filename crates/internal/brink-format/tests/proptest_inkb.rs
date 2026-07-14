@@ -2,9 +2,9 @@
 
 use brink_format::{
     AddressPath, ClosureEnvEntry, ContainerDef, CountingFlags, DefinitionId, DefinitionTag,
-    ExternalFnDef, GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, NameId,
-    PluralCategory, ScopeLineTable, SectionKind, SelectKey, SlotInfo, SourceLocation, StoryData,
-    Value, ValueType, read_inkb, read_inkb_index, write_inkb,
+    ExternalFnDef, GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, MapKey,
+    NameId, OrderedMap, PluralCategory, ScopeLineTable, SectionKind, SelectKey, ShapeId, SlotInfo,
+    SourceLocation, StoryData, Value, ValueType, read_inkb, read_inkb_index, write_inkb,
 };
 use proptest::prelude::*;
 
@@ -121,10 +121,32 @@ fn arb_value_type() -> impl Strategy<Value = ValueType> {
         Just(ValueType::Null),
         Just(ValueType::FnRef),
         Just(ValueType::Closure),
+        // Collection/record value types (value-model-spec §4; issue #672
+        // workstream B item 2 — these were missing from the declared-type
+        // side of this fuzzer even though `arb_value` below can now produce
+        // `Array`/`Map`/`Record` payloads).
+        Just(ValueType::Array),
+        Just(ValueType::Map),
+        Just(ValueType::Record),
     ]
 }
 
-fn arb_value() -> impl Strategy<Value = Value> {
+fn arb_map_key() -> impl Strategy<Value = MapKey> {
+    prop_oneof![
+        any::<i32>().prop_map(MapKey::Int),
+        ".*".prop_map(|s: String| MapKey::Str(s.into())),
+        any::<bool>().prop_map(MapKey::Bool),
+    ]
+}
+
+/// Leaf values (never recurse). `arb_value` below extends this with
+/// `Array`/`Map`/`Record` — the value-model-spec §4 collection types — so
+/// `write_read_roundtrip` actually exercises the encode/decode path for
+/// `GlobalVarDef::default_value` holding a nested collection (issue #672
+/// workstream B item 2, "value -> inkb bytes -> value == identity"). Bounded
+/// via `prop_recursive` (depth 3, up to 16 total nodes, width 4 per
+/// collection) so generated cases stay small and shrinkable.
+fn arb_value_leaf() -> impl Strategy<Value = Value> {
     prop_oneof![
         any::<i32>().prop_map(Value::Int),
         any::<f32>().prop_map(Value::Float),
@@ -137,6 +159,23 @@ fn arb_value() -> impl Strategy<Value = Value> {
         arb_def_id().prop_map(Value::FnRef),
         arb_closure(),
     ]
+}
+
+fn arb_value() -> impl Strategy<Value = Value> {
+    arb_value_leaf().prop_recursive(3, 16, 4, |inner| {
+        prop_oneof![
+            prop::collection::vec(inner.clone(), 0..4).prop_map(Value::array),
+            prop::collection::vec((arb_map_key(), inner.clone()), 0..4).prop_map(|entries| {
+                let mut map = OrderedMap::new();
+                for (key, value) in entries {
+                    map.insert(key, value);
+                }
+                Value::map(map)
+            }),
+            (any::<u32>(), prop::collection::vec(inner, 0..4))
+                .prop_map(|(shape, fields)| Value::record(ShapeId(shape), fields)),
+        ]
+    })
 }
 
 /// A `Value::Closure` with a small bound-env of `val` (`Int` snapshot) and
