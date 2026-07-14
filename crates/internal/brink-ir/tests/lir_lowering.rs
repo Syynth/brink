@@ -3579,7 +3579,11 @@ fn find_diag(
 
 /// A `RecordNew`'s decoded parts: `(shape_id, fields, prelude)` — see
 /// `lir::Expr::RecordNew`'s own doc for what `fields`/`prelude` mean.
-type RecordNewParts<'a> = (u32, &'a [lir::Expr], &'a [(u16, brink_format::NameId, lir::Expr)]);
+type RecordNewParts<'a> = (
+    u32,
+    &'a [lir::Expr],
+    &'a [(u16, brink_format::NameId, lir::Expr)],
+);
 
 fn find_record_new(expr: &lir::Expr) -> Option<RecordNewParts<'_>> {
     match expr {
