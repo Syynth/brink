@@ -968,13 +968,18 @@ pub enum DiagnosticCode {
     E009,
     /// `EXTERNAL` declaration is missing a name.
     E010,
-    /// `INCLUDE` statement is missing a file path.
+    /// RETIRED (lane-A audit, #709) — the parser always materializes a
+    /// `FILE_PATH` node inside `INCLUDE_STMT` (possibly empty) and reports
+    /// missing path as E037 (`parser/declaration.rs::include_statement`).
+    /// Code kept reserved, not reused.
     E011,
 
     // ── Control flow ────────────────────────────────────────────
     /// Divert is missing a target.
     E012,
-    /// Thread start is missing a target.
+    /// RETIRED (lane-A audit, #709) — `parser/divert.rs::path` always creates
+    /// a `PATH` node (empty on error + E037), so `ThreadStart::target()` is
+    /// never `None`. Code kept reserved, not reused.
     E013,
     /// Logic line has no effect (bare `~`).
     E014,
@@ -986,11 +991,15 @@ pub enum DiagnosticCode {
     E016,
     /// Function call is missing a name.
     E017,
-    /// Divert target expression is missing a path.
+    /// RETIRED (lane-A audit, #709) — `parser/divert.rs::path` always creates
+    /// a `PATH` node (empty on error + E037), so `DivertTargetExpr::target()`
+    /// is never `None`. Code kept reserved, not reused.
     E018,
 
     // ── Choices ─────────────────────────────────────────────────
-    /// Choice is missing bullet markers.
+    /// RETIRED (lane-A audit, #709) — the parser only builds a `CHOICE` node
+    /// after seeing a bullet token, so a bullet-less choice CST cannot exist.
+    /// Code kept reserved, not reused.
     E019,
 
     // ── Inline logic ────────────────────────────────────────────
@@ -1012,7 +1021,9 @@ pub enum DiagnosticCode {
     E026,
     /// Ambiguous bare list item reference.
     E027,
-    /// Circular INCLUDE dependency.
+    /// RETIRED (lane-A audit, #709) — circular INCLUDE is detected at the
+    /// discovery phase and surfaces as `CompileError::CircularInclude`, not as
+    /// a per-construct diagnostic. Code kept reserved, not reused.
     E028,
 
     // ── Compile errors ────────────────────────────────────────────
@@ -1083,12 +1094,11 @@ pub enum DiagnosticCode {
     /// available again for the next brink extension that parses/analyzes
     /// before its lowering lands.
     E052,
-    /// Internal error: a T1b brink-extension HIR node (`LogicBlock`,
-    /// `ArrayLiteral`, `MapLiteral`, `Index`) reached LIR lowering. The
-    /// dialect gate (E051/E052) should have rejected it first, but that
-    /// gate is a suppressible analysis diagnostic — this is the
-    /// non-suppressible backstop that fires when the gate was suppressed
-    /// (e.g. `// brink-disable-all`).
+    /// RETIRED (T1b-2, #570) — previously a non-suppressible backstop
+    /// rejecting T1b brink-extension HIR nodes (`LogicBlock`, `ArrayLiteral`,
+    /// `MapLiteral`, `Index`) at LIR lowering. T1b-2 completed real lowering
+    /// for all such constructs, making the backstop obsolete. Code kept
+    /// reserved, not reused, for diagnostic-code stability.
     E053,
     /// A block-scoped `temp` (`~ { … }`, docs/t1b-surface-spec.md §2) or
     /// `for` loop variable shadows an already-visible temp/param — either an
@@ -1290,6 +1300,25 @@ pub enum DiagnosticCode {
     /// was never registered as a real global — a runtime-only
     /// `UnresolvedGlobal` fault with no compile diagnostic.
     E082,
+
+    // ── Declaration-default constness, top level (issue #692, sibling to
+    // #673/#679's collection-element E075/E076/E077) ─────────────────────
+    /// A scalar `VAR`/`CONST` declaration default whose *source expression
+    /// kind* can never be a compile-time constant — a bare reference to
+    /// another `VAR` (`VAR x = someOtherVar`) or a function call
+    /// (`VAR x = f()`), including either wrapped in a prefix/infix
+    /// operation. `eval_const_expr`'s `Path` arm (`SymbolKind::Variable`)
+    /// and its catch-all previously folded both silently to `Null` with no
+    /// diagnostic — the same silent-fold bug #673/#679 fixed one level
+    /// down, inside array/map/struct literals, left unfixed at this top
+    /// level. Keyed off the source expression kind, never the folded
+    /// result, same as `E077`. Does not fire for a `Path` nested inside a
+    /// collection/struct/fn literal (array element, map value, struct
+    /// field, `#fn` argument) — those recurse through their own existing
+    /// `E075`/`E076`/`E077` per-element checks one level in, which
+    /// deliberately still leave a `VAR`-reference gap unchanged (#679 scope
+    /// notes) pending its own follow-up.
+    E083,
 }
 
 impl DiagnosticCode {
@@ -1379,6 +1408,7 @@ impl DiagnosticCode {
             Self::E080 => "E080",
             Self::E081 => "E081",
             Self::E082 => "E082",
+            Self::E083 => "E083",
         }
     }
 
@@ -1396,15 +1426,14 @@ impl DiagnosticCode {
             Self::E008 => "LIST declaration is missing a name",
             Self::E009 => "LIST member is missing a name",
             Self::E010 => "EXTERNAL declaration is missing a name",
-            Self::E011 => "INCLUDE statement is missing a file path",
+            Self::E011 => "retired (lane-A audit) — parser always creates FILE_PATH",
             Self::E012 => "divert is missing a target",
-            Self::E013 => "thread start is missing a target",
+            Self::E013 | Self::E018 => "retired (lane-A audit) — parser always creates PATH node",
             Self::E014 => "logic line has no effect",
             Self::E015 => "expression is missing an operand",
             Self::E016 => "unknown or unsupported operator",
             Self::E017 => "function call is missing a name",
-            Self::E018 => "divert target expression is missing a path",
-            Self::E019 => "choice is missing bullet markers",
+            Self::E019 => "retired (lane-A audit) — parser guarantees bullet markers",
             Self::E020 => "inline conditional is missing a condition",
             Self::E021 => "inline sequence has no branches",
             Self::E022 => "duplicate knot definition",
@@ -1413,7 +1442,7 @@ impl DiagnosticCode {
             Self::E025 => "unresolved variable reference",
             Self::E026 => "duplicate list item",
             Self::E027 => "ambiguous bare list item reference",
-            Self::E028 => "circular INCLUDE dependency",
+            Self::E028 => "retired (lane-A audit) — circular INCLUDE surfaces as CompileError",
             Self::E029 => "choice in conditional must explicitly divert",
             Self::E030 => "string interpolation in constant initializer is ignored",
             Self::E031 => "function call argument count mismatch",
@@ -1438,9 +1467,7 @@ impl DiagnosticCode {
             Self::E050 => "directive does not take arguments",
             Self::E051 => "brink extension used under strict-ink dialect",
             Self::E052 => "brink extension not yet implemented",
-            Self::E053 => {
-                "internal: brink extension reached LIR lowering (dialect gate suppressed)"
-            }
+            Self::E053 => "retired (T1b-2) — T1b extension lowering is complete",
             Self::E054 => "block-scoped temp shadows an already-visible temp",
             Self::E055 => "collection mutator's first argument is not an lvalue",
             Self::E056 => "collection mutator used in expression position",
@@ -1478,6 +1505,7 @@ impl DiagnosticCode {
             Self::E080 => "#fn ref parameter is not bound to a durable cell at creation",
             Self::E081 => "#fn binds more arguments than the target declares",
             Self::E082 => "block-scoped temp referenced after its block has closed",
+            Self::E083 => "VAR/CONST declaration default is not a compile-time-constant expression",
         }
     }
 
@@ -1588,6 +1616,7 @@ impl DiagnosticCode {
             "E080" => Some(Self::E080),
             "E081" => Some(Self::E081),
             "E082" => Some(Self::E082),
+            "E083" => Some(Self::E083),
             _ => None,
         }
     }
