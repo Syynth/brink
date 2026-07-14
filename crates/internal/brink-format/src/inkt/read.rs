@@ -230,6 +230,7 @@ fn parse_value_type(pair: P<'_>) -> Result<ValueType, InktParseError> {
         "null" => Ok(ValueType::Null),
         "array" => Ok(ValueType::Array),
         "map" => Ok(ValueType::Map),
+        "handle" => Ok(ValueType::Handle),
         "record" => Ok(ValueType::Record),
         "fn_ref" => Ok(ValueType::FnRef),
         "closure" => Ok(ValueType::Closure),
@@ -313,6 +314,10 @@ fn parse_value(pair: P<'_>, type_hint: Option<ValueType>) -> Result<Value, InktP
             })?;
             Ok(Value::FragmentRef(idx))
         }
+        // Handle values (T1d, `docs/t1d-spec.md` §2): `(handle <kind> <id>)`
+        // — reader lands with the writer in this same PR (never repeat the
+        // #742 write/read asymmetry).
+        Rule::handle_value => parse_handle_value(inner),
         // T1c function values (docs/t1c-spec.md §1/§6) — the read-side legs
         // paired with `write_value`'s `record`/`fn_ref`/`closure` atoms
         // (issue #742: writer/reader must stay in sync, dump-parity rule).
@@ -331,6 +336,28 @@ fn parse_value(pair: P<'_>, type_hint: Option<ValueType>) -> Result<Value, InktP
             format!("unexpected value rule: {:?}", inner.as_rule()),
         )),
     }
+}
+
+/// Parse a `handle_value` node (`"(" ~ "handle" ~ integer ~ integer ~ ")"`)
+/// into a [`Value::handle`] (T1d, `docs/t1d-spec.md` §2).
+fn parse_handle_value(pair: P<'_>) -> Result<Value, InktParseError> {
+    let mut parts = pair.into_inner();
+    let kind_pair = parts.next().ok_or_else(|| InktParseError {
+        message: "expected kind integer in handle".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let kind = parse_u16(&kind_pair)?;
+    let id_pair = parts.next().ok_or_else(|| InktParseError {
+        message: "expected id integer in handle".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let id: u64 = id_pair
+        .as_str()
+        .parse()
+        .map_err(|_| err(&id_pair, "invalid handle id"))?;
+    Ok(Value::handle(NameId(kind), id))
 }
 
 /// Parse a `map_value` node (`(map (key value)…)`) into a [`Value::Map`].

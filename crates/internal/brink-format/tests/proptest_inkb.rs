@@ -128,6 +128,10 @@ fn arb_value_type() -> impl Strategy<Value = ValueType> {
         Just(ValueType::Array),
         Just(ValueType::Map),
         Just(ValueType::Record),
+        // T1d handle value type (docs/t1d-spec.md §2): `arb_value` below can
+        // now produce a `Handle` payload, same rationale as the collection
+        // types above.
+        Just(ValueType::Handle),
     ]
 }
 
@@ -158,6 +162,10 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
         // default reaches the wire as a global's `default_value`.
         arb_def_id().prop_map(Value::FnRef),
         arb_closure(),
+        // T1d handle values (docs/t1d-spec.md §2): the reserved `VAL_HANDLE`
+        // tag's first emission — round-tripped here like every other value
+        // tag.
+        (arb_name_id(), any::<u64>()).prop_map(|(kind, id)| Value::handle(kind, id)),
     ]
 }
 

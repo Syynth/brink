@@ -144,7 +144,9 @@ fn arb_shape_id() -> impl Strategy<Value = ShapeId> {
 /// below in `arb_value`'s `prop_recursive` block (issue #742: the `.inkt`
 /// grammar previously had no `record_value`/`fn_ref_value`/`closure_value`
 /// rule, so `write_inkt` could emit text `read_inkt` could not parse back —
-/// fixed alongside this coverage).
+/// fixed alongside this coverage). `Handle` is also a leaf: T1d's `.inkt`
+/// atom (`handle_value` in the grammar) lands its reader in the same PR as
+/// its writer, so it never joins the `#742` exclusion class.
 fn arb_value_leaf() -> impl Strategy<Value = Value> {
     prop_oneof![
         any::<i32>().prop_map(Value::Int),
@@ -158,6 +160,7 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
             prop::collection::vec(arb_def_id(), 0..3),
         )
             .prop_map(|(items, origins)| Value::List(ListValue { items, origins }.into())),
+        (arb_name_id(), any::<u64>()).prop_map(|(kind, id)| Value::handle(kind, id)),
         arb_def_id().prop_map(Value::FnRef),
     ]
 }
