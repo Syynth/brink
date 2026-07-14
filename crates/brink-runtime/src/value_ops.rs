@@ -76,24 +76,70 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
             let parts: Vec<String> = fields.iter().map(|v| stringify(v, program)).collect();
             format!("{{{}}}", parts.join(", "))
         }
-        // Function values (T1c). The **authoritative** author-facing display
-        // form (`fn heal(ref hp = player_hp, amount)`, spec §5) is a T1c-3
-        // deliverable (`docs/t1c-spec.md` §11); this provisional rendering only
-        // keeps `stringify` total and is deliberately not locked by any corpus
-        // transcript in this slice.
-        Value::FnRef(_) => "fn".to_owned(),
-        Value::Closure(c) => {
-            let parts: Vec<String> = c
-                .env
-                .iter()
-                .map(|e| {
-                    let mode = if e.is_ref { "ref" } else { "val" };
-                    format!("{mode} {}", stringify(&e.payload, program))
-                })
-                .collect();
-            format!("fn({})", parts.join(", "))
+        // Function values (T1c-3, spec §5). The **authoritative** author-facing
+        // display form — signature-like, with bound args rendered as defaults:
+        // `fn heal(ref hp = player_hp, amount)`. Bound `val` args print their
+        // value's display form, bound `ref` args print the captured cell name,
+        // unbound params print as bare names. This is a permanently observable
+        // surface (spec §5, ratified 2026-07-13) — deliberately boring and
+        // stable, exercised via `string(f)`/`{f}` and property-tested. Both
+        // `string(f)` and interpolation route here (typed-mode-spec §4:
+        // "display is universal").
+        Value::FnRef(target) => display_fn_value(*target, &[], program),
+        Value::Closure(c) => display_fn_value(c.target, &c.env, program),
+    }
+}
+
+/// The authoritative function-value display form (`docs/t1c-spec.md` §5):
+/// `fn <name>(<param…>)` where each declared param renders as `ref name =
+/// cell` / `name = value` when bound, or a bare `name` when unbound.
+///
+/// Total — never faults, never panics: an unresolvable target renders `?` for
+/// the name, an unresolvable param `NameId` renders `?`, and a `ref` payload
+/// that isn't a resolvable global cell falls back to its value display form.
+fn display_fn_value(
+    target: brink_format::DefinitionId,
+    env: &[brink_format::ClosureEnvEntry],
+    program: &Program,
+) -> String {
+    let name = program
+        .divert_target_path(target)
+        .unwrap_or_else(|| "?".to_owned());
+    let empty: &[brink_format::ParamMeta] = &[];
+    let params = program
+        .resolve_target(target)
+        .map_or(empty, |(idx, _)| program.container_params(idx));
+
+    // Render every declared param, in order. The bound prefix comes from
+    // `env`; any trailing params beyond `env.len()` are unbound. `env` can be
+    // longer than `params` only for a stale rehydrated value — still rendered
+    // so the form stays total (the invoke-time rehydration check is the fault
+    // path, not display).
+    let count = params.len().max(env.len());
+    let mut parts = Vec::with_capacity(count);
+    for i in 0..count {
+        if let Some(entry) = env.get(i) {
+            let pname = program.name_checked(entry.name).unwrap_or("?");
+            if entry.is_ref {
+                let cell = match &entry.payload {
+                    Value::VariablePointer(id) => {
+                        program.global_var_name(*id).map(ToOwned::to_owned)
+                    }
+                    _ => None,
+                }
+                .unwrap_or_else(|| stringify(&entry.payload, program));
+                parts.push(format!("ref {pname} = {cell}"));
+            } else {
+                parts.push(format!("{pname} = {}", stringify(&entry.payload, program)));
+            }
+        } else {
+            let pname = params
+                .get(i)
+                .map_or("?", |p| program.name_checked(p.name).unwrap_or("?"));
+            parts.push(pname.to_owned());
         }
     }
+    format!("fn {name}({})", parts.join(", "))
 }
 
 /// Provisional stringify for a map key (see [`stringify`]'s collection arms).
@@ -199,6 +245,22 @@ pub(crate) fn binary_op(
         }
         (Value::DivertTarget(a), Value::DivertTarget(b)) if op == BinaryOp::NotEqual => {
             Ok(Value::Bool(a != b))
+        }
+        // Function-value equality (T1c-3, spec §5): structural — same fn
+        // token and equal bound rows (`ref` entries by bound cell, `val` by
+        // value), delegated to `Value`'s `PartialEq`. Only `==`/`!=` are
+        // defined; any ordering op (`<`, `>=`, …) falls through to the
+        // `TypeError` fault below — spec §5's "no ordering" rule (a runtime
+        // fault in gradual mode, a compile error in strict).
+        (Value::FnRef(_) | Value::Closure(_), Value::FnRef(_) | Value::Closure(_))
+            if op == BinaryOp::Equal =>
+        {
+            Ok(Value::Bool(left == right))
+        }
+        (Value::FnRef(_) | Value::Closure(_), Value::FnRef(_) | Value::Closure(_))
+            if op == BinaryOp::NotEqual =>
+        {
+            Ok(Value::Bool(left != right))
         }
         // Equality for null
         (Value::Null, Value::Null) if op == BinaryOp::Equal => Ok(Value::Bool(true)),

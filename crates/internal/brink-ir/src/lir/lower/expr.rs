@@ -823,6 +823,37 @@ fn lower_t1b_stdlib_call(
                 args: supplied,
             })
         }
+        // T1c-3 (docs/t1c-spec.md §3): `bind(f, args…)` — val-only currying
+        // over an existing function value. `f` is the callee; the remaining
+        // args are appended to its bound-arg row (consuming the head of its
+        // remaining param row) and a new function value is returned. Lowers
+        // to `BindValue(argc)`; over-binding and a non-function callee are
+        // runtime faults at the op. Strict-mode static checking of this
+        // explicit intrinsic form is not yet wired (it does not route through
+        // the `Ty::Fn` value-call machinery like `#fn(...)` sites do), so the
+        // runtime fault is the only backstop here today, same as `call`
+        // (see `resolve.rs::is_t1b_stdlib_name`).
+        "bind" => {
+            if args.is_empty() {
+                ctx.diagnostics.push(crate::Diagnostic {
+                    file: ctx.file,
+                    range: call_range,
+                    message: format!(
+                        "{}: `bind` needs at least the callee function value \
+                         (`bind(f, args…)`)",
+                        crate::DiagnosticCode::E031.title(),
+                    ),
+                    code: crate::DiagnosticCode::E031,
+                });
+                return Some(lir::Expr::Null);
+            }
+            let callee = lower_expr(&args[0], ctx);
+            let supplied = args[1..].iter().map(|a| lower_expr(a, ctx)).collect();
+            Some(lir::Expr::BindValue {
+                callee: Box::new(callee),
+                args: supplied,
+            })
+        }
         _ => None,
     }
 }
@@ -850,6 +881,7 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "float"
             | "string"
             | "call"
+            | "bind"
     )
 }
 

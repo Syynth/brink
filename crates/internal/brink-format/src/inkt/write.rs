@@ -561,6 +561,7 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
             bound_count,
         } => write!(w, "make_closure {target} bound={bound_count}"),
         Opcode::CallValue(argc) => write!(w, "call_value argc={argc}"),
+        Opcode::BindValue(argc) => write!(w, "bind_value argc={argc}"),
     }
 }
 

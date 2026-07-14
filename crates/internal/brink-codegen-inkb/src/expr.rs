@@ -159,6 +159,24 @@ impl ContainerEmitter<'_> {
                 );
             }
 
+            lir::Expr::BindValue { callee, args } => {
+                // Same stack shape as `CallValue`: push the supplied args
+                // (bottom), then the callee (top). `BindValue` returns a new
+                // function value rather than entering the target, so it never
+                // produces localized output — no fragment wrapping needed.
+                for arg in args {
+                    self.emit_expr(arg, false);
+                }
+                self.emit_expr(callee, false);
+                self.emit(
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "a bind supplies <=255 args"
+                    )]
+                    Opcode::BindValue(args.len() as u8),
+                );
+            }
+
             // ── Collections (T1b) ────────────────────────────────────
             lir::Expr::ConstLiteral(v) => self.emit_literal_pool_push(v),
 

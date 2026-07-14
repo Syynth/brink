@@ -365,6 +365,7 @@ fn every_case_directory_has_a_test() {
         "annotations-mixed",
         "fn-value-call-forms",
         "fn-value-ref-mutation",
+        "fn-value-bind-chain",
         "ref-call-with-block-temp",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
@@ -1254,6 +1255,17 @@ fn fn_value_ref_cell_mutation_through_a_stored_value() {
     assert_case("fn-value-ref-mutation");
 }
 
+// ── T1c-3 (#701): `bind` currying + display form ────────────────────────
+
+#[test]
+fn fn_value_bind_chains_and_display_form() {
+    // `bind(f, args…)` val-only currying — nested bind chains, `bind` then
+    // `call`, `bind` over a ref-bound value, and the authoritative `string(f)`
+    // display form (`fn heal(ref hp = world_hp, amount)`, spec §5) exercised
+    // through interpolation. All through real production codegen.
+    assert_case("fn-value-bind-chain");
+}
+
 // ── T1c-2 (#700): gradual-mode dispatch faults (spec §3) ────────────────
 
 /// Run a brink program to completion, returning the first runtime error (if
@@ -1296,6 +1308,20 @@ fn explicit_call_with_wrong_arity_is_a_turn_terminating_fault() {
     );
 }
 
+#[test]
+fn bind_over_binding_more_than_remaining_params_is_a_turn_terminating_fault() {
+    // `bind(f, …)` that supplies more args than the target has remaining
+    // params is a turn-terminating fault (spec §3) — never a silently
+    // truncated bound row. `double` takes one param, so binding two faults.
+    let src = "~ temp d = #fn(double)\n~ temp g = bind(d, 1, 2)\nUnreachable {g}.\n-> END\n\n\
+               === function double(x) ===\n~ return x + x\n";
+    let err = run_expecting_fault(src).expect("over-binding must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::FunctionValueArity { .. }),
+        "expected FunctionValueArity, got {err:?}"
+    );
+}
+
 // ── #721: direct-call `f(args…)` arity mismatch must fault cleanly ──────
 //
 // `f(args…)` compiles through the same `CallVariable` opcode as the classic
@@ -1320,6 +1346,18 @@ fn direct_call_with_too_many_args_is_a_turn_terminating_fault() {
 }
 
 #[test]
+fn binding_a_non_function_value_is_a_turn_terminating_fault() {
+    // `bind(x, …)` where `x` is not a function value is a dispatch fault
+    // (spec §3) — same NotCallable posture as calling a non-function.
+    let src = "~ temp x = 5\n~ temp g = bind(x, 1)\nUnreachable {g}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("binding a non-function must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::NotCallable(_)),
+        "expected NotCallable, got {err:?}"
+    );
+}
+
+#[test]
 fn direct_call_with_too_few_args_is_a_turn_terminating_fault() {
     // `add` takes 2 params; the direct call supplies 1.
     let src = "~ temp d = #fn(add)\n~ temp r = d(1)\nUnreachable {r}.\n-> END\n\n\
@@ -1328,6 +1366,19 @@ fn direct_call_with_too_few_args_is_a_turn_terminating_fault() {
     assert!(
         matches!(err, brink_runtime::RuntimeError::FunctionValueArity { .. }),
         "expected FunctionValueArity, got {err:?}"
+    );
+}
+
+#[test]
+fn ordering_two_function_values_is_a_turn_terminating_fault() {
+    // Structural `==`/`!=` are defined (spec §5), but ordering (`<`, `>`, …)
+    // is not — a runtime fault in gradual mode (a compile error in strict).
+    let src = "~ temp d = #fn(double)\n~ temp lt = d < d\nUnreachable {lt}.\n-> END\n\n\
+               === function double(x) ===\n~ return x + x\n";
+    let err = run_expecting_fault(src).expect("ordering fn values must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::TypeError(_)),
+        "expected TypeError, got {err:?}"
     );
 }
 

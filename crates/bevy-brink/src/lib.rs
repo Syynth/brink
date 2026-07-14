@@ -65,7 +65,7 @@ pub use bevy_brink_derive::BrinkCommand;
 pub use bindings::{
     BrinkArgError, BrinkBindings, BrinkBindingsAppExt, BrinkCallError, BrinkCommand, BrinkHandler,
     BrinkQueryInput, advance_flow, any_flow_awaiting_external, call_ink_function,
-    resolve_pending_externals,
+    call_ink_function_value, resolve_pending_externals,
 };
 /// Re-exported so `#[derive(BrinkCommand)]`-generated code (and binding
 /// authors) can name the ink runtime value type without depending on

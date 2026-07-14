@@ -654,6 +654,15 @@ pub enum Expr {
         callee: Box<Expr>,
         args: Vec<Expr>,
     },
+    /// `bind(f, args…)` — the val-only currying stdlib intrinsic (T1c-3,
+    /// docs/t1c-spec.md §3). `callee` evaluates to the function value being
+    /// curried; `args` are the val-only args appended to its bound-arg row
+    /// (consuming the head of its remaining param row). Codegens to
+    /// `BindValue(argc)`; over-binding is a runtime fault at the op.
+    BindValue {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+    },
 
     // ── Collections (T1b, docs/t1b-surface-spec.md §3-4) ────────────
     /// A compile-time-constant collection literal — emitted via the V4
