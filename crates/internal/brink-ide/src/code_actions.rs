@@ -14,7 +14,7 @@ pub enum CodeActionKind {
 /// field is the discriminator). This is the payload carried in a code action's
 /// `data` field over the wasm boundary so a selected action can be passed back
 /// to `resolve_code_action` without re-deriving it from the cursor position.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "action")]
 pub enum CodeActionData {
     SortKnots,
@@ -45,6 +45,15 @@ pub enum CodeActionData {
     DemoteKnot {
         knot: String,
         dest_knot: String,
+    },
+    /// Auto-import quick-fix (M-4, modules-spec §2/§9): insert
+    /// `IMPORT { name } FROM module` to bring an out-of-scope public
+    /// definition into the referring file. Produced by
+    /// [`crate::import_fix::import_actions`] off an `E025` diagnostic; resolved
+    /// as a pure source rewrite.
+    AddImport {
+        module: String,
+        name: String,
     },
 }
 
@@ -186,6 +195,9 @@ pub fn resolve_code_action(source: &str, data: &CodeActionData) -> Option<String
             stitch,
             direction,
         } => structural_move::reorder_stitch(source, knot, stitch, *direction).ok()?,
+        CodeActionData::AddImport { module, name } => {
+            crate::import_fix::insert_import(source, module, name)?
+        }
         // These require analysis — caller should use resolve_structural_action.
         CodeActionData::MoveStitch { .. }
         | CodeActionData::PromoteStitch { .. }

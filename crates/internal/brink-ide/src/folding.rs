@@ -75,6 +75,24 @@ pub fn folding_ranges(hir: &HirFile, source: &str, projection: &Projection) -> V
         });
     }
 
+    // Leading IMPORT block (M-4, modules-spec §9): collapse a run of
+    // two-or-more leading module `IMPORT`s into one region, mirroring the
+    // INCLUDE block fold. The span is derived from the shared
+    // `import_block_span` detector so fold and auto-import agree on its
+    // bounds. A single IMPORT is detected by the shared helper but is not
+    // worth folding.
+    if let Some(span) = crate::import_block::import_block_span(hir, source)
+        && span.count >= 2
+    {
+        ranges.push(FoldRange {
+            start_line: span.start_line,
+            end_line: span.end_line,
+            collapsed_text: Some(format!("IMPORT … ({} modules)", span.count)),
+            from_line_start: false,
+            kind: FoldKind::Structural,
+        });
+    }
+
     // Weave + construct folds from the projection (#476). A Choice
     // container's extent is the full branch (choice line ∪ body, §5.1): the
     // fold anchors at the end of the choice line and hides the branch. A
@@ -850,6 +868,48 @@ text
                 |(s, _, t)| *s == 0 && t.as_deref().is_some_and(|t| t.starts_with("INCLUDE …"))
             ),
             "a single INCLUDE must not fold: {folds:?}"
+        );
+    }
+
+    #[test]
+    fn import_block_folds_when_two_or_more() {
+        let src = "IMPORT { ambush } FROM quest_3\nIMPORT quest_4\n== hub ==\ntext\n";
+        let folds = folds_with_text(src);
+        assert!(
+            folds.contains(&(0, 1, Some("IMPORT … (2 modules)".to_owned()))),
+            "{folds:?}"
+        );
+    }
+
+    #[test]
+    fn single_import_does_not_fold() {
+        let src = "IMPORT quest_3\n== hub ==\ntext\n";
+        let folds = folds_with_text(src);
+        assert!(
+            !folds.iter().any(
+                |(s, _, t)| *s == 0 && t.as_deref().is_some_and(|t| t.starts_with("IMPORT …"))
+            ),
+            "a single IMPORT must not fold: {folds:?}"
+        );
+    }
+
+    #[test]
+    fn include_and_import_blocks_fold_independently() {
+        let src = "\
+INCLUDE a.ink
+INCLUDE b.ink
+IMPORT quest_3
+IMPORT quest_4
+== hub ==
+";
+        let folds = folds_with_text(src);
+        assert!(
+            folds.contains(&(0, 1, Some("INCLUDE … (2 files)".to_owned()))),
+            "include fold present: {folds:?}"
+        );
+        assert!(
+            folds.contains(&(2, 3, Some("IMPORT … (2 modules)".to_owned()))),
+            "import fold present: {folds:?}"
         );
     }
 
