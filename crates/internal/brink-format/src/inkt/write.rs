@@ -38,6 +38,7 @@ pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
     write_address_paths(w, &story.address_paths)?;
     write_list_literals(w, &story.list_literals)?;
     write_literal_pool(w, &story.literal_pool)?;
+    write_visibility(w, &story.private_defs)?;
     write_alias_table(w, &story.alias_table)?;
 
     // Build a lookup from scope_id → line table for writing
@@ -102,6 +103,18 @@ fn write_globals(w: &mut dyn fmt::Write, globals: &[GlobalVarDef]) -> fmt::Resul
         }
         writeln!(w)?;
         writeln!(w, "      (name {}))", g.name.0)?;
+    }
+    writeln!(w, "  )")
+}
+
+fn write_visibility(w: &mut dyn fmt::Write, private_defs: &[DefinitionId]) -> fmt::Result {
+    if private_defs.is_empty() {
+        return Ok(());
+    }
+    writeln!(w)?;
+    writeln!(w, "  (visibility")?;
+    for id in private_defs {
+        writeln!(w, "    (private {id})")?;
     }
     writeln!(w, "  )")
 }
@@ -777,6 +790,7 @@ mod tests {
             list_literals: vec![],
             literal_pool: vec![],
             struct_shapes: vec![],
+            private_defs: vec![],
             alias_table: vec![],
             source_checksum: 0,
         };

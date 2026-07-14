@@ -32,14 +32,14 @@ pub use read::{
     read_section_alias_table, read_section_containers, read_section_externals,
     read_section_line_tables, read_section_list_defs, read_section_list_items,
     read_section_list_literals, read_section_literal_pool, read_section_name_table,
-    read_section_struct_shapes, read_section_variables,
+    read_section_struct_shapes, read_section_variables, read_section_visibility,
 };
 pub use write::{
     assemble_inkb, write_inkb, write_section_address_paths, write_section_addresses,
     write_section_alias_table, write_section_containers, write_section_externals,
     write_section_line_tables, write_section_list_defs, write_section_list_items,
     write_section_list_literals, write_section_literal_pool, write_section_name_table,
-    write_section_struct_shapes, write_section_variables,
+    write_section_struct_shapes, write_section_variables, write_section_visibility,
 };
 
 use core::ops::Range;
@@ -59,19 +59,25 @@ pub(crate) const MAGIC: &[u8; 4] = b"INKB";
 /// v4 added the collection value tags `VAL_ARRAY`/`VAL_MAP` (tree encoding) and
 /// froze the reserved Tier-1 value-tag/section/opcode surface (the §9 one-bump
 /// rule of `docs/value-model-spec.md`) — see `docs/format-v4-rfc.md`.
+/// (Also on the v4 line: the optional `Visibility` section, M-2b,
+/// `docs/modules-spec.md` §4, tag `0x0E` — omitted when empty, so it didn't
+/// need a bump of its own.)
 /// v5 added the `AliasTable` section (`docs/modules-spec.md` §5, M-3): this
 /// section was not part of the v4 RFC's frozen inventory (unlike
 /// `StructShapes`/`EffectRows`, which were pre-reserved and only needed
-/// their *encoding* materialized without a bump), so a brand-new mandatory
+/// their *encoding* materialized without a bump), so a brand-new *mandatory*
 /// section is its own one-bump event. The section itself carries a
 /// one-byte section-local version so its *row encoding* can still evolve
 /// without a further format bump, matching the `EffectRows` precedent.
+/// `AliasTable` takes tag `0x0F` (the next free tag after `Visibility`).
 pub(crate) const VERSION: u16 = 5;
 /// Fixed-size preamble: magic + version + section count + reserved + file size + checksum.
 pub(crate) const HEADER_PREAMBLE: usize = 16;
 /// Each offset table entry: kind(1) + reserved(3) + offset(4)
 pub(crate) const SECTION_ENTRY_SIZE: usize = 8;
-/// Number of sections in the current format.
+/// Number of *mandatory* sections in the current format (always present,
+/// including the possibly-empty `AliasTable`). The optional `Visibility`
+/// section (M-2b) adds one more entry to the offset table when non-empty.
 pub(crate) const SECTION_COUNT: u8 = 13;
 
 // Value type tags
@@ -160,11 +166,20 @@ pub enum SectionKind {
     /// encoding at the format layer only — nothing in the compiler emits a
     /// non-empty table yet (see the PR description's scope note).
     StructShapes = 0x0C,
+    /// M-2b `Visibility` (`docs/modules-spec.md` §4, `docs/format-spec.md`):
+    /// the `DefinitionId`s of every `#@private` definition, sorted ascending.
+    /// **Omitted entirely when empty** (the common all-public case), so
+    /// public-only stories stay byte-identical for that section — the
+    /// section is purely additive and self-framed in the offset table.
+    /// `0x0D` is reserved for `EffectRows`, so this takes the next free tag.
+    Visibility = 0x0E,
     /// M-3 `AliasTable` (`docs/modules-spec.md` §5): old→new `DefinitionId`
     /// rename records from `#@was(old_name)` directives. Section-locally
     /// versioned (one prefix byte) so the row encoding can grow without a
     /// format-wide bump. Always present (possibly empty) from v5 onward.
-    AliasTable = 0x0E,
+    /// `0x0E` was claimed by `Visibility` (M-2b), so this takes the next
+    /// free tag.
+    AliasTable = 0x0F,
 }
 
 // Reserved v4 section kinds — numeric assignments frozen by the §9 one-bump
@@ -173,7 +188,8 @@ pub enum SectionKind {
 // has no match arm for this, so the strict reader keeps rejecting it
 // (`InvalidSectionKind`) until its milestone lands and a real variant is
 // added, the same discipline `StructShapes` itself followed before it
-// graduated, and `AliasTable` (0x0E, skipping this gap) follows now.
+// graduated, and `Visibility` (0x0E, skipping this gap) followed. `AliasTable`
+// takes the next tag after `Visibility`, 0x0F.
 //   0x0D EffectRows    — reserved, count always 0, section-locally
 //                        versioned so T2 can define the row encoding without
 //                        another format bump
@@ -193,7 +209,8 @@ impl SectionKind {
             0x0A => Ok(Self::AddressPaths),
             0x0B => Ok(Self::LiteralPool),
             0x0C => Ok(Self::StructShapes),
-            0x0E => Ok(Self::AliasTable),
+            0x0E => Ok(Self::Visibility),
+            0x0F => Ok(Self::AliasTable),
             _ => Err(DecodeError::InvalidSectionKind(tag)),
         }
     }

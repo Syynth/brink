@@ -58,6 +58,13 @@ pub struct StoryRunner {
     /// Bracketed by [`begin_replay`](Self::begin_replay) /
     /// [`end_replay`](Self::end_replay).
     replaying: Cell<bool>,
+    /// The M-2b dev-tooling visibility override (play-from-here). When `true`,
+    /// host semantic access to `#@private` definitions is **allowed** — the
+    /// story runs with visibility enforcement off. Default `false`: production
+    /// hosts respect visibility. Re-applied across `reset`/`reload` like the
+    /// seed so a dev session stays a dev session. See `docs/modules-spec.md`
+    /// §4 boundary rule 3.
+    dev_visibility_override: Cell<bool>,
 }
 
 #[wasm_bindgen]
@@ -85,6 +92,7 @@ impl StoryRunner {
             busy: Cell::new(false),
             recorder: RefCell::new(ReplayRecorder::new()),
             replaying: Cell::new(false),
+            dev_visibility_override: Cell::new(false),
         })
     }
 
@@ -211,6 +219,30 @@ impl StoryRunner {
         if let Some(story) = self.story.borrow_mut().as_mut() {
             story.set_rng_seed(seed);
         }
+    }
+
+    /// Enable the M-2b dev-tooling visibility override (play-from-here). When
+    /// `allow` is `true`, host semantic access to `#@private` definitions —
+    /// `getVar`/`setVar`, `goToPath`/`goToPathWithArgs`, `callFunction` — is
+    /// permitted: the story runs with visibility enforcement **off**. Editors
+    /// and debug hosts set this so they can start flows at private knots and
+    /// inspect private state; production hosts leave it `false` (the default)
+    /// to respect visibility. Applies immediately and persists across
+    /// `reset`/`reload`. This is a host capability, not a language switch —
+    /// the compiled program is identical either way. See `docs/modules-spec.md`
+    /// §4 boundary rule 3.
+    #[wasm_bindgen(js_name = setDevVisibilityOverride)]
+    pub fn set_dev_visibility_override(&self, allow: bool) {
+        self.dev_visibility_override.set(allow);
+        if let Some(story) = self.story.borrow_mut().as_mut() {
+            story.set_visibility_enforcement(!allow);
+        }
+    }
+
+    /// Whether the dev-tooling visibility override is currently on.
+    #[wasm_bindgen(js_name = devVisibilityOverride)]
+    pub fn dev_visibility_override(&self) -> bool {
+        self.dev_visibility_override.get()
     }
 
     /// Capture the durable, name-keyed game state as a JSON string (globals,
@@ -501,6 +533,10 @@ impl StoryRunner {
         if let Some(seed) = self.seed.get() {
             story.set_rng_seed(seed);
         }
+        // A dev session stays a dev session across reset (play-from-here).
+        if self.dev_visibility_override.get() {
+            story.set_visibility_enforcement(false);
+        }
         *self.story.borrow_mut() = Some(story);
         // A reset is a fresh playthrough: drop the recording and leave replay.
         *self.recorder.borrow_mut() = ReplayRecorder::new();
@@ -534,6 +570,10 @@ impl StoryRunner {
             brink_runtime::Story::<FastRng>::new(Arc::clone(&self.program), line_tables);
         if let Some(seed) = self.seed.get() {
             story.set_rng_seed(seed);
+        }
+        // A dev session stays a dev session across hot-reload (play-from-here).
+        if self.dev_visibility_override.get() {
+            story.set_visibility_enforcement(false);
         }
         *self.story.borrow_mut() = Some(story);
 

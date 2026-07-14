@@ -14,7 +14,8 @@ silently orphaning it under a stale id.
   A self-alias (`old_name` equals the current name) warns "nothing to
   migrate" (E095); a missing/empty argument is E094.
 - **Compiled `AliasTable` section** (`.inkb` format v5, section tag
-  `0x0E`) — one-byte section-locally-versioned old→new `DefinitionId`
+  `0x0F`, since `0x0E` was independently claimed by the M-2b `Visibility`
+  section) — one-byte section-locally-versioned old→new `DefinitionId`
   rows, sorted for the runtime's binary-search lookup. Matching `.inkt`
   text atoms (`(alias_table (alias $old -> $new))`). Empty for every story
   that uses no `#@was`, including the entire pre-M-3 corpus.

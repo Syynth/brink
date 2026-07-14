@@ -35,6 +35,59 @@ fn roundtrip_i001_minimal_story() {
     assert_eq!(data, recovered);
 }
 
+// ── M-2b visibility section (tag 0x0E) ──────────────────────────────────────
+
+#[test]
+fn roundtrip_visibility_section() {
+    use brink_format::{DefinitionId, DefinitionTag};
+
+    let mut data = i001_data();
+    // Sorted ascending, as the compiler emits.
+    let mut private_defs = vec![
+        DefinitionId::new(DefinitionTag::GlobalVar, 3),
+        DefinitionId::new(DefinitionTag::Address, 7),
+    ];
+    private_defs.sort_by_key(|id| id.to_raw());
+    data.private_defs = private_defs;
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    // The optional section shows up in the offset table when non-empty.
+    let index = read_inkb_index(&buf).unwrap();
+    assert!(
+        index
+            .sections
+            .iter()
+            .any(|s| s.kind == SectionKind::Visibility)
+    );
+
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
+    assert_eq!(data.private_defs, recovered.private_defs);
+    assert_eq!(data, recovered);
+}
+
+#[test]
+fn visibility_section_omitted_when_empty() {
+    // The all-public common case: no Visibility section, no version bump, so
+    // pre-modules stories stay byte-identical.
+    let data = i001_data();
+    assert!(data.private_defs.is_empty());
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let index = read_inkb_index(&buf).unwrap();
+    assert!(
+        !index
+            .sections
+            .iter()
+            .any(|s| s.kind == SectionKind::Visibility)
+    );
+    assert_eq!(index.version, 4);
+}
+
 // ── v4 collection value encoding (#526) ─────────────────────────────────────
 //
 // The v4 format serializes `Value::Array`/`Value::Map` as trees in the
@@ -741,6 +794,7 @@ fn roundtrip_line_entry_with_audio_ref() {
         list_literals: vec![],
         literal_pool: vec![],
         struct_shapes: vec![],
+        private_defs: vec![],
         alias_table: vec![],
         source_checksum: 0,
     };

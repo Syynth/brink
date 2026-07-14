@@ -903,6 +903,20 @@ export class StoryRunnerHandle {
     this.runner.set_seed(seed);
   }
 
+  /**
+   * Enable the dev-tooling visibility override (M-2b, play-from-here). When
+   * `allow` is `true`, host semantic access to `#@private` definitions —
+   * `getVar`/`setVar`, `goToPath`/`runKnot`, `callFunction` — is permitted:
+   * enforcement is turned off. Editors and debug hosts set this to start
+   * flows at private knots and inspect private state; production hosts leave
+   * it `false` (the default) to respect visibility. Applies now and is
+   * re-applied across `reset()`/`reload()`. A host capability, not a language
+   * switch — the compiled program is identical either way.
+   */
+  setDevVisibilityOverride(allow: boolean): void {
+    this.runner.setDevVisibilityOverride(allow);
+  }
+
   /** Capture durable game state as a typed object (dev/inspectable). */
   save(): SaveState {
     return JSON.parse(this.runner.save()) as SaveState;
@@ -1772,6 +1786,18 @@ export class StorySessionHandle {
   goToPath(path: string, ...args: ExternalValue[]): void {
     this.session.go_to_path(path, args);
     this.noteJournalActivity();
+  }
+
+  /**
+   * Enable the dev-tooling visibility override (M-2b, play-from-here). When
+   * `allow` is `true`, host semantic access to `#@private` definitions —
+   * `setVar`/`goToPath`/`callFunction` — is permitted (enforcement off). The
+   * studio sets this on a "play from here" session so it can start a flow at
+   * a private knot. Applies now and persists across `restart`/`reload`.
+   * Default off; production hosts respect visibility.
+   */
+  setDevVisibilityOverride(allow: boolean): void {
+    this.session.setDevVisibilityOverride(allow);
   }
 
   /** Capture durable game state (does not journal). */

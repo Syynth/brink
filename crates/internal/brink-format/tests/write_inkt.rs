@@ -33,6 +33,27 @@ fn roundtrip_i001_minimal_story() {
     assert_eq!(data, recovered);
 }
 
+#[test]
+fn visibility_roundtrips_through_inkt() {
+    use brink_format::{DefinitionId, DefinitionTag};
+
+    let mut data = i001_data();
+    let mut private_defs = vec![
+        DefinitionId::new(DefinitionTag::GlobalVar, 3),
+        DefinitionId::new(DefinitionTag::Address, 7),
+    ];
+    private_defs.sort_by_key(|id| id.to_raw());
+    data.private_defs = private_defs.clone();
+
+    let mut buf = String::new();
+    brink_format::write_inkt(&data, &mut buf).unwrap();
+    assert!(buf.contains("(visibility"), "inkt text: {buf}");
+
+    let recovered = brink_format::read_inkt(&buf).unwrap();
+    assert_eq!(recovered.private_defs, private_defs);
+    assert_eq!(data, recovered);
+}
+
 /// The T1b literal pool round-trips through `.inkt` text, including nested
 /// array/map entries — this also exercises the `array_value`/`map_value`
 /// grammar rules added alongside it, which fix a pre-existing gap: `Value`

@@ -34,6 +34,7 @@ fn empty_scopes_are_omitted() {
         list_literals: vec![],
         literal_pool: vec![],
         struct_shapes: vec![],
+        private_defs: vec![],
         alias_table: vec![],
         source_checksum: 0,
     };
@@ -56,6 +57,7 @@ fn source_checksum_formatting() {
         list_literals: vec![],
         literal_pool: vec![],
         struct_shapes: vec![],
+        private_defs: vec![],
         alias_table: vec![],
         source_checksum: 0,
     };
@@ -89,6 +91,7 @@ fn audio_ref_exported() {
         list_literals: vec![],
         literal_pool: vec![],
         struct_shapes: vec![],
+        private_defs: vec![],
         alias_table: vec![],
         source_checksum: 0,
     };

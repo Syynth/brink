@@ -125,6 +125,9 @@ pub fn emit(program: &lir::Program) -> Result<StoryData, CodegenError> {
         list_literals: state.list_literals,
         literal_pool: state.literal_pool,
         struct_shapes,
+        // M-2b: the compiler-computed private-definition set rides straight
+        // through — the LIR already sorted it deterministically.
+        private_defs: program.private_defs.clone(),
         alias_table: program.aliases.clone(),
         source_checksum: 0,
     })

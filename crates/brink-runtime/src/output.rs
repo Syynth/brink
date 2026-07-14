@@ -1021,6 +1021,7 @@ fn test_dummy_program() -> Program {
         external_fns: HashMap::new(),
         local_scope_defaults: Vec::new(),
         struct_shapes: Vec::new(),
+        private_defs: Vec::new(),
         alias_table: Vec::new(),
     }
 }
@@ -1526,6 +1527,7 @@ mod tests {
             external_fns: HashMap::new(),
             local_scope_defaults: Vec::new(),
             struct_shapes: Vec::new(),
+            private_defs: Vec::new(),
             alias_table: Vec::new(),
         };
 
