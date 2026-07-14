@@ -323,7 +323,9 @@ pub(crate) fn emit_event<M: Send + Sync + 'static>(
 mod tests {
     use super::*;
     use crate::BrinkFlowRequest;
-    use crate::test_support::{add_story_assets, compile_test_story, compile_test_story_brink, make_test_app};
+    use crate::test_support::{
+        add_story_assets, compile_test_story, compile_test_story_brink, make_test_app,
+    };
     use bevy_app::Update;
     use bevy_asset::Assets;
     use bevy_ecs::prelude::*;
