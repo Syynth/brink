@@ -145,6 +145,13 @@ pub enum ValueCallKind {
         expected: Ty,
         found: Ty,
     },
+    /// `bind(f, args…)` (T1c-3, issue #733) supplied more args than remain
+    /// in the known `fn(T…): R` callee's param row — over-binding, distinct
+    /// from [`Self::ArityMismatch`] because `bind` has no fixed target arity
+    /// to match (binding fewer than the remaining params is legal; only
+    /// binding *more* is an error, mirroring the runtime's
+    /// `FunctionValueArity` fault and `#fn`'s own `E081` over-binding check).
+    OverBind { available: usize, got: usize },
 }
 
 /// The whole-project inference result (mirrors `AnalysisResult`'s shape:
