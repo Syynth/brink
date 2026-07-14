@@ -194,8 +194,15 @@ flow entity vs host callback registry).
   versioned) ships **factored rows** — direct part + per-dispatch
   entries `{cell, narrowable, static fallback}` — plus the
   `DefinitionId → row` table. Flat rows are rejected: they
-  structurally foreclose §7. Exact byte layout at implementation,
-  inside the section version.
+  structurally foreclose §7. **Capability atoms carry a reserved
+  parameter slot** (ruled 2026-07-14, t1d-spec §7): an atom may be
+  handle-parameterized (`Transform(@argN)`); v1 populates every atom
+  as `(any)` (component-granular); instance resolution is a later
+  narrowing rung (token comparison at schedule-commit — §7's
+  machinery, second client). Possession-bounded capabilities are the
+  tier-2 security model: handles are true ocap tokens (only bindings
+  mint them). Exact byte layout at implementation, inside the
+  section version.
 - Non-goals on record: tier-2 (foreign-ink) implementation,
   entity-granular capabilities, dynamic linking (#717, icebox), any
   author-facing effect syntax beyond the entry-point freeze (no
