@@ -8,7 +8,7 @@ mod stmts;
 mod structs;
 mod temps;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use brink_format::CountingFlags;
 
@@ -1082,6 +1082,7 @@ fn make_ctx<'a>(
         choice_gather_target: None,
         next_block_slot,
         block_scopes: Vec::new(),
+        block_scoped_temp_names: HashSet::new(),
         diagnostics,
         loop_depth: 0,
         structs,
