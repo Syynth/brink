@@ -206,71 +206,36 @@ pub fn per_file_diagnostics(
     out
 }
 
-/// Whole-project diagnostic contributors that genuinely need cross-file
-/// state (issue #632 / FG-3 design doc §1): host-manifest enrichment/checks
-/// (`external_check` — needs the full ranged index for diagnostic spans and
-/// every file's HIR to find call sites anywhere in the project) and, under
-/// `types = strict`, the strict typed-mode checks (`strict::check` — needs a
-/// whole-project [`InferenceResult`]). Also produces `symbol_meta`
-/// (doc/type enrichment for hover etc.), which is inherently project-wide
-/// the same way.
-///
-/// `strict_inference`: TM-3's strict pass needs a whole-project
-/// [`InferenceResult`] (docs/typed-mode-spec.md §9-step-3 — E063 auto-wiring
-/// "must run inference anyway"). Pass `None` to have this function compute
-/// its own via [`infer_project`] (the self-contained default —
-/// [`analyze_with_options`]'s pure, non-salsa path). Pass `Some` to reuse an
-/// already-computed result instead — `brink-db`'s
-/// `whole_project_diagnostics_query` supplies its FG-narrowed,
-/// per-SCC-memoized `type_inference_query` here so strict mode's
-/// warm-reanalyze cost is the incremental one the FG spine exists for, not a
-/// from-scratch whole-project solve on every keystroke. Ignored entirely
-/// under `types = gradual` or when the dialect makes strict mode a config
-/// error. The `types = strict` + wrong-dialect config error (`E064`) is
-/// computed exactly once here, guarded by the same top-level `if` as before
-/// this split (issue #632's TM-3-interaction fence).
+/// Collect inline `///` docs across all files, keyed by `(kind, declared
+/// name)` — the project-wide doc merge feeding the external/callable/value
+/// enrichment passes. Exposed as its own seam (issue #750 / FG-3
+/// completion) so `brink-db` can memoize it behind an `Eq`-cutoff query:
+/// [`DocBlock`] carries no ranges, so any edit that leaves every `///`
+/// block's parsed content intact backdates the memo even though the pass
+/// reads every file's manifest.
 #[must_use]
-pub fn whole_project_diagnostics(
-    files: &[(FileId, &HirFile, &SymbolManifest)],
+pub fn project_inline_docs(
+    files: &[(FileId, &SymbolManifest)],
+) -> BTreeMap<(SymbolKind, String), DocBlock> {
+    collect_inline_docs(files)
+}
+
+/// The index-driven half of the external-check family (issue #750 / FG-3
+/// completion): host-manifest enrichment + checks for `EXTERNAL`s
+/// ([`external_check::analyze_externals`] — arity `E039`, unknown semantic
+/// types `E040`) followed by knot/stitch doc enrichment
+/// ([`external_check::enrich_callables`], same `E040` vocabulary), in
+/// exactly that order for both the diagnostics and the `symbol_meta`
+/// merge. Reads the index and the merged inline docs only — never any
+/// file's HIR — which is what lets `brink-db` memoize it separately from
+/// the per-file HIR walks ([`file_value_meta`] /
+/// [`file_call_site_diagnostics`]).
+#[must_use]
+pub fn external_meta_diagnostics(
     index: &SymbolIndex,
-    resolutions: &ResolutionMap,
+    inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
     opts: &AnalysisOptions,
-    strict_inference: Option<&infer::InferenceResult>,
-) -> (Vec<Diagnostic>, BTreeMap<DefinitionId, SymbolMeta>) {
-    let manifest_inputs: Vec<(FileId, &SymbolManifest)> = files
-        .iter()
-        .map(|&(id, _hir, manifest)| (id, manifest))
-        .collect();
-    let hir_inputs: Vec<(FileId, &HirFile)> = files.iter().map(|&(id, hir, _)| (id, hir)).collect();
-
-    let mut diagnostics = Vec::new();
-
-    // TM-3 strict typed-mode policy (docs/typed-mode-spec.md §1/§9-step-3).
-    // `types = strict` requires `dialect = brink` — a config error (`E064`)
-    // otherwise, reported alone (nothing else strict-specific runs against a
-    // project whose dialect already rejects the annotation syntax strict
-    // mode needs). Under `dialect = brink`, run inference (reusing
-    // `strict_inference` when the caller already computed one) and wire in
-    // Unknown/Conflicted-escape (`E065`/`E066`) plus `E063` mismatches.
-    // Gradual mode never reaches this block — byte-identical, forever.
-    if opts.types == TypePolicy::Strict {
-        if let Some(diag) = strict::config_error(opts.dialect, hir_inputs.first().map(|&(f, _)| f))
-        {
-            diagnostics.push(diag);
-        } else {
-            let owned_inference;
-            let inference = if let Some(inf) = strict_inference {
-                inf
-            } else {
-                owned_inference = infer::infer_project(&hir_inputs, index, resolutions);
-                &owned_inference
-            };
-            diagnostics.extend(strict::check(&hir_inputs, index, inference, resolutions));
-        }
-    }
-
-    // Host-manifest enrichment + checks (tooling/author-time only).
-    let inline_docs = collect_inline_docs(&manifest_inputs);
+) -> (BTreeMap<DefinitionId, SymbolMeta>, Vec<Diagnostic>) {
     let (types, registered) = manifest_maps(opts.host_manifest.as_ref());
     let has_manifest = opts.host_manifest.is_some();
     // Unknown-semantic-type checking (`E040`) is on when a manifest is
@@ -278,15 +243,14 @@ pub fn whole_project_diagnostics(
     // (#532) — a host can opt back into strict checking with no manifest.
     let check_unknown_types =
         has_manifest || opts.semantic_type_check == SemanticTypeDiagnosticSeverity::Error;
-    let (mut symbol_meta, ext_diags) = external_check::analyze_externals(
+    let (mut symbol_meta, mut diagnostics) = external_check::analyze_externals(
         index,
-        &inline_docs,
+        inline_docs,
         &types,
         &registered,
         opts.external_check,
         check_unknown_types,
     );
-    diagnostics.extend(ext_diags);
 
     // Knot/stitch doc enrichment (presentational; shares the semantic-type
     // vocabulary, so unknown types still diagnose — but only once a manifest
@@ -294,7 +258,7 @@ pub fn whole_project_diagnostics(
     // `resolve_type`).
     let (callable_meta, callable_diags) = external_check::enrich_callables(
         index,
-        &inline_docs,
+        inline_docs,
         &types,
         opts.external_check,
         check_unknown_types,
@@ -302,25 +266,183 @@ pub fn whole_project_diagnostics(
     diagnostics.extend(callable_diags);
     symbol_meta.extend(callable_meta);
 
-    // VAR/CONST initializer info + LIST docs (presentational, no diagnostics).
-    symbol_meta.extend(external_check::infer_value_meta(
-        &hir_inputs,
-        index,
-        &inline_docs,
-    ));
+    (symbol_meta, diagnostics)
+}
 
-    // Call-site literal checks (type mismatch, closed domain) over the HIR.
-    // Externals only — knot/stitch metadata is presentational, not binding.
-    if opts.external_check != ExternalCheckSeverity::Off {
-        let name_to_meta: BTreeMap<&str, &SymbolMeta> = symbol_meta
-            .iter()
-            .filter_map(|(id, meta)| {
-                index.symbols.get(id).and_then(|s| {
-                    (s.kind == SymbolKind::External).then_some((s.name.as_str(), meta))
-                })
+/// Project the external-kind entries of an enrichment map to a name-keyed
+/// map for the call-site checks (issue #750 / FG-3 completion). Range-free
+/// by construction ([`SymbolMeta`] carries no spans), so `brink-db` can put
+/// an `Eq`-cutoff memo between the (often-invalidated, full-ranged-index-
+/// reading) enrichment pass and every file's call-site walk — the
+/// `resolution_index` playbook.
+///
+/// Fed [`external_meta_diagnostics`]'s output, this is identical to the
+/// pre-split filter over the *fully merged* `symbol_meta`: the callable
+/// ([`external_check::enrich_callables`]) and value
+/// ([`external_check::infer_value_meta`]) passes only ever key
+/// `Knot`/`Stitch` and `Variable`/`Constant`/`List` ids respectively, so no
+/// entry they add can pass the `SymbolKind::External` filter here.
+/// Same-name duplicates resolve identically too: iteration is in
+/// `DefinitionId` order in both shapes, later entries overwriting.
+#[must_use]
+pub fn call_site_metas(
+    index: &SymbolIndex,
+    metas: &BTreeMap<DefinitionId, SymbolMeta>,
+) -> BTreeMap<String, SymbolMeta> {
+    metas
+        .iter()
+        .filter_map(|(id, meta)| {
+            index.symbols.get(id).and_then(|s| {
+                (s.kind == SymbolKind::External).then(|| (s.name.clone(), meta.clone()))
             })
-            .collect();
-        diagnostics.extend(external_check::check_call_sites(&hir_inputs, &name_to_meta));
+        })
+        .collect()
+}
+
+/// One file's VAR/CONST/LIST initializer/doc enrichment (issue #750 / FG-3
+/// completion — the per-file slice of [`external_check::infer_value_meta`],
+/// which `whole_project_diagnostics` used to run as one loop over every
+/// file's HIR). Purely presentational — never produces diagnostics. A
+/// declaration's initializer lives in exactly one file, so the per-file
+/// split is behavior-neutral: the whole-project result is the file-order
+/// merge of the per-file maps (later files overwrite on the — deliberately
+/// deterministic — duplicate-name id collision, exactly as the single loop
+/// did). Reads no symbol ranges from `index` (only `by_name` + `kind`), so
+/// a range-zeroed index projection serves it.
+#[must_use]
+pub fn file_value_meta(
+    file: FileId,
+    hir: &HirFile,
+    index: &SymbolIndex,
+    inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
+) -> BTreeMap<DefinitionId, SymbolMeta> {
+    external_check::infer_value_meta(&[(file, hir)], index, inline_docs)
+}
+
+/// One file's external call-site literal checks (`E041` type mismatch,
+/// `E042` closed domain) — the per-file slice of
+/// [`external_check::check_call_sites`] (issue #750 / FG-3 completion).
+/// The checker only ever reads the file it is visiting plus the name-keyed
+/// external metas, so the per-file split is behavior-neutral; the caller
+/// owns both the [`ExternalCheckSeverity`] gate and the file-order
+/// concatenation the single whole-project walk produced.
+#[must_use]
+pub fn file_call_site_diagnostics(
+    file: FileId,
+    hir: &HirFile,
+    metas: &BTreeMap<String, SymbolMeta>,
+) -> Vec<Diagnostic> {
+    let name_to_meta: BTreeMap<&str, &SymbolMeta> = metas
+        .iter()
+        .map(|(name, meta)| (name.as_str(), meta))
+        .collect();
+    external_check::check_call_sites(&[(file, hir)], &name_to_meta)
+}
+
+/// The strict typed-mode pass (docs/typed-mode-spec.md §1/§9-step-3),
+/// extracted from `whole_project_diagnostics`'s body (issue #750 / FG-3
+/// completion) so `brink-db` can run it without also paying for the
+/// external-check family's inputs. Returns empty under `types = gradual` —
+/// byte-identical, forever.
+///
+/// `types = strict` requires `dialect = brink` — a config error (`E064`)
+/// otherwise, reported alone (nothing else strict-specific runs against a
+/// project whose dialect already rejects the annotation syntax strict mode
+/// needs). Under `dialect = brink`, runs inference (reusing
+/// `strict_inference` when the caller already computed one — see
+/// [`whole_project_diagnostics`]'s doc) and wires in Unknown/Conflicted-
+/// escape (`E065`/`E066`) plus `E063` mismatches.
+#[must_use]
+pub fn strict_diagnostics(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+    opts: &AnalysisOptions,
+    strict_inference: Option<&InferenceResult>,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    if opts.types == TypePolicy::Strict {
+        if let Some(diag) = strict::config_error(opts.dialect, files.first().map(|&(f, _)| f)) {
+            diagnostics.push(diag);
+        } else {
+            let owned_inference;
+            let inference = if let Some(inf) = strict_inference {
+                inf
+            } else {
+                owned_inference = infer::infer_project(files, index, resolutions);
+                &owned_inference
+            };
+            diagnostics.extend(strict::check(files, index, inference, resolutions));
+        }
+    }
+    diagnostics
+}
+
+/// Whole-project diagnostic contributors that genuinely need cross-file
+/// state (issue #632 / FG-3 design doc §1), now composed of the same
+/// per-pass seams `brink-db`'s decomposed queries wrap (issue #750 / FG-3
+/// completion) — [`strict_diagnostics`], [`external_meta_diagnostics`],
+/// per-file [`file_value_meta`], and per-file
+/// [`file_call_site_diagnostics`] behind [`call_site_metas`] — in exactly
+/// the pre-split order, so the query-composed result is identical to this
+/// monolithic one by construction (pinned by `query_equivalence.rs`).
+///
+/// `strict_inference`: TM-3's strict pass needs a whole-project
+/// [`InferenceResult`] (docs/typed-mode-spec.md §9-step-3 — E063 auto-wiring
+/// "must run inference anyway"). Pass `None` to have this function compute
+/// its own via [`infer_project`] (the self-contained default —
+/// [`analyze_with_options`]'s pure, non-salsa path). Pass `Some` to reuse an
+/// already-computed result instead — `brink-db` supplies its FG-narrowed,
+/// per-SCC-memoized `type_inference_query` here so strict mode's
+/// warm-reanalyze cost is the incremental one the FG spine exists for, not a
+/// from-scratch whole-project solve on every keystroke. Ignored entirely
+/// under `types = gradual` or when the dialect makes strict mode a config
+/// error. The `types = strict` + wrong-dialect config error (`E064`) is
+/// computed exactly once, inside [`strict_diagnostics`] (issue #632's
+/// TM-3-interaction fence).
+#[must_use]
+pub fn whole_project_diagnostics(
+    files: &[(FileId, &HirFile, &SymbolManifest)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+    opts: &AnalysisOptions,
+    strict_inference: Option<&InferenceResult>,
+) -> (Vec<Diagnostic>, BTreeMap<DefinitionId, SymbolMeta>) {
+    let manifest_inputs: Vec<(FileId, &SymbolManifest)> = files
+        .iter()
+        .map(|&(id, _hir, manifest)| (id, manifest))
+        .collect();
+    let hir_inputs: Vec<(FileId, &HirFile)> = files.iter().map(|&(id, hir, _)| (id, hir)).collect();
+
+    // TM-3 strict typed-mode policy. Gradual mode returns empty here —
+    // byte-identical, forever.
+    let mut diagnostics =
+        strict_diagnostics(&hir_inputs, index, resolutions, opts, strict_inference);
+
+    // Host-manifest enrichment + checks (tooling/author-time only) — the
+    // index-driven half: externals (E039/E040), then callables.
+    let inline_docs = collect_inline_docs(&manifest_inputs);
+    let (mut symbol_meta, ext_diags) = external_meta_diagnostics(index, &inline_docs, opts);
+    diagnostics.extend(ext_diags);
+
+    // Name-keyed external metas for the call-site checks — built before the
+    // value-meta merge, which is identical to the pre-split post-merge
+    // filter (see `call_site_metas`'s doc for the argument).
+    let cs_metas = call_site_metas(index, &symbol_meta);
+
+    // VAR/CONST initializer info + LIST docs (presentational, no
+    // diagnostics), merged in file order.
+    for &(file_id, hir, _) in files {
+        symbol_meta.extend(file_value_meta(file_id, hir, index, &inline_docs));
+    }
+
+    // Call-site literal checks (type mismatch, closed domain) over the HIR,
+    // in file order. Externals only — knot/stitch metadata is
+    // presentational, not binding.
+    if opts.external_check != ExternalCheckSeverity::Off {
+        for &(file_id, hir, _) in files {
+            diagnostics.extend(file_call_site_diagnostics(file_id, hir, &cs_metas));
+        }
     }
 
     (diagnostics, symbol_meta)
