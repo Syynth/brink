@@ -126,7 +126,7 @@ impl fmt::Debug for DefinitionId {
 }
 
 /// An index into the story name table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NameId(pub u16);
 
 /// A reference to a specific line within a container.

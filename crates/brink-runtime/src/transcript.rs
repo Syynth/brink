@@ -52,6 +52,12 @@ const VAL_STRING: u8 = 0x03;
 const VAL_LIST: u8 = 0x04;
 const VAL_DIVERT_TARGET: u8 = 0x05;
 const VAL_NULL: u8 = 0x06;
+// Shared numeric surface with the `.inkb` format (`inkb::VAL_VAR_POINTER`). A
+// `VariablePointer` is preserved distinctly (T1c, #700) so a `ref`-bound
+// closure env entry round-trips losslessly — the old code collapsed it to
+// `VAL_DIVERT_TARGET`, which is fine for a bare pointer (display-identical) but
+// would corrupt a captured `ref` cell inside a persisted function value.
+const VAL_VAR_POINTER: u8 = 0x07;
 const VAL_FRAGMENT_REF: u8 = 0x08;
 // v4 collection tags — shared numeric surface with the `.inkb` format
 // (`docs/format-v4-rfc.md` §1). Reachable today via `Opcode::EmitValue`, which
@@ -59,6 +65,13 @@ const VAL_FRAGMENT_REF: u8 = 0x08;
 // #525 can be a collection) into `OutputPart::ValueRef`.
 const VAL_ARRAY: u8 = 0x09;
 const VAL_MAP: u8 = 0x0A;
+// T1c function-value tags — shared numeric surface with the `.inkb` format
+// (`docs/format-v4-rfc.md` §1). A function value can ride the append-only
+// transcript / journal / speculation snapshots as an ordinary value (spec §6:
+// "function values save like every other value"), e.g. via `Opcode::EmitValue`
+// or a saved binding.
+const VAL_FN_REF: u8 = 0x0B;
+const VAL_CLOSURE: u8 = 0x0C;
 // TM-4 record tag — shared numeric surface with the `.inkb` format
 // (`docs/format-v4-rfc.md` §1: `ShapeId`, then field values in shape order).
 const VAL_RECORD: u8 = 0x0F;
@@ -498,7 +511,7 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
             write_def_id(buf, *id);
         }
         Value::VariablePointer(id) => {
-            write_u8(buf, VAL_DIVERT_TARGET); // serialize same as divert target
+            write_u8(buf, VAL_VAR_POINTER);
             write_def_id(buf, *id);
         }
         Value::FragmentRef(idx) => {
@@ -533,6 +546,23 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
             write_u32(buf, fields.len() as u32);
             for field in fields.iter() {
                 encode_value(field, buf);
+            }
+        }
+        // Function values (T1c, spec §6): save like every other value. `FnRef`
+        // is the fn token; `Closure` adds a u32-counted env of `{NameId, kind
+        // u8, value}` entries — the named/moded env the rehydration check reads.
+        Value::FnRef(target) => {
+            write_u8(buf, VAL_FN_REF);
+            write_def_id(buf, *target);
+        }
+        Value::Closure(c) => {
+            write_u8(buf, VAL_CLOSURE);
+            write_def_id(buf, c.target);
+            write_u32(buf, c.env.len() as u32);
+            for entry in &c.env {
+                write_u16(buf, entry.name.0);
+                write_u8(buf, u8::from(entry.is_ref));
+                encode_value(&entry.payload, buf);
             }
         }
     }
@@ -594,6 +624,10 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Tran
             let id = read_def_id(buf, off)?;
             Ok(Value::DivertTarget(id))
         }
+        VAL_VAR_POINTER => {
+            let id = read_def_id(buf, off)?;
+            Ok(Value::VariablePointer(id))
+        }
         VAL_FRAGMENT_REF => Ok(Value::FragmentRef(read_u32(buf, off)?)),
         VAL_NULL => Ok(Value::Null),
         VAL_ARRAY => {
@@ -622,6 +656,23 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Tran
                 fields.push(decode_value(buf, off, depth + 1)?);
             }
             Ok(Value::record(shape, fields))
+        }
+        VAL_FN_REF => Ok(Value::FnRef(read_def_id(buf, off)?)),
+        VAL_CLOSURE => {
+            let target = read_def_id(buf, off)?;
+            let count = read_u32(buf, off)? as usize;
+            let mut env = Vec::with_capacity(count.min(buf.len().saturating_sub(*off)));
+            for _ in 0..count {
+                let name = brink_format::NameId(read_u16(buf, off)?);
+                let is_ref = read_u8(buf, off)? != 0;
+                let payload = decode_value(buf, off, depth + 1)?;
+                env.push(brink_format::ClosureEnvEntry {
+                    name,
+                    is_ref,
+                    payload,
+                });
+            }
+            Ok(Value::closure(target, env))
         }
         _ => Err(TranscriptError::InvalidValueTag(tag)),
     }
@@ -737,6 +788,51 @@ mod tests {
         match &data.parts[1] {
             OutputPart::ValueRef(v) => assert_eq!(*v, Value::map(map)),
             other => unreachable!("expected ValueRef(map), got {other:?}"),
+        }
+    }
+
+    // Function values (T1c, #700) persist through the transcript/journal as
+    // ordinary values (spec §6). This locks the VAL_FN_REF / VAL_CLOSURE
+    // encoding — the fn token, the bound-env names/modes, and both payload
+    // shapes (`val` snapshot, `ref` VariablePointer) — across the round-trip.
+    #[test]
+    fn round_trip_value_ref_function_values() {
+        use brink_format::{ClosureEnvEntry, DefinitionId, DefinitionTag, NameId};
+
+        let target = DefinitionId::new(DefinitionTag::Address, 7);
+        let cell = DefinitionId::new(DefinitionTag::Address, 3);
+        let fn_ref = Value::FnRef(target);
+        let closure = Value::closure(
+            target,
+            vec![
+                ClosureEnvEntry {
+                    name: NameId(2),
+                    is_ref: true,
+                    payload: Value::VariablePointer(cell),
+                },
+                ClosureEnvEntry {
+                    name: NameId(5),
+                    is_ref: false,
+                    payload: Value::Int(41),
+                },
+            ],
+        );
+
+        let parts = vec![
+            OutputPart::ValueRef(fn_ref.clone()),
+            OutputPart::ValueRef(closure.clone()),
+        ];
+        let bytes = write_transcript(&parts, 7, &[]);
+        let data = read_transcript(&bytes).unwrap();
+
+        assert_eq!(data.parts.len(), 2);
+        match &data.parts[0] {
+            OutputPart::ValueRef(v) => assert_eq!(*v, fn_ref),
+            other => unreachable!("expected ValueRef(fn_ref), got {other:?}"),
+        }
+        match &data.parts[1] {
+            OutputPart::ValueRef(v) => assert_eq!(*v, closure),
+            other => unreachable!("expected ValueRef(closure), got {other:?}"),
         }
     }
 

@@ -1076,9 +1076,12 @@ pub enum DiagnosticCode {
     E051,
     /// A brink-extension construct parses and analyzes cleanly under the
     /// `brink` dialect, but its LIR lowering hasn't landed yet. Originally
-    /// minted for T1b-1 (every T1b construct lowers since T1b-2, #570); now
-    /// fires for `#fn(…)` function values, whose lowering lands in T1c-2
-    /// (docs/t1c-spec.md §11).
+    /// minted for T1b-1 (every T1b construct lowers since T1b-2, #570), then
+    /// revived by T1c-1 (#699) as the `#fn(…)` lowering fence. **No production
+    /// emit site remains** since T1c-2 (#700): `#fn(…)` now lowers for real
+    /// (expression position and declaration defaults). Reserved, not reused —
+    /// available again for the next brink extension that parses/analyzes
+    /// before its lowering lands.
     E052,
     /// Internal error: a T1b brink-extension HIR node (`LogicBlock`,
     /// `ArrayLiteral`, `MapLiteral`, `Index`) reached LIR lowering. The

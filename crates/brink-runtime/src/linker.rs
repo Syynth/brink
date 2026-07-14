@@ -50,6 +50,7 @@ pub fn link(
             counting_flags: cdef.counting_flags,
             path_hash: cdef.path_hash,
             param_count: cdef.param_count,
+            params: cdef.params.clone(),
             scope_table_idx,
         });
     }

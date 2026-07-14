@@ -221,6 +221,25 @@ const CONVERT_INT: u8 = 0xD3;
 const CONVERT_FLOAT: u8 = 0xD4;
 const CONVERT_STRING: u8 = 0xD5;
 
+// Function-value opcodes (T1c, `docs/format-v4-rfc.md` §3 "Functions" —
+// named there, numerically unallocated; assigned here, contiguous and
+// adjacent to the conversion block above, this PR's own reservation). First
+// live emission of the reserved function-value surface (`docs/t1c-spec.md`
+// §11 T1c-2).
+//   0xD6 PushFnRef(DefinitionId)          0xD7 MakeClosure(env descriptor)
+//   0xD8 CallValue(argc)
+// `PushFnRef` pushes the zero-bound `Value::FnRef`. `MakeClosure`'s operand is
+// the target `DefinitionId` then a u16-counted descriptor of `{NameId, kind
+// u8 (0=val,1=ref)}` entries — one per bound arg, in declared order — and it
+// pops that many values off the stack (bound in order) to build a
+// `Value::Closure`. `CallValue(argc)` pops the callee (top of stack) then the
+// `argc` supplied (val-only) args below it, dispatching through the function
+// value (`docs/t1c-spec.md` §3): non-function callee / wrong arity /
+// rehydration mismatch / cross-flow ref-`#@local` are turn-terminating faults.
+const PUSH_FN_REF: u8 = 0xD6;
+const MAKE_CLOSURE: u8 = 0xD7;
+const CALL_VALUE: u8 = 0xD8;
+
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
 const LIST_NOT_CONTAINS: u8 = 0xB1;
@@ -653,6 +672,31 @@ pub enum Opcode {
     /// coercion").
     ConvertString,
 
+    // ── Function values (T1c, `docs/t1c-spec.md` §3/§6) ──────────────────
+    /// `[]` → `FnRef`. Push a zero-bound function value for the target
+    /// `DefinitionId` (`#fn(name)` where the target has no `ref` params).
+    PushFnRef(DefinitionId),
+    /// `[bound_0, …, bound_{n-1}]` → `Closure`. Pop the `n` = `bound_count`
+    /// bound args (in declared order) and pair each with its param name/mode
+    /// read from the target container's own [`ContainerDef::params`] table
+    /// (the bound prefix `params[0..n]`) to build a `Closure`.
+    /// A `ref` bound arg is a `VariablePointer` (a captured durable cell); a
+    /// `val` bound arg is a snapshot. The names/modes are read from the
+    /// signature (not baked into the opcode) so there is one source of truth
+    /// the rehydration check compares against.
+    MakeClosure {
+        target: DefinitionId,
+        bound_count: u8,
+    },
+    /// `[arg_0, …, arg_{argc-1}, callee]` → return value. Pop the callee
+    /// function value then the `argc` supplied (val-only) args, splice the
+    /// closure's bound prefix ahead of them, and enter the target. Faults
+    /// (turn-terminating, `docs/t1c-spec.md` §3): callee is not a function
+    /// value; `bound + argc` ≠ the target's declared arity; a rehydrated env
+    /// entry's name/mode no longer matches the current signature; the callee
+    /// `ref`-binds a `#@local` and is invoked from a non-creating flow.
+    CallValue(u8),
+
     // ── Lifecycle ───────────────────────────────────────────────────────
     Done,
     /// Pause for choice presentation. Like `Done` but does NOT set
@@ -951,6 +995,24 @@ impl Opcode {
             Self::ConvertFloat => write_u8(buf, CONVERT_FLOAT),
             Self::ConvertString => write_u8(buf, CONVERT_STRING),
 
+            // Function values (T1c, #700)
+            Self::PushFnRef(id) => {
+                write_u8(buf, PUSH_FN_REF);
+                write_def_id(buf, id);
+            }
+            Self::MakeClosure {
+                target,
+                bound_count,
+            } => {
+                write_u8(buf, MAKE_CLOSURE);
+                write_def_id(buf, target);
+                write_u8(buf, bound_count);
+            }
+            Self::CallValue(argc) => {
+                write_u8(buf, CALL_VALUE);
+                write_u8(buf, argc);
+            }
+
             // Lifecycle
             Self::Done => write_u8(buf, DONE),
             Self::Yield => write_u8(buf, YIELD),
@@ -1152,6 +1214,14 @@ impl Opcode {
             CONVERT_INT => Self::ConvertInt,
             CONVERT_FLOAT => Self::ConvertFloat,
             CONVERT_STRING => Self::ConvertString,
+
+            // Function values (T1c, #700)
+            PUSH_FN_REF => Self::PushFnRef(read_def_id(buf, offset)?),
+            MAKE_CLOSURE => Self::MakeClosure {
+                target: read_def_id(buf, offset)?,
+                bound_count: read_u8(buf, offset)?,
+            },
+            CALL_VALUE => Self::CallValue(read_u8(buf, offset)?),
 
             // Lifecycle
             DONE => Self::Done,

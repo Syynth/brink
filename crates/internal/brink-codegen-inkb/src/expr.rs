@@ -111,6 +111,40 @@ impl ContainerEmitter<'_> {
                 self.emit_builtin(*builtin, args);
             }
 
+            // ── Function values (T1c, #700) ──────────────────────────
+            lir::Expr::MakeFnValue { target, bound } => {
+                for arg in bound {
+                    self.emit_call_arg(arg);
+                }
+                if bound.is_empty() {
+                    self.emit(Opcode::PushFnRef(*target));
+                } else {
+                    self.emit(Opcode::MakeClosure {
+                        target: *target,
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "a #fn binds <=255 args (E081 caps at the declared row)"
+                        )]
+                        bound_count: bound.len() as u8,
+                    });
+                }
+            }
+
+            lir::Expr::CallValue { callee, args } => {
+                for arg in args {
+                    self.emit_expr(arg, false);
+                }
+                self.emit_expr(callee, false);
+                self.emit_fragment_wrapped(
+                    display,
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "a call supplies <=255 args"
+                    )]
+                    Opcode::CallValue(args.len() as u8),
+                );
+            }
+
             // ── Collections (T1b) ────────────────────────────────────
             lir::Expr::ConstLiteral(v) => self.emit_literal_pool_push(v),
 
@@ -246,7 +280,7 @@ impl ContainerEmitter<'_> {
         reason = "literal pools stay well under u32::MAX entries"
     )]
     fn emit_literal_pool_push(&mut self, v: &lir::ConstValue) {
-        let value = crate::const_to_value(v);
+        let value = crate::const_to_value(v, self.state_name_table, self.state_name_index);
         let idx = self
             .literal_pool
             .iter()

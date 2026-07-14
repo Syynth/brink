@@ -287,6 +287,7 @@ fn type_name(v: &Value) -> &'static str {
         Value::Array(_) => "array",
         Value::Map(_) => "map",
         Value::Record { .. } => "record",
+        Value::FnRef(_) | Value::Closure(_) => "fn",
     }
 }
 

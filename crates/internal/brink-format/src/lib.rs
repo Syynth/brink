@@ -32,8 +32,8 @@ mod inkt;
 pub use counting::CountingFlags;
 pub use definition::{
     AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef, LocaleData, LocaleLineEntry, LocaleScopeTable, ScopeLineTable, SlotInfo,
-    SourceLocation, StructShapeDef, content_hash,
+    ListItemDef, LocaleData, LocaleLineEntry, LocaleScopeTable, ParamMeta, ScopeLineTable,
+    SlotInfo, SourceLocation, StructShapeDef, content_hash,
 };
 pub use id::{DefinitionId, DefinitionTag, LineId, NameId};
 pub use inkb::{
@@ -54,7 +54,10 @@ pub use line::{
 pub use opcode::{ChoiceFlags, DecodeError, Opcode, SequenceKind};
 pub use save::{LoadReport, SAVE_FORMAT_VERSION, SaveState, VisitEntry};
 pub use story::StoryData;
-pub use value::{ListValue, MAX_DECODE_DEPTH, MapKey, OrderedMap, ShapeId, Value, ValueType};
+pub use value::{
+    ClosureEnvEntry, ClosureValue, ListValue, MAX_DECODE_DEPTH, MapKey, OrderedMap, ShapeId, Value,
+    ValueType,
+};
 
 #[cfg(any(feature = "inkt", feature = "inkt-write"))]
 pub use inkt::write_inkt;

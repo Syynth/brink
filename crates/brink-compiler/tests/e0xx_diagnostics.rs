@@ -31,12 +31,12 @@
 //! - E028 — no production emit site; a circular INCLUDE surfaces as
 //!   `CompileError::CircularInclude` from discovery instead (covered in
 //!   `tests/driver.rs::compile_circular_includes_detected`).
-//! - E053 — retired by T1b-2 (#570): the LIR backstop was replaced by real
-//!   lowering; no production emit site remains. (E052, formerly listed
-//!   alongside it, was **revived by T1c-1 (#699)** as the `#fn(…)`
-//!   not-yet-implemented lowering fence — tested below and, for the
-//!   VAR-declaration-default path, in
-//!   `brink-test-harness/tests/tier1_brink.rs`.)
+//! - E052 / E053 — both retired: the LIR backstop was replaced by real
+//!   lowering; no production emit site remains. E053 went with T1b-2 (#570);
+//!   E052 was revived by T1c-1 (#699) as the `#fn(…)` not-yet-implemented
+//!   lowering fence and retired again by T1c-2 (#700), which lands real
+//!   `#fn(…)` lowering (expression position and declaration defaults). Both
+//!   are reserved-not-reused.
 //! - E060 — emitted only when codegen rejects a `Program` violating an
 //!   invariant an earlier stage guarantees (a compiler bug by definition);
 //!   not constructible from source.
@@ -677,19 +677,25 @@ fn e062_retired_fn_type_annotation_actually_resolves_under_strict() {
     );
 }
 
-// ─── T1c-1 lowering fence (E052 — revived by #699) ───────────────────
+// ─── T1c-2 (#700): the E052 `#fn` lowering fence is retired ───────────
 
 #[test]
-fn e052_fn_literal_not_yet_implemented_at_lowering() {
+fn e052_retired_fn_literal_lowers_without_error() {
     // A well-formed `#fn` creation site under dialect=brink parses, gates,
-    // and type-checks in T1c-1 but has no LIR/codegen story until T1c-2 —
-    // the non-suppressible lowering fence is the one error left.
-    assert_error_at(
+    // type-checks (T1c-1) AND now lowers for real (T1c-2, #700) — the former
+    // E052 lowering fence is gone, so a valid `#fn` compiles clean. An E052
+    // (or any diagnostic) would surface as a `Diagnostics` compile error.
+    let result = compile(
         "=== function double(x) ===\n~ return x + x\n\n~ temp f = #fn(double, 1)\nHi\n",
         brink_options(),
-        DiagnosticCode::E052,
-        "#fn(double, 1)",
     );
+    if let Err(err) = result {
+        let diags = errors_of(err);
+        assert!(
+            !diags.iter().any(|d| d.code == DiagnosticCode::E052),
+            "E052 lowering fence should be retired for #fn, got {diags:?}",
+        );
+    }
 }
 
 // ─── Structs (E068–E071, E073, E074) ─────────────────────────────────

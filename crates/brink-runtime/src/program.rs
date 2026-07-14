@@ -77,6 +77,11 @@ pub(crate) struct LinkedContainer {
     pub path_hash: i32,
     /// Number of declared parameters (for arity-checking host-directed entry).
     pub param_count: u8,
+    /// Per-parameter name/mode metadata, in declared order (T1c, #700).
+    /// Empty for containers the converter produced or that declare no params;
+    /// used by function-value dispatch to validate a rehydrated closure's
+    /// bound env against the current signature.
+    pub params: Vec<brink_format::ParamMeta>,
     /// Index into `Program.line_tables` for this container's scope line table.
     pub scope_table_idx: u32,
 }
@@ -166,6 +171,20 @@ impl Program {
     /// Look up a name by id.
     pub(crate) fn name(&self, id: NameId) -> &str {
         &self.name_table[id.0 as usize]
+    }
+
+    /// Look up a name by id, returning `None` if the id is out of range. Used
+    /// by function-value rehydration (T1c, #700): a closure loaded from a save
+    /// produced against a *different* compile can carry a `NameId` that no
+    /// longer indexes this program's table — treated as a mismatch (fault),
+    /// never a panic.
+    pub(crate) fn name_checked(&self, id: NameId) -> Option<&str> {
+        self.name_table.get(id.0 as usize).map(String::as_str)
+    }
+
+    /// Access a container's per-parameter name/mode metadata (T1c, #700).
+    pub(crate) fn container_params(&self, idx: u32) -> &[brink_format::ParamMeta] {
+        &self.containers[idx as usize].params
     }
 
     /// Look up a global slot index.

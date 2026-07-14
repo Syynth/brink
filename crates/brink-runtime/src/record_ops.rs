@@ -158,6 +158,7 @@ fn type_name(v: &Value) -> &'static str {
         Value::Array(_) => "array",
         Value::Map(_) => "map",
         Value::Record { .. } => "record",
+        Value::FnRef(_) | Value::Closure(_) => "fn",
     }
 }
 
@@ -237,6 +238,7 @@ mod tests {
                 counting_flags: CountingFlags::empty(),
                 path_hash: 0,
                 param_count: 0,
+                params: Vec::new(),
                 scope_table_idx: 0,
             }],
             address_map: HashMap::new(),

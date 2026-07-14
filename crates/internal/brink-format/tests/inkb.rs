@@ -622,6 +622,7 @@ fn roundtrip_line_entry_with_audio_ref() {
             counting_flags: CountingFlags::empty(),
             path_hash: 0,
             param_count: 0,
+            params: vec![],
             local: false,
         }],
         line_tables: vec![ScopeLineTable {

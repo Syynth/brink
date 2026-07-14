@@ -6,7 +6,7 @@ use pest_derive::Parser;
 use crate::counting::CountingFlags;
 use crate::definition::{
     AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef, ScopeLineTable, SlotInfo, SourceLocation,
+    ListItemDef, ParamMeta, ScopeLineTable, SlotInfo, SourceLocation,
 };
 use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -661,6 +661,10 @@ fn parse_list_literal_entry(pair: P<'_>) -> Result<ListValue, InktParseError> {
 
 // ── Containers ──────────────────────────────────────────────────────────────
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one-arm-per-field container parser; splitting would scatter the field table"
+)]
 fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktParseError> {
     let mut inner = pair.into_inner();
     let id = parse_def_id(inner.next().ok_or_else(|| InktParseError {
@@ -672,6 +676,7 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
     let mut counting_flags = CountingFlags::empty();
     let mut path_hash = 0i32;
     let mut param_count = 0u8;
+    let mut params: Vec<ParamMeta> = Vec::new();
     let mut local = false;
     let mut lines = Vec::new();
     let mut bytecode = Vec::new();
@@ -722,7 +727,8 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
                 })?;
             }
             Rule::params_field => {
-                let val = child.into_inner().next().ok_or_else(|| InktParseError {
+                let mut fields = child.into_inner();
+                let val = fields.next().ok_or_else(|| InktParseError {
                     message: "expected integer in params".into(),
                     line: 0,
                     col: 0,
@@ -732,6 +738,29 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
                     line: 0,
                     col: 0,
                 })?;
+                // Per-param name/mode metadata (T1c, #700): `(val id)` / `(ref
+                // id)` entries after the count, in declared order.
+                for meta in fields {
+                    if meta.as_rule() != Rule::param_meta {
+                        continue;
+                    }
+                    let mut mi = meta.into_inner();
+                    let mode = mi.next().ok_or_else(|| InktParseError {
+                        message: "expected mode in param_meta".into(),
+                        line: 0,
+                        col: 0,
+                    })?;
+                    let is_ref = mode.as_str() == "ref";
+                    let name_int = mi.next().ok_or_else(|| InktParseError {
+                        message: "expected name id in param_meta".into(),
+                        line: 0,
+                        col: 0,
+                    })?;
+                    params.push(ParamMeta {
+                        name: NameId(parse_u16(&name_int)?),
+                        is_ref,
+                    });
+                }
             }
             Rule::local_flag => local = true,
             Rule::lines_field => {
@@ -752,6 +781,10 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
         counting_flags,
         path_hash,
         param_count,
+        // Per-param name/mode metadata (T1c, #700), reconstructed from the
+        // `(params N (mode id)…)` dump so the `.inkt` round-trip is lossless
+        // (matches the binary `.inkb` path used by persistence/rehydration).
+        params,
         local,
     };
     let line_table = ScopeLineTable { scope_id, lines };

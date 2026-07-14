@@ -93,12 +93,12 @@ pub fn emit(program: &lir::Program) -> Result<StoryData, CodegenError> {
     // path is empty.
     walk_container(&program.root, "", "", program.root.id, &mut state);
 
-    if let Some(first) = state.errors.into_iter().next() {
+    if let Some(first) = core::mem::take(&mut state.errors).into_iter().next() {
         return Err(first);
     }
 
     // Build globals, lists, externals.
-    let variables = build_globals(&program.globals);
+    let variables = build_globals(&program.globals, &mut state);
     let list_defs = build_list_defs(&program.lists);
     let list_items = build_list_items(&program.list_items);
     let externals = build_externals(&program.externals);
@@ -167,6 +167,26 @@ struct EmitState {
     /// `Result` through every recursive emitter call. Bounded by the size
     /// of the `Program` being walked, same as every other `Vec` here.
     errors: Vec<CodegenError>,
+}
+
+/// Intern a string into a story name table, deduping against entries already
+/// present. Shared by both codegen phases: the container walk
+/// ([`ContainerEmitter::intern_string`]) and the post-walk build phase
+/// ([`const_to_value`]), which hold the name table/index by different paths
+/// but need identical dedup semantics.
+fn intern_into(
+    name_table: &mut Vec<String>,
+    name_index: &mut HashMap<String, NameId>,
+    s: &str,
+) -> NameId {
+    if let Some(&id) = name_index.get(s) {
+        return id;
+    }
+    #[expect(clippy::cast_possible_truncation)]
+    let id = NameId(name_table.len() as u16);
+    name_table.push(s.to_string());
+    name_index.insert(s.to_string(), id);
+    id
 }
 
 // ─── Container emitter ──────────────────────────────────────────────
@@ -402,6 +422,19 @@ fn walk_container(
         // (`choose_path_string_with_args`) / `call_function`. Saturates — a
         // knot with >255 params is absurd and never legitimately occurs.
         param_count: u8::try_from(container.params.len()).unwrap_or(u8::MAX),
+        // Per-param name/mode metadata (T1c, #700): carried so the runtime can
+        // validate a rehydrated function value against the current signature.
+        // The LIR param `NameId`s are valid in the story name table (it is
+        // cloned from `program.name_table` — see `emit`), so they are used
+        // as-is.
+        params: container
+            .params
+            .iter()
+            .map(|p| brink_format::ParamMeta {
+                name: p.name,
+                is_ref: p.is_ref,
+            })
+            .collect(),
         local: container.local,
     };
     state.containers.push(def);
@@ -487,14 +520,14 @@ fn walk_container(
 
 // ─── Top-level definition builders ─────────────────────────────────
 
-fn build_globals(globals: &[lir::GlobalDef]) -> Vec<GlobalVarDef> {
+fn build_globals(globals: &[lir::GlobalDef], state: &mut EmitState) -> Vec<GlobalVarDef> {
     globals
         .iter()
         .map(|g| GlobalVarDef {
             id: g.id,
             name: g.name,
             value_type: const_value_type(&g.default),
-            default_value: const_to_value(&g.default),
+            default_value: const_to_value(&g.default, &mut state.name_table, &mut state.name_index),
             mutable: g.mutable,
             local: g.local,
         })
@@ -547,10 +580,16 @@ fn const_value_type(v: &lir::ConstValue) -> brink_format::ValueType {
         lir::ConstValue::Null => brink_format::ValueType::Null,
         lir::ConstValue::Array(_) => brink_format::ValueType::Array,
         lir::ConstValue::Map(_) => brink_format::ValueType::Map,
+        lir::ConstValue::FnRef(_) => brink_format::ValueType::FnRef,
+        lir::ConstValue::Closure { .. } => brink_format::ValueType::Closure,
     }
 }
 
-fn const_to_value(v: &lir::ConstValue) -> Value {
+fn const_to_value(
+    v: &lir::ConstValue,
+    name_table: &mut Vec<String>,
+    name_index: &mut HashMap<String, NameId>,
+) -> Value {
     match v {
         lir::ConstValue::Int(n) => Value::Int(*n),
         lir::ConstValue::Float(f) => Value::Float(*f),
@@ -565,13 +604,45 @@ fn const_to_value(v: &lir::ConstValue) -> Value {
             }
             .into(),
         ),
-        lir::ConstValue::Array(items) => Value::array(items.iter().map(const_to_value).collect()),
+        lir::ConstValue::Array(items) => Value::array(
+            items
+                .iter()
+                .map(|i| const_to_value(i, name_table, name_index))
+                .collect(),
+        ),
         lir::ConstValue::Map(entries) => {
             let mut map = OrderedMap::with_capacity(entries.len());
             for (k, v) in entries {
-                map.insert(const_map_key_to_value(k), const_to_value(v));
+                let val = const_to_value(v, name_table, name_index);
+                map.insert(const_map_key_to_value(k), val);
             }
             Value::map(map)
+        }
+        // Function values baked into a declaration default (T1c, #700). The
+        // param name is interned (deduped) into the story name table so it
+        // resolves to the same string the target container's `params` table
+        // carries — the runtime rehydration check compares the two by name.
+        lir::ConstValue::FnRef(target) => Value::FnRef(*target),
+        lir::ConstValue::Closure { target, env } => {
+            let env = env
+                .iter()
+                .map(|e| match e {
+                    lir::ConstClosureEntry::Val { name, value } => {
+                        let payload = const_to_value(value, name_table, name_index);
+                        brink_format::ClosureEnvEntry {
+                            name: intern_into(name_table, name_index, name),
+                            is_ref: false,
+                            payload,
+                        }
+                    }
+                    lir::ConstClosureEntry::Ref { name, cell } => brink_format::ClosureEnvEntry {
+                        name: intern_into(name_table, name_index, name),
+                        is_ref: true,
+                        payload: Value::VariablePointer(*cell),
+                    },
+                })
+                .collect();
+            Value::closure(*target, env)
         }
     }
 }

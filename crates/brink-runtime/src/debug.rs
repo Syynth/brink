@@ -165,6 +165,25 @@ impl<'p> NameResolver<'p> {
                 let parts: Vec<String> = fields.iter().map(|v| self.format_value(v)).collect();
                 format!("Record#{}{{{}}}", shape.0, parts.join(", "))
             }
+            // Function values (T1c, #700). Debug rendering resolves the target
+            // path where possible and shows the bound env; the author-facing
+            // `string(f)` display form (spec §5) lands in T1c-3.
+            Value::FnRef(target) => match self.def_path(*target) {
+                Some(p) => format!("fn {p}"),
+                None => "fn ?".to_owned(),
+            },
+            Value::Closure(c) => {
+                let name = self.def_path(c.target).unwrap_or("?");
+                let parts: Vec<String> = c
+                    .env
+                    .iter()
+                    .map(|e| {
+                        let mode = if e.is_ref { "ref" } else { "val" };
+                        format!("{mode} {}", self.format_value(&e.payload))
+                    })
+                    .collect();
+                format!("fn {name}({})", parts.join(", "))
+            }
         }
     }
 }

@@ -155,6 +155,24 @@ impl<'a> Resolver<'a> {
                 let parts: Vec<String> = fields.iter().map(|v| self.format_value(v)).collect();
                 format!("Record#{}{{{}}}", shape.0, parts.join(", "))
             }
+            // Function values (T1c, #700): a `#fn(…)` baked into a declaration
+            // default reaches the program model as a global's initial value.
+            Value::FnRef(target) => format!("fn {}", self.path(*target)),
+            Value::Closure(c) => {
+                let parts: Vec<String> = c
+                    .env
+                    .iter()
+                    .map(|e| {
+                        let mode = if e.is_ref { "ref" } else { "val" };
+                        format!(
+                            "{mode} {} = {}",
+                            self.name(e.name),
+                            self.format_value(&e.payload)
+                        )
+                    })
+                    .collect();
+                format!("fn {}({})", self.path(c.target), parts.join(", "))
+            }
         }
     }
 }
@@ -496,6 +514,14 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         Opcode::ConvertInt => "convert_int".to_owned(),
         Opcode::ConvertFloat => "convert_float".to_owned(),
         Opcode::ConvertString => "convert_string".to_owned(),
+
+        // Function values (T1c, #700)
+        Opcode::PushFnRef(id) => format!("push_fn_ref {}", r.path(*id)),
+        Opcode::MakeClosure {
+            target,
+            bound_count,
+        } => format!("make_closure {} bound={bound_count}", r.path(*target)),
+        Opcode::CallValue(argc) => format!("call_value argc={argc}"),
     }
 }
 
