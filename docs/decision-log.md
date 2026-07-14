@@ -1448,3 +1448,11 @@
 - **SYSTEM:** language design (#605 typed mode / TM-4 surface; issues #675/#676)
 - **WHAT:** (1) Construction-literal initializers (`Point#{y: g(), x: f()}`) evaluate in **source order** (left-to-right as written), not shape-declaration order; codegen reorders values into shape offsets AFTER evaluation. (2) A duplicate field in a construction literal is a **compile error** (next free E-code), replacing the current silent drop of the first initializer's side effect.
 - **WHY:** Left-to-right matches every other expression's evaluation order in the language — least author surprise, and side-effect order stays what the author wrote; shape order is a memory-layout concern that belongs to codegen, not semantics. Duplicate-field-errors is the no-silent-garbage posture applied at compile time.
+
+## LSP diagnostics race fixed with a single serialized publisher; tokio confined to the lsp binary
+- **WHEN:** 2026-07-14
+- **PROJECT:** brink
+- **SYSTEM:** brink-lsp
+- **SCOPE:** moderate
+- **WHAT:** The did_open/change/save per-file diagnostics publish and the background analysis_loop publish are unified behind one serialized publisher that owns decide→send→record atomically, tagging each publish with (generation, tier: PerFile|Analysis) and applying a monotone anti-downgrade rule (newer generation wins; Analysis breaks ties; a PerFile never overwrites a same-or-newer Analysis). The dead `generation` atomic is revived to carry the ordering. Plumbing is an async (tokio::Mutex) publish fn rather than a dedicated task/mpsc — acceptable specifically because it lives entirely in the brink-lsp binary, which is a leaf crate already built on tokio/tower-lsp and never compiled to wasm.
+- **WHY:** The bug is a wire send-ordering race across two tasks, so cache-record-only fixes can still strand the client on the parse-only subset — only a single owner of both send and record closes it. tokio primitives are fine here because brink-lsp is not in the wasm path; the same pattern would NOT be acceptable in the lower plumbing (brink-db/brink-ir/brink-analyzer) that brink-web compiles to wasm, which is the standing constraint worth recording.

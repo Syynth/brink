@@ -179,7 +179,6 @@ Some text.
 }
 
 #[test]
-#[expect(clippy::too_many_lines)]
 fn diagnostics_for_scene1_ink() {
     // Backstop cap on the wait loop below — see that loop's comment.
     const MAX_MESSAGES: u64 = 2000;
@@ -242,15 +241,16 @@ fn diagnostics_for_scene1_ink() {
         }),
     );
 
-    // Collect publishDiagnostics for the opened file until (a) at least one
-    // has arrived and (b) a background pass covering the file has completed.
-    // Both are guaranteed: `did_open` always publishes its per-file set
-    // (even when empty), and every background pass fires
-    // `$/brink/backgroundAnalysisComplete` (#695). This replaces the old
-    // dummy-request barrier (collect whatever notifications happened to
-    // precede a `documentSymbol` response), which raced against both
-    // publishers and flaked (#615) — the message cap is only a backstop
-    // against a genuine hang/regression.
+    // Wait for a background pass covering the file to complete. The settling
+    // condition is the `$/brink/backgroundAnalysisComplete` signal (#695) —
+    // NOT "at least one publishDiagnostics arrived". scene1.ink is a *clean*
+    // file, and the server suppresses an empty first publish for a
+    // never-published file (`DiagnosticsPublisher`, #615, matching the
+    // background loop's long-standing behavior), so a correct run legitimately
+    // emits ZERO diagnostics for it. Requiring a publish is exactly what hung
+    // this test once empty publishes were suppressed. Collect any diagnostics
+    // publishes that do arrive, for reporting. The message cap is only a
+    // backstop against a genuine hang/regression.
     let mut diag_notifications: Vec<Value> = Vec::new();
     let mut analysis_done = false;
     for _ in 0..MAX_MESSAGES {
@@ -261,8 +261,6 @@ fn diagnostics_for_scene1_ink() {
             && msg["params"]["file_count"].as_u64().unwrap_or(0) >= 1
         {
             analysis_done = true;
-        }
-        if analysis_done && !diag_notifications.is_empty() {
             break;
         }
     }
@@ -272,7 +270,7 @@ fn diagnostics_for_scene1_ink() {
          within {MAX_MESSAGES} messages"
     );
 
-    // Print diagnostics for inspection
+    // Report whatever diagnostics were published (may be none — see above).
     for note in &diag_notifications {
         let diags = note["params"]["diagnostics"]
             .as_array()
@@ -298,13 +296,6 @@ fn diagnostics_for_scene1_ink() {
         }
     }
 
-    // Assert we got at least one publishDiagnostics notification
-    assert!(
-        !diag_notifications.is_empty(),
-        "expected at least one publishDiagnostics notification"
-    );
-
-    // For now, just report what we got. We can tighten assertions later.
     let all_diags: Vec<&Value> = diag_notifications
         .iter()
         .flat_map(|n| n["params"]["diagnostics"].as_array().unwrap().iter())
