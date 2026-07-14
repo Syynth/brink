@@ -8,6 +8,35 @@ use brink_ir::{
 
 use crate::manifest::local_definition_id;
 
+/// Per-file import coverage, shared verbatim by resolution ([`ImportScope`])
+/// and the E025 import-required checker (`modules::import_covers`): the set
+/// of modules imported **qualified** (`IMPORT mod`, which licenses
+/// `module.name` access to any public export) and the `(module, name)` pairs
+/// brought into scope by **bare** imports (`IMPORT { name } FROM mod`, which
+/// is name-precise — it does *not* license every other export of `mod`).
+///
+/// A single source of truth for this distinction: an earlier version of
+/// `ImportScope` collapsed every import to just its module name, so a bare
+/// `IMPORT { other } FROM mod` was (wrongly) treated as importing *all* of
+/// `mod`, silently disagreeing with `import_covers`'s name-precise gate.
+#[must_use]
+pub(crate) fn import_coverage_for_file(
+    imports: &[Import],
+) -> (BTreeSet<&str>, BTreeSet<(&str, &str)>) {
+    let mut qualified = BTreeSet::new();
+    let mut bare = BTreeSet::new();
+    for import in imports {
+        if import.bare {
+            for item in &import.items {
+                bare.insert((import.module.as_str(), item.name.as_str()));
+            }
+        } else {
+            qualified.insert(import.module.as_str());
+        }
+    }
+    (qualified, bare)
+}
+
 /// Per-file import context threaded into resolution (M-2d,
 /// docs/modules-spec.md §2; issue #790) so a bare reference with multiple
 /// cross-module candidates binds to the module *this file* actually imports —
@@ -27,13 +56,15 @@ pub struct ImportScope {
     /// undeclared stem-module / the legacy world). A candidate declared in
     /// this same module is bare-visible without any import.
     pub file_module: Option<String>,
-    /// The **declared** modules this file imports — the FROM-module of every
-    /// bare `IMPORT { … } FROM mod` and every qualified `IMPORT mod`. A
-    /// *public* candidate in one of these modules is import-visible. This is
-    /// the same module-granularity licensing `modules::check`'s E025 uses
-    /// (`import_covers`), so resolution and the import-required diagnostic
-    /// agree on what a file may see. `BTreeSet` for determinism.
-    pub imported_modules: BTreeSet<String>,
+    /// Modules this file imports **qualified** (`IMPORT mod`) — licenses
+    /// `module.name` access to any public export of that module.
+    pub qualified_modules: BTreeSet<String>,
+    /// `(module, name)` pairs this file imports **bare**
+    /// (`IMPORT { name } FROM mod`) — name-precise, matching
+    /// `modules::import_covers` exactly so resolution and the E025
+    /// import-required diagnostic can never diverge. `BTreeSet` for
+    /// determinism.
+    pub bare_imports: BTreeSet<(String, String)>,
 }
 
 impl ImportScope {
@@ -41,10 +72,14 @@ impl ImportScope {
     /// its HIR `IMPORT` list.
     #[must_use]
     pub fn new(file_module: Option<String>, imports: &[Import]) -> Self {
-        let imported_modules = imports.iter().map(|i| i.module.clone()).collect();
+        let (qualified, bare) = import_coverage_for_file(imports);
         Self {
             file_module,
-            imported_modules,
+            qualified_modules: qualified.into_iter().map(str::to_string).collect(),
+            bare_imports: bare
+                .into_iter()
+                .map(|(module, name)| (module.to_string(), name.to_string()))
+                .collect(),
         }
     }
 }
@@ -71,7 +106,10 @@ fn classify(scope: &ImportScope, info: &SymbolInfo) -> Candidacy {
             if scope.file_module.as_deref() == Some(module.as_str()) {
                 Candidacy::InScope
             } else if info.visibility == Visibility::Public
-                && scope.imported_modules.contains(module)
+                && (scope.qualified_modules.contains(module)
+                    || scope
+                        .bare_imports
+                        .contains(&(module.clone(), info.name.clone())))
             {
                 Candidacy::Imported
             } else {
@@ -940,7 +978,7 @@ fn unresolved_diag(
 #[cfg(test)]
 #[expect(clippy::cast_possible_truncation, reason = "test helper ranges")]
 mod tests {
-    use brink_ir::{DeclaredSymbol, Scope, UnresolvedRef};
+    use brink_ir::{DeclaredSymbol, ImportItem, Scope, UnresolvedRef};
     use rowan::TextRange;
     use rowan::TextSize;
 
@@ -1697,7 +1735,8 @@ mod tests {
 
         let scope_a = ImportScope {
             file_module: None,
-            imported_modules: ["quest_a".to_string()].into_iter().collect(),
+            qualified_modules: ["quest_a".to_string()].into_iter().collect(),
+            bare_imports: BTreeSet::new(),
         };
         assert_eq!(
             lookup_by_name(&index, &scope_a, "ambush", &[SymbolKind::Knot]),
@@ -1707,7 +1746,8 @@ mod tests {
 
         let scope_b = ImportScope {
             file_module: None,
-            imported_modules: ["quest_b".to_string()].into_iter().collect(),
+            qualified_modules: ["quest_b".to_string()].into_iter().collect(),
+            bare_imports: BTreeSet::new(),
         };
         assert_eq!(
             lookup_by_name(&index, &scope_b, "ambush", &[SymbolKind::Knot]),
@@ -1723,7 +1763,8 @@ mod tests {
         // `ambush` is bare-visible and wins over the imported homonym.
         let scope = ImportScope {
             file_module: Some("quest_b".to_string()),
-            imported_modules: ["quest_a".to_string()].into_iter().collect(),
+            qualified_modules: ["quest_a".to_string()].into_iter().collect(),
+            bare_imports: BTreeSet::new(),
         };
         assert_eq!(
             lookup_by_name(&index, &scope, "ambush", &[SymbolKind::Knot]),
@@ -1748,6 +1789,73 @@ mod tests {
             ),
             Some(a),
             "no imports → flat first-winner, unchanged from pre-M-2d"
+        );
+    }
+
+    /// `ImportScope` granularity regression (issue #790 review): a bare
+    /// import must be name-precise, matching `modules::import_covers`
+    /// exactly. `ImportScope::new` used to collapse every import to just its
+    /// module name (`imports.iter().map(|i| i.module.clone())`), so a bare
+    /// `IMPORT { other } FROM quest_a` wrongly counted as importing *all* of
+    /// `quest_a` — including its unrelated public `ambush`.
+    #[test]
+    fn bare_import_grants_candidacy_only_for_its_own_named_item() {
+        let (index, _a, b) = two_module_ambush_index();
+        let scope = ImportScope::new(
+            None,
+            &[
+                Import {
+                    module: "quest_a".to_string(),
+                    module_range: TextRange::default(),
+                    items: vec![ImportItem {
+                        name: "other".to_string(),
+                        alias: None,
+                        range: TextRange::default(),
+                    }],
+                    bare: true,
+                    range: TextRange::default(),
+                },
+                Import {
+                    module: "quest_b".to_string(),
+                    module_range: TextRange::default(),
+                    items: vec![ImportItem {
+                        name: "ambush".to_string(),
+                        alias: None,
+                        range: TextRange::default(),
+                    }],
+                    bare: true,
+                    range: TextRange::default(),
+                },
+            ],
+        );
+        assert_eq!(
+            lookup_by_name(&index, &scope, "ambush", &[SymbolKind::Knot]),
+            Some(b),
+            "bare-importing `other` from quest_a must not license quest_a's `ambush` — \
+             only quest_b's `ambush` (actually bare-imported) is a candidate"
+        );
+    }
+
+    /// A qualified `IMPORT mod` still licenses every public export of that
+    /// module (unlike a bare import, which is name-precise) — the
+    /// granularity fix must not regress this path.
+    #[test]
+    fn qualified_import_still_grants_candidacy_for_any_export() {
+        let (index, a, _b) = two_module_ambush_index();
+        let scope = ImportScope::new(
+            None,
+            &[Import {
+                module: "quest_a".to_string(),
+                module_range: TextRange::default(),
+                items: Vec::new(),
+                bare: false,
+                range: TextRange::default(),
+            }],
+        );
+        assert_eq!(
+            lookup_by_name(&index, &scope, "ambush", &[SymbolKind::Knot]),
+            Some(a),
+            "a qualified `IMPORT quest_a` still licenses quest_a's `ambush`"
         );
     }
 }

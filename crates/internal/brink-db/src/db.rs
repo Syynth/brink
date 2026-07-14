@@ -1591,4 +1591,66 @@ mod module_tests {
             );
         }
     }
+
+    /// `ImportScope` granularity regression (issue #790 review): a bare
+    /// `IMPORT { other } FROM quest_a` must not license `quest_a`'s *other*
+    /// public exports — only the name actually named. Two modules each
+    /// export public `ambush`; the referring file bare-imports an unrelated
+    /// name from `quest_a` and bare-imports `ambush` itself only from
+    /// `quest_b`. Before the fix, `ImportScope` collapsed every import to
+    /// just its module name, so `quest_a` counted as "imported" for *any*
+    /// name — `-> ambush` could silently mis-resolve to `quest_a.ambush`
+    /// and then draw a spurious `E025` telling the author to import `ambush`
+    /// from `quest_a`, on a program that should compile clean. Resolution
+    /// and the `E025` checker must agree at (module, name) granularity for
+    /// bare imports.
+    #[test]
+    fn bare_import_is_name_precise_no_spurious_e025() {
+        let mut db = ProjectDb::new();
+        db.set_analysis_options(brink_opts());
+        db.set_file(
+            "quest_a.ink",
+            "#@module(quest_a)\n== ambush ==\n#@public\nFrom A\n-> DONE\n== other ==\n#@public\nOther A\n-> DONE\n".to_owned(),
+        );
+        db.set_file(
+            "quest_b.ink",
+            "#@module(quest_b)\n== ambush ==\n#@public\nFrom B\n-> DONE\n".to_owned(),
+        );
+        let main = db.set_file(
+            "main.ink",
+            "IMPORT { other } FROM quest_a\nIMPORT { ambush } FROM quest_b\n-> ambush\n".to_owned(),
+        );
+
+        let index = db.symbol_index();
+        let module_of = |target: brink_format::DefinitionId| -> Option<String> {
+            index
+                .symbols
+                .get(&target)
+                .and_then(|info| info.module.clone())
+        };
+
+        let (map, _diags) = db.resolve(main).expect("file resolves");
+        let targets: Vec<brink_format::DefinitionId> = map.iter().map(|r| r.target).collect();
+        assert!(
+            targets
+                .iter()
+                .any(|&t| module_of(t).as_deref() == Some("quest_b")),
+            "bare-importing `ambush` from quest_b must bind it to quest_b, got {:?}",
+            targets.iter().map(|&t| module_of(t)).collect::<Vec<_>>()
+        );
+        assert!(
+            !targets
+                .iter()
+                .any(|&t| module_of(t).as_deref() == Some("quest_a")),
+            "bare-importing only `other` from quest_a must NOT license quest_a's `ambush`, got {:?}",
+            targets.iter().map(|&t| module_of(t)).collect::<Vec<_>>()
+        );
+
+        let diags = db.diagnostics(main).expect("diagnostics");
+        assert!(
+            diags.iter().all(|d| d.code != DiagnosticCode::E025),
+            "a correctly bare-imported `ambush` must never draw a spurious E025 \
+             pointing at the unrelated module that only imported a different name, got {diags:?}"
+        );
+    }
 }
