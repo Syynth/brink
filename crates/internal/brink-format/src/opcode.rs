@@ -405,6 +405,10 @@ pub enum DecodeError {
     /// cap (see `MAX_DECODE_DEPTH`). Guards against crafted files of deeply
     /// nested single-element collections stack-overflowing the reader.
     MaxDepthExceeded(usize),
+    /// A section-locally-versioned section (e.g. `AliasTable`,
+    /// `docs/modules-spec.md` §5) carried a version byte this reader doesn't
+    /// know how to decode.
+    UnsupportedSectionVersion { section: u8, version: u8 },
 }
 
 impl fmt::Display for DecodeError {
@@ -448,6 +452,12 @@ impl fmt::Display for DecodeError {
             Self::UnsupportedInklVersion(v) => write!(f, "unsupported .inkl version: {v}"),
             Self::MaxDepthExceeded(limit) => {
                 write!(f, "value nesting exceeded max decode depth ({limit})")
+            }
+            Self::UnsupportedSectionVersion { section, version } => {
+                write!(
+                    f,
+                    "unsupported section-local version {version} for section {section:#04x}"
+                )
             }
         }
     }

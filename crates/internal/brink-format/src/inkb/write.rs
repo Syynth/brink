@@ -7,8 +7,8 @@ use crate::codec::{
     crc32, write_def_id, write_i32, write_str, write_u8, write_u16, write_u32, write_u64,
 };
 use crate::definition::{
-    AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef, ScopeLineTable, StructShapeDef,
+    AddressDef, AddressPath, AliasEntry, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry,
+    ListDef, ListItemDef, ScopeLineTable, StructShapeDef,
 };
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::story::StoryData;
@@ -47,8 +47,9 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
         SectionKind::AddressPaths,
         SectionKind::LiteralPool,
         SectionKind::StructShapes,
+        SectionKind::AliasTable,
     ];
-    let mut section_offsets = [0u32; 12];
+    let mut section_offsets = [0u32; 13];
 
     // 1. NameTable
     section_offsets[0] = (buf.len() - base) as u32;
@@ -97,6 +98,10 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
     // 12. StructShapes (TM-4)
     section_offsets[11] = (buf.len() - base) as u32;
     write_section_struct_shapes(&story.struct_shapes, buf);
+
+    // 13. AliasTable (M-3)
+    section_offsets[12] = (buf.len() - base) as u32;
+    write_section_alias_table(&story.alias_table, buf);
 
     let file_size = (buf.len() - base) as u32;
     let checksum = crc32(&buf[base + header_size..]);
@@ -467,6 +472,25 @@ pub fn write_section_struct_shapes(struct_shapes: &[StructShapeDef], buf: &mut V
         for field in &shape.fields {
             write_u16(buf, field.0);
         }
+    }
+}
+
+/// Section-local encoding version for `AliasTable` (`docs/modules-spec.md`
+/// §5) — independent of the `.inkb` format `VERSION`, so the row encoding
+/// can change without another whole-format bump.
+pub(crate) const ALIAS_TABLE_SECTION_VERSION: u8 = 1;
+
+/// Write the M-3 `AliasTable` section (no header framing): a one-byte
+/// section-local version, then a flat list of old→new `DefinitionId` pairs
+/// (`docs/modules-spec.md` §5). Entries are written in the order given —
+/// callers sort by `old` for the runtime's binary-search lookup.
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_alias_table(entries: &[AliasEntry], buf: &mut Vec<u8>) {
+    write_u8(buf, ALIAS_TABLE_SECTION_VERSION);
+    write_u32(buf, entries.len() as u32);
+    for entry in entries {
+        write_def_id(buf, entry.old);
+        write_def_id(buf, entry.new);
     }
 }
 

@@ -62,18 +62,29 @@ pub struct VisitEntry {
 /// than have data silently vanish. Globals whose name no longer exists are
 /// **dropped** (no slot to hold them) and reported here. Visit/turn counts are
 /// never dropped — counts for scopes the current program lacks are retained
-/// harmlessly (unused until/unless the scope returns), so they aren't reported.
+/// harmlessly (unused until/unless the scope returns), so they aren't reported
+/// *except* when the miss-path alias lookup (M-3, docs/modules-spec.md §5)
+/// still can't place them — see `unresolved_renames`.
 #[derive(Default, Clone, Debug, PartialEq, Serialize)]
 pub struct LoadReport {
     /// Saved global names with no matching global in the current program.
     pub unknown_globals: Vec<String>,
+    /// M-3 rehydration miss-path teaching messages (docs/modules-spec.md
+    /// §5): a saved fn token, divert value, or visit/turn-count key that
+    /// didn't match the current program even after consulting the compiled
+    /// `#@was` alias table. Only populated for a program that actually
+    /// carries alias-table entries (i.e. uses `#@was` somewhere) — an
+    /// ordinary content edit with no rename directive stays silent, same
+    /// as before M-3.
+    pub unresolved_renames: Vec<String>,
 }
 
 impl LoadReport {
-    /// Whether the load applied cleanly (nothing dropped).
+    /// Whether the load applied cleanly (nothing dropped, nothing left
+    /// unresolved after the rename miss-path lookup).
     #[must_use]
     pub fn is_clean(&self) -> bool {
-        self.unknown_globals.is_empty()
+        self.unknown_globals.is_empty() && self.unresolved_renames.is_empty()
     }
 }
 

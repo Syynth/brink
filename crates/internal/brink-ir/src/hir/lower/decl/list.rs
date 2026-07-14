@@ -56,6 +56,15 @@ impl DeclareSymbols for ast::ListDecl {
         if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
             sink.set_visibility(SymbolKind::List, &list_name_text, vis);
         }
+        if let Some((old_name, was_range)) =
+            super::super::directive::was_from_directives(&dirs, sink)
+        {
+            if old_name == list_name_text {
+                sink.diagnose(was_range, DiagnosticCode::E095);
+            } else {
+                sink.set_was(SymbolKind::List, &list_name_text, old_name, was_range);
+            }
+        }
 
         Ok(ListDecl {
             ptr: ast::AstPtr::new(self),

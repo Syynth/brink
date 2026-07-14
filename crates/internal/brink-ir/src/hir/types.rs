@@ -74,6 +74,12 @@ pub struct HirFile {
     /// strict-ink). The *effective* per-definition visibility travels the
     /// manifest path (`DeclaredSymbol::visibility`) to the symbol index.
     pub visibility: Vec<VisibilityDirective>,
+    /// Range of every `#@was(…)` directive tag in the file — module-level
+    /// and definition-level alike (M-3, docs/modules-spec.md §5), for the
+    /// dialect gate (E051 under strict-ink). The *effective* rename travels
+    /// separately: `ModuleDecl::was` for the module, `DeclaredSymbol::was`
+    /// for a definition.
+    pub was_directives: Vec<TextRange>,
 }
 
 /// A file's explicit `#@module(name)` declaration (M-1, modules-spec §1).
@@ -83,6 +89,13 @@ pub struct ModuleDecl {
     pub name: String,
     /// Source range of the whole `#@module(…)` directive tag.
     pub range: TextRange,
+    /// The module's old name and directive range, from a file-level
+    /// `#@was(old_name)` (M-3, docs/modules-spec.md §5). `None` means no
+    /// rename recorded. Scoped to *declared* modules only — an undeclared
+    /// stem-module's identity is its file stem, not a `#@was` target (a
+    /// stray `#@was` with no `#@module` diagnoses `E049` instead of
+    /// silently attaching here).
+    pub was: Option<(String, TextRange)>,
 }
 
 /// An `IMPORT` statement (M-2, docs/modules-spec.md §2), both forms.
@@ -1468,6 +1481,17 @@ pub enum DiagnosticCode {
     /// (both `#@private` and `#@public`, or the same one twice). A
     /// declaration takes at most one visibility directive (modules-spec §4).
     E093,
+
+    // ── M-3 renames (docs/modules-spec.md §5/§7) ────────────────────
+    /// A malformed `#@was(…)` directive: a missing or empty old-name
+    /// argument (`#@was`, `#@was()`). `#@was` takes exactly one non-empty
+    /// name (modules-spec §5).
+    E094,
+    /// `#@was(name)` names the thing's own *current* name — a self-alias
+    /// that would be a no-op entry in the compiled alias table. Nothing to
+    /// migrate; likely a stale directive left over from a previous rename
+    /// (warning, modules-spec §5/§7).
+    E095,
 }
 
 impl DiagnosticCode {
@@ -1568,6 +1592,8 @@ impl DiagnosticCode {
             Self::E091 => "E091",
             Self::E092 => "E092",
             Self::E093 => "E093",
+            Self::E094 => "E094",
+            Self::E095 => "E095",
         }
     }
 
@@ -1687,6 +1713,8 @@ impl DiagnosticCode {
             }
             Self::E092 => "redundant `#@public`/`#@private` — restates the module default",
             Self::E093 => "conflicting or repeated visibility directives on one declaration",
+            Self::E094 => "`#@was` requires exactly one non-empty old-name argument",
+            Self::E095 => "`#@was` names the definition's own current name — nothing to migrate",
         }
     }
 
@@ -1707,7 +1735,8 @@ impl DiagnosticCode {
             | Self::E043
             | Self::E054
             | Self::E063
-            | Self::E092 => Severity::Warning,
+            | Self::E092
+            | Self::E095 => Severity::Warning,
             _ => Severity::Error,
         }
     }
@@ -1809,6 +1838,8 @@ impl DiagnosticCode {
             "E091" => Some(Self::E091),
             "E092" => Some(Self::E092),
             "E093" => Some(Self::E093),
+            "E094" => Some(Self::E094),
+            "E095" => Some(Self::E095),
             _ => None,
         }
     }

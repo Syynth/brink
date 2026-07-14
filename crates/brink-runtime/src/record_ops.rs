@@ -261,6 +261,7 @@ mod tests {
                 name: NameId(0),
                 fields: vec![NameId(0), NameId(1)],
             }],
+            alias_table: Vec::new(),
         }
     }
 

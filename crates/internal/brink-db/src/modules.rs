@@ -32,6 +32,10 @@ pub(crate) struct FileModuleInput {
     pub file: FileId,
     pub stem: String,
     pub declared: Option<String>,
+    /// This file's own `#@was(old_name)`, if any (M-3, docs/modules-spec.md
+    /// §5) — only meaningful alongside `declared`; ignored for an
+    /// undeclared stem-module file (see `ModuleDecl::was`'s doc).
+    pub was: Option<String>,
 }
 
 /// The file stem of a path: the final path segment with a trailing
@@ -60,10 +64,12 @@ pub(crate) fn resolve_modules(
             Some(name) => ResolvedModule {
                 name: name.clone(),
                 declared: true,
+                was: input.was.clone(),
             },
             None => ResolvedModule {
                 name: input.stem.clone(),
                 declared: false,
+                was: None,
             },
         };
         resolved.insert(input.file, module);
@@ -98,6 +104,35 @@ pub(crate) fn resolve_modules(
         }
         if !changed {
             break;
+        }
+    }
+
+    // M-3 (docs/modules-spec.md §5): a `#@was` declared on any file of a
+    // multi-file module (several files independently carrying the same
+    // `#@module(name)` — the merge case, not INCLUDE, which already
+    // propagates the whole `ResolvedModule` including `was` above) applies
+    // to the whole module. Aggregate by name so every file sees it
+    // regardless of which file declared the directive. Deterministic:
+    // `resolved` is a `BTreeMap<FileId, _>`, so `.values()` iterates in
+    // `FileId` order — the first file (in that order) with a `was` for a
+    // given module name wins if more than one disagrees (undiagnosed edge
+    // case, same "first wins" discipline INCLUDE inheritance already uses).
+    let mut was_by_name: BTreeMap<String, String> = BTreeMap::new();
+    for module in resolved.values() {
+        if module.declared
+            && let Some(was) = &module.was
+        {
+            was_by_name
+                .entry(module.name.clone())
+                .or_insert_with(|| was.clone());
+        }
+    }
+    for module in resolved.values_mut() {
+        if module.declared
+            && module.was.is_none()
+            && let Some(was) = was_by_name.get(&module.name)
+        {
+            module.was = Some(was.clone());
         }
     }
 
@@ -136,6 +171,7 @@ mod tests {
             file: FileId(file),
             stem: stem.to_string(),
             declared: declared.map(str::to_string),
+            was: None,
         }
     }
 

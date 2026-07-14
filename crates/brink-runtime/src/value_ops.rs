@@ -659,6 +659,7 @@ mod tests {
             external_fns: HashMap::new(),
             local_scope_defaults: Vec::new(),
             struct_shapes: Vec::new(),
+            alias_table: Vec::new(),
         }
     }
 

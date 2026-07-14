@@ -31,21 +31,22 @@ mod inkt;
 
 pub use counting::CountingFlags;
 pub use definition::{
-    AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef, LocaleData, LocaleLineEntry, LocaleScopeTable, ParamMeta, ScopeLineTable,
+    AddressDef, AddressPath, AliasEntry, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry,
+    ListDef, ListItemDef, LocaleData, LocaleLineEntry, LocaleScopeTable, ParamMeta, ScopeLineTable,
     SlotInfo, SourceLocation, StructShapeDef, content_hash,
 };
 pub use id::{DefinitionId, DefinitionTag, LineId, NameId};
 pub use inkb::{
     InkbIndex, SectionEntry, SectionKind, assemble_inkb, read_inkb, read_inkb_index,
-    read_section_address_paths, read_section_addresses, read_section_containers,
-    read_section_externals, read_section_line_tables, read_section_list_defs,
-    read_section_list_items, read_section_list_literals, read_section_literal_pool,
-    read_section_name_table, read_section_struct_shapes, read_section_variables, write_inkb,
-    write_section_address_paths, write_section_addresses, write_section_containers,
-    write_section_externals, write_section_line_tables, write_section_list_defs,
-    write_section_list_items, write_section_list_literals, write_section_literal_pool,
-    write_section_name_table, write_section_struct_shapes, write_section_variables,
+    read_section_address_paths, read_section_addresses, read_section_alias_table,
+    read_section_containers, read_section_externals, read_section_line_tables,
+    read_section_list_defs, read_section_list_items, read_section_list_literals,
+    read_section_literal_pool, read_section_name_table, read_section_struct_shapes,
+    read_section_variables, write_inkb, write_section_address_paths, write_section_addresses,
+    write_section_alias_table, write_section_containers, write_section_externals,
+    write_section_line_tables, write_section_list_defs, write_section_list_items,
+    write_section_list_literals, write_section_literal_pool, write_section_name_table,
+    write_section_struct_shapes, write_section_variables,
 };
 pub use inkl::{read_inkl, write_inkl};
 pub use line::{

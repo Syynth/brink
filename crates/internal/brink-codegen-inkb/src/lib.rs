@@ -125,6 +125,7 @@ pub fn emit(program: &lir::Program) -> Result<StoryData, CodegenError> {
         list_literals: state.list_literals,
         literal_pool: state.literal_pool,
         struct_shapes,
+        alias_table: program.aliases.clone(),
         source_checksum: 0,
     })
 }
