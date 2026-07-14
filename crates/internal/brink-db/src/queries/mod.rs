@@ -301,8 +301,12 @@ pub(crate) fn symbol_index_query(
     let (module_map, module_diags) =
         crate::modules::resolve_modules(&module_inputs, include_graph_query(db, project));
 
+    // M-2c (issue #784): the cross-declared-module duplicate escalation is
+    // dialect-gated (brink only) inside `symbol_index_with_modules` itself,
+    // so the project's configured dialect must reach it here.
+    let dialect = project.analysis_options(db).dialect;
     let (index, mut diagnostics) =
-        brink_analyzer::symbol_index_with_modules(&manifest_refs, &module_map);
+        brink_analyzer::symbol_index_with_modules(&manifest_refs, &module_map, dialect);
     diagnostics.extend(module_diags);
     (index, diagnostics)
 }

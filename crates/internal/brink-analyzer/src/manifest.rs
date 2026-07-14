@@ -63,7 +63,7 @@ pub type ModuleMap = BTreeMap<FileId, ResolvedModule>;
 /// behavior. Use [`merge_manifests_with_modules`] to qualify identity by
 /// declared module.
 pub fn merge_manifests(files: &[(FileId, &SymbolManifest)]) -> (SymbolIndex, Vec<Diagnostic>) {
-    merge_manifests_with_modules(files, &ModuleMap::new())
+    merge_manifests_with_modules(files, &ModuleMap::new(), crate::Dialect::default())
 }
 
 /// Merge per-file symbol manifests, qualifying `DefinitionId`s by each
@@ -74,9 +74,18 @@ pub fn merge_manifests(files: &[(FileId, &SymbolManifest)]) -> (SymbolIndex, Vec
 /// or files absent from `modules`) hashes by bare name, byte-identically
 /// to [`merge_manifests`]. This is the byte-identity guarantee the whole
 /// pre-modules corpus relies on.
+///
+/// `dialect` gates the M-2c cross-module-collision escalation (issue #784,
+/// decision-log "Cross-module name collisions" 2026-07-14): under
+/// `Dialect::Brink`, a same-name/same-kind duplicate whose two owning files
+/// declared *different* modules is a hard error (`E096`) instead of the
+/// usual `E022`/`E023`/`E026` warning. `merge_manifests`'s empty
+/// `ModuleMap` can never produce a declared-module duplicate, so its
+/// `Dialect::default()` is inert.
 pub fn merge_manifests_with_modules(
     files: &[(FileId, &SymbolManifest)],
     modules: &ModuleMap,
+    dialect: crate::Dialect,
 ) -> (SymbolIndex, Vec<Diagnostic>) {
     let mut index = SymbolIndex::default();
     let mut diagnostics = Vec::new();
@@ -95,7 +104,14 @@ pub fn merge_manifests_with_modules(
             // module carried the directive.
             was: resolved.and_then(|m| m.was.as_deref()),
         };
-        insert_file_symbols(&mut index, &mut diagnostics, file_id, module, manifest);
+        insert_file_symbols(
+            &mut index,
+            &mut diagnostics,
+            file_id,
+            module,
+            manifest,
+            dialect,
+        );
     }
 
     (index, diagnostics)
@@ -123,6 +139,7 @@ fn insert_file_symbols(
     file_id: FileId,
     module: ModuleCtx<'_>,
     manifest: &SymbolManifest,
+    dialect: crate::Dialect,
 ) {
     use DiagnosticCode::{E022, E023, E026};
     use SymbolKind::{Constant, External, Knot, Label, List, ListItem, Stitch, Struct, Variable};
@@ -140,7 +157,16 @@ fn insert_file_symbols(
     ];
     for (syms, kind, dup_code) in groups {
         for sym in syms {
-            insert_symbol(index, diagnostics, file_id, module, sym, kind, dup_code);
+            insert_symbol(
+                index,
+                diagnostics,
+                file_id,
+                module,
+                sym,
+                kind,
+                dup_code,
+                dialect,
+            );
         }
     }
     for local in &manifest.locals {
@@ -148,6 +174,61 @@ fn insert_file_symbols(
     }
 }
 
+/// M-2c cross-module escalation (issue #784, decision-log "Cross-module
+/// name collisions" 2026-07-14): under `Dialect::Brink`, when *both*
+/// colliding definitions' owning files declared a module
+/// (`SymbolInfo::module`/`new_module` is `Some` only for a *declared*
+/// module — modules-spec §5) and those modules are *different*, this is no
+/// longer the ordinary inklecate-compat warning — it's a hard error,
+/// reported at both definitions' spans (returns `true`, meaning the caller
+/// must not fall through to the warning path). A duplicate within one
+/// declared module (same name on both sides), or involving any
+/// undeclared/legacy file, returns `false` — `strict-ink` never reaches
+/// past the first check.
+fn emit_cross_module_collision(
+    diagnostics: &mut Vec<Diagnostic>,
+    dialect: crate::Dialect,
+    existing: &SymbolInfo,
+    file: FileId,
+    sym: &brink_ir::DeclaredSymbol,
+    new_module: Option<&str>,
+) -> bool {
+    if dialect != crate::Dialect::Brink {
+        return false;
+    }
+    let (Some(existing_module), Some(new_module)) = (existing.module.as_deref(), new_module) else {
+        return false;
+    };
+    if existing_module == new_module {
+        return false;
+    }
+    diagnostics.push(Diagnostic {
+        file: existing.file,
+        range: existing.range,
+        message: format!(
+            "{}: `{}` (also declared in module `{new_module}`)",
+            DiagnosticCode::E096.title(),
+            sym.name,
+        ),
+        code: DiagnosticCode::E096,
+    });
+    diagnostics.push(Diagnostic {
+        file,
+        range: sym.range,
+        message: format!(
+            "{}: `{}` (also declared in module `{existing_module}`)",
+            DiagnosticCode::E096.title(),
+            sym.name,
+        ),
+        code: DiagnosticCode::E096,
+    });
+    true
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal helper threading file/module context + the per-kind duplicate code + dialect through one insertion; splitting further would just re-bundle these into an ad-hoc struct for no clarity gain"
+)]
 fn insert_symbol(
     index: &mut SymbolIndex,
     diagnostics: &mut Vec<Diagnostic>,
@@ -156,13 +237,17 @@ fn insert_symbol(
     sym: &brink_ir::DeclaredSymbol,
     kind: SymbolKind,
     dup_code: DiagnosticCode,
+    dialect: crate::Dialect,
 ) {
     // Skip duplicates of the same kind — inklecate permits redefinition but we warn.
     if let Some(existing_ids) = index.by_name.get(&sym.name) {
-        let has_dup = existing_ids
+        let existing = existing_ids
             .iter()
-            .any(|id| index.symbols.get(id).is_some_and(|info| info.kind == kind));
-        if has_dup {
+            .find_map(|id| index.symbols.get(id).filter(|info| info.kind == kind));
+        if let Some(existing) = existing {
+            if emit_cross_module_collision(diagnostics, dialect, existing, file, sym, module.name) {
+                return;
+            }
             diagnostics.push(Diagnostic {
                 file,
                 range: sym.range,
@@ -427,6 +512,153 @@ mod tests {
         assert!(diags.is_empty(), "expected no diagnostics: {diags:?}");
     }
 
+    // ── M-2c cross-module collisions (issue #784, decision-log
+    // "Cross-module name collisions" 2026-07-14) ──────────────────────
+
+    /// Two *declared* modules (different names) each defining `start` is a
+    /// hard error (`E096`) under `Dialect::Brink` — one diagnostic per
+    /// colliding definition, each carrying its own file/span, and the
+    /// second definition is never inserted into the index (matches the
+    /// existing duplicate-drop behavior).
+    #[test]
+    fn cross_declared_module_duplicate_emits_e096_with_both_spans() {
+        let mut m1 = SymbolManifest::default();
+        m1.knots.push(sym("start", 0));
+        let mut m2 = SymbolManifest::default();
+        m2.knots.push(sym("start", 100));
+
+        let files = vec![(FileId(0), &m1), (FileId(1), &m2)];
+        let mut modules = ModuleMap::new();
+        modules.insert(
+            FileId(0),
+            ResolvedModule {
+                name: "quest".to_string(),
+                declared: true,
+                was: None,
+            },
+        );
+        modules.insert(
+            FileId(1),
+            ResolvedModule {
+                name: "town".to_string(),
+                declared: true,
+                was: None,
+            },
+        );
+
+        let (index, diags) = merge_manifests_with_modules(&files, &modules, crate::Dialect::Brink);
+
+        assert_eq!(diags.len(), 2, "expected one E096 per span, got {diags:?}");
+        assert!(
+            diags.iter().all(|d| d.code == DiagnosticCode::E096),
+            "expected both diagnostics to be E096, got {diags:?}"
+        );
+        let mut spans: Vec<_> = diags.iter().map(|d| (d.file, d.range)).collect();
+        spans.sort_by_key(|(f, _)| f.0);
+        assert_eq!(
+            spans,
+            vec![(FileId(0), range(0, 5)), (FileId(1), range(100, 5))]
+        );
+
+        // The second (colliding) definition was never inserted — only the
+        // first-seen `start` survives in the index, matching the pre-#784
+        // duplicate-drop behavior for the within-module/warning case.
+        assert_eq!(index.by_name.get("start").map(Vec::len), Some(1));
+    }
+
+    /// Two files sharing the **same** declared module keep the ordinary
+    /// within-module `E022` warning — never `E096` — even under
+    /// `Dialect::Brink`.
+    #[test]
+    fn same_declared_module_duplicate_stays_e022_under_brink() {
+        let mut m1 = SymbolManifest::default();
+        m1.knots.push(sym("start", 0));
+        let mut m2 = SymbolManifest::default();
+        m2.knots.push(sym("start", 100));
+
+        let files = vec![(FileId(0), &m1), (FileId(1), &m2)];
+        let mut modules = ModuleMap::new();
+        for file in [FileId(0), FileId(1)] {
+            modules.insert(
+                file,
+                ResolvedModule {
+                    name: "quest".to_string(),
+                    declared: true,
+                    was: None,
+                },
+            );
+        }
+
+        let (_index, diags) = merge_manifests_with_modules(&files, &modules, crate::Dialect::Brink);
+
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::E022);
+    }
+
+    /// A declared-module/undeclared-file collision (one side has no
+    /// declared module) stays `E022` — the escalation requires *both*
+    /// sides to be declared modules.
+    #[test]
+    fn declared_vs_undeclared_duplicate_stays_e022_under_brink() {
+        let mut m1 = SymbolManifest::default();
+        m1.knots.push(sym("start", 0));
+        let mut m2 = SymbolManifest::default();
+        m2.knots.push(sym("start", 100));
+
+        let files = vec![(FileId(0), &m1), (FileId(1), &m2)];
+        let mut modules = ModuleMap::new();
+        modules.insert(
+            FileId(0),
+            ResolvedModule {
+                name: "quest".to_string(),
+                declared: true,
+                was: None,
+            },
+        );
+        // FileId(1) absent from `modules` -> undeclared, hashes bare.
+
+        let (_index, diags) = merge_manifests_with_modules(&files, &modules, crate::Dialect::Brink);
+
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::E022);
+    }
+
+    /// Under `Dialect::StrictInk` (the default), a cross-declared-module
+    /// duplicate never escalates — `merge_manifests`'s inert default keeps
+    /// the compat corpus untouched.
+    #[test]
+    fn cross_declared_module_duplicate_stays_e022_under_strict_ink() {
+        let mut m1 = SymbolManifest::default();
+        m1.knots.push(sym("start", 0));
+        let mut m2 = SymbolManifest::default();
+        m2.knots.push(sym("start", 100));
+
+        let files = vec![(FileId(0), &m1), (FileId(1), &m2)];
+        let mut modules = ModuleMap::new();
+        modules.insert(
+            FileId(0),
+            ResolvedModule {
+                name: "quest".to_string(),
+                declared: true,
+                was: None,
+            },
+        );
+        modules.insert(
+            FileId(1),
+            ResolvedModule {
+                name: "town".to_string(),
+                declared: true,
+                was: None,
+            },
+        );
+
+        let (_index, diags) =
+            merge_manifests_with_modules(&files, &modules, crate::Dialect::StrictInk);
+
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::E022);
+    }
+
     // ── M-1 identity gate (docs/modules-spec.md §5) ──────────────────
 
     fn sample_manifest() -> SymbolManifest {
@@ -462,10 +694,12 @@ mod tests {
                 was: None,
             },
         );
-        let (with_undeclared, _) = merge_manifests_with_modules(&files, &modules);
+        let (with_undeclared, _) =
+            merge_manifests_with_modules(&files, &modules, crate::Dialect::default());
 
         // (3) A file absent from the map must also stay bare.
-        let (with_empty, _) = merge_manifests_with_modules(&files, &ModuleMap::new());
+        let (with_empty, _) =
+            merge_manifests_with_modules(&files, &ModuleMap::new(), crate::Dialect::default());
 
         let mut base_ids: Vec<_> = baseline.symbols.keys().map(|id| id.to_raw()).collect();
         base_ids.sort_unstable();
@@ -524,7 +758,8 @@ mod tests {
                 was: None,
             },
         );
-        let (qualified, _) = merge_manifests_with_modules(&files, &modules);
+        let (qualified, _) =
+            merge_manifests_with_modules(&files, &modules, crate::Dialect::default());
 
         let bare_start = bare.by_name.get("start").and_then(|v| v.first()).copied();
         let q_start = qualified

@@ -1334,4 +1334,134 @@ mod module_tests {
             "expected E090 self-import from a symbol-less file, got {codes:?}"
         );
     }
+
+    // ── M-2c cross-module collisions (issue #784, decision-log
+    // "Cross-module name collisions" 2026-07-14) ────────────────────────
+
+    fn brink_opts() -> brink_analyzer::AnalysisOptions {
+        brink_analyzer::AnalysisOptions {
+            dialect: brink_analyzer::Dialect::Brink,
+            ..brink_analyzer::AnalysisOptions::default()
+        }
+    }
+
+    /// Two **different** declared modules exporting the same public knot
+    /// name is a hard error (`E096`) under `dialect = brink` — reported at
+    /// *both* definitions' spans, through the same `symbol_index_query`
+    /// path the compiler/studio read.
+    #[test]
+    fn cross_declared_module_duplicate_knot_is_e096_under_brink() {
+        let mut db = ProjectDb::new();
+        db.set_analysis_options(brink_opts());
+        let quest = db.set_file(
+            "quest.ink",
+            "#@module(quest)\n== start ==\n#@public\nHi from quest\n-> DONE\n".to_owned(),
+        );
+        let town = db.set_file(
+            "town.ink",
+            "#@module(town)\n== start ==\n#@public\nHi from town\n-> DONE\n".to_owned(),
+        );
+
+        let diags = db.symbol_index_diagnostics();
+        let e096: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::E096)
+            .collect();
+        assert_eq!(
+            e096.len(),
+            2,
+            "expected one E096 per colliding definition (both spans), got {e096:?}"
+        );
+        let files: std::collections::BTreeSet<_> = e096.iter().map(|d| d.file).collect();
+        assert_eq!(
+            files,
+            std::collections::BTreeSet::from([quest, town]),
+            "the two E096 diagnostics must land on each definition's own file/span"
+        );
+    }
+
+    /// Two files sharing the **same** declared module (a multi-file module)
+    /// that both define `start` stay the ordinary within-module warning
+    /// (`E022`) — never `E096` — even under `dialect = brink`.
+    #[test]
+    fn same_declared_module_duplicate_knot_still_warns_e022() {
+        let mut db = ProjectDb::new();
+        db.set_analysis_options(brink_opts());
+        db.set_file(
+            "a.ink",
+            "#@module(quest)\n== start ==\nHi from a\n-> DONE\n".to_owned(),
+        );
+        db.set_file(
+            "b.ink",
+            "#@module(quest)\n== start ==\nHi from b\n-> DONE\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .symbol_index_diagnostics()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E022),
+            "expected the within-module E022 warning, got {codes:?}"
+        );
+        assert!(
+            !codes.contains(&DiagnosticCode::E096),
+            "same declared module must never escalate to E096, got {codes:?}"
+        );
+    }
+
+    /// Undeclared (legacy/soup) files duplicating a knot name are unchanged
+    /// by M-2c: still `E022`, never `E096`, even under `dialect = brink`.
+    #[test]
+    fn undeclared_duplicate_knot_unchanged_under_brink() {
+        let mut db = ProjectDb::new();
+        db.set_analysis_options(brink_opts());
+        db.set_file("a.ink", "== start ==\nHi from a\n-> DONE\n".to_owned());
+        db.set_file("b.ink", "== start ==\nHi from b\n-> DONE\n".to_owned());
+
+        let codes: Vec<_> = db
+            .symbol_index_diagnostics()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E022),
+            "expected the legacy E022 warning, got {codes:?}"
+        );
+        assert!(
+            !codes.contains(&DiagnosticCode::E096),
+            "undeclared legacy soup must never escalate to E096, got {codes:?}"
+        );
+    }
+
+    /// Under `strict-ink` (the default), a cross-declared-module duplicate
+    /// stays the ordinary `E022` warning — the compat corpus is untouched.
+    #[test]
+    fn cross_declared_module_duplicate_stays_e022_under_strict_ink() {
+        let mut db = ProjectDb::new();
+        // Default AnalysisOptions -> Dialect::StrictInk; no set_analysis_options call.
+        db.set_file(
+            "quest.ink",
+            "#@module(quest)\n== start ==\n#@public\nHi from quest\n-> DONE\n".to_owned(),
+        );
+        db.set_file(
+            "town.ink",
+            "#@module(town)\n== start ==\n#@public\nHi from town\n-> DONE\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .symbol_index_diagnostics()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E022),
+            "expected E022 under strict-ink, got {codes:?}"
+        );
+        assert!(
+            !codes.contains(&DiagnosticCode::E096),
+            "strict-ink must never see E096, got {codes:?}"
+        );
+    }
 }
