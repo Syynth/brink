@@ -884,7 +884,14 @@ fn render(source: &str, lines: &[ClassifiedLine], config: &FormatConfig) -> Stri
                 out.push('\n');
             }
             LineKind::Declaration => {
-                out.push_str(raw.trim_end());
+                // Module `IMPORT` statements (M-4, modules-spec §2/§9) get
+                // canonical inner spacing; every other declaration is passed
+                // through with only trailing whitespace trimmed.
+                if raw.trim_start().starts_with("IMPORT") {
+                    out.push_str(&format_import(raw));
+                } else {
+                    out.push_str(raw.trim_end());
+                }
                 out.push('\n');
             }
             // Reindent the whole `~ { … }` block as a unit: `cst_node`
@@ -934,6 +941,60 @@ fn render(source: &str, lines: &[ClassifiedLine], config: &FormatConfig) -> Stri
 }
 
 // ── Per-line formatters ─────────────────────────────────────────────
+
+/// Format a module `IMPORT` statement (M-4, docs/modules-spec.md §2/§9) with
+/// canonical inner spacing.
+///
+/// Both grammar forms normalize:
+/// - bare: `IMPORT {  a , b  AS c } FROM  mod` → `IMPORT { a, b AS c } FROM mod`
+/// - qualified: `IMPORT   mod` → `IMPORT mod`
+///
+/// A statement that does not match either shape (mid-edit / malformed) is left
+/// verbatim (only surrounding whitespace trimmed) so formatting never corrupts
+/// it. (A trailing `//` comment reclassifies the line away from
+/// `LineKind::Declaration` upstream, so it never reaches here — such lines are
+/// passed through untouched.)
+fn format_import(raw: &str) -> String {
+    let trimmed = raw.trim();
+    normalize_import_code(trimmed).unwrap_or_else(|| trimmed.to_owned())
+}
+
+/// Normalize the code portion (comment already stripped) of an `IMPORT`
+/// statement to its canonical spelling, or `None` when it does not match a
+/// well-formed shape (leave it verbatim rather than risk corrupting it).
+fn normalize_import_code(code: &str) -> Option<String> {
+    let rest = code.strip_prefix("IMPORT")?.trim();
+
+    if let Some(open) = rest.find('{') {
+        // Bare form: `IMPORT { a, b AS c } FROM mod`.
+        let close = rest.find('}')?;
+        if close < open {
+            return None;
+        }
+        let items_str = &rest[open + 1..close];
+        let after = rest[close + 1..].trim();
+        let module = after.strip_prefix("FROM")?.trim();
+        if module.is_empty() || module.contains(char::is_whitespace) {
+            return None;
+        }
+
+        let items: Vec<String> = items_str
+            .split(',')
+            .map(|item| collapse_whitespace(item.trim()))
+            .filter(|item| !item.is_empty())
+            .collect();
+        if items.is_empty() {
+            return None;
+        }
+        Some(format!("IMPORT {{ {} }} FROM {module}", items.join(", ")))
+    } else {
+        // Qualified form: `IMPORT mod` (a single bare module name).
+        if rest.is_empty() || rest.contains(char::is_whitespace) {
+            return None;
+        }
+        Some(format!("IMPORT {rest}"))
+    }
+}
 
 /// Format a knot header: `=== name ===` or `=== function name(params) ===`
 fn format_knot_header(raw: &str) -> String {
@@ -1738,6 +1799,45 @@ mod tests {
         let input = "INCLUDE other.ink\n";
         let result = fmt(input);
         assert_eq!(result, "INCLUDE other.ink\n");
+    }
+
+    #[test]
+    fn import_qualified_normalizes_spacing() {
+        assert_eq!(fmt("IMPORT   quest_3\n"), "IMPORT quest_3\n");
+    }
+
+    #[test]
+    fn import_bare_normalizes_spacing() {
+        assert_eq!(
+            fmt("IMPORT {  ambush ,  guard_talk  AS gt  } FROM quest_3\n"),
+            "IMPORT { ambush, guard_talk AS gt } FROM quest_3\n"
+        );
+    }
+
+    #[test]
+    fn import_block_stays_at_column_zero() {
+        // A leading IMPORT block below a `#@module` header keeps col-0 depth;
+        // the knot body still indents. (fmt inserts a blank line before the
+        // knot header — existing behavior.)
+        let input =
+            "#@module(town)\nIMPORT { ambush } FROM quest_3\nIMPORT quest_4\n=== hub ===\nHi.\n";
+        assert_eq!(
+            fmt(input),
+            "#@module(town)\nIMPORT { ambush } FROM quest_3\nIMPORT quest_4\n\n=== hub ===\n  Hi.\n"
+        );
+    }
+
+    #[test]
+    fn import_formatting_is_idempotent() {
+        let once = fmt("IMPORT {  a , b AS c } FROM  m\n");
+        assert_eq!(fmt(&once), once);
+        assert_eq!(once, "IMPORT { a, b AS c } FROM m\n");
+    }
+
+    #[test]
+    fn malformed_import_is_left_verbatim() {
+        // No closing brace — bail to verbatim rather than corrupt it.
+        assert_eq!(fmt("IMPORT { a FROM m\n"), "IMPORT { a FROM m\n");
     }
 
     #[test]
