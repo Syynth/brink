@@ -102,7 +102,7 @@ fn analysis_matches_with_cross_file_duplicate_scoped_locals() {
 /// closed-domain violation (`E042`), inline-doc'd knots (callable
 /// enrichment), and doc'd VAR/CONST (value metas) — content, *order*, and
 /// `symbol_meta` must all be identical between `db.analysis()` (now
-/// assembled from inline_docs/external_meta/call_site_metas + per-file
+/// assembled from `inline_docs`/`external_meta`/`call_site_metas` + per-file
 /// value-meta/call-site queries) and the monolithic
 /// `analyze_with_options` path.
 #[test]
