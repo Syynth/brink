@@ -999,8 +999,13 @@ export interface LinesTable {
 /** A base type keyword, or the name of a registered semantic type. */
 export type TypeRef = string;
 
-/** The underlying base types at an external boundary. */
-export type BaseType = "string" | "int" | "float" | "bool" | "void";
+/**
+ * The underlying base types at an external boundary. `"handle"` (T1d-2,
+ * docs/t1d-spec.md §3) is a host-resource handle kind — the semantic
+ * type's own `name` field *is* the declared kind name (e.g.
+ * `"AudioInstance"`), not a specialization label like the other bases.
+ */
+export type BaseType = "string" | "int" | "float" | "bool" | "void" | "handle";
 
 /** Presentation/effect category of an external (informational). */
 export type ExternalKind = "query" | "effect" | "presentation" | "plain";

@@ -175,6 +175,12 @@ impl TypeRef {
 }
 
 /// The underlying base types ink values can take at an external boundary.
+///
+/// `Handle` (T1d-2, docs/t1d-spec.md §3) is a distinct category from the
+/// scalar bases above: a `SemanticTypeDef { base: Handle, .. }` entry doesn't
+/// specialize a primitive (the way `switch_id` specializes `int`) — its
+/// `name` field *is* the declared handle-kind name (e.g. `AudioInstance`),
+/// the nominal vocabulary `handle<K>` type annotations resolve `K` against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BaseType {
@@ -183,6 +189,9 @@ pub enum BaseType {
     Float,
     Bool,
     Void,
+    /// A host-resource handle kind (T1d-2) — this type def's `name` is the
+    /// kind name itself, not a specialization label.
+    Handle,
 }
 
 impl BaseType {
@@ -195,6 +204,7 @@ impl BaseType {
             "float" => Some(Self::Float),
             "bool" => Some(Self::Bool),
             "void" => Some(Self::Void),
+            "handle" => Some(Self::Handle),
             _ => None,
         }
     }
