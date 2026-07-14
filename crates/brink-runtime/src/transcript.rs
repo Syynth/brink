@@ -858,6 +858,39 @@ mod tests {
         }
     }
 
+    // Handle values (T1d, `docs/t1d-spec.md` §2/§5) persist through the
+    // transcript/journal codec as ordinary values — "handles appear in
+    // saves, journals, and speculation snapshots" per the spec. This locks
+    // the VAL_HANDLE (0x0D) encode/decode arms: a bare handle, one nested
+    // inside a collection, and the `u64::MAX` id to exercise the full
+    // write_u64/read_u64 leg (not just small ids that might coincidentally
+    // round-trip through a truncated path).
+    #[test]
+    fn round_trip_value_ref_handle() {
+        let handle = Value::handle(NameId(9), u64::MAX);
+        let nested = Value::array(vec![
+            Value::handle(NameId(3), 0),
+            Value::String(Arc::from("goblin")),
+        ]);
+
+        let parts = vec![
+            OutputPart::ValueRef(handle.clone()),
+            OutputPart::ValueRef(nested.clone()),
+        ];
+        let bytes = write_transcript(&parts, 13, &[]);
+        let data = read_transcript(&bytes).unwrap();
+
+        assert_eq!(data.parts.len(), 2);
+        match &data.parts[0] {
+            OutputPart::ValueRef(v) => assert_eq!(*v, handle),
+            other => unreachable!("expected ValueRef(handle), got {other:?}"),
+        }
+        match &data.parts[1] {
+            OutputPart::ValueRef(v) => assert_eq!(*v, nested),
+            other => unreachable!("expected ValueRef(nested handle), got {other:?}"),
+        }
+    }
+
     #[test]
     fn round_trip_line_ref_with_slots() {
         let parts = vec![OutputPart::LineRef {
