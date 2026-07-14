@@ -59,21 +59,29 @@ pub(super) struct BodyCtx<'a> {
     /// and the call-position annotated-callee fallback.
     pub list_names: &'a BTreeSet<String>,
     pub struct_names: &'a BTreeSet<String>,
+    /// Declared handle-kind names from the registered `HostManifest`
+    /// (T1d-2b, issue #774, docs/t1d-spec.md §3) — the manifest mirror of
+    /// `list_names`/`struct_names`'s ink-source-declared vocabularies.
+    /// Threaded from `ProjectCtx::new`'s `manifest` parameter through
+    /// `infer_project`/`solve_scc`/`call_edges`/`referenced_globals`; empty
+    /// when no manifest is registered, same degrade posture as every other
+    /// manifest-driven check.
+    pub handle_names: &'a BTreeSet<String>,
 }
 
 impl BodyCtx<'_> {
     /// A [`crate::annotations::TypeNames`] bundle for this ctx's
-    /// annotation-resolution call sites. `handles` is always empty here: no
-    /// `HostManifest` reaches `ProjectCtx`/`infer_project` in this slice
-    /// (T1d-2, docs/t1d-spec.md §3 — see `signature()`'s matching note),
-    /// so a `handle<K>` annotation on a param/return/temp never resolves
-    /// during body inference yet — it degrades to the same "unresolved"
-    /// treatment any other unrecognized name gets, not a silent drop.
+    /// annotation-resolution call sites — `handles` now carries the real
+    /// registered handle-kind vocabulary (T1d-2b, issue #774), so a
+    /// `handle<K>` annotation on a param/return/temp resolves to
+    /// `Ty::Handle(K)` during body inference whenever `K` is declared in the
+    /// registered manifest, exactly like `list<L>`/`STRUCT` already do
+    /// against their own declared-name sets.
     fn type_names(&self) -> crate::annotations::TypeNames {
         crate::annotations::TypeNames {
             lists: self.list_names.clone(),
             structs: self.struct_names.clone(),
-            handles: BTreeSet::new(),
+            handles: self.handle_names.clone(),
         }
     }
 }

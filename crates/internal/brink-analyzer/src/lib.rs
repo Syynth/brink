@@ -412,7 +412,8 @@ pub fn strict_diagnostics(
             let inference = if let Some(inf) = strict_inference {
                 inf
             } else {
-                owned_inference = infer::infer_project(files, index, resolutions);
+                owned_inference =
+                    infer::infer_project(files, index, resolutions, opts.host_manifest.as_ref());
                 &owned_inference
             };
             diagnostics.extend(strict::check(
