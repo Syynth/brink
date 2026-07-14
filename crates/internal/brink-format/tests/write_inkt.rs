@@ -128,6 +128,114 @@ fn collection_literal_declaration_default_compiles_to_a_real_value_not_null() {
     );
 }
 
+/// #742: a `Record` default round-trips through `.inkt` text — the
+/// `(record <shape> <field>…)` atom that `write_value` already emitted but
+/// `read_inkt`'s `value` grammar rule had no matching alternative for (a
+/// write/read asymmetry for the T1c value tags, `docs/format-v4-rfc.md`
+/// §4). Also exercises the `:record` `type_name` on the enclosing
+/// `global_entry`, which had the same gap.
+#[test]
+fn global_with_record_default_roundtrips() {
+    use brink_format::{
+        DefinitionId, DefinitionTag, GlobalVarDef, NameId, ShapeId, Value, ValueType,
+    };
+
+    let mut data = i001_data();
+    let next_id = data.variables.len() as u64;
+    data.variables.push(GlobalVarDef {
+        id: DefinitionId::new(DefinitionTag::GlobalVar, next_id),
+        name: NameId(0),
+        value_type: ValueType::Record,
+        default_value: Value::record(ShapeId(3), vec![Value::Int(10), Value::Bool(true)]),
+        mutable: false,
+        local: false,
+    });
+
+    let mut buf = String::new();
+    brink_format::write_inkt(&data, &mut buf).unwrap();
+    assert!(buf.contains("(record 3 10 true)"), "{buf}");
+
+    let recovered = brink_format::read_inkt(&buf).unwrap();
+    assert_eq!(recovered.variables, data.variables);
+}
+
+/// #742: a `FnRef` default (`(fn_ref <def_id>)`) round-trips. Also exercises
+/// `:fn_ref` as a `global_entry` `type_name`.
+#[test]
+fn global_with_fn_ref_default_roundtrips() {
+    use brink_format::{DefinitionId, DefinitionTag, GlobalVarDef, NameId, Value, ValueType};
+
+    let mut data = i001_data();
+    let target = DefinitionId::new(DefinitionTag::Address, 0x00AB_CDEF);
+    let next_id = data.variables.len() as u64;
+    data.variables.push(GlobalVarDef {
+        id: DefinitionId::new(DefinitionTag::GlobalVar, next_id),
+        name: NameId(0),
+        value_type: ValueType::FnRef,
+        default_value: Value::FnRef(target),
+        mutable: false,
+        local: false,
+    });
+
+    let mut buf = String::new();
+    brink_format::write_inkt(&data, &mut buf).unwrap();
+    assert!(buf.contains("(fn_ref $01_00000000abcdef)"), "{buf}");
+
+    let recovered = brink_format::read_inkt(&buf).unwrap();
+    assert_eq!(recovered.variables, data.variables);
+}
+
+/// #742: a `Closure` default (`(closure <def_id> (val|ref <name> <value>)…)`)
+/// round-trips, including both `val` and `ref` env entries and a nested
+/// collection payload. Also exercises `:closure` as a `global_entry`
+/// `type_name`.
+#[test]
+fn global_with_closure_default_roundtrips() {
+    use brink_format::{
+        ClosureEnvEntry, DefinitionId, DefinitionTag, GlobalVarDef, NameId, Value, ValueType,
+    };
+
+    let mut data = i001_data();
+    let target = DefinitionId::new(DefinitionTag::Address, 0x123);
+    let ref_target = DefinitionId::new(DefinitionTag::GlobalVar, 0x456);
+    let closure = Value::closure(
+        target,
+        vec![
+            ClosureEnvEntry {
+                name: NameId(1),
+                is_ref: false,
+                payload: Value::array(vec![Value::Int(1), Value::Int(2)]),
+            },
+            ClosureEnvEntry {
+                name: NameId(2),
+                is_ref: true,
+                payload: Value::VariablePointer(ref_target),
+            },
+        ],
+    );
+    let next_id = data.variables.len() as u64;
+    data.variables.push(GlobalVarDef {
+        id: DefinitionId::new(DefinitionTag::GlobalVar, next_id),
+        name: NameId(0),
+        value_type: ValueType::Closure,
+        default_value: closure,
+        mutable: false,
+        local: false,
+    });
+
+    let mut buf = String::new();
+    brink_format::write_inkt(&data, &mut buf).unwrap();
+    assert!(buf.contains("(closure $01_00000000000123"), "{buf}");
+    assert!(buf.contains("(val 1 (array 1 2))"), "{buf}");
+    assert!(
+        buf.contains("(ref 2 (var_pointer $02_00000000000456))"),
+        "{buf}"
+    );
+
+    let recovered = brink_format::read_inkt(&buf).unwrap();
+    assert_eq!(recovered.variables, data.variables);
+}
+
 fn collect_story_ink_files(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
     if dir.is_dir() {
