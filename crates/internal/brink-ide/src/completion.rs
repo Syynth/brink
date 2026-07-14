@@ -13,6 +13,12 @@ pub enum CompletionContext {
     Logic,
     /// Inside `( )` — function arguments.
     FunctionArgs,
+    /// Inside the target position of `#fn(` — the T1c creation site's first
+    /// argument, which is always a statically-named function (spec §2, "the
+    /// static target path — a name, never an expression"). Distinct from
+    /// [`CompletionContext::FunctionArgs`] so completion offers only
+    /// function-definition names here, not every value symbol in scope.
+    FnTarget,
     /// Default — show everything.
     General,
 }
@@ -32,6 +38,11 @@ pub fn detect_completion_context(source: &str, byte_offset: usize) -> Completion
     let bytes = line_prefix.as_bytes();
     let mut brace_depth: i32 = 0;
     let mut paren_depth: i32 = 0;
+    // Whether a `,` was seen at the current (unmatched) paren's top level —
+    // i.e. the cursor sits *after* the first argument, not in it. Only
+    // matters for distinguishing `#fn(` (first-arg target position) from
+    // `#fn(name, ` (an ordinary bound-argument position, ` `).
+    let mut saw_comma_at_top = false;
     let mut i = bytes.len();
 
     while i > 0 {
@@ -50,8 +61,15 @@ pub fn detect_completion_context(source: &str, byte_offset: usize) -> Completion
                 if paren_depth > 0 {
                     paren_depth -= 1;
                 } else {
+                    let before = &line_prefix[..i];
+                    if !saw_comma_at_top && before.trim_end().ends_with("#fn") {
+                        return CompletionContext::FnTarget;
+                    }
                     return CompletionContext::FunctionArgs;
                 }
+            }
+            b',' if brace_depth == 0 && paren_depth == 0 => {
+                saw_comma_at_top = true;
             }
             b'>' if i > 0 && bytes[i - 1] == b'-' && brace_depth == 0 && paren_depth == 0 => {
                 return CompletionContext::Divert;
@@ -178,6 +196,13 @@ pub fn is_visible_in_context(
                 | SymbolKind::Temp
                 | SymbolKind::ListItem
         ),
+        // T1c (docs/t1c-spec.md §2): `#fn`'s target must be a statically-named
+        // `=== function ... ===` — the same shape `brink_analyzer::fn_values`
+        // enforces as E079. Only function-tagged knots qualify; a plain knot,
+        // stitch, or any value symbol is never a legal `#fn` target.
+        CompletionContext::FnTarget => {
+            info.kind == SymbolKind::Knot && info.detail.as_deref() == Some("function")
+        }
         CompletionContext::General => true,
     }
 }
@@ -303,6 +328,90 @@ mod tests {
         assert!(matches!(
             detect_completion_context(src, src.len()),
             CompletionContext::FunctionArgs
+        ));
+    }
+
+    // ── T1c-4 (#702): `#fn(` target completion (docs/t1c-spec.md §2) ─────
+
+    #[test]
+    fn context_fn_literal_target() {
+        let src = "~ temp f = #fn(";
+        assert!(matches!(
+            detect_completion_context(src, src.len()),
+            CompletionContext::FnTarget
+        ));
+    }
+
+    #[test]
+    fn context_fn_literal_target_partial_name() {
+        let src = "~ temp f = #fn(hea";
+        assert!(matches!(
+            detect_completion_context(src, src.len()),
+            CompletionContext::FnTarget
+        ));
+    }
+
+    #[test]
+    fn context_fn_literal_bound_arg_is_ordinary_function_args() {
+        // Past the first comma — a bound-argument position, not the target.
+        let src = "~ temp f = #fn(heal, ";
+        assert!(matches!(
+            detect_completion_context(src, src.len()),
+            CompletionContext::FunctionArgs
+        ));
+    }
+
+    #[test]
+    fn context_plain_call_is_not_fn_target() {
+        // An ordinary call — `#fn` specifically gates this, not just any
+        // trailing `fn`-like identifier.
+        let src = "~ temp f = heal(";
+        assert!(matches!(
+            detect_completion_context(src, src.len()),
+            CompletionContext::FunctionArgs
+        ));
+    }
+
+    #[test]
+    fn fn_target_context_offers_only_function_definitions() {
+        let scope = CursorScope {
+            knot: None,
+            stitch: None,
+        };
+        let function_knot = brink_ir::SymbolInfo {
+            kind: SymbolKind::Knot,
+            file: brink_ir::FileId(0),
+            range: rowan::TextRange::new(0.into(), 1.into()),
+            id: brink_format::DefinitionId::new(brink_format::DefinitionTag::Address, 1),
+            name: "heal".to_owned(),
+            params: vec![],
+            detail: Some("function".to_owned()),
+            scope: None,
+            param_detail: None,
+        };
+        let plain_knot = brink_ir::SymbolInfo {
+            detail: None,
+            ..function_knot.clone()
+        };
+        let variable = brink_ir::SymbolInfo {
+            kind: SymbolKind::Variable,
+            detail: None,
+            ..function_knot.clone()
+        };
+        assert!(is_visible_in_context(
+            &CompletionContext::FnTarget,
+            &function_knot,
+            &scope
+        ));
+        assert!(!is_visible_in_context(
+            &CompletionContext::FnTarget,
+            &plain_knot,
+            &scope
+        ));
+        assert!(!is_visible_in_context(
+            &CompletionContext::FnTarget,
+            &variable,
+            &scope
         ));
     }
 

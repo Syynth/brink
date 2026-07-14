@@ -92,8 +92,21 @@ pub fn hover(
             .find(|(fid, _, _)| *fid == info.file)
             .map_or(String::new(), |(_, p, _)| format!("\n\n*Defined in `{p}`*"));
 
+        // T1c-4 (#702, docs/t1c-spec.md §11): a fn-value slot — a
+        // VAR/CONST/temp whose declaration initializer is a direct
+        // `#fn(target, args…)` literal — shows the same bound-signature
+        // display form `string(f)` produces at runtime (spec §5), built
+        // statically from the HIR since there is no compiled `Program` at
+        // hover time. `None` for every other symbol and for indirect
+        // (`bind()`, copy-of-a-variable) bindings — see
+        // `fn_value_hover`'s module doc.
+        let fn_value_str = db
+            .hir(file_id)
+            .and_then(|hir| crate::fn_value_hover::fn_value_slot_signature(analysis, hir, info))
+            .map_or(String::new(), |sig| format!("\n\n`{sig}`"));
+
         format!(
-            "**{kind_str}** `{}{inferred_local_str}{value_str}{params_str}{ret_str}`{detail_str}{kind_tag}{doc_block}{file_note}",
+            "**{kind_str}** `{}{inferred_local_str}{value_str}{params_str}{ret_str}`{detail_str}{kind_tag}{doc_block}{file_note}{fn_value_str}",
             info.name
         )
     } else {
@@ -443,6 +456,36 @@ stalls
         let content = hover_at(src, "heal(hp)");
         assert!(content.contains("hp: int"), "{content}");
         assert!(content.contains("-> int"), "{content}");
+    }
+
+    // ── T1c-4 (#702): fn-value slot hover shows the bound signature ──────
+
+    #[test]
+    fn hover_shows_the_bound_signature_for_a_fn_value_var_slot() {
+        let src = "\
+VAR player_hp = 10
+VAR healer = 0
+
+~ healer = #fn(heal, player_hp)
+-> END
+
+=== function heal(ref hp, amount) ===
+~ hp = hp + amount
+~ return hp
+";
+        let content = hover_at(src, "healer = 0");
+        assert!(content.contains("**variable**"), "{content}");
+        assert!(
+            content.contains("fn heal(ref hp = player_hp, amount)"),
+            "{content}"
+        );
+    }
+
+    #[test]
+    fn hover_shows_no_bound_signature_for_an_ordinary_var() {
+        let src = "VAR health = 100\n-> END\n";
+        let content = hover_at(src, "health = 100");
+        assert!(!content.contains("fn "), "{content}");
     }
 
     #[test]
