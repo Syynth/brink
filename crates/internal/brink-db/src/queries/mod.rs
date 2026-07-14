@@ -112,6 +112,7 @@ impl Default for BrinkDatabase {
                 .ingredient::<suppressions_query>()
                 .ingredient::<include_graph_query>()
                 // Layer 2.
+                .ingredient::<module_map_query>()
                 .ingredient::<symbol_index_query>()
                 .ingredient::<resolution_index_query>()
                 .ingredient::<resolve_query>()
@@ -272,6 +273,35 @@ pub(crate) fn include_graph_query(db: &dyn salsa::Database, project: ProjectInpu
 
 // ─── Layer 2: project-wide names ─────────────────────────────────────
 
+/// Every file's resolved module (M-1, docs/modules-spec.md §1/§5) plus the
+/// stem-collision diagnostics (`E085`). Extracted as its own memoized query
+/// (issue #790) so both [`symbol_index_query`] — which qualifies identity by
+/// declared module — and [`resolve_query`] — which needs each referring
+/// file's module + imports to scope resolution — share one computation.
+///
+/// Undeclared stem-modules (the entire pre-modules corpus) resolve to
+/// non-qualifying entries, so their `DefinitionId`s stay byte-identical.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn module_map_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> (brink_analyzer::ModuleMap, Vec<Diagnostic>) {
+    let files = project.files(db);
+    let module_inputs: Vec<crate::modules::FileModuleInput> = files
+        .iter()
+        .map(|f| {
+            let hir_module = lowered_query(db, *f).hir.module.as_ref();
+            crate::modules::FileModuleInput {
+                file: f.file_id(db),
+                stem: crate::modules::file_stem(f.path(db)).to_string(),
+                declared: hir_module.map(|m| m.name.clone()),
+                was: hir_module.and_then(|m| m.was.as_ref().map(|(old, _)| old.clone())),
+            }
+        })
+        .collect();
+    crate::modules::resolve_modules(&module_inputs, include_graph_query(db, project))
+}
+
 /// The merged project-wide symbol index plus indexing diagnostics
 /// (duplicates, built-in shadowing). Thin wrapper over
 /// [`brink_analyzer::symbol_index`].
@@ -286,33 +316,16 @@ pub(crate) fn symbol_index_query(
         .map(|f| (f.file_id(db), &lowered_query(db, *f).manifest))
         .collect();
 
-    // M-1 (docs/modules-spec.md §1/§5): resolve every file's module —
-    // stem default, `#@module` override, INCLUDE inheritance — so symbol
-    // identity can be qualified by declared module. Undeclared stem-modules
-    // (the entire pre-modules corpus) resolve to non-qualifying entries, so
-    // their `DefinitionId`s stay byte-identical.
-    let module_inputs: Vec<crate::modules::FileModuleInput> = files
-        .iter()
-        .map(|f| {
-            let hir_module = lowered_query(db, *f).hir.module.as_ref();
-            crate::modules::FileModuleInput {
-                file: f.file_id(db),
-                stem: crate::modules::file_stem(f.path(db)).to_string(),
-                declared: hir_module.map(|m| m.name.clone()),
-                was: hir_module.and_then(|m| m.was.as_ref().map(|(old, _)| old.clone())),
-            }
-        })
-        .collect();
-    let (module_map, module_diags) =
-        crate::modules::resolve_modules(&module_inputs, include_graph_query(db, project));
+    let (module_map, module_diags) = module_map_query(db, project);
 
-    // M-2c (issue #784): the cross-declared-module duplicate escalation is
-    // dialect-gated (brink only) inside `symbol_index_with_modules` itself,
-    // so the project's configured dialect must reach it here.
+    // M-2c/M-2d (issues #784/#790): the cross-declared-module duplicate
+    // handling (E096 stopgap → coexistence) is dialect-gated (brink only)
+    // inside `symbol_index_with_modules` itself, so the project's configured
+    // dialect must reach it here.
     let dialect = project.analysis_options(db).dialect;
     let (index, mut diagnostics) =
-        brink_analyzer::symbol_index_with_modules(&manifest_refs, &module_map, dialect);
-    diagnostics.extend(module_diags);
+        brink_analyzer::symbol_index_with_modules(&manifest_refs, module_map, dialect);
+    diagnostics.extend(module_diags.clone());
     (index, diagnostics)
 }
 
@@ -365,7 +378,25 @@ pub(crate) fn resolve_query(
     file: SourceFile,
 ) -> (Arc<ResolutionMap>, Vec<Diagnostic>) {
     let index = resolution_index_query(db, project);
-    brink_analyzer::resolve(file.file_id(db), &lowered_query(db, file).manifest, index)
+    let lowered = lowered_query(db, file);
+
+    // Import-scoped resolution (M-2d, docs/modules-spec.md §2; issue #790):
+    // feed the resolver this file's own **declared** module and its `IMPORT`
+    // list so a bare reference with same-name candidates across declared
+    // modules binds to the one this file imported. The scope is inert for
+    // the pre-modules / single-module world (no declared module qualifies
+    // identity, so every candidate carries `module: None` and the resolver's
+    // fast path is byte-identical). `file_module` comes from the shared
+    // module map (declared modules only — INCLUDE inheritance already
+    // applied), matching how `symbol_index_query` qualified identity.
+    let (module_map, _module_diags) = module_map_query(db, project);
+    let file_module = module_map
+        .get(&file.file_id(db))
+        .filter(|m| m.declared)
+        .map(|m| m.name.clone());
+    let scope = brink_analyzer::ImportScope::new(file_module, &lowered.hir.imports);
+
+    brink_analyzer::resolve(file.file_id(db), &lowered.manifest, index, &scope)
 }
 
 /// Interned key for [`signature_query`]. Keyed on the content-addressed

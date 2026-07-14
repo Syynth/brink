@@ -95,8 +95,18 @@ fn per_file_resolve_concatenation_matches_analyze() {
     let (hir_b, man_b) = lower(FileId(1), INDEX_SRC_B);
     let (index, _) = brink_analyzer::symbol_index(&[(FileId(0), &man_a), (FileId(1), &man_b)]);
 
-    let (res_a, diags_a) = brink_analyzer::resolve(FileId(0), &man_a, &index);
-    let (res_b, diags_b) = brink_analyzer::resolve(FileId(1), &man_b, &index);
+    let (res_a, diags_a) = brink_analyzer::resolve(
+        FileId(0),
+        &man_a,
+        &index,
+        &brink_analyzer::ImportScope::default(),
+    );
+    let (res_b, diags_b) = brink_analyzer::resolve(
+        FileId(1),
+        &man_b,
+        &index,
+        &brink_analyzer::ImportScope::default(),
+    );
     let mut concat = (*res_a).clone();
     concat.extend((*res_b).clone());
 
@@ -121,8 +131,18 @@ fn resolving_a_file_does_not_observe_other_files_bodies() {
     let (index1, _) = brink_analyzer::symbol_index(&[(FileId(0), &man_a), (FileId(1), &man_b)]);
     let (index2, _) = brink_analyzer::symbol_index(&[(FileId(0), &man_a), (FileId(1), &man_b2)]);
 
-    let (res1, diags1) = brink_analyzer::resolve(FileId(0), &man_a, &index1);
-    let (res2, diags2) = brink_analyzer::resolve(FileId(0), &man_a, &index2);
+    let (res1, diags1) = brink_analyzer::resolve(
+        FileId(0),
+        &man_a,
+        &index1,
+        &brink_analyzer::ImportScope::default(),
+    );
+    let (res2, diags2) = brink_analyzer::resolve(
+        FileId(0),
+        &man_a,
+        &index2,
+        &brink_analyzer::ImportScope::default(),
+    );
     assert_eq!(*res1, *res2, "file A's resolutions changed with B's body");
     assert_eq!(diags1, diags2);
 }

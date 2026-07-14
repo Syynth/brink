@@ -1,10 +1,85 @@
+use std::collections::BTreeSet;
+
 use brink_format::DefinitionId;
 use brink_ir::{
-    Diagnostic, DiagnosticCode, FileId, LocalSymbol, RefKind, ResolutionMap, ResolvedRef, Scope,
-    SymbolIndex, SymbolKind, SymbolManifest,
+    Diagnostic, DiagnosticCode, FileId, Import, LocalSymbol, RefKind, ResolutionMap, ResolvedRef,
+    Scope, SymbolIndex, SymbolInfo, SymbolKind, SymbolManifest, Visibility,
 };
 
 use crate::manifest::local_definition_id;
+
+/// Per-file import context threaded into resolution (M-2d,
+/// docs/modules-spec.md §2; issue #790) so a bare reference with multiple
+/// cross-module candidates binds to the module *this file* actually imports —
+/// "names cross module boundaries only via import" — rather than to the flat
+/// duplicate-winner.
+///
+/// The default (empty) scope reproduces the pre-M-2d flat behavior exactly:
+/// the entire strict-ink and single-module world has at most one candidate
+/// per (name, kind), so [`lookup_by_name`]'s fast path returns it unchanged
+/// and this context never influences the result. It only ever disambiguates
+/// the genuinely-new case unlocked by relaxing the #784/#793 stopgap: two
+/// *declared* modules publicly defining the same name, now coexisting in the
+/// index instead of one being suppressed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImportScope {
+    /// The referring file's own **declared** module (`None` for an
+    /// undeclared stem-module / the legacy world). A candidate declared in
+    /// this same module is bare-visible without any import.
+    pub file_module: Option<String>,
+    /// The **declared** modules this file imports — the FROM-module of every
+    /// bare `IMPORT { … } FROM mod` and every qualified `IMPORT mod`. A
+    /// *public* candidate in one of these modules is import-visible. This is
+    /// the same module-granularity licensing `modules::check`'s E025 uses
+    /// (`import_covers`), so resolution and the import-required diagnostic
+    /// agree on what a file may see. `BTreeSet` for determinism.
+    pub imported_modules: BTreeSet<String>,
+}
+
+impl ImportScope {
+    /// Build the scope for one file from its resolved (declared) module and
+    /// its HIR `IMPORT` list.
+    #[must_use]
+    pub fn new(file_module: Option<String>, imports: &[Import]) -> Self {
+        let imported_modules = imports.iter().map(|i| i.module.clone()).collect();
+        Self {
+            file_module,
+            imported_modules,
+        }
+    }
+}
+
+/// How a candidate definition relates to the referring file's import scope.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Candidacy {
+    /// Bare-visible without an import: the legacy world (`module == None`) or
+    /// a definition in the referrer's own declared module.
+    InScope,
+    /// A public definition in a **declared** module this file imports.
+    Imported,
+    /// Neither — a cross-module definition this file has no line of sight to.
+    Other,
+}
+
+/// Classify a candidate against the referring file's import scope (M-2d).
+fn classify(scope: &ImportScope, info: &SymbolInfo) -> Candidacy {
+    match &info.module {
+        // Undeclared stem-module / legacy soup — always bare-visible, so the
+        // pre-modules corpus is untouched.
+        None => Candidacy::InScope,
+        Some(module) => {
+            if scope.file_module.as_deref() == Some(module.as_str()) {
+                Candidacy::InScope
+            } else if info.visibility == Visibility::Public
+                && scope.imported_modules.contains(module)
+            {
+                Candidacy::Imported
+            } else {
+                Candidacy::Other
+            }
+        }
+    }
+}
 
 /// Resolve all unresolved references across files.
 ///
@@ -20,8 +95,9 @@ pub fn resolve_refs(
     let mut map = ResolutionMap::new();
     let mut diagnostics = Vec::new();
 
+    let scope = ImportScope::default();
     for &(file_id, manifest) in files {
-        let (file_map, file_diags) = resolve_file(index, file_id, manifest);
+        let (file_map, file_diags) = resolve_file(index, &scope, file_id, manifest);
         map.extend(file_map);
         diagnostics.extend(file_diags);
     }
@@ -46,6 +122,7 @@ pub fn resolve_refs(
 /// longer invalidates file X's `resolve` memo.
 pub fn resolve_file(
     index: &SymbolIndex,
+    scope: &ImportScope,
     file_id: FileId,
     manifest: &SymbolManifest,
 ) -> (ResolutionMap, Vec<Diagnostic>) {
@@ -56,19 +133,43 @@ pub fn resolve_file(
     for uref in &manifest.unresolved {
         match uref.kind {
             RefKind::Divert => {
-                resolve_divert(index, locals, file_id, uref, &mut map, &mut diagnostics);
+                resolve_divert(
+                    index,
+                    scope,
+                    locals,
+                    file_id,
+                    uref,
+                    &mut map,
+                    &mut diagnostics,
+                );
             }
             RefKind::Variable => {
-                resolve_variable(index, locals, file_id, uref, &mut map, &mut diagnostics);
+                resolve_variable(
+                    index,
+                    scope,
+                    locals,
+                    file_id,
+                    uref,
+                    &mut map,
+                    &mut diagnostics,
+                );
             }
             RefKind::Function => {
-                resolve_function(index, locals, file_id, uref, &mut map, &mut diagnostics);
+                resolve_function(
+                    index,
+                    scope,
+                    locals,
+                    file_id,
+                    uref,
+                    &mut map,
+                    &mut diagnostics,
+                );
             }
             RefKind::List => {
-                resolve_list_ref(index, file_id, uref, &mut map, &mut diagnostics);
+                resolve_list_ref(index, scope, file_id, uref, &mut map, &mut diagnostics);
             }
             RefKind::Struct => {
-                resolve_struct_ref(index, file_id, uref, &mut map, &mut diagnostics);
+                resolve_struct_ref(index, scope, file_id, uref, &mut map, &mut diagnostics);
             }
         }
     }
@@ -78,13 +179,14 @@ pub fn resolve_file(
 
 fn resolve_divert(
     index: &SymbolIndex,
+    scope: &ImportScope,
     locals: &[LocalSymbol],
     file_id: FileId,
     uref: &brink_ir::UnresolvedRef,
     map: &mut ResolutionMap,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    if let Some(id) = lookup_divert(index, locals, uref) {
+    if let Some(id) = lookup_divert(index, scope, locals, uref) {
         map.push(ResolvedRef {
             file: file_id,
             range: uref.range,
@@ -102,6 +204,7 @@ fn resolve_divert(
 
 fn lookup_divert(
     index: &SymbolIndex,
+    scope: &ImportScope,
     locals: &[LocalSymbol],
     uref: &brink_ir::UnresolvedRef,
 ) -> Option<DefinitionId> {
@@ -109,15 +212,20 @@ fn lookup_divert(
 
     // Dotted path — try exact qualified lookup, then qualify with current knot
     if path.contains('.') {
-        if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Stitch, SymbolKind::Label]) {
+        if let Some(id) =
+            lookup_by_name(index, scope, path, &[SymbolKind::Stitch, SymbolKind::Label])
+        {
             return Some(id);
         }
         // Try qualifying with current knot scope (e.g., `a_package.forest` → `adventure.a_package.forest`)
         if let Some(knot) = &uref.scope.knot {
             let qualified = format!("{knot}.{path}");
-            if let Some(id) =
-                lookup_by_name(index, &qualified, &[SymbolKind::Stitch, SymbolKind::Label])
-            {
+            if let Some(id) = lookup_by_name(
+                index,
+                scope,
+                &qualified,
+                &[SymbolKind::Stitch, SymbolKind::Label],
+            ) {
                 return Some(id);
             }
         }
@@ -128,15 +236,19 @@ fn lookup_divert(
     // 1. Stitch or label in current knot
     if let Some(knot) = &uref.scope.knot {
         let qualified = format!("{knot}.{path}");
-        if let Some(id) =
-            lookup_by_name(index, &qualified, &[SymbolKind::Stitch, SymbolKind::Label])
-        {
+        if let Some(id) = lookup_by_name(
+            index,
+            scope,
+            &qualified,
+            &[SymbolKind::Stitch, SymbolKind::Label],
+        ) {
             return Some(id);
         }
         // Label in current stitch (knot.stitch.label)
         if let Some(stitch) = &uref.scope.stitch
             && let Some(id) = lookup_by_name(
                 index,
+                scope,
                 &format!("{knot}.{stitch}.{path}"),
                 &[SymbolKind::Label],
             )
@@ -146,29 +258,29 @@ fn lookup_divert(
     }
 
     // 2. Knot at top level
-    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Knot]) {
+    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::Knot]) {
         return Some(id);
     }
 
     // 3. Top-level stitch (bare name, no parent knot)
-    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Stitch]) {
+    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::Stitch]) {
         return Some(id);
     }
 
     // 4. Label anywhere in current knot (search by suffix)
     if let Some(knot) = &uref.scope.knot
-        && let Some(id) = lookup_label_in_knot(index, knot, path)
+        && let Some(id) = lookup_label_in_knot(index, scope, knot, path)
     {
         return Some(id);
     }
 
     // 5. Top-level label — stored as bare name (visible from any scope)
-    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Label]) {
+    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::Label]) {
         return Some(id);
     }
 
     // 6. Variable divert target (`VAR x = -> knot`, then `-> x`)
-    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Variable]) {
+    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::Variable]) {
         return Some(id);
     }
 
@@ -178,6 +290,7 @@ fn lookup_divert(
 
 fn resolve_variable(
     index: &SymbolIndex,
+    scope: &ImportScope,
     locals: &[LocalSymbol],
     file_id: FileId,
     uref: &brink_ir::UnresolvedRef,
@@ -190,7 +303,7 @@ fn resolve_variable(
         return;
     }
 
-    match lookup_variable(index, locals, uref) {
+    match lookup_variable(index, scope, locals, uref) {
         VarResult::Found(id) => {
             map.push(ResolvedRef {
                 file: file_id,
@@ -221,6 +334,7 @@ enum VarResult {
 /// Hierarchical variable lookup — returns the first match in priority order.
 fn lookup_variable(
     index: &SymbolIndex,
+    scope: &ImportScope,
     locals: &[LocalSymbol],
     uref: &brink_ir::UnresolvedRef,
 ) -> VarResult {
@@ -232,7 +346,12 @@ fn lookup_variable(
     }
 
     // 2. Global variables / constants
-    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Variable, SymbolKind::Constant]) {
+    if let Some(id) = lookup_by_name(
+        index,
+        scope,
+        path,
+        &[SymbolKind::Variable, SymbolKind::Constant],
+    ) {
         return VarResult::Found(id);
     }
 
@@ -245,37 +364,44 @@ fn lookup_variable(
 
     // 4. Qualified list item (ListName.ItemName)
     if path.contains('.')
-        && let Some(id) = lookup_by_name(index, path, &[SymbolKind::ListItem])
+        && let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::ListItem])
     {
         return VarResult::Found(id);
     }
 
     // 5. List names
-    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::List]) {
+    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::List]) {
         return VarResult::Found(id);
     }
 
     // 6. Knots and top-level stitches (visit counts)
-    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Knot, SymbolKind::Stitch]) {
+    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::Knot, SymbolKind::Stitch]) {
         return VarResult::Found(id);
     }
 
     // 7. Stitches in current knot scope
     if let Some(knot) = &uref.scope.knot
-        && let Some(id) = lookup_by_name(index, &format!("{knot}.{path}"), &[SymbolKind::Stitch])
+        && let Some(id) = lookup_by_name(
+            index,
+            scope,
+            &format!("{knot}.{path}"),
+            &[SymbolKind::Stitch],
+        )
     {
         return VarResult::Found(id);
     }
 
     // 8. Qualified stitch/label (e.g. `knot.stitch` or `knot.stitch.label` visit count)
     if path.contains('.') {
-        if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Stitch, SymbolKind::Label]) {
+        if let Some(id) =
+            lookup_by_name(index, scope, path, &[SymbolKind::Stitch, SymbolKind::Label])
+        {
             return VarResult::Found(id);
         }
         // Try `knot.label` where label is stored as `knot.*.label` (label inside a stitch)
         if let Some((knot, label)) = path.split_once('.')
             && !label.contains('.')
-            && let Some(id) = lookup_label_in_knot(index, knot, label)
+            && let Some(id) = lookup_label_in_knot(index, scope, knot, label)
         {
             return VarResult::Found(id);
         }
@@ -283,14 +409,14 @@ fn lookup_variable(
 
     // 9. Labels in current knot
     if let Some(knot) = &uref.scope.knot
-        && let Some(id) = lookup_label_in_knot(index, knot, path)
+        && let Some(id) = lookup_label_in_knot(index, scope, knot, path)
     {
         return VarResult::Found(id);
     }
 
     // 10. Labels at top level (no knot scope)
     if uref.scope.knot.is_none()
-        && let Some(id) = lookup_by_name(index, path, &[SymbolKind::Label])
+        && let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::Label])
     {
         return VarResult::Found(id);
     }
@@ -313,8 +439,12 @@ fn lookup_variable(
         if let Some(id) = lookup_local_in_scope(locals, head, &uref.scope) {
             return VarResult::Found(id);
         }
-        if let Some(id) = lookup_by_name(index, head, &[SymbolKind::Variable, SymbolKind::Constant])
-        {
+        if let Some(id) = lookup_by_name(
+            index,
+            scope,
+            head,
+            &[SymbolKind::Variable, SymbolKind::Constant],
+        ) {
             return VarResult::Found(id);
         }
     }
@@ -324,6 +454,7 @@ fn lookup_variable(
 
 fn resolve_function(
     index: &SymbolIndex,
+    scope: &ImportScope,
     locals: &[LocalSymbol],
     file_id: FileId,
     uref: &brink_ir::UnresolvedRef,
@@ -338,7 +469,7 @@ fn resolve_function(
     }
 
     // Try externals first
-    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::External]) {
+    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::External]) {
         map.push(ResolvedRef {
             file: file_id,
             range: uref.range,
@@ -349,7 +480,7 @@ fn resolve_function(
     }
 
     // Try knots (ink allows knots as functions via tunnels)
-    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Knot]) {
+    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::Knot]) {
         map.push(ResolvedRef {
             file: file_id,
             range: uref.range,
@@ -360,7 +491,7 @@ fn resolve_function(
     }
 
     // Try list names (ink allows `list(n)` as type conversion)
-    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::List]) {
+    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::List]) {
         map.push(ResolvedRef {
             file: file_id,
             range: uref.range,
@@ -370,7 +501,7 @@ fn resolve_function(
     }
 
     // Try variables (ink allows calling a variable holding a function ref)
-    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Variable]) {
+    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::Variable]) {
         map.push(ResolvedRef {
             file: file_id,
             range: uref.range,
@@ -444,6 +575,7 @@ fn check_arity(
 
 fn resolve_list_ref(
     index: &SymbolIndex,
+    scope: &ImportScope,
     file_id: FileId,
     uref: &brink_ir::UnresolvedRef,
     map: &mut ResolutionMap,
@@ -453,7 +585,7 @@ fn resolve_list_ref(
 
     // Try qualified list item (ListName.ItemName)
     if path.contains('.')
-        && let Some(id) = lookup_by_name(index, path, &[SymbolKind::ListItem])
+        && let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::ListItem])
     {
         map.push(ResolvedRef {
             file: file_id,
@@ -481,7 +613,7 @@ fn resolve_list_ref(
     }
 
     // Try list name
-    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::List]) {
+    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::List]) {
         map.push(ResolvedRef {
             file: file_id,
             range: uref.range,
@@ -506,13 +638,14 @@ fn resolve_list_ref(
 /// variables need.
 fn resolve_struct_ref(
     index: &SymbolIndex,
+    scope: &ImportScope,
     file_id: FileId,
     uref: &brink_ir::UnresolvedRef,
     map: &mut ResolutionMap,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let path = &uref.path;
-    if let Some(id) = lookup_by_name(index, path, &[SymbolKind::Struct]) {
+    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::Struct]) {
         map.push(ResolvedRef {
             file: file_id,
             range: uref.range,
@@ -658,18 +791,51 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
 /// initializer position has no enclosing body to scope against).
 pub(crate) fn lookup_by_name(
     index: &SymbolIndex,
+    scope: &ImportScope,
     name: &str,
     kinds: &[SymbolKind],
 ) -> Option<DefinitionId> {
     let ids = index.by_name.get(name)?;
+
+    let mut first_match: Option<DefinitionId> = None;
+    let mut first_in_scope: Option<DefinitionId> = None;
+    let mut first_imported: Option<DefinitionId> = None;
+    let mut multiple = false;
+
     for id in ids {
-        if let Some(info) = index.symbols.get(id)
-            && kinds.contains(&info.kind)
-        {
-            return Some(*id);
+        let Some(info) = index.symbols.get(id) else {
+            continue;
+        };
+        if !kinds.contains(&info.kind) {
+            continue;
+        }
+        if first_match.is_none() {
+            first_match = Some(*id);
+        } else {
+            multiple = true;
+        }
+        match classify(scope, info) {
+            Candidacy::InScope if first_in_scope.is_none() => first_in_scope = Some(*id),
+            Candidacy::Imported if first_imported.is_none() => first_imported = Some(*id),
+            _ => {}
         }
     }
-    None
+
+    // Fast path (byte-identity guarantee): with zero or one candidate of the
+    // requested kind — the entire strict-ink and single-module world — the
+    // sole match is returned exactly as the pre-M-2d flat lookup did, so the
+    // import scope never changes an existing corpus's resolution.
+    if !multiple {
+        return first_match;
+    }
+
+    // Multiple cross-module candidates (only reachable now that the #784/#793
+    // stopgap is relaxed and same-name public defs coexist): the referrer's
+    // own-module / legacy candidate wins, else an imported public one, else
+    // fall back to the flat first-winner — which keeps `modules::check`'s
+    // E025 import-required diagnostic (keyed off the resolved target) firing
+    // for a genuinely un-imported cross-module reference, exactly as before.
+    first_in_scope.or(first_imported).or(first_match)
 }
 
 /// Result of a bare list item lookup.
@@ -710,10 +876,15 @@ fn lookup_list_item_bare(index: &SymbolIndex, bare_name: &str) -> BareItemResult
 
 /// Look up a label within a knot scope. Searches for `knot.label` and
 /// `knot.*.label` patterns.
-fn lookup_label_in_knot(index: &SymbolIndex, knot: &str, label: &str) -> Option<DefinitionId> {
+fn lookup_label_in_knot(
+    index: &SymbolIndex,
+    scope: &ImportScope,
+    knot: &str,
+    label: &str,
+) -> Option<DefinitionId> {
     // Try knot.label
     let direct = format!("{knot}.{label}");
-    if let Some(id) = lookup_by_name(index, &direct, &[SymbolKind::Label]) {
+    if let Some(id) = lookup_by_name(index, scope, &direct, &[SymbolKind::Label]) {
         return Some(id);
     }
 
@@ -1353,7 +1524,8 @@ mod tests {
         let parsed = brink_syntax::parse(src);
         let (_hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let (index, _diag) = merge_manifests(&[(FileId(0), &manifest)]);
-        let (resolutions, _diag) = resolve_file(&index, FileId(0), &manifest);
+        let (resolutions, _diag) =
+            resolve_file(&index, &ImportScope::default(), FileId(0), &manifest);
         (index, resolutions)
     }
 
@@ -1467,7 +1639,8 @@ mod tests {
         let parsed = brink_syntax::parse(src);
         let (_hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let (index, _diag) = merge_manifests(&[(FileId(0), &manifest)]);
-        let (resolutions, diags) = resolve_file(&index, FileId(0), &manifest);
+        let (resolutions, diags) =
+            resolve_file(&index, &ImportScope::default(), FileId(0), &manifest);
         assert!(
             resolutions.is_empty(),
             "no resolution for an undeclared shape: {resolutions:?}"
@@ -1475,6 +1648,106 @@ mod tests {
         assert!(
             diags.iter().any(|d| d.code == DiagnosticCode::E068),
             "{diags:?}"
+        );
+    }
+
+    // ── M-2d import-scoped lookup (issue #790) ────────────────────────
+
+    /// A hand-built index with two `Knot`s named `ambush` in *different*
+    /// declared modules (the coexistence unlocked by relaxing the #784/#793
+    /// stopgap). Insertion order is `quest_a`, then `quest_b`, so the flat
+    /// first-winner is always `quest_a` — the import scope is what makes
+    /// `quest_b` reachable.
+    fn two_module_ambush_index() -> (SymbolIndex, DefinitionId, DefinitionId) {
+        use brink_format::DefinitionTag;
+        let mut index = SymbolIndex::default();
+        let mk = |index: &mut SymbolIndex, module: &str, hash: u64| {
+            let id = DefinitionId::new(DefinitionTag::Address, hash);
+            index.symbols.insert(
+                id,
+                SymbolInfo {
+                    kind: SymbolKind::Knot,
+                    file: FileId(0),
+                    range: TextRange::default(),
+                    id,
+                    name: "ambush".to_string(),
+                    params: Vec::new(),
+                    detail: None,
+                    scope: None,
+                    param_detail: None,
+                    module: Some(module.to_string()),
+                    visibility: Visibility::Public,
+                },
+            );
+            index
+                .by_name
+                .entry("ambush".to_string())
+                .or_default()
+                .push(id);
+            id
+        };
+        let a = mk(&mut index, "quest_a", 0xA);
+        let b = mk(&mut index, "quest_b", 0xB);
+        (index, a, b)
+    }
+
+    #[test]
+    fn import_scope_binds_each_importer_to_its_own_module() {
+        let (index, a, b) = two_module_ambush_index();
+
+        let scope_a = ImportScope {
+            file_module: None,
+            imported_modules: ["quest_a".to_string()].into_iter().collect(),
+        };
+        assert_eq!(
+            lookup_by_name(&index, &scope_a, "ambush", &[SymbolKind::Knot]),
+            Some(a),
+            "a file importing quest_a binds quest_a's ambush"
+        );
+
+        let scope_b = ImportScope {
+            file_module: None,
+            imported_modules: ["quest_b".to_string()].into_iter().collect(),
+        };
+        assert_eq!(
+            lookup_by_name(&index, &scope_b, "ambush", &[SymbolKind::Knot]),
+            Some(b),
+            "a file importing quest_b binds quest_b's ambush — not the flat first-winner"
+        );
+    }
+
+    #[test]
+    fn same_module_candidate_wins_over_imported_one() {
+        let (index, a, b) = two_module_ambush_index();
+        // A file *inside* quest_b that also imports quest_a: its own module's
+        // `ambush` is bare-visible and wins over the imported homonym.
+        let scope = ImportScope {
+            file_module: Some("quest_b".to_string()),
+            imported_modules: ["quest_a".to_string()].into_iter().collect(),
+        };
+        assert_eq!(
+            lookup_by_name(&index, &scope, "ambush", &[SymbolKind::Knot]),
+            Some(b),
+            "own-module definition beats an imported homonym"
+        );
+        let _ = a;
+    }
+
+    #[test]
+    fn default_scope_falls_back_to_flat_first_winner() {
+        // Byte-identity guard: with no import context (the pre-M-2d world),
+        // a multi-candidate lookup returns the flat first-inserted winner,
+        // exactly as the old flat resolver did.
+        let (index, a, _b) = two_module_ambush_index();
+        assert_eq!(
+            lookup_by_name(
+                &index,
+                &ImportScope::default(),
+                "ambush",
+                &[SymbolKind::Knot]
+            ),
+            Some(a),
+            "no imports → flat first-winner, unchanged from pre-M-2d"
         );
     }
 }
