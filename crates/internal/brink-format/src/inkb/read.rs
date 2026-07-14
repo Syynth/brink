@@ -9,7 +9,7 @@ use crate::definition::{
     AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
     ListItemDef, ParamMeta, ScopeLineTable, SlotInfo, SourceLocation, StructShapeDef,
 };
-use crate::id::NameId;
+use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::opcode::DecodeError;
 use crate::story::StoryData;
@@ -54,6 +54,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
     let address_paths = read_section_address_paths(buf, &index)?;
     let literal_pool = read_section_literal_pool(buf, &index)?;
     let struct_shapes = read_section_struct_shapes(buf, &index)?;
+    let private_defs = read_section_visibility(buf, &index)?;
 
     Ok(StoryData {
         containers,
@@ -68,6 +69,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
         list_literals,
         literal_pool,
         struct_shapes,
+        private_defs,
         source_checksum: index.checksum,
     })
 }
@@ -545,6 +547,26 @@ pub fn read_section_struct_shapes(
         shapes.push(StructShapeDef { id, name, fields });
     }
     Ok(shapes)
+}
+
+/// Read the M-2b `Visibility` section (tag `0x0E`) from a complete `.inkb`
+/// file using its index — the `DefinitionId`s of every `#@private`
+/// definition. Absent section decodes as empty (the all-public common case),
+/// mirroring [`read_section_struct_shapes`].
+pub fn read_section_visibility(
+    buf: &[u8],
+    index: &InkbIndex,
+) -> Result<Vec<DefinitionId>, DecodeError> {
+    let Some(range) = index.section_range(SectionKind::Visibility) else {
+        return Ok(Vec::new());
+    };
+    let mut off = range.start;
+    let count = read_u32(buf, &mut off)? as usize;
+    let mut ids = Vec::with_capacity(safe_capacity(count, buf.len(), off, 4));
+    for _ in 0..count {
+        ids.push(read_def_id(buf, &mut off)?);
+    }
+    Ok(ids)
 }
 
 fn decode_external(buf: &[u8], off: &mut usize) -> Result<ExternalFnDef, DecodeError> {

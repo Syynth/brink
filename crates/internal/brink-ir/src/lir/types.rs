@@ -39,6 +39,15 @@ pub struct Program {
     /// its own position), so codegen can hand it straight to
     /// `brink_format::StoryData::struct_shapes`.
     pub struct_shapes: Vec<StructShapeDef>,
+
+    /// M-2b (`docs/modules-spec.md` §4): the `DefinitionId`s of every
+    /// `#@private` definition, sorted ascending by raw id. Collected from the
+    /// resolved [`SymbolIndex`](crate::symbols::SymbolIndex) (whose
+    /// per-symbol `visibility` already carries declaration-flips-default),
+    /// never from a `HashMap` iteration order. Codegen hands this straight to
+    /// `brink_format::StoryData::private_defs`; the runtime uses it to refuse
+    /// host semantic access. Empty for the all-public pre-modules world.
+    pub private_defs: Vec<DefinitionId>,
 }
 
 /// One declared `STRUCT` shape (TM-4c). Mirrors

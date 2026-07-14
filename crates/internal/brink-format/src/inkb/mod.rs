@@ -32,14 +32,14 @@ pub use read::{
     read_section_containers, read_section_externals, read_section_line_tables,
     read_section_list_defs, read_section_list_items, read_section_list_literals,
     read_section_literal_pool, read_section_name_table, read_section_struct_shapes,
-    read_section_variables,
+    read_section_variables, read_section_visibility,
 };
 pub use write::{
     assemble_inkb, write_inkb, write_section_address_paths, write_section_addresses,
     write_section_containers, write_section_externals, write_section_line_tables,
     write_section_list_defs, write_section_list_items, write_section_list_literals,
     write_section_literal_pool, write_section_name_table, write_section_struct_shapes,
-    write_section_variables,
+    write_section_variables, write_section_visibility,
 };
 
 use core::ops::Range;
@@ -153,6 +153,13 @@ pub enum SectionKind {
     /// encoding at the format layer only — nothing in the compiler emits a
     /// non-empty table yet (see the PR description's scope note).
     StructShapes = 0x0C,
+    /// M-2b `Visibility` (`docs/modules-spec.md` §4, `docs/format-spec.md`):
+    /// the `DefinitionId`s of every `#@private` definition, sorted ascending.
+    /// **Omitted entirely when empty** (the common all-public case), so
+    /// public-only stories stay byte-identical and no version bump is needed
+    /// — the section is purely additive and self-framed in the offset table.
+    /// `0x0D` is reserved for `EffectRows`, so this takes the next free tag.
+    Visibility = 0x0E,
 }
 
 // Reserved v4 section kinds — numeric assignments frozen by the §9 one-bump
@@ -180,6 +187,7 @@ impl SectionKind {
             0x0A => Ok(Self::AddressPaths),
             0x0B => Ok(Self::LiteralPool),
             0x0C => Ok(Self::StructShapes),
+            0x0E => Ok(Self::Visibility),
             _ => Err(DecodeError::InvalidSectionKind(tag)),
         }
     }

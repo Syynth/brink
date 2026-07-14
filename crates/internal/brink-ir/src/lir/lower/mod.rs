@@ -163,6 +163,18 @@ pub fn lower_to_program_with_type_mode(
 
     let struct_shapes = structs::struct_shape_defs(&shape_table);
 
+    // M-2b (`docs/modules-spec.md` §4): enumerate every `#@private`
+    // definition's `DefinitionId` from the resolved symbol index. The index
+    // is a `HashMap`, so sort the result — determinism is load-bearing (this
+    // rides into `StoryData`).
+    let mut private_defs: Vec<brink_format::DefinitionId> = index
+        .symbols
+        .iter()
+        .filter(|(_, info)| info.visibility == crate::symbols::Visibility::Private)
+        .map(|(id, _)| *id)
+        .collect();
+    private_defs.sort_by_key(|id| id.to_raw());
+
     (
         Some(lir::Program {
             root,
@@ -172,6 +184,7 @@ pub fn lower_to_program_with_type_mode(
             externals,
             name_table: names.into_entries(),
             struct_shapes,
+            private_defs,
         }),
         lir_diagnostics,
     )

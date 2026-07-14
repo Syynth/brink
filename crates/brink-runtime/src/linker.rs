@@ -235,6 +235,13 @@ pub fn link(
     }
     local_scope_defaults.sort();
 
+    // M-2b (`docs/modules-spec.md` §4): the `#@private` definition set, used
+    // only to refuse host semantic access. Empty for the all-public world.
+    // Sorted so `Program::is_private` can binary-search (the compiler already
+    // emits it sorted; re-sort defensively for hand-built/legacy `StoryData`).
+    let mut private_defs: Vec<DefinitionId> = data.private_defs.clone();
+    private_defs.sort_by_key(|d| d.to_raw());
+
     let program = Program {
         containers,
         address_map,
@@ -253,6 +260,7 @@ pub fn link(
         external_fns,
         local_scope_defaults,
         struct_shapes,
+        private_defs,
     };
     Ok((program, line_tables))
 }
