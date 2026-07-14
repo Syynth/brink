@@ -928,7 +928,8 @@ mod tests {
         let parsed = brink_syntax::parse(src);
         let (hir, manifest, _diag) = lower(FileId(0), &parsed.tree());
         let (index, _diag) = crate::symbol_index(&[(FileId(0), &manifest)]);
-        let (resolutions, _diag) = crate::resolve(FileId(0), &manifest, &index);
+        let (resolutions, _diag) =
+            crate::resolve(FileId(0), &manifest, &index, &crate::ImportScope::default());
         let inline_docs = crate::project_inline_docs(&[(FileId(0), &manifest)]);
         (hir, (*index).clone(), (*resolutions).clone(), inline_docs)
     }
