@@ -55,7 +55,7 @@
 //! behavior-neutral by construction (locked by the `query_equivalence` tests
 //! and the oracle gate).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use brink_analyzer::{AnalysisOptions, CallGraph, InferenceResult, SccGraph, Sig, TypePolicy};
@@ -68,6 +68,7 @@ use brink_ir::{
 use brink_syntax::Parse;
 
 use crate::db::resolve_include_path;
+use crate::determinism::{LookupMap, LookupSet};
 use crate::include_graph::IncludeGraph;
 
 mod analysis;
@@ -250,7 +251,7 @@ pub(crate) fn suppressions_query(db: &dyn salsa::Database, file: SourceFile) -> 
 #[salsa::tracked(returns(ref))]
 pub(crate) fn include_graph_query(db: &dyn salsa::Database, project: ProjectInput) -> IncludeGraph {
     let files = project.files(db);
-    let path_to_id: HashMap<&str, FileId> = files
+    let path_to_id: LookupMap<&str, FileId> = files
         .iter()
         .map(|f| (f.path(db).as_str(), f.file_id(db)))
         .collect();
@@ -354,8 +355,7 @@ pub(crate) fn resolution_index_query(
     stripped
         .symbols
         .retain(|_, info| !matches!(info.kind, SymbolKind::Param | SymbolKind::Temp));
-    let live_ids: std::collections::HashSet<DefinitionId> =
-        stripped.symbols.keys().copied().collect();
+    let live_ids: LookupSet<DefinitionId> = stripped.symbols.keys().copied().collect();
     stripped.by_name.retain(|_, ids| {
         ids.retain(|id| live_ids.contains(id));
         !ids.is_empty()
@@ -1022,13 +1022,13 @@ pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput
     // mirroring `Driver::lir_inputs`.
     let graph = include_graph_query(db, project);
     let all_ids: Vec<FileId> = files.iter().map(|f| f.file_id(db)).collect();
-    let by_id: HashMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
+    let by_id: LookupMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
     let topo = graph.topological_order(entry, &all_ids);
     let hir_refs: Vec<(FileId, &HirFile)> = topo
         .iter()
         .filter_map(|id| by_id.get(id).map(|f| (*id, &lowered_query(db, *f).hir)))
         .collect();
-    let paths: HashMap<FileId, String> = topo
+    let paths: LookupMap<FileId, String> = topo
         .iter()
         .filter_map(|id| by_id.get(id).map(|f| (*id, f.path(db).clone())))
         .collect();
@@ -1284,7 +1284,7 @@ pub fn partition_diagnostics(
 
     // Analysis diagnostics (unless disable_all).
     if !disable_all {
-        let mut by_file: HashMap<FileId, Vec<Diagnostic>> = HashMap::new();
+        let mut by_file: LookupMap<FileId, Vec<Diagnostic>> = LookupMap::new();
         for d in analysis_diagnostics {
             by_file.entry(d.file).or_default().push(d.clone());
         }

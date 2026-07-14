@@ -4,6 +4,18 @@
     clippy::print_stderr,
     clippy::items_after_statements
 )]
+// Issue #801: this crate's `clippy.toml` disallows bare `HashMap`/`HashSet`
+// so an iteration-order leak into codegen output can't ship quietly. This
+// file's one use (an always-empty `file_paths` map handed to
+// `lower_to_program_with_type_mode` — this test harness never populates
+// `SourceLocation`) has no order to leak; `crate::determinism::LookupMap`
+// is `pub(crate)` and invisible to this external test-binary crate, so a
+// file-level allow is the narrower fix (the `DefinitionId`-collision
+// `seen` maps below are real `BTreeMap`s, not exempted).
+#![allow(
+    clippy::disallowed_types,
+    reason = "always-empty file_paths map, no order to leak — see file doc"
+)]
 
 use brink_ir::lir;
 use brink_ir::{FileId, HirFile, SymbolManifest};
@@ -3046,8 +3058,8 @@ fn no_definition_id_collisions_in_simple_story() {
     collect_ids(&p.root, &mut ids);
 
     // Check for duplicates
-    let mut seen: std::collections::HashMap<brink_format::DefinitionId, Vec<&str>> =
-        std::collections::HashMap::new();
+    let mut seen: std::collections::BTreeMap<brink_format::DefinitionId, Vec<&str>> =
+        std::collections::BTreeMap::new();
     let mut collisions = Vec::new();
     for (id, name) in &ids {
         seen.entry(*id).or_default().push(name.as_str());
@@ -3098,8 +3110,8 @@ VAR teacup = false
     let mut ids = Vec::new();
     collect_ids(&p.root, &mut ids);
 
-    let mut seen: std::collections::HashMap<brink_format::DefinitionId, Vec<&str>> =
-        std::collections::HashMap::new();
+    let mut seen: std::collections::BTreeMap<brink_format::DefinitionId, Vec<&str>> =
+        std::collections::BTreeMap::new();
     let mut collisions = Vec::new();
     for (id, name) in &ids {
         seen.entry(*id).or_default().push(name.as_str());

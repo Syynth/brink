@@ -8,11 +8,10 @@ mod stmts;
 mod structs;
 mod temps;
 
-use std::collections::{HashMap, HashSet};
-
 use brink_format::CountingFlags;
 
 use crate::FileId;
+use crate::determinism::{LookupMap, LookupSet};
 use crate::hir;
 use crate::symbols::{ResolutionMap, SymbolIndex};
 
@@ -74,7 +73,7 @@ pub fn lower_to_program(
     files: &[(FileId, &hir::HirFile)],
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
-    file_paths: &HashMap<FileId, String>,
+    file_paths: &LookupMap<FileId, String>,
 ) -> (Option<lir::Program>, Vec<crate::Diagnostic>) {
     lower_to_program_with_type_mode(
         files,
@@ -101,7 +100,7 @@ pub fn lower_to_program_with_type_mode(
     files: &[(FileId, &hir::HirFile)],
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
-    file_paths: &HashMap<FileId, String>,
+    file_paths: &LookupMap<FileId, String>,
     type_mode: context::TypeMode,
 ) -> (Option<lir::Program>, Vec<crate::Diagnostic>) {
     // ── Step 0: Normalize HIR (pre-LIR regularization) ──────────
@@ -208,7 +207,7 @@ fn lower_root(
     names: &mut NameTable,
     root_id: brink_format::DefinitionId,
     ids: &mut context::IdAllocator,
-    file_paths: &HashMap<FileId, String>,
+    file_paths: &LookupMap<FileId, String>,
     diagnostics: &mut Vec<crate::Diagnostic>,
     structs: &context::StructCtx<'_>,
 ) -> lir::Container {
@@ -302,7 +301,7 @@ fn lower_knot(
     names: &mut NameTable,
     ids: &mut context::IdAllocator,
     root_id: brink_format::DefinitionId,
-    file_paths: &HashMap<FileId, String>,
+    file_paths: &LookupMap<FileId, String>,
     diagnostics: &mut Vec<crate::Diagnostic>,
     structs: &context::StructCtx<'_>,
 ) -> lir::Container {
@@ -402,7 +401,7 @@ fn lower_stitch(
     names: &mut NameTable,
     ids: &mut context::IdAllocator,
     root_id: brink_format::DefinitionId,
-    file_paths: &HashMap<FileId, String>,
+    file_paths: &LookupMap<FileId, String>,
     block_slot: &mut u16,
     diagnostics: &mut Vec<crate::Diagnostic>,
     structs: &context::StructCtx<'_>,
@@ -1083,7 +1082,7 @@ fn make_ctx<'a>(
     root_id: brink_format::DefinitionId,
     scope_path: String,
     param_names: &[&str],
-    file_paths: &'a HashMap<FileId, String>,
+    file_paths: &'a LookupMap<FileId, String>,
     next_block_slot: &'a mut u16,
     diagnostics: &'a mut Vec<crate::Diagnostic>,
     structs: &'a context::StructCtx<'a>,
@@ -1103,11 +1102,11 @@ fn make_ctx<'a>(
         choice_gather_target: None,
         next_block_slot,
         block_scopes: Vec::new(),
-        block_scoped_temp_names: HashSet::new(),
+        block_scoped_temp_names: LookupSet::new(),
         diagnostics,
         loop_depth: 0,
         structs,
-        temp_shapes: HashMap::new(),
+        temp_shapes: LookupMap::new(),
     }
 }
 
