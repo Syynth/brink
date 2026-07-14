@@ -648,6 +648,10 @@ fn base_name(base: BaseType) -> &'static str {
         BaseType::Float => "float",
         BaseType::Bool => "bool",
         BaseType::Void => "void",
+        // No handle literal syntax exists (T1d-1), so `literal_base` never
+        // produces this arm in practice — kept exhaustive so a future
+        // literal form can't silently skip this display path.
+        BaseType::Handle => "handle",
     }
 }
 

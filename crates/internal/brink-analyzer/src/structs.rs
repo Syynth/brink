@@ -69,8 +69,12 @@ fn declared_shapes(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
 ) -> BTreeMap<String, ShapeInfo> {
-    let list_names = annotations::declared_list_names(index);
-    let struct_names = annotations::declared_struct_names(index);
+    // No manifest access at this call site (`structs::check` isn't
+    // threaded a `HostManifest` — struct field types aren't in T1d-2's
+    // scope), so `handle<K>` field types resolve `None` here, same as any
+    // other name `TypeNames` doesn't recognize — consistent with
+    // `annotations::resolve`'s documented "unresolved -> silent" contract.
+    let names = annotations::TypeNames::new(index, None);
     let mut out = BTreeMap::new();
     for &(_file, hir) in files {
         for s in &hir.structs {
@@ -78,8 +82,7 @@ fn declared_shapes(
                 .fields
                 .iter()
                 .map(|f| {
-                    let ty = annotations::resolve(&f.ty, &list_names, &struct_names)
-                        .unwrap_or(Ty::Unknown);
+                    let ty = annotations::resolve(&f.ty, &names).unwrap_or(Ty::Unknown);
                     (f.name.text.clone(), ty)
                 })
                 .collect();
