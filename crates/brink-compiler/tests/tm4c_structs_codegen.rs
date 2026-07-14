@@ -9,8 +9,10 @@
 //! field reads (`RecordGet`/`RecordGetDyn`), single-level field writes
 //! (`RecordSet`/`RecordSetDyn`, take → `make_mut` → write-back), nested
 //! structs in a collection, the strict/gradual static-offset matrix and its
-//! required equivalence, the gradual construction-fault path, and a
-//! `SaveState` round-trip.
+//! required equivalence, the gradual construction-fault path, a
+//! `SaveState` round-trip, and (issue #676) that construction-literal
+//! initializers evaluate in **source** order end-to-end through real VM
+//! execution, independent of the shape's declaration order.
 
 #![allow(clippy::panic, clippy::unwrap_used)]
 
@@ -321,4 +323,49 @@ fn single_level_field_write_is_observably_equivalent_to_manual_read_modify_write
             "p.y = {new_y} must match the manual take/reconstruct/write-back reference"
         );
     }
+}
+
+// ── Source-order evaluation (issue #676) ──────────────────────────────
+//
+// Construction-literal initializers evaluate in the order the author wrote
+// them, not the shape's declaration order — codegen reorders only the
+// already-evaluated *values* into shape offsets afterward (decision-log
+// "Struct construction literals: source-order evaluation, duplicate field
+// is a compile error", 2026-07-14). `Point`'s shape declares `x` before
+// `y`; the fixture below writes the literal with `y` first — each
+// initializer a side-effecting function call appending to a shared log —
+// proving through actual VM execution (not just LIR inspection) that `y`'s
+// call fires before `x`'s.
+
+#[test]
+fn construction_literal_initializers_evaluate_in_source_order() {
+    let src = format!(
+        "VAR log = \"\"\n{POINT_SRC}\
+        ~ temp p = Point#{{y: mark_y(), x: mark_x()}}\n\
+        {{log}}\n-> DONE\n\n\
+        === function mark_y() ===\n~ log = log + \"y\"\n~ return 2.0\n\n\
+        === function mark_x() ===\n~ log = log + \"x\"\n~ return 1.0\n"
+    );
+    let data = compile_mem(&src, Dialect::Brink, TypePolicy::Gradual).unwrap();
+    let mut story = story_for(&data);
+    let text = run_to_text(&mut story);
+    assert_eq!(
+        text.trim(),
+        "yx",
+        "y is written first in source, so mark_y() must fire before mark_x() \
+         even though x is declared first in Point's shape"
+    );
+}
+
+#[test]
+fn construction_literal_values_land_at_the_right_field_despite_source_reordering() {
+    // Companion to the effect-order test above: the *values* placed into
+    // the record must still land at their declared field regardless of
+    // source order — decoupling evaluation order from placement must never
+    // also scramble placement itself.
+    let src = format!("{POINT_SRC}~ temp p = Point#{{y: 2.0, x: 1.0}}\n{{p.x}} {{p.y}}\n-> DONE\n");
+    let data = compile_mem(&src, Dialect::Brink, TypePolicy::Gradual).unwrap();
+    let mut story = story_for(&data);
+    let text = run_to_text(&mut story);
+    assert_eq!(text.trim(), "1 2");
 }

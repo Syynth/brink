@@ -150,34 +150,36 @@ fn lower_fn_literal(fl: &hir::FnLiteral, ctx: &mut LowerCtx<'_>) -> lir::Expr {
 const CONSTRUCTION_FAULT_SHAPE_ID: u32 = u32::MAX;
 
 /// `Name#{field: expr, …}` construction (TM-4c, `docs/typed-mode-spec.md`
-/// §6). Every initializer is lowered — and therefore evaluated — exactly
-/// once, in **source** order (the order the author wrote them), regardless
-/// of which path below is taken.
+/// §6). Every supplied initializer is lowered — and, at codegen time,
+/// evaluated — exactly once, in **source** order (the order the author
+/// wrote them; decision-log "Struct construction literals: source-order
+/// evaluation, duplicate field is a compile error" 2026-07-14, issue #676),
+/// regardless of which path below is taken.
 ///
 /// - **Well-formed** (every declared field has exactly one initializer, no
-///   extra names): reorders the *already-lowered* expression trees into the
-///   shape's *declaration* order for `RecordNew` (the VM's required push
-///   order). **Evaluation-order caveat**: because each field's `lir::Expr`
-///   is placed, not re-evaluated, codegen will evaluate them in shape order
-///   at emission time, not source order — when the author's field order
-///   differs from the shape's declared order *and* more than one
-///   initializer has an observable side effect (a function call, an
-///   external, `TURNS_SINCE`, …), those side effects fire in shape order.
-///   The LIR has no local-binding expression node (an `Expr::Let`-shaped
-///   construct) to stage a source-order-evaluated value ahead of a later
-///   shape-order placement without one — introducing one is out of TM-4c's
-///   scope (flagged in the PR description's scope notes). Field
-///   initializers with observable side effects are expected to be rare in
-///   practice; this divergence is deliberate and documented, not a silent
-///   miscompile — construction *values* are always correct regardless.
+///   extra names): stages each initializer's *already-lowered* expression
+///   into a fresh synthetic temp slot, in source order (`prelude` —
+///   `LowerCtx::alloc_block_slot`, the same T1b synthetic-temp machinery
+///   `lower::blocks`' RMW desugaring uses), then builds `fields` as
+///   `GetTemp` reads of those slots reordered into the shape's *declaration*
+///   order for `RecordNew` (the VM's required push order). Codegen emits
+///   `prelude` first — so every value is *computed* in source order — and
+///   only then pushes `fields` in shape order, decoupling evaluation order
+///   from placement order. A duplicate field name (last-wins on placement)
+///   is a compile error under normal operation (`structs::check_duplicates`'
+///   `E083`); this loop still stages *every* supplied initializer (not just
+///   the winning last one), so a shadowed duplicate's side effect still
+///   fires even under `// brink-disable-all` suppression — never a silent
+///   drop (issue #675).
 /// - **Mismatched** (a missing declared field, or an initializer for a name
 ///   the shape doesn't declare): value-model-spec §11c's gradual
 ///   construction-fault path. Reachable under `types = gradual` (the only
 ///   policy that compiles this far — under `types = strict` it's already
 ///   `E069`/`E070`, a compile error, unless that diagnostic was suppressed,
 ///   in which case this is the non-suppressible runtime backstop). Emits
-///   every supplied initializer (source order, still evaluated for its side
-///   effects) followed by `RecordNew(CONSTRUCTION_FAULT_SHAPE_ID)` — the VM's
+///   every supplied initializer directly (source order, still evaluated for
+///   its side effects; no staging needed since nothing gets reordered)
+///   followed by `RecordNew(CONSTRUCTION_FAULT_SHAPE_ID)` — the VM's
 ///   `record_new` looks up the shape *before* popping any values, so an
 ///   always-invalid `ShapeId` deterministically turn-terminates via the
 ///   already-existing `RuntimeError::InvalidShapeId` fault (no new opcode or
@@ -191,15 +193,23 @@ fn lower_struct_literal(sl: &hir::StructLiteral, ctx: &mut LowerCtx<'_>) -> lir:
         return reject_unresolved_struct_shape(sl.ptr.text_range(), ctx);
     };
 
-    let mut placed: Vec<Option<lir::Expr>> = vec![None; shape.fields.len()];
+    let mut placed: Vec<Option<u16>> = vec![None; shape.fields.len()];
+    let mut prelude: Vec<(u16, brink_format::NameId, lir::Expr)> =
+        Vec::with_capacity(sl.fields.len());
     let mut source_order: Vec<lir::Expr> = Vec::with_capacity(sl.fields.len());
     let mut has_extra = false;
     for (name, val) in &sl.fields {
         let lowered = lower_expr(val, ctx);
         match shape.field(&name.text) {
             Some((offset, _)) => {
-                if let Some(slot) = placed.get_mut(offset as usize) {
-                    *slot = Some(lowered.clone());
+                // Stage this initializer's value now, at its source
+                // position — the fault path below (if this literal turns
+                // out mismatched) never sees `prelude`, only `source_order`.
+                let slot = ctx.alloc_block_slot();
+                let name_id = ctx.names.intern("__field");
+                prelude.push((slot, name_id, lowered.clone()));
+                if let Some(p) = placed.get_mut(offset as usize) {
+                    *p = Some(slot);
                 }
             }
             None => has_extra = true,
@@ -212,10 +222,11 @@ fn lower_struct_literal(sl: &hir::StructLiteral, ctx: &mut LowerCtx<'_>) -> lir:
         return lir::Expr::RecordNew {
             shape_id: CONSTRUCTION_FAULT_SHAPE_ID,
             fields: source_order,
+            prelude: Vec::new(),
         };
     }
 
-    // `has_missing == false` just proved every slot is `Some` — `unwrap_or`
+    // `has_missing == false` just proved every slot is `Some` — `map_or`
     // rather than `unwrap` anyway (denied in production code; guarded, not
     // asserted, per the E053-backstop lesson): a future refactor that
     // weakens that proof degrades to a well-formed-but-wrong `Null` field
@@ -224,8 +235,13 @@ fn lower_struct_literal(sl: &hir::StructLiteral, ctx: &mut LowerCtx<'_>) -> lir:
         shape_id: shape.id,
         fields: placed
             .into_iter()
-            .map(|f| f.unwrap_or(lir::Expr::Null))
+            .map(|slot| {
+                slot.map_or(lir::Expr::Null, |s| {
+                    lir::Expr::GetTemp(s, ctx.names.intern("__field"))
+                })
+            })
             .collect(),
+        prelude,
     }
 }
 

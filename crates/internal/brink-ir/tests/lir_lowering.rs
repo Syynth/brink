@@ -3577,10 +3577,36 @@ fn find_diag(
     diags.iter().find(|d| d.code == code)
 }
 
-fn find_record_new(expr: &lir::Expr) -> Option<(u32, &[lir::Expr])> {
+/// A `RecordNew`'s decoded parts: `(shape_id, fields, prelude)` — see
+/// `lir::Expr::RecordNew`'s own doc for what `fields`/`prelude` mean.
+type RecordNewParts<'a> = (u32, &'a [lir::Expr], &'a [(u16, brink_format::NameId, lir::Expr)]);
+
+fn find_record_new(expr: &lir::Expr) -> Option<RecordNewParts<'_>> {
     match expr {
-        lir::Expr::RecordNew { shape_id, fields } => Some((*shape_id, fields)),
+        lir::Expr::RecordNew {
+            shape_id,
+            fields,
+            prelude,
+        } => Some((*shape_id, fields, prelude)),
         _ => None,
+    }
+}
+
+/// Resolve a `RecordNew` field to the actual initializer expression it was
+/// built from: the well-formed path's `fields` entries are `GetTemp` reads
+/// of a `prelude` slot (#676 source-order staging), so this chases that
+/// indirection back to the staged expression; the fault path's `fields`
+/// entries are already the raw initializer, returned as-is.
+fn resolve_field<'a>(
+    field: &'a lir::Expr,
+    prelude: &'a [(u16, brink_format::NameId, lir::Expr)],
+) -> &'a lir::Expr {
+    match field {
+        lir::Expr::GetTemp(slot, _) => prelude
+            .iter()
+            .find(|(s, _, _)| s == slot)
+            .map_or(field, |(_, _, e)| e),
+        _ => field,
     }
 }
 
@@ -3615,11 +3641,72 @@ fn struct_literal_lowers_to_record_new_in_shape_order() {
         .iter()
         .find_map(declare_temp_value)
         .expect("temp p := Point#{...} should be a DeclareTemp");
-    let (shape_id, fields) = find_record_new(value).expect("Point#{...} should lower to RecordNew");
+    let (shape_id, fields, prelude) =
+        find_record_new(value).expect("Point#{...} should lower to RecordNew");
     assert_eq!(shape_id, program.struct_shapes[0].id);
-    // Reordered into shape decl order (x, y) despite being written y, x.
-    assert!(matches!(fields[0], lir::Expr::Float(f) if f == 1.0));
-    assert!(matches!(fields[1], lir::Expr::Float(f) if f == 2.0));
+    // `fields` is reordered into shape decl order (x, y) despite being
+    // written y, x — each entry is a `GetTemp` read of a `prelude` slot,
+    // resolved back to its staged value here.
+    assert!(matches!(
+        resolve_field(&fields[0], prelude),
+        lir::Expr::Float(f) if *f == 1.0
+    ));
+    assert!(matches!(
+        resolve_field(&fields[1], prelude),
+        lir::Expr::Float(f) if *f == 2.0
+    ));
+    // `prelude` itself is staged in **source** order (#676): y (2.0) first,
+    // then x (1.0) — the author's left-to-right order, not shape order.
+    assert_eq!(prelude.len(), 2, "one staged slot per supplied initializer");
+    assert!(matches!(prelude[0].2, lir::Expr::Float(f) if f == 2.0));
+    assert!(matches!(prelude[1].2, lir::Expr::Float(f) if f == 1.0));
+}
+
+#[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "exact literal from source (1.0/2.0/3.0), not a computed value"
+)]
+fn duplicate_field_still_stages_every_initializer_no_silent_drop() {
+    // #675's LIR-level defense-in-depth: `structs::check_duplicates` (E083)
+    // is what normally stops this from compiling at all, but this test
+    // proves lowering itself never silently drops an initializer's side
+    // effect even under suppression — both `x` initializers get staged
+    // into `prelude` (hence both would still be evaluated at runtime),
+    // even though only the *last* one's value (2.0, last-wins) ends up
+    // placed in the record. `E083` itself is an analyzer diagnostic this
+    // LIR-only harness never surfaces — covered instead by
+    // `brink-analyzer`'s own unit tests and the `e0xx_diagnostics` pipeline
+    // suite.
+    let src = "STRUCT Point = #{x: float, y: float}\n\
+        ~ temp p = Point#{x: 1.0, x: 2.0, y: 3.0}\nHello.\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.severity() != brink_ir::Severity::Error),
+        "{diags:?}"
+    );
+    let program = program.expect("struct constructs still lower for real under TM-4c");
+    let value = program
+        .root
+        .body
+        .iter()
+        .find_map(declare_temp_value)
+        .expect("temp p := Point#{...} should be a DeclareTemp");
+    let (_shape_id, fields, prelude) =
+        find_record_new(value).expect("Point#{...} should lower to RecordNew");
+    assert_eq!(
+        prelude.len(),
+        3,
+        "every supplied initializer is staged, including the shadowed duplicate"
+    );
+    // The winning (last-wins) `x` initializer's value (2.0) is what
+    // actually lands in the record at offset 0.
+    assert!(matches!(
+        resolve_field(&fields[0], prelude),
+        lir::Expr::Float(f) if *f == 2.0
+    ));
 }
 
 #[test]
@@ -3835,13 +3922,17 @@ fn gradual_construction_field_mismatch_uses_fault_sentinel_shape_id() {
         .iter()
         .find_map(declare_temp_value)
         .expect("temp p := Point#{...} should be a DeclareTemp");
-    let (shape_id, fields) =
+    let (shape_id, fields, prelude) =
         find_record_new(value).expect("mismatched construction should still be a RecordNew");
     assert_eq!(shape_id, u32::MAX, "sentinel shape id signals the fault");
     assert_eq!(
         fields.len(),
         1,
         "the one supplied initializer is still evaluated"
+    );
+    assert!(
+        prelude.is_empty(),
+        "the fault path's fields are already source order — no staging needed"
     );
 }
 
