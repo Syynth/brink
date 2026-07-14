@@ -144,19 +144,15 @@ fn import_coverage<'a>(files: &'a [(FileId, &'a HirFile)]) -> ImportCoverage<'a>
     let mut qualified: BTreeMap<FileId, BTreeSet<&str>> = BTreeMap::new();
     let mut bare: BTreeMap<FileId, BTreeSet<(&str, &str)>> = BTreeMap::new();
     for &(file_id, hir) in files {
-        for import in &hir.imports {
-            if import.bare {
-                for item in &import.items {
-                    bare.entry(file_id)
-                        .or_default()
-                        .insert((import.module.as_str(), item.name.as_str()));
-                }
-            } else {
-                qualified
-                    .entry(file_id)
-                    .or_default()
-                    .insert(import.module.as_str());
-            }
+        // Shared with `ImportScope` (`resolve.rs`) so resolution and this
+        // E025 gate can never diverge on what an import covers (issue #790
+        // review).
+        let (file_qualified, file_bare) = crate::resolve::import_coverage_for_file(&hir.imports);
+        if !file_qualified.is_empty() {
+            qualified.insert(file_id, file_qualified);
+        }
+        if !file_bare.is_empty() {
+            bare.insert(file_id, file_bare);
         }
     }
     (qualified, bare)
