@@ -2,10 +2,10 @@
 #![allow(clippy::unwrap_used)]
 
 use brink_format::{
-    AddressPath, ContainerDef, CountingFlags, DefinitionId, DefinitionTag, ExternalFnDef,
-    GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, ListValue, MapKey,
-    NameId, Opcode, OrderedMap, PluralCategory, ScopeLineTable, SelectKey, SlotInfo,
-    SourceLocation, StoryData, Value,
+    AddressPath, ClosureEnvEntry, ContainerDef, CountingFlags, DefinitionId, DefinitionTag,
+    ExternalFnDef, GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, ListValue,
+    MapKey, NameId, Opcode, OrderedMap, PluralCategory, ScopeLineTable, SelectKey, ShapeId,
+    SlotInfo, SourceLocation, StoryData, Value,
 };
 use proptest::prelude::*;
 
@@ -134,15 +134,19 @@ fn arb_map_key() -> impl Strategy<Value = MapKey> {
     ]
 }
 
-/// Leaf values (never recurse) — mirrors `proptest_inkb.rs`'s split. `Record`/
-/// `FnRef`/`Closure` are deliberately excluded here: the `.inkt` grammar
-/// (`src/inkt/inkt.pest`) has no `record_value`/`fn_ref_value`/
-/// `closure_value` rule, so `write_inkt` can emit text for those variants
-/// that `read_inkt` cannot parse back — a write/read asymmetry, not a
-/// round-trip law this suite can assert (tracked as issue #742). `Handle` is
-/// deliberately **included**: T1d's `.inkt` atom (`handle_value` in the
-/// grammar) lands its reader in the same PR as its writer, precisely so it
-/// does not join the `#742` exclusion list above.
+fn arb_shape_id() -> impl Strategy<Value = ShapeId> {
+    any::<u32>().prop_map(ShapeId)
+}
+
+/// Leaf values (never recurse) — mirrors `proptest_inkb.rs`'s split.
+/// `FnRef` has no nested payload so it lives here alongside the other
+/// leaves; `Record`/`Closure` recurse into their fields/env and are added
+/// below in `arb_value`'s `prop_recursive` block (issue #742: the `.inkt`
+/// grammar previously had no `record_value`/`fn_ref_value`/`closure_value`
+/// rule, so `write_inkt` could emit text `read_inkt` could not parse back —
+/// fixed alongside this coverage). `Handle` is also a leaf: T1d's `.inkt`
+/// atom (`handle_value` in the grammar) lands its reader in the same PR as
+/// its writer, so it never joins the `#742` exclusion class.
 fn arb_value_leaf() -> impl Strategy<Value = Value> {
     prop_oneof![
         any::<i32>().prop_map(Value::Int),
@@ -157,24 +161,44 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
         )
             .prop_map(|(items, origins)| Value::List(ListValue { items, origins }.into())),
         (arb_name_id(), any::<u64>()).prop_map(|(kind, id)| Value::handle(kind, id)),
+        arb_def_id().prop_map(Value::FnRef),
     ]
 }
 
-/// `Array`/`Map` (value-model-spec §4) nested to a bounded depth — the
-/// `.inkt` reader's `array_value`/`map_value` rules support both, so this
-/// closes the "value -> inkt text -> value == identity" law (issue #672
-/// workstream B item 2) for collections, not just scalars.
+/// `Array`/`Map`/`Record`/`Closure` (value-model-spec §4, t1c-spec §1/§6)
+/// nested to a bounded depth — the `.inkt` reader's `array_value`/
+/// `map_value`/`record_value`/`closure_value` rules support all four, so
+/// this closes the "value -> inkt text -> value == identity" law (issue
+/// #672 workstream B item 2, extended by #742 to the T1c function-value
+/// tags) for every recursive `Value` variant, not just scalars.
 fn arb_value() -> impl Strategy<Value = Value> {
     arb_value_leaf().prop_recursive(3, 16, 4, |inner| {
         prop_oneof![
             prop::collection::vec(inner.clone(), 0..4).prop_map(Value::array),
-            prop::collection::vec((arb_map_key(), inner), 0..4).prop_map(|entries| {
+            prop::collection::vec((arb_map_key(), inner.clone()), 0..4).prop_map(|entries| {
                 let mut map = OrderedMap::new();
                 for (key, value) in entries {
                     map.insert(key, value);
                 }
                 Value::map(map)
             }),
+            (arb_shape_id(), prop::collection::vec(inner.clone(), 0..4))
+                .prop_map(|(shape, fields)| Value::record(shape, fields)),
+            (
+                arb_def_id(),
+                prop::collection::vec((arb_name_id(), any::<bool>(), inner), 0..3),
+            )
+                .prop_map(|(target, raw_env)| {
+                    let env = raw_env
+                        .into_iter()
+                        .map(|(name, is_ref, payload)| ClosureEnvEntry {
+                            name,
+                            is_ref,
+                            payload,
+                        })
+                        .collect();
+                    Value::closure(target, env)
+                }),
         ]
     })
 }

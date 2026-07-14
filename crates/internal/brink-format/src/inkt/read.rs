@@ -12,7 +12,7 @@ use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::opcode::{ChoiceFlags, Opcode, SequenceKind};
 use crate::story::StoryData;
-use crate::value::{ListValue, MapKey, OrderedMap, Value, ValueType};
+use crate::value::{ClosureEnvEntry, ListValue, MapKey, OrderedMap, ShapeId, Value, ValueType};
 
 #[derive(Parser)]
 #[grammar = "inkt/inkt.pest"]
@@ -231,6 +231,9 @@ fn parse_value_type(pair: P<'_>) -> Result<ValueType, InktParseError> {
         "array" => Ok(ValueType::Array),
         "map" => Ok(ValueType::Map),
         "handle" => Ok(ValueType::Handle),
+        "record" => Ok(ValueType::Record),
+        "fn_ref" => Ok(ValueType::FnRef),
+        "closure" => Ok(ValueType::Closure),
         _ => Err(err(&pair, format!("unknown value type: {s}"))),
     }
 }
@@ -289,29 +292,7 @@ fn parse_value(pair: P<'_>, type_hint: Option<ValueType>) -> Result<Value, InktP
             }
             Ok(Value::array(items))
         }
-        Rule::map_value => {
-            let mut map = OrderedMap::new();
-            for entry in inner.into_inner() {
-                if entry.as_rule() != Rule::map_entry {
-                    continue;
-                }
-                let mut children = entry.into_inner();
-                let key_pair = children.next().ok_or_else(|| InktParseError {
-                    message: "expected map key".into(),
-                    line: 0,
-                    col: 0,
-                })?;
-                let value_pair = children.next().ok_or_else(|| InktParseError {
-                    message: "expected map value".into(),
-                    line: 0,
-                    col: 0,
-                })?;
-                let key = parse_map_key(key_pair)?;
-                let value = parse_value(value_pair, None)?;
-                map.insert(key, value);
-            }
-            Ok(Value::map(map))
-        }
+        Rule::map_value => parse_map_value(inner),
         Rule::var_pointer_value => {
             let id_pair = inner.into_inner().next().ok_or_else(|| InktParseError {
                 message: "expected def_id in var_pointer".into(),
@@ -337,6 +318,19 @@ fn parse_value(pair: P<'_>, type_hint: Option<ValueType>) -> Result<Value, InktP
         // — reader lands with the writer in this same PR (never repeat the
         // #742 write/read asymmetry).
         Rule::handle_value => parse_handle_value(inner),
+        // T1c function values (docs/t1c-spec.md §1/§6) — the read-side legs
+        // paired with `write_value`'s `record`/`fn_ref`/`closure` atoms
+        // (issue #742: writer/reader must stay in sync, dump-parity rule).
+        Rule::record_value => parse_record_value(inner),
+        Rule::fn_ref_value => {
+            let id_pair = inner.into_inner().next().ok_or_else(|| InktParseError {
+                message: "expected def_id in fn_ref".into(),
+                line: 0,
+                col: 0,
+            })?;
+            Ok(Value::FnRef(parse_def_id(id_pair)?))
+        }
+        Rule::closure_value => parse_closure_value(inner),
         _ => Err(err(
             &inner,
             format!("unexpected value rule: {:?}", inner.as_rule()),
@@ -364,6 +358,97 @@ fn parse_handle_value(pair: P<'_>) -> Result<Value, InktParseError> {
         .parse()
         .map_err(|_| err(&id_pair, "invalid handle id"))?;
     Ok(Value::handle(NameId(kind), id))
+}
+
+/// Parse a `map_value` node (`(map (key value)…)`) into a [`Value::Map`].
+fn parse_map_value(pair: P<'_>) -> Result<Value, InktParseError> {
+    let mut map = OrderedMap::new();
+    for entry in pair.into_inner() {
+        if entry.as_rule() != Rule::map_entry {
+            continue;
+        }
+        let mut children = entry.into_inner();
+        let key_pair = children.next().ok_or_else(|| InktParseError {
+            message: "expected map key".into(),
+            line: 0,
+            col: 0,
+        })?;
+        let value_pair = children.next().ok_or_else(|| InktParseError {
+            message: "expected map value".into(),
+            line: 0,
+            col: 0,
+        })?;
+        let key = parse_map_key(key_pair)?;
+        let value = parse_value(value_pair, None)?;
+        map.insert(key, value);
+    }
+    Ok(Value::map(map))
+}
+
+/// Parse a `record_value` node (`(record <shape> <field>…)`) into a
+/// [`Value::Record`] — the read-side leg paired with `write_value`'s
+/// `(record …)` atom (issue #742).
+fn parse_record_value(pair: P<'_>) -> Result<Value, InktParseError> {
+    let mut children = pair.into_inner();
+    let shape_pair = children.next().ok_or_else(|| InktParseError {
+        message: "expected shape id in record".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let shape_id: u32 = shape_pair.as_str().parse().map_err(|_| InktParseError {
+        message: "invalid record shape id".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let mut fields = Vec::new();
+    for field in children {
+        fields.push(parse_value(field, None)?);
+    }
+    Ok(Value::record(ShapeId(shape_id), fields))
+}
+
+/// Parse a `closure_value` node (`(closure <target> (val|ref <name> <value>)…)`)
+/// into a [`Value::Closure`] — the read-side leg paired with `write_value`'s
+/// `(closure …)` atom (issue #742).
+fn parse_closure_value(pair: P<'_>) -> Result<Value, InktParseError> {
+    let mut children = pair.into_inner();
+    let target_pair = children.next().ok_or_else(|| InktParseError {
+        message: "expected def_id in closure".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let target = parse_def_id(target_pair)?;
+    let mut env = Vec::new();
+    for entry in children {
+        if entry.as_rule() != Rule::closure_entry {
+            continue;
+        }
+        let mut ei = entry.into_inner();
+        let mode = ei.next().ok_or_else(|| InktParseError {
+            message: "expected mode in closure entry".into(),
+            line: 0,
+            col: 0,
+        })?;
+        let is_ref = mode.as_str() == "ref";
+        let name_int = ei.next().ok_or_else(|| InktParseError {
+            message: "expected name id in closure entry".into(),
+            line: 0,
+            col: 0,
+        })?;
+        let name = NameId(parse_u16(&name_int)?);
+        let payload_pair = ei.next().ok_or_else(|| InktParseError {
+            message: "expected payload value in closure entry".into(),
+            line: 0,
+            col: 0,
+        })?;
+        let payload = parse_value(payload_pair, None)?;
+        env.push(ClosureEnvEntry {
+            name,
+            is_ref,
+            payload,
+        });
+    }
+    Ok(Value::closure(target, env))
 }
 
 fn parse_list_value(pair: P<'_>) -> Result<Value, InktParseError> {
