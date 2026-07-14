@@ -427,3 +427,49 @@ pub(crate) fn diagnostics_query(
     );
     out
 }
+
+/// Whether the project has at least one Error-severity diagnostic after
+/// suppression filtering and [`brink_analyzer::effective_severity`]
+/// partitioning (issue #791 / FG-4a — PR #753's seam finding #3: "`lir_query`
+/// still reads `analysis_diagnostics_query` wholesale for its error gate;
+/// FG-4's per-container chunks will want a 'has any error' boolean
+/// projection so chunk memos don't ride the full diagnostic vector's Eq").
+///
+/// Computes the exact same `errors.is_empty()` verdict [`super::lir_query`]'s
+/// gate used to compute inline, from the exact same inputs
+/// ([`analysis_diagnostics_query`] plus every file's lowering diagnostics,
+/// suppressions, and the entry file's `disable_all` flag) via the same
+/// shared [`partition_diagnostics`] — so this is a pure re-expression of the
+/// gate as its own query, not a new rule. `bool`'s `PartialEq` is the
+/// cheapest possible cutoff: a diagnostics edit that changes *content* (a
+/// message, an added warning) without flipping whether any error exists
+/// backdates this memo, so any dependent that reads only this boolean (not
+/// the full `Vec<Diagnostic>`) stays fully validated across that edit — see
+/// `fg4a_dependency_edges.rs`.
+///
+/// [`partition_diagnostics`]: super::partition_diagnostics
+#[salsa::tracked]
+pub(crate) fn has_errors_query(db: &dyn salsa::Database, project: ProjectInput) -> bool {
+    let files = project.files(db);
+    let Some(entry) = project.entry(db) else {
+        return false;
+    };
+    let disable_all = files
+        .iter()
+        .find(|f| f.file_id(db) == entry)
+        .is_some_and(|f| super::suppressions_query(db, *f).disable_all);
+    let inputs: Vec<super::FileDiagnostics<'_>> = files
+        .iter()
+        .map(|f| super::FileDiagnostics {
+            file: f.file_id(db),
+            source: f.text(db),
+            suppressions: super::suppressions_query(db, *f),
+            lowering: &lowered_query(db, *f).diagnostics,
+        })
+        .collect();
+    let types = project.analysis_options(db).types;
+    let diagnostics = analysis_diagnostics_query(db, project);
+    let (errors, _warnings) =
+        super::partition_diagnostics(&inputs, diagnostics, disable_all, types);
+    !errors.is_empty()
+}

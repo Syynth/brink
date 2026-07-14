@@ -46,7 +46,7 @@ fn move_result(new_source: String, cross_file_edits: Vec<FileEdit>) -> Structura
 }
 
 /// Direction for reorder operations.
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum Direction {
     Up,
     Down,

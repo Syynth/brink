@@ -1251,6 +1251,160 @@ mod tests {
         );
     }
 
+    // ─── `EXTERNAL` call-site argument checking (issue #786) ────────────
+    //
+    // docs/t1d-spec.md §3's own acceptance criterion: "under `types =
+    // strict`, a binding declared to take `handle<AudioInstance>` rejects a
+    // `handle<Timer>` argument at compile time". T1d-2b (#774) closed this
+    // for two *locals* meeting through body-usage inference (comparison,
+    // reassignment); this closes the literal reading of the sentence — the
+    // binding itself, at its own call site — reusing the identical
+    // `known_sigs`/`observe`/`Ty::Conflicted`/`E066` machinery, no parallel
+    // checking surface (see `infer::collect_external_sigs`'s doc).
+
+    fn audio_and_timer_manifest(play_sound_param_kind: &str) -> brink_ir::HostManifest {
+        brink_ir::HostManifest {
+            types: vec![
+                brink_ir::SemanticTypeDef {
+                    name: "AudioInstance".to_string(),
+                    base: brink_ir::BaseType::Handle,
+                    constraint: None,
+                    values: None,
+                    widget: None,
+                },
+                brink_ir::SemanticTypeDef {
+                    name: "Timer".to_string(),
+                    base: brink_ir::BaseType::Handle,
+                    constraint: None,
+                    values: None,
+                    widget: None,
+                },
+            ],
+            externals: vec![brink_ir::ManifestExternal {
+                name: "play_sound".to_string(),
+                params: vec![brink_ir::ManifestParam {
+                    name: "inst".to_string(),
+                    ty: brink_ir::TypeRef(play_sound_param_kind.to_string()),
+                }],
+                returns: brink_ir::TypeRef::default(),
+                kind: brink_ir::ExternalKind::default(),
+                doc: None,
+                widgets: Vec::new(),
+                path: Vec::new(),
+            }],
+        }
+    }
+
+    /// The #767/#786 acceptance criterion, literally: a binding
+    /// (`EXTERNAL play_sound`) declared in the manifest to take
+    /// `handle<AudioInstance>` rejects a `handle<Timer>`-kinded argument at
+    /// compile time under `types = strict`.
+    #[test]
+    fn external_binding_rejects_cross_kind_handle_argument_under_strict() {
+        let src = "EXTERNAL play_sound(inst)\n\
+=== function get_timer(id: int): handle<Timer> ===\n~ return id\n\
+=== main ===\n~ temp t = get_timer(1)\n~ play_sound(t)\n-> DONE\n";
+        let (hir, index, res) = build(src);
+        let manifest = audio_and_timer_manifest("AudioInstance");
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res, Some(&manifest));
+        let diags = check(
+            &[(FileId(0), &hir)],
+            &index,
+            &inference,
+            &res,
+            Some(&manifest),
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E066 && d.message.contains("temp `t`")),
+            "a Timer-kinded argument to an AudioInstance-declared binding must \
+             Conflicted-escape temp `t`: {diags:?}"
+        );
+        assert!(
+            diags.iter().all(|d| d.code == DiagnosticCode::E066),
+            "no other diagnostic code expected: {diags:?}"
+        );
+    }
+
+    /// Negative counterpart: an argument of the binding's *own* declared
+    /// kind is clean — no escape, matching `unify(Handle(k), Handle(k)) ==
+    /// Handle(k)`.
+    #[test]
+    fn external_binding_accepts_same_kind_handle_argument_under_strict() {
+        let src = "EXTERNAL play_sound(inst)\n\
+=== function get_audio(id: int): handle<AudioInstance> ===\n~ return id\n\
+=== main ===\n~ temp t = get_audio(1)\n~ play_sound(t)\n-> DONE\n";
+        let (hir, index, res) = build(src);
+        let manifest = audio_and_timer_manifest("AudioInstance");
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res, Some(&manifest));
+        let diags = check(
+            &[(FileId(0), &hir)],
+            &index,
+            &inference,
+            &res,
+            Some(&manifest),
+        );
+        assert!(
+            diags.is_empty(),
+            "same-kind binding argument must not escape: {diags:?}"
+        );
+    }
+
+    /// Gradual mode is unaffected: `strict_diagnostics` never even calls
+    /// `infer_project`/`check` when `types = gradual` (this module's own
+    /// `check` is only ever reached under strict), so a cross-kind argument
+    /// to the same binding produces no compile-time diagnostic at all under
+    /// gradual — the existing runtime fault at the binding boundary (T1d
+    /// spec §3's own "under gradual, kind mismatch is a runtime fault"
+    /// posture) stays the only enforcement, byte-identical to before this
+    /// issue.
+    #[test]
+    fn external_binding_cross_kind_argument_is_not_checked_under_gradual() {
+        let src = "EXTERNAL play_sound(inst)\n\
+=== function get_timer(id: int): handle<Timer> ===\n~ return id\n\
+=== main ===\n~ temp t = get_timer(1)\n~ play_sound(t)\n-> DONE\n";
+        let (hir, index, res) = build(src);
+        let manifest = audio_and_timer_manifest("AudioInstance");
+        let opts = crate::AnalysisOptions {
+            host_manifest: Some(manifest),
+            dialect: crate::Dialect::Brink,
+            types: TypePolicy::Gradual,
+            ..Default::default()
+        };
+        let diags = crate::strict_diagnostics(&[(FileId(0), &hir)], &index, &res, &opts, None);
+        assert!(
+            diags.is_empty(),
+            "gradual mode must never run the strict handle-kind check: {diags:?}"
+        );
+    }
+
+    /// An `EXTERNAL` with no matching registered manifest entry contributes
+    /// no checkable signature — the argument's own inferred kind
+    /// (`AudioInstance`, from the annotated return) stays clean, same as
+    /// today (this is the disclosed inline-doc-only gap
+    /// `infer::collect_external_sigs`'s doc names, not a regression).
+    #[test]
+    fn external_binding_with_unregistered_name_is_unchecked() {
+        let src = "EXTERNAL other_call(inst)\n\
+=== function get_timer(id: int): handle<Timer> ===\n~ return id\n\
+=== main ===\n~ temp t = get_timer(1)\n~ other_call(t)\n-> DONE\n";
+        let (hir, index, res) = build(src);
+        let manifest = audio_and_timer_manifest("AudioInstance");
+        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res, Some(&manifest));
+        let diags = check(
+            &[(FileId(0), &hir)],
+            &index,
+            &inference,
+            &res,
+            Some(&manifest),
+        );
+        assert!(
+            diags.is_empty(),
+            "an unregistered external's call sites stay unchecked: {diags:?}"
+        );
+    }
+
     #[test]
     fn unconstrained_empty_array_temp_escapes_as_unknown() {
         // spec §5's own worked example.

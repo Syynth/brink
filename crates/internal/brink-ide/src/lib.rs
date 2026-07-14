@@ -12,6 +12,8 @@ pub mod folding;
 pub mod formatting;
 pub mod hir_projection;
 pub mod hover;
+pub mod import_block;
+pub mod import_fix;
 pub mod include_block;
 mod inferred_types;
 pub mod inlay_hints;

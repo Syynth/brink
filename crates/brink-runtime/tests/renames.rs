@@ -132,6 +132,135 @@ fn={g}
     );
 }
 
+/// Declared-module global rename (issue #785, gap 1): a VAR's own bare name
+/// changes via `#@was(old_name)` while it lives in a **declared** module —
+/// the case PR #782 disclosed as unrehydrated ("`SaveState.globals` is
+/// name-keyed... that name carries no module qualifier"). Declared-module
+/// identity is `(module, name)`-hashed, so a saved global whose name no
+/// longer matches any current slot can't be reasoned about from the bare
+/// name string alone; `SaveState::global_ids` round-trips the save-time
+/// `DefinitionId` so the miss path can consult the alias table directly.
+/// `anchor` is declared first specifically so `#@was(score)` (directly
+/// above the renamed `points` declaration) sits *after* a real declaration
+/// in the file, not in the file's pure leading directive run — otherwise
+/// it would be mis-scanned as a file-level `#@was` (a module rename) rather
+/// than a definition-level one (modules-spec §5's `is_file_leading_line`
+/// placement rule).
+#[test]
+fn declared_module_var_rename_rebinds_by_saved_id() {
+    let v1_src = r"
+#@module(quest_5)
+VAR anchor = 0
+VAR score = 7
+
+-> reader
+
+=== reader ===
+{score}
+-> DONE
+";
+    let v1_data = compile(v1_src);
+    let v1 = link_story(&v1_data);
+    let save = v1.save_state();
+    assert_eq!(
+        save.globals.get("score"),
+        Some(&brink_format::Value::Int(7)),
+        "v1 should save score=7: {:?}",
+        save.globals
+    );
+
+    // V2: same declared module (`quest_5`, unchanged) — only the VAR's own
+    // name changed, `score` -> `points`, recorded with `#@was(score)`
+    // directly on the renamed declaration. `points`' own default (99) is
+    // deliberately different from the saved value (7) so the assertion
+    // below proves the *loaded* value won, not a coincidental default.
+    let v2_src = r"
+#@module(quest_5)
+VAR anchor = 0
+
+#@was(score)
+VAR points = 99
+
+-> reader
+
+=== reader ===
+{points}
+-> DONE
+";
+    let v2_data = compile(v2_src);
+    let mut v2 = link_story(&v2_data);
+
+    let report = v2.load_state(&save);
+    assert!(
+        report.is_clean(),
+        "declared-module VAR rename with #@was must rebind cleanly: {report:?}"
+    );
+
+    let output = run_to_terminal(&mut v2);
+    assert_eq!(
+        output.trim(),
+        "7",
+        "loaded value must rebind from the renamed declared-module global: {output:?}"
+    );
+}
+
+/// `Value::List` deep-rebind (issue #785, gap 2): a saved global holding a
+/// `LIST` value — active items *and* origins, both `DefinitionId`s — must
+/// rebind through a rename exactly like the `Array`/`Map`/`Record` cases
+/// `rebind_value` already covered; before this fix `Value::List` fell
+/// through to the catch-all `other => other.clone()` arm and its embedded
+/// ids stayed stale. Exercised via a **module** rename (renames every
+/// definition the module owns, including the `LIST`'s items and its own
+/// list-definition id, in one alias-table sweep — the same mechanism the
+/// flagship fn-token/divert-target/visit-count case above uses), so a
+/// clean `LoadReport` and a correctly-printed list value together prove the
+/// list's internal ids — not just its slot's top-level name — rebound.
+#[test]
+fn module_rename_deep_rebinds_list_value() {
+    let v1_src = r"
+#@module(quest_7)
+LIST loot = sword, shield, potion
+VAR held = (sword, potion)
+
+-> reader
+
+=== reader ===
+{held}
+-> DONE
+";
+    let v1_data = compile(v1_src);
+    let v1 = link_story(&v1_data);
+    let save = v1.save_state();
+
+    let v2_src = r"
+#@module(quest_8)
+#@was(quest_7)
+LIST loot = sword, shield, potion
+VAR held = ()
+
+-> reader
+
+=== reader ===
+{held}
+-> DONE
+";
+    let v2_data = compile(v2_src);
+    let mut v2 = link_story(&v2_data);
+
+    let report = v2.load_state(&save);
+    assert!(
+        report.is_clean(),
+        "module rename must deep-rebind a saved Value::List cleanly: {report:?}"
+    );
+
+    let output = run_to_terminal(&mut v2);
+    assert_eq!(
+        output.trim(),
+        "sword, potion",
+        "loaded LIST value's active items must rebind to the renamed module's list: {output:?}"
+    );
+}
+
 /// The plain knot-rename case (modules-spec §5, §8): renaming a bare knot —
 /// no module involved — is the pre-existing silent save-break `#@was`
 /// retrofits. A save from before the rename must still rebind after it.

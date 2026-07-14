@@ -1464,16 +1464,23 @@ impl LanguageServer for Backend {
             return Ok(Some(vec![]));
         };
 
-        let source = {
+        let (source, import_actions) = {
             let db = lock_db(&self.db);
             let Some(file_id) = db.file_id(&path) else {
                 return Ok(Some(vec![]));
             };
-            db.source(file_id).map(String::from)
-        };
-
-        let Some(source) = source else {
-            return Ok(Some(vec![]));
+            let Some(source) = db.source(file_id).map(String::from) else {
+                return Ok(Some(vec![]));
+            };
+            let idx = LineIndex::new(&source);
+            let offset: u32 = idx
+                .offset(params.range.start.line, params.range.start.character)
+                .into();
+            // Auto-import quick-fix (M-4): session-aware, so it reads the
+            // module-qualified db while the lock is held, then merges into the
+            // same code-action list as the source-only actions below.
+            let import_actions = brink_ide::import_fix::import_actions(&db, file_id, offset);
+            (source, import_actions)
         };
 
         let idx = LineIndex::new(&source);
@@ -1481,7 +1488,8 @@ impl LanguageServer for Backend {
             .offset(params.range.start.line, params.range.start.character)
             .into();
 
-        let domain_actions = brink_ide::code_actions::code_actions(&source, cursor_offset);
+        let mut domain_actions = brink_ide::code_actions::code_actions(&source, cursor_offset);
+        domain_actions.extend(import_actions);
 
         let uri = params.text_document.uri.as_str();
         let lsp_actions = domain_actions
@@ -1560,6 +1568,20 @@ impl LanguageServer for Backend {
                 brink_ide::code_actions::CodeActionData::FormatStitch {
                     knot: knot_name.to_owned(),
                     stitch: stitch_name.to_owned(),
+                }
+            }
+            Some("add_import") => {
+                let module = data
+                    .get("module")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                let name = data
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                brink_ide::code_actions::CodeActionData::AddImport {
+                    module: module.to_owned(),
+                    name: name.to_owned(),
                 }
             }
             _ => return Ok(action),
@@ -2285,6 +2307,11 @@ fn code_action_data_to_json(
         brink_ide::code_actions::CodeActionData::DemoteKnot { knot, dest_knot } => {
             serde_json::json!({
                 "kind": "demote_knot", "uri": uri, "knot": knot, "dest_knot": dest_knot,
+            })
+        }
+        brink_ide::code_actions::CodeActionData::AddImport { module, name } => {
+            serde_json::json!({
+                "kind": "add_import", "uri": uri, "module": module, "name": name,
             })
         }
     }

@@ -20,6 +20,11 @@
 //!   types flow backward into a callee's params) is never done; only a
 //!   callee's own already-computed signature flows forward into how the
 //!   caller's argument expressions are typed.
+//! - An **`EXTERNAL` binding** (issue #786) reads its own entry in
+//!   `known_sigs` too, seeded once up front by [`collect_external_sigs`]
+//!   from the registered `HostManifest` rather than solved by the fixpoint
+//!   (an external has no body to infer) — a call to it types its arguments
+//!   exactly like a callable's, through the same `known_sigs` lookup.
 //!
 //! ## SCC fixpoint
 //!
@@ -52,8 +57,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use brink_format::DefinitionId;
 use brink_ir::{
-    Block, ContainerPtr, FileId, HirFile, HostManifest, Param, ResolutionMap, SymbolIndex,
-    SymbolKind, TypeExpr,
+    BaseType, Block, ContainerPtr, FileId, HirFile, HostManifest, Param, ResolutionMap,
+    SymbolIndex, SymbolKind, TypeExpr, TypeRef,
 };
 use rowan::TextRange;
 
@@ -245,6 +250,102 @@ fn collect_globals(
         }
     }
     globals
+}
+
+/// Declaration-derived `EXTERNAL` signatures (issue #786, docs/t1d-spec.md
+/// §3: "a binding declared to take `handle<AudioInstance>` rejects a
+/// `handle<Timer>` argument at compile time" under `types = strict`).
+///
+/// `EXTERNAL name(params)` has no ink-side type-annotation grammar (unlike a
+/// knot/stitch's `(x: T)`/`): T ===`), so the only source of a binding's
+/// *declared* parameter/return types is the registered [`HostManifest`]'s
+/// own [`brink_ir::ManifestExternal`] entry, matched by name — the same
+/// "binding declares its own signature" source docs/t1d-spec.md §3 means by
+/// "a binding declared to take `handle<K>`". This is deliberately narrower
+/// than [`crate::external_check::analyze_externals`]'s full merge (which
+/// also honors an inline `///` `@param` doc-comment override): the checker
+/// substrate here needs a `Ty`, and only a manifest-registered
+/// [`SemanticTypeDef`](brink_ir::SemanticTypeDef) can name a *handle kind*
+/// (`types` is exclusively manifest-sourced — `external_check::resolve_type`
+/// looks up the same `manifest.types` table regardless of whether the
+/// containing param's own name came from an inline doc or a registered
+/// entry). An EXTERNAL with no matching registered entry at all contributes
+/// no signature here — its call sites stay exactly as unchecked as before
+/// this issue (the literal-only `E041`/`E042` checks in `external_check.rs`
+/// are unaffected either way, and remain the only static coverage for a
+/// purely-inline-documented external).
+///
+/// No HIR read: entirely index + manifest derived (mirrors
+/// [`collect_globals`]'s shape, one step simpler — externals carry no
+/// ink-side annotation to resolve against a per-file HIR at all), so this
+/// has no per-file dependency edge to narrow.
+///
+/// A param/return whose registered [`TypeRef`] doesn't resolve to a base
+/// keyword or a declared handle kind (unregistered semantic-type
+/// specialization, e.g. a non-handle nominal like `switch_id`, or no
+/// manifest at all) types `Ty::Unknown` — the same conservative fallback
+/// every other unresolved slot in this module gets. `Ty::Unknown` params
+/// are inert at the call-checking site (`BodyCtx::observe` is a documented
+/// no-op against `Ty::Unknown`), so this never fabricates a false mismatch.
+fn collect_external_sigs(
+    index: &SymbolIndex,
+    manifest: Option<&HostManifest>,
+) -> BTreeMap<DefinitionId, InferredSig> {
+    let mut sigs = BTreeMap::new();
+    let Some(manifest) = manifest else {
+        return sigs;
+    };
+    let handle_names = crate::annotations::declared_handle_kinds(Some(manifest));
+    let registered: BTreeMap<&str, &brink_ir::ManifestExternal> = manifest
+        .externals
+        .iter()
+        .map(|e| (e.name.as_str(), e))
+        .collect();
+    for (&id, info) in &index.symbols {
+        if info.kind != SymbolKind::External {
+            continue;
+        }
+        let Some(&reg) = registered.get(info.name.as_str()) else {
+            continue;
+        };
+        let params = reg
+            .params
+            .iter()
+            .map(|p| type_ref_to_ty(&p.ty, &handle_names))
+            .collect();
+        let return_ty = type_ref_to_ty(&reg.returns, &handle_names);
+        sigs.insert(id, InferredSig { params, return_ty });
+    }
+    sigs
+}
+
+/// Resolve a manifest [`TypeRef`] to a checker [`Ty`] — the handle-kind-only
+/// slice of `external_check::resolve_type`'s domain (see
+/// [`collect_external_sigs`]'s doc for why this doesn't need the full
+/// [`SemanticTypeDef`](brink_ir::SemanticTypeDef) resolution, closed-domain
+/// constraints included). A base scalar keyword (`string`/`int`/`float`/
+/// `bool`) resolves directly; `void` has no `Ty` (return-only, same as an
+/// annotation's `void`, handled separately by every caller that cares); any
+/// other name resolves to `Ty::Handle` iff it is a declared handle kind,
+/// else `Ty::Unknown` (unresolved — never a hard failure).
+fn type_ref_to_ty(t: &TypeRef, handle_names: &BTreeSet<String>) -> Ty {
+    let name = t.0.trim();
+    if name.is_empty() {
+        return Ty::Unknown;
+    }
+    match BaseType::from_keyword(name) {
+        Some(BaseType::String) => Ty::String,
+        Some(BaseType::Int) => Ty::Int,
+        Some(BaseType::Float) => Ty::Float,
+        Some(BaseType::Bool) => Ty::Bool,
+        Some(BaseType::Void | BaseType::Handle) | None => {
+            if handle_names.contains(name) {
+                Ty::Handle(name.to_string())
+            } else {
+                Ty::Unknown
+            }
+        }
+    }
 }
 
 /// Every inferable (knot/stitch) def in the project, resolved back to its
@@ -444,15 +545,26 @@ fn solve_one_batch(
 
 /// Pass 2: solve every SCC batch in dependency order, mutually-recursive
 /// batches by fixpoint (spec §2's SCC rule — see the module doc).
+///
+/// `external_sigs` (issue #786): every `EXTERNAL`'s declaration-derived
+/// signature ([`collect_external_sigs`]), seeded into `known_sigs` before any
+/// batch solves — a call to an external now resolves through the exact same
+/// `known_sigs` lookup + [`body::BodyCtx::observe`] unify path an ordinary
+/// knot/stitch call already uses, so a `handle<K>`-mismatched argument folds
+/// its local to `Ty::Conflicted` and reports through the pre-existing `E066`
+/// classification, no parallel checking surface. Externals are never SCC
+/// members (never in any `batch`), so this seed is never touched again by
+/// the per-batch fixpoint loop below.
 fn solve_batches(
     batches: &[BTreeSet<DefinitionId>],
     by_id: &BTreeMap<DefinitionId, &Def<'_>>,
     ctx: &ProjectCtx<'_>,
+    external_sigs: &BTreeMap<DefinitionId, InferredSig>,
 ) -> (
     BTreeMap<DefinitionId, InferredSig>,
     BTreeMap<DefinitionId, BodyTypes>,
 ) {
-    let mut known_sigs: BTreeMap<DefinitionId, InferredSig> = BTreeMap::new();
+    let mut known_sigs: BTreeMap<DefinitionId, InferredSig> = external_sigs.clone();
     let mut bodies: BTreeMap<DefinitionId, BodyTypes> = BTreeMap::new();
 
     for batch in batches {
@@ -472,7 +584,10 @@ fn solve_batches(
 /// manifest, threaded through to `signature()`/annotation resolution so
 /// `handle<K>` param/return/temp annotations resolve to `Ty::Handle(K)`
 /// during body inference — `None` degrades to an empty handle-kind set,
-/// same posture as every other manifest-driven check.
+/// same posture as every other manifest-driven check. Also threaded to
+/// [`collect_external_sigs`] (issue #786) so a call to a manifest-registered
+/// `EXTERNAL` checks its arguments against the binding's declared param
+/// types the same way a knot/stitch call already does.
 #[must_use]
 pub fn infer_project(
     files: &[(FileId, &HirFile)],
@@ -487,10 +602,11 @@ pub fn infer_project(
     let by_id: BTreeMap<DefinitionId, &Def<'_>> = defs.iter().map(|d| (d.id, d)).collect();
 
     let ctx = ProjectCtx::new(index, &globals, &by_file, &inferable, manifest);
+    let external_sigs = collect_external_sigs(index, manifest);
 
     let graph = build_call_graph(&defs, &ctx);
     let batches = topo_order(&graph);
-    let (signatures, bodies) = solve_batches(&batches, &by_id, &ctx);
+    let (signatures, bodies) = solve_batches(&batches, &by_id, &ctx, &external_sigs);
 
     InferenceResult { signatures, bodies }
 }
@@ -687,6 +803,17 @@ pub fn referenced_globals(
 /// `solve_scc_query` reads it off `project.analysis_options(db)`, the same
 /// coarse project-wide dependency shape `per_file_diagnostics_query`
 /// already reads `host_manifest` at.
+///
+/// **`EXTERNAL` call-site checking (issue #786).** `known_sigs` is also
+/// seeded (idempotently, every call — cheap index+manifest scan, no HIR)
+/// with [`collect_external_sigs`]'s declaration-derived signatures before
+/// this batch solves, so a call to a manifest-registered `EXTERNAL` types
+/// its arguments against the binding's declared params through the exact
+/// same [`body::BodyCtx::observe`] path a knot/stitch call already uses —
+/// same #627 `Ty::Conflicted` lattice, same `E066` report, no parallel
+/// checking surface. `index`/`manifest` are both already read by this
+/// function for every other reason above, so this adds no new salsa
+/// dependency edge on `brink-db`'s `solve_scc_query` side.
 #[must_use]
 #[expect(
     clippy::too_many_arguments,
@@ -709,6 +836,7 @@ pub fn solve_scc(
     BTreeMap<DefinitionId, InferredSig>,
     BTreeMap<DefinitionId, BodyTypes>,
 ) {
+    known_sigs.extend(collect_external_sigs(index, manifest));
     let by_file = index_resolutions_by_file(resolutions);
     let by_id: BTreeMap<DefinitionId, &Def<'_>> = defs.iter().map(|d| (d.id, d)).collect();
     let ctx = ProjectCtx::new(index, globals, &by_file, inferable, manifest);
@@ -842,6 +970,143 @@ mod tests {
             .expect("main");
         let main_body = result.bodies.get(&main_id).expect("main body");
         assert_eq!(main_body.locals.get("v"), Some(&Ty::Float));
+    }
+
+    // ─── `EXTERNAL` call-site checking (issue #786) ─────────────────────
+
+    fn audio_manifest_with_external(param_kind: &str) -> brink_ir::HostManifest {
+        brink_ir::HostManifest {
+            types: vec![
+                brink_ir::SemanticTypeDef {
+                    name: "AudioInstance".to_string(),
+                    base: brink_ir::BaseType::Handle,
+                    constraint: None,
+                    values: None,
+                    widget: None,
+                },
+                brink_ir::SemanticTypeDef {
+                    name: "Timer".to_string(),
+                    base: brink_ir::BaseType::Handle,
+                    constraint: None,
+                    values: None,
+                    widget: None,
+                },
+            ],
+            externals: vec![brink_ir::ManifestExternal {
+                name: "play_sound".to_string(),
+                params: vec![brink_ir::ManifestParam {
+                    name: "inst".to_string(),
+                    ty: brink_ir::TypeRef(param_kind.to_string()),
+                }],
+                returns: brink_ir::TypeRef::default(),
+                kind: brink_ir::ExternalKind::default(),
+                doc: None,
+                widgets: Vec::new(),
+                path: Vec::new(),
+            }],
+        }
+    }
+
+    /// The #786 mechanism, isolated: a manifest-registered `EXTERNAL`'s
+    /// declared `handle<K>` param type propagates into `known_sigs` exactly
+    /// like a knot/stitch callee's declared param type does
+    /// ([`call_site_propagates_callee_param_type_to_caller_local`]'s own
+    /// pattern) — a caller's local passed as the argument picks up the
+    /// binding's declared kind.
+    #[test]
+    fn external_call_propagates_declared_handle_kind_to_caller_local() {
+        let (hir, index, res) = build(
+            "EXTERNAL play_sound(inst)\n=== main ===\n~ temp s = get_sound(1)\n\
+             ~ play_sound(s)\n-> DONE\n=== function get_sound(id): handle<AudioInstance> ===\n~ return id\n",
+        );
+        let manifest = audio_manifest_with_external("AudioInstance");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, Some(&manifest));
+        let main_id = index
+            .by_name
+            .get("main")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("main");
+        let main_body = result.bodies.get(&main_id).expect("main body");
+        assert_eq!(
+            main_body.locals.get("s"),
+            Some(&Ty::Handle("AudioInstance".to_string())),
+            "s picks up its own declared return kind cleanly: {main_body:?}"
+        );
+    }
+
+    /// Positive case: a local declared with one handle kind, passed as the
+    /// argument to a binding declared for a *different* kind, folds to
+    /// `Ty::Conflicted` at the call site through `observe`/`unify` — the
+    /// same #627 lattice a mismatched knot/stitch call argument already
+    /// used, no parallel checking surface (`strict.rs`'s
+    /// `external_call_cross_kind_argument_is_conflicted_under_strict` pins
+    /// the resulting `E066` diagnostic end to end).
+    #[test]
+    fn external_call_with_cross_kind_argument_conflicts_the_caller_local() {
+        let (hir, index, res) = build(
+            "EXTERNAL play_sound(inst)\n=== main ===\n~ temp t = get_timer(1)\n\
+             ~ play_sound(t)\n-> DONE\n=== function get_timer(id): handle<Timer> ===\n~ return id\n",
+        );
+        let manifest = audio_manifest_with_external("AudioInstance");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, Some(&manifest));
+        let main_id = index
+            .by_name
+            .get("main")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("main");
+        let main_body = result.bodies.get(&main_id).expect("main body");
+        assert_eq!(
+            main_body.locals.get("t"),
+            Some(&Ty::Conflicted),
+            "t is Timer-kinded but play_sound declares AudioInstance: {main_body:?}"
+        );
+    }
+
+    /// No manifest registered at all: an `EXTERNAL` call contributes no
+    /// signature (`collect_external_sigs` degrades to empty, same posture as
+    /// every other manifest-driven check) — the call types `Ty::Unknown`,
+    /// exactly today's byte-identical behavior. Pins the "gradual mode is
+    /// unaffected" half of the #786 acceptance criterion at the inference
+    /// level (strict mode itself never even runs without `types = strict`).
+    #[test]
+    fn external_call_with_no_manifest_stays_unknown() {
+        let (hir, index, res) = build(
+            "EXTERNAL play_sound(inst)\n=== main ===\n~ temp t = 1\n~ play_sound(t)\n-> DONE\n",
+        );
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None);
+        let main_id = index
+            .by_name
+            .get("main")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("main");
+        let main_body = result.bodies.get(&main_id).expect("main body");
+        // `t` is pinned Int by its own `= 1` initializer, unaffected by the
+        // unchecked external call.
+        assert_eq!(main_body.locals.get("t"), Some(&Ty::Int));
+    }
+
+    /// An `EXTERNAL` with no matching registered manifest entry (inline-doc-
+    /// only, or simply unregistered) contributes no signature either — same
+    /// conservative "absent data reads as no signature" contract as every
+    /// other lookup miss in this module.
+    #[test]
+    fn external_call_with_unregistered_name_stays_unknown() {
+        let (hir, index, res) = build(
+            "EXTERNAL other_call(inst)\n=== main ===\n~ temp t = 1\n~ other_call(t)\n-> DONE\n",
+        );
+        let manifest = audio_manifest_with_external("AudioInstance");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, Some(&manifest));
+        let main_id = index
+            .by_name
+            .get("main")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("main");
+        let main_body = result.bodies.get(&main_id).expect("main body");
+        assert_eq!(main_body.locals.get("t"), Some(&Ty::Int));
     }
 
     #[test]

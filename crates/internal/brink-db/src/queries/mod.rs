@@ -75,8 +75,8 @@ mod analysis;
 pub use analysis::ResolvedProject;
 pub(crate) use analysis::{
     analysis_diagnostics_query, analysis_query, call_site_diagnostics_query, call_site_metas_query,
-    contributor_diagnostics_query, diagnostics_query, external_meta_query, inline_docs_query,
-    per_file_diagnostics_query, resolutions_index_query, value_meta_query,
+    contributor_diagnostics_query, diagnostics_query, external_meta_query, has_errors_query,
+    inline_docs_query, per_file_diagnostics_query, resolutions_index_query, value_meta_query,
     whole_project_diagnostics_query,
 };
 
@@ -152,6 +152,11 @@ impl Default for BrinkDatabase {
                 .ingredient::<analysis_diagnostics_query>()
                 .ingredient::<analysis_query>()
                 .ingredient::<diagnostics_query>()
+                // FG-4a (issue #791): the `has_errors` boolean projection
+                // (PR #753's seam finding #3) and the LIR-lowering split it
+                // gates — see `lir_query`'s doc comment.
+                .ingredient::<has_errors_query>()
+                .ingredient::<lir_lowering_query>()
                 // Layer 2/3: type inference (TM-1, advisory-only).
                 // Per-def/per-SCC decomposition (FG-2, issue #631):
                 // call_edges(def) -> call_graph() -> scc_membership() ->
@@ -923,49 +928,50 @@ impl PartialEq for LirProduct {
     }
 }
 
-/// Whole-project LIR lowering (slice B: one project query; slice C splits it
-/// per container). `no_eq`: `lir::Program` has no `PartialEq`, so this memo
-/// never backdates — [`story_data_query`] backdates on `StoryData` instead.
-#[salsa::tracked(returns(ref), no_eq)]
-pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirProduct {
-    let files = project.files(db);
-    let Some(entry) = project.entry(db) else {
-        return LirProduct::default();
-    };
+/// The LIR-lowering half of [`lir_query`] split out on its own (issue #791 /
+/// FG-4a — PR #753's seam finding #3), gated on [`has_errors_query`]'s
+/// narrow boolean instead of the full [`analysis_diagnostics_query`] vector.
+/// Reads only [`resolutions_index_query`], every file's [`lowered_query`]
+/// HIR, and [`include_graph_query`] — never the raw analysis diagnostics —
+/// so a diagnostics edit that changes *content* without flipping
+/// [`has_errors_query`]'s verdict leaves this memo (and its `Arc<Program>`
+/// pointer) fully validated, not re-executed (`fg4a_dependency_edges.rs`).
+/// `no_eq`: `lir::Program` has no `PartialEq`, same reasoning as
+/// [`LirProduct`]'s own impl below.
+#[derive(Clone, Default)]
+pub(crate) struct LirLowering {
+    /// The lowered LIR program, if lowering succeeded with no Error-severity
+    /// lowering diagnostic.
+    pub program: Option<Arc<brink_ir::lir::Program>>,
+    /// Error-severity diagnostics raised *during* LIR lowering (never from
+    /// `analysis_diagnostics_query` — those are [`lir_query`]'s own concern).
+    pub errors: Vec<Diagnostic>,
+    /// Warning-severity diagnostics raised during LIR lowering.
+    pub warnings: Vec<Diagnostic>,
+}
 
-    // FG-3 (issue #632): read the narrow resolutions/index projection and
-    // the assembled diagnostics directly, not through the bundled
-    // `analysis_query` — a diagnostics-only edit that leaves
-    // `resolutions_index_query`'s output unchanged still needs this query to
-    // re-run (it gates on diagnostics too), but the resolutions/index half
-    // of the work below no longer rides the diagnostics-laden `AnalysisResult`.
-    let resolved = resolutions_index_query(db, project);
-    let diagnostics = analysis_diagnostics_query(db, project);
-
-    // Diagnostic gate — the same report `compile_lir` builds.
-    let disable_all = files
-        .iter()
-        .find(|f| f.file_id(db) == entry)
-        .is_some_and(|f| suppressions_query(db, *f).disable_all);
-    let inputs: Vec<FileDiagnostics<'_>> = files
-        .iter()
-        .map(|f| FileDiagnostics {
-            file: f.file_id(db),
-            source: f.text(db),
-            suppressions: suppressions_query(db, *f),
-            lowering: &lowered_query(db, *f).diagnostics,
-        })
-        .collect();
-    let types = project.analysis_options(db).types;
-    let (errors, warnings) = partition_diagnostics(&inputs, diagnostics, disable_all, types);
-
-    if !errors.is_empty() {
-        return LirProduct {
-            program: None,
-            errors,
-            warnings,
+impl PartialEq for LirLowering {
+    fn eq(&self, other: &Self) -> bool {
+        let program_eq = match (&self.program, &other.program) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
         };
+        program_eq && self.errors == other.errors && self.warnings == other.warnings
     }
+}
+
+#[salsa::tracked(no_eq)]
+pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput) -> LirLowering {
+    let Some(entry) = project.entry(db) else {
+        return LirLowering::default();
+    };
+    if has_errors_query(db, project) {
+        return LirLowering::default();
+    }
+
+    let files = project.files(db);
+    let resolved = resolutions_index_query(db, project);
 
     // LIR inputs in topological include order (paste-before semantics),
     // mirroring `Driver::lir_inputs`.
@@ -987,6 +993,7 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
     // `TypePolicy` to `brink-ir`'s local mirror (`brink-ir` sits below
     // `brink-analyzer` in the crate graph and can't name `TypePolicy`
     // directly).
+    let types = project.analysis_options(db).types;
     let type_mode = match types {
         TypePolicy::Strict => brink_ir::lir::TypeMode::Strict,
         TypePolicy::Gradual => brink_ir::lir::TypeMode::Gradual,
@@ -1007,19 +1014,15 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
     // first argument, or a mutator used in expression position) blocks
     // compilation exactly like an analysis-phase error would, not just a
     // cosmetic warning on an otherwise-successful compile.
-    let (mut lir_errors, mut lir_warnings): (Vec<Diagnostic>, Vec<Diagnostic>) = lir_diagnostics
+    let (lir_errors, lir_warnings): (Vec<Diagnostic>, Vec<Diagnostic>) = lir_diagnostics
         .into_iter()
         .partition(|d| brink_analyzer::effective_severity(d.code, types) == Severity::Error);
 
     if program.is_some() && lir_errors.is_empty() {
-        let mut errors = errors;
-        errors.append(&mut lir_errors);
-        let mut warnings = warnings;
-        warnings.append(&mut lir_warnings);
-        LirProduct {
+        LirLowering {
             program: program.map(Arc::new),
-            errors,
-            warnings,
+            errors: lir_errors,
+            warnings: lir_warnings,
         }
     } else {
         // Either `lower_to_program` refused to lower (its residual-extension
@@ -1030,15 +1033,75 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
         // (T1b-3's rvalue-mutator/mutator-in-expression-position checks).
         // Either way: surface it as a compile error, never return a corrupt,
         // partial, or diagnostically-invalid program.
-        let mut errors = errors;
-        errors.append(&mut lir_errors);
-        let mut warnings = warnings;
-        warnings.append(&mut lir_warnings);
-        LirProduct {
+        LirLowering {
+            program: None,
+            errors: lir_errors,
+            warnings: lir_warnings,
+        }
+    }
+}
+
+/// Whole-project LIR lowering (slice B: one project query; slice C splits it
+/// per container). `no_eq`: `lir::Program` has no `PartialEq`, so this memo
+/// never backdates — [`story_data_query`] backdates on `StoryData` instead.
+#[salsa::tracked(returns(ref), no_eq)]
+pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirProduct {
+    let files = project.files(db);
+    let Some(entry) = project.entry(db) else {
+        return LirProduct::default();
+    };
+
+    // FG-3 (issue #632): read the assembled diagnostics directly, not
+    // through the bundled `analysis_query` — a resolutions-only change (no
+    // diagnostic anywhere differs) leaves this half's dependency fully
+    // validated.
+    let diagnostics = analysis_diagnostics_query(db, project);
+
+    // Diagnostic gate — the same report `compile_lir` builds.
+    let disable_all = files
+        .iter()
+        .find(|f| f.file_id(db) == entry)
+        .is_some_and(|f| suppressions_query(db, *f).disable_all);
+    let inputs: Vec<FileDiagnostics<'_>> = files
+        .iter()
+        .map(|f| FileDiagnostics {
+            file: f.file_id(db),
+            source: f.text(db),
+            suppressions: suppressions_query(db, *f),
+            lowering: &lowered_query(db, *f).diagnostics,
+        })
+        .collect();
+    let types = project.analysis_options(db).types;
+    let (mut errors, mut warnings) =
+        partition_diagnostics(&inputs, diagnostics, disable_all, types);
+
+    // FG-4a (issue #791, PR #753 seam finding #3): the gate deciding
+    // whether to attempt (potentially expensive) LIR lowering reads the
+    // narrow `has_errors_query` boolean projection instead of
+    // `errors.is_empty()` directly. `errors`/`warnings` above are still
+    // needed for *this* query's own return value — diagnostic content, not
+    // just presence — but the lowering itself is fully delegated to
+    // `lir_lowering_query`, which reads `has_errors_query` only (never the
+    // raw diagnostics vector), so its `Arc<Program>` survives a diagnostics
+    // edit that doesn't flip the error verdict. `has_errors_query` computes
+    // this exact `errors.is_empty()` value from the same inputs (see its
+    // doc comment), so this is behavior-neutral by construction.
+    if has_errors_query(db, project) {
+        return LirProduct {
             program: None,
             errors,
             warnings,
-        }
+        };
+    }
+
+    let lowering = lir_lowering_query(db, project);
+    errors.extend(lowering.errors);
+    warnings.extend(lowering.warnings);
+
+    LirProduct {
+        program: lowering.program,
+        errors,
+        warnings,
     }
 }
 
