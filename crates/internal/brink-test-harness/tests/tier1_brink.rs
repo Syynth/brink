@@ -313,6 +313,21 @@ fn rmw_mutator_shared_nested_lvalue() {
     assert_case("rmw-mutator-shared-nested-lvalue");
 }
 
+// ── #680: ref-argument call co-occurring with a temp decl in one block ───
+
+#[test]
+fn ref_call_with_block_temp() {
+    // The issue's literal repro shape end-to-end: a `~ { … }` block body
+    // containing both a `temp` declaration and a `ref`-argument call
+    // targeting a global `VAR`, with the temp used only within its own
+    // block. Must resolve `gold`'s `ref` argument to the real global slot
+    // and run to completion — see the RCA + regression tests in
+    // `brink-ir`'s `lir_lowering.rs` for the root cause (a block-scoped
+    // temp read *after* its block closes, unrelated to `ref` at all) and
+    // the diagnostic (E082) that now catches that case instead.
+    assert_case("ref-call-with-block-temp");
+}
+
 /// Every `tests/tier1-brink/` case directory is exercised by a `#[test]`
 /// above — a directory with no matching test would silently never run.
 #[test]
@@ -350,6 +365,7 @@ fn every_case_directory_has_a_test() {
         "annotations-mixed",
         "fn-value-call-forms",
         "fn-value-ref-mutation",
+        "ref-call-with-block-temp",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink")
@@ -1167,6 +1183,59 @@ fn well_formed_fn_creation_compiles_clean() {
     let source = "=== function heal(ref hp, amount) ===\n~ hp = hp + amount\n~ return hp\n\n\
                   VAR player_hp = 10\n=== main ===\n~ temp f = #fn(heal, player_hp)\nDone.\n-> END\n";
     compile_brink(source).expect("a well-formed #fn creation compiles clean in T1c-2");
+}
+
+// ── #680 RCA: block-scoped temp referenced after its block closes (E082) ──
+//
+// #680 was filed as "a `ref`-argument call co-occurring with a `temp` decl
+// in the same `~ { }` block resolves to the wrong global slot
+// (UnresolvedGlobal)". RCA (see `brink-ir`'s `lir_lowering.rs` for the
+// lowering-layer regression tests) found the `ref`-argument call is not the
+// trigger at all: the actual defect is reading a T1b block-scoped `temp`
+// from *outside* its own `~ { … }` block, which used to silently fall
+// through to the compiler's inklecate-compat "forward-referenced classic
+// temp" path and emit a phantom global id — a runtime-only
+// `UnresolvedGlobal` fault with no compile diagnostic. That's now a real,
+// non-suppressible compile error (E082) instead.
+
+#[test]
+fn block_scoped_temp_read_after_its_block_closes_is_e082() {
+    let source = "VAR gold = 100\n~ {\n    temp name = \"hero\"\n}\n{name}\n-> END\n";
+    let err =
+        compile_brink(source).expect_err("reading a block temp after its block closed must fail");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E082),
+        "expected E082, got {diags:?}"
+    );
+}
+
+#[test]
+fn block_scoped_temp_passed_by_ref_after_its_block_closes_is_e082() {
+    let source = "VAR gold = 100\n~ {\n    temp name = \"hero\"\n}\n~ heal(name)\nDone.\n-> END\n\n\
+                  === function heal(ref hp) ===\n~ return hp\n";
+    let err =
+        compile_brink(source).expect_err("passing an out-of-scope block temp by ref must fail");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E082),
+        "expected E082, got {diags:?}"
+    );
+}
+
+#[test]
+fn ref_call_co_occurring_with_block_temp_is_not_e082() {
+    // The issue's literal repro shape: a `ref`-argument call and a `temp`
+    // decl in the *same* block, temp never read after the block closes —
+    // this compiles clean, proving `ref` calls were never the trigger.
+    let source = "VAR gold = 100\n~ {\n    temp x = 1\n    heal(gold)\n}\nDone.\n-> END\n\n\
+                  === function heal(ref hp) ===\n~ return hp\n";
+    compile_brink(source)
+        .expect("ref-argument call co-occurring with a temp decl in one block compiles clean");
 }
 
 // ── T1c-2 (#700): function-value corpus wing (straight-line cases) ───────
