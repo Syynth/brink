@@ -14,8 +14,8 @@ use tracing::debug;
 use crate::queries::{
     BrinkDatabase, CompileProduct, DefKey, LirProduct, ProjectInput, ResolvedProject, SourceFile,
     analysis_query, call_site_diagnostics_query, call_site_metas_query, diagnostics_query,
-    include_graph_query, infer_body_query, inferred_signature_query, lir_query, lowered_query,
-    parse_query, per_file_diagnostics_query, resolutions_index_query, resolve_query,
+    has_errors_query, include_graph_query, infer_body_query, inferred_signature_query, lir_query,
+    lowered_query, parse_query, per_file_diagnostics_query, resolutions_index_query, resolve_query,
     signature_query, story_data_query, suppressions_query, symbol_index_query,
     type_diagnostics_query, type_inference_query, value_meta_query,
 };
@@ -433,6 +433,18 @@ impl ProjectDb {
     pub fn lir_product(&self) -> Option<&LirProduct> {
         self.project.entry(&self.salsa)?;
         Some(lir_query(&self.salsa, self.project))
+    }
+
+    /// Whether the project has at least one Error-severity diagnostic after
+    /// suppression filtering (issue #791 / FG-4a) — the narrow boolean
+    /// projection [`lir_product`](Self::lir_product)'s gate reads instead of
+    /// the full diagnostics vector. `false` (never `None`) when no entry
+    /// point is set, matching `partition_diagnostics`'s empty-`errors`
+    /// default in that case. Exposed for the dependency-edge tests; a
+    /// diagnostics-content edit that leaves this boolean unchanged proves
+    /// the cutoff seam backdated.
+    pub fn has_errors(&self) -> bool {
+        has_errors_query(&self.salsa, self.project)
     }
 
     /// Whole-project compile to [`brink_format::StoryData`] (layer 3,
