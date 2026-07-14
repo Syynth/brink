@@ -1,0 +1,18 @@
+[package]
+name = "brink-runtime-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+brink-format = { path = "../../internal/brink-format" }
+brink-runtime = { path = ".." }
+
+[[bin]]
+name = "vm_no_panic"
+path = "fuzz_targets/vm_no_panic.rs"
+doc = false
