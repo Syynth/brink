@@ -4,6 +4,21 @@ Brink's Rust crates are published to [crates.io] with [release-plz], and the
 `brink-cli` / `brink-lsp` binaries are shipped to GitHub Releases with
 [cargo-dist] (`dist`). This doc covers the one-time setup and the release flow.
 
+## npm packages: lockstep versioning
+
+The three published npm packages under `@brink-lang` (`web`, `editor`, `studio`)
+use **lockstep versioning** via changesets' `fixed` group:
+[`.changeset/config.json`](../.changeset/config.json) pins all three to a single
+version across every release. This mirrors the Rust side, where `release-plz`
+versions all crates in lockstep, and gives consumers a single version number for
+the entire `@brink-lang` namespace.
+
+On the next release after this setting lands, all three packages jump to the same
+version (the next minor bump from the current max: e.g., from `web` 0.11.0 →
+`0.12.0`). Every subsequent release bumps all three together; a package with no
+changes in that release still gets the version bump and an empty/passthrough
+changelog entry — that's the accepted cost of the lockstep guarantee.
+
 ## What gets published
 
 crates.io flattens dependencies — there is no "private dependency". Every
