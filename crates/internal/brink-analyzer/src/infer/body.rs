@@ -109,6 +109,22 @@ pub(super) struct BodyResult {
     /// Ruling 1) — also the per-def global *read set* future T2 effect rows
     /// need.
     pub referenced_globals: BTreeSet<DefinitionId>,
+    /// T2-1 (docs/effects-spec.md §2/§4, issue #860): the effect-atom
+    /// *write* set — VAR/CONST globals this body assigns to. The read set is
+    /// [`Self::referenced_globals`] (spec §4 names it exactly that); the
+    /// call-kind set is [`Self::external_calls`]; the direct-callee edges the
+    /// effect fixpoint follows are [`Self::calls`]. Harvested by the same walk
+    /// that drives type inference — zero extra passes.
+    pub effect_writes: BTreeSet<DefinitionId>,
+    /// T2-1: the effect-atom *call-kind* set — the `EXTERNAL` binding names
+    /// this body directly calls (spec §2's `call external-kind` atoms).
+    pub external_calls: BTreeSet<String>,
+    /// T2-1: the body performed a call *through a function value* (or another
+    /// construct whose callee effects inference cannot summarize), so its
+    /// effect row is pessimal (docs/effects-spec.md §3/§4 — the
+    /// conservative-total floor; reading a concrete row off a stored `Ty::Fn`
+    /// is the §8 precision refinement, not this slice).
+    pub effect_opaque: bool,
     /// T1c: statically-checkable call-through-value facts (see
     /// [`super::ValueCallFact`]) — recorded here because this walk is the
     /// only place argument expressions have types; reported by strict mode
@@ -150,6 +166,9 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         return_ty: Ty::Unknown,
         calls: BTreeSet::new(),
         referenced_globals: BTreeSet::new(),
+        effect_writes: BTreeSet::new(),
+        external_calls: BTreeSet::new(),
+        effect_opaque: false,
         annotated,
         value_calls: Vec::new(),
     };
@@ -190,6 +209,9 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         return_ty,
         calls: pass.calls,
         referenced_globals: pass.referenced_globals,
+        effect_writes: pass.effect_writes,
+        external_calls: pass.external_calls,
+        effect_opaque: pass.effect_opaque,
         value_calls: pass.value_calls,
     }
 }
@@ -200,6 +222,9 @@ struct InferPass<'a, 'b> {
     return_ty: Ty,
     calls: BTreeSet<DefinitionId>,
     referenced_globals: BTreeSet<DefinitionId>,
+    effect_writes: BTreeSet<DefinitionId>,
+    external_calls: BTreeSet<String>,
+    effect_opaque: bool,
     /// Resolvable annotation/ascription types by local name — params up
     /// front, temps added as their declarations are walked. Consulted only
     /// as a *fallback* at consumption sites where the body-derived type is
@@ -293,6 +318,33 @@ impl InferPass<'_, '_> {
     fn record_call_edge(&mut self, def: DefinitionId) {
         if self.ctx.inferable.contains(&def) {
             self.calls.insert(def);
+        } else if let Some(info) = self.ctx.index.symbols.get(&def)
+            && info.kind == SymbolKind::External
+        {
+            // T2-1 (docs/effects-spec.md §2): a direct call/divert to an
+            // `EXTERNAL` binding is a call-kind atom. Externals have no
+            // inferable body of their own, so they never enter `calls` (the
+            // fixpoint-edge set) — the binding *name* is the terminal kind the
+            // host acts on.
+            self.external_calls.insert(info.name.clone());
+        }
+    }
+
+    /// T2-1: record an effect *write* atom (docs/effects-spec.md §2) — a bare
+    /// assignment target (`~ x = …`) resolving to a VAR/CONST global. A
+    /// no-op for a temp/param target (flow-private, spec §2) or any
+    /// non-`Path` target. Over-reporting the same id as a read too (the
+    /// existing `~ x = x + 1` walk records it in `referenced_globals`) is
+    /// conservatively sound — the row never under-reports (spec §3).
+    fn record_write(&mut self, target: &Expr) {
+        let Expr::Path(p) = target else { return };
+        let Some(def) = self.resolve(p.range) else {
+            return;
+        };
+        if let Some(info) = self.ctx.index.symbols.get(&def)
+            && matches!(info.kind, SymbolKind::Variable | SymbolKind::Constant)
+        {
+            self.effect_writes.insert(def);
         }
     }
 
@@ -600,6 +652,16 @@ impl InferPass<'_, '_> {
         args: &[Expr],
         arg_tys: &[Ty],
     ) -> Ty {
+        // T2-1 (docs/effects-spec.md §3/§4): this is a call *through a function
+        // value* — `f(args)` or `call(f, args…)`, the one place a real
+        // callee's effects escape the static call graph. Rows ride `Ty::Fn`
+        // (spec §5, the heap answer) but this advisory slice doesn't yet read a
+        // concrete row back off the value's type (the §8 precision rung), so
+        // the sound floor is pessimal: an `Unknown`-typed callee slot has no
+        // row → the enclosing def touches everything. `bind` creates a value
+        // rather than calling one, so it routes through `check_bind_value`, not
+        // here.
+        self.effect_opaque = true;
         match callee_ty {
             Ty::Fn(params, ret) => {
                 if args.len() != params.len() {
@@ -899,6 +961,7 @@ impl InferPass<'_, '_> {
                 self.infer_expr(&a.target);
                 let ty = self.infer_expr(&a.value);
                 self.observe(&a.target, &ty);
+                self.record_write(&a.target);
             }
             Stmt::Return(r) => self.infer_return(r.value.as_ref(), &r.onwards_args),
             Stmt::ChoiceSet(cs) => self.infer_choice_set(cs),
@@ -998,6 +1061,7 @@ impl InferPass<'_, '_> {
                 self.infer_expr(&a.target);
                 let ty = self.infer_expr(&a.value);
                 self.observe(&a.target, &ty);
+                self.record_write(&a.target);
             }
             BlockStmt::Return(r) => self.infer_return(r.value.as_ref(), &r.onwards_args),
             BlockStmt::If(i) => self.infer_if(i),
