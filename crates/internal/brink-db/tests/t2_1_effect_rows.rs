@@ -88,6 +88,39 @@ fn effects_query_is_pessimal_for_a_call_through_a_function_value() {
 }
 
 #[test]
+fn effects_query_writes_through_a_ref_param_at_the_call_site() {
+    // Review-finding regression (issue #860's PR): `inc`'s own body atoms are
+    // empty (`~ x = x + 1` assigns a `Param`, never a `Variable`/`Constant`)
+    // — the write only becomes visible at `knot`'s own call site, where
+    // `val` is passed into `inc`'s `ref x` slot. Same fixture as
+    // tests/tier1/variables/variable-pointer-ref-from-knot/story.ink,
+    // exercised end-to-end through `ProjectDb::effects` this time.
+    let mut db = ProjectDb::new();
+    db.set_file(
+        "main.ink",
+        "VAR val = 5\n\
+         === knot ===\n~ inc(val)\n{val}\n->->\n\
+         === function inc(ref x) ===\n~ x = x + 1\n"
+            .to_owned(),
+    );
+    let knot = def_named(&db, "knot");
+    let inc = def_named(&db, "inc");
+    let val = def_named(&db, "val");
+
+    let knot_row = db.effects(knot).expect("knot has an inferable effect row");
+    assert!(
+        knot_row.writes.contains(&val),
+        "knot's call `inc(val)` writes through inc's `ref x` param"
+    );
+
+    let inc_row = db.effects(inc).expect("inc has an inferable effect row");
+    assert!(
+        !inc_row.writes.contains(&val),
+        "inc's own row never names `val` — only the caller's call site does"
+    );
+}
+
+#[test]
 fn effects_query_is_none_for_a_non_callable_def() {
     let mut db = ProjectDb::new();
     db.set_file("main.ink", "VAR gold = 10\n-> DONE\n".to_owned());

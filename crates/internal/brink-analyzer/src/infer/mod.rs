@@ -2228,4 +2228,39 @@ mod tests {
             "a pure arithmetic body reads/writes/calls nothing"
         );
     }
+
+    /// Review-finding regression (issue #860's PR): a direct call passing a
+    /// VAR/CONST global into a `ref` parameter slot writes through that
+    /// parameter (docs/effects-spec.md §5 "through parameters") — the callee
+    /// mutates the *caller's* cell. The exact fixture the reviewer supplied
+    /// (`tests/tier1/variables/variable-pointer-ref-from-knot/story.ink`):
+    /// `inc`'s own body atoms are empty (its assignment target `x` is a
+    /// `Param`, never a `Variable`/`Constant`), so ground truth only shows up
+    /// at `knot`'s own call site — the `conservative_total_no_under_report`
+    /// property test above can never catch this since it only checks
+    /// inter-row consistency, never this kind of ground-truth completeness.
+    #[test]
+    fn a_direct_call_writes_through_a_ref_param_at_the_call_site() {
+        let src = "VAR val = 5\n\
+                   === knot ===\n~ inc(val)\n{val}\n->->\n\
+                   === function inc(ref x) ===\n~ x = x + 1\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+
+        let knot = id_of(&index, "knot");
+        let inc = id_of(&index, "inc");
+        let val = id_of(&index, "val");
+
+        assert!(
+            rows[&knot].writes.contains(&val),
+            "knot's call `inc(val)` writes through inc's `ref x` param — the \
+             write atom must not be dropped"
+        );
+        assert!(
+            !rows[&inc].writes.contains(&val),
+            "inc's own body never names `val` — the write is only visible at \
+             the call site, not inc's own atoms"
+        );
+    }
 }

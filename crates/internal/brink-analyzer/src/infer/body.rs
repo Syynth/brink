@@ -216,6 +216,21 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
     }
 }
 
+/// Unwrap a ref-argument expression down to its root path (T1e,
+/// docs/t1e-spec.md §2), mirroring `brink_ir::lir::lower::expr`'s
+/// `decompose_projection` walk: an explicit `ref` sigil, a dotted
+/// field-access chain, and an index expression all peel away to the same
+/// root `Expr` a plain unmarked `ref` argument already is — the location
+/// whose cell is actually mutated.
+fn ref_arg_root(expr: &Expr) -> &Expr {
+    match expr {
+        Expr::RefArg(ra) => ref_arg_root(&ra.operand),
+        Expr::FieldAccess(fa) => ref_arg_root(&fa.base),
+        Expr::Index(idx) => ref_arg_root(&idx.base),
+        other => other,
+    }
+}
+
 struct InferPass<'a, 'b> {
     ctx: &'a BodyCtx<'b>,
     locals: BTreeMap<String, Ty>,
@@ -345,6 +360,34 @@ impl InferPass<'_, '_> {
             && matches!(info.kind, SymbolKind::Variable | SymbolKind::Constant)
         {
             self.effect_writes.insert(def);
+        }
+    }
+
+    /// T2-1 fix (review finding on issue #860's PR): a direct call/divert
+    /// passing an argument into a `ref` parameter slot writes through that
+    /// parameter (docs/effects-spec.md §5 "through parameters") — the
+    /// callee mutates the *caller's* cell, not a private copy. `record_write`
+    /// alone only sees the callee's own body (where the target is a `Param`,
+    /// never a `Variable`/`Constant`), so it can never discover this; the
+    /// write has to be recorded here, at the call site, against whichever
+    /// global the caller actually passed in. `def` is the resolved call
+    /// target (knot/stitch/`EXTERNAL`) whose declared `params` (from the
+    /// symbol index, not `known_sigs` — `InferredSig` carries no `is_ref`
+    /// bit) says which positions are `ref`; `args` are the call's own
+    /// argument expressions, matched positionally exactly like
+    /// `lir::lower::expr::lower_call_args` matches them for codegen. An
+    /// explicit `ref` sigil (T1e, docs/t1e-spec.md §2 — `ref npc.hp`, `ref
+    /// inventory[idx]`) is unwrapped down to its root path first: mutating a
+    /// projection still writes through the root global's own cell.
+    fn record_ref_param_writes(&mut self, def: DefinitionId, args: &[Expr]) {
+        let Some(info) = self.ctx.index.symbols.get(&def) else {
+            return;
+        };
+        for (i, arg) in args.iter().enumerate() {
+            if info.params.get(i).is_some_and(|p| p.is_ref) {
+                let root = ref_arg_root(arg);
+                self.record_write(root);
+            }
         }
     }
 
@@ -525,6 +568,7 @@ impl InferPass<'_, '_> {
                 return self.infer_value_call(path, def, args, &arg_tys);
             }
             self.record_call_edge(def);
+            self.record_ref_param_writes(def, args);
             return self.ctx.known_sigs.get(&def).map_or(Ty::Unknown, |sig| {
                 for (i, arg) in args.iter().enumerate() {
                     if let Some(param_ty) = sig.params.get(i) {
@@ -924,6 +968,7 @@ impl InferPass<'_, '_> {
             return;
         };
         self.record_call_edge(def);
+        self.record_ref_param_writes(def, &target.args);
         if let Some(sig) = self.ctx.known_sigs.get(&def) {
             for (i, arg) in target.args.iter().enumerate() {
                 if let Some(param_ty) = sig.params.get(i) {
