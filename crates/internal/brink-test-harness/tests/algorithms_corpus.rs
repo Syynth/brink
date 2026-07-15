@@ -1,4 +1,5 @@
-//! Algorithms corpus — sorting/searching lane (issue #822, epic #397/#822).
+//! Algorithms corpus — sorting/searching + graphs lanes (issue #822, epic
+//! #397/#822).
 //!
 //! Sibling of `tier1_brink.rs`'s flat `tests/tier1-brink/<name>/` corpus,
 //! scoped to `tests/tier1-brink/algorithms/<name>/`: classic algorithms
@@ -21,7 +22,7 @@
 
 use std::path::{Path, PathBuf};
 
-use brink_compiler::{AnalysisOptions, Dialect};
+use brink_compiler::{AnalysisOptions, Dialect, TypePolicy};
 use brink_runtime::{DotNetRng, Line, Story};
 
 fn corpus_dir() -> PathBuf {
@@ -34,13 +35,21 @@ fn corpus_dir() -> PathBuf {
         .join("algorithms")
 }
 
-/// Run `story.ink` (brink dialect) to completion and return the
-/// concatenated output text — mirrors `tier1_brink.rs::run_case` exactly
-/// (deterministic `DotNetRng`, choice-free straight-line programs only).
+/// Run `story.ink` (brink dialect, gradual types) to completion and
+/// return the concatenated output text — mirrors `tier1_brink.rs::run_case`
+/// exactly (deterministic `DotNetRng`, choice-free straight-line programs
+/// only).
 fn run_case(dir: &Path) -> String {
+    run_case_with_types(dir, TypePolicy::Gradual)
+}
+
+/// Same as [`run_case`], but lets a case opt into `types = strict` — used
+/// by `dijkstra-grid`, whose header documents the strict-mode experiment.
+fn run_case_with_types(dir: &Path, types: TypePolicy) -> String {
     let ink_path = dir.join("story.ink");
     let options = AnalysisOptions {
         dialect: Dialect::Brink,
+        types,
         ..AnalysisOptions::default()
     };
     let compile_msg = format!("compile {}", ink_path.display());
@@ -74,10 +83,15 @@ fn run_case(dir: &Path) -> String {
 }
 
 fn assert_case(name: &str) {
+    assert_case_with_types(name, TypePolicy::Gradual);
+}
+
+/// Same as [`assert_case`], but lets a case opt into `types = strict`.
+fn assert_case_with_types(name: &str, types: TypePolicy) {
     let dir = corpus_dir().join(name);
     let expected_msg = format!("read expected.txt for algorithms/{name}");
     let expected = std::fs::read_to_string(dir.join("expected.txt")).expect(&expected_msg);
-    let actual = run_case(&dir);
+    let actual = run_case_with_types(&dir, types);
     assert_eq!(
         actual, expected,
         "case algorithms/{name}: output mismatch\n--- expected ---\n{expected}\n--- actual ---\n{actual}"
@@ -124,6 +138,65 @@ fn fisher_yates_shuffle_is_seeded_and_deterministic() {
     assert_case_is_deterministic_across_runs("fisher-yates-shuffle");
 }
 
+#[test]
+fn bfs_grid_path_finds_shortest_route() {
+    assert_case("bfs-grid-path");
+}
+
+#[test]
+fn dfs_grid_path_finds_a_route_not_necessarily_shortest() {
+    assert_case("dfs-grid-path");
+}
+
+/// Same grid, same start/goal as `dfs_grid_path_...` — BFS's level-order
+/// search and DFS's fixed-priority stack search must land on different
+/// answers on purpose (see both files' headers). If a future change to
+/// either port ever made them agree, that would mean one of them stopped
+/// demonstrating what it's there to demonstrate.
+#[test]
+fn bfs_and_dfs_diverge_on_the_shared_grid() {
+    let bfs = run_case(&corpus_dir().join("bfs-grid-path"));
+    let dfs = run_case(&corpus_dir().join("dfs-grid-path"));
+    assert_ne!(
+        bfs, dfs,
+        "bfs-grid-path and dfs-grid-path produced identical output — the shared grid's \
+         entire point is that BFS finds the 4-cell shortest path and DFS finds the 14-cell \
+         loop; if these ever match, the grid fixture no longer demonstrates the divergence"
+    );
+}
+
+#[test]
+fn dijkstra_grid_finds_cheapest_route_under_strict_types() {
+    assert_case_with_types("dijkstra-grid", TypePolicy::Strict);
+}
+
+#[test]
+fn astar_grid_finds_same_cost_as_dijkstra_with_fewer_nodes_visited() {
+    assert_case("astar-grid");
+}
+
+/// A* must match Dijkstra's optimal cost on the shared weighted grid (the
+/// Manhattan heuristic is admissible here — see `astar-grid`'s header) —
+/// this is the "living documentation" payoff made mechanically true, not
+/// just asserted in a comment.
+#[test]
+fn astar_matches_dijkstra_cost_on_the_shared_weighted_grid() {
+    let dijkstra = run_case_with_types(&corpus_dir().join("dijkstra-grid"), TypePolicy::Strict);
+    let astar = run_case(&corpus_dir().join("astar-grid"));
+    let dijkstra_cost = dijkstra
+        .lines()
+        .find(|l| l.starts_with("Total cost:"))
+        .expect("dijkstra-grid prints a Total cost line");
+    let astar_cost = astar
+        .lines()
+        .find(|l| l.starts_with("Total cost:"))
+        .expect("astar-grid prints a Total cost line");
+    assert_eq!(
+        dijkstra_cost, astar_cost,
+        "dijkstra-grid and astar-grid must find the same optimal cost on the shared grid"
+    );
+}
+
 /// Every `tests/tier1-brink/algorithms/` case directory is exercised by a
 /// `#[test]` above — a directory with no matching test would silently
 /// never run (same invariant `tier1_brink.rs` enforces for its own flat
@@ -136,6 +209,10 @@ fn every_algorithms_case_directory_has_a_test() {
         "insertion-sort",
         "binary-search",
         "fisher-yates-shuffle",
+        "bfs-grid-path",
+        "dfs-grid-path",
+        "dijkstra-grid",
+        "astar-grid",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink/algorithms")
