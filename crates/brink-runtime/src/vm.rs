@@ -324,6 +324,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 .resolve_global(id)
                 .ok_or(RuntimeError::UnresolvedGlobal(id))?;
             let val = context.global(idx).clone();
+            note_value_share(&val);
             flow.value_stack.push(val);
         }
         Opcode::SetGlobal(id) => {
@@ -1204,6 +1205,28 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
 
     Ok(Stepped::Continue)
 }
+
+// ── Bench counters (issue #821 Workstream B seed) ────────────────────────────
+
+/// Record an Arc-clone (cheap share) event if `val` is a collection-typed
+/// `Value` (`Array`/`Map`/`Record`) — called right after the `.clone()` that
+/// reads a global variable ([`Opcode::GetGlobal`]), the primary way a
+/// collection becomes shared between two storage slots (value-model-spec
+/// §5/§6's "sharing is O(1)" claim). No-op unless the `bench-counters`
+/// feature is enabled.
+#[cfg(feature = "bench-counters")]
+#[inline]
+fn note_value_share(val: &Value) {
+    match val {
+        Value::Array(_) | Value::Map(_) | Value::Record { .. } => {
+            crate::bench_counters::record_arc_clone();
+        }
+        _ => {}
+    }
+}
+#[cfg(not(feature = "bench-counters"))]
+#[inline(always)]
+fn note_value_share(_val: &Value) {}
 
 // ── Function values (T1c, docs/t1c-spec.md §3/§6, #700) ──────────────────────
 

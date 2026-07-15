@@ -1,5 +1,5 @@
-//! Algorithms corpus — sorting/searching + graphs + procgen lanes (issue
-//! #822, epic #397/#822).
+//! Algorithms corpus — sorting/searching + graphs + DP + procgen lanes
+//! (issue #822, epic #397/#822).
 //!
 //! Sibling of `tier1_brink.rs`'s flat `tests/tier1-brink/<name>/` corpus,
 //! scoped to `tests/tier1-brink/algorithms/<name>/`: classic algorithms
@@ -221,6 +221,26 @@ fn value_noise_field_interpolates_a_hashed_lattice() {
     assert_case_is_deterministic_across_runs("value-noise-field");
 }
 
+#[test]
+fn memoized_fibonacci_reuses_subproblems_via_a_local_memo_map() {
+    assert_case("memoized-fibonacci");
+}
+
+#[test]
+fn knapsack_01_maximizes_value_under_capacity_via_composite_key_memo() {
+    assert_case("knapsack-01");
+}
+
+#[test]
+fn longest_common_subsequence_recovers_the_subsequence_via_map_of_maps_memo() {
+    assert_case("longest-common-subsequence");
+}
+
+#[test]
+fn edit_distance_computes_levenshtein_distance_via_bottom_up_table() {
+    assert_case("edit-distance");
+}
+
 /// Every `tests/tier1-brink/algorithms/` case directory is exercised by a
 /// `#[test]` above — a directory with no matching test would silently
 /// never run (same invariant `tier1_brink.rs` enforces for its own flat
@@ -241,6 +261,10 @@ fn every_algorithms_case_directory_has_a_test() {
         "bsp-dungeon",
         "cellular-automata-cave",
         "value-noise-field",
+        "memoized-fibonacci",
+        "knapsack-01",
+        "longest-common-subsequence",
+        "edit-distance",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink/algorithms")
