@@ -13,12 +13,13 @@ use tracing::debug;
 
 use crate::determinism::LookupMap;
 use crate::queries::{
-    BrinkDatabase, CompileProduct, DefKey, LirProduct, ProjectInput, ResolvedProject, SourceFile,
-    analysis_query, call_site_diagnostics_query, call_site_metas_query, diagnostics_query,
-    has_errors_query, include_graph_query, infer_body_query, inferred_signature_query, lir_query,
-    lowered_query, parse_query, per_file_diagnostics_query, resolutions_index_query, resolve_query,
-    signature_query, story_data_query, suppressions_query, symbol_index_query,
-    type_diagnostics_query, type_inference_query, value_meta_query,
+    BrinkDatabase, CompileProduct, DefKey, KnotChunkKey, LirProduct, ProjectInput, ResolvedProject,
+    SourceFile, analysis_query, call_site_diagnostics_query, call_site_metas_query,
+    diagnostics_query, has_errors_query, include_graph_query, infer_body_query,
+    inferred_signature_query, lir_knot_chunk_query, lir_query, lowered_query, parse_query,
+    per_file_diagnostics_query, resolutions_index_query, resolve_query, signature_query,
+    story_data_query, suppressions_query, symbol_index_query, type_diagnostics_query,
+    type_inference_query, value_meta_query,
 };
 
 /// Stateful incremental project database.
@@ -446,6 +447,20 @@ impl ProjectDb {
     /// the cutoff seam backdated.
     pub fn has_errors(&self) -> bool {
         has_errors_query(&self.salsa, self.project)
+    }
+
+    /// FG-4d non-re-execution probe (issue #830): the `Arc<ScopeChunk>` the
+    /// per-knot LIR chunk memo stores for the `knot_index`-th knot of `file`.
+    /// `Arc::ptr_eq` on the result across an edit proves the memo validated
+    /// without re-executing — salsa only hands back the same allocation when
+    /// a query's inputs (this file's HIR, the project resolutions, and the
+    /// struct-shape projection) are all unchanged. Exposed for the
+    /// dependency-edge tests, mirroring [`resolutions_index`](Self::resolutions_index).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn knot_chunk(&self, file: FileId, knot_index: u32) -> Arc<brink_ir::lir::ScopeChunk> {
+        let key = KnotChunkKey::new(&self.salsa, file, knot_index);
+        lir_knot_chunk_query(&self.salsa, self.project, key).chunk
     }
 
     /// Whole-project compile to [`brink_format::StoryData`] (layer 3,

@@ -427,37 +427,30 @@ pub fn lower_knot_chunk_incremental(
     )
 }
 
-/// Incremental entry point for the whole root scope (`brink-db`'s root-content
-/// memo): lower every file's root-level content into one chunk per file,
-/// sharing the single root frame, from the same cutoff-friendly inputs as
-/// [`lower_knot_chunk_incremental`].
+/// Lower the whole root scope from an already-built [`LirPrelude`] — the
+/// link phase's own root-content step. Uses the prelude's real struct-shape
+/// table (not the reconstructed projection), so it is byte-identical to the
+/// monolithic composition's root-content lowering. `brink-db`'s link query
+/// calls this; the per-knot memos use [`lower_knot_chunk_incremental`]
+/// (cutoff-friendly `StructShapeData`) instead.
 #[expect(
     clippy::implicit_hasher,
     reason = "internal API called only by brink-db"
 )]
 #[must_use]
-pub fn lower_root_content_incremental(
-    files: &[(FileId, &hir::HirFile)],
+pub fn lower_root_content_for_prelude(
+    prelude: &LirPrelude,
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
     file_paths: &LookupMap<FileId, String>,
-    shape_data: &StructShapeData,
-    type_mode: context::TypeMode,
 ) -> (Vec<(chunk::ScopeChunk, Vec<crate::Diagnostic>)>, u16) {
     let resolutions = ResolutionLookup::build(resolutions);
-    let mut throwaway = NameTable::new();
-    let shapes = structs::rebuild_shape_table(shape_data, &mut throwaway);
-    let global_shapes = structs::rebuild_global_shape_map(shape_data);
-    let struct_ctx = context::StructCtx {
-        shapes: &shapes,
-        global_shapes: &global_shapes,
-        type_mode,
-    };
+    let struct_ctx = prelude.struct_ctx();
     lower_root_content_chunks(
-        files,
+        &prelude.files(),
         &resolutions,
         index,
-        context::root_definition_id(),
+        prelude.root_id,
         file_paths,
         &struct_ctx,
     )

@@ -158,6 +158,12 @@ impl Default for BrinkDatabase {
                 // (PR #753's seam finding #3) and the LIR-lowering split it
                 // gates — see `lir_query`'s doc comment.
                 .ingredient::<has_errors_query>()
+                // FG-4d (issue #830): per-knot LIR chunk memos + the
+                // cutoff-friendly struct-shape projection they read;
+                // `lir_lowering_query` is now the link phase assembling them.
+                .ingredient::<struct_shape_data_query>()
+                .ingredient::<KnotChunkKey<'_>>()
+                .ingredient::<lir_knot_chunk_query>()
                 .ingredient::<lir_lowering_query>()
                 // Layer 2/3: type inference (TM-1, advisory-only).
                 // Per-def/per-SCC decomposition (FG-2, issue #631):
@@ -1006,6 +1012,159 @@ impl PartialEq for LirLowering {
     }
 }
 
+// ─── FG-4d: per-container LIR chunk memos + link ─────────────────────
+//
+// `lir_lowering_query` below is now the **link phase**
+// (`docs/fine-grained-salsa-proposal.md` §5 + the three-resolution-moments
+// appendix): it reads a per-knot chunk memo per definition, assembles them
+// (plus the whole-root chunk) into a `Program`, and gates on
+// `has_errors_query`. The per-knot memos (`lir_knot_chunk_query`) are the
+// FG-4d win — an edit that leaves a knot's declaring file, the project
+// resolutions, and the struct-shape projection unchanged leaves that knot's
+// chunk `Arc` pointer-identical (non-re-execution), and the whole-project
+// link re-runs but backdates on the `StoryData` `Eq` firebreak
+// (`story_data_query`). Byte-identity with the monolithic path is by
+// construction: the chunk lowering and assembly are the *same* `brink-ir`
+// functions `lower_to_program_with_type_mode` composes, fed the same inputs
+// in the same interleaved walk order.
+//
+// Input-breadth limit (issue #830, #815): the per-knot memo depends on the
+// whole-project `resolutions_index_query` and `struct_shape_data_query`, so
+// non-re-execution holds for edits those two backdate across (a
+// diagnostics-only / `AnalysisOptions` edit, and — for a knot in an
+// *unedited* file — any edit whose resolutions/struct-shapes are unchanged).
+// `topological_order`'s all-files fallback (#815, a separate slice) still
+// widens the link's own inputs; this slice's non-re-execution proofs scope
+// to what is achievable with that fallback in place.
+
+/// The cutoff-friendly struct-shape projection (FG-4d): the
+/// `NameId`-free, `Eq`-able [`StructShapeData`] the per-knot chunk memo reads
+/// instead of every file's HIR. Backdates when no `STRUCT` declaration (or
+/// struct-typed global annotation) changed, so an unrelated edit leaves the
+/// knot chunks that read it pointer-identical. Reads the same
+/// `resolutions_index_query` index the monolithic path's `build_prelude`
+/// does, so its ids/offsets are byte-identical.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn struct_shape_data_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> brink_ir::lir::StructShapeData {
+    let Some(entry) = project.entry(db) else {
+        return brink_ir::lir::StructShapeData::default();
+    };
+    let files = project.files(db);
+    let graph = include_graph_query(db, project);
+    let all_ids: Vec<FileId> = files.iter().map(|f| f.file_id(db)).collect();
+    let by_id: LookupMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
+    let topo = graph.topological_order(entry, &all_ids);
+    let hir_refs: Vec<(FileId, &HirFile)> = topo
+        .iter()
+        .filter_map(|id| by_id.get(id).map(|f| (*id, &lowered_query(db, *f).hir)))
+        .collect();
+    let resolved = resolutions_index_query(db, project);
+    brink_ir::lir::build_struct_shape_data(&hir_refs, &resolved.index)
+}
+
+/// Interned key for [`lir_knot_chunk_query`]: a knot identified by its
+/// declaring file and its index within that file's knot list. Keyed on
+/// `(FileId, knot_index)` rather than the knot's `DefinitionId` so two knots
+/// that would hash to the same address (e.g. same-named file-local knots)
+/// never collapse onto one memo — the byte-identity hazard `DefinitionId`
+/// keying would carry.
+#[salsa::interned]
+pub(crate) struct KnotChunkKey<'db> {
+    pub file: FileId,
+    pub knot_index: u32,
+}
+
+/// One knot's lowered LIR chunk plus its lowering diagnostics — the value a
+/// per-knot memo stores. `chunk` is `Arc`-wrapped so a validated (non-re-
+/// executed) memo hands back the *same* allocation, which
+/// `Arc::ptr_eq` detects (the non-re-execution proof — same reasoning as
+/// `LirLowering`'s `program`). The `PartialEq` exists solely to satisfy
+/// salsa's `Update` bound; `no_eq` disables backdating, so it is never used
+/// to claim two independently-lowered chunks equal.
+#[derive(Clone, Default)]
+pub(crate) struct LoweredChunk {
+    pub chunk: Arc<brink_ir::lir::ScopeChunk>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+impl PartialEq for LoweredChunk {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.chunk, &other.chunk) && self.diagnostics == other.diagnostics
+    }
+}
+
+/// Lower one knot into a self-contained LIR chunk — the per-`DefinitionId`
+/// unit of FG-4d. Reads only the declaring file's `lowered_query` HIR
+/// (per-file edge), the whole-project `resolutions_index_query`
+/// (backdates across body/diagnostics edits), and
+/// `struct_shape_data_query` (backdates unless a struct declaration
+/// changed) — so a knot in an unedited file whose resolutions and struct
+/// shapes are unchanged keeps its chunk `Arc` across the edit. `no_eq`:
+/// `ScopeChunk` has no `PartialEq` (holds `lir::Container`), so this never
+/// backdates — the link re-runs and re-anchors on `StoryData`'s `Eq`.
+#[salsa::tracked(no_eq)]
+pub(crate) fn lir_knot_chunk_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    key: KnotChunkKey<'_>,
+) -> LoweredChunk {
+    let file_id = key.file(db);
+    let knot_index = key.knot_index(db) as usize;
+    let Some(source) = project
+        .files(db)
+        .iter()
+        .copied()
+        .find(|f| f.file_id(db) == file_id)
+    else {
+        return LoweredChunk::default();
+    };
+
+    let resolved = resolutions_index_query(db, project);
+    let shape_data = struct_shape_data_query(db, project);
+    let type_mode = match project.analysis_options(db).types {
+        TypePolicy::Strict => brink_ir::lir::TypeMode::Strict,
+        TypePolicy::Gradual => brink_ir::lir::TypeMode::Gradual,
+    };
+    let file_paths: LookupMap<FileId, String> = project
+        .files(db)
+        .iter()
+        .map(|f| (f.file_id(db), f.path(db).clone()))
+        .collect();
+
+    // Normalize + stamp this one file in isolation — both passes are
+    // per-file independent, so this is byte-identical to the file's slice of
+    // the whole-project prelude (the composition the monolithic path runs).
+    let mut normalized = vec![(file_id, lowered_query(db, source).hir.clone())];
+    brink_ir::normalize_file(&mut normalized[0].1);
+    brink_ir::stamp_container_ids(&mut normalized, &resolved.index);
+    let hir_file = &normalized[0].1;
+    let Some(knot) = hir_file.knots.get(knot_index) else {
+        return LoweredChunk::default();
+    };
+
+    let (chunk, diagnostics) = brink_ir::lir::lower_knot_chunk_incremental(
+        hir_file,
+        knot,
+        &resolved.index,
+        &resolved.resolutions,
+        &file_paths,
+        shape_data,
+        type_mode,
+        file_id,
+    );
+    LoweredChunk {
+        chunk: Arc::new(chunk),
+        diagnostics,
+    }
+}
+
+/// FG-4d **link phase**: assemble the per-knot chunk memos and the whole-root
+/// chunk into a `Program`. Gated on `has_errors_query` (unchanged). See the
+/// section comment above for the byte-identity and non-re-execution
+/// arguments.
 #[salsa::tracked(no_eq)]
 pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput) -> LirLowering {
     let Some(entry) = project.entry(db) else {
@@ -1043,41 +1202,65 @@ pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput
         TypePolicy::Strict => brink_ir::lir::TypeMode::Strict,
         TypePolicy::Gradual => brink_ir::lir::TypeMode::Gradual,
     };
-    let (program, lir_diagnostics) = brink_ir::lir::lower_to_program_with_type_mode(
-        &hir_refs,
+
+    // Whole-project prelude (decls + struct shapes + the seeded name table)
+    // and the whole-root chunk — both use the prelude's real struct table, so
+    // they are byte-identical to the monolithic composition's root handling.
+    let prelude =
+        brink_ir::lir::build_prelude(&hir_refs, &resolved.index, &resolved.resolutions, type_mode);
+    let (root_chunks, root_temp_slots) = brink_ir::lir::lower_root_content_for_prelude(
+        &prelude,
         &resolved.index,
         &resolved.resolutions,
         &paths,
-        type_mode,
     );
 
+    // Interleave in walk order (per file: root content, then that file's
+    // knots) — the order the assembler dedups names against. Knot chunks come
+    // from the per-knot memos; declaration diagnostics lead, matching the
+    // monolithic diagnostic order exactly.
+    let mut lir_diagnostics = prelude.decl_diagnostics.clone();
+    let mut ordered_chunks: Vec<brink_ir::lir::ScopeChunk> = Vec::new();
+    let prelude_files = prelude.files();
+    let mut root_iter = root_chunks.into_iter();
+    for (file_id, hir_file) in &prelude_files {
+        if let Some((chunk, diags)) = root_iter.next() {
+            ordered_chunks.push(chunk);
+            lir_diagnostics.extend(diags);
+        }
+        for knot_index in 0..hir_file.knots.len() {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a file won't declare anywhere near u32::MAX knots"
+            )]
+            let key = KnotChunkKey::new(db, *file_id, knot_index as u32);
+            let lowered = lir_knot_chunk_query(db, project, key);
+            ordered_chunks.push((*lowered.chunk).clone());
+            lir_diagnostics.extend(lowered.diagnostics.clone());
+        }
+    }
+
+    let program =
+        brink_ir::lir::assemble_program(&prelude, ordered_chunks, root_temp_slots, &resolved.index);
+
     // LIR lowering itself is total (T1b-2: every construct lowers to a
-    // program regardless of dialect) — a diagnostic pushed during lowering
-    // doesn't stop `lower_to_program` from returning `Some`. It must still
-    // be severity-partitioned like every other diagnostic here: an
-    // Error-severity one (T1b-3's E055/E056 — a collection mutator's rvalue
-    // first argument, or a mutator used in expression position) blocks
-    // compilation exactly like an analysis-phase error would, not just a
-    // cosmetic warning on an otherwise-successful compile.
+    // program regardless of dialect). Error-severity lowering diagnostics
+    // (T1b-3's E055/E056) still gate `program: None` exactly like an
+    // analysis-phase error would.
     let (lir_errors, lir_warnings): (Vec<Diagnostic>, Vec<Diagnostic>) = lir_diagnostics
         .into_iter()
         .partition(|d| brink_analyzer::effective_severity(d.code, types) == Severity::Error);
 
-    if program.is_some() && lir_errors.is_empty() {
+    if lir_errors.is_empty() {
         LirLowering {
-            program: program.map(Arc::new),
+            program: Some(Arc::new(program)),
             errors: lir_errors,
             warnings: lir_warnings,
         }
     } else {
-        // Either `lower_to_program` refused to lower (its residual-extension
-        // backstop fired — E053, meaning a T1b brink-extension HIR node
-        // reached LIR lowering despite the dialect gate, only possible if
-        // the gate's analysis diagnostic was suppressed — see #572 review),
-        // or lowering succeeded but produced an Error-severity diagnostic
-        // (T1b-3's rvalue-mutator/mutator-in-expression-position checks).
-        // Either way: surface it as a compile error, never return a corrupt,
-        // partial, or diagnostically-invalid program.
+        // A lowering-phase Error-severity diagnostic (E055/E056) blocks
+        // compilation: surface it, never hand back a diagnostically-invalid
+        // program.
         LirLowering {
             program: None,
             errors: lir_errors,
