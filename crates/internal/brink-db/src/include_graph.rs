@@ -128,12 +128,36 @@ impl IncludeGraph {
         None
     }
 
-    /// Return all file IDs reachable from `entry` in topological order
-    /// (included files before the files that include them).
+    /// Return file IDs reachable from `entry` in topological order (included
+    /// files before the files that include them).
     ///
     /// Uses a post-order DFS: children (includes) are visited before their
     /// parent, giving the correct "paste-before" order for ink `INCLUDE`.
-    pub fn topological_order(&self, entry: FileId, all_ids: &[FileId]) -> Vec<FileId> {
+    ///
+    /// Only `entry` and files it transitively `INCLUDE`s are returned. Prior
+    /// to issue #815 this method also appended every other live file the DFS
+    /// didn't reach, as a "shouldn't happen in practice, but be safe"
+    /// fallback. In a one-shot compile (CLI, oracle corpus) that fallback was
+    /// always a no-op — `brink-driver`'s `discover` only ever loads `entry`
+    /// plus its transitive `INCLUDE`s into the database, so every loaded
+    /// file was already reachable. But `ProjectDb` is also the long-lived
+    /// model behind the LSP/studio, where files are added independently of
+    /// any single entry point (open editor tabs, a whole directory scan) and
+    /// unrelated or not-yet-`INCLUDE`d files routinely coexist with `entry`
+    /// in the same database. There the fallback fed every one of those
+    /// files' HIR into `lir_lowering_query`'s inputs: any edit anywhere in
+    /// the project re-executed whole-project LIR lowering regardless of
+    /// `entry`'s actual `INCLUDE` tree, and — because `lower_to_program`
+    /// lowers every file it's handed into the program (globals, lists,
+    /// externals, containers) — unrelated files' declarations were spliced
+    /// into `entry`'s compiled `StoryData`.
+    ///
+    /// Diagnostics for files `entry` doesn't reach are unaffected by this
+    /// narrowing: they're computed independently, per file, over the
+    /// project's full file set (`brink-db`'s `analysis_diagnostics_query` /
+    /// `diagnostics_query`, both of which iterate `project.files(db)`
+    /// directly), not through this method.
+    pub fn topological_order(&self, entry: FileId) -> Vec<FileId> {
         fn dfs(
             node: FileId,
             graph: &IncludeGraph,
@@ -153,16 +177,6 @@ impl IncludeGraph {
         let mut order = Vec::new();
 
         dfs(entry, self, &mut visited, &mut order);
-
-        // Include any remaining files not reachable from entry
-        // (shouldn't happen in practice, but be safe).
-        let mut all_sorted: Vec<_> = all_ids.to_vec();
-        all_sorted.sort_by_key(|id| id.0);
-        for &id in &all_sorted {
-            if visited.insert(id) {
-                order.push(id);
-            }
-        }
 
         order
     }

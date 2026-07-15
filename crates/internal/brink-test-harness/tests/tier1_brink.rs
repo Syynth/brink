@@ -373,6 +373,10 @@ fn every_case_directory_has_a_test() {
         .expect("read tests/tier1-brink")
         .filter_map(Result::ok)
         .filter(|e| e.path().is_dir())
+        // `algorithms/` (issue #822) is a nested sub-corpus, not a leaf
+        // case directory — it owns its own `every_algorithms_case_
+        // directory_has_a_test` invariant in `algorithms_corpus.rs`.
+        .filter(|e| e.file_name() != "algorithms")
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
     found.sort();
