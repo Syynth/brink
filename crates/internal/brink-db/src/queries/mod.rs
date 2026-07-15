@@ -193,6 +193,12 @@ impl Default for BrinkDatabase {
                 // `lir_lowering_query` is now the link phase assembling them.
                 .ingredient::<struct_shape_data_query>()
                 .ingredient::<normalized_stamped_query>()
+                // FG-4e (issue #839): decl_hir_query is the per-file
+                // backdating projection lir_prelude_decls_query reads
+                // instead of raw HIR, so a knot body edit doesn't force the
+                // whole-project declaration collection to re-execute.
+                .ingredient::<decl_hir_query>()
+                .ingredient::<lir_prelude_decls_query>()
                 .ingredient::<KnotChunkKey<'_>>()
                 .ingredient::<lir_knot_chunk_query>()
                 .ingredient::<lir_lowering_query>()
@@ -1137,6 +1143,43 @@ pub(crate) fn struct_shape_data_query(
     brink_ir::lir::build_struct_shape_data(&hir_refs, &resolved.index)
 }
 
+/// One file's declaration-only HIR projection (issue #839 / FG-4e):
+/// `constants`/`variables`/`lists`/`structs`/`externals` kept, `root_content`
+/// and every knot's body dropped to `Block::default()`/`Vec::new()`. Backed
+/// by [`HirFile`]'s derived `PartialEq`, so a body-only edit — one that
+/// leaves every declaration untouched — backdates this memo across the edit,
+/// same as [`normalized_stamped_query`] backdates the file's syntax tree.
+///
+/// This is the per-file dependency edge [`lir_prelude_decls_query`] reads
+/// instead of the raw, body-carrying [`lowered_query`]: `brink_ir::lir`'s
+/// declaration-collection passes ([`collect_globals`], [`collect_lists`],
+/// [`collect_externals`], [`build_shape_table`], [`build_global_shape_map`])
+/// never read `root_content`/`knots` (see `PreludeDecls`'s doc in
+/// `brink-ir`), so stripping them here is behavior-neutral for every reader
+/// and turns "any reachable file changed" into "a reachable file's
+/// declarations changed" as the trigger for re-interning the project name
+/// table.
+///
+/// [`collect_globals`]: brink_ir::lir::build_prelude_decls
+/// [`collect_lists`]: brink_ir::lir::build_prelude_decls
+/// [`collect_externals`]: brink_ir::lir::build_prelude_decls
+/// [`build_shape_table`]: brink_ir::lir::build_prelude_decls
+/// [`build_global_shape_map`]: brink_ir::lir::build_prelude_decls
+#[salsa::tracked(returns(ref))]
+pub(crate) fn decl_hir_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+) -> HirFile {
+    let _ = project;
+    let hir = &lowered_query(db, file).hir;
+    HirFile {
+        root_content: brink_ir::hir::Block::default(),
+        knots: Vec::new(),
+        ..hir.clone()
+    }
+}
+
 /// One file's HIR after the pre-LIR normalize + container-id stamp passes,
 /// memoized per file (FG-4d). Without this, each of a K-knot file's per-knot
 /// chunk memos would repeat the file's normalize+stamp, turning a cold
@@ -1160,6 +1203,84 @@ pub(crate) fn normalized_stamped_query(
     brink_ir::stamp_container_ids(&mut slice, &resolved.index);
     let [(_, stamped)] = slice;
     Arc::new(stamped)
+}
+
+/// [`brink_ir::lir::PreludeDecls`] wrapped so [`lir_prelude_decls_query`]
+/// (`no_eq`: the wrapped `ShapeTable`/`GlobalShapeMap` carry `NameId`s valid
+/// only within this specific prelude's numbering, so they cannot be `Eq`
+/// without a NameId-free relocation redesign — same reasoning as
+/// [`LirLowering`]'s `program`) can still satisfy salsa's `Update` bound.
+/// `Arc`-wrapped so a validated (non-re-executed) memo hands back the *same*
+/// allocation — `Arc::ptr_eq` is the non-re-execution proof, same pattern as
+/// [`LoweredChunk`].
+#[derive(Clone)]
+pub(crate) struct PreludeDeclsResult {
+    pub decls: Arc<brink_ir::lir::PreludeDecls>,
+}
+
+impl PartialEq for PreludeDeclsResult {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.decls, &other.decls)
+    }
+}
+
+/// The whole-project declaration-level prelude (issue #839 / FG-4e —
+/// `docs/fine-grained-salsa-proposal.md`'s pattern, applied past structs to
+/// the rest of `build_prelude`): [`brink_ir::lir::build_prelude_decls`] over
+/// every entry-reachable file's [`decl_hir_query`] projection instead of the
+/// monolithic link's inline `build_prelude` call over raw, body-carrying
+/// HIR. Because [`decl_hir_query`] itself backdates across a body-only edit,
+/// a knot body edit anywhere in the project leaves *this* query's recorded
+/// dependencies unchanged — [`lir_lowering_query`] no longer pays
+/// `collect_globals`/`collect_lists`/`collect_externals`/`build_shape_table`/
+/// `build_global_shape_map`'s full re-interning cost on every recompile, only
+/// when some reachable file's actual declarations change (`fg4e_prelude_
+/// decls.rs`).
+///
+/// Same input-breadth limit as [`struct_shape_data_query`] (issue #815):
+/// scoped to `entry`'s transitive `INCLUDE` closure, not full backdating
+/// across *any* unrelated project file's declarations (that would need a
+/// per-file decl memo feeding the interning step directly, which the
+/// project-wide, order-sensitive `NameTable` this produces does not allow
+/// without the same NameId-free-projection-plus-relocation redesign
+/// `StructShapeData` did for structs alone — out of this slice's scope, see
+/// the PR description).
+#[salsa::tracked(no_eq)]
+pub(crate) fn lir_prelude_decls_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> PreludeDeclsResult {
+    let type_mode = match type_policy_query(db, project) {
+        TypePolicy::Strict => brink_ir::lir::TypeMode::Strict,
+        TypePolicy::Gradual => brink_ir::lir::TypeMode::Gradual,
+    };
+    let Some(entry) = project.entry(db) else {
+        return PreludeDeclsResult {
+            decls: Arc::new(brink_ir::lir::PreludeDecls::empty(type_mode)),
+        };
+    };
+    let files = project.files(db);
+    let by_id: LookupMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
+    let graph = include_graph_query(db, project);
+    let topo = graph.topological_order(entry);
+    let decl_refs: Vec<(FileId, &HirFile)> = topo
+        .iter()
+        .filter_map(|id| {
+            by_id
+                .get(id)
+                .map(|f| (*id, decl_hir_query(db, project, *f)))
+        })
+        .collect();
+    let resolved = resolutions_index_query(db, project);
+    let decls = brink_ir::lir::build_prelude_decls(
+        &decl_refs,
+        &resolved.index,
+        &resolved.resolutions,
+        type_mode,
+    );
+    PreludeDeclsResult {
+        decls: Arc::new(decls),
+    }
 }
 
 /// Interned key for [`lir_knot_chunk_query`]: a knot identified by its
@@ -1305,33 +1426,42 @@ pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput
     let graph = include_graph_query(db, project);
     let by_id: LookupMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
     let topo = graph.topological_order(entry);
-    let hir_refs: Vec<(FileId, &HirFile)> = topo
-        .iter()
-        .filter_map(|id| by_id.get(id).map(|f| (*id, &lowered_query(db, *f).hir)))
-        .collect();
     let paths: LookupMap<FileId, String> = topo
         .iter()
         .filter_map(|id| by_id.get(id).map(|f| (*id, f.path(db).clone())))
         .collect();
 
     // TM-4c (`docs/typed-mode-spec.md` §6): the project's `types` policy
-    // gates static-offset record field ops — map the analyzer's
-    // `TypePolicy` to `brink-ir`'s local mirror (`brink-ir` sits below
-    // `brink-analyzer` in the crate graph and can't name `TypePolicy`
-    // directly). Read through the narrow [`type_policy_query`] projection,
-    // never the raw `AnalysisOptions` input field — see its doc comment
-    // (issue #806).
+    // gates static-offset record field ops, and also partitions lowering
+    // diagnostics by effective severity below. Read through the narrow
+    // [`type_policy_query`] projection, never the raw `AnalysisOptions`
+    // input field — see its doc comment (issue #806).
+    //
+    // [`brink-ir`'s local `TypeMode` mirror](brink_ir::lir::TypeMode) is now
+    // decided once, inside [`lir_prelude_decls_query`]'s own
+    // `type_policy_query` read — this function no longer needs its own copy
+    // (issue #839 / FG-4e removed the direct `build_prelude` call that used
+    // to consume it here).
     let types = type_policy_query(db, project);
-    let type_mode = match types {
-        TypePolicy::Strict => brink_ir::lir::TypeMode::Strict,
-        TypePolicy::Gradual => brink_ir::lir::TypeMode::Gradual,
-    };
 
-    // Whole-project prelude (decls + struct shapes + the seeded name table)
-    // and the whole-root chunk — both use the prelude's real struct table, so
-    // they are byte-identical to the monolithic composition's root handling.
-    let prelude =
-        brink_ir::lir::build_prelude(&hir_refs, &resolved.index, &resolved.resolutions, type_mode);
+    // Whole-project prelude (issue #839 / FG-4e): declarations + struct
+    // shapes + the seeded name table come from [`lir_prelude_decls_query`]
+    // (its own memo, cutoff-friendly across body-only edits — see its doc),
+    // and the normalized+stamped HIR reuses the already-memoized per-file
+    // [`normalized_stamped_query`] instead of `build_prelude`'s inline
+    // normalize+stamp recompute. `assemble_prelude` is pure composition —
+    // byte-identical to the monolithic `build_prelude` by construction (see
+    // `PreludeDecls`'s doc in `brink-ir`).
+    let prelude_decls = lir_prelude_decls_query(db, project);
+    let normalized: Vec<(FileId, HirFile)> = topo
+        .iter()
+        .filter_map(|id| {
+            by_id
+                .get(id)
+                .map(|f| (*id, (**normalized_stamped_query(db, project, *f)).clone()))
+        })
+        .collect();
+    let prelude = brink_ir::lir::assemble_prelude((*prelude_decls.decls).clone(), normalized);
     let (root_chunks, root_temp_slots) = brink_ir::lir::lower_root_content_for_prelude(
         &prelude,
         &resolved.index,

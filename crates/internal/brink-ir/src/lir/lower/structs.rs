@@ -35,6 +35,11 @@ use super::decls::lookup_global;
 use super::lir;
 
 /// One declared `STRUCT` shape, resolved for lowering.
+///
+/// `Clone` (issue #839 / FG-4e): [`PreludeDecls`] holds a whole
+/// [`ShapeTable`] and is cloned out of `brink-db`'s `lir_prelude_decls_query`
+/// Arc once per link execution — see that struct's doc.
+#[derive(Clone)]
 pub struct ShapeInfo {
     pub id: u32,
     pub name: NameId,
@@ -60,7 +65,7 @@ impl ShapeInfo {
 
 /// Every declared `STRUCT` shape in the project, by name. See the module
 /// doc for the id-assignment determinism argument.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct ShapeTable {
     by_name: LookupMap<String, ShapeInfo>,
 }
