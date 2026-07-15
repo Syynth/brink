@@ -83,26 +83,26 @@ proptest! {
     }
 
     /// `m[key] = v` matches a manual insertion-order `Vec<(String, i32)>`
-    /// reference with `OrderedMap::insert`'s overwrite-in-place semantics
-    /// (value-model-spec §4: "re-inserting an existing key overwrites its
-    /// value in place, keeping the key's original position"). Like indexed
-    /// array assignment, `m[key] = v` mutates an existing slot rather than
-    /// growing the collection (`MapKeyNotFound` for an absent key is the
-    /// VM's actual, deliberate behavior — indexed writes never extend a
-    /// collection; `insert`/`push` are the stdlib mutators for that,
-    /// already covered by `proptest_t1b.rs`), so `write_key` is drawn from
-    /// the keys that were actually inserted.
+    /// reference with `OrderedMap::insert`'s semantics (value-model-spec §4:
+    /// "re-inserting an existing key overwrites its value in place, keeping
+    /// the key's original position"). `write_key` is drawn from a wider
+    /// range (`[a-j]`) than `keys` (`[a-e]`), so about half the generated
+    /// cases exercise an overwrite (`write_key` already in `keys`) and about
+    /// half exercise a fresh-key insert (`write_key` not in `keys`) — issue
+    /// #856, ruled 2026-07-15: `m[newKey] = v` inserts (JS/Python
+    /// semantics) rather than faulting `MapKeyNotFound`, matching
+    /// `insert`/`push`'s existing insert-on-absent behavior
+    /// (`proptest_t1b.rs`).
     #[test]
     fn map_index_write_matches_manual_ordered_insert(
         keys in prop::collection::vec("[a-e]", 1..6),
-        write_key_idx in 0usize..6,
+        write_key in "[a-j]",
         new_val in -1000i32..1000,
     ) {
         let mut reference: Vec<(String, i32)> = Vec::new();
         for (i, k) in keys.iter().enumerate() {
             ordered_insert(&mut reference, k.clone(), i32::try_from(i).unwrap());
         }
-        let write_key = keys[write_key_idx % keys.len()].clone();
         ordered_insert(&mut reference, write_key.clone(), new_val);
 
         let entries: Vec<String> = keys
