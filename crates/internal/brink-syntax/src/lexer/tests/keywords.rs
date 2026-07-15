@@ -4,6 +4,7 @@ use SyntaxKind::*;
 #[test]
 fn all_keywords() {
     assert_eq!(kinds("INCLUDE"), vec![KW_INCLUDE]);
+    assert_eq!(kinds("IMPORT"), vec![KW_IMPORT]);
     assert_eq!(kinds("EXTERNAL"), vec![KW_EXTERNAL]);
     assert_eq!(kinds("VAR"), vec![KW_VAR]);
     assert_eq!(kinds("CONST"), vec![KW_CONST]);

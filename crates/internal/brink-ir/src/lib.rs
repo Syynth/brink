@@ -7,6 +7,7 @@
 //! - **`symbols`** — Symbol tables shared between HIR, analyzer, and LIR
 //! - **`lir`** — Low-level IR: resolved, container-centric program for codegen
 
+pub(crate) mod determinism;
 pub mod dialect;
 pub mod hir;
 pub mod host_manifest;

@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 
-use crate::id::DefinitionId;
+use crate::id::{DefinitionId, NameId};
 
 /// Maximum nesting depth permitted when decoding `VAL_ARRAY`/`VAL_MAP`
 /// values. Generous for legitimate data but bounds worst-case recursion so a
@@ -50,6 +50,14 @@ pub enum ValueType {
     Map,
     /// A closed-shape, copy-on-write record ([`Value::Record`]) — TM-4.
     Record,
+    /// A zero-bound function value ([`Value::FnRef`]) — T1c.
+    FnRef,
+    /// A function value with a bound-arg prefix ([`Value::Closure`]) — T1c.
+    Closure,
+    /// An opaque host-resource token ([`Value::Handle`]) — T1d.
+    Handle,
+    /// A symbolic path projection ([`Value::Projection`]) — T1e.
+    Projection,
 }
 
 /// A runtime value in the ink VM.
@@ -117,6 +125,149 @@ pub enum Value {
         shape: ShapeId,
         fields: Arc<Vec<Value>>,
     },
+    /// A **zero-bound function value** (`docs/t1c-spec.md` §1/§6, wire tag
+    /// `VAL_FN_REF`). Partial application over a statically-named function
+    /// with no bound-arg prefix — `#fn(name)` where the target has no `ref`
+    /// params. The `DefinitionId` is the fn token (hashes from the target's
+    /// name, so a saved token survives recompiles that only edit the body).
+    ///
+    /// A no-payload scalar (`Copy`-cheap `DefinitionId`); no `Arc` needed.
+    /// Structural equality is "same fn token" (§5, sharing-unobservable).
+    FnRef(DefinitionId),
+    /// A **function value with a bound-arg prefix** (`docs/t1c-spec.md`
+    /// §1/§6, wire tag `VAL_CLOSURE`). Despite the name there is no lexical
+    /// environment — ink has no free variables; the "env" is the bound
+    /// prefix of the target's declared params (a `val` entry snapshots the
+    /// value at creation, a `ref` entry captures a durable cell as a
+    /// [`VariablePointer`](Self::VariablePointer)).
+    ///
+    /// Wrapped in `Arc` for the same O(1)-clone discipline as the collection
+    /// variants. Structural equality (§5): same fn token **and** equal env
+    /// rows — `ref` entries compare by bound cell, `val` entries by value,
+    /// both of which fall out of the derived per-entry comparison because a
+    /// `ref` payload is a `VariablePointer` (compared by its `DefinitionId`).
+    Closure(Arc<ClosureValue>),
+    /// An opaque host-resource token (`docs/t1d-spec.md` §1/§2, wire tag
+    /// `VAL_HANDLE`). Host resources (entities, audio instances, assets,
+    /// timers) enter the script world as `Handle` tokens: `{kind, id}`
+    /// scalars with value semantics — copied like ints, serializable,
+    /// compared by token. No live pointer ever lives in a `Value`;
+    /// dereferencing happens only host-side, against the host's registry,
+    /// inside bindings (the sharing-unobservable dogma applies verbatim — a
+    /// handle is a *name*, re-bound at a defined seam).
+    ///
+    /// `kind` is a [`NameId`] into the compiled story's manifest-declared
+    /// kind vocabulary (analyzer-side, not the format — the format ships
+    /// only the token shape, `docs/format-v4-rfc.md` §2). `id` is an opaque
+    /// `u64` the host allocates; the script never interprets it.
+    ///
+    /// A no-payload scalar (`Copy`-cheap: `NameId` + `u64`); no `Arc`
+    /// needed. Structural equality is token equality (`kind == kind && id
+    /// == id`, §6) — no ordering exists (any `<`/`>`/`<=`/`>=` is a runtime
+    /// fault in gradual mode, a compile error under the typed dialect), and
+    /// a handle is never a legal map key (the domain stays
+    /// int/string/bool — same restriction as function values).
+    ///
+    /// **No literal syntax and no dedicated opcode construct this value —
+    /// handles enter the script world only via bindings** (`docs/t1d-spec.md`
+    /// §2 RULED). This variant, its wire encoding, and its `.inkt` atom
+    /// exist so a handle received from a binding can flow through globals,
+    /// collections, saves, and the transcript like any other value.
+    Handle {
+        /// The manifest-declared kind name (analyzer-side vocabulary).
+        kind: NameId,
+        /// The host-allocated token id. Opaque to the script.
+        id: u64,
+    },
+    /// A symbolic path projection (`docs/t1e-spec.md` §1/§3, wire tag
+    /// `VAL_PROJECTION`): `(root cell, path segments)` — never an interior
+    /// pointer. Created only in `ref`-argument position (`ref
+    /// npc.inventory[3]`); reads walk the path against the root's *current*
+    /// value, writes desugar to root-cell RMW (take → walk → `make_mut`
+    /// spine → write → store back, spec §3). The segment list is fixed at
+    /// creation ("index expressions snapshot at `ref` creation", spec §1) —
+    /// there is no lazy re-evaluation.
+    ///
+    /// Wrapped in `Arc` for the same O(1)-clone discipline as
+    /// [`Closure`](Self::Closure). Structural equality (spec §4 PROPOSED,
+    /// implemented here): same root cell and equal segments.
+    Projection(Arc<ProjectionValue>),
+}
+
+/// The payload of a [`Value::Projection`] — the root cell plus its ordered
+/// segment chain (`docs/t1e-spec.md` §1/§3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectionValue {
+    /// The durable root cell this projection reads/writes through (a global
+    /// `VAR`/`#@local` — never a temp, enforced at compile time by T1e-1's
+    /// E080 durable-root check). Mirrors the `VAL_VAR_POINTER` payload shape
+    /// (`docs/format-v4-rfc.md` §1: "cell reference … reused not
+    /// reinvented").
+    pub cell: DefinitionId,
+    /// The ordered path segments, fixed at creation.
+    pub segments: Vec<ProjSegment>,
+}
+
+/// One path-projection segment (`docs/format-v4-rfc.md` §1: `segments: 0 =
+/// index i32, 1 = key value`). Segment kind `2 = range` is RESERVED and never
+/// constructed in T1e (icebox #829 — sequence slices/ranges).
+///
+/// The kind recorded here is a **wire-compactness choice**, not a semantic
+/// tag the walker trusts blindly: an evaluated segment value that happens to
+/// be an `Int` is captured as [`Index`](Self::Index) (the compact i32 form);
+/// everything else — a map key of another scalar type, or a struct field
+/// name (always a `Value::String` literal) — is captured as
+/// [`Key`](Self::Key). Walking dispatches on the *root's current container
+/// type* at each step (spec §4: reads walk against the root's current
+/// value), so an `Index(n)` segment applied to a `Map` is reinterpreted as
+/// `MapKey::Int(n)` — the distinction never forecloses either domain.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ProjSegment {
+    /// `[i]` — captured because the evaluated segment value was an `Int`.
+    Index(i32),
+    /// `[k]` (a non-`Int` map key) or `.field` (a struct field name,
+    /// captured as `Value::String`).
+    Key(Value),
+}
+
+impl ProjSegment {
+    /// Build a segment from an evaluated `Value` — the classification rule
+    /// this whole module documents: `Int` → [`Index`](Self::Index), anything
+    /// else → [`Key`](Self::Key).
+    #[must_use]
+    pub fn from_value(v: Value) -> Self {
+        match v {
+            Value::Int(n) => Self::Index(n),
+            other => Self::Key(other),
+        }
+    }
+}
+
+/// The payload of a [`Value::Closure`] — the fn token plus its bound-arg
+/// prefix (`docs/t1c-spec.md` §1/§6).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClosureValue {
+    /// The target function's [`DefinitionId`] (the fn token).
+    pub target: DefinitionId,
+    /// The bound-arg prefix, in the target's declared param order. The
+    /// entries carry the param **name and mode** deliberately (spec §6): on
+    /// load/invoke after a recompile they are validated against the current
+    /// signature so a renamed/re-moded param faults cleanly instead of
+    /// silently misbinding.
+    pub env: Vec<ClosureEnvEntry>,
+}
+
+/// One bound-arg entry in a [`ClosureValue`]'s env.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClosureEnvEntry {
+    /// The bound param's interned name (redundancy for rehydration checking).
+    pub name: NameId,
+    /// `true` if the target declared this param `ref` (the payload is a
+    /// captured cell), `false` for a `val` snapshot.
+    pub is_ref: bool,
+    /// The bound value: a snapshot (`val`) or a captured cell reference
+    /// (`ref` — a [`VariablePointer`](Value::VariablePointer)).
+    pub payload: Value,
 }
 
 impl Value {
@@ -136,6 +287,10 @@ impl Value {
             Self::Array(_) => ValueType::Array,
             Self::Map(_) => ValueType::Map,
             Self::Record { .. } => ValueType::Record,
+            Self::FnRef(_) => ValueType::FnRef,
+            Self::Closure(_) => ValueType::Closure,
+            Self::Handle { .. } => ValueType::Handle,
+            Self::Projection(_) => ValueType::Projection,
         }
     }
 
@@ -211,6 +366,62 @@ impl Value {
     pub fn as_record(&self) -> Option<(ShapeId, &Arc<Vec<Value>>)> {
         match self {
             Self::Record { shape, fields } => Some((*shape, fields)),
+            _ => None,
+        }
+    }
+
+    /// Build a [`Closure`](Self::Closure) from a target and its bound-arg
+    /// prefix (T1c, `docs/t1c-spec.md` §6).
+    pub fn closure(target: DefinitionId, env: Vec<ClosureEnvEntry>) -> Self {
+        Self::Closure(Arc::new(ClosureValue { target, env }))
+    }
+
+    /// The fn token (target [`DefinitionId`]) if this value is a function
+    /// value — [`FnRef`](Self::FnRef) or [`Closure`](Self::Closure).
+    pub fn fn_target(&self) -> Option<DefinitionId> {
+        match self {
+            Self::FnRef(target) => Some(*target),
+            Self::Closure(c) => Some(c.target),
+            _ => None,
+        }
+    }
+
+    /// Borrow the closure payload if this value is a [`Closure`](Self::Closure).
+    pub fn as_closure(&self) -> Option<&Arc<ClosureValue>> {
+        match self {
+            Self::Closure(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// Build a [`Handle`](Self::Handle) token from a kind and host-allocated
+    /// id (T1d, `docs/t1d-spec.md` §2). Note: this constructor is a plain
+    /// value builder, not a capability mint — the invariant that handles
+    /// only ever originate from a binding is enforced by the compiler (no
+    /// literal syntax, no opcode constructs this value), not by this type.
+    pub fn handle(kind: NameId, id: u64) -> Self {
+        Self::Handle { kind, id }
+    }
+
+    /// Borrow the `(kind, id)` pair if this value is a [`Handle`](Self::Handle).
+    pub fn as_handle(&self) -> Option<(NameId, u64)> {
+        match self {
+            Self::Handle { kind, id } => Some((*kind, *id)),
+            _ => None,
+        }
+    }
+
+    /// Build a [`Projection`](Self::Projection) from a root cell and its
+    /// ordered segment chain (`docs/t1e-spec.md` §1/§3).
+    pub fn projection(cell: DefinitionId, segments: Vec<ProjSegment>) -> Self {
+        Self::Projection(Arc::new(ProjectionValue { cell, segments }))
+    }
+
+    /// Borrow the projection payload if this value is a
+    /// [`Projection`](Self::Projection).
+    pub fn as_projection(&self) -> Option<&Arc<ProjectionValue>> {
+        match self {
+            Self::Projection(p) => Some(p),
             _ => None,
         }
     }
@@ -326,6 +537,27 @@ impl PartialEq for Value {
                     fields: b,
                 },
             ) => sa == sb && (Arc::ptr_eq(a, b) || a == b),
+            // Function values (T1c, docs/t1c-spec.md §5): structural equality
+            // is "same fn token and equal bound-arg rows". `FnRef` is the
+            // zero-bound case (same token). `Closure` adds the env comparison,
+            // with the `Arc::ptr_eq` fast path mirroring the collection arms;
+            // a `ref` env entry's `VariablePointer` payload compares by cell,
+            // a `val` entry by value — both fall out of `ClosureValue`'s
+            // derived `PartialEq`.
+            (Self::FnRef(a), Self::FnRef(b)) => a == b,
+            (Self::Closure(a), Self::Closure(b)) => Arc::ptr_eq(a, b) || a == b,
+            // Handle equality (T1d, docs/t1d-spec.md §6): token equality —
+            // same kind and same id, nothing else. No ordering exists (there
+            // is no `PartialOrd`/`Ord` impl for `Value`), and a handle is
+            // never a legal map key (`MapKey::from_value` has no `Handle`
+            // arm, so it falls through to `None` for this variant).
+            (Self::Handle { kind: ka, id: ida }, Self::Handle { kind: kb, id: idb }) => {
+                ka == kb && ida == idb
+            }
+            // Projection equality (T1e, docs/t1e-spec.md §4 PROPOSED): same
+            // root cell + equal segments, with the `Arc::ptr_eq` fast path
+            // mirroring every other heap-allocated variant.
+            (Self::Projection(a), Self::Projection(b)) => Arc::ptr_eq(a, b) || a == b,
             _ => false,
         }
     }
@@ -498,6 +730,19 @@ impl OrderedMap {
     /// Whether `key` is present.
     pub fn contains_key(&self, key: &MapKey) -> bool {
         self.entries.iter().any(|(k, _)| k == key)
+    }
+
+    /// Mutably borrow the value for `key`, or `None` if absent. The
+    /// intermediate-segment leg of the T1e projection RMW spine
+    /// (`docs/t1e-spec.md` §3): recursing a `make_mut` chain through a map
+    /// needs a mutable handle to an *existing* entry without touching
+    /// insertion order, which [`insert`](Self::insert) alone (add-or-replace)
+    /// can't provide.
+    pub fn get_mut(&mut self, key: &MapKey) -> Option<&mut Value> {
+        self.entries
+            .iter_mut()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v)
     }
 
     /// Insert `value` under `key`, returning the previous value if the key was
@@ -937,6 +1182,59 @@ mod tests {
         let v = Value::array(vec![
             Value::map(inner_map),
             Value::array(vec![Value::map(OrderedMap::new())]),
+            Value::Null,
+        ]);
+        assert_eq!(json_round_trip(&v), v);
+    }
+
+    // ── Handle (T1d, docs/t1d-spec.md §2/§6) ────────────────────────────────
+
+    #[test]
+    fn handle_value_type_and_constructor() {
+        let h = Value::handle(NameId(3), 42);
+        assert_eq!(h.value_type(), ValueType::Handle);
+        assert_eq!(h.as_handle(), Some((NameId(3), 42)));
+        assert!(Value::Int(0).as_handle().is_none());
+    }
+
+    #[test]
+    fn handle_equality_is_token_equality() {
+        // Same kind, same id: equal.
+        assert_eq!(Value::handle(NameId(1), 42), Value::handle(NameId(1), 42));
+        // Same id, different kind: not equal — kind is part of the token.
+        assert_ne!(Value::handle(NameId(1), 42), Value::handle(NameId(2), 42));
+        // Same kind, different id: not equal.
+        assert_ne!(Value::handle(NameId(1), 1), Value::handle(NameId(1), 2));
+        // A Handle is never equal to any other variant, even with a
+        // coincidentally matching id (compare against a DivertTarget encoding
+        // the same raw bits).
+        assert_ne!(
+            Value::handle(NameId(1), 42),
+            Value::DivertTarget(DefinitionId::new(DefinitionTag::Address, 42))
+        );
+    }
+
+    #[test]
+    fn handle_is_not_a_legal_map_key() {
+        // MapKey's domain is int/string/bool (value-model-spec §4); Handle
+        // has no `MapKey::from_value` arm and falls through to `None`.
+        assert_eq!(MapKey::from_value(&Value::handle(NameId(1), 42)), None);
+    }
+
+    #[test]
+    fn handle_serde_round_trip_is_structural() {
+        let v = Value::handle(NameId(7), u64::MAX);
+        let back = json_round_trip(&v);
+        assert_eq!(back, v);
+        assert_eq!(back.value_type(), ValueType::Handle);
+        assert_eq!(back.as_handle(), Some((NameId(7), u64::MAX)));
+    }
+
+    #[test]
+    fn handle_nested_in_collection_serde_round_trip() {
+        let v = Value::array(vec![
+            Value::handle(NameId(1), 1),
+            Value::handle(NameId(2), 2),
             Value::Null,
         ]);
         assert_eq!(json_round_trip(&v), v);

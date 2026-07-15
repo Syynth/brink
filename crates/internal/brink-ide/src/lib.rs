@@ -7,10 +7,13 @@ pub mod dir_rename;
 pub mod document;
 pub mod extract;
 pub mod file_rename;
+pub mod fn_value_hover;
 pub mod folding;
 pub mod formatting;
 pub mod hir_projection;
 pub mod hover;
+pub mod import_block;
+pub mod import_fix;
 pub mod include_block;
 mod inferred_types;
 pub mod inlay_hints;
@@ -32,7 +35,7 @@ pub mod trivia;
 
 pub use completion::{
     CompletionContext, CursorScope, cursor_scope, detect_completion_context, is_visible_in_context,
-    stdlib_completion_context, stdlib_completions,
+    ref_arg_root_prefix, stdlib_completion_context, stdlib_completions,
 };
 
 /// Author-time host value cache (Tier 3, #174): `host`-source semantic types →

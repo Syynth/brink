@@ -69,10 +69,24 @@ pub(super) fn lower_top_level_stitch(
     });
     scope.current_knot = None;
 
-    // `#@local` directive line(s) in the leading tag-line run of the body.
+    // `#@local` and `#@private`/`#@public` directives in the leading
+    // tag-line run of the body.
     let is_local = stitch.body().is_some_and(|b| {
         let dirs = leading_body_directives(b.syntax());
-        apply_scope_directives(&dirs, DirectiveTarget::Stitch, sink)
+        let local = apply_scope_directives(&dirs, DirectiveTarget::Stitch, sink);
+        if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
+            sink.set_visibility(crate::SymbolKind::Stitch, &name_text, vis);
+        }
+        if let Some((old_name, was_range)) =
+            super::super::directive::was_from_directives(&dirs, sink)
+        {
+            if old_name == name_text {
+                sink.diagnose(was_range, DiagnosticCode::E095);
+            } else {
+                sink.set_was(crate::SymbolKind::Stitch, &name_text, old_name, was_range);
+            }
+        }
+        local
     });
 
     Ok(Knot {
@@ -148,10 +162,34 @@ pub(super) fn lower_stitch(
     });
     scope.current_stitch = None;
 
-    // `#@local` directive line(s) in the leading tag-line run of the body.
+    // `#@local` and `#@private`/`#@public` directives in the leading
+    // tag-line run of the body.
     let is_local = stitch.body().is_some_and(|b| {
         let dirs = leading_body_directives(b.syntax());
-        apply_scope_directives(&dirs, DirectiveTarget::Stitch, sink)
+        let local = apply_scope_directives(&dirs, DirectiveTarget::Stitch, sink);
+        if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
+            sink.set_visibility(crate::SymbolKind::Stitch, &qualified, vis);
+        }
+        // `#@was(old_name)` on a nested stitch takes the bare old stitch
+        // name (the enclosing knot isn't being renamed) — qualify it the
+        // same way `declare_full` qualified the current name before
+        // comparing/storing.
+        if let Some((old_name, was_range)) =
+            super::super::directive::was_from_directives(&dirs, sink)
+        {
+            let old_qualified = format!("{knot_name}.{old_name}");
+            if old_qualified == qualified {
+                sink.diagnose(was_range, DiagnosticCode::E095);
+            } else {
+                sink.set_was(
+                    crate::SymbolKind::Stitch,
+                    &qualified,
+                    old_qualified,
+                    was_range,
+                );
+            }
+        }
+        local
     });
 
     Ok(Stitch {

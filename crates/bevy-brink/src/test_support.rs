@@ -40,6 +40,36 @@ pub fn compile_test_story(source: &str) -> (Program, Vec<Vec<brink_format::LineE
     (program, tables, initial_context)
 }
 
+/// [`compile_test_story`] but under the **brink dialect**, so a fixture can
+/// use brink-extension syntax (`#fn(…)` function values, `~ { }` blocks,
+/// sigil collection literals). Same `(Program, line tables, World)` return.
+pub fn compile_test_story_brink(
+    source: &str,
+) -> (Program, Vec<Vec<brink_format::LineEntry>>, World) {
+    use brink_compiler::{AnalysisOptions, Dialect};
+    let output = brink_compiler::compile_with_options(
+        "test.ink",
+        |path| {
+            if path == "test.ink" {
+                Ok(source.to_string())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("unexpected include: {path}"),
+                ))
+            }
+        },
+        AnalysisOptions {
+            dialect: Dialect::Brink,
+            ..AnalysisOptions::default()
+        },
+    )
+    .expect("brink test fixture should compile");
+    let (program, tables) = brink_runtime::link(&output.data).expect("test fixture should link");
+    let initial_context = fresh_context(&program);
+    (program, tables, initial_context)
+}
+
 /// Build an `App` with the minimum plugins needed to exercise
 /// `BrinkPlugin<()>`'s systems without spinning up a full Bevy game.
 pub fn make_test_app() -> App {

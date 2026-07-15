@@ -29,17 +29,17 @@ pub(crate) mod write;
 
 pub use read::{
     read_inkb, read_inkb_index, read_section_address_paths, read_section_addresses,
-    read_section_containers, read_section_externals, read_section_line_tables,
-    read_section_list_defs, read_section_list_items, read_section_list_literals,
-    read_section_literal_pool, read_section_name_table, read_section_struct_shapes,
-    read_section_variables,
+    read_section_alias_table, read_section_containers, read_section_externals,
+    read_section_line_tables, read_section_list_defs, read_section_list_items,
+    read_section_list_literals, read_section_literal_pool, read_section_name_table,
+    read_section_struct_shapes, read_section_variables, read_section_visibility,
 };
 pub use write::{
     assemble_inkb, write_inkb, write_section_address_paths, write_section_addresses,
-    write_section_containers, write_section_externals, write_section_line_tables,
-    write_section_list_defs, write_section_list_items, write_section_list_literals,
-    write_section_literal_pool, write_section_name_table, write_section_struct_shapes,
-    write_section_variables,
+    write_section_alias_table, write_section_containers, write_section_externals,
+    write_section_line_tables, write_section_list_defs, write_section_list_items,
+    write_section_list_literals, write_section_literal_pool, write_section_name_table,
+    write_section_struct_shapes, write_section_variables, write_section_visibility,
 };
 
 use core::ops::Range;
@@ -59,13 +59,26 @@ pub(crate) const MAGIC: &[u8; 4] = b"INKB";
 /// v4 added the collection value tags `VAL_ARRAY`/`VAL_MAP` (tree encoding) and
 /// froze the reserved Tier-1 value-tag/section/opcode surface (the §9 one-bump
 /// rule of `docs/value-model-spec.md`) — see `docs/format-v4-rfc.md`.
-pub(crate) const VERSION: u16 = 4;
+/// (Also on the v4 line: the optional `Visibility` section, M-2b,
+/// `docs/modules-spec.md` §4, tag `0x0E` — omitted when empty, so it didn't
+/// need a bump of its own.)
+/// v5 added the `AliasTable` section (`docs/modules-spec.md` §5, M-3): this
+/// section was not part of the v4 RFC's frozen inventory (unlike
+/// `StructShapes`/`EffectRows`, which were pre-reserved and only needed
+/// their *encoding* materialized without a bump), so a brand-new *mandatory*
+/// section is its own one-bump event. The section itself carries a
+/// one-byte section-local version so its *row encoding* can still evolve
+/// without a further format bump, matching the `EffectRows` precedent.
+/// `AliasTable` takes tag `0x0F` (the next free tag after `Visibility`).
+pub(crate) const VERSION: u16 = 5;
 /// Fixed-size preamble: magic + version + section count + reserved + file size + checksum.
 pub(crate) const HEADER_PREAMBLE: usize = 16;
 /// Each offset table entry: kind(1) + reserved(3) + offset(4)
 pub(crate) const SECTION_ENTRY_SIZE: usize = 8;
-/// Number of sections in the current format.
-pub(crate) const SECTION_COUNT: u8 = 12;
+/// Number of *mandatory* sections in the current format (always present,
+/// including the possibly-empty `AliasTable`). The optional `Visibility`
+/// section (M-2b) adds one more entry to the offset table when non-empty.
+pub(crate) const SECTION_COUNT: u8 = 13;
 
 // Value type tags
 pub(crate) const VAL_INT: u8 = 0x00;
@@ -85,13 +98,31 @@ pub(crate) const VAL_MAP: u8 = 0x0A;
 // closed-shape records. `docs/format-v4-rfc.md` §1: `ShapeId (u32 into
 // StructShapes), then field values in shape order`.
 pub(crate) const VAL_RECORD: u8 = 0x0F;
-
-// Reserved v4 value tags — numeric assignments frozen by the one-bump rule,
-// emitted by nothing in 4.0 (each is materialized when its milestone lands,
-// still under VERSION 4). The strict reader rejects them until then because no
-// `Value` variant exists to decode into. See `docs/format-v4-rfc.md` §1:
-//   0x0B VAL_FN_REF     (T1c)   0x0C VAL_CLOSURE (T1c)
-//   0x0D VAL_HANDLE     (T1d)   0x0E VAL_PROJECTION (T1e)
+// T1c (`docs/t1c-spec.md` §6, `docs/format-v4-rfc.md` §1): function values.
+// `VAL_FN_REF` = the zero-bound case (a `DefinitionId`); `VAL_CLOSURE` =
+// `DefinitionId`, u16 env count, then env entries `{NameId, kind u8 (0=val,
+// 1=ref), value}`. Numeric assignments were frozen by the one-bump rule; this
+// PR (T1c-2) materializes them.
+pub(crate) const VAL_FN_REF: u8 = 0x0B;
+pub(crate) const VAL_CLOSURE: u8 = 0x0C;
+// T1d (`docs/t1d-spec.md` §2, `docs/format-v4-rfc.md` §1): opaque
+// host-resource tokens. `kind NameId, u64 id` — no live pointer, no
+// dedicated opcode; handles enter the script world only via bindings.
+pub(crate) const VAL_HANDLE: u8 = 0x0D;
+// T1e (`docs/t1e-spec.md` §3, `docs/format-v4-rfc.md` §1): symbolic path
+// projections. `cell reference (= VAL_VAR_POINTER payload shape), u8 segment
+// count, then segments (u8 kind: 0=index i32 / 1=key value)`. Segment kind
+// `2=range` is RESERVED — never emitted (icebox #829). First emission of
+// this reserved tag.
+pub(crate) const VAL_PROJECTION: u8 = 0x0E;
+/// Wire kind for a [`crate::ProjSegment::Index`] segment.
+pub(crate) const PROJ_SEG_INDEX: u8 = 0x00;
+/// Wire kind for a [`crate::ProjSegment::Key`] segment.
+pub(crate) const PROJ_SEG_KEY: u8 = 0x01;
+// Segment kind 0x02 (range: start i32, end i32) is RESERVED — sequence
+// slices/ranges (icebox #829). Never emitted; the reader rejects it
+// (`InvalidProjSegmentKind`) since no `ProjSegment` variant exists to decode
+// into, the same discipline the value-tag reservations above follow.
 
 // LineContent tags
 pub(crate) const LINE_PLAIN: u8 = 0x00;
@@ -143,15 +174,31 @@ pub enum SectionKind {
     /// encoding at the format layer only — nothing in the compiler emits a
     /// non-empty table yet (see the PR description's scope note).
     StructShapes = 0x0C,
+    /// M-2b `Visibility` (`docs/modules-spec.md` §4, `docs/format-spec.md`):
+    /// the `DefinitionId`s of every `#@private` definition, sorted ascending.
+    /// **Omitted entirely when empty** (the common all-public case), so
+    /// public-only stories stay byte-identical for that section — the
+    /// section is purely additive and self-framed in the offset table.
+    /// `0x0D` is reserved for `EffectRows`, so this takes the next free tag.
+    Visibility = 0x0E,
+    /// M-3 `AliasTable` (`docs/modules-spec.md` §5): old→new `DefinitionId`
+    /// rename records from `#@was(old_name)` directives. Section-locally
+    /// versioned (one prefix byte) so the row encoding can grow without a
+    /// format-wide bump. Always present (possibly empty) from v5 onward.
+    /// `0x0E` was claimed by `Visibility` (M-2b), so this takes the next
+    /// free tag.
+    AliasTable = 0x0F,
 }
 
 // Reserved v4 section kinds — numeric assignments frozen by the §9 one-bump
-// rule (`docs/format-v4-rfc.md` §2 "Sections"), emitted by nothing in 4.0.
-// Deliberately NOT a `SectionKind` variant: `from_u8` has no match arm for
-// this, so the strict reader keeps rejecting it (`InvalidSectionKind`) until
-// its milestone lands and a real variant is added, the same discipline
-// `StructShapes` itself followed before this PR.
-//   0x0D EffectRows    — reserved, count always 0 in 4.0, section-locally
+// rule (`docs/format-v4-rfc.md` §2 "Sections"), emitted by nothing in 4.0,
+// still unclaimed in 5.0. Deliberately NOT a `SectionKind` variant: `from_u8`
+// has no match arm for this, so the strict reader keeps rejecting it
+// (`InvalidSectionKind`) until its milestone lands and a real variant is
+// added, the same discipline `StructShapes` itself followed before it
+// graduated, and `Visibility` (0x0E, skipping this gap) followed. `AliasTable`
+// takes the next tag after `Visibility`, 0x0F.
+//   0x0D EffectRows    — reserved, count always 0, section-locally
 //                        versioned so T2 can define the row encoding without
 //                        another format bump
 
@@ -170,6 +217,8 @@ impl SectionKind {
             0x0A => Ok(Self::AddressPaths),
             0x0B => Ok(Self::LiteralPool),
             0x0C => Ok(Self::StructShapes),
+            0x0E => Ok(Self::Visibility),
+            0x0F => Ok(Self::AliasTable),
             _ => Err(DecodeError::InvalidSectionKind(tag)),
         }
     }
@@ -250,5 +299,7 @@ mod tests {
         for tag in 0x01u8..=0x0C {
             assert!(SectionKind::from_u8(tag).is_ok());
         }
+        assert!(SectionKind::from_u8(0x0E).is_ok(), "Visibility (M-2b)");
+        assert!(SectionKind::from_u8(0x0F).is_ok(), "AliasTable (M-3)");
     }
 }

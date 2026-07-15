@@ -4,6 +4,18 @@
     clippy::print_stderr,
     clippy::items_after_statements
 )]
+// Issue #801: this crate's `clippy.toml` disallows bare `HashMap`/`HashSet`
+// so an iteration-order leak into codegen output can't ship quietly. This
+// file's one use (an always-empty `file_paths` map handed to
+// `lower_to_program_with_type_mode` — this test harness never populates
+// `SourceLocation`) has no order to leak; `crate::determinism::LookupMap`
+// is `pub(crate)` and invisible to this external test-binary crate, so a
+// file-level allow is the narrower fix (the `DefinitionId`-collision
+// `seen` maps below are real `BTreeMap`s, not exempted).
+#![allow(
+    clippy::disallowed_types,
+    reason = "always-empty file_paths map, no order to leak — see file doc"
+)]
 
 use brink_ir::lir;
 use brink_ir::{FileId, HirFile, SymbolManifest};
@@ -663,6 +675,89 @@ fn const_reference_array_element_folds_and_does_not_false_positive_e077() {
             .iter()
             .any(|d| d.code == brink_ir::DiagnosticCode::E077),
         "a CONST-reference element must not trip E077, got {diagnostics:?}"
+    );
+}
+
+// ── #743: bare VAR reference nested one level inside a declaration-default
+// collection/fn literal — the residue #679's scope notes flagged and #692/
+// E083 deliberately left alone. `is_const_foldable_kind` now resolves a
+// nested `Path` the same way `is_const_foldable_decl_default` resolves the
+// top-level one: `SymbolKind::Variable` is never a compile-time constant, so
+// it reports the standard E077 instead of silently folding to `Null`.
+
+#[test]
+fn var_reference_array_element_is_now_a_real_compile_error() {
+    let source = "VAR a = 1\nVAR arr = #[a]\n";
+    let (program, diagnostics) = lower_ink_with_warnings(source);
+    let program = program.expect("lowering stays total");
+    let g = find_global(&program, "arr");
+    assert!(
+        matches!(
+            &g.default,
+            lir::ConstValue::Array(items) if items.as_slice() == [lir::ConstValue::Null]
+        ),
+        "the never-constant VAR-reference element still folds to Null (now diagnosed, not silent), got {:?}",
+        g.default
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E077),
+        "expected non-suppressible E077 for a VAR-reference array element in a VAR default, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn var_reference_map_value_is_now_a_real_compile_error() {
+    let source = "VAR a = 1\nVAR m = #{\"k\": a}\n";
+    let (program, diagnostics) = lower_ink_with_warnings(source);
+    let program = program.expect("lowering stays total");
+    let g = find_global(&program, "m");
+    assert!(
+        matches!(
+            &g.default,
+            lir::ConstValue::Map(entries)
+                if entries.as_slice()
+                    == [(lir::ConstMapKey::Str("k".to_string()), lir::ConstValue::Null)]
+        ),
+        "the never-constant VAR-reference value still folds to Null (now diagnosed, not silent), got {:?}",
+        g.default
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E077),
+        "expected non-suppressible E077 for a VAR-reference map value in a VAR default, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn var_reference_bound_fn_val_arg_is_now_a_real_compile_error() {
+    // `eval_const_fn_literal`'s `val` branch previously called
+    // `eval_const_expr` with no `is_const_foldable_kind` gate at all — a
+    // bare VAR reference bound by value silently folded to `Null` inside
+    // the closure's `env`, zero diagnostic.
+    let source = "=== function heal(hp) ===\n~ return hp + 1\n\nVAR g = 5\nVAR f = #fn(heal, g)\n";
+    let (program, diagnostics) = lower_ink_with_warnings(source);
+    let program = program.expect("lowering stays total");
+    let g = find_global(&program, "f");
+    assert!(
+        matches!(
+            &g.default,
+            lir::ConstValue::Closure { env, .. }
+                if matches!(
+                    env.as_slice(),
+                    [lir::ConstClosureEntry::Val { value: lir::ConstValue::Null, .. }]
+                )
+        ),
+        "the never-constant VAR-reference bound val arg still folds to Null (now diagnosed, not silent), got {:?}",
+        g.default
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E077),
+        "expected non-suppressible E077 for a VAR-reference #fn bound val arg in a VAR default, got {diagnostics:?}"
     );
 }
 
@@ -2963,8 +3058,8 @@ fn no_definition_id_collisions_in_simple_story() {
     collect_ids(&p.root, &mut ids);
 
     // Check for duplicates
-    let mut seen: std::collections::HashMap<brink_format::DefinitionId, Vec<&str>> =
-        std::collections::HashMap::new();
+    let mut seen: std::collections::BTreeMap<brink_format::DefinitionId, Vec<&str>> =
+        std::collections::BTreeMap::new();
     let mut collisions = Vec::new();
     for (id, name) in &ids {
         seen.entry(*id).or_default().push(name.as_str());
@@ -3015,8 +3110,8 @@ VAR teacup = false
     let mut ids = Vec::new();
     collect_ids(&p.root, &mut ids);
 
-    let mut seen: std::collections::HashMap<brink_format::DefinitionId, Vec<&str>> =
-        std::collections::HashMap::new();
+    let mut seen: std::collections::BTreeMap<brink_format::DefinitionId, Vec<&str>> =
+        std::collections::BTreeMap::new();
     let mut collisions = Vec::new();
     for (id, name) in &ids {
         seen.entry(*id).or_default().push(name.as_str());
@@ -3577,10 +3672,40 @@ fn find_diag(
     diags.iter().find(|d| d.code == code)
 }
 
-fn find_record_new(expr: &lir::Expr) -> Option<(u32, &[lir::Expr])> {
+/// A `RecordNew`'s decoded parts: `(shape_id, fields, prelude)` — see
+/// `lir::Expr::RecordNew`'s own doc for what `fields`/`prelude` mean.
+type RecordNewParts<'a> = (
+    u32,
+    &'a [lir::Expr],
+    &'a [(u16, brink_format::NameId, lir::Expr)],
+);
+
+fn find_record_new(expr: &lir::Expr) -> Option<RecordNewParts<'_>> {
     match expr {
-        lir::Expr::RecordNew { shape_id, fields } => Some((*shape_id, fields)),
+        lir::Expr::RecordNew {
+            shape_id,
+            fields,
+            prelude,
+        } => Some((*shape_id, fields, prelude)),
         _ => None,
+    }
+}
+
+/// Resolve a `RecordNew` field to the actual initializer expression it was
+/// built from: the well-formed path's `fields` entries are `GetTemp` reads
+/// of a `prelude` slot (#676 source-order staging), so this chases that
+/// indirection back to the staged expression; the fault path's `fields`
+/// entries are already the raw initializer, returned as-is.
+fn resolve_field<'a>(
+    field: &'a lir::Expr,
+    prelude: &'a [(u16, brink_format::NameId, lir::Expr)],
+) -> &'a lir::Expr {
+    match field {
+        lir::Expr::GetTemp(slot, _) => prelude
+            .iter()
+            .find(|(s, _, _)| s == slot)
+            .map_or(field, |(_, _, e)| e),
+        _ => field,
     }
 }
 
@@ -3615,11 +3740,72 @@ fn struct_literal_lowers_to_record_new_in_shape_order() {
         .iter()
         .find_map(declare_temp_value)
         .expect("temp p := Point#{...} should be a DeclareTemp");
-    let (shape_id, fields) = find_record_new(value).expect("Point#{...} should lower to RecordNew");
+    let (shape_id, fields, prelude) =
+        find_record_new(value).expect("Point#{...} should lower to RecordNew");
     assert_eq!(shape_id, program.struct_shapes[0].id);
-    // Reordered into shape decl order (x, y) despite being written y, x.
-    assert!(matches!(fields[0], lir::Expr::Float(f) if f == 1.0));
-    assert!(matches!(fields[1], lir::Expr::Float(f) if f == 2.0));
+    // `fields` is reordered into shape decl order (x, y) despite being
+    // written y, x — each entry is a `GetTemp` read of a `prelude` slot,
+    // resolved back to its staged value here.
+    assert!(matches!(
+        resolve_field(&fields[0], prelude),
+        lir::Expr::Float(f) if *f == 1.0
+    ));
+    assert!(matches!(
+        resolve_field(&fields[1], prelude),
+        lir::Expr::Float(f) if *f == 2.0
+    ));
+    // `prelude` itself is staged in **source** order (#676): y (2.0) first,
+    // then x (1.0) — the author's left-to-right order, not shape order.
+    assert_eq!(prelude.len(), 2, "one staged slot per supplied initializer");
+    assert!(matches!(prelude[0].2, lir::Expr::Float(f) if f == 2.0));
+    assert!(matches!(prelude[1].2, lir::Expr::Float(f) if f == 1.0));
+}
+
+#[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "exact literal from source (1.0/2.0/3.0), not a computed value"
+)]
+fn duplicate_field_still_stages_every_initializer_no_silent_drop() {
+    // #675's LIR-level defense-in-depth: `structs::check_duplicates` (E084)
+    // is what normally stops this from compiling at all, but this test
+    // proves lowering itself never silently drops an initializer's side
+    // effect even under suppression — both `x` initializers get staged
+    // into `prelude` (hence both would still be evaluated at runtime),
+    // even though only the *last* one's value (2.0, last-wins) ends up
+    // placed in the record. `E084` itself is an analyzer diagnostic this
+    // LIR-only harness never surfaces — covered instead by
+    // `brink-analyzer`'s own unit tests and the `e0xx_diagnostics` pipeline
+    // suite.
+    let src = "STRUCT Point = #{x: float, y: float}\n\
+        ~ temp p = Point#{x: 1.0, x: 2.0, y: 3.0}\nHello.\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.severity() != brink_ir::Severity::Error),
+        "{diags:?}"
+    );
+    let program = program.expect("struct constructs still lower for real under TM-4c");
+    let value = program
+        .root
+        .body
+        .iter()
+        .find_map(declare_temp_value)
+        .expect("temp p := Point#{...} should be a DeclareTemp");
+    let (_shape_id, fields, prelude) =
+        find_record_new(value).expect("Point#{...} should lower to RecordNew");
+    assert_eq!(
+        prelude.len(),
+        3,
+        "every supplied initializer is staged, including the shadowed duplicate"
+    );
+    // The winning (last-wins) `x` initializer's value (2.0) is what
+    // actually lands in the record at offset 0.
+    assert!(matches!(
+        resolve_field(&fields[0], prelude),
+        lir::Expr::Float(f) if *f == 2.0
+    ));
 }
 
 #[test]
@@ -3743,17 +3929,24 @@ fn chained_field_write_emits_e074() {
     assert_eq!(e074.code.severity(), brink_ir::Severity::Error);
 }
 
-// NOTE (scopeNotes): a mixed chain written as `arr[i].field = v` (an
-// `Index`-based root followed by a `.field` write) cannot be exercised
-// end-to-end through the parser today — `arr[0].x = 2.0` fails to parse as
-// an *assignment* at all (a pre-existing grammar gap: the `.field` postfix
-// grammar's assignment-target position doesn't yet recognize an `Index`
-// base, producing a generic "expression is missing an operand" (E015)
-// parse error instead of a `FieldAccessExpr` target) — a PR #665/#668
-// grammar-layer issue, out of TM-4c's scope. `try_lower_field_assignment`'s
-// `hir::Expr::FieldAccess` branch (blocks.rs) still rejects that shape with
-// E074 by inspection — verified by code review, not by an integration test
-// here, since the grammar can't produce the input yet.
+#[test]
+fn mixed_index_then_field_write_emits_e074() {
+    // #674: `arr[i].field = v` (an `Index`-based root followed by a
+    // `.field` write) now parses as a real `FIELD_ACCESS_EXPR` assignment
+    // target (the grammar gap tracked in the NOTE this test replaces —
+    // formerly a generic E015 parse error, PR #665/#668's pre-existing
+    // gap). LIR still fences it off as a chained/mixed field write: this
+    // pins that `E074` actually fires end-to-end through the parser, not
+    // just by code-review inspection of `try_lower_field_assignment`'s
+    // `hir::Expr::FieldAccess` branch (blocks.rs).
+    let src = "VAR arr = #[1, 2, 3]\n~ arr[0].x = 2.0\nHello.\n";
+    let (_program, diags) = lower_ink_with_warnings(src);
+    let e074 = find_diag(&diags, brink_ir::DiagnosticCode::E074).expect(
+        "expected E074 for a mixed index-then-field write (arr[0].x = ...), now reachable \
+         through the parser",
+    );
+    assert_eq!(e074.code.severity(), brink_ir::Severity::Error);
+}
 
 #[test]
 fn single_level_field_write_lowers_via_take_make_mut_write_back() {
@@ -3828,13 +4021,17 @@ fn gradual_construction_field_mismatch_uses_fault_sentinel_shape_id() {
         .iter()
         .find_map(declare_temp_value)
         .expect("temp p := Point#{...} should be a DeclareTemp");
-    let (shape_id, fields) =
+    let (shape_id, fields, prelude) =
         find_record_new(value).expect("mismatched construction should still be a RecordNew");
     assert_eq!(shape_id, u32::MAX, "sentinel shape id signals the fault");
     assert_eq!(
         fields.len(),
         1,
         "the one supplied initializer is still evaluated"
+    );
+    assert!(
+        prelude.is_empty(),
+        "the fault path's fields are already source order — no staging needed"
     );
 }
 
@@ -3909,4 +4106,260 @@ fn gradual_mode_never_emits_static_offset_even_with_annotation() {
         }
         _ => panic!("expected RecordGet"),
     }
+}
+
+// ── #680 RCA: block-scoped temp read after its block closes (E082) ───────
+//
+// #680 was filed as "a `ref`-argument call co-occurring with a `temp` decl
+// in the same `~ { }` block resolves to the wrong global slot
+// (UnresolvedGlobal)". Root-causing the reporter's minimal repro against
+// current `main` shows the `ref`-argument call is a red herring: it
+// reproduces with *no* ref call at all, and does *not* reproduce for the
+// literal "ref call + temp decl in the same block" shape alone. The actual
+// trigger is reading a T1b block-scoped `temp` (`~ { … }`) from *outside*
+// its own block — LIR lowering's fallback for "temp not currently visible"
+// (`lower_path`'s `SymbolKind::Temp` arm, kept for inklecate-compat
+// classic-temp forward-reference emulation) previously caught this case
+// too, silently emitting a phantom hashed `GetGlobal`/`RefGlobal` id that
+// was never registered as a real global — exactly the reported
+// `UnresolvedGlobal` fault, with zero compile diagnostic. This matches the
+// `tests/tier1-brink/annotations-mixed` fixture's own account of the bug
+// (docs comment there: rewritten from a `~ { … }` block to standalone `~`
+// logic lines "specifically to avoid tripping this bug").
+
+#[test]
+fn block_scoped_temp_read_after_block_closes_is_e082_not_a_silent_phantom_global() {
+    let src = "VAR gold = 100\n~ {\n    temp name = \"hero\"\n}\n{name}\n-> END\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    let e082 = find_diag(&diags, brink_ir::DiagnosticCode::E082)
+        .expect("expected E082 for a block-scoped temp read after its block closed");
+    assert_eq!(e082.code.severity(), brink_ir::Severity::Error);
+    // `lower_to_program` is total — it still returns `Some` even with an
+    // Error-severity diagnostic recorded (the `brink-db` `lir_query` layer
+    // is what refuses to hand back a `Program`, not `lower_to_program`
+    // itself, matching the E057/E059 precedent above).
+    let program = program.expect("lower_to_program is total — it still returns Some");
+    // The pre-fix behavior emitted `Expr::GetGlobal(<hash of "name">)` here
+    // — a `DefinitionId` never present in `program.globals` (only `gold`
+    // is). Confirm that phantom id is gone: `gold` is still the only
+    // global, and it never masquerades as the temp's storage.
+    assert_eq!(program.globals.len(), 1);
+    assert_eq!(program.globals[0].id, find_global(&program, "gold").id);
+}
+
+#[test]
+fn block_scoped_temp_passed_by_ref_after_block_closes_is_e082() {
+    // Same defect, reached through `lower_call_args`'s `ref`-argument path
+    // instead of `lower_path` — `name` is passed by `ref` to `heal` after
+    // its declaring block has closed.
+    let src = "VAR gold = 100\n~ {\n    temp name = \"hero\"\n}\n~ heal(name)\nDone.\n-> END\n\n\
+               === function heal(ref hp) ===\n~ return hp\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    let e082 = find_diag(&diags, brink_ir::DiagnosticCode::E082)
+        .expect("expected E082 for an out-of-scope block temp passed by ref");
+    assert_eq!(e082.code.severity(), brink_ir::Severity::Error);
+    assert!(
+        program.is_some(),
+        "lower_to_program is total — it still returns Some"
+    );
+}
+
+#[test]
+fn ref_argument_call_with_temp_decl_in_the_same_block_compiles_clean() {
+    // The issue's literal minimal repro shape — a `ref`-argument call
+    // co-occurring with a `temp` decl in the same `~ { … }` block — with the
+    // temp used only inside its own block (never read after the block
+    // closes). This must compile with no E082 and resolve `gold`'s `ref`
+    // argument to the real global slot, proving the fix doesn't regress the
+    // shape #680 was originally filed against.
+    let src = "VAR gold = 100\n~ {\n    temp x = 1\n    heal(gold)\n}\nDone.\n-> END\n\n\
+               === function heal(ref hp) ===\n~ return hp\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        find_diag(&diags, brink_ir::DiagnosticCode::E082).is_none(),
+        "temp used only within its own block must never trigger E082: {diags:?}"
+    );
+    let program = program.expect("well-formed program lowers cleanly");
+    let gold_id = find_global(&program, "gold").id;
+    let heal = find_child(&program.root, "heal");
+    let call = program
+        .root
+        .body
+        .iter()
+        .find_map(|s| match s {
+            lir::Stmt::ExprStmt(e @ lir::Expr::Call { .. }) => Some(e),
+            _ => None,
+        })
+        .expect("heal(gold) should lower to an ExprStmt(Call)");
+    match call {
+        lir::Expr::Call { target, args } => {
+            assert_eq!(*target, heal.id);
+            assert_eq!(args.len(), 1);
+            match &args[0] {
+                lir::CallArg::RefGlobal(id) => assert_eq!(*id, gold_id),
+                lir::CallArg::RefTemp(..) => panic!("expected RefGlobal(gold), got RefTemp"),
+                lir::CallArg::Value(_) => panic!("expected RefGlobal(gold), got Value"),
+                lir::CallArg::RefProjection { .. } => {
+                    panic!("expected RefGlobal(gold), got RefProjection")
+                }
+            }
+        }
+        _ => unreachable!(),
+    }
+}
+
+// ─── T1e-1 path projections (docs/t1e-spec.md §2/§8, issue #831) ──────
+
+#[test]
+fn ref_marked_bare_var_call_arg_lowers_exactly_like_the_unmarked_form() {
+    // `ref gold` (zero path segments — no dotted field, no `[…]` index) is
+    // not a real T1e *projection*; it binds exactly like today's unmarked
+    // `gold` always has (`lower_ref_path_call_arg`), never hitting the
+    // T1e-1 E052-fence (`E099`).
+    let src = "VAR gold = 100\n~ heal(ref gold)\nDone.\n-> END\n\n\
+               === function heal(ref hp) ===\n~ return hp\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        find_diag(&diags, brink_ir::DiagnosticCode::E099).is_none(),
+        "a bare single-name `ref` must never hit the T1e-1 fence: {diags:?}"
+    );
+    let program = program.expect("well-formed program lowers cleanly");
+    let gold_id = find_global(&program, "gold").id;
+    let heal = find_child(&program.root, "heal");
+    let call = program
+        .root
+        .body
+        .iter()
+        .find_map(|s| match s {
+            lir::Stmt::ExprStmt(e @ lir::Expr::Call { .. }) => Some(e),
+            _ => None,
+        })
+        .expect("heal(ref gold) should lower to an ExprStmt(Call)");
+    match call {
+        lir::Expr::Call { target, args } => {
+            assert_eq!(*target, heal.id);
+            assert_eq!(args.len(), 1);
+            match &args[0] {
+                lir::CallArg::RefGlobal(id) => assert_eq!(*id, gold_id),
+                lir::CallArg::RefTemp(..) => panic!("expected RefGlobal(gold), got RefTemp"),
+                lir::CallArg::Value(_) => panic!("expected RefGlobal(gold), got Value"),
+                lir::CallArg::RefProjection { .. } => {
+                    panic!("expected RefGlobal(gold), got RefProjection")
+                }
+            }
+        }
+        _ => unreachable!(),
+    }
+}
+
+// ─── T1e-2 path projections (docs/t1e-spec.md §2/§3, tracking #828) ───
+//
+// T1e-2 replaces the T1e-1 E052-fence (`E099`) with real `MakeProjection`
+// lowering for a real path segment — `CallArg::RefProjection`.
+
+#[test]
+fn ref_dotted_field_projection_call_arg_lowers_to_ref_projection() {
+    // `ref npc.hp` has a real path segment (a dotted field) — a genuine
+    // T1e projection. `brink-analyzer`'s durable-root/position checks pass
+    // (`npc` is a durable global VAR, direct call-argument position), and
+    // T1e-2 now lowers it for real: a single field segment, a literal
+    // string expression carrying the field name.
+    let src = "VAR npc = 100\n~ heal(ref npc.hp)\nDone.\n-> END\n\n\
+               === function heal(ref hp) ===\n~ return hp\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        find_diag(&diags, brink_ir::DiagnosticCode::E099).is_none(),
+        "a real path-segment projection must no longer hit the T1e-1 fence: {diags:?}"
+    );
+    let program = program.expect("well-formed program lowers cleanly");
+    let npc_id = find_global(&program, "npc").id;
+    let call = program
+        .root
+        .body
+        .iter()
+        .find_map(|s| match s {
+            lir::Stmt::ExprStmt(e @ lir::Expr::Call { .. }) => Some(e),
+            _ => None,
+        })
+        .expect("heal(ref npc.hp) should lower to an ExprStmt(Call)");
+    match call {
+        lir::Expr::Call { args, .. } => {
+            assert_eq!(args.len(), 1);
+            match &args[0] {
+                lir::CallArg::RefProjection { root, segments } => {
+                    assert_eq!(*root, npc_id);
+                    assert_eq!(segments.len(), 1, "expected one dotted-field segment");
+                    match &segments[0] {
+                        lir::Expr::String(s) => {
+                            assert_eq!(s.parts.len(), 1);
+                            match &s.parts[0] {
+                                lir::StringPart::Literal(text) => assert_eq!(text, "hp"),
+                                lir::StringPart::Interpolation(_) => {
+                                    panic!("expected a literal field-name part, got Interpolation")
+                                }
+                            }
+                        }
+                        _ => panic!("expected a literal field-name string"),
+                    }
+                }
+                _ => panic!("expected RefProjection(npc, [hp])"),
+            }
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn ref_index_projection_call_arg_lowers_to_ref_projection() {
+    let src = "VAR inventory = 100\n~ temp idx = 0\n~ heal(ref inventory[idx])\nDone.\n-> END\n\n\
+               === function heal(ref hp) ===\n~ return hp\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        find_diag(&diags, brink_ir::DiagnosticCode::E099).is_none(),
+        "an index-segment projection must no longer hit the T1e-1 fence: {diags:?}"
+    );
+    let program = program.expect("well-formed program lowers cleanly");
+    let inventory_id = find_global(&program, "inventory").id;
+    let call = program
+        .root
+        .body
+        .iter()
+        .find_map(|s| match s {
+            lir::Stmt::ExprStmt(e @ lir::Expr::Call { .. }) => Some(e),
+            _ => None,
+        })
+        .expect("heal(ref inventory[idx]) should lower to an ExprStmt(Call)");
+    match call {
+        lir::Expr::Call { args, .. } => {
+            assert_eq!(args.len(), 1);
+            match &args[0] {
+                lir::CallArg::RefProjection { root, segments } => {
+                    assert_eq!(*root, inventory_id);
+                    assert_eq!(segments.len(), 1, "expected one index segment");
+                    // The index expression is `idx` (a temp read) — snapshot
+                    // at creation, evaluated once here as an ordinary
+                    // `GetTemp`.
+                    assert!(
+                        matches!(&segments[0], lir::Expr::GetTemp(..)),
+                        "expected the index segment to lower `idx` via GetTemp"
+                    );
+                }
+                _ => panic!("expected RefProjection(inventory, [idx])"),
+            }
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn block_scoped_temp_visible_for_the_rest_of_its_own_block_no_false_positive() {
+    // Nested scopes (an `if` inside the block) must still see the outer
+    // block's temp — E082 is only for reads *after* the declaring block has
+    // fully closed, never for a live nested scope.
+    let src = "VAR gold = 100\n~ {\n    temp name = \"hero\"\n    if gold > 0 {\n        temp y = name\n    }\n}\nDone.\n-> END\n";
+    let (_program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        find_diag(&diags, brink_ir::DiagnosticCode::E082).is_none(),
+        "a nested scope must still see the outer block's live temp: {diags:?}"
+    );
 }

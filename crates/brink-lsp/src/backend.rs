@@ -32,6 +32,7 @@ use tower_lsp::{Client, LanguageServer};
 
 use brink_ide::{
     CompletionContext, cursor_scope, detect_completion_context, is_visible_in_context,
+    ref_arg_root_prefix,
 };
 
 use crate::convert::{self, LineIndex};
@@ -106,13 +107,175 @@ impl LanguageOptions {
     }
 }
 
+/// Tier of a `publishDiagnostics` send. The notification handlers
+/// (`did_open`/`did_change`/`did_save`) publish the fast **`PerFile`** set
+/// (parse + lowering only); the background [`analysis_loop`] publishes the
+/// full **`Analysis`** set (adds cross-file analyzer diagnostics). For the
+/// same file content, `Analysis` is strictly richer than `PerFile`, so within
+/// one generation it wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublishTier {
+    PerFile,
+    Analysis,
+}
+
+/// What was last published for a file, plus the ordering key it went out
+/// under. `generation` is the content revision (see [`Backend::mutate_db`]) the
+/// set was computed against; `tier` breaks ties within one generation.
+struct PublishRecord {
+    generation: u64,
+    tier: PublishTier,
+    diags: Vec<tower_lsp::lsp_types::Diagnostic>,
+}
+
+/// Outcome of the anti-downgrade rule: whether to actually send the incoming
+/// set to the client, and whether to record it as the new authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PublishDecision {
+    send: bool,
+    record: bool,
+}
+
+/// The [`DiagnosticsPublisher`] anti-downgrade rule, factored out pure so it
+/// can be unit-tested without a live `Client`. Given what's currently recorded
+/// for a file (`prev`) and an incoming `(generation, tier, diags)`, decide
+/// whether to send and whether to record. See [`DiagnosticsPublisher`] for the
+/// rationale.
+fn publish_decision(
+    prev: Option<&PublishRecord>,
+    generation: u64,
+    tier: PublishTier,
+    diags: &[tower_lsp::lsp_types::Diagnostic],
+) -> PublishDecision {
+    match prev {
+        // Never published: send (and record) only a non-empty set, so a clean
+        // file never generates a spurious empty publish.
+        None => {
+            let nonempty = !diags.is_empty();
+            PublishDecision {
+                send: nonempty,
+                record: nonempty,
+            }
+        }
+        Some(prev) => {
+            let is_downgrade = generation < prev.generation
+                || (generation == prev.generation
+                    && tier == PublishTier::PerFile
+                    && prev.tier == PublishTier::Analysis);
+            if is_downgrade {
+                // Stale/less-complete relative to what's shown — drop it whole,
+                // leaving both the record and the client untouched.
+                PublishDecision {
+                    send: false,
+                    record: false,
+                }
+            } else {
+                // At or above the current authority: send only if the set
+                // actually changed, but always re-record so the ordering key
+                // advances — a no-op-content upgrade still raises the
+                // tier/generation, keeping later downgrade checks correct.
+                PublishDecision {
+                    send: prev.diags != diags,
+                    record: true,
+                }
+            }
+        }
+    }
+}
+
+/// Serializes every `publishDiagnostics` send through one async critical
+/// section so **wire order equals decision order** across the
+/// notification-handler tasks and the background [`analysis_loop`] task, and
+/// applies a monotone anti-downgrade rule (#615).
+///
+/// Two independent tasks publish diagnostics for the same file — a handler's
+/// per-file publish and the loop's analysis publish — and nothing ordered
+/// their sends. Under load the older/less-complete `PerFile` set could land on
+/// the wire *after* the richer `Analysis` set; because the previous dedup
+/// cache still recorded the `Analysis` set, the next pass computed an
+/// identical set and suppressed the correction, permanently stranding the
+/// client on the parse-only subset until the next edit.
+///
+/// Holding the mutex across the send fuses the decision and the send into one
+/// atomic step, so no interleaving can reorder them. The rule: a publish
+/// applies iff it is not a downgrade of what the file currently shows — a
+/// strictly newer `generation` always wins; within one generation `Analysis`
+/// beats `PerFile`; a `PerFile` never overwrites a same-or-newer `Analysis`.
+/// The `generation` is a content revision advanced under the db lock (see
+/// [`Backend::mutate_db`]) and read by both publishers under that same lock,
+/// so a per-file set carries exactly its content's revision and the matching
+/// background pass reads that revision or a newer one — the full set therefore
+/// always wins the exchange for a given content, whichever way the two sends
+/// interleave, while a routine edit's per-file set still out-generations the
+/// previous analysis and shows instantly.
+#[derive(Clone)]
+pub struct DiagnosticsPublisher {
+    client: Client,
+    state: Arc<tokio::sync::Mutex<HashMap<brink_ir::FileId, PublishRecord>>>,
+}
+
+impl DiagnosticsPublisher {
+    pub(crate) fn new(client: Client) -> Self {
+        Self {
+            client,
+            state: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Publish `diags` for `file_id` (at `path`) unless doing so would
+    /// downgrade what the client currently shows for that file (see the type
+    /// docs for the ordering rule). `version` is forwarded verbatim as
+    /// `PublishDiagnosticsParams.version`: per-file publishes carry the client
+    /// document version, analysis publishes carry `None`.
+    async fn publish(
+        &self,
+        file_id: brink_ir::FileId,
+        path: &str,
+        diags: Vec<tower_lsp::lsp_types::Diagnostic>,
+        generation: u64,
+        tier: PublishTier,
+        version: Option<i32>,
+    ) {
+        // Held across the `.await` below — this is the whole point: decide and
+        // send under one lock so wire order cannot diverge from decision order.
+        let mut state = self.state.lock().await;
+
+        let decision = publish_decision(state.get(&file_id), generation, tier, &diags);
+
+        if decision.send
+            && let Ok(uri) = Url::from_file_path(path)
+        {
+            self.client
+                .publish_diagnostics(uri, diags.clone(), version)
+                .await;
+        }
+        if decision.record {
+            state.insert(
+                file_id,
+                PublishRecord {
+                    generation,
+                    tier,
+                    diags,
+                },
+            );
+        }
+    }
+
+    /// Forget a file's last-published record (on close/delete) so a later
+    /// reopen republishes from scratch instead of being deduped against a
+    /// now-stale set.
+    async fn forget(&self, file_id: brink_ir::FileId) {
+        self.state.lock().await.remove(&file_id);
+    }
+}
+
 pub struct Backend {
     client: Client,
     db: Arc<Mutex<brink_db::ProjectDb>>,
     analysis_rx: watch::Receiver<Option<Arc<ProjectAnalyses>>>,
     analysis_trigger: Arc<Notify>,
     generation: Arc<AtomicU64>,
-    last_published: Arc<Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>>,
+    publisher: DiagnosticsPublisher,
     workspace_roots: Arc<Mutex<Vec<PathBuf>>>,
     language: LanguageOptions,
 }
@@ -124,9 +287,7 @@ impl Backend {
         analysis_rx: watch::Receiver<Option<Arc<ProjectAnalyses>>>,
         analysis_trigger: Arc<Notify>,
         generation: Arc<AtomicU64>,
-        last_published: Arc<
-            Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>,
-        >,
+        publisher: DiagnosticsPublisher,
         language: LanguageOptions,
     ) -> Self {
         Self {
@@ -135,7 +296,7 @@ impl Backend {
             analysis_rx,
             analysis_trigger,
             generation,
-            last_published,
+            publisher,
             workspace_roots: Arc::new(Mutex::new(Vec::new())),
             language,
         }
@@ -158,8 +319,24 @@ impl Backend {
 
     /// Publish per-file diagnostics (parse + lowering only, no analysis).
     /// This gives instant syntax error feedback without waiting for background analysis.
-    async fn publish_perfile_diagnostics(&self, uri: &Url, path: &str) {
-        let lsp_diags = {
+    ///
+    /// `version` is the client document version this set was computed from,
+    /// when the triggering notification carries one (`didOpen`/`didChange`).
+    /// Passing it through in `PublishDiagnosticsParams.version` is what the
+    /// protocol intends, and it also distinguishes these per-file publishes
+    /// from background [`analysis_loop`] publishes (which analyze a db
+    /// snapshot, not a specific client document version, and so send no
+    /// version). Integration tests rely on that distinction: this publish
+    /// runs on the notification-handler task and can land on the wire
+    /// *between* a background pass's publish and that pass's
+    /// [`BackgroundAnalysisComplete`] signal (#615), so a test waiting for
+    /// background-analysis diagnostics must be able to ignore it.
+    ///
+    /// Routed through [`DiagnosticsPublisher`] (tagged `PerFile`) rather than
+    /// sent directly, so the anti-downgrade rule prevents a delayed per-file
+    /// send from clobbering a fuller analysis set already on screen.
+    async fn publish_perfile_diagnostics(&self, path: &str, version: Option<i32>) {
+        let (file_id, generation, lsp_diags) = {
             let db = lock_db(&self.db);
             let Some(file_id) = db.file_id(path) else {
                 return;
@@ -180,20 +357,60 @@ impl Backend {
                 &suppressions,
             );
 
-            filtered
+            let lsp_diags: Vec<_> = filtered
                 .iter()
                 .map(|d| convert::diagnostic_to_lsp(d, &idx))
-                .collect()
+                .collect();
+
+            // Generation this set reflects: read under the same db lock as the
+            // content, so `(content, generation)` is a consistent pair (the bump
+            // happens inside `mutate_db`, under this lock). A per-file publish
+            // therefore carries exactly its content's revision, so the matching
+            // background pass — which reads the same revision, or a newer one if
+            // edits coalesced — ties or beats it and wins the anti-downgrade
+            // exchange, while a *routine* edit's set still out-generations the
+            // previous analysis and shows instantly.
+            let generation = self.generation.load(Ordering::Relaxed);
+            (file_id, generation, lsp_diags)
         };
 
-        self.client
-            .publish_diagnostics(uri.clone(), lsp_diags, None)
+        self.publisher
+            .publish(
+                file_id,
+                path,
+                lsp_diags,
+                generation,
+                PublishTier::PerFile,
+                version,
+            )
             .await;
     }
 
-    /// Bump the generation counter and notify the background analysis task.
-    fn trigger_analysis(&self) {
+    /// Apply a content mutation to the db and advance the content generation
+    /// in the **same** critical section.
+    ///
+    /// The generation is a content revision counter that the
+    /// [`DiagnosticsPublisher`] uses to order publishes. It must move in lock
+    /// step with the content it versions: every reader that snapshots a
+    /// `(content, generation)` pair does so under this same db lock, so
+    /// bumping here — rather than later in [`trigger_analysis`] — is what makes
+    /// the pair consistent. If the bump happened after the lock was released, a
+    /// reader could observe new content with an old generation (or vice-versa),
+    /// and the anti-downgrade rule would misfire: a routine edit's per-file
+    /// publish would tie the previous analysis and be dropped as a same-
+    /// generation downgrade, silently killing instant syntax feedback.
+    fn mutate_db<R>(&self, f: impl FnOnce(&mut brink_db::ProjectDb) -> R) -> R {
+        let mut db = lock_db(&self.db);
+        let out = f(&mut db);
         self.generation.fetch_add(1, Ordering::Relaxed);
+        out
+    }
+
+    /// Notify the background analysis task that inputs changed. The content
+    /// generation is advanced by [`mutate_db`](Self::mutate_db) /
+    /// [`load_file_from_disk`](Self::load_file_from_disk) under the db lock,
+    /// not here, so it stays a consistent pair with the content snapshot.
+    fn trigger_analysis(&self) {
         self.analysis_trigger.notify_one();
     }
 
@@ -243,6 +460,10 @@ impl Backend {
             return;
         }
         db.set_file(path, contents);
+        // Content added — advance the generation under this same lock (see
+        // `mutate_db`); this path can't use the helper because it keeps reading
+        // the db (include chasing) after the mutation.
+        self.generation.fetch_add(1, Ordering::Relaxed);
 
         // Collect includes to chase (release the lock first)
         let includes = db
@@ -577,25 +798,23 @@ impl LanguageServer for Backend {
                         tracing::warn!(path, "failed to read watched file");
                         continue;
                     };
-                    let mut db = lock_db(&self.db);
-                    if db.file_id(&path).is_some() {
-                        db.update_file(&path, contents);
-                    } else {
-                        db.set_file(&path, contents);
-                    }
+                    self.mutate_db(|db| {
+                        if db.file_id(&path).is_some() {
+                            db.update_file(&path, contents);
+                        } else {
+                            db.set_file(&path, contents);
+                        }
+                    });
                     changed = true;
                 }
                 FileChangeType::DELETED => {
-                    let file_id = {
-                        let mut db = lock_db(&self.db);
+                    let file_id = self.mutate_db(|db| {
                         let fid = db.file_id(&path);
                         db.remove_file(&path);
                         fid
-                    };
-                    if let Some(fid) = file_id
-                        && let Ok(mut published) = self.last_published.lock()
-                    {
-                        published.remove(&fid);
+                    });
+                    if let Some(fid) = file_id {
+                        self.publisher.forget(fid).await;
                     }
                     self.client
                         .publish_diagnostics(change.uri.clone(), vec![], None)
@@ -624,15 +843,12 @@ impl LanguageServer for Backend {
             return;
         };
 
-        {
-            let mut db = lock_db(&self.db);
-            db.set_file(&path, params.text_document.text);
-        }
+        self.mutate_db(|db| db.set_file(&path, params.text_document.text));
 
         // Chase INCLUDE directives — load referenced files from disk
         self.chase_includes(&path);
 
-        self.publish_perfile_diagnostics(&params.text_document.uri, &path)
+        self.publish_perfile_diagnostics(&path, Some(params.text_document.version))
             .await;
         self.trigger_analysis();
     }
@@ -653,12 +869,9 @@ impl LanguageServer for Backend {
             return;
         };
 
-        {
-            let mut db = lock_db(&self.db);
-            db.update_file(&path, change.text);
-        }
+        self.mutate_db(|db| db.update_file(&path, change.text));
 
-        self.publish_perfile_diagnostics(&params.text_document.uri, &path)
+        self.publish_perfile_diagnostics(&path, Some(params.text_document.version))
             .await;
         self.trigger_analysis();
     }
@@ -671,12 +884,12 @@ impl LanguageServer for Backend {
         };
 
         if let Some(text) = params.text {
-            let mut db = lock_db(&self.db);
-            db.update_file(&path, text);
+            self.mutate_db(|db| db.update_file(&path, text));
         }
 
-        self.publish_perfile_diagnostics(&params.text_document.uri, &path)
-            .await;
+        // `DidSaveTextDocumentParams` carries no document version, so this
+        // publish can't be version-tagged like didOpen/didChange's.
+        self.publish_perfile_diagnostics(&path, None).await;
         self.trigger_analysis();
     }
 
@@ -687,18 +900,15 @@ impl LanguageServer for Backend {
             return;
         };
 
-        let file_id = {
-            let mut db = lock_db(&self.db);
+        let file_id = self.mutate_db(|db| {
             let fid = db.file_id(&path);
             db.remove_file(&path);
             fid
-        };
+        });
 
-        // Clear from last_published tracking
-        if let Some(fid) = file_id
-            && let Ok(mut published) = self.last_published.lock()
-        {
-            published.remove(&fid);
+        // Drop the last-published record so a reopen republishes from scratch.
+        if let Some(fid) = file_id {
+            self.publisher.forget(fid).await;
         }
 
         self.client
@@ -954,8 +1164,18 @@ impl LanguageServer for Backend {
             return Ok(Some(CompletionResponse::Array(items)));
         }
 
+        // T1e (docs/t1e-spec.md §2, issue #850): right after `ref `, only a
+        // `VAR` is a legal `ref lvalue-path` root (E080) — narrow the
+        // `FunctionArgs` set the same way `brink-web`'s wasm completion path
+        // does (`ref_arg_root_prefix`'s own doc explains the "where cheap"
+        // scoping: root position only, not `.`/`[` path continuations).
+        let ref_root = ref_arg_root_prefix(&snap.source, byte_offset);
+
         for info in snap.analysis.index.symbols.values() {
             if !is_visible_in_context(&ctx, info, &cursor_scope) {
+                continue;
+            }
+            if ref_root.is_some() && info.kind != brink_ir::SymbolKind::Variable {
                 continue;
             }
             items.push(make_completion_item(info, None));
@@ -1255,16 +1475,23 @@ impl LanguageServer for Backend {
             return Ok(Some(vec![]));
         };
 
-        let source = {
+        let (source, import_actions) = {
             let db = lock_db(&self.db);
             let Some(file_id) = db.file_id(&path) else {
                 return Ok(Some(vec![]));
             };
-            db.source(file_id).map(String::from)
-        };
-
-        let Some(source) = source else {
-            return Ok(Some(vec![]));
+            let Some(source) = db.source(file_id).map(String::from) else {
+                return Ok(Some(vec![]));
+            };
+            let idx = LineIndex::new(&source);
+            let offset: u32 = idx
+                .offset(params.range.start.line, params.range.start.character)
+                .into();
+            // Auto-import quick-fix (M-4): session-aware, so it reads the
+            // module-qualified db while the lock is held, then merges into the
+            // same code-action list as the source-only actions below.
+            let import_actions = brink_ide::import_fix::import_actions(&db, file_id, offset);
+            (source, import_actions)
         };
 
         let idx = LineIndex::new(&source);
@@ -1272,7 +1499,8 @@ impl LanguageServer for Backend {
             .offset(params.range.start.line, params.range.start.character)
             .into();
 
-        let domain_actions = brink_ide::code_actions::code_actions(&source, cursor_offset);
+        let mut domain_actions = brink_ide::code_actions::code_actions(&source, cursor_offset);
+        domain_actions.extend(import_actions);
 
         let uri = params.text_document.uri.as_str();
         let lsp_actions = domain_actions
@@ -1351,6 +1579,20 @@ impl LanguageServer for Backend {
                 brink_ide::code_actions::CodeActionData::FormatStitch {
                     knot: knot_name.to_owned(),
                     stitch: stitch_name.to_owned(),
+                }
+            }
+            Some("add_import") => {
+                let module = data
+                    .get("module")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                let name = data
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                brink_ide::code_actions::CodeActionData::AddImport {
+                    module: module.to_owned(),
+                    name: name.to_owned(),
                 }
             }
             _ => return Ok(action),
@@ -1728,11 +1970,11 @@ struct BackgroundAnalysisCompleteParams {
 /// no separate propagation step needed.
 pub async fn analysis_loop(
     db: Arc<Mutex<brink_db::ProjectDb>>,
-    _generation: Arc<AtomicU64>,
+    generation: Arc<AtomicU64>,
     trigger: Arc<Notify>,
     tx: watch::Sender<Option<Arc<ProjectAnalyses>>>,
     client: Client,
-    last_published: Arc<Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>>,
+    publisher: DiagnosticsPublisher,
     language: LanguageOptions,
 ) {
     loop {
@@ -1755,9 +1997,16 @@ pub async fn analysis_loop(
             ..AnalysisOptions::default()
         };
 
-        // Snapshot inputs under lock
-        let (projects, file_meta, per_file_diags, file_suppressions) = {
+        // Snapshot inputs under lock, reading the generation in the same locked
+        // block so `(content, generation)` is a consistent pair: it reflects
+        // exactly the content-revision folded into this pass. For any edit this
+        // pass includes, that is `>=` the generation the edit's per-file publish
+        // carried (both read the revision under the db lock; the analysis reads
+        // at-or-after the write). Tagged `Analysis`, this therefore wins the
+        // `DiagnosticsPublisher` anti-downgrade rule against that per-file set.
+        let (generation, projects, file_meta, per_file_diags, file_suppressions) = {
             let db = lock_db(&db);
+            let generation = generation.load(Ordering::Relaxed);
             let project_defs = db.compute_projects();
             let project_inputs: Vec<_> = project_defs
                 .iter()
@@ -1772,7 +2021,7 @@ pub async fn analysis_loop(
                 meta.iter()
                     .filter_map(|(fid, _, _)| Some((*fid, db.suppressions(*fid)?.clone())))
                     .collect();
-            (project_inputs, meta, diags, suppressions)
+            (generation, project_inputs, meta, diags, suppressions)
         };
 
         // Run per-project analysis OUTSIDE the lock
@@ -1812,12 +2061,12 @@ pub async fn analysis_loop(
         // Publish diagnostics for all affected files
         let file_count = file_meta.len();
         publish_all_diagnostics(
-            &client,
+            &publisher,
             &result,
             &file_meta,
             &per_file_diags,
             &file_suppressions,
-            &last_published,
+            generation,
         )
         .await;
 
@@ -1899,17 +2148,18 @@ fn collect_multiproject_diags(
     }
 }
 
-/// Compute full diagnostic set for each file and publish if changed.
+/// Compute the full diagnostic set for each file and hand it to the
+/// [`DiagnosticsPublisher`] tagged `Analysis` at `generation`.
 ///
 /// Unions analysis diagnostics from all projects containing a file.
 /// Applies suppression directives before publishing.
 async fn publish_all_diagnostics(
-    client: &Client,
+    publisher: &DiagnosticsPublisher,
     projects: &ProjectAnalyses,
     file_meta: &[(brink_ir::FileId, String, String)],
     per_file_diags: &[(brink_ir::FileId, Vec<brink_ir::Diagnostic>)],
     file_suppressions: &HashMap<brink_ir::FileId, brink_ir::suppressions::Suppressions>,
-    last_published: &Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>,
+    generation: u64,
 ) {
     let lowering_diags: HashMap<brink_ir::FileId, &[brink_ir::Diagnostic]> = per_file_diags
         .iter()
@@ -1977,7 +2227,16 @@ async fn publish_all_diagnostics(
                     &mut lsp_diags,
                 );
 
-                publish_if_changed(client, last_published, *file_id, path, lsp_diags).await;
+                publisher
+                    .publish(
+                        *file_id,
+                        path,
+                        lsp_diags,
+                        generation,
+                        PublishTier::Analysis,
+                        None,
+                    )
+                    .await;
                 continue;
             }
         }
@@ -1995,41 +2254,16 @@ async fn publish_all_diagnostics(
             .map(|d| convert::diagnostic_to_lsp(d, &idx))
             .collect();
 
-        publish_if_changed(client, last_published, *file_id, path, lsp_diags).await;
-    }
-}
-
-/// Publish diagnostics if they differ from the last published set.
-async fn publish_if_changed(
-    client: &Client,
-    last_published: &Mutex<HashMap<brink_ir::FileId, Vec<tower_lsp::lsp_types::Diagnostic>>>,
-    file_id: brink_ir::FileId,
-    path: &str,
-    lsp_diags: Vec<tower_lsp::lsp_types::Diagnostic>,
-) {
-    let should_publish = {
-        let published = match last_published.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        match published.get(&file_id) {
-            Some(prev) => *prev != lsp_diags,
-            None => !lsp_diags.is_empty(),
-        }
-    };
-
-    if should_publish {
-        if let Ok(uri) = Url::from_file_path(path) {
-            client
-                .publish_diagnostics(uri, lsp_diags.clone(), None)
-                .await;
-        }
-
-        let mut published = match last_published.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        published.insert(file_id, lsp_diags);
+        publisher
+            .publish(
+                *file_id,
+                path,
+                lsp_diags,
+                generation,
+                PublishTier::Analysis,
+                None,
+            )
+            .await;
     }
 }
 
@@ -2086,5 +2320,142 @@ fn code_action_data_to_json(
                 "kind": "demote_knot", "uri": uri, "knot": knot, "dest_knot": dest_knot,
             })
         }
+        brink_ide::code_actions::CodeActionData::AddImport { module, name } => {
+            serde_json::json!({
+                "kind": "add_import", "uri": uri, "module": module, "name": name,
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tower_lsp::lsp_types::Diagnostic;
+
+    use super::{PublishDecision, PublishRecord, PublishTier, publish_decision};
+
+    /// A distinct diagnostic set identified by its message (content equality is
+    /// all `publish_decision` inspects).
+    fn diags(msg: &str) -> Vec<Diagnostic> {
+        vec![Diagnostic {
+            message: msg.to_owned(),
+            ..Diagnostic::default()
+        }]
+    }
+
+    fn record(generation: u64, tier: PublishTier, msg: &str) -> PublishRecord {
+        PublishRecord {
+            generation,
+            tier,
+            diags: diags(msg),
+        }
+    }
+
+    const SEND_AND_RECORD: PublishDecision = PublishDecision {
+        send: true,
+        record: true,
+    };
+    const DROP: PublishDecision = PublishDecision {
+        send: false,
+        record: false,
+    };
+    const RECORD_ONLY: PublishDecision = PublishDecision {
+        send: false,
+        record: true,
+    };
+
+    #[test]
+    fn fresh_file_empty_set_is_dropped() {
+        // Never-published clean file: no spurious empty publish.
+        assert_eq!(publish_decision(None, 0, PublishTier::PerFile, &[]), DROP,);
+    }
+
+    #[test]
+    fn fresh_file_nonempty_set_is_sent() {
+        assert_eq!(
+            publish_decision(None, 0, PublishTier::PerFile, &diags("e1")),
+            SEND_AND_RECORD,
+        );
+    }
+
+    #[test]
+    fn analysis_upgrades_perfile_within_a_generation() {
+        // PerFile@G already shown; the fuller Analysis@G (same edit) wins.
+        let prev = record(1, PublishTier::PerFile, "parse-only");
+        assert_eq!(
+            publish_decision(
+                Some(&prev),
+                1,
+                PublishTier::Analysis,
+                &diags("parse+analysis")
+            ),
+            SEND_AND_RECORD,
+        );
+    }
+
+    #[test]
+    fn perfile_never_downgrades_a_same_generation_analysis() {
+        // THE BUG (#615): a delayed PerFile@G landing after Analysis@G for the
+        // same content must be dropped whole — not sent, not recorded — so the
+        // client keeps the full set.
+        let prev = record(1, PublishTier::Analysis, "parse+analysis");
+        assert_eq!(
+            publish_decision(Some(&prev), 1, PublishTier::PerFile, &diags("parse-only")),
+            DROP,
+        );
+    }
+
+    #[test]
+    fn newer_generation_perfile_replaces_older_analysis() {
+        // A fresh edit's PerFile (gen G+1) legitimately supersedes the stale
+        // full set computed for the previous content (gen G).
+        let prev = record(1, PublishTier::Analysis, "old-content-analysis");
+        assert_eq!(
+            publish_decision(
+                Some(&prev),
+                2,
+                PublishTier::PerFile,
+                &diags("new-content-parse")
+            ),
+            SEND_AND_RECORD,
+        );
+    }
+
+    #[test]
+    fn stale_older_generation_analysis_is_dropped() {
+        // An analysis pass for superseded content must not overwrite a newer set.
+        let prev = record(2, PublishTier::Analysis, "current");
+        assert_eq!(
+            publish_decision(Some(&prev), 1, PublishTier::Analysis, &diags("stale")),
+            DROP,
+        );
+    }
+
+    #[test]
+    fn identical_upgrade_records_without_sending() {
+        // Analysis@G with the same content as the shown PerFile@G: no need to
+        // re-send, but record the tier bump so a later PerFile@G is correctly
+        // rejected as a downgrade.
+        let prev = record(1, PublishTier::PerFile, "same");
+        assert_eq!(
+            publish_decision(Some(&prev), 1, PublishTier::Analysis, &diags("same")),
+            RECORD_ONLY,
+        );
+    }
+
+    #[test]
+    fn tier_bump_from_identical_upgrade_then_blocks_late_perfile() {
+        // Chains the previous case: after the record-only Analysis@G upgrade,
+        // a late PerFile@G is a downgrade and is dropped.
+        let after_upgrade = record(1, PublishTier::Analysis, "same");
+        assert_eq!(
+            publish_decision(
+                Some(&after_upgrade),
+                1,
+                PublishTier::PerFile,
+                &diags("same")
+            ),
+            DROP,
+        );
     }
 }

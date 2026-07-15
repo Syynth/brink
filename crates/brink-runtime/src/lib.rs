@@ -30,6 +30,8 @@
 
 extern crate alloc;
 
+#[cfg(feature = "bench-counters")]
+pub mod bench_counters;
 mod collection_ops;
 mod collections;
 mod conversion_ops;
@@ -41,6 +43,7 @@ mod list_ops;
 mod locale;
 mod output;
 mod program;
+mod proj_ops;
 mod record_ops;
 mod replay;
 pub mod rng;

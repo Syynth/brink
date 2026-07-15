@@ -352,7 +352,7 @@ enum LineKind {
     /// A T1b `~ { … }` multi-line block (docs/t1b-surface-spec.md §2, brink
     /// extension). This line is the block's opening `~ {` line; every
     /// physical line the block spans (through the trailing newline after
-    /// the closing `}`) becomes [`LineKind::Skip`], and `logic_block_node`
+    /// the closing `}`) becomes [`LineKind::Skip`], and `cst_node`
     /// carries the `LOGIC_LINE` CST node so `render()` can walk its
     /// `STMT_BLOCK` and reindent the internals (#573).
     LogicBlock,
@@ -367,8 +367,15 @@ enum LineKind {
     /// byte-for-byte verbatim span — the pre-#602 behavior — for this block
     /// only; well-formed blocks still go through [`LineKind::LogicBlock`].
     LogicBlockVerbatim,
-    /// A line already emitted as part of a preceding [`LineKind::LogicBlock`]
-    /// or [`LineKind::LogicBlockVerbatim`] span — renders nothing.
+    /// A STRUCT declaration (TM-4b, docs/typed-mode-spec.md §6). This line
+    /// is the opening `STRUCT Name = #{` line; every physical line the struct
+    /// spans (through the trailing newline after the closing `}`) becomes
+    /// [`LineKind::Skip`], and `struct_decl_node` carries the `STRUCT_DECL`
+    /// CST node so `render()` can walk its fields and reindent the internals.
+    StructDecl,
+    /// A line already emitted as part of a preceding [`LineKind::LogicBlock`],
+    /// [`LineKind::LogicBlockVerbatim`], or [`LineKind::StructDecl`] span —
+    /// renders nothing.
     Skip,
 }
 
@@ -381,9 +388,10 @@ struct ClassifiedLine {
     end: usize,
     /// Indentation depth from HIR structure.
     depth: u32,
-    /// The `LOGIC_LINE` CST node for a [`LineKind::LogicBlock`] line —
+    /// The `LOGIC_LINE` CST node for a [`LineKind::LogicBlock`] line, or
+    /// the `STRUCT_DECL` CST node for a [`LineKind::StructDecl`] line —
     /// `None` for every other kind.
-    logic_block_node: Option<SyntaxNode>,
+    cst_node: Option<SyntaxNode>,
 }
 
 /// Classify every line in the source by walking the CST, using HIR depth map.
@@ -420,7 +428,7 @@ fn classify_lines(
                 start,
                 end,
                 depth: depth_map.get(i).copied().unwrap_or(0),
-                logic_block_node: None,
+                cst_node: None,
             }
         })
         .collect();
@@ -445,6 +453,17 @@ fn classify_lines(
 }
 
 /// Mark lines inside block comments as `BlockComment`.
+///
+/// A line marked `BlockComment` renders verbatim (`trim_end` only), and
+/// `classify_node` skips any construct starting on it. That's right for
+/// free-floating comments (banners, multi-line comments, comments the parser
+/// split a content line around), but wrong for a comment nested inside a
+/// construct whose renderer handles comments itself — marking the line would
+/// pre-empt the construct's classification entirely (a single-line
+/// `STRUCT Point = #{x: float, /* mid */ y: float}` never reached
+/// `render_struct_decl`; a comment on a `#{` or `~ {` opening line dedented
+/// the whole body). [`comment_handled_by_construct`] decides which comments
+/// to leave to their construct.
 fn mark_block_comments(root: &SyntaxNode, line_starts: &[usize], lines: &mut [ClassifiedLine]) {
     for token in root.descendants_with_tokens() {
         if let NodeOrToken::Token(tok) = token
@@ -452,12 +471,71 @@ fn mark_block_comments(root: &SyntaxNode, line_starts: &[usize], lines: &mut [Cl
         {
             let start_line = line_for_offset(line_starts, tok.text_range().start().into());
             let end_line = line_for_offset(line_starts, tok.text_range().end().into());
+            if start_line == end_line && comment_handled_by_construct(&tok) {
+                continue;
+            }
             let last = end_line.min(lines.len() - 1);
             for line in &mut lines[start_line..=last] {
                 line.kind = LineKind::BlockComment;
             }
         }
     }
+}
+
+/// Is this single-line `BLOCK_COMMENT` token inside a region that a
+/// construct's own renderer preserves? If so, `mark_block_comments` must not
+/// mark its line — the construct's `classify_node` arm takes over and its
+/// renderer emits the comment itself. The regions are deliberately exact:
+/// anywhere the answer is wrongly `true`, the renderer silently drops the
+/// comment (it only walks the region listed here); anywhere wrongly `false`,
+/// the line just stays verbatim (safe, the pre-fix behavior).
+///
+/// Multi-line comments never qualify (the caller checks): the `Logic` arm
+/// classifies only the construct's first physical line, so a comment
+/// spanning further lines must keep the verbatim treatment.
+fn comment_handled_by_construct(tok: &brink_syntax::SyntaxToken) -> bool {
+    let Some(parent) = tok.parent() else {
+        return false;
+    };
+    for anc in parent.ancestors() {
+        match anc.kind() {
+            // Inside a `~ { … }` body: `render_stmt_block` emits comments
+            // among statements and `join_token_text` (statement/header text)
+            // keeps mid-statement comments — everything is covered.
+            //
+            // Reaching LOGIC_LINE instead means the comment is a direct child
+            // of the logic line, outside any STMT_BLOCK (an in-block comment
+            // matched STMT_BLOCK first). Both forms preserve those:
+            // `format_logic` re-emits the whole raw `~ expr` line, comment
+            // included, and `render_logic_block` emits a leading (`~ /* c */
+            // {`) or trailing (`} /* c */`) direct-child comment on the
+            // block's header/closing line.
+            SyntaxKind::STMT_BLOCK | SyntaxKind::LOGIC_LINE => return true,
+            // `render_struct_decl` / `format_struct_decl_single_line` walk
+            // only the region strictly between `#{` and `}` (comments there
+            // are direct children of `STRUCT_DECL`, see the parser's
+            // `skip_struct_body_trivia`). A comment outside the braces
+            // (e.g. `STRUCT Point /* c */ = #{…}`) would be dropped.
+            SyntaxKind::STRUCT_DECL => {
+                let open = anc
+                    .children_with_tokens()
+                    .find(|e| e.kind() == SyntaxKind::L_BRACE)
+                    .map(|e| e.text_range().end());
+                let close = anc
+                    .children_with_tokens()
+                    .find(|e| e.kind() == SyntaxKind::R_BRACE)
+                    .map(|e| e.text_range().start());
+                return match (open, close) {
+                    (Some(open), Some(close)) => {
+                        tok.text_range().start() >= open && tok.text_range().end() <= close
+                    }
+                    _ => false,
+                };
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Walk CST to classify line kinds. Depth is already set from HIR.
@@ -537,27 +615,21 @@ fn classify_node(
             | SyntaxKind::CONST_DECL
             | SyntaxKind::LIST_DECL
             | SyntaxKind::INCLUDE_STMT
+            | SyntaxKind::IMPORT_STMT
             | SyntaxKind::EXTERNAL_DECL => {
                 if line_idx < lines.len() {
                     lines[line_idx].kind = LineKind::Declaration;
                     lines[line_idx].depth = 0;
                 }
             }
-            // TM-4b (docs/typed-mode-spec.md §6): unlike `VAR`/`CONST`/`LIST`
-            // (always single physical line), a `STRUCT` decl body is legal
-            // across multiple lines ("single-line form is legal for short
-            // structs" implies multi-line is the common case). Every other
-            // `LineKind` here assumes one physical line per CST node; a
-            // generic per-line `Declaration`/`Other` treatment would `trim()`
-            // and reindent each continuation line independently, silently
-            // discarding the author's own field indentation. Pass the whole
-            // node through byte-for-byte instead — the same verbatim
-            // discipline `mark_verbatim_span` already gives a malformed
-            // `~ { … }` block. Reformatting a `STRUCT` body "like a block"
-            // (§6) is deferred to a follow-up; verbatim keeps output
-            // idempotent and non-lossy in the meantime.
+            // TM-4b (docs/typed-mode-spec.md §6): `STRUCT` decl body can span
+            // multiple lines. Format like blocks with proper field indentation.
             SyntaxKind::STRUCT_DECL => {
-                mark_verbatim_span(&child, line_starts, lines);
+                if subtree_has_parse_error(child.text_range(), errors) {
+                    mark_verbatim_span(&child, line_starts, lines);
+                } else {
+                    mark_struct_decl_span(&child, line_starts, lines);
+                }
             }
             SyntaxKind::EMPTY_LINE => {
                 if line_idx < lines.len() {
@@ -596,7 +668,7 @@ fn mark_logic_block_span(node: &SyntaxNode, line_starts: &[usize], lines: &mut [
         return;
     }
     lines[start_line].kind = LineKind::LogicBlock;
-    lines[start_line].logic_block_node = Some(node.clone());
+    lines[start_line].cst_node = Some(node.clone());
     let last = end_line.min(lines.len() - 1);
     for line in &mut lines[start_line + 1..=last] {
         line.kind = LineKind::Skip;
@@ -644,7 +716,28 @@ fn mark_verbatim_span(node: &SyntaxNode, line_starts: &[usize], lines: &mut [Cla
     // indentation (review finding on #610).
     lines[start_line].start = line_starts[start_line];
     lines[start_line].end = range.end().into();
-    lines[start_line].logic_block_node = None;
+    lines[start_line].cst_node = None;
+    let last = end_line.min(lines.len() - 1);
+    for line in &mut lines[start_line + 1..=last] {
+        line.kind = LineKind::Skip;
+    }
+}
+
+/// Mark every physical line spanned by `node` (a `STRUCT_DECL`) as belonging to
+/// a single reindented unit: the first line becomes [`LineKind::StructDecl`]
+/// carrying `node` itself (so `render()` can walk its field declarations and
+/// reindent), and every subsequent physical line spanned (through the trailing
+/// newline after the closing `}`) becomes [`LineKind::Skip`] so it renders
+/// nothing of its own.
+fn mark_struct_decl_span(node: &SyntaxNode, line_starts: &[usize], lines: &mut [ClassifiedLine]) {
+    let range = node.text_range();
+    let start_line = line_for_offset(line_starts, range.start().into());
+    let end_line = line_for_offset(line_starts, range.end().into());
+    if start_line >= lines.len() {
+        return;
+    }
+    lines[start_line].kind = LineKind::StructDecl;
+    lines[start_line].cst_node = Some(node.clone());
     let last = end_line.min(lines.len() - 1);
     for line in &mut lines[start_line + 1..=last] {
         line.kind = LineKind::Skip;
@@ -709,6 +802,7 @@ fn indent_str(config: &FormatConfig, depth: u32) -> String {
     }
 }
 
+#[expect(clippy::too_many_lines)]
 fn render(source: &str, lines: &[ClassifiedLine], config: &FormatConfig) -> String {
     let mut out = String::with_capacity(source.len());
     let mut consecutive_blanks: u32 = 0;
@@ -790,15 +884,22 @@ fn render(source: &str, lines: &[ClassifiedLine], config: &FormatConfig) -> Stri
                 out.push('\n');
             }
             LineKind::Declaration => {
-                out.push_str(raw.trim_end());
+                // Module `IMPORT` statements (M-4, modules-spec §2/§9) get
+                // canonical inner spacing; every other declaration is passed
+                // through with only trailing whitespace trimmed.
+                if raw.trim_start().starts_with("IMPORT") {
+                    out.push_str(&format_import(raw));
+                } else {
+                    out.push_str(raw.trim_end());
+                }
                 out.push('\n');
             }
-            // Reindent the whole `~ { … }` block as a unit: `logic_block_node`
+            // Reindent the whole `~ { … }` block as a unit: `cst_node`
             // is the `LOGIC_LINE` CST node (see `mark_logic_block_span`);
             // `render_logic_block` walks its `STMT_BLOCK` recursively,
             // computing indentation independently of `raw`.
             LineKind::LogicBlock => {
-                if let Some(node) = &line.logic_block_node {
+                if let Some(node) = &line.cst_node {
                     let base_indent = indent_str(config, line.depth);
                     out.push_str(&render_logic_block(node, &base_indent));
                 }
@@ -810,6 +911,16 @@ fn render(source: &str, lines: &[ClassifiedLine], config: &FormatConfig) -> Stri
             // to reindent.
             LineKind::LogicBlockVerbatim => {
                 out.push_str(raw);
+            }
+            // Reindent the whole STRUCT declaration as a unit: `cst_node`
+            // is the `STRUCT_DECL` CST node (see `mark_struct_decl_span`);
+            // `render_struct_decl` walks its field declarations and reindents
+            // the body with proper formatting (TM-4b, docs/typed-mode-spec.md §6).
+            LineKind::StructDecl => {
+                if let Some(node) = &line.cst_node {
+                    let base_indent = indent_str(config, line.depth);
+                    out.push_str(&render_struct_decl(node, &base_indent, config));
+                }
             }
             LineKind::Blank | LineKind::BlockComment | LineKind::Skip => unreachable!(),
         }
@@ -830,6 +941,60 @@ fn render(source: &str, lines: &[ClassifiedLine], config: &FormatConfig) -> Stri
 }
 
 // ── Per-line formatters ─────────────────────────────────────────────
+
+/// Format a module `IMPORT` statement (M-4, docs/modules-spec.md §2/§9) with
+/// canonical inner spacing.
+///
+/// Both grammar forms normalize:
+/// - bare: `IMPORT {  a , b  AS c } FROM  mod` → `IMPORT { a, b AS c } FROM mod`
+/// - qualified: `IMPORT   mod` → `IMPORT mod`
+///
+/// A statement that does not match either shape (mid-edit / malformed) is left
+/// verbatim (only surrounding whitespace trimmed) so formatting never corrupts
+/// it. (A trailing `//` comment reclassifies the line away from
+/// `LineKind::Declaration` upstream, so it never reaches here — such lines are
+/// passed through untouched.)
+fn format_import(raw: &str) -> String {
+    let trimmed = raw.trim();
+    normalize_import_code(trimmed).unwrap_or_else(|| trimmed.to_owned())
+}
+
+/// Normalize the code portion (comment already stripped) of an `IMPORT`
+/// statement to its canonical spelling, or `None` when it does not match a
+/// well-formed shape (leave it verbatim rather than risk corrupting it).
+fn normalize_import_code(code: &str) -> Option<String> {
+    let rest = code.strip_prefix("IMPORT")?.trim();
+
+    if let Some(open) = rest.find('{') {
+        // Bare form: `IMPORT { a, b AS c } FROM mod`.
+        let close = rest.find('}')?;
+        if close < open {
+            return None;
+        }
+        let items_str = &rest[open + 1..close];
+        let after = rest[close + 1..].trim();
+        let module = after.strip_prefix("FROM")?.trim();
+        if module.is_empty() || module.contains(char::is_whitespace) {
+            return None;
+        }
+
+        let items: Vec<String> = items_str
+            .split(',')
+            .map(|item| collapse_whitespace(item.trim()))
+            .filter(|item| !item.is_empty())
+            .collect();
+        if items.is_empty() {
+            return None;
+        }
+        Some(format!("IMPORT {{ {} }} FROM {module}", items.join(", ")))
+    } else {
+        // Qualified form: `IMPORT mod` (a single bare module name).
+        if rest.is_empty() || rest.contains(char::is_whitespace) {
+            return None;
+        }
+        Some(format!("IMPORT {rest}"))
+    }
+}
 
 /// Format a knot header: `=== name ===` or `=== function name(params) ===`
 fn format_knot_header(raw: &str) -> String {
@@ -990,9 +1155,22 @@ fn block_indent(base_indent: &str, level: u32) -> String {
 /// to exactly one space. Mid-statement comments (rare — e.g. inside a
 /// parenthesized expression) are kept verbatim with a single space on each
 /// side. Node boundaries are transparent; only tokens contribute text.
+///
+/// One exception to the "collapse to one space" rule: whitespace directly
+/// touching a `.` field-access dot, or a `[`/`]` index bracket, collapses to
+/// *zero* space instead — `party [ leader ] . hp` renders `party[leader].hp`.
+/// This is the path-projection display convention itself
+/// (`docs/t1e-spec.md` §4: `ref npc.inventory[3]`, no spaces) applied
+/// uniformly to every dotted-path/indexed construct this joiner ever
+/// renders, T1e `ref lvalue-path` arguments (`brink-fmt path-ref argument
+/// formatting`, issue #850) included — not a special case keyed off `ref`,
+/// since the CST gives no cheaper way to tell a path-projection segment
+/// from any other field access or index expression at this token-stream
+/// level, and there's no reason the two should format differently anyway.
 fn join_token_text(elems: impl Iterator<Item = SyntaxElement>) -> String {
     let mut out = String::new();
     let mut pending_space = false;
+    let mut last_kind: Option<SyntaxKind> = None;
     for elem in elems {
         let NodeOrToken::Token(tok) = elem else {
             continue;
@@ -1009,13 +1187,20 @@ fn join_token_text(elems: impl Iterator<Item = SyntaxElement>) -> String {
                 }
                 out.push_str(tok.text());
                 pending_space = true;
+                last_kind = Some(tok.kind());
             }
-            _ => {
-                if pending_space {
+            kind => {
+                let zero_space =
+                    matches!(
+                        kind,
+                        SyntaxKind::DOT | SyntaxKind::L_BRACKET | SyntaxKind::R_BRACKET
+                    ) || matches!(last_kind, Some(SyntaxKind::DOT | SyntaxKind::L_BRACKET));
+                if pending_space && !zero_space {
                     out.push(' ');
-                    pending_space = false;
                 }
+                pending_space = false;
                 out.push_str(tok.text());
+                last_kind = Some(kind);
             }
         }
     }
@@ -1052,15 +1237,58 @@ fn header_expr_text(node: &SyntaxNode) -> String {
 /// Render a `~ { … }` block's `LOGIC_LINE` node — the header `~ {`, the
 /// reindented body, and the closing `}` — as a complete, newline-terminated
 /// string. `base_indent` is the outer depth of the `~` line itself.
+///
+/// Comments and blank lines *inside* the block are emitted by
+/// `render_stmt_block`. But a comment that is a direct child of the
+/// `LOGIC_LINE` itself sits *outside* the `STMT_BLOCK` — either between `~`
+/// and `{` (a leading comment) or after the closing `}` (a trailing comment)
+/// — and would be silently dropped since the body is rebuilt from the
+/// `STMT_BLOCK` alone. Emit leading comments on the header line
+/// (`~ /* c */ {`) and trailing comments on the closing line (`} /* c */`)
+/// so `} // note` survives.
 fn render_logic_block(node: &SyntaxNode, base_indent: &str) -> String {
+    let body = node.children().find(|c| c.kind() == SyntaxKind::STMT_BLOCK);
+    let block_start = body.as_ref().map(|b| b.text_range().start());
+
+    let mut leading: Vec<String> = Vec::new();
+    let mut trailing: Vec<String> = Vec::new();
+    for elem in node.children_with_tokens() {
+        let NodeOrToken::Token(tok) = elem else {
+            continue;
+        };
+        if !matches!(
+            tok.kind(),
+            SyntaxKind::LINE_COMMENT | SyntaxKind::BLOCK_COMMENT
+        ) {
+            continue;
+        }
+        // A comment before the `STMT_BLOCK` is leading; anything else
+        // (including the no-block degenerate case) is trailing.
+        if block_start.is_some_and(|start| tok.text_range().start() < start) {
+            leading.push(tok.text().trim().to_owned());
+        } else {
+            trailing.push(tok.text().trim().to_owned());
+        }
+    }
+
     let mut out = String::new();
     out.push_str(base_indent);
-    out.push_str("~ {\n");
-    if let Some(body) = node.children().find(|c| c.kind() == SyntaxKind::STMT_BLOCK) {
-        render_stmt_block(&body, base_indent, 1, &mut out);
+    out.push('~');
+    for comment in &leading {
+        out.push(' ');
+        out.push_str(comment);
+    }
+    out.push_str(" {\n");
+    if let Some(body) = &body {
+        render_stmt_block(body, base_indent, 1, &mut out);
     }
     out.push_str(base_indent);
-    out.push_str("}\n");
+    out.push('}');
+    for comment in &trailing {
+        out.push(' ');
+        out.push_str(comment);
+    }
+    out.push('\n');
     out
 }
 
@@ -1209,6 +1437,245 @@ fn render_header_stmt(
     out.push_str("}\n");
 }
 
+/// Render a STRUCT declaration (TM-4b, docs/typed-mode-spec.md §6). For
+/// single-line structs, output as-is; for multiline structs, format like
+/// blocks with proper field indentation and trailing commas on each field.
+fn render_struct_decl(node: &SyntaxNode, base_indent: &str, config: &FormatConfig) -> String {
+    // Collect field declarations to determine multiline status and content.
+    let fields: Vec<SyntaxNode> = node
+        .children()
+        .filter(|c| c.kind() == SyntaxKind::STRUCT_FIELD_DECL)
+        .collect();
+
+    // Determine if the struct body spans multiple lines by checking if the
+    // first and last field (or the opening and closing braces) are on different lines.
+    // Check the source text between `#{` and `}` for newlines.
+    let opening_brace = node
+        .children_with_tokens()
+        .find(|e| e.kind() == SyntaxKind::L_BRACE)
+        .map(|e| e.text_range().start());
+    let closing_brace = node.children_with_tokens().find_map(|e| {
+        if e.kind() == SyntaxKind::R_BRACE {
+            Some(e.text_range().start())
+        } else {
+            None
+        }
+    });
+
+    let is_multiline =
+        if let (Some(open_offset), Some(close_offset)) = (opening_brace, closing_brace) {
+            // Check if the range between `{` and `}` contains any field on a different line.
+            // We do this by checking if any field's text range starts on a line after the
+            // opening brace line. Since we don't have direct access to line numbers in the
+            // CST, we use a simpler heuristic: if any field has NEWLINE tokens in the parent's
+            // descendants before it, or between it and the next field, it's multiline.
+            !fields.is_empty()
+                && node
+                    .children_with_tokens()
+                    .skip_while(|e| e.text_range().end() <= open_offset)
+                    .take_while(|e| e.text_range().start() < close_offset)
+                    .any(|e| e.kind() == SyntaxKind::NEWLINE)
+        } else {
+            false
+        };
+
+    if !is_multiline {
+        // Single-line struct: output as a single line with single space after colon.
+        // Collapse all whitespace and format as `STRUCT Name = #{field: type, …}`.
+        return format_struct_decl_single_line(node, base_indent);
+    }
+
+    // Multiline struct: format like a block.
+    let mut out = String::new();
+    out.push_str(base_indent);
+    out.push_str("STRUCT ");
+    out.push_str(&struct_decl_name(node));
+    out.push_str(" = #{\n");
+
+    // Field indent is base_indent + one level of the file's configured
+    // indent (unlike logic blocks which use hardcoded 4 spaces).
+    let field_indent = format!("{base_indent}{}", indent_str(config, 1));
+    let (Some(open_offset), Some(close_offset)) = (opening_brace, closing_brace) else {
+        out.push_str(base_indent);
+        out.push_str("}\n");
+        return out;
+    };
+    render_struct_body_multiline(node, open_offset, close_offset, &field_indent, &mut out);
+
+    // Close the struct.
+    out.push_str(base_indent);
+    out.push_str("}\n");
+    out
+}
+
+/// Extract the struct name from a `STRUCT_DECL`'s `IDENTIFIER` child.
+fn struct_decl_name(node: &SyntaxNode) -> String {
+    node.children()
+        .find(|c| c.kind() == SyntaxKind::IDENTIFIER)
+        .and_then(|id| {
+            id.children_with_tokens().find_map(|e| {
+                if let NodeOrToken::Token(tok) = e
+                    && tok.kind() == SyntaxKind::IDENT
+                {
+                    Some(tok.text().to_string())
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or_else(|| "Unknown".to_string())
+}
+
+/// Render every field declaration and comment directly inside a multiline
+/// `STRUCT_DECL` body, in source order, with trailing commas on each field.
+/// Comments are direct children of `STRUCT_DECL` (see
+/// `skip_struct_body_trivia` in the parser) rather than living inside any
+/// field node, so — mirroring `render_stmt_block` — this walks the node's
+/// direct children/tokens between the braces instead of iterating field
+/// nodes alone; that preserves leading, interleaved, and same-line trailing
+/// comments.
+fn render_struct_body_multiline(
+    node: &SyntaxNode,
+    open_offset: rowan::TextSize,
+    close_offset: rowan::TextSize,
+    field_indent: &str,
+    out: &mut String,
+) {
+    let mut newline_run: u32 = 0;
+    let mut has_emitted = false;
+    for elem in node
+        .children_with_tokens()
+        .skip_while(|e| e.text_range().end() <= open_offset)
+        .take_while(|e| e.text_range().start() < close_offset)
+    {
+        match elem {
+            NodeOrToken::Token(tok) => match tok.kind() {
+                SyntaxKind::NEWLINE => newline_run += 1,
+                SyntaxKind::LINE_COMMENT | SyntaxKind::BLOCK_COMMENT => {
+                    let text = tok.text().trim_end();
+                    if has_emitted && newline_run == 0 {
+                        // Trailing comment on the same physical line as the
+                        // previous field/comment — stays attached to it.
+                        if out.ends_with('\n') {
+                            out.pop();
+                        }
+                        out.push(' ');
+                        out.push_str(text);
+                        out.push('\n');
+                    } else {
+                        if newline_run >= 2 {
+                            out.push('\n');
+                        }
+                        out.push_str(field_indent);
+                        out.push_str(text);
+                        out.push('\n');
+                    }
+                    has_emitted = true;
+                    newline_run = 0;
+                }
+                _ => {}
+            },
+            NodeOrToken::Node(n) if n.kind() == SyntaxKind::STRUCT_FIELD_DECL => {
+                if newline_run >= 2 {
+                    out.push('\n');
+                }
+                newline_run = 0;
+                out.push_str(field_indent);
+                let field_text = join_token_text(n.descendants_with_tokens());
+                out.push_str(&field_text);
+                out.push(',');
+                out.push('\n');
+                has_emitted = true;
+            }
+            NodeOrToken::Node(_) => {}
+        }
+    }
+}
+
+/// Format a single-line STRUCT declaration: `STRUCT Name = #{field: type, …}`.
+/// Collapses all whitespace and ensures canonical spacing: single space after colon.
+fn format_struct_decl_single_line(node: &SyntaxNode, base_indent: &str) -> String {
+    let mut out = String::new();
+    out.push_str(base_indent);
+    out.push_str("STRUCT ");
+    out.push_str(&struct_decl_name(node));
+    out.push_str(" = #{");
+
+    // Comments are direct children of `STRUCT_DECL` (see
+    // `skip_struct_body_trivia` in the parser), not children of any field
+    // node — a single-line struct can only contain `BLOCK_COMMENT`s (a
+    // `LINE_COMMENT` forces a `NEWLINE`, which would make the struct
+    // multiline), but they still need to be preserved rather than dropped.
+    let opening_brace = node
+        .children_with_tokens()
+        .find(|e| e.kind() == SyntaxKind::L_BRACE)
+        .map(|e| e.text_range().start());
+    let closing_brace = node.children_with_tokens().find_map(|e| {
+        if e.kind() == SyntaxKind::R_BRACE {
+            Some(e.text_range().start())
+        } else {
+            None
+        }
+    });
+
+    if let (Some(open_offset), Some(close_offset)) = (opening_brace, closing_brace) {
+        let mut has_field = false;
+        let mut has_content = false;
+        for elem in node
+            .children_with_tokens()
+            .skip_while(|e| e.text_range().end() <= open_offset)
+            .take_while(|e| e.text_range().start() < close_offset)
+        {
+            match elem {
+                NodeOrToken::Node(n) if n.kind() == SyntaxKind::STRUCT_FIELD_DECL => {
+                    if has_field {
+                        out.push_str(", ");
+                    } else if has_content {
+                        out.push(' ');
+                    }
+                    format_struct_field_for_single_line(&n, &mut out);
+                    has_field = true;
+                    has_content = true;
+                }
+                NodeOrToken::Token(tok)
+                    if matches!(
+                        tok.kind(),
+                        SyntaxKind::LINE_COMMENT | SyntaxKind::BLOCK_COMMENT
+                    ) =>
+                {
+                    if has_content {
+                        out.push(' ');
+                    }
+                    out.push_str(tok.text().trim());
+                    has_content = true;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    out.push_str("}\n");
+    out
+}
+
+/// Extract and format a `STRUCT_FIELD_DECL` for single-line output: `name: type`.
+fn format_struct_field_for_single_line(field: &SyntaxNode, out: &mut String) {
+    // Use join_token_text to get the entire field as a single-spaced string,
+    // then split on the colon to extract name and type, and reconstruct with
+    // canonical spacing: `name: type` with single space after colon.
+    let field_text = join_token_text(field.descendants_with_tokens());
+    if let Some(colon_pos) = field_text.find(':') {
+        let name = field_text[..colon_pos].trim();
+        let type_str = field_text[colon_pos + 1..].trim();
+        out.push_str(name);
+        out.push_str(": ");
+        out.push_str(type_str);
+    } else {
+        // Fallback if no colon found (shouldn't happen for valid input).
+        out.push_str(&field_text);
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1352,6 +1819,45 @@ mod tests {
         let input = "INCLUDE other.ink\n";
         let result = fmt(input);
         assert_eq!(result, "INCLUDE other.ink\n");
+    }
+
+    #[test]
+    fn import_qualified_normalizes_spacing() {
+        assert_eq!(fmt("IMPORT   quest_3\n"), "IMPORT quest_3\n");
+    }
+
+    #[test]
+    fn import_bare_normalizes_spacing() {
+        assert_eq!(
+            fmt("IMPORT {  ambush ,  guard_talk  AS gt  } FROM quest_3\n"),
+            "IMPORT { ambush, guard_talk AS gt } FROM quest_3\n"
+        );
+    }
+
+    #[test]
+    fn import_block_stays_at_column_zero() {
+        // A leading IMPORT block below a `#@module` header keeps col-0 depth;
+        // the knot body still indents. (fmt inserts a blank line before the
+        // knot header — existing behavior.)
+        let input =
+            "#@module(town)\nIMPORT { ambush } FROM quest_3\nIMPORT quest_4\n=== hub ===\nHi.\n";
+        assert_eq!(
+            fmt(input),
+            "#@module(town)\nIMPORT { ambush } FROM quest_3\nIMPORT quest_4\n\n=== hub ===\n  Hi.\n"
+        );
+    }
+
+    #[test]
+    fn import_formatting_is_idempotent() {
+        let once = fmt("IMPORT {  a , b AS c } FROM  m\n");
+        assert_eq!(fmt(&once), once);
+        assert_eq!(once, "IMPORT { a, b AS c } FROM m\n");
+    }
+
+    #[test]
+    fn malformed_import_is_left_verbatim() {
+        // No closing brace — bail to verbatim rather than corrupt it.
+        assert_eq!(fmt("IMPORT { a FROM m\n"), "IMPORT { a FROM m\n");
     }
 
     #[test]
@@ -1822,42 +2328,390 @@ mod tests {
         assert_eq!(result, expected);
     }
 
-    // ── TM-4b structs (docs/typed-mode-spec.md §6) ────────────────────
+    // ── TM-4b structs: block-style formatting (docs/typed-mode-spec.md §6) ──
     //
-    // Verbatim pass-through (see `STRUCT_DECL`'s `classify_node` arm) — a
-    // `STRUCT` body is legal across multiple physical lines, unlike every
-    // other `Declaration`-classified node, so it gets the same
-    // whole-node-verbatim treatment `mark_verbatim_span` gives a malformed
-    // `~ { … }` block rather than the generic per-line trim/reindent.
+    // Single-line structs format to a single line with canonical spacing
+    // (`field: type` with single space after colon). Multiline structs
+    // format like blocks: proper field indentation + trailing comma on
+    // each field. Both formats are idempotent.
 
     #[test]
-    fn struct_decl_single_line_is_idempotent() {
-        let input = "STRUCT Point = #{x: float, y: float}\n";
-        let once = fmt(input);
-        assert_eq!(once, input, "single-line struct decl stays verbatim");
-        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
-    }
-
-    #[test]
-    fn struct_decl_multiline_is_idempotent_and_preserves_field_indentation() {
-        let input = "STRUCT Point = #{\n    x: float,\n    y: float,\n}\n";
+    fn struct_decl_single_line_normalizes_spacing() {
+        // Input with irregular spacing; should normalize to `field: type` with
+        // single space after colon, no trailing comma on single-line form.
+        let input = "STRUCT Point = #{x:float,y:  float}\n";
+        let expected = "STRUCT Point = #{x: float, y: float}\n";
         let once = fmt(input);
         assert_eq!(
-            once, input,
-            "multiline struct decl must round-trip byte-for-byte, indentation included"
+            once, expected,
+            "single-line struct should normalize spacing"
         );
         assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
     }
 
     #[test]
+    fn struct_decl_multiline_formats_with_indentation_and_trailing_commas() {
+        // Multiline struct should be formatted with field indentation and
+        // trailing commas. Input indentation is normalized.
+        let input = "STRUCT Point = #{\nx: float,\ny: float,\n}\n";
+        let expected = "STRUCT Point = #{\n  x: float,\n  y: float,\n}\n";
+        let once = fmt(input);
+        assert_eq!(
+            once, expected,
+            "multiline struct should format with proper indentation and trailing commas"
+        );
+        assert_eq!(
+            fmt(&once),
+            once,
+            "formatting twice must be a no-op (idempotent)"
+        );
+    }
+
+    #[test]
+    fn struct_decl_multiline_is_idempotent() {
+        let input = "STRUCT Point = #{\n  x: float,\n  y: float,\n}\n";
+        let once = fmt(input);
+        assert_eq!(
+            once, input,
+            "properly formatted multiline struct should round-trip"
+        );
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn struct_decl_multiline_with_complex_types() {
+        // Fields with complex types (arrays, maps, nested generics) should
+        // format correctly with proper type text reconstruction.
+        let input = "STRUCT Data = #{\nvalues: array<int>,\nmapping: map<string, float>,\n}\n";
+        let expected =
+            "STRUCT Data = #{\n  values: array<int>,\n  mapping: map<string, float>,\n}\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting is idempotent");
+    }
+
+    #[test]
     fn struct_decl_followed_by_ordinary_content_formats_normally() {
-        // The `STRUCT_DECL` span itself stays verbatim; everything after it
-        // still goes through the ordinary formatter rules (blank line
-        // before a knot header, body content indented one level) —
-        // verbatim is scoped to the decl's own node, not "the rest of the
-        // file after any struct decl".
-        let input = "STRUCT Point = #{\n    x: float,\n}\n=== main ===\nHello.\n-> DONE\n";
-        let expected = "STRUCT Point = #{\n    x: float,\n}\n\n=== main ===\n  Hello.\n  -> DONE\n";
+        // The `STRUCT_DECL` formats as a unit; everything after it still
+        // goes through the ordinary formatter rules (blank line before knot
+        // header, body content indented one level).
+        let input = "STRUCT Point = #{\nx: float,\ny: float,\n}\n=== main ===\nHello.\n-> DONE\n";
+        let expected =
+            "STRUCT Point = #{\n  x: float,\n  y: float,\n}\n\n=== main ===\n  Hello.\n  -> DONE\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting is idempotent");
+    }
+
+    // `skip_struct_body_trivia` (brink-syntax parser/declaration.rs) bumps
+    // `LINE_COMMENT`/`BLOCK_COMMENT` tokens as direct children of
+    // `STRUCT_DECL`, not as children of any `STRUCT_FIELD_DECL`. The
+    // multiline and single-line renderers both need to walk the node's own
+    // children (like `render_stmt_block` does for logic blocks) rather than
+    // iterating fields alone, or these comments are silently dropped.
+
+    #[test]
+    fn struct_decl_multiline_preserves_trailing_same_line_comment() {
+        let input = "STRUCT Point = #{\n    x: float, // the x coord\n    y: float,\n}\n";
+        let expected = "STRUCT Point = #{\n  x: float, // the x coord\n  y: float,\n}\n";
+        let once = fmt(input);
+        assert_eq!(
+            once, expected,
+            "a same-line trailing comment must stay attached to its field"
+        );
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn struct_decl_multiline_preserves_leading_comment() {
+        let input = "STRUCT Point = #{\n    // header comment\n    x: float,\n    y: float,\n}\n";
+        let expected = "STRUCT Point = #{\n  // header comment\n  x: float,\n  y: float,\n}\n";
+        let once = fmt(input);
+        assert_eq!(
+            once, expected,
+            "a standalone comment before the first field must be preserved"
+        );
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn struct_decl_multiline_preserves_interleaved_comment() {
+        let input = "STRUCT Point = #{\n    x: float,\n    // between fields\n    y: float,\n}\n";
+        let expected = "STRUCT Point = #{\n  x: float,\n  // between fields\n  y: float,\n}\n";
+        let once = fmt(input);
+        assert_eq!(
+            once, expected,
+            "a standalone comment between fields must be preserved"
+        );
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    // Drives `render_struct_decl` directly against the parsed `STRUCT_DECL`
+    // node to exercise the renderer in isolation from line classification.
+    // (The full `fmt()` pipeline reaches it too since
+    // `comment_handled_by_construct` leaves in-brace comments to the
+    // STRUCT_DECL arm — see
+    // `struct_decl_single_line_with_inline_block_comment_is_normalized`.)
+    fn render_struct_decl_only(source: &str) -> String {
+        let parsed = brink_syntax::parse(source);
+        let node = parsed
+            .syntax()
+            .children()
+            .find(|c| c.kind() == SyntaxKind::STRUCT_DECL)
+            .expect("source must parse to a single STRUCT_DECL");
+        render_struct_decl(&node, "", &FormatConfig::default())
+    }
+
+    #[test]
+    fn struct_decl_single_line_preserves_leading_interleaved_and_trailing_comments() {
+        let leading = render_struct_decl_only("STRUCT Point = #{/* lead */ x: float, y: float}\n");
+        assert_eq!(leading, "STRUCT Point = #{/* lead */ x: float, y: float}\n");
+
+        let interleaved =
+            render_struct_decl_only("STRUCT Point = #{x: float, /* mid */ y: float}\n");
+        assert_eq!(
+            interleaved,
+            "STRUCT Point = #{x: float /* mid */, y: float}\n"
+        );
+
+        let trailing =
+            render_struct_decl_only("STRUCT Point = #{x: float, y: float /* trail */}\n");
+        assert_eq!(
+            trailing,
+            "STRUCT Point = #{x: float, y: float /* trail */}\n"
+        );
+    }
+
+    // ── Inline block comments must not pre-empt construct classification ──
+    //
+    // `mark_block_comments` used to mark ANY physical line containing a
+    // `BLOCK_COMMENT` token anywhere in its subtree as a pure
+    // `LineKind::BlockComment` line, which made `classify_node` skip the
+    // line's real construct (`STRUCT_DECL`, `LOGIC_LINE`) entirely — the
+    // line rendered verbatim instead of through the construct's own
+    // comment-aware renderer. These tests pin the fixed behavior: a
+    // single-line block comment nested inside a comment-aware construct is
+    // that construct's business.
+
+    #[test]
+    fn struct_decl_single_line_with_inline_block_comment_is_normalized() {
+        // Extra whitespace proves the line goes through
+        // `format_struct_decl_single_line` rather than the verbatim
+        // block-comment path (which would leave it untouched).
+        let input = "STRUCT   Point =  #{x:   float, /* mid */ y: float}\n";
+        let expected = "STRUCT Point = #{x: float /* mid */, y: float}\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn struct_decl_multiline_with_block_comment_on_opening_line_keeps_field_indent() {
+        // The comment on the `#{` line used to mark the whole first line as
+        // a block-comment line, skipping the STRUCT_DECL arm — the fields
+        // lost their indentation entirely.
+        let input = "STRUCT Point = #{ /* c */\n    x: float,\n}\n";
+        let expected = "STRUCT Point = #{\n  /* c */\n  x: float,\n}\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn logic_line_with_trailing_block_comment_is_normalized() {
+        let input = "~x = 5 /* foo */\n";
+        let expected = "~ x = 5 /* foo */\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn logic_block_with_comment_on_opening_line_keeps_body_indent() {
+        // Same failure mode as the struct case, for T1b `~ { … }` blocks:
+        // the comment after `{` used to skip the LOGIC_LINE arm and the
+        // block body lost its indentation.
+        let input = "~ { /* c */\n    x = 5\n}\n";
+        let expected = "~ {\n    /* c */\n    x = 5\n}\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    // ── Comments outside the STMT_BLOCK on a `~ { … }` line ──
+    //
+    // A comment that is a direct child of the `LOGIC_LINE` itself — between
+    // `~` and `{`, or trailing after the closing `}` — sits outside the
+    // `STMT_BLOCK` the body is rebuilt from. It used to be silently dropped
+    // (`render_logic_block` walked only the `STMT_BLOCK`). It is now emitted
+    // on the header/closing line.
+
+    #[test]
+    fn logic_block_trailing_block_comment_after_close_is_preserved() {
+        let input = "~ {\n    x = 5\n} /* c */\n";
+        let expected = "~ {\n    x = 5\n} /* c */\n";
+        let once = fmt(input);
+        assert_eq!(once, expected, "trailing block comment must not be dropped");
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn logic_block_trailing_line_comment_after_close_is_preserved() {
+        let input = "~ {\n    x = 5\n} // c\n";
+        let expected = "~ {\n    x = 5\n} // c\n";
+        let once = fmt(input);
+        assert_eq!(once, expected, "trailing line comment must not be dropped");
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn logic_block_multiple_trailing_comments_after_close_are_preserved() {
+        let input = "~ {\n    x = 5\n} /* a */ /* b */\n";
+        let expected = "~ {\n    x = 5\n} /* a */ /* b */\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn logic_block_leading_comment_between_tilde_and_brace_is_preserved() {
+        // The comment sits before the `{`; it used to mark the whole opening
+        // line as a block-comment line, skipping classification and
+        // de-indenting the body to column 0.
+        let input = "~ /* c */ {\n    x = 5\n}\n";
+        let expected = "~ /* c */ {\n    x = 5\n}\n";
+        let once = fmt(input);
+        assert_eq!(
+            once, expected,
+            "leading comment must be kept, body re-indented"
+        );
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn logic_block_leading_and_trailing_comments_both_preserved() {
+        let input = "~ /* lead */ {\n    x = 5\n} /* trail */\n";
+        let expected = "~ /* lead */ {\n    x = 5\n} /* trail */\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn logic_block_single_line_with_trailing_comment_expands_and_keeps_comment() {
+        // A single-line `~ { … }` block always expands to multi-line (like
+        // the no-comment case `~ { x = 5 }` → `~ {\n    x = 5\n}\n`); the
+        // trailing comment rides along on the closing line rather than
+        // pinning the whole line to a verbatim single-line form.
+        let input = "~ { x = 5 } /* c */\n";
+        let expected = "~ {\n    x = 5\n} /* c */\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn logic_block_trailing_comment_preserved_inside_knot_with_indent() {
+        // The block is nested one level inside a knot, so the trailing
+        // comment must ride the closing `}`'s indented line.
+        let input = "== k ==\n~ {\n    x = 5\n} /* c */\n-> DONE\n";
+        let expected = "=== k ===\n  ~ {\n      x = 5\n  } /* c */\n  -> DONE\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    // ── T1e path-ref argument formatting (docs/t1e-spec.md §2, issue #850)
+    //
+    // A `ref lvalue-path` argument (`ref npc.hp`, `ref inventory[idx]`,
+    // `ref party[leader].hp`) is ordinary expression syntax as far as the
+    // CST is concerned — `REF_EXPR` wrapping a `PATH`/`INDEX_EXPR` chain —
+    // so it already flows through the same token-joining machinery every
+    // other `~ { … }` block statement does (`join_token_text`'s
+    // whitespace-run-collapses-to-one-space rule). These lock that in as a
+    // deliberate, tested contract rather than an untested coincidence: a
+    // `ref`-marked path argument inside a multi-statement block reformats
+    // exactly like any other call argument, canonical single-space spacing
+    // throughout, one statement per line.
+
+    #[test]
+    fn block_ref_path_field_argument_normalizes_spacing() {
+        let input = "~ {\ntemp x =   0\nheal(ref  npc.hp,   5)\n}\n";
+        let expected = "~ {\n    temp x = 0\n    heal(ref npc.hp, 5)\n}\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn block_ref_path_index_argument_normalizes_spacing() {
+        let input = "~ {\nbump(ref  inventory[ idx ],   5)\n}\n";
+        let expected = "~ {\n    bump(ref inventory[idx], 5)\n}\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn block_ref_path_mixed_field_and_index_argument_normalizes_spacing() {
+        // `ref party[leader].hp` — the t1e-spec §2 grammar example itself
+        // (index segment followed by a field segment).
+        let input = "~ {\nheal(ref  party[ leader ] . hp,   5)\n}\n";
+        let expected = "~ {\n    heal(ref party[leader].hp, 5)\n}\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn block_ref_path_through_fn_value_normalizes_spacing() {
+        let input = "~ {\ntemp healer =   #fn( heal ,  ref  npc.hp )\n}\n";
+        let expected = "~ {\n    temp healer = #fn( heal , ref npc.hp )\n}\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    // Lines where the comment is NOT inside a comment-aware construct's
+    // handled region keep the verbatim block-comment treatment — classifying
+    // them would drop the comment (renderers only walk the construct node)
+    // or disturb parser-fragmented lines.
+
+    #[test]
+    fn block_comment_lines_outside_comment_aware_constructs_stay_verbatim() {
+        // Standalone banner (single- and multi-line).
+        for src in [
+            "/* banner */\nHello\n",
+            "/* line one\n   line two */\nHello\n",
+            // Leading comment before a construct on the same line: the
+            // comment is a direct child of SOURCE_FILE, outside the
+            // construct node — classification would drop it.
+            "/* c */ ~ x = 5\n",
+            "/* c */ STRUCT Point = #{x: float}\n",
+            // Comment outside a struct's braces: the struct renderers only
+            // walk the region between `{` and `}`.
+            "STRUCT Point /* c */ = #{x: float}\n",
+            // Multi-line comment inside a plain logic line: the Logic arm
+            // only renders the first physical line.
+            "~ x = 5 + /* multi\nline */ 6\n",
+            // Content line split by the parser around the comment.
+            "Hello /* hi */ world\n",
+        ] {
+            let once = fmt(src);
+            assert_eq!(once, src, "must stay verbatim: {src:?}");
+            assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+        }
+    }
+
+    #[test]
+    fn struct_decl_empty_multiline_collapses_to_single_line() {
+        // An empty struct body has no fields, so `is_multiline` (which
+        // requires at least one field) is always false — an empty struct
+        // written across multiple lines collapses to the canonical
+        // single-line empty form. This is intentional: there is no field
+        // content to justify a multiline layout.
+        let input = "STRUCT Empty = #{\n}\n";
+        let expected = "STRUCT Empty = #{}\n";
         let once = fmt(input);
         assert_eq!(once, expected);
         assert_eq!(fmt(&once), once, "formatting twice must be a no-op");

@@ -1,0 +1,1 @@
+fib(10) = 55, fib(20) = 6765, fib(30) = 832040. Total calls (incl. memo hits): 61. Memo entries: 31.

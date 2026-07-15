@@ -1,5 +1,6 @@
 use brink_format::{DefinitionId, DefinitionTag};
 
+use crate::determinism::LookupMap;
 use crate::symbols::{SymbolIndex, SymbolKind};
 use crate::{Diagnostic, DiagnosticCode, FileId, hir};
 
@@ -18,16 +19,27 @@ pub fn collect_globals(
     resolutions: &ResolutionLookup,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<lir::GlobalDef> {
-    use std::collections::HashMap;
-
-    // Pass 1: evaluate all constants and build a value lookup.
-    let mut const_values: HashMap<DefinitionId, lir::ConstValue> = HashMap::new();
+    // Pass 1: evaluate all constants and build a value lookup (keyed
+    // lookup only — `LookupMap`, issue #801's audited alias).
+    let mut const_values: LookupMap<DefinitionId, lir::ConstValue> = LookupMap::new();
     let mut globals = Vec::new();
 
     for &(file_id, hir_file) in files {
         for cst in &hir_file.constants {
             if let Some(id) = lookup_global(index, &cst.name.text, SymbolKind::Constant) {
                 let name = names.intern(&cst.name.text);
+                // #692: a bare non-constant reference/call as the *whole*
+                // default (not nested inside a collection/struct/fn literal,
+                // which do their own E075/E076/E077 checks one level in) is
+                // a real compile error, never a silent `Null` fold.
+                if !is_const_foldable_decl_default(&cst.value, index, resolutions, file_id) {
+                    diagnostics.push(Diagnostic {
+                        file: file_id,
+                        range: cst.ptr.text_range(),
+                        message: DiagnosticCode::E083.title().to_string(),
+                        code: DiagnosticCode::E083,
+                    });
+                }
                 let default = eval_const_expr(
                     &cst.value,
                     index,
@@ -53,6 +65,16 @@ pub fn collect_globals(
         for var in &hir_file.variables {
             if let Some(id) = lookup_global(index, &var.name.text, SymbolKind::Variable) {
                 let name = names.intern(&var.name.text);
+                // #692: same top-level constness check as the CONST pass
+                // above.
+                if !is_const_foldable_decl_default(&var.value, index, resolutions, file_id) {
+                    diagnostics.push(Diagnostic {
+                        file: file_id,
+                        range: var.ptr.text_range(),
+                        message: DiagnosticCode::E083.title().to_string(),
+                        code: DiagnosticCode::E083,
+                    });
+                }
                 let default = eval_const_expr(
                     &var.value,
                     index,
@@ -210,7 +232,7 @@ pub fn eval_const_expr(
     index: &SymbolIndex,
     resolutions: &ResolutionLookup,
     file: FileId,
-    const_values: &std::collections::HashMap<DefinitionId, lir::ConstValue>,
+    const_values: &LookupMap<DefinitionId, lir::ConstValue>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> lir::ConstValue {
     match expr {
@@ -312,8 +334,10 @@ pub fn eval_const_expr(
         // #673: `VAR`/`CONST p = Name#{…}` — see `eval_const_struct_literal`'s
         // doc.
         hir::Expr::StructLiteral(sl) => eval_const_struct_literal(sl, file, diagnostics),
-        // T1c-1: `VAR f = #fn(…)` — see `eval_const_fn_literal`'s doc.
-        hir::Expr::FnLiteral(fl) => eval_const_fn_literal(fl, file, diagnostics),
+        // T1c-2: `VAR f = #fn(…)` — see `eval_const_fn_literal`'s doc.
+        hir::Expr::FnLiteral(fl) => {
+            eval_const_fn_literal(fl, index, resolutions, file, const_values, diagnostics)
+        }
         _ => lir::ConstValue::Null,
     }
 }
@@ -335,12 +359,12 @@ fn eval_const_array_literal(
     index: &SymbolIndex,
     resolutions: &ResolutionLookup,
     file: FileId,
-    const_values: &std::collections::HashMap<DefinitionId, lir::ConstValue>,
+    const_values: &LookupMap<DefinitionId, lir::ConstValue>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> lir::ConstValue {
     let mut items = Vec::with_capacity(arr.elements.len());
     for e in &arr.elements {
-        if !is_const_foldable_kind(e) {
+        if !is_const_foldable_kind(e, index, resolutions, file) {
             diagnostics.push(Diagnostic {
                 file,
                 range: arr.ptr.text_range(),
@@ -376,12 +400,12 @@ fn eval_const_map_literal(
     index: &SymbolIndex,
     resolutions: &ResolutionLookup,
     file: FileId,
-    const_values: &std::collections::HashMap<DefinitionId, lir::ConstValue>,
+    const_values: &LookupMap<DefinitionId, lir::ConstValue>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> lir::ConstValue {
     let mut entries = Vec::with_capacity(map.entries.len());
     for (k, v) in &map.entries {
-        if !is_const_foldable_kind(v) {
+        if !is_const_foldable_kind(v, index, resolutions, file) {
             diagnostics.push(Diagnostic {
                 file,
                 range: map.ptr.text_range(),
@@ -428,64 +452,132 @@ fn eval_const_struct_literal(
     lir::ConstValue::Null
 }
 
-/// T1c-1: `VAR f = #fn(…)` — function values don't lower anywhere yet
-/// (T1c-2, docs/t1c-spec.md §11), and a declaration default has no runtime
-/// construction step to defer to regardless. A real compile error (E052,
-/// same "not yet implemented" class as the expression-position rejection in
-/// `expr::reject_fn_literal`), never a silent `Null` default.
+/// T1c-2: `VAR f = #fn(name, args…)` — bake a function value into the
+/// declaration default (docs/t1c-spec.md §2/§6). This is the declaration-
+/// default half of the T1c-1 E052 fence removal (the expression-position half
+/// is `expr::lower_fn_literal`): a zero-bound `#fn(name)` folds to
+/// [`lir::ConstValue::FnRef`]; a bound `#fn(name, args…)` folds to
+/// [`lir::ConstValue::Closure`], with each `ref` param bound to a durable
+/// global cell and each `val` param to a compile-time snapshot. Creation-site
+/// validity (E079/E080/E081) is `brink-analyzer`'s job; an unresolved target
+/// leaves the analyzer's own diagnostic to stand and folds to `Null`.
 fn eval_const_fn_literal(
     fl: &hir::FnLiteral,
+    index: &SymbolIndex,
+    resolutions: &ResolutionLookup,
     file: FileId,
+    const_values: &LookupMap<DefinitionId, lir::ConstValue>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> lir::ConstValue {
-    diagnostics.push(Diagnostic {
-        file,
-        range: fl.ptr.text_range(),
-        message: "`#fn(…)` function values are not yet implemented in this slice — \
-                  creation type-checks (T1c-1) but lowering/execution lands in T1c-2"
-            .to_owned(),
-        code: DiagnosticCode::E052,
-    });
-    lir::ConstValue::Null
+    let Some(target_id) = resolutions.resolve(file, fl.target.range) else {
+        return lir::ConstValue::Null;
+    };
+    let Some(target_info) = index.symbols.get(&target_id) else {
+        return lir::ConstValue::Null;
+    };
+    if fl.args.is_empty() {
+        return lir::ConstValue::FnRef(target_id);
+    }
+    let mut env = Vec::with_capacity(fl.args.len());
+    for (i, arg) in fl.args.iter().enumerate() {
+        let param = target_info.params.get(i);
+        let name = param.map_or_else(String::new, |p| p.name.clone());
+        let is_ref = param.is_some_and(|p| p.is_ref);
+        if is_ref {
+            // A `ref` bound arg must name a durable global cell (analyzer E080
+            // guaranteed this under `dialect = brink`); resolve it to the cell
+            // id so codegen bakes a `VariablePointer`. An unresolved cell (the
+            // arg isn't a path, or the path doesn't resolve) means the
+            // analyzer's own diagnostic already stands for this site — fold
+            // the whole literal to `Null` rather than sentinel-binding the
+            // function's own `target_id` as a fake cell (T1c-2 rider, #721).
+            let Some(cell) = (match arg {
+                hir::Expr::Path(p) => resolutions.resolve(file, p.range),
+                _ => None,
+            }) else {
+                return lir::ConstValue::Null;
+            };
+            env.push(lir::ConstClosureEntry::Ref { name, cell });
+        } else {
+            // #743: a `val` bound arg is exactly an array-element/map-value
+            // position one level inside the `#fn(…)` literal — same E077
+            // non-constant-kind check, so a bare `VAR` reference or a
+            // never-foldable kind (call, index, field access, …) bound by
+            // value no longer silently folds to `Null` with zero diagnostic.
+            if !is_const_foldable_kind(arg, index, resolutions, file) {
+                diagnostics.push(Diagnostic {
+                    file,
+                    range: fl.ptr.text_range(),
+                    message: DiagnosticCode::E077.title().to_string(),
+                    code: DiagnosticCode::E077,
+                });
+            }
+            let value = eval_const_expr(arg, index, resolutions, file, const_values, diagnostics);
+            env.push(lir::ConstClosureEntry::Val { name, value });
+        }
+    }
+    lir::ConstValue::Closure {
+        target: target_id,
+        env,
+    }
 }
 
-/// #679 review: can this source expression *kind* ever constant-fold in a
-/// declaration default? `false` means `eval_const_expr` is guaranteed to
-/// land in a `Null` fallthrough — a function call, postfix indexing, field
-/// access, or `++`/`--` has no compile-time evaluation and no runtime
-/// construction step left to defer to, so an array element / map value of
-/// that kind is a real compile error (`E077`), #673's silent-`Null` bug one
-/// level down inside the literal.
+/// #679 review (#743 closed the `Path`-to-`Variable` residue): can this
+/// source expression *kind* ever constant-fold in a declaration default?
+/// `false` means `eval_const_expr` is guaranteed to land in a `Null`
+/// fallthrough — a function call, postfix indexing, field access, or
+/// `++`/`--` has no compile-time evaluation and no runtime construction step
+/// left to defer to, so an array element / map value / struct field / `#fn`
+/// bound `val` arg of that kind is a real compile error (`E077`), #673's
+/// silent-`Null` bug one level down inside the literal.
 ///
 /// Deliberately keyed off the expression kind, never the folded result:
 ///
 /// - `Expr::Null` is HIR error recovery (or a missing initializer), not
 ///   author-writable source — folding it to `Null` is correct and already
 ///   diagnosed upstream, so it must not double-report here.
-/// - `Expr::Path` constness depends on what the path resolves to; a bare
-///   reference to another `VAR` folding to `Null` is the pre-existing,
-///   separately-tracked gap #679's scope notes name, and its behavior is
-///   deliberately unchanged.
+/// - `Expr::Path` constness depends on what the path resolves to — same
+///   resolution `is_const_foldable_decl_default` does one level up: a bare
+///   reference to another `VAR` (`SymbolKind::Variable`) is never a
+///   compile-time constant one level in either (#743; #679's scope notes
+///   originally left this nested case unchanged, tracked separately and
+///   now closed), while a reference to a `CONST`/list item/knot/stitch/
+///   function still folds for real. An unresolved path leaves the
+///   analyzer's own unresolved-reference diagnostic (E024/E025) to stand —
+///   not double-reported here, so it stays foldable.
 /// - Collection/struct literals recurse through their own `eval_const_*`
 ///   arms, which do their own per-element checking (`E075`/`E076`/`E077`).
 ///
 /// Exhaustive on purpose: a new `hir::Expr` variant must decide its
 /// declaration-default story here instead of silently inheriting `true`.
-fn is_const_foldable_kind(expr: &hir::Expr) -> bool {
+fn is_const_foldable_kind(
+    expr: &hir::Expr,
+    index: &SymbolIndex,
+    resolutions: &ResolutionLookup,
+    file: FileId,
+) -> bool {
     match expr {
         hir::Expr::Int(_)
         | hir::Expr::Float(_)
         | hir::Expr::Bool(_)
         | hir::Expr::String(_)
         | hir::Expr::Null
-        | hir::Expr::Path(_)
         | hir::Expr::DivertTarget(_)
         | hir::Expr::ListLiteral(_)
         | hir::Expr::ArrayLiteral(_)
         | hir::Expr::MapLiteral(_)
         | hir::Expr::StructLiteral(_) => true,
-        hir::Expr::Prefix(_, inner) => is_const_foldable_kind(inner),
-        hir::Expr::Infix(lhs, _, rhs) => is_const_foldable_kind(lhs) && is_const_foldable_kind(rhs),
+        hir::Expr::Path(path) => !matches!(
+            resolutions
+                .resolve(file, path.range)
+                .and_then(|id| index.symbols.get(&id)),
+            Some(info) if info.kind == SymbolKind::Variable
+        ),
+        hir::Expr::Prefix(_, inner) => is_const_foldable_kind(inner, index, resolutions, file),
+        hir::Expr::Infix(lhs, _, rhs) => {
+            is_const_foldable_kind(lhs, index, resolutions, file)
+                && is_const_foldable_kind(rhs, index, resolutions, file)
+        }
         hir::Expr::Postfix(..)
         | hir::Expr::Call(..)
         | hir::Expr::Index(_)
@@ -493,7 +585,83 @@ fn is_const_foldable_kind(expr: &hir::Expr) -> bool {
         // T1c-1: `#fn(…)` never constant-folds — as a declaration default it
         // is already a targeted E052 at `eval_const_expr`'s own arm; as an
         // array/map element it reports the standard E077.
-        | hir::Expr::FnLiteral(_) => false,
+        | hir::Expr::FnLiteral(_)
+        // T1e-1: `ref lvalue-path` never constant-folds — it isn't a legal
+        // ref-argument position at all here (`brink-analyzer`'s own E097
+        // already covers it), and even where legal it has no compile-time
+        // value.
+        | hir::Expr::RefArg(_) => false,
+    }
+}
+
+/// #692: can this source expression *kind* ever be a compile-time constant
+/// at the top level of a `VAR`/`CONST` declaration default (the whole
+/// default, not an element nested inside a collection/struct/fn literal)?
+/// Sibling check to [`is_const_foldable_kind`], which governs collection
+/// *elements* one level in; this one governs the position `eval_const_expr`
+/// itself is called from directly (`collect_globals`'s two call sites).
+///
+/// The one place this genuinely differs from `is_const_foldable_kind`:
+/// `Expr::Path` is resolved here, because at this position (unlike a
+/// collection element, #679 scope notes) the issue this fixes (#692) is
+/// exactly a bare reference to another `VAR` — `SymbolKind::Variable` is
+/// never a compile-time constant (global mutable state doesn't exist yet
+/// during the const-fold pass) — while a reference to a `CONST`/list
+/// item/knot/stitch/function *is*, same as `eval_const_expr`'s own arm
+/// already treats it. An unresolved path leaves the analyzer's own
+/// unresolved-reference diagnostic (E024/E025) to stand — not double-
+/// reported here.
+///
+/// `Expr::Prefix`/`Expr::Infix` recurse (a wrapped non-constant, e.g.
+/// `VAR x = -f()` or `VAR x = 1 + someVar`, is still a bare top-level
+/// default, not a collection element). Collection/struct/fn literals do
+/// their own per-element checking one level in (`E075`/`E076`/`E077`), and
+/// a bare `#fn(…)` *is* a supported constant default (T1c-2) — both report
+/// `true` here to avoid double-reporting.
+///
+/// Exhaustive on purpose: a new `hir::Expr` variant must decide its
+/// top-level declaration-default story here instead of silently inheriting
+/// `true`.
+fn is_const_foldable_decl_default(
+    expr: &hir::Expr,
+    index: &SymbolIndex,
+    resolutions: &ResolutionLookup,
+    file: FileId,
+) -> bool {
+    match expr {
+        hir::Expr::Int(_)
+        | hir::Expr::Float(_)
+        | hir::Expr::Bool(_)
+        | hir::Expr::String(_)
+        | hir::Expr::Null
+        | hir::Expr::DivertTarget(_)
+        | hir::Expr::ListLiteral(_)
+        | hir::Expr::ArrayLiteral(_)
+        | hir::Expr::MapLiteral(_)
+        | hir::Expr::StructLiteral(_)
+        | hir::Expr::FnLiteral(_) => true,
+        hir::Expr::Path(path) => !matches!(
+            resolutions
+                .resolve(file, path.range)
+                .and_then(|id| index.symbols.get(&id)),
+            Some(info) if info.kind == SymbolKind::Variable
+        ),
+        hir::Expr::Prefix(_, inner) => {
+            is_const_foldable_decl_default(inner, index, resolutions, file)
+        }
+        hir::Expr::Infix(lhs, _, rhs) => {
+            is_const_foldable_decl_default(lhs, index, resolutions, file)
+                && is_const_foldable_decl_default(rhs, index, resolutions, file)
+        }
+        hir::Expr::Postfix(..)
+        | hir::Expr::Call(..)
+        | hir::Expr::Index(_)
+        | hir::Expr::FieldAccess(_)
+        // T1e-1: `ref lvalue-path` is never a legal top-level declaration
+        // default (it's a ref-argument-only construct — `brink-analyzer`'s
+        // own E097 covers the standalone-position case) and has no
+        // compile-time value even where legal.
+        | hir::Expr::RefArg(_) => false,
     }
 }
 

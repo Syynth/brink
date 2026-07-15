@@ -1,4 +1,4 @@
-//! E0xx pipeline-level coverage audit (#672, lane A).
+//! E0xx pipeline-level coverage audit (#672, lane A) + hygiene follow-up (#709).
 //!
 //! One direct, minimal fixture per `DiagnosticCode`, proven to fire through
 //! the real pipeline (`brink_compiler::compile_with_options` — parse → HIR
@@ -15,32 +15,31 @@
 //! - E051 — `tests/t1b_dialect_gate.rs`
 //! - E063, E064, E065, E066, E067 — `tests/tm3_strict_policy.rs`
 //!
-//! Codes with **no test at all** because no source input can make them fire
-//! through the pipeline (suspected-dead; see the #672 lane-A audit report —
-//! findings, not test targets):
+//! Codes retired as unreachable (lane-A audit findings + hygiene follow-up
+//! #709; see enum docs for rationale):
 //!
-//! - E011 — the parser always materializes a `FILE_PATH` node (possibly
-//!   empty) inside `INCLUDE_STMT` and reports a missing path as E037
-//!   (`parser/declaration.rs::include_statement`), so `lower_include`'s
-//!   `ok_or(E011)` never triggers.
-//! - E013 / E018 — `parser/divert.rs::path` always creates a `PATH` node
-//!   (empty on error + E037), so `ThreadStart::target()` /
-//!   `DivertTargetExpr::target()` are never `None`.
-//! - E019 — the parser only builds a `CHOICE` node after seeing a bullet
-//!   token, so a bullet-less choice CST cannot exist.
-//! - E028 — no production emit site; a circular INCLUDE surfaces as
-//!   `CompileError::CircularInclude` from discovery instead (covered in
-//!   `tests/driver.rs::compile_circular_includes_detected`).
-//! - E053 — retired by T1b-2 (#570): the LIR backstop was replaced by real
-//!   lowering; no production emit site remains. (E052, formerly listed
-//!   alongside it, was **revived by T1c-1 (#699)** as the `#fn(…)`
-//!   not-yet-implemented lowering fence — tested below and, for the
-//!   VAR-declaration-default path, in
-//!   `brink-test-harness/tests/tier1_brink.rs`.)
+//! - E011 — RETIRED — the parser always materializes a `FILE_PATH` node
+//!   inside `INCLUDE_STMT`; reports E037 on error. Code moved to
+//!   `include.rs::lower_include` as an unreachable!(…) branch.
+//! - E013 — RETIRED — `parser/divert.rs::path` always creates a `PATH` node;
+//!   `ThreadStart::target()` never returns None. Code moved to
+//!   `divert.rs::lower_divert` as an unreachable!(…) branch.
+//! - E018 — RETIRED — `parser/divert.rs::path` always creates a `PATH` node;
+//!   `DivertTargetExpr::target()` never returns None. Code moved to
+//!   `expr/references.rs::DivertTargetExpr` as an unreachable!(…) branch.
+//! - E019 — RETIRED — the parser only builds a `CHOICE` node after a bullet
+//!   token; bullet-less choices cannot exist in the CST. Code moved to
+//!   `choice.rs::lower_choice` as an unreachable!(…) branch.
+//! - E028 — RETIRED — circular INCLUDE is detected at discovery and surfaces
+//!   as `CompileError::CircularInclude`, not a per-construct diagnostic.
+//! - E052 — RETIRED (T1c-2, #700) — `#fn(…)` now lowers for real; former
+//!   lowering fence is obsolete. Reserved, not reused.
+//! - E053 — RETIRED (T1b-2, #570) — T1b brink-extension HIR nodes now lower
+//!   for real; former LIR backstop is obsolete. Reserved, not reused.
 //! - E060 — emitted only when codegen rejects a `Program` violating an
 //!   invariant an earlier stage guarantees (a compiler bug by definition);
 //!   not constructible from source.
-//! - E072 — retired (TM-4c, #666), documented as reserved-not-reused.
+//! - E072 — RETIRED (TM-4c, #666), documented as reserved-not-reused.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -677,22 +676,28 @@ fn e062_retired_fn_type_annotation_actually_resolves_under_strict() {
     );
 }
 
-// ─── T1c-1 lowering fence (E052 — revived by #699) ───────────────────
+// ─── T1c-2 (#700): the E052 `#fn` lowering fence is retired ───────────
 
 #[test]
-fn e052_fn_literal_not_yet_implemented_at_lowering() {
+fn e052_retired_fn_literal_lowers_without_error() {
     // A well-formed `#fn` creation site under dialect=brink parses, gates,
-    // and type-checks in T1c-1 but has no LIR/codegen story until T1c-2 —
-    // the non-suppressible lowering fence is the one error left.
-    assert_error_at(
+    // type-checks (T1c-1) AND now lowers for real (T1c-2, #700) — the former
+    // E052 lowering fence is gone, so a valid `#fn` compiles clean. An E052
+    // (or any diagnostic) would surface as a `Diagnostics` compile error.
+    let result = compile(
         "=== function double(x) ===\n~ return x + x\n\n~ temp f = #fn(double, 1)\nHi\n",
         brink_options(),
-        DiagnosticCode::E052,
-        "#fn(double, 1)",
     );
+    if let Err(err) = result {
+        let diags = errors_of(err);
+        assert!(
+            !diags.iter().any(|d| d.code == DiagnosticCode::E052),
+            "E052 lowering fence should be retired for #fn, got {diags:?}",
+        );
+    }
 }
 
-// ─── Structs (E068–E071, E073, E074) ─────────────────────────────────
+// ─── Structs (E068–E071, E073, E074, E084) ───────────────────────────
 
 const POINT_SRC: &str = "STRUCT Point = #{\n    x: float,\n    y: float,\n}\n";
 
@@ -747,4 +752,90 @@ fn e073_unresolved_shape_reaches_lir_when_e068_suppressed() {
 fn e074_chained_field_write_projection() {
     let source = "STRUCT Inner = #{v: int}\nSTRUCT Outer = #{inner: Inner}\nVAR o = 0\n~ {\n    o = Outer#{inner: Inner#{v: 1}}\n    o.inner.v = 2\n}\nHi\n";
     assert_error_at(source, brink_options(), DiagnosticCode::E074, "o.inner.v");
+}
+
+#[test]
+fn e084_duplicate_field_under_gradual() {
+    // Policy-independent (issue #675): fires under the default `types =
+    // gradual` too, not just strict — the repeated occurrence is the span.
+    let source = format!("{POINT_SRC}~ temp p = Point#{{x: 1.0, x: 2.0, y: 3.0}}\nHi\n");
+    assert_error_at(&source, brink_options(), DiagnosticCode::E084, "x: 2.0");
+}
+
+#[test]
+fn e084_duplicate_field_under_strict() {
+    let source = format!("{POINT_SRC}~ temp p = Point#{{x: 1.0, x: 2.0, y: 3.0}}\nHi\n");
+    assert_error_at(&source, strict_options(), DiagnosticCode::E084, "x: 2.0");
+}
+
+// ─── T1e-1 path projections (E097–E099, docs/t1e-spec.md §2/§6, issue #831) ──
+
+const HEAL_SRC: &str = "=== function heal(ref hp, k) ===\n~ hp = hp + k\n\n";
+
+#[test]
+fn e080_ref_projection_root_is_a_temp() {
+    // T1e's `ref` extends the existing E080 code (not a new one) to the
+    // path-projection grammar — same durable-root obligation as T1c's
+    // unmarked ref-argument form.
+    let source = format!("{HEAL_SRC}=== main ===\n~ temp t = 1\n~ heal(ref t, 5)\n-> DONE\n");
+    assert_error_at(&source, brink_options(), DiagnosticCode::E080, "ref t");
+}
+
+#[test]
+fn e097_standalone_ref_projection() {
+    let source = "VAR gold = 5\n=== main ===\n~ temp r = ref gold\n-> DONE\n";
+    assert_error_at(source, brink_options(), DiagnosticCode::E097, "ref gold");
+}
+
+#[test]
+fn e098_strict_unknown_field_segment() {
+    let source = format!(
+        "STRUCT NPC = #{{hp: int}}\nVAR npc: NPC = NPC#{{hp: 10}}\n{HEAL_SRC}\
+         === main ===\n~ heal(ref npc.mana, 5)\n-> DONE\n"
+    );
+    assert_error_at(&source, strict_options(), DiagnosticCode::E098, "npc.mana");
+}
+
+#[test]
+fn real_path_projection_lowers_for_real_no_longer_e099() {
+    // T1e-2 (docs/t1e-spec.md §3, tracking #828) replaces the T1e-1 E099
+    // lowering fence with real `MakeProjection` emission for a genuine path
+    // projection (a real segment, not a bare single-name `ref`) that passes
+    // every analyzer check. `npc` here has no statically-known STRUCT shape
+    // (gradual mode, no `VAR npc: Shape` annotation), so `.hp` is a runtime
+    // by-name segment — exactly the case the old fence used to stop at.
+    let source = format!("VAR npc = 5\n{HEAL_SRC}=== main ===\n~ heal(ref npc.hp, 5)\n-> DONE\n");
+    // E099 is error-severity (the old fence made `compile` fail); a
+    // successful compile alone proves it no longer fires here.
+    let out = compile(&source, brink_options())
+        .unwrap_or_else(|e| panic!("a real path-projection ref-argument must lower: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}
+
+#[test]
+fn e099_bind_ref_argument_always_fences_even_zero_segment() {
+    // `bind(f, args…)` (docs/t1c-spec.md §3) is val-only currying at LIR —
+    // `BindValue`'s args have no `CallArg`/ref-capture concept at all
+    // (unlike ordinary calls/`#fn`, which already have `RefGlobal`). So
+    // *any* `ref`-marked bind argument fences here, even the zero-segment
+    // case that a plain call/`#fn` would lower for real — there's no
+    // "today's unmarked behavior" to fall back to for `bind`, since `bind`
+    // never supported ref-argument binding before T1e either. Proves this
+    // is a clean, targeted stop, not a silent value-lowering of a `ref`.
+    let source = format!(
+        "VAR gold = 5\n{HEAL_SRC}=== main ===\n~ temp f = #fn(heal, gold)\n\
+         ~ temp g = bind(f, ref gold)\n-> DONE\n"
+    );
+    assert_error_at(&source, brink_options(), DiagnosticCode::E099, "ref gold");
+}
+
+#[test]
+fn ref_marked_bare_var_arg_compiles_clean_through_the_real_pipeline() {
+    // The zero-segment case (`ref gold`, no dotted field / `[…]` index) is
+    // not a projection at all — it must compile exactly like today's
+    // unmarked `ref`-argument form, never hitting E097/E099.
+    let source = format!("VAR gold = 5\n{HEAL_SRC}=== main ===\n~ heal(ref gold, 5)\n-> DONE\n");
+    let out = compile(&source, brink_options())
+        .unwrap_or_else(|e| panic!("a bare single-name `ref` must compile clean: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
 }

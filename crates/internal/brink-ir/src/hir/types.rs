@@ -55,6 +55,95 @@ pub struct HirFile {
     pub externals: Vec<ExternalDecl>,
     /// `INCLUDE` sites (for cross-file resolution by the analyzer).
     pub includes: Vec<IncludeSite>,
+    /// The file's explicit `#@module(name)` declaration, if any (M-1,
+    /// docs/modules-spec.md §1). `None` means the file is an *undeclared*
+    /// stem-module — its module name is its file stem and identity hashing
+    /// stays byte-identical to the pre-modules derivation. `Some` names the
+    /// module explicitly and opts the file into the declared-module world
+    /// (module-qualified `DefinitionId`s, §5). The name argument is
+    /// validated (non-empty, single occurrence) during lowering; the range
+    /// covers the whole directive tag for the dialect gate (`#@module` is
+    /// brink-only) and diagnostics.
+    pub module: Option<ModuleDecl>,
+    /// `IMPORT` statements (M-2, docs/modules-spec.md §2). Brink-dialect
+    /// only — the dialect gate rejects each under strict-ink. Empty for the
+    /// entire pre-modules world.
+    pub imports: Vec<Import>,
+    /// Every `#@private` / `#@public` visibility directive occurrence in the
+    /// file (M-2, docs/modules-spec.md §4), for the dialect gate (E051 under
+    /// strict-ink). The *effective* per-definition visibility travels the
+    /// manifest path (`DeclaredSymbol::visibility`) to the symbol index.
+    pub visibility: Vec<VisibilityDirective>,
+    /// Range of every `#@was(…)` directive tag in the file — module-level
+    /// and definition-level alike (M-3, docs/modules-spec.md §5), for the
+    /// dialect gate (E051 under strict-ink). The *effective* rename travels
+    /// separately: `ModuleDecl::was` for the module, `DeclaredSymbol::was`
+    /// for a definition.
+    pub was_directives: Vec<TextRange>,
+}
+
+/// A file's explicit `#@module(name)` declaration (M-1, modules-spec §1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleDecl {
+    /// The declared module name (the argument to `#@module(…)`).
+    pub name: String,
+    /// Source range of the whole `#@module(…)` directive tag.
+    pub range: TextRange,
+    /// The module's old name and directive range, from a file-level
+    /// `#@was(old_name)` (M-3, docs/modules-spec.md §5). `None` means no
+    /// rename recorded. Scoped to *declared* modules only — an undeclared
+    /// stem-module's identity is its file stem, not a `#@was` target (a
+    /// stray `#@was` with no `#@module` diagnoses `E049` instead of
+    /// silently attaching here).
+    pub was: Option<(String, TextRange)>,
+}
+
+/// An `IMPORT` statement (M-2, docs/modules-spec.md §2), both forms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Import {
+    /// The imported module name.
+    pub module: String,
+    /// Source range of the module-name token.
+    pub module_range: TextRange,
+    /// The bare-form name list (`IMPORT { a, b AS c } FROM mod`). Empty for
+    /// the qualified form (`IMPORT mod`), which brings only the module name
+    /// into scope for `module.name` access.
+    pub items: Vec<ImportItem>,
+    /// `true` for the bare form (has a `{ … }` list, even if empty);
+    /// distinguishes an empty bare list from the qualified form.
+    pub bare: bool,
+    /// Source range of the whole `IMPORT …` statement.
+    pub range: TextRange,
+}
+
+/// One `name` or `name AS alias` entry in a bare-form import list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportItem {
+    /// The imported definition's own (source-module) name.
+    pub name: String,
+    /// The local alias (`AS gt`), if any. Absent means the name is bound
+    /// under its own spelling.
+    pub alias: Option<String>,
+    /// Source range of the item.
+    pub range: TextRange,
+}
+
+impl ImportItem {
+    /// The name this import binds locally — the alias if present, else the
+    /// imported name.
+    #[must_use]
+    pub fn local_name(&self) -> &str {
+        self.alias.as_deref().unwrap_or(&self.name)
+    }
+}
+
+/// A `#@private` / `#@public` directive occurrence (M-2, modules-spec §4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibilityDirective {
+    /// Which visibility the directive requests.
+    pub mark: crate::VisibilityMark,
+    /// Source range of the directive tag.
+    pub range: TextRange,
 }
 
 // ─── Containers ─────────────────────────────────────────────────────
@@ -553,6 +642,16 @@ pub enum Expr {
     /// T1c, docs/t1c-spec.md §2): partial application over the statically
     /// named function `target`, binding a prefix of its declared params.
     FnLiteral(FnLiteral),
+    /// `ref lvalue-path` — path-projection creation (brink extension, T1e,
+    /// docs/t1e-spec.md §2): a symbolic `(root cell, path segments)` value.
+    /// Legal only in ref-argument position (calls, `#fn(…)`, `bind(…)`);
+    /// anywhere else is `brink-analyzer`'s E097 (icebox #825). The segment
+    /// expressions (index subexpressions inside a nested `Index`) are
+    /// captured whole as part of `operand`'s own tree — "index expressions
+    /// snapshot at `ref` creation" (t1e-spec §1) falls out of this shape for
+    /// free: there is no lazy re-evaluation path, only this one owned tree,
+    /// evaluated once at the creation site.
+    RefArg(RefArgExpr),
 }
 
 /// `#fn(target, args…)`. `ptr` lets the dialect gate point its diagnostic
@@ -568,6 +667,20 @@ pub struct FnLiteral {
     /// target's declared param row (over-binding is E081; `ref`-param
     /// binding discipline is E080).
     pub args: Vec<Expr>,
+}
+
+/// `ref lvalue-path` — path-projection creation (brink extension, T1e,
+/// docs/t1e-spec.md §2). `ptr` lets the dialect gate point its diagnostic at
+/// the exact `ref` expression, matching the sibling sigil-literal shapes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefArgExpr {
+    pub ptr: SyntaxNodePtr,
+    /// The lvalue-shaped operand: a `Path` (plain or dotted), an `Index`, a
+    /// `FieldAccess`, or a mix of the two nested arbitrarily deep. Any other
+    /// expression kind is not an lvalue at all — `brink-analyzer`'s E080
+    /// ("this argument is not an lvalue"), same message class T1c's
+    /// unmarked-`ref` discipline already uses.
+    pub operand: Box<Expr>,
 }
 
 /// `Name#{field: expr, …}`. `ptr` lets the dialect gate point its
@@ -754,6 +867,7 @@ pub fn display_expr(expr: &Expr) -> String {
                 format!("#fn({name}, ...)")
             }
         }
+        Expr::RefArg(ra) => format!("ref {}", display_expr(&ra.operand)),
     }
 }
 
@@ -968,13 +1082,18 @@ pub enum DiagnosticCode {
     E009,
     /// `EXTERNAL` declaration is missing a name.
     E010,
-    /// `INCLUDE` statement is missing a file path.
+    /// RETIRED (lane-A audit, #709) — the parser always materializes a
+    /// `FILE_PATH` node inside `INCLUDE_STMT` (possibly empty) and reports
+    /// missing path as E037 (`parser/declaration.rs::include_statement`).
+    /// Code kept reserved, not reused.
     E011,
 
     // ── Control flow ────────────────────────────────────────────
     /// Divert is missing a target.
     E012,
-    /// Thread start is missing a target.
+    /// RETIRED (lane-A audit, #709) — `parser/divert.rs::path` always creates
+    /// a `PATH` node (empty on error + E037), so `ThreadStart::target()` is
+    /// never `None`. Code kept reserved, not reused.
     E013,
     /// Logic line has no effect (bare `~`).
     E014,
@@ -986,11 +1105,15 @@ pub enum DiagnosticCode {
     E016,
     /// Function call is missing a name.
     E017,
-    /// Divert target expression is missing a path.
+    /// RETIRED (lane-A audit, #709) — `parser/divert.rs::path` always creates
+    /// a `PATH` node (empty on error + E037), so `DivertTargetExpr::target()`
+    /// is never `None`. Code kept reserved, not reused.
     E018,
 
     // ── Choices ─────────────────────────────────────────────────
-    /// Choice is missing bullet markers.
+    /// RETIRED (lane-A audit, #709) — the parser only builds a `CHOICE` node
+    /// after seeing a bullet token, so a bullet-less choice CST cannot exist.
+    /// Code kept reserved, not reused.
     E019,
 
     // ── Inline logic ────────────────────────────────────────────
@@ -1012,7 +1135,9 @@ pub enum DiagnosticCode {
     E026,
     /// Ambiguous bare list item reference.
     E027,
-    /// Circular INCLUDE dependency.
+    /// RETIRED (lane-A audit, #709) — circular INCLUDE is detected at the
+    /// discovery phase and surfaces as `CompileError::CircularInclude`, not as
+    /// a per-construct diagnostic. Code kept reserved, not reused.
     E028,
 
     // ── Compile errors ────────────────────────────────────────────
@@ -1076,16 +1201,18 @@ pub enum DiagnosticCode {
     E051,
     /// A brink-extension construct parses and analyzes cleanly under the
     /// `brink` dialect, but its LIR lowering hasn't landed yet. Originally
-    /// minted for T1b-1 (every T1b construct lowers since T1b-2, #570); now
-    /// fires for `#fn(…)` function values, whose lowering lands in T1c-2
-    /// (docs/t1c-spec.md §11).
+    /// minted for T1b-1 (every T1b construct lowers since T1b-2, #570), then
+    /// revived by T1c-1 (#699) as the `#fn(…)` lowering fence. **No production
+    /// emit site remains** since T1c-2 (#700): `#fn(…)` now lowers for real
+    /// (expression position and declaration defaults). Reserved, not reused —
+    /// available again for the next brink extension that parses/analyzes
+    /// before its lowering lands.
     E052,
-    /// Internal error: a T1b brink-extension HIR node (`LogicBlock`,
-    /// `ArrayLiteral`, `MapLiteral`, `Index`) reached LIR lowering. The
-    /// dialect gate (E051/E052) should have rejected it first, but that
-    /// gate is a suppressible analysis diagnostic — this is the
-    /// non-suppressible backstop that fires when the gate was suppressed
-    /// (e.g. `// brink-disable-all`).
+    /// RETIRED (T1b-2, #570) — previously a non-suppressible backstop
+    /// rejecting T1b brink-extension HIR nodes (`LogicBlock`, `ArrayLiteral`,
+    /// `MapLiteral`, `Index`) at LIR lowering. T1b-2 completed real lowering
+    /// for all such constructs, making the backstop obsolete. Code kept
+    /// reserved, not reused, for diagnostic-code stability.
     E053,
     /// A block-scoped `temp` (`~ { … }`, docs/t1b-surface-spec.md §2) or
     /// `for` loop variable shadows an already-visible temp/param — either an
@@ -1228,19 +1355,28 @@ pub enum DiagnosticCode {
     /// construction step to fault at, so this is the compile-time
     /// equivalent — a real error, never a silent `Null`.
     E076,
-    /// An array element or map value in a `VAR`/`CONST` declaration default
-    /// has a source expression kind that can never constant-fold — a
-    /// function call, postfix indexing, field access, or `++`/`--`. A
-    /// declaration default is baked into `StoryData` at compile time, so
-    /// there is no runtime construction step left to evaluate the element
-    /// at; without this diagnostic the element recursed into
-    /// `eval_const_expr`'s catch-all and silently became `Null` — #673's
-    /// silent-`Null` bug one level down, inside the literal (#679 review).
-    /// Keyed off the source expression *kind*, never the folded result: an
-    /// `Expr::Null` produced by HIR error recovery must not double-report,
-    /// and a bare `Path` reference (whose constness depends on resolution —
-    /// the pre-existing, separately-tracked gap #679's scope notes name)
-    /// keeps its existing behavior.
+    /// An array element, map value, struct field, or `#fn` bound `val` arg
+    /// nested inside a `VAR`/`CONST` declaration default has a source
+    /// expression kind that can never constant-fold — a function call,
+    /// postfix indexing, field access, `++`/`--`, or (#743) a bare
+    /// reference to another `VAR`. A declaration default is baked into
+    /// `StoryData` at compile time, so there is no runtime construction
+    /// step left to evaluate the element at; without this diagnostic the
+    /// element recursed into `eval_const_expr`'s `Path`
+    /// (`SymbolKind::Variable`) arm or catch-all and silently became `Null`
+    /// — #673's silent-`Null` bug one level down, inside the literal (#679
+    /// review; the `Path`-to-`Variable` case one level in was left
+    /// deliberately unchanged there and closed by #743). Keyed off the
+    /// source expression *kind*, never the folded result: an `Expr::Null`
+    /// produced by HIR error recovery must not double-report, and a `Path`
+    /// resolving to a `CONST`/list item/knot/stitch/function still folds
+    /// for real and is not flagged — only a resolved `SymbolKind::Variable`
+    /// (or an unresolved path, left to the analyzer's own diagnostic) is
+    /// exempt from the fold-for-real behavior, matching
+    /// `is_const_foldable_decl_default`'s top-level twin (`E083`). (A
+    /// struct literal nested at this position is unconditionally `E075`
+    /// regardless of field content — `ConstValue` has no record variant at
+    /// all — so a bad field inside it never reaches this arm.)
     E077,
     // ── TM-3 completion: conversion intrinsics (docs/typed-mode-spec.md
     // §4, maintainer ruling 2026-07-13, issue #659) ──────────────────────
@@ -1267,19 +1403,193 @@ pub enum DiagnosticCode {
     /// be bound at creation, and each must capture a durable cell — a
     /// global `VAR` (flow-local `#@local` VARs included); a `temp`/param
     /// is a compile error (temps die with the frame, value-model §11), a
-    /// `CONST` is not a mutable cell, and any rvalue/field projection is
-    /// not a cell at all.
+    /// `CONST` is not a mutable cell, and a bare (unmarked) rvalue/field
+    /// reference is not a cell at all.
+    ///
+    /// T1e (docs/t1e-spec.md §2/§6, issue #831) extends this same code —
+    /// "reuse the E080-family message shape" — to the explicit `ref
+    /// lvalue-path` projection form (`heal(ref npc.hp, 5)`,
+    /// `#fn(heal, ref party[leader].hp)`, `bind(f, ref inventory[idx])`):
+    /// the *root* of the path (the innermost variable the segments walk
+    /// from) must still be a durable global `VAR`, by the same rule —
+    /// `temp`/param roots remain a compile error, a `CONST` root is not a
+    /// mutable cell. A projection's own *segments* (dotted fields, `[…]`
+    /// indices) are a separate check (`E098`, strict-mode statically-known
+    /// shapes only) — this code is the root-durability obligation alone.
     E080,
     /// `#fn(name, args…)` binds more arguments than the target declares —
     /// the bound-arg row is a *prefix* of the declared param row
     /// (docs/t1c-spec.md §2: "binding more args than the target declares
     /// is a compile error").
     E081,
+
+    // ── T1b block-temp scoping (docs/t1b-surface-spec.md §2, issue #680) ──
+    /// A T1b block-scoped `temp` (`~ { … }`) — or a `for`-loop variable,
+    /// which desugars the same way — was referenced (by value or by `ref`
+    /// argument) after its own `~ { … }`/`while`/`for`/`if` block already
+    /// closed. Root-caused for #680: LIR lowering's fallback for "temp not
+    /// currently visible" (used for inklecate-compat forward-reference
+    /// emulation of *classic* temps) previously also caught this case,
+    /// silently emitting a phantom hashed `GetGlobal`/`RefGlobal` id that
+    /// was never registered as a real global — a runtime-only
+    /// `UnresolvedGlobal` fault with no compile diagnostic.
+    E082,
+
+    // ── Declaration-default constness, top level (issue #692, sibling to
+    // #673/#679's collection-element E075/E076/E077) ─────────────────────
+    /// A scalar `VAR`/`CONST` declaration default whose *source expression
+    /// kind* can never be a compile-time constant — a bare reference to
+    /// another `VAR` (`VAR x = someOtherVar`) or a function call
+    /// (`VAR x = f()`), including either wrapped in a prefix/infix
+    /// operation. `eval_const_expr`'s `Path` arm (`SymbolKind::Variable`)
+    /// and its catch-all previously folded both silently to `Null` with no
+    /// diagnostic — the same silent-fold bug #673/#679 fixed one level
+    /// down, inside array/map/struct literals, left unfixed at this top
+    /// level. Keyed off the source expression kind, never the folded
+    /// result, same as `E077`. Does not fire for a `Path` nested inside a
+    /// collection/struct/fn literal (array element, map value, struct
+    /// field, `#fn` argument) — those recurse through their own existing
+    /// `E075`/`E076`/`E077` per-element checks one level in, which
+    /// deliberately still leave a `VAR`-reference gap unchanged (#679 scope
+    /// notes) pending its own follow-up.
+    E083,
+
+    // ── TM-5 struct construction literals (docs/typed-mode-spec.md §6,
+    // decision-log "Struct construction literals: source-order evaluation,
+    // duplicate field is a compile error" 2026-07-14, issues #675/#676) ──
+    /// A struct construction literal (`Name#{…}`) supplies the same field
+    /// name more than once. Previously a silent last-wins: only the final
+    /// initializer's value was placed, and — because the well-formed
+    /// `RecordNew` lowering path discarded every non-placed lowered
+    /// expression tree wholesale — an earlier duplicate's initializer
+    /// (including any observable side effect, e.g. a function call) never
+    /// actually ran at all, with no diagnostic (#675's RCA). Now a real
+    /// compile error naming the repeated field, under both
+    /// `types = gradual` and `types = strict` — unlike `E069`/`E070`/
+    /// `E071` (which need a resolved shape to check missing/extra/mistyped
+    /// fields against, and are strict-mode-only), a duplicate field is a
+    /// structural authoring mistake detectable from the literal alone,
+    /// independent of type-checking policy or whether the shape name even
+    /// resolves.
+    E084,
+
+    // ── M-1 modules (docs/modules-spec.md §1/§5) ──────────────────
+    /// An *undeclared* file whose module (its file stem) collides with a
+    /// *declared* module's name (`#@module(name)` elsewhere). Accidental
+    /// membership with mixed visibility defaults is the one footgun the
+    /// module model forbids (modules-spec §1). Fix: declare the file with
+    /// the same `#@module(name)`, or rename it.
+    E085,
+    /// A malformed `#@module(…)` directive: a missing or empty name
+    /// argument, or a second `#@module` in the same file. `#@module`
+    /// takes exactly one non-empty module name and appears at most once
+    /// per file (modules-spec §1).
+    E086,
+
+    // ── M-2 imports + visibility (docs/modules-spec.md §2/§4/§7) ───
+    /// A reference resolves to a `#@private` definition in another module.
+    /// Private names are module-internal; the referrer is outside that
+    /// module. Fix: make the definition `#@public` and `IMPORT` it, or move
+    /// the reference into the module (modules-spec §4/§7).
+    E087,
+    /// A bare-form `IMPORT { name } FROM mod` names a definition that the
+    /// *declared* module `mod` does not publicly export. Only enforced
+    /// against declared modules — an import naming an unknown/undeclared
+    /// module is not itself flagged by this code, since this module's
+    /// export set isn't visible to the check (modules-spec §2/§7).
+    E088,
+    /// An `IMPORT` brings the same local name into scope twice (a repeated
+    /// bare import, or two imports whose names/aliases collide) — the
+    /// reference would be ambiguous (modules-spec §2/§7).
+    E089,
+    /// An `IMPORT` names the importing file's own module — a module cannot
+    /// import itself; its own names are already bare (modules-spec §2/§7).
+    E090,
+    /// A qualified access `a.b` is ambiguous: `a` is both a module imported
+    /// in this file and a visible definition. Fix with an `AS` alias — no
+    /// silent precedence (modules-spec §2/§7).
+    E091,
+    /// A `#@public`/`#@private` override that restates the module's default
+    /// (e.g. `#@public` in an undeclared module, `#@private` in a declared
+    /// one) — redundant, no effect (warning, modules-spec §4/§7).
+    E092,
+    /// Conflicting or repeated visibility directives on one declaration
+    /// (both `#@private` and `#@public`, or the same one twice). A
+    /// declaration takes at most one visibility directive (modules-spec §4).
+    E093,
+
+    // ── M-3 renames (docs/modules-spec.md §5/§7) ────────────────────
+    /// A malformed `#@was(…)` directive: a missing or empty old-name
+    /// argument (`#@was`, `#@was()`). `#@was` takes exactly one non-empty
+    /// name (modules-spec §5).
+    E094,
+    /// `#@was(name)` names the thing's own *current* name — a self-alias
+    /// that would be a no-op entry in the compiled alias table. Nothing to
+    /// migrate; likely a stale directive left over from a previous rename
+    /// (warning, modules-spec §5/§7).
+    E095,
+
+    // ── M-2c cross-module collisions (issue #784, decision-log
+    // "Cross-module name collisions" 2026-07-14) ────────────────────────
+    /// Two *declared* modules (`#@module(name)`, different names) each
+    /// define a same-name, same-kind symbol. Escalated from the
+    /// `E022`/`E023`/`E026` inklecate-compat duplicate warning to a hard
+    /// error under `dialect = brink` only: flat resolution (unchanged by
+    /// this stopgap — true import-scoped resolution is #790's job) binds a
+    /// bare name to whichever declared-module definition merge happens to
+    /// see first, so two declared modules sharing a name make that binding
+    /// silently order-dependent for one of them. A duplicate *within* one
+    /// module (same declared module name across its files, or any
+    /// undeclared/legacy file) keeps the existing warning — this code
+    /// fires only when both colliding definitions' owning files declared
+    /// *different* modules. Reported once per colliding definition (both
+    /// spans), under `strict-ink` this code never fires (compat corpus
+    /// untouched).
+    E096,
+
+    // ── T1e-1 path projections (docs/t1e-spec.md §2/§6, issue #831,
+    // tracking #828) ──────────────────────────────────────────────────
+    /// A `ref lvalue-path` projection expression (`ref npc.hp`,
+    /// `ref inventory[idx]`) appears somewhere other than ref-argument
+    /// position (a direct argument of a call, `#fn(…)`, or `bind(…)`) — a
+    /// standalone projection value (`temp r = ref a[0]`), one nested inside
+    /// another expression, or any other position. Deliberate v1 posture
+    /// (t1e-spec §2: "projections exist only where `ref` already exists:
+    /// argument binding"); first-class standalone projection values are a
+    /// future round, tracked as icebox #825 — not a permanent rejection.
+    E097,
+    /// A `ref lvalue-path` projection's segment (a dotted field, or a
+    /// `[…]` index) disagrees with the root's statically-known shape, under
+    /// `types = strict` only — a dotted field the declared `STRUCT` shape
+    /// doesn't have, or a `[…]` index against a declared shape that isn't a
+    /// collection (mirrors `structs::check`'s missing/extra-field
+    /// machinery, `E069`–`E071`, applied to path segments instead of
+    /// construction-literal fields; "Unknown never disagrees" for any
+    /// segment whose base type isn't statically known this way — silently
+    /// unchecked, same spirit as `E071`).
+    E098,
+    /// A `ref lvalue-path` projection with at least one path segment
+    /// (dotted field or `[…]` index — a *real* projection, not a bare
+    /// single-name `ref`) reached LIR lowering. T1e-1 (docs/t1e-spec.md §8
+    /// sequencing item 1) ships grammar + HIR + analyzer only — the
+    /// `MakeProjection`/`ProjRead`/`ProjWrite` opcodes a projection needs to
+    /// actually run land in T1e-2 (tracking #828). The E052-fence pattern:
+    /// every other check (`E080` durable root, `E097` position, `E098`
+    /// strict segment shape) already ran and passed, so this is a clean,
+    /// deliberate "not yet lowerable" stop, not a silent drop or a
+    /// miscompile — see `brink-ir::lir::lower::mod`'s backstop doctrine. A
+    /// bare single-name `ref x` (zero segments) never hits this — it lowers
+    /// exactly like today's unmarked ref-argument binding.
+    E099,
 }
 
 impl DiagnosticCode {
     /// The stable string representation (e.g., `"E001"`).
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a flat one-arm-per-code table that necessarily grows with the diagnostic set"
+    )]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::E001 => "E001",
@@ -1363,11 +1673,33 @@ impl DiagnosticCode {
             Self::E079 => "E079",
             Self::E080 => "E080",
             Self::E081 => "E081",
+            Self::E082 => "E082",
+            Self::E083 => "E083",
+            Self::E084 => "E084",
+            Self::E085 => "E085",
+            Self::E086 => "E086",
+            Self::E087 => "E087",
+            Self::E088 => "E088",
+            Self::E089 => "E089",
+            Self::E090 => "E090",
+            Self::E091 => "E091",
+            Self::E092 => "E092",
+            Self::E093 => "E093",
+            Self::E094 => "E094",
+            Self::E095 => "E095",
+            Self::E096 => "E096",
+            Self::E097 => "E097",
+            Self::E098 => "E098",
+            Self::E099 => "E099",
         }
     }
 
     /// Short human-readable title for this diagnostic code.
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a flat one-arm-per-code message table that necessarily grows with the diagnostic set"
+    )]
     pub fn title(self) -> &'static str {
         match self {
             Self::E001 => "knot is missing a name",
@@ -1380,15 +1712,14 @@ impl DiagnosticCode {
             Self::E008 => "LIST declaration is missing a name",
             Self::E009 => "LIST member is missing a name",
             Self::E010 => "EXTERNAL declaration is missing a name",
-            Self::E011 => "INCLUDE statement is missing a file path",
+            Self::E011 => "retired (lane-A audit) — parser always creates FILE_PATH",
             Self::E012 => "divert is missing a target",
-            Self::E013 => "thread start is missing a target",
+            Self::E013 | Self::E018 => "retired (lane-A audit) — parser always creates PATH node",
             Self::E014 => "logic line has no effect",
             Self::E015 => "expression is missing an operand",
             Self::E016 => "unknown or unsupported operator",
             Self::E017 => "function call is missing a name",
-            Self::E018 => "divert target expression is missing a path",
-            Self::E019 => "choice is missing bullet markers",
+            Self::E019 => "retired (lane-A audit) — parser guarantees bullet markers",
             Self::E020 => "inline conditional is missing a condition",
             Self::E021 => "inline sequence has no branches",
             Self::E022 => "duplicate knot definition",
@@ -1397,7 +1728,7 @@ impl DiagnosticCode {
             Self::E025 => "unresolved variable reference",
             Self::E026 => "duplicate list item",
             Self::E027 => "ambiguous bare list item reference",
-            Self::E028 => "circular INCLUDE dependency",
+            Self::E028 => "retired (lane-A audit) — circular INCLUDE surfaces as CompileError",
             Self::E029 => "choice in conditional must explicitly divert",
             Self::E030 => "string interpolation in constant initializer is ignored",
             Self::E031 => "function call argument count mismatch",
@@ -1422,9 +1753,7 @@ impl DiagnosticCode {
             Self::E050 => "directive does not take arguments",
             Self::E051 => "brink extension used under strict-ink dialect",
             Self::E052 => "brink extension not yet implemented",
-            Self::E053 => {
-                "internal: brink extension reached LIR lowering (dialect gate suppressed)"
-            }
+            Self::E053 => "retired (T1b-2) — T1b extension lowering is complete",
             Self::E054 => "block-scoped temp shadows an already-visible temp",
             Self::E055 => "collection mutator's first argument is not an lvalue",
             Self::E056 => "collection mutator used in expression position",
@@ -1455,12 +1784,40 @@ impl DiagnosticCode {
                 "map literal key in a VAR/CONST declaration default is not a compile-time-constant scalar (int/string/bool)"
             }
             Self::E077 => {
-                "array element or map value in a VAR/CONST declaration default is not a compile-time-constant expression"
+                "array element, map value, or #fn bound value argument in a VAR/CONST declaration default is not a compile-time-constant expression"
             }
             Self::E078 => "int()/float() argument is outside the permissive numeric+bool domain",
             Self::E079 => "#fn target is not a statically-named function definition",
-            Self::E080 => "#fn ref parameter is not bound to a durable cell at creation",
+            Self::E080 => {
+                "ref-argument (#fn, call, or bind) does not bind a durable cell at creation"
+            }
             Self::E081 => "#fn binds more arguments than the target declares",
+            Self::E082 => "block-scoped temp referenced after its block has closed",
+            Self::E083 => "VAR/CONST declaration default is not a compile-time-constant expression",
+            Self::E084 => "struct construction literal supplies a duplicate field",
+            Self::E085 => {
+                "file's module (its stem) collides with a declared module of the same name"
+            }
+            Self::E086 => {
+                "`#@module` requires exactly one module name and may appear at most once per file"
+            }
+            Self::E087 => "reference to a `#@private` definition in another module",
+            Self::E088 => {
+                "bare `IMPORT { name } FROM mod` names a definition the declared module does not export"
+            }
+            Self::E089 => "`IMPORT` brings the same name into scope more than once",
+            Self::E090 => "a module cannot `IMPORT` itself",
+            Self::E091 => {
+                "qualified access is ambiguous: the name is both an imported module and a definition"
+            }
+            Self::E092 => "redundant `#@public`/`#@private` — restates the module default",
+            Self::E093 => "conflicting or repeated visibility directives on one declaration",
+            Self::E094 => "`#@was` requires exactly one non-empty old-name argument",
+            Self::E095 => "`#@was` names the definition's own current name — nothing to migrate",
+            Self::E096 => "duplicate definition declared in two different modules",
+            Self::E097 => "`ref` projection expression outside ref-argument position",
+            Self::E098 => "ref-argument path segment disagrees with the statically-known shape",
+            Self::E099 => "path-projection ref-argument is not yet lowerable (T1e-2, #828)",
         }
     }
 
@@ -1480,13 +1837,19 @@ impl DiagnosticCode {
             | Self::E038
             | Self::E043
             | Self::E054
-            | Self::E063 => Severity::Warning,
+            | Self::E063
+            | Self::E092
+            | Self::E095 => Severity::Warning,
             _ => Severity::Error,
         }
     }
 
     /// Parse a diagnostic code from its string representation (e.g., `"E027"`).
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a flat one-arm-per-code table that necessarily grows with the diagnostic set"
+    )]
     pub fn from_str_code(s: &str) -> Option<Self> {
         match s {
             "E001" => Some(Self::E001),
@@ -1570,6 +1933,24 @@ impl DiagnosticCode {
             "E079" => Some(Self::E079),
             "E080" => Some(Self::E080),
             "E081" => Some(Self::E081),
+            "E082" => Some(Self::E082),
+            "E083" => Some(Self::E083),
+            "E084" => Some(Self::E084),
+            "E085" => Some(Self::E085),
+            "E086" => Some(Self::E086),
+            "E087" => Some(Self::E087),
+            "E088" => Some(Self::E088),
+            "E089" => Some(Self::E089),
+            "E090" => Some(Self::E090),
+            "E091" => Some(Self::E091),
+            "E092" => Some(Self::E092),
+            "E093" => Some(Self::E093),
+            "E094" => Some(Self::E094),
+            "E095" => Some(Self::E095),
+            "E096" => Some(Self::E096),
+            "E097" => Some(Self::E097),
+            "E098" => Some(Self::E098),
+            "E099" => Some(Self::E099),
             _ => None,
         }
     }

@@ -548,6 +548,80 @@ enum NextStep {
     },
 }
 
+/// The `SystemState` param bundle the engine→ink eval driver re-borrows each
+/// suspension: the flow components, the (optional) globals resource, the two
+/// asset stores, and the bindings registry. Factored out so
+/// [`call_ink_function`] (by name) and [`call_ink_function_value`] (by opaque
+/// function-value token) share one driver.
+type EvalSystemState<M> = SystemState<(
+    Query<
+        'static,
+        'static,
+        (
+            &'static BrinkProgram<M>,
+            &'static BrinkLocale<M>,
+            &'static mut BrinkFlow<M>,
+            &'static mut BrinkContext<M>,
+        ),
+    >,
+    Option<ResMut<'static, crate::BrinkGlobals<M>>>,
+    Res<'static, Assets<ProgramAsset>>,
+    Res<'static, Assets<LineTablesAsset>>,
+    Res<'static, BrinkBindings<M>>,
+)>;
+
+/// Drive an in-progress function evaluation to completion: run each pending
+/// world-access query against the World (borrows released between calls),
+/// resolve it, and resume — until the function returns its value. Shared by
+/// [`call_ink_function`] and [`call_ink_function_value`]; the only difference
+/// between the two callers is how the evaluation *begins* (by name vs by
+/// opaque function-value token), which produces the initial `NextStep`.
+fn drive_function_eval_to_done<M: Send + Sync + 'static>(
+    world: &mut World,
+    entity: Entity,
+    state: &mut EvalSystemState<M>,
+    mut next: NextStep,
+) -> Result<Value, BrinkCallError> {
+    loop {
+        match next {
+            NextStep::Done(value) => return Ok(value),
+            NextStep::RunQuery { system, qargs } => {
+                let value = world
+                    .run_system_with(system, (entity, qargs))
+                    .map_err(|e| BrinkCallError::QueryFailed(format!("{e:?}")))?;
+                next = {
+                    let (mut flows, globals, programs, tables, bindings) = state
+                        .get_mut(world)
+                        .map_err(|e| BrinkCallError::SystemParamInvalid(e.to_string()))?;
+                    let mut globals = globals.ok_or(BrinkCallError::NotAFlow)?;
+                    let (prog_c, loc_c, mut flow, mut ctx) = flows
+                        .get_mut(entity)
+                        .map_err(|_| BrinkCallError::NotAFlow)?;
+                    let program = &programs
+                        .get(&prog_c.handle)
+                        .ok_or(BrinkCallError::ProgramNotLoaded)?
+                        .program;
+                    let line_tables = &tables
+                        .get(&loc_c.handle)
+                        .ok_or(BrinkCallError::LineTablesNotLoaded)?
+                        .tables;
+                    let handler = bindings.eval_handler();
+                    flow.inner.resolve_external(value);
+                    let mut view = crate::globals::flow_context_view(&mut globals, &mut ctx);
+                    let outcome = flow.inner.resume_function_eval::<FastRng>(
+                        program,
+                        line_tables,
+                        &mut view,
+                        &handler,
+                        None,
+                    )?;
+                    classify_eval(&flow.inner, program, &bindings, outcome)?
+                };
+            }
+        }
+    }
+}
+
 /// Classify a [`FunctionEval`] outcome into the driver's [`NextStep`],
 /// looking up the query system for a pending external. Called inside the
 /// borrow scope where `flow`/`program`/`bindings` are available.
@@ -597,25 +671,10 @@ pub fn call_ink_function<M: Send + Sync + 'static>(
     name: &str,
     args: &[Value],
 ) -> Result<Value, BrinkCallError> {
-    #[expect(
-        clippy::type_complexity,
-        reason = "SystemState param tuple for the flow components + assets + bindings"
-    )]
-    let mut state: SystemState<(
-        Query<(
-            &BrinkProgram<M>,
-            &BrinkLocale<M>,
-            &mut BrinkFlow<M>,
-            &mut BrinkContext<M>,
-        )>,
-        Option<ResMut<crate::BrinkGlobals<M>>>,
-        Res<Assets<ProgramAsset>>,
-        Res<Assets<LineTablesAsset>>,
-        Res<BrinkBindings<M>>,
-    )> = SystemState::new(world);
+    let mut state: EvalSystemState<M> = SystemState::new(world);
 
-    // Begin the evaluation.
-    let mut next = {
+    // Begin the evaluation (resolve the function by name, then start it).
+    let next = {
         let (mut flows, globals, programs, tables, bindings) = state
             .get_mut(world)
             .map_err(|e| BrinkCallError::SystemParamInvalid(e.to_string()))?;
@@ -649,46 +708,73 @@ pub fn call_ink_function<M: Send + Sync + 'static>(
         classify_eval(&flow.inner, program, &bindings, outcome)?
     };
 
-    // Drive: run each pending world-access query against the World (borrows
-    // released here), resolve it, and resume — until the function returns.
-    loop {
-        match next {
-            NextStep::Done(value) => return Ok(value),
-            NextStep::RunQuery { system, qargs } => {
-                let value = world
-                    .run_system_with(system, (entity, qargs))
-                    .map_err(|e| BrinkCallError::QueryFailed(format!("{e:?}")))?;
-                next = {
-                    let (mut flows, globals, programs, tables, bindings) = state
-                        .get_mut(world)
-                        .map_err(|e| BrinkCallError::SystemParamInvalid(e.to_string()))?;
-                    let mut globals = globals.ok_or(BrinkCallError::NotAFlow)?;
-                    let (prog_c, loc_c, mut flow, mut ctx) = flows
-                        .get_mut(entity)
-                        .map_err(|_| BrinkCallError::NotAFlow)?;
-                    let program = &programs
-                        .get(&prog_c.handle)
-                        .ok_or(BrinkCallError::ProgramNotLoaded)?
-                        .program;
-                    let line_tables = &tables
-                        .get(&loc_c.handle)
-                        .ok_or(BrinkCallError::LineTablesNotLoaded)?
-                        .tables;
-                    let handler = bindings.eval_handler();
-                    flow.inner.resolve_external(value);
-                    let mut view = crate::globals::flow_context_view(&mut globals, &mut ctx);
-                    let outcome = flow.inner.resume_function_eval::<FastRng>(
-                        program,
-                        line_tables,
-                        &mut view,
-                        &handler,
-                        None,
-                    )?;
-                    classify_eval(&flow.inner, program, &bindings, outcome)?
-                };
-            }
-        }
-    }
+    // Drive: run each pending world-access query against the World, resolve
+    // it, and resume — until the function returns.
+    drive_function_eval_to_done(world, entity, &mut state, next)
+}
+
+/// Synchronously invoke an ink **function value** (`#fn(…)` — a `FnRef` or
+/// `Closure`) on a flow entity from an exclusive (`&mut World`) context,
+/// returning its value — the host callback-invocation surface (T1c-3,
+/// `docs/t1c-spec.md` §6).
+///
+/// This is the [`call_ink_function`] sibling for the case where the host
+/// holds an opaque function-value token (obtained from a global, a returned
+/// value, or a `bind_brink_query` result) rather than a static function name.
+/// The host never dereferences the token's env — invocation re-enters the VM
+/// (`FlowInstance::begin_function_value_eval`), running any world-access query
+/// bindings the callback triggers, and is journaled exactly like a by-name
+/// call. `args` supply the remaining (val-only) params after the value's bound
+/// prefix.
+///
+/// The dispatch faults of `docs/t1c-spec.md` §3/§6 (non-function value, wrong
+/// arity, rehydration mismatch, cross-flow ref-`#@local`) surface as
+/// [`BrinkCallError::Runtime`].
+///
+/// `M` is the story marker (use `()` for the default).
+///
+/// # Errors
+/// See [`BrinkCallError`].
+pub fn call_ink_function_value<M: Send + Sync + 'static>(
+    world: &mut World,
+    entity: Entity,
+    callee: &Value,
+    args: &[Value],
+) -> Result<Value, BrinkCallError> {
+    let mut state: EvalSystemState<M> = SystemState::new(world);
+
+    // Begin the evaluation through the opaque function-value token.
+    let next = {
+        let (mut flows, globals, programs, tables, bindings) = state
+            .get_mut(world)
+            .map_err(|e| BrinkCallError::SystemParamInvalid(e.to_string()))?;
+        let mut globals = globals.ok_or(BrinkCallError::NotAFlow)?;
+        let (prog_c, loc_c, mut flow, mut ctx) = flows
+            .get_mut(entity)
+            .map_err(|_| BrinkCallError::NotAFlow)?;
+        let program = &programs
+            .get(&prog_c.handle)
+            .ok_or(BrinkCallError::ProgramNotLoaded)?
+            .program;
+        let line_tables = &tables
+            .get(&loc_c.handle)
+            .ok_or(BrinkCallError::LineTablesNotLoaded)?
+            .tables;
+        let handler = bindings.eval_handler();
+        let mut view = crate::globals::flow_context_view(&mut globals, &mut ctx);
+        let outcome = flow.inner.begin_function_value_eval::<FastRng>(
+            program,
+            line_tables,
+            &mut view,
+            &handler,
+            callee,
+            args,
+            None,
+        )?;
+        classify_eval(&flow.inner, program, &bindings, outcome)?
+    };
+
+    drive_function_eval_to_done(world, entity, &mut state, next)
 }
 
 /// One step of the [`advance_flow`] loop, captured inside the borrow scope
@@ -1121,7 +1207,7 @@ pub fn resolve_pending_externals<M: Send + Sync + 'static>(world: &mut World) {
 #[expect(clippy::panic, reason = "tests assert via panic on the error arm")]
 mod tests {
     use super::*;
-    use crate::test_support::compile_test_story;
+    use crate::test_support::{compile_test_story, compile_test_story_brink};
     use bevy_ecs::prelude::*;
     use brink_runtime::{FastRng, FlowInstance};
 
@@ -1287,6 +1373,125 @@ mod tests {
             }
             other => panic!("expected Resolved(map), got {other:?}"),
         }
+    }
+
+    // ── T1e pass-through audit (docs/t1e-spec.md §8 item 3, issue #850) ──
+    //
+    // "bevy-brink pass-through audit: projections cross bindings as
+    // ordinary values; the host never walks paths — assert it." Two halves:
+    //
+    // 1. A raw `Value::Projection` can *structurally never* reach a binding
+    //    from real compiled ink. `ref lvalue-path` (`ref npc.hp`) only
+    //    lowers to `MakeProjection` when the target's own declared
+    //    parameter is `ref` (`brink_ir::lir::lower::expr::lower_call_args`:
+    //    `is_ref = params[i].is_ref`) — and an `EXTERNAL` declaration's
+    //    grammar has no `ref` marker at all
+    //    (`brink_syntax::parser::declaration::function_param_list` parses
+    //    plain identifiers only, unlike a knot/function header's
+    //    `KNOT_PARAMS`, which does). So `heal(ref npc.hp, 5)` against an
+    //    `EXTERNAL heal` can never lower to a projection; it hits the
+    //    ordinary ref-argument fence and fails to compile. `bindings.rs`'s
+    //    `ExternalFnHandler::call` therefore never sees the `(root,
+    //    segments)` descriptor — only a real, structural guarantee.
+    // 2. Once a projection-bound `ref` parameter *is* read inside an
+    //    ordinary ink function body (the only way to observe one), the
+    //    read auto-dereferences to a plain value before it can be used as
+    //    an argument anywhere (`vm.rs`'s `GetTemp` dispatch, T1e-2) — so a
+    //    value derived from a projection and handed to an external binding
+    //    always arrives as an ordinary snapshot, never the projection
+    //    itself.
+
+    /// Half 1: `ref npc.hp` against an `EXTERNAL` target fails to compile —
+    /// there is no lowering path that could hand a raw `Value::Projection`
+    /// to a host binding.
+    #[test]
+    fn ref_projection_argument_to_an_external_call_fails_to_compile() {
+        use brink_compiler::{AnalysisOptions, CompileError, Dialect};
+        let src = "EXTERNAL heal(target, amount)\n\
+                    STRUCT NPC = #{hp: int}\n\
+                    VAR npc = 0\n\
+                    === main ===\n\
+                    ~ npc = NPC#{hp: 1}\n\
+                    ~ heal(ref npc.hp, 5)\n\
+                    -> END\n";
+        let err = brink_compiler::compile_with_options(
+            "audit.ink",
+            |path| {
+                if path == "audit.ink" {
+                    Ok(src.to_string())
+                } else {
+                    Err(std::io::Error::new(std::io::ErrorKind::NotFound, path))
+                }
+            },
+            AnalysisOptions {
+                dialect: Dialect::Brink,
+                ..AnalysisOptions::default()
+            },
+        )
+        .expect_err("a ref-projection argument to an EXTERNAL target must not compile");
+        let CompileError::Diagnostics(diags) = err else {
+            panic!("expected a diagnostics rejection, got {err:?}");
+        };
+        assert!(
+            !diags.is_empty(),
+            "expected at least one diagnostic rejecting the construct"
+        );
+    }
+
+    /// Half 2: an ink function with a projection-bound `ref` parameter
+    /// reads it and forwards the *resolved* value to an external binding —
+    /// the binding observes a plain `Value::Int`, never a `Value::Projection`.
+    #[test]
+    fn value_read_through_a_ref_projection_reaches_a_binding_as_a_plain_snapshot() {
+        let src = "STRUCT NPC = #{hp: int, name: string}\n\
+                    VAR npc = 0\n\
+                    EXTERNAL report(x)\n\n\
+                    ~ npc = NPC#{hp: 7, name: \"x\"}\n\
+                    ~ temp result = heal(ref npc.hp, 5)\n\
+                    Result: {result}\n\
+                    -> END\n\n\
+                    === function heal(ref hp, amount) ===\n\
+                    ~ temp seen = report(hp)\n\
+                    ~ hp = hp + amount\n\
+                    ~ return hp\n";
+        let (program, tables, _ctx) = compile_test_story_brink(src);
+
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<Value>>> = std::sync::Arc::default();
+        let seen_for_binding = std::sync::Arc::clone(&seen);
+        let mut app = App::new();
+        app.bind_brink_fn::<(), _, _>("report", move |args| {
+            seen_for_binding
+                .lock()
+                .expect("lock")
+                .push(args.first().cloned().unwrap_or(Value::Null));
+            Value::Null
+        });
+        let bindings = app.world().resource::<BrinkBindings<()>>();
+        let handler = bindings.handler();
+
+        let (mut flow, mut ctx) = FlowInstance::new_at_root(&program);
+        let mut text = String::new();
+        loop {
+            let line = flow
+                .step_single_line::<FastRng>(&program, &tables, &mut ctx, &handler, None)
+                .unwrap();
+            text.push_str(line.text());
+            if line.is_terminal() {
+                break;
+            }
+        }
+
+        assert!(
+            text.contains("Result: 12"),
+            "heal(ref npc.hp, 5) should read 7, add 5, and return 12; got {text:?}"
+        );
+        let captured = seen.lock().expect("lock");
+        assert_eq!(
+            captured.as_slice(),
+            &[Value::Int(7)],
+            "the binding must see the dereferenced value (7), never a Value::Projection: \
+             got {captured:?}"
+        );
     }
 
     /// End-to-end: a pure-fn binding's return value is inlined into story
@@ -1491,6 +1696,74 @@ mod tests {
             result.as_bool(),
             Some(false),
             "4 enemies !< 3 → cannot spawn"
+        );
+    }
+
+    /// End-to-end host callback-invocation surface (T1c-3, `docs/t1c-spec.md`
+    /// §6): an ink function returns a **function value** as an opaque token to
+    /// the host, which then re-invokes it via `call_ink_function_value` —
+    /// re-entering the VM without ever dereferencing the token's env. Both a
+    /// zero-bound `FnRef` and a `bind`-curried `Closure` are exercised.
+    #[test]
+    fn call_ink_function_value_reinvokes_an_opaque_token() {
+        use crate::BrinkFlowRequest;
+        use crate::test_support::{add_story_assets, make_test_app};
+
+        let mut app = make_test_app();
+        // Register a (never-called) binding so the `BrinkBindings<()>` resource
+        // the engine→ink driver reads exists — this fixture uses no externals.
+        app.bind_brink_fn::<(), _, _>("_unused", |_| 0);
+
+        // `make_doubler` returns a bare `#fn(double)`; `make_adder` returns a
+        // `bind`-curried closure that has bound the first param.
+        let (program, tables, ctx) = crate::test_support::compile_test_story_brink(
+            "-> END\n\
+             === function make_doubler() ===\n~ return #fn(double)\n\
+             === function make_adder() ===\n~ return bind(#fn(add), 10)\n\
+             === function double(x) ===\n~ return x + x\n\
+             === function add(a, b) ===\n~ return a + b\n",
+        );
+        let story = add_story_assets(&mut app, program, tables, ctx);
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+        app.update();
+
+        // Obtain the opaque function-value tokens from ink.
+        let double_token =
+            call_ink_function::<()>(app.world_mut(), entity, "make_doubler", &[]).unwrap();
+        let adder_token =
+            call_ink_function::<()>(app.world_mut(), entity, "make_adder", &[]).unwrap();
+
+        // Re-invoke each through the host callback surface. The host never
+        // inspects the token — invocation re-enters the VM.
+        let doubled = call_ink_function_value::<()>(
+            app.world_mut(),
+            entity,
+            &double_token,
+            &[Value::Int(21)],
+        )
+        .unwrap();
+        assert_eq!(doubled.as_int(), Some(42), "double(21)");
+
+        let summed =
+            call_ink_function_value::<()>(app.world_mut(), entity, &adder_token, &[Value::Int(5)])
+                .unwrap();
+        assert_eq!(summed.as_int(), Some(15), "add(10, 5) via bound closure");
+
+        // Wrong arity through the opaque token is a defined fault, not silent
+        // garbage (spec §3), surfaced as a `Runtime` error.
+        let err = call_ink_function_value::<()>(
+            app.world_mut(),
+            entity,
+            &double_token,
+            &[Value::Int(1), Value::Int(2)],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, BrinkCallError::Runtime(_)),
+            "over-supplied args must fault, got {err:?}"
         );
     }
 

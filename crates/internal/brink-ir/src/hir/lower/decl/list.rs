@@ -49,9 +49,22 @@ impl DeclareSymbols for ast::ListDecl {
             sink.declare(SymbolKind::ListItem, &qualified, member.name.range);
         }
 
-        // Directives don't apply to LISTs (v1) — diagnose any that attach.
+        // `#@local` doesn't apply to LISTs (diagnosed if it attaches), but
+        // `#@private`/`#@public` do (M-2: LISTs are importable, §2).
         let dirs = directives_before(self.syntax());
         let _ = apply_scope_directives(&dirs, DirectiveTarget::List, sink);
+        if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
+            sink.set_visibility(SymbolKind::List, &list_name_text, vis);
+        }
+        if let Some((old_name, was_range)) =
+            super::super::directive::was_from_directives(&dirs, sink)
+        {
+            if old_name == list_name_text {
+                sink.diagnose(was_range, DiagnosticCode::E095);
+            } else {
+                sink.set_was(SymbolKind::List, &list_name_text, old_name, was_range);
+            }
+        }
 
         Ok(ListDecl {
             ptr: ast::AstPtr::new(self),

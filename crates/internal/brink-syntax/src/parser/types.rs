@@ -5,10 +5,12 @@
 //! identically in both dialects; `strict-ink` rejection (E051) happens at
 //! analysis (`brink-analyzer::dialect_gate`), never here. Nominal type names
 //! are lowercase: `int`, `float`, `bool`, `string`, `divert`, `void`,
-//! `list<L>`, `array<T>`, `map<K, V>`, `fn(T…): R`. Grammar accepts *any*
-//! identifier as a type name or generic head — recognizing the fixed set,
-//! rejecting unknown names, and flagging `fn(...)` as reserved-until-T1c are
-//! semantic checks (`brink-analyzer`), not parser concerns.
+//! `list<L>`, `array<T>`, `map<K, V>`, `fn(T…): R`, `handle<K>` (T1d-2,
+//! docs/t1d-spec.md §3 — a manifest-declared handle kind name). Grammar
+//! accepts *any* identifier as a type name or generic head — recognizing
+//! the fixed set, rejecting unknown names, and flagging `fn(...)` as
+//! reserved-until-T1c are semantic checks (`brink-analyzer`), not parser
+//! concerns.
 
 use crate::SyntaxKind::{
     COLON, COMMA, GT, IDENTIFIER, L_PAREN, LT, R_PAREN, TYPE_ANNOTATION, TYPE_EXPR, TYPE_FN,
@@ -199,6 +201,26 @@ mod tests {
         assert!(
             out.contains(&format!("{:?}", SyntaxKind::TYPE_GENERIC)),
             "{out}"
+        );
+    }
+
+    /// T1d-2 (docs/t1d-spec.md §3, typed-mode-spec.md §3 amendment):
+    /// `handle<K>` needs no grammar change at all — the generic-instantiation
+    /// rule already accepts any identifier as a generic head (this test's
+    /// whole point), same as `list<L>`/`array<T>`/`map<K, V>` before it.
+    /// Recognizing `handle` specifically, and validating `K` against the
+    /// manifest's declared kinds, are `brink-analyzer` semantic concerns
+    /// (`annotations::resolve`/`check`), not this parser's.
+    #[test]
+    fn generic_handle_type_parses_like_any_other_generic() {
+        let out = dump("VAR h: handle<AudioInstance> = 0\n");
+        assert!(
+            out.contains(&format!("{:?}", SyntaxKind::TYPE_GENERIC)),
+            "{out}"
+        );
+        assert_eq!(
+            parse("VAR h: handle<AudioInstance> = 0\n").errors().len(),
+            0
         );
     }
 

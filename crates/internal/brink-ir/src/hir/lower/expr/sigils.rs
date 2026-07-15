@@ -10,7 +10,7 @@
 
 use brink_syntax::ast::{self, AstNode, SyntaxNodePtr};
 
-use crate::hir::types::{ArrayLiteral, FnLiteral, IndexExpr, MapLiteral};
+use crate::hir::types::{ArrayLiteral, FnLiteral, IndexExpr, MapLiteral, RefArgExpr};
 use crate::{DiagnosticCode, Expr, RefKind};
 
 use super::super::context::{LowerScope, LowerSink, Lowered};
@@ -80,6 +80,20 @@ impl LowerExpr for ast::FnLiteral {
             ptr: SyntaxNodePtr::from_node(self.syntax()),
             target,
             args,
+        }))
+    }
+}
+
+impl LowerExpr for ast::RefExpr {
+    fn lower_expr(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Expr> {
+        let range = self.syntax().text_range();
+        let operand = self
+            .operand()
+            .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E015))
+            .and_then(|e| e.lower_expr(scope, sink))?;
+        Ok(Expr::RefArg(RefArgExpr {
+            ptr: SyntaxNodePtr::from_node(self.syntax()),
+            operand: Box::new(operand),
         }))
     }
 }

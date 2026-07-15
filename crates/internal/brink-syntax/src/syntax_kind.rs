@@ -43,6 +43,9 @@ pub enum SyntaxKind {
     KW_DONE,
     KW_END,
     KW_TODO,
+    /// `IMPORT` — module import statement (brink extension, M-2,
+    /// docs/modules-spec.md §2). `FROM`/`AS` stay contextual `IDENT`s.
+    KW_IMPORT,
 
     // ── Punctuation / operator tokens ────────────────────────────
     /// `=`
@@ -145,6 +148,14 @@ pub enum SyntaxKind {
     // ── Node kinds (parser) ──────────────────────────────────────
     SOURCE_FILE,
     INCLUDE_STMT,
+    /// `IMPORT { a, b AS c } FROM mod` or `IMPORT mod` (M-2).
+    IMPORT_STMT,
+    /// The `{ … }` name list of a bare-form import.
+    IMPORT_LIST,
+    /// One `name` or `name AS alias` entry in an import list.
+    IMPORT_ITEM,
+    /// The module name of an import (both forms).
+    IMPORT_MODULE,
     FILE_PATH,
     EXTERNAL_DECL,
     KNOT_DEF,
@@ -312,6 +323,17 @@ pub enum SyntaxKind {
     /// (E051 under strict-ink) at analysis, same pattern as T1b/TM-4b.
     FN_LITERAL,
 
+    // ── T1e path projections (docs/t1e-spec.md §2) ──────────────────
+    // `ref lvalue-path` — path-projection creation in ref-argument position
+    // (`heal(ref npc.hp, 5)`, `#fn(heal, ref party[leader].hp)`,
+    // `bind(f, ref inventory[idx])`). Superset grammar — always parses in
+    // expression position (mirrors `FN_LITERAL`'s dialect-gate pattern);
+    // whether the position is legal (ref-argument only, never standalone)
+    // and whether the root is a durable cell is `brink-analyzer`'s job.
+    /// `ref` followed by a single lvalue-shaped operand — a plain path, a
+    /// dotted field chain, `[…]` indexing, or a mix of the two.
+    REF_EXPR,
+
     // Not a real kind — used only for `rowan::Language::kind_to_raw` bounds.
     #[doc(hidden)]
     __LAST,
@@ -352,6 +374,7 @@ impl SyntaxKind {
                 | Self::KW_DONE
                 | Self::KW_END
                 | Self::KW_TODO
+                | Self::KW_IMPORT
                 | Self::EQ
                 | Self::PLUS_EQ
                 | Self::MINUS_EQ
@@ -447,6 +470,7 @@ impl SyntaxKind {
                 | Self::KW_DONE
                 | Self::KW_END
                 | Self::KW_TODO
+                | Self::KW_IMPORT
         )
     }
 }

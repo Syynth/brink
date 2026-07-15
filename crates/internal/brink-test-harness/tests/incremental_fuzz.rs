@@ -117,7 +117,7 @@ fn mutate(rng: &mut Lcg, original: &str, current: &str, step: u64) -> String {
         return current.to_owned();
     }
 
-    let op = rng.pick(7);
+    let op = rng.pick(8);
     let at = safe[rng.pick(safe.len())];
     let mut out: Vec<String> = lines.iter().map(|&l| l.to_owned()).collect();
     match op {
@@ -167,6 +167,13 @@ fn mutate(rng: &mut Lcg, original: &str, current: &str, step: u64) -> String {
                 None => out.insert(at, format!("A fuzzed line, step {step}.")),
             }
         }
+        // Inline `///` doc churn (FG-3 completion, issue #750): insert a
+        // doc comment line — when the next line happens to be a
+        // declaration (VAR/CONST/knot/EXTERNAL), this attaches real doc
+        // content, exercising the inline_docs/value-meta/external-meta
+        // family's incremental path; anywhere else it is harmless comment
+        // churn that must still leave every query equal to fresh.
+        6 => out.insert(at, format!("/// Fuzzed doc, step {step}.")),
         // Revert the file to its original content.
         _ => return original.to_owned(),
     }
@@ -224,6 +231,20 @@ fn assert_fg3_families_match(
                 db.per_file_diagnostics(id),
                 fresh_db.per_file_diagnostics(id),
                 "{project}: per_file_diagnostics({path}) diverged from fresh compile after edit {step}"
+            );
+            // Issue #750 (FG-3 completion): the decomposed external-check
+            // family's per-file contributors must agree too — value metas
+            // (VAR/CONST/LIST enrichment, exercised by the doc-churn and
+            // initializer-edit mutations) and call-site diagnostics.
+            assert_eq!(
+                db.file_value_meta(id),
+                fresh_db.file_value_meta(id),
+                "{project}: file_value_meta({path}) diverged from fresh compile after edit {step}"
+            );
+            assert_eq!(
+                db.file_call_site_diagnostics(id),
+                fresh_db.file_call_site_diagnostics(id),
+                "{project}: file_call_site_diagnostics({path}) diverged from fresh compile after edit {step}"
             );
         }
     }

@@ -621,6 +621,16 @@ pub struct FlowInstance {
     /// while a from-game call is mid-flight (possibly paused on an
     /// external); `None` during normal play. Not meaningful to persist.
     pub(crate) eval: Option<EvalState>,
+    /// Whether host **semantic** access to `#@private` definitions is
+    /// refused on this flow instance (M-2b, `docs/modules-spec.md` §4
+    /// boundary rule 2/3). `true` by default. Mirrors
+    /// [`Story`]'s own flag for consumers — `bevy-brink`'s per-entity
+    /// orchestration, [`crate::Speculation`] — that drive a `FlowInstance`
+    /// directly, bypassing `Story` entirely. [`Story`] keeps every
+    /// `FlowInstance` it owns (`default`, named, shared) synced to its own
+    /// flag via [`Story::set_visibility_enforcement`](crate::Story::set_visibility_enforcement),
+    /// so the two never diverge for story-owned flows.
+    pub(crate) enforce_visibility: bool,
 }
 
 /// Bookkeeping for an in-progress engine→ink function evaluation.
@@ -698,6 +708,7 @@ impl FlowInstance {
             status: StoryStatus::Active,
             stats: Stats::default(),
             eval: None,
+            enforce_visibility: true,
         };
         // All existing construction paths default to the all-`World`
         // policy (see `docs/scoped-flow-state-spec.md` "The policy") — this
@@ -706,6 +717,33 @@ impl FlowInstance {
         // `(Self, World)` signature.
         let world = World::from_globals(globals, ResolvedPolicy::all_world());
         (flow_instance, world)
+    }
+
+    /// Enable or disable host visibility enforcement on this flow instance
+    /// (M-2b, `docs/modules-spec.md` §4 boundary rule 3). Enforcement is
+    /// **on** by default: [`choose_path_string`](Self::choose_path_string)/
+    /// [`choose_path_string_with_args`](Self::choose_path_string_with_args)
+    /// into a `#@private` knot/stitch, and
+    /// [`begin_function_eval`](Self::begin_function_eval)/
+    /// [`begin_function_value_eval`](Self::begin_function_value_eval) of a
+    /// `#@private` function, return [`RuntimeError::PrivateAccess`].
+    ///
+    /// This mirrors [`Story::set_visibility_enforcement`](crate::Story::set_visibility_enforcement)
+    /// for consumers that drive a `FlowInstance` directly — `bevy-brink`'s
+    /// per-entity orchestration and [`crate::Speculation`] — rather than
+    /// through a [`Story`](crate::Story). A `Story` keeps every
+    /// `FlowInstance` it owns synced to its own flag when this is called on
+    /// the `Story`, so callers that only ever go through `Story` never need
+    /// to call this directly.
+    pub fn set_visibility_enforcement(&mut self, enforce: bool) {
+        self.enforce_visibility = enforce;
+    }
+
+    /// Whether host visibility enforcement is currently on for this flow
+    /// instance (default `true`).
+    #[must_use]
+    pub fn visibility_enforced(&self) -> bool {
+        self.enforce_visibility
     }
 
     /// Maximum VM steps per `continue_maximally` call before erroring.
@@ -1153,6 +1191,18 @@ impl FlowInstance {
         path: &str,
         args: &[Value],
     ) -> Result<(), RuntimeError> {
+        // M-2b: refuse host-driven entry into a `#@private` knot/stitch
+        // while visibility enforcement is on (`docs/modules-spec.md` §4
+        // boundary rule 2). Mirrors `Story`'s own `check_entry_visibility`
+        // for callers that drive this `FlowInstance` directly — `bevy-brink`,
+        // `Speculation` — without going through `Story`. Checked before any
+        // other error path so a private name reports as private, not as
+        // "not found" or "awaiting external".
+        if self.enforce_visibility && program.has_private_defs() && program.path_is_private(path) {
+            return Err(RuntimeError::PrivateAccess {
+                name: path.to_owned(),
+            });
+        }
         // A parked host call cannot be silently abandoned: erroring is the
         // strictest safe behavior (brink-specific — C# has no pausable
         // externals during normal playback).
@@ -1365,6 +1415,24 @@ impl FlowInstance {
         args: &[Value],
         resolver: Option<&dyn PluralResolver>,
     ) -> Result<FunctionEval, RuntimeError> {
+        // M-2b: refuse host-driven evaluation of a `#@private` function
+        // while visibility enforcement is on (`docs/modules-spec.md` §4
+        // boundary rule 2). Mirrors `Story::call_function`'s own check for
+        // callers that drive this `FlowInstance` directly — `bevy-brink`,
+        // `Speculation` — without going through `Story`. The caller
+        // resolves `container_idx` itself (typically via
+        // [`Program::find_address`](crate::Program::find_address) on the
+        // function name), so the error names the definition by its compiled
+        // id rather than the original name string, which isn't available
+        // here.
+        if self.enforce_visibility
+            && program.has_private_defs()
+            && program.container_is_private(container_idx)
+        {
+            return Err(RuntimeError::PrivateAccess {
+                name: format!("{}", program.container(container_idx).id),
+            });
+        }
         if self.eval.is_some() {
             return Err(RuntimeError::AlreadyEvaluatingFunction);
         }
@@ -1399,6 +1467,103 @@ impl FlowInstance {
         // function's prologue (`DeclareTemp`) binds them exactly as it
         // would for an in-story call.
         self.flow.value_stack.extend_from_slice(args);
+
+        self.eval = Some(EvalState {
+            value_floor,
+            choice_floor,
+        });
+        self.drive_function_eval::<R>(program, line_tables, context, handler, resolver)
+    }
+
+    /// Evaluate an ink **function value** (`FnRef`/`Closure`) from engine
+    /// code — the host callback-invocation surface (T1c-3,
+    /// `docs/t1c-spec.md` §6). A function value crosses to the host as an
+    /// opaque token `{DefinitionId, env}`; the host never dereferences the
+    /// env — invocation always re-enters the VM here and is journaled
+    /// exactly like [`begin_function_eval`](Self::begin_function_eval).
+    ///
+    /// `callee` must be a [`Value::FnRef`] / [`Value::Closure`]; `args`
+    /// supply the remaining (val-only) params after the value's bound
+    /// prefix. The same fault set as in-story dispatch applies — non-function
+    /// callee, wrong arity, rehydration mismatch, cross-flow ref-`#@local`
+    /// (`docs/t1c-spec.md` §3/§6) — surfaced as the `Err` here rather than as
+    /// a turn-terminating story fault, since this is out-of-band evaluation.
+    ///
+    /// Like [`begin_function_eval`](Self::begin_function_eval) this does not
+    /// advance the player-visible story (output isolated, transcript
+    /// untouched, no visit-count increment) and pauses on world-access
+    /// externals — resume with
+    /// [`resume_function_eval`](Self::resume_function_eval).
+    ///
+    /// # Errors
+    /// - [`AlreadyEvaluatingFunction`](RuntimeError::AlreadyEvaluatingFunction)
+    ///   if an evaluation is already in progress on this flow.
+    /// - The function-value dispatch faults above (via
+    ///   `vm::prepare_fn_value_call`), before any frame is pushed.
+    /// - The same evaluation errors as
+    ///   [`begin_function_eval`](Self::begin_function_eval).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "mirrors begin_function_eval: the VM environment plus the callee value and args"
+    )]
+    pub fn begin_function_value_eval<R: StoryRng>(
+        &mut self,
+        program: &Program,
+        line_tables: &[Vec<brink_format::LineEntry>],
+        context: &mut (impl ContextAccess + ?Sized),
+        handler: &dyn ExternalFnHandler,
+        callee: &Value,
+        args: &[Value],
+        resolver: Option<&dyn PluralResolver>,
+    ) -> Result<FunctionEval, RuntimeError> {
+        if self.eval.is_some() {
+            return Err(RuntimeError::AlreadyEvaluatingFunction);
+        }
+
+        // Validate + assemble the full arg row (bound prefix then supplied)
+        // through the shared dispatch path, so a bad callee faults *before*
+        // any boundary frame or capture scope is set up — no partial state.
+        let (container_idx, _target, full_args) =
+            vm::prepare_fn_value_call(program, callee, args.to_vec())?;
+
+        // M-2b: refuse a `#@private` function value the same way
+        // `begin_function_eval` refuses a `#@private` name — this is the
+        // sibling engine→ink call-dispatch path (T1c function values), sharing
+        // the same `container_idx` resolve-then-enter shape, so it shares the
+        // same gap and the same fix. Checked before any boundary frame or
+        // capture scope is set up, same as the `eval.is_some()` check above.
+        if self.enforce_visibility
+            && program.has_private_defs()
+            && program.container_is_private(container_idx)
+        {
+            return Err(RuntimeError::PrivateAccess {
+                name: format!("{}", program.container(container_idx).id),
+            });
+        }
+
+        let value_floor = self.flow.value_stack.len();
+        let choice_floor = self.flow.pending_choices.len();
+
+        self.flow.output.begin_capture();
+        let output_start = self.flow.output.target_len();
+        let boundary = CallFrame {
+            return_address: None,
+            temps: Vec::new(),
+            container_stack: vec![ContainerPosition {
+                container_idx,
+                offset: 0,
+            }],
+            frame_type: CallFrameType::FunctionEvalFromGame,
+            external_fn_id: None,
+            function_output_start: Some(output_start),
+        };
+        self.flow.current_thread_mut().call_stack.push(boundary);
+        self.stats.frames_pushed += 1;
+
+        // Pass the full arg row (bound prefix then supplied) onto the value
+        // stack in declaration order — the prologue binds it exactly as an
+        // in-story call would.
+        self.flow.value_stack.extend_from_slice(&full_args);
 
         self.eval = Some(EvalState {
             value_floor,
@@ -1763,6 +1928,13 @@ pub struct Story<R: StoryRng = FastRng> {
     /// studio/host state — not persisted in a [`StorySnapshot`].
     shared_instances: HashMap<String, FlowInstance>,
     resolver: Option<Box<dyn PluralResolver>>,
+    /// Whether host **semantic** access to `#@private` definitions is refused
+    /// (M-2b, `docs/modules-spec.md` §4 boundary rule 2). `true` by default —
+    /// production hosts respect visibility. Dev tooling (play-from-here) sets
+    /// it `false` via [`set_visibility_enforcement`](Self::set_visibility_enforcement)
+    /// to start flows at private knots. No effect on stories without any
+    /// `#@private` definition (the fast path short-circuits on that).
+    enforce_visibility: bool,
     _rng: PhantomData<R>,
 }
 
@@ -1777,6 +1949,7 @@ impl<R: StoryRng> Clone for Story<R> {
             instances: self.instances.clone(),
             shared_instances: self.shared_instances.clone(),
             resolver: None,
+            enforce_visibility: self.enforce_visibility,
             _rng: PhantomData,
         }
     }
@@ -1808,8 +1981,46 @@ impl<R: StoryRng> Story<R> {
             instances: HashMap::new(),
             shared_instances: HashMap::new(),
             resolver: None,
+            enforce_visibility: true,
             _rng: PhantomData,
         }
+    }
+
+    /// Enable or disable host visibility enforcement (M-2b,
+    /// `docs/modules-spec.md` §4 boundary rule 3). Enforcement is **on** by
+    /// default: host semantic access (variable get/set, entry lookup,
+    /// function eval) to a `#@private` definition returns
+    /// [`RuntimeError::PrivateAccess`] (or `None`/`false` for the infallible
+    /// get/set). Dev tooling — editors, debug hosts, the play-from-here
+    /// affordance — calls this with `false` to start flows at private knots
+    /// and inspect private state. This is a host capability, not a language
+    /// switch; the compiled program is identical either way. Persistence
+    /// (save/load/journal/replay) ignores this flag entirely.
+    ///
+    /// Propagates to every [`FlowInstance`] this `Story` currently owns
+    /// (`default`, every named flow, every shared flow) — each carries its
+    /// own copy of the flag (so `bevy-brink`/[`crate::Speculation`] can
+    /// enforce it when driving a `FlowInstance` directly, without a
+    /// `Story`), and `Story` keeps them synced so a `Story`-mediated dev
+    /// override never diverges from the flows it delegates to. Flows
+    /// spawned after this call ([`spawn_flow`](Self::spawn_flow)/
+    /// [`spawn_flow_shared`](Self::spawn_flow_shared)) inherit the
+    /// `Story`'s current setting at spawn time.
+    pub fn set_visibility_enforcement(&mut self, enforce: bool) {
+        self.enforce_visibility = enforce;
+        self.default.set_visibility_enforcement(enforce);
+        for (flow, _, _) in self.instances.values_mut() {
+            flow.set_visibility_enforcement(enforce);
+        }
+        for flow in self.shared_instances.values_mut() {
+            flow.set_visibility_enforcement(enforce);
+        }
+    }
+
+    /// Whether host visibility enforcement is currently on (default `true`).
+    #[must_use]
+    pub fn visibility_enforced(&self) -> bool {
+        self.enforce_visibility
     }
 
     /// Set the plural resolver for Select resolution in localized lines.
@@ -1940,17 +2151,38 @@ impl<R: StoryRng> Story<R> {
 
     /// Read a global variable's current value by name. `None` if no global
     /// with that name is declared. Reads the default flow's context.
+    ///
+    /// Returns `None` for a `#@private` variable while visibility enforcement
+    /// is on (M-2b) — the host is outside every module, so a private name is
+    /// not host-visible. Dev tooling opts out via
+    /// [`set_visibility_enforcement`](Self::set_visibility_enforcement).
     pub fn variable(&self, name: &str) -> Option<&Value> {
         let idx = self.program.global_index(name)?;
+        if self.enforce_visibility
+            && self.program.has_private_defs()
+            && self.program.global_is_private(idx)
+        {
+            return None;
+        }
         Some(ContextAccess::global(&self.default_context, idx))
     }
 
     /// Set a global variable by name, returning `false` (no-op) if no global
     /// with that name is declared. Ink globals are dynamically typed, so the
     /// host is responsible for passing a sensibly-typed value.
+    ///
+    /// Returns `false` (no write) for a `#@private` variable while visibility
+    /// enforcement is on (M-2b). Dev tooling opts out via
+    /// [`set_visibility_enforcement`](Self::set_visibility_enforcement).
     pub fn set_variable(&mut self, name: &str, value: Value) -> bool {
         match self.program.global_index(name) {
             Some(idx) => {
+                if self.enforce_visibility
+                    && self.program.has_private_defs()
+                    && self.program.global_is_private(idx)
+                {
+                    return false;
+                }
                 ContextAccess::set_global(&mut self.default_context, idx, value);
                 true
             }
@@ -2023,6 +2255,17 @@ impl<R: StoryRng> Story<R> {
         args: &[Value],
         handler: &dyn ExternalFnHandler,
     ) -> Result<Value, RuntimeError> {
+        // M-2b: refuse host-driven evaluation of a `#@private` function while
+        // enforcement is on. Checked before resolution details so a private
+        // name reports as private, not as "not found".
+        if self.enforce_visibility
+            && self.program.has_private_defs()
+            && self.program.path_is_private(name)
+        {
+            return Err(RuntimeError::PrivateAccess {
+                name: name.to_owned(),
+            });
+        }
         let container_idx = self
             .program
             .find_address(name)
@@ -2102,7 +2345,7 @@ impl<R: StoryRng> Story<R> {
         snapshot: StorySnapshot<R>,
         line_tables: Vec<Vec<brink_format::LineEntry>>,
     ) -> Self {
-        Self {
+        let mut story = Self {
             program,
             default: snapshot.default,
             default_context: snapshot.default_context,
@@ -2113,8 +2356,20 @@ impl<R: StoryRng> Story<R> {
             // starts with none.
             shared_instances: HashMap::new(),
             resolver: None,
+            // Enforcement is a host capability, not persisted state — a
+            // reattached story defaults to enforcing; the host re-applies a
+            // dev override if it wants one.
+            enforce_visibility: true,
             _rng: PhantomData,
-        }
+        };
+        // `snapshot.default`/`snapshot.instances` carry whatever
+        // `FlowInstance`-level enforcement flag they had at detach time
+        // (e.g. `false`, if `into_snapshot` ran while a play-from-here
+        // session had enforcement off) — force every flow back to the
+        // reattached story's own (enforcing) setting so the two can't
+        // diverge.
+        story.set_visibility_enforcement(true);
+        story
     }
 
     // ── Execution API ──────────────────────────────────────────────
@@ -2249,9 +2504,26 @@ impl<R: StoryRng> Story<R> {
     /// [`AlreadyEvaluatingFunction`](RuntimeError::AlreadyEvaluatingFunction)
     /// if an engine→ink function evaluation is in progress.
     pub fn choose_path_string(&mut self, path: &str) -> Result<(), RuntimeError> {
+        self.check_entry_visibility(path)?;
         let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
         self.default
             .choose_path_string(&self.program, &mut view, path)
+    }
+
+    /// M-2b: refuse a host-driven entry into a `#@private` knot/stitch while
+    /// visibility enforcement is on. Shared by both `choose_path_string`
+    /// entry points. Dev tooling (play-from-here) disables enforcement via
+    /// [`set_visibility_enforcement`](Self::set_visibility_enforcement).
+    fn check_entry_visibility(&self, path: &str) -> Result<(), RuntimeError> {
+        if self.enforce_visibility
+            && self.program.has_private_defs()
+            && self.program.path_is_private(path)
+        {
+            return Err(RuntimeError::PrivateAccess {
+                name: path.to_owned(),
+            });
+        }
+        Ok(())
     }
 
     /// Move the default flow's play head to a parameterized knot/stitch,
@@ -2269,6 +2541,7 @@ impl<R: StoryRng> Story<R> {
         path: &str,
         args: &[Value],
     ) -> Result<(), RuntimeError> {
+        self.check_entry_visibility(path)?;
         let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
         self.default
             .choose_path_string_with_args(&self.program, &mut view, path, args)
@@ -2332,6 +2605,21 @@ impl<R: StoryRng> Story<R> {
         name: &str,
         entry_point: DefinitionId,
     ) -> Result<(), RuntimeError> {
+        // M-2b: refuse host-driven entry into a `#@private` knot/stitch while
+        // visibility enforcement is on (`docs/modules-spec.md` §4 boundary
+        // rule 2). Mirrors `check_entry_visibility`'s refusal on the named
+        // `choose_path_string` path — a host holding a `DefinitionId` (this
+        // by-id entry point) must not be able to bypass it. Checked before
+        // any other error path so a private target reports as private, not
+        // as "already exists" or "unresolved" (#803).
+        if self.enforce_visibility
+            && self.program.has_private_defs()
+            && self.program.is_private(entry_point)
+        {
+            return Err(RuntimeError::PrivateAccess {
+                name: format!("{entry_point}"),
+            });
+        }
         if self.instances.contains_key(name) {
             return Err(RuntimeError::FlowAlreadyExists(name.to_owned()));
         }
@@ -2340,7 +2628,11 @@ impl<R: StoryRng> Story<R> {
             .resolve_target(entry_point)
             .map(|(idx, _)| idx)
             .ok_or(RuntimeError::UnresolvedDefinition(entry_point))?;
-        let (flow, ctx) = FlowInstance::new_at(&self.program, container_idx);
+        let (mut flow, ctx) = FlowInstance::new_at(&self.program, container_idx);
+        // Inherit this `Story`'s current enforcement setting (a dev override
+        // set before spawning must apply to newly spawned flows too, not
+        // just the flows that existed at override time).
+        flow.set_visibility_enforcement(self.enforce_visibility);
         self.instances
             .insert(name.to_owned(), (flow, ctx, FlowLocal::new()));
         Ok(())
@@ -2415,15 +2707,32 @@ impl<R: StoryRng> Story<R> {
         name: &str,
         container_idx: Option<u32>,
     ) -> Result<(), RuntimeError> {
+        // M-2b: same by-id refusal as `spawn_flow` (#803) — a resolved
+        // `container_idx` (e.g. from `Program::find_address`, as the wasm
+        // `spawn_flow` binding in `brink-web` does) must not bypass the
+        // named-lookup refusal either. `None` targets the root, which is
+        // never private.
+        if let Some(idx) = container_idx
+            && self.enforce_visibility
+            && self.program.has_private_defs()
+            && self.program.container_is_private(idx)
+        {
+            return Err(RuntimeError::PrivateAccess {
+                name: format!("{}", self.program.container(idx).id),
+            });
+        }
         if self.shared_instances.contains_key(name) || self.instances.contains_key(name) {
             return Err(RuntimeError::FlowAlreadyExists(name.to_owned()));
         }
         // The fresh context the constructor returns is discarded — a shared
         // flow runs against `default_context`.
-        let (flow, _ctx) = match container_idx {
+        let (mut flow, _ctx) = match container_idx {
             Some(idx) => FlowInstance::new_at(&self.program, idx),
             None => FlowInstance::new_at_root(&self.program),
         };
+        // Inherit this `Story`'s current enforcement setting — see
+        // `spawn_flow`'s identical note.
+        flow.set_visibility_enforcement(self.enforce_visibility);
         self.shared_instances.insert(name.to_owned(), flow);
         Ok(())
     }

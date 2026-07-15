@@ -124,6 +124,37 @@ fn struct_construct_read_write() {
     assert_case("struct-construct-read-write");
 }
 
+// ── #674: `arr[i].field = v` grammar fix ─────────────────────────────────
+//
+// The `.field` postfix grammar's assignment-target position used to reject
+// an `Index` base entirely — `arr[0].x = 2.0` failed to parse as an
+// assignment at all, producing a generic E015 parse error instead of
+// reaching LIR's existing chained/mixed-field-write fence. This proves the
+// full compiler entry point now surfaces the *intended* diagnostic — E074,
+// the T1e boundary — not E015, for a mixed index-then-field write target.
+// Full RMW support for this shape is still out of scope (T1e, deliberately
+// deferred); this only fixes the grammar/diagnostic-routing gap.
+
+#[test]
+fn index_then_field_assignment_target_is_e074_not_a_parse_error() {
+    let source = "VAR arr = #[1, 2, 3]\n~ arr[0].x = 2.0\nHello.\n-> END\n";
+    let err = compile_brink(source)
+        .expect_err("a mixed index-then-field write target must still be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E074),
+        "expected E074 (chained/mixed field-write projection), got {diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code != brink_compiler::DiagnosticCode::E015),
+        "must not regress to the old generic E015 parse error, got {diags:?}"
+    );
+}
+
 // ── TM-5 (#621) corpus wing growth ────────────────────────────────────────
 //
 // TM-4c's `struct-construct-read-write` only reads/writes a struct in place;
@@ -282,6 +313,21 @@ fn rmw_mutator_shared_nested_lvalue() {
     assert_case("rmw-mutator-shared-nested-lvalue");
 }
 
+// ── #680: ref-argument call co-occurring with a temp decl in one block ───
+
+#[test]
+fn ref_call_with_block_temp() {
+    // The issue's literal repro shape end-to-end: a `~ { … }` block body
+    // containing both a `temp` declaration and a `ref`-argument call
+    // targeting a global `VAR`, with the temp used only within its own
+    // block. Must resolve `gold`'s `ref` argument to the real global slot
+    // and run to completion — see the RCA + regression tests in
+    // `brink-ir`'s `lir_lowering.rs` for the root cause (a block-scoped
+    // temp read *after* its block closes, unrelated to `ref` at all) and
+    // the diagnostic (E082) that now catches that case instead.
+    assert_case("ref-call-with-block-temp");
+}
+
 /// Every `tests/tier1-brink/` case directory is exercised by a `#[test]`
 /// above — a directory with no matching test would silently never run.
 #[test]
@@ -317,11 +363,20 @@ fn every_case_directory_has_a_test() {
         "struct-construct-read-write",
         "struct-through-function-call",
         "annotations-mixed",
+        "fn-value-call-forms",
+        "fn-value-ref-mutation",
+        "fn-value-bind-chain",
+        "fn-value-bind-triple-chain",
+        "ref-call-with-block-temp",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink")
         .filter_map(Result::ok)
         .filter(|e| e.path().is_dir())
+        // `algorithms/` (issue #822) is a nested sub-corpus, not a leaf
+        // case directory — it owns its own `every_algorithms_case_
+        // directory_has_a_test` invariant in `algorithms_corpus.rs`.
+        .filter(|e| e.file_name() != "algorithms")
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
     found.sort();
@@ -503,6 +558,185 @@ fn map_literal_declaration_default_with_non_constant_value_is_a_real_compile_err
             .iter()
             .any(|d| d.code == brink_compiler::DiagnosticCode::E077),
         "expected E077, got {diags:?}"
+    );
+}
+
+// ── #692: bare non-constant scalar VAR/CONST declaration default ────────
+//
+// Sibling of the #673/#679 collection-element fixes above: a scalar
+// `VAR`/`CONST` default whose *whole* value is a non-constant reference or
+// call — not nested inside an array/map/struct/fn literal — previously
+// silently folded to `Null` through `eval_const_expr`'s `Path`
+// (`SymbolKind::Variable`) arm or its catch-all, with zero diagnostic. Now a
+// real, non-suppressible compile error (E083) through the full
+// `compile_with_options` entry point.
+
+#[test]
+fn var_declaration_default_referencing_another_var_is_a_real_compile_error() {
+    let source = "VAR a = 1\nVAR b = a\nHello.\n-> END\n";
+    let err = compile_brink(source)
+        .expect_err("a bare VAR-to-VAR declaration default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E083),
+        "expected E083, got {diags:?}"
+    );
+}
+
+#[test]
+fn var_declaration_default_calling_a_function_is_a_real_compile_error() {
+    let source = "VAR x = f()\nHello.\n-> END\n\n=== function f()\n~ return 1\n";
+    let err = compile_brink(source)
+        .expect_err("a bare function-call declaration default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E083),
+        "expected E083, got {diags:?}"
+    );
+}
+
+#[test]
+fn const_declaration_default_referencing_a_var_is_a_real_compile_error() {
+    let source = "VAR a = 1\nCONST b = a\nHello.\n-> END\n";
+    let err = compile_brink(source)
+        .expect_err("a bare VAR-reference CONST declaration default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E083),
+        "expected E083, got {diags:?}"
+    );
+}
+
+#[test]
+fn var_declaration_default_with_non_constant_wrapped_in_prefix_is_a_real_compile_error() {
+    // Still a bare top-level default, not a collection element — `-f()`
+    // recurses through the `Prefix` arm and must report the same E083 as an
+    // unwrapped call.
+    let source = "VAR x = -f()\nHello.\n-> END\n\n=== function f()\n~ return 1\n";
+    let err = compile_brink(source)
+        .expect_err("a non-constant prefix-wrapped declaration default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E083),
+        "expected E083, got {diags:?}"
+    );
+}
+
+#[test]
+fn var_declaration_default_referencing_a_const_is_still_valid() {
+    // No false positive: `SymbolKind::Constant` (unlike `Variable`) is a
+    // genuine compile-time constant — `eval_const_expr`'s own `Path` arm
+    // already resolves it via `const_values`.
+    let source = "CONST a = 1\nVAR b = a\nHello.\n-> END\n";
+    let out = compile_brink(source).expect("VAR referencing a CONST default must still compile");
+    assert!(
+        !out.warnings
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E083),
+        "unexpected E083, got {:?}",
+        out.warnings
+    );
+}
+
+// ── #743: bare VAR reference nested one level inside a declaration-default
+// collection/struct/fn literal — the residue #679's scope notes flagged and
+// #692/E083 deliberately left alone (E083 governs only the *whole* default,
+// not a construct nested one level in). `is_const_foldable_kind` (the
+// element-level twin of `is_const_foldable_decl_default`) now resolves a
+// nested `Path` the same way: a `SymbolKind::Variable` reference is never a
+// compile-time constant, so it reports the standard `E077`, same as any
+// other never-foldable element kind, instead of silently folding to `Null`
+// with zero diagnostic.
+
+#[test]
+fn var_reference_nested_inside_an_array_default_is_now_a_real_compile_error() {
+    let source = "VAR a = 1\nVAR arr = #[a]\nHello.\n-> END\n";
+    let err = compile_brink(source)
+        .expect_err("a VAR reference nested inside an array default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E077),
+        "expected E077, got {diags:?}"
+    );
+}
+
+#[test]
+fn var_reference_nested_inside_a_map_value_default_is_a_real_compile_error() {
+    let source = "VAR a = 1\nVAR m = #{\"k\": a}\nHello.\n-> END\n";
+    let err = compile_brink(source)
+        .expect_err("a VAR reference nested inside a map value default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E077),
+        "expected E077, got {diags:?}"
+    );
+}
+
+#[test]
+fn var_reference_nested_inside_a_struct_field_default_is_still_e075() {
+    // A struct construction literal used as a declaration default is
+    // unconditionally E075 regardless of field content (`ConstValue` has no
+    // record variant at all — #673) — a bare `VAR` field reference never
+    // reaches the `E077` arm because the whole literal is already rejected.
+    // Direct fixture proving the "struct field" position #743 names is
+    // covered, not silently folded.
+    let source = "STRUCT Point = #{\n    x: float,\n}\n\nVAR a = 1.0\nVAR p = Point#{x: a}\nHello.\n-> END\n";
+    let err = compile_brink(source)
+        .expect_err("a VAR reference nested inside a struct field default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E075),
+        "expected E075, got {diags:?}"
+    );
+}
+
+#[test]
+fn var_reference_nested_inside_a_bound_fn_val_arg_default_is_a_real_compile_error() {
+    // `#fn(name, args…)`'s `val`-bound args are the fourth nested position
+    // #743 names — `eval_const_fn_literal`'s `val` branch previously called
+    // `eval_const_expr` directly with no `is_const_foldable_kind` gate at
+    // all, so a bare `VAR` reference bound by value silently folded to
+    // `Null` with zero diagnostic.
+    let source = "=== function heal(hp) ===\n~ return hp + 1\n\nVAR g = 5\nVAR f = #fn(heal, g)\nHello.\n-> END\n";
+    let err = compile_brink(source)
+        .expect_err("a VAR reference bound by value in a #fn default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E077),
+        "expected E077, got {diags:?}"
+    );
+}
+
+#[test]
+fn const_reference_nested_inside_an_array_default_still_compiles_clean() {
+    // Anti-regression: a `CONST` reference is a resolved `Path` that is
+    // *not* `SymbolKind::Variable` — it must keep folding for real via
+    // `const_values`, same as before #743, with no E077 false positive.
+    let source = "CONST a = 1\nVAR arr = #[a]\nHello.\n-> END\n";
+    let out = compile_brink(source)
+        .expect("a CONST reference nested inside an array default must still compile");
+    assert!(
+        !out.warnings
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E077),
+        "unexpected E077, got {:?}",
+        out.warnings
     );
 }
 
@@ -1046,45 +1280,28 @@ fn every_stdlib_name_is_rejected_under_strict_ink_and_compiles_under_brink() {
     }
 }
 
-// ── T1c-1 (#699): `#fn(…)` function values — lowering fence ─────────────
+// ── T1c-2 (#700): `#fn(…)` function values — real lowering ──────────────
 //
-// The T1c-1 slice ships grammar + HIR + dialect gate + creation-site
-// diagnostics + typing, but NO LIR/codegen/VM (docs/t1c-spec.md §11). A
-// program that actually uses `#fn` under `dialect = brink` must be a clean,
-// targeted compile error (E052, the "brink extension not yet implemented"
-// class) — never a silent drop or a miscompiled Null.
+// T1c-2 lands LIR/codegen/VM (docs/t1c-spec.md §11): the T1c-1 E052 lowering
+// fence is retired. A program that uses `#fn` under `dialect = brink` now
+// compiles clean (expression position AND declaration defaults) — never a
+// silent drop, never a fence error.
 
 #[test]
-fn fn_literal_under_brink_dialect_is_a_targeted_not_yet_implemented_error() {
+fn fn_literal_under_brink_dialect_lowers_for_real() {
     let source = "=== function heal(hp) ===\n~ return hp + 1\n\n\
                   === main ===\n~ temp f = #fn(heal, 1)\nDone.\n-> END\n";
-    let err = compile_brink(source)
-        .expect_err("#fn must reject at lowering in T1c-1 (no LIR/codegen yet)");
-    let diags = errors_of(&err);
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.code == brink_compiler::DiagnosticCode::E052),
-        "expected E052 lowering rejection, got {diags:?}"
-    );
+    compile_brink(source).expect("#fn now lowers for real in T1c-2 (no E052 fence)");
 }
 
 #[test]
-fn fn_literal_declaration_default_is_a_targeted_error_not_a_silent_null() {
-    // A `VAR` default has no runtime construction step — without a targeted
-    // arm this would silently bake `Null` into StoryData (the exact silent
-    // drop class the house rules forbid).
+fn fn_literal_declaration_default_bakes_a_real_value_not_a_null() {
+    // A `VAR` default has no runtime construction step — T1c-2 bakes a real
+    // `FnRef`/`Closure` into StoryData (never the silent `Null` the house
+    // rules forbid, and no E052 fence).
     let source = "=== function heal(hp) ===\n~ return hp + 1\n\n\
                   VAR f = #fn(heal, 1)\nHello.\n-> END\n";
-    let err = compile_brink(source)
-        .expect_err("#fn as a declaration default must be a compile error in T1c-1");
-    let diags = errors_of(&err);
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.code == brink_compiler::DiagnosticCode::E052),
-        "expected E052 lowering rejection, got {diags:?}"
-    );
+    compile_brink(source).expect("#fn as a declaration default compiles clean in T1c-2");
 }
 
 // ── T1c-1 (#699): creation-site diagnostics E079/E080/E081 ───────────────
@@ -1145,17 +1362,558 @@ fn fn_over_binding_is_e081() {
 }
 
 #[test]
-fn well_formed_fn_creation_reaches_the_lowering_fence_only() {
-    // A fully legal creation site under gradual types: the ONLY error left
-    // is the T1c-1 lowering fence (E052) — no E079/E080/E081 noise.
+fn well_formed_fn_creation_compiles_clean() {
+    // A fully legal creation site under gradual types compiles clean in T1c-2
+    // — no E079/E080/E081 creation noise and no E052 fence.
     let source = "=== function heal(ref hp, amount) ===\n~ hp = hp + amount\n~ return hp\n\n\
                   VAR player_hp = 10\n=== main ===\n~ temp f = #fn(heal, player_hp)\nDone.\n-> END\n";
-    let err = compile_brink(source).expect_err("still rejects at lowering in T1c-1");
+    compile_brink(source).expect("a well-formed #fn creation compiles clean in T1c-2");
+}
+
+// ── #680 RCA: block-scoped temp referenced after its block closes (E082) ──
+//
+// #680 was filed as "a `ref`-argument call co-occurring with a `temp` decl
+// in the same `~ { }` block resolves to the wrong global slot
+// (UnresolvedGlobal)". RCA (see `brink-ir`'s `lir_lowering.rs` for the
+// lowering-layer regression tests) found the `ref`-argument call is not the
+// trigger at all: the actual defect is reading a T1b block-scoped `temp`
+// from *outside* its own `~ { … }` block, which used to silently fall
+// through to the compiler's inklecate-compat "forward-referenced classic
+// temp" path and emit a phantom global id — a runtime-only
+// `UnresolvedGlobal` fault with no compile diagnostic. That's now a real,
+// non-suppressible compile error (E082) instead.
+
+#[test]
+fn block_scoped_temp_read_after_its_block_closes_is_e082() {
+    let source = "VAR gold = 100\n~ {\n    temp name = \"hero\"\n}\n{name}\n-> END\n";
+    let err =
+        compile_brink(source).expect_err("reading a block temp after its block closed must fail");
     let diags = errors_of(&err);
     assert!(
         diags
             .iter()
-            .all(|d| d.code == brink_compiler::DiagnosticCode::E052),
-        "only the lowering fence should fire for a well-formed creation: {diags:?}"
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E082),
+        "expected E082, got {diags:?}"
     );
+}
+
+#[test]
+fn block_scoped_temp_passed_by_ref_after_its_block_closes_is_e082() {
+    let source = "VAR gold = 100\n~ {\n    temp name = \"hero\"\n}\n~ heal(name)\nDone.\n-> END\n\n\
+                  === function heal(ref hp) ===\n~ return hp\n";
+    let err =
+        compile_brink(source).expect_err("passing an out-of-scope block temp by ref must fail");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E082),
+        "expected E082, got {diags:?}"
+    );
+}
+
+#[test]
+fn ref_call_co_occurring_with_block_temp_is_not_e082() {
+    // The issue's literal repro shape: a `ref`-argument call and a `temp`
+    // decl in the *same* block, temp never read after the block closes —
+    // this compiles clean, proving `ref` calls were never the trigger.
+    let source = "VAR gold = 100\n~ {\n    temp x = 1\n    heal(gold)\n}\nDone.\n-> END\n\n\
+                  === function heal(ref hp) ===\n~ return hp\n";
+    compile_brink(source)
+        .expect("ref-argument call co-occurring with a temp decl in one block compiles clean");
+}
+
+// ── T1c-2 (#700): function-value corpus wing (straight-line cases) ───────
+
+#[test]
+fn fn_value_both_call_forms() {
+    // Creation (zero-bound FnRef + bound Closure) and both call forms — the
+    // direct `f(args…)` and the explicit `call(f, args…)`.
+    assert_case("fn-value-call-forms");
+}
+
+#[test]
+fn fn_value_ref_cell_mutation_through_a_stored_value() {
+    // A `#fn(heal, player_hp)` ref-binds a durable World cell; invoking the
+    // stored value twice mutates the cell through the captured pointer.
+    assert_case("fn-value-ref-mutation");
+}
+
+// ── T1c-3 (#701): `bind` currying + display form ────────────────────────
+
+#[test]
+fn fn_value_bind_chains_and_display_form() {
+    // `bind(f, args…)` val-only currying — nested bind chains, `bind` then
+    // `call`, `bind` over a ref-bound value, and the authoritative `string(f)`
+    // display form (`fn heal(ref hp = world_hp, amount)`, spec §5) exercised
+    // through interpolation. All through real production codegen.
+    assert_case("fn-value-bind-chain");
+}
+
+// ── T1c-4 (#702): mechanical tail — deeper bind-of-bind corpus growth ────
+
+#[test]
+fn fn_value_bind_of_bind_fully_curries_to_a_zero_arg_call() {
+    // `fn-value-bind-chain` already proves a two-level bind-of-bind
+    // (`g = bind(f, 1)`, `h = bind(g, 2)`). This goes one level further —
+    // three chained `bind` calls over a `ref`-bound three-param target,
+    // each currying one more `val` param, until the bound row exactly
+    // matches the declared arity and the final call supplies zero
+    // additional arguments (`h()`). Proves `bind`'s "consume the head of
+    // the remaining param row" rule composes cleanly across an arbitrary
+    // chain depth, not just two links.
+    assert_case("fn-value-bind-triple-chain");
+}
+
+// ── T1c-2 (#700): gradual-mode dispatch faults (spec §3) ────────────────
+
+/// Run a brink program to completion, returning the first runtime error (if
+/// any) rather than panicking — for the turn-terminating fault cases.
+fn run_expecting_fault(source: &str) -> Option<brink_runtime::RuntimeError> {
+    let (program, tables) = compile_and_link(source);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    for _ in 0..64 {
+        match story.continue_single() {
+            Ok(Line::Done { .. } | Line::End { .. }) => return None,
+            Ok(_) => {}
+            Err(e) => return Some(e),
+        }
+    }
+    None
+}
+
+#[test]
+fn calling_a_non_function_value_is_a_turn_terminating_fault() {
+    // Gradual mode: `x(3)` where `x` holds an int is a dispatch fault — no
+    // silent garbage (spec §3, value-model §11c).
+    let src = "~ temp x = 5\n~ temp y = x(3)\nUnreachable {y}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("calling an int must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::NotCallable(_)),
+        "expected NotCallable, got {err:?}"
+    );
+}
+
+#[test]
+fn explicit_call_with_wrong_arity_is_a_turn_terminating_fault() {
+    // The explicit `call(f, args…)` form carries argc, so a gradual-mode arity
+    // mismatch faults exactly (spec §3/§4).
+    let src = "~ temp d = #fn(double)\n~ temp r = call(d, 1, 2)\nUnreachable {r}.\n-> END\n\n\
+               === function double(x) ===\n~ return x + x\n";
+    let err = run_expecting_fault(src).expect("wrong arity must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::FunctionValueArity { .. }),
+        "expected FunctionValueArity, got {err:?}"
+    );
+}
+
+#[test]
+fn bind_over_binding_more_than_remaining_params_is_a_turn_terminating_fault() {
+    // `bind(f, …)` that supplies more args than the target has remaining
+    // params is a turn-terminating fault (spec §3) — never a silently
+    // truncated bound row. `double` takes one param, so binding two faults.
+    let src = "~ temp d = #fn(double)\n~ temp g = bind(d, 1, 2)\nUnreachable {g}.\n-> END\n\n\
+               === function double(x) ===\n~ return x + x\n";
+    let err = run_expecting_fault(src).expect("over-binding must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::FunctionValueArity { .. }),
+        "expected FunctionValueArity, got {err:?}"
+    );
+}
+
+// ── #721: direct-call `f(args…)` arity mismatch must fault cleanly ──────
+//
+// `f(args…)` compiles through the same `CallVariable` opcode as the classic
+// divert-target-variable-call path (`{s(P)}` etc. — `run_story.rs`'s
+// `function_variable_call`). Before #721, the popped-arg count for the
+// function-value arm was *derived* from the resolved target's arity instead
+// of carried as an `argc` operand, so a wrong-arity direct call could leave
+// a stray value on the stack instead of faulting. These prove both
+// directions fault via `FunctionValueArity`, matching the explicit
+// `call(f, args…)` form above — never silent stack corruption.
+
+#[test]
+fn direct_call_with_too_many_args_is_a_turn_terminating_fault() {
+    // `double` takes 1 param; the direct call supplies 2.
+    let src = "~ temp d = #fn(double)\n~ temp r = d(1, 2)\nUnreachable {r}.\n-> END\n\n\
+               === function double(x) ===\n~ return x + x\n";
+    let err = run_expecting_fault(src).expect("wrong arity must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::FunctionValueArity { .. }),
+        "expected FunctionValueArity, got {err:?}"
+    );
+}
+
+#[test]
+fn binding_a_non_function_value_is_a_turn_terminating_fault() {
+    // `bind(x, …)` where `x` is not a function value is a dispatch fault
+    // (spec §3) — same NotCallable posture as calling a non-function.
+    let src = "~ temp x = 5\n~ temp g = bind(x, 1)\nUnreachable {g}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("binding a non-function must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::NotCallable(_)),
+        "expected NotCallable, got {err:?}"
+    );
+}
+
+#[test]
+fn direct_call_with_too_few_args_is_a_turn_terminating_fault() {
+    // `add` takes 2 params; the direct call supplies 1.
+    let src = "~ temp d = #fn(add)\n~ temp r = d(1)\nUnreachable {r}.\n-> END\n\n\
+               === function add(x, y) ===\n~ return x + y\n";
+    let err = run_expecting_fault(src).expect("wrong arity must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::FunctionValueArity { .. }),
+        "expected FunctionValueArity, got {err:?}"
+    );
+}
+
+// ── T1c-4 (#702): mechanical tail — the remaining fault categories ───────
+//
+// docs/t1c-spec.md §3: "calling a non-function value, or calling with wrong
+// arity or a wrong-typed argument, is a turn-terminating runtime fault" plus
+// the cross-flow ref-`#@local` fault. Non-fn-callee and arity are covered
+// above (T1c-2/T1c-3); these two round out the fault-category checklist.
+
+#[test]
+fn calling_through_a_fn_value_with_a_wrong_typed_argument_is_a_turn_terminating_fault() {
+    // Gradual mode has no fn-value-specific static arg-type check at the
+    // call boundary (spec §3/§4 — that's strict mode's job, and strict-mode
+    // call/bind checking is explicitly out of this pass's scope, #733) — a
+    // wrong-typed argument flows into the body and faults there exactly like
+    // an ordinary direct call would. `square`'s `x * x` faults on a string
+    // argument (`string_op` only defines `Add`/`Equal`/`NotEqual`).
+    let src = "~ temp d = #fn(square)\n~ temp r = d(\"nope\")\nUnreachable {r}.\n-> END\n\n\
+               === function square(x) ===\n~ return x * x\n";
+    let err = run_expecting_fault(src).expect("wrong-typed argument must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::TypeError(_)),
+        "expected TypeError, got {err:?}"
+    );
+}
+
+#[test]
+fn invoking_a_closure_that_ref_binds_a_local_cell_is_a_cross_flow_fault() {
+    // spec §3/#597: a closure that `ref`-binds a `#@local` flow-private cell
+    // is a turn-terminating fault on invocation — T1c ships this instead of
+    // tracking creating-flow identity. `prepare_fn_value_call`'s guard reads
+    // the bound cell's compiled scope bit unconditionally (no creating-flow
+    // identity exists yet to compare against), so a single-flow story
+    // exercises the fault directly — no second flow needed.
+    let src = "#@local\nVAR mood = 10\n\n\
+               ~ temp healer = #fn(heal, mood)\n~ temp r = healer(5)\nUnreachable {r}.\n-> END\n\n\
+               === function heal(ref hp, amount) ===\n~ hp = hp + amount\n~ return hp\n";
+    let err = run_expecting_fault(src).expect("ref-binding a #@local cell must fault on invoke");
+    assert!(
+        matches!(
+            err,
+            brink_runtime::RuntimeError::FunctionValueCrossFlowLocal(_)
+        ),
+        "expected FunctionValueCrossFlowLocal, got {err:?}"
+    );
+}
+
+#[test]
+fn ordering_two_function_values_is_a_turn_terminating_fault() {
+    // Structural `==`/`!=` are defined (spec §5), but ordering (`<`, `>`, …)
+    // is not — a runtime fault in gradual mode (a compile error in strict).
+    let src = "~ temp d = #fn(double)\n~ temp lt = d < d\nUnreachable {lt}.\n-> END\n\n\
+               === function double(x) ===\n~ return x + x\n";
+    let err = run_expecting_fault(src).expect("ordering fn values must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::TypeError(_)),
+        "expected TypeError, got {err:?}"
+    );
+}
+
+#[test]
+fn direct_call_with_correct_arity_still_works() {
+    // Regression guard: the argc-carrying dispatch must not disturb the
+    // matching-arity happy path.
+    let src = "~ temp d = #fn(double)\n~ temp r = d(21)\n{r}.\n-> END\n\n\
+               === function double(x) ===\n~ return x + x\n";
+    let (program, tables) = compile_and_link(src);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    let out = run_to_end(&mut story);
+    assert_eq!(out, "42.\n");
+}
+
+// ── T1c-2 (#700): persistence + rehydration (spec §6) ───────────────────
+
+/// Compile `source` (brink dialect) and link it to a runnable program.
+fn compile_and_link(
+    source: &str,
+) -> (
+    std::sync::Arc<brink_runtime::Program>,
+    Vec<Vec<brink_format::LineEntry>>,
+) {
+    let files: std::collections::HashMap<&str, &str> =
+        std::collections::HashMap::from([("main.ink", source)]);
+    let output = brink_compiler::compile_with_options(
+        "main.ink",
+        |path| {
+            files
+                .get(path)
+                .map(|s| (*s).to_string())
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, path))
+        },
+        AnalysisOptions {
+            dialect: Dialect::Brink,
+            ..AnalysisOptions::default()
+        },
+    )
+    .expect("compile");
+    let (program, tables) = brink_runtime::link(&output.data).expect("link");
+    (std::sync::Arc::new(program), tables)
+}
+
+/// Drain a story to its terminal line, concatenating text.
+fn run_to_end(story: &mut Story<DotNetRng>) -> String {
+    let mut out = String::new();
+    loop {
+        match story.continue_single().expect("runtime error") {
+            Line::Text { text, .. } => out.push_str(&text),
+            Line::Done { text, .. } | Line::End { text, .. } | Line::Choices { text, .. } => {
+                out.push_str(&text);
+                break;
+            }
+        }
+    }
+    out
+}
+
+// A program that stores a function value in a global at `setup`, then invokes
+// it from a separate `invoke` knot — so a save taken after `setup` carries a
+// live fn value, and `invoke` can be reached after a load without re-running
+// creation.
+const SAVE_LOAD_SRC: &str = "\
+=== function double(x) ===
+~ return x + x
+
+VAR stored = 0
+
+=== setup ===
+~ stored = #fn(double)
+Set up.
+-> DONE
+
+=== invoke ===
+~ temp r = stored(21)
+Result {r}.
+-> END
+";
+
+#[test]
+fn fn_value_save_load_invoke_equals_direct_invoke() {
+    let (program, tables) = compile_and_link(SAVE_LOAD_SRC);
+
+    // Direct: setup, then invoke — no save/load in between.
+    let mut direct = Story::<DotNetRng>::new(std::sync::Arc::clone(&program), tables.clone());
+    direct.choose_path_string("setup").expect("goto setup");
+    let _ = run_to_end(&mut direct);
+    direct.choose_path_string("invoke").expect("goto invoke");
+    let direct_out = run_to_end(&mut direct);
+
+    // Save/load: setup, capture the game state (global holds the fn value),
+    // load it into a fresh story, then invoke without re-running setup.
+    let mut src = Story::<DotNetRng>::new(std::sync::Arc::clone(&program), tables.clone());
+    src.choose_path_string("setup").expect("goto setup");
+    let _ = run_to_end(&mut src);
+    let saved = src.save_state();
+
+    let mut loaded = Story::<DotNetRng>::new(program, tables);
+    let report = loaded.load_state(&saved);
+    assert!(
+        report.is_clean(),
+        "save round-trip should reconcile cleanly: {report:?}"
+    );
+    loaded.choose_path_string("invoke").expect("goto invoke");
+    let loaded_out = run_to_end(&mut loaded);
+
+    assert_eq!(
+        direct_out, loaded_out,
+        "save→load→invoke must equal direct invoke",
+    );
+    assert_eq!(loaded_out, "Result 42.\n");
+}
+
+#[test]
+fn fn_value_rehydration_faults_on_param_rename_and_remode() {
+    // v1: `heal(ref hp, amount)` — the closure ref-binds a World cell.
+    let v1 = "\
+=== function heal(ref hp, amount) ===
+~ hp = hp + amount
+~ return hp
+
+VAR world_hp = 10
+VAR stored = 0
+
+=== setup ===
+~ stored = #fn(heal, world_hp)
+Set up.
+-> DONE
+";
+    // v2: same knot name (same fn token / DefinitionId) but the first param is
+    // renamed AND re-moded (ref → val) — a saved closure must fault on invoke,
+    // never silently misbind (spec §6).
+    let v2 = "\
+=== function heal(dose, amount) ===
+~ return dose + amount
+
+VAR world_hp = 10
+VAR stored = 0
+
+=== invoke ===
+~ temp r = stored(5)
+Result {r}.
+-> END
+";
+
+    let (p1, t1) = compile_and_link(v1);
+    let mut s1 = Story::<DotNetRng>::new(p1, t1);
+    s1.choose_path_string("setup").expect("goto setup");
+    let _ = run_to_end(&mut s1);
+    let saved = s1.save_state();
+
+    let (p2, t2) = compile_and_link(v2);
+    let mut s2 = Story::<DotNetRng>::new(p2, t2);
+    let _ = s2.load_state(&saved);
+    s2.choose_path_string("invoke").expect("goto invoke");
+
+    // Invoking the rehydrated closure must be a defined fault.
+    let mut err = None;
+    for _ in 0..8 {
+        match s2.continue_single() {
+            Ok(Line::Done { .. } | Line::End { .. }) => break,
+            Ok(_) => {}
+            Err(e) => {
+                err = Some(e);
+                break;
+            }
+        }
+    }
+    let err = err.expect("rehydrated closure with a renamed/re-moded param must fault on invoke");
+    assert!(
+        matches!(
+            err,
+            brink_runtime::RuntimeError::FunctionValueRehydrationMismatch(_)
+        ),
+        "expected FunctionValueRehydrationMismatch, got {err:?}"
+    );
+}
+
+// ── T1c-4 (#702): mechanical tail — save/load with fn values *inside* a
+// collection ────────────────────────────────────────────────────────────
+//
+// `fn_value_save_load_invoke_equals_direct_invoke` above proves a fn value
+// held directly in a scalar global survives save/load. Spec §6 makes no
+// carve-out by container — "function values save like every other value" —
+// so this proves the same roundtrip for a fn value sitting *inside* an
+// array and a map, matching the collections' own existing COW/value-copy
+// save/load coverage (`Value::Array`/`Value::Map` have no special-cased
+// serialization path; a `Value::Closure` element rides along like any other
+// element).
+
+/// Same shape as `SAVE_LOAD_SRC` but the global holds an *array* of two fn
+/// values (`#[#fn(double), #fn(double)]`) rather than a bare fn value —
+/// `invoke` reads one element into a `temp` (a plain array index, not a
+/// chained `arr[i](args)` call expression) and calls it from there.
+const SAVE_LOAD_ARRAY_SRC: &str = "\
+=== function double(x) ===
+~ return x + x
+
+VAR stored = 0
+
+=== setup ===
+~ stored = #[#fn(double), #fn(double)]
+Set up.
+-> DONE
+
+=== invoke ===
+~ temp f = stored[1]
+~ temp r = f(21)
+Result {r}.
+-> END
+";
+
+#[test]
+fn fn_value_inside_an_array_save_load_invoke_equals_direct_invoke() {
+    let (program, tables) = compile_and_link(SAVE_LOAD_ARRAY_SRC);
+
+    let mut direct = Story::<DotNetRng>::new(std::sync::Arc::clone(&program), tables.clone());
+    direct.choose_path_string("setup").expect("goto setup");
+    let _ = run_to_end(&mut direct);
+    direct.choose_path_string("invoke").expect("goto invoke");
+    let direct_out = run_to_end(&mut direct);
+
+    let mut src = Story::<DotNetRng>::new(std::sync::Arc::clone(&program), tables.clone());
+    src.choose_path_string("setup").expect("goto setup");
+    let _ = run_to_end(&mut src);
+    let saved = src.save_state();
+
+    let mut loaded = Story::<DotNetRng>::new(program, tables);
+    let report = loaded.load_state(&saved);
+    assert!(
+        report.is_clean(),
+        "save round-trip should reconcile cleanly: {report:?}"
+    );
+    loaded.choose_path_string("invoke").expect("goto invoke");
+    let loaded_out = run_to_end(&mut loaded);
+
+    assert_eq!(
+        direct_out, loaded_out,
+        "save→load→invoke must equal direct invoke for a fn value inside an array",
+    );
+    assert_eq!(loaded_out, "Result 42.\n");
+}
+
+/// Same shape again, a *map* keyed by name instead of an array indexed by
+/// position — proves the roundtrip isn't array-specific.
+const SAVE_LOAD_MAP_SRC: &str = "\
+=== function double(x) ===
+~ return x + x
+
+VAR stored = 0
+
+=== setup ===
+~ stored = #{\"double\": #fn(double)}
+Set up.
+-> DONE
+
+=== invoke ===
+~ temp f = stored[\"double\"]
+~ temp r = f(21)
+Result {r}.
+-> END
+";
+
+#[test]
+fn fn_value_inside_a_map_save_load_invoke_equals_direct_invoke() {
+    let (program, tables) = compile_and_link(SAVE_LOAD_MAP_SRC);
+
+    let mut direct = Story::<DotNetRng>::new(std::sync::Arc::clone(&program), tables.clone());
+    direct.choose_path_string("setup").expect("goto setup");
+    let _ = run_to_end(&mut direct);
+    direct.choose_path_string("invoke").expect("goto invoke");
+    let direct_out = run_to_end(&mut direct);
+
+    let mut src = Story::<DotNetRng>::new(std::sync::Arc::clone(&program), tables.clone());
+    src.choose_path_string("setup").expect("goto setup");
+    let _ = run_to_end(&mut src);
+    let saved = src.save_state();
+
+    let mut loaded = Story::<DotNetRng>::new(program, tables);
+    let report = loaded.load_state(&saved);
+    assert!(
+        report.is_clean(),
+        "save round-trip should reconcile cleanly: {report:?}"
+    );
+    loaded.choose_path_string("invoke").expect("goto invoke");
+    let loaded_out = run_to_end(&mut loaded);
+
+    assert_eq!(
+        direct_out, loaded_out,
+        "save→load→invoke must equal direct invoke for a fn value inside a map",
+    );
+    assert_eq!(loaded_out, "Result 42.\n");
 }

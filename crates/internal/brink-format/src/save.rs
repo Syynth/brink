@@ -31,6 +31,21 @@ pub struct SaveState {
     pub version: u16,
     /// Global variables by name. `BTreeMap` for deterministic serialization.
     pub globals: BTreeMap<String, Value>,
+    /// Each saved global's compiled `DefinitionId` at save time, keyed by
+    /// the same name as [`Self::globals`] (M-3 rehydration miss-path lookup,
+    /// `docs/modules-spec.md` §5). A VAR/CONST/LIST living in a **declared**
+    /// module hashes its identity as `(module, name)`, so a bare name alone
+    /// can't reconstruct the id a `#@was` alias-table entry was compiled
+    /// against — this is the "module qualifier" the miss path needs,
+    /// round-tripped as the id itself rather than the module name, so no
+    /// hashing scheme has to be re-derived at load time. Consulted only when
+    /// a saved global's name no longer matches any current global slot;
+    /// absent entries (older saves predating this field) simply fall back
+    /// to the pre-M-3 unknown-global report, same tolerant-of-patches
+    /// behavior as before. `#[serde(default)]` so an older save missing
+    /// this field entirely still deserializes.
+    #[serde(default)]
+    pub global_ids: BTreeMap<String, DefinitionId>,
     /// Visit counts by scope id, sorted by id for deterministic output.
     pub visits: Vec<VisitEntry>,
     /// Turn-since counts by scope id, sorted by id.
@@ -62,18 +77,29 @@ pub struct VisitEntry {
 /// than have data silently vanish. Globals whose name no longer exists are
 /// **dropped** (no slot to hold them) and reported here. Visit/turn counts are
 /// never dropped — counts for scopes the current program lacks are retained
-/// harmlessly (unused until/unless the scope returns), so they aren't reported.
+/// harmlessly (unused until/unless the scope returns), so they aren't reported
+/// *except* when the miss-path alias lookup (M-3, docs/modules-spec.md §5)
+/// still can't place them — see `unresolved_renames`.
 #[derive(Default, Clone, Debug, PartialEq, Serialize)]
 pub struct LoadReport {
     /// Saved global names with no matching global in the current program.
     pub unknown_globals: Vec<String>,
+    /// M-3 rehydration miss-path teaching messages (docs/modules-spec.md
+    /// §5): a saved fn token, divert value, or visit/turn-count key that
+    /// didn't match the current program even after consulting the compiled
+    /// `#@was` alias table. Only populated for a program that actually
+    /// carries alias-table entries (i.e. uses `#@was` somewhere) — an
+    /// ordinary content edit with no rename directive stays silent, same
+    /// as before M-3.
+    pub unresolved_renames: Vec<String>,
 }
 
 impl LoadReport {
-    /// Whether the load applied cleanly (nothing dropped).
+    /// Whether the load applied cleanly (nothing dropped, nothing left
+    /// unresolved after the rename miss-path lookup).
     #[must_use]
     pub fn is_clean(&self) -> bool {
-        self.unknown_globals.is_empty()
+        self.unknown_globals.is_empty() && self.unresolved_renames.is_empty()
     }
 }
 
@@ -109,6 +135,7 @@ mod tests {
         let save = SaveState {
             version: SAVE_FORMAT_VERSION,
             globals,
+            global_ids: BTreeMap::new(),
             visits: Vec::new(),
             turns: Vec::new(),
             turn_index: 0,

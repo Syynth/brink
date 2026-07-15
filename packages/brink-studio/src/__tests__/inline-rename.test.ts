@@ -193,6 +193,37 @@ describe("inline-rename widget", () => {
     view.destroy();
   });
 
+  it("reaches an interactive pending state as soon as the debounce settles, without waiting for the analysis (#722)", () => {
+    const { view, queries } = mountRename(() => unsafe(1));
+    startInlineRename(view, DOC.indexOf(SYMBOL));
+    const input = inputEl(view);
+
+    typeName(view, input, "bad");
+    vi.advanceTimersByTime(250); // the debounce settles...
+
+    // ...but the (deferred) breakage analysis has not run yet: this is the
+    // "rename UI reaches interactive-pending state without waiting for
+    // analysis" regression the issue asks for. The badge already reflects a
+    // pending/checking state and is disabled (no apply until it resolves);
+    // the input itself stays live so typing more isn't blocked.
+    expect(queries).toHaveLength(0);
+    const badge = view.dom.querySelector<HTMLButtonElement>(".brink-inline-rename-badge")!;
+    expect(badge.hidden).toBe(false);
+    expect(badge.disabled).toBe(true);
+    expect(badge.classList.contains("brink-inline-rename-badge--pending")).toBe(true);
+    expect(badge.getAttribute("aria-busy")).toBe("true");
+    expect(input.disabled).toBe(false);
+
+    // The deferred analysis then runs (idle-scheduled) and the badge settles
+    // into the real verdict.
+    vi.advanceTimersByTime(1);
+    expect(queries).toHaveLength(1);
+    expect(badge.disabled).toBe(false);
+    expect(badge.classList.contains("brink-inline-rename-badge--pending")).toBe(false);
+    expect(badge.textContent).toBe("⚠ breaks 1");
+    view.destroy();
+  });
+
   it("expands the badge into the inline report (no modal) with the affected list", () => {
     const { view } = mountRename(() => unsafe(2));
     startInlineRename(view, DOC.indexOf(SYMBOL));
@@ -210,13 +241,20 @@ describe("inline-rename widget", () => {
     view.destroy();
   });
 
-  it("commits a safe rename on Enter (no popover)", () => {
-    const { view, commits } = mountRename(() => safe());
+  it("commits a safe rename on Enter (no popover), after the deferred analysis resolves", () => {
+    const { view, queries, commits } = mountRename(() => safe());
     startInlineRename(view, DOC.indexOf(SYMBOL));
     const input = inputEl(view);
     typeName(view, input, "greeting");
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 
+    // Enter does not force the (uncached) analysis to run synchronously —
+    // nothing has committed yet, and the widget is still mounted.
+    expect(queries).toHaveLength(0);
+    expect(commits).toHaveLength(0);
+    expect(view.dom.querySelector(".brink-inline-rename-input")).not.toBeNull();
+
+    vi.advanceTimersByTime(1); // flush the deferred (idle-scheduled) query
     expect(commits).toEqual([{ newName: "greeting", currentName: "hello" }]);
     // The widget tears down on commit.
     expect(view.dom.querySelector(".brink-inline-rename-input")).toBeNull();
@@ -239,8 +277,13 @@ describe("inline-rename widget", () => {
     typeName(view, input, "bad");
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 
-    expect(commits).toHaveLength(0);
+    // Pending: the deferred analysis hasn't resolved yet, so the report isn't
+    // up yet either — but the widget is already interactive (not blocked).
     const report = view.dom.querySelector<HTMLElement>(".brink-inline-rename-report")!;
+    expect(report.hidden).toBe(true);
+    vi.advanceTimersByTime(1);
+
+    expect(commits).toHaveLength(0);
     expect(report.hidden).toBe(false);
 
     // "Rename anyway" commits the unsafe rename.

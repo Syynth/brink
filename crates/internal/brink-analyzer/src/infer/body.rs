@@ -59,6 +59,31 @@ pub(super) struct BodyCtx<'a> {
     /// and the call-position annotated-callee fallback.
     pub list_names: &'a BTreeSet<String>,
     pub struct_names: &'a BTreeSet<String>,
+    /// Declared handle-kind names from the registered `HostManifest`
+    /// (T1d-2b, issue #774, docs/t1d-spec.md §3) — the manifest mirror of
+    /// `list_names`/`struct_names`'s ink-source-declared vocabularies.
+    /// Threaded from `ProjectCtx::new`'s `manifest` parameter through
+    /// `infer_project`/`solve_scc`/`call_edges`/`referenced_globals`; empty
+    /// when no manifest is registered, same degrade posture as every other
+    /// manifest-driven check.
+    pub handle_names: &'a BTreeSet<String>,
+}
+
+impl BodyCtx<'_> {
+    /// A [`crate::annotations::TypeNames`] bundle for this ctx's
+    /// annotation-resolution call sites — `handles` now carries the real
+    /// registered handle-kind vocabulary (T1d-2b, issue #774), so a
+    /// `handle<K>` annotation on a param/return/temp resolves to
+    /// `Ty::Handle(K)` during body inference whenever `K` is declared in the
+    /// registered manifest, exactly like `list<L>`/`STRUCT` already do
+    /// against their own declared-name sets.
+    fn type_names(&self) -> crate::annotations::TypeNames {
+        crate::annotations::TypeNames {
+            lists: self.list_names.clone(),
+            structs: self.struct_names.clone(),
+            handles: self.handle_names.clone(),
+        }
+    }
 }
 
 /// The result of walking one definition's body.
@@ -108,12 +133,13 @@ pub(super) struct BodyResult {
 /// derivations, and a genuinely conflicted body still comes out
 /// `Conflicted` (E066) — the #627 lattice is untouched.
 pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyResult {
+    let names = ctx.type_names();
     let annotated: BTreeMap<String, Ty> = def
         .params
         .iter()
         .filter_map(|p| {
             let te = p.annotation.as_ref()?;
-            let ty = crate::annotations::resolve(te, ctx.list_names, ctx.struct_names)?;
+            let ty = crate::annotations::resolve(te, &names)?;
             Some((p.name.text.clone(), ty))
         })
         .collect();
@@ -152,7 +178,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
 
     let return_ty = if pass.return_ty.is_unknown() {
         def.return_annotation
-            .and_then(|te| crate::annotations::resolve(te, ctx.list_names, ctx.struct_names))
+            .and_then(|te| crate::annotations::resolve(te, &names))
             .unwrap_or(pass.return_ty)
     } else {
         pass.return_ty
@@ -253,8 +279,7 @@ impl InferPass<'_, '_> {
     /// map (same role as a param annotation — see the field's doc).
     fn register_ascription(&mut self, t: &brink_ir::TempDecl) {
         if let Some(te) = &t.annotation
-            && let Some(ty) =
-                crate::annotations::resolve(te, self.ctx.list_names, self.ctx.struct_names)
+            && let Some(ty) = crate::annotations::resolve(te, &self.ctx.type_names())
         {
             self.annotated.insert(t.name.text.clone(), ty);
         }
@@ -361,6 +386,15 @@ impl InferPass<'_, '_> {
             // the target's SCC before this one). Bound args are observed
             // against the target's param row, same as direct-call args.
             Expr::FnLiteral(fl) => self.infer_fn_literal(fl),
+            // T1e `ref lvalue-path` (docs/t1e-spec.md §2): no projection
+            // type is modeled in this slice (T1e-1 ships grammar/HIR/
+            // analyzer checks only, not runtime representation) — same
+            // "out of scope, still visited for its own escape-checking
+            // purposes" posture as `Expr::FieldAccess` just above.
+            Expr::RefArg(ra) => {
+                self.infer_expr(&ra.operand);
+                Ty::Unknown
+            }
         }
     }
 
@@ -452,7 +486,7 @@ impl InferPass<'_, '_> {
         // (shadow-fallback, matching `brink_analyzer::resolve::
         // is_t1b_stdlib_name` — a real def always wins the resolve() above).
         if let [seg] = path.segments.as_slice() {
-            return self.infer_intrinsic(&seg.text, args, &arg_tys);
+            return self.infer_intrinsic(&seg.text, path.range, args, &arg_tys);
         }
         Ty::Unknown
     }
@@ -509,17 +543,9 @@ impl InferPass<'_, '_> {
     ) -> Ty {
         let mut callee_ty = self.ty_of_def(def);
         if callee_ty.is_unknown()
-            && let Some(name) = self.ctx.index.symbols.get(&def).map(|i| i.name.clone())
-            && let Some(ann) = self.annotated.get(&name)
+            && let Some(ann) = self.annotated_callee_ty(path)
         {
-            callee_ty = ann.clone();
-        } else if callee_ty.is_unknown()
-            && let [seg] = path.segments.as_slice()
-            && let Some(ann) = self.annotated.get(&seg.text)
-        {
-            // Local callee under a locals-stripped index (see
-            // `infer_call`): the bare name is the path's single segment.
-            callee_ty = ann.clone();
+            callee_ty = ann;
         }
 
         let callee = path
@@ -529,12 +555,57 @@ impl InferPass<'_, '_> {
             .collect::<Vec<_>>()
             .join(".");
 
+        self.check_value_call(path.range, &callee, callee_ty, args, arg_tys)
+    }
+
+    /// Boundary-annotation fallback for a callee whose body-inferred type
+    /// came back `Unknown` (T1c, spec §4: "the boundary-annotation firewall
+    /// applied at the consumption site" — a `cb: fn(int): int` param must be
+    /// callable under strict without a body use pinning it first). Shared by
+    /// every callee-classification site: direct `f(args)`
+    /// ([`Self::infer_value_call`]) and the explicit `call(f, args…)` /
+    /// `bind(f, args…)` intrinsic forms ([`Self::infer_intrinsic`]) — same
+    /// rule, different syntax (spec §3).
+    fn annotated_callee_ty(&self, path: &HirPath) -> Option<Ty> {
+        if let Some(def) = self.resolve(path.range)
+            && let Some(name) = self.ctx.index.symbols.get(&def).map(|i| i.name.clone())
+            && let Some(ann) = self.annotated.get(&name)
+        {
+            return Some(ann.clone());
+        }
+        if let [seg] = path.segments.as_slice()
+            && let Some(ann) = self.annotated.get(&seg.text)
+        {
+            // Local callee under a locals-stripped index (see
+            // `infer_call`): the bare name is the path's single segment.
+            return Some(ann.clone());
+        }
+        None
+    }
+
+    /// Statically-checkable typing rule for a call *through* an
+    /// already-classified callee type (T1c spec §4): known `fn(T…): R` →
+    /// arity + per-arg checks, return `R`; `Unknown`/`Conflicted` → the TM-3
+    /// escape rule applied to call position; any other concrete type (except
+    /// `Divert`, the pre-existing "call through a divert-ref variable"
+    /// pattern, deliberately left unchecked) → not callable. Shared by
+    /// direct calls (`f(args)`) and the explicit `call(f, args…)` intrinsic
+    /// form — spec §3: "same semantics, usable where the callee is itself an
+    /// expression".
+    fn check_value_call(
+        &mut self,
+        range: TextRange,
+        callee: &str,
+        callee_ty: Ty,
+        args: &[Expr],
+        arg_tys: &[Ty],
+    ) -> Ty {
         match callee_ty {
             Ty::Fn(params, ret) => {
                 if args.len() != params.len() {
                     self.push_value_call(
-                        path.range,
-                        &callee,
+                        range,
+                        callee,
                         ValueCallKind::ArityMismatch {
                             expected: params.len(),
                             got: args.len(),
@@ -548,8 +619,8 @@ impl InferPass<'_, '_> {
                         && &unify(param_ty, arg_ty) != param_ty
                     {
                         self.push_value_call(
-                            path.range,
-                            &callee,
+                            range,
+                            callee,
                             ValueCallKind::ArgMismatch {
                                 index: i,
                                 expected: param_ty.clone(),
@@ -565,15 +636,86 @@ impl InferPass<'_, '_> {
             }
             Ty::Divert => Ty::Unknown,
             Ty::Unknown => {
-                self.push_value_call(path.range, &callee, ValueCallKind::UnknownCallee);
+                self.push_value_call(range, callee, ValueCallKind::UnknownCallee);
                 Ty::Unknown
             }
             Ty::Conflicted => {
-                self.push_value_call(path.range, &callee, ValueCallKind::ConflictedCallee);
+                self.push_value_call(range, callee, ValueCallKind::ConflictedCallee);
                 Ty::Unknown
             }
             other => {
-                self.push_value_call(path.range, &callee, ValueCallKind::NotCallable(other));
+                self.push_value_call(range, callee, ValueCallKind::NotCallable(other));
+                Ty::Unknown
+            }
+        }
+    }
+
+    /// Statically-checkable typing rule for `bind(f, args…)` (T1c-3, spec
+    /// §3/§4): "consume the head of the param row" — known `fn(T…): R` →
+    /// binding more args than remain is an over-bind error (never a
+    /// truncated row, mirroring the runtime's `FunctionValueArity` fault and
+    /// `#fn`'s own E081 over-binding check), otherwise the bound prefix is
+    /// checked per-arg and the result types as `fn(remaining…): R`.
+    /// `Unknown`/`Conflicted`/not-callable classify exactly like
+    /// [`Self::check_value_call`] — `bind` is effect-transparent and
+    /// type-transparent over the same escape rule.
+    fn check_bind_value(
+        &mut self,
+        range: TextRange,
+        callee: &str,
+        callee_ty: Ty,
+        args: &[Expr],
+        arg_tys: &[Ty],
+    ) -> Ty {
+        match callee_ty {
+            Ty::Fn(params, ret) => {
+                if args.len() > params.len() {
+                    self.push_value_call(
+                        range,
+                        callee,
+                        ValueCallKind::OverBind {
+                            available: params.len(),
+                            got: args.len(),
+                        },
+                    );
+                    // Can't compute a meaningful remaining row for a bind
+                    // request that doesn't fit the signature.
+                    return Ty::Unknown;
+                }
+                for (i, param_ty) in params.iter().take(args.len()).enumerate() {
+                    if let Some(arg_ty) = arg_tys.get(i)
+                        && !param_ty.is_unresolved()
+                        && !arg_ty.is_unresolved()
+                        && &unify(param_ty, arg_ty) != param_ty
+                    {
+                        self.push_value_call(
+                            range,
+                            callee,
+                            ValueCallKind::ArgMismatch {
+                                index: i,
+                                expected: param_ty.clone(),
+                                found: arg_ty.clone(),
+                            },
+                        );
+                    }
+                    if let Some(arg) = args.get(i) {
+                        self.observe(arg, param_ty);
+                    }
+                }
+                let remaining: Vec<Ty> = params.into_iter().skip(args.len()).collect();
+                Ty::Fn(remaining, ret)
+            }
+            Ty::Divert => Ty::Unknown,
+            Ty::Unknown => {
+                self.push_value_call(range, callee, ValueCallKind::UnknownCallee);
+                Ty::Unknown
+            }
+            Ty::Conflicted => {
+                self.push_value_call(range, callee, ValueCallKind::ConflictedCallee);
+                Ty::Unknown
+            }
+            other => {
+                self.push_value_call(range, callee, ValueCallKind::NotCallable(other));
                 Ty::Unknown
             }
         }
@@ -590,12 +732,27 @@ impl InferPass<'_, '_> {
     /// Stdlib intrinsic typing rules (typed-mode-spec §2's "facility
     /// doctrine" list): `len`/`keys`/`values`/`contains`/`push`/`insert`/
     /// `remove`, plus the TM-3-completion pure conversion intrinsics
-    /// `int`/`float`/`string` (§4, issue #659). These names have no
-    /// `DefinitionId` of their own (they resolve specially, not through the
-    /// symbol index — see `brink_ir::lir::lower::expr::is_t1b_stdlib_name`),
-    /// so the rules live here as a direct match rather than "attached" to a
-    /// resolved def.
-    fn infer_intrinsic(&mut self, name: &str, args: &[Expr], arg_tys: &[Ty]) -> Ty {
+    /// `int`/`float`/`string` (§4, issue #659), plus the T1c-2/T1c-3 explicit
+    /// call forms `call`/`bind` (§3/§4, issue #733 — wiring their typing
+    /// rules into the checker after they shipped `Unknown`-typed in #730).
+    /// These names have no `DefinitionId` of their own (they resolve
+    /// specially, not through the symbol index — see
+    /// `brink_ir::lir::lower::expr::is_t1b_stdlib_name`), so the rules live
+    /// here as a direct match rather than "attached" to a resolved def.
+    ///
+    /// `range` is the intrinsic name's own source range (`call`/`bind`'s
+    /// token, matching the `E031` arity diagnostic's anchor in
+    /// `lir::lower::expr::lower_t1b_stdlib_call`) — used as the `call`/`bind`
+    /// forms' `ValueCallFact` diagnostic site, since their callee is an
+    /// arbitrary expression (`args[0]`), not a resolvable `Path` the way a
+    /// direct call's callee always is.
+    fn infer_intrinsic(
+        &mut self,
+        name: &str,
+        range: TextRange,
+        args: &[Expr],
+        arg_tys: &[Ty],
+    ) -> Ty {
         match name {
             // `len` (stdlib slice 1) and `int` (TM-3-completion conversion
             // intrinsic, #659) both return a fixed `Ty::Int` independent of
@@ -658,6 +815,40 @@ impl InferPass<'_, '_> {
             // with `len` (both fixed `Ty::Int`, per clippy).
             "float" => Ty::Float,
             "string" => Ty::String,
+            // T1c (docs/t1c-spec.md §3/§4, issue #733): the explicit call
+            // forms. `f` (args[0]) is the callee — a value, not a
+            // statically-named target — so its type comes from the
+            // already-inferred `arg_tys[0]`, with the same boundary-
+            // annotation fallback direct calls get (`annotated_callee_ty`).
+            // An empty `args` (missing callee) is a lowering-owned `E031`
+            // arity error (`lir::lower::expr::lower_t1b_stdlib_call`); typing
+            // just degrades to `Unknown` rather than duplicating that check.
+            "call" | "bind" if args.is_empty() => Ty::Unknown,
+            "call" => {
+                let mut callee_ty = arg_tys[0].clone();
+                if callee_ty.is_unknown()
+                    && let Expr::Path(p) = &args[0]
+                    && let Some(ann) = self.annotated_callee_ty(p)
+                {
+                    callee_ty = ann;
+                }
+                let callee = brink_ir::display_expr(&args[0]);
+                self.check_value_call(range, &callee, callee_ty, &args[1..], &arg_tys[1..])
+            }
+            // `bind(f, args…)` — spec §3's "consume the head of the param
+            // row" rule; the result is a new `fn(remaining…): R` value, not
+            // `R` itself (see `check_bind_value`).
+            "bind" => {
+                let mut callee_ty = arg_tys[0].clone();
+                if callee_ty.is_unknown()
+                    && let Expr::Path(p) = &args[0]
+                    && let Some(ann) = self.annotated_callee_ty(p)
+                {
+                    callee_ty = ann;
+                }
+                let callee = brink_ir::display_expr(&args[0]);
+                self.check_bind_value(range, &callee, callee_ty, &args[1..], &arg_tys[1..])
+            }
             _ => Ty::Unknown,
         }
     }

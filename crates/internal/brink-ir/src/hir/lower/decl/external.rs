@@ -57,9 +57,23 @@ impl DeclareSymbols for ast::ExternalDecl {
         )]
         let param_count = self.param_list().map_or(0, |pl| pl.params().count() as u8);
 
-        // Directives don't apply to EXTERNALs — diagnose any that attach.
+        // `#@local` doesn't apply to EXTERNALs (diagnosed if it attaches);
+        // `#@private`/`#@public` are recorded (M-2) rather than silently
+        // dropped.
         let dirs = directives_before(self.syntax());
         let _ = apply_scope_directives(&dirs, DirectiveTarget::External, sink);
+        if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
+            sink.set_visibility(SymbolKind::External, &name.text, vis);
+        }
+        if let Some((old_name, was_range)) =
+            super::super::directive::was_from_directives(&dirs, sink)
+        {
+            if old_name == name.text {
+                sink.diagnose(was_range, DiagnosticCode::E095);
+            } else {
+                sink.set_was(SymbolKind::External, &name.text, old_name, was_range);
+            }
+        }
 
         Ok(ExternalDecl {
             ptr: ast::AstPtr::new(self),

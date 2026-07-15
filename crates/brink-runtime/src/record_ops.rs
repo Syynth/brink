@@ -75,6 +75,7 @@ pub(crate) fn record_set_dyn(
     let value = flow.pop_value()?;
     let mut record = flow.pop_value()?;
     let idx = field_index(program, &record, NameId(name_id))?;
+    note_record_mutation(&record);
     let Some(fields) = record.record_make_mut() else {
         return Err(RuntimeError::NotARecord(type_name(&record)));
     };
@@ -127,6 +128,7 @@ pub(crate) fn record_set(flow: &mut Flow, offset: u16) -> Result<(), RuntimeErro
     if offset as usize >= len {
         return Err(RuntimeError::RecordFieldOffsetOutOfRange { offset, len });
     }
+    note_record_mutation(&record);
     let Some(fields) = record.record_make_mut() else {
         return Err(RuntimeError::NotARecord(type_name(&record)));
     };
@@ -143,6 +145,24 @@ pub(crate) fn record_set(flow: &mut Flow, offset: u16) -> Result<(), RuntimeErro
 
 // ── Shared helpers ───────────────────────────────────────────────────────
 
+/// Record a COW-copy event if mutating `record` via the next
+/// `record_make_mut()` call will find a shared `Arc` and pay the O(n) copy
+/// — see `collection_ops::note_array_mutation` for the full rationale
+/// (issue #821 Workstream B seed). No-op unless the `bench-counters`
+/// feature is enabled.
+#[cfg(feature = "bench-counters")]
+#[inline]
+fn note_record_mutation(record: &Value) {
+    if let Value::Record { fields, .. } = record
+        && alloc::sync::Arc::strong_count(fields) > 1
+    {
+        crate::bench_counters::record_cow_copy();
+    }
+}
+#[cfg(not(feature = "bench-counters"))]
+#[inline(always)]
+fn note_record_mutation(_record: &Value) {}
+
 fn type_name(v: &Value) -> &'static str {
     match v {
         Value::Int(_) => "int",
@@ -158,6 +178,9 @@ fn type_name(v: &Value) -> &'static str {
         Value::Array(_) => "array",
         Value::Map(_) => "map",
         Value::Record { .. } => "record",
+        Value::FnRef(_) | Value::Closure(_) => "fn",
+        Value::Handle { .. } => "handle",
+        Value::Projection(_) => "projection",
     }
 }
 
@@ -237,6 +260,7 @@ mod tests {
                 counting_flags: CountingFlags::empty(),
                 path_hash: 0,
                 param_count: 0,
+                params: Vec::new(),
                 scope_table_idx: 0,
             }],
             address_map: HashMap::new(),
@@ -258,6 +282,8 @@ mod tests {
                 name: NameId(0),
                 fields: vec![NameId(0), NameId(1)],
             }],
+            private_defs: Vec::new(),
+            alias_table: Vec::new(),
         }
     }
 

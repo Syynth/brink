@@ -1,0 +1,27 @@
+---
+source: crates/internal/brink-syntax/src/parser/tests/logic/mod.rs
+assertion_line: 162
+expression: "format!(\"{:#?}\", p.syntax())"
+---
+SOURCE_FILE@0..17
+  LOGIC_LINE@0..17
+    TILDE@0..1 "~"
+    WHITESPACE@1..2 " "
+    ASSIGNMENT@2..16
+      FIELD_ACCESS_EXPR@2..10
+        INDEX_EXPR@2..8
+          PATH@2..5
+            IDENT@2..5 "arr"
+          L_BRACKET@5..6 "["
+          PATH@6..7
+            IDENT@6..7 "i"
+          R_BRACKET@7..8 "]"
+        DOT@8..9 "."
+        IDENTIFIER@9..10
+          IDENT@9..10 "x"
+      WHITESPACE@10..11 " "
+      EQ@11..12 "="
+      WHITESPACE@12..13 " "
+      FLOAT_LIT@13..16
+        FLOAT@13..16 "2.0"
+    NEWLINE@16..17 "\n"

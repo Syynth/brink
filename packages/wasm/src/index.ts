@@ -274,6 +274,36 @@ export class EditorSessionHandle {
     this.session.set_semantic_type_check(level);
   }
 
+  /**
+   * Set the T1b compiler dialect (docs/t1b-surface-spec.md §1, #589, #600,
+   * #611): `"brink"` or `"strict-ink"` (default — any other value, or never
+   * calling this at all, keeps `StrictInk`). Gates stdlib slice 1 completion
+   * (`getCompletionsDoc`), dialect-aware signature help
+   * (`getSignatureHelpDoc`), and the background analysis pass's `E051`
+   * "brink extension" diagnostic — a `brink`-dialect project no longer shows
+   * permanent spurious `E051` on valid extension syntax. Re-analyzes
+   * immediately (like `setExternalCheck`/`setSemanticTypeCheck`).
+   */
+  setLanguageDialect(value: "brink" | "strict-ink"): void {
+    this.bump();
+    this.session.set_language_dialect(value);
+  }
+
+  /**
+   * Set the TM-3 typed-mode policy (docs/typed-mode-spec.md §1, #660):
+   * `"strict"` or `"gradual"` (default — any other value, or never calling
+   * this at all, keeps `Gradual`). Mirrors `setLanguageDialect` exactly.
+   * `"strict"` requires `setLanguageDialect("brink")` to also be in effect,
+   * or the compile/analysis surface a single project-level `E064`
+   * config-error diagnostic instead of running the normal passes (the
+   * caller's responsibility, same as the compiler CLI). Re-analyzes
+   * immediately (like `setLanguageDialect`).
+   */
+  setTypePolicy(value: "strict" | "gradual"): void {
+    this.bump();
+    this.session.set_type_policy(value);
+  }
+
   setActiveFile(path: string): boolean {
     return this.session.set_active_file(path);
   }
@@ -871,6 +901,20 @@ export class StoryRunnerHandle {
    * fully deterministic playthrough. */
   setSeed(seed: number): void {
     this.runner.set_seed(seed);
+  }
+
+  /**
+   * Enable the dev-tooling visibility override (M-2b, play-from-here). When
+   * `allow` is `true`, host semantic access to `#@private` definitions —
+   * `getVar`/`setVar`, `goToPath`/`runKnot`, `callFunction` — is permitted:
+   * enforcement is turned off. Editors and debug hosts set this to start
+   * flows at private knots and inspect private state; production hosts leave
+   * it `false` (the default) to respect visibility. Applies now and is
+   * re-applied across `reset()`/`reload()`. A host capability, not a language
+   * switch — the compiled program is identical either way.
+   */
+  setDevVisibilityOverride(allow: boolean): void {
+    this.runner.setDevVisibilityOverride(allow);
   }
 
   /** Capture durable game state as a typed object (dev/inspectable). */
@@ -1742,6 +1786,18 @@ export class StorySessionHandle {
   goToPath(path: string, ...args: ExternalValue[]): void {
     this.session.go_to_path(path, args);
     this.noteJournalActivity();
+  }
+
+  /**
+   * Enable the dev-tooling visibility override (M-2b, play-from-here). When
+   * `allow` is `true`, host semantic access to `#@private` definitions —
+   * `setVar`/`goToPath`/`callFunction` — is permitted (enforcement off). The
+   * studio sets this on a "play from here" session so it can start a flow at
+   * a private knot. Applies now and persists across `restart`/`reload`.
+   * Default off; production hosts respect visibility.
+   */
+  setDevVisibilityOverride(allow: boolean): void {
+    this.session.setDevVisibilityOverride(allow);
   }
 
   /** Capture durable game state (does not journal). */

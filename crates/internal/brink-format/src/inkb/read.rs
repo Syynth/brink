@@ -6,20 +6,24 @@ use alloc::vec::Vec;
 use crate::codec::{crc32, read_def_id, read_i32, read_str, read_u8, read_u16, read_u32, read_u64};
 use crate::counting::CountingFlags;
 use crate::definition::{
-    AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef, ScopeLineTable, SlotInfo, SourceLocation, StructShapeDef,
+    AddressDef, AddressPath, AliasEntry, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry,
+    ListDef, ListItemDef, ParamMeta, ScopeLineTable, SlotInfo, SourceLocation, StructShapeDef,
 };
-use crate::id::NameId;
+use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::opcode::DecodeError;
 use crate::story::StoryData;
-use crate::value::{ListValue, MAX_DECODE_DEPTH, MapKey, OrderedMap, ShapeId, Value, ValueType};
+use crate::value::{
+    ClosureEnvEntry, ListValue, MAX_DECODE_DEPTH, MapKey, OrderedMap, ShapeId, Value, ValueType,
+};
 
+use super::write::ALIAS_TABLE_SECTION_VERSION;
 use super::{
     CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HEADER_PREAMBLE, InkbIndex,
     KEY_CARDINAL, KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN, LINE_TEMPLATE, MAGIC,
-    PART_LITERAL, PART_SELECT, PART_SLOT, SECTION_ENTRY_SIZE, SectionEntry, SectionKind, VAL_ARRAY,
-    VAL_BOOL, VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FRAGMENT_REF, VAL_INT, VAL_LIST, VAL_MAP, VAL_NULL,
+    PART_LITERAL, PART_SELECT, PART_SLOT, PROJ_SEG_INDEX, PROJ_SEG_KEY, SECTION_ENTRY_SIZE,
+    SectionEntry, SectionKind, VAL_ARRAY, VAL_BOOL, VAL_CLOSURE, VAL_DIVERT_TARGET, VAL_FLOAT,
+    VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT, VAL_LIST, VAL_MAP, VAL_NULL, VAL_PROJECTION,
     VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION, safe_capacity,
 };
 
@@ -51,6 +55,8 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
     let address_paths = read_section_address_paths(buf, &index)?;
     let literal_pool = read_section_literal_pool(buf, &index)?;
     let struct_shapes = read_section_struct_shapes(buf, &index)?;
+    let private_defs = read_section_visibility(buf, &index)?;
+    let alias_table = read_section_alias_table(buf, &index)?;
 
     Ok(StoryData {
         containers,
@@ -65,6 +71,8 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
         list_literals,
         literal_pool,
         struct_shapes,
+        private_defs,
+        alias_table,
         source_checksum: index.checksum,
     })
 }
@@ -338,6 +346,10 @@ fn decode_value_type(buf: &[u8], off: &mut usize) -> Result<ValueType, DecodeErr
         VAL_ARRAY => Ok(ValueType::Array),
         VAL_MAP => Ok(ValueType::Map),
         VAL_RECORD => Ok(ValueType::Record),
+        VAL_FN_REF => Ok(ValueType::FnRef),
+        VAL_CLOSURE => Ok(ValueType::Closure),
+        VAL_HANDLE => Ok(ValueType::Handle),
+        VAL_PROJECTION => Ok(ValueType::Projection),
         _ => Err(DecodeError::InvalidValueType(tag)),
     }
 }
@@ -405,7 +417,57 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Deco
             }
             Ok(Value::record(shape, fields))
         }
+        // Function values (T1c, `docs/format-v4-rfc.md` §1).
+        VAL_FN_REF => Ok(Value::FnRef(read_def_id(buf, off)?)),
+        VAL_CLOSURE => {
+            let target = read_def_id(buf, off)?;
+            let count = read_u16(buf, off)? as usize;
+            let mut env = Vec::with_capacity(safe_capacity(count, buf.len(), *off, 4));
+            for _ in 0..count {
+                let name = NameId(read_u16(buf, off)?);
+                let is_ref = read_u8(buf, off)? != 0;
+                let payload = decode_value(buf, off, depth + 1)?;
+                env.push(ClosureEnvEntry {
+                    name,
+                    is_ref,
+                    payload,
+                });
+            }
+            Ok(Value::closure(target, env))
+        }
+        // Handle values (T1d, `docs/format-v4-rfc.md` §1).
+        VAL_HANDLE => {
+            let kind = NameId(read_u16(buf, off)?);
+            let id = read_u64(buf, off)?;
+            Ok(Value::handle(kind, id))
+        }
+        // Projection values (T1e, `docs/format-v4-rfc.md` §1). Segment kind
+        // `2=range` is RESERVED — `decode_proj_segment` rejects it since no
+        // `ProjSegment` variant exists to decode into (`docs/t1e-spec.md` §3).
+        VAL_PROJECTION => {
+            let cell = read_def_id(buf, off)?;
+            let count = read_u8(buf, off)? as usize;
+            let mut segments = Vec::with_capacity(safe_capacity(count, buf.len(), *off, 1));
+            for _ in 0..count {
+                segments.push(decode_proj_segment(buf, off, depth + 1)?);
+            }
+            Ok(Value::projection(cell, segments))
+        }
         _ => Err(DecodeError::InvalidValueType(tag)),
+    }
+}
+
+/// Decode a single [`crate::ProjSegment`] written by `encode_proj_segment`.
+fn decode_proj_segment(
+    buf: &[u8],
+    off: &mut usize,
+    depth: usize,
+) -> Result<crate::ProjSegment, DecodeError> {
+    let kind = read_u8(buf, off)?;
+    match kind {
+        PROJ_SEG_INDEX => Ok(crate::ProjSegment::Index(read_i32(buf, off)?)),
+        PROJ_SEG_KEY => Ok(crate::ProjSegment::Key(decode_value(buf, off, depth)?)),
+        other => Err(DecodeError::InvalidProjSegmentKind(other)),
     }
 }
 
@@ -517,6 +579,56 @@ pub fn read_section_struct_shapes(
     Ok(shapes)
 }
 
+/// Read the M-2b `Visibility` section (tag `0x0E`) from a complete `.inkb`
+/// file using its index — the `DefinitionId`s of every `#@private`
+/// definition. Absent section decodes as empty (the all-public common case),
+/// mirroring [`read_section_struct_shapes`].
+pub fn read_section_visibility(
+    buf: &[u8],
+    index: &InkbIndex,
+) -> Result<Vec<DefinitionId>, DecodeError> {
+    let Some(range) = index.section_range(SectionKind::Visibility) else {
+        return Ok(Vec::new());
+    };
+    let mut off = range.start;
+    let count = read_u32(buf, &mut off)? as usize;
+    let mut ids = Vec::with_capacity(safe_capacity(count, buf.len(), off, 4));
+    for _ in 0..count {
+        ids.push(read_def_id(buf, &mut off)?);
+    }
+    Ok(ids)
+}
+
+/// Read the M-3 `AliasTable` section (`docs/modules-spec.md` §5) from a
+/// complete `.inkb` file using its index. Absent section (a pre-M-3 file, or
+/// a story with no `#@was` directives) decodes as empty, mirroring
+/// [`read_section_literal_pool`]. The section-local version byte is checked
+/// independently of the whole-file `VERSION` — see [`ALIAS_TABLE_SECTION_VERSION`].
+pub fn read_section_alias_table(
+    buf: &[u8],
+    index: &InkbIndex,
+) -> Result<Vec<AliasEntry>, DecodeError> {
+    let Some(range) = index.section_range(SectionKind::AliasTable) else {
+        return Ok(Vec::new());
+    };
+    let mut off = range.start;
+    let section_version = read_u8(buf, &mut off)?;
+    if section_version != ALIAS_TABLE_SECTION_VERSION {
+        return Err(DecodeError::UnsupportedSectionVersion {
+            section: SectionKind::AliasTable as u8,
+            version: section_version,
+        });
+    }
+    let count = read_u32(buf, &mut off)? as usize;
+    let mut entries = Vec::with_capacity(safe_capacity(count, buf.len(), off, 16));
+    for _ in 0..count {
+        let old = read_def_id(buf, &mut off)?;
+        let new = read_def_id(buf, &mut off)?;
+        entries.push(AliasEntry { old, new });
+    }
+    Ok(entries)
+}
+
 fn decode_external(buf: &[u8], off: &mut usize) -> Result<ExternalFnDef, DecodeError> {
     let id = read_def_id(buf, off)?;
     let name = NameId(read_u16(buf, off)?);
@@ -549,6 +661,14 @@ fn decode_container(buf: &[u8], off: &mut usize) -> Result<ContainerDef, DecodeE
     let path_hash = read_i32(buf, off)?;
     let param_count = read_u8(buf, off)?;
     let local = read_u8(buf, off)? != 0;
+    // Per-param name/mode metadata (T1c, `docs/t1c-spec.md` §6).
+    let param_meta_count = read_u16(buf, off)? as usize;
+    let mut params = Vec::with_capacity(safe_capacity(param_meta_count, buf.len(), *off, 3));
+    for _ in 0..param_meta_count {
+        let name = NameId(read_u16(buf, off)?);
+        let is_ref = read_u8(buf, off)? != 0;
+        params.push(ParamMeta { name, is_ref });
+    }
 
     let bytecode_len = read_u32(buf, off)? as usize;
     if *off + bytecode_len > buf.len() {
@@ -565,6 +685,7 @@ fn decode_container(buf: &[u8], off: &mut usize) -> Result<ContainerDef, DecodeE
         counting_flags,
         path_hash,
         param_count,
+        params,
         local,
     })
 }

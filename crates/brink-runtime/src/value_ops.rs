@@ -22,11 +22,22 @@ pub(crate) fn is_truthy(v: &Value) -> bool {
         // A record is a value with fields, not a collection with a size —
         // it's always truthy, same as every other non-collection variant
         // here (divert targets, pointers, fragment refs).
+        // A function value is a value with an identity, not a collection with a
+        // size — always truthy, like every other non-collection variant here.
+        // A handle (T1d) is the same shape of argument: an opaque token with
+        // an identity, not a collection — always truthy.
+        // A projection (T1e) is a value with an identity (root cell + path),
+        // not a collection — always truthy, same reasoning as every other
+        // non-collection variant here.
         Value::DivertTarget(_)
         | Value::VariablePointer(_)
         | Value::TempPointer { .. }
         | Value::FragmentRef(_)
-        | Value::Record { .. } => true,
+        | Value::Record { .. }
+        | Value::FnRef(_)
+        | Value::Closure(_)
+        | Value::Handle { .. }
+        | Value::Projection(_) => true,
         Value::List(lv) => !lv.items.is_empty(),
         Value::Array(items) => !items.is_empty(),
         Value::Map(map) => !map.is_empty(),
@@ -72,7 +83,138 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
             let parts: Vec<String> = fields.iter().map(|v| stringify(v, program)).collect();
             format!("{{{}}}", parts.join(", "))
         }
+        // Function values (T1c-3, spec §5). The **authoritative** author-facing
+        // display form — signature-like, with bound args rendered as defaults:
+        // `fn heal(ref hp = player_hp, amount)`. Bound `val` args print their
+        // value's display form, bound `ref` args print the captured cell name,
+        // unbound params print as bare names. This is a permanently observable
+        // surface (spec §5, ratified 2026-07-13) — deliberately boring and
+        // stable, exercised via `string(f)`/`{f}` and property-tested. Both
+        // `string(f)` and interpolation route here (typed-mode-spec §4:
+        // "display is universal").
+        Value::FnRef(target) => display_fn_value(*target, &[], program),
+        Value::Closure(c) => display_fn_value(c.target, &c.env, program),
+        // Handle values (T1d, `docs/t1d-spec.md` §6). The **authoritative**
+        // display form — deliberately boring and stable, same
+        // observable-surface-forever reasoning as the fn-value display
+        // ruling above: `handle <Kind>#<id>`. Total: an unresolvable kind
+        // (a stale `NameId` from a different compile) renders `?`, matching
+        // `display_fn_value`'s convention for its own unresolvable names.
+        Value::Handle { kind, id } => {
+            let kind_name = program.name_checked(*kind).unwrap_or("?");
+            format!("handle {kind_name}#{id}")
+        }
+        // Projection values (T1e, `docs/t1e-spec.md` §4 PROPOSED): `ref
+        // <root>` / `ref <root>.<field>[<index>]…` — root + rendered path,
+        // deliberately boring and stable. An unresolvable root cell (a stale
+        // `DefinitionId` from a different compile) renders `?`, matching
+        // `display_fn_value`'s convention for its own unresolvable names.
+        Value::Projection(p) => format!("ref {}", display_projection_path(p, program)),
     }
+}
+
+/// Render a projection's `root.field[index]…` path text — no leading `ref `
+/// prefix. [`stringify`]'s own `Value::Projection` arm prepends `ref ` for a
+/// projection displayed as an ordinary value (`ref npc.inventory[3]`,
+/// `docs/t1e-spec.md` §4 PROPOSED); [`display_fn_value`]'s bound-`ref`-param
+/// arm calls this directly so a projection-bound `ref` parameter renders
+/// `ref hp = npc.hp`, not the doubled `ref hp = ref npc.hp` that prepending
+/// `ref ` twice would produce (issue #850).
+fn display_projection_path(p: &brink_format::ProjectionValue, program: &Program) -> String {
+    let root = program
+        .global_var_name(p.cell)
+        .map_or_else(|| "?".to_owned(), ToOwned::to_owned);
+    let mut out = root;
+    for seg in &p.segments {
+        display_proj_segment(seg, program, &mut out);
+    }
+    out
+}
+
+/// Render one path-projection segment onto `out` (`docs/t1e-spec.md` §4
+/// PROPOSED): a struct-field-shaped string key as `.name`, anything else as
+/// `[value]`.
+fn display_proj_segment(seg: &brink_format::ProjSegment, program: &Program, out: &mut String) {
+    use core::fmt::Write as _;
+    match seg {
+        brink_format::ProjSegment::Index(n) => {
+            let _ = write!(out, "[{n}]");
+        }
+        brink_format::ProjSegment::Key(Value::String(s)) if is_field_like(s) => {
+            let _ = write!(out, ".{s}");
+        }
+        brink_format::ProjSegment::Key(v) => {
+            let _ = write!(out, "[{}]", stringify(v, program));
+        }
+    }
+}
+
+/// Whether a string looks like a bare identifier (`.field`-renderable)
+/// rather than an arbitrary map key (`["field"]`-renderable).
+fn is_field_like(s: &str) -> bool {
+    let mut chars = s.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// The authoritative function-value display form (`docs/t1c-spec.md` §5):
+/// `fn <name>(<param…>)` where each declared param renders as `ref name =
+/// cell` / `name = value` when bound, or a bare `name` when unbound.
+///
+/// Total — never faults, never panics: an unresolvable target renders `?` for
+/// the name, an unresolvable param `NameId` renders `?`, and a `ref` payload
+/// that isn't a resolvable global cell falls back to its value display form.
+fn display_fn_value(
+    target: brink_format::DefinitionId,
+    env: &[brink_format::ClosureEnvEntry],
+    program: &Program,
+) -> String {
+    let name = program
+        .divert_target_path(target)
+        .unwrap_or_else(|| "?".to_owned());
+    let empty: &[brink_format::ParamMeta] = &[];
+    let params = program
+        .resolve_target(target)
+        .map_or(empty, |(idx, _)| program.container_params(idx));
+
+    // Render every declared param, in order. The bound prefix comes from
+    // `env`; any trailing params beyond `env.len()` are unbound. `env` can be
+    // longer than `params` only for a stale rehydrated value — still rendered
+    // so the form stays total (the invoke-time rehydration check is the fault
+    // path, not display).
+    let count = params.len().max(env.len());
+    let mut parts = Vec::with_capacity(count);
+    for i in 0..count {
+        if let Some(entry) = env.get(i) {
+            let pname = program.name_checked(entry.name).unwrap_or("?");
+            if entry.is_ref {
+                let cell = match &entry.payload {
+                    Value::VariablePointer(id) => {
+                        program.global_var_name(*id).map(ToOwned::to_owned)
+                    }
+                    // T1e (docs/t1e-spec.md §4 PROPOSED, issue #850): a
+                    // path-projection-bound `ref` param (`#fn(heal, ref
+                    // npc.hp)`) renders its captured *path*, not the bare
+                    // `ref `-prefixed value form `stringify` would give a
+                    // standalone projection — `display_projection_path`
+                    // omits that prefix since the `ref {pname} = ` this
+                    // arm builds already supplies it once.
+                    Value::Projection(p) => Some(display_projection_path(p, program)),
+                    _ => None,
+                }
+                .unwrap_or_else(|| stringify(&entry.payload, program));
+                parts.push(format!("ref {pname} = {cell}"));
+            } else {
+                parts.push(format!("{pname} = {}", stringify(&entry.payload, program)));
+            }
+        } else {
+            let pname = params
+                .get(i)
+                .map_or("?", |p| program.name_checked(p.name).unwrap_or("?"));
+            parts.push(pname.to_owned());
+        }
+    }
+    format!("fn {name}({})", parts.join(", "))
 }
 
 /// Provisional stringify for a map key (see [`stringify`]'s collection arms).
@@ -111,6 +253,15 @@ fn stringify_list(lv: &ListValue, program: &Program) -> String {
 }
 
 /// Binary arithmetic/comparison operation.
+#[expect(
+    clippy::match_same_arms,
+    reason = "the FnRef/Closure and Handle equality arms have identical bodies \
+              (both delegate to Value's PartialEq) but must stay separate \
+              match arms, not merged into one shared pattern: a fn value and \
+              a handle are unrelated opaque-identity types, and comparing \
+              across them must still hit the TypeError fault below, not \
+              silently return false the way the Null cross-type rule does"
+)]
 pub(crate) fn binary_op(
     op: BinaryOp,
     left: &Value,
@@ -178,6 +329,36 @@ pub(crate) fn binary_op(
         }
         (Value::DivertTarget(a), Value::DivertTarget(b)) if op == BinaryOp::NotEqual => {
             Ok(Value::Bool(a != b))
+        }
+        // Function-value equality (T1c-3, spec §5): structural — same fn
+        // token and equal bound rows (`ref` entries by bound cell, `val` by
+        // value), delegated to `Value`'s `PartialEq`. Only `==`/`!=` are
+        // defined; any ordering op (`<`, `>=`, …) falls through to the
+        // `TypeError` fault below — spec §5's "no ordering" rule (a runtime
+        // fault in gradual mode, a compile error in strict). Deliberately
+        // NOT merged with the `Handle` arm below despite the identical body
+        // (see this function's `#[expect]`): a fn value compared against a
+        // handle must still fault, not silently return `false`.
+        (Value::FnRef(_) | Value::Closure(_), Value::FnRef(_) | Value::Closure(_))
+            if op == BinaryOp::Equal =>
+        {
+            Ok(Value::Bool(left == right))
+        }
+        (Value::FnRef(_) | Value::Closure(_), Value::FnRef(_) | Value::Closure(_))
+            if op == BinaryOp::NotEqual =>
+        {
+            Ok(Value::Bool(left != right))
+        }
+        // Handle equality (T1d, `docs/t1d-spec.md` §6): token equality — same
+        // kind and same id, delegated to `Value`'s `PartialEq`. Only `==`/`!=`
+        // are defined; any ordering op falls through to the `TypeError` fault
+        // below — the spec's "no ordering" rule (a runtime fault in gradual
+        // mode, a compile error under the typed dialect).
+        (Value::Handle { .. }, Value::Handle { .. }) if op == BinaryOp::Equal => {
+            Ok(Value::Bool(left == right))
+        }
+        (Value::Handle { .. }, Value::Handle { .. }) if op == BinaryOp::NotEqual => {
+            Ok(Value::Bool(left != right))
         }
         // Equality for null
         (Value::Null, Value::Null) if op == BinaryOp::Equal => Ok(Value::Bool(true)),
@@ -517,6 +698,7 @@ mod tests {
                 counting_flags: brink_format::CountingFlags::empty(),
                 path_hash: 0,
                 param_count: 0,
+                params: Vec::new(),
                 scope_table_idx: 0,
             }],
             address_map: {
@@ -539,6 +721,8 @@ mod tests {
             external_fns: HashMap::new(),
             local_scope_defaults: Vec::new(),
             struct_shapes: Vec::new(),
+            private_defs: Vec::new(),
+            alias_table: Vec::new(),
         }
     }
 
@@ -774,6 +958,63 @@ mod tests {
         )
         .unwrap();
         assert_eq!(r, Value::Bool(true));
+    }
+
+    // ── Handle (T1d, docs/t1d-spec.md §6) ───────────────────────────────────
+
+    #[test]
+    fn handle_equality_is_token_equality() {
+        let p = dummy_program();
+        let h1 = Value::handle(NameId(1), 42);
+        let h1_again = Value::handle(NameId(1), 42);
+        let h2 = Value::handle(NameId(2), 42);
+
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &h1, &h1_again, &p).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            binary_op(BinaryOp::NotEqual, &h1, &h2, &p).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &h1, &h2, &p).unwrap(),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn handle_has_no_ordering() {
+        // No `<`/`>`/`<=`/`>=` is defined for Handle (spec §6) — every
+        // ordering op is a runtime TypeError fault in gradual mode.
+        let p = dummy_program();
+        let h1 = Value::handle(NameId(1), 1);
+        let h2 = Value::handle(NameId(1), 2);
+        for op in [
+            BinaryOp::Less,
+            BinaryOp::Greater,
+            BinaryOp::LessOrEqual,
+            BinaryOp::GreaterOrEqual,
+        ] {
+            assert!(
+                binary_op(op, &h1, &h2, &p).is_err(),
+                "{op:?} on two handles must fault, not silently order them"
+            );
+        }
+    }
+
+    #[test]
+    fn handle_equality_does_not_leak_across_to_other_identity_types() {
+        // A handle and a fn value are unrelated opaque-identity types — even
+        // though both use the same "structural PartialEq" body in
+        // `binary_op` (the reason for this function's `match_same_arms`
+        // `#[expect]`), comparing across them must still fault, not silently
+        // return `false` the way the `Null` cross-type rule does.
+        let p = dummy_program();
+        let h = Value::handle(NameId(1), 42);
+        let f = Value::FnRef(DefinitionId::new(DefinitionTag::Address, 42));
+        assert!(binary_op(BinaryOp::Equal, &h, &f, &p).is_err());
+        assert!(binary_op(BinaryOp::NotEqual, &h, &f, &p).is_err());
     }
 
     /// List items stored with qualified names ("Rank.low") should display as just "low".

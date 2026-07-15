@@ -11,9 +11,11 @@
 //! model.
 
 mod db;
+mod determinism;
 mod include_graph;
 #[cfg(feature = "memory-introspection")]
 mod memory;
+mod modules;
 mod queries;
 
 pub use brink_analyzer::{BodyTypes, InferenceResult, InferredSig, Sig, Ty};

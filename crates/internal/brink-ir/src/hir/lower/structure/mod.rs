@@ -3,18 +3,20 @@
 //! This module produces `HirFile`, `Knot`, `Stitch`, and `IncludeSite` and
 //! is the entry point for the full lowering pipeline.
 
+mod import;
 mod include;
 mod knot;
 mod stitch;
 
 use brink_syntax::ast::{self, AstNode};
 
-use crate::{Block, FileId, HirFile, IncludeSite, Knot, SymbolManifest};
+use crate::{Block, DiagnosticCode, FileId, HirFile, Import, IncludeSite, Knot, SymbolManifest};
 
 use super::block::lower_weave_body;
 use super::context::{EffectSink, LowerScope, LowerSink};
 use super::decl::DeclareSymbols;
 
+use import::lower_import;
 use include::lower_include;
 use knot::lower_knot;
 use stitch::lower_top_level_stitch;
@@ -155,6 +157,47 @@ fn lower_source_file(
     }
     let root_content = lower_weave_body(file.syntax(), scope, sink);
 
+    // M-1 (docs/modules-spec.md §1): a file-level `#@module(name)`
+    // directive declares the module explicitly. Absent, the file is an
+    // undeclared stem-module (identity hashing stays byte-identical).
+    let module =
+        super::directive::file_module_declaration(file.syntax(), sink).map(|(name, range)| {
+            crate::ModuleDecl {
+                name,
+                range,
+                was: None,
+            }
+        });
+
+    // M-3 (docs/modules-spec.md §5): a file-level `#@was(old_name)` records
+    // the module's rename. Only meaningful alongside `#@module` — a
+    // self-alias (`old_name` equals the current module name) is `E095`
+    // ("nothing to migrate"); a `#@was` with no `#@module` to attach to is
+    // `E049` ("directive not supported on this target").
+    let module_was = super::directive::file_module_was(file.syntax(), sink);
+    let module = match (module, module_was) {
+        (Some(mut m), Some((old_name, was_range))) => {
+            if old_name == m.name {
+                sink.diagnose(was_range, DiagnosticCode::E095);
+            } else {
+                m.was = Some((old_name, was_range));
+            }
+            Some(m)
+        }
+        (Some(m), None) => Some(m),
+        (None, Some((_, was_range))) => {
+            sink.diagnose(was_range, DiagnosticCode::E049);
+            None
+        }
+        (None, None) => None,
+    };
+
+    // M-2 (docs/modules-spec.md §2/§4): `IMPORT` statements and the
+    // `#@private`/`#@public` directive occurrences (for the dialect gate).
+    let imports: Vec<Import> = file.imports().map(|i| lower_import(&i)).collect();
+    let visibility = super::directive::collect_visibility_directives(file.syntax());
+    let was_directives = super::directive::collect_was_directives(file.syntax());
+
     HirFile {
         root_content,
         knots,
@@ -164,5 +207,9 @@ fn lower_source_file(
         structs,
         externals,
         includes,
+        module,
+        imports,
+        visibility,
+        was_directives,
     }
 }

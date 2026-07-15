@@ -17,6 +17,7 @@ use brink_format::{DefinitionId, Value};
 
 use crate::collections::Map as HashMap;
 use crate::program::Program;
+use crate::value_ops;
 
 /// A structured, read-only snapshot of the runtime's current state.
 pub struct DebugSnapshot {
@@ -165,6 +166,36 @@ impl<'p> NameResolver<'p> {
                 let parts: Vec<String> = fields.iter().map(|v| self.format_value(v)).collect();
                 format!("Record#{}{{{}}}", shape.0, parts.join(", "))
             }
+            // Function values (T1c, #700). Debug rendering resolves the target
+            // path where possible and shows the bound env; the author-facing
+            // `string(f)` display form (spec §5) lands in T1c-3.
+            Value::FnRef(target) => match self.def_path(*target) {
+                Some(p) => format!("fn {p}"),
+                None => "fn ?".to_owned(),
+            },
+            Value::Closure(c) => {
+                let name = self.def_path(c.target).unwrap_or("?");
+                let parts: Vec<String> = c
+                    .env
+                    .iter()
+                    .map(|e| {
+                        let mode = if e.is_ref { "ref" } else { "val" };
+                        format!("{mode} {}", self.format_value(&e.payload))
+                    })
+                    .collect();
+                format!("fn {name}({})", parts.join(", "))
+            }
+            // Handle values (T1d, `docs/t1d-spec.md` §6). Same display form
+            // as the runtime's authoritative `string(h)` (`value_ops::stringify`):
+            // `handle <Kind>#<id>`, resolved via the program's name table.
+            Value::Handle { kind, id } => {
+                let kind_name = self.program.name_checked(*kind).unwrap_or("?");
+                format!("handle {kind_name}#{id}")
+            }
+            // Projection values (T1e, `docs/t1e-spec.md` §4). Same display
+            // form as the runtime's authoritative `string(p)`
+            // (`value_ops::stringify`).
+            Value::Projection(_) => value_ops::stringify(value, self.program),
         }
     }
 }

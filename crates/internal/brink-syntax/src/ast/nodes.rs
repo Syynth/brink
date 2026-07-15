@@ -20,6 +20,10 @@ use crate::{SyntaxNode, SyntaxToken};
 
 ast_node!(SourceFile, SOURCE_FILE);
 ast_node!(IncludeStmt, INCLUDE_STMT);
+ast_node!(ImportStmt, IMPORT_STMT);
+ast_node!(ImportList, IMPORT_LIST);
+ast_node!(ImportItem, IMPORT_ITEM);
+ast_node!(ImportModule, IMPORT_MODULE);
 ast_node!(FilePath, FILE_PATH);
 ast_node!(ExternalDecl, EXTERNAL_DECL);
 
@@ -149,6 +153,10 @@ ast_node!(FieldAccessExpr, FIELD_ACCESS_EXPR);
 // ── T1c function values (docs/t1c-spec.md §2) ─────────────────────────
 
 ast_node!(FnLiteral, FN_LITERAL);
+
+// ── T1e path projections (docs/t1e-spec.md §2) ────────────────────────
+
+ast_node!(RefExpr, REF_EXPR);
 
 // ── Diverts ──────────────────────────────────────────────────────────
 
@@ -305,6 +313,11 @@ pub enum Expr {
     /// `#fn(target, args…)` — function-value creation (T1c,
     /// docs/t1c-spec.md §2, brink extension).
     FnLiteral(FnLiteral),
+    /// `ref lvalue-path` — path-projection creation (T1e,
+    /// docs/t1e-spec.md §2, brink extension). Legal only in ref-argument
+    /// position (calls, `#fn(…)`, `bind(…)`) — a `brink-analyzer` concern,
+    /// not a grammar one.
+    RefExpr(RefExpr),
 }
 
 impl std::fmt::Debug for Expr {
@@ -341,6 +354,7 @@ impl crate::ast::AstNode for Expr {
                 | SyntaxKind::STRUCT_LITERAL
                 | SyntaxKind::FIELD_ACCESS_EXPR
                 | SyntaxKind::FN_LITERAL
+                | SyntaxKind::REF_EXPR
         )
     }
 
@@ -364,6 +378,7 @@ impl crate::ast::AstNode for Expr {
             SyntaxKind::STRUCT_LITERAL => StructLiteral::cast(node).map(Expr::StructLiteral),
             SyntaxKind::FIELD_ACCESS_EXPR => FieldAccessExpr::cast(node).map(Expr::FieldAccess),
             SyntaxKind::FN_LITERAL => FnLiteral::cast(node).map(Expr::FnLiteral),
+            SyntaxKind::REF_EXPR => RefExpr::cast(node).map(Expr::RefExpr),
             _ => None,
         }
     }
@@ -388,6 +403,7 @@ impl crate::ast::AstNode for Expr {
             Expr::StructLiteral(n) => n.syntax(),
             Expr::FieldAccess(n) => n.syntax(),
             Expr::FnLiteral(n) => n.syntax(),
+            Expr::RefExpr(n) => n.syntax(),
         }
     }
 }
@@ -435,6 +451,11 @@ impl SourceFile {
     }
 
     pub fn includes(&self) -> impl Iterator<Item = IncludeStmt> {
+        support::children(&self.syntax)
+    }
+
+    /// `IMPORT` statements (M-2, docs/modules-spec.md §2). Top-level only.
+    pub fn imports(&self) -> impl Iterator<Item = ImportStmt> {
         support::children(&self.syntax)
     }
 
@@ -488,6 +509,53 @@ impl SourceFile {
 impl IncludeStmt {
     pub fn file_path(&self) -> Option<FilePath> {
         support::child(&self.syntax)
+    }
+}
+
+// ── ImportStmt (M-2, docs/modules-spec.md §2) ────────────────────────
+
+impl ImportStmt {
+    /// The `{ … }` name list, present only for the bare form
+    /// (`IMPORT { a } FROM mod`). Absent for the qualified form
+    /// (`IMPORT mod`).
+    pub fn list(&self) -> Option<ImportList> {
+        support::child(&self.syntax)
+    }
+
+    /// The imported module name node (present in both forms).
+    pub fn module(&self) -> Option<ImportModule> {
+        support::child(&self.syntax)
+    }
+}
+
+impl ImportList {
+    pub fn items(&self) -> impl Iterator<Item = ImportItem> {
+        support::children(&self.syntax)
+    }
+}
+
+impl ImportItem {
+    /// The imported name (first identifier) and its optional alias (the
+    /// identifier after `AS`). The list has one entry with no alias, or two
+    /// with `[name, alias]`.
+    fn identifiers(&self) -> impl Iterator<Item = Identifier> {
+        support::children(&self.syntax)
+    }
+
+    /// The imported definition's own name.
+    pub fn name(&self) -> Option<String> {
+        self.identifiers().next().and_then(|id| id.name())
+    }
+
+    /// The local alias (`AS gt`), if any.
+    pub fn alias(&self) -> Option<String> {
+        self.identifiers().nth(1).and_then(|id| id.name())
+    }
+}
+
+impl ImportModule {
+    pub fn name(&self) -> Option<String> {
+        support::child::<Identifier>(&self.syntax).and_then(|id| id.name())
     }
 }
 
@@ -1105,6 +1173,25 @@ impl FnLiteral {
             .children()
             .filter_map(Expr::cast)
             .filter(move |e| Some(e.syntax()) != target_node.as_ref())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// T1e path projections (docs/t1e-spec.md §2)
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── RefExpr ──────────────────────────────────────────────────────────
+
+impl RefExpr {
+    pub fn ref_kw(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, KW_REF)
+    }
+
+    /// The lvalue-shaped operand after `ref` — a plain path, a dotted field
+    /// chain, `[…]` indexing, or a mix. `None` on malformed input (`ref` at
+    /// end of input, or followed by a token that starts no expression).
+    pub fn operand(&self) -> Option<Expr> {
+        support::child(&self.syntax)
     }
 }
 

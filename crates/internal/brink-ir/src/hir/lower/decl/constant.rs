@@ -43,9 +43,22 @@ impl DeclareSymbols for ast::ConstDecl {
             Expr::Null
         };
 
-        // Directives don't apply to CONSTs — diagnose any that attach.
+        // `#@local` doesn't apply to CONSTs (diagnosed if it attaches), but
+        // `#@private`/`#@public` do (M-2: CONSTs are importable, §2).
         let dirs = directives_before(self.syntax());
         let _ = apply_scope_directives(&dirs, DirectiveTarget::Const, sink);
+        if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
+            sink.set_visibility(SymbolKind::Constant, &name.text, vis);
+        }
+        if let Some((old_name, was_range)) =
+            super::super::directive::was_from_directives(&dirs, sink)
+        {
+            if old_name == name.text {
+                sink.diagnose(was_range, DiagnosticCode::E095);
+            } else {
+                sink.set_was(SymbolKind::Constant, &name.text, old_name, was_range);
+            }
+        }
 
         let annotation = self
             .type_annotation()

@@ -68,7 +68,10 @@ no-return functions (assigning a `void` call is an error in strict
 mode). Type names are lowercase nominals: `int`, `float`, `bool`,
 `string`, `divert`, `list<L>` (nominal per LIST declaration),
 `array<T>`, `map<K, V>`, `fn(T…): R` (function values, for the
-unfrozen T1c), plus declared struct names.
+unfrozen T1c), `handle<K>` (T1d-2, docs/t1d-spec.md §3 — this spec's
+first amendment: `K` names a handle kind declared in the external
+manifest's host semantic-type vocabulary — not an ink-source
+declaration like `LIST`/`STRUCT`), plus declared struct names.
 
 ## 4. Coercion lattice in strict mode — PROPOSED
 
@@ -131,6 +134,17 @@ STRUCT Point = #{                          // decl body MIRRORS the literal:
 - Missing/extra fields at construction: compile error (strict) /
   construction fault (gradual). Field offsets compile statically under
   strict (the performance payoff the structs ruling anticipated).
+- **Construction-literal initializers evaluate in source order** — the
+  order the author wrote them, left-to-right — never the shape's
+  declaration order, under either policy (RULED 2026-07-14, decision-log
+  "Struct construction literals: source-order evaluation, duplicate field
+  is a compile error", issue #676). Shape order is purely a memory-layout
+  concern for the compiled `RecordNew` push order; it never governs when
+  an initializer's side effect fires.
+- **A duplicate field in a construction literal is a compile error**
+  (`E084`) under both `types = gradual` and `types = strict` — the
+  repeated occurrence's initializer, including any side effect, is not
+  silently dropped (same ruling, issue #675).
 
 ## 7. What strict mode checks in plain-ink content — PROPOSED
 

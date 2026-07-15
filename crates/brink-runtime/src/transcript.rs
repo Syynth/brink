@@ -24,7 +24,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use brink_format::{DefinitionId, LineFlags, MAX_DECODE_DEPTH, MapKey, OrderedMap, Value};
+use brink_format::{DefinitionId, LineFlags, MAX_DECODE_DEPTH, MapKey, NameId, OrderedMap, Value};
 
 use crate::output::{OutputPart, resolve_lines};
 use crate::program::Program;
@@ -52,6 +52,12 @@ const VAL_STRING: u8 = 0x03;
 const VAL_LIST: u8 = 0x04;
 const VAL_DIVERT_TARGET: u8 = 0x05;
 const VAL_NULL: u8 = 0x06;
+// Shared numeric surface with the `.inkb` format (`inkb::VAL_VAR_POINTER`). A
+// `VariablePointer` is preserved distinctly (T1c, #700) so a `ref`-bound
+// closure env entry round-trips losslessly — the old code collapsed it to
+// `VAL_DIVERT_TARGET`, which is fine for a bare pointer (display-identical) but
+// would corrupt a captured `ref` cell inside a persisted function value.
+const VAL_VAR_POINTER: u8 = 0x07;
 const VAL_FRAGMENT_REF: u8 = 0x08;
 // v4 collection tags — shared numeric surface with the `.inkb` format
 // (`docs/format-v4-rfc.md` §1). Reachable today via `Opcode::EmitValue`, which
@@ -59,9 +65,31 @@ const VAL_FRAGMENT_REF: u8 = 0x08;
 // #525 can be a collection) into `OutputPart::ValueRef`.
 const VAL_ARRAY: u8 = 0x09;
 const VAL_MAP: u8 = 0x0A;
+// T1c function-value tags — shared numeric surface with the `.inkb` format
+// (`docs/format-v4-rfc.md` §1). A function value can ride the append-only
+// transcript / journal / speculation snapshots as an ordinary value (spec §6:
+// "function values save like every other value"), e.g. via `Opcode::EmitValue`
+// or a saved binding.
+const VAL_FN_REF: u8 = 0x0B;
+const VAL_CLOSURE: u8 = 0x0C;
+// T1d handle tag — shared numeric surface with the `.inkb` format
+// (`docs/format-v4-rfc.md` §1: `kind NameId, u64 id`). A handle received
+// from a binding rides the append-only transcript / journal / speculation
+// snapshots as an ordinary value (`docs/t1d-spec.md` §2: "handles appear in
+// saves, journals, and speculation snapshots as ordinary values"), e.g. via
+// `Opcode::EmitValue` or a saved binding.
+const VAL_HANDLE: u8 = 0x0D;
 // TM-4 record tag — shared numeric surface with the `.inkb` format
 // (`docs/format-v4-rfc.md` §1: `ShapeId`, then field values in shape order).
 const VAL_RECORD: u8 = 0x0F;
+// T1e projection tag — shared numeric surface with the `.inkb` format
+// (`docs/format-v4-rfc.md` §1: cell reference, u8 segment count, segments).
+// A projection rides the append-only transcript / journal / speculation
+// snapshots as an ordinary value (`docs/t1e-spec.md` §3: "Saves/journal/
+// speculation: ordinary values"), e.g. via `Opcode::EmitValue`.
+const VAL_PROJECTION: u8 = 0x0E;
+const PROJ_SEG_INDEX: u8 = 0x00;
+const PROJ_SEG_KEY: u8 = 0x01;
 
 // ── Error type ────────────────────────────────────────────────────────────
 
@@ -464,6 +492,10 @@ fn read_def_id(buf: &[u8], off: &mut usize) -> Result<DefinitionId, TranscriptEr
 // ── Value encoding ────────────────────────────────────────────────────────
 
 #[expect(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per value tag — T1e's VAL_PROJECTION arm pushed this past 100"
+)]
 fn encode_value(v: &Value, buf: &mut Vec<u8>) {
     match v {
         Value::Int(n) => {
@@ -498,7 +530,7 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
             write_def_id(buf, *id);
         }
         Value::VariablePointer(id) => {
-            write_u8(buf, VAL_DIVERT_TARGET); // serialize same as divert target
+            write_u8(buf, VAL_VAR_POINTER);
             write_def_id(buf, *id);
         }
         Value::FragmentRef(idx) => {
@@ -535,6 +567,52 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
                 encode_value(field, buf);
             }
         }
+        // Function values (T1c, spec §6): save like every other value. `FnRef`
+        // is the fn token; `Closure` adds a u32-counted env of `{NameId, kind
+        // u8, value}` entries — the named/moded env the rehydration check reads.
+        Value::FnRef(target) => {
+            write_u8(buf, VAL_FN_REF);
+            write_def_id(buf, *target);
+        }
+        Value::Closure(c) => {
+            write_u8(buf, VAL_CLOSURE);
+            write_def_id(buf, c.target);
+            write_u32(buf, c.env.len() as u32);
+            for entry in &c.env {
+                write_u16(buf, entry.name.0);
+                write_u8(buf, u8::from(entry.is_ref));
+                encode_value(&entry.payload, buf);
+            }
+        }
+        // Handle values (T1d, spec §5: "the journal records returned tokens";
+        // §2: "handles appear in saves, journals, and speculation snapshots
+        // as ordinary values"). Token equality holds at this level; rebinding
+        // to a live resource happens at the host boundary, not here.
+        Value::Handle { kind, id } => {
+            write_u8(buf, VAL_HANDLE);
+            write_u16(buf, kind.0);
+            write_u64(buf, *id);
+        }
+        // Projection values (T1e, spec §3: "Saves/journal/speculation:
+        // ordinary values"). Segment kind `2=range` is RESERVED and never
+        // written — `ProjSegment` has no variant to produce it.
+        Value::Projection(p) => {
+            write_u8(buf, VAL_PROJECTION);
+            write_def_id(buf, p.cell);
+            write_u8(buf, p.segments.len() as u8);
+            for seg in &p.segments {
+                match seg {
+                    brink_format::ProjSegment::Index(n) => {
+                        write_u8(buf, PROJ_SEG_INDEX);
+                        write_i32(buf, *n);
+                    }
+                    brink_format::ProjSegment::Key(v) => {
+                        write_u8(buf, PROJ_SEG_KEY);
+                        encode_value(v, buf);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -558,6 +636,10 @@ fn encode_map_key(key: &MapKey, buf: &mut Vec<u8>) {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per value tag — T1e's VAL_PROJECTION arm pushed this past 100"
+)]
 fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, TranscriptError> {
     if depth > MAX_DECODE_DEPTH {
         return Err(TranscriptError::MaxDepthExceeded(MAX_DECODE_DEPTH));
@@ -594,6 +676,10 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Tran
             let id = read_def_id(buf, off)?;
             Ok(Value::DivertTarget(id))
         }
+        VAL_VAR_POINTER => {
+            let id = read_def_id(buf, off)?;
+            Ok(Value::VariablePointer(id))
+        }
         VAL_FRAGMENT_REF => Ok(Value::FragmentRef(read_u32(buf, off)?)),
         VAL_NULL => Ok(Value::Null),
         VAL_ARRAY => {
@@ -622,6 +708,47 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Tran
                 fields.push(decode_value(buf, off, depth + 1)?);
             }
             Ok(Value::record(shape, fields))
+        }
+        VAL_FN_REF => Ok(Value::FnRef(read_def_id(buf, off)?)),
+        VAL_CLOSURE => {
+            let target = read_def_id(buf, off)?;
+            let count = read_u32(buf, off)? as usize;
+            let mut env = Vec::with_capacity(count.min(buf.len().saturating_sub(*off)));
+            for _ in 0..count {
+                let name = brink_format::NameId(read_u16(buf, off)?);
+                let is_ref = read_u8(buf, off)? != 0;
+                let payload = decode_value(buf, off, depth + 1)?;
+                env.push(brink_format::ClosureEnvEntry {
+                    name,
+                    is_ref,
+                    payload,
+                });
+            }
+            Ok(Value::closure(target, env))
+        }
+        // Handle values (T1d, `docs/format-v4-rfc.md` §1).
+        VAL_HANDLE => {
+            let kind = NameId(read_u16(buf, off)?);
+            let id = read_u64(buf, off)?;
+            Ok(Value::handle(kind, id))
+        }
+        // Projection values (T1e, `docs/format-v4-rfc.md` §1).
+        VAL_PROJECTION => {
+            let cell = read_def_id(buf, off)?;
+            let count = read_u8(buf, off)? as usize;
+            let mut segments = Vec::with_capacity(count.min(buf.len().saturating_sub(*off)));
+            for _ in 0..count {
+                let kind = read_u8(buf, off)?;
+                let seg = match kind {
+                    PROJ_SEG_INDEX => brink_format::ProjSegment::Index(read_i32(buf, off)?),
+                    PROJ_SEG_KEY => {
+                        brink_format::ProjSegment::Key(decode_value(buf, off, depth + 1)?)
+                    }
+                    other => return Err(TranscriptError::InvalidValueTag(other)),
+                };
+                segments.push(seg);
+            }
+            Ok(Value::projection(cell, segments))
         }
         _ => Err(TranscriptError::InvalidValueTag(tag)),
     }
@@ -737,6 +864,121 @@ mod tests {
         match &data.parts[1] {
             OutputPart::ValueRef(v) => assert_eq!(*v, Value::map(map)),
             other => unreachable!("expected ValueRef(map), got {other:?}"),
+        }
+    }
+
+    // Function values (T1c, #700) persist through the transcript/journal as
+    // ordinary values (spec §6). This locks the VAL_FN_REF / VAL_CLOSURE
+    // encoding — the fn token, the bound-env names/modes, and both payload
+    // shapes (`val` snapshot, `ref` VariablePointer) — across the round-trip.
+    #[test]
+    fn round_trip_value_ref_function_values() {
+        use brink_format::{ClosureEnvEntry, DefinitionId, DefinitionTag, NameId};
+
+        let target = DefinitionId::new(DefinitionTag::Address, 7);
+        let cell = DefinitionId::new(DefinitionTag::Address, 3);
+        let fn_ref = Value::FnRef(target);
+        let closure = Value::closure(
+            target,
+            vec![
+                ClosureEnvEntry {
+                    name: NameId(2),
+                    is_ref: true,
+                    payload: Value::VariablePointer(cell),
+                },
+                ClosureEnvEntry {
+                    name: NameId(5),
+                    is_ref: false,
+                    payload: Value::Int(41),
+                },
+            ],
+        );
+
+        let parts = vec![
+            OutputPart::ValueRef(fn_ref.clone()),
+            OutputPart::ValueRef(closure.clone()),
+        ];
+        let bytes = write_transcript(&parts, 7, &[]);
+        let data = read_transcript(&bytes).unwrap();
+
+        assert_eq!(data.parts.len(), 2);
+        match &data.parts[0] {
+            OutputPart::ValueRef(v) => assert_eq!(*v, fn_ref),
+            other => unreachable!("expected ValueRef(fn_ref), got {other:?}"),
+        }
+        match &data.parts[1] {
+            OutputPart::ValueRef(v) => assert_eq!(*v, closure),
+            other => unreachable!("expected ValueRef(closure), got {other:?}"),
+        }
+    }
+
+    // Handle values (T1d, `docs/t1d-spec.md` §2/§5) persist through the
+    // transcript/journal codec as ordinary values — "handles appear in
+    // saves, journals, and speculation snapshots" per the spec. This locks
+    // the VAL_HANDLE (0x0D) encode/decode arms: a bare handle, one nested
+    // inside a collection, and the `u64::MAX` id to exercise the full
+    // write_u64/read_u64 leg (not just small ids that might coincidentally
+    // round-trip through a truncated path).
+    #[test]
+    fn round_trip_value_ref_handle() {
+        let handle = Value::handle(NameId(9), u64::MAX);
+        let nested = Value::array(vec![
+            Value::handle(NameId(3), 0),
+            Value::String(Arc::from("goblin")),
+        ]);
+
+        let parts = vec![
+            OutputPart::ValueRef(handle.clone()),
+            OutputPart::ValueRef(nested.clone()),
+        ];
+        let bytes = write_transcript(&parts, 13, &[]);
+        let data = read_transcript(&bytes).unwrap();
+
+        assert_eq!(data.parts.len(), 2);
+        match &data.parts[0] {
+            OutputPart::ValueRef(v) => assert_eq!(*v, handle),
+            other => unreachable!("expected ValueRef(handle), got {other:?}"),
+        }
+        match &data.parts[1] {
+            OutputPart::ValueRef(v) => assert_eq!(*v, nested),
+            other => unreachable!("expected ValueRef(nested handle), got {other:?}"),
+        }
+    }
+
+    /// T1e (`docs/t1e-spec.md` §3: "Saves/journal/speculation: ordinary
+    /// values") — the transcript leg of the per-codec round-trip discipline
+    /// (inkb/inkt/transcript, the wave-11 lesson): the `VAL_PROJECTION`
+    /// (0x0E) encode/decode arms, a bare projection and one nested inside a
+    /// collection, with a mixed index+key segment chain.
+    #[test]
+    fn round_trip_value_ref_projection() {
+        use brink_format::ProjSegment;
+
+        let cell = DefinitionId::new(brink_format::DefinitionTag::GlobalVar, 42);
+        let proj = Value::projection(
+            cell,
+            vec![
+                ProjSegment::Key(Value::String("hp".into())),
+                ProjSegment::Index(3),
+            ],
+        );
+        let nested = Value::array(vec![Value::projection(cell, vec![]), Value::Bool(true)]);
+
+        let parts = vec![
+            OutputPart::ValueRef(proj.clone()),
+            OutputPart::ValueRef(nested.clone()),
+        ];
+        let bytes = write_transcript(&parts, 13, &[]);
+        let data = read_transcript(&bytes).unwrap();
+
+        assert_eq!(data.parts.len(), 2);
+        match &data.parts[0] {
+            OutputPart::ValueRef(v) => assert_eq!(*v, proj),
+            other => unreachable!("expected ValueRef(projection), got {other:?}"),
+        }
+        match &data.parts[1] {
+            OutputPart::ValueRef(v) => assert_eq!(*v, nested),
+            other => unreachable!("expected ValueRef(nested projection), got {other:?}"),
         }
     }
 

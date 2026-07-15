@@ -36,6 +36,12 @@ pub(super) struct ParsedDirective {
     pub bare: bool,
     /// The tag contains inline `{…}` logic (directives must be static).
     pub dynamic: bool,
+    /// The trimmed text between a balanced `(…)` argument, if the tag has
+    /// one (e.g. `@was(old_name)` → `Some("old_name")`). `None` for a bare
+    /// directive or one with an unbalanced/missing paren pair. Not
+    /// validated for emptiness here — callers that need a non-empty
+    /// argument (`@module`, `@was`) check that themselves.
+    pub arg: Option<String>,
     /// Range of the whole tag, for diagnostics.
     pub range: TextRange,
 }
@@ -83,10 +89,18 @@ pub(super) fn parse_directive_tag(tag: &ast::Tag) -> Option<ParsedDirective> {
         .take_while(|c| *c != '(' && !c.is_whitespace())
         .collect();
     let bare = !dynamic && rest.len() == name.len();
+    // Balanced `(…)` argument text, trimmed — mirrors `module_directive_name`'s
+    // extraction so every directive (not just `@module`) can carry one.
+    let after_name = rest.trim_start_matches(|c: char| c != '(');
+    let arg = after_name
+        .strip_prefix('(')
+        .and_then(|s| s.strip_suffix(')'))
+        .map(|s| s.trim().to_string());
     Some(ParsedDirective {
         name,
         bare,
         dynamic,
+        arg,
         range: tag.syntax().text_range(),
     })
 }
@@ -192,11 +206,258 @@ pub(super) fn in_leading_body_run(tl: &ast::TagLine) -> bool {
 }
 
 /// Is this directive line in a position that an owner consumes (a
-/// declaration lookback or a knot/stitch leading run)? Used by the
-/// tag-line chokepoint to decide between silent erasure (an owner
-/// reports any problems) and `E045`.
+/// declaration lookback, a knot/stitch leading run, or a file-level
+/// `#@module` at the top of the file)? Used by the tag-line chokepoint
+/// to decide between silent erasure (an owner reports any problems) and
+/// `E045`.
 pub(super) fn is_consumed_position(tl: &ast::TagLine) -> bool {
-    attached_declaration(tl).is_some() || in_leading_body_run(tl)
+    attached_declaration(tl).is_some()
+        || in_leading_body_run(tl)
+        || is_file_module_line(tl)
+        || is_file_was_line(tl)
+}
+
+/// The single directive on a pure-directive line, if the line carries
+/// exactly one.
+fn sole_directive(tl: &ast::TagLine) -> Option<ParsedDirective> {
+    match scan_tag_line(tl) {
+        TagLineClass::Directives(mut dirs) if dirs.len() == 1 => dirs.pop(),
+        _ => None,
+    }
+}
+
+/// Is this tag line a file-level `#@module(…)` directive — a pure
+/// directive line whose single directive is `@module`, sitting in the
+/// leading run at the top of the file (only trivia / tag lines / empty
+/// lines precede it under the `SOURCE_FILE` root)?
+///
+/// This is the one file-level directive placement M-1 recognizes
+/// (docs/modules-spec.md §1); every other file-level directive stays an
+/// `E045` misplacement error, per the reserved-`@`-namespace rule.
+pub(super) fn is_file_module_line(tl: &ast::TagLine) -> bool {
+    is_file_leading_line(tl, "module")
+}
+
+/// Is this tag line a file-level `#@was(…)` directive — the same
+/// leading-run placement as [`is_file_module_line`], naming the module's
+/// old name (M-3, `docs/modules-spec.md` §5). Works whether or not the
+/// file also carries `#@module`: an undeclared stem-module's `#@was` would
+/// have no declared-module identity to alias against, so
+/// [`super::structure::lower_file`]'s consumer only acts on it when
+/// `#@module` is also present — but the placement itself is recognized
+/// either way, so a stray `#@was` with no `#@module` gets the *targeted*
+/// M-3 diagnostic rather than a generic `E045` misplacement.
+pub(super) fn is_file_was_line(tl: &ast::TagLine) -> bool {
+    is_file_leading_line(tl, "was")
+}
+
+/// Shared placement check for a file-level directive: a pure directive
+/// line named `name`, sitting in the leading run at the top of the file
+/// (only trivia / tag lines / empty lines precede it under the
+/// `SOURCE_FILE` root).
+fn is_file_leading_line(tl: &ast::TagLine, name: &str) -> bool {
+    let Some(dir) = sole_directive(tl) else {
+        return false;
+    };
+    if dir.name != name {
+        return false;
+    }
+    let Some(parent) = tl.syntax().parent() else {
+        return false;
+    };
+    if parent.kind() != SyntaxKind::SOURCE_FILE {
+        return false;
+    }
+    // Nothing but trivia / tag lines / empty lines before it.
+    let mut cursor = tl.syntax().prev_sibling_or_token();
+    while let Some(el) = cursor {
+        match el {
+            rowan::NodeOrToken::Token(tok) => {
+                if !is_trivia(tok.kind()) {
+                    return false;
+                }
+                cursor = tok.prev_sibling_or_token();
+            }
+            rowan::NodeOrToken::Node(node) => {
+                if !matches!(node.kind(), SyntaxKind::TAG_LINE | SyntaxKind::EMPTY_LINE) {
+                    return false;
+                }
+                cursor = node.prev_sibling_or_token();
+            }
+        }
+    }
+    true
+}
+
+/// Collect every `#@private` / `#@public` directive occurrence in the file,
+/// for the dialect gate (M-2, docs/modules-spec.md §4). A flat pass over all
+/// directive tag lines — attachment to a specific declaration is handled
+/// separately via the declaration owners (`DeclaredSymbol::visibility`); the
+/// gate only needs each occurrence's range and requested visibility.
+pub(super) fn collect_visibility_directives(
+    source_file: &SyntaxNode,
+) -> Vec<crate::VisibilityDirective> {
+    use crate::VisibilityMark;
+    let mut out = Vec::new();
+    for node in source_file.descendants() {
+        let Some(tl) = ast::TagLine::cast(node) else {
+            continue;
+        };
+        let Some(tags) = tl.tags() else {
+            continue;
+        };
+        for tag in tags.tags() {
+            if let Some(dir) = parse_directive_tag(&tag) {
+                let mark = match dir.name.as_str() {
+                    "private" => VisibilityMark::Private,
+                    "public" => VisibilityMark::Public,
+                    _ => continue,
+                };
+                out.push(crate::VisibilityDirective {
+                    mark,
+                    range: dir.range,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Collect every `#@was(…)` directive tag's range in the file, module-level
+/// and definition-level alike (M-3, `docs/modules-spec.md` §5), for the
+/// dialect gate. Mirrors [`collect_visibility_directives`]: a flat pass,
+/// independent of the attachment/validation walk owners run separately.
+pub(super) fn collect_was_directives(source_file: &SyntaxNode) -> Vec<TextRange> {
+    let mut out = Vec::new();
+    for node in source_file.descendants() {
+        let Some(tl) = ast::TagLine::cast(node) else {
+            continue;
+        };
+        let Some(tags) = tl.tags() else {
+            continue;
+        };
+        for tag in tags.tags() {
+            if let Some(dir) = parse_directive_tag(&tag)
+                && dir.name == "was"
+            {
+                out.push(dir.range);
+            }
+        }
+    }
+    out
+}
+
+/// Extract and validate the file's `#@module(name)` declaration, if any.
+///
+/// Scans direct children of the `SOURCE_FILE` root for file-level
+/// `#@module` directive lines (via [`is_file_module_line`]) and returns
+/// the first valid `(name, range)`. Malformed forms diagnose:
+///
+/// - a dynamic (`#@module({expr})`) argument → `E046`;
+/// - a missing / empty name argument (`#@module`, `#@module()`) → `E086`;
+/// - a second `#@module` anywhere in the file → `E086`.
+///
+/// The name is the balanced text between the parentheses, trimmed. The
+/// brink-dialect gate (`#@module` is a brink extension) is applied later
+/// by the analyzer over the returned range.
+pub(super) fn file_module_declaration(
+    source_file: &SyntaxNode,
+    sink: &mut impl LowerSink,
+) -> Option<(String, TextRange)> {
+    let mut found: Option<(String, TextRange)> = None;
+    for child in source_file.children() {
+        let Some(tl) = ast::TagLine::cast(child) else {
+            continue;
+        };
+        if !is_file_module_line(&tl) {
+            continue;
+        }
+        let Some(dir) = sole_directive(&tl) else {
+            continue;
+        };
+        if dir.dynamic {
+            sink.diagnose(dir.range, DiagnosticCode::E046);
+            continue;
+        }
+        let Some(name) = module_directive_name(&tl) else {
+            sink.diagnose(dir.range, DiagnosticCode::E086);
+            continue;
+        };
+        if found.is_some() {
+            // A second `#@module` in the file — duplicate declaration.
+            sink.diagnose(dir.range, DiagnosticCode::E086);
+            continue;
+        }
+        found = Some((name, dir.range));
+    }
+    found
+}
+
+/// Extract and validate the file's `#@was(old_name)` declaration, if any
+/// (M-3, `docs/modules-spec.md` §5) — the module-level counterpart of
+/// [`file_module_declaration`], same placement, same malformed-form
+/// diagnostics (`E046` dynamic, `E094` missing/empty argument, `E048`
+/// second occurrence — `E048` rather than a dedicated code because it's
+/// the same "repeated directive" shape `apply_scope_directives` already
+/// uses for `#@local`).
+pub(super) fn file_module_was(
+    source_file: &SyntaxNode,
+    sink: &mut impl LowerSink,
+) -> Option<(String, TextRange)> {
+    let mut found: Option<(String, TextRange)> = None;
+    for child in source_file.children() {
+        let Some(tl) = ast::TagLine::cast(child) else {
+            continue;
+        };
+        if !is_file_was_line(&tl) {
+            continue;
+        }
+        let Some(dir) = sole_directive(&tl) else {
+            continue;
+        };
+        if dir.dynamic {
+            sink.diagnose(dir.range, DiagnosticCode::E046);
+            continue;
+        }
+        let Some(name) = dir.arg.as_ref().filter(|n| !n.is_empty()) else {
+            sink.diagnose(dir.range, DiagnosticCode::E094);
+            continue;
+        };
+        if found.is_some() {
+            sink.diagnose(dir.range, DiagnosticCode::E048);
+            continue;
+        }
+        found = Some((name.clone(), dir.range));
+    }
+    found
+}
+
+/// Parse the balanced text argument of a `@module(name)` directive tag,
+/// returning the trimmed name if it is non-empty.
+fn module_directive_name(tl: &ast::TagLine) -> Option<String> {
+    let tags = tl.tags()?;
+    let tag = tags.tags().next()?;
+    // Reconstruct the tag's literal text (tokens after the leading `#`).
+    let mut text = String::new();
+    let mut first = true;
+    for child in tag.syntax().children_with_tokens() {
+        if let rowan::NodeOrToken::Token(tok) = child {
+            if first && tok.kind() == SyntaxKind::HASH {
+                first = false;
+                continue;
+            }
+            first = false;
+            text.push_str(tok.text());
+        } else {
+            first = false;
+        }
+    }
+    let trimmed = text.trim();
+    let rest = trimmed.strip_prefix('@')?;
+    let after_name = rest.trim_start_matches(|c: char| c != '(');
+    let inner = after_name.strip_prefix('(')?.strip_suffix(')')?;
+    let name = inner.trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// Collect the directives from the directive lines immediately
@@ -295,6 +556,24 @@ pub(super) fn apply_scope_directives(
     for d in dirs {
         if d.dynamic {
             sink.diagnose(d.range, DiagnosticCode::E046);
+        } else if d.name == "private" || d.name == "public" {
+            // Visibility directives (M-2, modules-spec §4) — handled by
+            // [`visibility_from_directives`]; not an unknown-directive error
+            // here.
+        } else if d.name == "was" {
+            // Rename directive (M-3, modules-spec §5) — handled by
+            // [`was_from_directives`]; not an unknown-directive error here.
+        } else if d.name == "module" {
+            // File-level module declaration (M-1, modules-spec §1) — handled
+            // by [`file_module_declaration`]'s own top-of-file scan. Named
+            // here only because `directives_before` collects by *position*
+            // (consecutive directive lines immediately above a
+            // declaration), not by meaning: `#@module(name)` sitting
+            // directly above the file's first VAR/CONST/LIST/EXTERNAL (no
+            // blank line between them — an entirely ordinary authoring
+            // style) is *also* in that declaration's lookback run, so this
+            // owner would otherwise misfire `E044` on a directive that
+            // already validated cleanly at the file level.
         } else if d.name != "local" {
             sink.diagnose(d.range, DiagnosticCode::E044);
         } else if !d.bare {
@@ -308,4 +587,76 @@ pub(super) fn apply_scope_directives(
         }
     }
     is_local
+}
+
+/// Interpret the `#@was(old_name)` rename directive(s) among a
+/// declaration's collected directives (M-3, `docs/modules-spec.md` §5).
+///
+/// Returns the old name and the directive's range, or `None` when no
+/// `#@was` is present. `dynamic` is `E046`; a missing/empty argument is
+/// `E094`; a second `#@was` on the same target is `E048` (the same
+/// duplicate-directive code `apply_scope_directives` uses for a repeated
+/// `#@local`) — the first valid occurrence wins. The self-alias check
+/// (`old_name` equals the target's own current name, `E095`) is the
+/// caller's job: this function doesn't know what it's attached to.
+pub(super) fn was_from_directives(
+    dirs: &[ParsedDirective],
+    sink: &mut impl LowerSink,
+) -> Option<(String, TextRange)> {
+    let mut chosen: Option<(String, TextRange)> = None;
+    for d in dirs {
+        if d.name != "was" {
+            continue;
+        }
+        if d.dynamic {
+            sink.diagnose(d.range, DiagnosticCode::E046);
+            continue;
+        }
+        let Some(name) = d.arg.as_ref().filter(|n| !n.is_empty()) else {
+            sink.diagnose(d.range, DiagnosticCode::E094);
+            continue;
+        };
+        if chosen.is_some() {
+            sink.diagnose(d.range, DiagnosticCode::E048);
+            continue;
+        }
+        chosen = Some((name.clone(), d.range));
+    }
+    chosen
+}
+
+/// Interpret the `#@private` / `#@public` visibility directives among a
+/// declaration's collected directives (M-2, docs/modules-spec.md §4).
+///
+/// Returns the explicit override, or `None` when neither is present (take
+/// the module default). Both directives must be bare (`#@private`, no args);
+/// a non-bare form is `E050`, a dynamic argument `E046`. Supplying *both*
+/// `#@private` and `#@public`, or repeating one, is a conflict (`E093`) —
+/// the first wins. Validity of the override against the module default
+/// (redundant-override warning `E092`) is checked later by the analyzer,
+/// which knows the file's declared-ness.
+pub(super) fn visibility_from_directives(
+    dirs: &[ParsedDirective],
+    sink: &mut impl LowerSink,
+) -> Option<crate::VisibilityMark> {
+    use crate::VisibilityMark;
+    let mut chosen: Option<VisibilityMark> = None;
+    for d in dirs {
+        let mark = match d.name.as_str() {
+            "private" => VisibilityMark::Private,
+            "public" => VisibilityMark::Public,
+            _ => continue,
+        };
+        if d.dynamic {
+            sink.diagnose(d.range, DiagnosticCode::E046);
+        } else if !d.bare {
+            sink.diagnose(d.range, DiagnosticCode::E050);
+        } else if chosen.is_some() {
+            // A second visibility directive — conflict or repeat.
+            sink.diagnose(d.range, DiagnosticCode::E093);
+        } else {
+            chosen = Some(mark);
+        }
+    }
+    chosen
 }

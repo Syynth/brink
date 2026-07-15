@@ -13,6 +13,12 @@ pub enum CompletionContext {
     Logic,
     /// Inside `( )` — function arguments.
     FunctionArgs,
+    /// Inside the target position of `#fn(` — the T1c creation site's first
+    /// argument, which is always a statically-named function (spec §2, "the
+    /// static target path — a name, never an expression"). Distinct from
+    /// [`CompletionContext::FunctionArgs`] so completion offers only
+    /// function-definition names here, not every value symbol in scope.
+    FnTarget,
     /// Default — show everything.
     General,
 }
@@ -32,6 +38,11 @@ pub fn detect_completion_context(source: &str, byte_offset: usize) -> Completion
     let bytes = line_prefix.as_bytes();
     let mut brace_depth: i32 = 0;
     let mut paren_depth: i32 = 0;
+    // Whether a `,` was seen at the current (unmatched) paren's top level —
+    // i.e. the cursor sits *after* the first argument, not in it. Only
+    // matters for distinguishing `#fn(` (first-arg target position) from
+    // `#fn(name, ` (an ordinary bound-argument position, ` `).
+    let mut saw_comma_at_top = false;
     let mut i = bytes.len();
 
     while i > 0 {
@@ -50,8 +61,15 @@ pub fn detect_completion_context(source: &str, byte_offset: usize) -> Completion
                 if paren_depth > 0 {
                     paren_depth -= 1;
                 } else {
+                    let before = &line_prefix[..i];
+                    if !saw_comma_at_top && before.trim_end().ends_with("#fn") {
+                        return CompletionContext::FnTarget;
+                    }
                     return CompletionContext::FunctionArgs;
                 }
+            }
+            b',' if brace_depth == 0 && paren_depth == 0 => {
+                saw_comma_at_top = true;
             }
             b'>' if i > 0 && bytes[i - 1] == b'-' && brace_depth == 0 && paren_depth == 0 => {
                 return CompletionContext::Divert;
@@ -60,8 +78,10 @@ pub fn detect_completion_context(source: &str, byte_offset: usize) -> Completion
                 // Check for identifier before the dot.
                 let before_dot = &line_prefix[..i];
                 let ident_start = before_dot
-                    .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-                    .map_or(0, |p| p + 1);
+                    .char_indices()
+                    .rev()
+                    .find(|(_, c)| !c.is_alphanumeric() && *c != '_')
+                    .map_or(0, |(p, c)| p + c.len_utf8());
                 let knot = &before_dot[ident_start..];
                 if !knot.is_empty() {
                     return CompletionContext::DottedPath {
@@ -78,6 +98,47 @@ pub fn detect_completion_context(source: &str, byte_offset: usize) -> Completion
     }
 
     CompletionContext::General
+}
+
+/// The T1e `ref lvalue-path` **root** completion position
+/// (`docs/t1e-spec.md` §2, issue #850) — the cursor sits right after typing
+/// `ref` and at least one space, with at most a partial bare identifier
+/// typed since (`heal(ref `, `heal(ref np`). Returns the partial identifier
+/// typed so far (possibly empty).
+///
+/// `None` once a `.` or `[` has been typed — that's a path *continuation*
+/// (`ref npc.`, `ref inventory[`), which needs the root's resolved
+/// struct/collection shape to complete usefully. This helper only detects
+/// the root position, deliberately not the continuation: "completion after
+/// `ref ` where cheap" (issue #850) scopes the offer to what a pure lexical
+/// scan can answer — same "cheap" contract [`detect_completion_context`]
+/// itself follows — not a shape/type resolution pass.
+#[must_use]
+pub fn ref_arg_root_prefix(source: &str, byte_offset: usize) -> Option<String> {
+    let line_start = source[..byte_offset].rfind('\n').map_or(0, |pos| pos + 1);
+    let line_prefix = &source[line_start..byte_offset];
+
+    // Walk back over the in-progress bare identifier (if any).
+    let ident_start = line_prefix
+        .char_indices()
+        .rev()
+        .find(|(_, c)| !(c.is_alphanumeric() || *c == '_'))
+        .map_or(0, |(p, c)| p + c.len_utf8());
+    let prefix = &line_prefix[ident_start..];
+    let before = line_prefix[..ident_start].trim_end();
+
+    if !before.ends_with("ref") {
+        return None;
+    }
+    // Word-boundary check on "ref" itself — `prefer np` must not match.
+    let ref_start = before.len() - 3;
+    if ref_start > 0 {
+        let prev = before.as_bytes()[ref_start - 1];
+        if prev.is_ascii_alphanumeric() || prev == b'_' {
+            return None;
+        }
+    }
+    Some(prefix.to_owned())
 }
 
 /// The scope (knot/stitch) containing the cursor.
@@ -178,6 +239,13 @@ pub fn is_visible_in_context(
                 | SymbolKind::Temp
                 | SymbolKind::ListItem
         ),
+        // T1c (docs/t1c-spec.md §2): `#fn`'s target must be a statically-named
+        // `=== function ... ===` — the same shape `brink_analyzer::fn_values`
+        // enforces as E079. Only function-tagged knots qualify; a plain knot,
+        // stitch, or any value symbol is never a legal `#fn` target.
+        CompletionContext::FnTarget => {
+            info.kind == SymbolKind::Knot && info.detail.as_deref() == Some("function")
+        }
         CompletionContext::General => true,
     }
 }
@@ -253,6 +321,17 @@ mod tests {
     }
 
     #[test]
+    fn context_dotted_path_no_panic_on_multibyte_delimiter() {
+        // Same multibyte-delimiter hazard as `ref_arg_root_prefix`, but for
+        // the dotted-path scan in `detect_completion_context`: a smart
+        // apostrophe or other multibyte char sitting right before the dot's
+        // preceding identifier must not panic on a non-char-boundary slice.
+        for src in ["-> it’s.knot.", "-> He said—word."] {
+            let _ = detect_completion_context(src, src.len());
+        }
+    }
+
+    #[test]
     fn context_inline_expr() {
         let src = "Hello {";
         assert!(matches!(
@@ -303,6 +382,154 @@ mod tests {
         assert!(matches!(
             detect_completion_context(src, src.len()),
             CompletionContext::FunctionArgs
+        ));
+    }
+
+    // ── T1e (docs/t1e-spec.md §2, issue #850): `ref` root completion ──────
+
+    #[test]
+    fn ref_root_right_after_keyword_and_space() {
+        let src = "~ heal(ref ";
+        assert_eq!(ref_arg_root_prefix(src, src.len()), Some(String::new()));
+    }
+
+    #[test]
+    fn ref_root_with_partial_identifier() {
+        let src = "~ heal(ref np";
+        assert_eq!(ref_arg_root_prefix(src, src.len()), Some("np".to_owned()));
+    }
+
+    #[test]
+    fn ref_root_inside_fn_literal_bound_args() {
+        // `#fn(heal, ref npc)` — the bound-arg position after the target,
+        // same `CompletionContext::FunctionArgs` classification a plain
+        // call's ref-argument position gets.
+        let src = "~ temp f = #fn(heal, ref np";
+        assert_eq!(ref_arg_root_prefix(src, src.len()), Some("np".to_owned()));
+    }
+
+    #[test]
+    fn ref_root_none_without_ref_keyword() {
+        let src = "~ heal(np";
+        assert_eq!(ref_arg_root_prefix(src, src.len()), None);
+    }
+
+    #[test]
+    fn ref_root_none_for_word_ending_in_ref() {
+        // `xref` ends in the three letters "ref" but isn't the `ref`
+        // keyword — the word-boundary check must reject it.
+        let src = "~ heal(xref np";
+        assert_eq!(ref_arg_root_prefix(src, src.len()), None);
+    }
+
+    #[test]
+    fn ref_root_none_once_a_dot_continuation_has_started() {
+        // `ref npc.` is a path *continuation*, not the root position — this
+        // helper deliberately only answers the root ("where cheap", #850).
+        let src = "~ heal(ref npc.h";
+        assert_eq!(ref_arg_root_prefix(src, src.len()), None);
+    }
+
+    #[test]
+    fn ref_root_none_once_a_bracket_continuation_has_started() {
+        let src = "~ bump(ref inventory[";
+        assert_eq!(ref_arg_root_prefix(src, src.len()), None);
+    }
+
+    #[test]
+    fn ref_root_no_panic_on_multibyte_delimiter_before_identifier() {
+        // A multibyte delimiter (smart apostrophe, em-dash, ellipsis) sitting
+        // directly before the in-progress identifier must not panic: the
+        // scan has to advance by the delimiter's real UTF-8 width, not
+        // assume it's one byte.
+        for src in ["~ heal(it’np", "~ heal(He said—np", "~ heal(Wait…np"] {
+            let _ = ref_arg_root_prefix(src, src.len());
+        }
+    }
+
+    // ── T1c-4 (#702): `#fn(` target completion (docs/t1c-spec.md §2) ─────
+
+    #[test]
+    fn context_fn_literal_target() {
+        let src = "~ temp f = #fn(";
+        assert!(matches!(
+            detect_completion_context(src, src.len()),
+            CompletionContext::FnTarget
+        ));
+    }
+
+    #[test]
+    fn context_fn_literal_target_partial_name() {
+        let src = "~ temp f = #fn(hea";
+        assert!(matches!(
+            detect_completion_context(src, src.len()),
+            CompletionContext::FnTarget
+        ));
+    }
+
+    #[test]
+    fn context_fn_literal_bound_arg_is_ordinary_function_args() {
+        // Past the first comma — a bound-argument position, not the target.
+        let src = "~ temp f = #fn(heal, ";
+        assert!(matches!(
+            detect_completion_context(src, src.len()),
+            CompletionContext::FunctionArgs
+        ));
+    }
+
+    #[test]
+    fn context_plain_call_is_not_fn_target() {
+        // An ordinary call — `#fn` specifically gates this, not just any
+        // trailing `fn`-like identifier.
+        let src = "~ temp f = heal(";
+        assert!(matches!(
+            detect_completion_context(src, src.len()),
+            CompletionContext::FunctionArgs
+        ));
+    }
+
+    #[test]
+    fn fn_target_context_offers_only_function_definitions() {
+        let scope = CursorScope {
+            knot: None,
+            stitch: None,
+        };
+        let function_knot = brink_ir::SymbolInfo {
+            kind: SymbolKind::Knot,
+            file: brink_ir::FileId(0),
+            range: rowan::TextRange::new(0.into(), 1.into()),
+            id: brink_format::DefinitionId::new(brink_format::DefinitionTag::Address, 1),
+            name: "heal".to_owned(),
+            params: vec![],
+            detail: Some("function".to_owned()),
+            scope: None,
+            param_detail: None,
+            module: None,
+            visibility: brink_ir::Visibility::Public,
+        };
+        let plain_knot = brink_ir::SymbolInfo {
+            detail: None,
+            ..function_knot.clone()
+        };
+        let variable = brink_ir::SymbolInfo {
+            kind: SymbolKind::Variable,
+            detail: None,
+            ..function_knot.clone()
+        };
+        assert!(is_visible_in_context(
+            &CompletionContext::FnTarget,
+            &function_knot,
+            &scope
+        ));
+        assert!(!is_visible_in_context(
+            &CompletionContext::FnTarget,
+            &plain_knot,
+            &scope
+        ));
+        assert!(!is_visible_in_context(
+            &CompletionContext::FnTarget,
+            &variable,
+            &scope
         ));
     }
 

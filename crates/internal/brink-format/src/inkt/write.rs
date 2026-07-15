@@ -12,14 +12,14 @@ use std::collections::HashMap;
 
 use crate::counting::CountingFlags;
 use crate::definition::{
-    AddressDef, AddressPath, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry, ListDef,
-    ListItemDef,
+    AddressDef, AddressPath, AliasEntry, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry,
+    ListDef, ListItemDef,
 };
 use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, SelectKey};
 use crate::opcode::{ChoiceFlags, Opcode, SequenceKind};
 use crate::story::StoryData;
-use crate::value::{ListValue, MapKey, Value, ValueType};
+use crate::value::{ListValue, MapKey, ProjSegment, Value, ValueType};
 
 /// Write the textual (.inkt) representation of a compiled story.
 pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
@@ -38,6 +38,8 @@ pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
     write_address_paths(w, &story.address_paths)?;
     write_list_literals(w, &story.list_literals)?;
     write_literal_pool(w, &story.literal_pool)?;
+    write_visibility(w, &story.private_defs)?;
+    write_alias_table(w, &story.alias_table)?;
 
     // Build a lookup from scope_id → line table for writing
     let line_map: HashMap<DefinitionId, &[LineEntry]> = story
@@ -101,6 +103,18 @@ fn write_globals(w: &mut dyn fmt::Write, globals: &[GlobalVarDef]) -> fmt::Resul
         }
         writeln!(w)?;
         writeln!(w, "      (name {}))", g.name.0)?;
+    }
+    writeln!(w, "  )")
+}
+
+fn write_visibility(w: &mut dyn fmt::Write, private_defs: &[DefinitionId]) -> fmt::Result {
+    if private_defs.is_empty() {
+        return Ok(());
+    }
+    writeln!(w)?;
+    writeln!(w, "  (visibility")?;
+    for id in private_defs {
+        writeln!(w, "    (private {id})")?;
     }
     writeln!(w, "  )")
 }
@@ -220,6 +234,20 @@ fn write_address_paths(w: &mut dyn fmt::Write, address_paths: &[AddressPath]) ->
     writeln!(w, "  )")
 }
 
+/// M-3 (`docs/modules-spec.md` §5): `#@was`-derived old→new `DefinitionId`
+/// rename records. Mirrors [`write_addresses`]'s `id -> target` shape.
+fn write_alias_table(w: &mut dyn fmt::Write, aliases: &[AliasEntry]) -> fmt::Result {
+    if aliases.is_empty() {
+        return Ok(());
+    }
+    writeln!(w)?;
+    writeln!(w, "  (alias_table")?;
+    for a in aliases {
+        writeln!(w, "    (alias {} -> {})", a.old, a.new)?;
+    }
+    writeln!(w, "  )")
+}
+
 fn write_container(w: &mut dyn fmt::Write, c: &ContainerDef, lines: &[LineEntry]) -> fmt::Result {
     writeln!(w)?;
     writeln!(w, "  (container {}", c.id)?;
@@ -254,9 +282,20 @@ fn write_container(w: &mut dyn fmt::Write, c: &ContainerDef, lines: &[LineEntry]
         writeln!(w, "    (path_hash {})", c.path_hash)?;
     }
 
-    // Declared parameter count (parameterized knots/stitches/functions)
+    // Declared parameter count (parameterized knots/stitches/functions).
+    // When per-param name/mode metadata is present (T1c, #700 — carried so
+    // rehydration can validate function values), dump it too for parity.
     if c.param_count != 0 {
-        writeln!(w, "    (params {})", c.param_count)?;
+        if c.params.is_empty() {
+            writeln!(w, "    (params {})", c.param_count)?;
+        } else {
+            write!(w, "    (params {}", c.param_count)?;
+            for p in &c.params {
+                let mode = if p.is_ref { "ref" } else { "val" };
+                write!(w, " ({mode} {})", p.name.0)?;
+            }
+            writeln!(w, ")")?;
+        }
     }
 
     // Flow-private scope default (`#@local` knot/stitch)
@@ -432,7 +471,7 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::TunnelCall(id) => write!(w, "tunnel_call {id}"),
         Opcode::TunnelReturn => write!(w, "tunnel_return"),
         Opcode::TunnelCallVariable => write!(w, "tunnel_call_variable"),
-        Opcode::CallVariable => write!(w, "call_variable"),
+        Opcode::CallVariable(argc) => write!(w, "call_variable argc={argc}"),
 
         // Threads
         Opcode::ThreadCall(id) => write!(w, "thread_call {id}"),
@@ -542,6 +581,23 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::ConvertInt => write!(w, "convert_int"),
         Opcode::ConvertFloat => write!(w, "convert_float"),
         Opcode::ConvertString => write!(w, "convert_string"),
+
+        // Function values (T1c, #700)
+        Opcode::PushFnRef(id) => write!(w, "push_fn_ref {id}"),
+        Opcode::MakeClosure {
+            target,
+            bound_count,
+        } => write!(w, "make_closure {target} bound={bound_count}"),
+        Opcode::CallValue(argc) => write!(w, "call_value argc={argc}"),
+        Opcode::BindValue(argc) => write!(w, "bind_value argc={argc}"),
+
+        // Path projections (T1e)
+        Opcode::MakeProjection {
+            root,
+            segment_count,
+        } => write!(w, "make_projection {root} segments={segment_count}"),
+        Opcode::ProjRead => write!(w, "proj_read"),
+        Opcode::ProjWrite => write!(w, "proj_write"),
     }
 }
 
@@ -595,6 +651,10 @@ fn value_type_name(vt: ValueType) -> &'static str {
         ValueType::Array => "array",
         ValueType::Map => "map",
         ValueType::Record => "record",
+        ValueType::FnRef => "fn_ref",
+        ValueType::Closure => "closure",
+        ValueType::Handle => "handle",
+        ValueType::Projection => "projection",
     }
 }
 
@@ -661,6 +721,46 @@ fn write_value(w: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
             }
             write!(w, ")")
         }
+        // Function values (T1c, #700): a fn value can reach the dump as a
+        // binding/global default value the same way a collection can.
+        Value::FnRef(target) => write!(w, "(fn_ref {target})"),
+        Value::Closure(c) => {
+            write!(w, "(closure {}", c.target)?;
+            for entry in &c.env {
+                let mode = if entry.is_ref { "ref" } else { "val" };
+                write!(w, " ({mode} {} ", entry.name.0)?;
+                write_value(w, &entry.payload)?;
+                write!(w, ")")?;
+            }
+            write!(w, ")")
+        }
+        // Handle values (T1d, `docs/t1d-spec.md` §2): `(handle <kind> <id>)`
+        // — kind as its raw NameId (the human-readable kind name lives in the
+        // name table, resolved by tooling that has it, not by this dump).
+        Value::Handle { kind, id } => write!(w, "(handle {} {id})", kind.0),
+        // Projection values (T1e, `docs/t1e-spec.md` §3): `(projection <cell>
+        // (segments <seg>…))`, each segment `(index <n>)` or `(key <value>)`
+        // — the reader parity this dump exists for (dump/reader parity, the
+        // #742 lesson).
+        Value::Projection(p) => {
+            write!(w, "(projection {} (segments", p.cell)?;
+            for seg in &p.segments {
+                write!(w, " ")?;
+                write_proj_segment(w, seg)?;
+            }
+            write!(w, "))")
+        }
+    }
+}
+
+fn write_proj_segment(w: &mut dyn fmt::Write, seg: &ProjSegment) -> fmt::Result {
+    match seg {
+        ProjSegment::Index(n) => write!(w, "(index {n})"),
+        ProjSegment::Key(v) => {
+            write!(w, "(key ")?;
+            write_value(w, v)?;
+            write!(w, ")")
+        }
     }
 }
 
@@ -722,6 +822,8 @@ mod tests {
             list_literals: vec![],
             literal_pool: vec![],
             struct_shapes: vec![],
+            private_defs: vec![],
+            alias_table: vec![],
             source_checksum: 0,
         };
         let mut buf = String::new();

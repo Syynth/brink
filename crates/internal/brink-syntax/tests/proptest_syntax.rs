@@ -89,9 +89,42 @@ fn arb_expr() -> impl Strategy<Value = String> {
                 format!("#{{{body}}}")
             }),
             // T1b §4: postfix indexing `base[index]`
-            (inner.clone(), inner).prop_map(|(base, idx)| format!("{base}[{idx}]")),
+            (inner.clone(), inner.clone()).prop_map(|(base, idx)| format!("{base}[{idx}]")),
+            // T1c §2: `#fn(target, args…)` function-value creation literal —
+            // joins the `#[…]`/`#{…}` sigil family. The target is always a
+            // bare name (never an expression, per the grammar), so this
+            // doesn't recurse on `inner` for the target position, only for
+            // the bound args.
+            (arb_ident(), prop::collection::vec(inner, 0..=2))
+                .prop_map(|(name, args)| format_fn_literal(&name, &args)),
         ]
     })
+}
+
+/// Render `#fn(target, args…)` — a bare `#fn(target)` with no trailing
+/// comma when `args` is empty (matching the grammar's zero-bound-args shape,
+/// e.g. `#fn(double)`), `#fn(target, a, b, …)` otherwise.
+fn format_fn_literal(name: &str, args: &[String]) -> String {
+    if args.is_empty() {
+        format!("#fn({name})")
+    } else {
+        format!("#fn({name}, {})", args.join(", "))
+    }
+}
+
+/// `#fn(target, args…)` — same recursive-arg shape as the `arb_expr` arm
+/// above, generated standalone (T1c, docs/t1c-spec.md §2) so it can be fuzzed
+/// as a top-level statement, not only nested inside a larger expression.
+fn arb_fn_literal() -> impl Strategy<Value = String> {
+    (arb_ident(), prop::collection::vec(arb_expr(), 0..=3))
+        .prop_map(|(name, args)| format_fn_literal(&name, &args))
+}
+
+/// `~ temp f = #fn(target, args…)` — a `#fn` literal in the one statement
+/// position every other `arb_*_line` strategy above already covers for
+/// ordinary expressions (`arb_logic_line`'s `~ temp x = expr` arm).
+fn arb_fn_literal_temp_decl() -> impl Strategy<Value = String> {
+    (arb_ident(), arb_fn_literal()).prop_map(|(name, fl)| format!("~ temp {name} = {fl}\n"))
 }
 
 fn arb_infix_op() -> impl Strategy<Value = &'static str> {
@@ -758,6 +791,52 @@ proptest! {
         arb_struct_decl(),
         arb_struct_literal(),
         arb_field_access(),
+    ]) {
+        let _ = parse(&input);
+    }
+
+    // ── T1c (docs/t1c-spec.md §2/§9/§11): `#fn(target, args…)` function-value
+    // creation literal — joins the `#[…]`/`#{…}` sigil family, so it gets the
+    // same lossless-roundtrip / no-errors / node-kind / never-panics coverage
+    // those literals already have. "Grammar fuzzing extends to `#fn` in both
+    // dialects" (spec §9): the parser is dialect-agnostic by construction
+    // (dialect gating happens at analysis, matching TM-2's and TM-4b's own
+    // `never_panics` precedent), so this fuzzes it once, at the parser layer.
+
+    #[test]
+    fn fn_literal_temp_decl_roundtrip(input in arb_fn_literal_temp_decl()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn fn_literal_temp_decl_no_errors(input in arb_fn_literal_temp_decl()) {
+        let parsed = parse(&input);
+        prop_assert!(
+            parsed.errors().is_empty(),
+            "parse errors for input: {:?}\nerrors: {:?}",
+            input, parsed.errors(),
+        );
+    }
+
+    #[test]
+    fn fn_literal_temp_decl_produces_fn_literal_node(input in arb_fn_literal_temp_decl()) {
+        let parsed = parse(&input);
+        prop_assert!(has_node_kind(&parsed.syntax(), SyntaxKind::FN_LITERAL));
+    }
+
+    /// Never panics on any `#fn` input, standalone or nested inside a larger
+    /// expression (`arb_expr`'s own `#fn` arm, exercised transitively via
+    /// every `arb_logic_line`/`arb_block_stmt`/`arb_story` fuzz run above) —
+    /// extends the grammar fuzz coverage the same way TM-2's
+    /// `type_annotated_input_never_panics` and TM-4b's `struct_input_never_panics`
+    /// do. The parser itself is dialect-agnostic, so this covers both
+    /// dialects by construction — dialect gating (E051 under strict-ink) is
+    /// an analysis-layer concern, never a parse-layer one.
+    #[test]
+    fn fn_literal_input_never_panics(input in prop_oneof![
+        arb_fn_literal(),
+        arb_fn_literal_temp_decl(),
     ]) {
         let _ = parse(&input);
     }

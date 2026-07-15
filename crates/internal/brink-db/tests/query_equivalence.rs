@@ -13,9 +13,28 @@
 //! tests pin that equivalence on fixtures chosen to poke the risky corners:
 //! locals (params/temps), duplicate names across files, cross-file duplicate
 //! scoped locals, and unresolved references.
+//!
+//! FG-6 (#841) audited this family against the decision-log ruling to
+//! retire "the composed-equals-monolithic equivalence family in favor of
+//! cross-version byte-identity (`inkb_hashes`)": that ruling targets
+//! `brink-compiler`'s now-removed *production* one-shot-driver-vs-`ProjectDb`
+//! duplication (collapsed in #844/#841 — there was never a committed test
+//! comparing those two, only ad hoc `inkb_hashes` verification during the
+//! switch). The tests below compare something different and still real: a
+//! salsa **query composition** (`db.analysis()`/`db.signature()`) against a
+//! **direct, non-decomposed `brink_analyzer` call** on the same inputs, to
+//! prove FG-1/FG-3's per-file/per-def query decomposition doesn't change
+//! analyzer output. That seam has nothing to do with which pipeline
+//! `brink-compiler` routes through and remains load-bearing after FG-6 —
+//! kept, not retired. See `fg2_scc_dependency_edges.rs` for FG-2's analogous
+//! per-SCC seam.
 
+use brink_analyzer::AnalysisOptions;
 use brink_db::ProjectDb;
-use brink_ir::{FileId, HirFile, SymbolManifest};
+use brink_ir::{
+    BaseType, Constraint, DiagnosticCode, FileId, HirFile, HostManifest, ManifestExternal,
+    ManifestParam, SemanticTypeDef, SymbolManifest, TypeRef,
+};
 
 fn db_with(files: &[(&str, &str)]) -> ProjectDb {
     let mut db = ProjectDb::new();
@@ -91,6 +110,127 @@ fn analysis_matches_with_cross_file_duplicate_scoped_locals() {
     ]);
 }
 
+/// Composed == monolithic with the whole external-check family firing
+/// (issue #750 / FG-3 completion): a registered host manifest with a
+/// closed-domain semantic type, an arity mismatch (`E039`), an unknown
+/// semantic type (`E040`), a call-site type mismatch (`E041`), a
+/// closed-domain violation (`E042`), inline-doc'd knots (callable
+/// enrichment), and doc'd VAR/CONST (value metas) — content, *order*, and
+/// `symbol_meta` must all be identical between `db.analysis()` (now
+/// assembled from `inline_docs`/`external_meta`/`call_site_metas` + per-file
+/// value-meta/call-site queries) and the monolithic
+/// `analyze_with_options` path.
+#[test]
+fn analysis_matches_with_host_manifest_and_external_checks() {
+    let files: &[(&str, &str)] = &[
+        (
+            "main.ink",
+            "INCLUDE lib.ink\n\
+             /// The player's purse.\n\
+             VAR gold = 10\n\
+             /// Cap on everything.\n\
+             CONST MAX = 99\n\
+             /// @param who {actor_id}\n\
+             EXTERNAL add_state(who)\n\
+             EXTERNAL play_sound(sound)\n\
+             EXTERNAL misdeclared(a, b)\n\
+             === start ===\n\
+             ~ play_sound(\"boom\")\n\
+             ~ play_sound(\"quack\")\n\
+             ~ play_sound(3)\n\
+             -> helper(2)\n",
+        ),
+        (
+            "lib.ink",
+            "/// Helps out.\n\
+             /// @param times {int}\n\
+             === helper(times) ===\n\
+             ~ play_sound(\"click\")\n\
+             ~ misdeclared(1, 2)\n\
+             -> END\n",
+        ),
+    ];
+    let opts = AnalysisOptions {
+        host_manifest: Some(HostManifest {
+            externals: vec![
+                ManifestExternal {
+                    name: "play_sound".to_owned(),
+                    params: vec![ManifestParam {
+                        name: "sound".to_owned(),
+                        ty: TypeRef("sound_id".to_owned()),
+                    }],
+                    returns: TypeRef::default(),
+                    kind: brink_ir::ExternalKind::default(),
+                    doc: Some("Play a sound effect.".to_owned()),
+                    widgets: Vec::new(),
+                    path: Vec::new(),
+                },
+                ManifestExternal {
+                    name: "misdeclared".to_owned(),
+                    // One param in the manifest vs two in the ink decl: E039.
+                    params: vec![ManifestParam {
+                        name: "only".to_owned(),
+                        ty: TypeRef("int".to_owned()),
+                    }],
+                    returns: TypeRef::default(),
+                    kind: brink_ir::ExternalKind::default(),
+                    doc: None,
+                    widgets: Vec::new(),
+                    path: Vec::new(),
+                },
+            ],
+            // `actor_id` deliberately absent: the inline `@param who
+            // {actor_id}` tag is an unknown semantic type once a manifest is
+            // registered — E040.
+            types: vec![SemanticTypeDef {
+                name: "sound_id".to_owned(),
+                base: BaseType::String,
+                constraint: Some(Constraint::Enum {
+                    values: vec!["click".to_owned(), "boom".to_owned()],
+                }),
+                values: None,
+                widget: None,
+            }],
+        }),
+        ..AnalysisOptions::default()
+    };
+
+    let mut db = db_with(files);
+    db.set_analysis_options(opts.clone());
+    let query = db.analysis();
+
+    let inputs = db.analysis_inputs();
+    let refs: Vec<(FileId, &HirFile, &SymbolManifest)> = inputs
+        .iter()
+        .map(|(id, hir, manifest)| (*id, hir, manifest))
+        .collect();
+    let monolithic = brink_analyzer::analyze_with_options(&refs, &opts);
+
+    // Non-vacuity: every code in the family actually fired.
+    for code in [
+        DiagnosticCode::E039,
+        DiagnosticCode::E040,
+        DiagnosticCode::E041,
+        DiagnosticCode::E042,
+    ] {
+        assert!(
+            query.diagnostics.iter().any(|d| d.code == code),
+            "fixture must fire {code:?}: {:?}",
+            query.diagnostics
+        );
+    }
+    assert!(
+        !query.symbol_meta.is_empty(),
+        "fixture must produce symbol metas"
+    );
+
+    assert_eq!(
+        *query, monolithic,
+        "query-composed analysis (decomposed external-check family, issue \
+         #750) diverged from the monolithic analyzer"
+    );
+}
+
 #[test]
 fn analysis_matches_with_unresolved_and_duplicates() {
     assert_analysis_matches(&[
@@ -122,7 +262,7 @@ fn signature_matches_direct_analyzer_call() {
         ) {
             continue;
         }
-        let expected = brink_analyzer::signature(*def, &index, &hir_refs);
+        let expected = brink_analyzer::signature(*def, &index, &hir_refs, None);
         let got = db.signature(*def);
         assert_eq!(got, expected, "signature mismatch for {def:?}");
         checked += 1;

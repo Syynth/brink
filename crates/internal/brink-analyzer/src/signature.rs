@@ -11,11 +11,9 @@ use std::sync::Arc;
 
 use brink_format::DefinitionId;
 use brink_ir::hir::{Expr, HirFile};
-use brink_ir::{FileId, ParamInfo, SymbolIndex, SymbolKind};
+use brink_ir::{FileId, HostManifest, ParamInfo, SymbolIndex, SymbolKind};
 
-use crate::annotations::{
-    declared_list_names, declared_struct_names, resolve as resolve_annotation,
-};
+use crate::annotations::resolve as resolve_annotation;
 use crate::external_check::{InferredType, infer_literal_type};
 use crate::infer::Ty;
 use crate::resolve::lookup_by_name;
@@ -101,10 +99,15 @@ fn ty_to_inferred_type(ty: &Ty) -> Option<InferredType> {
         // `Fn` (T1c): a function-value type has no `InferredType`
         // representation either — same gap as `Array`/`Map`/`Struct`, not a
         // silent drop.
+        // `Handle` (T1d-2): same gap again — no `InferredType` variant
+        // represents a nominal handle kind; the full `Ty::Handle` is still
+        // available via `param_annotations`/`return_annotation`/
+        // `resolve_annotation`, not silently dropped.
         Ty::Array(_)
         | Ty::Map(_, _)
         | Ty::Struct(_)
         | Ty::Fn(..)
+        | Ty::Handle(_)
         | Ty::Unknown
         | Ty::Conflicted => None,
     }
@@ -116,11 +119,10 @@ fn ty_to_inferred_type(ty: &Ty) -> Option<InferredType> {
 fn value_type_with_annotation_override(
     literal_type: Option<InferredType>,
     annotation: Option<&brink_ir::TypeExpr>,
-    list_names: &std::collections::BTreeSet<String>,
-    struct_names: &std::collections::BTreeSet<String>,
+    names: &crate::annotations::TypeNames,
 ) -> Option<InferredType> {
     annotation
-        .and_then(|ann| resolve_annotation(ann, list_names, struct_names))
+        .and_then(|ann| resolve_annotation(ann, names))
         .and_then(|ty| ty_to_inferred_type(&ty))
         .or(literal_type)
 }
@@ -133,15 +135,15 @@ fn declared_fn_type(
     annotation: Option<&brink_ir::TypeExpr>,
     index: &SymbolIndex,
     files: &[(FileId, &HirFile)],
-    list_names: &std::collections::BTreeSet<String>,
-    struct_names: &std::collections::BTreeSet<String>,
+    names: &crate::annotations::TypeNames,
+    manifest: Option<&HostManifest>,
 ) -> Option<Ty> {
     // Annotation wins over inference (TM-2 firewall) — same rule as
     // `value_type_with_annotation_override`, but reading the full `Ty`
     // straight from `resolve_annotation` instead of downcasting through
     // `InferredType` (which has no `Fn` form — see `Sig::fn_type`'s doc).
     if let Some(ann) = annotation
-        && let Some(ty @ Ty::Fn(..)) = resolve_annotation(ann, list_names, struct_names)
+        && let Some(ty @ Ty::Fn(..)) = resolve_annotation(ann, names)
     {
         return Some(ty);
     }
@@ -165,7 +167,18 @@ fn declared_fn_type(
         .map(|s| s.text.as_str())
         .collect::<Vec<_>>()
         .join(".");
-    let target_def = lookup_by_name(index, &target_name, &[SymbolKind::Knot])?;
+    // Signature typing of a global `#fn` initializer has no per-file import
+    // context (no enclosing body), so it looks the target up flatly (M-2d
+    // import scoping — issue #790 — is inert here: a single-candidate knot
+    // hits `lookup_by_name`'s fast path and resolves identically; only the
+    // new multi-declared-module homonym case, not reachable from a typed
+    // `#fn` target today, would differ).
+    let target_def = lookup_by_name(
+        index,
+        &crate::resolve::ImportScope::default(),
+        &target_name,
+        &[SymbolKind::Knot],
+    )?;
     let target_info = index.symbols.get(&target_def)?;
     if target_info.detail.as_deref() != Some("function") {
         return None;
@@ -186,7 +199,7 @@ fn declared_fn_type(
     // signature only (never its body) — `#fn` targets are always knots, so
     // this never re-enters the `Variable`/`Constant` arms that call
     // `declared_fn_type` in the first place.
-    let target_sig = signature(target_def, index, files)?;
+    let target_sig = signature(target_def, index, files, manifest)?;
     let remaining: Vec<Ty> = target_sig
         .param_annotations
         .iter()
@@ -205,16 +218,16 @@ fn declared_fn_type(
 #[must_use]
 #[expect(
     clippy::too_many_lines,
-    reason = "TM-4b (docs/typed-mode-spec.md §6) threads a second declared-name \
-              set (struct_names, alongside the pre-existing list_names) through \
-              every existing per-kind annotation-resolution branch below — the \
-              same shape the function already had, just wider, not a new \
-              structural concern worth splitting out"
+    reason = "each per-kind annotation-resolution branch below (Variable/Constant/ \
+              Knot/Stitch) threads the same TypeNames bundle (lists/structs/handles, \
+              TM-4b + T1d-2) through its own param/return/value-type resolution — \
+              a wide but flat shape, not a new structural concern worth splitting out"
 )]
 pub fn signature(
     def: DefinitionId,
     index: &SymbolIndex,
     files: &[(FileId, &HirFile)],
+    manifest: Option<&HostManifest>,
 ) -> Option<Arc<Sig>> {
     let info = index.symbols.get(&def)?;
     let hir = files
@@ -231,9 +244,17 @@ pub fn signature(
         // `list<L>`/declared-struct annotations resolve nominally against
         // every declared `LIST`/`STRUCT` in the project (spec §2/§3, TM-4b
         // §6) — computed lazily, only when this def actually has a
-        // knot/stitch/var to annotate below.
-        let list_names = || declared_list_names(index);
-        let struct_names = || declared_struct_names(index);
+        // knot/stitch/var to annotate below. T1d-2b (issue #774): the
+        // registered `HostManifest` now reaches `signature()` too (threaded
+        // by `brink-db`'s per-def `signature_query`, the same coarse
+        // project-wide dependency shape `per_file_diagnostics_query` already
+        // reads `host_manifest` at), so `handle<K>` annotations resolve
+        // against the manifest's declared kind vocabulary here exactly like
+        // `list<L>`/`STRUCT` resolve against the project's declared names —
+        // `None` (no manifest registered) still degrades to an empty
+        // handle-kind set, same "unresolved -> silent" contract every other
+        // unrecognized name already gets.
+        let names = || crate::annotations::TypeNames::new(index, manifest);
         match info.kind {
             SymbolKind::Variable => {
                 if let Some(v) = hir.variables.iter().find(|v| v.name.text == info.name) {
@@ -242,8 +263,7 @@ pub fn signature(
                     value_type = value_type_with_annotation_override(
                         infer_literal_type(&v.value),
                         v.annotation.as_ref(),
-                        &list_names(),
-                        &struct_names(),
+                        &names(),
                     );
                     // T1c follow-up (issue #712): `Ty::Fn` has no
                     // `InferredType` home, so it's carried on its own field
@@ -253,8 +273,8 @@ pub fn signature(
                         v.annotation.as_ref(),
                         index,
                         files,
-                        &list_names(),
-                        &struct_names(),
+                        &names(),
+                        manifest,
                     );
                 }
             }
@@ -265,8 +285,7 @@ pub fn signature(
                     value_type = value_type_with_annotation_override(
                         infer_literal_type(&c.value),
                         c.annotation.as_ref(),
-                        &list_names(),
-                        &struct_names(),
+                        &names(),
                     );
                     // T1c follow-up (issue #712) — see the `Variable` arm.
                     fn_type = declared_fn_type(
@@ -274,29 +293,28 @@ pub fn signature(
                         c.annotation.as_ref(),
                         index,
                         files,
-                        &list_names(),
-                        &struct_names(),
+                        &names(),
+                        manifest,
                     );
                 }
             }
             SymbolKind::Knot => {
                 if let Some(k) = hir.knots.iter().find(|k| k.name.text == info.name) {
                     is_local = k.is_local;
-                    let names = list_names();
-                    let s_names = struct_names();
+                    let names = names();
                     param_annotations = k
                         .params
                         .iter()
                         .map(|p| {
                             p.annotation
                                 .as_ref()
-                                .and_then(|a| resolve_annotation(a, &names, &s_names))
+                                .and_then(|a| resolve_annotation(a, &names))
                         })
                         .collect();
                     return_annotation = k
                         .return_type
                         .as_ref()
-                        .and_then(|rt| resolve_annotation(rt, &names, &s_names));
+                        .and_then(|rt| resolve_annotation(rt, &names));
                 }
             }
             SymbolKind::Stitch => {
@@ -311,35 +329,33 @@ pub fn signature(
                         .and_then(|k| k.stitches.iter().find(|s| s.name.text == stitch_name))
                     {
                         is_local = s.is_local;
-                        let names = list_names();
-                        let s_names = struct_names();
+                        let names = names();
                         param_annotations = s
                             .params
                             .iter()
                             .map(|p| {
                                 p.annotation
                                     .as_ref()
-                                    .and_then(|a| resolve_annotation(a, &names, &s_names))
+                                    .and_then(|a| resolve_annotation(a, &names))
                             })
                             .collect();
                     }
                 } else if let Some(k) = hir.knots.iter().find(|k| k.name.text == info.name) {
                     is_local = k.is_local;
-                    let names = list_names();
-                    let s_names = struct_names();
+                    let names = names();
                     param_annotations = k
                         .params
                         .iter()
                         .map(|p| {
                             p.annotation
                                 .as_ref()
-                                .and_then(|a| resolve_annotation(a, &names, &s_names))
+                                .and_then(|a| resolve_annotation(a, &names))
                         })
                         .collect();
                     return_annotation = k
                         .return_type
                         .as_ref()
-                        .and_then(|rt| resolve_annotation(rt, &names, &s_names));
+                        .and_then(|rt| resolve_annotation(rt, &names));
                 }
             }
             _ => {}

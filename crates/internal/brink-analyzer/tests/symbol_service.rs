@@ -95,8 +95,18 @@ fn per_file_resolve_concatenation_matches_analyze() {
     let (hir_b, man_b) = lower(FileId(1), INDEX_SRC_B);
     let (index, _) = brink_analyzer::symbol_index(&[(FileId(0), &man_a), (FileId(1), &man_b)]);
 
-    let (res_a, diags_a) = brink_analyzer::resolve(FileId(0), &man_a, &index);
-    let (res_b, diags_b) = brink_analyzer::resolve(FileId(1), &man_b, &index);
+    let (res_a, diags_a) = brink_analyzer::resolve(
+        FileId(0),
+        &man_a,
+        &index,
+        &brink_analyzer::ImportScope::default(),
+    );
+    let (res_b, diags_b) = brink_analyzer::resolve(
+        FileId(1),
+        &man_b,
+        &index,
+        &brink_analyzer::ImportScope::default(),
+    );
     let mut concat = (*res_a).clone();
     concat.extend((*res_b).clone());
 
@@ -121,8 +131,18 @@ fn resolving_a_file_does_not_observe_other_files_bodies() {
     let (index1, _) = brink_analyzer::symbol_index(&[(FileId(0), &man_a), (FileId(1), &man_b)]);
     let (index2, _) = brink_analyzer::symbol_index(&[(FileId(0), &man_a), (FileId(1), &man_b2)]);
 
-    let (res1, diags1) = brink_analyzer::resolve(FileId(0), &man_a, &index1);
-    let (res2, diags2) = brink_analyzer::resolve(FileId(0), &man_a, &index2);
+    let (res1, diags1) = brink_analyzer::resolve(
+        FileId(0),
+        &man_a,
+        &index1,
+        &brink_analyzer::ImportScope::default(),
+    );
+    let (res2, diags2) = brink_analyzer::resolve(
+        FileId(0),
+        &man_a,
+        &index2,
+        &brink_analyzer::ImportScope::default(),
+    );
     assert_eq!(*res1, *res2, "file A's resolutions changed with B's body");
     assert_eq!(diags1, diags2);
 }
@@ -148,7 +168,7 @@ More.
 fn sig_for(kind: SymbolKind, name: &str) -> Sig {
     let (hir, _manifest, result) = analyzed(SIG_SRC);
     let def = def_id(&result, kind, name);
-    let sig = signature(def, &result.index, &[(FileId(0), &hir)]).expect("known def");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
     (*sig).clone()
 }
 
@@ -201,7 +221,7 @@ fn signature_local_knot_and_stitch_carry_local_bit() {
 fn signature_unknown_def_returns_none() {
     let (hir, _manifest, result) = analyzed(SIG_SRC);
     let bogus = DefinitionId::new(brink_format::DefinitionTag::Address, 0xDEAD_BEEF);
-    assert!(signature(bogus, &result.index, &[(FileId(0), &hir)]).is_none());
+    assert!(signature(bogus, &result.index, &[(FileId(0), &hir)], None).is_none());
 }
 
 #[test]
@@ -216,12 +236,14 @@ fn signature_is_declaration_derived_only() {
         def_id(&res_a, SymbolKind::Knot, "camp"),
         &res_a.index,
         &[(FileId(0), &hir_a)],
+        None,
     )
     .expect("camp in a");
     let sig_b = signature(
         def_id(&res_b, SymbolKind::Knot, "camp"),
         &res_b.index,
         &[(FileId(0), &hir_b)],
+        None,
     )
     .expect("camp in b");
     assert_eq!(*sig_a, *sig_b, "body edit changed a declaration signature");
@@ -238,7 +260,7 @@ fn signature_knot_carries_param_and_return_type_annotations() {
     let src = "=== function heal(hp: int, amount: float): bool ===\n~ return true\n";
     let (hir, _manifest, result) = analyzed(src);
     let def = def_id(&result, SymbolKind::Knot, "heal");
-    let sig = signature(def, &result.index, &[(FileId(0), &hir)]).expect("known def");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
     assert_eq!(
         sig.param_annotations,
         vec![
@@ -254,7 +276,7 @@ fn signature_unannotated_param_is_none_in_param_annotations() {
     let src = "=== heal(hp: int, amount) ===\n~ return\n";
     let (hir, _manifest, result) = analyzed(src);
     let def = def_id(&result, SymbolKind::Knot, "heal");
-    let sig = signature(def, &result.index, &[(FileId(0), &hir)]).expect("known def");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
     assert_eq!(
         sig.param_annotations,
         vec![Some(brink_analyzer::Ty::Int), None]
@@ -269,7 +291,7 @@ fn signature_stitch_carries_param_annotations_but_never_a_return_annotation() {
     let src = "=== camp ===\nText.\n= fire\n~ temp x: string = who\n-> DONE\n";
     let (hir, _manifest, result) = analyzed(src);
     let def = def_id(&result, SymbolKind::Stitch, "camp.fire");
-    let sig = signature(def, &result.index, &[(FileId(0), &hir)]).expect("known def");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
     assert!(sig.param_annotations.is_empty(), "fire has no params");
     assert_eq!(sig.return_annotation, None);
 }
@@ -282,7 +304,7 @@ fn signature_var_annotation_wins_over_the_literal_inferred_type() {
     let src = "VAR gold: float = 100\n";
     let (hir, _manifest, result) = analyzed(src);
     let def = def_id(&result, SymbolKind::Variable, "gold");
-    let sig = signature(def, &result.index, &[(FileId(0), &hir)]).expect("known def");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
     assert_eq!(sig.value_type, Some(brink_analyzer::InferredType::Float));
 }
 
@@ -291,7 +313,7 @@ fn signature_unannotated_var_keeps_the_literal_inferred_type() {
     let src = "VAR gold = 100\n";
     let (hir, _manifest, result) = analyzed(src);
     let def = def_id(&result, SymbolKind::Variable, "gold");
-    let sig = signature(def, &result.index, &[(FileId(0), &hir)]).expect("known def");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
     assert_eq!(sig.value_type, Some(brink_analyzer::InferredType::Int));
 }
 
@@ -303,7 +325,7 @@ fn signature_const_annotation_wins_over_the_literal_inferred_type() {
     let src = "CONST speed: float = 100\n";
     let (hir, _manifest, result) = analyzed(src);
     let def = def_id(&result, SymbolKind::Constant, "speed");
-    let sig = signature(def, &result.index, &[(FileId(0), &hir)]).expect("known def");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
     assert_eq!(sig.value_type, Some(brink_analyzer::InferredType::Float));
 }
 
@@ -312,7 +334,7 @@ fn signature_unannotated_const_keeps_the_literal_inferred_type() {
     let src = "CONST speed = 100\n";
     let (hir, _manifest, result) = analyzed(src);
     let def = def_id(&result, SymbolKind::Constant, "speed");
-    let sig = signature(def, &result.index, &[(FileId(0), &hir)]).expect("known def");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
     assert_eq!(sig.value_type, Some(brink_analyzer::InferredType::Int));
 }
 
@@ -321,7 +343,7 @@ fn signature_list_generic_annotation_resolves_against_declared_list_names() {
     let src = "LIST Weathers = sunny, (rainy)\n=== function pick(w: list<Weathers>): void ===\n~ return\n";
     let (hir, _manifest, result) = analyzed(src);
     let def = def_id(&result, SymbolKind::Knot, "pick");
-    let sig = signature(def, &result.index, &[(FileId(0), &hir)]).expect("known def");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
     assert_eq!(
         sig.param_annotations,
         vec![Some(brink_analyzer::Ty::List("Weathers".to_string()))]

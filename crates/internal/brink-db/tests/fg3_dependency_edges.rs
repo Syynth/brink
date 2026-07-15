@@ -147,3 +147,138 @@ fn resolutions_index_value_is_unaffected_by_external_check_severity() {
         "toggling external_check severity re-executed resolutions_index_query"
     );
 }
+
+// ── Issue #750 (FG-3 completion): the external-check family ────────────
+
+/// A two-file fixture whose external call-site checks actually fire: a.ink
+/// declares a typed external (inline `///` doc — no host manifest needed,
+/// `int` is a base type) plus a call, and b.ink calls it with a `string`
+/// literal, a real `E041`. The b-side memo existing and being non-empty
+/// keeps the pointer-identity assertions below non-vacuous.
+fn external_call_site_fixture() -> ProjectDb {
+    let mut db = ProjectDb::new();
+    db.set_file(
+        "a.ink",
+        "/// Pay the piper.\n/// @param amount {int}\nEXTERNAL pay(amount)\n\
+         === a_knot ===\nA scene line.\n~ pay(1)\n-> END\n"
+            .to_owned(),
+    );
+    db.set_file(
+        "b.ink",
+        "=== b_knot ===\n~ pay(\"gold\")\n-> END\n".to_owned(),
+    );
+    db
+}
+
+/// Issue #750: `call_site_diagnostics_query` must depend only on its own
+/// file's `lowered_query` plus the range-free `call_site_metas_query`
+/// projection — never another file's HIR. A body edit in the *declaring*
+/// file (which shifts every range in the full index and re-executes the
+/// enrichment pass) must leave the other file's call-site memo fully
+/// validated (same `Arc`), not re-executed — pre-#750, this walk ran
+/// project-wide inside `whole_project_diagnostics_query` on any body edit.
+#[test]
+fn call_site_contributor_survives_unrelated_file_body_edit() {
+    let mut db = external_call_site_fixture();
+    let b = db.file_id("b.ink").expect("b.ink id");
+
+    let before = db
+        .file_call_site_diagnostics(b)
+        .expect("b.ink has a call-site memo");
+    assert!(
+        before.iter().any(|d| d.code == DiagnosticCode::E041),
+        "fixture must fire E041 in b.ink (string literal into int param), \
+         or this test is vacuous: {before:?}"
+    );
+
+    // Body edit in a.ink: insert a line inside the knot, after the EXTERNAL
+    // declaration — every later range shifts, so the full ranged index (and
+    // with it external_meta_query's inputs) really changes, but no doc,
+    // declaration, or external content does.
+    db.update_file(
+        "a.ink",
+        "/// Pay the piper.\n/// @param amount {int}\nEXTERNAL pay(amount)\n\
+         === a_knot ===\nA new line first.\nA scene line, revised.\n~ pay(1)\n-> END\n"
+            .to_owned(),
+    );
+
+    let after = db
+        .file_call_site_diagnostics(b)
+        .expect("b.ink still has a call-site memo");
+    assert!(
+        Arc::ptr_eq(&before, &after),
+        "editing the declaring file's body re-executed b.ink's call-site \
+         contributor memo (issue #750 FG-3 completion)"
+    );
+}
+
+/// Issue #750: the `call_site_metas_query` cutoff seam itself. A body edit
+/// anywhere shifts declaration ranges, so the full-ranged-index-reading
+/// enrichment pass re-executes — but the name→meta projection is
+/// range-free, so it must come out `Eq` and leave this memo (and through
+/// it, every file's call-site memo) untouched. The `resolution_index`
+/// playbook, applied to the external-check family.
+#[test]
+fn call_site_metas_survive_body_edits_anywhere() {
+    let mut db = external_call_site_fixture();
+
+    let before = db.call_site_metas();
+    assert!(
+        before.contains_key("pay"),
+        "fixture must produce an external meta for `pay`, or this test is vacuous"
+    );
+
+    db.update_file(
+        "b.ink",
+        "=== b_knot ===\nSome fresh prose.\n~ pay(\"gold\")\n-> END\n".to_owned(),
+    );
+
+    let after = db.call_site_metas();
+    assert!(
+        Arc::ptr_eq(&before, &after),
+        "a body edit re-executed call_site_metas_query — the range-free \
+         cutoff seam failed to backdate (issue #750 FG-3 completion)"
+    );
+}
+
+/// Issue #750: `value_meta_query` must depend only on its own file's
+/// `lowered_query` (plus the range-zeroed index projection and the
+/// range-free doc merge) — a body edit in an unrelated file must leave the
+/// memo fully validated (same `Arc`), not re-executed. Pre-#750 this walk
+/// (`infer_value_meta`) ran over every file's HIR inside
+/// `whole_project_diagnostics_query` on any body edit.
+#[test]
+fn value_meta_contributor_survives_unrelated_file_body_edit() {
+    let mut db = ProjectDb::new();
+    db.set_file(
+        "vars.ink",
+        "/// The player's gold.\nVAR gold = 10\nCONST MAX = 99\n".to_owned(),
+    );
+    db.set_file(
+        "scene.ink",
+        "=== scene ===\nOriginal prose.\n-> END\n".to_owned(),
+    );
+    let vars = db.file_id("vars.ink").expect("vars.ink id");
+
+    let before = db
+        .file_value_meta(vars)
+        .expect("vars.ink has a value-meta memo");
+    assert!(
+        !before.is_empty(),
+        "fixture must produce VAR/CONST metas, or this test is vacuous"
+    );
+
+    db.update_file(
+        "scene.ink",
+        "=== scene ===\nA new opening line.\nOriginal prose, revised.\n-> END\n".to_owned(),
+    );
+
+    let after = db
+        .file_value_meta(vars)
+        .expect("vars.ink still has a value-meta memo");
+    assert!(
+        Arc::ptr_eq(&before, &after),
+        "editing an unrelated file's body re-executed vars.ink's value-meta \
+         contributor memo (issue #750 FG-3 completion)"
+    );
+}

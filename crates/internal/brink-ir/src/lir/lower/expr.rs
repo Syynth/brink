@@ -108,35 +108,76 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
         hir::Expr::StructLiteral(sl) => lower_struct_literal(sl, ctx),
         hir::Expr::FieldAccess(fa) => lower_field_access(fa, ctx),
 
-        // T1c-1 (docs/t1c-spec.md §11): `#fn(…)` function values parse,
-        // gate, and type-check in this slice, but their LIR/codegen/VM
-        // story is T1c-2 — see [`reject_fn_literal`].
-        hir::Expr::FnLiteral(fl) => reject_fn_literal(fl, ctx),
+        // T1c-2 (docs/t1c-spec.md §2/§11): `#fn(…)` function values lower
+        // for real — `PushFnRef` (zero-bound) / `MakeClosure` (bound prefix)
+        // via [`lower_fn_literal`]. The T1c-1 E052 fence that stood here is
+        // removed exactly where this real lowering replaces it.
+        hir::Expr::FnLiteral(fl) => lower_fn_literal(fl, ctx),
+
+        // T1e-1 (docs/t1e-spec.md §8 sequencing item 1, issue #831): a `ref
+        // lvalue-path` reaching *general* expression lowering. This is the
+        // E052-fence pattern (see `lir::lower::mod`'s backstop doctrine): a
+        // bare single-name `ref x` is handled entirely inside
+        // `lower_call_args` (identical to today's unmarked ref-argument
+        // binding, never reaches here); anything with a real path segment
+        // (dotted field / `[…]` index) — or any `RefArg` outside
+        // ref-argument position at all, which should already carry
+        // `brink-analyzer`'s E097 — funnels through `lower_call_args`'s
+        // fallback arm into this one. T1e-2 lands `MakeProjection`; until
+        // then this is a clean, targeted stop, not a silent drop.
+        hir::Expr::RefArg(ra) => lower_ref_arg_fence(ra, ctx),
     }
 }
 
-/// T1c-1 lowering fence (docs/t1c-spec.md §11 build sequencing): `#fn(…)`
-/// has grammar, HIR, dialect gating, creation-site diagnostics, and typing
-/// in this slice — LIR emission (`PushFnRef`/`MakeClosure`), dispatch, and
-/// persistence land in T1c-2. Until then, a `#fn` reaching LIR lowering is
-/// a real, targeted, **non-suppressible** compile error (E052, the
-/// designated "brink extension not yet implemented" class) — never a silent
-/// drop (house rule: silent drops are always bugs). Bound-argument
-/// subexpressions are still lowered for their own diagnostics' sake; the
-/// result is discarded along with the whole expression.
-fn reject_fn_literal(fl: &hir::FnLiteral, ctx: &mut LowerCtx<'_>) -> lir::Expr {
-    for arg in &fl.args {
-        lower_expr(arg, ctx);
-    }
+/// The T1e-1 E052-fence backstop for a `ref lvalue-path` that reached
+/// general expression lowering with at least one real path segment (or fell
+/// through from an illegal, non-argument position). `E099` names the
+/// specific reason (no `MakeProjection`/`ProjRead` support yet, tracking
+/// #828) rather than reusing the generic dialect-gate `E052`. The operand
+/// is still lowered (for its own nested diagnostics) and discarded — the
+/// whole `RefArg` folds to `Null`, matching every other "reported, not
+/// silently dropped" fence in this module.
+fn lower_ref_arg_fence(ra: &hir::RefArgExpr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
     ctx.diagnostics.push(crate::Diagnostic {
         file: ctx.file,
-        range: fl.ptr.text_range(),
-        message: "`#fn(…)` function values are not yet implemented in this slice — \
-                  creation type-checks (T1c-1) but lowering/execution lands in T1c-2"
-            .to_owned(),
-        code: crate::DiagnosticCode::E052,
+        range: ra.ptr.text_range(),
+        message: format!(
+            "{}: path-projection ref-arguments (`ref {}`) have no runtime \
+             representation yet — grammar/HIR/analyzer support lands in T1e-1 \
+             (this compiler), lowering in T1e-2 (tracking #828)",
+            crate::DiagnosticCode::E099.title(),
+            crate::display_expr(&ra.operand),
+        ),
+        code: crate::DiagnosticCode::E099,
     });
+    lower_expr(&ra.operand, ctx);
     lir::Expr::Null
+}
+
+/// Lower `#fn(target, args…)` to a [`lir::Expr::MakeFnValue`] (T1c-2,
+/// docs/t1c-spec.md §2). The target resolves to a function `DefinitionId`;
+/// the bound args reuse the ordinary call-argument lowering
+/// ([`lower_call_args`]), so a `ref`-position bound arg becomes a
+/// [`lir::CallArg::RefGlobal`] (a captured durable cell) and a `val` a
+/// snapshot — exactly the creation-site discipline `brink-analyzer` enforced
+/// (E079/E080/E081). Codegen splits zero-bound (`PushFnRef`) from bound
+/// (`MakeClosure`).
+///
+/// An unresolved target is left to the analyzer's own diagnostic (E025/E079);
+/// the bound args are still lowered so their subexpression diagnostics fire,
+/// but the literal folds to `Null` (never a silent drop of a *reported*
+/// construct).
+fn lower_fn_literal(fl: &hir::FnLiteral, ctx: &mut LowerCtx<'_>) -> lir::Expr {
+    if let Some(info) = ctx.resolve_path(fl.target.range) {
+        let target = info.id;
+        let bound = lower_call_args(&fl.args, &info.params, ctx);
+        lir::Expr::MakeFnValue { target, bound }
+    } else {
+        for arg in &fl.args {
+            lower_expr(arg, ctx);
+        }
+        lir::Expr::Null
+    }
 }
 
 /// A sentinel `ShapeId` that never names a real declared shape — `Program::
@@ -147,34 +188,36 @@ fn reject_fn_literal(fl: &hir::FnLiteral, ctx: &mut LowerCtx<'_>) -> lir::Expr {
 const CONSTRUCTION_FAULT_SHAPE_ID: u32 = u32::MAX;
 
 /// `Name#{field: expr, …}` construction (TM-4c, `docs/typed-mode-spec.md`
-/// §6). Every initializer is lowered — and therefore evaluated — exactly
-/// once, in **source** order (the order the author wrote them), regardless
-/// of which path below is taken.
+/// §6). Every supplied initializer is lowered — and, at codegen time,
+/// evaluated — exactly once, in **source** order (the order the author
+/// wrote them; decision-log "Struct construction literals: source-order
+/// evaluation, duplicate field is a compile error" 2026-07-14, issue #676),
+/// regardless of which path below is taken.
 ///
 /// - **Well-formed** (every declared field has exactly one initializer, no
-///   extra names): reorders the *already-lowered* expression trees into the
-///   shape's *declaration* order for `RecordNew` (the VM's required push
-///   order). **Evaluation-order caveat**: because each field's `lir::Expr`
-///   is placed, not re-evaluated, codegen will evaluate them in shape order
-///   at emission time, not source order — when the author's field order
-///   differs from the shape's declared order *and* more than one
-///   initializer has an observable side effect (a function call, an
-///   external, `TURNS_SINCE`, …), those side effects fire in shape order.
-///   The LIR has no local-binding expression node (an `Expr::Let`-shaped
-///   construct) to stage a source-order-evaluated value ahead of a later
-///   shape-order placement without one — introducing one is out of TM-4c's
-///   scope (flagged in the PR description's scope notes). Field
-///   initializers with observable side effects are expected to be rare in
-///   practice; this divergence is deliberate and documented, not a silent
-///   miscompile — construction *values* are always correct regardless.
+///   extra names): stages each initializer's *already-lowered* expression
+///   into a fresh synthetic temp slot, in source order (`prelude` —
+///   `LowerCtx::alloc_block_slot`, the same T1b synthetic-temp machinery
+///   `lower::blocks`' RMW desugaring uses), then builds `fields` as
+///   `GetTemp` reads of those slots reordered into the shape's *declaration*
+///   order for `RecordNew` (the VM's required push order). Codegen emits
+///   `prelude` first — so every value is *computed* in source order — and
+///   only then pushes `fields` in shape order, decoupling evaluation order
+///   from placement order. A duplicate field name (last-wins on placement)
+///   is a compile error under normal operation (`structs::check_duplicates`'
+///   `E084`); this loop still stages *every* supplied initializer (not just
+///   the winning last one), so a shadowed duplicate's side effect still
+///   fires even under `// brink-disable-all` suppression — never a silent
+///   drop (issue #675).
 /// - **Mismatched** (a missing declared field, or an initializer for a name
 ///   the shape doesn't declare): value-model-spec §11c's gradual
 ///   construction-fault path. Reachable under `types = gradual` (the only
 ///   policy that compiles this far — under `types = strict` it's already
 ///   `E069`/`E070`, a compile error, unless that diagnostic was suppressed,
 ///   in which case this is the non-suppressible runtime backstop). Emits
-///   every supplied initializer (source order, still evaluated for its side
-///   effects) followed by `RecordNew(CONSTRUCTION_FAULT_SHAPE_ID)` — the VM's
+///   every supplied initializer directly (source order, still evaluated for
+///   its side effects; no staging needed since nothing gets reordered)
+///   followed by `RecordNew(CONSTRUCTION_FAULT_SHAPE_ID)` — the VM's
 ///   `record_new` looks up the shape *before* popping any values, so an
 ///   always-invalid `ShapeId` deterministically turn-terminates via the
 ///   already-existing `RuntimeError::InvalidShapeId` fault (no new opcode or
@@ -188,15 +231,23 @@ fn lower_struct_literal(sl: &hir::StructLiteral, ctx: &mut LowerCtx<'_>) -> lir:
         return reject_unresolved_struct_shape(sl.ptr.text_range(), ctx);
     };
 
-    let mut placed: Vec<Option<lir::Expr>> = vec![None; shape.fields.len()];
+    let mut placed: Vec<Option<u16>> = vec![None; shape.fields.len()];
+    let mut prelude: Vec<(u16, brink_format::NameId, lir::Expr)> =
+        Vec::with_capacity(sl.fields.len());
     let mut source_order: Vec<lir::Expr> = Vec::with_capacity(sl.fields.len());
     let mut has_extra = false;
     for (name, val) in &sl.fields {
         let lowered = lower_expr(val, ctx);
         match shape.field(&name.text) {
             Some((offset, _)) => {
-                if let Some(slot) = placed.get_mut(offset as usize) {
-                    *slot = Some(lowered.clone());
+                // Stage this initializer's value now, at its source
+                // position — the fault path below (if this literal turns
+                // out mismatched) never sees `prelude`, only `source_order`.
+                let slot = ctx.alloc_block_slot();
+                let name_id = ctx.names.intern("__field");
+                prelude.push((slot, name_id, lowered.clone()));
+                if let Some(p) = placed.get_mut(offset as usize) {
+                    *p = Some(slot);
                 }
             }
             None => has_extra = true,
@@ -209,10 +260,11 @@ fn lower_struct_literal(sl: &hir::StructLiteral, ctx: &mut LowerCtx<'_>) -> lir:
         return lir::Expr::RecordNew {
             shape_id: CONSTRUCTION_FAULT_SHAPE_ID,
             fields: source_order,
+            prelude: Vec::new(),
         };
     }
 
-    // `has_missing == false` just proved every slot is `Some` — `unwrap_or`
+    // `has_missing == false` just proved every slot is `Some` — `map_or`
     // rather than `unwrap` anyway (denied in production code; guarded, not
     // asserted, per the E053-backstop lesson): a future refactor that
     // weakens that proof degrades to a well-formed-but-wrong `Null` field
@@ -221,8 +273,13 @@ fn lower_struct_literal(sl: &hir::StructLiteral, ctx: &mut LowerCtx<'_>) -> lir:
         shape_id: shape.id,
         fields: placed
             .into_iter()
-            .map(|f| f.unwrap_or(lir::Expr::Null))
+            .map(|slot| {
+                slot.map_or(lir::Expr::Null, |s| {
+                    lir::Expr::GetTemp(s, ctx.names.intern("__field"))
+                })
+            })
             .collect(),
+        prelude,
     }
 }
 
@@ -533,12 +590,34 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
             SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label => {
                 lir::Expr::VisitCount(info.id)
             }
-            // Temps not caught by temp_slot above are forward-referenced
-            // (used before their declaration). Inklecate emits a get_global
-            // for these, which fails at link time because no such global
-            // exists. We reproduce the same behavior so the linker errors.
-            // Hash the variable name the same way the converter does
-            // (DefaultHasher on the name string → GlobalVar tag).
+            // Temps not caught by temp_slot above are either (a) a classic
+            // (non-block) temp used before its declaring statement — a
+            // genuine forward reference, matching inklecate's own behavior
+            // of emitting a get_global that fails at link time (reproduced
+            // below by hashing the name the same way the converter does:
+            // DefaultHasher on the name string → GlobalVar tag) — or (b) a
+            // T1b block-scoped temp (`~ { … }`) referenced after its
+            // `push_block_scope`/`pop_block_scope` bracket has already
+            // closed (#680 RCA: this is the actual defect — see E082).
+            // `block_scoped_temp_names` (populated by `declare_block_local`,
+            // never cleared) distinguishes the two: a name that was ever a
+            // block-scoped local can never legitimately reach this fallback
+            // any other way, since `temp_slot` already checks every open
+            // block scope first.
+            SymbolKind::Temp if ctx.block_scoped_temp_names.contains(&name) => {
+                ctx.diagnostics.push(crate::Diagnostic {
+                    file: ctx.file,
+                    range: path.range,
+                    message: format!(
+                        "{}: `{name}` was declared in a `~ {{ … }}` block that has already \
+                         closed — block-scoped temps (docs/t1b-surface-spec.md §2) are only \
+                         visible for the rest of their own block",
+                        crate::DiagnosticCode::E082.title(),
+                    ),
+                    code: crate::DiagnosticCode::E082,
+                });
+                lir::Expr::Null
+            }
             SymbolKind::Temp => {
                 use brink_format::{DefinitionId, DefinitionTag};
                 use std::collections::hash_map::DefaultHasher;
@@ -669,6 +748,10 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
 /// expression ever reaches here. Reaching here with one of those three names
 /// means the author used it in expression position (`~ x = push(a, v)`),
 /// which is invalid since mutators return nothing (§5) — E056.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one-arm-per-stdlib-name dispatch; splitting would scatter the table"
+)]
 fn lower_t1b_stdlib_call(
     name: &str,
     args: &[hir::Expr],
@@ -768,6 +851,73 @@ fn lower_t1b_stdlib_call(
                 &args[0], ctx,
             ))))
         }
+        // T1c (docs/t1c-spec.md §3): the explicit call form `call(f, args…)` —
+        // dispatch through a function value where the callee is itself an
+        // expression. `f` is the callee; the remaining args are the supplied
+        // (val-only) params. Lowers to `CallValue(argc)`; the runtime op is
+        // the gradual-mode backstop (dispatch, arity, type faults). Under
+        // `types = strict` this form is now statically checked too (issue
+        // #733): `brink_analyzer::infer::body::infer_intrinsic` routes `call`
+        // through the same `Ty::Fn` value-call machinery as `#fn(...)`/direct
+        // calls (`check_value_call`), so a strict author reaches the runtime
+        // fault only through a genuinely `Unknown`/`Conflicted` callee (an
+        // escape error, `E065`/`E066`).
+        "call" => {
+            if args.is_empty() {
+                ctx.diagnostics.push(crate::Diagnostic {
+                    file: ctx.file,
+                    range: call_range,
+                    message: format!(
+                        "{}: `call` needs at least the callee function value \
+                         (`call(f, args…)`)",
+                        crate::DiagnosticCode::E031.title(),
+                    ),
+                    code: crate::DiagnosticCode::E031,
+                });
+                return Some(lir::Expr::Null);
+            }
+            let callee = lower_expr(&args[0], ctx);
+            let supplied = args[1..].iter().map(|a| lower_expr(a, ctx)).collect();
+            Some(lir::Expr::CallValue {
+                callee: Box::new(callee),
+                args: supplied,
+            })
+        }
+        // T1c-3 (docs/t1c-spec.md §3): `bind(f, args…)` — val-only currying
+        // over an existing function value. `f` is the callee; the remaining
+        // args are appended to its bound-arg row (consuming the head of its
+        // remaining param row) and a new function value is returned. Lowers
+        // to `BindValue(argc)`; over-binding and a non-function callee are
+        // runtime faults at the op — the gradual-mode backstop. Under
+        // `types = strict` this form is now statically checked too (issue
+        // #733): `brink_analyzer::infer::body::infer_intrinsic` routes `bind`
+        // through `check_bind_value` (the "consume the head of the param
+        // row" rule applied to a known `Ty::Fn` callee — over-binding
+        // becomes a compile-time `E063`, same code family as the direct-call
+        // arg/arity mismatches); `Unknown`/`Conflicted` callees still escape
+        // as `E065`/`E066`, same as `call` (see `resolve.rs::
+        // is_t1b_stdlib_name`).
+        "bind" => {
+            if args.is_empty() {
+                ctx.diagnostics.push(crate::Diagnostic {
+                    file: ctx.file,
+                    range: call_range,
+                    message: format!(
+                        "{}: `bind` needs at least the callee function value \
+                         (`bind(f, args…)`)",
+                        crate::DiagnosticCode::E031.title(),
+                    ),
+                    code: crate::DiagnosticCode::E031,
+                });
+                return Some(lir::Expr::Null);
+            }
+            let callee = lower_expr(&args[0], ctx);
+            let supplied = args[1..].iter().map(|a| lower_expr(a, ctx)).collect();
+            Some(lir::Expr::BindValue {
+                callee: Box::new(callee),
+                args: supplied,
+            })
+        }
         _ => None,
     }
 }
@@ -794,7 +944,55 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "int"
             | "float"
             | "string"
+            | "call"
+            | "bind"
     )
+}
+
+/// The pre-T1e ref-argument binding for a bare (single-segment) path —
+/// exactly [`lower_call_args`]'s original `hir::Expr::Path` arm, extracted
+/// so the T1e `hir::Expr::RefArg` arm can reuse it verbatim for the
+/// zero-segment case (`ref gold` binds exactly like unmarked `gold` always
+/// has).
+fn lower_ref_path_call_arg(
+    path: &hir::Path,
+    original: &hir::Expr,
+    ctx: &mut LowerCtx<'_>,
+) -> lir::CallArg {
+    let name = path_to_string(path);
+    if let Some(slot) = ctx.temp_slot(&name) {
+        let name_id = ctx.names.intern(&name);
+        return lir::CallArg::RefTemp(slot, name_id);
+    }
+    if let Some(info) = ctx.resolve_path(path.range) {
+        // A T1b block-scoped temp (`~ { … }`) passed by `ref` after its own
+        // block has closed — same #680 RCA as `lower_path`'s
+        // `SymbolKind::Temp` arm. Without this check `info.id` (the temp's
+        // `LocalVar`-tagged id, never registered as a real global) would be
+        // emitted as a `RefGlobal`, faulting at runtime as
+        // `UnresolvedGlobal` with no compile diagnostic.
+        if info.kind == SymbolKind::Temp && ctx.block_scoped_temp_names.contains(&name) {
+            ctx.diagnostics.push(crate::Diagnostic {
+                file: ctx.file,
+                range: path.range,
+                message: format!(
+                    "{}: `{name}` was declared in a `~ {{ … }}` block that has already \
+                     closed — block-scoped temps (docs/t1b-surface-spec.md §2) are only \
+                     visible for the rest of their own block",
+                    crate::DiagnosticCode::E082.title(),
+                ),
+                code: crate::DiagnosticCode::E082,
+            });
+            return lir::CallArg::Value(lir::Expr::Null);
+        }
+        let id = if info.kind == SymbolKind::List {
+            list_def_to_global_var(info.id)
+        } else {
+            info.id
+        };
+        return lir::CallArg::RefGlobal(id);
+    }
+    lir::CallArg::Value(lower_expr(original, ctx))
 }
 
 pub(super) fn lower_call_args(
@@ -808,22 +1006,26 @@ pub(super) fn lower_call_args(
             let is_ref = params.get(i).is_some_and(|p| p.is_ref);
             if is_ref {
                 match arg {
-                    hir::Expr::Path(path) => {
-                        let name = path_to_string(path);
-                        if let Some(slot) = ctx.temp_slot(&name) {
-                            let name_id = ctx.names.intern(&name);
-                            return lir::CallArg::RefTemp(slot, name_id);
+                    hir::Expr::Path(path) => lower_ref_path_call_arg(path, arg, ctx),
+                    // T1e-2 (docs/t1e-spec.md §2/§3, tracking #828): an
+                    // explicit `ref` marking a bare single-name path (`ref
+                    // gold`) is not a real path *projection* — zero
+                    // segments — so it binds exactly like today's unmarked
+                    // form. Anything with a real segment (dotted field,
+                    // `[…]` index, or any deeper mix) is a genuine T1e
+                    // projection, lowered for real via
+                    // `lower_ref_projection_arg` — the T1e-1 `E099` fence
+                    // this replaces. The analyzer's own durable-root/shape/
+                    // position checks already ran by the time lowering sees
+                    // it; `lower_ref_projection_arg` still falls back to the
+                    // fence if the root somehow doesn't resolve (defense in
+                    // depth, not the expected path).
+                    hir::Expr::RefArg(ra) => match ra.operand.as_ref() {
+                        hir::Expr::Path(path) if path.segments.len() == 1 => {
+                            lower_ref_path_call_arg(path, &ra.operand, ctx)
                         }
-                        if let Some(info) = ctx.resolve_path(path.range) {
-                            let id = if info.kind == SymbolKind::List {
-                                list_def_to_global_var(info.id)
-                            } else {
-                                info.id
-                            };
-                            return lir::CallArg::RefGlobal(id);
-                        }
-                        lir::CallArg::Value(lower_expr(arg, ctx))
-                    }
+                        _ => lower_ref_projection_arg(ra, ctx),
+                    },
                     _ => lir::CallArg::Value(lower_expr(arg, ctx)),
                 }
             } else {
@@ -831,6 +1033,83 @@ pub(super) fn lower_call_args(
             }
         })
         .collect()
+}
+
+/// One path-projection segment source, decomposed from the HIR operand tree
+/// (mirrors `brink-analyzer::ref_projection`'s private `decompose`/`Segment`
+/// shape — brink-ir can't depend on brink-analyzer, so this is its own
+/// small copy of the same walk).
+enum ProjSegmentSrc<'a> {
+    /// `.field` — a dotted field-access segment.
+    Field(&'a hir::Name),
+    /// `[index]` — an indexing segment; the subexpression is evaluated once
+    /// at `ref` creation (snapshot-at-creation, spec §1(1)).
+    Index(&'a hir::Expr),
+}
+
+/// Decompose an lvalue-shaped HIR expression into its root `Path` and its
+/// ordered segment chain. `None` if `expr` isn't lvalue-shaped at all — the
+/// analyzer's own `E080` already rejects that case before lowering ever
+/// sees it, so this is a defense-in-depth `None`, not an expected miss.
+fn decompose_projection(expr: &hir::Expr) -> Option<(&hir::Path, Vec<ProjSegmentSrc<'_>>)> {
+    match expr {
+        hir::Expr::Path(p) => {
+            // A multi-segment bare `Path` (`npc.hp`) is the TM-4b
+            // resolution-fallback shape: the analyzer resolves the *whole*
+            // path's range to the root variable, so every segment past the
+            // first is a field-access segment (same convention
+            // `ref_projection::decompose` documents).
+            let segments = p.segments[1..].iter().map(ProjSegmentSrc::Field).collect();
+            Some((p, segments))
+        }
+        hir::Expr::FieldAccess(fa) => {
+            let (root, mut segments) = decompose_projection(&fa.base)?;
+            segments.push(ProjSegmentSrc::Field(&fa.field));
+            Some((root, segments))
+        }
+        hir::Expr::Index(idx) => {
+            let (root, mut segments) = decompose_projection(&idx.base)?;
+            segments.push(ProjSegmentSrc::Index(&idx.index));
+            Some((root, segments))
+        }
+        _ => None,
+    }
+}
+
+/// Lower a real path-projection `ref` argument (≥1 segment) to
+/// [`lir::CallArg::RefProjection`] — first real lowering of the T1e
+/// projection surface (`docs/t1e-spec.md` §2/§3), replacing the T1e-1
+/// `E099` fence for this shape. Field segments lower to a literal string
+/// expression (the field name); index segments lower via ordinary
+/// [`lower_expr`] — both evaluated once, in source order, at the `ref`
+/// creation site (snapshot-at-creation, spec §1(1)); codegen pushes them in
+/// *reverse* so `Opcode::MakeProjection` can pop them back into source
+/// order.
+fn lower_ref_projection_arg(ra: &hir::RefArgExpr, ctx: &mut LowerCtx<'_>) -> lir::CallArg {
+    let Some((root, src_segments)) = decompose_projection(&ra.operand) else {
+        return lir::CallArg::Value(lower_ref_arg_fence(ra, ctx));
+    };
+    let Some(info) = ctx.resolve_path(root.range) else {
+        return lir::CallArg::Value(lower_ref_arg_fence(ra, ctx));
+    };
+    let root_id = if info.kind == SymbolKind::List {
+        list_def_to_global_var(info.id)
+    } else {
+        info.id
+    };
+    let segments = src_segments
+        .into_iter()
+        .map(|seg| match seg {
+            ProjSegmentSrc::Field(name) => lir::Expr::String(lir::StringExpr {
+                parts: vec![lir::StringPart::Literal(name.text.clone())],
+            }),
+            ProjSegmentSrc::Index(index_expr) => lower_expr(index_expr, ctx),
+        })
+        .collect();
+    lir::CallArg::RefProjection {
+        root: root_id,
+        segments,
+    }
 }
 
 pub fn path_to_string(path: &hir::Path) -> String {

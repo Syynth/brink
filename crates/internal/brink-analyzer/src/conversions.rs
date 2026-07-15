@@ -120,6 +120,8 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
         // T1c `#fn(target, args…)`: only the bound arguments are child
         // expressions — the target is a static `Path` field, same as `Call`.
         Expr::FnLiteral(fl) => fl.args.iter().collect(),
+        // T1e `ref lvalue-path`: only the operand is a child expression.
+        Expr::RefArg(ra) => vec![&ra.operand],
         Expr::String(s) => s
             .parts
             .iter()
@@ -222,7 +224,8 @@ mod tests {
         let parsed = brink_syntax::parse(src);
         let (hir, manifest, _diag) = lower(FileId(0), &parsed.tree());
         let (index, _diag) = crate::symbol_index(&[(FileId(0), &manifest)]);
-        let (resolutions, _diag) = crate::resolve(FileId(0), &manifest, &index);
+        let (resolutions, _diag) =
+            crate::resolve(FileId(0), &manifest, &index, &crate::ImportScope::default());
         (hir, (*index).clone(), (*resolutions).clone())
     }
 

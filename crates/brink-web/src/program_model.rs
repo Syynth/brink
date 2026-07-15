@@ -155,6 +155,49 @@ impl<'a> Resolver<'a> {
                 let parts: Vec<String> = fields.iter().map(|v| self.format_value(v)).collect();
                 format!("Record#{}{{{}}}", shape.0, parts.join(", "))
             }
+            // Function values (T1c, #700): a `#fn(…)` baked into a declaration
+            // default reaches the program model as a global's initial value.
+            Value::FnRef(target) => format!("fn {}", self.path(*target)),
+            Value::Closure(c) => {
+                let parts: Vec<String> = c
+                    .env
+                    .iter()
+                    .map(|e| {
+                        let mode = if e.is_ref { "ref" } else { "val" };
+                        format!(
+                            "{mode} {} = {}",
+                            self.name(e.name),
+                            self.format_value(&e.payload)
+                        )
+                    })
+                    .collect();
+                format!("fn {}({})", self.path(c.target), parts.join(", "))
+            }
+            // Handle values (T1d, `docs/t1d-spec.md` §6): no literal syntax
+            // constructs one, but this arm keeps `format_value` exhaustive —
+            // same display form as the runtime's authoritative `string(h)`.
+            Value::Handle { kind, id } => format!("handle {}#{id}", self.name(*kind)),
+            // Projection values (T1e, `docs/t1e-spec.md` §4): same display
+            // form as the runtime's authoritative `string(p)` — `ref
+            // <root><path>`.
+            Value::Projection(p) => {
+                let mut out = format!("ref {}", self.gname(p.cell));
+                for seg in &p.segments {
+                    match seg {
+                        brink_format::ProjSegment::Index(n) => {
+                            out.push('[');
+                            out.push_str(&n.to_string());
+                            out.push(']');
+                        }
+                        brink_format::ProjSegment::Key(v) => {
+                            out.push('[');
+                            out.push_str(&self.format_value(v));
+                            out.push(']');
+                        }
+                    }
+                }
+                out
+            }
         }
     }
 }
@@ -384,7 +427,7 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         Opcode::TunnelCall(id) => format!("tunnel_call {}", r.path(*id)),
         Opcode::TunnelReturn => "tunnel_return".to_owned(),
         Opcode::TunnelCallVariable => "tunnel_call_variable".to_owned(),
-        Opcode::CallVariable => "call_variable".to_owned(),
+        Opcode::CallVariable(argc) => format!("call_variable argc={argc}"),
 
         // Threads
         Opcode::ThreadCall(id) => format!("thread_call {}", r.path(*id)),
@@ -496,6 +539,26 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         Opcode::ConvertInt => "convert_int".to_owned(),
         Opcode::ConvertFloat => "convert_float".to_owned(),
         Opcode::ConvertString => "convert_string".to_owned(),
+
+        // Function values (T1c, #700)
+        Opcode::PushFnRef(id) => format!("push_fn_ref {}", r.path(*id)),
+        Opcode::MakeClosure {
+            target,
+            bound_count,
+        } => format!("make_closure {} bound={bound_count}", r.path(*target)),
+        Opcode::CallValue(argc) => format!("call_value argc={argc}"),
+        Opcode::BindValue(argc) => format!("bind_value argc={argc}"),
+
+        // Path projections (T1e)
+        Opcode::MakeProjection {
+            root,
+            segment_count,
+        } => format!(
+            "make_projection {} segments={segment_count}",
+            r.gname(*root)
+        ),
+        Opcode::ProjRead => "proj_read".to_owned(),
+        Opcode::ProjWrite => "proj_write".to_owned(),
     }
 }
 

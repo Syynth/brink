@@ -6,7 +6,7 @@
 use rowan::TextRange;
 
 use crate::host_manifest::DocBlock;
-use crate::symbols::{DeclaredSymbol, LocalSymbol, RefKind, UnresolvedRef};
+use crate::symbols::{DeclaredSymbol, LocalSymbol, RefKind, UnresolvedRef, VisibilityMark};
 use crate::{Diagnostic, DiagnosticCode, FileId, ParamInfo, Scope, SymbolKind, SymbolManifest};
 
 // ─── Read-only scope ────────────────────────────────────────────────
@@ -111,6 +111,19 @@ pub trait LowerSink {
         doc: Option<DocBlock>,
     );
 
+    /// Attach an explicit `#@private`/`#@public` visibility override (M-2,
+    /// docs/modules-spec.md §4) to the most recently declared symbol of
+    /// `kind` named `name`. A no-op by default; declarations call it after
+    /// their directive run is parsed (which happens after the `declare_*`
+    /// call). Keyed by `(kind, name)`, not position, so it is robust to the
+    /// nested-declaration order of knot/stitch bodies.
+    fn set_visibility(&mut self, _kind: SymbolKind, _name: &str, _visibility: VisibilityMark) {}
+
+    /// Attach a `#@was(old_name)` rename record (M-3, docs/modules-spec.md
+    /// §5) to the most recently declared symbol of `kind` named `name`. A
+    /// no-op by default, same calling convention as [`set_visibility`].
+    fn set_was(&mut self, _kind: SymbolKind, _name: &str, _old_name: String, _range: TextRange) {}
+
     /// Register a local variable (param or temp) scoped to a container.
     fn add_local(&mut self, local: LocalSymbol);
 
@@ -175,6 +188,8 @@ impl LowerSink for EffectSink {
             range,
             params,
             detail,
+            visibility: None,
+            was: None,
         };
         match kind {
             SymbolKind::Knot => self.manifest.knots.push(sym),
@@ -191,6 +206,42 @@ impl LowerSink for EffectSink {
         }
         if let Some(doc) = doc {
             self.manifest.docs.insert((kind, name.to_string()), doc);
+        }
+    }
+
+    fn set_visibility(&mut self, kind: SymbolKind, name: &str, visibility: VisibilityMark) {
+        let vec = match kind {
+            SymbolKind::Knot => &mut self.manifest.knots,
+            SymbolKind::Stitch => &mut self.manifest.stitches,
+            SymbolKind::Variable => &mut self.manifest.variables,
+            SymbolKind::Constant => &mut self.manifest.constants,
+            SymbolKind::List => &mut self.manifest.lists,
+            SymbolKind::Struct => &mut self.manifest.structs,
+            SymbolKind::External => &mut self.manifest.externals,
+            SymbolKind::Label | SymbolKind::ListItem | SymbolKind::Param | SymbolKind::Temp => {
+                return;
+            }
+        };
+        if let Some(sym) = vec.iter_mut().rev().find(|s| s.name == name) {
+            sym.visibility = Some(visibility);
+        }
+    }
+
+    fn set_was(&mut self, kind: SymbolKind, name: &str, old_name: String, range: TextRange) {
+        let vec = match kind {
+            SymbolKind::Knot => &mut self.manifest.knots,
+            SymbolKind::Stitch => &mut self.manifest.stitches,
+            SymbolKind::Variable => &mut self.manifest.variables,
+            SymbolKind::Constant => &mut self.manifest.constants,
+            SymbolKind::List => &mut self.manifest.lists,
+            SymbolKind::Struct => &mut self.manifest.structs,
+            SymbolKind::External => &mut self.manifest.externals,
+            SymbolKind::Label | SymbolKind::ListItem | SymbolKind::Param | SymbolKind::Temp => {
+                return;
+            }
+        };
+        if let Some(sym) = vec.iter_mut().rev().find(|s| s.name == name) {
+            sym.was = Some((old_name, range));
         }
     }
 

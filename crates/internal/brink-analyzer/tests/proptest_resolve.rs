@@ -3,6 +3,19 @@
     clippy::cast_possible_truncation,
     clippy::needless_pass_by_value
 )]
+// Issue #801: this crate's `clippy.toml` disallows bare `HashMap`/`HashSet`
+// so an iteration-order leak into production output can't ship quietly.
+// This file's three `HashSet`s are all membership-only (`.contains()` /
+// `.insert()`-as-duplicate-guard on a `prop_assert!`) and never iterated —
+// order-free by construction — but `rowan::TextRange`/`DiagnosticCode`
+// don't implement `Ord`, so routing them through the crate's `LookupSet`
+// alias (`pub(crate)`, invisible to this external test-binary crate) or a
+// `BTreeSet` both need trait changes out of this issue's scope. A file-level
+// allow here (test-only code, not production output) is the narrower fix.
+#![allow(
+    clippy::disallowed_types,
+    reason = "membership-only HashSets, audited order-free — see file doc"
+)]
 
 //! Property-based tests for name resolution.
 //!
@@ -63,6 +76,20 @@ fn arb_ref_kind() -> impl Strategy<Value = RefKind> {
 
 /// Strategy that generates a manifest with 1-5 knots, 0-3 variables,
 /// 0-2 lists with items, and 0-8 unresolved refs that may or may not match.
+/// A `DeclaredSymbol` with only name/range set — every other field at its
+/// "nothing declared" default. Shared by every `arb_manifest` construction
+/// site below to keep the strategy closure short.
+fn decl_sym(name: String, range: TextRange) -> DeclaredSymbol {
+    DeclaredSymbol {
+        name,
+        range,
+        params: Vec::new(),
+        detail: None,
+        visibility: None,
+        was: None,
+    }
+}
+
 fn arb_manifest() -> impl Strategy<Value = SymbolManifest> {
     (
         prop::collection::vec(arb_ident(), 1..=5), // knot names
@@ -104,53 +131,39 @@ fn arb_manifest() -> impl Strategy<Value = SymbolManifest> {
                 let mut offset = 0u32;
 
                 for name in &knots {
-                    manifest.knots.push(DeclaredSymbol {
-                        name: name.clone(),
-                        range: range(offset, name.len() as u32),
-                        params: Vec::new(),
-                        detail: None,
-                    });
+                    manifest
+                        .knots
+                        .push(decl_sym(name.clone(), range(offset, name.len() as u32)));
                     offset += name.len() as u32 + 1;
                 }
 
                 for name in &vars {
-                    manifest.variables.push(DeclaredSymbol {
-                        name: name.clone(),
-                        range: range(offset, name.len() as u32),
-                        params: Vec::new(),
-                        detail: None,
-                    });
+                    manifest
+                        .variables
+                        .push(decl_sym(name.clone(), range(offset, name.len() as u32)));
                     offset += name.len() as u32 + 1;
                 }
 
                 for (list_name, items) in &lists {
-                    manifest.lists.push(DeclaredSymbol {
-                        name: list_name.clone(),
-                        range: range(offset, list_name.len() as u32),
-                        params: Vec::new(),
-                        detail: None,
-                    });
+                    manifest.lists.push(decl_sym(
+                        list_name.clone(),
+                        range(offset, list_name.len() as u32),
+                    ));
                     offset += list_name.len() as u32 + 1;
 
                     for item in items {
                         let qualified = format!("{list_name}.{item}");
-                        manifest.list_items.push(DeclaredSymbol {
-                            name: qualified,
-                            range: range(offset, item.len() as u32),
-                            params: Vec::new(),
-                            detail: None,
-                        });
+                        manifest
+                            .list_items
+                            .push(decl_sym(qualified, range(offset, item.len() as u32)));
                         offset += item.len() as u32 + 1;
                     }
                 }
 
                 for name in &externals {
-                    manifest.externals.push(DeclaredSymbol {
-                        name: name.clone(),
-                        range: range(offset, name.len() as u32),
-                        params: Vec::new(),
-                        detail: None,
-                    });
+                    manifest
+                        .externals
+                        .push(decl_sym(name.clone(), range(offset, name.len() as u32)));
                     offset += name.len() as u32 + 1;
                 }
 
@@ -209,6 +222,10 @@ fn empty_hir() -> HirFile {
         structs: Vec::new(),
         externals: Vec::new(),
         includes: Vec::new(),
+        module: None,
+        imports: Vec::new(),
+        visibility: Vec::new(),
+        was_directives: Vec::new(),
     }
 }
 
@@ -358,6 +375,8 @@ proptest! {
                 range: range(0, name.len() as u32),
                         params: Vec::new(),
                         detail: None,
+                        visibility: None,
+                        was: None,
                     }],
             ..Default::default()
         };
@@ -367,6 +386,8 @@ proptest! {
                 range: range(100, name.len() as u32),
                         params: Vec::new(),
                         detail: None,
+                        visibility: None,
+                        was: None,
                     }],
             ..Default::default()
         };
@@ -403,6 +424,8 @@ proptest! {
                 range: range(0, name.len() as u32),
                         params: Vec::new(),
                         detail: None,
+                        visibility: None,
+                        was: None,
                     }],
             ..Default::default()
         };
@@ -412,6 +435,8 @@ proptest! {
                 range: range(100, name.len() as u32),
                         params: Vec::new(),
                         detail: None,
+                        visibility: None,
+                        was: None,
                     }],
             ..Default::default()
         };
@@ -456,6 +481,8 @@ proptest! {
                 range: range(offset, name.len() as u32),
                         params: Vec::new(),
                         detail: None,
+                        visibility: None,
+                        was: None,
                     });
             offset += name.len() as u32 + 1;
         }

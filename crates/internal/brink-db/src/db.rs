@@ -1,8 +1,8 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use brink_analyzer::{
-    AnalysisOptions, AnalysisResult, BodyTypes, InferenceResult, InferredSig, Sig,
+    AnalysisOptions, AnalysisResult, BodyTypes, InferenceResult, InferredSig, Sig, SymbolMeta,
 };
 use brink_format::DefinitionId;
 use brink_ir::suppressions::Suppressions;
@@ -11,12 +11,15 @@ use brink_syntax::Parse;
 use salsa::Setter as _;
 use tracing::debug;
 
+use crate::determinism::LookupMap;
 use crate::queries::{
-    BrinkDatabase, CompileProduct, DefKey, LirProduct, ProjectInput, ResolvedProject, SourceFile,
-    analysis_query, diagnostics_query, include_graph_query, infer_body_query,
-    inferred_signature_query, lir_query, lowered_query, parse_query, per_file_diagnostics_query,
-    resolutions_index_query, resolve_query, signature_query, story_data_query, suppressions_query,
-    symbol_index_query, type_diagnostics_query, type_inference_query,
+    BrinkDatabase, CompileProduct, DefKey, KnotChunkKey, LirProduct, ProjectInput, ResolvedProject,
+    SourceFile, analysis_query, call_site_diagnostics_query, call_site_metas_query,
+    diagnostics_query, has_errors_query, include_graph_query, infer_body_query,
+    inferred_signature_query, lir_knot_chunk_query, lir_prelude_decls_query, lir_query,
+    lowered_query, parse_query, per_file_diagnostics_query, resolutions_index_query, resolve_query,
+    signature_query, story_data_query, suppressions_query, symbol_index_query,
+    type_diagnostics_query, type_inference_query, value_meta_query,
 };
 
 /// Stateful incremental project database.
@@ -32,9 +35,9 @@ pub struct ProjectDb {
     project: ProjectInput,
     /// Live files only — every public accessor reads through this map, so
     /// tombstoned inputs (see `retired`) are invisible to consumers.
-    files: HashMap<FileId, SourceFile>,
-    path_to_id: HashMap<String, FileId>,
-    id_to_path: HashMap<FileId, String>,
+    files: LookupMap<FileId, SourceFile>,
+    path_to_id: LookupMap<String, FileId>,
+    id_to_path: LookupMap<FileId, String>,
     /// Tombstoned salsa inputs from removed files, keyed by path — the
     /// durable path→`FileId` identity store (#536). Salsa never forgets an
     /// input, so [`remove_file`](Self::remove_file) parks the `SourceFile`
@@ -42,7 +45,7 @@ pub struct ProjectDb {
     /// same path reinstates it, reusing its original `FileId` so the old
     /// per-file memos are overwritten in place rather than leaking as
     /// permanently unreachable dead entries (rust-analyzer precedent).
-    retired: HashMap<String, SourceFile>,
+    retired: LookupMap<String, SourceFile>,
     next_id: u32,
 }
 
@@ -54,10 +57,10 @@ impl ProjectDb {
         Self {
             salsa,
             project,
-            files: HashMap::new(),
-            path_to_id: HashMap::new(),
-            id_to_path: HashMap::new(),
-            retired: HashMap::new(),
+            files: LookupMap::new(),
+            path_to_id: LookupMap::new(),
+            id_to_path: LookupMap::new(),
+            retired: LookupMap::new(),
             next_id: 0,
         }
     }
@@ -188,10 +191,11 @@ impl ProjectDb {
     }
 
     /// Return file IDs in topological include order (included files before
-    /// the files that include them), matching ink's `INCLUDE` paste semantics.
+    /// the files that include them), matching ink's `INCLUDE` paste
+    /// semantics. Only `entry` and files it transitively `INCLUDE`s are
+    /// returned — see [`IncludeGraph::topological_order`] (issue #815).
     pub fn file_ids_topo(&self, entry: FileId) -> Vec<FileId> {
-        let all: Vec<_> = self.file_ids().collect();
-        self.include_graph().topological_order(entry, &all)
+        self.include_graph().topological_order(entry)
     }
 
     /// Get the parse tree for a file.
@@ -358,6 +362,34 @@ impl ProjectDb {
         Some(per_file_diagnostics_query(&self.salsa, self.project, file))
     }
 
+    /// One file's VAR/CONST/LIST initializer/doc enrichment (issue #750 /
+    /// FG-3 completion) — purely presentational `symbol_meta` entries, no
+    /// diagnostics. `None` for an unknown file id. A body edit in a
+    /// *different* file leaves this `Arc`'s pointer identity untouched.
+    pub fn file_value_meta(&self, id: FileId) -> Option<Arc<BTreeMap<DefinitionId, SymbolMeta>>> {
+        let file = *self.files.get(&id)?;
+        Some(value_meta_query(&self.salsa, self.project, file))
+    }
+
+    /// One file's external call-site literal checks (`E041`/`E042`, issue
+    /// #750 / FG-3 completion). `None` for an unknown file id; empty when
+    /// the `external_check` severity is `Off`. A body edit in a *different*
+    /// file leaves this `Arc`'s pointer identity untouched.
+    pub fn file_call_site_diagnostics(&self, id: FileId) -> Option<Arc<Vec<Diagnostic>>> {
+        let file = *self.files.get(&id)?;
+        Some(call_site_diagnostics_query(&self.salsa, self.project, file))
+    }
+
+    /// The range-free, name-keyed external metas feeding the per-file
+    /// call-site checks (issue #750 / FG-3 completion) — the cutoff seam
+    /// between the (often re-executed, full-ranged-index-reading)
+    /// enrichment pass and every file's call-site memo. Exposed for the
+    /// dependency-edge tests; pointer identity across an edit proves the
+    /// seam backdated.
+    pub fn call_site_metas(&self) -> Arc<BTreeMap<String, SymbolMeta>> {
+        call_site_metas_query(&self.salsa, self.project)
+    }
+
     /// Per-file diagnostics including this file's share of analysis
     /// diagnostics (layer 3, `diagnostics(FileId)`). Raw — no suppression
     /// filtering.
@@ -404,6 +436,46 @@ impl ProjectDb {
     pub fn lir_product(&self) -> Option<&LirProduct> {
         self.project.entry(&self.salsa)?;
         Some(lir_query(&self.salsa, self.project))
+    }
+
+    /// Whether the project has at least one Error-severity diagnostic after
+    /// suppression filtering (issue #791 / FG-4a) — the narrow boolean
+    /// projection [`lir_product`](Self::lir_product)'s gate reads instead of
+    /// the full diagnostics vector. `false` (never `None`) when no entry
+    /// point is set, matching `partition_diagnostics`'s empty-`errors`
+    /// default in that case. Exposed for the dependency-edge tests; a
+    /// diagnostics-content edit that leaves this boolean unchanged proves
+    /// the cutoff seam backdated.
+    pub fn has_errors(&self) -> bool {
+        has_errors_query(&self.salsa, self.project)
+    }
+
+    /// FG-4d non-re-execution probe (issue #830): the `Arc<ScopeChunk>` the
+    /// per-knot LIR chunk memo stores for the `knot_index`-th knot of `file`.
+    /// `Arc::ptr_eq` on the result across an edit proves the memo validated
+    /// without re-executing — salsa only hands back the same allocation when
+    /// a query's inputs (this file's HIR, the project resolutions, and the
+    /// struct-shape projection) are all unchanged. Exposed for the
+    /// dependency-edge tests, mirroring [`resolutions_index`](Self::resolutions_index).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn knot_chunk(&self, file: FileId, knot_index: u32) -> Arc<brink_ir::lir::ScopeChunk> {
+        let key = KnotChunkKey::new(&self.salsa, file, knot_index);
+        lir_knot_chunk_query(&self.salsa, self.project, key).chunk
+    }
+
+    /// FG-4e non-re-execution probe (issue #839): the
+    /// `Arc<brink_ir::lir::PreludeDecls>` the whole-project prelude-decls
+    /// memo stores. `Arc::ptr_eq` on the result across an edit proves the
+    /// memo validated without re-executing — salsa only hands back the same
+    /// allocation when every entry-reachable file's [decl-only HIR
+    /// projection](crate::queries::PreludeDeclsResult) is unchanged, which
+    /// holds across a knot-body-only edit. Exposed for the dependency-edge
+    /// tests, mirroring [`knot_chunk`](Self::knot_chunk).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn lir_prelude_decls(&self) -> Arc<brink_ir::lir::PreludeDecls> {
+        lir_prelude_decls_query(&self.salsa, self.project).decls
     }
 
     /// Whole-project compile to [`brink_format::StoryData`] (layer 3,
@@ -883,5 +955,733 @@ mod type_inference_tests {
             .expect("heal knot indexed");
         let body = db.infer_body(heal).expect("heal has an inferable body");
         assert_eq!(body.params[0].1.display(), "int");
+    }
+}
+
+#[cfg(test)]
+mod module_tests {
+    //! M-1 modules (docs/modules-spec.md §1/§5): end-to-end reachability of
+    //! module-qualified identity through the same public `ProjectDb`
+    //! symbol-index surface the compiler (and IDE) use — the path that feeds
+    //! codegen and the checked-in `.inkb`.
+    use super::ProjectDb;
+    use brink_ir::DiagnosticCode;
+
+    fn knot_id(db: &ProjectDb, name: &str) -> u64 {
+        db.symbol_index()
+            .by_name
+            .get(name)
+            .and_then(|ids| ids.first())
+            .map(|id| id.to_raw())
+            .expect("knot indexed")
+    }
+
+    #[test]
+    fn undeclared_file_keeps_bare_identity() {
+        // The identity gate, exercised through the real db pipeline: an
+        // undeclared single-file module hashes exactly as a bare-name build.
+        // Byte-exact identity of a knot in an undeclared file is pinned in
+        // the analyzer's `known_good_bare_definition_ids`; here we prove the
+        // db path itself resolves an undeclared file to a *non-qualifying*
+        // module — two undeclared files with different stems hash the knot
+        // identically (the stem never enters the hash).
+        let mut one = ProjectDb::new();
+        one.set_file("story.ink", "== start ==\nHi\n-> DONE\n".to_owned());
+        let mut other = ProjectDb::new();
+        other.set_file("elsewhere.ink", "== start ==\nHi\n-> DONE\n".to_owned());
+        assert_eq!(
+            knot_id(&one, "start"),
+            knot_id(&other, "start"),
+            "two undeclared files (different stems) hash the knot identically"
+        );
+    }
+
+    #[test]
+    fn declared_module_qualifies_identity_through_db() {
+        let mut bare = ProjectDb::new();
+        bare.set_file("story.ink", "== start ==\nHi\n-> DONE\n".to_owned());
+
+        let mut declared = ProjectDb::new();
+        declared.set_file(
+            "story.ink",
+            "#@module(quest)\n== start ==\nHi\n-> DONE\n".to_owned(),
+        );
+
+        assert_ne!(
+            knot_id(&bare, "start"),
+            knot_id(&declared, "start"),
+            "declaring a module must qualify (change) the knot's DefinitionId"
+        );
+    }
+
+    #[test]
+    fn included_file_inherits_module_identity() {
+        // Standalone `part.ink` (undeclared) vs the same file INCLUDE-glued
+        // under a declaring head — the included knot's identity must follow
+        // the head's module.
+        let mut standalone = ProjectDb::new();
+        standalone.set_file("part.ink", "== helper ==\nHi\n-> DONE\n".to_owned());
+
+        let mut glued = ProjectDb::new();
+        glued.set_file(
+            "head.ink",
+            "#@module(quest)\nINCLUDE part.ink\n-> helper\n".to_owned(),
+        );
+        glued.set_file("part.ink", "== helper ==\nHi\n-> DONE\n".to_owned());
+        glued.set_entry("head.ink");
+
+        assert_ne!(
+            knot_id(&standalone, "helper"),
+            knot_id(&glued, "helper"),
+            "an INCLUDE-glued file inherits the includer's declared module"
+        );
+    }
+
+    #[test]
+    fn stem_collision_with_declared_module_is_e085_through_db() {
+        let mut db = ProjectDb::new();
+        // `a.ink` declares module `shared`; `shared.ink` is an undeclared
+        // file whose stem is *also* `shared` — the forbidden footgun.
+        db.set_file("a.ink", "#@module(shared)\n== a_knot ==\nHi\n".to_owned());
+        db.set_file("shared.ink", "== other ==\nHi\n".to_owned());
+
+        let codes: Vec<_> = db
+            .symbol_index_diagnostics()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E085),
+            "expected E085 stem collision, got {codes:?}"
+        );
+    }
+
+    /// End-to-end reachability for M-2 cross-module visibility (§4/§7): a
+    /// `#@private` knot in declared module `quest`, diverted to from a
+    /// different declared module `town`, surfaces `E087` through the same
+    /// production diagnostics path the compiler/studio read.
+    #[test]
+    fn private_cross_module_reference_is_e087_through_db() {
+        let mut db = ProjectDb::new();
+        db.set_file(
+            "quest.ink",
+            "#@module(quest)\n== ambush ==\n#@private\nGotcha!\n-> DONE\n".to_owned(),
+        );
+        let town = db.set_file(
+            "town.ink",
+            "#@module(town)\n== square ==\nHi\n-> ambush\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(town)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E087),
+            "expected E087 private-cross-module reference, got {codes:?}"
+        );
+    }
+
+    /// An explicitly `#@public` knot in another declared module, diverted to
+    /// from a file that **imports** it, resolves cleanly — no E087 (public,
+    /// visibility-keyed) and no E025 (the import licenses the crossing, §2).
+    #[test]
+    fn imported_public_cross_module_reference_is_clean() {
+        let mut db = ProjectDb::new();
+        db.set_file(
+            "quest.ink",
+            "#@module(quest)\n== ambush ==\n#@public\nGotcha!\n-> DONE\n".to_owned(),
+        );
+        let town = db.set_file(
+            "town.ink",
+            "#@module(town)\nIMPORT { ambush } FROM quest\n== square ==\nHi\n-> ambush\n"
+                .to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(town)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            !codes.contains(&DiagnosticCode::E087),
+            "public cross-module reference must not be E087, got {codes:?}"
+        );
+        assert!(
+            !codes.contains(&DiagnosticCode::E025),
+            "an imported public cross-module reference must not be E025, got {codes:?}"
+        );
+    }
+
+    /// M-2c (§2): a *public* knot in another **declared** module, referenced
+    /// from a file that did **not** `IMPORT` it, is `E025` — names cross
+    /// module boundaries only via import. Bringing the name in (bare import)
+    /// clears it (proven by `imported_public_cross_module_reference_is_clean`).
+    #[test]
+    fn public_cross_module_reference_without_import_is_e025() {
+        let mut db = ProjectDb::new();
+        db.set_file(
+            "quest.ink",
+            "#@module(quest)\n== ambush ==\n#@public\nGotcha!\n-> DONE\n".to_owned(),
+        );
+        let town = db.set_file(
+            "town.ink",
+            "#@module(town)\n== square ==\nHi\n-> ambush\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(town)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E025),
+            "a non-imported public cross-module reference must be E025, got {codes:?}"
+        );
+    }
+
+    /// The qualified import form (`IMPORT quest`) also licenses references to
+    /// the module's exports — no E025.
+    #[test]
+    fn qualified_import_licenses_cross_module_reference() {
+        let mut db = ProjectDb::new();
+        db.set_file(
+            "quest.ink",
+            "#@module(quest)\n== ambush ==\n#@public\nGotcha!\n-> DONE\n".to_owned(),
+        );
+        let town = db.set_file(
+            "town.ink",
+            "#@module(town)\nIMPORT quest\n== square ==\nHi\n-> ambush\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(town)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            !codes.contains(&DiagnosticCode::E025),
+            "a qualified import must license the crossing, got {codes:?}"
+        );
+    }
+
+    /// The import-required restriction is keyed on the *target's* module being
+    /// **declared**: a plain multi-file project with no `#@module` anywhere is
+    /// one big default-public module (§3), so a cross-*file* bare reference
+    /// keeps resolving with no E025 — the byte-identical legacy guarantee.
+    #[test]
+    fn cross_file_reference_in_undeclared_project_is_not_e025() {
+        let mut db = ProjectDb::new();
+        // `main.ink` INCLUDEs `helpers.ink`; neither declares a module.
+        db.set_file(
+            "helpers.ink",
+            "== helper ==\nHelping.\n-> DONE\n".to_owned(),
+        );
+        let main = db.set_file(
+            "main.ink",
+            "INCLUDE helpers.ink\n== start ==\nHi\n-> helper\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(main)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            !codes.contains(&DiagnosticCode::E025),
+            "an undeclared multi-file project must not trip the import gate, got {codes:?}"
+        );
+    }
+
+    /// M-2c (§2): a `IMPORT quest` (qualified) whose module name also names a
+    /// knot visible bare in the same file makes `quest.y` ambiguous — `E091`.
+    #[test]
+    fn qualified_import_colliding_with_definition_is_e091() {
+        let mut db = ProjectDb::new();
+        db.set_file(
+            "quest.ink",
+            "#@module(quest)\n== ambush ==\n#@public\nGotcha!\n-> DONE\n".to_owned(),
+        );
+        // `town` has its own knot named `quest` AND imports module `quest`.
+        let town = db.set_file(
+            "town.ink",
+            "#@module(town)\nIMPORT quest\n== quest ==\nHi\n-> DONE\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(town)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E091),
+            "expected E091 qualified module-vs-definition ambiguity, got {codes:?}"
+        );
+    }
+
+    /// The `E092` redundant-override warning is reachable end-to-end: a
+    /// `#@private` on a definition in a **declared** module restates that
+    /// module's private-by-default (§4), so it is redundant.
+    #[test]
+    fn redundant_private_in_declared_module_is_e092() {
+        let mut db = ProjectDb::new();
+        let f = db.set_file(
+            "quest.ink",
+            "#@module(quest)\n== ambush ==\n#@private\nHi\n-> DONE\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(f)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E092),
+            "expected E092 redundant-override warning, got {codes:?}"
+        );
+    }
+
+    /// A `#@public` on a definition in an **undeclared** stem-module restates
+    /// the public-by-default (§4) — also redundant (`E092`).
+    #[test]
+    fn redundant_public_in_undeclared_module_is_e092() {
+        let mut db = ProjectDb::new();
+        let f = db.set_file(
+            "story.ink",
+            "== ambush ==\n#@public\nHi\n-> DONE\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(f)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E092),
+            "expected E092 redundant-override warning, got {codes:?}"
+        );
+    }
+
+    /// A module importing itself surfaces `E090` through the db.
+    #[test]
+    fn self_import_is_e090_through_db() {
+        let mut db = ProjectDb::new();
+        let f = db.set_file(
+            "quest.ink",
+            "#@module(quest)\nIMPORT quest\n== start ==\nHi\n-> DONE\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(f)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E090),
+            "expected E090 self-import, got {codes:?}"
+        );
+    }
+
+    /// A bare import naming a definition the (declared) module does not
+    /// publicly export surfaces `E088`; a repeated local name surfaces
+    /// `E089`.
+    #[test]
+    fn unresolved_and_duplicate_bare_import_through_db() {
+        let mut db = ProjectDb::new();
+        db.set_file(
+            "quest.ink",
+            "#@module(quest)\n== ambush ==\n#@public\nHi\n-> DONE\n".to_owned(),
+        );
+        // `ambush` twice (duplicate local name) and `nope` (not exported).
+        let town = db.set_file(
+            "town.ink",
+            "#@module(town)\nIMPORT { ambush, ambush, nope } FROM quest\n== square ==\nHi\n-> DONE\n"
+                .to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(town)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E089),
+            "expected E089 duplicate import, got {codes:?}"
+        );
+        assert!(
+            codes.contains(&DiagnosticCode::E088),
+            "expected E088 unresolved import, got {codes:?}"
+        );
+    }
+
+    /// A single file declaring `#@module(quest)` whose knots reference
+    /// sibling definitions bare (issue #795): a self-reference inside the
+    /// declared module must never be E087, no matter which of the file's
+    /// symbols the index's `HashMap` happens to yield first (locals carry
+    /// `module: None` and must not poison the file's module attribution).
+    /// The bug was nondeterministic — repeated fresh-db runs (fresh
+    /// `HashMap` seeds each time) cover the iteration-order space; the
+    /// order-independent analyzer-level regression lives in
+    /// `brink-analyzer`'s `modules::tests`.
+    #[test]
+    fn single_file_declared_module_self_reference_is_not_e087() {
+        for _ in 0..16 {
+            let mut db = ProjectDb::new();
+            let f = db.set_file(
+                "main.ink",
+                "#@module(quest)\nVAR target = -> ambush\n-> ambush\n== ambush ==\n~ temp x = 1\nGotcha!\n-> reader\n== reader ==\nDone.\n-> DONE\n".to_owned(),
+            );
+
+            let codes: Vec<_> = db
+                .diagnostics(f)
+                .unwrap_or_default()
+                .iter()
+                .map(|d| d.code)
+                .collect();
+            assert!(
+                !codes.contains(&DiagnosticCode::E087),
+                "same-module self-reference must not be E087, got {codes:?}"
+            );
+        }
+    }
+
+    /// A file that belongs to a declared module but declares no top-level
+    /// symbols of its own (only root content) must still resolve to that
+    /// module — a referrer in the *same* declared module referencing a
+    /// `#@private` sibling def must not be wrongly flagged `E087` just
+    /// because the referrer's own module couldn't be derived from its
+    /// (nonexistent) symbols.
+    #[test]
+    fn symbol_less_file_in_same_module_is_not_e087() {
+        let mut db = ProjectDb::new();
+        db.set_file(
+            "a.ink",
+            "#@module(town)\n== square ==\n#@private\nGotcha!\n-> DONE\n".to_owned(),
+        );
+        // `b.ink` declares the same module but has only root content — no
+        // knot/VAR/CONST/LIST/STRUCT of its own.
+        let b = db.set_file("b.ink", "#@module(town)\n-> square\n".to_owned());
+
+        let codes: Vec<_> = db
+            .diagnostics(b)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            !codes.contains(&DiagnosticCode::E087),
+            "same-module reference from a symbol-less file must not be E087, got {codes:?}"
+        );
+    }
+
+    /// A symbol-less file (only root content) that imports its own declared
+    /// module must still trip `E090` self-import — the same derivation gap
+    /// that caused the `E087` false positive above also caused this false
+    /// negative (the referrer's own module resolved to `None`).
+    #[test]
+    fn symbol_less_file_self_import_is_e090() {
+        let mut db = ProjectDb::new();
+        let f = db.set_file(
+            "quest.ink",
+            "#@module(quest)\nIMPORT quest\n-> DONE\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .diagnostics(f)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E090),
+            "expected E090 self-import from a symbol-less file, got {codes:?}"
+        );
+    }
+
+    // ── M-2c cross-module collisions (issue #784, decision-log
+    // "Cross-module name collisions" 2026-07-14) ────────────────────────
+
+    fn brink_opts() -> brink_analyzer::AnalysisOptions {
+        brink_analyzer::AnalysisOptions {
+            dialect: brink_analyzer::Dialect::Brink,
+            ..brink_analyzer::AnalysisOptions::default()
+        }
+    }
+
+    /// Two **different** declared modules exporting the same public knot
+    /// name now **coexist** under `dialect = brink` (M-2d, issue #790 —
+    /// the E096 stopgap relaxed): no diagnostic, and both definitions land
+    /// in the index, through the same `symbol_index_query` path the
+    /// compiler/studio read.
+    #[test]
+    fn cross_declared_module_duplicate_knot_coexists_under_brink() {
+        let mut db = ProjectDb::new();
+        db.set_analysis_options(brink_opts());
+        db.set_file(
+            "quest.ink",
+            "#@module(quest)\n== start ==\n#@public\nHi from quest\n-> DONE\n".to_owned(),
+        );
+        db.set_file(
+            "town.ink",
+            "#@module(town)\n== start ==\n#@public\nHi from town\n-> DONE\n".to_owned(),
+        );
+
+        let diags = db.symbol_index_diagnostics();
+        assert!(
+            diags.iter().all(|d| d.code != DiagnosticCode::E096),
+            "E096 is relaxed — cross-declared-module homonyms must coexist, got {diags:?}"
+        );
+        // Both public `start` knots survive in the index under the shared
+        // bare name — the raw material import-scoped resolution binds
+        // per-importer.
+        let index = db.symbol_index();
+        assert_eq!(
+            index.by_name.get("start").map(Vec::len),
+            Some(2),
+            "both modules' `start` knots must be indexed"
+        );
+    }
+
+    /// Two files sharing the **same** declared module (a multi-file module)
+    /// that both define `start` stay the ordinary within-module warning
+    /// (`E022`) — never `E096` — even under `dialect = brink`.
+    #[test]
+    fn same_declared_module_duplicate_knot_still_warns_e022() {
+        let mut db = ProjectDb::new();
+        db.set_analysis_options(brink_opts());
+        db.set_file(
+            "a.ink",
+            "#@module(quest)\n== start ==\nHi from a\n-> DONE\n".to_owned(),
+        );
+        db.set_file(
+            "b.ink",
+            "#@module(quest)\n== start ==\nHi from b\n-> DONE\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .symbol_index_diagnostics()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E022),
+            "expected the within-module E022 warning, got {codes:?}"
+        );
+        assert!(
+            !codes.contains(&DiagnosticCode::E096),
+            "same declared module must never escalate to E096, got {codes:?}"
+        );
+    }
+
+    /// Undeclared (legacy/soup) files duplicating a knot name are unchanged
+    /// by M-2c: still `E022`, never `E096`, even under `dialect = brink`.
+    #[test]
+    fn undeclared_duplicate_knot_unchanged_under_brink() {
+        let mut db = ProjectDb::new();
+        db.set_analysis_options(brink_opts());
+        db.set_file("a.ink", "== start ==\nHi from a\n-> DONE\n".to_owned());
+        db.set_file("b.ink", "== start ==\nHi from b\n-> DONE\n".to_owned());
+
+        let codes: Vec<_> = db
+            .symbol_index_diagnostics()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E022),
+            "expected the legacy E022 warning, got {codes:?}"
+        );
+        assert!(
+            !codes.contains(&DiagnosticCode::E096),
+            "undeclared legacy soup must never escalate to E096, got {codes:?}"
+        );
+    }
+
+    /// Under `strict-ink` (the default), a cross-declared-module duplicate
+    /// stays the ordinary `E022` warning — the compat corpus is untouched.
+    #[test]
+    fn cross_declared_module_duplicate_stays_e022_under_strict_ink() {
+        let mut db = ProjectDb::new();
+        // Default AnalysisOptions -> Dialect::StrictInk; no set_analysis_options call.
+        db.set_file(
+            "quest.ink",
+            "#@module(quest)\n== start ==\n#@public\nHi from quest\n-> DONE\n".to_owned(),
+        );
+        db.set_file(
+            "town.ink",
+            "#@module(town)\n== start ==\n#@public\nHi from town\n-> DONE\n".to_owned(),
+        );
+
+        let codes: Vec<_> = db
+            .symbol_index_diagnostics()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            codes.contains(&DiagnosticCode::E022),
+            "expected E022 under strict-ink, got {codes:?}"
+        );
+        assert!(
+            !codes.contains(&DiagnosticCode::E096),
+            "strict-ink must never see E096, got {codes:?}"
+        );
+    }
+
+    /// The M-2d flagship (issue #790): two modules each export a public
+    /// `ambush`; two files each bare-import a *different* one. Import-scoped
+    /// resolution binds each file's `-> ambush` to the module it imported —
+    /// not to the flat duplicate-winner — and the whole project compiles
+    /// clean (no E025 import-required, no E096). Driven through the real
+    /// `ProjectDb`/`resolve_query` path the compiler reads.
+    #[test]
+    fn two_modules_export_ambush_each_file_binds_its_own() {
+        let mut db = ProjectDb::new();
+        db.set_analysis_options(brink_opts());
+        db.set_file(
+            "quest_a.ink",
+            "#@module(quest_a)\n== ambush ==\n#@public\nFrom A\n-> DONE\n".to_owned(),
+        );
+        db.set_file(
+            "quest_b.ink",
+            "#@module(quest_b)\n== ambush ==\n#@public\nFrom B\n-> DONE\n".to_owned(),
+        );
+        let main_a = db.set_file(
+            "main_a.ink",
+            "IMPORT { ambush } FROM quest_a\n-> ambush\n".to_owned(),
+        );
+        let main_b = db.set_file(
+            "main_b.ink",
+            "IMPORT { ambush } FROM quest_b\n-> ambush\n".to_owned(),
+        );
+
+        // The two `ambush` knots coexist, module-qualified.
+        let index = db.symbol_index();
+        let ambush_ids = index.by_name.get("ambush").expect("both ambush knots");
+        assert_eq!(ambush_ids.len(), 2, "both modules' `ambush` are indexed");
+        let module_of = |target: brink_format::DefinitionId| -> Option<String> {
+            index
+                .symbols
+                .get(&target)
+                .and_then(|info| info.module.clone())
+        };
+
+        // Each importing file's `-> ambush` binds to the module it imported.
+        let targets = |file| -> Vec<brink_format::DefinitionId> {
+            let (map, _diags) = db.resolve(file).expect("file resolves");
+            map.iter().map(|r| r.target).collect()
+        };
+        let a_targets = targets(main_a);
+        assert!(
+            a_targets
+                .iter()
+                .any(|&t| module_of(t).as_deref() == Some("quest_a")),
+            "main_a's `ambush` must bind to module quest_a, got {:?}",
+            a_targets.iter().map(|&t| module_of(t)).collect::<Vec<_>>()
+        );
+        assert!(
+            !a_targets
+                .iter()
+                .any(|&t| module_of(t).as_deref() == Some("quest_b")),
+            "main_a must NOT bind quest_b's `ambush`"
+        );
+
+        let b_targets = targets(main_b);
+        assert!(
+            b_targets
+                .iter()
+                .any(|&t| module_of(t).as_deref() == Some("quest_b")),
+            "main_b's `ambush` must bind to module quest_b"
+        );
+        assert!(
+            !b_targets
+                .iter()
+                .any(|&t| module_of(t).as_deref() == Some("quest_a")),
+            "main_b must NOT bind quest_a's `ambush`"
+        );
+
+        // The whole project compiles clean: no import-required error, no
+        // stopgap collision error, on any file.
+        for file in [main_a, main_b] {
+            let diags = db.diagnostics(file).expect("diagnostics");
+            assert!(
+                diags
+                    .iter()
+                    .all(|d| d.code != DiagnosticCode::E025 && d.code != DiagnosticCode::E096),
+                "import-scoped resolution must leave the correctly-imported file clean, got {diags:?}"
+            );
+        }
+    }
+
+    /// `ImportScope` granularity regression (issue #790 review): a bare
+    /// `IMPORT { other } FROM quest_a` must not license `quest_a`'s *other*
+    /// public exports — only the name actually named. Two modules each
+    /// export public `ambush`; the referring file bare-imports an unrelated
+    /// name from `quest_a` and bare-imports `ambush` itself only from
+    /// `quest_b`. Before the fix, `ImportScope` collapsed every import to
+    /// just its module name, so `quest_a` counted as "imported" for *any*
+    /// name — `-> ambush` could silently mis-resolve to `quest_a.ambush`
+    /// and then draw a spurious `E025` telling the author to import `ambush`
+    /// from `quest_a`, on a program that should compile clean. Resolution
+    /// and the `E025` checker must agree at (module, name) granularity for
+    /// bare imports.
+    #[test]
+    fn bare_import_is_name_precise_no_spurious_e025() {
+        let mut db = ProjectDb::new();
+        db.set_analysis_options(brink_opts());
+        db.set_file(
+            "quest_a.ink",
+            "#@module(quest_a)\n== ambush ==\n#@public\nFrom A\n-> DONE\n== other ==\n#@public\nOther A\n-> DONE\n".to_owned(),
+        );
+        db.set_file(
+            "quest_b.ink",
+            "#@module(quest_b)\n== ambush ==\n#@public\nFrom B\n-> DONE\n".to_owned(),
+        );
+        let main = db.set_file(
+            "main.ink",
+            "IMPORT { other } FROM quest_a\nIMPORT { ambush } FROM quest_b\n-> ambush\n".to_owned(),
+        );
+
+        let index = db.symbol_index();
+        let module_of = |target: brink_format::DefinitionId| -> Option<String> {
+            index
+                .symbols
+                .get(&target)
+                .and_then(|info| info.module.clone())
+        };
+
+        let (map, _diags) = db.resolve(main).expect("file resolves");
+        let targets: Vec<brink_format::DefinitionId> = map.iter().map(|r| r.target).collect();
+        assert!(
+            targets
+                .iter()
+                .any(|&t| module_of(t).as_deref() == Some("quest_b")),
+            "bare-importing `ambush` from quest_b must bind it to quest_b, got {:?}",
+            targets.iter().map(|&t| module_of(t)).collect::<Vec<_>>()
+        );
+        assert!(
+            !targets
+                .iter()
+                .any(|&t| module_of(t).as_deref() == Some("quest_a")),
+            "bare-importing only `other` from quest_a must NOT license quest_a's `ambush`, got {:?}",
+            targets.iter().map(|&t| module_of(t)).collect::<Vec<_>>()
+        );
+
+        let diags = db.diagnostics(main).expect("diagnostics");
+        assert!(
+            diags.iter().all(|d| d.code != DiagnosticCode::E025),
+            "a correctly bare-imported `ambush` must never draw a spurious E025 \
+             pointing at the unrelated module that only imported a different name, got {diags:?}"
+        );
     }
 }

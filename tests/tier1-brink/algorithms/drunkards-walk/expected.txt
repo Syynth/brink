@@ -1,0 +1,9 @@
+Cave grid (wall cells solid, floor cells a dot):
+#####...##
+####...###
+.###...###
+..#...####
+......####
+..#...####
+Floor tiles carved: 26.
+Steps taken: 65.

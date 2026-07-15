@@ -359,6 +359,52 @@ enum TypedValueJs {
         shape: u32,
         fields: Vec<TypedValueJs>,
     },
+    /// A function value ([`Value::FnRef`]/[`Value::Closure`], T1c) as an
+    /// **opaque token** (`docs/t1c-spec.md` §6 host boundary: "function values
+    /// cross as opaque tokens `{DefinitionId, env}`; the host never
+    /// dereferences the env"). `target` is the resolved knot/stitch path;
+    /// `bound` carries the bound-arg prefix as a lossless typed tree so a
+    /// speculation/eval result never silently drops a fn value. The
+    /// host-side callback-invocation surface lands in T1c-3.
+    Fn {
+        target: Option<String>,
+        bound: Vec<TypedValueJs>,
+    },
+    /// An opaque host-resource token ([`Value::Handle`], T1d,
+    /// `docs/t1d-spec.md` §2/§6) — the lossless counterpart to
+    /// [`value_to_js`](crate::value_marshal::value_to_js)'s native-object
+    /// mapping. `kind` is the manifest-declared kind name, resolved from the
+    /// program's name table (`"?"` for a stale `NameId` from a different
+    /// compile — same convention as `Divert`'s unresolved-path case). `id`
+    /// is the host-allocated token id, carried as a decimal string so a
+    /// full-range `u64` never loses precision crossing to a JS `number`
+    /// (`docs/value-model-spec.md` §8 native-leg lossiness class, the #667
+    /// wildcard-arm hazard this arm exists to avoid).
+    Handle {
+        kind: String,
+        id: String,
+    },
+    /// A symbolic path projection ([`Value::Projection`], T1e,
+    /// `docs/t1e-spec.md` §3) as a lossless typed tree — the same rationale
+    /// as [`Array`](Self::Array)/[`Map`](Self::Map): `root` is the resolved
+    /// global var name (`None` for a stale/unresolvable cell — same
+    /// convention as [`Divert`](Self::Divert)'s unresolved-path case),
+    /// `segments` carries each snapshot segment typed (`Index` vs `Key`
+    /// mirrors the wire's own two-kind encoding, `docs/format-v4-rfc.md`
+    /// §1).
+    Projection {
+        root: Option<String>,
+        segments: Vec<TypedProjSegmentJs>,
+    },
+}
+
+/// One [`Value::Projection`] path segment, typed (`docs/format-v4-rfc.md`
+/// §1: `0=index i32, 1=key value`).
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum TypedProjSegmentJs {
+    Index { value: i32 },
+    Key { value: Box<TypedValueJs> },
 }
 
 #[derive(Serialize)]
@@ -443,6 +489,43 @@ fn value_to_typed_js(v: &Value, program: &brink_runtime::Program) -> TypedValueJ
                 .map(|f| value_to_typed_js(f, program))
                 .collect(),
         },
+        // Function values (T1c, spec §6): opaque token — target path plus the
+        // bound-arg prefix as a lossless typed tree.
+        Value::FnRef(id) => TypedValueJs::Fn {
+            target: program.divert_target_path(*id),
+            bound: Vec::new(),
+        },
+        Value::Closure(c) => TypedValueJs::Fn {
+            target: program.divert_target_path(c.target),
+            bound: c
+                .env
+                .iter()
+                .map(|e| value_to_typed_js(&e.payload, program))
+                .collect(),
+        },
+        // Handle values (T1d, spec §2/§6): opaque token, kind name resolved
+        // where possible. Never falls to `Null` — the #667 wildcard-arm
+        // hazard class this exhaustive match structurally rules out.
+        Value::Handle { kind, id } => TypedValueJs::Handle {
+            kind: program.name_checked(*kind).unwrap_or("?").to_owned(),
+            id: id.to_string(),
+        },
+        // Projection values (T1e, spec §3): a lossless typed tree, root cell
+        // resolved where possible (same "never silently drop" reasoning as
+        // every other non-`Null` arm here).
+        Value::Projection(p) => TypedValueJs::Projection {
+            root: program.global_var_name(p.cell).map(ToOwned::to_owned),
+            segments: p
+                .segments
+                .iter()
+                .map(|seg| match seg {
+                    brink_format::ProjSegment::Index(n) => TypedProjSegmentJs::Index { value: *n },
+                    brink_format::ProjSegment::Key(v) => TypedProjSegmentJs::Key {
+                        value: Box::new(value_to_typed_js(v, program)),
+                    },
+                })
+                .collect(),
+        },
         Value::Null
         | Value::VariablePointer(_)
         | Value::TempPointer { .. }
@@ -461,8 +544,9 @@ mod typed_value_tests {
     use super::value_to_typed_js;
     use brink_format::{MapKey, OrderedMap, Value};
 
-    /// A trivial linked program — `value_to_typed_js` only consults the program
-    /// for `List`/`Divert`, so any program suffices for the collection arms.
+    /// A trivial linked program — `value_to_typed_js` only consults the
+    /// program for `List`/`Divert`/`Handle`, so any program suffices for the
+    /// collection arms.
     fn program() -> brink_runtime::Program {
         let out =
             brink_compiler::compile("m.ink", |_p| Ok::<_, std::io::Error>("-> END\n".to_owned()))
@@ -525,6 +609,39 @@ mod typed_value_tests {
         assert_eq!(j["items"][0]["entries"][0]["key"]["value"], "hp");
         assert_eq!(j["items"][1]["type"], "array");
         assert_eq!(j["items"][1]["items"][0]["type"], "null");
+    }
+
+    // ── Handle (T1d, docs/t1d-spec.md §2/§6) ────────────────────────────────
+
+    #[test]
+    fn handle_marshals_as_opaque_token_not_null() {
+        // Regression guard for the #667 wildcard-arm hazard class: a Handle
+        // must never fall through to `TypedValueJs::Null`.
+        let j = typed_json(&Value::handle(brink_format::NameId(0), 42));
+        assert_eq!(j["type"], "handle");
+        assert_eq!(j["id"], "42");
+    }
+
+    #[test]
+    fn handle_id_crosses_as_a_string_not_a_lossy_f64_number() {
+        // u64::MAX has no exact f64 representation; the id must cross as a
+        // decimal string (JSON `"18446744073709551615"`), not a `number`
+        // (which would silently round).
+        let j = typed_json(&Value::handle(brink_format::NameId(0), u64::MAX));
+        assert_eq!(j["id"], u64::MAX.to_string());
+        assert!(
+            j["id"].is_string(),
+            "id must be a JSON string, not a number"
+        );
+    }
+
+    #[test]
+    fn handle_kind_resolves_to_question_mark_when_unresolvable() {
+        // A NameId with no entry in this program's name table (the trivial
+        // "-> END" program has an empty/near-empty table) renders "?" — same
+        // convention as `display_fn_value`'s unresolvable-name fallback.
+        let j = typed_json(&Value::handle(brink_format::NameId(u16::MAX), 1));
+        assert_eq!(j["kind"], "?");
     }
 }
 

@@ -4,7 +4,7 @@ use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use brink_format::{CountingFlags, DefinitionId, ListValue, NameId, ShapeId, Value};
+use brink_format::{AliasEntry, CountingFlags, DefinitionId, ListValue, NameId, ShapeId, Value};
 
 use crate::collections::Map as HashMap;
 
@@ -56,6 +56,19 @@ pub struct Program {
     /// mapping. Empty until a compiler milestone emits `STRUCT`
     /// declarations.
     pub(crate) struct_shapes: Vec<StructShapeEntry>,
+    /// M-2b (`docs/modules-spec.md` §4): the set of `#@private` definition
+    /// ids. Used only to refuse host **semantic** access (variable get/set,
+    /// entry lookup, function eval) — the VM and host **persistence** never
+    /// consult it, so private state still executes and still saves/loads.
+    /// Empty (and never consulted) for the all-public pre-modules world.
+    /// Sorted ascending by raw id (the linker sorts it), so membership is a
+    /// `binary_search` — no set type needed for a list that is typically empty
+    /// or tiny, and `no_std`-clean.
+    pub(crate) private_defs: Vec<DefinitionId>,
+    /// M-3 (`docs/modules-spec.md` §5): the compiled `#@was` alias table,
+    /// sorted by `old` — [`Program::resolve_alias`] binary-searches it.
+    /// Empty for every story that uses no `#@was`.
+    pub(crate) alias_table: Vec<AliasEntry>,
 }
 
 /// Runtime metadata for one declared struct shape.
@@ -77,12 +90,18 @@ pub(crate) struct LinkedContainer {
     pub path_hash: i32,
     /// Number of declared parameters (for arity-checking host-directed entry).
     pub param_count: u8,
+    /// Per-parameter name/mode metadata, in declared order (T1c, #700).
+    /// Empty for containers the converter produced or that declare no params;
+    /// used by function-value dispatch to validate a rehydrated closure's
+    /// bound env against the current signature.
+    pub params: Vec<brink_format::ParamMeta>,
     /// Index into `Program.line_tables` for this container's scope line table.
     pub scope_table_idx: u32,
 }
 
 pub(crate) struct GlobalSlot {
-    #[expect(dead_code, reason = "needed for save/load serialization and debugging")]
+    /// The global's `DefinitionId` — used by save/load and by M-2b
+    /// visibility enforcement ([`Program::global_is_private`]).
     pub id: DefinitionId,
     pub name: NameId,
     pub default: Value,
@@ -126,6 +145,55 @@ impl Program {
         self.address_map.get(&id).copied()
     }
 
+    /// Whether `id` names a live container/address in the current program
+    /// (a knot/stitch/label or a synthetic child address) — the "does this
+    /// still resolve directly" half of the M-3 rehydration miss-path check
+    /// (`docs/modules-spec.md` §5).
+    pub(crate) fn knows_address(&self, id: DefinitionId) -> bool {
+        self.address_map.contains_key(&id)
+    }
+
+    /// Whether `id` names a live global slot in the current program.
+    pub(crate) fn knows_global(&self, id: DefinitionId) -> bool {
+        self.global_map.contains_key(&id)
+    }
+
+    /// Whether `id` names a live list item in the current program — the
+    /// list-item half of the M-3 rehydration miss-path check (`docs/modules-spec.md`
+    /// §5), mirroring [`knows_address`](Self::knows_address)/[`knows_global`](Self::knows_global)
+    /// for the ids embedded in a saved `Value::List` (active items).
+    pub(crate) fn knows_list_item(&self, id: DefinitionId) -> bool {
+        self.list_item_map.contains_key(&id)
+    }
+
+    /// Whether `id` names a live list definition in the current program —
+    /// the list-origin half of the M-3 rehydration miss-path check, for the
+    /// ids embedded in a saved `Value::List`'s `origins`.
+    pub(crate) fn knows_list_def(&self, id: DefinitionId) -> bool {
+        self.list_def_map.contains_key(&id)
+    }
+
+    /// M-3 rehydration miss-path lookup (`docs/modules-spec.md` §5): given
+    /// an `id` the current program doesn't recognize, consult the compiled
+    /// `#@was` alias table for its current identity. Callers still need to
+    /// check whether the returned id itself resolves — an alias chain is
+    /// never followed (the compiler always emits `old -> new` against the
+    /// definition's *current* id, never `old -> old2`).
+    pub(crate) fn resolve_alias(&self, old: DefinitionId) -> Option<DefinitionId> {
+        self.alias_table
+            .binary_search_by_key(&old, |e| e.old)
+            .ok()
+            .map(|idx| self.alias_table[idx].new)
+    }
+
+    /// Whether this program carries any `#@was`-derived alias-table
+    /// entries at all. Gates `load_state`'s miss-path reporting: an
+    /// ordinary content edit with no rename directive stays exactly as
+    /// silent as it was before M-3.
+    pub(crate) fn has_aliases(&self) -> bool {
+        !self.alias_table.is_empty()
+    }
+
     /// Resolve a definition ID to `(container_idx, byte_offset)`.
     #[cfg(feature = "testing")]
     pub fn resolve_address(&self, id: DefinitionId) -> Option<(u32, usize)> {
@@ -166,6 +234,48 @@ impl Program {
     /// Look up a name by id.
     pub(crate) fn name(&self, id: NameId) -> &str {
         &self.name_table[id.0 as usize]
+    }
+
+    /// Look up a name by id, returning `None` if the id is out of range. Used
+    /// by function-value rehydration (T1c, #700): a closure loaded from a save
+    /// produced against a *different* compile can carry a `NameId` that no
+    /// longer indexes this program's table — treated as a mismatch (fault),
+    /// never a panic.
+    ///
+    /// Public (T1d, `docs/t1d-spec.md` §6): the same "index by id, `None` if
+    /// out of range" contract a host needs to resolve a [`brink_format::Value::Handle`]'s
+    /// `kind` to its manifest-declared name — e.g. for dev-tooling display or
+    /// a host-side capability check. `bevy-brink` re-exports `Program`
+    /// (decision 2026-07-10), so this is reachable from engine code without a
+    /// direct `brink-runtime` dependency.
+    pub fn name_checked(&self, id: NameId) -> Option<&str> {
+        self.name_table.get(id.0 as usize).map(String::as_str)
+    }
+
+    /// Reverse of [`name_checked`](Self::name_checked): look up the
+    /// [`NameId`] a string interns to in this program's name table, if any.
+    ///
+    /// Public (T1d-3, `docs/t1d-spec.md` §4): a host minting a
+    /// [`brink_format::Value::Handle`] from a binding (e.g. `spawn_timer()`
+    /// returning a fresh `handle<Timer>`) needs the compiled program's
+    /// `NameId` for the manifest-declared kind name (`"Timer"`) to build the
+    /// token — the wire form carries only the interned id, never the string.
+    /// `None` means this compile never interned that name (e.g. no
+    /// `handle<Timer>`-typed signature or annotation anywhere in the source
+    /// graph), so no token of that kind can be minted against this program.
+    /// Linear scan, same cost class as [`global_index`](Self::global_index).
+    #[must_use]
+    pub fn name_id(&self, name: &str) -> Option<NameId> {
+        self.name_table
+            .iter()
+            .position(|n| n == name)
+            .and_then(|i| u16::try_from(i).ok())
+            .map(NameId)
+    }
+
+    /// Access a container's per-parameter name/mode metadata (T1c, #700).
+    pub(crate) fn container_params(&self, idx: u32) -> &[brink_format::ParamMeta] {
+        &self.containers[idx as usize].params
     }
 
     /// Look up a global slot index.
@@ -215,6 +325,50 @@ impl Program {
         self.address_by_path
             .get(path)
             .map(|t| self.containers[t.container_idx as usize].param_count)
+    }
+
+    // ── Visibility (`#@private` — M-2b, docs/modules-spec.md §4) ────────────
+
+    /// Whether the compiler marked any definition `#@private`. `false` for the
+    /// entire pre-modules / all-public world — the fast path where visibility
+    /// enforcement is a single boolean check that skips every lookup below.
+    pub(crate) fn has_private_defs(&self) -> bool {
+        !self.private_defs.is_empty()
+    }
+
+    /// Whether the definition `id` was declared `#@private`.
+    pub(crate) fn is_private(&self, id: DefinitionId) -> bool {
+        self.private_defs
+            .binary_search_by_key(&id.to_raw(), |d| d.to_raw())
+            .is_ok()
+    }
+
+    /// Whether the global at slot `idx` is `#@private`.
+    pub(crate) fn global_is_private(&self, idx: u32) -> bool {
+        self.globals
+            .get(idx as usize)
+            .is_some_and(|slot| self.is_private(slot.id))
+    }
+
+    /// Whether the named entry point (knot/stitch/function path) is
+    /// `#@private`. Unknown paths are treated as not-private — resolution
+    /// failure is reported by the caller's own "not found" path, not here.
+    pub(crate) fn path_is_private(&self, path: &str) -> bool {
+        self.find_path_target(path)
+            .is_some_and(|id| self.is_private(id))
+    }
+
+    /// Whether the container at `idx` is `#@private`. Used by
+    /// [`FlowInstance::begin_function_eval`](crate::FlowInstance::begin_function_eval)/
+    /// [`begin_function_value_eval`](crate::FlowInstance::begin_function_value_eval),
+    /// which receive an already-resolved `container_idx` rather than a name
+    /// (the caller resolves it, typically via [`find_address`](Self::find_address),
+    /// before entering the VM boundary). Out-of-range indices are not
+    /// private — an invalid index is the caller's bug, reported elsewhere.
+    pub(crate) fn container_is_private(&self, idx: u32) -> bool {
+        self.containers
+            .get(idx as usize)
+            .is_some_and(|c| self.is_private(c.id))
     }
 
     /// Build the initial globals vector from slot defaults.
@@ -318,9 +472,23 @@ impl Program {
         self.globals.get(idx).map(|slot| self.name(slot.name))
     }
 
+    /// Compiled `DefinitionId` for a global slot index — the identity
+    /// `save_state` round-trips into `SaveState::global_ids` so the M-3
+    /// rehydration miss path (`docs/modules-spec.md` §5) can recover a
+    /// renamed VAR/CONST/LIST global's *save-time* id (declared-module
+    /// identity is `(module, name)`-hashed, so the bare name alone can't
+    /// reconstruct it) and look it up in the compiled alias table.
+    pub(crate) fn global_id(&self, idx: usize) -> Option<DefinitionId> {
+        self.globals.get(idx).map(|slot| slot.id)
+    }
+
     /// Variable name for a global's defining `DefinitionId` (e.g. a
-    /// `VariablePointer` target).
-    pub(crate) fn global_var_name(&self, id: DefinitionId) -> Option<&str> {
+    /// `VariablePointer` target, or a T1e projection's root cell). `pub`
+    /// (not `pub(crate)`) since `brink-web`'s program-model/speculation
+    /// disassembly needs it to render a projection's root name at the wasm
+    /// boundary, the same way `divert_target_path` already resolves a
+    /// divert's `DefinitionId` for that consumer.
+    pub fn global_var_name(&self, id: DefinitionId) -> Option<&str> {
         let slot = self.resolve_global(id)?;
         self.global_slot_name(slot as usize)
     }
@@ -453,6 +621,8 @@ mod find_address_tests {
             external_fns: HashMap::new(),
             local_scope_defaults: Vec::new(),
             struct_shapes: Vec::new(),
+            private_defs: Vec::new(),
+            alias_table: Vec::new(),
         }
     }
 

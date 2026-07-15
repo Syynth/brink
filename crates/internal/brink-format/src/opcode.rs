@@ -221,6 +221,61 @@ const CONVERT_INT: u8 = 0xD3;
 const CONVERT_FLOAT: u8 = 0xD4;
 const CONVERT_STRING: u8 = 0xD5;
 
+// Function-value opcodes (T1c, `docs/format-v4-rfc.md` §3 "Functions" —
+// named there, numerically unallocated; assigned here, contiguous and
+// adjacent to the conversion block above, this PR's own reservation). First
+// live emission of the reserved function-value surface (`docs/t1c-spec.md`
+// §11 T1c-2).
+//   0xD6 PushFnRef(DefinitionId)          0xD7 MakeClosure(env descriptor)
+//   0xD8 CallValue(argc)                   0xD9 BindValue(argc)
+// `PushFnRef` pushes the zero-bound `Value::FnRef`. `MakeClosure`'s operand is
+// the target `DefinitionId` then a u16-counted descriptor of `{NameId, kind
+// u8 (0=val,1=ref)}` entries — one per bound arg, in declared order — and it
+// pops that many values off the stack (bound in order) to build a
+// `Value::Closure`. `CallValue(argc)` pops the callee (top of stack) then the
+// `argc` supplied (val-only) args below it, dispatching through the function
+// value (`docs/t1c-spec.md` §3): non-function callee / wrong arity /
+// rehydration mismatch / cross-flow ref-`#@local` are turn-terminating faults.
+// `BindValue(argc)` (T1c-3, `bind(f, args…)` stdlib intrinsic) pops the callee
+// (top of stack) then the `argc` supplied (val-only) args below it and returns
+// a *new* function value with those args appended to the callee's bound-arg
+// row (val-only currying — consuming the head of the remaining param row). The
+// newly bound entries take their name/mode from the target's own signature at
+// the appended positions (always `val`, since `ref` params are bound away at
+// creation). Faults (turn-terminating): callee is not a function value;
+// binding more args than the target has remaining params.
+const PUSH_FN_REF: u8 = 0xD6;
+const MAKE_CLOSURE: u8 = 0xD7;
+const CALL_VALUE: u8 = 0xD8;
+const BIND_VALUE: u8 = 0xD9;
+
+// Projection opcodes (T1e, `docs/format-v4-rfc.md` §3 "Projections" — named
+// there, numerically unallocated; assigned here, contiguous and adjacent to
+// the function-value block above, this PR's own reservation). First live
+// emission of the reserved projection surface (`docs/t1e-spec.md` §3/§8
+// T1e-2).
+//   0xDA MakeProjection(root, segment_count)   0xDB ProjRead
+//   0xDC ProjWrite
+// `MakeProjection` pops `segment_count` values off the stack (pushed by
+// codegen in source order; the VM's LIFO pop collects them reversed, then
+// reverses once more to restore source order — same shape `MakeClosure`'s
+// bound-arg row uses) and classifies each into a `ProjSegment` (`Int` →
+// `Index`, else → `Key`,
+// `docs/format-v4-rfc.md` §1), building a `Value::Projection` rooted at
+// `root`. `ProjRead`/`ProjWrite` implement the spec's root-cell RMW
+// discipline (take root → walk → `make_mut` spine → write → store back);
+// both fault `RuntimeError::ProjectionInvalidated` on a path that no longer
+// resolves (shrunk array, missing key, removed struct field — spec §1(2)).
+// The compiler's own emission path for dereferencing a projection-bound
+// `ref` parameter reuses the *same* underlying walk (`brink_runtime::proj_ops`)
+// through `GetTemp`/`SetTemp`/`TakeTemp`'s additive `Value::Projection`
+// dispatch arm rather than interleaving these bytes at every param access —
+// see those opcodes' VM dispatch for the shared implementation. `ProjRead`/
+// `ProjWrite` remain real, independently encodable/dispatchable opcodes.
+const MAKE_PROJECTION: u8 = 0xDA;
+const PROJ_READ: u8 = 0xDB;
+const PROJ_WRITE: u8 = 0xDC;
+
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
 const LIST_NOT_CONTAINS: u8 = 0xB1;
@@ -377,6 +432,15 @@ pub enum DecodeError {
     /// cap (see `MAX_DECODE_DEPTH`). Guards against crafted files of deeply
     /// nested single-element collections stack-overflowing the reader.
     MaxDepthExceeded(usize),
+    /// A section-locally-versioned section (e.g. `AliasTable`,
+    /// `docs/modules-spec.md` §5) carried a version byte this reader doesn't
+    /// know how to decode.
+    UnsupportedSectionVersion { section: u8, version: u8 },
+    /// A `VAL_PROJECTION` segment carried an unknown kind byte — either
+    /// malformed bytecode or the RESERVED range-segment kind (`2`,
+    /// `docs/format-v4-rfc.md` §1), which nothing emits in T1e and the
+    /// reader therefore rejects (`docs/t1e-spec.md` §3).
+    InvalidProjSegmentKind(u8),
 }
 
 impl fmt::Display for DecodeError {
@@ -420,6 +484,15 @@ impl fmt::Display for DecodeError {
             Self::UnsupportedInklVersion(v) => write!(f, "unsupported .inkl version: {v}"),
             Self::MaxDepthExceeded(limit) => {
                 write!(f, "value nesting exceeded max decode depth ({limit})")
+            }
+            Self::UnsupportedSectionVersion { section, version } => {
+                write!(
+                    f,
+                    "unsupported section-local version {version} for section {section:#04x}"
+                )
+            }
+            Self::InvalidProjSegmentKind(b) => {
+                write!(f, "invalid projection segment kind: {b:#04x}")
             }
         }
     }
@@ -496,7 +569,16 @@ pub enum Opcode {
     TunnelCall(DefinitionId),
     TunnelReturn,
     TunnelCallVariable,
-    CallVariable,
+    /// Call through a variable holding either a divert target (classic ink
+    /// function-via-variable) or a function value (T1c-2 direct-call form
+    /// `f(args…)`) — both share this dispatch site. `argc` is the exact
+    /// number of args codegen pushed before the callee at this call site
+    /// (never derived from the resolved target's arity at runtime — issue
+    /// #721: doing so made a gradual-mode direct-call arity mismatch leave
+    /// a stray value on the stack instead of faulting). The divert-target
+    /// arm ignores `argc` (unchanged oracle-verified behavior); the
+    /// function-value arm pops exactly `argc` supplied args.
+    CallVariable(u8),
 
     // ── Threads ─────────────────────────────────────────────────────────
     ThreadCall(DefinitionId),
@@ -653,6 +735,64 @@ pub enum Opcode {
     /// coercion").
     ConvertString,
 
+    // ── Function values (T1c, `docs/t1c-spec.md` §3/§6) ──────────────────
+    /// `[]` → `FnRef`. Push a zero-bound function value for the target
+    /// `DefinitionId` (`#fn(name)` where the target has no `ref` params).
+    PushFnRef(DefinitionId),
+    /// `[bound_0, …, bound_{n-1}]` → `Closure`. Pop the `n` = `bound_count`
+    /// bound args (in declared order) and pair each with its param name/mode
+    /// read from the target container's own [`ContainerDef::params`] table
+    /// (the bound prefix `params[0..n]`) to build a `Closure`.
+    /// A `ref` bound arg is a `VariablePointer` (a captured durable cell); a
+    /// `val` bound arg is a snapshot. The names/modes are read from the
+    /// signature (not baked into the opcode) so there is one source of truth
+    /// the rehydration check compares against.
+    MakeClosure {
+        target: DefinitionId,
+        bound_count: u8,
+    },
+    /// `[arg_0, …, arg_{argc-1}, callee]` → return value. Pop the callee
+    /// function value then the `argc` supplied (val-only) args, splice the
+    /// closure's bound prefix ahead of them, and enter the target. Faults
+    /// (turn-terminating, `docs/t1c-spec.md` §3): callee is not a function
+    /// value; `bound + argc` ≠ the target's declared arity; a rehydrated env
+    /// entry's name/mode no longer matches the current signature; the callee
+    /// `ref`-binds a `#@local` and is invoked from a non-creating flow.
+    CallValue(u8),
+    /// `[arg_0, …, arg_{argc-1}, callee]` → new function value. The
+    /// `bind(f, args…)` stdlib intrinsic (T1c-3, `docs/t1c-spec.md` §3):
+    /// pop the callee function value then the `argc` supplied (val-only)
+    /// args, append them to the callee's bound-arg row (val-only currying,
+    /// consuming the head of the remaining param row), and push the new
+    /// function value. The appended entries take their param name/mode from
+    /// the target's signature (always `val`). Faults (turn-terminating):
+    /// callee is not a function value; `bound + argc` exceeds the target's
+    /// declared arity.
+    BindValue(u8),
+
+    // ── Path projections (T1e, `docs/t1e-spec.md` §3) ─────────────────────
+    /// `[seg_0, …, seg_{n-1}]` → `Projection` (`n` = `segment_count`, pushed
+    /// by codegen in source order; the VM's LIFO pop-then-reverse restores
+    /// it). Each popped value is classified `Int` → `ProjSegment::Index`, else →
+    /// `ProjSegment::Key` and paired with the static `root` cell to build a
+    /// `Value::Projection` (`docs/format-v4-rfc.md` §1). Emitted at every
+    /// real path-projection `ref`-argument creation site (`ref
+    /// npc.inventory[3]`) — the T1e-1 `E099` lowering fence this replaces.
+    MakeProjection {
+        root: DefinitionId,
+        segment_count: u8,
+    },
+    /// `[projection]` → value. Root-cell RMW read: take the root cell's
+    /// *current* value, walk the segment chain, push the result. Faults
+    /// `ProjectionInvalidated` (turn-terminating) if the path no longer
+    /// resolves (spec §1(2)).
+    ProjRead,
+    /// `[projection, value]` → (assigns, pushes nothing). Root-cell RMW
+    /// write: take root → walk → `make_mut` spine → write the final segment
+    /// → store back (spec §3). Faults `ProjectionInvalidated` on an
+    /// unresolved path, same domain as `ProjRead`.
+    ProjWrite,
+
     // ── Lifecycle ───────────────────────────────────────────────────────
     Done,
     /// Pause for choice presentation. Like `Done` but does NOT set
@@ -803,7 +943,10 @@ impl Opcode {
             }
             Self::TunnelReturn => write_u8(buf, TUNNEL_RETURN),
             Self::TunnelCallVariable => write_u8(buf, TUNNEL_CALL_VARIABLE),
-            Self::CallVariable => write_u8(buf, CALL_VARIABLE),
+            Self::CallVariable(argc) => {
+                write_u8(buf, CALL_VARIABLE);
+                write_u8(buf, argc);
+            }
 
             // Threads
             Self::ThreadCall(id) => {
@@ -951,6 +1094,40 @@ impl Opcode {
             Self::ConvertFloat => write_u8(buf, CONVERT_FLOAT),
             Self::ConvertString => write_u8(buf, CONVERT_STRING),
 
+            // Function values (T1c, #700)
+            Self::PushFnRef(id) => {
+                write_u8(buf, PUSH_FN_REF);
+                write_def_id(buf, id);
+            }
+            Self::MakeClosure {
+                target,
+                bound_count,
+            } => {
+                write_u8(buf, MAKE_CLOSURE);
+                write_def_id(buf, target);
+                write_u8(buf, bound_count);
+            }
+            Self::CallValue(argc) => {
+                write_u8(buf, CALL_VALUE);
+                write_u8(buf, argc);
+            }
+            Self::BindValue(argc) => {
+                write_u8(buf, BIND_VALUE);
+                write_u8(buf, argc);
+            }
+
+            // Path projections (T1e)
+            Self::MakeProjection {
+                root,
+                segment_count,
+            } => {
+                write_u8(buf, MAKE_PROJECTION);
+                write_def_id(buf, root);
+                write_u8(buf, segment_count);
+            }
+            Self::ProjRead => write_u8(buf, PROJ_READ),
+            Self::ProjWrite => write_u8(buf, PROJ_WRITE),
+
             // Lifecycle
             Self::Done => write_u8(buf, DONE),
             Self::Yield => write_u8(buf, YIELD),
@@ -1041,7 +1218,7 @@ impl Opcode {
             TUNNEL_CALL => Self::TunnelCall(read_def_id(buf, offset)?),
             TUNNEL_RETURN => Self::TunnelReturn,
             TUNNEL_CALL_VARIABLE => Self::TunnelCallVariable,
-            CALL_VARIABLE => Self::CallVariable,
+            CALL_VARIABLE => Self::CallVariable(read_u8(buf, offset)?),
 
             // Threads
             THREAD_CALL => Self::ThreadCall(read_def_id(buf, offset)?),
@@ -1152,6 +1329,23 @@ impl Opcode {
             CONVERT_INT => Self::ConvertInt,
             CONVERT_FLOAT => Self::ConvertFloat,
             CONVERT_STRING => Self::ConvertString,
+
+            // Function values (T1c, #700)
+            PUSH_FN_REF => Self::PushFnRef(read_def_id(buf, offset)?),
+            MAKE_CLOSURE => Self::MakeClosure {
+                target: read_def_id(buf, offset)?,
+                bound_count: read_u8(buf, offset)?,
+            },
+            CALL_VALUE => Self::CallValue(read_u8(buf, offset)?),
+            BIND_VALUE => Self::BindValue(read_u8(buf, offset)?),
+
+            // Path projections (T1e)
+            MAKE_PROJECTION => Self::MakeProjection {
+                root: read_def_id(buf, offset)?,
+                segment_count: read_u8(buf, offset)?,
+            },
+            PROJ_READ => Self::ProjRead,
+            PROJ_WRITE => Self::ProjWrite,
 
             // Lifecycle
             DONE => Self::Done,
@@ -1302,7 +1496,8 @@ mod tests {
         roundtrip(&Opcode::TunnelCall(test_id()));
         roundtrip(&Opcode::TunnelReturn);
         roundtrip(&Opcode::TunnelCallVariable);
-        roundtrip(&Opcode::CallVariable);
+        roundtrip(&Opcode::CallVariable(0));
+        roundtrip(&Opcode::CallVariable(3));
     }
 
     #[test]

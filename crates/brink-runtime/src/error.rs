@@ -124,6 +124,22 @@ pub enum RuntimeError {
         got: usize,
     },
 
+    /// A host **semantic** access (variable get/set, entry lookup, function
+    /// eval) targeted a `#@private` definition while visibility enforcement
+    /// was on (M-2b, `docs/modules-spec.md` §4 boundary rule 2). The host is
+    /// outside every module. Dev tooling (play-from-here) opts out via
+    /// [`Story::set_visibility_enforcement`](crate::Story::set_visibility_enforcement).
+    /// Persistence (save/load/journal/replay) is unaffected — it never routes
+    /// through the enforced surface.
+    #[error(
+        "'{name}' is #@private and cannot be accessed by the host \
+         (dev tooling may override visibility enforcement)"
+    )]
+    PrivateAccess {
+        /// The private definition's name or path, as the host supplied it.
+        name: String,
+    },
+
     // ── T1b collections (docs/value-model-spec.md §11c) ──────────────
     //
     // Out-of-bounds/missing-key reads and writes are turn-terminating
@@ -155,6 +171,12 @@ pub enum RuntimeError {
     /// malformed bytecode, not an author-triggerable condition.
     #[error("literal pool index {0} out of range")]
     InvalidLiteralIndex(u32),
+    /// A `NameId` (container/address-path name) referenced an index outside
+    /// `StoryData::name_table` — malformed bytecode, not an
+    /// author-triggerable condition. Caught at link time, before any of the
+    /// name is used to build path lookup tables.
+    #[error("name id {0} out of range")]
+    InvalidNameId(u16),
 
     // ── TM-4 records (docs/typed-mode-spec.md §6 / value-model-spec §11c) ──
     /// `RecordNew(shape_id)` referenced a shape id outside the compiled
@@ -201,4 +223,51 @@ pub enum RuntimeError {
         target: &'static str,
         got: &'static str,
     },
+
+    // ── T1c function values (docs/t1c-spec.md §3/§6, issue #700) ──────────
+    /// `call(f, …)` / a direct `f(…)` where the callee value is not a
+    /// function value (nor a divert target). Gradual-mode dispatch fault —
+    /// "no silent garbage" (spec §3, value-model-spec §11c).
+    #[error("cannot call a {0} value as a function")]
+    NotCallable(&'static str),
+    /// Calling a function value with the wrong number of arguments: the bound
+    /// prefix plus the supplied args must exactly equal the target's declared
+    /// arity (spec §3). Turn-terminating in gradual mode; strict mode catches
+    /// it at compile time (spec §4).
+    #[error(
+        "function value expects {expected} argument(s), got {got} (bound {bound} + supplied {supplied})"
+    )]
+    FunctionValueArity {
+        expected: usize,
+        got: usize,
+        bound: usize,
+        supplied: usize,
+    },
+    /// A rehydrated function value's bound env no longer matches the current
+    /// signature — a param was renamed, reordered, or re-moded across a
+    /// recompile (spec §6). A defined fault, never a silent misbinding.
+    #[error("function value no longer matches its target's signature: {0}")]
+    FunctionValueRehydrationMismatch(String),
+    /// Invoking a function value that `ref`-binds a flow-private (`#@local`)
+    /// cell (spec §3). T1c ships this fault instead of creating-flow identity
+    /// (#597): a `#@local`-`ref` binding can only be dereferenced safely from
+    /// its creating flow, and no creating-flow identity is tracked yet, so the
+    /// invocation faults rather than risk a silent cross-flow misbinding. The
+    /// payload is the bound cell's name.
+    #[error(
+        "function value ref-binds flow-private cell `{0}`; cross-flow invocation is a fault in T1c (see #597)"
+    )]
+    FunctionValueCrossFlowLocal(String),
+
+    // ── T1e path projections (docs/t1e-spec.md §1(2)/§3) ──────────────────
+    /// A live path projection's snapshot segments no longer resolve against
+    /// the root cell's *current* value at read or write time: a shrunk
+    /// array, a removed map key, or a struct field dropped by recompile.
+    /// The single ratified turn-terminating fault for every path-invalidation
+    /// cause (spec §1(2): "a defined turn-terminating runtime fault — not a
+    /// clamp, not UB"). The payload carries the underlying cause (an
+    /// `IndexOutOfBounds`/`MapKeyNotFound`/`RecordFieldNotFound`-shaped
+    /// message, or a root-resolution failure).
+    #[error("projection invalidated: {0}")]
+    ProjectionInvalidated(String),
 }

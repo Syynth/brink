@@ -178,6 +178,20 @@ plus one optional constraint (enum / regex / range / "host-resolved domain").
 Records, unions, and generics are out of scope; that way lies a type system.
 Color, item_id, enum, and pattern all fit comfortably in flat-nominal.
 
+**Handle kinds (T1d-2, docs/t1d-spec.md §3).** `base: "handle"` is a
+distinct fifth base alongside `string`/`int`/`float`/`bool`/`void` — but
+unlike those, it doesn't specialize a primitive. The semantic type's own
+`name` field *is* the declared handle-kind name (e.g. `AudioInstance`,
+`Timer`) — the vocabulary the typed dialect's `handle<K>` annotation form
+resolves `K` against (`docs/typed-mode-spec.md` §3's first amendment).
+`Value::Handle { kind, id }` tokens (T1d-1) carry the kind as a `NameId`
+at runtime; the manifest is where that vocabulary is declared for the
+analyzer, not the format.
+
+```jsonc
+{ "name": "AudioInstance", "base": "handle" }
+```
+
 ### Tier 3 — Live value providers & editor widgets (host protocol)
 
 The part that **cannot** come from a shipped file. Two flavors of the same

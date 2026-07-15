@@ -96,7 +96,14 @@ impl ContainerEmitter<'_> {
                     self.emit_call_arg(arg);
                 }
                 self.emit(Opcode::GetGlobal(*target));
-                self.emit_fragment_wrapped(display, Opcode::CallVariable);
+                self.emit_fragment_wrapped(
+                    display,
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "a call supplies <=255 args"
+                    )]
+                    Opcode::CallVariable(args.len() as u8),
+                );
             }
 
             lir::Expr::CallVariableTemp { slot, args, .. } => {
@@ -104,11 +111,70 @@ impl ContainerEmitter<'_> {
                     self.emit_call_arg(arg);
                 }
                 self.emit(Opcode::GetTemp(*slot));
-                self.emit_fragment_wrapped(display, Opcode::CallVariable);
+                self.emit_fragment_wrapped(
+                    display,
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "a call supplies <=255 args"
+                    )]
+                    Opcode::CallVariable(args.len() as u8),
+                );
             }
 
             lir::Expr::CallBuiltin { builtin, args } => {
                 self.emit_builtin(*builtin, args);
+            }
+
+            // ── Function values (T1c, #700) ──────────────────────────
+            lir::Expr::MakeFnValue { target, bound } => {
+                for arg in bound {
+                    self.emit_call_arg(arg);
+                }
+                if bound.is_empty() {
+                    self.emit(Opcode::PushFnRef(*target));
+                } else {
+                    self.emit(Opcode::MakeClosure {
+                        target: *target,
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "a #fn binds <=255 args (E081 caps at the declared row)"
+                        )]
+                        bound_count: bound.len() as u8,
+                    });
+                }
+            }
+
+            lir::Expr::CallValue { callee, args } => {
+                for arg in args {
+                    self.emit_expr(arg, false);
+                }
+                self.emit_expr(callee, false);
+                self.emit_fragment_wrapped(
+                    display,
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "a call supplies <=255 args"
+                    )]
+                    Opcode::CallValue(args.len() as u8),
+                );
+            }
+
+            lir::Expr::BindValue { callee, args } => {
+                // Same stack shape as `CallValue`: push the supplied args
+                // (bottom), then the callee (top). `BindValue` returns a new
+                // function value rather than entering the target, so it never
+                // produces localized output — no fragment wrapping needed.
+                for arg in args {
+                    self.emit_expr(arg, false);
+                }
+                self.emit_expr(callee, false);
+                self.emit(
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "a bind supplies <=255 args"
+                    )]
+                    Opcode::BindValue(args.len() as u8),
+                );
             }
 
             // ── Collections (T1b) ────────────────────────────────────
@@ -185,7 +251,18 @@ impl ContainerEmitter<'_> {
             }
 
             // ── Records (TM-4c) ──────────────────────────────────────
-            lir::Expr::RecordNew { shape_id, fields } => {
+            lir::Expr::RecordNew {
+                shape_id,
+                fields,
+                prelude,
+            } => {
+                // Stage every initializer in source order first (issue
+                // #676) — each pop-then-store is stack-neutral, so this
+                // adds no net stack growth before `fields` is pushed.
+                for (slot, _name, expr) in prelude {
+                    self.emit_expr(expr, false);
+                    self.emit(Opcode::DeclareTemp(*slot));
+                }
                 for f in fields {
                     self.emit_expr(f, false);
                 }
@@ -246,7 +323,7 @@ impl ContainerEmitter<'_> {
         reason = "literal pools stay well under u32::MAX entries"
     )]
     fn emit_literal_pool_push(&mut self, v: &lir::ConstValue) {
-        let value = crate::const_to_value(v);
+        let value = crate::const_to_value(v, self.state_name_table, self.state_name_index);
         let idx = self
             .literal_pool
             .iter()
@@ -271,6 +348,26 @@ impl ContainerEmitter<'_> {
             lir::CallArg::Value(expr) => self.emit_expr(expr, false),
             lir::CallArg::RefGlobal(id) => self.emit(Opcode::PushVarPointer(*id)),
             lir::CallArg::RefTemp(slot, _) => self.emit(Opcode::PushTempPointer(*slot)),
+            // T1e-2 (docs/t1e-spec.md §3): a real path-projection ref
+            // argument — first emission of `MakeProjection`. Segment
+            // expressions push in source order; the VM's `MakeProjection`
+            // handler pops them (LIFO) into reverse-push order, then
+            // reverses that collected `Vec` once to restore source order —
+            // the same "push in order, pop-then-reverse" shape
+            // `MakeClosure`'s bound-arg row already establishes.
+            lir::CallArg::RefProjection { root, segments } => {
+                for seg in segments {
+                    self.emit_expr(seg, false);
+                }
+                self.emit(Opcode::MakeProjection {
+                    root: *root,
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "a ref-argument path has far fewer than 255 segments"
+                    )]
+                    segment_count: segments.len() as u8,
+                });
+            }
         }
     }
 
@@ -279,8 +376,8 @@ impl ContainerEmitter<'_> {
         if s.parts.len() == 1
             && let lir::StringPart::Literal(text) = &s.parts[0]
         {
-            let name_id = self.intern_string(text);
-            self.emit(Opcode::PushString(name_id.0));
+            // FG-4b: leave the operand symbolic; the link phase resolves it.
+            self.emit_push_string(text);
             return;
         }
 

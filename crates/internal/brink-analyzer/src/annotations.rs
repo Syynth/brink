@@ -26,7 +26,8 @@ use std::collections::BTreeSet;
 
 use brink_format::DefinitionId;
 use brink_ir::{
-    Diagnostic, DiagnosticCode, FileId, HirFile, Knot, Stitch, SymbolIndex, SymbolKind,
+    BaseType, Diagnostic, DiagnosticCode, FileId, HirFile, HostManifest, Knot, Stitch, SymbolIndex,
+    SymbolKind,
 };
 
 use crate::infer::{InferenceResult, Ty};
@@ -39,6 +40,57 @@ fn is_known_leaf(name: &str) -> bool {
         name,
         "int" | "float" | "bool" | "string" | "divert" | "void"
     )
+}
+
+/// The three name vocabularies a type annotation resolves nominal generics
+/// against — `list<L>`/`STRUCT` names come from ink source (the project's
+/// `SymbolIndex`), `handle<K>` kinds come from the registered host manifest
+/// (T1d-2, docs/t1d-spec.md §3: "Handle kinds live in the external manifest
+/// — the existing host semantic-type vocabulary the analyzer already
+/// polices — not in the format"). Bundled together because every existing
+/// call site already threads `list_names`/`struct_names` as an inseparable
+/// pair; `handles` joins that pair rather than becoming a fourth parameter
+/// sprinkled through every signature in this crate.
+#[derive(Debug, Clone, Default)]
+pub struct TypeNames {
+    pub lists: BTreeSet<String>,
+    pub structs: BTreeSet<String>,
+    pub handles: BTreeSet<String>,
+}
+
+impl TypeNames {
+    /// Build the full bundle for a project: declared `LIST`/`STRUCT` names
+    /// from the symbol index, declared handle kinds from the registered host
+    /// manifest (`None` when no manifest is registered — an empty
+    /// vocabulary, matching how an unregistered manifest degrades every
+    /// other manifest-driven check).
+    #[must_use]
+    pub fn new(index: &SymbolIndex, manifest: Option<&HostManifest>) -> Self {
+        Self {
+            lists: declared_list_names(index),
+            structs: declared_struct_names(index),
+            handles: declared_handle_kinds(manifest),
+        }
+    }
+}
+
+/// Every declared handle-kind name in the registered host manifest (T1d-2):
+/// a [`brink_ir::SemanticTypeDef`] whose `base` is [`BaseType::Handle`] — its
+/// `name` field *is* the kind name `handle<K>` annotations resolve `K`
+/// against (`host_manifest.rs`'s `BaseType::Handle` doc). Empty when no
+/// manifest is registered, same degrade-gracefully posture as
+/// `external_check`'s semantic-type resolution (issue #339).
+#[must_use]
+pub fn declared_handle_kinds(manifest: Option<&HostManifest>) -> BTreeSet<String> {
+    manifest
+        .map(|m| {
+            m.types
+                .iter()
+                .filter(|t| t.base == BaseType::Handle)
+                .map(|t| t.name.clone())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Resolve a parsed type annotation into the checker's `Ty` universe.
@@ -54,19 +106,19 @@ fn is_known_leaf(name: &str) -> bool {
 /// universe has no void — the whole annotation resolves `None`, i.e. is
 /// treated as absent, same contract as any other unresolvable component).
 ///
-/// `struct_names` (TM-4b, docs/typed-mode-spec.md §6): a bare `Named` type
+/// `names.structs` (TM-4b, docs/typed-mode-spec.md §6): a bare `Named` type
 /// whose name is a declared `STRUCT` resolves to `Ty::Struct` — "declared
 /// struct names join the TM-2 annotation type grammar", the same join
-/// `list_names` gives `list<L>`. Checked after the fixed scalar-keyword set
+/// `names.lists` gives `list<L>`. Checked after the fixed scalar-keyword set
 /// so a struct can never shadow `int`/`float`/etc. (those names aren't
 /// legal `STRUCT` identifiers by convention, but this ordering is the
 /// unambiguous choice regardless).
+///
+/// `names.handles` (T1d-2, docs/t1d-spec.md §3): `handle<K>` resolves to
+/// `Ty::Handle(K)` when `K` names a declared handle kind — the manifest
+/// mirror of `list<L>`'s ink-source-declared vocabulary.
 #[must_use]
-pub fn resolve(
-    te: &brink_ir::TypeExpr,
-    list_names: &BTreeSet<String>,
-    struct_names: &BTreeSet<String>,
-) -> Option<Ty> {
+pub fn resolve(te: &brink_ir::TypeExpr, names: &TypeNames) -> Option<Ty> {
     match te {
         brink_ir::TypeExpr::Named { name, .. } => match name.as_str() {
             "int" => Some(Ty::Int),
@@ -74,32 +126,33 @@ pub fn resolve(
             "bool" => Some(Ty::Bool),
             "string" => Some(Ty::String),
             "divert" => Some(Ty::Divert),
-            _ if struct_names.contains(name) => Some(Ty::Struct(name.clone())),
+            _ if names.structs.contains(name) => Some(Ty::Struct(name.clone())),
             _ => None, // "void", or an unrecognized/unknown name
         },
         brink_ir::TypeExpr::Generic { name, args, .. } => match name.as_str() {
             "list" if args.len() == 1 => match &args[0] {
-                brink_ir::TypeExpr::Named { name: l, .. } if list_names.contains(l) => {
+                brink_ir::TypeExpr::Named { name: l, .. } if names.lists.contains(l) => {
                     Some(Ty::List(l.clone()))
                 }
                 _ => None,
             },
-            "array" if args.len() == 1 => {
-                resolve(&args[0], list_names, struct_names).map(|t| Ty::Array(Box::new(t)))
-            }
+            "handle" if args.len() == 1 => match &args[0] {
+                brink_ir::TypeExpr::Named { name: k, .. } if names.handles.contains(k) => {
+                    Some(Ty::Handle(k.clone()))
+                }
+                _ => None,
+            },
+            "array" if args.len() == 1 => resolve(&args[0], names).map(|t| Ty::Array(Box::new(t))),
             "map" if args.len() == 2 => {
-                let k = resolve(&args[0], list_names, struct_names)?;
-                let v = resolve(&args[1], list_names, struct_names)?;
+                let k = resolve(&args[0], names)?;
+                let v = resolve(&args[1], names)?;
                 Some(Ty::Map(Box::new(k), Box::new(v)))
             }
             _ => None,
         },
         brink_ir::TypeExpr::Fn { params, ret, .. } => {
-            let params: Option<Vec<Ty>> = params
-                .iter()
-                .map(|p| resolve(p, list_names, struct_names))
-                .collect();
-            let ret = resolve(ret, list_names, struct_names)?;
+            let params: Option<Vec<Ty>> = params.iter().map(|p| resolve(p, names)).collect();
+            let ret = resolve(ret, names)?;
             Some(Ty::Fn(params?, Box::new(ret)))
         }
     }
@@ -131,86 +184,74 @@ pub(crate) fn declared_struct_names(index: &SymbolIndex) -> BTreeSet<String> {
 }
 
 /// Semantic diagnostics on annotation content: unknown type names (`E061`).
-/// Brink-dialect-only (see module doc).
+/// Brink-dialect-only (see module doc). `manifest`: the registered host
+/// manifest, if any — T1d-2's `handle<K>` vocabulary source (`None` degrades
+/// to an empty handle-kind set, same posture as every other manifest-driven
+/// check).
 #[must_use]
-pub fn check(files: &[(FileId, &HirFile)], index: &SymbolIndex) -> Vec<Diagnostic> {
-    let list_names = declared_list_names(index);
-    let struct_names = declared_struct_names(index);
+pub fn check(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    manifest: Option<&HostManifest>,
+) -> Vec<Diagnostic> {
+    let names = TypeNames::new(index, manifest);
     let mut out = Vec::new();
     for &(file, hir) in files {
         for v in &hir.variables {
             if let Some(te) = &v.annotation {
-                check_one(te, &list_names, &struct_names, file, &mut out);
+                check_one(te, &names, file, &mut out);
             }
         }
         for c in &hir.constants {
             if let Some(te) = &c.annotation {
-                check_one(te, &list_names, &struct_names, file, &mut out);
+                check_one(te, &names, file, &mut out);
             }
         }
         for knot in &hir.knots {
-            check_knot(knot, file, &list_names, &struct_names, &mut out);
+            check_knot(knot, file, &names, &mut out);
         }
     }
     out
 }
 
-fn check_knot(
-    knot: &Knot,
-    file: FileId,
-    list_names: &BTreeSet<String>,
-    struct_names: &BTreeSet<String>,
-    out: &mut Vec<Diagnostic>,
-) {
+fn check_knot(knot: &Knot, file: FileId, names: &TypeNames, out: &mut Vec<Diagnostic>) {
     for p in &knot.params {
         if let Some(te) = &p.annotation {
-            check_one(te, list_names, struct_names, file, out);
+            check_one(te, names, file, out);
         }
     }
     if let Some(rt) = &knot.return_type {
-        check_one(rt, list_names, struct_names, file, out);
+        check_one(rt, names, file, out);
     }
     for stitch in &knot.stitches {
-        check_stitch(stitch, file, list_names, struct_names, out);
+        check_stitch(stitch, file, names, out);
     }
 }
 
-fn check_stitch(
-    stitch: &Stitch,
-    file: FileId,
-    list_names: &BTreeSet<String>,
-    struct_names: &BTreeSet<String>,
-    out: &mut Vec<Diagnostic>,
-) {
+fn check_stitch(stitch: &Stitch, file: FileId, names: &TypeNames, out: &mut Vec<Diagnostic>) {
     for p in &stitch.params {
         if let Some(te) = &p.annotation {
-            check_one(te, list_names, struct_names, file, out);
+            check_one(te, names, file, out);
         }
     }
 }
 
 /// Check one type expression (and recursively, its generic args / fn
 /// params+return) for unknown names / reserved fn-types.
-fn check_one(
-    te: &brink_ir::TypeExpr,
-    list_names: &BTreeSet<String>,
-    struct_names: &BTreeSet<String>,
-    file: FileId,
-    out: &mut Vec<Diagnostic>,
-) {
+fn check_one(te: &brink_ir::TypeExpr, names: &TypeNames, file: FileId, out: &mut Vec<Diagnostic>) {
     match te {
         brink_ir::TypeExpr::Named { name, range } => {
             // TM-4b (docs/typed-mode-spec.md §6): "declared struct names
             // join the TM-2 annotation type grammar... E061 no longer fires
             // for a declared name".
-            if !is_known_leaf(name) && !struct_names.contains(name) {
+            if !is_known_leaf(name) && !names.structs.contains(name) {
                 out.push(Diagnostic {
                     file,
                     range: *range,
                     message: format!(
                         "`{name}` is not a recognized type — expected int, float, bool, \
-                         string, divert, void, list<L>, array<T>, map<K, V>, or a declared \
-                         STRUCT name"
+                         string, divert, void, list<L>, array<T>, map<K, V>, handle<K>, or a \
+                         declared STRUCT name"
                     ),
                     code: DiagnosticCode::E061,
                 });
@@ -219,7 +260,7 @@ fn check_one(
         brink_ir::TypeExpr::Generic { name, args, range } => match name.as_str() {
             "list" => {
                 let bad = match args.as_slice() {
-                    [brink_ir::TypeExpr::Named { name: l, .. }] => !list_names.contains(l),
+                    [brink_ir::TypeExpr::Named { name: l, .. }] => !names.lists.contains(l),
                     _ => true,
                 };
                 if bad {
@@ -234,9 +275,31 @@ fn check_one(
                     });
                 }
             }
+            // T1d-2 (docs/t1d-spec.md §3): `handle<K>` is a legal type form
+            // whose kind vocabulary lives in the registered host manifest,
+            // not ink source — the `list<L>` pattern above, mirrored against
+            // `names.handles` instead of `names.lists`.
+            "handle" => {
+                let bad = match args.as_slice() {
+                    [brink_ir::TypeExpr::Named { name: k, .. }] => !names.handles.contains(k),
+                    _ => true,
+                };
+                if bad {
+                    out.push(Diagnostic {
+                        file,
+                        range: *range,
+                        message: format!(
+                            "`handle<{}>` doesn't name a declared handle kind in the host \
+                             manifest",
+                            args.first().map_or(String::new(), display_short)
+                        ),
+                        code: DiagnosticCode::E061,
+                    });
+                }
+            }
             "array" | "map" => {
                 for a in args {
-                    check_one(a, list_names, struct_names, file, out);
+                    check_one(a, names, file, out);
                 }
             }
             _ => {
@@ -253,9 +316,9 @@ fn check_one(
         // Component names are still content-checked recursively (E061).
         brink_ir::TypeExpr::Fn { params, ret, .. } => {
             for p in params {
-                check_one(p, list_names, struct_names, file, out);
+                check_one(p, names, file, out);
             }
-            check_one(ret, list_names, struct_names, file, out);
+            check_one(ret, names, file, out);
         }
     }
 }
@@ -278,36 +341,25 @@ fn display_short(te: &brink_ir::TypeExpr) -> String {
 ///
 /// A pure consumer of two already-public seams: never touches
 /// `infer::body`'s internals, never re-solves anything.
+/// `manifest`: the registered host manifest (T1d-2), so an annotated
+/// `handle<K>` param/return can resolve against its declared handle kinds
+/// instead of always reading as an unresolved annotation — `None` degrades
+/// to an empty handle-kind set (gradual/advisory: an unresolved `handle<K>`
+/// merely opts the slot out of `E063`, never a hard failure).
 #[must_use]
 pub fn mismatches(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
     inference: &InferenceResult,
+    manifest: Option<&HostManifest>,
 ) -> Vec<Diagnostic> {
-    let list_names = declared_list_names(index);
-    let struct_names = declared_struct_names(index);
+    let names = TypeNames::new(index, manifest);
     let mut out = Vec::new();
     for &(file, hir) in files {
         for knot in &hir.knots {
-            check_def_mismatch(
-                knot,
-                file,
-                index,
-                &list_names,
-                &struct_names,
-                inference,
-                &mut out,
-            );
+            check_def_mismatch(knot, file, index, &names, inference, &mut out);
             for stitch in &knot.stitches {
-                check_stitch_mismatch(
-                    stitch,
-                    file,
-                    index,
-                    &list_names,
-                    &struct_names,
-                    inference,
-                    &mut out,
-                );
+                check_stitch_mismatch(stitch, file, index, &names, inference, &mut out);
             }
         }
     }
@@ -337,8 +389,7 @@ fn check_def_mismatch(
     knot: &Knot,
     file: FileId,
     index: &SymbolIndex,
-    list_names: &BTreeSet<String>,
-    struct_names: &BTreeSet<String>,
+    names: &TypeNames,
     inference: &InferenceResult,
     out: &mut Vec<Diagnostic>,
 ) {
@@ -350,7 +401,7 @@ fn check_def_mismatch(
     };
     for (i, p) in knot.params.iter().enumerate() {
         let Some(ann) = &p.annotation else { continue };
-        let Some(ann_ty) = resolve(ann, list_names, struct_names) else {
+        let Some(ann_ty) = resolve(ann, names) else {
             continue;
         };
         let Some(body_ty) = inferred.params.get(i) else {
@@ -359,7 +410,7 @@ fn check_def_mismatch(
         report_if_mismatched(ann, &ann_ty, body_ty, file, out);
     }
     if let Some(rt) = &knot.return_type
-        && let Some(ann_ty) = resolve(rt, list_names, struct_names)
+        && let Some(ann_ty) = resolve(rt, names)
     {
         report_if_mismatched(rt, &ann_ty, &inferred.return_ty, file, out);
     }
@@ -369,8 +420,7 @@ fn check_stitch_mismatch(
     stitch: &Stitch,
     file: FileId,
     index: &SymbolIndex,
-    list_names: &BTreeSet<String>,
-    struct_names: &BTreeSet<String>,
+    names: &TypeNames,
     inference: &InferenceResult,
     out: &mut Vec<Diagnostic>,
 ) {
@@ -382,7 +432,7 @@ fn check_stitch_mismatch(
     };
     for (i, p) in stitch.params.iter().enumerate() {
         let Some(ann) = &p.annotation else { continue };
-        let Some(ann_ty) = resolve(ann, list_names, struct_names) else {
+        let Some(ann_ty) = resolve(ann, names) else {
             continue;
         };
         let Some(body_ty) = inferred.params.get(i) else {
@@ -429,6 +479,8 @@ fn report_if_mismatched(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use brink_ir::ResolutionMap;
     use brink_ir::hir::lower;
@@ -440,6 +492,17 @@ mod tests {
         (hir, (*index).clone())
     }
 
+    /// Build a [`TypeNames`] bundle for a `resolve()` test call — pre-T1d-2
+    /// tests only ever needed `lists`/`structs`; `handles` stays empty
+    /// (no manifest in these fixtures).
+    fn tn(lists: &BTreeSet<String>, structs: &BTreeSet<String>) -> TypeNames {
+        TypeNames {
+            lists: lists.clone(),
+            structs: structs.clone(),
+            handles: BTreeSet::new(),
+        }
+    }
+
     /// Like [`build`], but also computes real resolutions — needed by the
     /// `mismatches()` tests: `infer_project` resolves body references (e.g.
     /// `hp` inside a knot body back to its own param) via the resolution
@@ -448,7 +511,8 @@ mod tests {
         let parsed = brink_syntax::parse(src);
         let (hir, manifest, _diag) = lower(FileId(0), &parsed.tree());
         let (index, _diag) = crate::symbol_index(&[(FileId(0), &manifest)]);
-        let (resolutions, _diag) = crate::resolve(FileId(0), &manifest, &index);
+        let (resolutions, _diag) =
+            crate::resolve(FileId(0), &manifest, &index, &crate::ImportScope::default());
         (hir, (*index).clone(), (*resolutions).clone())
     }
 
@@ -461,9 +525,9 @@ mod tests {
         let b = hir.variables[1].annotation.as_ref().expect("b annotation");
         let c = hir.variables[2].annotation.as_ref().expect("c annotation");
         let empty = BTreeSet::new();
-        assert_eq!(resolve(a, &empty, &empty), Some(Ty::Int));
-        assert_eq!(resolve(b, &empty, &empty), Some(Ty::Float));
-        assert_eq!(resolve(c, &empty, &empty), Some(Ty::Bool));
+        assert_eq!(resolve(a, &tn(&empty, &empty)), Some(Ty::Int));
+        assert_eq!(resolve(b, &tn(&empty, &empty)), Some(Ty::Float));
+        assert_eq!(resolve(c, &tn(&empty, &empty)), Some(Ty::Bool));
     }
 
     #[test]
@@ -473,11 +537,11 @@ mod tests {
         let m = hir.variables[1].annotation.as_ref().expect("m");
         let empty = BTreeSet::new();
         assert_eq!(
-            resolve(a, &empty, &empty),
+            resolve(a, &tn(&empty, &empty)),
             Some(Ty::Array(Box::new(Ty::Int)))
         );
         assert_eq!(
-            resolve(m, &empty, &empty),
+            resolve(m, &tn(&empty, &empty)),
             Some(Ty::Map(Box::new(Ty::String), Box::new(Ty::Int)))
         );
     }
@@ -488,13 +552,13 @@ mod tests {
         let te = hir.variables[0].annotation.as_ref().expect("annotation");
         let empty = BTreeSet::new();
         assert_eq!(
-            resolve(te, &empty, &empty),
+            resolve(te, &tn(&empty, &empty)),
             None,
             "Weathers isn't declared here"
         );
         let declared: BTreeSet<String> = ["Weathers".to_string()].into_iter().collect();
         assert_eq!(
-            resolve(te, &declared, &empty),
+            resolve(te, &tn(&declared, &empty)),
             Some(Ty::List("Weathers".to_string()))
         );
     }
@@ -505,7 +569,7 @@ mod tests {
         let empty = BTreeSet::new();
         for v in &hir.variables {
             let te = v.annotation.as_ref().expect("annotation");
-            assert_eq!(resolve(te, &empty, &empty), None, "{v:?}");
+            assert_eq!(resolve(te, &tn(&empty, &empty)), None, "{v:?}");
         }
     }
 
@@ -518,11 +582,11 @@ mod tests {
         let cb = hir.variables[0].annotation.as_ref().expect("cb");
         let z = hir.variables[1].annotation.as_ref().expect("z");
         assert_eq!(
-            resolve(cb, &empty, &empty),
+            resolve(cb, &tn(&empty, &empty)),
             Some(Ty::Fn(vec![Ty::Int, Ty::String], Box::new(Ty::Bool)))
         );
         assert_eq!(
-            resolve(z, &empty, &empty),
+            resolve(z, &tn(&empty, &empty)),
             Some(Ty::Fn(Vec::new(), Box::new(Ty::Int)))
         );
     }
@@ -536,14 +600,14 @@ mod tests {
         let a = hir.variables[0].annotation.as_ref().expect("a");
         let b = hir.variables[1].annotation.as_ref().expect("b");
         assert_eq!(
-            resolve(a, &empty, &empty),
+            resolve(a, &tn(&empty, &empty)),
             Some(Ty::Array(Box::new(Ty::Fn(
                 vec![Ty::Int],
                 Box::new(Ty::Int)
             ))))
         );
         assert_eq!(
-            resolve(b, &empty, &empty),
+            resolve(b, &tn(&empty, &empty)),
             Some(Ty::Fn(
                 vec![Ty::Array(Box::new(Ty::Int))],
                 Box::new(Ty::Fn(vec![Ty::Int], Box::new(Ty::Bool)))
@@ -558,7 +622,7 @@ mod tests {
         let (hir, _index) = build("VAR cb: fn(int): void = 0\n");
         let te = hir.variables[0].annotation.as_ref().expect("annotation");
         let empty = BTreeSet::new();
-        assert_eq!(resolve(te, &empty, &empty), None);
+        assert_eq!(resolve(te, &tn(&empty, &empty)), None);
     }
 
     #[test]
@@ -570,15 +634,108 @@ mod tests {
         let te = hir.variables[0].annotation.as_ref().expect("annotation");
         let empty = BTreeSet::new();
         assert_eq!(
-            resolve(te, &empty, &empty),
+            resolve(te, &tn(&empty, &empty)),
             None,
             "Point isn't in struct_names here"
         );
         let declared: BTreeSet<String> = ["Point".to_string()].into_iter().collect();
         assert_eq!(
-            resolve(te, &empty, &declared),
+            resolve(te, &tn(&empty, &declared)),
             Some(Ty::Struct("Point".to_string()))
         );
+    }
+
+    // ── T1d-2 handle<K> (docs/t1d-spec.md §3) ────────────────────────
+
+    /// A `HostManifest` declaring one handle kind, `AudioInstance`.
+    fn audio_instance_manifest() -> HostManifest {
+        HostManifest {
+            types: vec![brink_ir::SemanticTypeDef {
+                name: "AudioInstance".to_string(),
+                base: BaseType::Handle,
+                constraint: None,
+                values: None,
+                widget: None,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn declared_handle_kinds_reads_only_handle_based_semantic_types() {
+        let manifest = HostManifest {
+            types: vec![
+                brink_ir::SemanticTypeDef {
+                    name: "AudioInstance".to_string(),
+                    base: BaseType::Handle,
+                    constraint: None,
+                    values: None,
+                    widget: None,
+                },
+                brink_ir::SemanticTypeDef {
+                    name: "switch_id".to_string(),
+                    base: BaseType::Int,
+                    constraint: None,
+                    values: None,
+                    widget: None,
+                },
+            ],
+            ..Default::default()
+        };
+        let kinds = declared_handle_kinds(Some(&manifest));
+        assert_eq!(kinds, ["AudioInstance".to_string()].into_iter().collect());
+        assert!(declared_handle_kinds(None).is_empty());
+    }
+
+    #[test]
+    fn resolve_handle_generic_needs_declared_manifest_kind() {
+        let (hir, index) = build("VAR h: handle<AudioInstance> = 0\n");
+        let te = hir.variables[0].annotation.as_ref().expect("annotation");
+        assert_eq!(
+            resolve(te, &TypeNames::new(&index, None)),
+            None,
+            "AudioInstance isn't declared without a manifest"
+        );
+        let manifest = audio_instance_manifest();
+        assert_eq!(
+            resolve(te, &TypeNames::new(&index, Some(&manifest))),
+            Some(Ty::Handle("AudioInstance".to_string()))
+        );
+    }
+
+    #[test]
+    fn check_flags_undeclared_handle_kind() {
+        let (hir, index) = build("VAR h: handle<Nope> = 0\n");
+        let diags = check(
+            &[(FileId(0), &hir)],
+            &index,
+            Some(&audio_instance_manifest()),
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E061);
+    }
+
+    #[test]
+    fn check_accepts_declared_handle_kind() {
+        let (hir, index) = build("VAR h: handle<AudioInstance> = 0\n");
+        let diags = check(
+            &[(FileId(0), &hir)],
+            &index,
+            Some(&audio_instance_manifest()),
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn check_flags_handle_kind_with_no_manifest_registered() {
+        // Mirrors `check_flags_undeclared_list_name`: a `handle<K>` with no
+        // manifest registered at all has no vocabulary to resolve against —
+        // an empty handle-kind set, same degrade-gracefully posture as
+        // every other manifest-driven check.
+        let (hir, index) = build("VAR h: handle<AudioInstance> = 0\n");
+        let diags = check(&[(FileId(0), &hir)], &index, None);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E061);
     }
 
     // ── check() ─────────────────────────────────────────────────────
@@ -586,7 +743,7 @@ mod tests {
     #[test]
     fn check_flags_unknown_type_name() {
         let (hir, index) = build("VAR p: Frobnicator = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index);
+        let diags = check(&[(FileId(0), &hir)], &index, None);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E061);
     }
@@ -595,14 +752,14 @@ mod tests {
     fn check_accepts_fn_type_since_t1c() {
         // T1c-1 (#699): E062 retired — `fn(T…): R` is a legal type form.
         let (hir, index) = build("VAR cb: fn(int, int): bool = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index);
+        let diags = check(&[(FileId(0), &hir)], &index, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
     fn check_still_flags_unknown_names_inside_a_fn_type() {
         let (hir, index) = build("VAR cb: fn(Bogus): bool = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index);
+        let diags = check(&[(FileId(0), &hir)], &index, None);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E061);
     }
@@ -611,21 +768,21 @@ mod tests {
     fn check_accepts_known_scalar_and_generic_types() {
         let (hir, index) =
             build("VAR a: int = 1\nVAR b: array<float> = 0\nVAR c: map<string, bool> = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index);
+        let diags = check(&[(FileId(0), &hir)], &index, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
     fn check_accepts_void_return_type() {
         let (hir, index) = build("=== function noop(): void ===\n~ return\n");
-        let diags = check(&[(FileId(0), &hir)], &index);
+        let diags = check(&[(FileId(0), &hir)], &index, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
     fn check_accepts_declared_list_name() {
         let (hir, index) = build("LIST Weathers = sunny, rainy\nVAR w: list<Weathers> = sunny\n");
-        let diags = check(&[(FileId(0), &hir)], &index);
+        let diags = check(&[(FileId(0), &hir)], &index, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -633,7 +790,7 @@ mod tests {
     #[test]
     fn check_accepts_declared_struct_name() {
         let (hir, index) = build("STRUCT Point = #{x: float}\nVAR p: Point = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index);
+        let diags = check(&[(FileId(0), &hir)], &index, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -642,7 +799,7 @@ mod tests {
         // A name that isn't a known scalar, generic head, or declared
         // struct still flags E061 — TM-4b only widens the accepted set.
         let (hir, index) = build("VAR w: NotAStruct = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index);
+        let diags = check(&[(FileId(0), &hir)], &index, None);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E061);
     }
@@ -650,7 +807,7 @@ mod tests {
     #[test]
     fn check_flags_undeclared_list_name() {
         let (hir, index) = build("VAR w: list<Nope> = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index);
+        let diags = check(&[(FileId(0), &hir)], &index, None);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E061);
     }
@@ -658,7 +815,7 @@ mod tests {
     #[test]
     fn check_flags_param_and_return_type_annotations() {
         let (hir, index) = build("=== function heal(hp: Bogus): AlsoBogus ===\n~ return hp\n");
-        let diags = check(&[(FileId(0), &hir)], &index);
+        let diags = check(&[(FileId(0), &hir)], &index, None);
         assert_eq!(diags.len(), 2, "{diags:?}");
         assert!(diags.iter().all(|d| d.code == DiagnosticCode::E061));
     }
@@ -671,8 +828,9 @@ mod tests {
         // against an int literal — body inference derives `int`.
         let (hir, index, res) =
             build_with_resolutions("=== heal(hp: string) ===\n{hp > 1:\n  ok\n}\n-> DONE\n");
-        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = mismatches(&[(FileId(0), &hir)], &index, &inference);
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = mismatches(&[(FileId(0), &hir)], &index, &inference, None);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E063);
     }
@@ -681,8 +839,9 @@ mod tests {
     fn mismatches_is_silent_when_annotation_and_inference_agree() {
         let (hir, index, res) =
             build_with_resolutions("=== heal(hp: int) ===\n{hp > 1:\n  ok\n}\n-> DONE\n");
-        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = mismatches(&[(FileId(0), &hir)], &index, &inference);
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = mismatches(&[(FileId(0), &hir)], &index, &inference, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -692,8 +851,9 @@ mod tests {
         // `Unknown`, which never disagrees (spec: "unresolved -> Unknown,
         // which is LEGAL").
         let (hir, index, res) = build_with_resolutions("=== heal(hp: int) ===\nHello.\n-> DONE\n");
-        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = mismatches(&[(FileId(0), &hir)], &index, &inference);
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = mismatches(&[(FileId(0), &hir)], &index, &inference, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -704,8 +864,9 @@ mod tests {
         // coercion (spec §4) — not a disagreement.
         let (hir, index, res) =
             build_with_resolutions("=== heal(hp: float) ===\n{hp > 1:\n  ok\n}\n-> DONE\n");
-        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
-        let diags = mismatches(&[(FileId(0), &hir)], &index, &inference);
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = mismatches(&[(FileId(0), &hir)], &index, &inference, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -720,7 +881,8 @@ mod tests {
         let (hir, index, res) = build_with_resolutions(
             "=== heal(hp: int) ===\n{hp > 1:\n  ok\n}\n{hp == \"x\":\n  no\n}\n-> DONE\n",
         );
-        let inference = crate::infer_project(&[(FileId(0), &hir)], &index, &res);
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         // Confirm the fixture actually exercises `Conflicted`, not some
         // other path, before asserting on `mismatches`' silence.
         let heal_id = index
@@ -735,7 +897,7 @@ mod tests {
             .expect("inferred signature for heal");
         assert_eq!(sig.params, vec![Ty::Conflicted], "fixture sanity check");
 
-        let diags = mismatches(&[(FileId(0), &hir)], &index, &inference);
+        let diags = mismatches(&[(FileId(0), &hir)], &index, &inference, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
 }

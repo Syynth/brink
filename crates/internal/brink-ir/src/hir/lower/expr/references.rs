@@ -64,10 +64,12 @@ impl LowerExpr for ast::FunctionCall {
 
 impl LowerExpr for ast::DivertTargetExpr {
     fn lower_expr(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Expr> {
-        let range = self.syntax().text_range();
-        let ast_path = self
-            .target()
-            .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E018))?;
+        // The parser always creates a PATH node (empty on error + E037),
+        // so self.target() always returns Some (lane-A audit, #709: E018 is
+        // unreachable).
+        let Some(ast_path) = self.target() else {
+            unreachable!("parser guarantees PATH node in DivertTargetExpr")
+        };
         let path = lower_path(&ast_path);
         let full = path_full_name(&path);
         sink.add_unresolved(

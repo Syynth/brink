@@ -1021,6 +1021,8 @@ fn test_dummy_program() -> Program {
         external_fns: HashMap::new(),
         local_scope_defaults: Vec::new(),
         struct_shapes: Vec::new(),
+        private_defs: Vec::new(),
+        alias_table: Vec::new(),
     }
 }
 
@@ -1506,6 +1508,7 @@ mod tests {
                 counting_flags: CountingFlags::empty(),
                 path_hash: 0,
                 param_count: 0,
+                params: Vec::new(),
                 scope_table_idx: 0,
             }],
             address_map: HashMap::new(),
@@ -1524,6 +1527,8 @@ mod tests {
             external_fns: HashMap::new(),
             local_scope_defaults: Vec::new(),
             struct_shapes: Vec::new(),
+            private_defs: Vec::new(),
+            alias_table: Vec::new(),
         };
 
         let line_tables = vec![vec![LineEntry {

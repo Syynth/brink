@@ -16,9 +16,14 @@
 //! [`resolutions_index_query`] (index + resolutions, no diagnostics),
 //! [`per_file_diagnostics_query`]/[`contributor_diagnostics_query`] (the
 //! per-file validate/dialect_gate/annotation-content split),
-//! [`whole_project_diagnostics_query`] (`external_check` + strict, still
-//! whole-project), and [`analysis_diagnostics_query`] (every diagnostic
-//! source, merged). See the "FG-3" section below for the full rationale.
+//! [`whole_project_diagnostics_query`] (now a thin aggregator — issue #750
+//! decomposed the external-check family into [`inline_docs_query`] /
+//! [`external_meta_query`] / [`call_site_metas_query`] and the per-file
+//! [`value_meta_query`] / [`call_site_diagnostics_query`]; only the M-2
+//! modules pass and the strict typed-mode pass remain genuinely
+//! whole-project), and
+//! [`analysis_diagnostics_query`] (every diagnostic source, merged). See
+//! the "FG-3" section below for the full rationale.
 //!
 //! Layer 3 (lowering/codegen, whole-project in this slice): [`lir_query`],
 //! [`story_data_query`], and the per-file [`diagnostics_query`] — both now
@@ -49,13 +54,36 @@
 //! wrong file's declaration. With locals gone, dropping the rest is
 //! behavior-neutral by construction (locked by the `query_equivalence` tests
 //! and the oracle gate).
+//!
+//! # Memory bounding (FG-5, issue #647, decision log "FG-5 memory bounding")
+//!
+//! The per-file query families (`parse`, `lowered`, `suppressions`,
+//! `resolve`, `per_file_diagnostics`, `value_meta`, `call_site_diagnostics`,
+//! `diagnostics`) and the per-def families keyed by [`DefKey`]
+//! (`signature`, `def_body`,
+//! `referenced_globals`, `call_edges`, `solve_scc`, `inferred_signature`,
+//! `infer_body`) each carry a salsa `lru` capacity — a **runaway guard**,
+//! not a working-set trim. Issue #537's measurement (large synthetic
+//! projects, 2,000-edit sessions) showed every one of these families scales
+//! with live project size and shows zero session-length growth, so a tight
+//! LRU would only evict live working-set entries and buy recompute churn on
+//! big projects, never save memory. The ceilings are sized far above
+//! realistic project scale on purpose (≈30× the measured 132-file scale for
+//! per-file families, ≈10× the measured 1,549-def scale for per-def
+//! families) so they never evict in steady state, and exist only to cap the
+//! pathological/runaway case. **No eviction *policy* design happened here**
+//! — that was explicitly ruled out by the data; see the decision log entry
+//! for the full ruling. `def_body`, `solve_scc`, `signature`, `infer_body`,
+//! and `lowered` additionally specify a `heap_size` estimator
+//! ([`heap_size`], issue #538) — the families #537 flagged as the dominant
+//! Arc-hidden payloads, so `crate::memory::snapshot`'s `heap_bytes` column
+//! reads `Some(_)` for them instead of the honest-`None` every query
+//! reported before this pass.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use brink_analyzer::{
-    AnalysisOptions, AnalysisResult, CallGraph, InferenceResult, SccGraph, Sig, TypePolicy,
-};
+use brink_analyzer::{AnalysisOptions, CallGraph, InferenceResult, SccGraph, Sig, TypePolicy};
 use brink_format::{DefinitionId, StoryData};
 use brink_ir::suppressions::{Suppressions, apply_suppressions, parse_suppressions};
 use brink_ir::{
@@ -65,7 +93,19 @@ use brink_ir::{
 use brink_syntax::Parse;
 
 use crate::db::resolve_include_path;
+use crate::determinism::{LookupMap, LookupSet};
 use crate::include_graph::IncludeGraph;
+
+mod analysis;
+mod heap_size;
+
+pub use analysis::ResolvedProject;
+pub(crate) use analysis::{
+    analysis_diagnostics_query, analysis_query, call_site_diagnostics_query, call_site_metas_query,
+    contributor_diagnostics_query, diagnostics_query, external_meta_query, has_errors_query,
+    inline_docs_query, per_file_diagnostics_query, resolutions_index_query, value_meta_query,
+    whole_project_diagnostics_query,
+};
 
 // ─── Database ────────────────────────────────────────────────────────
 
@@ -99,6 +139,7 @@ impl Default for BrinkDatabase {
                 .ingredient::<suppressions_query>()
                 .ingredient::<include_graph_query>()
                 // Layer 2.
+                .ingredient::<module_map_query>()
                 .ingredient::<symbol_index_query>()
                 .ingredient::<resolution_index_query>()
                 .ingredient::<resolve_query>()
@@ -120,10 +161,47 @@ impl Default for BrinkDatabase {
                 .ingredient::<resolutions_index_query>()
                 .ingredient::<per_file_diagnostics_query>()
                 .ingredient::<contributor_diagnostics_query>()
+                // FG-3 completion (issue #750): the external-check family,
+                // decomposed. inline_docs_query (project doc merge, Eq
+                // cutoff) + external_meta_query (index-driven E039/E040 +
+                // enrichment, no HIR) + call_site_metas_query (the
+                // range-free name→meta cutoff seam) feed the per-file
+                // value_meta_query / call_site_diagnostics_query, so a body
+                // edit in file Y re-runs only Y's own value-meta and
+                // call-site walks; whole_project_diagnostics_query is now a
+                // thin aggregator (plus the genuinely whole-project M-2
+                // modules pass and strict pass).
+                .ingredient::<inline_docs_query>()
+                .ingredient::<external_meta_query>()
+                .ingredient::<call_site_metas_query>()
+                .ingredient::<value_meta_query>()
+                .ingredient::<call_site_diagnostics_query>()
                 .ingredient::<whole_project_diagnostics_query>()
                 .ingredient::<analysis_diagnostics_query>()
                 .ingredient::<analysis_query>()
                 .ingredient::<diagnostics_query>()
+                // FG-4a (issue #791): the `has_errors` boolean projection
+                // (PR #753's seam finding #3) and the LIR-lowering split it
+                // gates — see `lir_query`'s doc comment. type_policy_query
+                // (issue #806) is the matching narrow `.types` projection so
+                // an unrelated AnalysisOptions edit can't re-execute the
+                // `no_eq` lowering memo.
+                .ingredient::<has_errors_query>()
+                .ingredient::<type_policy_query>()
+                // FG-4d (issue #830): per-knot LIR chunk memos + the
+                // cutoff-friendly struct-shape projection they read;
+                // `lir_lowering_query` is now the link phase assembling them.
+                .ingredient::<struct_shape_data_query>()
+                .ingredient::<normalized_stamped_query>()
+                // FG-4e (issue #839): decl_hir_query is the per-file
+                // backdating projection lir_prelude_decls_query reads
+                // instead of raw HIR, so a knot body edit doesn't force the
+                // whole-project declaration collection to re-execute.
+                .ingredient::<decl_hir_query>()
+                .ingredient::<lir_prelude_decls_query>()
+                .ingredient::<KnotChunkKey<'_>>()
+                .ingredient::<lir_knot_chunk_query>()
+                .ingredient::<lir_lowering_query>()
                 // Layer 2/3: type inference (TM-1, advisory-only).
                 // Per-def/per-SCC decomposition (FG-2, issue #631):
                 // call_edges(def) -> call_graph() -> scc_membership() ->
@@ -182,7 +260,11 @@ pub(crate) struct ProjectInput {
 // ─── Layer 1: per-file queries ───────────────────────────────────────
 
 /// Parse one file's text into a lossless CST.
-#[salsa::tracked(returns(ref))]
+///
+/// `lru = 4096`: a per-file runaway-guard ceiling (issue #647, decision log
+/// "FG-5 memory bounding"), not a working-set trim — see this module's doc
+/// comment's "Memory bounding" section.
+#[salsa::tracked(returns(ref), lru = 4096)]
 pub(crate) fn parse_query(db: &dyn salsa::Database, file: SourceFile) -> Parse {
     brink_syntax::parse(file.text(db))
 }
@@ -199,13 +281,20 @@ pub(crate) struct LoweredFile {
 /// Lower one file to HIR. Salsa's dependency tracking on the `parse` input
 /// replaces the retired per-knot green-node/byte-offset cache (`knot_cache`):
 /// the composition below is byte-identical to what `set_file` produced.
-#[salsa::tracked(returns(ref))]
+///
+/// `lru = 4096`: per-file runaway-guard ceiling (issue #647). `heap_size`:
+/// one of the five #538/#647 estimators — #537 flagged this family's
+/// per-def analogues (`def_body`/`solve_scc`) as the dominant Arc-hidden
+/// payload; this is the per-file sibling.
+#[salsa::tracked(returns(ref), lru = 4096, heap_size = heap_size::lowered_file_heap_size)]
 pub(crate) fn lowered_query(db: &dyn salsa::Database, file: SourceFile) -> LoweredFile {
     lower_file(file.file_id(db), parse_query(db, file))
 }
 
 /// Parsed suppression/expectation directives for one file.
-#[salsa::tracked(returns(ref))]
+///
+/// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
+#[salsa::tracked(returns(ref), lru = 4096)]
 pub(crate) fn suppressions_query(db: &dyn salsa::Database, file: SourceFile) -> Suppressions {
     parse_suppressions(file.text(db))
 }
@@ -216,7 +305,7 @@ pub(crate) fn suppressions_query(db: &dyn salsa::Database, file: SourceFile) -> 
 #[salsa::tracked(returns(ref))]
 pub(crate) fn include_graph_query(db: &dyn salsa::Database, project: ProjectInput) -> IncludeGraph {
     let files = project.files(db);
-    let path_to_id: HashMap<&str, FileId> = files
+    let path_to_id: LookupMap<&str, FileId> = files
         .iter()
         .map(|f| (f.path(db).as_str(), f.file_id(db)))
         .collect();
@@ -239,6 +328,35 @@ pub(crate) fn include_graph_query(db: &dyn salsa::Database, project: ProjectInpu
 
 // ─── Layer 2: project-wide names ─────────────────────────────────────
 
+/// Every file's resolved module (M-1, docs/modules-spec.md §1/§5) plus the
+/// stem-collision diagnostics (`E085`). Extracted as its own memoized query
+/// (issue #790) so both [`symbol_index_query`] — which qualifies identity by
+/// declared module — and [`resolve_query`] — which needs each referring
+/// file's module + imports to scope resolution — share one computation.
+///
+/// Undeclared stem-modules (the entire pre-modules corpus) resolve to
+/// non-qualifying entries, so their `DefinitionId`s stay byte-identical.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn module_map_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> (brink_analyzer::ModuleMap, Vec<Diagnostic>) {
+    let files = project.files(db);
+    let module_inputs: Vec<crate::modules::FileModuleInput> = files
+        .iter()
+        .map(|f| {
+            let hir_module = lowered_query(db, *f).hir.module.as_ref();
+            crate::modules::FileModuleInput {
+                file: f.file_id(db),
+                stem: crate::modules::file_stem(f.path(db)).to_string(),
+                declared: hir_module.map(|m| m.name.clone()),
+                was: hir_module.and_then(|m| m.was.as_ref().map(|(old, _)| old.clone())),
+            }
+        })
+        .collect();
+    crate::modules::resolve_modules(&module_inputs, include_graph_query(db, project))
+}
+
 /// The merged project-wide symbol index plus indexing diagnostics
 /// (duplicates, built-in shadowing). Thin wrapper over
 /// [`brink_analyzer::symbol_index`].
@@ -252,7 +370,18 @@ pub(crate) fn symbol_index_query(
         .iter()
         .map(|f| (f.file_id(db), &lowered_query(db, *f).manifest))
         .collect();
-    brink_analyzer::symbol_index(&manifest_refs)
+
+    let (module_map, module_diags) = module_map_query(db, project);
+
+    // M-2c/M-2d (issues #784/#790): the cross-declared-module duplicate
+    // handling (E096 stopgap → coexistence) is dialect-gated (brink only)
+    // inside `symbol_index_with_modules` itself, so the project's configured
+    // dialect must reach it here.
+    let dialect = project.analysis_options(db).dialect;
+    let (index, mut diagnostics) =
+        brink_analyzer::symbol_index_with_modules(&manifest_refs, module_map, dialect);
+    diagnostics.extend(module_diags.clone());
+    (index, diagnostics)
 }
 
 /// The early-cutoff projection of the symbol index used by resolution:
@@ -280,8 +409,7 @@ pub(crate) fn resolution_index_query(
     stripped
         .symbols
         .retain(|_, info| !matches!(info.kind, SymbolKind::Param | SymbolKind::Temp));
-    let live_ids: std::collections::HashSet<DefinitionId> =
-        stripped.symbols.keys().copied().collect();
+    let live_ids: LookupSet<DefinitionId> = stripped.symbols.keys().copied().collect();
     stripped.by_name.retain(|_, ids| {
         ids.retain(|id| live_ids.contains(id));
         !ids.is_empty()
@@ -297,14 +425,34 @@ pub(crate) fn resolution_index_query(
 /// projection for globals and this file's own `manifest.locals` for
 /// param/temp lookups — the per-file dependency edge that lets a `~ temp`
 /// edit in file Y leave file X's memo untouched (issue #517).
-#[salsa::tracked(returns(ref))]
+///
+/// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
+#[salsa::tracked(returns(ref), lru = 4096)]
 pub(crate) fn resolve_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
     file: SourceFile,
 ) -> (Arc<ResolutionMap>, Vec<Diagnostic>) {
     let index = resolution_index_query(db, project);
-    brink_analyzer::resolve(file.file_id(db), &lowered_query(db, file).manifest, index)
+    let lowered = lowered_query(db, file);
+
+    // Import-scoped resolution (M-2d, docs/modules-spec.md §2; issue #790):
+    // feed the resolver this file's own **declared** module and its `IMPORT`
+    // list so a bare reference with same-name candidates across declared
+    // modules binds to the one this file imported. The scope is inert for
+    // the pre-modules / single-module world (no declared module qualifies
+    // identity, so every candidate carries `module: None` and the resolver's
+    // fast path is byte-identical). `file_module` comes from the shared
+    // module map (declared modules only — INCLUDE inheritance already
+    // applied), matching how `symbol_index_query` qualified identity.
+    let (module_map, _module_diags) = module_map_query(db, project);
+    let file_module = module_map
+        .get(&file.file_id(db))
+        .filter(|m| m.declared)
+        .map(|m| m.name.clone());
+    let scope = brink_analyzer::ImportScope::new(file_module, &lowered.hir.imports);
+
+    brink_analyzer::resolve(file.file_id(db), &lowered.manifest, index, &scope)
 }
 
 /// Interned key for [`signature_query`]. Keyed on the content-addressed
@@ -338,7 +486,22 @@ pub(crate) struct DefKey<'db> {
 /// down to the one matching `SourceFile` before calling `lowered_query`
 /// means the only per-file dependency recorded is the declaring file's own —
 /// a body edit elsewhere in the project no longer invalidates this memo.
-#[salsa::tracked]
+///
+/// **Manifest dependency (T1d-2b, issue #774, docs/t1d-spec.md §3).** Also
+/// reads `project.analysis_options(db).host_manifest` so `handle<K>`
+/// annotations resolve to `Ty::Handle(K)` here — the registered manifest is
+/// project-wide, host-set config, not derived from any file's edits, so
+/// reading it is the same coarse dependency shape `per_file_diagnostics_query`
+/// already reads `host_manifest` at, not a reintroduction of whole-project
+/// per-file churn.
+///
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647, decision log
+/// "FG-5 memory bounding" — #537's data showed this family scales with
+/// live project defs, never with session length, so the ceiling is sized
+/// far above realistic project scale and never evicts in steady state).
+/// `heap_size = heap_size::signature_heap_size`: one of the five #538
+/// estimators — #537 named `signature` the widest-fanout per-def memo.
+#[salsa::tracked(lru = 16384, heap_size = heap_size::signature_heap_size)]
 pub(crate) fn signature_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -353,258 +516,8 @@ pub(crate) fn signature_query<'db>(
         .filter(|f| f.file_id(db) == declaring_file)
         .map(|f| (f.file_id(db), &lowered_query(db, *f).hir))
         .collect();
-    brink_analyzer::signature(def_id, index, &hir_refs)
-}
-
-// ─── FG-3 (issue #632): decomposed analysis_query ─────────────────────
-//
-// `analysis_query`'s only cutoff used to be `PartialEq` over the whole
-// `AnalysisResult` — index, resolutions, diagnostics (range-laden), and
-// symbol_meta bundled into one struct — so it almost never backdated, and
-// every file's validate/dialect_gate/annotation-content checks re-ran on
-// nearly any edit, since they were three whole-project passes each looping
-// every file. This section splits that into:
-//
-// - [`resolutions_index_query`] — index + resolutions, no diagnostics: the
-//   RESOLUTIONS/INDEX half.
-// - [`per_file_diagnostics_query`] / [`contributor_diagnostics_query`] — the
-//   genuinely per-file diagnostic contributors (validate, dialect_gate,
-//   annotation content checks) behind a thin whole-project aggregator, so a
-//   body edit re-runs only the edited file's own contributor.
-// - [`whole_project_diagnostics_query`] — the passes that genuinely need
-//   cross-file state (external_check against the host manifest, and under
-//   `types = strict`, `strict::check`, which needs a whole-project
-//   `InferenceResult`) — reading the narrow [`resolutions_index_query`]
-//   projection and the already-FG-2/FG-2.1-narrowed `type_inference_query`,
-//   never the diagnostics-laden bundle.
-// - [`analysis_diagnostics_query`] — the DIAGNOSTICS half: every diagnostic
-//   source merged, in the same order `finish_analysis` produces them, so
-//   `db.analysis()` stays output-identical to the monolithic
-//   `brink_analyzer::analyze_with_options` path (pinned by
-//   `query_equivalence.rs`).
-// - [`analysis_query`] — kept as a thin assembler over the above three for
-//   `db.analysis()`'s existing LSP/IDE/CLI-facing `AnalysisResult` shape.
-//   [`diagnostics_query`] and [`lir_query`] read
-//   [`analysis_diagnostics_query`]/[`resolutions_index_query`] directly
-//   instead of through this bundle, so a diagnostics-only edit never forces
-//   a resolutions-only reader to recompute and vice versa.
-
-/// Index + resolutions, aggregated across every file's [`resolve_query`]
-/// (issue #632 / FG-3) — deliberately without diagnostics, so this struct's
-/// `PartialEq` never touches a diagnostic's range. Neither
-/// [`symbol_index_query`] nor any file's [`resolve_query`] reads
-/// `project.analysis_options`, so an `AnalysisOptions` edit that only
-/// changes diagnostics (e.g. raising `semantic_type_check` to `Error`) never
-/// even triggers salsa to re-run this query's closure — not just a
-/// backdate, a full skip (pinned by `fg3_dependency_edges.rs`).
-///
-/// `Arc`-wrapped (design doc §2 Fork 2's "Arc<plain>" ruling, applied here):
-/// pointer identity is the observable a re-execution-vs-cutoff test needs —
-/// see `fg3_dependency_edges.rs`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ResolvedProject {
-    pub index: Arc<SymbolIndex>,
-    pub resolutions: ResolutionMap,
-}
-
-#[salsa::tracked]
-pub(crate) fn resolutions_index_query(
-    db: &dyn salsa::Database,
-    project: ProjectInput,
-) -> Arc<ResolvedProject> {
-    let (index, _diags) = symbol_index_query(db, project).clone();
-    let mut resolutions = ResolutionMap::new();
-    for file in project.files(db) {
-        let (file_map, _file_diags) = resolve_query(db, project, *file);
-        resolutions.extend(file_map.iter().cloned());
-    }
-    Arc::new(ResolvedProject { index, resolutions })
-}
-
-/// One file's per-file diagnostic contributors (issue #632 / FG-3 design doc
-/// §1 item 4 — [`brink_analyzer::per_file_diagnostics`]): structural
-/// validation, the dialect gate, and (brink dialect only) annotation-content
-/// checks. Reads only this file's own `lowered_query`/`resolve_query`, plus
-/// the narrow, cutoff-friendly [`resolution_index_query`] projection (for
-/// annotation content checks' declared-`LIST`-name lookup — range-free, so
-/// it doesn't reintroduce whole-project churn). Never another file's HIR: a
-/// body edit in file Y leaves file X's memo fully validated (same
-/// `Arc`/pointer), not re-executed. `Arc`-wrapped for the same pointer-
-/// identity reason as [`ResolvedProject`].
-#[salsa::tracked]
-pub(crate) fn per_file_diagnostics_query(
-    db: &dyn salsa::Database,
-    project: ProjectInput,
-    file: SourceFile,
-) -> Arc<Vec<Diagnostic>> {
-    let file_id = file.file_id(db);
-    let hir = &lowered_query(db, file).hir;
-    let (file_resolutions, _diags) = resolve_query(db, project, file);
-    let index = resolution_index_query(db, project);
-    let dialect = project.analysis_options(db).dialect;
-    Arc::new(brink_analyzer::per_file_diagnostics(
-        file_id,
-        hir,
-        file_resolutions,
-        index,
-        dialect,
-    ))
-}
-
-/// Aggregated per-file diagnostic contributors across the whole project
-/// (issue #632 / FG-3 — "a thin aggregator" per the design doc). The loop
-/// itself is cheap: each iteration is a salsa memo lookup, not a HIR walk —
-/// [`per_file_diagnostics_query`]'s actual `validate`/`dialect_gate`/
-/// annotation-content work only re-runs for the file(s) whose own
-/// dependencies changed.
-#[salsa::tracked(returns(ref))]
-pub(crate) fn contributor_diagnostics_query(
-    db: &dyn salsa::Database,
-    project: ProjectInput,
-) -> Vec<Diagnostic> {
-    let mut out = Vec::new();
-    for file in project.files(db) {
-        out.extend(
-            per_file_diagnostics_query(db, project, *file)
-                .iter()
-                .cloned(),
-        );
-    }
-    out
-}
-
-/// Whole-project diagnostics + `symbol_meta` (issue #632 / FG-3 design doc
-/// §1 — [`brink_analyzer::whole_project_diagnostics`]): the passes that
-/// genuinely need cross-file state — host-manifest enrichment/checks
-/// (`external_check`) and, under `types = strict`, the strict typed-mode
-/// checks. Reads [`resolutions_index_query`] for index/resolutions (never
-/// the diagnostics-laden `analysis_query`) and, under `types = strict` +
-/// `dialect = brink`, the already-memoized, FG-2/FG-2.1-narrowed
-/// `type_inference_query` — the same TM-3 wiring `analysis_query` used to
-/// own directly, moved here unchanged (issue #632's fence: no strict-mode
-/// *behavior* change, only its query wiring). Still walks every file's HIR
-/// (`full_refs`) — `external_check` and strict checking both genuinely need
-/// the whole project, per the design doc's exemption list.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct WholeProjectDiagnostics {
-    pub diagnostics: Vec<Diagnostic>,
-    pub symbol_meta: BTreeMap<DefinitionId, brink_analyzer::SymbolMeta>,
-}
-
-#[salsa::tracked(returns(ref))]
-pub(crate) fn whole_project_diagnostics_query(
-    db: &dyn salsa::Database,
-    project: ProjectInput,
-) -> WholeProjectDiagnostics {
-    let files = project.files(db);
-    let resolved = resolutions_index_query(db, project);
-    let full_refs: Vec<(FileId, &HirFile, &SymbolManifest)> = files
-        .iter()
-        .map(|f| {
-            let lowered = lowered_query(db, *f);
-            (f.file_id(db), &lowered.hir, &lowered.manifest)
-        })
-        .collect();
-
     let opts = project.analysis_options(db);
-    // TM-3 (docs/typed-mode-spec.md §9-step-3): under `types = strict` +
-    // `dialect = brink`, reuse the already-memoized, FG-narrowed
-    // `type_inference_query` instead of letting `whole_project_diagnostics`
-    // recompute inference from scratch via `infer_project` — this is the
-    // "inference finally has a consumer" seam the per-def/per-SCC
-    // decomposition (FG-2, FG-2.1) exists for: a warm re-analyze after an
-    // edit only re-solves the SCC(s) that edit actually touched, not the
-    // whole project.
-    let strict_inference = (opts.dialect == brink_analyzer::Dialect::Brink
-        && opts.types == brink_analyzer::TypePolicy::Strict)
-        .then(|| type_inference_query(db, project).as_ref());
-
-    let (diagnostics, symbol_meta) = brink_analyzer::whole_project_diagnostics(
-        &full_refs,
-        &resolved.index,
-        &resolved.resolutions,
-        opts,
-        strict_inference,
-    );
-    WholeProjectDiagnostics {
-        diagnostics,
-        symbol_meta,
-    }
-}
-
-/// All analysis diagnostics, assembled in the exact order
-/// [`brink_analyzer::finish_analysis`] would produce them (issue #632 /
-/// FG-3): symbol-index diagnostics, every file's own `resolve_query`
-/// diagnostics, the per-file contributors
-/// ([`contributor_diagnostics_query`]), then the whole-project contributors
-/// ([`whole_project_diagnostics_query`]). [`diagnostics_query`] filters this
-/// by file; [`lir_query`] reads it directly for its error gate — neither
-/// goes through the bundled [`analysis_query`] anymore.
-#[salsa::tracked(returns(ref))]
-pub(crate) fn analysis_diagnostics_query(
-    db: &dyn salsa::Database,
-    project: ProjectInput,
-) -> Vec<Diagnostic> {
-    let (_index, mut diagnostics) = symbol_index_query(db, project).clone();
-    for file in project.files(db) {
-        let (_file_map, file_diags) = resolve_query(db, project, *file);
-        diagnostics.extend(file_diags.iter().cloned());
-    }
-    diagnostics.extend(contributor_diagnostics_query(db, project).iter().cloned());
-    diagnostics.extend(
-        whole_project_diagnostics_query(db, project)
-            .diagnostics
-            .iter()
-            .cloned(),
-    );
-    diagnostics
-}
-
-/// Full cross-file analysis (issue #632 / FG-3: now a thin assembler over
-/// [`resolutions_index_query`] + [`analysis_diagnostics_query`] +
-/// [`whole_project_diagnostics_query`] rather than calling
-/// [`brink_analyzer::finish_analysis`] directly) — `db.analysis()`'s public
-/// shape, kept for LSP/IDE/CLI consumers that want the whole bundled
-/// result. Output-identical to the pre-FG-3 query and to the monolithic
-/// `analyze_with_options` path (pinned by `query_equivalence.rs`); the
-/// decomposition changes *dependency edges*, not values. Narrower consumers
-/// ([`diagnostics_query`], [`lir_query`]) read the three sub-queries
-/// directly instead of through this bundle.
-#[salsa::tracked(returns(ref))]
-pub(crate) fn analysis_query(db: &dyn salsa::Database, project: ProjectInput) -> AnalysisResult {
-    let resolved = resolutions_index_query(db, project);
-    let diagnostics = analysis_diagnostics_query(db, project).clone();
-    let whole = whole_project_diagnostics_query(db, project);
-    AnalysisResult {
-        index: Arc::clone(&resolved.index),
-        resolutions: resolved.resolutions.clone(),
-        diagnostics,
-        symbol_meta: whole.symbol_meta.clone(),
-    }
-}
-
-/// Per-file diagnostics (spec §4 layer 3): this file's lowering + syntax
-/// diagnostics plus its share of the cross-file analysis diagnostics. Raw —
-/// suppression filtering stays a consumer concern (see
-/// [`partition_diagnostics`]). Reads [`analysis_diagnostics_query`] directly
-/// (issue #632 / FG-3) rather than through the bundled [`analysis_query`],
-/// so a resolutions-only change (no diagnostic anywhere differs) leaves this
-/// memo's dependency fully validated.
-#[salsa::tracked(returns(ref))]
-pub(crate) fn diagnostics_query(
-    db: &dyn salsa::Database,
-    project: ProjectInput,
-    file: SourceFile,
-) -> Vec<Diagnostic> {
-    let file_id = file.file_id(db);
-    let mut out = lowered_query(db, file).diagnostics.clone();
-    out.extend(
-        analysis_diagnostics_query(db, project)
-            .iter()
-            .filter(|d| d.file == file_id)
-            .cloned(),
-    );
-    out
+    brink_analyzer::signature(def_id, index, &hir_refs, opts.host_manifest.as_ref())
 }
 
 // ─── Layer 2/3: type inference (TM-1, advisory-only) ──────────────────
@@ -695,7 +608,11 @@ pub(crate) struct DefBody {
     pub body: brink_ir::Block,
 }
 
-#[salsa::tracked]
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647). `heap_size =
+/// heap_size::def_body_heap_size`: one of the five #538 estimators — #537
+/// named `def_body` (holds a full HIR `Block` clone per def) one of the
+/// two dominant Arc-hidden-payload families.
+#[salsa::tracked(lru = 16384, heap_size = heap_size::def_body_heap_size)]
 pub(crate) fn def_body_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -725,7 +642,17 @@ pub(crate) fn def_body_query<'db>(
 /// exactly the same declaring-file-only dependency edge
 /// [`def_body_query`] uses). Also the per-def global *read set* a future T2
 /// effect row needs — see `brink_analyzer::referenced_globals`'s docs.
-#[salsa::tracked]
+///
+/// Passes `None` for `brink_analyzer::referenced_globals`'s manifest
+/// parameter (T1d-2b, issue #774) deliberately: this pass discards every
+/// computed type (only the referenced-def-id *set* survives), so a
+/// registered manifest can never change its output — reading
+/// `project.analysis_options(db)` here would only add a needless
+/// project-wide invalidation edge to the FG-2.1 narrow per-def dependency
+/// this query exists to keep narrow, for zero behavioral benefit.
+///
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 16384)]
 pub(crate) fn referenced_globals_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -750,6 +677,7 @@ pub(crate) fn referenced_globals_query<'db>(
         &[(declaring_file, hir)],
         index,
         resolutions,
+        None,
     ))
 }
 
@@ -765,7 +693,15 @@ pub(crate) fn referenced_globals_query<'db>(
 /// project file's — plus the index-sourced [`inferable_defs_query`]. No
 /// globals map at all (pass 1 discards every computed type; see
 /// `brink_analyzer::call_edges`'s docs).
-#[salsa::tracked]
+///
+/// Passes `None` for `brink_analyzer::call_edges`'s manifest parameter
+/// (T1d-2b, issue #774) — same rationale as [`referenced_globals_query`]:
+/// pass 1 discards every computed type, so the manifest can never change
+/// this query's output, and reading `project.analysis_options(db)` here
+/// would only widen this per-def query's dependency edge for no benefit.
+///
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 16384)]
 pub(crate) fn call_edges_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -792,6 +728,7 @@ pub(crate) fn call_edges_query<'db>(
         index,
         resolutions,
         inferable,
+        None,
     ))
 }
 
@@ -865,7 +802,40 @@ pub(crate) struct SolvedScc {
 /// existing per-declaring-file [`signature_query`] (never a whole-project
 /// globals scan). `inferable`: the same index-sourced
 /// [`inferable_defs_query`] `call_edges_query` uses.
-#[salsa::tracked]
+///
+/// **Manifest dependency (T1d-2b, issue #774, docs/t1d-spec.md §3).** Also
+/// reads `project.analysis_options(db).host_manifest`, threaded to
+/// [`brink_analyzer::solve_scc`] so a `handle<K>` param/return/temp
+/// annotation resolves to `Ty::Handle(K)` during the per-SCC body-uses
+/// solve — the seam that makes strict-mode handle-kind rejection reachable
+/// end-to-end (the #767 acceptance criterion): once two locals of
+/// different declared handle kinds are unified together, the #627 lattice
+/// folds them to `Ty::Conflicted`, and `strict::check`'s pre-existing
+/// `E066` classification reports it — this query is what was missing to
+/// let a genuine `Ty::Handle` ever reach that lattice from body-usage
+/// inference through the salsa-memoized pipeline. Same coarse project-wide
+/// dependency shape [`signature_query`]/`per_file_diagnostics_query`
+/// already read `host_manifest` at — unlike [`call_edges_query`]/
+/// [`referenced_globals_query`] (whose *outputs* the manifest can never
+/// change), this query's output genuinely depends on it.
+///
+/// **`inline_docs` dependency (issue #805).** Also reads [`inline_docs_query`]
+/// — the same project-wide merged `///` doc-comment memo [`external_meta_query`]
+/// already reads — and threads it to [`brink_analyzer::solve_scc`] so an
+/// `EXTERNAL` documented purely inline (no matching registered
+/// `ManifestExternal`) now seeds a `known_sigs` entry too, and so a
+/// registered/inline param or return type naming a *scalar* semantic type
+/// (not just a `handle<K>` kind) resolves to its own base `Ty`. Range-free
+/// (`DocBlock` carries no source spans), so this doesn't reintroduce the
+/// whole-project-HIR churn FG-2/FG-2.1 eliminated — a doc-content-preserving
+/// edit backdates through `inline_docs_query`'s own `Eq` cutoff exactly like
+/// every other reader of that memo.
+///
+/// `lru = 16384`: per-def (per-SCC) runaway-guard ceiling (issue #647).
+/// `heap_size = heap_size::solve_scc_heap_size`: one of the five #538
+/// estimators — #537 named `solve_scc` (holds signatures+bodies per SCC)
+/// the other dominant Arc-hidden-payload family alongside `def_body`.
+#[salsa::tracked(lru = 16384, heap_size = heap_size::solve_scc_heap_size)]
 pub(crate) fn solve_scc_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -945,6 +915,8 @@ pub(crate) fn solve_scc_query<'db>(
         }
     }
 
+    let opts = project.analysis_options(db);
+    let inline_docs = inline_docs_query(db, project);
     let (signatures, bodies) = brink_analyzer::solve_scc(
         batch,
         &defs,
@@ -953,6 +925,8 @@ pub(crate) fn solve_scc_query<'db>(
         &globals,
         inferable,
         known_sigs,
+        opts.host_manifest.as_ref(),
+        inline_docs,
     );
     Arc::new(SolvedScc { signatures, bodies })
 }
@@ -961,7 +935,9 @@ pub(crate) fn solve_scc_query<'db>(
 /// the missing per-def API TM-2's firewall consumer needs most). `None` for
 /// a def with no inferable body (not a knot/stitch, or an unknown id) — same
 /// `None` contract as [`signature_query`]/[`infer_body_query`].
-#[salsa::tracked]
+///
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 16384)]
 pub(crate) fn inferred_signature_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -1012,7 +988,10 @@ pub(crate) fn type_inference_query(
 /// whole-project `type_inference_query` memo pre-decomposition. `None` for a
 /// def with no inferable body (not a knot/stitch, or an unknown id) — same
 /// `None` contract as [`signature_query`].
-#[salsa::tracked]
+///
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647). `heap_size =
+/// heap_size::infer_body_heap_size`: one of the five #538 estimators.
+#[salsa::tracked(lru = 16384, heap_size = heap_size::infer_body_heap_size)]
 pub(crate) fn infer_body_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -1075,6 +1054,475 @@ impl PartialEq for LirProduct {
     }
 }
 
+/// The LIR-lowering half of [`lir_query`] split out on its own (issue #791 /
+/// FG-4a — PR #753's seam finding #3), gated on [`has_errors_query`]'s
+/// narrow boolean instead of the full [`analysis_diagnostics_query`] vector.
+/// Reads only [`resolutions_index_query`], every file's [`lowered_query`]
+/// HIR, [`include_graph_query`], and the narrow [`type_policy_query`]
+/// projection — never the raw analysis diagnostics, and never the raw
+/// `AnalysisOptions` input field (issue #806) — so a diagnostics edit that
+/// changes *content* without flipping [`has_errors_query`]'s verdict, and an
+/// options edit that doesn't change the `types` policy, both leave this memo
+/// (and its `Arc<Program>` pointer) fully validated, not re-executed
+/// (`fg4a_dependency_edges.rs`).
+/// `no_eq`: `lir::Program` has no `PartialEq`, same reasoning as
+/// [`LirProduct`]'s own impl below.
+#[derive(Clone, Default)]
+pub(crate) struct LirLowering {
+    /// The lowered LIR program, if lowering succeeded with no Error-severity
+    /// lowering diagnostic.
+    pub program: Option<Arc<brink_ir::lir::Program>>,
+    /// Error-severity diagnostics raised *during* LIR lowering (never from
+    /// `analysis_diagnostics_query` — those are [`lir_query`]'s own concern).
+    pub errors: Vec<Diagnostic>,
+    /// Warning-severity diagnostics raised during LIR lowering.
+    pub warnings: Vec<Diagnostic>,
+}
+
+impl PartialEq for LirLowering {
+    fn eq(&self, other: &Self) -> bool {
+        let program_eq = match (&self.program, &other.program) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        program_eq && self.errors == other.errors && self.warnings == other.warnings
+    }
+}
+
+// ─── FG-4d: per-container LIR chunk memos + link ─────────────────────
+//
+// `lir_lowering_query` below is now the **link phase**
+// (`docs/fine-grained-salsa-proposal.md` §5 + the three-resolution-moments
+// appendix): it reads a per-knot chunk memo per definition, assembles them
+// (plus the whole-root chunk) into a `Program`, and gates on
+// `has_errors_query`. The per-knot memos (`lir_knot_chunk_query`) are the
+// FG-4d win — an edit that leaves a knot's declaring file, the project
+// resolutions, and the struct-shape projection unchanged leaves that knot's
+// chunk `Arc` pointer-identical (non-re-execution), and the whole-project
+// link re-runs but backdates on the `StoryData` `Eq` firebreak
+// (`story_data_query`). Byte-identity with the monolithic path is by
+// construction: the chunk lowering and assembly are the *same* `brink-ir`
+// functions `lower_to_program_with_type_mode` composes, fed the same inputs
+// in the same interleaved walk order.
+//
+// Input-breadth limit (issue #830, #815): the per-knot memo depends on the
+// whole-project `resolutions_index_query` and `struct_shape_data_query`, so
+// non-re-execution holds for edits those two backdate across (a
+// diagnostics-only / `AnalysisOptions` edit, and — for a knot in an
+// *unedited* file — any edit whose resolutions/struct-shapes are unchanged).
+// `topological_order` is now narrowed to `entry`'s transitive `INCLUDE`
+// closure (issue #815, landed separately) rather than falling back to all
+// project files, so `struct_shape_data_query` and the link's own inputs are
+// scoped the same way.
+
+/// The cutoff-friendly struct-shape projection (FG-4d): the
+/// `NameId`-free, `Eq`-able [`StructShapeData`] the per-knot chunk memo reads
+/// instead of every file's HIR. Backdates when no `STRUCT` declaration (or
+/// struct-typed global annotation) changed, so an unrelated edit leaves the
+/// knot chunks that read it pointer-identical. Reads the same
+/// `resolutions_index_query` index the monolithic path's `build_prelude`
+/// does, so its ids/offsets are byte-identical.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn struct_shape_data_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> brink_ir::lir::StructShapeData {
+    let Some(entry) = project.entry(db) else {
+        return brink_ir::lir::StructShapeData::default();
+    };
+    let files = project.files(db);
+    let graph = include_graph_query(db, project);
+    let by_id: LookupMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
+    let topo = graph.topological_order(entry);
+    let hir_refs: Vec<(FileId, &HirFile)> = topo
+        .iter()
+        .filter_map(|id| by_id.get(id).map(|f| (*id, &lowered_query(db, *f).hir)))
+        .collect();
+    let resolved = resolutions_index_query(db, project);
+    brink_ir::lir::build_struct_shape_data(&hir_refs, &resolved.index)
+}
+
+/// One file's declaration-only HIR projection (issue #839 / FG-4e):
+/// `constants`/`variables`/`lists`/`structs`/`externals` kept, `root_content`
+/// and every knot's body dropped to `Block::default()`/`Vec::new()`. Backed
+/// by [`HirFile`]'s derived `PartialEq`, so a body-only edit — one that
+/// leaves every declaration untouched — backdates this memo across the edit,
+/// same as [`normalized_stamped_query`] backdates the file's syntax tree.
+///
+/// This is the per-file dependency edge [`lir_prelude_decls_query`] reads
+/// instead of the raw, body-carrying [`lowered_query`]: `brink_ir::lir`'s
+/// declaration-collection passes ([`collect_globals`], [`collect_lists`],
+/// [`collect_externals`], [`build_shape_table`], [`build_global_shape_map`])
+/// never read `root_content`/`knots` (see `PreludeDecls`'s doc in
+/// `brink-ir`), so stripping them here is behavior-neutral for every reader
+/// and turns "any reachable file changed" into "a reachable file's
+/// declarations changed" as the trigger for re-interning the project name
+/// table.
+///
+/// [`collect_globals`]: brink_ir::lir::build_prelude_decls
+/// [`collect_lists`]: brink_ir::lir::build_prelude_decls
+/// [`collect_externals`]: brink_ir::lir::build_prelude_decls
+/// [`build_shape_table`]: brink_ir::lir::build_prelude_decls
+/// [`build_global_shape_map`]: brink_ir::lir::build_prelude_decls
+#[salsa::tracked(returns(ref))]
+pub(crate) fn decl_hir_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+) -> HirFile {
+    let _ = project;
+    let hir = &lowered_query(db, file).hir;
+    HirFile {
+        root_content: brink_ir::hir::Block::default(),
+        knots: Vec::new(),
+        ..hir.clone()
+    }
+}
+
+/// One file's HIR after the pre-LIR normalize + container-id stamp passes,
+/// memoized per file (FG-4d). Without this, each of a K-knot file's per-knot
+/// chunk memos would repeat the file's normalize+stamp, turning a cold
+/// compile into O(K²) work per file; sharing it here keeps the per-def split
+/// from regressing cold compile. Both passes are per-file independent, so
+/// this is byte-identical to the file's slice of the whole-project prelude.
+/// Reads the whole-project index only for label-container stamping (the same
+/// index the monolithic path stamps with), and `HirFile`'s value `Eq`
+/// backdates it across edits that leave this file's normalized shape
+/// unchanged.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn normalized_stamped_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+) -> Arc<HirFile> {
+    let resolved = resolutions_index_query(db, project);
+    let mut hir = lowered_query(db, file).hir.clone();
+    brink_ir::normalize_file(&mut hir);
+    let mut slice = [(file.file_id(db), hir)];
+    brink_ir::stamp_container_ids(&mut slice, &resolved.index);
+    let [(_, stamped)] = slice;
+    Arc::new(stamped)
+}
+
+/// [`brink_ir::lir::PreludeDecls`] wrapped so [`lir_prelude_decls_query`]
+/// (`no_eq`: the wrapped `ShapeTable`/`GlobalShapeMap` carry `NameId`s valid
+/// only within this specific prelude's numbering, so they cannot be `Eq`
+/// without a NameId-free relocation redesign — same reasoning as
+/// [`LirLowering`]'s `program`) can still satisfy salsa's `Update` bound.
+/// `Arc`-wrapped so a validated (non-re-executed) memo hands back the *same*
+/// allocation — `Arc::ptr_eq` is the non-re-execution proof, same pattern as
+/// [`LoweredChunk`].
+#[derive(Clone)]
+pub(crate) struct PreludeDeclsResult {
+    pub decls: Arc<brink_ir::lir::PreludeDecls>,
+}
+
+impl PartialEq for PreludeDeclsResult {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.decls, &other.decls)
+    }
+}
+
+/// The whole-project declaration-level prelude (issue #839 / FG-4e —
+/// `docs/fine-grained-salsa-proposal.md`'s pattern, applied past structs to
+/// the rest of `build_prelude`): [`brink_ir::lir::build_prelude_decls`] over
+/// every entry-reachable file's [`decl_hir_query`] projection instead of the
+/// monolithic link's inline `build_prelude` call over raw, body-carrying
+/// HIR. Because [`decl_hir_query`] itself backdates across a body-only edit,
+/// a knot body edit anywhere in the project leaves *this* query's recorded
+/// dependencies unchanged — [`lir_lowering_query`] no longer pays
+/// `collect_globals`/`collect_lists`/`collect_externals`/`build_shape_table`/
+/// `build_global_shape_map`'s full re-interning cost on every recompile, only
+/// when some reachable file's actual declarations change (`fg4e_prelude_
+/// decls.rs`).
+///
+/// Same input-breadth limit as [`struct_shape_data_query`] (issue #815):
+/// scoped to `entry`'s transitive `INCLUDE` closure, not full backdating
+/// across *any* unrelated project file's declarations (that would need a
+/// per-file decl memo feeding the interning step directly, which the
+/// project-wide, order-sensitive `NameTable` this produces does not allow
+/// without the same NameId-free-projection-plus-relocation redesign
+/// `StructShapeData` did for structs alone — out of this slice's scope, see
+/// the PR description).
+#[salsa::tracked(no_eq)]
+pub(crate) fn lir_prelude_decls_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> PreludeDeclsResult {
+    let type_mode = match type_policy_query(db, project) {
+        TypePolicy::Strict => brink_ir::lir::TypeMode::Strict,
+        TypePolicy::Gradual => brink_ir::lir::TypeMode::Gradual,
+    };
+    let Some(entry) = project.entry(db) else {
+        return PreludeDeclsResult {
+            decls: Arc::new(brink_ir::lir::PreludeDecls::empty(type_mode)),
+        };
+    };
+    let files = project.files(db);
+    let by_id: LookupMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
+    let graph = include_graph_query(db, project);
+    let topo = graph.topological_order(entry);
+    let decl_refs: Vec<(FileId, &HirFile)> = topo
+        .iter()
+        .filter_map(|id| {
+            by_id
+                .get(id)
+                .map(|f| (*id, decl_hir_query(db, project, *f)))
+        })
+        .collect();
+    let resolved = resolutions_index_query(db, project);
+    let decls = brink_ir::lir::build_prelude_decls(
+        &decl_refs,
+        &resolved.index,
+        &resolved.resolutions,
+        type_mode,
+    );
+    PreludeDeclsResult {
+        decls: Arc::new(decls),
+    }
+}
+
+/// Interned key for [`lir_knot_chunk_query`]: a knot identified by its
+/// declaring file and its index within that file's knot list. Keyed on
+/// `(FileId, knot_index)` rather than the knot's `DefinitionId` so two knots
+/// that would hash to the same address (e.g. same-named file-local knots)
+/// never collapse onto one memo — the byte-identity hazard `DefinitionId`
+/// keying would carry.
+#[salsa::interned]
+pub(crate) struct KnotChunkKey<'db> {
+    pub file: FileId,
+    pub knot_index: u32,
+}
+
+/// One knot's lowered LIR chunk plus its lowering diagnostics — the value a
+/// per-knot memo stores. `chunk` is `Arc`-wrapped so a validated (non-re-
+/// executed) memo hands back the *same* allocation, which
+/// `Arc::ptr_eq` detects (the non-re-execution proof — same reasoning as
+/// `LirLowering`'s `program`). The `PartialEq` exists solely to satisfy
+/// salsa's `Update` bound; `no_eq` disables backdating, so it is never used
+/// to claim two independently-lowered chunks equal.
+#[derive(Clone, Default)]
+pub(crate) struct LoweredChunk {
+    pub chunk: Arc<brink_ir::lir::ScopeChunk>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+impl PartialEq for LoweredChunk {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.chunk, &other.chunk) && self.diagnostics == other.diagnostics
+    }
+}
+
+/// Lower one knot into a self-contained LIR chunk — the per-`DefinitionId`
+/// unit of FG-4d. Reads only the declaring file's `lowered_query` HIR
+/// (per-file edge), the whole-project `resolutions_index_query`
+/// (backdates across body/diagnostics edits), and
+/// `struct_shape_data_query` (backdates unless a struct declaration
+/// changed) — so a knot in an unedited file whose resolutions and struct
+/// shapes are unchanged keeps its chunk `Arc` across the edit. `no_eq`:
+/// `ScopeChunk` has no `PartialEq` (holds `lir::Container`), so this never
+/// backdates — the link re-runs and re-anchors on `StoryData`'s `Eq`.
+#[salsa::tracked(no_eq)]
+pub(crate) fn lir_knot_chunk_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    key: KnotChunkKey<'_>,
+) -> LoweredChunk {
+    let file_id = key.file(db);
+    let knot_index = key.knot_index(db) as usize;
+    let Some(source) = project
+        .files(db)
+        .iter()
+        .copied()
+        .find(|f| f.file_id(db) == file_id)
+    else {
+        return LoweredChunk::default();
+    };
+
+    let resolved = resolutions_index_query(db, project);
+    let shape_data = struct_shape_data_query(db, project);
+    // Narrow `.types` projection (issue #806/#809) — not the raw
+    // `AnalysisOptions` field — so an unrelated options edit doesn't
+    // re-execute this chunk memo.
+    let type_mode = match type_policy_query(db, project) {
+        TypePolicy::Strict => brink_ir::lir::TypeMode::Strict,
+        TypePolicy::Gradual => brink_ir::lir::TypeMode::Gradual,
+    };
+    let file_paths: LookupMap<FileId, String> = project
+        .files(db)
+        .iter()
+        .map(|f| (f.file_id(db), f.path(db).clone()))
+        .collect();
+
+    // The file's normalized+stamped HIR, shared across all its knots'
+    // memos (so a K-knot file normalizes once, not K times).
+    let hir_file = normalized_stamped_query(db, project, source);
+    let Some(knot) = hir_file.knots.get(knot_index) else {
+        return LoweredChunk::default();
+    };
+
+    let (chunk, diagnostics) = brink_ir::lir::lower_knot_chunk_incremental(
+        hir_file,
+        knot,
+        &resolved.index,
+        &resolved.resolutions,
+        &file_paths,
+        shape_data,
+        type_mode,
+        file_id,
+    );
+    LoweredChunk {
+        chunk: Arc::new(chunk),
+        diagnostics,
+    }
+}
+
+/// The project's TM-3 `types` policy as its own narrow projection query
+/// (issue #806 / PR #809, mirroring [`has_errors_query`]'s pattern): a raw
+/// `project.analysis_options(db).types` field read inside
+/// [`lir_lowering_query`] would register a dependency on the *whole*
+/// `AnalysisOptions` input field, so any options edit — registering a host
+/// manifest, toggling `semantic_type_check`, even re-setting the identical
+/// value — would force the `no_eq` lowering memo to fully re-execute and
+/// allocate a fresh `Arc<Program>`. `TypePolicy`'s derived `Eq` is the
+/// cheapest possible cutoff: an options edit that doesn't change `.types`
+/// re-executes only this trivial projection, backdates it, and leaves
+/// [`lir_lowering_query`] (and its `Arc<Program>` pointer) fully validated —
+/// see `fg4a_dependency_edges.rs`. Behavior-neutral by construction: the
+/// same field, read one query-hop later.
+///
+/// FG-4d (issue #830) also routes the per-knot chunk memos' `.types` read
+/// through this projection, so an `AnalysisOptions` edit that leaves `.types`
+/// unchanged keeps every knot chunk `Arc` pointer-identical.
+#[salsa::tracked]
+pub(crate) fn type_policy_query(db: &dyn salsa::Database, project: ProjectInput) -> TypePolicy {
+    project.analysis_options(db).types
+}
+
+/// FG-4d **link phase**: assemble the per-knot chunk memos and the whole-root
+/// chunk into a `Program`. Gated on `has_errors_query` (unchanged). See the
+/// section comment above for the byte-identity and non-re-execution
+/// arguments.
+#[salsa::tracked(no_eq)]
+pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput) -> LirLowering {
+    let Some(entry) = project.entry(db) else {
+        return LirLowering::default();
+    };
+    if has_errors_query(db, project) {
+        return LirLowering::default();
+    }
+
+    let files = project.files(db);
+    let resolved = resolutions_index_query(db, project);
+
+    // LIR inputs in topological include order (paste-before semantics),
+    // mirroring `Driver::lir_inputs`. Narrowed to `entry`'s transitive
+    // `INCLUDE` closure (issue #815) — files outside it never lower here;
+    // their diagnostics still run independently via
+    // `analysis_diagnostics_query`/`diagnostics_query` below and in
+    // `super::diagnostics_query`, which iterate `project.files(db)`
+    // directly rather than through this topo order.
+    let graph = include_graph_query(db, project);
+    let by_id: LookupMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
+    let topo = graph.topological_order(entry);
+    let paths: LookupMap<FileId, String> = topo
+        .iter()
+        .filter_map(|id| by_id.get(id).map(|f| (*id, f.path(db).clone())))
+        .collect();
+
+    // TM-4c (`docs/typed-mode-spec.md` §6): the project's `types` policy
+    // gates static-offset record field ops, and also partitions lowering
+    // diagnostics by effective severity below. Read through the narrow
+    // [`type_policy_query`] projection, never the raw `AnalysisOptions`
+    // input field — see its doc comment (issue #806).
+    //
+    // [`brink-ir`'s local `TypeMode` mirror](brink_ir::lir::TypeMode) is now
+    // decided once, inside [`lir_prelude_decls_query`]'s own
+    // `type_policy_query` read — this function no longer needs its own copy
+    // (issue #839 / FG-4e removed the direct `build_prelude` call that used
+    // to consume it here).
+    let types = type_policy_query(db, project);
+
+    // Whole-project prelude (issue #839 / FG-4e): declarations + struct
+    // shapes + the seeded name table come from [`lir_prelude_decls_query`]
+    // (its own memo, cutoff-friendly across body-only edits — see its doc),
+    // and the normalized+stamped HIR reuses the already-memoized per-file
+    // [`normalized_stamped_query`] instead of `build_prelude`'s inline
+    // normalize+stamp recompute. `assemble_prelude` is pure composition —
+    // byte-identical to the monolithic `build_prelude` by construction (see
+    // `PreludeDecls`'s doc in `brink-ir`).
+    let prelude_decls = lir_prelude_decls_query(db, project);
+    let normalized: Vec<(FileId, HirFile)> = topo
+        .iter()
+        .filter_map(|id| {
+            by_id
+                .get(id)
+                .map(|f| (*id, (**normalized_stamped_query(db, project, *f)).clone()))
+        })
+        .collect();
+    let prelude = brink_ir::lir::assemble_prelude((*prelude_decls.decls).clone(), normalized);
+    let (root_chunks, root_temp_slots) = brink_ir::lir::lower_root_content_for_prelude(
+        &prelude,
+        &resolved.index,
+        &resolved.resolutions,
+        &paths,
+    );
+
+    // Interleave in walk order (per file: root content, then that file's
+    // knots) — the order the assembler dedups names against. Knot chunks come
+    // from the per-knot memos; declaration diagnostics lead, matching the
+    // monolithic diagnostic order exactly.
+    let mut lir_diagnostics = prelude.decl_diagnostics.clone();
+    let mut ordered_chunks: Vec<brink_ir::lir::ScopeChunk> = Vec::new();
+    let prelude_files = prelude.files();
+    let mut root_iter = root_chunks.into_iter();
+    for (file_id, hir_file) in &prelude_files {
+        if let Some((chunk, diags)) = root_iter.next() {
+            ordered_chunks.push(chunk);
+            lir_diagnostics.extend(diags);
+        }
+        for knot_index in 0..hir_file.knots.len() {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a file won't declare anywhere near u32::MAX knots"
+            )]
+            let key = KnotChunkKey::new(db, *file_id, knot_index as u32);
+            let lowered = lir_knot_chunk_query(db, project, key);
+            ordered_chunks.push((*lowered.chunk).clone());
+            lir_diagnostics.extend(lowered.diagnostics.clone());
+        }
+    }
+
+    let program =
+        brink_ir::lir::assemble_program(&prelude, ordered_chunks, root_temp_slots, &resolved.index);
+
+    // LIR lowering itself is total (T1b-2: every construct lowers to a
+    // program regardless of dialect). Error-severity lowering diagnostics
+    // (T1b-3's E055/E056) still gate `program: None` exactly like an
+    // analysis-phase error would.
+    let (lir_errors, lir_warnings): (Vec<Diagnostic>, Vec<Diagnostic>) = lir_diagnostics
+        .into_iter()
+        .partition(|d| brink_analyzer::effective_severity(d.code, types) == Severity::Error);
+
+    if lir_errors.is_empty() {
+        LirLowering {
+            program: Some(Arc::new(program)),
+            errors: lir_errors,
+            warnings: lir_warnings,
+        }
+    } else {
+        // A lowering-phase Error-severity diagnostic (E055/E056) blocks
+        // compilation: surface it, never hand back a diagnostically-invalid
+        // program.
+        LirLowering {
+            program: None,
+            errors: lir_errors,
+            warnings: lir_warnings,
+        }
+    }
+}
+
 /// Whole-project LIR lowering (slice B: one project query; slice C splits it
 /// per container). `no_eq`: `lir::Program` has no `PartialEq`, so this memo
 /// never backdates — [`story_data_query`] backdates on `StoryData` instead.
@@ -1085,13 +1533,10 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
         return LirProduct::default();
     };
 
-    // FG-3 (issue #632): read the narrow resolutions/index projection and
-    // the assembled diagnostics directly, not through the bundled
-    // `analysis_query` — a diagnostics-only edit that leaves
-    // `resolutions_index_query`'s output unchanged still needs this query to
-    // re-run (it gates on diagnostics too), but the resolutions/index half
-    // of the work below no longer rides the diagnostics-laden `AnalysisResult`.
-    let resolved = resolutions_index_query(db, project);
+    // FG-3 (issue #632): read the assembled diagnostics directly, not
+    // through the bundled `analysis_query` — a resolutions-only change (no
+    // diagnostic anywhere differs) leaves this half's dependency fully
+    // validated.
     let diagnostics = analysis_diagnostics_query(db, project);
 
     // Diagnostic gate — the same report `compile_lir` builds.
@@ -1109,9 +1554,21 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
         })
         .collect();
     let types = project.analysis_options(db).types;
-    let (errors, warnings) = partition_diagnostics(&inputs, diagnostics, disable_all, types);
+    let (mut errors, mut warnings) =
+        partition_diagnostics(&inputs, diagnostics, disable_all, types);
 
-    if !errors.is_empty() {
+    // FG-4a (issue #791, PR #753 seam finding #3): the gate deciding
+    // whether to attempt (potentially expensive) LIR lowering reads the
+    // narrow `has_errors_query` boolean projection instead of
+    // `errors.is_empty()` directly. `errors`/`warnings` above are still
+    // needed for *this* query's own return value — diagnostic content, not
+    // just presence — but the lowering itself is fully delegated to
+    // `lir_lowering_query`, which reads `has_errors_query` only (never the
+    // raw diagnostics vector), so its `Arc<Program>` survives a diagnostics
+    // edit that doesn't flip the error verdict. `has_errors_query` computes
+    // this exact `errors.is_empty()` value from the same inputs (see its
+    // doc comment), so this is behavior-neutral by construction.
+    if has_errors_query(db, project) {
         return LirProduct {
             program: None,
             errors,
@@ -1119,78 +1576,14 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
         };
     }
 
-    // LIR inputs in topological include order (paste-before semantics),
-    // mirroring `Driver::lir_inputs`.
-    let graph = include_graph_query(db, project);
-    let all_ids: Vec<FileId> = files.iter().map(|f| f.file_id(db)).collect();
-    let by_id: HashMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
-    let topo = graph.topological_order(entry, &all_ids);
-    let hir_refs: Vec<(FileId, &HirFile)> = topo
-        .iter()
-        .filter_map(|id| by_id.get(id).map(|f| (*id, &lowered_query(db, *f).hir)))
-        .collect();
-    let paths: HashMap<FileId, String> = topo
-        .iter()
-        .filter_map(|id| by_id.get(id).map(|f| (*id, f.path(db).clone())))
-        .collect();
+    let lowering = lir_lowering_query(db, project);
+    errors.extend(lowering.errors);
+    warnings.extend(lowering.warnings);
 
-    // TM-4c (`docs/typed-mode-spec.md` §6): the project's `types` policy
-    // gates static-offset record field ops — map the analyzer's
-    // `TypePolicy` to `brink-ir`'s local mirror (`brink-ir` sits below
-    // `brink-analyzer` in the crate graph and can't name `TypePolicy`
-    // directly).
-    let type_mode = match types {
-        TypePolicy::Strict => brink_ir::lir::TypeMode::Strict,
-        TypePolicy::Gradual => brink_ir::lir::TypeMode::Gradual,
-    };
-    let (program, lir_diagnostics) = brink_ir::lir::lower_to_program_with_type_mode(
-        &hir_refs,
-        &resolved.index,
-        &resolved.resolutions,
-        &paths,
-        type_mode,
-    );
-
-    // LIR lowering itself is total (T1b-2: every construct lowers to a
-    // program regardless of dialect) — a diagnostic pushed during lowering
-    // doesn't stop `lower_to_program` from returning `Some`. It must still
-    // be severity-partitioned like every other diagnostic here: an
-    // Error-severity one (T1b-3's E055/E056 — a collection mutator's rvalue
-    // first argument, or a mutator used in expression position) blocks
-    // compilation exactly like an analysis-phase error would, not just a
-    // cosmetic warning on an otherwise-successful compile.
-    let (mut lir_errors, mut lir_warnings): (Vec<Diagnostic>, Vec<Diagnostic>) = lir_diagnostics
-        .into_iter()
-        .partition(|d| brink_analyzer::effective_severity(d.code, types) == Severity::Error);
-
-    if program.is_some() && lir_errors.is_empty() {
-        let mut errors = errors;
-        errors.append(&mut lir_errors);
-        let mut warnings = warnings;
-        warnings.append(&mut lir_warnings);
-        LirProduct {
-            program: program.map(Arc::new),
-            errors,
-            warnings,
-        }
-    } else {
-        // Either `lower_to_program` refused to lower (its residual-extension
-        // backstop fired — E053, meaning a T1b brink-extension HIR node
-        // reached LIR lowering despite the dialect gate, only possible if
-        // the gate's analysis diagnostic was suppressed — see #572 review),
-        // or lowering succeeded but produced an Error-severity diagnostic
-        // (T1b-3's rvalue-mutator/mutator-in-expression-position checks).
-        // Either way: surface it as a compile error, never return a corrupt,
-        // partial, or diagnostically-invalid program.
-        let mut errors = errors;
-        errors.append(&mut lir_errors);
-        let mut warnings = warnings;
-        warnings.append(&mut lir_warnings);
-        LirProduct {
-            program: None,
-            errors,
-            warnings,
-        }
+    LirProduct {
+        program: lowering.program,
+        errors,
+        warnings,
     }
 }
 
@@ -1328,7 +1721,7 @@ pub fn partition_diagnostics(
 
     // Analysis diagnostics (unless disable_all).
     if !disable_all {
-        let mut by_file: HashMap<FileId, Vec<Diagnostic>> = HashMap::new();
+        let mut by_file: LookupMap<FileId, Vec<Diagnostic>> = LookupMap::new();
         for d in analysis_diagnostics {
             by_file.entry(d.file).or_default().push(d.clone());
         }

@@ -30,6 +30,13 @@
 //! `resolve::resolve_struct_ref`) is not re-reported here — a construction
 //! against a shape that doesn't exist has no declared fields to check
 //! against.
+//!
+//! [`check_duplicates`] (`E084`, issue #675) is a fourth, *policy-
+//! independent* check: a construction literal supplying the same field
+//! name more than once is flagged under both `types = gradual` and
+//! `types = strict` — it doesn't need the shape to resolve, so it's wired
+//! into `per_file_diagnostics` unconditionally (dialect = brink only)
+//! rather than behind `strict::config_error` the way [`check`] is.
 
 use std::collections::BTreeMap;
 
@@ -43,27 +50,36 @@ use crate::infer::Ty;
 /// type (`Ty::Unknown` if the field's own annotation doesn't resolve —
 /// e.g. an unrecognized type name, already flagged elsewhere by
 /// `annotations::check`'s `E061`).
-struct ShapeInfo {
+///
+/// `pub(crate)` (issue #831): `ref_projection`'s strict-mode path-segment
+/// check reuses this exact shape table for `ref lvalue-path` field segments
+/// — "reuse existing machinery" (docs/t1e-spec.md §6) rather than building a
+/// second one.
+pub(crate) struct ShapeInfo {
     fields: Vec<(String, Ty)>,
 }
 
 impl ShapeInfo {
-    fn field_ty(&self, name: &str) -> Option<&Ty> {
+    pub(crate) fn field_ty(&self, name: &str) -> Option<&Ty> {
         self.fields.iter().find(|(n, _)| n == name).map(|(_, t)| t)
     }
 
-    fn has_field(&self, name: &str) -> bool {
+    pub(crate) fn has_field(&self, name: &str) -> bool {
         self.fields.iter().any(|(n, _)| n == name)
     }
 }
 
 /// Every declared `STRUCT` shape in the project, by name.
-fn declared_shapes(
+pub(crate) fn declared_shapes(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
 ) -> BTreeMap<String, ShapeInfo> {
-    let list_names = annotations::declared_list_names(index);
-    let struct_names = annotations::declared_struct_names(index);
+    // No manifest access at this call site (`structs::check` isn't
+    // threaded a `HostManifest` — struct field types aren't in T1d-2's
+    // scope), so `handle<K>` field types resolve `None` here, same as any
+    // other name `TypeNames` doesn't recognize — consistent with
+    // `annotations::resolve`'s documented "unresolved -> silent" contract.
+    let names = annotations::TypeNames::new(index, None);
     let mut out = BTreeMap::new();
     for &(_file, hir) in files {
         for s in &hir.structs {
@@ -71,8 +87,7 @@ fn declared_shapes(
                 .fields
                 .iter()
                 .map(|f| {
-                    let ty = annotations::resolve(&f.ty, &list_names, &struct_names)
-                        .unwrap_or(Ty::Unknown);
+                    let ty = annotations::resolve(&f.ty, &names).unwrap_or(Ty::Unknown);
                     (f.name.text.clone(), ty)
                 })
                 .collect();
@@ -128,6 +143,85 @@ impl HirVisitor for ConstructionVisitor<'_> {
     }
 }
 
+/// Duplicate-field diagnostic (`E084`, issue #675) — unlike [`check`]'s
+/// missing/extra/mistyped diagnostics above, this doesn't need the shape to
+/// resolve (a repeated field name is detectable from the literal's own
+/// field list alone) and runs under *both* `types` policies: a duplicate
+/// field is a structural authoring mistake, not a type-checking concern.
+/// Callers wire this in unconditionally (dialect = brink only, matching
+/// every other TM-4c construction-literal check) rather than gating it
+/// behind `strict::config_error` the way [`check`] is.
+#[must_use]
+pub fn check_duplicates(files: &[(FileId, &HirFile)]) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for &(file, hir) in files {
+        let mut v = DuplicateFieldVisitor {
+            file,
+            diagnostics: &mut out,
+        };
+        visit::visit(hir, &mut v);
+        // Same file-level VAR/CONST-initializer gap `check`'s own doc
+        // explains — `visit::visit`'s block-tree walk doesn't cover them.
+        for var in &hir.variables {
+            check_duplicates_expr(&var.value, file, &mut out);
+        }
+        for c in &hir.constants {
+            check_duplicates_expr(&c.value, file, &mut out);
+        }
+    }
+    out
+}
+
+struct DuplicateFieldVisitor<'a> {
+    file: FileId,
+    diagnostics: &'a mut Vec<Diagnostic>,
+}
+
+impl HirVisitor for DuplicateFieldVisitor<'_> {
+    fn visit_exprs(&self) -> bool {
+        true
+    }
+
+    fn enter_expr(&mut self, expr: &Expr) {
+        if let Expr::StructLiteral(sl) = expr {
+            check_literal_duplicates(sl, self.file, self.diagnostics);
+        }
+    }
+}
+
+/// [`check_expr`]'s twin for the duplicate-field pass — same file-level
+/// VAR/CONST-initializer recursion, independent of the shape table.
+fn check_duplicates_expr(expr: &Expr, file: FileId, out: &mut Vec<Diagnostic>) {
+    if let Expr::StructLiteral(sl) = expr {
+        check_literal_duplicates(sl, file, out);
+    }
+    for child in expr_children(expr) {
+        check_duplicates_expr(child, file, out);
+    }
+}
+
+/// Flag every field-name occurrence in `sl` beyond its first — one
+/// diagnostic per repeated initializer, naming the field and pointing at
+/// the *repeated* occurrence (not the first, so authors see exactly which
+/// initializer is the redundant one).
+fn check_literal_duplicates(sl: &StructLiteral, file: FileId, out: &mut Vec<Diagnostic>) {
+    let mut seen: crate::determinism::LookupSet<&str> = crate::determinism::LookupSet::new();
+    for (name, _value) in &sl.fields {
+        if !seen.insert(name.text.as_str()) {
+            out.push(Diagnostic {
+                file,
+                range: name.range,
+                message: format!(
+                    "{}: field `{}` is initialized more than once",
+                    DiagnosticCode::E084.title(),
+                    name.text
+                ),
+                code: DiagnosticCode::E084,
+            });
+        }
+    }
+}
+
 /// Recurse into `expr` looking for struct literals — used only for the
 /// file-level VAR/CONST initializers `visit::visit` doesn't cover; every
 /// other position is already reached through the `HirVisitor` walk above.
@@ -161,6 +255,8 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
         // T1c `#fn(target, args…)`: only the bound arguments are child
         // expressions — the target is a static `Path` field, same as `Call`.
         Expr::FnLiteral(fl) => fl.args.iter().collect(),
+        // T1e `ref lvalue-path`: only the operand is a child expression.
+        Expr::RefArg(ra) => vec![&ra.operand],
         Expr::String(s) => s
             .parts
             .iter()
@@ -411,5 +507,71 @@ mod tests {
         let diags = check(&[(FileId(0), &hir)], &index);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E071);
+    }
+
+    // ─── check_duplicates (E084, issue #675) ──────────────────────────
+
+    #[test]
+    fn duplicate_field_is_e084_naming_the_field() {
+        let (hir, _index) = build(
+            "STRUCT Point = #{x: float, y: float}\n\
+             === main ===\n~ p = Point#{x: 1.0, x: 2.0, y: 3.0}\n-> DONE\n",
+        );
+        let diags = check_duplicates(&[(FileId(0), &hir)]);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E084);
+        assert!(diags[0].message.contains('x'), "{:?}", diags[0].message);
+    }
+
+    #[test]
+    fn duplicate_field_points_at_the_repeated_occurrence_not_the_first() {
+        let src =
+            "STRUCT Point = #{x: float}\n=== main ===\n~ p = Point#{x: 1.0, x: 2.0}\n-> DONE\n";
+        let (hir, _index) = build(src);
+        let diags = check_duplicates(&[(FileId(0), &hir)]);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        let second_x = src.rfind("x: 2.0").expect("second x initializer");
+        assert_eq!(usize::from(diags[0].range.start()), second_x);
+    }
+
+    #[test]
+    fn clean_construction_has_no_duplicate_diagnostic() {
+        let (hir, _index) = build(
+            "STRUCT Point = #{x: float, y: float}\n\
+             === main ===\n~ p = Point#{x: 1.0, y: 2.0}\n-> DONE\n",
+        );
+        let diags = check_duplicates(&[(FileId(0), &hir)]);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn duplicate_field_flagged_even_under_gradual_and_unresolved_shape() {
+        // No `types = strict` context needed here (this build() harness
+        // never runs `strict::check`'s gate) — and the shape name doesn't
+        // even need to resolve, unlike `check`'s missing/extra/mistyped
+        // trio: a repeated field name is a mistake regardless.
+        let (hir, _index) = build("=== main ===\n~ p = Bogus#{x: 1, x: 2}\n-> DONE\n");
+        let diags = check_duplicates(&[(FileId(0), &hir)]);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E084);
+    }
+
+    #[test]
+    fn duplicate_field_inside_var_initializer_is_checked() {
+        let (hir, _index) = build("STRUCT Point = #{x: float}\nVAR p = Point#{x: 1.0, x: 2.0}\n");
+        let diags = check_duplicates(&[(FileId(0), &hir)]);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E084);
+    }
+
+    #[test]
+    fn three_way_duplicate_flags_every_repeat_after_the_first() {
+        let (hir, _index) = build(
+            "STRUCT Point = #{x: float}\n\
+             === main ===\n~ p = Point#{x: 1.0, x: 2.0, x: 3.0}\n-> DONE\n",
+        );
+        let diags = check_duplicates(&[(FileId(0), &hir)]);
+        assert_eq!(diags.len(), 2, "{diags:?}");
+        assert!(diags.iter().all(|d| d.code == DiagnosticCode::E084));
     }
 }

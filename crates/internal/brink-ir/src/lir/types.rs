@@ -1,4 +1,4 @@
-use brink_format::{CountingFlags, DefinitionId, NameId};
+use brink_format::{AliasEntry, CountingFlags, DefinitionId, NameId};
 
 use crate::{AssignOp, InfixOp, PostfixOp, PrefixOp, SequenceType};
 
@@ -39,6 +39,23 @@ pub struct Program {
     /// its own position), so codegen can hand it straight to
     /// `brink_format::StoryData::struct_shapes`.
     pub struct_shapes: Vec<StructShapeDef>,
+
+    /// M-2b (`docs/modules-spec.md` §4): the `DefinitionId`s of every
+    /// `#@private` definition, sorted ascending by raw id. Collected from the
+    /// resolved [`SymbolIndex`](crate::symbols::SymbolIndex) (whose
+    /// per-symbol `visibility` already carries declaration-flips-default),
+    /// never from a `HashMap` iteration order. Codegen hands this straight to
+    /// `brink_format::StoryData::private_defs`; the runtime uses it to refuse
+    /// host semantic access. Empty for the all-public pre-modules world.
+    pub private_defs: Vec<DefinitionId>,
+
+    /// M-3 (`docs/modules-spec.md` §5): old→new `DefinitionId` rename
+    /// records from every `#@was(old_name)` directive in the project,
+    /// sorted by `old` (deterministic regardless of file/symbol iteration
+    /// order — codegen hands this straight to
+    /// `brink_format::StoryData::alias_table`). Empty unless the source
+    /// uses `#@was`.
+    pub aliases: Vec<AliasEntry>,
 }
 
 /// One declared `STRUCT` shape (TM-4c). Mirrors
@@ -122,6 +139,29 @@ pub enum ConstValue {
     /// Keys are restricted to the ratified scalar domain by construction —
     /// [`ConstMapKey`] has no variant for anything else.
     Map(Vec<(ConstMapKey, ConstValue)>),
+    /// A zero-bound function value baked into a declaration default
+    /// (`VAR f = #fn(name)`), T1c — `docs/t1c-spec.md` §2/§6.
+    FnRef(DefinitionId),
+    /// A bound function value baked into a declaration default
+    /// (`VAR f = #fn(name, args…)`), T1c. `env` is the bound prefix in
+    /// declared order.
+    Closure {
+        target: DefinitionId,
+        env: Vec<ConstClosureEntry>,
+    },
+}
+
+/// One bound-arg entry of a compile-time-constant [`ConstValue::Closure`].
+/// The param `name` is kept as a string (not a `NameId`) because it is
+/// interned into the story name table at codegen — `const_to_value` dedups it
+/// against the target's param names that are already in the table.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConstClosureEntry {
+    /// A `val` param bound to a compile-time snapshot.
+    Val { name: String, value: ConstValue },
+    /// A `ref` param bound to a durable cell (a global `VAR`) — codegens to a
+    /// `VariablePointer`.
+    Ref { name: String, cell: DefinitionId },
 }
 
 /// A compile-time-constant map key — the ratified scalar domain
@@ -396,6 +436,17 @@ pub enum CallArg {
     RefGlobal(DefinitionId),
     /// `ref` argument targeting a temp variable — emits `PushTempPointer`.
     RefTemp(u16, NameId),
+    /// A real path-projection `ref` argument (`ref npc.hp`, `ref
+    /// party[leader].hp`, T1e-2, `docs/t1e-spec.md` §2/§3) — a durable
+    /// global root plus one or more segment expressions, evaluated once
+    /// (snapshot-at-creation, spec §1(1)) and emitted as `MakeProjection`.
+    /// A bare zero-segment `ref x` never reaches this variant — it lowers
+    /// exactly like today's unmarked ref-argument binding
+    /// ([`RefGlobal`]/[`RefTemp`]).
+    RefProjection {
+        root: DefinitionId,
+        segments: Vec<Expr>,
+    },
 }
 
 // ─── Choice sets ─────────────────────────────────────────────────────
@@ -613,6 +664,34 @@ pub enum Expr {
         args: Vec<Expr>,
     },
 
+    // ── Function values (T1c, docs/t1c-spec.md §2/§3) ───────────────
+    /// `#fn(target, bound…)` — create a function value. With no bound args
+    /// this codegens to `PushFnRef` (a zero-bound `FnRef`); with bound args
+    /// to `MakeClosure` (a `Closure`). `bound` is the bound prefix in declared
+    /// order — a `ref` param is a [`CallArg::RefGlobal`] (a captured durable
+    /// cell), a `val` param a [`CallArg::Value`] snapshot.
+    MakeFnValue {
+        target: DefinitionId,
+        bound: Vec<CallArg>,
+    },
+    /// Call *through* a function value: the direct form `f(args…)` where `f`
+    /// holds a fn value, and the explicit `call(f, args…)` form. `callee`
+    /// evaluates to the function value; `args` are the supplied (val-only)
+    /// remaining params. Codegens to `CallValue(argc)`.
+    CallValue {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+    },
+    /// `bind(f, args…)` — the val-only currying stdlib intrinsic (T1c-3,
+    /// docs/t1c-spec.md §3). `callee` evaluates to the function value being
+    /// curried; `args` are the val-only args appended to its bound-arg row
+    /// (consuming the head of its remaining param row). Codegens to
+    /// `BindValue(argc)`; over-binding is a runtime fault at the op.
+    BindValue {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+    },
+
     // ── Collections (T1b, docs/t1b-surface-spec.md §3-4) ────────────
     /// A compile-time-constant collection literal — emitted via the V4
     /// literal pool (`PushLiteral(idx)`), deduplicated at codegen.
@@ -681,15 +760,24 @@ pub enum Expr {
     },
 
     // ── Records (TM-4c, `docs/typed-mode-spec.md` §6) ───────────────
-    /// `Name#{field: expr, …}` construction. `fields` is already reordered
-    /// into the shape's *declaration* order (not source order) — see
-    /// `lir::lower::expr::lower_struct_literal`'s doc for why every
-    /// initializer is still evaluated in source order regardless (each
-    /// entry here may itself be a `GetTemp` read of a source-order-
-    /// evaluated synthetic temp, not the raw initializer expression).
+    /// `Name#{field: expr, …}` construction. `fields` is in the exact order
+    /// `RecordNew`'s VM opcode expects the values pushed — the shape's
+    /// *declaration* order for a well-formed literal, or source order for
+    /// the construction-fault sentinel path (`lower_struct_literal`'s doc).
+    /// `prelude` runs first (source order — the author's left-to-right
+    /// order), staging every supplied initializer's value into a synthetic
+    /// temp slot *before* any `fields` entry is pushed — codegen emits each
+    /// `prelude` triple as `<expr bytecode>; DeclareTemp(slot)` in order,
+    /// then `fields` (which, on the well-formed path, are `GetTemp` reads
+    /// of those slots reordered into shape order). This decouples
+    /// evaluation order from placement order (issue #676): shape order is
+    /// a memory-layout concern for `fields`, never an evaluation-order one.
+    /// Empty on the construction-fault path, where `fields` already *is*
+    /// source order and no reordering — hence no staging — is needed.
     RecordNew {
         shape_id: u32,
         fields: Vec<Expr>,
+        prelude: Vec<(u16, NameId, Expr)>,
     },
     /// `base.field` (read). `static_offset: Some(offset)` when
     /// `brink-ir`'s LIR lowering proved `base`'s shape at compile time

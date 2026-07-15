@@ -1,8 +1,9 @@
 use crate::SyntaxKind::{
     COLON, COMMA, CONST_DECL, EQ, EXTERNAL_DECL, FILE_PATH, FUNCTION_PARAM_LIST, HASH, IDENT,
-    IDENTIFIER, INCLUDE_STMT, INTEGER, KW_CONST, KW_EXTERNAL, KW_INCLUDE, KW_LIST, KW_VAR, L_BRACE,
-    L_PAREN, LIST_DECL, LIST_DEF, LIST_MEMBER, LIST_MEMBER_OFF, LIST_MEMBER_ON, NEWLINE, R_BRACE,
-    R_PAREN, STRUCT_DECL, STRUCT_FIELD_DECL, VAR_DECL,
+    IDENTIFIER, IMPORT_ITEM, IMPORT_LIST, IMPORT_MODULE, IMPORT_STMT, INCLUDE_STMT, INTEGER,
+    KW_CONST, KW_EXTERNAL, KW_IMPORT, KW_INCLUDE, KW_LIST, KW_VAR, L_BRACE, L_PAREN, LIST_DECL,
+    LIST_DEF, LIST_MEMBER, LIST_MEMBER_OFF, LIST_MEMBER_ON, NEWLINE, R_BRACE, R_PAREN, STRUCT_DECL,
+    STRUCT_FIELD_DECL, VAR_DECL,
 };
 
 use super::Parser;
@@ -33,6 +34,96 @@ pub(crate) fn include_statement(p: &mut Parser<'_, '_>) {
     if p.at(NEWLINE) {
         p.bump();
     }
+    p.finish_node();
+}
+
+/// Parse an `IMPORT` statement (M-2, docs/modules-spec.md §2), both forms:
+///
+/// ```text
+/// import_statement = { "IMPORT" ~ INLINE_WS+ ~ (import_list ~ "FROM" ~ module | module) ~ NEWLINE }
+/// import_list      = { "{" ~ import_item ~ ("," ~ import_item)* ~ "}" }
+/// import_item      = { identifier ~ ("AS" ~ identifier)? }
+/// module           = { identifier }
+/// ```
+///
+/// `FROM`/`AS` are contextual soft keywords (plain `IDENT`s everywhere
+/// else); only `IMPORT` is a reserved token. Grammar is always superset-
+/// parsed; the brink-dialect gate rejects the whole statement under
+/// strict-ink downstream (the `#@module` precedent).
+pub(crate) fn import_statement(p: &mut Parser<'_, '_>) {
+    p.start_node(IMPORT_STMT);
+    p.bump(); // KW_IMPORT
+    p.skip_ws();
+
+    if p.at(L_BRACE) {
+        // Bare form: `IMPORT { a, b AS c } FROM mod`.
+        import_list(p);
+        p.skip_ws();
+        if p.at_kw_text("FROM") {
+            p.bump(); // contextual `FROM`
+        } else {
+            p.error("expected `FROM` after import list".into());
+        }
+        p.skip_ws();
+        import_module(p);
+    } else {
+        // Qualified form: `IMPORT mod`.
+        import_module(p);
+    }
+
+    if p.at(NEWLINE) {
+        p.bump();
+    }
+    p.finish_node();
+}
+
+/// Parse the `{ a, b AS c }` name list of a bare-form import.
+fn import_list(p: &mut Parser<'_, '_>) {
+    p.start_node(IMPORT_LIST);
+    p.bump(); // L_BRACE
+    p.skip_ws();
+    if !p.at(R_BRACE) {
+        import_item(p);
+        loop {
+            p.skip_ws();
+            if !p.eat(COMMA) {
+                break;
+            }
+            p.skip_ws();
+            if p.at(R_BRACE) {
+                break; // trailing comma tolerated
+            }
+            import_item(p);
+        }
+    }
+    p.skip_ws();
+    p.expect(R_BRACE);
+    p.finish_node();
+}
+
+/// Parse one `name` or `name AS alias` import item.
+fn import_item(p: &mut Parser<'_, '_>) {
+    p.start_node(IMPORT_ITEM);
+    p.start_node(IDENTIFIER);
+    p.expect_ident_or_keyword();
+    p.finish_node();
+    p.skip_ws();
+    if p.at_kw_text("AS") {
+        p.bump(); // contextual `AS`
+        p.skip_ws();
+        p.start_node(IDENTIFIER);
+        p.expect_ident_or_keyword();
+        p.finish_node();
+    }
+    p.finish_node();
+}
+
+/// Parse the module name of an import (both forms).
+fn import_module(p: &mut Parser<'_, '_>) {
+    p.start_node(IMPORT_MODULE);
+    p.start_node(IDENTIFIER);
+    p.expect_ident_or_keyword();
+    p.finish_node();
     p.finish_node();
 }
 
@@ -327,7 +418,7 @@ pub(crate) fn at_struct_decl(p: &Parser<'_, '_>) -> bool {
 pub(crate) fn at_declaration(p: &Parser<'_, '_>) -> bool {
     matches!(
         p.current(),
-        KW_INCLUDE | KW_EXTERNAL | KW_VAR | KW_CONST | KW_LIST
+        KW_INCLUDE | KW_IMPORT | KW_EXTERNAL | KW_VAR | KW_CONST | KW_LIST
     )
 }
 
@@ -342,6 +433,7 @@ pub(crate) fn at_inline_declaration(p: &Parser<'_, '_>) -> bool {
 pub(crate) fn declaration(p: &mut Parser<'_, '_>) {
     match p.current() {
         KW_INCLUDE => include_statement(p),
+        KW_IMPORT => import_statement(p),
         KW_EXTERNAL => external_declaration(p),
         KW_VAR => var_declaration(p),
         KW_CONST => const_declaration(p),

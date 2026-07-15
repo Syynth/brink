@@ -67,6 +67,17 @@ fn cycle(db: &mut ProjectDb, variant: usize) {
     {
         let _ = db.infer_body(scratch_knot);
         let _ = db.inferred_signature(scratch_knot);
+
+        // FG-5 (issue #647): also pull `signature_query` — the one
+        // remaining per-def family this test didn't already exercise
+        // transitively (`infer_body`/`inferred_signature` above already
+        // reach `solve_scc_query`/`call_edges_query`/
+        // `referenced_globals_query` through `scc_membership_query`'s
+        // whole-project walk). `signature_query` now carries an `lru`
+        // runaway-guard ceiling and a `heap_size` estimator; a leaked
+        // per-def memo on remove/re-add would show up here exactly like
+        // the pre-#536 per-file leak this test already guards.
+        let _ = db.signature(scratch_knot);
     }
 
     db.remove_file("scratch.ink");

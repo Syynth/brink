@@ -39,9 +39,22 @@ impl DeclareSymbols for ast::VarDecl {
             Expr::Null
         };
 
-        // `#@local` directive line(s) immediately above the declaration.
+        // `#@local` and `#@private`/`#@public` directive line(s) immediately
+        // above the declaration.
         let dirs = directives_before(self.syntax());
         let is_local = apply_scope_directives(&dirs, DirectiveTarget::Var, sink);
+        if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
+            sink.set_visibility(SymbolKind::Variable, &name.text, vis);
+        }
+        if let Some((old_name, was_range)) =
+            super::super::directive::was_from_directives(&dirs, sink)
+        {
+            if old_name == name.text {
+                sink.diagnose(was_range, DiagnosticCode::E095);
+            } else {
+                sink.set_was(SymbolKind::Variable, &name.text, old_name, was_range);
+            }
+        }
 
         let annotation = self
             .type_annotation()

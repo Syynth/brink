@@ -23,11 +23,10 @@
 //!   `types = strict`, and always falls back to the by-name ops, which are
 //!   correct under every policy.
 
-use std::collections::{HashMap, HashSet};
-
 use brink_format::{DefinitionId, NameId};
 
 use crate::FileId;
+use crate::determinism::{LookupMap, LookupSet};
 use crate::hir;
 use crate::symbols::{SymbolIndex, SymbolKind};
 
@@ -36,6 +35,11 @@ use super::decls::lookup_global;
 use super::lir;
 
 /// One declared `STRUCT` shape, resolved for lowering.
+///
+/// `Clone` (issue #839 / FG-4e): [`PreludeDecls`] holds a whole
+/// [`ShapeTable`] and is cloned out of `brink-db`'s `lir_prelude_decls_query`
+/// Arc once per link execution — see that struct's doc.
+#[derive(Clone)]
 pub struct ShapeInfo {
     pub id: u32,
     pub name: NameId,
@@ -47,7 +51,7 @@ pub struct ShapeInfo {
     /// annotation names another declared struct — that's what lets
     /// `expr::known_shape` chase a read chain (`o.inner.v`) across more than
     /// one `.field` hop without any type inference.
-    field_index: HashMap<String, (u16, Option<String>)>,
+    field_index: LookupMap<String, (u16, Option<String>)>,
 }
 
 impl ShapeInfo {
@@ -61,9 +65,9 @@ impl ShapeInfo {
 
 /// Every declared `STRUCT` shape in the project, by name. See the module
 /// doc for the id-assignment determinism argument.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct ShapeTable {
-    by_name: HashMap<String, ShapeInfo>,
+    by_name: LookupMap<String, ShapeInfo>,
 }
 
 impl ShapeTable {
@@ -91,14 +95,14 @@ impl ShapeTable {
 /// an analyzer concern (out of TM-4c's scope), not something LIR lowering
 /// diagnoses; this just needs to not panic or vary run-to-run.
 pub fn build_shape_table(files: &[(FileId, &hir::HirFile)], names: &mut NameTable) -> ShapeTable {
-    let mut struct_names: HashSet<&str> = HashSet::new();
+    let mut struct_names: LookupSet<&str> = LookupSet::new();
     for &(_, hir_file) in files {
         for s in &hir_file.structs {
             struct_names.insert(s.name.text.as_str());
         }
     }
 
-    let mut by_name: HashMap<String, ShapeInfo> = HashMap::new();
+    let mut by_name: LookupMap<String, ShapeInfo> = LookupMap::new();
     let mut next_id: u32 = 0;
     for &(_, hir_file) in files {
         for s in &hir_file.structs {
@@ -107,7 +111,7 @@ pub fn build_shape_table(files: &[(FileId, &hir::HirFile)], names: &mut NameTabl
             }
             let shape_name = names.intern(&s.name.text);
             let mut fields = Vec::with_capacity(s.fields.len());
-            let mut field_index = HashMap::with_capacity(s.fields.len());
+            let mut field_index = LookupMap::with_capacity(s.fields.len());
             for (i, f) in s.fields.iter().enumerate() {
                 let field_name = names.intern(&f.name.text);
                 fields.push(field_name);
@@ -165,7 +169,168 @@ pub fn struct_shape_defs(shapes: &ShapeTable) -> Vec<lir::StructShapeDef> {
 /// struct, resolved to their `DefinitionId` — see the module doc for why
 /// this (plus per-temp tracking) is the whole "compile-time known shape"
 /// story.
-pub type GlobalShapeMap = HashMap<DefinitionId, String>;
+pub type GlobalShapeMap = LookupMap<DefinitionId, String>;
+
+// ─── FG-4d: cutoff-friendly struct-shape projection ──────────────────
+//
+// The whole-program struct-shape data ([`ShapeTable`] + [`GlobalShapeMap`])
+// is derived from every file's declared `STRUCT`s, so a per-container LIR
+// chunk memo that needs it would depend on all files' HIR — defeating
+// cross-file cutoff. [`StructShapeData`] is the same data as a
+// range-free, `NameId`-free, `Eq`-able value: it can back a whole-project
+// salsa query that *backdates* when no struct declaration changed, so a
+// per-chunk memo reading it survives an unrelated edit (the FG-4d
+// non-re-execution property). The `NameId`s in the reconstructed
+// [`ShapeTable`] are chunk-throwaway — per-chunk lowering re-interns every
+// field/shape name into its own local table (`expr.rs`'s
+// `ctx.names.intern`), reading only shape *ids*, field *offsets*, and the
+// nested-shape *names* from the table — so a throwaway numbering is
+// byte-identical after [`super::chunk::assemble_scopes`] relocation.
+
+/// One declared struct shape, `NameId`-free. Fields are in declaration
+/// (offset) order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructShapeEntry {
+    /// Declared struct name.
+    pub name: String,
+    /// Fields in declaration order — index `i` is offset `i`.
+    pub fields: Vec<StructFieldEntry>,
+}
+
+/// One struct field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructFieldEntry {
+    /// Field source name.
+    pub name: String,
+    /// Static offset (declaration index).
+    pub offset: u16,
+    /// The field's own declared struct-shape name, if its TM-2 annotation
+    /// names another declared struct (the nested read-chain enabler).
+    pub nested: Option<String>,
+}
+
+/// The whole-program struct-shape data as a cutoff-friendly, `Eq`-able,
+/// `NameId`-free value. `shapes[i].id == i` implicitly (ordered by
+/// `ShapeId`); `global_shapes` is sorted by `DefinitionId` for determinism.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StructShapeData {
+    /// Shapes in `ShapeId` order (index `i` has id `i`).
+    pub shapes: Vec<StructShapeEntry>,
+    /// Global `VAR`/`CONST` `DefinitionId` → shape name, sorted by id.
+    pub global_shapes: Vec<(DefinitionId, String)>,
+}
+
+/// Build the cutoff-friendly [`StructShapeData`] directly from HIR, mirroring
+/// [`build_shape_table`]'s id/offset/nested rules exactly (verified
+/// equivalent in the module tests) — same topological `files` order, same
+/// first-declaration-wins dedup, same offset = declaration index, same
+/// nested-only-when-annotation-names-a-declared-struct rule.
+#[must_use]
+pub fn build_struct_shape_data(
+    files: &[(FileId, &hir::HirFile)],
+    index: &SymbolIndex,
+) -> StructShapeData {
+    let mut struct_names: LookupSet<&str> = LookupSet::new();
+    for &(_, hir_file) in files {
+        for s in &hir_file.structs {
+            struct_names.insert(s.name.text.as_str());
+        }
+    }
+
+    let mut seen: LookupSet<String> = LookupSet::new();
+    let mut shapes = Vec::new();
+    for &(_, hir_file) in files {
+        for s in &hir_file.structs {
+            if seen.contains(&s.name.text) {
+                continue;
+            }
+            seen.insert(s.name.text.clone());
+            let mut fields = Vec::with_capacity(s.fields.len());
+            for (i, f) in s.fields.iter().enumerate() {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "a struct won't declare anywhere near u16::MAX fields"
+                )]
+                let offset = i as u16;
+                let nested = match &f.ty {
+                    hir::TypeExpr::Named { name, .. } if struct_names.contains(name.as_str()) => {
+                        Some(name.clone())
+                    }
+                    _ => None,
+                };
+                fields.push(StructFieldEntry {
+                    name: f.name.text.clone(),
+                    offset,
+                    nested,
+                });
+            }
+            shapes.push(StructShapeEntry {
+                name: s.name.text.clone(),
+                fields,
+            });
+        }
+    }
+
+    // Rebuild a ShapeTable (throwaway names) only to reuse the exact
+    // `build_global_shape_map` logic without depending on its internals.
+    let mut throwaway = NameTable::new();
+    let shape_table = rebuild_shape_table(
+        &StructShapeData {
+            shapes: shapes.clone(),
+            global_shapes: Vec::new(),
+        },
+        &mut throwaway,
+    );
+    let global_map = build_global_shape_map(files, index, &shape_table);
+    let mut global_shapes: Vec<(DefinitionId, String)> = global_map.into_iter().collect();
+    global_shapes.sort_by_key(|a| a.0.to_raw());
+
+    StructShapeData {
+        shapes,
+        global_shapes,
+    }
+}
+
+/// Reconstruct a [`ShapeTable`] from [`StructShapeData`], interning every
+/// shape/field name into `names`. For a per-chunk lowering memo `names` is a
+/// throwaway table (the reconstructed `NameId`s are never read — see the
+/// module note); the id/offset/`field_index` data is what lowering uses and
+/// is reproduced exactly.
+#[must_use]
+pub fn rebuild_shape_table(data: &StructShapeData, names: &mut NameTable) -> ShapeTable {
+    let mut by_name: LookupMap<String, ShapeInfo> = LookupMap::new();
+    for (id, entry) in data.shapes.iter().enumerate() {
+        let shape_name = names.intern(&entry.name);
+        let mut fields = Vec::with_capacity(entry.fields.len());
+        let mut field_index = LookupMap::with_capacity(entry.fields.len());
+        for f in &entry.fields {
+            fields.push(names.intern(&f.name));
+            field_index.insert(f.name.clone(), (f.offset, f.nested.clone()));
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "shape count won't exceed u32::MAX"
+        )]
+        by_name.insert(
+            entry.name.clone(),
+            ShapeInfo {
+                id: id as u32,
+                name: shape_name,
+                fields,
+                field_index,
+            },
+        );
+    }
+    ShapeTable { by_name }
+}
+
+/// Reconstruct the [`GlobalShapeMap`] from [`StructShapeData`]'s sorted
+/// `global_shapes` list — the inverse of the flattening in
+/// [`build_struct_shape_data`].
+#[must_use]
+pub fn rebuild_global_shape_map(data: &StructShapeData) -> GlobalShapeMap {
+    data.global_shapes.iter().cloned().collect()
+}
 
 #[must_use]
 pub fn build_global_shape_map(
@@ -173,7 +338,7 @@ pub fn build_global_shape_map(
     index: &SymbolIndex,
     shapes: &ShapeTable,
 ) -> GlobalShapeMap {
-    let mut out = HashMap::new();
+    let mut out = LookupMap::new();
     for &(_, hir_file) in files {
         for var in &hir_file.variables {
             record_global_annotation(
@@ -263,6 +428,43 @@ mod tests {
             plain_nested, None,
             "a non-struct-typed field has no nested shape"
         );
+    }
+
+    /// FG-4d byte-identity contract: the cutoff-friendly [`StructShapeData`]
+    /// projection reconstructs a [`ShapeTable`] with the exact same ids,
+    /// offsets, nested-shape names, and field counts as the direct
+    /// [`build_shape_table`] the monolithic path uses. Only the `NameId`s
+    /// differ (throwaway vs. shared), which per-chunk lowering never reads.
+    #[test]
+    fn struct_shape_data_roundtrips_to_shape_table() {
+        let hir = hir_for(
+            "STRUCT Inner = #{v: int}\n\
+             STRUCT Outer = #{inner: Inner, n: int, tail: Inner}\n\
+             STRUCT Alpha = #{a: int, b: int}\nHello.\n",
+        );
+        let files = [(FileId(0), &hir)];
+        let index = SymbolIndex::default();
+
+        let mut direct_names = NameTable::new();
+        let direct = build_shape_table(&files, &mut direct_names);
+
+        let data = build_struct_shape_data(&files, &index);
+        let mut throwaway = NameTable::new();
+        let rebuilt = rebuild_shape_table(&data, &mut throwaway);
+
+        assert_eq!(direct.len(), rebuilt.len());
+        for name in ["Inner", "Outer", "Alpha"] {
+            let d = direct.get(name).expect("shape in direct table");
+            let r = rebuilt.get(name).expect("shape in rebuilt table");
+            assert_eq!(d.id, r.id, "{name} shape id");
+            assert_eq!(d.fields.len(), r.fields.len(), "{name} field count");
+            // Every field: same offset + same nested shape name.
+            for field in ["inner", "n", "tail", "a", "b", "v"] {
+                let d_field = d.field(field).map(|(o, n)| (o, n.map(str::to_string)));
+                let r_field = r.field(field).map(|(o, n)| (o, n.map(str::to_string)));
+                assert_eq!(d_field, r_field, "{name}.{field} offset/nested");
+            }
+        }
     }
 
     #[test]
