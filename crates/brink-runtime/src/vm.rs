@@ -1216,7 +1216,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
 /// feature is enabled.
 #[cfg(feature = "bench-counters")]
 #[inline]
-fn note_value_share(val: &Value) {
+pub(crate) fn note_value_share(val: &Value) {
     match val {
         Value::Array(_) | Value::Map(_) | Value::Record { .. } => {
             crate::bench_counters::record_arc_clone();
@@ -1226,7 +1226,7 @@ fn note_value_share(val: &Value) {
 }
 #[cfg(not(feature = "bench-counters"))]
 #[inline(always)]
-fn note_value_share(_val: &Value) {}
+pub(crate) fn note_value_share(_val: &Value) {}
 
 // ── Function values (T1c, docs/t1c-spec.md §3/§6, #700) ──────────────────────
 

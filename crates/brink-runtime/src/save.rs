@@ -76,9 +76,18 @@ pub fn save_state<C: ContextAccess + ?Sized>(program: &Program, ctx: &C) -> Save
 
     let globals: BTreeMap<String, Value> = (0..program.global_count())
         .filter_map(|idx| {
-            program
-                .global_slot_name(idx as usize)
-                .map(|name| (name.to_owned(), ctx.global(idx).clone()))
+            program.global_slot_name(idx as usize).map(|name| {
+                let value = ctx.global(idx).clone();
+                // Same mechanism as `Opcode::GetGlobal`'s read (a bare
+                // `Arc::clone` on a collection-typed `Value`) — reported
+                // through the same counter so a save/load cycle's
+                // Arc-clone count is visible to `bench-counters`
+                // (issue #821 Workstream C), not silently invisible just
+                // because it's a host-side `ContextAccess` read rather
+                // than a VM opcode.
+                crate::vm::note_value_share(&value);
+                (name.to_owned(), value)
+            })
         })
         .collect();
 
@@ -185,7 +194,19 @@ pub fn load_state<C: ContextAccess + ?Sized>(
                 let value = if renames_matter {
                     rebind_value(program, value, &mut report)
                 } else {
-                    value.clone()
+                    // The common path (no `#@was` aliases active): a
+                    // bare `Value::clone()`, same mechanism as
+                    // `Opcode::GetGlobal`'s read — noted so a full
+                    // save/load round trip's Arc-clone count is visible
+                    // to `bench-counters` (issue #821 Workstream C), not
+                    // just the save half. The `renames_matter` branch
+                    // above calls `rebind_value`, which recursively
+                    // rebuilds compound values rather than cloning the
+                    // top-level `Arc` — not the same mechanism, so not
+                    // noted here (would overstate the count).
+                    let cloned = value.clone();
+                    crate::vm::note_value_share(&cloned);
+                    cloned
                 };
                 ctx.set_global(idx, value);
             }
