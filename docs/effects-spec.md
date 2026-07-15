@@ -176,10 +176,11 @@ scheduling sound as content loads.
   is closed by this; its types half stands (manifest-listed
   host-callable functions require annotations).
 
-**Still OPEN — host-side sitting** (schedule when bevy-brink
-implementation nears): manifest capability grammar (entity-granular
-syntax space reserved), reactive-sleep API shape (component on the
-flow entity vs host callback registry).
+**Host-side mechanics — SETTLED (sitting 3, 2026-07-15)**: see §12.
+Still OPEN for the final host sitting: the manifest capability
+*grammar* (how a binding author writes `reads Transform`;
+entity-granular syntax space reserved) and the reactive-sleep
+*author-facing API surface*.
 
 ## 11. Invariants and non-goals
 
@@ -208,3 +209,95 @@ flow entity vs host callback registry).
   author-facing effect syntax beyond the entry-point freeze (no
   monads, no handlers, no function coloring — interior effects are
   inferred, always).
+
+
+## 12. The bevy host runtime — settled mechanics (sitting 3, 2026-07-15)
+
+Recorded so implementation can proceed later without re-deriving.
+T2's implementation splits: the **compiler half** (row inference,
+`#@effects`, EffectRows emission — buildable now on the delivered FG
+substrate) lands first; the host half builds against real shipped
+rows.
+
+### 12.1 The frame loop
+
+bevy-brink's flow-runner advances pending flows each frame through:
+**Collect** (spawned + woken) → **Schedule** (per-flow next-turn
+access from the row of the container the flow is parked in) →
+**Prefetch** (§12.3) → **Step** (parallel, pure VM against borrowed
+reads, writes/commands buffered) → **Apply** (buffered writes in
+deterministic flow-id order) → **Subscribe** (newly-parked flows
+register wake-dependency sets) → **Detect** (cell writes + component
+change ticks wake intersecting parked flows).
+
+Mechanism notes banked from the walk-through:
+- **Per-container rows are the resume-scheduling estimate** — a flow
+  resumes from wherever it parked, which is the concrete reason every
+  knot/stitch ships a row (the earlier "host can start anywhere"
+  rationale was the weaker half of the truth).
+- **Reactive sleep needs no new row granularity**: a parked flow's
+  wake set = the live park-condition's direct reads (walkable at
+  runtime) ∪ the transitive rows of functions the condition calls
+  (the shipped `DefinitionId → row` table).
+
+### 12.2 Borrow, don't copy — RULED
+
+The host **never copies world data** to parallelize. The row-join
+output is the same currency as bevy's `FilteredAccessSet`; the step
+phase runs flows on the task pool inside an `UnsafeWorldCell` scope
+with access proven by rows — shared read borrows, buffered writes
+(bevy's own executor pattern, one storey down). The §8 snapshot-only
+contract applies **at the ink boundary only**: what crosses into
+script is a value (a binding returning a `Transform` copies one small
+struct — inherent to value semantics); it never required host-side
+world copying.
+
+### 12.3 Prefetch, honestly
+
+Three cheap things, zero data copying:
+1. resolve dynamic `QueryState`s per access set once per batch
+   (`QueryBuilder`, `ComponentId`-driven, `FilteredEntityRef`);
+2. prevalidate entity liveness for handle-targeted reads (feeds the
+   dead-handle path pre-step);
+3. **eliminate park/resume round-trips**: with the borrow held during
+   step, world-read bindings become synchronous reads —
+   `AwaitingExternal` suspension for world queries stops existing on
+   the batch path.
+
+### 12.4 Frame-start consistency — RULED (the concurrency semantics)
+
+Batch-scheduled flows read the **frame-start world** (reads pinned to
+the frame-start change tick); writes buffer and apply in
+deterministic flow-id order at Apply. Consequences: everything
+parallelizes (no conflict partitioning needed — even write-write is
+deterministic by apply order); a peer's same-frame write is visible
+**next** frame (double-buffered, simulation-tick semantics). The
+**serial host API** (stepping one flow at a time) keeps today's
+immediate-visibility semantics — documented as the serial mode, not a
+policy switch. The write-write wire bit considered earlier is NOT
+needed under this ruling; it stays a reserved-slot question if a
+conflict-partitioned policy is ever wanted.
+
+### 12.5 Two-level bevy integration — RULED direction, staged
+
+- **Level 1 (v2 optimization)**: build the flow-runner via
+  `SystemParamBuilder`/`QueryParamBuilder` with the **aggregate
+  access of all loaded stories' rows**, so bevy's own scheduler runs
+  narrative concurrently with unrelated game systems (no `&mut World`
+  serialization). A system's access is fixed at build — which aligns
+  exactly with the ruled **load-boundary** invariant: story
+  load/unload is when the params rebuild.
+- **Level 2 (v1)**: exclusive-system driver; inside it, dynamic
+  queries + `Access` math + `UnsafeWorldCell` + `ComputeTaskPool`
+  scope per §12.2–12.4. Fully correct and parallel across flows on
+  day one; level 1 is pure scheduling throughput, zero semantic
+  change.
+- Change detection for sleep rides per-entity `ComponentTicks`
+  through untyped access — no typed `Changed<T>` filters needed.
+
+### 12.6 What remains for the final host sitting
+
+Manifest capability grammar (author-facing spelling; the
+change-detectable-vs-opaque read bit per binding); reactive-sleep
+author-facing API surface; serial-mode documentation. Everything else
+in the host half is settled above.
