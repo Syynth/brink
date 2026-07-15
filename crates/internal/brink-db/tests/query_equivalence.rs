@@ -13,6 +13,21 @@
 //! tests pin that equivalence on fixtures chosen to poke the risky corners:
 //! locals (params/temps), duplicate names across files, cross-file duplicate
 //! scoped locals, and unresolved references.
+//!
+//! FG-6 (#841) audited this family against the decision-log ruling to
+//! retire "the composed-equals-monolithic equivalence family in favor of
+//! cross-version byte-identity (`inkb_hashes`)": that ruling targets
+//! `brink-compiler`'s now-removed *production* one-shot-driver-vs-`ProjectDb`
+//! duplication (collapsed in #844/#841 — there was never a committed test
+//! comparing those two, only ad hoc `inkb_hashes` verification during the
+//! switch). The tests below compare something different and still real: a
+//! salsa **query composition** (`db.analysis()`/`db.signature()`) against a
+//! **direct, non-decomposed `brink_analyzer` call** on the same inputs, to
+//! prove FG-1/FG-3's per-file/per-def query decomposition doesn't change
+//! analyzer output. That seam has nothing to do with which pipeline
+//! `brink-compiler` routes through and remains load-bearing after FG-6 —
+//! kept, not retired. See `fg2_scc_dependency_edges.rs` for FG-2's analogous
+//! per-SCC seam.
 
 use brink_analyzer::AnalysisOptions;
 use brink_db::ProjectDb;
