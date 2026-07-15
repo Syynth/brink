@@ -14,6 +14,7 @@ mod fn_values;
 mod infer;
 mod manifest;
 mod modules;
+mod ref_projection;
 mod resolve;
 mod signature;
 mod strict;
@@ -233,6 +234,12 @@ pub fn per_file_diagnostics(
         // `dialect_gate`: the resolution records consulted always carry
         // this file's own id.
         out.extend(fn_values::check(&files, file_resolutions, index));
+        // T1e-1 `ref lvalue-path` creation-site checks (E080 durable root,
+        // E097 standalone position, docs/t1e-spec.md §2/§6, issue #831) —
+        // same brink-only rule, same per-file argument as `fn_values`'s own
+        // comment just above (a reference's resolution record always
+        // carries the file the reference itself lives in).
+        out.extend(ref_projection::check(&files, file_resolutions, index));
         // Struct construction-literal duplicate-field check (E084, issue
         // #675) — same brink-only rule, and unlike `structs::check`'s
         // missing/extra/mistyped trio this runs under *both* `types`

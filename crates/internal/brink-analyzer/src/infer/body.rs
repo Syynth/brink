@@ -386,6 +386,15 @@ impl InferPass<'_, '_> {
             // the target's SCC before this one). Bound args are observed
             // against the target's param row, same as direct-call args.
             Expr::FnLiteral(fl) => self.infer_fn_literal(fl),
+            // T1e `ref lvalue-path` (docs/t1e-spec.md §2): no projection
+            // type is modeled in this slice (T1e-1 ships grammar/HIR/
+            // analyzer checks only, not runtime representation) — same
+            // "out of scope, still visited for its own escape-checking
+            // purposes" posture as `Expr::FieldAccess` just above.
+            Expr::RefArg(ra) => {
+                self.infer_expr(&ra.operand);
+                Ty::Unknown
+            }
         }
     }
 

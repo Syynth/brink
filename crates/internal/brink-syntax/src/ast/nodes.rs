@@ -154,6 +154,10 @@ ast_node!(FieldAccessExpr, FIELD_ACCESS_EXPR);
 
 ast_node!(FnLiteral, FN_LITERAL);
 
+// ── T1e path projections (docs/t1e-spec.md §2) ────────────────────────
+
+ast_node!(RefExpr, REF_EXPR);
+
 // ── Diverts ──────────────────────────────────────────────────────────
 
 ast_node!(DivertNode, DIVERT_NODE);
@@ -309,6 +313,11 @@ pub enum Expr {
     /// `#fn(target, args…)` — function-value creation (T1c,
     /// docs/t1c-spec.md §2, brink extension).
     FnLiteral(FnLiteral),
+    /// `ref lvalue-path` — path-projection creation (T1e,
+    /// docs/t1e-spec.md §2, brink extension). Legal only in ref-argument
+    /// position (calls, `#fn(…)`, `bind(…)`) — a `brink-analyzer` concern,
+    /// not a grammar one.
+    RefExpr(RefExpr),
 }
 
 impl std::fmt::Debug for Expr {
@@ -345,6 +354,7 @@ impl crate::ast::AstNode for Expr {
                 | SyntaxKind::STRUCT_LITERAL
                 | SyntaxKind::FIELD_ACCESS_EXPR
                 | SyntaxKind::FN_LITERAL
+                | SyntaxKind::REF_EXPR
         )
     }
 
@@ -368,6 +378,7 @@ impl crate::ast::AstNode for Expr {
             SyntaxKind::STRUCT_LITERAL => StructLiteral::cast(node).map(Expr::StructLiteral),
             SyntaxKind::FIELD_ACCESS_EXPR => FieldAccessExpr::cast(node).map(Expr::FieldAccess),
             SyntaxKind::FN_LITERAL => FnLiteral::cast(node).map(Expr::FnLiteral),
+            SyntaxKind::REF_EXPR => RefExpr::cast(node).map(Expr::RefExpr),
             _ => None,
         }
     }
@@ -392,6 +403,7 @@ impl crate::ast::AstNode for Expr {
             Expr::StructLiteral(n) => n.syntax(),
             Expr::FieldAccess(n) => n.syntax(),
             Expr::FnLiteral(n) => n.syntax(),
+            Expr::RefExpr(n) => n.syntax(),
         }
     }
 }
@@ -1161,6 +1173,25 @@ impl FnLiteral {
             .children()
             .filter_map(Expr::cast)
             .filter(move |e| Some(e.syntax()) != target_node.as_ref())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// T1e path projections (docs/t1e-spec.md §2)
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── RefExpr ──────────────────────────────────────────────────────────
+
+impl RefExpr {
+    pub fn ref_kw(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, KW_REF)
+    }
+
+    /// The lvalue-shaped operand after `ref` — a plain path, a dotted field
+    /// chain, `[…]` indexing, or a mix. `None` on malformed input (`ref` at
+    /// end of input, or followed by a token that starts no expression).
+    pub fn operand(&self) -> Option<Expr> {
+        support::child(&self.syntax)
     }
 }
 
