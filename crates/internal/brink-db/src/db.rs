@@ -190,10 +190,11 @@ impl ProjectDb {
     }
 
     /// Return file IDs in topological include order (included files before
-    /// the files that include them), matching ink's `INCLUDE` paste semantics.
+    /// the files that include them), matching ink's `INCLUDE` paste
+    /// semantics. Only `entry` and files it transitively `INCLUDE`s are
+    /// returned — see [`IncludeGraph::topological_order`] (issue #815).
     pub fn file_ids_topo(&self, entry: FileId) -> Vec<FileId> {
-        let all: Vec<_> = self.file_ids().collect();
-        self.include_graph().topological_order(entry, &all)
+        self.include_graph().topological_order(entry)
     }
 
     /// Get the parse tree for a file.
