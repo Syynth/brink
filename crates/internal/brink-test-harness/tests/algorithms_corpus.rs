@@ -1,5 +1,5 @@
-//! Algorithms corpus — sorting/searching + graphs lanes (issue #822, epic
-//! #397/#822).
+//! Algorithms corpus — sorting/searching + graphs + procgen lanes (issue
+//! #822, epic #397/#822).
 //!
 //! Sibling of `tier1_brink.rs`'s flat `tests/tier1-brink/<name>/` corpus,
 //! scoped to `tests/tier1-brink/algorithms/<name>/`: classic algorithms
@@ -197,6 +197,30 @@ fn astar_matches_dijkstra_cost_on_the_shared_weighted_grid() {
     );
 }
 
+#[test]
+fn drunkards_walk_carves_a_bounded_cave() {
+    assert_case("drunkards-walk");
+    assert_case_is_deterministic_across_runs("drunkards-walk");
+}
+
+#[test]
+fn bsp_dungeon_partitions_the_root_rect_exactly() {
+    assert_case("bsp-dungeon");
+    assert_case_is_deterministic_across_runs("bsp-dungeon");
+}
+
+#[test]
+fn cellular_automata_cave_smooths_over_fixed_generations() {
+    assert_case("cellular-automata-cave");
+    assert_case_is_deterministic_across_runs("cellular-automata-cave");
+}
+
+#[test]
+fn value_noise_field_interpolates_a_hashed_lattice() {
+    assert_case("value-noise-field");
+    assert_case_is_deterministic_across_runs("value-noise-field");
+}
+
 /// Every `tests/tier1-brink/algorithms/` case directory is exercised by a
 /// `#[test]` above — a directory with no matching test would silently
 /// never run (same invariant `tier1_brink.rs` enforces for its own flat
@@ -213,6 +237,10 @@ fn every_algorithms_case_directory_has_a_test() {
         "dfs-grid-path",
         "dijkstra-grid",
         "astar-grid",
+        "drunkards-walk",
+        "bsp-dungeon",
+        "cellular-automata-cave",
+        "value-noise-field",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink/algorithms")

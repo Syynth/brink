@@ -1,0 +1,6 @@
+Root: (0,0) 20x12.
+Rooms generated: 4.
+Room 0: (0,0) 12x8 | Room 1: (0,8) 12x4 | Room 2: (12,0) 5x12 | Room 3: (17,0) 3x12
+Total leaf area: 240.
+Root area: 240.
+Partition exact (no overlap, no gap): true.
