@@ -1,0 +1,3 @@
+Position 1 (X can win now): [X../X../..O] X plays 6 -> [X../X../X.O]
+Position 2 (X must block O): [O../OX./..X] X plays 6 -> [O../OX./X.X]
+Position 3 (one cell left, drawn finish): [XOX/XOO/OX.] X plays 8 -> [XOX/XOO/OXX]

@@ -1,0 +1,9 @@
+Tick 1: SUCCESS[attack;]
+Tick 2: SUCCESS[attack;]
+Tick 3: RUNNING[reload(running);]
+Tick 4: SUCCESS[reload(done);]
+Tick 5: SUCCESS[attack;]
+Tick 6: SUCCESS[flee;]
+Tick 7: SUCCESS[flee;]
+Tick 8: SUCCESS[patrol;]
+Final: health=25, ammo=2, enemy_near=false.
