@@ -78,8 +78,10 @@ pub fn detect_completion_context(source: &str, byte_offset: usize) -> Completion
                 // Check for identifier before the dot.
                 let before_dot = &line_prefix[..i];
                 let ident_start = before_dot
-                    .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-                    .map_or(0, |p| p + 1);
+                    .char_indices()
+                    .rev()
+                    .find(|(_, c)| !c.is_alphanumeric() && *c != '_')
+                    .map_or(0, |(p, c)| p + c.len_utf8());
                 let knot = &before_dot[ident_start..];
                 if !knot.is_empty() {
                     return CompletionContext::DottedPath {
@@ -118,8 +120,10 @@ pub fn ref_arg_root_prefix(source: &str, byte_offset: usize) -> Option<String> {
 
     // Walk back over the in-progress bare identifier (if any).
     let ident_start = line_prefix
-        .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
-        .map_or(0, |p| p + 1);
+        .char_indices()
+        .rev()
+        .find(|(_, c)| !(c.is_alphanumeric() || *c == '_'))
+        .map_or(0, |(p, c)| p + c.len_utf8());
     let prefix = &line_prefix[ident_start..];
     let before = line_prefix[..ident_start].trim_end();
 
@@ -317,6 +321,17 @@ mod tests {
     }
 
     #[test]
+    fn context_dotted_path_no_panic_on_multibyte_delimiter() {
+        // Same multibyte-delimiter hazard as `ref_arg_root_prefix`, but for
+        // the dotted-path scan in `detect_completion_context`: a smart
+        // apostrophe or other multibyte char sitting right before the dot's
+        // preceding identifier must not panic on a non-char-boundary slice.
+        for src in ["-> it’s.knot.", "-> He said—word."] {
+            let _ = detect_completion_context(src, src.len());
+        }
+    }
+
+    #[test]
     fn context_inline_expr() {
         let src = "Hello {";
         assert!(matches!(
@@ -401,9 +416,9 @@ mod tests {
 
     #[test]
     fn ref_root_none_for_word_ending_in_ref() {
-        // `prefer` ends in the three letters "ref" but isn't the `ref`
+        // `xref` ends in the three letters "ref" but isn't the `ref`
         // keyword — the word-boundary check must reject it.
-        let src = "~ heal(prefer np";
+        let src = "~ heal(xref np";
         assert_eq!(ref_arg_root_prefix(src, src.len()), None);
     }
 
@@ -419,6 +434,17 @@ mod tests {
     fn ref_root_none_once_a_bracket_continuation_has_started() {
         let src = "~ bump(ref inventory[";
         assert_eq!(ref_arg_root_prefix(src, src.len()), None);
+    }
+
+    #[test]
+    fn ref_root_no_panic_on_multibyte_delimiter_before_identifier() {
+        // A multibyte delimiter (smart apostrophe, em-dash, ellipsis) sitting
+        // directly before the in-progress identifier must not panic: the
+        // scan has to advance by the delimiter's real UTF-8 width, not
+        // assume it's one byte.
+        for src in ["~ heal(it’np", "~ heal(He said—np", "~ heal(Wait…np"] {
+            let _ = ref_arg_root_prefix(src, src.len());
+        }
     }
 
     // ── T1c-4 (#702): `#fn(` target completion (docs/t1c-spec.md §2) ─────
