@@ -103,6 +103,17 @@ fn nested_index_assignment_is_rmw() {
     assert_case("nested-index-assignment");
 }
 
+/// `memo[k] = v` on a fresh key inserts (JS/Python semantics) instead of
+/// faulting `MapKeyNotFound` — issue #856, ruled 2026-07-15. Covers all
+/// three of the ruling's acceptance shapes in one straight-line program:
+/// fresh-key assign inserts (`"a"` then `"b"`), a repeat assign to the same
+/// key overwrites in place rather than growing the map (`memo["a"] = 2`
+/// after `memo["a"] = 1` leaves `len(memo) == 2`, not 3).
+#[test]
+fn map_index_assign_inserts_fresh_key() {
+    assert_case("map-index-assign-inserts-fresh-key");
+}
+
 // ── #673: collection literals as VAR/CONST declaration defaults ─────────
 //
 // Deliberately does NOT use the `VAR p = 0` + reassignment workaround idiom
@@ -365,6 +376,7 @@ fn every_case_directory_has_a_test() {
         "shadowing-triple-nested-blocks",
         "shadowing-for-loop-variable",
         "map-key-domain-contains-edges",
+        "map-index-assign-inserts-fresh-key",
         "rmw-self-referential-flat-assignment",
         "rmw-chain-self-referential",
         "rmw-shared-map-cow",
@@ -962,6 +974,25 @@ fn push_on_a_non_collection_faults() {
 // asymmetry is the exact edge value-model-spec §11c draws: `contains` has no
 // "the key isn't there" failure mode to escalate to a fault, but
 // indexing/`insert`/`remove` do.
+
+// ── #856: map[newKey] = value inserts, but reads still fault ─────────────
+//
+// Ruled 2026-07-15: indexed *assignment* to an absent map key now inserts
+// (JS/Python semantics — `map-index-assign-inserts-fresh-key` above), but
+// this doesn't loosen reads (`m[k]`, `IndexGet`) at all — those still fault
+// `MapKeyNotFound` on a missing key, exactly as before, per
+// value-model-spec §11c.
+
+#[test]
+fn map_index_get_absent_key_still_faults() {
+    let source =
+        "VAR m = 0\n~ {\n    m = #{\"a\": 1}\n    temp x = m[\"absent\"]\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::MapKeyNotFound { ref key } if key == "absent"),
+        "expected MapKeyNotFound {{ key: \"absent\" }}, got {err:?}"
+    );
+}
 
 #[test]
 fn map_index_get_with_non_key_domain_float_faults() {

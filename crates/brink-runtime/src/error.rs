@@ -151,9 +151,12 @@ pub enum RuntimeError {
     /// Array index read/write out of bounds (`0 <= index < len` required).
     #[error("array index {index} out of bounds (len {len})")]
     IndexOutOfBounds { index: i32, len: usize },
-    /// Map key read/write on a key that isn't present. Indexed *write*
-    /// (`m[k] = v`) requires the key to already exist — it never inserts;
-    /// use the `insert()` stdlib mutator (T1b-3) to add a new key.
+    /// Map key *read* (`m[k]`, `MapGet`) on a key that isn't present, or a
+    /// path-projection *write* through a `ref` whose final segment key
+    /// isn't present (`docs/t1e-spec.md` §4). Indexed *assignment*
+    /// (`m[k] = v` via the `IndexSet` opcode) no longer raises this fault on
+    /// a missing key — it inserts instead (JS/Python semantics, issue #856,
+    /// ruled 2026-07-15).
     #[error("map has no key {key}")]
     MapKeyNotFound { key: String },
     /// `a[i]`/`a[i] = v`/`m[k]`/`m[k] = v` where `a`/`m` isn't an
