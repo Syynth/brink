@@ -242,6 +242,27 @@ fn projection_through_fn_value_ref_binding() {
     assert_eq!(out, "10\n");
 }
 
+// ── Display form through `#fn` (spec §4 PROPOSED, issue #850) ──────────
+
+#[test]
+fn projection_bound_ref_param_displays_path_not_double_prefixed() {
+    // `#fn(heal, ref npc.hp)` binds a path projection into `hp`'s ref slot;
+    // the function-value display form (`docs/t1c-spec.md` §5: "a bound
+    // `ref` parameter shows the captured cell's *name*") must show the
+    // projection's rendered path (`npc.hp`, spec §4's `ref
+    // npc.inventory[3]` convention) exactly once — not `ref hp = ref
+    // npc.hp`, which would nest the `ref ` prefix the outer `ref hp = `
+    // already supplies.
+    let src = format!(
+        "{NPC_STRUCT}=== main ===\n\
+         ~ npc = NPC#{{hp: 1, name: \"x\"}}\n\
+         ~ temp f = #fn(heal, ref npc.hp)\n\
+         {{f}}\n-> END\n{HEAL}"
+    );
+    let out = run_entry(&src, "main");
+    assert_eq!(out, "fn heal(ref hp = npc.hp, k)\n");
+}
+
 // ── RMW-equivalence property (spec §7: "extends the lane-B law") ───────
 
 proptest! {

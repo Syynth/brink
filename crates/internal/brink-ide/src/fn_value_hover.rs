@@ -266,10 +266,27 @@ fn render_fn_literal(analysis: &AnalysisResult, fl: &FnLiteral, file: FileId) ->
     let mut parts = Vec::with_capacity(target_info.params.len());
     for (i, param) in target_info.params.iter().enumerate() {
         if let Some(arg) = fl.args.get(i) {
-            let arg_text = brink_ir::display_expr(arg);
             if param.is_ref {
-                parts.push(format!("ref {} = {arg_text}", param.name));
+                // T1e (docs/t1e-spec.md §4 PROPOSED, issue #850): the bound
+                // arg is either a bare cell (`Expr::Path`, unmarked —
+                // vanilla ink's implicit-ref convention) or an explicit
+                // `ref lvalue-path` (`Expr::RefArg`, a real path
+                // projection — `ref npc.hp`). `display_expr`'s own
+                // `Expr::RefArg` arm prepends its own `ref ` (it's also
+                // used to render a bare `ref` expression standing alone,
+                // where that prefix is the whole point) — call it on the
+                // *operand* here instead of the outer node, so the `ref
+                // {param.name} = ` this arm already renders isn't doubled
+                // into `ref hp = ref npc.hp`. This mirrors the runtime's
+                // own `display_fn_value` fix (`brink_runtime::value_ops`)
+                // for the identical shape at the *evaluated* level.
+                let path_text = match arg {
+                    Expr::RefArg(ra) => brink_ir::display_expr(&ra.operand),
+                    _ => brink_ir::display_expr(arg),
+                };
+                parts.push(format!("ref {} = {path_text}", param.name));
             } else {
+                let arg_text = brink_ir::display_expr(arg);
                 parts.push(format!("{} = {arg_text}", param.name));
             }
         } else {
@@ -398,6 +415,49 @@ VAR player_hp = 10
 ";
         let sig = signature_at(src, "d = #fn").expect("fn-value slot signature");
         assert_eq!(sig, "fn double(x)");
+    }
+
+    /// T1e (docs/t1e-spec.md §4 PROPOSED, issue #850): a path-projection
+    /// `ref` argument (`ref npc.hp`, not a bare cell name) renders its path
+    /// exactly once — `ref hp = npc.hp`, not the doubled `ref hp = ref
+    /// npc.hp` that would result from re-prepending `display_expr`'s own
+    /// `ref `-prefixed `Expr::RefArg` rendering.
+    #[test]
+    fn projection_ref_arg_shows_the_path_not_a_doubled_ref_prefix() {
+        let src = "\
+STRUCT NPC = #{hp: int, name: string}
+VAR npc = 0
+
+~ temp healer = #fn(heal, ref npc.hp)
+-> END
+
+=== function heal(ref hp, amount) ===
+~ hp = hp + amount
+~ return hp
+";
+        let sig = signature_at(src, "healer = #fn").expect("fn-value slot signature");
+        assert_eq!(sig, "fn heal(ref hp = npc.hp, amount)");
+    }
+
+    /// Same shape, an index segment (`docs/t1e-spec.md` §4's own
+    /// `ref npc.inventory[3]` example) rather than a field — the display
+    /// form chains both segment kinds the same way `display_expr`'s
+    /// `Expr::Index`/`Expr::FieldAccess` arms already compose.
+    #[test]
+    fn projection_ref_arg_with_index_segment_shows_the_full_path() {
+        let src = "\
+STRUCT NPC = #{inventory: int, name: string}
+VAR npc = 0
+
+~ temp granter = #fn(grant, ref npc.inventory[3])
+-> END
+
+=== function grant(ref slot, amount) ===
+~ slot = slot + amount
+~ return slot
+";
+        let sig = signature_at(src, "granter = #fn").expect("fn-value slot signature");
+        assert_eq!(sig, "fn grant(ref slot = npc.inventory[3], amount)");
     }
 
     #[test]

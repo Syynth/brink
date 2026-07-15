@@ -35,7 +35,7 @@ pub mod trivia;
 
 pub use completion::{
     CompletionContext, CursorScope, cursor_scope, detect_completion_context, is_visible_in_context,
-    stdlib_completion_context, stdlib_completions,
+    ref_arg_root_prefix, stdlib_completion_context, stdlib_completions,
 };
 
 /// Author-time host value cache (Tier 3, #174): `host`-source semantic types →

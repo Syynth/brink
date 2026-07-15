@@ -1763,11 +1763,24 @@ impl EditorSession {
             .file_id(path)
             .map(|id| self.session.db().reachable_from(id));
 
+        // T1e (docs/t1e-spec.md §2, issue #850): `ref` argument ROOT
+        // position — completion right after `ref ` narrows to durable
+        // cells only (`VAR`s, the E080 rule every `ref lvalue-path` root
+        // must satisfy), instead of the full `FunctionArgs` set (which also
+        // offers CONST/param/temp/ListItem — none of them a legal `ref`
+        // root, so offering them there would suggest an argument that's
+        // guaranteed to fail analysis). Path *continuations* (`ref npc.`,
+        // `ref inventory[`) aren't narrowed here — see
+        // `ref_arg_root_prefix`'s own doc for why that's out of scope for
+        // "where cheap".
+        let ref_root = brink_ide::ref_arg_root_prefix(source, abs_offset as usize);
+
         let symbol_items = analysis
             .index
             .symbols
             .values()
             .filter(|info| brink_ide::is_visible_in_context(&ctx, info, &scope))
+            .filter(|info| ref_root.is_none() || info.kind == brink_ir::SymbolKind::Variable)
             .map(|info| {
                 let is_local = matches!(
                     info.kind,
@@ -1801,7 +1814,9 @@ impl EditorSession {
         // literal) — static items from the manifest, or `host` items from the
         // pushed cache.
         let mut items: Vec<CompletionItemJs> = Vec::new();
-        if matches!(ctx, brink_ide::CompletionContext::FunctionArgs) {
+        // Host value-picker literals aren't legal `ref` roots either (#850) —
+        // gate the same way the symbol-kind filter above does.
+        if matches!(ctx, brink_ide::CompletionContext::FunctionArgs) && ref_root.is_none() {
             items.extend(
                 brink_ide::signature::argument_value_completions(
                     analysis,
@@ -3833,6 +3848,84 @@ mod tests {
             trade["source_file"], "economy.ink",
             "out-of-scope knot carries its source file: {trade}"
         );
+    }
+
+    #[test]
+    fn completions_after_ref_keyword_offers_only_durable_variables() {
+        // T1e (docs/t1e-spec.md §2, issue #850): right after `ref `, only a
+        // `VAR` is a legal `ref lvalue-path` root (E080) — a CONST, param,
+        // or temp is not, so it must not be offered there even though the
+        // ordinary `FunctionArgs` completion set includes all of them.
+        let mut s = EditorSession::new();
+        let main = "VAR npc = 0\n\
+                     CONST MAX_HP = 100\n\
+                     === main(amount) ===\n\
+                     ~ temp scratch = 0\n\
+                     ~ heal(ref \n\
+                     -> END\n\n\
+                     === function heal(ref hp, k) ===\n\
+                     ~ hp = hp + k\n";
+        s.update_file("main.ink", main);
+        assert!(s.set_active_file("main.ink"));
+
+        let offset =
+            u32::try_from(main.find("heal(ref \n").expect("call present") + "heal(ref ".len())
+                .expect("offset fits u32");
+        let items: serde_json::Value =
+            serde_json::from_str(&s.completions(offset)).expect("valid completions JSON");
+        let arr = items.as_array().expect("completions is an array");
+        let names: Vec<&str> = arr
+            .iter()
+            .map(|i| i["name"].as_str().expect("name is a string"))
+            .collect();
+
+        assert!(
+            names.contains(&"npc"),
+            "the durable VAR is offered: {names:?}"
+        );
+        assert!(
+            !names.contains(&"MAX_HP"),
+            "a CONST is not a legal ref root, must not be offered: {names:?}"
+        );
+        assert!(
+            !names.contains(&"scratch"),
+            "a temp is not a legal ref root, must not be offered: {names:?}"
+        );
+        assert!(
+            !names.contains(&"amount"),
+            "a param is not a legal ref root, must not be offered: {names:?}"
+        );
+    }
+
+    #[test]
+    fn completions_in_ordinary_arg_position_still_offers_everything() {
+        // Sanity check for the test above: without a preceding `ref `, the
+        // full FunctionArgs set (including CONST/param/temp) is unaffected.
+        let mut s = EditorSession::new();
+        let main = "VAR npc = 0\n\
+                     CONST MAX_HP = 100\n\
+                     === main(amount) ===\n\
+                     ~ temp scratch = 0\n\
+                     ~ heal(\n\
+                     -> END\n\n\
+                     === function heal(hp, k) ===\n\
+                     ~ hp = hp + k\n";
+        s.update_file("main.ink", main);
+        assert!(s.set_active_file("main.ink"));
+
+        let offset = u32::try_from(main.find("heal(\n").expect("call present") + "heal(".len())
+            .expect("offset fits u32");
+        let items: serde_json::Value =
+            serde_json::from_str(&s.completions(offset)).expect("valid completions JSON");
+        let arr = items.as_array().expect("completions is an array");
+        let names: Vec<&str> = arr
+            .iter()
+            .map(|i| i["name"].as_str().expect("name is a string"))
+            .collect();
+
+        assert!(names.contains(&"npc"), "VAR offered: {names:?}");
+        assert!(names.contains(&"MAX_HP"), "CONST offered: {names:?}");
+        assert!(names.contains(&"scratch"), "temp offered: {names:?}");
     }
 
     #[test]
