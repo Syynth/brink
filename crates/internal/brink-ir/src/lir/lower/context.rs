@@ -64,6 +64,39 @@ impl NameTable {
     pub fn into_entries(self) -> Vec<String> {
         self.entries
     }
+
+    /// Rebuild a table pre-seeded with `entries` (first-occurrence order),
+    /// so subsequent [`intern`](Self::intern) calls dedup against them and
+    /// append after. The inverse of [`into_entries`](Self::into_entries) —
+    /// the FG-4d link phase captures the decl+struct seed as a `Vec<String>`
+    /// (a cutoff-friendly, `Eq`-able value) and reconstitutes the table here
+    /// before merging the per-chunk local names, so the assembled ids are
+    /// byte-identical to the single shared-table walk.
+    pub fn from_entries(entries: Vec<String>) -> Self {
+        let map = entries
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "name table won't exceed u16::MAX"
+                )]
+                (s.clone(), NameId(i as u16))
+            })
+            .collect();
+        Self { map, entries }
+    }
+}
+
+/// The root container's `DefinitionId` — the hash-of-empty-path address every
+/// lowering phase (prelude, per-chunk, assembly) uses as the `root_id`
+/// fallback. Content-derived (a fixed hash), so a fresh [`IdAllocator`] in a
+/// per-chunk salsa memo yields the same value as the whole-project walk
+/// (FG-4d history-independence — `docs/fine-grained-salsa-proposal.md`
+/// appendix).
+#[must_use]
+pub fn root_definition_id() -> DefinitionId {
+    IdAllocator::new().alloc_address("")
 }
 
 // ─── Id allocator ───────────────────────────────────────────────────

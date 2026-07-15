@@ -48,7 +48,7 @@ use super::lir;
 /// holding the knot container (with its stitches and inline children nested
 /// inside). Both shapes flatten into the root container by the assembler in
 /// exactly the order the old `lower_root` appended them.
-pub(super) struct ScopeChunk {
+pub struct ScopeChunk {
     pub body: Vec<lir::Stmt>,
     pub children: Vec<lir::Container>,
     /// The chunk's owned name strings, in first-occurrence walk order. Local

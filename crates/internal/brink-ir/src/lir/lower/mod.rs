@@ -19,7 +19,9 @@ use crate::symbols::{ResolutionMap, SymbolIndex};
 use super::types as lir;
 use context::{LowerCtx, NameTable, ResolutionLookup, TempMap};
 
+pub use chunk::ScopeChunk;
 pub use context::TypeMode;
+pub use structs::{StructFieldEntry, StructShapeData, StructShapeEntry, build_struct_shape_data};
 
 /// Defensive backstop for `brink-analyzer`'s dialect gate (E051/E052).
 ///
@@ -104,7 +106,124 @@ pub fn lower_to_program_with_type_mode(
     file_paths: &LookupMap<FileId, String>,
     type_mode: context::TypeMode,
 ) -> (Option<lir::Program>, Vec<crate::Diagnostic>) {
-    // ── Step 0: Normalize HIR (pre-LIR regularization) ──────────
+    // FG-4d: this whole-project entry is now the *composition* of the same
+    // three pure phases the incremental (`brink-db`) pipeline memoizes
+    // per-def — prelude, per-chunk lowering, assembly — so the two paths are
+    // byte-identical by construction. Every existing caller (tests, the JSON
+    // backend driver) keeps a single call; `brink-db` calls the phases
+    // individually and caches the middle one per `DefinitionId`.
+    let prelude = build_prelude(files, index, resolutions, type_mode);
+    let resolutions = ResolutionLookup::build(resolutions);
+    let struct_ctx = prelude.struct_ctx();
+
+    // Root content (all files, one shared frame) then each knot, collected in
+    // the exact interleaved walk order the assembler dedups names against.
+    let prelude_files = prelude.files();
+    let (root_chunks, root_temp_slots) = lower_root_content_chunks(
+        &prelude_files,
+        &resolutions,
+        index,
+        prelude.root_id,
+        file_paths,
+        &struct_ctx,
+    );
+
+    // Diagnostic order mirrors the old monolithic path exactly: declaration
+    // diagnostics first, then per-file (root content then that file's knots).
+    let mut lir_diagnostics = prelude.decl_diagnostics.clone();
+    let mut ordered_chunks = Vec::new();
+    let mut root_iter = root_chunks.into_iter();
+    for &(file_id, hir_file) in &prelude_files {
+        if let Some((chunk, diags)) = root_iter.next() {
+            ordered_chunks.push(chunk);
+            lir_diagnostics.extend(diags);
+        }
+        for knot in &hir_file.knots {
+            let (chunk, diags) = lower_knot_chunk(
+                hir_file,
+                knot,
+                index,
+                &resolutions,
+                file_paths,
+                &struct_ctx,
+                prelude.root_id,
+                file_id,
+            );
+            ordered_chunks.push(chunk);
+            lir_diagnostics.extend(diags);
+        }
+    }
+
+    let program = assemble_program(&prelude, ordered_chunks, root_temp_slots, index);
+    (Some(program), lir_diagnostics)
+}
+
+// ─── FG-4d: incremental lowering seam ───────────────────────────────
+//
+// `lower_to_program_with_type_mode` above is the composition of the three
+// functions below. `brink-db`'s salsa pipeline calls them separately so the
+// middle one (`lower_knot_chunk`) can be memoized per `DefinitionId`: an
+// edit that doesn't touch a knot leaves its chunk memo pointer-identical,
+// and the whole-project `assemble_program` link re-runs but backdates on the
+// `StoryData` `Eq` firebreak (`docs/fine-grained-salsa-proposal.md` §5 + the
+// three-resolution-moments appendix).
+
+/// Whole-project data every chunk lowering and the final assembly need but
+/// that is not chunk-local: normalized+stamped HIR (topological order), the
+/// collected declarations, the struct-shape table, the seeded project name
+/// table (decl + struct names, in the fixed order chunk-local names dedup
+/// against), and the `StoryData`-bound `private_defs`/`aliases`.
+pub struct LirPrelude {
+    normalized: Vec<(FileId, hir::HirFile)>,
+    root_id: brink_format::DefinitionId,
+    globals: Vec<lir::GlobalDef>,
+    lists: Vec<lir::ListDef>,
+    list_items: Vec<lir::ListItemDef>,
+    externals: Vec<lir::ExternalDef>,
+    shape_table: structs::ShapeTable,
+    global_shapes: structs::GlobalShapeMap,
+    name_seed: Vec<String>,
+    type_mode: context::TypeMode,
+    private_defs: Vec<brink_format::DefinitionId>,
+    aliases: Vec<brink_format::AliasEntry>,
+    /// Declaration-phase diagnostics (`collect_globals`'s constant-eval
+    /// errors) — the diagnostics the monolithic path pushes before any chunk.
+    pub decl_diagnostics: Vec<crate::Diagnostic>,
+}
+
+impl LirPrelude {
+    /// The prelude's normalized+stamped HIR as borrow pairs (topo order).
+    #[must_use]
+    pub fn files(&self) -> Vec<(FileId, &hir::HirFile)> {
+        self.normalized.iter().map(|(id, h)| (*id, h)).collect()
+    }
+
+    /// The `root` container's `DefinitionId`.
+    #[must_use]
+    pub fn root_id(&self) -> brink_format::DefinitionId {
+        self.root_id
+    }
+
+    fn struct_ctx(&self) -> context::StructCtx<'_> {
+        context::StructCtx {
+            shapes: &self.shape_table,
+            global_shapes: &self.global_shapes,
+            type_mode: self.type_mode,
+        }
+    }
+}
+
+/// Build the whole-project [`LirPrelude`]: normalize + stamp HIR, collect
+/// declarations, and build the struct-shape table — steps 0–2 of the old
+/// monolithic `lower_to_program`, verbatim and in the same order, so the
+/// seeded name table is byte-identical.
+#[must_use]
+pub fn build_prelude(
+    files: &[(FileId, &hir::HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+    type_mode: context::TypeMode,
+) -> LirPrelude {
     let mut normalized: Vec<(FileId, hir::HirFile)> = files
         .iter()
         .map(|(id, hir_file)| {
@@ -113,57 +232,255 @@ pub fn lower_to_program_with_type_mode(
             (*id, h)
         })
         .collect();
-
-    // ── Step 1: Stamp container IDs directly on HIR nodes ─────────
     hir::stamp_container_ids(&mut normalized, index);
 
     let files: Vec<(FileId, &hir::HirFile)> = normalized.iter().map(|(id, h)| (*id, h)).collect();
-    let files = &files;
-
-    let resolutions = ResolutionLookup::build(resolutions);
+    let resolutions_lookup = ResolutionLookup::build(resolutions);
     let mut names = NameTable::new();
     let mut ids = context::IdAllocator::new();
     let root_id = ids.alloc_address("");
 
-    // ── Step 2: Collect declarations ────────────────────────────────
-    let mut lir_diagnostics = Vec::new();
-    let mut globals =
-        decls::collect_globals(files, index, &mut names, &resolutions, &mut lir_diagnostics);
-    let (lists, list_items, list_globals) = decls::collect_lists(files, index, &mut names);
+    let mut decl_diagnostics = Vec::new();
+    let mut globals = decls::collect_globals(
+        &files,
+        index,
+        &mut names,
+        &resolutions_lookup,
+        &mut decl_diagnostics,
+    );
+    let (lists, list_items, list_globals) = decls::collect_lists(&files, index, &mut names);
     globals.extend(list_globals);
-    let externals = decls::collect_externals(files, index, &mut names);
+    let externals = decls::collect_externals(&files, index, &mut names);
 
-    // TM-4c (`docs/typed-mode-spec.md` §6): whole-program struct-shape data,
-    // built once and shared read-only by every `LowerCtx` — see
-    // `lower::structs`' module doc.
-    let shape_table = structs::build_shape_table(files, &mut names);
-    let global_shapes = structs::build_global_shape_map(files, index, &shape_table);
+    let shape_table = structs::build_shape_table(&files, &mut names);
+    let global_shapes = structs::build_global_shape_map(&files, index, &shape_table);
+    let name_seed = names.into_entries();
+
+    let mut private_defs: Vec<brink_format::DefinitionId> = index
+        .symbols
+        .iter()
+        .filter(|(_, info)| info.visibility == crate::symbols::Visibility::Private)
+        .map(|(id, _)| *id)
+        .collect();
+    private_defs.sort_by_key(|id| id.to_raw());
+
+    let mut aliases = index.aliases.clone();
+    aliases.sort_unstable();
+
+    LirPrelude {
+        normalized,
+        root_id,
+        globals,
+        lists,
+        list_items,
+        externals,
+        shape_table,
+        global_shapes,
+        name_seed,
+        type_mode,
+        private_defs,
+        aliases,
+        decl_diagnostics,
+    }
+}
+
+/// Lower every file's root-level content into one chunk per file, sharing a
+/// single temp/block-slot frame across the whole root scope (files share one
+/// call frame — `LowerCtx::next_block_slot`). Returns each `(chunk,
+/// lowering-diagnostics)` pair in `files` order plus the total root temp-slot
+/// count. This is the root-content half of the old `lower_root`, unchanged.
+#[must_use]
+fn lower_root_content_chunks(
+    files: &[(FileId, &hir::HirFile)],
+    resolutions: &ResolutionLookup,
+    index: &SymbolIndex,
+    root_id: brink_format::DefinitionId,
+    file_paths: &LookupMap<FileId, String>,
+    struct_ctx: &context::StructCtx<'_>,
+) -> (Vec<(chunk::ScopeChunk, Vec<crate::Diagnostic>)>, u16) {
+    let mut chunks = Vec::new();
+
+    // Content-pure allocator (seq resets per chunk; `alloc_address` is a
+    // deterministic hash) — a fresh one is byte-identical to the shared one.
+    let mut ids = context::IdAllocator::new();
+    let _ = ids.alloc_address("");
+
+    let root_blocks: Vec<&hir::Block> = files.iter().map(|(_, hir)| &hir.root_content).collect();
+    let temp_map = temps::alloc_temps(&[], &[], &root_blocks);
+    let mut block_slot = temp_map.total_slots();
+
+    for &(file_id, hir_file) in files {
+        let mut local_names = NameTable::new();
+        let mut diagnostics = Vec::new();
+        let (stmts, block_children) = {
+            let mut ctx = make_ctx(
+                file_id,
+                resolutions,
+                index,
+                &temp_map,
+                &mut local_names,
+                &mut ids,
+                root_id,
+                String::new(),
+                &[],
+                file_paths,
+                &mut block_slot,
+                &mut diagnostics,
+                struct_ctx,
+            );
+            let mut cc = 0;
+            let mut gc = 0;
+            ctx.ids.reset_seq_counter();
+            lower_block_with_children(&hir_file.root_content, &mut ctx, &mut cc, &mut gc)
+        };
+        chunks.push((
+            chunk::ScopeChunk::root_content(stmts, block_children, local_names.into_entries()),
+            diagnostics,
+        ));
+    }
+
+    (chunks, block_slot)
+}
+
+/// Lower one knot (its body, stitches, and inline children) into a
+/// self-contained [`chunk::ScopeChunk`] against a fresh local name table and
+/// a fresh content-pure allocator — the per-`DefinitionId` unit `brink-db`
+/// memoizes. Byte-identical to the knot's slice of the old `lower_root`.
+#[expect(clippy::too_many_arguments)]
+#[must_use]
+fn lower_knot_chunk(
+    hir_file: &hir::HirFile,
+    knot: &hir::Knot,
+    index: &SymbolIndex,
+    resolutions: &ResolutionLookup,
+    file_paths: &LookupMap<FileId, String>,
+    struct_ctx: &context::StructCtx<'_>,
+    root_id: brink_format::DefinitionId,
+    file_id: FileId,
+) -> (chunk::ScopeChunk, Vec<crate::Diagnostic>) {
+    let mut local_names = NameTable::new();
+    let mut ids = context::IdAllocator::new();
+    let _ = ids.alloc_address("");
+    let mut diagnostics = Vec::new();
+    let knot_container = lower_knot(
+        file_id,
+        hir_file,
+        knot,
+        resolutions,
+        index,
+        &mut local_names,
+        &mut ids,
+        root_id,
+        file_paths,
+        &mut diagnostics,
+        struct_ctx,
+    );
+    (
+        chunk::ScopeChunk::knot(knot_container, local_names.into_entries()),
+        diagnostics,
+    )
+}
+
+/// Incremental entry point (`brink-db`'s per-knot salsa memo): lower a single
+/// knot from cutoff-friendly inputs — the declaring file's already
+/// normalized+stamped HIR, the whole-project resolutions/index, and the
+/// [`StructShapeData`] projection (which the memo reads through an
+/// `Eq`-backdating query, so an unrelated edit leaves this chunk
+/// pointer-identical). Reconstructs the throwaway `NameTable`/`ShapeTable` the
+/// core lowering needs internally (their `NameId`s are never read — every
+/// name is re-interned into the chunk's own local table — so throwaway
+/// numbering is byte-identical after assembly relocation).
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal API called only by brink-db"
+)]
+#[expect(clippy::too_many_arguments)]
+#[must_use]
+pub fn lower_knot_chunk_incremental(
+    hir_file: &hir::HirFile,
+    knot: &hir::Knot,
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+    file_paths: &LookupMap<FileId, String>,
+    shape_data: &StructShapeData,
+    type_mode: context::TypeMode,
+    file_id: FileId,
+) -> (chunk::ScopeChunk, Vec<crate::Diagnostic>) {
+    let resolutions = ResolutionLookup::build(resolutions);
+    let mut throwaway = NameTable::new();
+    let shapes = structs::rebuild_shape_table(shape_data, &mut throwaway);
+    let global_shapes = structs::rebuild_global_shape_map(shape_data);
     let struct_ctx = context::StructCtx {
-        shapes: &shape_table,
+        shapes: &shapes,
         global_shapes: &global_shapes,
         type_mode,
     };
+    lower_knot_chunk(
+        hir_file,
+        knot,
+        index,
+        &resolutions,
+        file_paths,
+        &struct_ctx,
+        context::root_definition_id(),
+        file_id,
+    )
+}
 
-    // ── Step 3: Lower each top-level scope into a self-contained,
-    // chunk-local-named `ScopeChunk` (FG-4c, `chunk`'s module doc) ───
-    let (chunks, root_temp_slots) = lower_root(
+/// Incremental entry point for the whole root scope (`brink-db`'s root-content
+/// memo): lower every file's root-level content into one chunk per file,
+/// sharing the single root frame, from the same cutoff-friendly inputs as
+/// [`lower_knot_chunk_incremental`].
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal API called only by brink-db"
+)]
+#[must_use]
+pub fn lower_root_content_incremental(
+    files: &[(FileId, &hir::HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+    file_paths: &LookupMap<FileId, String>,
+    shape_data: &StructShapeData,
+    type_mode: context::TypeMode,
+) -> (Vec<(chunk::ScopeChunk, Vec<crate::Diagnostic>)>, u16) {
+    let resolutions = ResolutionLookup::build(resolutions);
+    let mut throwaway = NameTable::new();
+    let shapes = structs::rebuild_shape_table(shape_data, &mut throwaway);
+    let global_shapes = structs::rebuild_global_shape_map(shape_data);
+    let struct_ctx = context::StructCtx {
+        shapes: &shapes,
+        global_shapes: &global_shapes,
+        type_mode,
+    };
+    lower_root_content_chunks(
         files,
         &resolutions,
         index,
-        root_id,
-        &mut ids,
+        context::root_definition_id(),
         file_paths,
-        &mut lir_diagnostics,
         &struct_ctx,
-    );
+    )
+}
 
-    // ── Step 3b: Assemble — merge every chunk's local names into the
-    // project table (already holding decl + struct names) in walk order
-    // and relocate each chunk's local `NameId`s. The merge is the LIR link
-    // phase: byte-identical to the old shared-table walk by construction. ─
+/// Assemble the per-chunk lowering products into a finished [`lir::Program`]
+/// — the FG-4 **link phase** (`docs/fine-grained-salsa-proposal.md` §5).
+/// Merges every chunk's local name table into the seeded project table in
+/// walk order, relocates ids, applies counting flags over the whole tree,
+/// and attaches the struct-shape / private-def / alias `StoryData` tables.
+/// `chunks` must be in the interleaved walk order (per file: root content
+/// then that file's knots), so the assembled name ids are byte-identical to
+/// the single shared-table walk.
+#[must_use]
+pub fn assemble_program(
+    prelude: &LirPrelude,
+    chunks: Vec<chunk::ScopeChunk>,
+    root_temp_slots: u16,
+    _index: &SymbolIndex,
+) -> lir::Program {
+    let mut names = NameTable::from_entries(prelude.name_seed.clone());
     let (mut root_body, root_children) = chunk::assemble_scopes(chunks, &mut names);
 
-    // Implicit DONE at end of root (mirrors the old in-`lower_root` check).
     let ends_with_divert = root_body
         .last()
         .is_some_and(|s| matches!(s, lir::Stmt::Divert(_)));
@@ -175,7 +492,7 @@ pub fn lower_to_program_with_type_mode(
     }
 
     let mut root = lir::Container {
-        id: root_id,
+        id: prelude.root_id,
         name: None,
         kind: lir::ContainerKind::Root,
         params: Vec::new(),
@@ -189,136 +506,24 @@ pub fn lower_to_program_with_type_mode(
         local: false,
     };
 
-    // ── Step 4: Counting flags ──────────────────────────────────────
-    apply_counting_flags(&mut root, &globals);
+    apply_counting_flags(&mut root, &prelude.globals);
 
-    let struct_shapes = structs::struct_shape_defs(&shape_table);
+    let struct_shapes = structs::struct_shape_defs(&prelude.shape_table);
 
-    // M-2b (`docs/modules-spec.md` §4): enumerate every `#@private`
-    // definition's `DefinitionId` from the resolved symbol index. The index
-    // is a `HashMap`, so sort the result — determinism is load-bearing (this
-    // rides into `StoryData`).
-    let mut private_defs: Vec<brink_format::DefinitionId> = index
-        .symbols
-        .iter()
-        .filter(|(_, info)| info.visibility == crate::symbols::Visibility::Private)
-        .map(|(id, _)| *id)
-        .collect();
-    private_defs.sort_by_key(|id| id.to_raw());
-
-    // M-3 (`docs/modules-spec.md` §5): sort the analyzer's collected alias
-    // entries by `old` — the runtime's binary-search lookup requires it, and
-    // sorting here (rather than trusting file/symbol iteration order) keeps
-    // codegen output deterministic independent of project file order.
-    let mut aliases = index.aliases.clone();
-    aliases.sort_unstable();
-
-    (
-        Some(lir::Program {
-            root,
-            globals,
-            lists,
-            list_items,
-            externals,
-            name_table: names.into_entries(),
-            struct_shapes,
-            private_defs,
-            aliases,
-        }),
-        lir_diagnostics,
-    )
+    lir::Program {
+        root,
+        globals: prelude.globals.clone(),
+        lists: prelude.lists.clone(),
+        list_items: prelude.list_items.clone(),
+        externals: prelude.externals.clone(),
+        name_table: names.into_entries(),
+        struct_shapes,
+        private_defs: prelude.private_defs.clone(),
+        aliases: prelude.aliases.clone(),
+    }
 }
 
 // ─── Tree-building lowering ─────────────────────────────────────────
-
-/// Lower every top-level scope (each file's root-level content, then each of
-/// its knots) into a self-contained [`chunk::ScopeChunk`], each carrying its
-/// own chunk-local name table (FG-4c). Returns the chunks in walk order plus
-/// the root frame's total temp-slot count.
-///
-/// No shared [`NameTable`] is threaded here anymore — that is the coupling
-/// FG-4c breaks. The interning that used to happen inline during this walk
-/// now happens per chunk (into a fresh local table) and is merged/relocated by
-/// [`chunk::assemble_scopes`]. The traversal order is otherwise unchanged, so
-/// the assembled project name table is byte-identical to the old one.
-#[expect(clippy::too_many_arguments)]
-fn lower_root(
-    files: &[(FileId, &hir::HirFile)],
-    resolutions: &ResolutionLookup,
-    index: &SymbolIndex,
-    root_id: brink_format::DefinitionId,
-    ids: &mut context::IdAllocator,
-    file_paths: &LookupMap<FileId, String>,
-    diagnostics: &mut Vec<crate::Diagnostic>,
-    structs: &context::StructCtx<'_>,
-) -> (Vec<chunk::ScopeChunk>, u16) {
-    let mut chunks = Vec::new();
-
-    // Allocate temp slots for root content (top-level ~ temp declarations).
-    let root_blocks: Vec<&hir::Block> = files.iter().map(|(_, hir)| &hir.root_content).collect();
-    let temp_map = temps::alloc_temps(&[], &[], &root_blocks);
-    // Shared across every file's root content — the root is one frame, so
-    // block-scoped slots must not restart per file (see `LowerCtx::
-    // next_block_slot` doc). Names, unlike temp slots, are chunk-local.
-    let mut block_slot = temp_map.total_slots();
-
-    for &(file_id, hir_file) in files {
-        // One root-content chunk per file: this file's top-level body plus the
-        // inline children (sequences, choice/gather targets) it produces.
-        let mut local_names = NameTable::new();
-        let (stmts, block_children) = {
-            let mut ctx = make_ctx(
-                file_id,
-                resolutions,
-                index,
-                &temp_map,
-                &mut local_names,
-                ids,
-                root_id,
-                String::new(),
-                &[],
-                file_paths,
-                &mut block_slot,
-                diagnostics,
-                structs,
-            );
-            let mut cc = 0;
-            let mut gc = 0;
-            ctx.ids.reset_seq_counter();
-            lower_block_with_children(&hir_file.root_content, &mut ctx, &mut cc, &mut gc)
-        };
-        chunks.push(chunk::ScopeChunk::root_content(
-            stmts,
-            block_children,
-            local_names.into_entries(),
-        ));
-
-        // One chunk per knot: the whole knot subtree (stitches + inline
-        // children nested) against its own local name table.
-        for knot in &hir_file.knots {
-            let mut local_names = NameTable::new();
-            let knot_container = lower_knot(
-                file_id,
-                hir_file,
-                knot,
-                resolutions,
-                index,
-                &mut local_names,
-                ids,
-                root_id,
-                file_paths,
-                diagnostics,
-                structs,
-            );
-            chunks.push(chunk::ScopeChunk::knot(
-                knot_container,
-                local_names.into_entries(),
-            ));
-        }
-    }
-
-    (chunks, block_slot)
-}
 
 #[expect(clippy::too_many_arguments)]
 fn lower_knot(

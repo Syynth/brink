@@ -29,5 +29,9 @@
 pub mod lower;
 mod types;
 
-pub use lower::{TypeMode, lower_to_program, lower_to_program_with_type_mode};
+pub use lower::{
+    LirPrelude, ScopeChunk, StructShapeData, TypeMode, assemble_program, build_prelude,
+    build_struct_shape_data, lower_knot_chunk_incremental, lower_root_content_incremental,
+    lower_to_program, lower_to_program_with_type_mode,
+};
 pub use types::*;
