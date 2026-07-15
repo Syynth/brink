@@ -1,20 +1,26 @@
-use std::collections::HashMap;
-
 use brink_format::{AliasEntry, DefinitionId, DefinitionTag};
 use rowan::TextRange;
 
 use crate::FileId;
+use crate::determinism::LookupMap;
 
 // ─── Symbol index ───────────────────────────────────────────────────
 
 /// The unified symbol table produced by merging per-file manifests and
 /// resolving references.
+///
+/// `symbols`/`by_name` are keyed lookup tables (`LookupMap` — a `HashMap`
+/// under an issue #801 audited alias, see `crate::determinism`'s doc): every
+/// consumer that needs a deterministic order over these builds it explicitly
+/// at the point of consumption (e.g. `lir::lower::mod`'s `private_defs`
+/// sorts by raw id; `brink-analyzer::modules`'s file-attribution fold is
+/// order-independent by construction — see its doc comment).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SymbolIndex {
     /// All known definitions across all files.
-    pub symbols: HashMap<DefinitionId, SymbolInfo>,
+    pub symbols: LookupMap<DefinitionId, SymbolInfo>,
     /// Reverse index from canonical name to definition IDs.
-    pub by_name: HashMap<String, Vec<DefinitionId>>,
+    pub by_name: LookupMap<String, Vec<DefinitionId>>,
     /// M-3 (docs/modules-spec.md §5): old→new `DefinitionId` rename records
     /// collected from `#@was(old_name)` directives while merging manifests.
     /// Unordered here (append order follows file/symbol processing order);

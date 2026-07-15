@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -6,6 +5,7 @@ use brink_format::{DefinitionId, DefinitionTag, NameId};
 use rowan::TextRange;
 
 use crate::FileId;
+use crate::determinism::{LookupMap, LookupSet};
 use crate::symbols::{ResolutionMap, SymbolIndex, SymbolInfo};
 
 use super::structs::{GlobalShapeMap, ShapeTable};
@@ -14,7 +14,7 @@ use super::structs::{GlobalShapeMap, ShapeTable};
 
 /// O(1) lookup from `(FileId, TextRange)` to the resolved `DefinitionId`.
 pub struct ResolutionLookup {
-    map: HashMap<(FileId, TextRange), DefinitionId>,
+    map: LookupMap<(FileId, TextRange), DefinitionId>,
 }
 
 impl ResolutionLookup {
@@ -35,14 +35,14 @@ impl ResolutionLookup {
 
 /// Intern strings to `NameId`. Deduplicates identical strings.
 pub struct NameTable {
-    map: HashMap<String, NameId>,
+    map: LookupMap<String, NameId>,
     entries: Vec<String>,
 }
 
 impl NameTable {
     pub fn new() -> Self {
         Self {
-            map: HashMap::new(),
+            map: LookupMap::new(),
             entries: Vec::new(),
         }
     }
@@ -71,7 +71,7 @@ impl NameTable {
 /// Allocates new `DefinitionId`s for containers not in the symbol index
 /// (root, choice targets, unlabeled gathers).
 pub struct IdAllocator {
-    used: HashMap<String, DefinitionId>,
+    used: LookupMap<String, DefinitionId>,
     /// Global counter for conditionals and sequences. Never resets —
     /// shared between the plan phase and lowering phase to ensure
     /// unique container paths across all sub-scopes.
@@ -81,7 +81,7 @@ pub struct IdAllocator {
 impl IdAllocator {
     pub fn new() -> Self {
         Self {
-            used: HashMap::new(),
+            used: LookupMap::new(),
             seq_counter: 0,
         }
     }
@@ -169,9 +169,9 @@ pub struct LowerCtx<'a> {
     /// Temps that have been declared so far in source order.
     /// Forward-referenced temps (used before declaration) should resolve as
     /// globals, matching inklecate's behavior.
-    pub visible_temps: std::collections::HashSet<String>,
+    pub visible_temps: LookupSet<String>,
     /// Mapping from `FileId` to source file path, for populating `SourceLocation`.
-    pub file_paths: &'a std::collections::HashMap<FileId, String>,
+    pub file_paths: &'a LookupMap<FileId, String>,
     /// The root container ID — used as fallback when a stamped container ID
     /// is missing (should not happen in well-formed HIR).
     pub root_id: brink_format::DefinitionId,
@@ -211,7 +211,7 @@ pub struct LowerCtx<'a> {
     /// own block has already closed (#680 RCA) — the latter is a real
     /// authoring error and gets its own diagnostic (E082) instead of
     /// silently resolving to the wrong global slot.
-    pub block_scoped_temp_names: std::collections::HashSet<String>,
+    pub block_scoped_temp_names: LookupSet<String>,
     /// Diagnostics produced during lowering — historically just warnings
     /// (the T1b block-scoped-temp shadow warning, E054), but also
     /// Error-severity ones now (E055/E056 mutator checks, E057
@@ -245,7 +245,7 @@ pub struct LowerCtx<'a> {
     /// GlobalShapeMap` is the global half). Keyed by slot, not name, so a
     /// block-scoped shadow of an outer temp of the same name still maps to
     /// its own (correct) shape.
-    pub temp_shapes: std::collections::HashMap<u16, String>,
+    pub temp_shapes: LookupMap<u16, String>,
 }
 
 impl<'a> LowerCtx<'a> {
@@ -411,7 +411,7 @@ impl<'a> LowerCtx<'a> {
 /// Per-scope temp variable slot assignments.
 #[derive(Debug, Clone, Default)]
 pub struct TempMap {
-    slots: HashMap<String, u16>,
+    slots: LookupMap<String, u16>,
 }
 
 impl TempMap {

@@ -1,0 +1,21 @@
+# Issue #801 determinism enforcement, scoped to this crate (own file so the
+# workspace-root `clippy.toml`'s `allow-*-in-tests` settings still need
+# restating here — clippy uses the nearest clippy.toml, it does not merge).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-dbg-in-tests = true
+allow-print-in-tests = true
+
+# Bare std hashed collections leak per-process iteration order into
+# whatever consumes `.values()`/`.keys()`/a `for` loop over them — the
+# #795 regression (nondeterministic module attribution from a first-wins
+# `HashMap` fold) shipped through a build and two adversarial reviews
+# despite the determinism rule already being in CLAUDE.md. Every
+# currently-audited order-free use in this crate goes through the
+# crate's `determinism::{LookupMap, LookupSet}` aliases instead (see that
+# module's doc comment for the per-site audit) — a new bare use here means
+# a new site that hasn't been audited yet.
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "HashMap iteration order is nondeterministic across processes (issue #801, #795 regression) — use BTreeMap, sort at the point of consumption, or (once audited order-free) this crate's determinism::LookupMap." },
+    { path = "std::collections::HashSet", reason = "HashSet iteration order is nondeterministic across processes (issue #801, #795 regression) — use BTreeSet, sort at the point of consumption, or (once audited order-free) this crate's determinism::LookupSet." },
+]

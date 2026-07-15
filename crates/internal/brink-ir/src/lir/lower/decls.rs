@@ -1,5 +1,6 @@
 use brink_format::{DefinitionId, DefinitionTag};
 
+use crate::determinism::LookupMap;
 use crate::symbols::{SymbolIndex, SymbolKind};
 use crate::{Diagnostic, DiagnosticCode, FileId, hir};
 
@@ -18,10 +19,9 @@ pub fn collect_globals(
     resolutions: &ResolutionLookup,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<lir::GlobalDef> {
-    use std::collections::HashMap;
-
-    // Pass 1: evaluate all constants and build a value lookup.
-    let mut const_values: HashMap<DefinitionId, lir::ConstValue> = HashMap::new();
+    // Pass 1: evaluate all constants and build a value lookup (keyed
+    // lookup only — `LookupMap`, issue #801's audited alias).
+    let mut const_values: LookupMap<DefinitionId, lir::ConstValue> = LookupMap::new();
     let mut globals = Vec::new();
 
     for &(file_id, hir_file) in files {
@@ -232,7 +232,7 @@ pub fn eval_const_expr(
     index: &SymbolIndex,
     resolutions: &ResolutionLookup,
     file: FileId,
-    const_values: &std::collections::HashMap<DefinitionId, lir::ConstValue>,
+    const_values: &LookupMap<DefinitionId, lir::ConstValue>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> lir::ConstValue {
     match expr {
@@ -359,7 +359,7 @@ fn eval_const_array_literal(
     index: &SymbolIndex,
     resolutions: &ResolutionLookup,
     file: FileId,
-    const_values: &std::collections::HashMap<DefinitionId, lir::ConstValue>,
+    const_values: &LookupMap<DefinitionId, lir::ConstValue>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> lir::ConstValue {
     let mut items = Vec::with_capacity(arr.elements.len());
@@ -400,7 +400,7 @@ fn eval_const_map_literal(
     index: &SymbolIndex,
     resolutions: &ResolutionLookup,
     file: FileId,
-    const_values: &std::collections::HashMap<DefinitionId, lir::ConstValue>,
+    const_values: &LookupMap<DefinitionId, lir::ConstValue>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> lir::ConstValue {
     let mut entries = Vec::with_capacity(map.entries.len());
@@ -466,7 +466,7 @@ fn eval_const_fn_literal(
     index: &SymbolIndex,
     resolutions: &ResolutionLookup,
     file: FileId,
-    const_values: &std::collections::HashMap<DefinitionId, lir::ConstValue>,
+    const_values: &LookupMap<DefinitionId, lir::ConstValue>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> lir::ConstValue {
     let Some(target_id) = resolutions.resolve(file, fl.target.range) else {

@@ -23,11 +23,10 @@
 //!   `types = strict`, and always falls back to the by-name ops, which are
 //!   correct under every policy.
 
-use std::collections::{HashMap, HashSet};
-
 use brink_format::{DefinitionId, NameId};
 
 use crate::FileId;
+use crate::determinism::{LookupMap, LookupSet};
 use crate::hir;
 use crate::symbols::{SymbolIndex, SymbolKind};
 
@@ -47,7 +46,7 @@ pub struct ShapeInfo {
     /// annotation names another declared struct — that's what lets
     /// `expr::known_shape` chase a read chain (`o.inner.v`) across more than
     /// one `.field` hop without any type inference.
-    field_index: HashMap<String, (u16, Option<String>)>,
+    field_index: LookupMap<String, (u16, Option<String>)>,
 }
 
 impl ShapeInfo {
@@ -63,7 +62,7 @@ impl ShapeInfo {
 /// doc for the id-assignment determinism argument.
 #[derive(Default)]
 pub struct ShapeTable {
-    by_name: HashMap<String, ShapeInfo>,
+    by_name: LookupMap<String, ShapeInfo>,
 }
 
 impl ShapeTable {
@@ -91,14 +90,14 @@ impl ShapeTable {
 /// an analyzer concern (out of TM-4c's scope), not something LIR lowering
 /// diagnoses; this just needs to not panic or vary run-to-run.
 pub fn build_shape_table(files: &[(FileId, &hir::HirFile)], names: &mut NameTable) -> ShapeTable {
-    let mut struct_names: HashSet<&str> = HashSet::new();
+    let mut struct_names: LookupSet<&str> = LookupSet::new();
     for &(_, hir_file) in files {
         for s in &hir_file.structs {
             struct_names.insert(s.name.text.as_str());
         }
     }
 
-    let mut by_name: HashMap<String, ShapeInfo> = HashMap::new();
+    let mut by_name: LookupMap<String, ShapeInfo> = LookupMap::new();
     let mut next_id: u32 = 0;
     for &(_, hir_file) in files {
         for s in &hir_file.structs {
@@ -107,7 +106,7 @@ pub fn build_shape_table(files: &[(FileId, &hir::HirFile)], names: &mut NameTabl
             }
             let shape_name = names.intern(&s.name.text);
             let mut fields = Vec::with_capacity(s.fields.len());
-            let mut field_index = HashMap::with_capacity(s.fields.len());
+            let mut field_index = LookupMap::with_capacity(s.fields.len());
             for (i, f) in s.fields.iter().enumerate() {
                 let field_name = names.intern(&f.name.text);
                 fields.push(field_name);
@@ -165,7 +164,7 @@ pub fn struct_shape_defs(shapes: &ShapeTable) -> Vec<lir::StructShapeDef> {
 /// struct, resolved to their `DefinitionId` — see the module doc for why
 /// this (plus per-temp tracking) is the whole "compile-time known shape"
 /// story.
-pub type GlobalShapeMap = HashMap<DefinitionId, String>;
+pub type GlobalShapeMap = LookupMap<DefinitionId, String>;
 
 #[must_use]
 pub fn build_global_shape_map(
@@ -173,7 +172,7 @@ pub fn build_global_shape_map(
     index: &SymbolIndex,
     shapes: &ShapeTable,
 ) -> GlobalShapeMap {
-    let mut out = HashMap::new();
+    let mut out = LookupMap::new();
     for &(_, hir_file) in files {
         for var in &hir_file.variables {
             record_global_annotation(

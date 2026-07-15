@@ -76,6 +76,19 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         }
         app.insert_resource(BrinkWorldPolicy::<M>::new(self.policy.clone()));
         app.add_systems(Update, fulfill_flow_requests::<M>);
+        // T1d-3 handle integration (docs/t1d-spec.md §4): the type-erased
+        // kind index (empty until a host calls `register_handle_kind`) and
+        // its diagnostics-only retention metrics, the `is_valid(h)` binding
+        // (a standard world-query binding per spec, not a language
+        // intrinsic), and registry GC at `-> DONE` quiescent sweeps.
+        app.init_resource::<crate::handle::HandleKinds<M>>();
+        app.init_resource::<crate::handle::HandleRetentionMetrics<M>>();
+        app.init_resource::<crate::handle::HandleEntityRemap>();
+        {
+            use crate::bindings::BrinkBindingsAppExt as _;
+            app.bind_brink_query::<M, _, _>("is_valid", crate::handle::is_valid_system::<M>);
+        }
+        app.add_observer(crate::handle::gc_on_turn_done::<M>);
         // Auto-render BrinkTranscript<M> for any flow that has it.
         // No-op for flows that don't (the query just yields nothing).
         app.add_systems(Update, crate::transcript::refresh_transcripts::<M>);

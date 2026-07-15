@@ -75,13 +75,16 @@ pub fn merge_manifests(files: &[(FileId, &SymbolManifest)]) -> (SymbolIndex, Vec
 /// to [`merge_manifests`]. This is the byte-identity guarantee the whole
 /// pre-modules corpus relies on.
 ///
-/// `dialect` gates the M-2c cross-module-collision escalation (issue #784,
-/// decision-log "Cross-module name collisions" 2026-07-14): under
-/// `Dialect::Brink`, a same-name/same-kind duplicate whose two owning files
-/// declared *different* modules is a hard error (`E096`) instead of the
-/// usual `E022`/`E023`/`E026` warning. `merge_manifests`'s empty
-/// `ModuleMap` can never produce a declared-module duplicate, so its
-/// `Dialect::default()` is inert.
+/// `dialect` gates M-2d cross-module coexistence (issue #790, decision-log
+/// "Cross-module name collisions" 2026-07-14, endgame clause): under
+/// `Dialect::Brink`, a same-name/same-kind pair whose two owning files
+/// declared *different* modules is no longer a duplicate — both are inserted
+/// and coexist, and import-scoped resolution ([`crate::ImportScope`]) binds
+/// each reference to the module its file imported. This relaxes the M-2c/#793
+/// `E096` stopgap. A duplicate within one declared module, or involving any
+/// undeclared/legacy file, still warns (`E022`/`E023`/`E026`) and drops the
+/// later definition. `merge_manifests`'s empty `ModuleMap` can never produce
+/// a declared-module pair, so its `Dialect::default()` is inert.
 pub fn merge_manifests_with_modules(
     files: &[(FileId, &SymbolManifest)],
     modules: &ModuleMap,
@@ -174,55 +177,36 @@ fn insert_file_symbols(
     }
 }
 
-/// M-2c cross-module escalation (issue #784, decision-log "Cross-module
-/// name collisions" 2026-07-14): under `Dialect::Brink`, when *both*
-/// colliding definitions' owning files declared a module
-/// (`SymbolInfo::module`/`new_module` is `Some` only for a *declared*
-/// module — modules-spec §5) and those modules are *different*, this is no
-/// longer the ordinary inklecate-compat warning — it's a hard error,
-/// reported at both definitions' spans (returns `true`, meaning the caller
-/// must not fall through to the warning path). A duplicate within one
-/// declared module (same name on both sides), or involving any
-/// undeclared/legacy file, returns `false` — `strict-ink` never reaches
-/// past the first check.
-fn emit_cross_module_collision(
-    diagnostics: &mut Vec<Diagnostic>,
+/// M-2d import-scoped coexistence (issue #790, decision-log "Cross-module
+/// name collisions" 2026-07-14, endgame clause): two same-name/same-kind
+/// definitions in *different* **declared** modules are no longer a collision
+/// at all — they coexist in the index and import-scoped resolution
+/// (`resolve.rs`, [`crate::ImportScope`]) binds each reference to the module
+/// its file imported. This *relaxes* the M-2c/#793 `E096` stopgap, which had
+/// hard-errored exactly this case as a temporary guard against silent
+/// misbinding while the flat resolver was still authoritative.
+///
+/// Returns `true` when `existing`/`new_module` are such a cross-declared-
+/// module pair (so the caller must let both coexist — no diagnostic, no
+/// skip). A duplicate *within* one declared module, or involving any
+/// undeclared/legacy file, returns `false` — the ordinary inklecate-compat
+/// redefinition warning (`E022`/`E023`/`E026`) still applies and the later
+/// definition is still dropped. The `Dialect::Brink` gate preserves
+/// `strict-ink` byte-for-byte: `#@module` is brink-only syntax, so a
+/// strict-ink story never has a declared module, and this always returns
+/// `false` there — the whole compat corpus keeps its existing behavior.
+fn is_cross_declared_module_collision(
     dialect: crate::Dialect,
-    existing: &SymbolInfo,
-    file: FileId,
-    sym: &brink_ir::DeclaredSymbol,
+    existing_module: Option<&str>,
     new_module: Option<&str>,
 ) -> bool {
     if dialect != crate::Dialect::Brink {
         return false;
     }
-    let (Some(existing_module), Some(new_module)) = (existing.module.as_deref(), new_module) else {
-        return false;
-    };
-    if existing_module == new_module {
-        return false;
-    }
-    diagnostics.push(Diagnostic {
-        file: existing.file,
-        range: existing.range,
-        message: format!(
-            "{}: `{}` (also declared in module `{new_module}`)",
-            DiagnosticCode::E096.title(),
-            sym.name,
-        ),
-        code: DiagnosticCode::E096,
-    });
-    diagnostics.push(Diagnostic {
-        file,
-        range: sym.range,
-        message: format!(
-            "{}: `{}` (also declared in module `{existing_module}`)",
-            DiagnosticCode::E096.title(),
-            sym.name,
-        ),
-        code: DiagnosticCode::E096,
-    });
-    true
+    matches!(
+        (existing_module, new_module),
+        (Some(a), Some(b)) if a != b
+    )
 }
 
 #[expect(
@@ -239,15 +223,27 @@ fn insert_symbol(
     dup_code: DiagnosticCode,
     dialect: crate::Dialect,
 ) {
-    // Skip duplicates of the same kind — inklecate permits redefinition but we warn.
+    // Duplicate handling. A same-name/same-kind definition already in the
+    // index is normally an inklecate-compat redefinition: we warn and drop
+    // the later one. The M-2d exception (issue #790): if *every* existing
+    // same-kind definition sits in a **different declared module** from this
+    // one, they are not duplicates at all — they coexist and import-scoped
+    // resolution disambiguates them per referring file. Only a *true*
+    // duplicate (same declared module, or the undeclared/legacy world, or
+    // strict-ink where declared modules cannot exist) still warns-and-skips.
     if let Some(existing_ids) = index.by_name.get(&sym.name) {
-        let existing = existing_ids
+        let true_duplicate = existing_ids
             .iter()
-            .find_map(|id| index.symbols.get(id).filter(|info| info.kind == kind));
-        if let Some(existing) = existing {
-            if emit_cross_module_collision(diagnostics, dialect, existing, file, sym, module.name) {
-                return;
-            }
+            .filter_map(|id| index.symbols.get(id))
+            .filter(|info| info.kind == kind)
+            .find(|existing| {
+                !is_cross_declared_module_collision(
+                    dialect,
+                    existing.module.as_deref(),
+                    module.name,
+                )
+            });
+        if let Some(_existing) = true_duplicate {
             diagnostics.push(Diagnostic {
                 file,
                 range: sym.range,
@@ -256,6 +252,8 @@ fn insert_symbol(
             });
             return;
         }
+        // Otherwise: only cross-declared-module homonyms exist — fall through
+        // and insert this definition alongside them.
     }
 
     let tag = kind.definition_tag();
@@ -512,16 +510,18 @@ mod tests {
         assert!(diags.is_empty(), "expected no diagnostics: {diags:?}");
     }
 
-    // ── M-2c cross-module collisions (issue #784, decision-log
-    // "Cross-module name collisions" 2026-07-14) ──────────────────────
+    // ── M-2d cross-module coexistence (issue #790, decision-log
+    // "Cross-module name collisions" 2026-07-14, endgame clause —
+    // relaxes the #784/#793 E096 stopgap) ─────────────────────────────
 
-    /// Two *declared* modules (different names) each defining `start` is a
-    /// hard error (`E096`) under `Dialect::Brink` — one diagnostic per
-    /// colliding definition, each carrying its own file/span, and the
-    /// second definition is never inserted into the index (matches the
-    /// existing duplicate-drop behavior).
+    /// Two *declared* modules (different names) each defining `start` now
+    /// **coexist** under `Dialect::Brink`: no diagnostic, and *both*
+    /// definitions land in the index under the shared bare name so
+    /// import-scoped resolution can bind each referring file to the module
+    /// it imported. This is the E096 relaxation — the case #793 hard-errored
+    /// now compiles.
     #[test]
-    fn cross_declared_module_duplicate_emits_e096_with_both_spans() {
+    fn cross_declared_module_duplicate_coexists_under_brink() {
         let mut m1 = SymbolManifest::default();
         m1.knots.push(sym("start", 0));
         let mut m2 = SymbolManifest::default();
@@ -548,22 +548,30 @@ mod tests {
 
         let (index, diags) = merge_manifests_with_modules(&files, &modules, crate::Dialect::Brink);
 
-        assert_eq!(diags.len(), 2, "expected one E096 per span, got {diags:?}");
         assert!(
-            diags.iter().all(|d| d.code == DiagnosticCode::E096),
-            "expected both diagnostics to be E096, got {diags:?}"
-        );
-        let mut spans: Vec<_> = diags.iter().map(|d| (d.file, d.range)).collect();
-        spans.sort_by_key(|(f, _)| f.0);
-        assert_eq!(
-            spans,
-            vec![(FileId(0), range(0, 5)), (FileId(1), range(100, 5))]
+            diags.is_empty(),
+            "cross-declared-module homonyms coexist with no diagnostic (E096 relaxed), got {diags:?}"
         );
 
-        // The second (colliding) definition was never inserted — only the
-        // first-seen `start` survives in the index, matching the pre-#784
-        // duplicate-drop behavior for the within-module/warning case.
-        assert_eq!(index.by_name.get("start").map(Vec::len), Some(1));
+        // Both `start` definitions survive in the index under the shared bare
+        // name — the raw material import-scoped resolution disambiguates.
+        assert_eq!(index.by_name.get("start").map(Vec::len), Some(2));
+        // …and they are genuinely distinct ids (module-qualified identity).
+        let ids = index.by_name.get("start").expect("both starts present");
+        assert_ne!(
+            ids[0], ids[1],
+            "the two modules' `start`s have distinct ids"
+        );
+        let modules_of: std::collections::BTreeSet<Option<&str>> = ids
+            .iter()
+            .filter_map(|id| index.symbols.get(id))
+            .map(|info| info.module.as_deref())
+            .collect();
+        assert_eq!(
+            modules_of,
+            [Some("quest"), Some("town")].into_iter().collect(),
+            "one `start` per declared module"
+        );
     }
 
     /// Two files sharing the **same** declared module keep the ordinary
