@@ -200,7 +200,7 @@ fn check_duplicates_expr(expr: &Expr, file: FileId, out: &mut Vec<Diagnostic>) {
 /// the *repeated* occurrence (not the first, so authors see exactly which
 /// initializer is the redundant one).
 fn check_literal_duplicates(sl: &StructLiteral, file: FileId, out: &mut Vec<Diagnostic>) {
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut seen: crate::determinism::LookupSet<&str> = crate::determinism::LookupSet::new();
     for (name, _value) in &sl.fields {
         if !seen.insert(name.text.as_str()) {
             out.push(Diagnostic {

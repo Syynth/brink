@@ -3,6 +3,19 @@
     clippy::cast_possible_truncation,
     clippy::needless_pass_by_value
 )]
+// Issue #801: this crate's `clippy.toml` disallows bare `HashMap`/`HashSet`
+// so an iteration-order leak into production output can't ship quietly.
+// This file's three `HashSet`s are all membership-only (`.contains()` /
+// `.insert()`-as-duplicate-guard on a `prop_assert!`) and never iterated —
+// order-free by construction — but `rowan::TextRange`/`DiagnosticCode`
+// don't implement `Ord`, so routing them through the crate's `LookupSet`
+// alias (`pub(crate)`, invisible to this external test-binary crate) or a
+// `BTreeSet` both need trait changes out of this issue's scope. A file-level
+// allow here (test-only code, not production output) is the narrower fix.
+#![allow(
+    clippy::disallowed_types,
+    reason = "membership-only HashSets, audited order-free — see file doc"
+)]
 
 //! Property-based tests for name resolution.
 //!

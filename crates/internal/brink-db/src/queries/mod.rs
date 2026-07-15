@@ -55,7 +55,7 @@
 //! behavior-neutral by construction (locked by the `query_equivalence` tests
 //! and the oracle gate).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use brink_analyzer::{AnalysisOptions, CallGraph, InferenceResult, SccGraph, Sig, TypePolicy};
@@ -68,6 +68,7 @@ use brink_ir::{
 use brink_syntax::Parse;
 
 use crate::db::resolve_include_path;
+use crate::determinism::{LookupMap, LookupSet};
 use crate::include_graph::IncludeGraph;
 
 mod analysis;
@@ -112,6 +113,7 @@ impl Default for BrinkDatabase {
                 .ingredient::<suppressions_query>()
                 .ingredient::<include_graph_query>()
                 // Layer 2.
+                .ingredient::<module_map_query>()
                 .ingredient::<symbol_index_query>()
                 .ingredient::<resolution_index_query>()
                 .ingredient::<resolve_query>()
@@ -253,7 +255,7 @@ pub(crate) fn suppressions_query(db: &dyn salsa::Database, file: SourceFile) -> 
 #[salsa::tracked(returns(ref))]
 pub(crate) fn include_graph_query(db: &dyn salsa::Database, project: ProjectInput) -> IncludeGraph {
     let files = project.files(db);
-    let path_to_id: HashMap<&str, FileId> = files
+    let path_to_id: LookupMap<&str, FileId> = files
         .iter()
         .map(|f| (f.path(db).as_str(), f.file_id(db)))
         .collect();
@@ -276,6 +278,35 @@ pub(crate) fn include_graph_query(db: &dyn salsa::Database, project: ProjectInpu
 
 // ─── Layer 2: project-wide names ─────────────────────────────────────
 
+/// Every file's resolved module (M-1, docs/modules-spec.md §1/§5) plus the
+/// stem-collision diagnostics (`E085`). Extracted as its own memoized query
+/// (issue #790) so both [`symbol_index_query`] — which qualifies identity by
+/// declared module — and [`resolve_query`] — which needs each referring
+/// file's module + imports to scope resolution — share one computation.
+///
+/// Undeclared stem-modules (the entire pre-modules corpus) resolve to
+/// non-qualifying entries, so their `DefinitionId`s stay byte-identical.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn module_map_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> (brink_analyzer::ModuleMap, Vec<Diagnostic>) {
+    let files = project.files(db);
+    let module_inputs: Vec<crate::modules::FileModuleInput> = files
+        .iter()
+        .map(|f| {
+            let hir_module = lowered_query(db, *f).hir.module.as_ref();
+            crate::modules::FileModuleInput {
+                file: f.file_id(db),
+                stem: crate::modules::file_stem(f.path(db)).to_string(),
+                declared: hir_module.map(|m| m.name.clone()),
+                was: hir_module.and_then(|m| m.was.as_ref().map(|(old, _)| old.clone())),
+            }
+        })
+        .collect();
+    crate::modules::resolve_modules(&module_inputs, include_graph_query(db, project))
+}
+
 /// The merged project-wide symbol index plus indexing diagnostics
 /// (duplicates, built-in shadowing). Thin wrapper over
 /// [`brink_analyzer::symbol_index`].
@@ -290,33 +321,16 @@ pub(crate) fn symbol_index_query(
         .map(|f| (f.file_id(db), &lowered_query(db, *f).manifest))
         .collect();
 
-    // M-1 (docs/modules-spec.md §1/§5): resolve every file's module —
-    // stem default, `#@module` override, INCLUDE inheritance — so symbol
-    // identity can be qualified by declared module. Undeclared stem-modules
-    // (the entire pre-modules corpus) resolve to non-qualifying entries, so
-    // their `DefinitionId`s stay byte-identical.
-    let module_inputs: Vec<crate::modules::FileModuleInput> = files
-        .iter()
-        .map(|f| {
-            let hir_module = lowered_query(db, *f).hir.module.as_ref();
-            crate::modules::FileModuleInput {
-                file: f.file_id(db),
-                stem: crate::modules::file_stem(f.path(db)).to_string(),
-                declared: hir_module.map(|m| m.name.clone()),
-                was: hir_module.and_then(|m| m.was.as_ref().map(|(old, _)| old.clone())),
-            }
-        })
-        .collect();
-    let (module_map, module_diags) =
-        crate::modules::resolve_modules(&module_inputs, include_graph_query(db, project));
+    let (module_map, module_diags) = module_map_query(db, project);
 
-    // M-2c (issue #784): the cross-declared-module duplicate escalation is
-    // dialect-gated (brink only) inside `symbol_index_with_modules` itself,
-    // so the project's configured dialect must reach it here.
+    // M-2c/M-2d (issues #784/#790): the cross-declared-module duplicate
+    // handling (E096 stopgap → coexistence) is dialect-gated (brink only)
+    // inside `symbol_index_with_modules` itself, so the project's configured
+    // dialect must reach it here.
     let dialect = project.analysis_options(db).dialect;
     let (index, mut diagnostics) =
-        brink_analyzer::symbol_index_with_modules(&manifest_refs, &module_map, dialect);
-    diagnostics.extend(module_diags);
+        brink_analyzer::symbol_index_with_modules(&manifest_refs, module_map, dialect);
+    diagnostics.extend(module_diags.clone());
     (index, diagnostics)
 }
 
@@ -345,8 +359,7 @@ pub(crate) fn resolution_index_query(
     stripped
         .symbols
         .retain(|_, info| !matches!(info.kind, SymbolKind::Param | SymbolKind::Temp));
-    let live_ids: std::collections::HashSet<DefinitionId> =
-        stripped.symbols.keys().copied().collect();
+    let live_ids: LookupSet<DefinitionId> = stripped.symbols.keys().copied().collect();
     stripped.by_name.retain(|_, ids| {
         ids.retain(|id| live_ids.contains(id));
         !ids.is_empty()
@@ -369,7 +382,25 @@ pub(crate) fn resolve_query(
     file: SourceFile,
 ) -> (Arc<ResolutionMap>, Vec<Diagnostic>) {
     let index = resolution_index_query(db, project);
-    brink_analyzer::resolve(file.file_id(db), &lowered_query(db, file).manifest, index)
+    let lowered = lowered_query(db, file);
+
+    // Import-scoped resolution (M-2d, docs/modules-spec.md §2; issue #790):
+    // feed the resolver this file's own **declared** module and its `IMPORT`
+    // list so a bare reference with same-name candidates across declared
+    // modules binds to the one this file imported. The scope is inert for
+    // the pre-modules / single-module world (no declared module qualifies
+    // identity, so every candidate carries `module: None` and the resolver's
+    // fast path is byte-identical). `file_module` comes from the shared
+    // module map (declared modules only — INCLUDE inheritance already
+    // applied), matching how `symbol_index_query` qualified identity.
+    let (module_map, _module_diags) = module_map_query(db, project);
+    let file_module = module_map
+        .get(&file.file_id(db))
+        .filter(|m| m.declared)
+        .map(|m| m.name.clone());
+    let scope = brink_analyzer::ImportScope::new(file_module, &lowered.hir.imports);
+
+    brink_analyzer::resolve(file.file_id(db), &lowered.manifest, index, &scope)
 }
 
 /// Interned key for [`signature_query`]. Keyed on the content-addressed
@@ -720,6 +751,18 @@ pub(crate) struct SolvedScc {
 /// already read `host_manifest` at — unlike [`call_edges_query`]/
 /// [`referenced_globals_query`] (whose *outputs* the manifest can never
 /// change), this query's output genuinely depends on it.
+///
+/// **`inline_docs` dependency (issue #805).** Also reads [`inline_docs_query`]
+/// — the same project-wide merged `///` doc-comment memo [`external_meta_query`]
+/// already reads — and threads it to [`brink_analyzer::solve_scc`] so an
+/// `EXTERNAL` documented purely inline (no matching registered
+/// `ManifestExternal`) now seeds a `known_sigs` entry too, and so a
+/// registered/inline param or return type naming a *scalar* semantic type
+/// (not just a `handle<K>` kind) resolves to its own base `Ty`. Range-free
+/// (`DocBlock` carries no source spans), so this doesn't reintroduce the
+/// whole-project-HIR churn FG-2/FG-2.1 eliminated — a doc-content-preserving
+/// edit backdates through `inline_docs_query`'s own `Eq` cutoff exactly like
+/// every other reader of that memo.
 #[salsa::tracked]
 pub(crate) fn solve_scc_query<'db>(
     db: &'db dyn salsa::Database,
@@ -801,6 +844,7 @@ pub(crate) fn solve_scc_query<'db>(
     }
 
     let opts = project.analysis_options(db);
+    let inline_docs = inline_docs_query(db, project);
     let (signatures, bodies) = brink_analyzer::solve_scc(
         batch,
         &defs,
@@ -810,6 +854,7 @@ pub(crate) fn solve_scc_query<'db>(
         inferable,
         known_sigs,
         opts.host_manifest.as_ref(),
+        inline_docs,
     );
     Arc::new(SolvedScc { signatures, bodies })
 }
@@ -1002,13 +1047,13 @@ pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput
     // mirroring `Driver::lir_inputs`.
     let graph = include_graph_query(db, project);
     let all_ids: Vec<FileId> = files.iter().map(|f| f.file_id(db)).collect();
-    let by_id: HashMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
+    let by_id: LookupMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
     let topo = graph.topological_order(entry, &all_ids);
     let hir_refs: Vec<(FileId, &HirFile)> = topo
         .iter()
         .filter_map(|id| by_id.get(id).map(|f| (*id, &lowered_query(db, *f).hir)))
         .collect();
-    let paths: HashMap<FileId, String> = topo
+    let paths: LookupMap<FileId, String> = topo
         .iter()
         .filter_map(|id| by_id.get(id).map(|f| (*id, f.path(db).clone())))
         .collect();
@@ -1266,7 +1311,7 @@ pub fn partition_diagnostics(
 
     // Analysis diagnostics (unless disable_all).
     if !disable_all {
-        let mut by_file: HashMap<FileId, Vec<Diagnostic>> = HashMap::new();
+        let mut by_file: LookupMap<FileId, Vec<Diagnostic>> = LookupMap::new();
         for d in analysis_diagnostics {
             by_file.entry(d.file).or_default().push(d.clone());
         }

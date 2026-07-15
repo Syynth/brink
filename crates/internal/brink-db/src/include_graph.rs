@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-
 use brink_ir::FileId;
+
+use crate::determinism::{LookupMap, LookupSet};
 
 /// Tracks `INCLUDE` relationships between files.
 ///
@@ -10,9 +10,9 @@ use brink_ir::FileId;
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct IncludeGraph {
     /// file → files it includes
-    forward: HashMap<FileId, Vec<FileId>>,
+    forward: LookupMap<FileId, Vec<FileId>>,
     /// file → files that include it
-    reverse: HashMap<FileId, Vec<FileId>>,
+    reverse: LookupMap<FileId, Vec<FileId>>,
 }
 
 impl IncludeGraph {
@@ -45,8 +45,8 @@ impl IncludeGraph {
 impl IncludeGraph {
     pub fn new() -> Self {
         Self {
-            forward: HashMap::new(),
-            reverse: HashMap::new(),
+            forward: LookupMap::new(),
+            reverse: LookupMap::new(),
         }
     }
 
@@ -77,12 +77,19 @@ impl IncludeGraph {
     /// Detect cycles in the include graph. Returns the first cycle found
     /// as an ordered path of file IDs (the last includes the first).
     pub fn find_cycle(&self) -> Option<Vec<FileId>> {
-        use std::collections::HashSet;
+        let mut visited = LookupSet::new();
+        let mut on_stack = LookupSet::new();
 
-        let mut visited = HashSet::new();
-        let mut on_stack = HashSet::new();
+        // `forward` is a `HashMap`, so its key order is nondeterministic
+        // across processes — the DFS start node picks which cycle (if the
+        // graph has more than one) and which rotation of it comes back
+        // first, and that path is rendered straight into
+        // `DiscoverError::CircularInclude`'s user-facing message (issue
+        // #801). Sort the start candidates so the result is stable.
+        let mut starts: Vec<FileId> = self.forward.keys().copied().collect();
+        starts.sort_by_key(|id| id.0);
 
-        for &start in self.forward.keys() {
+        for start in starts {
             if visited.contains(&start) {
                 continue;
             }
@@ -127,12 +134,10 @@ impl IncludeGraph {
     /// Uses a post-order DFS: children (includes) are visited before their
     /// parent, giving the correct "paste-before" order for ink `INCLUDE`.
     pub fn topological_order(&self, entry: FileId, all_ids: &[FileId]) -> Vec<FileId> {
-        use std::collections::HashSet;
-
         fn dfs(
             node: FileId,
             graph: &IncludeGraph,
-            visited: &mut HashSet<FileId>,
+            visited: &mut LookupSet<FileId>,
             order: &mut Vec<FileId>,
         ) {
             if !visited.insert(node) {
@@ -144,7 +149,7 @@ impl IncludeGraph {
             order.push(node);
         }
 
-        let mut visited = HashSet::new();
+        let mut visited = LookupSet::new();
         let mut order = Vec::new();
 
         dfs(entry, self, &mut visited, &mut order);
@@ -168,9 +173,7 @@ impl IncludeGraph {
     /// Roots are files in `all_ids` that are not included by any other file.
     /// Returns `(root, members)` pairs sorted by root `FileId`.
     pub fn compute_projects(&self, all_ids: &[FileId]) -> Vec<(FileId, Vec<FileId>)> {
-        use std::collections::HashSet;
-
-        let all_set: HashSet<FileId> = all_ids.iter().copied().collect();
+        let all_set: LookupSet<FileId> = all_ids.iter().copied().collect();
 
         // Roots: files not included by any other file in the set
         let mut roots: Vec<FileId> = all_ids
@@ -185,13 +188,13 @@ impl IncludeGraph {
         roots.sort_by_key(|id| id.0);
 
         // For each root, DFS forward to collect members
-        let mut claimed: HashSet<FileId> = HashSet::new();
+        let mut claimed: LookupSet<FileId> = LookupSet::new();
         let mut projects: Vec<(FileId, Vec<FileId>)> = Vec::new();
 
         for &root in &roots {
             let mut members = Vec::new();
             let mut stack = vec![root];
-            let mut visited = HashSet::new();
+            let mut visited = LookupSet::new();
 
             while let Some(node) = stack.pop() {
                 if !visited.insert(node) || !all_set.contains(&node) {
@@ -224,8 +227,7 @@ impl IncludeGraph {
 
     /// Return root file IDs (files not included by any other file in `all_ids`).
     pub fn roots(&self, all_ids: &[FileId]) -> Vec<FileId> {
-        use std::collections::HashSet;
-        let all_set: HashSet<FileId> = all_ids.iter().copied().collect();
+        let all_set: LookupSet<FileId> = all_ids.iter().copied().collect();
         let mut roots: Vec<FileId> = all_ids
             .iter()
             .copied()
@@ -255,6 +257,46 @@ impl IncludeGraph {
             for source in &included_by {
                 if let Some(fwd) = self.forward.get_mut(source) {
                     fwd.retain(|&f| f != file);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Issue #801: `find_cycle`'s DFS start node used to come straight from
+    /// `self.forward.keys()` — a `HashMap` — so which rotation of a cycle it
+    /// returned depended on that map's per-instance `RandomState` seed.
+    /// Fresh-instance repetition (the #795 regression test's shape,
+    /// generalized): build a fresh `IncludeGraph` with a 3-file cycle
+    /// (`a -> b -> c -> a`) on every iteration — a fresh `HashMap` picks a
+    /// fresh seed each time — and assert the reported cycle never varies.
+    #[test]
+    fn find_cycle_start_node_is_stable_across_fresh_graphs() {
+        let a = FileId(0);
+        let b = FileId(1);
+        let c = FileId(2);
+
+        let mut first: Option<Vec<FileId>> = None;
+        for _ in 0..64 {
+            let mut graph = IncludeGraph::new();
+            graph.update(a, vec![b]);
+            graph.update(b, vec![c]);
+            graph.update(c, vec![a]);
+
+            let cycle = graph.find_cycle();
+            match &first {
+                None => first = Some(cycle.clone().expect("a -> b -> c -> a is a cycle")),
+                Some(expected) => {
+                    assert_eq!(
+                        cycle.as_ref(),
+                        Some(expected),
+                        "find_cycle's reported rotation diverged across fresh IncludeGraph \
+                         instances — a HashMap iteration order is leaking into the result"
+                    );
                 }
             }
         }

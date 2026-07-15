@@ -1,4 +1,5 @@
 mod blocks;
+mod chunk;
 mod content;
 mod context;
 mod decls;
@@ -8,11 +9,10 @@ mod stmts;
 mod structs;
 mod temps;
 
-use std::collections::{HashMap, HashSet};
-
 use brink_format::CountingFlags;
 
 use crate::FileId;
+use crate::determinism::{LookupMap, LookupSet};
 use crate::hir;
 use crate::symbols::{ResolutionMap, SymbolIndex};
 
@@ -74,7 +74,7 @@ pub fn lower_to_program(
     files: &[(FileId, &hir::HirFile)],
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
-    file_paths: &HashMap<FileId, String>,
+    file_paths: &LookupMap<FileId, String>,
 ) -> (Option<lir::Program>, Vec<crate::Diagnostic>) {
     lower_to_program_with_type_mode(
         files,
@@ -101,7 +101,7 @@ pub fn lower_to_program_with_type_mode(
     files: &[(FileId, &hir::HirFile)],
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
-    file_paths: &HashMap<FileId, String>,
+    file_paths: &LookupMap<FileId, String>,
     type_mode: context::TypeMode,
 ) -> (Option<lir::Program>, Vec<crate::Diagnostic>) {
     // ── Step 0: Normalize HIR (pre-LIR regularization) ──────────
@@ -144,12 +144,12 @@ pub fn lower_to_program_with_type_mode(
         type_mode,
     };
 
-    // ── Step 3: Lower containers as a tree ──────────────────────────
-    let root = lower_root(
+    // ── Step 3: Lower each top-level scope into a self-contained,
+    // chunk-local-named `ScopeChunk` (FG-4c, `chunk`'s module doc) ───
+    let (chunks, root_temp_slots) = lower_root(
         files,
         &resolutions,
         index,
-        &mut names,
         root_id,
         &mut ids,
         file_paths,
@@ -157,8 +157,39 @@ pub fn lower_to_program_with_type_mode(
         &struct_ctx,
     );
 
+    // ── Step 3b: Assemble — merge every chunk's local names into the
+    // project table (already holding decl + struct names) in walk order
+    // and relocate each chunk's local `NameId`s. The merge is the LIR link
+    // phase: byte-identical to the old shared-table walk by construction. ─
+    let (mut root_body, root_children) = chunk::assemble_scopes(chunks, &mut names);
+
+    // Implicit DONE at end of root (mirrors the old in-`lower_root` check).
+    let ends_with_divert = root_body
+        .last()
+        .is_some_and(|s| matches!(s, lir::Stmt::Divert(_)));
+    if !ends_with_divert {
+        root_body.push(lir::Stmt::Divert(lir::Divert {
+            target: lir::DivertTarget::Done,
+            args: Vec::new(),
+        }));
+    }
+
+    let mut root = lir::Container {
+        id: root_id,
+        name: None,
+        kind: lir::ContainerKind::Root,
+        params: Vec::new(),
+        body: root_body,
+        children: root_children,
+        counting_flags: CountingFlags::empty(),
+        temp_slot_count: root_temp_slots,
+        labeled: false,
+        inline: false,
+        is_function: false,
+        local: false,
+    };
+
     // ── Step 4: Counting flags ──────────────────────────────────────
-    let mut root = root;
     apply_counting_flags(&mut root, &globals);
 
     let struct_shapes = structs::struct_shape_defs(&shape_table);
@@ -200,96 +231,93 @@ pub fn lower_to_program_with_type_mode(
 
 // ─── Tree-building lowering ─────────────────────────────────────────
 
+/// Lower every top-level scope (each file's root-level content, then each of
+/// its knots) into a self-contained [`chunk::ScopeChunk`], each carrying its
+/// own chunk-local name table (FG-4c). Returns the chunks in walk order plus
+/// the root frame's total temp-slot count.
+///
+/// No shared [`NameTable`] is threaded here anymore — that is the coupling
+/// FG-4c breaks. The interning that used to happen inline during this walk
+/// now happens per chunk (into a fresh local table) and is merged/relocated by
+/// [`chunk::assemble_scopes`]. The traversal order is otherwise unchanged, so
+/// the assembled project name table is byte-identical to the old one.
 #[expect(clippy::too_many_arguments)]
 fn lower_root(
     files: &[(FileId, &hir::HirFile)],
     resolutions: &ResolutionLookup,
     index: &SymbolIndex,
-    names: &mut NameTable,
     root_id: brink_format::DefinitionId,
     ids: &mut context::IdAllocator,
-    file_paths: &HashMap<FileId, String>,
+    file_paths: &LookupMap<FileId, String>,
     diagnostics: &mut Vec<crate::Diagnostic>,
     structs: &context::StructCtx<'_>,
-) -> lir::Container {
-    let mut body = Vec::new();
-    let mut children = Vec::new();
+) -> (Vec<chunk::ScopeChunk>, u16) {
+    let mut chunks = Vec::new();
 
     // Allocate temp slots for root content (top-level ~ temp declarations).
     let root_blocks: Vec<&hir::Block> = files.iter().map(|(_, hir)| &hir.root_content).collect();
     let temp_map = temps::alloc_temps(&[], &[], &root_blocks);
     // Shared across every file's root content — the root is one frame, so
     // block-scoped slots must not restart per file (see `LowerCtx::
-    // next_block_slot` doc).
+    // next_block_slot` doc). Names, unlike temp slots, are chunk-local.
     let mut block_slot = temp_map.total_slots();
 
     for &(file_id, hir_file) in files {
-        let mut ctx = make_ctx(
-            file_id,
-            resolutions,
-            index,
-            &temp_map,
-            names,
-            ids,
-            root_id,
-            String::new(),
-            &[],
-            file_paths,
-            &mut block_slot,
-            diagnostics,
-            structs,
-        );
-        let mut cc = 0;
-        let mut gc = 0;
-        ctx.ids.reset_seq_counter();
-        let (stmts, mut block_children) =
-            lower_block_with_children(&hir_file.root_content, &mut ctx, &mut cc, &mut gc);
-        body.extend(stmts);
-        children.append(&mut block_children);
+        // One root-content chunk per file: this file's top-level body plus the
+        // inline children (sequences, choice/gather targets) it produces.
+        let mut local_names = NameTable::new();
+        let (stmts, block_children) = {
+            let mut ctx = make_ctx(
+                file_id,
+                resolutions,
+                index,
+                &temp_map,
+                &mut local_names,
+                ids,
+                root_id,
+                String::new(),
+                &[],
+                file_paths,
+                &mut block_slot,
+                diagnostics,
+                structs,
+            );
+            let mut cc = 0;
+            let mut gc = 0;
+            ctx.ids.reset_seq_counter();
+            lower_block_with_children(&hir_file.root_content, &mut ctx, &mut cc, &mut gc)
+        };
+        chunks.push(chunk::ScopeChunk::root_content(
+            stmts,
+            block_children,
+            local_names.into_entries(),
+        ));
 
-        // Add knots as children of root
+        // One chunk per knot: the whole knot subtree (stitches + inline
+        // children nested) against its own local name table.
         for knot in &hir_file.knots {
-            children.push(lower_knot(
+            let mut local_names = NameTable::new();
+            let knot_container = lower_knot(
                 file_id,
                 hir_file,
                 knot,
                 resolutions,
                 index,
-                names,
+                &mut local_names,
                 ids,
                 root_id,
                 file_paths,
                 diagnostics,
                 structs,
+            );
+            chunks.push(chunk::ScopeChunk::knot(
+                knot_container,
+                local_names.into_entries(),
             ));
         }
     }
 
-    // Implicit DONE at end of root
-    let ends_with_divert = body
-        .last()
-        .is_some_and(|s| matches!(s, lir::Stmt::Divert(_)));
-    if !ends_with_divert {
-        body.push(lir::Stmt::Divert(lir::Divert {
-            target: lir::DivertTarget::Done,
-            args: Vec::new(),
-        }));
-    }
-
-    lir::Container {
-        id: root_id,
-        name: None,
-        kind: lir::ContainerKind::Root,
-        params: Vec::new(),
-        body,
-        children,
-        counting_flags: CountingFlags::empty(),
-        temp_slot_count: block_slot,
-        labeled: false,
-        inline: false,
-        is_function: false,
-        local: false,
-    }
+    (chunks, block_slot)
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -302,7 +330,7 @@ fn lower_knot(
     names: &mut NameTable,
     ids: &mut context::IdAllocator,
     root_id: brink_format::DefinitionId,
-    file_paths: &HashMap<FileId, String>,
+    file_paths: &LookupMap<FileId, String>,
     diagnostics: &mut Vec<crate::Diagnostic>,
     structs: &context::StructCtx<'_>,
 ) -> lir::Container {
@@ -402,7 +430,7 @@ fn lower_stitch(
     names: &mut NameTable,
     ids: &mut context::IdAllocator,
     root_id: brink_format::DefinitionId,
-    file_paths: &HashMap<FileId, String>,
+    file_paths: &LookupMap<FileId, String>,
     block_slot: &mut u16,
     diagnostics: &mut Vec<crate::Diagnostic>,
     structs: &context::StructCtx<'_>,
@@ -1083,7 +1111,7 @@ fn make_ctx<'a>(
     root_id: brink_format::DefinitionId,
     scope_path: String,
     param_names: &[&str],
-    file_paths: &'a HashMap<FileId, String>,
+    file_paths: &'a LookupMap<FileId, String>,
     next_block_slot: &'a mut u16,
     diagnostics: &'a mut Vec<crate::Diagnostic>,
     structs: &'a context::StructCtx<'a>,
@@ -1103,11 +1131,11 @@ fn make_ctx<'a>(
         choice_gather_target: None,
         next_block_slot,
         block_scopes: Vec::new(),
-        block_scoped_temp_names: HashSet::new(),
+        block_scoped_temp_names: LookupSet::new(),
         diagnostics,
         loop_depth: 0,
         structs,
-        temp_shapes: HashMap::new(),
+        temp_shapes: LookupMap::new(),
     }
 }
 

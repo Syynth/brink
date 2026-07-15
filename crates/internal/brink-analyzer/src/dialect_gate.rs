@@ -35,13 +35,13 @@
 //! succeeds for blocks/sigils/indexing too) — so *this* gate is where
 //! `strict-ink` rejection actually happens for them.
 
-use std::collections::HashSet;
-
 use brink_ir::hir::visit::{self, HirVisitor};
 use brink_ir::{
     BlockStmt, Diagnostic, DiagnosticCode, ElseBranch, Expr, FileId, HirFile, IfStmt, Knot,
     ResolutionMap, Stitch, Stmt,
 };
+
+use crate::determinism::LookupSet;
 
 /// Compiler dialect: gates T1b brink-extension syntax. Default `StrictInk` —
 /// divergence from the oracle-anchored ink subset is a visible, one-time,
@@ -70,7 +70,7 @@ pub fn check(
     resolutions: &ResolutionMap,
     dialect: Dialect,
 ) -> Vec<Diagnostic> {
-    let resolved: HashSet<(FileId, rowan::TextRange)> =
+    let resolved: LookupSet<(FileId, rowan::TextRange)> =
         resolutions.iter().map(|r| (r.file, r.range)).collect();
     let mut out = Vec::new();
     for &(file, hir) in files {
@@ -140,7 +140,7 @@ pub fn check(
 struct GateVisitor<'a> {
     file: FileId,
     dialect: Dialect,
-    resolved: &'a HashSet<(FileId, rowan::TextRange)>,
+    resolved: &'a LookupSet<(FileId, rowan::TextRange)>,
     diagnostics: &'a mut Vec<Diagnostic>,
 }
 
