@@ -173,6 +173,7 @@ pub(crate) fn map_insert(flow: &mut Flow) -> Result<(), RuntimeError> {
     match container.value_type() {
         ValueType::Map => {
             let map_key = to_map_key(&key)?;
+            note_map_mutation(&container);
             let Some(map) = container.map_make_mut() else {
                 return Err(RuntimeError::NotIndexable(type_name(&container)));
             };
@@ -181,6 +182,7 @@ pub(crate) fn map_insert(flow: &mut Flow) -> Result<(), RuntimeError> {
         ValueType::Array => {
             let len = container.as_array().map_or(0, |items| items.len());
             let idx = insert_index(&key, len)?;
+            note_array_mutation(&container);
             let Some(items) = container.array_make_mut() else {
                 return Err(RuntimeError::NotIndexable(type_name(&container)));
             };
@@ -208,6 +210,7 @@ pub(crate) fn map_remove(flow: &mut Flow) -> Result<(), RuntimeError> {
     match container.value_type() {
         ValueType::Map => {
             let map_key = to_map_key(&key)?;
+            note_map_mutation(&container);
             let Some(map) = container.map_make_mut() else {
                 return Err(RuntimeError::NotIndexable(type_name(&container)));
             };
@@ -216,6 +219,7 @@ pub(crate) fn map_remove(flow: &mut Flow) -> Result<(), RuntimeError> {
         ValueType::Array => {
             let len = container.as_array().map_or(0, |items| items.len());
             let idx = array_index(&key, len)?;
+            note_array_mutation(&container);
             let Some(items) = container.array_make_mut() else {
                 return Err(RuntimeError::NotIndexable(type_name(&container)));
             };
@@ -271,6 +275,39 @@ pub(crate) fn push_literal(
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────────
+
+/// Record a COW-copy event if mutating `container` (an `Array`) via the
+/// next `array_make_mut()` call will find a shared `Arc` and pay the O(n)
+/// copy — must be called *before* `array_make_mut`, since that call itself
+/// performs the clone (issue #821 Workstream B seed). No-op — and the
+/// `Arc::strong_count` check itself compiles out — unless the
+/// `bench-counters` feature is enabled.
+#[cfg(feature = "bench-counters")]
+#[inline]
+fn note_array_mutation(container: &Value) {
+    if let Value::Array(items) = container
+        && alloc::sync::Arc::strong_count(items) > 1
+    {
+        crate::bench_counters::record_cow_copy();
+    }
+}
+#[cfg(not(feature = "bench-counters"))]
+#[inline(always)]
+fn note_array_mutation(_container: &Value) {}
+
+/// Same as [`note_array_mutation`] for `Map` containers.
+#[cfg(feature = "bench-counters")]
+#[inline]
+fn note_map_mutation(container: &Value) {
+    if let Value::Map(map) = container
+        && alloc::sync::Arc::strong_count(map) > 1
+    {
+        crate::bench_counters::record_cow_copy();
+    }
+}
+#[cfg(not(feature = "bench-counters"))]
+#[inline(always)]
+fn note_map_mutation(_container: &Value) {}
 
 fn type_name(v: &Value) -> &'static str {
     match v {
@@ -342,6 +379,7 @@ fn write_index(container: &mut Value, index: &Value, value: Value) -> Result<(),
         Value::Array(_) => {
             let len = container.as_array().map_or(0, |items| items.len());
             let i = array_index(index, len)?;
+            note_array_mutation(container);
             let Some(items) = container.array_make_mut() else {
                 return Err(RuntimeError::NotIndexable(type_name(container)));
             };
@@ -359,6 +397,7 @@ fn write_index(container: &mut Value, index: &Value, value: Value) -> Result<(),
                     key: map_key_display(&key),
                 });
             }
+            note_map_mutation(container);
             let Some(map) = container.map_make_mut() else {
                 return Err(RuntimeError::NotIndexable(type_name(container)));
             };

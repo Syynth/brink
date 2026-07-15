@@ -40,6 +40,13 @@ const CRUCIBLE_8_INPUT: &str = include_str!("../../../benchmarks/stories/crucibl
 /// below is a standalone `#[divan::bench]` using `compile_story_brink`.
 const LOOP_APPEND_10K_INK: &str = "../../benchmarks/stories/loop-append-10k/story.ink";
 
+/// Share-then-mutate (issue #821 Workstream A/B seed) benchmark: 5k
+/// iterations of "share a global into another, then mutate the copy" —
+/// the mirror image of [`LOOP_APPEND_10K_INK`]'s never-shared append.
+/// Brink-dialect only, standalone like the loop-append bench (see the
+/// `.ink` file's header for the mechanism this isolates).
+const SHARE_THEN_MUTATE_5K_INK: &str = "../../benchmarks/stories/share-then-mutate-5k/story.ink";
+
 #[expect(clippy::unwrap_used)]
 fn parse_inputs(s: &str) -> Vec<usize> {
     s.lines()
@@ -193,6 +200,70 @@ mod loop_append_bench {
     }
 }
 
+/// Share-then-mutate (issue #821) benchmark: isolates the deliberate
+/// mutate-while-shared cost, matching `loop_append_bench`'s granularity
+/// (link once, run repeatedly). Every iteration re-shares the array before
+/// mutating it, so — unlike `loop_append_bench`, which amortizes to ~0
+/// copies — this pays one COW copy per iteration by construction. See the
+/// `.ink` file's header comment and `docs/runtime-bench.md` for the counted
+/// comparison between the two (`bench-counters` feature).
+mod cow_sharing_bench {
+    use super::{SHARE_THEN_MUTATE_5K_INK, compile_story_brink, run_to_completion};
+
+    #[divan::bench]
+    fn share_then_mutate_5k(bencher: divan::Bencher) {
+        let data = compile_story_brink(SHARE_THEN_MUTATE_5K_INK);
+        #[expect(clippy::unwrap_used)]
+        let (program, line_tables) = brink_runtime::link(&data).unwrap();
+        let program = std::sync::Arc::new(program);
+        bencher.bench_local(|| run_to_completion(&program, line_tables.clone(), &[]));
+    }
+}
+
+/// `ptr_eq` equality fast path (issue #821, value-model-spec §4/§5):
+/// `Value`'s hand-written `PartialEq` short-circuits `Array`/`Map`/`Record`
+/// comparison via `Arc::ptr_eq` before falling back to an element-wise
+/// structural walk. Exercised directly against `brink_format::Value`
+/// rather than through an `.ink` program: brink's `==` operator has no
+/// `Array`/`Map` arm in `value_ops::binary_op` yet (unsupported types fault
+/// `TypeError`), so there is no ink-level equivalent to isolate the
+/// mechanism through today — this bench hits the exact same `PartialEq`
+/// impl the runtime's own `map_contains`/list/record comparisons use,
+/// which is the honest level to measure at (honest mechanism isolation,
+/// per the epic's gate).
+mod ptr_eq_bench {
+    use std::sync::Arc;
+
+    use brink_format::Value;
+
+    /// Large enough that an O(n) structural walk is measurably slower than
+    /// the O(1) `ptr_eq` shortcut, small enough the bench stays fast.
+    const N: i32 = 20_000;
+
+    fn big_array() -> Value {
+        Value::Array(Arc::new((0..N).map(Value::Int).collect()))
+    }
+
+    /// Same `Arc` on both sides (an `Arc::clone` share, e.g. a snapshot
+    /// compared against itself) — hits the `ptr_eq` shortcut, O(1).
+    #[divan::bench]
+    fn same_arc(bencher: divan::Bencher) {
+        let a = big_array();
+        let b = a.clone();
+        bencher.bench_local(|| a == b);
+    }
+
+    /// Distinct allocations with structurally identical contents (e.g. two
+    /// independently-built arrays, or one COW-copied off the other) — the
+    /// `ptr_eq` shortcut misses, falls through to a full O(n) element walk.
+    #[divan::bench]
+    fn distinct_but_equal(bencher: divan::Bencher) {
+        let a = big_array();
+        let b = big_array();
+        bencher.bench_local(|| a == b);
+    }
+}
+
 mod end_to_end {
     use super::{Scenario, compile_story, run_to_completion, scenarios};
 
@@ -271,10 +342,50 @@ fn print_crucible_8_stats() {
     eprintln!("───────────────────────────────────────────────\n");
 }
 
+/// Print `bench_counters` snapshots for the two mechanism-isolation
+/// programs (issue #821 Workstream B seed) — direct proof, not inference,
+/// that `loop-append-10k` amortizes to ~0 COW copies (the §5 cliff, fixed
+/// by #576) while `share-then-mutate-5k` pays exactly one copy per share by
+/// construction. Only compiled when `--features bench-counters` is passed;
+/// with the feature off, `main` skips straight to `divan::main()` and this
+/// function doesn't exist.
+#[cfg(feature = "bench-counters")]
+#[expect(clippy::unwrap_used, clippy::print_stderr)]
+fn print_bench_counters() {
+    use brink_runtime::bench_counters;
+
+    bench_counters::reset();
+    let data = compile_story_brink(LOOP_APPEND_10K_INK);
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let program = std::sync::Arc::new(program);
+    run_to_completion(&program, line_tables, &[]);
+    let loop_append = bench_counters::snapshot();
+
+    bench_counters::reset();
+    let data = compile_story_brink(SHARE_THEN_MUTATE_5K_INK);
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let program = std::sync::Arc::new(program);
+    run_to_completion(&program, line_tables, &[]);
+    let share_then_mutate = bench_counters::snapshot();
+
+    eprintln!("\n── bench-counters (Arc-clone / COW-copy events) ──");
+    eprintln!(
+        "  loop-append-10k:       cow_copies={:>6} arc_clones={:>6}",
+        loop_append.cow_copies, loop_append.arc_clones
+    );
+    eprintln!(
+        "  share-then-mutate-5k:  cow_copies={:>6} arc_clones={:>6}",
+        share_then_mutate.cow_copies, share_then_mutate.arc_clones
+    );
+    eprintln!("───────────────────────────────────────────────────\n");
+}
+
 fn main() {
     // Force scenario initialization before benchmarks run.
     let _ = scenarios();
     print_hanoi_10_stats();
     print_crucible_8_stats();
+    #[cfg(feature = "bench-counters")]
+    print_bench_counters();
     divan::main();
 }

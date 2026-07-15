@@ -31,6 +31,13 @@ default = ["std"]
 # out. Public API and behavior under the default `std` build are unchanged.
 std = ["brink-format/std", "serde/std", "thiserror/std"]
 testing = []
+# Bench-only debug counters (issue #821 Workstream B seed): Arc-clone /
+# COW-copy event counts behind a feature flag so the instrumentation is a
+# compile-time cut, not a runtime toggle — off by default (not part of
+# `default`, and no released consumer should ever enable it), so ordinary
+# builds pay exactly zero cost. See `crates/brink-runtime/src/bench_counters.rs`
+# and `docs/runtime-bench.md`.
+bench-counters = []
 
 [dev-dependencies]
 brink-compiler = { path = "../brink-compiler" }
