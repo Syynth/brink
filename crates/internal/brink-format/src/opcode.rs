@@ -284,8 +284,8 @@ const PROJ_WRITE: u8 = 0xDC;
 // Unicode-scalar-value index `i` (chars, not UTF-8 bytes — author sanity per
 // the issue). Turn-terminating faults (value-model-spec §11c): `s` isn't a
 // `String` (`RuntimeError::NotIndexable`); `i` isn't an `Int`
-// (`RuntimeError::InvalidArrayIndex`); `i` outside `[0, char_count)`
-// (`RuntimeError::IndexOutOfBounds`, `len` = char count).
+// (`RuntimeError::CharAtIndexNotInt`); `i` outside `[0, char_count)`
+// (`RuntimeError::CharAtOutOfBounds`, `len` = char count).
 const CHAR_AT: u8 = 0xDD;
 
 // List ops
