@@ -100,7 +100,9 @@ pub(crate) fn resolutions_index_query(
 /// eliminated. Never another file's HIR: a body edit in file Y leaves file
 /// X's memo fully validated (same `Arc`/pointer), not re-executed.
 /// `Arc`-wrapped for the same pointer-identity reason as [`ResolvedProject`].
-#[salsa::tracked]
+///
+/// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 4096)]
 pub(crate) fn per_file_diagnostics_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
@@ -220,7 +222,9 @@ pub(crate) fn call_site_metas_query(
 /// (the pass reads `by_name` + `kind`, never a symbol's range — see the
 /// analyzer seam's doc), and [`inline_docs_query`] — so a body edit in file
 /// Y leaves file X's memo fully validated (same `Arc`), not re-executed.
-#[salsa::tracked]
+///
+/// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 4096)]
 pub(crate) fn value_meta_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
@@ -245,7 +249,9 @@ pub(crate) fn value_meta_query(
 /// per-file HIR walk `finish_analysis` still ran project-wide. Empty when
 /// the `external_check` severity is `Off` (the same gate the monolithic
 /// path applies before walking any file).
-#[salsa::tracked]
+///
+/// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 4096)]
 pub(crate) fn call_site_diagnostics_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
@@ -419,7 +425,9 @@ pub(crate) fn analysis_query(db: &dyn salsa::Database, project: ProjectInput) ->
 /// (issue #632 / FG-3) rather than through the bundled [`analysis_query`],
 /// so a resolutions-only change (no diagnostic anywhere differs) leaves this
 /// memo's dependency fully validated.
-#[salsa::tracked(returns(ref))]
+///
+/// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
+#[salsa::tracked(returns(ref), lru = 4096)]
 pub(crate) fn diagnostics_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
