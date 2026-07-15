@@ -55,6 +55,11 @@ round):
 - `Value::Projection { cell, segments }` mirroring the frozen
   `VAL_PROJECTION` encoding (cell reference = `VAL_VAR_POINTER`
   payload shape; segments: `0=index i32`, `1=key value`).
+  **Segment kind `2=range (start i32, end i32)` is RESERVED, never
+  emitted in T1e**: sequence slices/ranges are an endorsed future
+  addition (icebox #829) and a slice-as-view is exactly a
+  range-segment projection — the wire must not foreclose it (the
+  flat-rows lesson).
 - Opcodes per the RFC's named reservations: `MakeProjection(desc)`,
   `ProjRead`, `ProjWrite` — first emission of that reserved block.
   `ProjWrite` implements root-cell RMW: take root → walk →
@@ -81,6 +86,15 @@ round):
   `ref` param; path granularity in rows is explicitly NOT attempted
   (mirrors the entity-granular-capability reservation: the slot
   exists in the factored encoding if ever wanted).
+
+## 4b. Related future directions — recorded, not designed
+
+- **Vector math types (vec2/vec3)**: structs-first posture (decision
+  2026-07-15, icebox #827) — the struct feature plus the future
+  methods round should account for them; native types only on #822
+  friction evidence, per the facility-doctrine ladder.
+- **Sequence slices/ranges**: endorsed (icebox #829); design as
+  range-kind projection segments per §3's reservation.
 
 ## 5. Borrow analysis — RULED (doctrine restated)
 
