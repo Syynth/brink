@@ -162,6 +162,7 @@ impl Default for BrinkDatabase {
                 // cutoff-friendly struct-shape projection they read;
                 // `lir_lowering_query` is now the link phase assembling them.
                 .ingredient::<struct_shape_data_query>()
+                .ingredient::<normalized_stamped_query>()
                 .ingredient::<KnotChunkKey<'_>>()
                 .ingredient::<lir_knot_chunk_query>()
                 .ingredient::<lir_lowering_query>()
@@ -1065,6 +1066,31 @@ pub(crate) fn struct_shape_data_query(
     brink_ir::lir::build_struct_shape_data(&hir_refs, &resolved.index)
 }
 
+/// One file's HIR after the pre-LIR normalize + container-id stamp passes,
+/// memoized per file (FG-4d). Without this, each of a K-knot file's per-knot
+/// chunk memos would repeat the file's normalize+stamp, turning a cold
+/// compile into O(K²) work per file; sharing it here keeps the per-def split
+/// from regressing cold compile. Both passes are per-file independent, so
+/// this is byte-identical to the file's slice of the whole-project prelude.
+/// Reads the whole-project index only for label-container stamping (the same
+/// index the monolithic path stamps with), and `HirFile`'s value `Eq`
+/// backdates it across edits that leave this file's normalized shape
+/// unchanged.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn normalized_stamped_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+) -> Arc<HirFile> {
+    let resolved = resolutions_index_query(db, project);
+    let mut hir = lowered_query(db, file).hir.clone();
+    brink_ir::normalize_file(&mut hir);
+    let mut slice = [(file.file_id(db), hir)];
+    brink_ir::stamp_container_ids(&mut slice, &resolved.index);
+    let [(_, stamped)] = slice;
+    Arc::new(stamped)
+}
+
 /// Interned key for [`lir_knot_chunk_query`]: a knot identified by its
 /// declaring file and its index within that file's knot list. Keyed on
 /// `(FileId, knot_index)` rather than the knot's `DefinitionId` so two knots
@@ -1134,13 +1160,9 @@ pub(crate) fn lir_knot_chunk_query(
         .map(|f| (f.file_id(db), f.path(db).clone()))
         .collect();
 
-    // Normalize + stamp this one file in isolation — both passes are
-    // per-file independent, so this is byte-identical to the file's slice of
-    // the whole-project prelude (the composition the monolithic path runs).
-    let mut normalized = vec![(file_id, lowered_query(db, source).hir.clone())];
-    brink_ir::normalize_file(&mut normalized[0].1);
-    brink_ir::stamp_container_ids(&mut normalized, &resolved.index);
-    let hir_file = &normalized[0].1;
+    // The file's normalized+stamped HIR, shared across all its knots'
+    // memos (so a K-knot file normalizes once, not K times).
+    let hir_file = normalized_stamped_query(db, project, source);
     let Some(knot) = hir_file.knots.get(knot_index) else {
         return LoweredChunk::default();
     };
