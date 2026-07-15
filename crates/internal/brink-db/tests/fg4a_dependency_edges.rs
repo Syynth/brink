@@ -208,3 +208,173 @@ fn has_errors_matches_manual_partition_diagnostics() {
         );
     }
 }
+
+/// An error-FREE two-file fixture for the issue #806 probes: the entry file
+/// is plain, clean ink, and `b.ink` is a second project file that `a.ink`
+/// never INCLUDEs. `lir_product().program` is `Some(Arc<Program>)`, so
+/// `lir_lowering_query`'s success branch genuinely runs and its `Arc`
+/// pointer identity is observable — the review finding on PR #809: an
+/// error-state fixture never even calls `lir_lowering_query` (the
+/// `has_errors_query` gate returns `program: None` first), making any
+/// "skipped re-execution" claim vacuous.
+fn clean_program_fixture() -> ProjectDb {
+    let mut db = ProjectDb::new();
+    db.set_file(
+        "a.ink",
+        "=== a_knot ===\nA scene line.\n-> END\n".to_owned(),
+    );
+    db.set_file(
+        "b.ink",
+        "=== b_knot ===\nSide content.\n-> END\n".to_owned(),
+    );
+    db.set_entry("a.ink");
+    db
+}
+
+/// The lir_query-level FG-4a non-re-execution probe (issue #806), the part
+/// that is provable today: `AnalysisOptions` edits that don't change any
+/// lowering input must NOT re-execute `lir_lowering_query`. Because that
+/// query is `no_eq` (a re-execution always allocates and stores a fresh
+/// `Arc<Program>`, even if byte-identical), surviving `Arc::ptr_eq` across
+/// an edit IS the proof its closure never ran — salsa only returns the same
+/// stored allocation when the memo is fully validated without re-execution.
+///
+/// Two levers, both of which broke pointer identity before the `.types`
+/// read was routed through the narrow `type_policy_query` projection (a raw
+/// `project.analysis_options(db).types` field read depends on the whole
+/// `AnalysisOptions` input field, and a salsa input write always bumps the
+/// field revision — even a value-identical one):
+///
+/// 1. a no-op re-set of the identical default `AnalysisOptions`, and
+/// 2. a genuine toggle of an options field `lir_lowering_query` never reads
+///    (`semantic_type_check`; the fixture has no semantic types anywhere,
+///    so no diagnostic changes and `has_errors()` stays `false`).
+#[test]
+fn lir_program_arc_survives_options_edits_that_leave_lowering_inputs_untouched() {
+    let mut db = clean_program_fixture();
+
+    // Non-vacuity: the program-generating phase really ran — the fixture is
+    // error-free and produced a real program Arc to observe.
+    assert!(!db.has_errors(), "fixture must be error-free");
+    let before = db
+        .lir_product()
+        .expect("entry set")
+        .program
+        .clone()
+        .expect("an error-free fixture must produce Some(Arc<Program>)");
+
+    // Lever 1: re-set the exact same (default) options value. Salsa bumps
+    // the input-field revision regardless of value equality, so only a
+    // backdating-capable projection between the field and the lowering memo
+    // keeps the memo validated.
+    db.set_analysis_options(AnalysisOptions::default());
+    let after_noop = db
+        .lir_product()
+        .expect("entry set")
+        .program
+        .clone()
+        .expect("still error-free after a no-op options re-set");
+    assert!(
+        Arc::ptr_eq(&before, &after_noop),
+        "a value-identical AnalysisOptions re-set re-executed \
+         lir_lowering_query (issue #806 FG-4a: the raw `.types` input-field \
+         read leak)"
+    );
+
+    // Lever 2: toggle a field the lowering never reads. No semantic types
+    // exist anywhere in the fixture, so raising `semantic_type_check` to
+    // `Error` changes no diagnostic — but it IS a real options-input write.
+    db.set_analysis_options(AnalysisOptions {
+        semantic_type_check: SemanticTypeDiagnosticSeverity::Error,
+        ..AnalysisOptions::default()
+    });
+    // Non-vacuity: the edit actually took.
+    assert_eq!(
+        db.analysis_options().semantic_type_check,
+        SemanticTypeDiagnosticSeverity::Error,
+        "the options toggle must be observable, or this lever is vacuous"
+    );
+    assert!(!db.has_errors(), "the toggle must not introduce an error");
+    let after_toggle = db
+        .lir_product()
+        .expect("entry set")
+        .program
+        .clone()
+        .expect("still error-free after the unrelated-field toggle");
+    assert!(
+        Arc::ptr_eq(&before, &after_toggle),
+        "toggling an AnalysisOptions field lir_lowering_query never reads \
+         (`semantic_type_check`) re-executed it (issue #806 FG-4a: the raw \
+         `.types` input-field read leak)"
+    );
+}
+
+/// The diagnostics-content half of the issue #806 probe, scoped to what is
+/// true today: a warning-only text edit (unreachable-after-`-> END` content
+/// in `b.ink` → `E033`, Warning severity) keeps `has_errors() == false`, so
+/// the `lir_query` error gate stays open and the program stays `Some`.
+///
+/// Deliberately NOT asserted here: `Arc::ptr_eq` across this edit. `b.ink`
+/// is unreachable from the entry (never `INCLUDE`d), but
+/// `IncludeGraph::topological_order`'s all-files fallback appends every
+/// unreachable project file to the lowering order, so `b.ink`'s
+/// `lowered_query` HIR is a *genuine* recorded input of `lir_lowering_query`
+/// today — any text edit to any project file legitimately re-executes the
+/// memo, warning-only or not. That input over-breadth is issue #815
+/// (deliberately out of scope for #806 / PR #809); once #815 narrows
+/// lowering inputs to include-reachable files, upgrade this test to assert
+/// `Arc::ptr_eq(&before_program, &after.program.unwrap())` across this
+/// exact edit.
+#[test]
+fn warning_only_edit_in_unincluded_file_keeps_error_verdict_and_program() {
+    let mut db = clean_program_fixture();
+
+    let before = db.lir_product().expect("entry set").clone();
+    let before_program = before
+        .program
+        .clone()
+        .expect("an error-free fixture must produce Some(Arc<Program>)");
+    assert!(!db.has_errors(), "fixture must be error-free");
+    assert!(
+        !before
+            .warnings
+            .iter()
+            .any(|d| d.code == DiagnosticCode::E033),
+        "E033 must not fire before the edit, or this test is vacuous: {:?}",
+        before.warnings
+    );
+
+    // Warning-only diagnostics-content edit: content after `-> END` is
+    // unreachable → E033 (Warning severity), no error anywhere.
+    db.update_file(
+        "b.ink",
+        "=== b_knot ===\n-> END\nUnreachable side content.\n".to_owned(),
+    );
+
+    let after = db.lir_product().expect("entry set").clone();
+
+    // Non-vacuity: the diagnostics content really changed.
+    assert!(
+        after
+            .warnings
+            .iter()
+            .any(|d| d.code == DiagnosticCode::E033),
+        "the edit must add an E033 warning, or this test is vacuous: {:?}",
+        after.warnings
+    );
+
+    // The error verdict did not flip, so the gate stayed open and the
+    // program is still generated.
+    assert!(
+        !db.has_errors(),
+        "a warning-only edit must not flip has_errors()"
+    );
+    assert!(
+        after.program.is_some(),
+        "a warning-only edit must not gate off the program"
+    );
+    // See the doc comment: pointer identity across this lever is #815's
+    // acceptance criterion, not #806's — `before_program` is captured above
+    // so the upgrade is a one-line change.
+    drop(before_program);
+}
