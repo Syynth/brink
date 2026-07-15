@@ -1,0 +1,4 @@
+Index of 5: 4.
+Index of 4: -1.
+Index of 9: 8.
+Index of -3: 0.
