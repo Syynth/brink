@@ -54,6 +54,31 @@
 //! wrong file's declaration. With locals gone, dropping the rest is
 //! behavior-neutral by construction (locked by the `query_equivalence` tests
 //! and the oracle gate).
+//!
+//! # Memory bounding (FG-5, issue #647, decision log "FG-5 memory bounding")
+//!
+//! The per-file query families (`parse`, `lowered`, `suppressions`,
+//! `resolve`, `per_file_diagnostics`, `value_meta`, `call_site_diagnostics`,
+//! `diagnostics`) and the per-def families keyed by [`DefKey`]
+//! (`signature`, `def_body`,
+//! `referenced_globals`, `call_edges`, `solve_scc`, `inferred_signature`,
+//! `infer_body`) each carry a salsa `lru` capacity — a **runaway guard**,
+//! not a working-set trim. Issue #537's measurement (large synthetic
+//! projects, 2,000-edit sessions) showed every one of these families scales
+//! with live project size and shows zero session-length growth, so a tight
+//! LRU would only evict live working-set entries and buy recompute churn on
+//! big projects, never save memory. The ceilings are sized far above
+//! realistic project scale on purpose (≈30× the measured 132-file scale for
+//! per-file families, ≈10× the measured 1,549-def scale for per-def
+//! families) so they never evict in steady state, and exist only to cap the
+//! pathological/runaway case. **No eviction *policy* design happened here**
+//! — that was explicitly ruled out by the data; see the decision log entry
+//! for the full ruling. `def_body`, `solve_scc`, `signature`, `infer_body`,
+//! and `lowered` additionally specify a `heap_size` estimator
+//! ([`heap_size`], issue #538) — the families #537 flagged as the dominant
+//! Arc-hidden payloads, so `crate::memory::snapshot`'s `heap_bytes` column
+//! reads `Some(_)` for them instead of the honest-`None` every query
+//! reported before this pass.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -72,6 +97,7 @@ use crate::determinism::{LookupMap, LookupSet};
 use crate::include_graph::IncludeGraph;
 
 mod analysis;
+mod heap_size;
 
 pub use analysis::ResolvedProject;
 pub(crate) use analysis::{
@@ -221,7 +247,11 @@ pub(crate) struct ProjectInput {
 // ─── Layer 1: per-file queries ───────────────────────────────────────
 
 /// Parse one file's text into a lossless CST.
-#[salsa::tracked(returns(ref))]
+///
+/// `lru = 4096`: a per-file runaway-guard ceiling (issue #647, decision log
+/// "FG-5 memory bounding"), not a working-set trim — see this module's doc
+/// comment's "Memory bounding" section.
+#[salsa::tracked(returns(ref), lru = 4096)]
 pub(crate) fn parse_query(db: &dyn salsa::Database, file: SourceFile) -> Parse {
     brink_syntax::parse(file.text(db))
 }
@@ -238,13 +268,20 @@ pub(crate) struct LoweredFile {
 /// Lower one file to HIR. Salsa's dependency tracking on the `parse` input
 /// replaces the retired per-knot green-node/byte-offset cache (`knot_cache`):
 /// the composition below is byte-identical to what `set_file` produced.
-#[salsa::tracked(returns(ref))]
+///
+/// `lru = 4096`: per-file runaway-guard ceiling (issue #647). `heap_size`:
+/// one of the five #538/#647 estimators — #537 flagged this family's
+/// per-def analogues (`def_body`/`solve_scc`) as the dominant Arc-hidden
+/// payload; this is the per-file sibling.
+#[salsa::tracked(returns(ref), lru = 4096, heap_size = heap_size::lowered_file_heap_size)]
 pub(crate) fn lowered_query(db: &dyn salsa::Database, file: SourceFile) -> LoweredFile {
     lower_file(file.file_id(db), parse_query(db, file))
 }
 
 /// Parsed suppression/expectation directives for one file.
-#[salsa::tracked(returns(ref))]
+///
+/// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
+#[salsa::tracked(returns(ref), lru = 4096)]
 pub(crate) fn suppressions_query(db: &dyn salsa::Database, file: SourceFile) -> Suppressions {
     parse_suppressions(file.text(db))
 }
@@ -375,7 +412,9 @@ pub(crate) fn resolution_index_query(
 /// projection for globals and this file's own `manifest.locals` for
 /// param/temp lookups — the per-file dependency edge that lets a `~ temp`
 /// edit in file Y leave file X's memo untouched (issue #517).
-#[salsa::tracked(returns(ref))]
+///
+/// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
+#[salsa::tracked(returns(ref), lru = 4096)]
 pub(crate) fn resolve_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
@@ -442,7 +481,14 @@ pub(crate) struct DefKey<'db> {
 /// reading it is the same coarse dependency shape `per_file_diagnostics_query`
 /// already reads `host_manifest` at, not a reintroduction of whole-project
 /// per-file churn.
-#[salsa::tracked]
+///
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647, decision log
+/// "FG-5 memory bounding" — #537's data showed this family scales with
+/// live project defs, never with session length, so the ceiling is sized
+/// far above realistic project scale and never evicts in steady state).
+/// `heap_size = heap_size::signature_heap_size`: one of the five #538
+/// estimators — #537 named `signature` the widest-fanout per-def memo.
+#[salsa::tracked(lru = 16384, heap_size = heap_size::signature_heap_size)]
 pub(crate) fn signature_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -549,7 +595,11 @@ pub(crate) struct DefBody {
     pub body: brink_ir::Block,
 }
 
-#[salsa::tracked]
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647). `heap_size =
+/// heap_size::def_body_heap_size`: one of the five #538 estimators — #537
+/// named `def_body` (holds a full HIR `Block` clone per def) one of the
+/// two dominant Arc-hidden-payload families.
+#[salsa::tracked(lru = 16384, heap_size = heap_size::def_body_heap_size)]
 pub(crate) fn def_body_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -587,7 +637,9 @@ pub(crate) fn def_body_query<'db>(
 /// `project.analysis_options(db)` here would only add a needless
 /// project-wide invalidation edge to the FG-2.1 narrow per-def dependency
 /// this query exists to keep narrow, for zero behavioral benefit.
-#[salsa::tracked]
+///
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 16384)]
 pub(crate) fn referenced_globals_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -634,7 +686,9 @@ pub(crate) fn referenced_globals_query<'db>(
 /// pass 1 discards every computed type, so the manifest can never change
 /// this query's output, and reading `project.analysis_options(db)` here
 /// would only widen this per-def query's dependency edge for no benefit.
-#[salsa::tracked]
+///
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 16384)]
 pub(crate) fn call_edges_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -763,7 +817,12 @@ pub(crate) struct SolvedScc {
 /// whole-project-HIR churn FG-2/FG-2.1 eliminated — a doc-content-preserving
 /// edit backdates through `inline_docs_query`'s own `Eq` cutoff exactly like
 /// every other reader of that memo.
-#[salsa::tracked]
+///
+/// `lru = 16384`: per-def (per-SCC) runaway-guard ceiling (issue #647).
+/// `heap_size = heap_size::solve_scc_heap_size`: one of the five #538
+/// estimators — #537 named `solve_scc` (holds signatures+bodies per SCC)
+/// the other dominant Arc-hidden-payload family alongside `def_body`.
+#[salsa::tracked(lru = 16384, heap_size = heap_size::solve_scc_heap_size)]
 pub(crate) fn solve_scc_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -863,7 +922,9 @@ pub(crate) fn solve_scc_query<'db>(
 /// the missing per-def API TM-2's firewall consumer needs most). `None` for
 /// a def with no inferable body (not a knot/stitch, or an unknown id) — same
 /// `None` contract as [`signature_query`]/[`infer_body_query`].
-#[salsa::tracked]
+///
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 16384)]
 pub(crate) fn inferred_signature_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -914,7 +975,10 @@ pub(crate) fn type_inference_query(
 /// whole-project `type_inference_query` memo pre-decomposition. `None` for a
 /// def with no inferable body (not a knot/stitch, or an unknown id) — same
 /// `None` contract as [`signature_query`].
-#[salsa::tracked]
+///
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647). `heap_size =
+/// heap_size::infer_body_heap_size`: one of the five #538 estimators.
+#[salsa::tracked(lru = 16384, heap_size = heap_size::infer_body_heap_size)]
 pub(crate) fn infer_body_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -1044,11 +1108,15 @@ pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput
     let resolved = resolutions_index_query(db, project);
 
     // LIR inputs in topological include order (paste-before semantics),
-    // mirroring `Driver::lir_inputs`.
+    // mirroring `Driver::lir_inputs`. Narrowed to `entry`'s transitive
+    // `INCLUDE` closure (issue #815) — files outside it never lower here;
+    // their diagnostics still run independently via
+    // `analysis_diagnostics_query`/`diagnostics_query` below and in
+    // `super::diagnostics_query`, which iterate `project.files(db)`
+    // directly rather than through this topo order.
     let graph = include_graph_query(db, project);
-    let all_ids: Vec<FileId> = files.iter().map(|f| f.file_id(db)).collect();
     let by_id: LookupMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
-    let topo = graph.topological_order(entry, &all_ids);
+    let topo = graph.topological_order(entry);
     let hir_refs: Vec<(FileId, &HirFile)> = topo
         .iter()
         .filter_map(|id| by_id.get(id).map(|f| (*id, &lowered_query(db, *f).hir)))

@@ -14,10 +14,14 @@
 //! been individually audited: either the collection is queried only by
 //! `.get()`/`.contains()`/keyed insertion (order never observed downstream),
 //! or every place it's iterated for output already sorts first (see
-//! `include_graph.rs`'s `find_cycle`, `roots`, `compute_projects`,
-//! `topological_order`, all of which sort their candidate lists by
-//! `FileId.0` before use — and `queries::mod`'s `partition_diagnostics`,
-//! which sorts by `FileId` before re-emitting). Routing an audited site
+//! `include_graph.rs`'s `find_cycle`, `roots`, `compute_projects`, both of
+//! which sort their candidate lists by `FileId.0` before use — and
+//! `queries::mod`'s `partition_diagnostics`, which sorts by `FileId` before
+//! re-emitting). `topological_order`'s DFS never iterates a hashed
+//! collection for output at all (issue #815): its `visited` set is queried
+//! only by `.insert()`'s membership test, and the emitted order comes solely
+//! from `IncludeGraph::includes`' `Vec<FileId>` (insertion-ordered from each
+//! file's own `INCLUDE` statements), not from map iteration. Routing an audited site
 //! through the alias — instead of a bare per-site
 //! `#[expect(clippy::disallowed_types)]` — keeps the lint live for every
 //! *new* use: a fresh `HashMap`/`HashSet` anywhere else in the crate still
