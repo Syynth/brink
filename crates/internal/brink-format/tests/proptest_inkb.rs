@@ -132,6 +132,22 @@ fn arb_value_type() -> impl Strategy<Value = ValueType> {
         // now produce a `Handle` payload, same rationale as the collection
         // types above.
         Just(ValueType::Handle),
+        // T1e projection value type (docs/t1e-spec.md §3): `arb_value` below
+        // can now produce a `Projection` payload, same rationale.
+        Just(ValueType::Projection),
+    ]
+}
+
+/// A single `ProjSegment` — scalar-only payloads (never a full recursive
+/// `Value`) so `arb_value_leaf` can stay a leaf generator (T1e, segment
+/// values are always scalar in practice: an index, a map key, or a struct
+/// field name).
+fn arb_proj_segment() -> impl Strategy<Value = brink_format::ProjSegment> {
+    prop_oneof![
+        any::<i32>().prop_map(brink_format::ProjSegment::Index),
+        any::<i32>().prop_map(|n| brink_format::ProjSegment::Key(Value::Int(n))),
+        ".*".prop_map(|s: String| brink_format::ProjSegment::Key(Value::String(s.into()))),
+        any::<bool>().prop_map(|b| brink_format::ProjSegment::Key(Value::Bool(b))),
     ]
 }
 
@@ -166,6 +182,15 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
         // tag's first emission — round-tripped here like every other value
         // tag.
         (arb_name_id(), any::<u64>()).prop_map(|(kind, id)| Value::handle(kind, id)),
+        // T1e projection values (docs/t1e-spec.md §3): the reserved
+        // `VAL_PROJECTION` tag's first emission — round-tripped here like
+        // every other value tag. Segment kind `2=range` stays RESERVED
+        // (never generated — `arb_proj_segment` has no such arm).
+        (
+            arb_def_id(),
+            prop::collection::vec(arb_proj_segment(), 0..4)
+        )
+            .prop_map(|(cell, segments)| Value::projection(cell, segments)),
     ]
 }
 

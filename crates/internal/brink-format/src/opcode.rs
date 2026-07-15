@@ -249,6 +249,33 @@ const MAKE_CLOSURE: u8 = 0xD7;
 const CALL_VALUE: u8 = 0xD8;
 const BIND_VALUE: u8 = 0xD9;
 
+// Projection opcodes (T1e, `docs/format-v4-rfc.md` §3 "Projections" — named
+// there, numerically unallocated; assigned here, contiguous and adjacent to
+// the function-value block above, this PR's own reservation). First live
+// emission of the reserved projection surface (`docs/t1e-spec.md` §3/§8
+// T1e-2).
+//   0xDA MakeProjection(root, segment_count)   0xDB ProjRead
+//   0xDC ProjWrite
+// `MakeProjection` pops `segment_count` values off the stack (pushed by
+// codegen in source order; the VM's LIFO pop collects them reversed, then
+// reverses once more to restore source order — same shape `MakeClosure`'s
+// bound-arg row uses) and classifies each into a `ProjSegment` (`Int` →
+// `Index`, else → `Key`,
+// `docs/format-v4-rfc.md` §1), building a `Value::Projection` rooted at
+// `root`. `ProjRead`/`ProjWrite` implement the spec's root-cell RMW
+// discipline (take root → walk → `make_mut` spine → write → store back);
+// both fault `RuntimeError::ProjectionInvalidated` on a path that no longer
+// resolves (shrunk array, missing key, removed struct field — spec §1(2)).
+// The compiler's own emission path for dereferencing a projection-bound
+// `ref` parameter reuses the *same* underlying walk (`brink_runtime::proj_ops`)
+// through `GetTemp`/`SetTemp`/`TakeTemp`'s additive `Value::Projection`
+// dispatch arm rather than interleaving these bytes at every param access —
+// see those opcodes' VM dispatch for the shared implementation. `ProjRead`/
+// `ProjWrite` remain real, independently encodable/dispatchable opcodes.
+const MAKE_PROJECTION: u8 = 0xDA;
+const PROJ_READ: u8 = 0xDB;
+const PROJ_WRITE: u8 = 0xDC;
+
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
 const LIST_NOT_CONTAINS: u8 = 0xB1;
@@ -409,6 +436,11 @@ pub enum DecodeError {
     /// `docs/modules-spec.md` §5) carried a version byte this reader doesn't
     /// know how to decode.
     UnsupportedSectionVersion { section: u8, version: u8 },
+    /// A `VAL_PROJECTION` segment carried an unknown kind byte — either
+    /// malformed bytecode or the RESERVED range-segment kind (`2`,
+    /// `docs/format-v4-rfc.md` §1), which nothing emits in T1e and the
+    /// reader therefore rejects (`docs/t1e-spec.md` §3).
+    InvalidProjSegmentKind(u8),
 }
 
 impl fmt::Display for DecodeError {
@@ -458,6 +490,9 @@ impl fmt::Display for DecodeError {
                     f,
                     "unsupported section-local version {version} for section {section:#04x}"
                 )
+            }
+            Self::InvalidProjSegmentKind(b) => {
+                write!(f, "invalid projection segment kind: {b:#04x}")
             }
         }
     }
@@ -734,6 +769,29 @@ pub enum Opcode {
     /// callee is not a function value; `bound + argc` exceeds the target's
     /// declared arity.
     BindValue(u8),
+
+    // ── Path projections (T1e, `docs/t1e-spec.md` §3) ─────────────────────
+    /// `[seg_0, …, seg_{n-1}]` → `Projection` (`n` = `segment_count`, pushed
+    /// by codegen in source order; the VM's LIFO pop-then-reverse restores
+    /// it). Each popped value is classified `Int` → `ProjSegment::Index`, else →
+    /// `ProjSegment::Key` and paired with the static `root` cell to build a
+    /// `Value::Projection` (`docs/format-v4-rfc.md` §1). Emitted at every
+    /// real path-projection `ref`-argument creation site (`ref
+    /// npc.inventory[3]`) — the T1e-1 `E099` lowering fence this replaces.
+    MakeProjection {
+        root: DefinitionId,
+        segment_count: u8,
+    },
+    /// `[projection]` → value. Root-cell RMW read: take the root cell's
+    /// *current* value, walk the segment chain, push the result. Faults
+    /// `ProjectionInvalidated` (turn-terminating) if the path no longer
+    /// resolves (spec §1(2)).
+    ProjRead,
+    /// `[projection, value]` → (assigns, pushes nothing). Root-cell RMW
+    /// write: take root → walk → `make_mut` spine → write the final segment
+    /// → store back (spec §3). Faults `ProjectionInvalidated` on an
+    /// unresolved path, same domain as `ProjRead`.
+    ProjWrite,
 
     // ── Lifecycle ───────────────────────────────────────────────────────
     Done,
@@ -1058,6 +1116,18 @@ impl Opcode {
                 write_u8(buf, argc);
             }
 
+            // Path projections (T1e)
+            Self::MakeProjection {
+                root,
+                segment_count,
+            } => {
+                write_u8(buf, MAKE_PROJECTION);
+                write_def_id(buf, root);
+                write_u8(buf, segment_count);
+            }
+            Self::ProjRead => write_u8(buf, PROJ_READ),
+            Self::ProjWrite => write_u8(buf, PROJ_WRITE),
+
             // Lifecycle
             Self::Done => write_u8(buf, DONE),
             Self::Yield => write_u8(buf, YIELD),
@@ -1268,6 +1338,14 @@ impl Opcode {
             },
             CALL_VALUE => Self::CallValue(read_u8(buf, offset)?),
             BIND_VALUE => Self::BindValue(read_u8(buf, offset)?),
+
+            // Path projections (T1e)
+            MAKE_PROJECTION => Self::MakeProjection {
+                root: read_def_id(buf, offset)?,
+                segment_count: read_u8(buf, offset)?,
+            },
+            PROJ_READ => Self::ProjRead,
+            PROJ_WRITE => Self::ProjWrite,
 
             // Lifecycle
             DONE => Self::Done,

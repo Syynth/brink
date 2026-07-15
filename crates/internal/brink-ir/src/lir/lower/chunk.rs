@@ -237,6 +237,15 @@ fn remap_call_args(args: &mut [lir::CallArg], map: &[NameId]) {
             CallArg::Value(e) => remap_expr(e, map),
             CallArg::RefTemp(_, name) => relocate(name, map),
             CallArg::RefGlobal(_) => {}
+            // T1e: segment expressions can reference temps (e.g. `ref
+            // party[idx]`), same remap need as an ordinary `Value` arg. The
+            // root is always a global `DefinitionId`, never remapped (same
+            // as `RefGlobal`).
+            CallArg::RefProjection { segments, .. } => {
+                for seg in segments {
+                    remap_expr(seg, map);
+                }
+            }
         }
     }
 }

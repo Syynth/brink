@@ -123,6 +123,7 @@ fn type_name(v: &Value) -> &'static str {
         Value::Record { .. } => "record",
         Value::FnRef(_) | Value::Closure(_) => "fn",
         Value::Handle { .. } => "handle",
+        Value::Projection(_) => "projection",
     }
 }
 

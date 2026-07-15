@@ -12,7 +12,9 @@ use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::opcode::{ChoiceFlags, Opcode, SequenceKind};
 use crate::story::StoryData;
-use crate::value::{ClosureEnvEntry, ListValue, MapKey, OrderedMap, ShapeId, Value, ValueType};
+use crate::value::{
+    ClosureEnvEntry, ListValue, MapKey, OrderedMap, ProjSegment, ShapeId, Value, ValueType,
+};
 
 #[derive(Parser)]
 #[grammar = "inkt/inkt.pest"]
@@ -240,6 +242,7 @@ fn parse_value_type(pair: P<'_>) -> Result<ValueType, InktParseError> {
         "record" => Ok(ValueType::Record),
         "fn_ref" => Ok(ValueType::FnRef),
         "closure" => Ok(ValueType::Closure),
+        "projection" => Ok(ValueType::Projection),
         _ => Err(err(&pair, format!("unknown value type: {s}"))),
     }
 }
@@ -324,6 +327,9 @@ fn parse_value(pair: P<'_>, type_hint: Option<ValueType>) -> Result<Value, InktP
         // — reader lands with the writer in this same PR (never repeat the
         // #742 write/read asymmetry).
         Rule::handle_value => parse_handle_value(inner),
+        // T1e projection values (docs/t1e-spec.md §3) — reader lands with the
+        // writer in this same PR (never repeat the #742 write/read asymmetry).
+        Rule::projection_value => parse_projection_value(inner),
         // T1c function values (docs/t1c-spec.md §1/§6) — the read-side legs
         // paired with `write_value`'s `record`/`fn_ref`/`closure` atoms
         // (issue #742: writer/reader must stay in sync, dump-parity rule).
@@ -364,6 +370,63 @@ fn parse_handle_value(pair: P<'_>) -> Result<Value, InktParseError> {
         .parse()
         .map_err(|_| err(&id_pair, "invalid handle id"))?;
     Ok(Value::handle(NameId(kind), id))
+}
+
+/// Parse a `projection_value` node (`(projection <cell> (segments
+/// <segment>…))`) into a [`Value::projection`] — the read-side leg paired
+/// with `write_value`'s `(projection …)` atom (issue #742 discipline,
+/// `docs/t1e-spec.md` §3).
+fn parse_projection_value(pair: P<'_>) -> Result<Value, InktParseError> {
+    let mut children = pair.into_inner();
+    let cell_pair = children.next().ok_or_else(|| InktParseError {
+        message: "expected cell def_id in projection".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let cell = parse_def_id(cell_pair)?;
+    let segs_pair = children.next().ok_or_else(|| InktParseError {
+        message: "expected segments in projection".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let mut segments = Vec::new();
+    for seg in segs_pair.into_inner() {
+        // `proj_segment` wraps exactly one of `index_segment`/`key_segment`.
+        let inner = seg.into_inner().next().ok_or_else(|| InktParseError {
+            message: "empty projection segment".into(),
+            line: 0,
+            col: 0,
+        })?;
+        match inner.as_rule() {
+            Rule::index_segment => {
+                let n_pair = inner.into_inner().next().ok_or_else(|| InktParseError {
+                    message: "expected integer in index segment".into(),
+                    line: 0,
+                    col: 0,
+                })?;
+                let n: i32 = n_pair
+                    .as_str()
+                    .parse()
+                    .map_err(|_| err(&n_pair, "invalid index segment"))?;
+                segments.push(ProjSegment::Index(n));
+            }
+            Rule::key_segment => {
+                let v_pair = inner.into_inner().next().ok_or_else(|| InktParseError {
+                    message: "expected value in key segment".into(),
+                    line: 0,
+                    col: 0,
+                })?;
+                segments.push(ProjSegment::Key(parse_value(v_pair, None)?));
+            }
+            other => {
+                return Err(err(
+                    &inner,
+                    format!("unexpected projection segment rule: {other:?}"),
+                ));
+            }
+        }
+    }
+    Ok(Value::projection(cell, segments))
 }
 
 /// Parse a `map_value` node (`(map (key value)…)`) into a [`Value::Map`].

@@ -109,12 +109,20 @@ pub(crate) const VAL_CLOSURE: u8 = 0x0C;
 // host-resource tokens. `kind NameId, u64 id` — no live pointer, no
 // dedicated opcode; handles enter the script world only via bindings.
 pub(crate) const VAL_HANDLE: u8 = 0x0D;
-
-// Reserved v4 value tags — numeric assignments frozen by the one-bump rule,
-// emitted by nothing in 4.0 (each is materialized when its milestone lands,
-// still under VERSION 4). The strict reader rejects them until then because no
-// `Value` variant exists to decode into. See `docs/format-v4-rfc.md` §1:
-//   0x0E VAL_PROJECTION (T1e)
+// T1e (`docs/t1e-spec.md` §3, `docs/format-v4-rfc.md` §1): symbolic path
+// projections. `cell reference (= VAL_VAR_POINTER payload shape), u8 segment
+// count, then segments (u8 kind: 0=index i32 / 1=key value)`. Segment kind
+// `2=range` is RESERVED — never emitted (icebox #829). First emission of
+// this reserved tag.
+pub(crate) const VAL_PROJECTION: u8 = 0x0E;
+/// Wire kind for a [`crate::ProjSegment::Index`] segment.
+pub(crate) const PROJ_SEG_INDEX: u8 = 0x00;
+/// Wire kind for a [`crate::ProjSegment::Key`] segment.
+pub(crate) const PROJ_SEG_KEY: u8 = 0x01;
+// Segment kind 0x02 (range: start i32, end i32) is RESERVED — sequence
+// slices/ranges (icebox #829). Never emitted; the reader rejects it
+// (`InvalidProjSegmentKind`) since no `ProjSegment` variant exists to decode
+// into, the same discipline the value-tag reservations above follow.
 
 // LineContent tags
 pub(crate) const LINE_PLAIN: u8 = 0x00;

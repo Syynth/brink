@@ -19,7 +19,7 @@ use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, SelectKey};
 use crate::opcode::{ChoiceFlags, Opcode, SequenceKind};
 use crate::story::StoryData;
-use crate::value::{ListValue, MapKey, Value, ValueType};
+use crate::value::{ListValue, MapKey, ProjSegment, Value, ValueType};
 
 /// Write the textual (.inkt) representation of a compiled story.
 pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
@@ -590,6 +590,14 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         } => write!(w, "make_closure {target} bound={bound_count}"),
         Opcode::CallValue(argc) => write!(w, "call_value argc={argc}"),
         Opcode::BindValue(argc) => write!(w, "bind_value argc={argc}"),
+
+        // Path projections (T1e)
+        Opcode::MakeProjection {
+            root,
+            segment_count,
+        } => write!(w, "make_projection {root} segments={segment_count}"),
+        Opcode::ProjRead => write!(w, "proj_read"),
+        Opcode::ProjWrite => write!(w, "proj_write"),
     }
 }
 
@@ -646,6 +654,7 @@ fn value_type_name(vt: ValueType) -> &'static str {
         ValueType::FnRef => "fn_ref",
         ValueType::Closure => "closure",
         ValueType::Handle => "handle",
+        ValueType::Projection => "projection",
     }
 }
 
@@ -729,6 +738,29 @@ fn write_value(w: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
         // — kind as its raw NameId (the human-readable kind name lives in the
         // name table, resolved by tooling that has it, not by this dump).
         Value::Handle { kind, id } => write!(w, "(handle {} {id})", kind.0),
+        // Projection values (T1e, `docs/t1e-spec.md` §3): `(projection <cell>
+        // (segments <seg>…))`, each segment `(index <n>)` or `(key <value>)`
+        // — the reader parity this dump exists for (dump/reader parity, the
+        // #742 lesson).
+        Value::Projection(p) => {
+            write!(w, "(projection {} (segments", p.cell)?;
+            for seg in &p.segments {
+                write!(w, " ")?;
+                write_proj_segment(w, seg)?;
+            }
+            write!(w, "))")
+        }
+    }
+}
+
+fn write_proj_segment(w: &mut dyn fmt::Write, seg: &ProjSegment) -> fmt::Result {
+    match seg {
+        ProjSegment::Index(n) => write!(w, "(index {n})"),
+        ProjSegment::Key(v) => {
+            write!(w, "(key ")?;
+            write_value(w, v)?;
+            write!(w, ")")
+        }
     }
 }
 

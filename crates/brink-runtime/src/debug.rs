@@ -17,6 +17,7 @@ use brink_format::{DefinitionId, Value};
 
 use crate::collections::Map as HashMap;
 use crate::program::Program;
+use crate::value_ops;
 
 /// A structured, read-only snapshot of the runtime's current state.
 pub struct DebugSnapshot {
@@ -191,6 +192,10 @@ impl<'p> NameResolver<'p> {
                 let kind_name = self.program.name_checked(*kind).unwrap_or("?");
                 format!("handle {kind_name}#{id}")
             }
+            // Projection values (T1e, `docs/t1e-spec.md` §4). Same display
+            // form as the runtime's authoritative `string(p)`
+            // (`value_ops::stringify`).
+            Value::Projection(_) => value_ops::stringify(value, self.program),
         }
     }
 }

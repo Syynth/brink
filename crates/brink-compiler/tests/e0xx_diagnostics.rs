@@ -797,14 +797,19 @@ fn e098_strict_unknown_field_segment() {
 }
 
 #[test]
-fn e099_path_projection_not_yet_lowerable() {
-    // T1e-1 ships grammar + HIR + analyzer only (docs/t1e-spec.md §8
-    // sequencing item 1) — a genuine path projection (a real segment, not a
-    // bare single-name `ref`) that passes every analyzer check still hits
-    // the E052-fence pattern at LIR lowering: no `MakeProjection` support
-    // until T1e-2.
+fn real_path_projection_lowers_for_real_no_longer_e099() {
+    // T1e-2 (docs/t1e-spec.md §3, tracking #828) replaces the T1e-1 E099
+    // lowering fence with real `MakeProjection` emission for a genuine path
+    // projection (a real segment, not a bare single-name `ref`) that passes
+    // every analyzer check. `npc` here has no statically-known STRUCT shape
+    // (gradual mode, no `VAR npc: Shape` annotation), so `.hp` is a runtime
+    // by-name segment — exactly the case the old fence used to stop at.
     let source = format!("VAR npc = 5\n{HEAL_SRC}=== main ===\n~ heal(ref npc.hp, 5)\n-> DONE\n");
-    assert_error_at(&source, brink_options(), DiagnosticCode::E099, "ref npc.hp");
+    // E099 is error-severity (the old fence made `compile` fail); a
+    // successful compile alone proves it no longer fires here.
+    let out = compile(&source, brink_options())
+        .unwrap_or_else(|e| panic!("a real path-projection ref-argument must lower: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
 }
 
 #[test]

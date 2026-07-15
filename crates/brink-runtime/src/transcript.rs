@@ -82,6 +82,14 @@ const VAL_HANDLE: u8 = 0x0D;
 // TM-4 record tag — shared numeric surface with the `.inkb` format
 // (`docs/format-v4-rfc.md` §1: `ShapeId`, then field values in shape order).
 const VAL_RECORD: u8 = 0x0F;
+// T1e projection tag — shared numeric surface with the `.inkb` format
+// (`docs/format-v4-rfc.md` §1: cell reference, u8 segment count, segments).
+// A projection rides the append-only transcript / journal / speculation
+// snapshots as an ordinary value (`docs/t1e-spec.md` §3: "Saves/journal/
+// speculation: ordinary values"), e.g. via `Opcode::EmitValue`.
+const VAL_PROJECTION: u8 = 0x0E;
+const PROJ_SEG_INDEX: u8 = 0x00;
+const PROJ_SEG_KEY: u8 = 0x01;
 
 // ── Error type ────────────────────────────────────────────────────────────
 
@@ -484,6 +492,10 @@ fn read_def_id(buf: &[u8], off: &mut usize) -> Result<DefinitionId, TranscriptEr
 // ── Value encoding ────────────────────────────────────────────────────────
 
 #[expect(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per value tag — T1e's VAL_PROJECTION arm pushed this past 100"
+)]
 fn encode_value(v: &Value, buf: &mut Vec<u8>) {
     match v {
         Value::Int(n) => {
@@ -581,6 +593,26 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
             write_u16(buf, kind.0);
             write_u64(buf, *id);
         }
+        // Projection values (T1e, spec §3: "Saves/journal/speculation:
+        // ordinary values"). Segment kind `2=range` is RESERVED and never
+        // written — `ProjSegment` has no variant to produce it.
+        Value::Projection(p) => {
+            write_u8(buf, VAL_PROJECTION);
+            write_def_id(buf, p.cell);
+            write_u8(buf, p.segments.len() as u8);
+            for seg in &p.segments {
+                match seg {
+                    brink_format::ProjSegment::Index(n) => {
+                        write_u8(buf, PROJ_SEG_INDEX);
+                        write_i32(buf, *n);
+                    }
+                    brink_format::ProjSegment::Key(v) => {
+                        write_u8(buf, PROJ_SEG_KEY);
+                        encode_value(v, buf);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -604,6 +636,10 @@ fn encode_map_key(key: &MapKey, buf: &mut Vec<u8>) {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per value tag — T1e's VAL_PROJECTION arm pushed this past 100"
+)]
 fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, TranscriptError> {
     if depth > MAX_DECODE_DEPTH {
         return Err(TranscriptError::MaxDepthExceeded(MAX_DECODE_DEPTH));
@@ -695,6 +731,24 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Tran
             let kind = NameId(read_u16(buf, off)?);
             let id = read_u64(buf, off)?;
             Ok(Value::handle(kind, id))
+        }
+        // Projection values (T1e, `docs/format-v4-rfc.md` §1).
+        VAL_PROJECTION => {
+            let cell = read_def_id(buf, off)?;
+            let count = read_u8(buf, off)? as usize;
+            let mut segments = Vec::with_capacity(count.min(buf.len().saturating_sub(*off)));
+            for _ in 0..count {
+                let kind = read_u8(buf, off)?;
+                let seg = match kind {
+                    PROJ_SEG_INDEX => brink_format::ProjSegment::Index(read_i32(buf, off)?),
+                    PROJ_SEG_KEY => {
+                        brink_format::ProjSegment::Key(decode_value(buf, off, depth + 1)?)
+                    }
+                    other => return Err(TranscriptError::InvalidValueTag(other)),
+                };
+                segments.push(seg);
+            }
+            Ok(Value::projection(cell, segments))
         }
         _ => Err(TranscriptError::InvalidValueTag(tag)),
     }
@@ -888,6 +942,43 @@ mod tests {
         match &data.parts[1] {
             OutputPart::ValueRef(v) => assert_eq!(*v, nested),
             other => unreachable!("expected ValueRef(nested handle), got {other:?}"),
+        }
+    }
+
+    /// T1e (`docs/t1e-spec.md` §3: "Saves/journal/speculation: ordinary
+    /// values") — the transcript leg of the per-codec round-trip discipline
+    /// (inkb/inkt/transcript, the wave-11 lesson): the `VAL_PROJECTION`
+    /// (0x0E) encode/decode arms, a bare projection and one nested inside a
+    /// collection, with a mixed index+key segment chain.
+    #[test]
+    fn round_trip_value_ref_projection() {
+        use brink_format::ProjSegment;
+
+        let cell = DefinitionId::new(brink_format::DefinitionTag::GlobalVar, 42);
+        let proj = Value::projection(
+            cell,
+            vec![
+                ProjSegment::Key(Value::String("hp".into())),
+                ProjSegment::Index(3),
+            ],
+        );
+        let nested = Value::array(vec![Value::projection(cell, vec![]), Value::Bool(true)]);
+
+        let parts = vec![
+            OutputPart::ValueRef(proj.clone()),
+            OutputPart::ValueRef(nested.clone()),
+        ];
+        let bytes = write_transcript(&parts, 13, &[]);
+        let data = read_transcript(&bytes).unwrap();
+
+        assert_eq!(data.parts.len(), 2);
+        match &data.parts[0] {
+            OutputPart::ValueRef(v) => assert_eq!(*v, proj),
+            other => unreachable!("expected ValueRef(projection), got {other:?}"),
+        }
+        match &data.parts[1] {
+            OutputPart::ValueRef(v) => assert_eq!(*v, nested),
+            other => unreachable!("expected ValueRef(nested projection), got {other:?}"),
         }
     }
 
