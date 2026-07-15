@@ -920,7 +920,16 @@ impl InferPass<'_, '_> {
             // container's element type). `int`'s arm lives above, merged
             // with `len` (both fixed `Ty::Int`, per clippy).
             "float" => Ty::Float,
-            "string" => Ty::String,
+            // `string` and `char_at(s, i)` (T1b stdlib slice 1 completion,
+            // issue #857) both return a fixed `Ty::String` independent of
+            // the argument — merged into one arm per clippy's
+            // `match_same_arms`, same as `len`/`int` above. `char_at`'s
+            // domain check (`s` is a `String`, `i` is an `Int`, `i` in
+            // range) is entirely a runtime/gradual-mode concern (the
+            // `CharAt` VM op) — no `self.observe` narrowing, since this
+            // facility's typing rule is only the return type, declared at
+            // introduction per the doctrine.
+            "string" | "char_at" => Ty::String,
             // T1c (docs/t1c-spec.md §3/§4, issue #733): the explicit call
             // forms. `f` (args[0]) is the callee — a value, not a
             // statically-named target — so its type comes from the

@@ -52,6 +52,7 @@ mod session;
 mod speculation;
 mod state;
 mod story;
+mod string_ops;
 pub mod transcript;
 mod value_ops;
 mod vm;

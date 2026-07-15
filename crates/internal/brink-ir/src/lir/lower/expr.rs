@@ -813,6 +813,21 @@ fn lower_t1b_stdlib_call(
                 needle: Box::new(lower_expr(&args[1], ctx)),
             })
         }
+        // `char_at(s, i)` (T1b stdlib slice 1 completion, issue #857): chars
+        // indexing (Unicode scalar values, not bytes — author sanity, per the
+        // issue) into a string, single-character `String` result.
+        // Turn-terminating fault at the runtime op on an out-of-range `i` or
+        // a non-`String`/non-`Int` argument (value-model-spec §11c) — this
+        // lowering just recognizes the call shape.
+        "char_at" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::CharAt {
+                s: Box::new(lower_expr(&args[0], ctx)),
+                index: Box::new(lower_expr(&args[1], ctx)),
+            })
+        }
         "push" | "insert" | "remove" => {
             ctx.diagnostics.push(crate::Diagnostic {
                 file: ctx.file,
@@ -946,6 +961,7 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "string"
             | "call"
             | "bind"
+            | "char_at"
     )
 }
 

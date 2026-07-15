@@ -1561,6 +1561,9 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         "begin_fragment" => Ok(Opcode::BeginFragment),
         "end_fragment" => Ok(Opcode::EndFragment),
 
+        // Stdlib slice 1 completion (#857)
+        "char_at" => Ok(Opcode::CharAt),
+
         // Debug
         "source_location" => {
             // Written as "source_location LINE:COL" — parsed as source_loc operand
