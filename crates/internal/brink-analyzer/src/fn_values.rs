@@ -223,6 +223,17 @@ impl FnValueVisitor<'_> {
     /// rvalues, `temp`s/params, `CONST`s, dotted field projections — is
     /// E080 with a cause-specific message.
     fn check_ref_arg(&mut self, fl: &FnLiteral, target_name: &str, param_name: &str, arg: &Expr) {
+        // T1e (docs/t1e-spec.md §2, tracking #828): an explicit `ref`-marked
+        // argument (`#fn(heal, ref npc.hp)`) is validated by
+        // `ref_projection::check`'s own `claim_ref_args`/`check_durable_root`
+        // — the general path-projection machinery, which correctly accepts
+        // field/index segments (unlike this function's bare-`Expr::Path`-only
+        // check below, predating T1e and still governing the *unmarked*
+        // ref-argument form, `#fn(heal, gold)`). Deferring here avoids a
+        // double, disagreeing E080 report for the exact same argument.
+        if matches!(arg, Expr::RefArg(_)) {
+            return;
+        }
         let reject = |cause: &str| {
             format!(
                 "ref parameter `{param_name}` of `{target_name}` must capture a durable \

@@ -57,8 +57,8 @@ pub use opcode::{ChoiceFlags, DecodeError, Opcode, SequenceKind};
 pub use save::{LoadReport, SAVE_FORMAT_VERSION, SaveState, VisitEntry};
 pub use story::StoryData;
 pub use value::{
-    ClosureEnvEntry, ClosureValue, ListValue, MAX_DECODE_DEPTH, MapKey, OrderedMap, ShapeId, Value,
-    ValueType,
+    ClosureEnvEntry, ClosureValue, ListValue, MAX_DECODE_DEPTH, MapKey, OrderedMap, ProjSegment,
+    ProjectionValue, ShapeId, Value, ValueType,
 };
 
 #[cfg(any(feature = "inkt", feature = "inkt-write"))]

@@ -348,6 +348,26 @@ impl ContainerEmitter<'_> {
             lir::CallArg::Value(expr) => self.emit_expr(expr, false),
             lir::CallArg::RefGlobal(id) => self.emit(Opcode::PushVarPointer(*id)),
             lir::CallArg::RefTemp(slot, _) => self.emit(Opcode::PushTempPointer(*slot)),
+            // T1e-2 (docs/t1e-spec.md §3): a real path-projection ref
+            // argument — first emission of `MakeProjection`. Segment
+            // expressions push in source order; the VM's `MakeProjection`
+            // handler pops them (LIFO) into reverse-push order, then
+            // reverses that collected `Vec` once to restore source order —
+            // the same "push in order, pop-then-reverse" shape
+            // `MakeClosure`'s bound-arg row already establishes.
+            lir::CallArg::RefProjection { root, segments } => {
+                for seg in segments {
+                    self.emit_expr(seg, false);
+                }
+                self.emit(Opcode::MakeProjection {
+                    root: *root,
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "a ref-argument path has far fewer than 255 segments"
+                    )]
+                    segment_count: segments.len() as u8,
+                });
+            }
         }
     }
 

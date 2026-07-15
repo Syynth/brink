@@ -289,6 +289,7 @@ fn type_name(v: &Value) -> &'static str {
         Value::Record { .. } => "record",
         Value::FnRef(_) | Value::Closure(_) => "fn",
         Value::Handle { .. } => "handle",
+        Value::Projection(_) => "projection",
     }
 }
 
@@ -315,7 +316,14 @@ fn map_key_display(k: &MapKey) -> alloc::string::String {
 /// Read `container[index]`, borrowing from `container` — the shared read
 /// half of `IndexGet` (via `.clone()`) and the intermediate reads inside
 /// `write_index`'s chain walk.
-fn read_index<'a>(container: &'a Value, index: &Value) -> Result<&'a Value, RuntimeError> {
+/// `pub(crate)`: also reused by [`crate::proj_ops`] for the array/map legs
+/// of a path-projection read walk (`docs/t1e-spec.md` §3/§4) — the identical
+/// bounds/key-exists semantics, just reachable through a projection instead
+/// of a direct `[…]` expression.
+pub(crate) fn read_index<'a>(
+    container: &'a Value,
+    index: &Value,
+) -> Result<&'a Value, RuntimeError> {
     match container {
         Value::Array(items) => {
             let i = array_index(index, items.len())?;
@@ -337,7 +345,12 @@ fn read_index<'a>(container: &'a Value, index: &Value) -> Result<&'a Value, Runt
 /// write-back discipline. Array writes never grow past the end (no
 /// out-of-bounds write ever succeeds); map writes never insert a new key
 /// (missing key is a fault — see `RuntimeError::MapKeyNotFound`'s doc).
-fn write_index(container: &mut Value, index: &Value, value: Value) -> Result<(), RuntimeError> {
+/// `pub(crate)`: also reused by [`crate::proj_ops`] — see [`read_index`].
+pub(crate) fn write_index(
+    container: &mut Value,
+    index: &Value,
+    value: Value,
+) -> Result<(), RuntimeError> {
     match container {
         Value::Array(_) => {
             let len = container.as_array().map_or(0, |items| items.len());

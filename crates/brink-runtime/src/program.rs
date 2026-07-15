@@ -483,8 +483,12 @@ impl Program {
     }
 
     /// Variable name for a global's defining `DefinitionId` (e.g. a
-    /// `VariablePointer` target).
-    pub(crate) fn global_var_name(&self, id: DefinitionId) -> Option<&str> {
+    /// `VariablePointer` target, or a T1e projection's root cell). `pub`
+    /// (not `pub(crate)`) since `brink-web`'s program-model/speculation
+    /// disassembly needs it to render a projection's root name at the wasm
+    /// boundary, the same way `divert_target_path` already resolves a
+    /// divert's `DefinitionId` for that consumer.
+    pub fn global_var_name(&self, id: DefinitionId) -> Option<&str> {
         let slot = self.resolve_global(id)?;
         self.global_slot_name(slot as usize)
     }

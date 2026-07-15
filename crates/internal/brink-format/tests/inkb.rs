@@ -192,6 +192,58 @@ fn roundtrip_handle_valued_globals() {
     assert_eq!(data, recovered);
 }
 
+/// T1e (`docs/t1e-spec.md` §3, `docs/format-v4-rfc.md` §1): the first
+/// emission of the reserved `VAL_PROJECTION` wire tag — write→read identity
+/// for a `Projection`-valued global, both a mixed index+field-name segment
+/// chain and one nested inside a collection. Segment kind `2=range` stays
+/// RESERVED (never constructed — `ProjSegment` has no such variant) — this
+/// test only proves the two kinds that ARE emitted (`0=index`, `1=key`)
+/// round-trip byte-for-byte.
+#[test]
+fn roundtrip_projection_valued_globals() {
+    use brink_format::{
+        DefinitionId, DefinitionTag, GlobalVarDef, NameId, ProjSegment, Value, ValueType,
+    };
+
+    let mut data = i001_data();
+    let next_id = data.variables.len() as u64;
+    let cell = DefinitionId::new(DefinitionTag::GlobalVar, 999);
+
+    data.variables.push(GlobalVarDef {
+        id: DefinitionId::new(DefinitionTag::GlobalVar, next_id),
+        name: NameId(0),
+        value_type: ValueType::Projection,
+        default_value: Value::projection(
+            cell,
+            vec![
+                ProjSegment::Key(Value::String("hp".into())),
+                ProjSegment::Index(3),
+                ProjSegment::Key(Value::Bool(true)),
+            ],
+        ),
+        mutable: true,
+        local: false,
+    });
+    data.variables.push(GlobalVarDef {
+        id: DefinitionId::new(DefinitionTag::GlobalVar, next_id + 1),
+        name: NameId(0),
+        value_type: ValueType::Array,
+        default_value: Value::array(vec![
+            Value::projection(cell, vec![]),
+            Value::projection(cell, vec![ProjSegment::Index(i32::MIN)]),
+        ]),
+        mutable: true,
+        local: false,
+    });
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
+    assert_eq!(data, recovered);
+}
+
 /// M-3 `AliasTable` section (`docs/modules-spec.md` §5, format section tag
 /// `0x0F`): write→read identity for the compiled `#@was` alias table —
 /// several entries of mixed `DefinitionTag`s (a knot rename and a global

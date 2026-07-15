@@ -1526,25 +1526,19 @@ fn collect_counting_refs(
             }
             lir::Stmt::Divert(d) => {
                 for arg in &d.args {
-                    if let lir::CallArg::Value(e) = arg {
-                        collect_counting_refs_expr(e, visit_ids, turns_ids);
-                    }
+                    collect_counting_refs_call_arg(arg, visit_ids, turns_ids);
                 }
             }
             lir::Stmt::TunnelCall(tc) => {
                 for t in &tc.targets {
                     for arg in &t.args {
-                        if let lir::CallArg::Value(e) = arg {
-                            collect_counting_refs_expr(e, visit_ids, turns_ids);
-                        }
+                        collect_counting_refs_call_arg(arg, visit_ids, turns_ids);
                     }
                 }
             }
             lir::Stmt::ThreadStart(ts) => {
                 for arg in &ts.args {
-                    if let lir::CallArg::Value(e) = arg {
-                        collect_counting_refs_expr(e, visit_ids, turns_ids);
-                    }
+                    collect_counting_refs_call_arg(arg, visit_ids, turns_ids);
                 }
             }
             // EnterContainer, DeclareTemp(None), Return(None), etc.
@@ -1582,6 +1576,26 @@ fn collect_counting_refs_content(
     }
 }
 
+/// A `TURNS_SINCE`/`READ_COUNT` reference inside a call argument — a plain
+/// `Value` arg's expression, or (T1e) a `RefProjection`'s segment
+/// expressions (`ref arr[READ_COUNT(-> x)]` is a legal, if unusual, snapshot
+/// segment). `RefGlobal`/`RefTemp` carry no expression to scan.
+fn collect_counting_refs_call_arg(
+    arg: &lir::CallArg,
+    visit_ids: &mut Vec<brink_format::DefinitionId>,
+    turns_ids: &mut Vec<brink_format::DefinitionId>,
+) {
+    match arg {
+        lir::CallArg::Value(e) => collect_counting_refs_expr(e, visit_ids, turns_ids),
+        lir::CallArg::RefProjection { segments, .. } => {
+            for seg in segments {
+                collect_counting_refs_expr(seg, visit_ids, turns_ids);
+            }
+        }
+        lir::CallArg::RefGlobal(_) | lir::CallArg::RefTemp(_, _) => {}
+    }
+}
+
 fn collect_counting_refs_expr(
     expr: &lir::Expr,
     visit_ids: &mut Vec<brink_format::DefinitionId>,
@@ -1615,9 +1629,7 @@ fn collect_counting_refs_expr(
         }
         lir::Expr::Call { args, .. } | lir::Expr::CallExternal { args, .. } => {
             for arg in args {
-                if let lir::CallArg::Value(e) = arg {
-                    collect_counting_refs_expr(e, visit_ids, turns_ids);
-                }
+                collect_counting_refs_call_arg(arg, visit_ids, turns_ids);
             }
         }
         lir::Expr::CallBuiltin { args, .. } => {

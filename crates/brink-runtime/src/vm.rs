@@ -18,6 +18,7 @@ use crate::conversion_ops;
 use crate::error::RuntimeError;
 use crate::list_ops;
 use crate::program::Program;
+use crate::proj_ops;
 use crate::record_ops;
 use crate::state::ContextAccess;
 use crate::story::{CallFrame, CallFrameType, ContainerPosition, Flow, PendingChoice, Stats};
@@ -391,6 +392,16 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                     }
                     target.temps[ti] = val;
                 }
+                // T1e (docs/t1e-spec.md §3): a projection-bound `ref`
+                // parameter's write-through — root-cell RMW via the same
+                // `proj_ops::write` an `Opcode::ProjWrite` dispatch would
+                // call. Purely additive: this arm is unreachable for any
+                // program that predates T1e (a `Value::Projection` is
+                // constructed only by `Opcode::MakeProjection`, itself
+                // emitted only for a real path-projection ref-argument).
+                Value::Projection(p) => {
+                    proj_ops::write(program, context, p.cell, &p.segments, val)?;
+                }
                 _ => {
                     let thread = flow.current_thread_mut();
                     let frame = thread
@@ -440,6 +451,12 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                         .cloned()
                         .unwrap_or(Value::Null);
                     flow.value_stack.push(target_val);
+                }
+                // T1e: a projection-bound `ref` parameter's read — same
+                // additive-only reasoning as `SetTemp`'s new arm above.
+                Value::Projection(p) => {
+                    let result = proj_ops::read(program, &*context, p.cell, &p.segments)?;
+                    flow.value_stack.push(result);
                 }
                 _ => {
                     flow.value_stack.push(val);
@@ -512,6 +529,12 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                     let taken = mem::replace(&mut target.temps[ti], Value::Null);
                     flow.value_stack.push(taken);
                 }
+                // T1e: a projection-bound `ref` parameter's take — same
+                // additive-only reasoning as `SetTemp`/`GetTemp`'s new arms.
+                Value::Projection(p) => {
+                    let taken = proj_ops::take(program, context, p.cell, &p.segments)?;
+                    flow.value_stack.push(taken);
+                }
                 _ => {
                     let thread = flow.current_thread_mut();
                     let frame = thread
@@ -544,7 +567,15 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 .cloned()
                 .unwrap_or(Value::Null);
             match current {
-                Value::VariablePointer(_) | Value::TempPointer { .. } => {
+                // T1e (docs/t1e-spec.md §2): a projection also flattens
+                // through — forwarding a projection-bound `ref` parameter
+                // (`heal(ref hp)` where `hp` is itself `ref`-bound) passes
+                // the *same* `(root cell, segments)` on, never wraps it in
+                // another layer of indirection. A compound projection is
+                // never constructed this way (T1e-1's E080 durable-root
+                // check rejects a param as a *new* `ref`'s root), so this
+                // is always the bare-forward case.
+                Value::VariablePointer(_) | Value::TempPointer { .. } | Value::Projection(_) => {
                     // Flatten: pass the existing pointer through.
                     flow.value_stack.push(current);
                 }
@@ -880,6 +911,46 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
             let bound = bind_fn_value(program, &callee, supplied)?;
             flow.value_stack.push(bound);
         }
+
+        // ── Path projections (T1e, docs/t1e-spec.md §3) ──────────────
+        Opcode::MakeProjection {
+            root,
+            segment_count,
+        } => {
+            // Codegen pushes segment values in source order; popping
+            // (LIFO) collects them in reverse, so one final `reverse()`
+            // restores source order — the same shape `MakeClosure`'s
+            // bound-arg row uses via `pop_values`' `split_off` (which
+            // preserves order because it slices, rather than popping one at
+            // a time).
+            let mut segments = Vec::with_capacity(segment_count as usize);
+            for _ in 0..segment_count {
+                segments.push(brink_format::ProjSegment::from_value(flow.pop_value()?));
+            }
+            segments.reverse();
+            flow.value_stack.push(Value::projection(root, segments));
+        }
+        Opcode::ProjRead => {
+            let val = flow.pop_value()?;
+            let Some(p) = val.as_projection() else {
+                return Err(RuntimeError::TypeError(
+                    "ProjRead requires a Projection value".into(),
+                ));
+            };
+            let result = proj_ops::read(program, &*context, p.cell, &p.segments)?;
+            flow.value_stack.push(result);
+        }
+        Opcode::ProjWrite => {
+            let value = flow.pop_value()?;
+            let proj = flow.pop_value()?;
+            let Some(p) = proj.as_projection() else {
+                return Err(RuntimeError::TypeError(
+                    "ProjWrite requires a Projection value".into(),
+                ));
+            };
+            proj_ops::write(program, context, p.cell, &p.segments, value)?;
+        }
+
         Opcode::TunnelReturn => {
             // The eval block before ->-> pushes either void (normal
             // return) or a DivertTarget (tunnel onwards override).
@@ -1155,6 +1226,7 @@ fn value_type_name(v: &Value) -> &'static str {
         Value::Record { .. } => "record",
         Value::FnRef(_) | Value::Closure(_) => "fn",
         Value::Handle { .. } => "handle",
+        Value::Projection(_) => "projection",
     }
 }
 

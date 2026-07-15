@@ -258,4 +258,16 @@ pub enum RuntimeError {
         "function value ref-binds flow-private cell `{0}`; cross-flow invocation is a fault in T1c (see #597)"
     )]
     FunctionValueCrossFlowLocal(String),
+
+    // ── T1e path projections (docs/t1e-spec.md §1(2)/§3) ──────────────────
+    /// A live path projection's snapshot segments no longer resolve against
+    /// the root cell's *current* value at read or write time: a shrunk
+    /// array, a removed map key, or a struct field dropped by recompile.
+    /// The single ratified turn-terminating fault for every path-invalidation
+    /// cause (spec §1(2): "a defined turn-terminating runtime fault — not a
+    /// clamp, not UB"). The payload carries the underlying cause (an
+    /// `IndexOutOfBounds`/`MapKeyNotFound`/`RecordFieldNotFound`-shaped
+    /// message, or a root-resolution failure).
+    #[error("projection invalidated: {0}")]
+    ProjectionInvalidated(String),
 }

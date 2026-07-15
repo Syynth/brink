@@ -479,6 +479,30 @@ fn rebind_value(program: &Program, value: &Value, report: &mut LoadReport) -> Va
                     .collect(),
             ),
         },
+        // T1e (docs/t1e-spec.md §3): "rehydration validates the root cell
+        // like VariablePointer today, and the `#@was` alias table applies
+        // to the root's identity on the miss path" — the *same*
+        // `rebind_value_global_id` a `VariablePointer` root uses, since a
+        // projection's cell reference is that identical payload shape
+        // (`docs/format-v4-rfc.md` §1: "cell reference = the existing
+        // VAL_VAR_POINTER payload shape, reused not reinvented"). Segment
+        // values recurse too — a `Key` segment can itself carry an id
+        // needing rebinding (e.g. a divert-target map key is not legal,
+        // but a nested closure/array segment value theoretically could be).
+        Value::Projection(p) => {
+            let cell = rebind_value_global_id(program, p.cell, report);
+            let segments = p
+                .segments
+                .iter()
+                .map(|seg| match seg {
+                    brink_format::ProjSegment::Index(n) => brink_format::ProjSegment::Index(*n),
+                    brink_format::ProjSegment::Key(v) => {
+                        brink_format::ProjSegment::Key(rebind_value(program, v, report))
+                    }
+                })
+                .collect();
+            Value::projection(cell, segments)
+        }
         other => other.clone(),
     }
 }

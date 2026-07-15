@@ -26,6 +26,9 @@ pub(crate) fn is_truthy(v: &Value) -> bool {
         // size — always truthy, like every other non-collection variant here.
         // A handle (T1d) is the same shape of argument: an opaque token with
         // an identity, not a collection — always truthy.
+        // A projection (T1e) is a value with an identity (root cell + path),
+        // not a collection — always truthy, same reasoning as every other
+        // non-collection variant here.
         Value::DivertTarget(_)
         | Value::VariablePointer(_)
         | Value::TempPointer { .. }
@@ -33,7 +36,8 @@ pub(crate) fn is_truthy(v: &Value) -> bool {
         | Value::Record { .. }
         | Value::FnRef(_)
         | Value::Closure(_)
-        | Value::Handle { .. } => true,
+        | Value::Handle { .. }
+        | Value::Projection(_) => true,
         Value::List(lv) => !lv.items.is_empty(),
         Value::Array(items) => !items.is_empty(),
         Value::Map(map) => !map.is_empty(),
@@ -100,7 +104,48 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
             let kind_name = program.name_checked(*kind).unwrap_or("?");
             format!("handle {kind_name}#{id}")
         }
+        // Projection values (T1e, `docs/t1e-spec.md` §4 PROPOSED): `ref
+        // <root>` / `ref <root>.<field>[<index>]…` — root + rendered path,
+        // deliberately boring and stable. An unresolvable root cell (a stale
+        // `DefinitionId` from a different compile) renders `?`, matching
+        // `display_fn_value`'s convention for its own unresolvable names.
+        Value::Projection(p) => {
+            let root = program
+                .global_var_name(p.cell)
+                .map_or_else(|| "?".to_owned(), ToOwned::to_owned);
+            let mut out = format!("ref {root}");
+            for seg in &p.segments {
+                display_proj_segment(seg, program, &mut out);
+            }
+            out
+        }
     }
+}
+
+/// Render one path-projection segment onto `out` (`docs/t1e-spec.md` §4
+/// PROPOSED): a struct-field-shaped string key as `.name`, anything else as
+/// `[value]`.
+fn display_proj_segment(seg: &brink_format::ProjSegment, program: &Program, out: &mut String) {
+    use core::fmt::Write as _;
+    match seg {
+        brink_format::ProjSegment::Index(n) => {
+            let _ = write!(out, "[{n}]");
+        }
+        brink_format::ProjSegment::Key(Value::String(s)) if is_field_like(s) => {
+            let _ = write!(out, ".{s}");
+        }
+        brink_format::ProjSegment::Key(v) => {
+            let _ = write!(out, "[{}]", stringify(v, program));
+        }
+    }
+}
+
+/// Whether a string looks like a bare identifier (`.field`-renderable)
+/// rather than an arbitrary map key (`["field"]`-renderable).
+fn is_field_like(s: &str) -> bool {
+    let mut chars = s.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// The authoritative function-value display form (`docs/t1c-spec.md` §5):

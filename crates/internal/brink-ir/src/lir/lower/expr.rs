@@ -1007,21 +1007,24 @@ pub(super) fn lower_call_args(
             if is_ref {
                 match arg {
                     hir::Expr::Path(path) => lower_ref_path_call_arg(path, arg, ctx),
-                    // T1e-1 (docs/t1e-spec.md §2, issue #831): an explicit
-                    // `ref` marking a bare single-name path (`ref gold`) is
-                    // not a real path *projection* — zero segments — so it
-                    // binds exactly like today's unmarked form. Anything
-                    // with a real segment (dotted field, `[…]` index, or
-                    // any deeper mix) is a genuine T1e projection; T1e-1
-                    // ships no `MakeProjection`/`ProjRead` support, so it
-                    // hits the E052-fence (`lower_ref_arg_fence`, `E099`) —
-                    // the analyzer's own durable-root/shape/position checks
-                    // already ran by the time lowering sees it.
+                    // T1e-2 (docs/t1e-spec.md §2/§3, tracking #828): an
+                    // explicit `ref` marking a bare single-name path (`ref
+                    // gold`) is not a real path *projection* — zero
+                    // segments — so it binds exactly like today's unmarked
+                    // form. Anything with a real segment (dotted field,
+                    // `[…]` index, or any deeper mix) is a genuine T1e
+                    // projection, lowered for real via
+                    // `lower_ref_projection_arg` — the T1e-1 `E099` fence
+                    // this replaces. The analyzer's own durable-root/shape/
+                    // position checks already ran by the time lowering sees
+                    // it; `lower_ref_projection_arg` still falls back to the
+                    // fence if the root somehow doesn't resolve (defense in
+                    // depth, not the expected path).
                     hir::Expr::RefArg(ra) => match ra.operand.as_ref() {
                         hir::Expr::Path(path) if path.segments.len() == 1 => {
                             lower_ref_path_call_arg(path, &ra.operand, ctx)
                         }
-                        _ => lir::CallArg::Value(lower_ref_arg_fence(ra, ctx)),
+                        _ => lower_ref_projection_arg(ra, ctx),
                     },
                     _ => lir::CallArg::Value(lower_expr(arg, ctx)),
                 }
@@ -1030,6 +1033,83 @@ pub(super) fn lower_call_args(
             }
         })
         .collect()
+}
+
+/// One path-projection segment source, decomposed from the HIR operand tree
+/// (mirrors `brink-analyzer::ref_projection`'s private `decompose`/`Segment`
+/// shape — brink-ir can't depend on brink-analyzer, so this is its own
+/// small copy of the same walk).
+enum ProjSegmentSrc<'a> {
+    /// `.field` — a dotted field-access segment.
+    Field(&'a hir::Name),
+    /// `[index]` — an indexing segment; the subexpression is evaluated once
+    /// at `ref` creation (snapshot-at-creation, spec §1(1)).
+    Index(&'a hir::Expr),
+}
+
+/// Decompose an lvalue-shaped HIR expression into its root `Path` and its
+/// ordered segment chain. `None` if `expr` isn't lvalue-shaped at all — the
+/// analyzer's own `E080` already rejects that case before lowering ever
+/// sees it, so this is a defense-in-depth `None`, not an expected miss.
+fn decompose_projection(expr: &hir::Expr) -> Option<(&hir::Path, Vec<ProjSegmentSrc<'_>>)> {
+    match expr {
+        hir::Expr::Path(p) => {
+            // A multi-segment bare `Path` (`npc.hp`) is the TM-4b
+            // resolution-fallback shape: the analyzer resolves the *whole*
+            // path's range to the root variable, so every segment past the
+            // first is a field-access segment (same convention
+            // `ref_projection::decompose` documents).
+            let segments = p.segments[1..].iter().map(ProjSegmentSrc::Field).collect();
+            Some((p, segments))
+        }
+        hir::Expr::FieldAccess(fa) => {
+            let (root, mut segments) = decompose_projection(&fa.base)?;
+            segments.push(ProjSegmentSrc::Field(&fa.field));
+            Some((root, segments))
+        }
+        hir::Expr::Index(idx) => {
+            let (root, mut segments) = decompose_projection(&idx.base)?;
+            segments.push(ProjSegmentSrc::Index(&idx.index));
+            Some((root, segments))
+        }
+        _ => None,
+    }
+}
+
+/// Lower a real path-projection `ref` argument (≥1 segment) to
+/// [`lir::CallArg::RefProjection`] — first real lowering of the T1e
+/// projection surface (`docs/t1e-spec.md` §2/§3), replacing the T1e-1
+/// `E099` fence for this shape. Field segments lower to a literal string
+/// expression (the field name); index segments lower via ordinary
+/// [`lower_expr`] — both evaluated once, in source order, at the `ref`
+/// creation site (snapshot-at-creation, spec §1(1)); codegen pushes them in
+/// *reverse* so `Opcode::MakeProjection` can pop them back into source
+/// order.
+fn lower_ref_projection_arg(ra: &hir::RefArgExpr, ctx: &mut LowerCtx<'_>) -> lir::CallArg {
+    let Some((root, src_segments)) = decompose_projection(&ra.operand) else {
+        return lir::CallArg::Value(lower_ref_arg_fence(ra, ctx));
+    };
+    let Some(info) = ctx.resolve_path(root.range) else {
+        return lir::CallArg::Value(lower_ref_arg_fence(ra, ctx));
+    };
+    let root_id = if info.kind == SymbolKind::List {
+        list_def_to_global_var(info.id)
+    } else {
+        info.id
+    };
+    let segments = src_segments
+        .into_iter()
+        .map(|seg| match seg {
+            ProjSegmentSrc::Field(name) => lir::Expr::String(lir::StringExpr {
+                parts: vec![lir::StringPart::Literal(name.text.clone())],
+            }),
+            ProjSegmentSrc::Index(index_expr) => lower_expr(index_expr, ctx),
+        })
+        .collect();
+    lir::CallArg::RefProjection {
+        root: root_id,
+        segments,
+    }
 }
 
 pub fn path_to_string(path: &hir::Path) -> String {
