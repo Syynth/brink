@@ -585,7 +585,12 @@ fn is_const_foldable_kind(
         // T1c-1: `#fn(…)` never constant-folds — as a declaration default it
         // is already a targeted E052 at `eval_const_expr`'s own arm; as an
         // array/map element it reports the standard E077.
-        | hir::Expr::FnLiteral(_) => false,
+        | hir::Expr::FnLiteral(_)
+        // T1e-1: `ref lvalue-path` never constant-folds — it isn't a legal
+        // ref-argument position at all here (`brink-analyzer`'s own E097
+        // already covers it), and even where legal it has no compile-time
+        // value.
+        | hir::Expr::RefArg(_) => false,
     }
 }
 
@@ -651,7 +656,12 @@ fn is_const_foldable_decl_default(
         hir::Expr::Postfix(..)
         | hir::Expr::Call(..)
         | hir::Expr::Index(_)
-        | hir::Expr::FieldAccess(_) => false,
+        | hir::Expr::FieldAccess(_)
+        // T1e-1: `ref lvalue-path` is never a legal top-level declaration
+        // default (it's a ref-argument-only construct — `brink-analyzer`'s
+        // own E097 covers the standalone-position case) and has no
+        // compile-time value even where legal.
+        | hir::Expr::RefArg(_) => false,
     }
 }
 

@@ -642,6 +642,16 @@ pub enum Expr {
     /// T1c, docs/t1c-spec.md §2): partial application over the statically
     /// named function `target`, binding a prefix of its declared params.
     FnLiteral(FnLiteral),
+    /// `ref lvalue-path` — path-projection creation (brink extension, T1e,
+    /// docs/t1e-spec.md §2): a symbolic `(root cell, path segments)` value.
+    /// Legal only in ref-argument position (calls, `#fn(…)`, `bind(…)`);
+    /// anywhere else is `brink-analyzer`'s E097 (icebox #825). The segment
+    /// expressions (index subexpressions inside a nested `Index`) are
+    /// captured whole as part of `operand`'s own tree — "index expressions
+    /// snapshot at `ref` creation" (t1e-spec §1) falls out of this shape for
+    /// free: there is no lazy re-evaluation path, only this one owned tree,
+    /// evaluated once at the creation site.
+    RefArg(RefArgExpr),
 }
 
 /// `#fn(target, args…)`. `ptr` lets the dialect gate point its diagnostic
@@ -657,6 +667,20 @@ pub struct FnLiteral {
     /// target's declared param row (over-binding is E081; `ref`-param
     /// binding discipline is E080).
     pub args: Vec<Expr>,
+}
+
+/// `ref lvalue-path` — path-projection creation (brink extension, T1e,
+/// docs/t1e-spec.md §2). `ptr` lets the dialect gate point its diagnostic at
+/// the exact `ref` expression, matching the sibling sigil-literal shapes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefArgExpr {
+    pub ptr: SyntaxNodePtr,
+    /// The lvalue-shaped operand: a `Path` (plain or dotted), an `Index`, a
+    /// `FieldAccess`, or a mix of the two nested arbitrarily deep. Any other
+    /// expression kind is not an lvalue at all — `brink-analyzer`'s E080
+    /// ("this argument is not an lvalue"), same message class T1c's
+    /// unmarked-`ref` discipline already uses.
+    pub operand: Box<Expr>,
 }
 
 /// `Name#{field: expr, …}`. `ptr` lets the dialect gate point its
@@ -843,6 +867,7 @@ pub fn display_expr(expr: &Expr) -> String {
                 format!("#fn({name}, ...)")
             }
         }
+        Expr::RefArg(ra) => format!("ref {}", display_expr(&ra.operand)),
     }
 }
 
@@ -1378,8 +1403,19 @@ pub enum DiagnosticCode {
     /// be bound at creation, and each must capture a durable cell — a
     /// global `VAR` (flow-local `#@local` VARs included); a `temp`/param
     /// is a compile error (temps die with the frame, value-model §11), a
-    /// `CONST` is not a mutable cell, and any rvalue/field projection is
-    /// not a cell at all.
+    /// `CONST` is not a mutable cell, and a bare (unmarked) rvalue/field
+    /// reference is not a cell at all.
+    ///
+    /// T1e (docs/t1e-spec.md §2/§6, issue #831) extends this same code —
+    /// "reuse the E080-family message shape" — to the explicit `ref
+    /// lvalue-path` projection form (`heal(ref npc.hp, 5)`,
+    /// `#fn(heal, ref party[leader].hp)`, `bind(f, ref inventory[idx])`):
+    /// the *root* of the path (the innermost variable the segments walk
+    /// from) must still be a durable global `VAR`, by the same rule —
+    /// `temp`/param roots remain a compile error, a `CONST` root is not a
+    /// mutable cell. A projection's own *segments* (dotted fields, `[…]`
+    /// indices) are a separate check (`E098`, strict-mode statically-known
+    /// shapes only) — this code is the root-durability obligation alone.
     E080,
     /// `#fn(name, args…)` binds more arguments than the target declares —
     /// the bound-arg row is a *prefix* of the declared param row
@@ -1510,11 +1546,50 @@ pub enum DiagnosticCode {
     /// spans), under `strict-ink` this code never fires (compat corpus
     /// untouched).
     E096,
+
+    // ── T1e-1 path projections (docs/t1e-spec.md §2/§6, issue #831,
+    // tracking #828) ──────────────────────────────────────────────────
+    /// A `ref lvalue-path` projection expression (`ref npc.hp`,
+    /// `ref inventory[idx]`) appears somewhere other than ref-argument
+    /// position (a direct argument of a call, `#fn(…)`, or `bind(…)`) — a
+    /// standalone projection value (`temp r = ref a[0]`), one nested inside
+    /// another expression, or any other position. Deliberate v1 posture
+    /// (t1e-spec §2: "projections exist only where `ref` already exists:
+    /// argument binding"); first-class standalone projection values are a
+    /// future round, tracked as icebox #825 — not a permanent rejection.
+    E097,
+    /// A `ref lvalue-path` projection's segment (a dotted field, or a
+    /// `[…]` index) disagrees with the root's statically-known shape, under
+    /// `types = strict` only — a dotted field the declared `STRUCT` shape
+    /// doesn't have, or a `[…]` index against a declared shape that isn't a
+    /// collection (mirrors `structs::check`'s missing/extra-field
+    /// machinery, `E069`–`E071`, applied to path segments instead of
+    /// construction-literal fields; "Unknown never disagrees" for any
+    /// segment whose base type isn't statically known this way — silently
+    /// unchecked, same spirit as `E071`).
+    E098,
+    /// A `ref lvalue-path` projection with at least one path segment
+    /// (dotted field or `[…]` index — a *real* projection, not a bare
+    /// single-name `ref`) reached LIR lowering. T1e-1 (docs/t1e-spec.md §8
+    /// sequencing item 1) ships grammar + HIR + analyzer only — the
+    /// `MakeProjection`/`ProjRead`/`ProjWrite` opcodes a projection needs to
+    /// actually run land in T1e-2 (tracking #828). The E052-fence pattern:
+    /// every other check (`E080` durable root, `E097` position, `E098`
+    /// strict segment shape) already ran and passed, so this is a clean,
+    /// deliberate "not yet lowerable" stop, not a silent drop or a
+    /// miscompile — see `brink-ir::lir::lower::mod`'s backstop doctrine. A
+    /// bare single-name `ref x` (zero segments) never hits this — it lowers
+    /// exactly like today's unmarked ref-argument binding.
+    E099,
 }
 
 impl DiagnosticCode {
     /// The stable string representation (e.g., `"E001"`).
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a flat one-arm-per-code table that necessarily grows with the diagnostic set"
+    )]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::E001 => "E001",
@@ -1613,6 +1688,9 @@ impl DiagnosticCode {
             Self::E094 => "E094",
             Self::E095 => "E095",
             Self::E096 => "E096",
+            Self::E097 => "E097",
+            Self::E098 => "E098",
+            Self::E099 => "E099",
         }
     }
 
@@ -1710,7 +1788,9 @@ impl DiagnosticCode {
             }
             Self::E078 => "int()/float() argument is outside the permissive numeric+bool domain",
             Self::E079 => "#fn target is not a statically-named function definition",
-            Self::E080 => "#fn ref parameter is not bound to a durable cell at creation",
+            Self::E080 => {
+                "ref-argument (#fn, call, or bind) does not bind a durable cell at creation"
+            }
             Self::E081 => "#fn binds more arguments than the target declares",
             Self::E082 => "block-scoped temp referenced after its block has closed",
             Self::E083 => "VAR/CONST declaration default is not a compile-time-constant expression",
@@ -1735,6 +1815,9 @@ impl DiagnosticCode {
             Self::E094 => "`#@was` requires exactly one non-empty old-name argument",
             Self::E095 => "`#@was` names the definition's own current name — nothing to migrate",
             Self::E096 => "duplicate definition declared in two different modules",
+            Self::E097 => "`ref` projection expression outside ref-argument position",
+            Self::E098 => "ref-argument path segment disagrees with the statically-known shape",
+            Self::E099 => "path-projection ref-argument is not yet lowerable (T1e-2, #828)",
         }
     }
 
@@ -1763,6 +1846,10 @@ impl DiagnosticCode {
 
     /// Parse a diagnostic code from its string representation (e.g., `"E027"`).
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a flat one-arm-per-code table that necessarily grows with the diagnostic set"
+    )]
     pub fn from_str_code(s: &str) -> Option<Self> {
         match s {
             "E001" => Some(Self::E001),
@@ -1861,6 +1948,9 @@ impl DiagnosticCode {
             "E094" => Some(Self::E094),
             "E095" => Some(Self::E095),
             "E096" => Some(Self::E096),
+            "E097" => Some(Self::E097),
+            "E098" => Some(Self::E098),
+            "E099" => Some(Self::E099),
             _ => None,
         }
     }

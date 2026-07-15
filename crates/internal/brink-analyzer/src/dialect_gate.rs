@@ -277,6 +277,12 @@ impl HirVisitor for GateVisitor<'_> {
             Expr::FnLiteral(fl) => {
                 self.flag(fl.ptr.text_range(), "`#fn(…)` function-value creation");
             }
+            // T1e (docs/t1e-spec.md §2): `ref lvalue-path` is brink-dialect-
+            // gated the same way, same "superset grammar always parses,
+            // dialect decides legality" rule.
+            Expr::RefArg(ra) => {
+                self.flag(ra.ptr.text_range(), "`ref` path-projection expression");
+            }
             _ => {}
         }
     }
@@ -535,6 +541,27 @@ mod tests {
         // implemented" rejection is LIR lowering's non-suppressible E052
         // (`lir::lower::expr::reject_fn_literal`), not a gate concern.
         let hir = lower_src("~ f = #fn(heal, hp)\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::Brink);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    // ── T1e path projections (docs/t1e-spec.md §2, issue #831) ────────
+
+    #[test]
+    fn strict_ink_flags_ref_expr() {
+        let hir = lower_src("~ x = alter(ref gold, 5)\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E051);
+        assert!(diags[0].message.contains("ref"), "{diags:?}");
+    }
+
+    #[test]
+    fn brink_dialect_does_not_flag_ref_expr_at_the_gate() {
+        // Under `Brink` the gate stays silent — legality (ref-argument
+        // position, durable root) is `ref_projection`'s own E097/E080, not
+        // a gate concern, same split T1c's `#fn` already established.
+        let hir = lower_src("~ x = alter(ref gold, 5)\n");
         let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::Brink);
         assert!(diags.is_empty(), "{diags:?}");
     }

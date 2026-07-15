@@ -767,3 +767,70 @@ fn e084_duplicate_field_under_strict() {
     let source = format!("{POINT_SRC}~ temp p = Point#{{x: 1.0, x: 2.0, y: 3.0}}\nHi\n");
     assert_error_at(&source, strict_options(), DiagnosticCode::E084, "x: 2.0");
 }
+
+// ─── T1e-1 path projections (E097–E099, docs/t1e-spec.md §2/§6, issue #831) ──
+
+const HEAL_SRC: &str = "=== function heal(ref hp, k) ===\n~ hp = hp + k\n\n";
+
+#[test]
+fn e080_ref_projection_root_is_a_temp() {
+    // T1e's `ref` extends the existing E080 code (not a new one) to the
+    // path-projection grammar — same durable-root obligation as T1c's
+    // unmarked ref-argument form.
+    let source = format!("{HEAL_SRC}=== main ===\n~ temp t = 1\n~ heal(ref t, 5)\n-> DONE\n");
+    assert_error_at(&source, brink_options(), DiagnosticCode::E080, "ref t");
+}
+
+#[test]
+fn e097_standalone_ref_projection() {
+    let source = "VAR gold = 5\n=== main ===\n~ temp r = ref gold\n-> DONE\n";
+    assert_error_at(source, brink_options(), DiagnosticCode::E097, "ref gold");
+}
+
+#[test]
+fn e098_strict_unknown_field_segment() {
+    let source = format!(
+        "STRUCT NPC = #{{hp: int}}\nVAR npc: NPC = NPC#{{hp: 10}}\n{HEAL_SRC}\
+         === main ===\n~ heal(ref npc.mana, 5)\n-> DONE\n"
+    );
+    assert_error_at(&source, strict_options(), DiagnosticCode::E098, "npc.mana");
+}
+
+#[test]
+fn e099_path_projection_not_yet_lowerable() {
+    // T1e-1 ships grammar + HIR + analyzer only (docs/t1e-spec.md §8
+    // sequencing item 1) — a genuine path projection (a real segment, not a
+    // bare single-name `ref`) that passes every analyzer check still hits
+    // the E052-fence pattern at LIR lowering: no `MakeProjection` support
+    // until T1e-2.
+    let source = format!("VAR npc = 5\n{HEAL_SRC}=== main ===\n~ heal(ref npc.hp, 5)\n-> DONE\n");
+    assert_error_at(&source, brink_options(), DiagnosticCode::E099, "ref npc.hp");
+}
+
+#[test]
+fn e099_bind_ref_argument_always_fences_even_zero_segment() {
+    // `bind(f, args…)` (docs/t1c-spec.md §3) is val-only currying at LIR —
+    // `BindValue`'s args have no `CallArg`/ref-capture concept at all
+    // (unlike ordinary calls/`#fn`, which already have `RefGlobal`). So
+    // *any* `ref`-marked bind argument fences here, even the zero-segment
+    // case that a plain call/`#fn` would lower for real — there's no
+    // "today's unmarked behavior" to fall back to for `bind`, since `bind`
+    // never supported ref-argument binding before T1e either. Proves this
+    // is a clean, targeted stop, not a silent value-lowering of a `ref`.
+    let source = format!(
+        "VAR gold = 5\n{HEAL_SRC}=== main ===\n~ temp f = #fn(heal, gold)\n\
+         ~ temp g = bind(f, ref gold)\n-> DONE\n"
+    );
+    assert_error_at(&source, brink_options(), DiagnosticCode::E099, "ref gold");
+}
+
+#[test]
+fn ref_marked_bare_var_arg_compiles_clean_through_the_real_pipeline() {
+    // The zero-segment case (`ref gold`, no dotted field / `[…]` index) is
+    // not a projection at all — it must compile exactly like today's
+    // unmarked `ref`-argument form, never hitting E097/E099.
+    let source = format!("VAR gold = 5\n{HEAL_SRC}=== main ===\n~ heal(ref gold, 5)\n-> DONE\n");
+    let out = compile(&source, brink_options())
+        .unwrap_or_else(|e| panic!("a bare single-name `ref` must compile clean: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}

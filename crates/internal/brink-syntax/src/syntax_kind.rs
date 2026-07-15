@@ -323,6 +323,17 @@ pub enum SyntaxKind {
     /// (E051 under strict-ink) at analysis, same pattern as T1b/TM-4b.
     FN_LITERAL,
 
+    // ── T1e path projections (docs/t1e-spec.md §2) ──────────────────
+    // `ref lvalue-path` — path-projection creation in ref-argument position
+    // (`heal(ref npc.hp, 5)`, `#fn(heal, ref party[leader].hp)`,
+    // `bind(f, ref inventory[idx])`). Superset grammar — always parses in
+    // expression position (mirrors `FN_LITERAL`'s dialect-gate pattern);
+    // whether the position is legal (ref-argument only, never standalone)
+    // and whether the root is a durable cell is `brink-analyzer`'s job.
+    /// `ref` followed by a single lvalue-shaped operand — a plain path, a
+    /// dotted field chain, `[…]` indexing, or a mix of the two.
+    REF_EXPR,
+
     // Not a real kind — used only for `rowan::Language::kind_to_raw` bounds.
     #[doc(hidden)]
     __LAST,

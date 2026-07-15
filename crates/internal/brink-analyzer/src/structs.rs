@@ -50,22 +50,27 @@ use crate::infer::Ty;
 /// type (`Ty::Unknown` if the field's own annotation doesn't resolve —
 /// e.g. an unrecognized type name, already flagged elsewhere by
 /// `annotations::check`'s `E061`).
-struct ShapeInfo {
+///
+/// `pub(crate)` (issue #831): `ref_projection`'s strict-mode path-segment
+/// check reuses this exact shape table for `ref lvalue-path` field segments
+/// — "reuse existing machinery" (docs/t1e-spec.md §6) rather than building a
+/// second one.
+pub(crate) struct ShapeInfo {
     fields: Vec<(String, Ty)>,
 }
 
 impl ShapeInfo {
-    fn field_ty(&self, name: &str) -> Option<&Ty> {
+    pub(crate) fn field_ty(&self, name: &str) -> Option<&Ty> {
         self.fields.iter().find(|(n, _)| n == name).map(|(_, t)| t)
     }
 
-    fn has_field(&self, name: &str) -> bool {
+    pub(crate) fn has_field(&self, name: &str) -> bool {
         self.fields.iter().any(|(n, _)| n == name)
     }
 }
 
 /// Every declared `STRUCT` shape in the project, by name.
-fn declared_shapes(
+pub(crate) fn declared_shapes(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
 ) -> BTreeMap<String, ShapeInfo> {
@@ -250,6 +255,8 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
         // T1c `#fn(target, args…)`: only the bound arguments are child
         // expressions — the target is a static `Path` field, same as `Call`.
         Expr::FnLiteral(fl) => fl.args.iter().collect(),
+        // T1e `ref lvalue-path`: only the operand is a child expression.
+        Expr::RefArg(ra) => vec![&ra.operand],
         Expr::String(s) => s
             .parts
             .iter()
