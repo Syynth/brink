@@ -1,5 +1,5 @@
-//! Algorithms corpus — sorting/searching + graphs + DP + procgen lanes
-//! (issue #822, epic #397/#822).
+//! Algorithms corpus — sorting/searching + graphs + DP + procgen +
+//! AI-decision lanes (issue #822, epic #397/#822).
 //!
 //! Sibling of `tier1_brink.rs`'s flat `tests/tier1-brink/<name>/` corpus,
 //! scoped to `tests/tier1-brink/algorithms/<name>/`: classic algorithms
@@ -241,6 +241,26 @@ fn edit_distance_computes_levenshtein_distance_via_bottom_up_table() {
     assert_case("edit-distance");
 }
 
+#[test]
+fn behavior_tree_composes_sequence_selector_and_invert_over_a_blackboard() {
+    assert_case("behavior-tree");
+}
+
+#[test]
+fn utility_ai_scores_actions_by_weighted_considerations() {
+    assert_case("utility-ai");
+}
+
+#[test]
+fn minimax_tictactoe_finds_wins_and_blocks_under_strict_types() {
+    assert_case_with_types("minimax-tictactoe", TypePolicy::Strict);
+}
+
+#[test]
+fn npc_fsm_dispatches_dialogue_state_through_a_map_of_fn_handlers() {
+    assert_case("npc-fsm");
+}
+
 /// Every `tests/tier1-brink/algorithms/` case directory is exercised by a
 /// `#[test]` above — a directory with no matching test would silently
 /// never run (same invariant `tier1_brink.rs` enforces for its own flat
@@ -265,6 +285,10 @@ fn every_algorithms_case_directory_has_a_test() {
         "knapsack-01",
         "longest-common-subsequence",
         "edit-distance",
+        "behavior-tree",
+        "utility-ai",
+        "minimax-tictactoe",
+        "npc-fsm",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink/algorithms")

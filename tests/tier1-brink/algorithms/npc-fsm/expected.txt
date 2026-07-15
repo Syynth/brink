@@ -1,0 +1,10 @@
+[idle] event=approach -> NPC: Oh, hello traveler! next=[greet]
+[greet] event=trade -> NPC: Take a look at my wares. next=[trade]
+[trade] event=buy -> NPC: Pleasure doing business. next=[trade]
+[trade] event=buy -> NPC: Pleasure doing business. next=[trade]
+[trade] event=leave -> NPC: Come back soon. next=[idle]
+[idle] event=approach -> NPC: Oh, hello traveler! next=[greet]
+[greet] event=leave -> NPC: Safe travels. next=[idle]
+[idle] event=buy -> NPC ignores you. next=[idle]
+[idle] event=approach -> NPC: Oh, hello traveler! next=[greet]
+Final state: greet.
