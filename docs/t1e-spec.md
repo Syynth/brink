@@ -1,8 +1,11 @@
 # T1e spec — path projections
 
-Status: **draft for ratification** (light spec pass, 2026-07-15 — the
-design was ruled in the value-model round; this transcribes §7 of
-`docs/value-model-spec.md` into implementable surface). Companions:
+Status: **RATIFIED 2026-07-15 as current posture** — the two narrowing
+choices (§2: argument-position-only; §4: root-cell-only effect rows)
+are deliberate v1 posture with exploration intents recorded as icebox
+issues #825 (first-class projection values) and #826 (path-granular
+rows), NOT permanent rejections. Transcribes §7 of
+`docs/value-model-spec.md`. Companions:
 `docs/format-v4-rfc.md` (VAL_PROJECTION + Proj* opcodes, encodings
 frozen), `docs/tier1-roadmap.md` §T1e, `docs/t1c-spec.md` (the ref
 rules projections extend). **RULED** sections transcribe the ratified
