@@ -1,0 +1,3 @@
+A (healthy, enemy far, no ammo): heal=0.05 attack=0 retreat=0.035 patrol=0.2 -> winner=patrol
+B (hurt, enemy adjacent, no ammo): heal=0.85 attack=0.54 retreat=0.865 patrol=0.2 -> winner=retreat
+C (mid health, enemy close, full ammo): heal=0.4 attack=0.88 retreat=0.52 patrol=0.2 -> winner=attack
