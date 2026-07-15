@@ -1105,9 +1105,10 @@ impl PartialEq for LirLowering {
 // non-re-execution holds for edits those two backdate across (a
 // diagnostics-only / `AnalysisOptions` edit, and — for a knot in an
 // *unedited* file — any edit whose resolutions/struct-shapes are unchanged).
-// `topological_order`'s all-files fallback (#815, a separate slice) still
-// widens the link's own inputs; this slice's non-re-execution proofs scope
-// to what is achievable with that fallback in place.
+// `topological_order` is now narrowed to `entry`'s transitive `INCLUDE`
+// closure (issue #815, landed separately) rather than falling back to all
+// project files, so `struct_shape_data_query` and the link's own inputs are
+// scoped the same way.
 
 /// The cutoff-friendly struct-shape projection (FG-4d): the
 /// `NameId`-free, `Eq`-able [`StructShapeData`] the per-knot chunk memo reads
@@ -1126,9 +1127,8 @@ pub(crate) fn struct_shape_data_query(
     };
     let files = project.files(db);
     let graph = include_graph_query(db, project);
-    let all_ids: Vec<FileId> = files.iter().map(|f| f.file_id(db)).collect();
     let by_id: LookupMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
-    let topo = graph.topological_order(entry, &all_ids);
+    let topo = graph.topological_order(entry);
     let hir_refs: Vec<(FileId, &HirFile)> = topo
         .iter()
         .filter_map(|id| by_id.get(id).map(|f| (*id, &lowered_query(db, *f).hir)))
