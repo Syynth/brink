@@ -156,8 +156,12 @@ impl Default for BrinkDatabase {
                 .ingredient::<diagnostics_query>()
                 // FG-4a (issue #791): the `has_errors` boolean projection
                 // (PR #753's seam finding #3) and the LIR-lowering split it
-                // gates — see `lir_query`'s doc comment.
+                // gates — see `lir_query`'s doc comment. type_policy_query
+                // (issue #806) is the matching narrow `.types` projection so
+                // an unrelated AnalysisOptions edit can't re-execute the
+                // `no_eq` lowering memo.
                 .ingredient::<has_errors_query>()
+                .ingredient::<type_policy_query>()
                 // FG-4d (issue #830): per-knot LIR chunk memos + the
                 // cutoff-friendly struct-shape projection they read;
                 // `lir_lowering_query` is now the link phase assembling them.
@@ -984,10 +988,13 @@ impl PartialEq for LirProduct {
 /// FG-4a — PR #753's seam finding #3), gated on [`has_errors_query`]'s
 /// narrow boolean instead of the full [`analysis_diagnostics_query`] vector.
 /// Reads only [`resolutions_index_query`], every file's [`lowered_query`]
-/// HIR, and [`include_graph_query`] — never the raw analysis diagnostics —
-/// so a diagnostics edit that changes *content* without flipping
-/// [`has_errors_query`]'s verdict leaves this memo (and its `Arc<Program>`
-/// pointer) fully validated, not re-executed (`fg4a_dependency_edges.rs`).
+/// HIR, [`include_graph_query`], and the narrow [`type_policy_query`]
+/// projection — never the raw analysis diagnostics, and never the raw
+/// `AnalysisOptions` input field (issue #806) — so a diagnostics edit that
+/// changes *content* without flipping [`has_errors_query`]'s verdict, and an
+/// options edit that doesn't change the `types` policy, both leave this memo
+/// (and its `Arc<Program>` pointer) fully validated, not re-executed
+/// (`fg4a_dependency_edges.rs`).
 /// `no_eq`: `lir::Program` has no `PartialEq`, same reasoning as
 /// [`LirProduct`]'s own impl below.
 #[derive(Clone, Default)]
@@ -1150,7 +1157,10 @@ pub(crate) fn lir_knot_chunk_query(
 
     let resolved = resolutions_index_query(db, project);
     let shape_data = struct_shape_data_query(db, project);
-    let type_mode = match project.analysis_options(db).types {
+    // Narrow `.types` projection (issue #806/#809) — not the raw
+    // `AnalysisOptions` field — so an unrelated options edit doesn't
+    // re-execute this chunk memo.
+    let type_mode = match type_policy_query(db, project) {
         TypePolicy::Strict => brink_ir::lir::TypeMode::Strict,
         TypePolicy::Gradual => brink_ir::lir::TypeMode::Gradual,
     };
@@ -1181,6 +1191,28 @@ pub(crate) fn lir_knot_chunk_query(
         chunk: Arc::new(chunk),
         diagnostics,
     }
+}
+
+/// The project's TM-3 `types` policy as its own narrow projection query
+/// (issue #806 / PR #809, mirroring [`has_errors_query`]'s pattern): a raw
+/// `project.analysis_options(db).types` field read inside
+/// [`lir_lowering_query`] would register a dependency on the *whole*
+/// `AnalysisOptions` input field, so any options edit — registering a host
+/// manifest, toggling `semantic_type_check`, even re-setting the identical
+/// value — would force the `no_eq` lowering memo to fully re-execute and
+/// allocate a fresh `Arc<Program>`. `TypePolicy`'s derived `Eq` is the
+/// cheapest possible cutoff: an options edit that doesn't change `.types`
+/// re-executes only this trivial projection, backdates it, and leaves
+/// [`lir_lowering_query`] (and its `Arc<Program>` pointer) fully validated —
+/// see `fg4a_dependency_edges.rs`. Behavior-neutral by construction: the
+/// same field, read one query-hop later.
+///
+/// FG-4d (issue #830) also routes the per-knot chunk memos' `.types` read
+/// through this projection, so an `AnalysisOptions` edit that leaves `.types`
+/// unchanged keeps every knot chunk `Arc` pointer-identical.
+#[salsa::tracked]
+pub(crate) fn type_policy_query(db: &dyn salsa::Database, project: ProjectInput) -> TypePolicy {
+    project.analysis_options(db).types
 }
 
 /// FG-4d **link phase**: assemble the per-knot chunk memos and the whole-root
@@ -1218,8 +1250,10 @@ pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput
     // gates static-offset record field ops — map the analyzer's
     // `TypePolicy` to `brink-ir`'s local mirror (`brink-ir` sits below
     // `brink-analyzer` in the crate graph and can't name `TypePolicy`
-    // directly).
-    let types = project.analysis_options(db).types;
+    // directly). Read through the narrow [`type_policy_query`] projection,
+    // never the raw `AnalysisOptions` input field — see its doc comment
+    // (issue #806).
+    let types = type_policy_query(db, project);
     let type_mode = match types {
         TypePolicy::Strict => brink_ir::lir::TypeMode::Strict,
         TypePolicy::Gradual => brink_ir::lir::TypeMode::Gradual,
