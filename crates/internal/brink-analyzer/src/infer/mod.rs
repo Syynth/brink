@@ -50,6 +50,7 @@
 //! the existing paths).
 
 mod body;
+mod effects;
 mod graph;
 mod ty;
 
@@ -62,6 +63,7 @@ use brink_ir::{
 };
 use rowan::TextRange;
 
+pub use effects::{EffectAtoms, EffectRow, solve_scc_effects};
 pub use graph::{CallGraph, SccGraph, scc_graph};
 pub use ty::{Ty, unify, unify_all};
 
@@ -810,6 +812,103 @@ pub fn referenced_globals(
     let no_sigs: BTreeMap<DefinitionId, InferredSig> = BTreeMap::new();
     let body_ctx = ctx.body_ctx(d, &no_sigs);
     infer_def_body(d, &body_ctx).referenced_globals
+}
+
+/// T2-1 (docs/effects-spec.md §2/§4, issue #860 — `def_effect_atoms(def)`).
+/// One def's raw effect atoms: the read set (VAR/CONST globals read), the
+/// write set (assignment targets resolving to a VAR/CONST), the call-kind set
+/// (`EXTERNAL` names directly called), the inferable direct-call edges the
+/// effect fixpoint follows, and whether the body calls through a function
+/// value (→ pessimal). Harvested by the exact same body walk
+/// [`referenced_globals`]/[`call_edges`] drive — the read set here *is*
+/// FG-2.1's `referenced_globals`, and the direct-call edges are `call_edges`'s
+/// set — so no new walk shape is introduced, only the per-def atom bundle T2
+/// needs assembled from one pass.
+///
+/// **Narrowed inputs** mirror [`call_edges`] exactly: `declaring_file_hir`
+/// need only cover `def`'s own file; `inferable` is caller-supplied
+/// (index-sourced) so a resolved call target in a *different* file is still
+/// classified as an edge, not a stray external. `manifest` is threaded for the
+/// same uniform-seam reason — it can never change the *structural* atom sets
+/// this discards every computed type to keep.
+#[must_use]
+pub fn def_effect_atoms(
+    def: DefinitionId,
+    declaring_file_hir: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+    inferable: &BTreeSet<DefinitionId>,
+    manifest: Option<&HostManifest>,
+) -> EffectAtoms {
+    let by_file = index_resolutions_by_file(resolutions);
+    let defs = collect_defs(declaring_file_hir, index);
+    let Some(d) = defs.iter().find(|d| d.id == def) else {
+        return EffectAtoms::default();
+    };
+    let empty_globals: BTreeMap<DefinitionId, Ty> = BTreeMap::new();
+    let ctx = ProjectCtx::new(index, &empty_globals, &by_file, inferable, manifest);
+    let no_sigs: BTreeMap<DefinitionId, InferredSig> = BTreeMap::new();
+    let body_ctx = ctx.body_ctx(d, &no_sigs);
+    let result = infer_def_body(d, &body_ctx);
+    EffectAtoms {
+        reads: result.referenced_globals,
+        writes: result.effect_writes,
+        calls: result.external_calls,
+        direct_calls: result.calls,
+        opaque: result.effect_opaque,
+    }
+}
+
+/// T2-1 (docs/effects-spec.md §4, issue #860 — the whole-project effect row
+/// table). Mirrors [`infer_project`]'s shape for effects: harvest every
+/// inferable def's atoms, build the same call graph off the direct-call edges,
+/// solve every SCC batch in condensation order with [`solve_scc_effects`]
+/// (accumulating each finalized batch's rows as `known_rows` for its
+/// successors). A pure function of already-computed inputs — the direct-call
+/// pure-function callers and the property tests use it; `brink-db`'s per-SCC
+/// `effects_scc_query` reproduces the same fold incrementally.
+#[must_use]
+pub fn effects_project(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+    manifest: Option<&HostManifest>,
+) -> BTreeMap<DefinitionId, EffectRow> {
+    let defs = collect_defs(files, index);
+    let inferable: BTreeSet<DefinitionId> = defs.iter().map(|d| d.id).collect();
+
+    // Harvest each def's atoms once; the direct-call edges double as the call
+    // graph the SCC batching needs.
+    let atoms: BTreeMap<DefinitionId, EffectAtoms> = defs
+        .iter()
+        .map(|d| {
+            (
+                d.id,
+                def_effect_atoms(d.id, files, index, resolutions, &inferable, manifest),
+            )
+        })
+        .collect();
+
+    let mut graph = CallGraph::new();
+    for (&id, a) in &atoms {
+        graph.add_node(id);
+        for &callee in &a.direct_calls {
+            graph.add_edge(id, callee);
+        }
+    }
+    let batches = topo_order(&graph);
+
+    let mut rows: BTreeMap<DefinitionId, EffectRow> = BTreeMap::new();
+    for batch in &batches {
+        // `solve_scc_effects` reads finalized predecessor rows out of
+        // `known_rows`; every earlier batch is already folded in, so passing
+        // the whole accumulated `rows` is exactly the condensation-predecessor
+        // set (plus already-solved siblings, harmless — a batch never edges
+        // back into a later one).
+        let solved = solve_scc_effects(batch, &atoms, &rows);
+        rows.extend(solved);
+    }
+    rows
 }
 
 /// Solve exactly one SCC batch (FG-2, issue #631 — `solve_scc(SccId)`).
@@ -2001,6 +2100,167 @@ mod tests {
         assert_eq!(
             composed, monolithic,
             "per-SCC composed inference must equal a single infer_project call"
+        );
+    }
+
+    // ─── T2-1 effect rows (docs/effects-spec.md §2/§4, issue #860) ───────
+
+    fn id_of(index: &SymbolIndex, name: &str) -> DefinitionId {
+        index
+            .by_name
+            .get(name)
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("no def with this name")
+    }
+
+    /// THE conservative-total soundness gate (docs/effects-spec.md §3, issue
+    /// #860): for every def, the inferred row must **cover** (⊒) its own body
+    /// atoms *and* every direct callee's finalized row — the no-under-report
+    /// invariant. Exercised over a mutually-recursive fixture (`ping <-> pong`)
+    /// so the check runs against a real multi-round SCC fixpoint, plus a
+    /// higher-order value-call (`apply`) so the pessimal floor is in the mix.
+    #[test]
+    fn conservative_total_no_under_report_over_mutual_recursion() {
+        let src = "VAR gold = 0\nVAR hp = 10\nEXTERNAL play_sfx(x)\n\
+                   === function ping(n) ===\n~ gold = gold + 1\n\
+                   {n == 0:\n  ~ return 0\n}\n~ play_sfx(n)\n~ return pong(n - 1)\n\
+                   === function pong(n) ===\n~ hp = hp - 1\n~ return ping(n)\n\
+                   === function apply(cb) ===\n~ return cb(1)\n\
+                   === caller ===\n~ temp x = ping(3)\n-> DONE\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let inferable = inferable_defs(&files, &index);
+
+        let rows = effects_project(&files, &index, &res, None);
+
+        for &def in &inferable {
+            let row = rows.get(&def).cloned().unwrap_or_default();
+            let atoms = def_effect_atoms(def, &files, &index, &res, &inferable, None);
+
+            // (1) covers its own body atoms.
+            assert!(
+                row.covers(&atoms.base_row()),
+                "def {def:?} row must cover its own body atoms"
+            );
+
+            // (2) covers every direct callee's finalized row.
+            for callee in &atoms.direct_calls {
+                let callee_row = rows.get(callee).cloned().unwrap_or_default();
+                assert!(
+                    row.covers(&callee_row),
+                    "def {def:?} row must cover callee {callee:?} row"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn effect_row_collects_read_write_and_external_call_atoms() {
+        let src = "VAR gold = 0\nVAR hp = 10\nEXTERNAL play_sfx(x)\n\
+                   === function spend(cost) ===\n~ gold = gold - cost\n\
+                   ~ temp before = hp\n~ play_sfx(cost)\n~ return gold\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+
+        let spend = id_of(&index, "spend");
+        let gold = id_of(&index, "gold");
+        let hp = id_of(&index, "hp");
+        let row = &rows[&spend];
+
+        assert!(row.reads.contains(&gold), "reads gold ({gold:?})");
+        assert!(row.reads.contains(&hp), "reads hp ({hp:?})");
+        assert!(row.writes.contains(&gold), "writes gold ({gold:?})");
+        assert!(!row.writes.contains(&hp), "never writes hp");
+        assert!(row.calls.contains("play_sfx"), "calls the external kind");
+        assert!(!row.opaque, "a fully-visible body is not pessimal");
+    }
+
+    #[test]
+    fn mutually_recursive_defs_share_the_unioned_row() {
+        let src = "VAR gold = 0\nVAR hp = 10\n\
+                   === function ping(n) ===\n~ gold = gold + 1\n\
+                   {n == 0:\n  ~ return 0\n}\n~ return pong(n - 1)\n\
+                   === function pong(n) ===\n~ hp = hp - 1\n~ return ping(n)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+
+        let left = id_of(&index, "ping");
+        let right = id_of(&index, "pong");
+        let gold = id_of(&index, "gold");
+        let hp = id_of(&index, "hp");
+
+        // Both SCC members converge on the union of both writes.
+        for def in [left, right] {
+            let row = &rows[&def];
+            assert!(row.writes.contains(&gold), "{def:?} writes gold");
+            assert!(row.writes.contains(&hp), "{def:?} writes hp");
+        }
+    }
+
+    #[test]
+    fn a_call_through_a_function_value_is_pessimal() {
+        // docs/effects-spec.md §4 gradual corollary: an `Unknown`-typed callee
+        // slot (here a `cb` param called as `cb(1)`) has no row to read → the
+        // enclosing def's row is pessimal.
+        let src = "=== function apply(cb) ===\n~ return cb(1)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let apply = id_of(&index, "apply");
+        assert!(
+            rows[&apply].opaque,
+            "a call through a function value must be pessimal"
+        );
+    }
+
+    #[test]
+    fn a_pure_body_has_an_empty_row() {
+        let src = "=== function double(n) ===\n~ return n * 2\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let double = id_of(&index, "double");
+        assert!(
+            rows[&double].is_empty(),
+            "a pure arithmetic body reads/writes/calls nothing"
+        );
+    }
+
+    /// Review-finding regression (issue #860's PR): a direct call passing a
+    /// VAR/CONST global into a `ref` parameter slot writes through that
+    /// parameter (docs/effects-spec.md §5 "through parameters") — the callee
+    /// mutates the *caller's* cell. The exact fixture the reviewer supplied
+    /// (`tests/tier1/variables/variable-pointer-ref-from-knot/story.ink`):
+    /// `inc`'s own body atoms are empty (its assignment target `x` is a
+    /// `Param`, never a `Variable`/`Constant`), so ground truth only shows up
+    /// at `knot`'s own call site — the `conservative_total_no_under_report`
+    /// property test above can never catch this since it only checks
+    /// inter-row consistency, never this kind of ground-truth completeness.
+    #[test]
+    fn a_direct_call_writes_through_a_ref_param_at_the_call_site() {
+        let src = "VAR val = 5\n\
+                   === knot ===\n~ inc(val)\n{val}\n->->\n\
+                   === function inc(ref x) ===\n~ x = x + 1\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+
+        let knot = id_of(&index, "knot");
+        let inc = id_of(&index, "inc");
+        let val = id_of(&index, "val");
+
+        assert!(
+            rows[&knot].writes.contains(&val),
+            "knot's call `inc(val)` writes through inc's `ref x` param — the \
+             write atom must not be dropped"
+        );
+        assert!(
+            !rows[&inc].writes.contains(&val),
+            "inc's own body never names `val` — the write is only visible at \
+             the call site, not inc's own atoms"
         );
     }
 }

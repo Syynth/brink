@@ -598,6 +598,9 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         } => write!(w, "make_projection {root} segments={segment_count}"),
         Opcode::ProjRead => write!(w, "proj_read"),
         Opcode::ProjWrite => write!(w, "proj_write"),
+
+        // Stdlib slice 1 completion (#857)
+        Opcode::CharAt => write!(w, "char_at"),
     }
 }
 

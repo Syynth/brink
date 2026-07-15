@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use brink_analyzer::{
-    AnalysisOptions, AnalysisResult, BodyTypes, InferenceResult, InferredSig, Sig, SymbolMeta,
+    AnalysisOptions, AnalysisResult, BodyTypes, EffectRow, InferenceResult, InferredSig, Sig,
+    SymbolMeta,
 };
 use brink_format::DefinitionId;
 use brink_ir::suppressions::Suppressions;
@@ -15,7 +16,7 @@ use crate::determinism::LookupMap;
 use crate::queries::{
     BrinkDatabase, CompileProduct, DefKey, KnotChunkKey, LirProduct, ProjectInput, ResolvedProject,
     SourceFile, analysis_query, call_site_diagnostics_query, call_site_metas_query,
-    diagnostics_query, has_errors_query, include_graph_query, infer_body_query,
+    diagnostics_query, effects_query, has_errors_query, include_graph_query, infer_body_query,
     inferred_signature_query, lir_knot_chunk_query, lir_prelude_decls_query, lir_query,
     lowered_query, parse_query, per_file_diagnostics_query, resolutions_index_query, resolve_query,
     signature_query, story_data_query, suppressions_query, symbol_index_query,
@@ -422,6 +423,24 @@ impl ProjectDb {
     /// [`signature`](Self::signature)/[`infer_body`](Self::infer_body).
     pub fn inferred_signature(&self, def: DefinitionId) -> Option<Arc<InferredSig>> {
         inferred_signature_query(&self.salsa, self.project, DefKey::new(&self.salsa, def))
+    }
+
+    /// Per-def effect row (`effects(def)`, T2-1, docs/effects-spec.md §2/§4,
+    /// issue #860) — the advisory `{reads, writes, calls}` summary of the
+    /// atomic effects `def` (and everything it transitively calls) may
+    /// perform, sited beside [`inferred_signature`](Self::inferred_signature).
+    /// Conservative-total (spec §3): the row over-reports, never under-reports;
+    /// a call through a function value or an unknown callee makes it pessimal
+    /// ([`EffectRow::opaque`]). `None` for a def with no inferable body (not a
+    /// knot/stitch, or an unknown id) — same contract as
+    /// [`inferred_signature`](Self::inferred_signature).
+    ///
+    /// **Advisory-only**: nothing in `story_data`/`lir_product`/`diagnostics`
+    /// reads this, so the row is additive metadata that leaves compiled output
+    /// byte-identical. Lazy — calling this is the only thing that triggers the
+    /// underlying atom harvest + per-SCC fixpoint.
+    pub fn effects(&self, def: DefinitionId) -> Option<Arc<EffectRow>> {
+        effects_query(&self.salsa, self.project, DefKey::new(&self.salsa, def))
     }
 
     /// Per-file type diagnostics (`type_diagnostics(FileId)`). Advisory-only

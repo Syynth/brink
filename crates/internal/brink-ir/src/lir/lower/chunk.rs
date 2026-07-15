@@ -414,6 +414,10 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
             remap_expr(base, map);
             remap_expr(key, map);
         }
+        Expr::CharAt { s, index } => {
+            remap_expr(s, map);
+            remap_expr(index, map);
+        }
         Expr::RecordNew {
             shape_id: _,
             fields,

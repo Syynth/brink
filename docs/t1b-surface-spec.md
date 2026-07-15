@@ -118,8 +118,8 @@ to the VERSION 4 literal pool + the reserved collection opcode block
 **Ruling: lowercase free functions, author-shadowing with warning.**
 
 Pure: `len(x)`, `keys(m)`, `values(m)`, `contains(x, v)` (arrays:
-element; maps: key). Mutating: `push(a, v)`, `insert(x, k_or_i, v)`,
-`remove(x, k_or_i)`.
+element; maps: key), `char_at(s, i)` (issue #857 — see below). Mutating:
+`push(a, v)`, `insert(x, k_or_i, v)`, `remove(x, k_or_i)`.
 
 - Names live in the brink dialect only; strict-ink projects never see
   them (no collision surface for vanilla ink).
@@ -133,6 +133,22 @@ element; maps: key). Mutating: `push(a, v)`, `insert(x, k_or_i, v)`,
 - Pure functions accept any expression.
 - Implementation is VM-native (opcode or native-call table), not ink
   functions — they must work on the value core directly.
+
+**`char_at(s, i)`** (issue #857, corpus finding — string indexing was
+missing, blocking string-algorithm ports like levenshtein/tokenizers):
+`i` indexes Unicode scalar values ("chars"), not UTF-8 bytes — a
+byte-indexed read would panic or split a multi-byte sequence for any
+non-ASCII text, which is exactly the silent-garbage outcome §11c
+forbids. Returns the char at `i` as a single-character `String` (ink
+has no separate char type). `i` outside `[0, char_count)`, a non-`Int`
+`i`, or a non-`String` `s` is a turn-terminating runtime fault (§11c's
+"no silent garbage" default — not a clamp, not a silently-empty
+result), matching indexing's own out-of-bounds fault posture (§4).
+Typing rule (declared at introduction, per the facility doctrine):
+fixed `Ty::String` return, independent of the argument types — the
+domain check is a runtime/gradual-mode concern at the `CharAt` op,
+same posture as `int`/`float`/`string` (§4's "everything else
+explicit" completion, `docs/typed-mode-spec.md` §4).
 
 ## 6. Testing (no oracle exists for this surface)
 

@@ -22,6 +22,7 @@ use crate::proj_ops;
 use crate::record_ops;
 use crate::state::ContextAccess;
 use crate::story::{CallFrame, CallFrameType, ContainerPosition, Flow, PendingChoice, Stats};
+use crate::string_ops;
 use crate::value_ops::{self, BinaryOp};
 
 /// Result of a single VM instruction step.
@@ -1179,6 +1180,9 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         Opcode::ConvertFloat => conversion_ops::convert_to_float(flow)?,
         Opcode::ConvertString => conversion_ops::convert_to_string(flow, program)?,
 
+        // ── Stdlib slice 1 completion (#857) ─────────────────────────
+        Opcode::CharAt => string_ops::char_at(flow)?,
+
         // ── External functions ──────────────────────────────────────
         Opcode::CallExternal(fn_id, arg_count) => {
             // Pop arguments from the value stack.
@@ -1216,7 +1220,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
 /// feature is enabled.
 #[cfg(feature = "bench-counters")]
 #[inline]
-fn note_value_share(val: &Value) {
+pub(crate) fn note_value_share(val: &Value) {
     match val {
         Value::Array(_) | Value::Map(_) | Value::Record { .. } => {
             crate::bench_counters::record_arc_clone();
@@ -1226,7 +1230,7 @@ fn note_value_share(val: &Value) {
 }
 #[cfg(not(feature = "bench-counters"))]
 #[inline(always)]
-fn note_value_share(_val: &Value) {}
+pub(crate) fn note_value_share(_val: &Value) {}
 
 // ── Function values (T1c, docs/t1c-spec.md §3/§6, #700) ──────────────────────
 

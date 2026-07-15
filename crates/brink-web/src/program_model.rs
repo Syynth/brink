@@ -559,6 +559,9 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         ),
         Opcode::ProjRead => "proj_read".to_owned(),
         Opcode::ProjWrite => "proj_write".to_owned(),
+
+        // Stdlib slice 1 completion (#857)
+        Opcode::CharAt => "char_at".to_owned(),
     }
 }
 
