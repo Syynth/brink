@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use brink_compiler::{AnalysisOptions, Dialect};
+use brink_compiler::{AnalysisOptions, Dialect, TypePolicy};
 use brink_format::StoryData;
 use brink_runtime::{DotNetRng, Line, Program, Stats, Story};
 
@@ -39,6 +39,45 @@ const CRUCIBLE_8_INPUT: &str = include_str!("../../../benchmarks/stories/crucibl
 /// the default strict-ink dialect via `compile_story`) — `loop_append_bench`
 /// below is a standalone `#[divan::bench]` using `compile_story_brink`.
 const LOOP_APPEND_10K_INK: &str = "../../benchmarks/stories/loop-append-10k/story.ink";
+
+/// Share-then-mutate (issue #821 Workstream A/B seed) benchmark: 5k
+/// iterations of "share a global into another, then mutate the copy" —
+/// the mirror image of [`LOOP_APPEND_10K_INK`]'s never-shared append.
+/// Brink-dialect only, standalone like the loop-append bench (see the
+/// `.ink` file's header for the mechanism this isolates).
+const SHARE_THEN_MUTATE_5K_INK: &str = "../../benchmarks/stories/share-then-mutate-5k/story.ink";
+
+/// #fn creation density (issue #821 second program batch): 10k repeated
+/// one-bound-arg closure creations in a tight loop, never called or
+/// shared. Brink-dialect only, standalone like the loop-append bench.
+const FN_CREATION_DENSITY_10K_INK: &str =
+    "../../benchmarks/stories/fn-creation-density-10k/story.ink";
+
+/// Bind-chain depth, shallow variant (depth 8) — see the `.ink` file's
+/// header for the O(depth²) mechanism this isolates against
+/// [`FN_BIND_CHAIN_DEEP_INK`].
+const FN_BIND_CHAIN_SHALLOW_INK: &str = "../../benchmarks/stories/fn-bind-chain-shallow/story.ink";
+
+/// Bind-chain depth, deep variant (depth 32) — see [`FN_BIND_CHAIN_SHALLOW_INK`].
+const FN_BIND_CHAIN_DEEP_INK: &str = "../../benchmarks/stories/fn-bind-chain-deep/story.ink";
+
+/// Dynamic-dispatch call throughput: 10k calls through a fn value. Compare
+/// against [`DIRECT_CALL_10K_INK`] for the honest baseline.
+const DYNAMIC_DISPATCH_10K_INK: &str = "../../benchmarks/stories/dynamic-dispatch-10k/story.ink";
+
+/// Direct-call baseline for [`DYNAMIC_DISPATCH_10K_INK`]: identical target
+/// function and iteration count, called through ordinary in-story dispatch.
+const DIRECT_CALL_10K_INK: &str = "../../benchmarks/stories/direct-call-10k/story.ink";
+
+/// Struct field access (issue #821 second program batch,
+/// docs/typed-mode-spec.md §6): 10k read-modify-write field accesses on a
+/// never-shared global struct. Compiled twice by
+/// [`struct_field_access_bench`] — once per [`TypePolicy`] — from this one
+/// source, to isolate the static-offset (`RecordGet`/`RecordSet`) vs
+/// by-name (`RecordGetDyn`/`RecordSetDyn`) dispatch cost the typed path
+/// buys. See the `.ink` file's header for the full mechanism argument.
+const STRUCT_FIELD_ACCESS_10K_INK: &str =
+    "../../benchmarks/stories/struct-field-access-10k/story.ink";
 
 #[expect(clippy::unwrap_used)]
 fn parse_inputs(s: &str) -> Vec<usize> {
@@ -94,6 +133,24 @@ fn compile_story_brink(ink_rel: &str) -> StoryData {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(ink_rel);
     let options = AnalysisOptions {
         dialect: Dialect::Brink,
+        ..AnalysisOptions::default()
+    };
+    brink_compiler::compile_path_with_options(&path, options)
+        .unwrap()
+        .data
+}
+
+/// Like [`compile_story_brink`] but with an explicit [`TypePolicy`] — used
+/// only by [`struct_field_access_bench`], which compiles the *same* source
+/// under both `TypePolicy::Strict` and `TypePolicy::Gradual` to isolate the
+/// static-offset vs by-name field-op dispatch cost (see
+/// [`STRUCT_FIELD_ACCESS_10K_INK`]'s doc for the full argument).
+#[expect(clippy::unwrap_used)]
+fn compile_story_brink_typed(ink_rel: &str, types: TypePolicy) -> StoryData {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(ink_rel);
+    let options = AnalysisOptions {
+        dialect: Dialect::Brink,
+        types,
         ..AnalysisOptions::default()
     };
     brink_compiler::compile_path_with_options(&path, options)
@@ -193,6 +250,172 @@ mod loop_append_bench {
     }
 }
 
+/// Share-then-mutate (issue #821) benchmark: isolates the deliberate
+/// mutate-while-shared cost, matching `loop_append_bench`'s granularity
+/// (link once, run repeatedly). Every iteration re-shares the array before
+/// mutating it, so — unlike `loop_append_bench`, which amortizes to ~0
+/// copies — this pays one COW copy per iteration by construction. See the
+/// `.ink` file's header comment and `docs/runtime-bench.md` for the counted
+/// comparison between the two (`bench-counters` feature).
+mod cow_sharing_bench {
+    use super::{SHARE_THEN_MUTATE_5K_INK, compile_story_brink, run_to_completion};
+
+    #[divan::bench]
+    fn share_then_mutate_5k(bencher: divan::Bencher) {
+        let data = compile_story_brink(SHARE_THEN_MUTATE_5K_INK);
+        #[expect(clippy::unwrap_used)]
+        let (program, line_tables) = brink_runtime::link(&data).unwrap();
+        let program = std::sync::Arc::new(program);
+        bencher.bench_local(|| run_to_completion(&program, line_tables.clone(), &[]));
+    }
+}
+
+/// Fn-value benchmarks (issue #821 second program batch): creation
+/// density, bind-chain depth, and dynamic-dispatch call throughput vs a
+/// direct-call baseline. Each program links once, runs repeatedly, same
+/// granularity as [`loop_append_bench`]/[`cow_sharing_bench`].
+mod fn_value_bench {
+    use super::{
+        DIRECT_CALL_10K_INK, DYNAMIC_DISPATCH_10K_INK, FN_BIND_CHAIN_DEEP_INK,
+        FN_BIND_CHAIN_SHALLOW_INK, FN_CREATION_DENSITY_10K_INK, compile_story_brink,
+        run_to_completion,
+    };
+
+    /// #fn creation density: 10k one-bound-arg closure creations, never
+    /// called or shared — isolates `Value::closure`'s per-creation
+    /// allocation cost alone.
+    #[divan::bench]
+    fn creation_density_10k(bencher: divan::Bencher) {
+        let data = compile_story_brink(FN_CREATION_DENSITY_10K_INK);
+        #[expect(clippy::unwrap_used)]
+        let (program, line_tables) = brink_runtime::link(&data).unwrap();
+        let program = std::sync::Arc::new(program);
+        bencher.bench_local(|| run_to_completion(&program, line_tables.clone(), &[]));
+    }
+
+    /// Bind-chain depth, shallow (depth 8) — compare against
+    /// [`bind_chain_deep`] for the O(depth²) scaling `bind_fn_value`'s
+    /// existing-prefix copy produces.
+    #[divan::bench]
+    fn bind_chain_shallow(bencher: divan::Bencher) {
+        let data = compile_story_brink(FN_BIND_CHAIN_SHALLOW_INK);
+        #[expect(clippy::unwrap_used)]
+        let (program, line_tables) = brink_runtime::link(&data).unwrap();
+        let program = std::sync::Arc::new(program);
+        bencher.bench_local(|| run_to_completion(&program, line_tables.clone(), &[]));
+    }
+
+    /// Bind-chain depth, deep (depth 32) — see [`bind_chain_shallow`].
+    #[divan::bench]
+    fn bind_chain_deep(bencher: divan::Bencher) {
+        let data = compile_story_brink(FN_BIND_CHAIN_DEEP_INK);
+        #[expect(clippy::unwrap_used)]
+        let (program, line_tables) = brink_runtime::link(&data).unwrap();
+        let program = std::sync::Arc::new(program);
+        bencher.bench_local(|| run_to_completion(&program, line_tables.clone(), &[]));
+    }
+
+    /// Dynamic-dispatch call throughput: 10k calls through a fn value —
+    /// compare against [`direct_call_10k`] for the honest baseline.
+    #[divan::bench]
+    fn dynamic_dispatch_10k(bencher: divan::Bencher) {
+        let data = compile_story_brink(DYNAMIC_DISPATCH_10K_INK);
+        #[expect(clippy::unwrap_used)]
+        let (program, line_tables) = brink_runtime::link(&data).unwrap();
+        let program = std::sync::Arc::new(program);
+        bencher.bench_local(|| run_to_completion(&program, line_tables.clone(), &[]));
+    }
+
+    /// Direct-call baseline for [`dynamic_dispatch_10k`]: identical target
+    /// function and iteration count, called through ordinary in-story
+    /// dispatch (`Opcode::Call`) instead of a fn value.
+    #[divan::bench]
+    fn direct_call_10k(bencher: divan::Bencher) {
+        let data = compile_story_brink(DIRECT_CALL_10K_INK);
+        #[expect(clippy::unwrap_used)]
+        let (program, line_tables) = brink_runtime::link(&data).unwrap();
+        let program = std::sync::Arc::new(program);
+        bencher.bench_local(|| run_to_completion(&program, line_tables.clone(), &[]));
+    }
+}
+
+/// Struct field access (issue #821 second program batch,
+/// docs/typed-mode-spec.md §6): the *same* source
+/// ([`STRUCT_FIELD_ACCESS_10K_INK`]) compiled under both `TypePolicy`
+/// values, isolating the static-offset (`RecordGet`/`RecordSet`, strict)
+/// vs by-name (`RecordGetDyn`/`RecordSetDyn`, gradual) field-op dispatch
+/// cost — "the difference the typed path buys." See the `.ink` file's
+/// header for the full mechanism argument, including why this isolates
+/// dispatch cost rather than COW behavior (both policies pay identical
+/// `bench-counters` COW-copy counts — see [`print_bench_counters`]).
+mod struct_field_access_bench {
+    use super::{
+        STRUCT_FIELD_ACCESS_10K_INK, TypePolicy, compile_story_brink_typed, run_to_completion,
+    };
+
+    #[divan::bench]
+    fn strict_static_offset(bencher: divan::Bencher) {
+        let data = compile_story_brink_typed(STRUCT_FIELD_ACCESS_10K_INK, TypePolicy::Strict);
+        #[expect(clippy::unwrap_used)]
+        let (program, line_tables) = brink_runtime::link(&data).unwrap();
+        let program = std::sync::Arc::new(program);
+        bencher.bench_local(|| run_to_completion(&program, line_tables.clone(), &[]));
+    }
+
+    #[divan::bench]
+    fn gradual_dynamic_fallback(bencher: divan::Bencher) {
+        let data = compile_story_brink_typed(STRUCT_FIELD_ACCESS_10K_INK, TypePolicy::Gradual);
+        #[expect(clippy::unwrap_used)]
+        let (program, line_tables) = brink_runtime::link(&data).unwrap();
+        let program = std::sync::Arc::new(program);
+        bencher.bench_local(|| run_to_completion(&program, line_tables.clone(), &[]));
+    }
+}
+
+/// `ptr_eq` equality fast path (issue #821, value-model-spec §4/§5):
+/// `Value`'s hand-written `PartialEq` short-circuits `Array`/`Map`/`Record`
+/// comparison via `Arc::ptr_eq` before falling back to an element-wise
+/// structural walk. Exercised directly against `brink_format::Value`
+/// rather than through an `.ink` program: brink's `==` operator has no
+/// `Array`/`Map` arm in `value_ops::binary_op` yet (unsupported types fault
+/// `TypeError`), so there is no ink-level equivalent to isolate the
+/// mechanism through today — this bench hits the exact same `PartialEq`
+/// impl the runtime's own `map_contains`/list/record comparisons use,
+/// which is the honest level to measure at (honest mechanism isolation,
+/// per the epic's gate).
+mod ptr_eq_bench {
+    use std::sync::Arc;
+
+    use brink_format::Value;
+
+    /// Large enough that an O(n) structural walk is measurably slower than
+    /// the O(1) `ptr_eq` shortcut, small enough the bench stays fast.
+    const N: i32 = 20_000;
+
+    fn big_array() -> Value {
+        Value::Array(Arc::new((0..N).map(Value::Int).collect()))
+    }
+
+    /// Same `Arc` on both sides (an `Arc::clone` share, e.g. a snapshot
+    /// compared against itself) — hits the `ptr_eq` shortcut, O(1).
+    #[divan::bench]
+    fn same_arc(bencher: divan::Bencher) {
+        let a = big_array();
+        let b = a.clone();
+        bencher.bench_local(|| a == b);
+    }
+
+    /// Distinct allocations with structurally identical contents (e.g. two
+    /// independently-built arrays, or one COW-copied off the other) — the
+    /// `ptr_eq` shortcut misses, falls through to a full O(n) element walk.
+    #[divan::bench]
+    fn distinct_but_equal(bencher: divan::Bencher) {
+        let a = big_array();
+        let b = big_array();
+        bencher.bench_local(|| a == b);
+    }
+}
+
 mod end_to_end {
     use super::{Scenario, compile_story, run_to_completion, scenarios};
 
@@ -271,10 +494,82 @@ fn print_crucible_8_stats() {
     eprintln!("───────────────────────────────────────────────\n");
 }
 
+/// Print `bench_counters` snapshots for the two mechanism-isolation
+/// programs (issue #821 Workstream B seed) — direct proof, not inference,
+/// that `loop-append-10k` amortizes to ~0 COW copies (the §5 cliff, fixed
+/// by #576) while `share-then-mutate-5k` pays exactly one copy per share by
+/// construction. Only compiled when `--features bench-counters` is passed;
+/// with the feature off, `main` skips straight to `divan::main()` and this
+/// function doesn't exist.
+#[cfg(feature = "bench-counters")]
+#[expect(clippy::unwrap_used, clippy::print_stderr)]
+fn print_bench_counters() {
+    use brink_runtime::bench_counters;
+
+    bench_counters::reset();
+    let data = compile_story_brink(LOOP_APPEND_10K_INK);
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let program = std::sync::Arc::new(program);
+    run_to_completion(&program, line_tables, &[]);
+    let loop_append = bench_counters::snapshot();
+
+    bench_counters::reset();
+    let data = compile_story_brink(SHARE_THEN_MUTATE_5K_INK);
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let program = std::sync::Arc::new(program);
+    run_to_completion(&program, line_tables, &[]);
+    let share_then_mutate = bench_counters::snapshot();
+
+    // Struct field access (issue #821 second program batch): both
+    // TypePolicy compiles of the same source, to prove the strict/gradual
+    // COW-copy count is identical — the wall-time delta between the two
+    // divan benches is dispatch-mechanism cost, not a COW-behavior
+    // difference. See STRUCT_FIELD_ACCESS_10K_INK's doc.
+    bench_counters::reset();
+    let data = compile_story_brink_typed(STRUCT_FIELD_ACCESS_10K_INK, TypePolicy::Strict);
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let program = std::sync::Arc::new(program);
+    run_to_completion(&program, line_tables, &[]);
+    let struct_strict = bench_counters::snapshot();
+
+    bench_counters::reset();
+    let data = compile_story_brink_typed(STRUCT_FIELD_ACCESS_10K_INK, TypePolicy::Gradual);
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let program = std::sync::Arc::new(program);
+    run_to_completion(&program, line_tables, &[]);
+    let struct_gradual = bench_counters::snapshot();
+
+    eprintln!("\n── bench-counters (Arc-clone / COW-copy events) ──");
+    eprintln!(
+        "  loop-append-10k:       cow_copies={:>6} arc_clones={:>6}",
+        loop_append.cow_copies, loop_append.arc_clones
+    );
+    eprintln!(
+        "  share-then-mutate-5k:  cow_copies={:>6} arc_clones={:>6}",
+        share_then_mutate.cow_copies, share_then_mutate.arc_clones
+    );
+    eprintln!(
+        "  struct-field-access-10k (strict):  cow_copies={:>6} arc_clones={:>6}",
+        struct_strict.cow_copies, struct_strict.arc_clones
+    );
+    eprintln!(
+        "  struct-field-access-10k (gradual): cow_copies={:>6} arc_clones={:>6}",
+        struct_gradual.cow_copies, struct_gradual.arc_clones
+    );
+    eprintln!(
+        "  (fn-value benches: not instrumented — bench-counters covers \
+         Array/Map/Record COW only, not Closure allocation; see \
+         docs/runtime-bench.md's honest-mechanism-isolation note)"
+    );
+    eprintln!("───────────────────────────────────────────────────\n");
+}
+
 fn main() {
     // Force scenario initialization before benchmarks run.
     let _ = scenarios();
     print_hanoi_10_stats();
     print_crucible_8_stats();
+    #[cfg(feature = "bench-counters")]
+    print_bench_counters();
     divan::main();
 }
