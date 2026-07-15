@@ -88,10 +88,34 @@ pub fn lower_to_program(
 }
 
 /// [`lower_to_program`] with an explicit `types` policy (TM-4c,
-/// `docs/typed-mode-spec.md` §6) — `brink-db`'s `lir_query` is the one
-/// caller that has a real project policy to hand in (`project.
-/// analysis_options(db).types`, mapped to `context::TypeMode`); every other
-/// caller (tests, the JSON backend driver) gets the gradual default via
+/// `docs/typed-mode-spec.md` §6).
+///
+/// **Not on the compile path.** Through FG-4c/d/e, `brink-db`'s production
+/// link phase (`lir_lowering_query`, backing `ProjectDb::lir_product`/
+/// `story_data`) stopped calling this whole-project entry: it composes the
+/// same three phases directly — its own `lir_prelude_decls_query` +
+/// `assemble_prelude`, [`lower_root_content_for_prelude`], and the per-knot
+/// [`lower_knot_chunk_incremental`] memoized per `DefinitionId` — so a
+/// knot-body edit re-lowers one chunk instead of the whole project. FG-6
+/// (#841) then removed `brink-compiler`'s own direct call, so every batch
+/// consumer (CLI, `brink-web`, `brink-intl`, the oracle harness) now reaches
+/// codegen through `ProjectDb::story_data()` too; there is exactly one
+/// compile path in production.
+///
+/// This function stays `pub` regardless — issue #841's audit (grep for
+/// external callers) found two real, deliberate direct consumers this
+/// composition does not supersede, both outside this crate: the
+/// `compile_bench` benchmark's staged/legacy-path rows, which exist
+/// specifically to measure this whole-project one-shot call *as the
+/// baseline* against the `ProjectDb`-driven per-chunk path (narrowing would
+/// delete the comparison, not the redundancy); and `golden_i078.rs`, a
+/// golden pipeline test that pins this function's exact LIR output for one
+/// fixture in isolation, deliberately bypassing `ProjectDb`. Narrowing to
+/// `pub(crate)` would break both for no correctness gain. `brink-ir`'s own
+/// `lir_lowering.rs` integration tests are the remaining caller (needs
+/// `pub`, not `pub(crate)`, since `tests/` compiles as a separate crate).
+///
+/// Every other caller (the tests above) gets the gradual default via
 /// [`lower_to_program`], which is always semantically valid — gradual never
 /// emits a static-offset op gated on `types = strict` (see `expr::
 /// known_shape`'s doc).
@@ -106,12 +130,15 @@ pub fn lower_to_program_with_type_mode(
     file_paths: &LookupMap<FileId, String>,
     type_mode: context::TypeMode,
 ) -> (Option<lir::Program>, Vec<crate::Diagnostic>) {
-    // FG-4d: this whole-project entry is now the *composition* of the same
-    // three pure phases the incremental (`brink-db`) pipeline memoizes
-    // per-def — prelude, per-chunk lowering, assembly — so the two paths are
-    // byte-identical by construction. Every existing caller (tests, the JSON
-    // backend driver) keeps a single call; `brink-db` calls the phases
-    // individually and caches the middle one per `DefinitionId`.
+    // FG-4d/e: this whole-project entry runs the same three pure phases
+    // `brink-db`'s production link phase (`lir_lowering_query`) composes
+    // from its own per-def/whole-project memos (prelude decls, per-knot
+    // chunk, assembly) — so the two are byte-identical by construction, even
+    // though `brink-db` no longer routes through this function at all (see
+    // this fn's doc). The remaining callers here (this crate's own
+    // `lir_lowering.rs` tests, `compile_bench`, `golden_i078.rs`) keep a
+    // single whole-project call; `brink-db` caches the per-knot phase
+    // individually, per `DefinitionId`, instead.
     let prelude = build_prelude(files, index, resolutions, type_mode);
     let resolutions = ResolutionLookup::build(resolutions);
     let struct_ctx = prelude.struct_ctx();
