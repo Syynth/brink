@@ -223,6 +223,15 @@ impl Default for BrinkDatabase {
                 .ingredient::<type_inference_query>()
                 .ingredient::<infer_body_query>()
                 .ingredient::<type_diagnostics_query>()
+                // T2-1 (issue #860): advisory effect-row inference, sited
+                // beside inferred_signature. def_effect_atoms_query is the
+                // per-def atom harvest (same body walk referenced_globals/
+                // call_edges drive); effects_scc_query lifts solve_scc's
+                // per-SCC fixpoint to the effect lattice; effects_query is the
+                // per-def view.
+                .ingredient::<def_effect_atoms_query>()
+                .ingredient::<effects_scc_query>()
+                .ingredient::<effects_query>()
                 // Layer 3.
                 .ingredient::<lir_query>()
                 .ingredient::<story_data_query>()
@@ -948,6 +957,126 @@ pub(crate) fn inferred_signature_query<'db>(
     let scc_id = *membership.member_of.get(&def_id)?;
     let solved = solve_scc_query(db, project, DefKey::new(db, scc_id));
     solved.signatures.get(&def_id).cloned().map(Arc::new)
+}
+
+/// One def's raw effect atoms (T2-1, docs/effects-spec.md §2/§4, issue #860 —
+/// `def_effect_atoms(def)`). The per-def read/write/call-kind atom bundle the
+/// effect-row fixpoint closes over, harvested by the exact same body walk
+/// [`referenced_globals_query`]/[`call_edges_query`] already drive — same
+/// declaring-file-only HIR + resolution dependency edges, same index-sourced
+/// [`inferable_defs_query`] for classifying a call target as an edge vs. a
+/// terminal external. Passes `None` for the manifest for the same reason
+/// [`call_edges_query`] does: this pass discards every computed type, so the
+/// manifest can never change the *structural* atom sets it keeps.
+///
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 16384)]
+pub(crate) fn def_effect_atoms_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: ProjectInput,
+    def: DefKey<'db>,
+) -> Arc<brink_analyzer::EffectAtoms> {
+    let index = inference_index_query(db, project);
+    let def_id = def.def(db);
+    let Some(declaring_file) = index.symbols.get(&def_id).map(|info| info.file) else {
+        return Arc::new(brink_analyzer::EffectAtoms::default());
+    };
+    let Some(file) = project
+        .files(db)
+        .iter()
+        .find(|f| f.file_id(db) == declaring_file)
+    else {
+        return Arc::new(brink_analyzer::EffectAtoms::default());
+    };
+    let hir = &lowered_query(db, *file).hir;
+    let (resolutions, _diags) = resolve_query(db, project, *file);
+    let inferable = inferable_defs_query(db, project);
+    Arc::new(brink_analyzer::def_effect_atoms(
+        def_id,
+        &[(declaring_file, hir)],
+        index,
+        resolutions,
+        inferable,
+        None,
+    ))
+}
+
+/// One SCC's finalized effect rows (T2-1, docs/effects-spec.md §4, issue #860
+/// — the per-SCC effect fixpoint, lifting [`solve_scc_query`]'s exact shape to
+/// the effect lattice). Reads every condensation-predecessor SCC's
+/// `effects_scc_query` first for `known_rows` (recursion is acyclic — the
+/// condensation is a DAG, same Fork 1 ruling [`solve_scc_query`] relies on, so
+/// salsa never sees a cycle), collects every member's
+/// [`def_effect_atoms_query`], then runs [`brink_analyzer::solve_scc_effects`]
+/// for this component's own members. Returns an empty map for an id that isn't
+/// any component's minimum member (defensive — never panics on a stale key).
+///
+/// `lru = 16384`: per-def (per-SCC) runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 16384)]
+pub(crate) fn effects_scc_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: ProjectInput,
+    scc: DefKey<'db>,
+) -> Arc<BTreeMap<DefinitionId, brink_analyzer::EffectRow>> {
+    let scc_id: SccId = scc.def(db);
+    let membership = scc_membership_query(db, project);
+    let Some(batch) = membership
+        .order
+        .iter()
+        .find(|comp| comp.iter().next().copied() == Some(scc_id))
+    else {
+        return Arc::new(BTreeMap::new());
+    };
+
+    let mut known_rows: BTreeMap<DefinitionId, brink_analyzer::EffectRow> = BTreeMap::new();
+    if let Some(deps) = membership.depends_on.get(&scc_id) {
+        for &dep in deps {
+            let solved = effects_scc_query(db, project, DefKey::new(db, dep));
+            known_rows.extend(solved.iter().map(|(k, v)| (*k, v.clone())));
+        }
+    }
+
+    let atoms: BTreeMap<DefinitionId, brink_analyzer::EffectAtoms> = batch
+        .iter()
+        .map(|&id| {
+            (
+                id,
+                (*def_effect_atoms_query(db, project, DefKey::new(db, id))).clone(),
+            )
+        })
+        .collect();
+
+    Arc::new(brink_analyzer::solve_scc_effects(
+        batch,
+        &atoms,
+        &known_rows,
+    ))
+}
+
+/// Per-def effect row (T2-1, docs/effects-spec.md §4, issue #860 —
+/// `effects(def)`, the advisory row query sited beside
+/// [`inferred_signature_query`]). Routes through the def's SCC exactly as
+/// [`inferred_signature_query`] routes through [`solve_scc_query`]. `None` for
+/// a def with no inferable body (not a knot/stitch, or an unknown id) — same
+/// contract as [`inferred_signature_query`]/[`infer_body_query`].
+///
+/// **Advisory-only** (issue #860): nothing in `story_data`, `lir_product`, or
+/// `diagnostics` reads this — the row is additive metadata the runtime doesn't
+/// yet consume, so the oracle stays byte-identical. Calling it is the only
+/// thing that triggers the underlying atom harvest + fixpoint.
+///
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 16384)]
+pub(crate) fn effects_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: ProjectInput,
+    def: DefKey<'db>,
+) -> Option<Arc<brink_analyzer::EffectRow>> {
+    let def_id = def.def(db);
+    let membership = scc_membership_query(db, project);
+    let scc_id = *membership.member_of.get(&def_id)?;
+    let solved = effects_scc_query(db, project, DefKey::new(db, scc_id));
+    solved.get(&def_id).cloned().map(Arc::new)
 }
 
 /// Whole-project type inference — now an aggregation over
