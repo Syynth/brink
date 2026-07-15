@@ -436,6 +436,17 @@ pub enum CallArg {
     RefGlobal(DefinitionId),
     /// `ref` argument targeting a temp variable — emits `PushTempPointer`.
     RefTemp(u16, NameId),
+    /// A real path-projection `ref` argument (`ref npc.hp`, `ref
+    /// party[leader].hp`, T1e-2, `docs/t1e-spec.md` §2/§3) — a durable
+    /// global root plus one or more segment expressions, evaluated once
+    /// (snapshot-at-creation, spec §1(1)) and emitted as `MakeProjection`.
+    /// A bare zero-segment `ref x` never reaches this variant — it lowers
+    /// exactly like today's unmarked ref-argument binding
+    /// ([`RefGlobal`]/[`RefTemp`]).
+    RefProjection {
+        root: DefinitionId,
+        segments: Vec<Expr>,
+    },
 }
 
 // ─── Choice sets ─────────────────────────────────────────────────────

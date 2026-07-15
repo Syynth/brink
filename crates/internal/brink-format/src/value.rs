@@ -56,6 +56,8 @@ pub enum ValueType {
     Closure,
     /// An opaque host-resource token ([`Value::Handle`]) — T1d.
     Handle,
+    /// A symbolic path projection ([`Value::Projection`]) — T1e.
+    Projection,
 }
 
 /// A runtime value in the ink VM.
@@ -177,6 +179,68 @@ pub enum Value {
         /// The host-allocated token id. Opaque to the script.
         id: u64,
     },
+    /// A symbolic path projection (`docs/t1e-spec.md` §1/§3, wire tag
+    /// `VAL_PROJECTION`): `(root cell, path segments)` — never an interior
+    /// pointer. Created only in `ref`-argument position (`ref
+    /// npc.inventory[3]`); reads walk the path against the root's *current*
+    /// value, writes desugar to root-cell RMW (take → walk → `make_mut`
+    /// spine → write → store back, spec §3). The segment list is fixed at
+    /// creation ("index expressions snapshot at `ref` creation", spec §1) —
+    /// there is no lazy re-evaluation.
+    ///
+    /// Wrapped in `Arc` for the same O(1)-clone discipline as
+    /// [`Closure`](Self::Closure). Structural equality (spec §4 PROPOSED,
+    /// implemented here): same root cell and equal segments.
+    Projection(Arc<ProjectionValue>),
+}
+
+/// The payload of a [`Value::Projection`] — the root cell plus its ordered
+/// segment chain (`docs/t1e-spec.md` §1/§3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectionValue {
+    /// The durable root cell this projection reads/writes through (a global
+    /// `VAR`/`#@local` — never a temp, enforced at compile time by T1e-1's
+    /// E080 durable-root check). Mirrors the `VAL_VAR_POINTER` payload shape
+    /// (`docs/format-v4-rfc.md` §1: "cell reference … reused not
+    /// reinvented").
+    pub cell: DefinitionId,
+    /// The ordered path segments, fixed at creation.
+    pub segments: Vec<ProjSegment>,
+}
+
+/// One path-projection segment (`docs/format-v4-rfc.md` §1: `segments: 0 =
+/// index i32, 1 = key value`). Segment kind `2 = range` is RESERVED and never
+/// constructed in T1e (icebox #829 — sequence slices/ranges).
+///
+/// The kind recorded here is a **wire-compactness choice**, not a semantic
+/// tag the walker trusts blindly: an evaluated segment value that happens to
+/// be an `Int` is captured as [`Index`](Self::Index) (the compact i32 form);
+/// everything else — a map key of another scalar type, or a struct field
+/// name (always a `Value::String` literal) — is captured as
+/// [`Key`](Self::Key). Walking dispatches on the *root's current container
+/// type* at each step (spec §4: reads walk against the root's current
+/// value), so an `Index(n)` segment applied to a `Map` is reinterpreted as
+/// `MapKey::Int(n)` — the distinction never forecloses either domain.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ProjSegment {
+    /// `[i]` — captured because the evaluated segment value was an `Int`.
+    Index(i32),
+    /// `[k]` (a non-`Int` map key) or `.field` (a struct field name,
+    /// captured as `Value::String`).
+    Key(Value),
+}
+
+impl ProjSegment {
+    /// Build a segment from an evaluated `Value` — the classification rule
+    /// this whole module documents: `Int` → [`Index`](Self::Index), anything
+    /// else → [`Key`](Self::Key).
+    #[must_use]
+    pub fn from_value(v: Value) -> Self {
+        match v {
+            Value::Int(n) => Self::Index(n),
+            other => Self::Key(other),
+        }
+    }
 }
 
 /// The payload of a [`Value::Closure`] — the fn token plus its bound-arg
@@ -226,6 +290,7 @@ impl Value {
             Self::FnRef(_) => ValueType::FnRef,
             Self::Closure(_) => ValueType::Closure,
             Self::Handle { .. } => ValueType::Handle,
+            Self::Projection(_) => ValueType::Projection,
         }
     }
 
@@ -342,6 +407,21 @@ impl Value {
     pub fn as_handle(&self) -> Option<(NameId, u64)> {
         match self {
             Self::Handle { kind, id } => Some((*kind, *id)),
+            _ => None,
+        }
+    }
+
+    /// Build a [`Projection`](Self::Projection) from a root cell and its
+    /// ordered segment chain (`docs/t1e-spec.md` §1/§3).
+    pub fn projection(cell: DefinitionId, segments: Vec<ProjSegment>) -> Self {
+        Self::Projection(Arc::new(ProjectionValue { cell, segments }))
+    }
+
+    /// Borrow the projection payload if this value is a
+    /// [`Projection`](Self::Projection).
+    pub fn as_projection(&self) -> Option<&Arc<ProjectionValue>> {
+        match self {
+            Self::Projection(p) => Some(p),
             _ => None,
         }
     }
@@ -474,6 +554,10 @@ impl PartialEq for Value {
             (Self::Handle { kind: ka, id: ida }, Self::Handle { kind: kb, id: idb }) => {
                 ka == kb && ida == idb
             }
+            // Projection equality (T1e, docs/t1e-spec.md §4 PROPOSED): same
+            // root cell + equal segments, with the `Arc::ptr_eq` fast path
+            // mirroring every other heap-allocated variant.
+            (Self::Projection(a), Self::Projection(b)) => Arc::ptr_eq(a, b) || a == b,
             _ => false,
         }
     }
@@ -646,6 +730,19 @@ impl OrderedMap {
     /// Whether `key` is present.
     pub fn contains_key(&self, key: &MapKey) -> bool {
         self.entries.iter().any(|(k, _)| k == key)
+    }
+
+    /// Mutably borrow the value for `key`, or `None` if absent. The
+    /// intermediate-segment leg of the T1e projection RMW spine
+    /// (`docs/t1e-spec.md` §3): recursing a `make_mut` chain through a map
+    /// needs a mutable handle to an *existing* entry without touching
+    /// insertion order, which [`insert`](Self::insert) alone (add-or-replace)
+    /// can't provide.
+    pub fn get_mut(&mut self, key: &MapKey) -> Option<&mut Value> {
+        self.entries
+            .iter_mut()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v)
     }
 
     /// Insert `value` under `key`, returning the previous value if the key was

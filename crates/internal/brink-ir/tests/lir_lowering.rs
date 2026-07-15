@@ -4199,6 +4199,9 @@ fn ref_argument_call_with_temp_decl_in_the_same_block_compiles_clean() {
                 lir::CallArg::RefGlobal(id) => assert_eq!(*id, gold_id),
                 lir::CallArg::RefTemp(..) => panic!("expected RefGlobal(gold), got RefTemp"),
                 lir::CallArg::Value(_) => panic!("expected RefGlobal(gold), got Value"),
+                lir::CallArg::RefProjection { .. } => {
+                    panic!("expected RefGlobal(gold), got RefProjection")
+                }
             }
         }
         _ => unreachable!(),
@@ -4240,6 +4243,66 @@ fn ref_marked_bare_var_call_arg_lowers_exactly_like_the_unmarked_form() {
                 lir::CallArg::RefGlobal(id) => assert_eq!(*id, gold_id),
                 lir::CallArg::RefTemp(..) => panic!("expected RefGlobal(gold), got RefTemp"),
                 lir::CallArg::Value(_) => panic!("expected RefGlobal(gold), got Value"),
+                lir::CallArg::RefProjection { .. } => {
+                    panic!("expected RefGlobal(gold), got RefProjection")
+                }
+            }
+        }
+        _ => unreachable!(),
+    }
+}
+
+// ─── T1e-2 path projections (docs/t1e-spec.md §2/§3, tracking #828) ───
+//
+// T1e-2 replaces the T1e-1 E052-fence (`E099`) with real `MakeProjection`
+// lowering for a real path segment — `CallArg::RefProjection`.
+
+#[test]
+fn ref_dotted_field_projection_call_arg_lowers_to_ref_projection() {
+    // `ref npc.hp` has a real path segment (a dotted field) — a genuine
+    // T1e projection. `brink-analyzer`'s durable-root/position checks pass
+    // (`npc` is a durable global VAR, direct call-argument position), and
+    // T1e-2 now lowers it for real: a single field segment, a literal
+    // string expression carrying the field name.
+    let src = "VAR npc = 100\n~ heal(ref npc.hp)\nDone.\n-> END\n\n\
+               === function heal(ref hp) ===\n~ return hp\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        find_diag(&diags, brink_ir::DiagnosticCode::E099).is_none(),
+        "a real path-segment projection must no longer hit the T1e-1 fence: {diags:?}"
+    );
+    let program = program.expect("well-formed program lowers cleanly");
+    let npc_id = find_global(&program, "npc").id;
+    let call = program
+        .root
+        .body
+        .iter()
+        .find_map(|s| match s {
+            lir::Stmt::ExprStmt(e @ lir::Expr::Call { .. }) => Some(e),
+            _ => None,
+        })
+        .expect("heal(ref npc.hp) should lower to an ExprStmt(Call)");
+    match call {
+        lir::Expr::Call { args, .. } => {
+            assert_eq!(args.len(), 1);
+            match &args[0] {
+                lir::CallArg::RefProjection { root, segments } => {
+                    assert_eq!(*root, npc_id);
+                    assert_eq!(segments.len(), 1, "expected one dotted-field segment");
+                    match &segments[0] {
+                        lir::Expr::String(s) => {
+                            assert_eq!(s.parts.len(), 1);
+                            match &s.parts[0] {
+                                lir::StringPart::Literal(text) => assert_eq!(text, "hp"),
+                                lir::StringPart::Interpolation(_) => {
+                                    panic!("expected a literal field-name part, got Interpolation")
+                                }
+                            }
+                        }
+                        _ => panic!("expected a literal field-name string"),
+                    }
+                }
+                _ => panic!("expected RefProjection(npc, [hp])"),
             }
         }
         _ => unreachable!(),
@@ -4247,34 +4310,45 @@ fn ref_marked_bare_var_call_arg_lowers_exactly_like_the_unmarked_form() {
 }
 
 #[test]
-fn ref_dotted_field_projection_call_arg_hits_the_t1e1_fence() {
-    // `ref npc.hp` has a real path segment (a dotted field) — a genuine
-    // T1e projection. `brink-analyzer`'s durable-root/position checks pass
-    // (`npc` is a durable global VAR, direct call-argument position), so
-    // this reaches lowering clean — where T1e-1's E052-fence (`E099`) stops
-    // it: no `MakeProjection`/`ProjRead` support lands until T1e-2.
-    let src = "VAR npc = 100\n~ heal(ref npc.hp)\nDone.\n-> END\n\n\
+fn ref_index_projection_call_arg_lowers_to_ref_projection() {
+    let src = "VAR inventory = 100\n~ temp idx = 0\n~ heal(ref inventory[idx])\nDone.\n-> END\n\n\
                === function heal(ref hp) ===\n~ return hp\n";
     let (program, diags) = lower_ink_with_warnings(src);
     assert!(
-        find_diag(&diags, brink_ir::DiagnosticCode::E099).is_some(),
-        "a real path-segment projection must hit the T1e-1 fence: {diags:?}"
+        find_diag(&diags, brink_ir::DiagnosticCode::E099).is_none(),
+        "an index-segment projection must no longer hit the T1e-1 fence: {diags:?}"
     );
-    assert!(
-        program.is_some(),
-        "lower_to_program is total — it still returns Some, not a hard abort"
-    );
-}
-
-#[test]
-fn ref_index_projection_call_arg_hits_the_t1e1_fence() {
-    let src = "VAR inventory = 100\n~ temp idx = 0\n~ heal(ref inventory[idx])\nDone.\n-> END\n\n\
-               === function heal(ref hp) ===\n~ return hp\n";
-    let (_program, diags) = lower_ink_with_warnings(src);
-    assert!(
-        find_diag(&diags, brink_ir::DiagnosticCode::E099).is_some(),
-        "an index-segment projection must hit the T1e-1 fence: {diags:?}"
-    );
+    let program = program.expect("well-formed program lowers cleanly");
+    let inventory_id = find_global(&program, "inventory").id;
+    let call = program
+        .root
+        .body
+        .iter()
+        .find_map(|s| match s {
+            lir::Stmt::ExprStmt(e @ lir::Expr::Call { .. }) => Some(e),
+            _ => None,
+        })
+        .expect("heal(ref inventory[idx]) should lower to an ExprStmt(Call)");
+    match call {
+        lir::Expr::Call { args, .. } => {
+            assert_eq!(args.len(), 1);
+            match &args[0] {
+                lir::CallArg::RefProjection { root, segments } => {
+                    assert_eq!(*root, inventory_id);
+                    assert_eq!(segments.len(), 1, "expected one index segment");
+                    // The index expression is `idx` (a temp read) — snapshot
+                    // at creation, evaluated once here as an ordinary
+                    // `GetTemp`.
+                    assert!(
+                        matches!(&segments[0], lir::Expr::GetTemp(..)),
+                        "expected the index segment to lower `idx` via GetTemp"
+                    );
+                }
+                _ => panic!("expected RefProjection(inventory, [idx])"),
+            }
+        }
+        _ => unreachable!(),
+    }
 }
 
 #[test]

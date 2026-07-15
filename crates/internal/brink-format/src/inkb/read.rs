@@ -21,10 +21,10 @@ use super::write::ALIAS_TABLE_SECTION_VERSION;
 use super::{
     CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HEADER_PREAMBLE, InkbIndex,
     KEY_CARDINAL, KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN, LINE_TEMPLATE, MAGIC,
-    PART_LITERAL, PART_SELECT, PART_SLOT, SECTION_ENTRY_SIZE, SectionEntry, SectionKind, VAL_ARRAY,
-    VAL_BOOL, VAL_CLOSURE, VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE,
-    VAL_INT, VAL_LIST, VAL_MAP, VAL_NULL, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION,
-    safe_capacity,
+    PART_LITERAL, PART_SELECT, PART_SLOT, PROJ_SEG_INDEX, PROJ_SEG_KEY, SECTION_ENTRY_SIZE,
+    SectionEntry, SectionKind, VAL_ARRAY, VAL_BOOL, VAL_CLOSURE, VAL_DIVERT_TARGET, VAL_FLOAT,
+    VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT, VAL_LIST, VAL_MAP, VAL_NULL, VAL_PROJECTION,
+    VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION, safe_capacity,
 };
 
 // ── Tier 1: Full story read ─────────────────────────────────────────────────
@@ -349,6 +349,7 @@ fn decode_value_type(buf: &[u8], off: &mut usize) -> Result<ValueType, DecodeErr
         VAL_FN_REF => Ok(ValueType::FnRef),
         VAL_CLOSURE => Ok(ValueType::Closure),
         VAL_HANDLE => Ok(ValueType::Handle),
+        VAL_PROJECTION => Ok(ValueType::Projection),
         _ => Err(DecodeError::InvalidValueType(tag)),
     }
 }
@@ -440,7 +441,33 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Deco
             let id = read_u64(buf, off)?;
             Ok(Value::handle(kind, id))
         }
+        // Projection values (T1e, `docs/format-v4-rfc.md` §1). Segment kind
+        // `2=range` is RESERVED — `decode_proj_segment` rejects it since no
+        // `ProjSegment` variant exists to decode into (`docs/t1e-spec.md` §3).
+        VAL_PROJECTION => {
+            let cell = read_def_id(buf, off)?;
+            let count = read_u8(buf, off)? as usize;
+            let mut segments = Vec::with_capacity(safe_capacity(count, buf.len(), *off, 1));
+            for _ in 0..count {
+                segments.push(decode_proj_segment(buf, off, depth + 1)?);
+            }
+            Ok(Value::projection(cell, segments))
+        }
         _ => Err(DecodeError::InvalidValueType(tag)),
+    }
+}
+
+/// Decode a single [`crate::ProjSegment`] written by `encode_proj_segment`.
+fn decode_proj_segment(
+    buf: &[u8],
+    off: &mut usize,
+    depth: usize,
+) -> Result<crate::ProjSegment, DecodeError> {
+    let kind = read_u8(buf, off)?;
+    match kind {
+        PROJ_SEG_INDEX => Ok(crate::ProjSegment::Index(read_i32(buf, off)?)),
+        PROJ_SEG_KEY => Ok(crate::ProjSegment::Key(decode_value(buf, off, depth)?)),
+        other => Err(DecodeError::InvalidProjSegmentKind(other)),
     }
 }
 

@@ -384,6 +384,27 @@ enum TypedValueJs {
         kind: String,
         id: String,
     },
+    /// A symbolic path projection ([`Value::Projection`], T1e,
+    /// `docs/t1e-spec.md` §3) as a lossless typed tree — the same rationale
+    /// as [`Array`](Self::Array)/[`Map`](Self::Map): `root` is the resolved
+    /// global var name (`None` for a stale/unresolvable cell — same
+    /// convention as [`Divert`](Self::Divert)'s unresolved-path case),
+    /// `segments` carries each snapshot segment typed (`Index` vs `Key`
+    /// mirrors the wire's own two-kind encoding, `docs/format-v4-rfc.md`
+    /// §1).
+    Projection {
+        root: Option<String>,
+        segments: Vec<TypedProjSegmentJs>,
+    },
+}
+
+/// One [`Value::Projection`] path segment, typed (`docs/format-v4-rfc.md`
+/// §1: `0=index i32, 1=key value`).
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum TypedProjSegmentJs {
+    Index { value: i32 },
+    Key { value: Box<TypedValueJs> },
 }
 
 #[derive(Serialize)]
@@ -488,6 +509,22 @@ fn value_to_typed_js(v: &Value, program: &brink_runtime::Program) -> TypedValueJ
         Value::Handle { kind, id } => TypedValueJs::Handle {
             kind: program.name_checked(*kind).unwrap_or("?").to_owned(),
             id: id.to_string(),
+        },
+        // Projection values (T1e, spec §3): a lossless typed tree, root cell
+        // resolved where possible (same "never silently drop" reasoning as
+        // every other non-`Null` arm here).
+        Value::Projection(p) => TypedValueJs::Projection {
+            root: program.global_var_name(p.cell).map(ToOwned::to_owned),
+            segments: p
+                .segments
+                .iter()
+                .map(|seg| match seg {
+                    brink_format::ProjSegment::Index(n) => TypedProjSegmentJs::Index { value: *n },
+                    brink_format::ProjSegment::Key(v) => TypedProjSegmentJs::Key {
+                        value: Box::new(value_to_typed_js(v, program)),
+                    },
+                })
+                .collect(),
         },
         Value::Null
         | Value::VariablePointer(_)

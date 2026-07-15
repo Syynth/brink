@@ -177,6 +177,27 @@ impl<'a> Resolver<'a> {
             // constructs one, but this arm keeps `format_value` exhaustive —
             // same display form as the runtime's authoritative `string(h)`.
             Value::Handle { kind, id } => format!("handle {}#{id}", self.name(*kind)),
+            // Projection values (T1e, `docs/t1e-spec.md` §4): same display
+            // form as the runtime's authoritative `string(p)` — `ref
+            // <root><path>`.
+            Value::Projection(p) => {
+                let mut out = format!("ref {}", self.gname(p.cell));
+                for seg in &p.segments {
+                    match seg {
+                        brink_format::ProjSegment::Index(n) => {
+                            out.push('[');
+                            out.push_str(&n.to_string());
+                            out.push(']');
+                        }
+                        brink_format::ProjSegment::Key(v) => {
+                            out.push('[');
+                            out.push_str(&self.format_value(v));
+                            out.push(']');
+                        }
+                    }
+                }
+                out
+            }
         }
     }
 }
@@ -527,6 +548,17 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         } => format!("make_closure {} bound={bound_count}", r.path(*target)),
         Opcode::CallValue(argc) => format!("call_value argc={argc}"),
         Opcode::BindValue(argc) => format!("bind_value argc={argc}"),
+
+        // Path projections (T1e)
+        Opcode::MakeProjection {
+            root,
+            segment_count,
+        } => format!(
+            "make_projection {} segments={segment_count}",
+            r.gname(*root)
+        ),
+        Opcode::ProjRead => "proj_read".to_owned(),
+        Opcode::ProjWrite => "proj_write".to_owned(),
     }
 }
 

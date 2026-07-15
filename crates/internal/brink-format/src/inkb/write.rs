@@ -13,14 +13,15 @@ use crate::definition::{
 use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::story::StoryData;
-use crate::value::{ListValue, MapKey, Value, ValueType};
+use crate::value::{ListValue, MapKey, ProjSegment, Value, ValueType};
 
 use super::{
     CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HEADER_PREAMBLE, KEY_CARDINAL,
     KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN, LINE_TEMPLATE, MAGIC, PART_LITERAL,
-    PART_SELECT, PART_SLOT, SECTION_COUNT, SECTION_ENTRY_SIZE, SectionKind, VAL_ARRAY, VAL_BOOL,
-    VAL_CLOSURE, VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT,
-    VAL_LIST, VAL_MAP, VAL_NULL, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION,
+    PART_SELECT, PART_SLOT, PROJ_SEG_INDEX, PROJ_SEG_KEY, SECTION_COUNT, SECTION_ENTRY_SIZE,
+    SectionKind, VAL_ARRAY, VAL_BOOL, VAL_CLOSURE, VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FN_REF,
+    VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT, VAL_LIST, VAL_MAP, VAL_NULL, VAL_PROJECTION, VAL_RECORD,
+    VAL_STRING, VAL_VAR_POINTER, VERSION,
 };
 
 // ── Tier 1: Full story write ────────────────────────────────────────────────
@@ -305,6 +306,8 @@ fn encode_value_type(vt: ValueType, buf: &mut Vec<u8>) {
         ValueType::Closure => VAL_CLOSURE,
         // T1d handle value type (v4, reserved tag graduated this PR).
         ValueType::Handle => VAL_HANDLE,
+        // T1e projection value type (v4, reserved tag graduated this PR).
+        ValueType::Projection => VAL_PROJECTION,
     };
     write_u8(buf, tag);
 }
@@ -412,6 +415,33 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
             write_u8(buf, VAL_HANDLE);
             write_u16(buf, kind.0);
             write_u64(buf, *id);
+        }
+        // Projection values (T1e, `docs/format-v4-rfc.md` §1: "cell
+        // reference, u8 segment count, then segments"). First emission of
+        // this reserved tag. Segment kind `2=range` is RESERVED and never
+        // written — `ProjSegment` has no variant to produce it.
+        Value::Projection(p) => {
+            write_u8(buf, VAL_PROJECTION);
+            write_def_id(buf, p.cell);
+            write_u8(buf, p.segments.len() as u8);
+            for seg in &p.segments {
+                encode_proj_segment(seg, buf);
+            }
+        }
+    }
+}
+
+/// Encode a single [`ProjSegment`] (`docs/format-v4-rfc.md` §1: `u8 kind (0
+/// = index i32, 1 = key value)`).
+fn encode_proj_segment(seg: &ProjSegment, buf: &mut Vec<u8>) {
+    match seg {
+        ProjSegment::Index(n) => {
+            write_u8(buf, PROJ_SEG_INDEX);
+            write_i32(buf, *n);
+        }
+        ProjSegment::Key(v) => {
+            write_u8(buf, PROJ_SEG_KEY);
+            encode_value(v, buf);
         }
     }
 }
