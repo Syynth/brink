@@ -4205,6 +4205,78 @@ fn ref_argument_call_with_temp_decl_in_the_same_block_compiles_clean() {
     }
 }
 
+// ─── T1e-1 path projections (docs/t1e-spec.md §2/§8, issue #831) ──────
+
+#[test]
+fn ref_marked_bare_var_call_arg_lowers_exactly_like_the_unmarked_form() {
+    // `ref gold` (zero path segments — no dotted field, no `[…]` index) is
+    // not a real T1e *projection*; it binds exactly like today's unmarked
+    // `gold` always has (`lower_ref_path_call_arg`), never hitting the
+    // T1e-1 E052-fence (`E099`).
+    let src = "VAR gold = 100\n~ heal(ref gold)\nDone.\n-> END\n\n\
+               === function heal(ref hp) ===\n~ return hp\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        find_diag(&diags, brink_ir::DiagnosticCode::E099).is_none(),
+        "a bare single-name `ref` must never hit the T1e-1 fence: {diags:?}"
+    );
+    let program = program.expect("well-formed program lowers cleanly");
+    let gold_id = find_global(&program, "gold").id;
+    let heal = find_child(&program.root, "heal");
+    let call = program
+        .root
+        .body
+        .iter()
+        .find_map(|s| match s {
+            lir::Stmt::ExprStmt(e @ lir::Expr::Call { .. }) => Some(e),
+            _ => None,
+        })
+        .expect("heal(ref gold) should lower to an ExprStmt(Call)");
+    match call {
+        lir::Expr::Call { target, args } => {
+            assert_eq!(*target, heal.id);
+            assert_eq!(args.len(), 1);
+            match &args[0] {
+                lir::CallArg::RefGlobal(id) => assert_eq!(*id, gold_id),
+                lir::CallArg::RefTemp(..) => panic!("expected RefGlobal(gold), got RefTemp"),
+                lir::CallArg::Value(_) => panic!("expected RefGlobal(gold), got Value"),
+            }
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn ref_dotted_field_projection_call_arg_hits_the_t1e1_fence() {
+    // `ref npc.hp` has a real path segment (a dotted field) — a genuine
+    // T1e projection. `brink-analyzer`'s durable-root/position checks pass
+    // (`npc` is a durable global VAR, direct call-argument position), so
+    // this reaches lowering clean — where T1e-1's E052-fence (`E099`) stops
+    // it: no `MakeProjection`/`ProjRead` support lands until T1e-2.
+    let src = "VAR npc = 100\n~ heal(ref npc.hp)\nDone.\n-> END\n\n\
+               === function heal(ref hp) ===\n~ return hp\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        find_diag(&diags, brink_ir::DiagnosticCode::E099).is_some(),
+        "a real path-segment projection must hit the T1e-1 fence: {diags:?}"
+    );
+    assert!(
+        program.is_some(),
+        "lower_to_program is total — it still returns Some, not a hard abort"
+    );
+}
+
+#[test]
+fn ref_index_projection_call_arg_hits_the_t1e1_fence() {
+    let src = "VAR inventory = 100\n~ temp idx = 0\n~ heal(ref inventory[idx])\nDone.\n-> END\n\n\
+               === function heal(ref hp) ===\n~ return hp\n";
+    let (_program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        find_diag(&diags, brink_ir::DiagnosticCode::E099).is_some(),
+        "an index-segment projection must hit the T1e-1 fence: {diags:?}"
+    );
+}
+
 #[test]
 fn block_scoped_temp_visible_for_the_rest_of_its_own_block_no_false_positive() {
     // Nested scopes (an `if` inside the block) must still see the outer

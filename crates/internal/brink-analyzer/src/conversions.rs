@@ -120,6 +120,8 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
         // T1c `#fn(target, args…)`: only the bound arguments are child
         // expressions — the target is a static `Path` field, same as `Call`.
         Expr::FnLiteral(fl) => fl.args.iter().collect(),
+        // T1e `ref lvalue-path`: only the operand is a child expression.
+        Expr::RefArg(ra) => vec![&ra.operand],
         Expr::String(s) => s
             .parts
             .iter()

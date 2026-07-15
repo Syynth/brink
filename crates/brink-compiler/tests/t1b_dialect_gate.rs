@@ -218,3 +218,27 @@ fn strict_ink_rejects_fn_literal() {
         "{diags:?}"
     );
 }
+
+// ── T1e-1 (#831): strict-ink rejects `ref lvalue-path` at analysis ──────
+
+#[test]
+fn strict_ink_rejects_ref_expr() {
+    // The oracle/strict-ink corpus is entirely classic ink — it never
+    // spells `ref` at an argument's expression position (only the
+    // pre-existing declaration-site `ref` param form, e.g.
+    // `=== function heal(ref hp) ===`, which this grammar addition doesn't
+    // touch at all). This proves the corpus stays untouched: any use of the
+    // new T1e call-site form is a hard E051, same as every other T1b/T1c
+    // brink extension.
+    let source = "VAR gold = 5\n\
+                  === function alter(ref x, k) ===\n~ x = x + k\n\n\
+                  === main ===\n~ alter(ref gold, 1)\nDone.\n-> END\n";
+    let err = compile_mem_with_dialect(source, Dialect::StrictInk).unwrap_err();
+    let diags = diagnostics_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E051
+            && d.message.contains("brink extension")
+            && d.message.contains("ref")),
+        "{diags:?}"
+    );
+}

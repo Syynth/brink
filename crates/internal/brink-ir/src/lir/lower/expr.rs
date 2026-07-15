@@ -113,7 +113,45 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
         // via [`lower_fn_literal`]. The T1c-1 E052 fence that stood here is
         // removed exactly where this real lowering replaces it.
         hir::Expr::FnLiteral(fl) => lower_fn_literal(fl, ctx),
+
+        // T1e-1 (docs/t1e-spec.md §8 sequencing item 1, issue #831): a `ref
+        // lvalue-path` reaching *general* expression lowering. This is the
+        // E052-fence pattern (see `lir::lower::mod`'s backstop doctrine): a
+        // bare single-name `ref x` is handled entirely inside
+        // `lower_call_args` (identical to today's unmarked ref-argument
+        // binding, never reaches here); anything with a real path segment
+        // (dotted field / `[…]` index) — or any `RefArg` outside
+        // ref-argument position at all, which should already carry
+        // `brink-analyzer`'s E097 — funnels through `lower_call_args`'s
+        // fallback arm into this one. T1e-2 lands `MakeProjection`; until
+        // then this is a clean, targeted stop, not a silent drop.
+        hir::Expr::RefArg(ra) => lower_ref_arg_fence(ra, ctx),
     }
+}
+
+/// The T1e-1 E052-fence backstop for a `ref lvalue-path` that reached
+/// general expression lowering with at least one real path segment (or fell
+/// through from an illegal, non-argument position). `E099` names the
+/// specific reason (no `MakeProjection`/`ProjRead` support yet, tracking
+/// #828) rather than reusing the generic dialect-gate `E052`. The operand
+/// is still lowered (for its own nested diagnostics) and discarded — the
+/// whole `RefArg` folds to `Null`, matching every other "reported, not
+/// silently dropped" fence in this module.
+fn lower_ref_arg_fence(ra: &hir::RefArgExpr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
+    ctx.diagnostics.push(crate::Diagnostic {
+        file: ctx.file,
+        range: ra.ptr.text_range(),
+        message: format!(
+            "{}: path-projection ref-arguments (`ref {}`) have no runtime \
+             representation yet — grammar/HIR/analyzer support lands in T1e-1 \
+             (this compiler), lowering in T1e-2 (tracking #828)",
+            crate::DiagnosticCode::E099.title(),
+            crate::display_expr(&ra.operand),
+        ),
+        code: crate::DiagnosticCode::E099,
+    });
+    lower_expr(&ra.operand, ctx);
+    lir::Expr::Null
 }
 
 /// Lower `#fn(target, args…)` to a [`lir::Expr::MakeFnValue`] (T1c-2,
@@ -911,6 +949,52 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
     )
 }
 
+/// The pre-T1e ref-argument binding for a bare (single-segment) path —
+/// exactly [`lower_call_args`]'s original `hir::Expr::Path` arm, extracted
+/// so the T1e `hir::Expr::RefArg` arm can reuse it verbatim for the
+/// zero-segment case (`ref gold` binds exactly like unmarked `gold` always
+/// has).
+fn lower_ref_path_call_arg(
+    path: &hir::Path,
+    original: &hir::Expr,
+    ctx: &mut LowerCtx<'_>,
+) -> lir::CallArg {
+    let name = path_to_string(path);
+    if let Some(slot) = ctx.temp_slot(&name) {
+        let name_id = ctx.names.intern(&name);
+        return lir::CallArg::RefTemp(slot, name_id);
+    }
+    if let Some(info) = ctx.resolve_path(path.range) {
+        // A T1b block-scoped temp (`~ { … }`) passed by `ref` after its own
+        // block has closed — same #680 RCA as `lower_path`'s
+        // `SymbolKind::Temp` arm. Without this check `info.id` (the temp's
+        // `LocalVar`-tagged id, never registered as a real global) would be
+        // emitted as a `RefGlobal`, faulting at runtime as
+        // `UnresolvedGlobal` with no compile diagnostic.
+        if info.kind == SymbolKind::Temp && ctx.block_scoped_temp_names.contains(&name) {
+            ctx.diagnostics.push(crate::Diagnostic {
+                file: ctx.file,
+                range: path.range,
+                message: format!(
+                    "{}: `{name}` was declared in a `~ {{ … }}` block that has already \
+                     closed — block-scoped temps (docs/t1b-surface-spec.md §2) are only \
+                     visible for the rest of their own block",
+                    crate::DiagnosticCode::E082.title(),
+                ),
+                code: crate::DiagnosticCode::E082,
+            });
+            return lir::CallArg::Value(lir::Expr::Null);
+        }
+        let id = if info.kind == SymbolKind::List {
+            list_def_to_global_var(info.id)
+        } else {
+            info.id
+        };
+        return lir::CallArg::RefGlobal(id);
+    }
+    lir::CallArg::Value(lower_expr(original, ctx))
+}
+
 pub(super) fn lower_call_args(
     args: &[hir::Expr],
     params: &[crate::symbols::ParamInfo],
@@ -922,47 +1006,23 @@ pub(super) fn lower_call_args(
             let is_ref = params.get(i).is_some_and(|p| p.is_ref);
             if is_ref {
                 match arg {
-                    hir::Expr::Path(path) => {
-                        let name = path_to_string(path);
-                        if let Some(slot) = ctx.temp_slot(&name) {
-                            let name_id = ctx.names.intern(&name);
-                            return lir::CallArg::RefTemp(slot, name_id);
+                    hir::Expr::Path(path) => lower_ref_path_call_arg(path, arg, ctx),
+                    // T1e-1 (docs/t1e-spec.md §2, issue #831): an explicit
+                    // `ref` marking a bare single-name path (`ref gold`) is
+                    // not a real path *projection* — zero segments — so it
+                    // binds exactly like today's unmarked form. Anything
+                    // with a real segment (dotted field, `[…]` index, or
+                    // any deeper mix) is a genuine T1e projection; T1e-1
+                    // ships no `MakeProjection`/`ProjRead` support, so it
+                    // hits the E052-fence (`lower_ref_arg_fence`, `E099`) —
+                    // the analyzer's own durable-root/shape/position checks
+                    // already ran by the time lowering sees it.
+                    hir::Expr::RefArg(ra) => match ra.operand.as_ref() {
+                        hir::Expr::Path(path) if path.segments.len() == 1 => {
+                            lower_ref_path_call_arg(path, &ra.operand, ctx)
                         }
-                        if let Some(info) = ctx.resolve_path(path.range) {
-                            // A T1b block-scoped temp (`~ { … }`) passed by
-                            // `ref` after its own block has closed — same
-                            // #680 RCA as `lower_path`'s `SymbolKind::Temp`
-                            // arm. Without this check `info.id` (the temp's
-                            // `LocalVar`-tagged id, never registered as a
-                            // real global) would be emitted as a
-                            // `RefGlobal`, faulting at runtime as
-                            // `UnresolvedGlobal` with no compile diagnostic.
-                            if info.kind == SymbolKind::Temp
-                                && ctx.block_scoped_temp_names.contains(&name)
-                            {
-                                ctx.diagnostics.push(crate::Diagnostic {
-                                    file: ctx.file,
-                                    range: path.range,
-                                    message: format!(
-                                        "{}: `{name}` was declared in a `~ {{ … }}` block that \
-                                         has already closed — block-scoped temps \
-                                         (docs/t1b-surface-spec.md §2) are only visible for \
-                                         the rest of their own block",
-                                        crate::DiagnosticCode::E082.title(),
-                                    ),
-                                    code: crate::DiagnosticCode::E082,
-                                });
-                                return lir::CallArg::Value(lir::Expr::Null);
-                            }
-                            let id = if info.kind == SymbolKind::List {
-                                list_def_to_global_var(info.id)
-                            } else {
-                                info.id
-                            };
-                            return lir::CallArg::RefGlobal(id);
-                        }
-                        lir::CallArg::Value(lower_expr(arg, ctx))
-                    }
+                        _ => lir::CallArg::Value(lower_ref_arg_fence(ra, ctx)),
+                    },
                     _ => lir::CallArg::Value(lower_expr(arg, ctx)),
                 }
             } else {

@@ -2,10 +2,11 @@ use crate::SyntaxKind::{
     self, AMP_AMP, ARRAY_LITERAL, BANG, BANG_EQ, BANG_QUESTION, BOOLEAN_LIT, CARET, COLON, COMMA,
     DIVERT, DIVERT_TARGET_EXPR, DOT, EOF, EQ_EQ, FIELD_ACCESS_EXPR, FLOAT, FLOAT_LIT, FN_LITERAL,
     FUNCTION_CALL, GT, GT_EQ, HASH, IDENT, IDENTIFIER, INDEX_EXPR, INFIX_EXPR, INTEGER,
-    INTEGER_LIT, KW_AND, KW_FALSE, KW_HAS, KW_HASNT, KW_MOD, KW_NOT, KW_OR, KW_TRUE, L_BRACE,
-    L_BRACKET, L_PAREN, LIST_EXPR, LT, LT_EQ, MAP_ENTRY, MAP_LITERAL, MINUS, MINUS_EQ, NEWLINE,
-    PAREN_EXPR, PERCENT, PIPE, PLUS, PLUS_EQ, POSTFIX_EXPR, PREFIX_EXPR, QUESTION, QUOTE, R_BRACE,
-    R_BRACKET, R_PAREN, SLASH, STAR, STRING_LIT, STRUCT_FIELD_INIT, STRUCT_LITERAL,
+    INTEGER_LIT, KW_AND, KW_FALSE, KW_HAS, KW_HASNT, KW_MOD, KW_NOT, KW_OR, KW_REF, KW_TRUE,
+    L_BRACE, L_BRACKET, L_PAREN, LIST_EXPR, LT, LT_EQ, MAP_ENTRY, MAP_LITERAL, MINUS, MINUS_EQ,
+    NEWLINE, PAREN_EXPR, PERCENT, PIPE, PLUS, PLUS_EQ, POSTFIX_EXPR, PREFIX_EXPR, QUESTION, QUOTE,
+    R_BRACE, R_BRACKET, R_PAREN, REF_EXPR, SLASH, STAR, STRING_LIT, STRUCT_FIELD_INIT,
+    STRUCT_LITERAL,
 };
 
 use super::Parser;
@@ -271,8 +272,33 @@ fn atom(p: &mut Parser<'_, '_>) -> bool {
             true
         }
 
+        // `ref lvalue-path` — path-projection creation (T1e §2,
+        // docs/t1e-spec.md). Expression position, same superset-grammar
+        // rule as the sigil family above: `brink-syntax` always parses it;
+        // whether the position is legal (ref-argument only — calls,
+        // `#fn(…)`, `bind(…)` — never standalone) and whether the root is a
+        // durable cell is `brink-analyzer`'s job.
+        KW_REF => {
+            ref_expr(p);
+            true
+        }
+
         _ => false,
     }
+}
+
+/// `ref` `operand` — one link of the T1e path-projection grammar
+/// (docs/t1e-spec.md §2). `operand` reuses the ordinary Pratt parser at
+/// `Prec::Prefix` (tightest), so it naturally picks up a bare path, a dotted
+/// field chain, `[…]` indexing, or a mix (`ref party[leader].hp`) — those
+/// postfix forms already parse as part of any primary expression (T1b §4,
+/// TM-4b §6); nothing new needed here beyond the `ref` keyword itself.
+fn ref_expr(p: &mut Parser<'_, '_>) {
+    p.start_node(REF_EXPR);
+    p.bump(); // `ref`
+    p.skip_ws();
+    expression_bp(p, Prec::Prefix);
+    p.finish_node();
 }
 
 /// `[ index ]` — one link of a postfix indexing chain (T1b §4): `a[0]`,

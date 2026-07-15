@@ -377,6 +377,8 @@ fn walk_expr(expr: &Expr, v: &mut impl HirVisitor) {
                 walk_expr(arg, v);
             }
         }
+        // T1e `ref lvalue-path`: only the operand descends.
+        Expr::RefArg(ra) => walk_expr(&ra.operand, v),
     }
 }
 

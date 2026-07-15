@@ -170,6 +170,16 @@ pub fn check(
     // TM-4b (docs/typed-mode-spec.md §6): missing/extra/mistyped struct
     // construction-literal fields — strict-mode-only, per the crate doc.
     out.extend(crate::structs::check(files, index));
+    // T1e-1 (docs/t1e-spec.md §6, issue #831): a `ref lvalue-path`
+    // projection's segments (dotted fields, `[…]` indices) checked against
+    // the root's statically-known declared shape — strict-mode-only, same
+    // rule `structs::check`'s own missing/extra/mistyped trio follows,
+    // reusing the same shape table.
+    out.extend(crate::ref_projection::check_strict(
+        files,
+        index,
+        resolutions,
+    ));
     // TM-3 completion (docs/typed-mode-spec.md §4, issue #659): `int(x)`/
     // `float(x)` statically out-of-domain argument literals —
     // strict-mode-only, per `conversions`'s own module doc.
@@ -2360,6 +2370,59 @@ mod tests {
                 .iter()
                 .any(|d| d.code == DiagnosticCode::E069),
             "missing field must surface through the real strict pipeline: {:?}",
+            result.diagnostics
+        );
+    }
+
+    // ── T1e-1 path projections (docs/t1e-spec.md §6, issue #831) ──────
+
+    #[test]
+    fn strict_check_wires_in_ref_projection_segment_errors_through_the_real_pipeline() {
+        // Same "exercises the full production path, not the unit in
+        // isolation" rationale as the struct-construction test just above.
+        let parsed = brink_syntax::parse(
+            "STRUCT NPC = #{hp: int}\n\
+             VAR npc: NPC = NPC#{hp: 10}\n\
+             === function heal(ref hp, k) ===\n~ hp = hp + k\n\n\
+             === main ===\n~ heal(ref npc.mana, 5)\n-> DONE\n",
+        );
+        let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let opts = crate::AnalysisOptions {
+            dialect: crate::Dialect::Brink,
+            types: TypePolicy::Strict,
+            ..crate::AnalysisOptions::default()
+        };
+        let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E098),
+            "unknown field segment must surface through the real strict pipeline: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn ref_projection_segment_errors_never_surface_under_gradual() {
+        let parsed = brink_syntax::parse(
+            "STRUCT NPC = #{hp: int}\n\
+             VAR npc: NPC = NPC#{hp: 10}\n\
+             === function heal(ref hp, k) ===\n~ hp = hp + k\n\n\
+             === main ===\n~ heal(ref npc.mana, 5)\n-> DONE\n",
+        );
+        let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let opts = crate::AnalysisOptions {
+            dialect: crate::Dialect::Brink,
+            ..crate::AnalysisOptions::default()
+        };
+        let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E098),
+            "gradual must never surface ref-projection segment errors: {:?}",
             result.diagnostics
         );
     }
