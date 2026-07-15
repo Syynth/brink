@@ -98,6 +98,45 @@ pub fn detect_completion_context(source: &str, byte_offset: usize) -> Completion
     CompletionContext::General
 }
 
+/// The T1e `ref lvalue-path` **root** completion position
+/// (`docs/t1e-spec.md` §2, issue #850) — the cursor sits right after typing
+/// `ref` and at least one space, with at most a partial bare identifier
+/// typed since (`heal(ref `, `heal(ref np`). Returns the partial identifier
+/// typed so far (possibly empty).
+///
+/// `None` once a `.` or `[` has been typed — that's a path *continuation*
+/// (`ref npc.`, `ref inventory[`), which needs the root's resolved
+/// struct/collection shape to complete usefully. This helper only detects
+/// the root position, deliberately not the continuation: "completion after
+/// `ref ` where cheap" (issue #850) scopes the offer to what a pure lexical
+/// scan can answer — same "cheap" contract [`detect_completion_context`]
+/// itself follows — not a shape/type resolution pass.
+#[must_use]
+pub fn ref_arg_root_prefix(source: &str, byte_offset: usize) -> Option<String> {
+    let line_start = source[..byte_offset].rfind('\n').map_or(0, |pos| pos + 1);
+    let line_prefix = &source[line_start..byte_offset];
+
+    // Walk back over the in-progress bare identifier (if any).
+    let ident_start = line_prefix
+        .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .map_or(0, |p| p + 1);
+    let prefix = &line_prefix[ident_start..];
+    let before = line_prefix[..ident_start].trim_end();
+
+    if !before.ends_with("ref") {
+        return None;
+    }
+    // Word-boundary check on "ref" itself — `prefer np` must not match.
+    let ref_start = before.len() - 3;
+    if ref_start > 0 {
+        let prev = before.as_bytes()[ref_start - 1];
+        if prev.is_ascii_alphanumeric() || prev == b'_' {
+            return None;
+        }
+    }
+    Some(prefix.to_owned())
+}
+
 /// The scope (knot/stitch) containing the cursor.
 pub struct CursorScope {
     pub knot: Option<String>,
@@ -329,6 +368,57 @@ mod tests {
             detect_completion_context(src, src.len()),
             CompletionContext::FunctionArgs
         ));
+    }
+
+    // ── T1e (docs/t1e-spec.md §2, issue #850): `ref` root completion ──────
+
+    #[test]
+    fn ref_root_right_after_keyword_and_space() {
+        let src = "~ heal(ref ";
+        assert_eq!(ref_arg_root_prefix(src, src.len()), Some(String::new()));
+    }
+
+    #[test]
+    fn ref_root_with_partial_identifier() {
+        let src = "~ heal(ref np";
+        assert_eq!(ref_arg_root_prefix(src, src.len()), Some("np".to_owned()));
+    }
+
+    #[test]
+    fn ref_root_inside_fn_literal_bound_args() {
+        // `#fn(heal, ref npc)` — the bound-arg position after the target,
+        // same `CompletionContext::FunctionArgs` classification a plain
+        // call's ref-argument position gets.
+        let src = "~ temp f = #fn(heal, ref np";
+        assert_eq!(ref_arg_root_prefix(src, src.len()), Some("np".to_owned()));
+    }
+
+    #[test]
+    fn ref_root_none_without_ref_keyword() {
+        let src = "~ heal(np";
+        assert_eq!(ref_arg_root_prefix(src, src.len()), None);
+    }
+
+    #[test]
+    fn ref_root_none_for_word_ending_in_ref() {
+        // `prefer` ends in the three letters "ref" but isn't the `ref`
+        // keyword — the word-boundary check must reject it.
+        let src = "~ heal(prefer np";
+        assert_eq!(ref_arg_root_prefix(src, src.len()), None);
+    }
+
+    #[test]
+    fn ref_root_none_once_a_dot_continuation_has_started() {
+        // `ref npc.` is a path *continuation*, not the root position — this
+        // helper deliberately only answers the root ("where cheap", #850).
+        let src = "~ heal(ref npc.h";
+        assert_eq!(ref_arg_root_prefix(src, src.len()), None);
+    }
+
+    #[test]
+    fn ref_root_none_once_a_bracket_continuation_has_started() {
+        let src = "~ bump(ref inventory[";
+        assert_eq!(ref_arg_root_prefix(src, src.len()), None);
     }
 
     // ── T1c-4 (#702): `#fn(` target completion (docs/t1c-spec.md §2) ─────

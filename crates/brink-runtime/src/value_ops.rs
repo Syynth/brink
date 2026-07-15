@@ -109,17 +109,26 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
         // deliberately boring and stable. An unresolvable root cell (a stale
         // `DefinitionId` from a different compile) renders `?`, matching
         // `display_fn_value`'s convention for its own unresolvable names.
-        Value::Projection(p) => {
-            let root = program
-                .global_var_name(p.cell)
-                .map_or_else(|| "?".to_owned(), ToOwned::to_owned);
-            let mut out = format!("ref {root}");
-            for seg in &p.segments {
-                display_proj_segment(seg, program, &mut out);
-            }
-            out
-        }
+        Value::Projection(p) => format!("ref {}", display_projection_path(p, program)),
     }
+}
+
+/// Render a projection's `root.field[index]…` path text — no leading `ref `
+/// prefix. [`stringify`]'s own `Value::Projection` arm prepends `ref ` for a
+/// projection displayed as an ordinary value (`ref npc.inventory[3]`,
+/// `docs/t1e-spec.md` §4 PROPOSED); [`display_fn_value`]'s bound-`ref`-param
+/// arm calls this directly so a projection-bound `ref` parameter renders
+/// `ref hp = npc.hp`, not the doubled `ref hp = ref npc.hp` that prepending
+/// `ref ` twice would produce (issue #850).
+fn display_projection_path(p: &brink_format::ProjectionValue, program: &Program) -> String {
+    let root = program
+        .global_var_name(p.cell)
+        .map_or_else(|| "?".to_owned(), ToOwned::to_owned);
+    let mut out = root;
+    for seg in &p.segments {
+        display_proj_segment(seg, program, &mut out);
+    }
+    out
 }
 
 /// Render one path-projection segment onto `out` (`docs/t1e-spec.md` §4
@@ -183,6 +192,14 @@ fn display_fn_value(
                     Value::VariablePointer(id) => {
                         program.global_var_name(*id).map(ToOwned::to_owned)
                     }
+                    // T1e (docs/t1e-spec.md §4 PROPOSED, issue #850): a
+                    // path-projection-bound `ref` param (`#fn(heal, ref
+                    // npc.hp)`) renders its captured *path*, not the bare
+                    // `ref `-prefixed value form `stringify` would give a
+                    // standalone projection — `display_projection_path`
+                    // omits that prefix since the `ref {pname} = ` this
+                    // arm builds already supplies it once.
+                    Value::Projection(p) => Some(display_projection_path(p, program)),
                     _ => None,
                 }
                 .unwrap_or_else(|| stringify(&entry.payload, program));

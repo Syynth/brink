@@ -1155,9 +1155,22 @@ fn block_indent(base_indent: &str, level: u32) -> String {
 /// to exactly one space. Mid-statement comments (rare — e.g. inside a
 /// parenthesized expression) are kept verbatim with a single space on each
 /// side. Node boundaries are transparent; only tokens contribute text.
+///
+/// One exception to the "collapse to one space" rule: whitespace directly
+/// touching a `.` field-access dot, or a `[`/`]` index bracket, collapses to
+/// *zero* space instead — `party [ leader ] . hp` renders `party[leader].hp`.
+/// This is the path-projection display convention itself
+/// (`docs/t1e-spec.md` §4: `ref npc.inventory[3]`, no spaces) applied
+/// uniformly to every dotted-path/indexed construct this joiner ever
+/// renders, T1e `ref lvalue-path` arguments (`brink-fmt path-ref argument
+/// formatting`, issue #850) included — not a special case keyed off `ref`,
+/// since the CST gives no cheaper way to tell a path-projection segment
+/// from any other field access or index expression at this token-stream
+/// level, and there's no reason the two should format differently anyway.
 fn join_token_text(elems: impl Iterator<Item = SyntaxElement>) -> String {
     let mut out = String::new();
     let mut pending_space = false;
+    let mut last_kind: Option<SyntaxKind> = None;
     for elem in elems {
         let NodeOrToken::Token(tok) = elem else {
             continue;
@@ -1174,13 +1187,20 @@ fn join_token_text(elems: impl Iterator<Item = SyntaxElement>) -> String {
                 }
                 out.push_str(tok.text());
                 pending_space = true;
+                last_kind = Some(tok.kind());
             }
-            _ => {
-                if pending_space {
+            kind => {
+                let zero_space =
+                    matches!(
+                        kind,
+                        SyntaxKind::DOT | SyntaxKind::L_BRACKET | SyntaxKind::R_BRACKET
+                    ) || matches!(last_kind, Some(SyntaxKind::DOT | SyntaxKind::L_BRACKET));
+                if pending_space && !zero_space {
                     out.push(' ');
-                    pending_space = false;
                 }
+                pending_space = false;
                 out.push_str(tok.text());
+                last_kind = Some(kind);
             }
         }
     }
@@ -2596,6 +2616,57 @@ mod tests {
         // comment must ride the closing `}`'s indented line.
         let input = "== k ==\n~ {\n    x = 5\n} /* c */\n-> DONE\n";
         let expected = "=== k ===\n  ~ {\n      x = 5\n  } /* c */\n  -> DONE\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    // ── T1e path-ref argument formatting (docs/t1e-spec.md §2, issue #850)
+    //
+    // A `ref lvalue-path` argument (`ref npc.hp`, `ref inventory[idx]`,
+    // `ref party[leader].hp`) is ordinary expression syntax as far as the
+    // CST is concerned — `REF_EXPR` wrapping a `PATH`/`INDEX_EXPR` chain —
+    // so it already flows through the same token-joining machinery every
+    // other `~ { … }` block statement does (`join_token_text`'s
+    // whitespace-run-collapses-to-one-space rule). These lock that in as a
+    // deliberate, tested contract rather than an untested coincidence: a
+    // `ref`-marked path argument inside a multi-statement block reformats
+    // exactly like any other call argument, canonical single-space spacing
+    // throughout, one statement per line.
+
+    #[test]
+    fn block_ref_path_field_argument_normalizes_spacing() {
+        let input = "~ {\ntemp x =   0\nheal(ref  npc.hp,   5)\n}\n";
+        let expected = "~ {\n    temp x = 0\n    heal(ref npc.hp, 5)\n}\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn block_ref_path_index_argument_normalizes_spacing() {
+        let input = "~ {\nbump(ref  inventory[ idx ],   5)\n}\n";
+        let expected = "~ {\n    bump(ref inventory[idx], 5)\n}\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn block_ref_path_mixed_field_and_index_argument_normalizes_spacing() {
+        // `ref party[leader].hp` — the t1e-spec §2 grammar example itself
+        // (index segment followed by a field segment).
+        let input = "~ {\nheal(ref  party[ leader ] . hp,   5)\n}\n";
+        let expected = "~ {\n    heal(ref party[leader].hp, 5)\n}\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn block_ref_path_through_fn_value_normalizes_spacing() {
+        let input = "~ {\ntemp healer =   #fn( heal ,  ref  npc.hp )\n}\n";
+        let expected = "~ {\n    temp healer = #fn( heal , ref npc.hp )\n}\n";
         let once = fmt(input);
         assert_eq!(once, expected);
         assert_eq!(fmt(&once), once, "formatting twice must be a no-op");

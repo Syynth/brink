@@ -32,6 +32,7 @@ use tower_lsp::{Client, LanguageServer};
 
 use brink_ide::{
     CompletionContext, cursor_scope, detect_completion_context, is_visible_in_context,
+    ref_arg_root_prefix,
 };
 
 use crate::convert::{self, LineIndex};
@@ -1163,8 +1164,18 @@ impl LanguageServer for Backend {
             return Ok(Some(CompletionResponse::Array(items)));
         }
 
+        // T1e (docs/t1e-spec.md §2, issue #850): right after `ref `, only a
+        // `VAR` is a legal `ref lvalue-path` root (E080) — narrow the
+        // `FunctionArgs` set the same way `brink-web`'s wasm completion path
+        // does (`ref_arg_root_prefix`'s own doc explains the "where cheap"
+        // scoping: root position only, not `.`/`[` path continuations).
+        let ref_root = ref_arg_root_prefix(&snap.source, byte_offset);
+
         for info in snap.analysis.index.symbols.values() {
             if !is_visible_in_context(&ctx, info, &cursor_scope) {
+                continue;
+            }
+            if ref_root.is_some() && info.kind != brink_ir::SymbolKind::Variable {
                 continue;
             }
             items.push(make_completion_item(info, None));

@@ -1207,7 +1207,7 @@ pub fn resolve_pending_externals<M: Send + Sync + 'static>(world: &mut World) {
 #[expect(clippy::panic, reason = "tests assert via panic on the error arm")]
 mod tests {
     use super::*;
-    use crate::test_support::compile_test_story;
+    use crate::test_support::{compile_test_story, compile_test_story_brink};
     use bevy_ecs::prelude::*;
     use brink_runtime::{FastRng, FlowInstance};
 
@@ -1373,6 +1373,125 @@ mod tests {
             }
             other => panic!("expected Resolved(map), got {other:?}"),
         }
+    }
+
+    // ── T1e pass-through audit (docs/t1e-spec.md §8 item 3, issue #850) ──
+    //
+    // "bevy-brink pass-through audit: projections cross bindings as
+    // ordinary values; the host never walks paths — assert it." Two halves:
+    //
+    // 1. A raw `Value::Projection` can *structurally never* reach a binding
+    //    from real compiled ink. `ref lvalue-path` (`ref npc.hp`) only
+    //    lowers to `MakeProjection` when the target's own declared
+    //    parameter is `ref` (`brink_ir::lir::lower::expr::lower_call_args`:
+    //    `is_ref = params[i].is_ref`) — and an `EXTERNAL` declaration's
+    //    grammar has no `ref` marker at all
+    //    (`brink_syntax::parser::declaration::function_param_list` parses
+    //    plain identifiers only, unlike a knot/function header's
+    //    `KNOT_PARAMS`, which does). So `heal(ref npc.hp, 5)` against an
+    //    `EXTERNAL heal` can never lower to a projection; it hits the
+    //    ordinary ref-argument fence and fails to compile. `bindings.rs`'s
+    //    `ExternalFnHandler::call` therefore never sees the `(root,
+    //    segments)` descriptor — only a real, structural guarantee.
+    // 2. Once a projection-bound `ref` parameter *is* read inside an
+    //    ordinary ink function body (the only way to observe one), the
+    //    read auto-dereferences to a plain value before it can be used as
+    //    an argument anywhere (`vm.rs`'s `GetTemp` dispatch, T1e-2) — so a
+    //    value derived from a projection and handed to an external binding
+    //    always arrives as an ordinary snapshot, never the projection
+    //    itself.
+
+    /// Half 1: `ref npc.hp` against an `EXTERNAL` target fails to compile —
+    /// there is no lowering path that could hand a raw `Value::Projection`
+    /// to a host binding.
+    #[test]
+    fn ref_projection_argument_to_an_external_call_fails_to_compile() {
+        use brink_compiler::{AnalysisOptions, CompileError, Dialect};
+        let src = "EXTERNAL heal(target, amount)\n\
+                    STRUCT NPC = #{hp: int}\n\
+                    VAR npc = 0\n\
+                    === main ===\n\
+                    ~ npc = NPC#{hp: 1}\n\
+                    ~ heal(ref npc.hp, 5)\n\
+                    -> END\n";
+        let err = brink_compiler::compile_with_options(
+            "audit.ink",
+            |path| {
+                if path == "audit.ink" {
+                    Ok(src.to_string())
+                } else {
+                    Err(std::io::Error::new(std::io::ErrorKind::NotFound, path))
+                }
+            },
+            AnalysisOptions {
+                dialect: Dialect::Brink,
+                ..AnalysisOptions::default()
+            },
+        )
+        .expect_err("a ref-projection argument to an EXTERNAL target must not compile");
+        let CompileError::Diagnostics(diags) = err else {
+            panic!("expected a diagnostics rejection, got {err:?}");
+        };
+        assert!(
+            !diags.is_empty(),
+            "expected at least one diagnostic rejecting the construct"
+        );
+    }
+
+    /// Half 2: an ink function with a projection-bound `ref` parameter
+    /// reads it and forwards the *resolved* value to an external binding —
+    /// the binding observes a plain `Value::Int`, never a `Value::Projection`.
+    #[test]
+    fn value_read_through_a_ref_projection_reaches_a_binding_as_a_plain_snapshot() {
+        let src = "STRUCT NPC = #{hp: int, name: string}\n\
+                    VAR npc = 0\n\
+                    EXTERNAL report(x)\n\n\
+                    ~ npc = NPC#{hp: 7, name: \"x\"}\n\
+                    ~ temp result = heal(ref npc.hp, 5)\n\
+                    Result: {result}\n\
+                    -> END\n\n\
+                    === function heal(ref hp, amount) ===\n\
+                    ~ temp seen = report(hp)\n\
+                    ~ hp = hp + amount\n\
+                    ~ return hp\n";
+        let (program, tables, _ctx) = compile_test_story_brink(src);
+
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<Value>>> = std::sync::Arc::default();
+        let seen_for_binding = std::sync::Arc::clone(&seen);
+        let mut app = App::new();
+        app.bind_brink_fn::<(), _, _>("report", move |args| {
+            seen_for_binding
+                .lock()
+                .expect("lock")
+                .push(args.first().cloned().unwrap_or(Value::Null));
+            Value::Null
+        });
+        let bindings = app.world().resource::<BrinkBindings<()>>();
+        let handler = bindings.handler();
+
+        let (mut flow, mut ctx) = FlowInstance::new_at_root(&program);
+        let mut text = String::new();
+        loop {
+            let line = flow
+                .step_single_line::<FastRng>(&program, &tables, &mut ctx, &handler, None)
+                .unwrap();
+            text.push_str(line.text());
+            if line.is_terminal() {
+                break;
+            }
+        }
+
+        assert!(
+            text.contains("Result: 12"),
+            "heal(ref npc.hp, 5) should read 7, add 5, and return 12; got {text:?}"
+        );
+        let captured = seen.lock().expect("lock");
+        assert_eq!(
+            captured.as_slice(),
+            &[Value::Int(7)],
+            "the binding must see the dereferenced value (7), never a Value::Projection: \
+             got {captured:?}"
+        );
     }
 
     /// End-to-end: a pure-fn binding's return value is inlined into story
