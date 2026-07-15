@@ -276,6 +276,18 @@ const MAKE_PROJECTION: u8 = 0xDA;
 const PROJ_READ: u8 = 0xDB;
 const PROJ_WRITE: u8 = 0xDC;
 
+// `char_at(s, i)` stdlib pure function (T1b stdlib slice 1 completion, issue
+// #857) — contiguous and adjacent to the projection block above, this PR's
+// own reservation (no prior RFC allocation for this one; same "assigned
+// here" precedent as the record/conversion/function-value/projection blocks
+// above it). Pops `i` then `s`, pushes the single-character `String` at
+// Unicode-scalar-value index `i` (chars, not UTF-8 bytes — author sanity per
+// the issue). Turn-terminating faults (value-model-spec §11c): `s` isn't a
+// `String` (`RuntimeError::NotIndexable`); `i` isn't an `Int`
+// (`RuntimeError::InvalidArrayIndex`); `i` outside `[0, char_count)`
+// (`RuntimeError::IndexOutOfBounds`, `len` = char count).
+const CHAR_AT: u8 = 0xDD;
+
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
 const LIST_NOT_CONTAINS: u8 = 0xB1;
@@ -793,6 +805,14 @@ pub enum Opcode {
     /// unresolved path, same domain as `ProjRead`.
     ProjWrite,
 
+    // ── Stdlib slice 1 completion (`docs/t1b-surface-spec.md` §5, issue
+    // #857) ───────────────────────────────────────────────────────────────
+    /// `[s, i]` → single-character `String`. The `char_at(s, i)` stdlib pure
+    /// function: `i` indexes Unicode scalar values ("chars"), not UTF-8
+    /// bytes. Turn-terminating fault (value-model-spec §11c) on a non-`Int`
+    /// `i`, a non-`String` `s`, or `i` outside `[0, char_count)`.
+    CharAt,
+
     // ── Lifecycle ───────────────────────────────────────────────────────
     Done,
     /// Pause for choice presentation. Like `Done` but does NOT set
@@ -1128,6 +1148,9 @@ impl Opcode {
             Self::ProjRead => write_u8(buf, PROJ_READ),
             Self::ProjWrite => write_u8(buf, PROJ_WRITE),
 
+            // Stdlib slice 1 completion (#857)
+            Self::CharAt => write_u8(buf, CHAR_AT),
+
             // Lifecycle
             Self::Done => write_u8(buf, DONE),
             Self::Yield => write_u8(buf, YIELD),
@@ -1346,6 +1369,9 @@ impl Opcode {
             },
             PROJ_READ => Self::ProjRead,
             PROJ_WRITE => Self::ProjWrite,
+
+            // Stdlib slice 1 completion (#857)
+            CHAR_AT => Self::CharAt,
 
             // Lifecycle
             DONE => Self::Done,
@@ -1815,6 +1841,18 @@ mod tests {
         let mut buf = Vec::new();
         Opcode::ConvertString.encode(&mut buf);
         assert_eq!(buf[0], 0xD5);
+    }
+
+    /// The `char_at(s, i)` stdlib-slice-1-completion opcode (`0xDD` — issue
+    /// #857) round-trips and sits contiguous and adjacent to the projection
+    /// block, matching the reservation comment above `CHAR_AT`.
+    #[test]
+    fn roundtrip_char_at_opcode() {
+        roundtrip(&Opcode::CharAt);
+
+        let mut buf = Vec::new();
+        Opcode::CharAt.encode(&mut buf);
+        assert_eq!(buf[0], 0xDD);
     }
 
     #[test]

@@ -270,4 +270,18 @@ pub enum RuntimeError {
     /// message, or a root-resolution failure).
     #[error("projection invalidated: {0}")]
     ProjectionInvalidated(String),
+
+    // ── Stdlib slice 1 completion: `char_at` (`docs/t1b-surface-spec.md`
+    // §5, issue #857) ──────────────────────────────────────────────────────
+    /// `char_at(s, i)`'s index expression didn't evaluate to an `Int`.
+    #[error("char_at index must be an int, got {0}")]
+    CharAtIndexNotInt(&'static str),
+    /// `char_at(s, i)` where `i` is outside `[0, char_count)` — chars
+    /// (Unicode scalar values), not UTF-8 bytes (the issue's "author
+    /// sanity" ruling), so `len` is `s.chars().count()`, never
+    /// `s.len()`. Turn-terminating fault, no silent empty/clamped result
+    /// (value-model-spec §11c) — matches `IndexOutOfBounds`'s posture for
+    /// arrays.
+    #[error("char_at index {index} out of bounds ({len} chars)")]
+    CharAtOutOfBounds { index: i32, len: usize },
 }

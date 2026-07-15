@@ -758,6 +758,16 @@ pub enum Expr {
         base: Box<Expr>,
         key: Box<Expr>,
     },
+    /// `[s, i]` → single-character `String`. The `char_at(s, i)` stdlib pure
+    /// function (T1b stdlib slice 1 completion, issue #857): `i` indexes
+    /// Unicode scalar values ("chars"), not UTF-8 bytes — author sanity, per
+    /// the issue. Turn-terminating fault on `i` out of `[0, char_count)`
+    /// (value-model-spec §11c: no silent garbage), matching `Index`'s
+    /// out-of-bounds fault posture.
+    CharAt {
+        s: Box<Expr>,
+        index: Box<Expr>,
+    },
 
     // ── Records (TM-4c, `docs/typed-mode-spec.md` §6) ───────────────
     /// `Name#{field: expr, …}` construction. `fields` is in the exact order

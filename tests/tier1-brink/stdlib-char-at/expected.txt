@@ -1,0 +1,1 @@
+char_at("hello", 0) = h, char_at("hello", 4) = o, char_at(s, 0) = c, char_at(s, 3) = é

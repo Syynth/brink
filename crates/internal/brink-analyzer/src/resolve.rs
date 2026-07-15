@@ -818,6 +818,11 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             // backstop for both `call` and `bind`, exactly as before.
             | "call"
             | "bind"
+            // `char_at(s, i)` (T1b stdlib slice 1 completion, issue #857):
+            // chars-indexed (Unicode scalar values, not bytes) single-
+            // character-`String` read into `s`. VM-native, same
+            // shadowing/dialect-gate machinery as the rest of this list.
+            | "char_at"
     )
 }
 

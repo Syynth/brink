@@ -240,6 +240,14 @@ fn stdlib_author_function_shadows_builtin() {
     assert_case("stdlib-shadowing");
 }
 
+// ── Stdlib slice 1 completion: char_at (docs/t1b-surface-spec.md §5,
+// issue #857) ──────────────────────────────────────────────────────────────
+
+#[test]
+fn stdlib_char_at_indexes_chars_not_bytes() {
+    assert_case("stdlib-char-at");
+}
+
 // ── TM-3 completion: conversion intrinsics (docs/typed-mode-spec.md §4,
 // maintainer ruling 2026-07-13, issue #659) ───────────────────────────────
 
@@ -348,6 +356,7 @@ fn every_case_directory_has_a_test() {
         "stdlib-remove",
         "stdlib-mutator-nested-lvalue",
         "stdlib-shadowing",
+        "stdlib-char-at",
         "stdlib-conversions",
         "deep-nesting-control-flow",
         "deep-nesting-collections",
@@ -1636,6 +1645,72 @@ fn direct_call_with_correct_arity_still_works() {
     let mut story = Story::<DotNetRng>::new(program, tables);
     let out = run_to_end(&mut story);
     assert_eq!(out, "42.\n");
+}
+
+// ── Stdlib slice 1 completion: char_at (docs/t1b-surface-spec.md §5,
+// issue #857) ──────────────────────────────────────────────────────────────
+
+#[test]
+fn char_at_out_of_range_index_is_a_turn_terminating_fault() {
+    // §11c's "no silent garbage" default — an out-of-range index faults
+    // rather than clamping or returning an empty string.
+    let src = "~ temp c = char_at(\"hi\", 5)\nUnreachable {c}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("out-of-range char_at must fault");
+    assert!(
+        matches!(
+            err,
+            brink_runtime::RuntimeError::CharAtOutOfBounds { index: 5, len: 2 }
+        ),
+        "expected CharAtOutOfBounds, got {err:?}"
+    );
+}
+
+#[test]
+fn char_at_negative_index_is_a_turn_terminating_fault() {
+    let src = "~ temp c = char_at(\"hi\", -1)\nUnreachable {c}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("negative char_at index must fault");
+    assert!(
+        matches!(
+            err,
+            brink_runtime::RuntimeError::CharAtOutOfBounds { index: -1, len: 2 }
+        ),
+        "expected CharAtOutOfBounds, got {err:?}"
+    );
+}
+
+#[test]
+fn char_at_on_a_non_string_is_a_turn_terminating_fault() {
+    let src = "~ temp c = char_at(5, 0)\nUnreachable {c}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("char_at on a non-string must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::NotIndexable("int")),
+        "expected NotIndexable, got {err:?}"
+    );
+}
+
+#[test]
+fn char_at_with_a_non_int_index_is_a_turn_terminating_fault() {
+    let src = "~ temp c = char_at(\"hi\", \"x\")\nUnreachable {c}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("non-int char_at index must fault");
+    assert!(
+        matches!(
+            err,
+            brink_runtime::RuntimeError::CharAtIndexNotInt("string")
+        ),
+        "expected CharAtIndexNotInt, got {err:?}"
+    );
+}
+
+#[test]
+fn char_at_author_shadow_wins_over_the_builtin() {
+    // §5's shadowing ruling: an author-defined `char_at` function resolves
+    // normally instead of dispatching to the VM-native intrinsic.
+    let src = "~ temp r = char_at(1, 2)\n{r}\n-> END\n\n\
+               === function char_at(a, b) ===\n~ return a + b\n";
+    let (program, tables) = compile_and_link(src);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    let out = run_to_end(&mut story);
+    assert_eq!(out, "3\n");
 }
 
 // ── T1c-2 (#700): persistence + rehydration (spec §6) ───────────────────
