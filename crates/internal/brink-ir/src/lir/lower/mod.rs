@@ -213,10 +213,161 @@ impl LirPrelude {
     }
 }
 
+/// The declaration-level half of [`LirPrelude`] (issue #839 / FG-4e): every
+/// collected `VAR`/`CONST`/`LIST`/`EXTERNAL`/`STRUCT` declaration, the seeded
+/// project name table, and the `StoryData`-bound `private_defs`/`aliases` —
+/// everything [`build_prelude_decls`] produces. Deliberately *not* the
+/// normalized+stamped HIR (`LirPrelude::normalized`): [`collect_globals`],
+/// [`collect_lists`], [`collect_externals`], [`build_shape_table`], and
+/// [`build_global_shape_map`] read only a file's `constants`/`variables`/
+/// `lists`/`structs`/`externals` fields — never `root_content`/`knots`, which
+/// [`hir::normalize_file`]/[`hir::stamp_container_ids`] are the only passes
+/// that touch — so this half is byte-identical whether it's built from raw,
+/// decl-only-projected, or normalized+stamped HIR (`brink-db`'s
+/// `lir_prelude_decls_query` exploits exactly this: it reads a per-file
+/// decl-only projection that backdates across a body-only edit, so a knot
+/// body edit doesn't force this struct's declarations/name table/shape table
+/// to be recomputed — the FG-4d `struct_shape_data_query` precedent, applied
+/// to the rest of the prelude).
+///
+/// [`collect_globals`]: decls::collect_globals
+/// [`collect_lists`]: decls::collect_lists
+/// [`collect_externals`]: decls::collect_externals
+/// [`build_shape_table`]: structs::build_shape_table
+/// [`build_global_shape_map`]: structs::build_global_shape_map
+#[derive(Clone)]
+pub struct PreludeDecls {
+    root_id: brink_format::DefinitionId,
+    globals: Vec<lir::GlobalDef>,
+    lists: Vec<lir::ListDef>,
+    list_items: Vec<lir::ListItemDef>,
+    externals: Vec<lir::ExternalDef>,
+    shape_table: structs::ShapeTable,
+    global_shapes: structs::GlobalShapeMap,
+    name_seed: Vec<String>,
+    type_mode: context::TypeMode,
+    private_defs: Vec<brink_format::DefinitionId>,
+    aliases: Vec<brink_format::AliasEntry>,
+    decl_diagnostics: Vec<crate::Diagnostic>,
+}
+
+impl PreludeDecls {
+    /// The empty prelude decls — no reachable entry (`brink-db`'s
+    /// `lir_prelude_decls_query`/`lir_lowering_query` early-return case).
+    #[must_use]
+    pub fn empty(type_mode: context::TypeMode) -> Self {
+        Self {
+            root_id: context::root_definition_id(),
+            globals: Vec::new(),
+            lists: Vec::new(),
+            list_items: Vec::new(),
+            externals: Vec::new(),
+            shape_table: structs::ShapeTable::default(),
+            global_shapes: structs::GlobalShapeMap::default(),
+            name_seed: Vec::new(),
+            type_mode,
+            private_defs: Vec::new(),
+            aliases: Vec::new(),
+            decl_diagnostics: Vec::new(),
+        }
+    }
+}
+
+/// Collect declaration-level LIR data — `VAR`/`CONST`/`LIST`/`EXTERNAL`/
+/// `STRUCT` — and seed the project name table, without touching
+/// `root_content`/`knots` (see [`PreludeDecls`]'s doc for why that's safe:
+/// none of the collection passes below ever read a body). This is exactly
+/// steps 1–2 of the old monolithic `build_prelude` (name collection +
+/// struct-shape table), factored out so `brink-db` can memoize it
+/// independently of the normalize+stamp step (step 0).
+#[must_use]
+pub fn build_prelude_decls(
+    files: &[(FileId, &hir::HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+    type_mode: context::TypeMode,
+) -> PreludeDecls {
+    let resolutions_lookup = ResolutionLookup::build(resolutions);
+    let mut names = NameTable::new();
+    let root_id = context::root_definition_id();
+
+    let mut decl_diagnostics = Vec::new();
+    let mut globals = decls::collect_globals(
+        files,
+        index,
+        &mut names,
+        &resolutions_lookup,
+        &mut decl_diagnostics,
+    );
+    let (lists, list_items, list_globals) = decls::collect_lists(files, index, &mut names);
+    globals.extend(list_globals);
+    let externals = decls::collect_externals(files, index, &mut names);
+
+    let shape_table = structs::build_shape_table(files, &mut names);
+    let global_shapes = structs::build_global_shape_map(files, index, &shape_table);
+    let name_seed = names.into_entries();
+
+    let mut private_defs: Vec<brink_format::DefinitionId> = index
+        .symbols
+        .iter()
+        .filter(|(_, info)| info.visibility == crate::symbols::Visibility::Private)
+        .map(|(id, _)| *id)
+        .collect();
+    private_defs.sort_by_key(|id| id.to_raw());
+
+    let mut aliases = index.aliases.clone();
+    aliases.sort_unstable();
+
+    PreludeDecls {
+        root_id,
+        globals,
+        lists,
+        list_items,
+        externals,
+        shape_table,
+        global_shapes,
+        name_seed,
+        type_mode,
+        private_defs,
+        aliases,
+        decl_diagnostics,
+    }
+}
+
+/// Assemble a [`LirPrelude`] from independently-computed [`PreludeDecls`]
+/// (issue #839 / FG-4e) plus the normalized+stamped HIR (`brink-db`'s link
+/// builds `normalized` from the already-memoized per-file
+/// `normalized_stamped_query` instead of recomputing normalize+stamp
+/// inline). Pure assembly — no lowering work of its own.
+#[must_use]
+pub fn assemble_prelude(
+    decls: PreludeDecls,
+    normalized: Vec<(FileId, hir::HirFile)>,
+) -> LirPrelude {
+    LirPrelude {
+        normalized,
+        root_id: decls.root_id,
+        globals: decls.globals,
+        lists: decls.lists,
+        list_items: decls.list_items,
+        externals: decls.externals,
+        shape_table: decls.shape_table,
+        global_shapes: decls.global_shapes,
+        name_seed: decls.name_seed,
+        type_mode: decls.type_mode,
+        private_defs: decls.private_defs,
+        aliases: decls.aliases,
+        decl_diagnostics: decls.decl_diagnostics,
+    }
+}
+
 /// Build the whole-project [`LirPrelude`]: normalize + stamp HIR, collect
 /// declarations, and build the struct-shape table — steps 0–2 of the old
 /// monolithic `lower_to_program`, verbatim and in the same order, so the
-/// seeded name table is byte-identical.
+/// seeded name table is byte-identical. Now a thin composition of
+/// [`build_prelude_decls`] (steps 1–2) over the normalized files (step 0) —
+/// see [`PreludeDecls`]'s doc for why running decl collection on normalized
+/// vs. raw HIR is byte-identical.
 #[must_use]
 pub fn build_prelude(
     files: &[(FileId, &hir::HirFile)],
@@ -234,54 +385,10 @@ pub fn build_prelude(
         .collect();
     hir::stamp_container_ids(&mut normalized, index);
 
-    let files: Vec<(FileId, &hir::HirFile)> = normalized.iter().map(|(id, h)| (*id, h)).collect();
-    let resolutions_lookup = ResolutionLookup::build(resolutions);
-    let mut names = NameTable::new();
-    let mut ids = context::IdAllocator::new();
-    let root_id = ids.alloc_address("");
-
-    let mut decl_diagnostics = Vec::new();
-    let mut globals = decls::collect_globals(
-        &files,
-        index,
-        &mut names,
-        &resolutions_lookup,
-        &mut decl_diagnostics,
-    );
-    let (lists, list_items, list_globals) = decls::collect_lists(&files, index, &mut names);
-    globals.extend(list_globals);
-    let externals = decls::collect_externals(&files, index, &mut names);
-
-    let shape_table = structs::build_shape_table(&files, &mut names);
-    let global_shapes = structs::build_global_shape_map(&files, index, &shape_table);
-    let name_seed = names.into_entries();
-
-    let mut private_defs: Vec<brink_format::DefinitionId> = index
-        .symbols
-        .iter()
-        .filter(|(_, info)| info.visibility == crate::symbols::Visibility::Private)
-        .map(|(id, _)| *id)
-        .collect();
-    private_defs.sort_by_key(|id| id.to_raw());
-
-    let mut aliases = index.aliases.clone();
-    aliases.sort_unstable();
-
-    LirPrelude {
-        normalized,
-        root_id,
-        globals,
-        lists,
-        list_items,
-        externals,
-        shape_table,
-        global_shapes,
-        name_seed,
-        type_mode,
-        private_defs,
-        aliases,
-        decl_diagnostics,
-    }
+    let normalized_refs: Vec<(FileId, &hir::HirFile)> =
+        normalized.iter().map(|(id, h)| (*id, h)).collect();
+    let decls = build_prelude_decls(&normalized_refs, index, resolutions, type_mode);
+    assemble_prelude(decls, normalized)
 }
 
 /// Lower every file's root-level content into one chunk per file, sharing a

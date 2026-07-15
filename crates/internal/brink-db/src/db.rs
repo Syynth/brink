@@ -16,10 +16,10 @@ use crate::queries::{
     BrinkDatabase, CompileProduct, DefKey, KnotChunkKey, LirProduct, ProjectInput, ResolvedProject,
     SourceFile, analysis_query, call_site_diagnostics_query, call_site_metas_query,
     diagnostics_query, has_errors_query, include_graph_query, infer_body_query,
-    inferred_signature_query, lir_knot_chunk_query, lir_query, lowered_query, parse_query,
-    per_file_diagnostics_query, resolutions_index_query, resolve_query, signature_query,
-    story_data_query, suppressions_query, symbol_index_query, type_diagnostics_query,
-    type_inference_query, value_meta_query,
+    inferred_signature_query, lir_knot_chunk_query, lir_prelude_decls_query, lir_query,
+    lowered_query, parse_query, per_file_diagnostics_query, resolutions_index_query, resolve_query,
+    signature_query, story_data_query, suppressions_query, symbol_index_query,
+    type_diagnostics_query, type_inference_query, value_meta_query,
 };
 
 /// Stateful incremental project database.
@@ -462,6 +462,20 @@ impl ProjectDb {
     pub fn knot_chunk(&self, file: FileId, knot_index: u32) -> Arc<brink_ir::lir::ScopeChunk> {
         let key = KnotChunkKey::new(&self.salsa, file, knot_index);
         lir_knot_chunk_query(&self.salsa, self.project, key).chunk
+    }
+
+    /// FG-4e non-re-execution probe (issue #839): the
+    /// `Arc<brink_ir::lir::PreludeDecls>` the whole-project prelude-decls
+    /// memo stores. `Arc::ptr_eq` on the result across an edit proves the
+    /// memo validated without re-executing — salsa only hands back the same
+    /// allocation when every entry-reachable file's [decl-only HIR
+    /// projection](crate::queries::PreludeDeclsResult) is unchanged, which
+    /// holds across a knot-body-only edit. Exposed for the dependency-edge
+    /// tests, mirroring [`knot_chunk`](Self::knot_chunk).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn lir_prelude_decls(&self) -> Arc<brink_ir::lir::PreludeDecls> {
+        lir_prelude_decls_query(&self.salsa, self.project).decls
     }
 
     /// Whole-project compile to [`brink_format::StoryData`] (layer 3,
