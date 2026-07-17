@@ -93,7 +93,7 @@ fn parse_meta_group(elem: &ExtensionElement) -> MetaGroup {
                     .children
                     .iter()
                     .filter_map(|n| match n {
-                        ExtensionNode::Text(t) => Some(t.as_str()),
+                        ExtensionNode::Text(t) | ExtensionNode::CData(t) => Some(t.as_str()),
                         ExtensionNode::Element(_) => None,
                     })
                     .collect::<String>();
@@ -172,5 +172,91 @@ mod tests {
         set_metadata(&mut ext, meta.clone());
         let extracted = extract_metadata(&ext);
         assert_eq!(extracted, Some(meta));
+    }
+
+    /// A `<mta:meta>` value delivered as a CDATA section (permitted by the XLIFF 2 spec,
+    /// and something external TMS round-trips may produce) must be extracted just like
+    /// plain text, not silently dropped.
+    #[test]
+    fn round_trip_metadata_cdata_value() {
+        let ext = Extensions {
+            elements: vec![ExtensionElement {
+                namespace: METADATA_NS.to_owned(),
+                local_name: "metadata".to_owned(),
+                attributes: Vec::new(),
+                children: vec![ExtensionNode::Element(ExtensionElement {
+                    namespace: METADATA_NS.to_owned(),
+                    local_name: "metaGroup".to_owned(),
+                    attributes: vec![("category".to_owned(), "tool".to_owned())],
+                    children: vec![ExtensionNode::Element(ExtensionElement {
+                        namespace: METADATA_NS.to_owned(),
+                        local_name: "meta".to_owned(),
+                        attributes: vec![("type".to_owned(), "tool-id".to_owned())],
+                        children: vec![ExtensionNode::CData("brink <tool>".to_owned())],
+                    })],
+                })],
+            }],
+            attributes: Vec::new(),
+        };
+
+        let extracted = extract_metadata(&ext).expect("metadata element present");
+        assert_eq!(
+            extracted,
+            Metadata {
+                groups: vec![MetaGroup {
+                    id: None,
+                    category: Some("tool".to_owned()),
+                    entries: vec![MetaEntry::Meta {
+                        key: "tool-id".to_owned(),
+                        value: "brink <tool>".to_owned(),
+                    }],
+                }],
+            }
+        );
+    }
+
+    /// A meta value split across adjacent Text and `CData` nodes (as the reader may
+    /// produce when mixed content includes an entity-decoded run alongside a CDATA
+    /// section) must be concatenated in document order.
+    #[test]
+    fn round_trip_metadata_mixed_text_and_cdata_value() {
+        let ext = Extensions {
+            elements: vec![ExtensionElement {
+                namespace: METADATA_NS.to_owned(),
+                local_name: "metadata".to_owned(),
+                attributes: Vec::new(),
+                children: vec![ExtensionNode::Element(ExtensionElement {
+                    namespace: METADATA_NS.to_owned(),
+                    local_name: "metaGroup".to_owned(),
+                    attributes: Vec::new(),
+                    children: vec![ExtensionNode::Element(ExtensionElement {
+                        namespace: METADATA_NS.to_owned(),
+                        local_name: "meta".to_owned(),
+                        attributes: vec![("type".to_owned(), "note".to_owned())],
+                        children: vec![
+                            ExtensionNode::Text("prefix-".to_owned()),
+                            ExtensionNode::CData("cdata-part".to_owned()),
+                            ExtensionNode::Text("-suffix".to_owned()),
+                        ],
+                    })],
+                })],
+            }],
+            attributes: Vec::new(),
+        };
+
+        let extracted = extract_metadata(&ext).expect("metadata element present");
+        assert_eq!(
+            extracted,
+            Metadata {
+                groups: vec![MetaGroup {
+                    id: None,
+                    category: None,
+                    entries: vec![MetaEntry::Meta {
+                        key: "note".to_owned(),
+                        value: "prefix-cdata-part-suffix".to_owned(),
+                    }],
+                }],
+            }
+        );
     }
 }
