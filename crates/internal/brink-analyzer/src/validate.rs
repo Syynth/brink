@@ -379,6 +379,7 @@ mod tests {
             },
             stitches: Vec::new(),
             is_local: false,
+            effects_assertion: None,
             return_type: None,
         });
 
@@ -410,6 +411,7 @@ mod tests {
             },
             stitches: Vec::new(),
             is_local: false,
+            effects_assertion: None,
             return_type: None,
         });
 
@@ -443,6 +445,7 @@ mod tests {
             },
             stitches: Vec::new(),
             is_local: false,
+            effects_assertion: None,
             return_type: None,
         });
 
@@ -487,6 +490,7 @@ mod tests {
             },
             stitches: Vec::new(),
             is_local: false,
+            effects_assertion: None,
             return_type: None,
         });
 
@@ -526,6 +530,7 @@ mod tests {
             },
             stitches: Vec::new(),
             is_local: false,
+            effects_assertion: None,
             return_type: None,
         });
 
@@ -578,6 +583,7 @@ mod tests {
             },
             stitches: Vec::new(),
             is_local: false,
+            effects_assertion: None,
             return_type: None,
         });
 
@@ -632,6 +638,7 @@ mod tests {
             },
             stitches: Vec::new(),
             is_local: false,
+            effects_assertion: None,
             return_type: None,
         });
 
@@ -685,6 +692,7 @@ mod tests {
             },
             stitches: Vec::new(),
             is_local: false,
+            effects_assertion: None,
             return_type: None,
         });
 
@@ -748,6 +756,7 @@ mod tests {
             },
             stitches: Vec::new(),
             is_local: false,
+            effects_assertion: None,
             return_type: None,
         });
 

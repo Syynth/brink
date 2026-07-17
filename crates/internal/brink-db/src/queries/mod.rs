@@ -102,9 +102,9 @@ mod heap_size;
 pub use analysis::ResolvedProject;
 pub(crate) use analysis::{
     analysis_diagnostics_query, analysis_query, call_site_diagnostics_query, call_site_metas_query,
-    contributor_diagnostics_query, diagnostics_query, external_meta_query, has_errors_query,
-    inline_docs_query, per_file_diagnostics_query, resolutions_index_query, value_meta_query,
-    whole_project_diagnostics_query,
+    contributor_diagnostics_query, diagnostics_query, effects_assertion_diagnostics_query,
+    external_meta_query, has_errors_query, inline_docs_query, per_file_diagnostics_query,
+    resolutions_index_query, value_meta_query, whole_project_diagnostics_query,
 };
 
 // ─── Database ────────────────────────────────────────────────────────
@@ -232,6 +232,10 @@ impl Default for BrinkDatabase {
                 .ingredient::<def_effect_atoms_query>()
                 .ingredient::<effects_scc_query>()
                 .ingredient::<effects_query>()
+                // T2-2 (issue #861): the `#@effects(…)` assertion's
+                // per-file exceedance check, reading `effects_query` only
+                // for defs that actually carry an assertion.
+                .ingredient::<effects_assertion_diagnostics_query>()
                 // Layer 3.
                 .ingredient::<lir_query>()
                 .ingredient::<story_data_query>()
