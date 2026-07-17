@@ -30,6 +30,7 @@
   - [Function Values](./toolchain/dialect/function-values.md)
   - [Path Projections](./toolchain/dialect/path-projections.md)
   - [Modules](./toolchain/dialect/modules.md)
+  - [Effects](./toolchain/dialect/effects.md)
   - [Conformance](./toolchain/dialect/conformance.md)
 - [Concepts](./toolchain/concepts/index.md)
   - [The Execution Model](./toolchain/concepts/execution-model.md)

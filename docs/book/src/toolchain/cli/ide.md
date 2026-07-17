@@ -216,6 +216,49 @@ brink ide actions --at main.ink:7:5 -e main.ink --format json
 
 JSON: an array of `{ "title", "kind" }` (kind: `quickfix`, `refactor`, `source`).
 
+### `effects-diff` — row drift between two revisions
+
+Diffs every knot/stitch's inferred [effect row](../dialect/effects.md)
+between two git revisions, or a revision and the working tree — the
+drift-*visibility* tooling docs/effects-spec.md §10 names as the lockfile's
+replacement: there is no drift policy to enforce, only a report of what
+changed, CI-comment-friendly.
+
+```sh
+brink ide effects-diff -e main.ink --base HEAD~1              # working tree vs. last commit
+brink ide effects-diff -e main.ink --base origin/main          # working tree vs. a branch
+brink ide effects-diff -e main.ink --base main --head feature/foo   # rev vs. rev
+brink ide effects-diff -e main.ink --base HEAD~1 --format json      # CI-comment-friendly
+```
+
+| Flag | Effect |
+|------|--------|
+| `--base REV` | required — the revision to diff against (any git commit-ish) |
+| `--head REV` | diff against this revision instead of the working tree |
+
+Unlike every other command here, `--entry` doesn't have to point at the
+*current* working tree's file — `--base`/`--head` each re-resolve the whole
+project (following `INCLUDE`s) as it existed at that revision, via `git
+show`, so the diff is real even across renames-free structural changes on
+either side. Output lines are `+`/`-`/`~` per drifted def, then indented
+`+`/`- reads|writes|calls …` per changed atom set:
+
+```text
+~ spend
+    + reads gold
+```
+
+This is the `1`-means-"found something" reading of the [exit-code
+contract](#output--exit-codes) above (the same shape `unused`/`check` use):
+`0` if nothing drifted, `1` if any def's row changed (added, removed, or a
+changed atom set) — so a CI step can gate on "did anything change" without
+parsing output — `2` on a usage error.
+
+JSON: an object keyed by qualified def name, each value `{ "status":
+"added"|"removed"|"changed", "row"? , "base"?, "head"? }` — `row` for
+`added`/`removed`, `base`/`head` (each `{ "reads", "writes", "calls",
+"opaque" }`) for `changed`. A def with no drift has no entry at all.
+
 ---
 
 ## Mutations

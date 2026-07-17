@@ -27,6 +27,8 @@ This chapter covers:
   the mutating `push`/`insert`/`remove`.
 - **[Types](./types.md)** — gradual vs. strict, inline annotations,
   structs, and the visit-count idiom that survives strict mode unchanged.
+- **[Effects](./effects.md)** — the inferred reads/writes/calls row every
+  knot/stitch carries, `#@effects(…)` assertions, and the exceedance error.
 - **[Conformance](./conformance.md)** — how the dialect coexists with the
   oracle-anchored core, and what "authoring-time only" actually means.
 

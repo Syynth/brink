@@ -105,8 +105,25 @@ pub fn hover(
             .and_then(|hir| crate::fn_value_hover::fn_value_slot_signature(analysis, hir, info))
             .map_or(String::new(), |sig| format!("\n\n`{sig}`"));
 
+        // T2-4 (docs/effects-spec.md §10, issue #863): a knot/stitch's
+        // inferred effect row — the display form spec §10's IDE-hover
+        // tooling commitment names ("boring and stable"), one line, names
+        // resolved through the same `analysis.index` every other hover
+        // enrichment above reads. `None` for anything that isn't a
+        // knot/stitch, or for a def `db.effects` has no row for — same
+        // `None` contract as `db.inferred_signature`.
+        let effects_str = matches!(
+            info.kind,
+            brink_ir::SymbolKind::Knot | brink_ir::SymbolKind::Stitch
+        )
+        .then(|| db.effects(info.id))
+        .flatten()
+        .map_or(String::new(), |row| {
+            format!("\n\n{}", effect_row_line(&row, &analysis.index))
+        });
+
         format!(
-            "**{kind_str}** `{}{inferred_local_str}{value_str}{params_str}{ret_str}`{detail_str}{kind_tag}{doc_block}{file_note}{fn_value_str}",
+            "**{kind_str}** `{}{inferred_local_str}{value_str}{params_str}{ret_str}`{detail_str}{kind_tag}{doc_block}{file_note}{fn_value_str}{effects_str}",
             info.name
         )
     } else {
@@ -122,6 +139,45 @@ pub fn hover(
         .or_else(|| word_range_at_offset(source, offset));
 
     Some(HoverInfo { content, range })
+}
+
+/// T2-4 (docs/effects-spec.md §10, issue #863): render a knot/stitch's
+/// inferred [`brink_db::EffectRow`] as one `*effects:* …` hover line —
+/// `reads`/`writes`/`calls` sets, resolved from raw `DefinitionId`s /
+/// call-kind names back to source identifiers via `index`. Deliberately
+/// boring and stable (spec §10): the same three-word-per-category shape
+/// every build produces, so it reads as data, not prose. `pure` sugars the
+/// empty, non-opaque row; `opaque` is the pessimal "touches everything"
+/// floor (a call through a function value, or an unresolved callee) — no
+/// atom list can bound it, so it gets its own line instead of an empty one.
+fn effect_row_line(row: &brink_db::EffectRow, index: &brink_ir::SymbolIndex) -> String {
+    if row.opaque {
+        return "*effects:* opaque (calls through a function value, or an unresolved callee)"
+            .to_string();
+    }
+    if row.is_empty() {
+        return "*effects:* pure".to_string();
+    }
+    let name_of = |id: &brink_format::DefinitionId| {
+        index
+            .symbols
+            .get(id)
+            .map_or_else(|| format!("{id:?}"), |info| info.name.clone())
+    };
+    let mut parts = Vec::new();
+    if !row.reads.is_empty() {
+        let names: Vec<String> = row.reads.iter().map(name_of).collect();
+        parts.push(format!("reads {}", names.join(", ")));
+    }
+    if !row.writes.is_empty() {
+        let names: Vec<String> = row.writes.iter().map(name_of).collect();
+        parts.push(format!("writes {}", names.join(", ")));
+    }
+    if !row.calls.is_empty() {
+        let names: Vec<&str> = row.calls.iter().map(String::as_str).collect();
+        parts.push(format!("calls {}", names.join(", ")));
+    }
+    format!("*effects:* {}", parts.join("; "))
 }
 
 /// TM-5 (#621): a knot/stitch's parameter-list and return-type hover
@@ -316,6 +372,55 @@ mod tests {
         let src = "CONST SPEED = 0.5\n-> END\n";
         let content = hover_at(src, "SPEED");
         assert!(content.contains("`SPEED: float = 0.5`"), "{content}");
+    }
+
+    // ── T2-4 (docs/effects-spec.md §10, issue #863): hover shows a
+    // knot/stitch's inferred effect row ──────────────────────────────────
+
+    #[test]
+    fn hover_shows_inferred_effect_row_for_a_knot() {
+        let src = "\
+VAR gold = 0
+EXTERNAL play_sfx(x)
+== function spend(cost) ==
+~ gold = gold - cost
+~ play_sfx(cost)
+~ return gold
+";
+        let content = hover_at(src, "spend(cost)");
+        assert!(
+            content.contains("*effects:* reads gold; writes gold; calls play_sfx"),
+            "{content}"
+        );
+    }
+
+    #[test]
+    fn hover_shows_pure_for_a_genuinely_pure_knot() {
+        let src = "== function double(x) ==\n~ return x * 2\n";
+        let content = hover_at(src, "double(x)");
+        assert!(content.contains("*effects:* pure"), "{content}");
+    }
+
+    #[test]
+    fn hover_shows_opaque_for_a_call_through_a_function_value() {
+        let src = "\
+== function apply(f, x) ==
+~ return f(x)
+";
+        let content = hover_at(src, "apply(f, x)");
+        assert!(
+            content.contains(
+                "*effects:* opaque (calls through a function value, or an unresolved callee)"
+            ),
+            "{content}"
+        );
+    }
+
+    #[test]
+    fn hover_omits_effects_for_a_variable() {
+        let src = "VAR gold = 0\n-> END\n";
+        let content = hover_at(src, "gold = 0");
+        assert!(!content.contains("*effects:*"), "{content}");
     }
 
     #[test]

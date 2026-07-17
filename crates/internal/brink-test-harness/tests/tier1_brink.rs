@@ -389,6 +389,7 @@ fn every_case_directory_has_a_test() {
         "fn-value-bind-chain",
         "fn-value-bind-triple-chain",
         "ref-call-with-block-temp",
+        "effects-assertions-clean",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink")
@@ -2022,4 +2023,62 @@ fn fn_value_inside_a_map_save_load_invoke_equals_direct_invoke() {
         "save→load→invoke must equal direct invoke for a fn value inside a map",
     );
     assert_eq!(loaded_out, "Result 42.\n");
+}
+
+// ── T2-4 effects corpus wing (docs/effects-spec.md §10, issue #863) ────────
+//
+// Unlike `t2_1_effect_rows.rs`/`t2_2_effects_assertions.rs` (which exercise
+// inference/assertions through `ProjectDb::analysis()` directly), these run
+// through the *full* `brink_compiler::compile_with_options` entry point —
+// the same one `brink compile`/`brink ide` use — proving `#@effects(…)`
+// inference, satisfied assertions, and the `E103` exceedance error all
+// still work end-to-end through the real pipeline, not just the analyzer
+// in isolation.
+
+/// `effects-assertions-clean`: reads/writes/`pure` assertions that are all
+/// satisfied stay silent and the story runs exactly as if they weren't
+/// there — `#@effects(…)` is advisory-only, never format/codegen/runtime
+/// observable (T2-3's inertness gate).
+#[test]
+fn effects_assertions_clean() {
+    assert_case("effects-assertions-clean");
+}
+
+/// A `calls:` assertion satisfied by the body's actual `EXTERNAL` call
+/// compiles clean through the full pipeline (the `calls` atom class
+/// `t2_2_effects_assertions.rs`'s `exceedance_on_an_extra_call` fixture
+/// covers from the *other* side — this is the satisfied side, and via
+/// `compile_with_options` rather than `ProjectDb::analysis()` directly).
+#[test]
+fn calls_assertion_satisfied_by_a_matching_external_compiles_clean() {
+    let output = compile_brink(
+        "EXTERNAL play_sfx(name)\n\
+         === function cue(name) ===\n#@effects(calls: play_sfx)\n\
+         ~ play_sfx(name)\n~ return 0\n",
+    )
+    .expect("a satisfied `calls:` assertion must compile clean through the full pipeline");
+    assert!(
+        output.warnings.is_empty(),
+        "a satisfied assertion produces no diagnostics at all: {:?}",
+        output.warnings
+    );
+}
+
+/// `E103` exceedance reached through the full compiler pipeline (not just
+/// the analyzer): a `#@effects(pure)` def that actually reads a global cell
+/// is a compile error, end to end.
+#[test]
+fn exceedance_is_a_real_compile_error_through_the_full_pipeline() {
+    let err = compile_brink(
+        "VAR gold = 0\n\
+         === function spend() ===\n#@effects(pure)\n~ return gold\n",
+    )
+    .expect_err("an exceeding `#@effects` assertion must fail the full compile");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E103),
+        "{diags:?}"
+    );
 }

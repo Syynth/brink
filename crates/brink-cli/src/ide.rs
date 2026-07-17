@@ -239,6 +239,39 @@ Examples:
         #[command(flatten)]
         opts: CommonOpts,
     },
+    /// Diff inferred effect rows between two revisions (or a revision and
+    /// the working tree) — drift *visibility*, not a gate (docs/effects-spec.md
+    /// §10, sitting 2: "there is no drift policy — Drift visibility is
+    /// tooling"). CI-comment-friendly: exits `0` with no output when nothing
+    /// drifted, `1` with a unified-diff-shaped report otherwise.
+    #[command(after_help = "\
+Examples:
+  brink ide effects-diff -e main.ink --base HEAD~1             # working tree vs. last commit
+  brink ide effects-diff -e main.ink --base origin/main        # working tree vs. a branch
+  brink ide effects-diff -e main.ink --base main --head feature/foo  # rev vs. rev
+  brink ide effects-diff -e main.ink --base HEAD~1 --format json    # CI-comment-friendly")]
+    EffectsDiff {
+        /// The revision to diff against (any git commit-ish: SHA, branch, tag, `HEAD~N`).
+        #[arg(long, value_name = "REV")]
+        base: String,
+        /// Diff against this revision instead of the working tree.
+        #[arg(long, value_name = "REV")]
+        head: Option<String>,
+        #[command(flatten)]
+        opts: EffectsDiffOpts,
+    },
+}
+
+/// Options for `effects-diff`: entry + format, no `--kind` (it addresses
+/// every knot/stitch in the project, never a single symbol).
+#[derive(Args)]
+pub struct EffectsDiffOpts {
+    /// Entry-point `.ink` file; `INCLUDE`s are followed to build the project.
+    #[arg(long, short = 'e', value_name = "FILE")]
+    entry: PathBuf,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = Format::Text)]
+    format: Format,
 }
 
 /// A structural refactor operation. Each addresses a knot/stitch by its
@@ -546,6 +579,9 @@ pub fn run(cmd: &IdeCommand) -> ExitCode {
         IdeCommand::MoveFile { old, new, mode } => run_move_file(old, new, mode),
         IdeCommand::Refactor { op } => run_refactor(op),
         IdeCommand::Actions { at, opts } => run_actions(at, opts),
+        IdeCommand::EffectsDiff { base, head, opts } => {
+            run_effects_diff(base, head.as_deref(), opts)
+        }
     };
     match result {
         Ok(code) => code,
@@ -1575,6 +1611,35 @@ impl Project {
         })
     }
 
+    /// Discover + analyze the project as it existed at a git revision
+    /// (`rev: None` means the working tree — plain [`Project::load`]).
+    /// `entry` is still a filesystem path (relative to the current
+    /// directory, or absolute); it's resolved to a path relative to the
+    /// repo root so the same string addresses the blob at `rev` via `git
+    /// show rev:path`, and every `INCLUDE` resolved from it (always
+    /// relative-to-entry's-directory, never repo-root-relative on its own)
+    /// stays consistent between the two reads.
+    fn load_at_rev(entry: &Path, rev: Option<&str>) -> Result<Self, String> {
+        let Some(rev) = rev else {
+            return Self::load(entry);
+        };
+        let (repo_root, rel_entry) = repo_relative_path(entry)?;
+        let mut driver = Driver::new();
+        driver
+            .discover(&rel_entry, |p: &str| read_git_blob(&repo_root, rev, p))
+            .map_err(|e| format!("{e}"))?;
+        let analysis = driver.analyze().clone();
+        let entry_id = driver
+            .db()
+            .file_id(&rel_entry)
+            .ok_or_else(|| format!("entry file not found in {rev}: {rel_entry}"))?;
+        Ok(Self {
+            driver,
+            analysis,
+            entry_id,
+        })
+    }
+
     /// Resolve a query's target to a single symbol — by `--at FILE:LINE:COL`
     /// (cursor → the symbol there, resolving a reference to its definition) or
     /// by qualified name.
@@ -2012,6 +2077,232 @@ fn parse_at(s: &str) -> Result<(String, u32, u32), String> {
         }
         _ => Err(format!("--at must be FILE:LINE:COL, got '{s}'")),
     }
+}
+
+// ── Git-revision project loading (`effects-diff`) ──────────────────────
+
+/// Resolve `entry` to `(repo root, path relative to repo root)` via `git
+/// rev-parse --show-toplevel`, so `git show REV:path` addresses the same
+/// file regardless of the caller's current directory.
+fn repo_relative_path(entry: &Path) -> Result<(String, String), String> {
+    let abs = std::fs::canonicalize(entry).map_err(|e| format!("{}: {e}", entry.display()))?;
+    // Scoped with `-C <entry's directory>` — plain `git rev-parse` resolves
+    // against the *process's* cwd, which is not necessarily where `entry`
+    // lives (a script can pass `-e ../other-project/main.ink`).
+    let entry_dir = abs.parent().unwrap_or(&abs);
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(entry_dir)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(|e| format!("git rev-parse --show-toplevel: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("not inside a git repository: {}", entry.display()));
+    }
+    let root = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let root_canon = std::fs::canonicalize(&root).map_err(|e| format!("{root}: {e}"))?;
+    let rel = abs.strip_prefix(&root_canon).map_err(|_| {
+        format!(
+            "{} is outside the git repo rooted at {root}",
+            entry.display()
+        )
+    })?;
+    Ok((root, rel.to_string_lossy().replace('\\', "/")))
+}
+
+/// Read `path` (repo-root-relative) as it existed at `rev`, via `git show`.
+/// Surfaced as an `io::Error` so it composes with `Driver::discover`'s
+/// `read_file` callback contract exactly like the filesystem reader does.
+fn read_git_blob(repo_root: &str, rev: &str, path: &str) -> Result<String, io::Error> {
+    let out = std::process::Command::new("git")
+        .args(["-C", repo_root, "show", &format!("{rev}:{path}")])
+        .output()?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("git show {rev}:{path}: {stderr}"),
+        ));
+    }
+    String::from_utf8(out.stdout)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+}
+
+/// One knot/stitch's effect row, names already resolved (so it compares
+/// stably across two separately-analyzed revisions where `DefinitionId`s
+/// aren't the same values). Sets are `BTreeSet`s throughout for
+/// deterministic diff/serialization order.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+struct RowView {
+    reads: std::collections::BTreeSet<String>,
+    writes: std::collections::BTreeSet<String>,
+    calls: std::collections::BTreeSet<String>,
+    opaque: bool,
+}
+
+impl RowView {
+    fn from_row(row: &brink_db::EffectRow, index: &brink_ir::SymbolIndex) -> Self {
+        let name_of = |id: &brink_format::DefinitionId| {
+            index
+                .symbols
+                .get(id)
+                .map_or_else(|| format!("{id:?}"), |info| info.name.clone())
+        };
+        Self {
+            reads: row.reads.iter().map(name_of).collect(),
+            writes: row.writes.iter().map(name_of).collect(),
+            calls: row.calls.iter().cloned().collect(),
+            opaque: row.opaque,
+        }
+    }
+}
+
+/// Every knot/stitch's [`RowView`] in `project`, keyed by qualified name —
+/// the join key across two separately-compiled revisions (spec §10: "every
+/// knot/stitch ships its row").
+fn effect_rows_by_name(project: &Project) -> BTreeMap<String, RowView> {
+    let db = project.driver.db();
+    project
+        .analysis
+        .index
+        .symbols
+        .values()
+        .filter(|info| matches!(info.kind, SymbolKind::Knot | SymbolKind::Stitch))
+        .filter_map(|info| {
+            let row = db.effects(info.id)?;
+            Some((
+                info.name.clone(),
+                RowView::from_row(&row, &project.analysis.index),
+            ))
+        })
+        .collect()
+}
+
+/// One def's drift between two revisions — omitted entirely when nothing
+/// changed. `added`/`removed` cover the def not existing on one side (a new
+/// or deleted knot/stitch); `changed` covers a row present on both sides
+/// with different atoms.
+#[derive(serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum RowDrift {
+    Added { row: RowView },
+    Removed { row: RowView },
+    Changed { base: RowView, head: RowView },
+}
+
+fn diff_effect_rows(
+    base: &BTreeMap<String, RowView>,
+    head: &BTreeMap<String, RowView>,
+) -> BTreeMap<String, RowDrift> {
+    let mut out = BTreeMap::new();
+    for (name, head_row) in head {
+        match base.get(name) {
+            None => {
+                out.insert(
+                    name.clone(),
+                    RowDrift::Added {
+                        row: head_row.clone(),
+                    },
+                );
+            }
+            Some(base_row) if base_row != head_row => {
+                out.insert(
+                    name.clone(),
+                    RowDrift::Changed {
+                        base: base_row.clone(),
+                        head: head_row.clone(),
+                    },
+                );
+            }
+            Some(_) => {}
+        }
+    }
+    for (name, base_row) in base {
+        if !head.contains_key(name) {
+            out.insert(
+                name.clone(),
+                RowDrift::Removed {
+                    row: base_row.clone(),
+                },
+            );
+        }
+    }
+    out
+}
+
+/// Render one atom-set delta line (`+reads a, b` / `-writes c`), omitted
+/// when the two sides agree on that category. `opaque` renders as its own
+/// pseudo-atom since it isn't a member of any set.
+fn render_row_delta(out: &mut String, base: &RowView, head: &RowView) {
+    let delta = |label: &str,
+                 before: &std::collections::BTreeSet<String>,
+                 after: &std::collections::BTreeSet<String>,
+                 out: &mut String| {
+        let added: Vec<&str> = after.difference(before).map(String::as_str).collect();
+        let removed: Vec<&str> = before.difference(after).map(String::as_str).collect();
+        if !added.is_empty() {
+            let _ = writeln!(out, "    + {label} {}", added.join(", "));
+        }
+        if !removed.is_empty() {
+            let _ = writeln!(out, "    - {label} {}", removed.join(", "));
+        }
+    };
+    delta("reads", &base.reads, &head.reads, out);
+    delta("writes", &base.writes, &head.writes, out);
+    delta("calls", &base.calls, &head.calls, out);
+    if base.opaque != head.opaque {
+        let _ = writeln!(out, "    {} opaque", if head.opaque { "+" } else { "-" });
+    }
+}
+
+fn run_effects_diff(
+    base: &str,
+    head: Option<&str>,
+    opts: &EffectsDiffOpts,
+) -> Result<ExitCode, String> {
+    let base_project = Project::load_at_rev(&opts.entry, Some(base))?;
+    let head_project = Project::load_at_rev(&opts.entry, head)?;
+    let base_rows = effect_rows_by_name(&base_project);
+    let head_rows = effect_rows_by_name(&head_project);
+    let drift = diff_effect_rows(&base_rows, &head_rows);
+
+    let mut out = io::stdout().lock();
+    match opts.format {
+        Format::Json => {
+            writeln!(out, "{}", to_json(&drift)?).map_err(|e| e.to_string())?;
+        }
+        Format::Text => {
+            let head_label = head.unwrap_or("working tree");
+            for (name, d) in &drift {
+                match d {
+                    RowDrift::Added { row } => {
+                        let mut line = format!("+ {name}\n");
+                        render_row_delta(&mut line, &RowView::default(), row);
+                        write!(out, "{line}").map_err(|e| e.to_string())?;
+                    }
+                    RowDrift::Removed { row } => {
+                        let mut line = format!("- {name}\n");
+                        render_row_delta(&mut line, row, &RowView::default());
+                        write!(out, "{line}").map_err(|e| e.to_string())?;
+                    }
+                    RowDrift::Changed { base: b, head: h } => {
+                        let mut line = format!("~ {name}\n");
+                        render_row_delta(&mut line, b, h);
+                        write!(out, "{line}").map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+            if drift.is_empty() {
+                writeln!(out, "no effect-row drift: {base} vs. {head_label}")
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(if drift.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
 }
 
 // ── Output location ─────────────────────────────────────────────────
