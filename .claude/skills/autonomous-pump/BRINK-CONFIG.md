@@ -33,3 +33,13 @@ Fill pump.js's CONFIG from these when running the pump on this repo.
 - Agents must use ONLY the provided shared CARGO_TARGET_DIR or the worktree-local ./target (which dies with the worktree). NEVER mint variant /tmp cache dirs (pump-cargo-target-brink-issueN / -fuzz / -prN / verify-target-*) — they defeat boundary sweeps and accumulated 68G across three waves. If the shared cache misbehaves (stale sibling binaries, phantom errors), `cargo clean -p <crate>` it or fall back to ./target; never a third path.
 - Review agents needing to run code clone into the worktree they were given or /tmp/brink-review-<pr> and DELETE it before returning.
 - Boundary sweep checklist: worktrees (all completed waves) → /tmp/pump-* glob (not exact path) → /tmp/brink-* clones → shared cache if no wave imminent.
+
+## Durable communication (decision 2026-07-18: durable-by-default)
+- Pump agents post substantive outputs to GitHub as they work; workflow-internal messages orchestrate but are never the only record.
+- Reviewers ALWAYS comment their verdict on the PR (approvals included, with scope gaps). Build agents comment scope-overflow on their issue. Fix agents comment applied/skipped dispositions on the PR. Merge agents comment ONLY noteworthy events (conflict resolutions, semantic fixes) — clean merges stay silent.
+- Standing wave ledger: **issue #967** (`LEDGER = 967` in CONFIG) — the scope-reconcile agent appends one comment per wave (wave id, batch, landed/parked, lessons verbatim, scope assessment).
+- Labels: `pump:ledger` (the ledger issue), `pump:scope` (issues filed from scope reconciliation), `pump:lesson` (graduated house-rule issues).
+
+## Quiet-window measurement (decision 2026-07-17, night-shift rule)
+- Perf baselines / BH-B numbers are CANONICAL only from a SOLO run while nothing else executes on the machine (no wave, no sibling builds). Harness code and provisional in-wave numbers may land with their slice, labeled provisional; canonical numbers are re-collected in the inter-wave gap (wave completes → boundary sweep → solo measurement agent → commit baselines → next wave) and committed to crates/bevy-brink/benches/baselines/.
+- Measurement agents: gates may use the shared cache, but BENCH runs use the worktree-local target dir; record machine context (cores, thread-pool size, OS, rustc) in the baseline .md.
