@@ -64,10 +64,11 @@ language).
 ## Faults
 
 Plain ink is famous for tolerating a lot — a missing content path doesn't
-crash the story. Indexing breaks from that: out-of-bounds and missing-key
-access are **turn-terminating runtime faults**, not values that quietly
-become `null` or an empty result. Every one of these ends the current turn,
-the same way dividing by zero already does:
+crash the story. Indexing breaks from that: out-of-bounds access, and
+missing-key *reads*, are **turn-terminating runtime faults**, not values
+that quietly become `null` or an empty result. Every row below ends the
+current turn, the same way dividing by zero already does — except the
+map-write row, which inserts instead of faulting (see below):
 
 | Situation | What happens |
 |---|---|
