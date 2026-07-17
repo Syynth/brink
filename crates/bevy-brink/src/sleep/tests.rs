@@ -306,6 +306,35 @@ fn detect_summary_all_true_or_empty_is_detect_capable() {
     );
 }
 
+/// Review finding: `DetectSummary::default()` (what [`FlowSleep::new`] builds
+/// every policy with before an optional [`FlowSleep::with_detect`]) must match
+/// [`DetectSummary::from_bits`]'s vacuous-true semantics for an empty map — a
+/// derived `Default` would instead leave `all_detect_capable: false`, silently
+/// forcing every policy built without `.with_detect` onto the must-poll path
+/// (the opposite of the documented "no dependency → cheap path" default).
+#[test]
+fn detect_summary_default_matches_vacuous_true_from_bits() {
+    assert_eq!(
+        DetectSummary::default(),
+        DetectSummary::from_bits(std::collections::BTreeMap::new()),
+        "DetectSummary::default() must agree with from_bits(empty): both vacuously \
+         all-detect-capable"
+    );
+    assert!(
+        DetectSummary::default().all_detect_capable,
+        "a policy built without .with_detect must default to the cheap \
+         (all-detect-capable) path, not must-poll"
+    );
+
+    // The consumer that actually matters: FlowSleep::new goes through
+    // DetectSummary::default() (via persistent/once), never from_bits directly.
+    let sleep = FlowSleep::<()>::persistent("cond");
+    assert!(
+        sleep.dependencies_all_detect_capable(),
+        "a freshly built FlowSleep with no .with_detect must be all-detect-capable"
+    );
+}
+
 #[test]
 fn condition_truthiness_matches_ink_coercion() {
     assert!(is_condition_true(&Value::Bool(true)));

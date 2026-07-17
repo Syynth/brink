@@ -128,7 +128,7 @@ pub enum SleepState {
 /// (`#913`, ruled 2026-07-18). Built from the per-container AND-merged
 /// [`ContainerAccess::detect`](crate::ContainerAccess) map, or supplied
 /// directly by a host that knows its condition's dependencies.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetectSummary {
     /// The per-capability merged bits the summary was built from (kept for
     /// inspector visibility / debugging). Empty means the condition has no
@@ -139,6 +139,19 @@ pub struct DetectSummary {
     /// the re-evaluation cadence: `true` → re-evaluate only on a World change;
     /// `false` → poll every wake pass.
     pub all_detect_capable: bool,
+}
+
+impl Default for DetectSummary {
+    /// The no-external-dependency case: an empty `bits` map is vacuously
+    /// all-detect-capable (see [`DetectSummary::from_bits`]) — a condition
+    /// that reads only ink World state is always change-detection-backed via
+    /// `BrinkGlobals`. A derived `Default` would instead default
+    /// `all_detect_capable` to `false`, silently forcing every policy built
+    /// without an explicit [`FlowSleep::with_detect`] onto the must-poll path
+    /// (the exact defect this hand-written impl exists to prevent).
+    fn default() -> Self {
+        Self::from_bits(BTreeMap::new())
+    }
 }
 
 impl DetectSummary {
