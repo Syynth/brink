@@ -1231,6 +1231,49 @@ mod tests {
         );
     }
 
+    /// Issue #994: a dotted field read on a `Struct`-typed temp (`t.x`) must
+    /// not corrupt `t`'s own accumulated type with the field-read's usage
+    /// context. Before the fix, `infer::body::InferPass::observe` joined
+    /// `useInt`'s `int` param type into temp `t`'s own slot (the TM-4b
+    /// resolution fallback maps the whole dotted path's range to `t`'s
+    /// `DefinitionId` — no static field-type table exists yet, so `t.x` and
+    /// bare `t` were indistinguishable to `observe`), producing
+    /// `unify(Struct(Point), int) == Conflicted` and a spurious `E066` on
+    /// `t` even though `t` itself — a `Point` — is never actually misused.
+    #[test]
+    fn temp_headed_dotted_field_read_does_not_corrupt_the_temp_s_own_type() {
+        let src = "STRUCT Point = #{x: float}\n\
+                   === function useInt(n: int): int ===\n~ return n\n\
+                   === main ===\n~ temp t = Point#{x: 1.0}\n~ temp r = useInt(t.x)\n-> DONE\n";
+        let (hir, index, res) = build(src);
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            diags.iter().all(|d| d.code != DiagnosticCode::E066),
+            "a dotted field read must never Conflicted-escape its head temp: {diags:?}"
+        );
+    }
+
+    /// Control for the #994 fix above: the segment-count guard in `observe`
+    /// only exempts a *dotted* field read — a bare (single-segment) temp
+    /// whose own uses genuinely disagree must still Conflicted-escape.
+    #[test]
+    fn bare_temp_with_genuinely_conflicting_uses_still_escapes_as_conflicted() {
+        let src = "=== function useInt(n: int): int ===\n~ return n\n\
+                   === main ===\n~ temp t = \"hello\"\n~ temp r = useInt(t)\n-> DONE\n";
+        let (hir, index, res) = build(src);
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E066 && d.message.contains("temp `t`")),
+            "a bare temp with genuinely conflicting uses must still Conflicted-escape: {diags:?}"
+        );
+    }
+
     /// Before T1d-2b (issue #774), this exact cross-kind fixture was
     /// silently unreachable: `infer_project`/`solve_scc` had no manifest
     /// seam, so `handle<K>` return annotations never resolved during body
