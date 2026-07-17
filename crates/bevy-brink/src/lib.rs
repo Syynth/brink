@@ -39,6 +39,8 @@ mod capability;
 mod event;
 mod flow;
 mod globals;
+#[cfg(feature = "effect-trace")]
+mod ground_truth;
 mod handle;
 mod input;
 mod line_tables;
@@ -134,6 +136,8 @@ pub use globals::{
     BrinkContext, BrinkGlobals, BrinkWorldPolicy, flow_context_view, load_flow_state,
     save_flow_state,
 };
+#[cfg(feature = "effect-trace")]
+pub use ground_truth::{AccessKind, GroundTruthLog, ObservedAccess, Violation, check};
 pub use handle::{
     BrinkDeadHandleDeref, BrinkHandleAppExt, HandleEntityRemap, HandleKind, HandleKinds,
     HandleLoadError, HandleRegistry, HandleRetentionMetrics, HandleSaveEntry, HandleSaveState,

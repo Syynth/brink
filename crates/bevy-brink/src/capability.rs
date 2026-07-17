@@ -409,6 +409,21 @@ impl<M: Send + Sync + 'static> CapabilityTable<M> {
     pub fn access_for(&self, id: AssetId<ProgramAsset>) -> Option<&ContainerAccessTable> {
         self.per_story.get(&id)?.as_ref().ok()
     }
+
+    /// Test-only constructor bypassing the load/unload boundary system
+    /// (`rebuild_capability_table`) — lets a unit test (`crate::ground_truth`'s,
+    /// the only caller) exercise [`CapabilityTable::access_for`] against a
+    /// hand-built join result without spinning up a full `App`/`ProgramAsset`
+    /// load cycle. Gated on `effect-trace` too (not just `test`) since that's
+    /// the only feature combination that compiles a caller.
+    #[cfg(all(test, feature = "effect-trace"))]
+    pub(crate) fn insert_for_test(
+        &mut self,
+        id: AssetId<ProgramAsset>,
+        result: Result<ContainerAccessTable, CapabilityError>,
+    ) {
+        self.per_story.insert(id, result);
+    }
 }
 
 /// Plugin-managed system: rebuild a loaded story's [`ContainerAccess`] table

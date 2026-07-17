@@ -53,6 +53,19 @@ dev = ["dep:brink-compiler", "dep:brink-syntax"]
 # `docs/runtime-bench.md`). Off by default — compile-time cut, not a
 # runtime toggle. Used by `benches/scenario_bench.rs` (issue #900).
 bench-counters = ["brink-runtime/bench-counters"]
+# Host-side ground-truth check (issue #938, the effect-trace pattern applied
+# to the bevy boundary — see `crates/bevy-brink/src/ground_truth.rs`'s module
+# docs). Off by default, exactly like `brink-runtime`'s own `effect-trace`
+# feature (`crates/brink-runtime/src/effect_trace.rs`): an ordinary build
+# pays exactly zero cost. When enabled, `bind_brink_query` captures each
+# binding's real bevy-declared `Access` at registration time and every
+# actual dispatch is recorded so a test/harness can assert it stays a subset
+# of BH-1's manifest-declared row-join (`crates/bevy-brink/src/capability.rs`)
+# — no `unsafe`, wraps the existing safe query-dispatch call site. Pulls in
+# `bevy_ecs/debug` so `Components::get_name` resolves a real Rust type name
+# for a violation's offending component instead of a placeholder string —
+# required for this feature's own "name the component" acceptance bar.
+effect-trace = ["bevy_ecs/debug"]
 
 [dev-dependencies]
 # The `play_story` example uses the bevy umbrella crate for windowing,

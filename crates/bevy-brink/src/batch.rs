@@ -331,8 +331,11 @@ pub(crate) fn step_one<M: Send + Sync + 'static>(
 /// Fold a story's whole [`ContainerAccessTable`] into one aggregate
 /// [`Access`] — the conservative "what could any container of this flow's
 /// story touch" set. BH-2 records this per flow; BH-3 narrows it to the
-/// flow's currently-parked container.
-fn aggregate_access(table: &ContainerAccessTable) -> Access {
+/// flow's currently-parked container. `pub(crate)` so the host-side
+/// ground-truth check (#938, `crate::ground_truth`) can compare a real
+/// dispatch's observed access against the same declared aggregate BH-2/BH-3
+/// already consume, rather than reimplementing the fold.
+pub(crate) fn aggregate_access(table: &ContainerAccessTable) -> Access {
     let mut acc = Access::default();
     for container in table.values() {
         acc.extend(&container.access);
