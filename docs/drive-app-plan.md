@@ -108,3 +108,30 @@ the friction it generates is #827's evidence.
   items, 1 bounty.
 - Friction journal: `drive-it` label (create at build time); one
   issue per finding, cross-ref the charter it feeds.
+
+## 9. Phasing — RULED 2026-07-18 (pure-bevy first, migrate to ink)
+
+- **Phase 0 — pure-bevy Compound** (dispatchable immediately, no
+  brink APIs): all behavior in Rust — guards as enum FSMs, cameras,
+  doors, alarm, spawner, rats, rounds + shop (bevy_ui), stats/combat.
+  The **control group**: baseline LOC, authoring shape, and
+  µs-per-entity numbers. Ends in an early low-stakes drive session
+  to tune game feel before any API is on the line.
+- **Phase 1 — entity-by-entity migration** (after BH-4 #973 +
+  FS-3w #978): each entity's move to ink is one friction-journal
+  entry + a measured delta (LOC, feel, cost). The same guard written
+  as Rust-enum FSM → ink knots → (future) #905 FSM syntax is the
+  charter's three-column evidence.
+- **Mixed world is the END STATE, not a phase**: both archetypes
+  stay spawnable side-by-side (rust-guards vs ink-guards keybinds) —
+  500 of each in one frame gives adopters the number they always
+  ask for (scripting-layer cost over native), and the demo doubles
+  as the incremental-adoption story real bevy games follow.
+- **CI constraint**: the demo must NOT inflate required CI (full
+  bevy rendering stack). It lives as a **workspace-excluded crate**
+  (`demos/compound/`, path-deps on the brink crates) rather than an
+  example dir — built locally, not by --all-targets/--all-features
+  jobs. Bit-rot guard: an optional manual/scheduled CI job may come
+  later. (Amends §8's examples/ placement — the API-honesty check
+  moves to Phase 1's migration diffs, which are better evidence
+  anyway.)
