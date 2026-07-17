@@ -1,0 +1,78 @@
+(story checksum=0x1862906e
+
+  (name_table
+    0 ""
+    1 "f"
+  )
+
+  (addresses
+    (address $01_406ea523c53def -> $01_406ea523c53def +0)
+    (address $01_8545a52d27ff4d -> $01_8545a52d27ff4d +0)
+    (address $01_5bc8457c28ed91 -> $01_5bc8457c28ed91 +0)
+    (address $01_2cf1477cf7282a -> $01_2cf1477cf7282a +0)
+  )
+
+  (address_paths
+    (path 0 -> $01_406ea523c53def)
+    (path 1 -> $01_5bc8457c28ed91)
+  )
+
+  (effect_rows
+    (row $01_5bc8457c28ed91
+      (reads)
+      (writes)
+      (calls)
+    )
+  )
+
+  (container $01_406ea523c53def
+    (name 0)
+    (lines
+      0 "A line." @c9e9ce127cd3e9fe (source "tests/tier1/glue/I046-left-right-glue-matching/story.ink" 0..8)
+      1 "Another line." @d4076abcb360a963
+    )
+    (code
+      emit_line 0 0
+      emit_newline
+      call $01_5bc8457c28ed91
+      jump_if_false 9
+      enter_container $01_8545a52d27ff4d
+      emit_newline
+      done
+    )
+  )
+
+  (container $01_8545a52d27ff4d
+    (scope $01_406ea523c53def)
+    (path_hash 48)
+    (code
+      emit_newline
+      emit_line 1 0
+      emit_newline
+    )
+  )
+
+  (container $01_5bc8457c28ed91
+    (name 1)
+    (path_hash 102)
+    (lines
+      0 "nothing" @c8b559707abcb912
+    )
+    (code
+      push_bool false
+      jump_if_false 9
+      enter_container $01_2cf1477cf7282a
+      push_bool true
+      return
+    )
+  )
+
+  (container $01_2cf1477cf7282a
+    (scope $01_5bc8457c28ed91)
+    (path_hash 196)
+    (code
+      emit_line 0 0
+      emit_newline
+    )
+  )
+)
