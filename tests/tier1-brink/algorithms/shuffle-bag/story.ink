@@ -73,7 +73,7 @@ VAR pulls = #[]
     }
 }
 
-Bag size: {BAG_SIZE}. 15 pulls (refills mid-sequence once): {pulls}.
+Bag size: {BAG_SIZE}. 15 pulls (refills mid-sequence twice): {pulls}.
 -> END
 
 // Fresh full bag, one of each piece, then Fisher–Yates shuffle in place —

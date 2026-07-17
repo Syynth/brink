@@ -1,1 +1,1 @@
-Bag size: 7. 15 pulls (refills mid-sequence once): [L, J, T, S, Z, O, I, O, Z, J, L, S, I, T, Z].
+Bag size: 7. 15 pulls (refills mid-sequence twice): [L, J, T, S, Z, O, I, O, Z, J, L, S, I, T, Z].
