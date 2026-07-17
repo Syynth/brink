@@ -216,12 +216,18 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
     }
 }
 
-/// Unwrap a ref-argument expression down to its root path (T1e,
-/// docs/t1e-spec.md §2), mirroring `brink_ir::lir::lower::expr`'s
-/// `decompose_projection` walk: an explicit `ref` sigil, a dotted
-/// field-access chain, and an index expression all peel away to the same
-/// root `Expr` a plain unmarked `ref` argument already is — the location
-/// whose cell is actually mutated.
+/// Unwrap a write-target expression down to its root path — an explicit
+/// `ref` sigil (T1e, docs/t1e-spec.md §2), a dotted field-access chain, and
+/// an index expression all peel away to the same root `Expr` a plain
+/// unmarked `ref` argument already is, mirroring `brink_ir::lir::lower::
+/// expr`'s `decompose_projection` walk. Two call sites rely on this same
+/// unwrapping: a `ref` call-site argument (`record_ref_param_writes`) and a
+/// plain assignment target (`record_write`) — `~ arr[i] = v` and
+/// `~ memo[k] = v` write through the *root* container's cell exactly like
+/// `writeback_lvalue_container_chain`'s codegen does (issue #880's audit of
+/// the #856 map-insert-on-assign path: the same silent-drop class as the
+/// ref-param write bug, just on the plain-assignment path instead of the
+/// call-site path).
 fn ref_arg_root(expr: &Expr) -> &Expr {
     match expr {
         Expr::RefArg(ra) => ref_arg_root(&ra.operand),
@@ -345,14 +351,23 @@ impl InferPass<'_, '_> {
         }
     }
 
-    /// T2-1: record an effect *write* atom (docs/effects-spec.md §2) — a bare
-    /// assignment target (`~ x = …`) resolving to a VAR/CONST global. A
-    /// no-op for a temp/param target (flow-private, spec §2) or any
-    /// non-`Path` target. Over-reporting the same id as a read too (the
+    /// T2-1: record an effect *write* atom (docs/effects-spec.md §2) — an
+    /// assignment target (`~ x = …`) resolving to a VAR/CONST global. `target`
+    /// is unwrapped to its root via `ref_arg_root` first (issue #880's
+    /// audit): `~ arr[i] = v` and `~ memo[newKey] = v` (the #856
+    /// insert-on-assign path) write through the *container's* cell, not
+    /// through some cell named by the index expression itself, exactly like
+    /// `writeback_lvalue_container_chain`'s codegen — recording only bare
+    /// `Expr::Path` targets silently dropped every indexed-assignment write
+    /// to a global (the same silent-drop shape as the ref-param write bug,
+    /// #866). A no-op for a temp/param root (flow-private, spec §2) or any
+    /// non-`Path` root. Over-reporting the same id as a read too (the
     /// existing `~ x = x + 1` walk records it in `referenced_globals`) is
     /// conservatively sound — the row never under-reports (spec §3).
     fn record_write(&mut self, target: &Expr) {
-        let Expr::Path(p) = target else { return };
+        let Expr::Path(p) = ref_arg_root(target) else {
+            return;
+        };
         let Some(def) = self.resolve(p.range) else {
             return;
         };
@@ -883,9 +898,31 @@ impl InferPass<'_, '_> {
                 }
                 Ty::Bool
             }
+            // `push`/`insert`/`remove` (T1b stdlib slice 1 mutators,
+            // docs/t1b-surface-spec.md §5) all write back through their
+            // lvalue first argument at the call site — the same
+            // codegen-observed `writeback_lvalue_container_chain` RMW
+            // (`brink-ir::lir::lower::blocks::try_lower_mutator_stmt`) a
+            // plain indexed assignment uses. Issue #880 (the #870
+            // ground-truth harness's first catch, after #866's ref-param
+            // class): `effects()`'s atom walk had no case for a mutator
+            // *call* at all, so the write to the container's root cell was
+            // silently missing from the row even though the bytecode really
+            // performs it. Recorded here, at the call site, the same place
+            // `record_ref_param_writes` records a `ref` parameter's write —
+            // "the intrinsics' effect behavior is declared at introduction
+            // per the facility doctrine" (this IS their row). `record_write`
+            // unwraps the lvalue (a bare path or an arbitrarily nested
+            // index chain, `is_lvalue_expr`'s domain) down to its root
+            // itself, so a chained lvalue (`push(grid[y], v)`) still
+            // attributes the write to `grid`, not to some cell named by the
+            // index expression.
             "push" => {
                 if let (Some(Ty::Array(elem)), Some(item)) = (arg_tys.first(), args.get(1)) {
                     self.observe(item, elem);
+                }
+                if let Some(container) = args.first() {
+                    self.record_write(container);
                 }
                 Ty::Unknown
             }
@@ -896,6 +933,9 @@ impl InferPass<'_, '_> {
                     self.observe(key_arg, k);
                     self.observe(val_arg, v);
                 }
+                if let Some(container) = args.first() {
+                    self.record_write(container);
+                }
                 Ty::Unknown
             }
             "remove" => {
@@ -905,6 +945,9 @@ impl InferPass<'_, '_> {
                         Some(Ty::Map(k, _)) => self.observe(item, k),
                         _ => {}
                     }
+                }
+                if let Some(container) = args.first() {
+                    self.record_write(container);
                 }
                 Ty::Unknown
             }

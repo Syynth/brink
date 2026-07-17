@@ -121,6 +121,136 @@ fn effects_query_writes_through_a_ref_param_at_the_call_site() {
 }
 
 #[test]
+fn effects_query_writes_through_an_indexed_assignment_target() {
+    // Issue #880's audit of the #856 map-insert-on-assign path: `record_
+    // write` used to only recognize a bare `Expr::Path` target, silently
+    // dropping the write for any indexed assignment (`arr[i] = v`,
+    // `memo[newKey] = v`) to a global — the same silent-drop class as the
+    // #866 ref-param bug, just on the plain-assignment path.
+    let mut db = ProjectDb::new();
+    db.set_file(
+        "main.ink",
+        "VAR arr = #[1, 2, 3]\n\
+         === function bump(i, v) ===\n~ arr[i] = v\n"
+            .to_owned(),
+    );
+    let bump = def_named(&db, "bump");
+    let arr = def_named(&db, "arr");
+    let row = db.effects(bump).expect("bump has an inferable effect row");
+    assert!(
+        row.writes.contains(&arr),
+        "bump's `arr[i] = v` writes arr through indexed assignment"
+    );
+}
+
+#[test]
+fn effects_query_writes_through_a_nested_indexed_assignment_target() {
+    // The nested-chain shape (`grid[y][x] = v`) — `ref_arg_root` must walk
+    // through an arbitrary number of `Expr::Index` layers down to the root
+    // path, not just one level.
+    let mut db = ProjectDb::new();
+    db.set_file(
+        "main.ink",
+        "VAR grid = #[#[1, 2], #[3, 4]]\n\
+         === function set_cell(y, x, v) ===\n~ grid[y][x] = v\n"
+            .to_owned(),
+    );
+    let set_cell = def_named(&db, "set_cell");
+    let grid = def_named(&db, "grid");
+    let row = db
+        .effects(set_cell)
+        .expect("set_cell has an inferable effect row");
+    assert!(
+        row.writes.contains(&grid),
+        "set_cell's `grid[y][x] = v` writes grid through a nested index chain"
+    );
+}
+
+#[test]
+fn effects_query_writes_through_the_insert_mutator_at_the_call_site() {
+    // Issue #880's core ask: `insert(memo, key, val)` writes back through
+    // its lvalue first argument — the same shape the three
+    // KNOWN_MUTATOR_WRITE_GAP_CASES corpus fixtures hit
+    // (crates/internal/brink-test-harness/tests/t2_ground_truth_effects.rs).
+    let mut db = ProjectDb::new();
+    db.set_file(
+        "main.ink",
+        "VAR memo = #{}\n\
+         === function memoize(k, v) ===\n~ insert(memo, k, v)\n"
+            .to_owned(),
+    );
+    let memoize = def_named(&db, "memoize");
+    let memo = def_named(&db, "memo");
+    let row = db
+        .effects(memoize)
+        .expect("memoize has an inferable effect row");
+    assert!(
+        row.writes.contains(&memo),
+        "memoize's `insert(memo, k, v)` writes memo through the mutator's lvalue arg"
+    );
+}
+
+#[test]
+fn effects_query_writes_through_the_push_mutator_at_the_call_site() {
+    let mut db = ProjectDb::new();
+    db.set_file(
+        "main.ink",
+        "VAR items = #[]\n\
+         === function add(v) ===\n~ push(items, v)\n"
+            .to_owned(),
+    );
+    let add = def_named(&db, "add");
+    let items = def_named(&db, "items");
+    let row = db.effects(add).expect("add has an inferable effect row");
+    assert!(
+        row.writes.contains(&items),
+        "add's `push(items, v)` writes items through the mutator's lvalue arg"
+    );
+}
+
+#[test]
+fn effects_query_writes_through_the_remove_mutator_at_the_call_site() {
+    let mut db = ProjectDb::new();
+    db.set_file(
+        "main.ink",
+        "VAR items = #[1, 2, 3]\n\
+         === function drop(k) ===\n~ remove(items, k)\n"
+            .to_owned(),
+    );
+    let drop_fn = def_named(&db, "drop");
+    let items = def_named(&db, "items");
+    let row = db
+        .effects(drop_fn)
+        .expect("drop has an inferable effect row");
+    assert!(
+        row.writes.contains(&items),
+        "drop's `remove(items, k)` writes items through the mutator's lvalue arg"
+    );
+}
+
+#[test]
+fn effects_query_char_at_is_pure_no_write_recorded() {
+    // Issue #880's audit explicitly names `char_at` as pure (no write) —
+    // it must never gain a spurious write atom.
+    let mut db = ProjectDb::new();
+    db.set_file(
+        "main.ink",
+        "VAR s = \"hello\"\n\
+         === function first(i) ===\n~ temp c = char_at(s, i)\n~ return c\n"
+            .to_owned(),
+    );
+    let first = def_named(&db, "first");
+    let s = def_named(&db, "s");
+    let row = db
+        .effects(first)
+        .expect("first has an inferable effect row");
+    assert!(
+        !row.writes.contains(&s),
+        "char_at is pure — it must never record a write to its argument"
+    );
+}
+
+#[test]
 fn effects_query_is_none_for_a_non_callable_def() {
     let mut db = ProjectDb::new();
     db.set_file("main.ink", "VAR gold = 10\n-> DONE\n".to_owned());

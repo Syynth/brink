@@ -158,36 +158,23 @@ fn assert_ground_truth(
     }
 }
 
-/// Known, pre-existing gap this harness *discovered* while building it
-/// (issue #870's own job: an independent ground-truth check finding what a
-/// purely structural test cannot) — **out of #870's fence, tracked
-/// separately, not fixed here**: `insert(cell, key, val)`/`push`/`remove`
-/// (the T1b-3 stdlib mutators, `docs/t1b-surface-spec.md` §5) write their
-/// first (lvalue) argument back through the *same* codegen path a normal
-/// assignment uses (`brink-ir`'s `writeback_lvalue_container_chain`) — a
-/// real `SetGlobal`, correctly observed here — but `brink-analyzer::infer::
-/// body`'s effect harvester has no `record_write` case for a mutator
-/// *statement* at all (only `Stmt::Assignment`'s target and a `ref`
-/// parameter's call-site argument feed `record_write`/
-/// `record_ref_param_writes`). Every case below memoizes into a
-/// module-level `VAR`/`#@local VAR` map via `insert(memo, key, v)`, so the
-/// module's own `effects(def)` row silently omits `memo` from `writes` —
-/// a second, independent under-report class from the ref-param one this
-/// issue is named for, same silent-drop shape (`CLAUDE.md`'s "silent drops
-/// are always bugs" rule), same fence discipline: flagged, not fixed,
-/// pending its own RCA + plan-mode approval (`CLAUDE.md`'s compiler
-/// workflow — no production fix ships without that). Skipping only the
-/// `writes` assertion, only for these three, keeps the harness honest
-/// about the one known gap while still fully exercising (and asserting
-/// on) every other def/atom in every other corpus case, including these
-/// three's own `reads`/`calls`.
-const KNOWN_MUTATOR_WRITE_GAP_CASES: &[&str] = &[
-    "knapsack-01",
-    "longest-common-subsequence",
-    "memoized-fibonacci",
-];
-
 /// Ground-truth one `tests/tier1-brink/<name>/story.ink` case.
+///
+/// Formerly skipped `knapsack-01`/`longest-common-subsequence`/
+/// `memoized-fibonacci`'s `writes` assertion via a `KNOWN_MUTATOR_WRITE_GAP_
+/// CASES` list — the gap this harness *discovered* while being built (issue
+/// #870's own job): `insert(cell, key, val)`/`push`/`remove` (the T1b-3
+/// stdlib mutators, `docs/t1b-surface-spec.md` §5) write their first
+/// (lvalue) argument back through the *same* codegen path a normal
+/// assignment uses (`brink-ir`'s `writeback_lvalue_container_chain`), but
+/// `brink-analyzer::infer::body`'s effect harvester had no `record_write`
+/// case for a mutator *call* at all. Fixed by issue #880 (`infer_intrinsic`'s
+/// `push`/`insert`/`remove` arms now call `record_write` against the lvalue
+/// argument, the same call-site pattern `record_ref_param_writes` uses for a
+/// `ref` parameter) — the skip list and its canary
+/// (`known_mutator_write_gap_cases_still_actually_have_the_gap`) are removed
+/// per the unskip protocol; the three cases now run the full, unfiltered
+/// ground-truth check like every other corpus case.
 fn check_corpus_case(dir: &Path) {
     let ink_path = dir.join("story.ink");
     let entry = ink_path.to_string_lossy().into_owned();
@@ -196,15 +183,7 @@ fn check_corpus_case(dir: &Path) {
         ..AnalysisOptions::default()
     };
     let db = build_db(&entry, |p| std::fs::read_to_string(p), options);
-    let mut observed = observe(&entry, &db);
-
-    let case_name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    if KNOWN_MUTATOR_WRITE_GAP_CASES.contains(&case_name) {
-        for row in observed.values_mut() {
-            row.writes.clear();
-        }
-    }
-
+    let observed = observe(&entry, &db);
     assert_ground_truth(&entry, &db, &observed);
 }
 
@@ -258,18 +237,20 @@ fn tier1_brink_corpus_never_under_reports_effects() {
     }
 }
 
-/// Canary for [`KNOWN_MUTATOR_WRITE_GAP_CASES`]: proves the *unfiltered*
-/// ground-truth check still actually fails for every listed case. Without
-/// this, a future fix to the stdlib-mutator-write gap would leave the
-/// skip-list silently stale forever — `tier1_brink_corpus_never_under_
-/// reports_effects` would keep passing (it never sees the now-fixed
-/// `writes` atom because this test filters it out), masking that the
-/// exclusion is no longer needed. If this test starts failing, the
-/// underlying gap is fixed — shrink `KNOWN_MUTATOR_WRITE_GAP_CASES`
-/// accordingly rather than silencing this test too.
+/// Regression pin for issue #880: the three cases that used to need
+/// `KNOWN_MUTATOR_WRITE_GAP_CASES` now ground-truth cleanly through the
+/// normal, unfiltered corpus walk (`tier1_brink_corpus_never_under_reports_
+/// effects` above already covers this — every `tests/tier1-brink/algorithms`
+/// case is discovered and walked — but this test names the three explicitly
+/// so a future regression on this exact class fails with their names in the
+/// test name, not buried in the corpus walk's generic assertion).
 #[test]
-fn known_mutator_write_gap_cases_still_actually_have_the_gap() {
-    for name in KNOWN_MUTATOR_WRITE_GAP_CASES {
+fn formerly_known_mutator_write_gap_cases_now_ground_truth_cleanly() {
+    for name in [
+        "knapsack-01",
+        "longest-common-subsequence",
+        "memoized-fibonacci",
+    ] {
         let dir = corpus_dir().join("algorithms").join(name);
         let ink_path = dir.join("story.ink");
         let entry = ink_path.to_string_lossy().into_owned();
@@ -279,15 +260,7 @@ fn known_mutator_write_gap_cases_still_actually_have_the_gap() {
         };
         let db = build_db(&entry, |p| std::fs::read_to_string(p), options);
         let observed = observe(&entry, &db);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            assert_ground_truth(&entry, &db, &observed);
-        }));
-        assert!(
-            result.is_err(),
-            "{name}: expected the unfiltered ground-truth check to still \
-             fail on the known mutator-write gap — if it now passes, the \
-             gap is fixed; remove `{name}` from `KNOWN_MUTATOR_WRITE_GAP_CASES`"
-        );
+        assert_ground_truth(&entry, &db, &observed);
     }
 }
 
