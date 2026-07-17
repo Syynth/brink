@@ -11,8 +11,9 @@
 //! through `serde_json`, which has no such restriction.
 
 use brink_format::{
-    ClosureEnvEntry, DefinitionId, DefinitionTag, MapKey, NameId, OrderedMap,
-    SUSPENDED_FLOW_SECTION_VERSION, ShapeId, SuspendedFlow, Value, WakePolicy, WakeSource,
+    ClosureEnvEntry, DefinitionId, DefinitionTag, ListValue, MapKey, NameId, OrderedMap,
+    ProjSegment, SUSPENDED_FLOW_SECTION_VERSION, ShapeId, SuspendedFlow, Value, WakePolicy,
+    WakeSource,
 };
 use proptest::prelude::*;
 
@@ -59,12 +60,33 @@ fn arb_closure_env_entry() -> impl Strategy<Value = ClosureEnvEntry> {
     )
 }
 
+/// One `Value::Projection` path segment: `Index` (a leaf `i32`) or `Key`
+/// (nests an arbitrary `Value` — a non-`Int` map key or a struct field name),
+/// mirroring `proptest_inkt.rs`'s `arb_proj_segment`.
+fn arb_proj_segment(
+    inner: impl Strategy<Value = Value> + Clone,
+) -> impl Strategy<Value = ProjSegment> {
+    prop_oneof![
+        any::<i32>().prop_map(ProjSegment::Index),
+        inner.prop_map(ProjSegment::Key),
+    ]
+}
+
 fn arb_value_leaf() -> impl Strategy<Value = Value> {
     prop_oneof![
         any::<i32>().prop_map(Value::Int),
         any::<f32>().prop_map(Value::Float),
         any::<bool>().prop_map(Value::Bool),
         ".*".prop_map(|s: String| Value::String(s.into())),
+        // List values (#746: this generator once omitted `List` entirely —
+        // the exact "generator-coverage gap" class #667 tracks — so every
+        // `Value` variant must be reachable from `arb_value_full`, this one
+        // included).
+        (
+            prop::collection::vec(arb_def_id(), 0..3),
+            prop::collection::vec(arb_def_id(), 0..3),
+        )
+            .prop_map(|(items, origins)| Value::List(ListValue { items, origins }.into())),
         arb_def_id().prop_map(Value::DivertTarget),
         arb_def_id().prop_map(Value::VariablePointer),
         Just(Value::Null),
@@ -139,8 +161,48 @@ pub fn arb_value_full() -> impl Strategy<Value = Value> {
                 }
                 Value::map(map)
             }),
-            (any::<u32>(), prop::collection::vec(inner, 0..4))
+            (any::<u32>(), prop::collection::vec(inner.clone(), 0..4))
                 .prop_map(|(shape, fields)| Value::record(ShapeId(shape), fields)),
+            // Projection values (T1e, docs/t1e-spec.md §3): the other #667
+            // gap in this generator — `arb_value_full`'s doc claims "every
+            // `Value` variant" but `Projection` was absent until now.
+            (
+                arb_def_id(),
+                prop::collection::vec(arb_proj_segment(inner), 0..3),
+            )
+                .prop_map(|(cell, segments)| Value::projection(cell, segments)),
         ]
     })
+}
+
+/// Structural exhaustiveness guard (issue #667, mirroring the identical guard
+/// `proptest_inkt.rs` added for #883/#397): a match over every current
+/// [`Value`] variant with **no wildcard arm**, so this fails to compile the
+/// moment a new variant is added to the enum. Never called — the only
+/// purpose is the compile-time forcing function: whoever adds a `Value`
+/// variant must also add an arm here, and teach `arb_value_leaf`/
+/// `arb_value_full` above to generate it, instead of the new variant silently
+/// escaping the `SaveState`/`SuspendedFlow` round-trip laws this module feeds
+/// the way `List` (#746) and `Projection` (this PR) both did.
+#[expect(dead_code, reason = "compile-time-only exhaustiveness guard, see doc")]
+fn assert_value_variants_exhaustive(value: &Value) {
+    match value {
+        Value::Int(_)
+        | Value::Float(_)
+        | Value::Bool(_)
+        | Value::String(_)
+        | Value::List(_)
+        | Value::DivertTarget(_)
+        | Value::VariablePointer(_)
+        | Value::TempPointer { .. }
+        | Value::Null
+        | Value::FragmentRef(_)
+        | Value::Array(_)
+        | Value::Map(_)
+        | Value::Record { .. }
+        | Value::FnRef(_)
+        | Value::Closure(_)
+        | Value::Handle { .. }
+        | Value::Projection(_) => {}
+    }
 }
