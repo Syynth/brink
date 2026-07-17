@@ -8,6 +8,19 @@
 //! [`update_suspicion`]) that the ink port can diff against line-for-line. The
 //! Bevy system is a thin shell that gathers inputs, calls the pure logic, and
 //! applies movement.
+//!
+//! #1010 ("guards rapidly teleport") root-caused to two things: (1)
+//! reinforcement waves popped a fully-active guard into existence mid-round
+//! with no warning, which reads as a teleport even though it is really an
+//! instant spawn; and (2) movement/suspicion used the raw frame `dt`
+//! uncapped, so any hitch (spawning a rat batch, a round transition, a slow
+//! debug-build frame) let a guard cover an oversized distance in one frame.
+//! Every other transform write in this module was already spawn-time-only and
+//! every state's movement target was already persisted (patrol waypoint,
+//! `last_seen`, or home post) rather than re-picked per frame, so those two
+//! hypotheses were ruled out by inspection. The fix: clamp the per-frame `dt`
+//! ([`clamp_step_dt`]), and telegraph reinforcement spawns with a brief
+//! freeze + pulsing marker ([`SpawnTelegraph`]) before they join the sim.
 
 use bevy::prelude::*;
 use std::time::Instant;
@@ -34,6 +47,19 @@ const SUSPICION_DECAY: f32 = 40.0; // per second while unseen
 const MAX_REINFORCEMENTS: u32 = 8;
 const REINFORCE_INTERVAL: f32 = 3.0;
 const REINFORCE_ENTRY: Vec2 = Vec2::new(540.0, -270.0);
+
+/// How long a freshly spawned reinforcement guard sits still with a pulsing
+/// marker before joining the sim (#1010). Turns an instant pop-in into a
+/// telegraphed arrival instead of something that reads as a teleport.
+const SPAWN_TELEGRAPH_SECS: f32 = 0.6;
+
+/// Upper bound on the `dt` used for guard movement/suspicion in a single
+/// frame (#1010). Bevy's own `Time<Virtual>` already clamps to 250ms, but
+/// that is still enough for a fast guard to visibly jump during a hitch
+/// (spawning rats, a round transition, a slow debug frame); clamping tighter
+/// here keeps every guard's motion continuous no matter how long a frame
+/// takes.
+const MAX_STEP_DT: f32 = 1.0 / 20.0;
 
 /// Patrol anchor points scattered around the arena.
 const POSTS: [Vec2; 6] = [
@@ -87,6 +113,22 @@ impl Guard {
     }
 }
 
+/// Marks a guard mid-telegraph: spawned, but frozen and excluded from
+/// [`guard_ai_system`] until the timer finishes (#1010). Rendered as a
+/// pulsing warning ring by [`spawn_telegraph_system`].
+#[derive(Component, Debug)]
+pub struct SpawnTelegraph {
+    timer: Timer,
+}
+
+impl SpawnTelegraph {
+    fn new() -> Self {
+        Self {
+            timer: Timer::from_seconds(SPAWN_TELEGRAPH_SECS, TimerMode::Once),
+        }
+    }
+}
+
 /// Reinforcement wave bookkeeping. Reset each round.
 #[derive(Resource, Debug)]
 pub struct ReinforcementSpawner {
@@ -104,6 +146,14 @@ impl Default for ReinforcementSpawner {
 }
 
 // --- Pure logic (unit-tested) ----------------------------------------------
+
+/// Cap a frame's delta-time so a single slow frame can never move (or
+/// suspicion-spike) a guard far enough to read as a teleport (#1010). Under
+/// normal framerates this is a no-op; it only bites during a hitch.
+#[must_use]
+pub fn clamp_step_dt(dt: f32) -> f32 {
+    dt.min(MAX_STEP_DT)
+}
 
 /// Integrate the suspicion meter for one tick.
 #[must_use]
@@ -170,13 +220,20 @@ pub fn guard_transition(
     }
 }
 
-/// Base movement speed for a state, before the alarm bonus.
+/// Base movement speed for a state, before the alarm bonus. Tuned against the
+/// player's baseline `move_speed` (260 units/s, `stats.rs`): patrol/suspicious
+/// stay well under it (calm oversight, cautious creep) and search is brisk
+/// but outrunnable. Alert sits just under the player at base, and the alarm
+/// `tier_speed_bonus` (up to 1.6x) carries it slightly past the player at
+/// high alarm (tier 2: 280, tier 3: 320) — so a chase is escapable early and
+/// becomes genuinely dangerous as the compound wakes up, without ever being
+/// so hot that the motion stops reading as continuous (#1010).
 fn state_speed(state: GuardState) -> f32 {
     match state {
-        GuardState::Patrol => 70.0,
-        GuardState::Suspicious => 60.0,
-        GuardState::Alert => 150.0,
-        GuardState::Search => 95.0,
+        GuardState::Patrol => 80.0,
+        GuardState::Suspicious => 70.0,
+        GuardState::Alert => 200.0,
+        GuardState::Search => 130.0,
         GuardState::ReturnToPost => 110.0,
     }
 }
@@ -190,13 +247,19 @@ pub fn guard_ai_system(
     alarm: Res<Alarm>,
     loadout: Res<Loadout>,
     player: Query<(&Transform, &PlayerStats), With<Player>>,
-    mut guards: Query<(&mut Transform, &mut Guard, &mut Sprite), Without<Player>>,
+    mut guards: Query<
+        (&mut Transform, &mut Guard, &mut Sprite),
+        (Without<Player>, Without<SpawnTelegraph>),
+    >,
     mut spotted: MessageWriter<SpottedEvent>,
     mut caught: MessageWriter<PlayerCaught>,
     mut timings: ResMut<BehaviorTimings>,
 ) {
     let start = Instant::now();
-    let dt = time.delta_secs();
+    // Guards mid-telegraph are excluded above, so every guard reaching this
+    // loop is fully active; clamp dt so a hitch can't move any of them far
+    // enough in one frame to read as a teleport (#1010).
+    let dt = clamp_step_dt(time.delta_secs());
 
     let Ok((player_tf, stats)) = player.single() else {
         timings.guards = start.elapsed();
@@ -302,6 +365,8 @@ pub fn reinforcement_system(
         return;
     }
     // Two guards per wave, marching in from the entry toward the arena center.
+    // Telegraphed (#1010): they sit frozen with a pulsing marker for a beat
+    // before joining the sim, instead of popping in already mid-stride.
     for i in 0..2 {
         if spawner.spawned >= MAX_REINFORCEMENTS {
             break;
@@ -312,13 +377,18 @@ pub fn reinforcement_system(
             REINFORCE_ENTRY + jitter,
             vec![REINFORCE_ENTRY + jitter, Vec2::ZERO],
             GuardState::Search,
+            true,
         );
         spawner.spawned += 1;
     }
 }
 
-/// Draw every guard's vision cone (debug gizmos, toggled by F1).
-pub fn draw_guard_cones(guards: Query<(&Transform, &Guard)>, mut gizmos: Gizmos) {
+/// Draw every active guard's vision cone (debug gizmos, toggled by F1).
+/// Telegraphed guards are excluded — they aren't perceiving yet.
+pub fn draw_guard_cones(
+    guards: Query<(&Transform, &Guard), Without<SpawnTelegraph>>,
+    mut gizmos: Gizmos,
+) {
     for (tf, guard) in &guards {
         let apex = tf.translation.truncate();
         let mut color = guard.state.color();
@@ -334,18 +404,66 @@ pub fn draw_guard_cones(guards: Query<(&Transform, &Guard)>, mut gizmos: Gizmos)
     }
 }
 
+/// Draw a pulsing warning ring over every guard mid-telegraph, and fade its
+/// sprite in as the timer closes. Always on (not F1-gated): this is the core
+/// "something is arriving" signal, not debug info (#1010).
+pub fn spawn_telegraph_system(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut guards: Query<(Entity, &Transform, &mut SpawnTelegraph, &mut Sprite)>,
+    mut gizmos: Gizmos,
+) {
+    for (entity, tf, mut telegraph, mut sprite) in &mut guards {
+        telegraph.timer.tick(time.delta());
+        let t = telegraph.timer.fraction();
+
+        let pos = tf.translation.truncate();
+        let radius = 12.0 + 20.0 * t;
+        let mut ring_color = Color::srgb(0.95, 0.3, 0.3);
+        ring_color.set_alpha(1.0 - 0.6 * t);
+        gizmos.circle_2d(pos, radius, ring_color);
+
+        let mut fade = sprite.color;
+        fade.set_alpha(0.25 + 0.75 * t);
+        sprite.color = fade;
+
+        if telegraph.timer.is_finished() {
+            commands.entity(entity).remove::<SpawnTelegraph>();
+        }
+    }
+}
+
 /// Spawn the round's starting guards. `count` scales with round difficulty.
+/// Not telegraphed — this happens before the round is visible to the player.
 pub fn spawn_round_guards(commands: &mut Commands, count: u32) {
     for i in 0..count as usize {
         let post_a = POSTS[i % POSTS.len()];
         let post_b = POSTS[(i + 1) % POSTS.len()];
-        spawn_guard(commands, post_a, vec![post_a, post_b], GuardState::Patrol);
+        spawn_guard(
+            commands,
+            post_a,
+            vec![post_a, post_b],
+            GuardState::Patrol,
+            false,
+        );
     }
 }
 
-fn spawn_guard(commands: &mut Commands, pos: Vec2, patrol: Vec<Vec2>, state: GuardState) {
-    commands.spawn((
-        Sprite::from_color(state.color(), GUARD_HALF * 2.0),
+fn spawn_guard(
+    commands: &mut Commands,
+    pos: Vec2,
+    patrol: Vec<Vec2>,
+    state: GuardState,
+    telegraphed: bool,
+) {
+    let mut sprite = Sprite::from_color(state.color(), GUARD_HALF * 2.0);
+    if telegraphed {
+        // Start nearly invisible; `spawn_telegraph_system` fades it in.
+        sprite.color.set_alpha(0.25);
+    }
+
+    let mut entity = commands.spawn((
+        sprite,
         Transform::from_translation(pos.extend(1.0)),
         Guard {
             state,
@@ -358,11 +476,26 @@ fn spawn_guard(commands: &mut Commands, pos: Vec2, patrol: Vec<Vec2>, state: Gua
         },
         RoundScoped,
     ));
+    if telegraphed {
+        entity.insert(SpawnTelegraph::new());
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clamp_step_dt_is_a_noop_under_normal_framerate() {
+        let dt = 1.0 / 60.0;
+        assert!((clamp_step_dt(dt) - dt).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn clamp_step_dt_caps_a_hitch() {
+        assert!((clamp_step_dt(1.0) - MAX_STEP_DT).abs() < f32::EPSILON);
+        assert!((clamp_step_dt(0.25) - MAX_STEP_DT).abs() < f32::EPSILON);
+    }
 
     #[test]
     fn suspicion_rises_when_seen_and_caps() {

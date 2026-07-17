@@ -33,6 +33,7 @@ use crate::doors::{
 };
 use crate::guards::{
     ReinforcementSpawner, draw_guard_cones, guard_ai_system, reinforcement_system,
+    spawn_telegraph_system,
 };
 use crate::hud::{setup_hud, update_hud};
 use crate::rats::{RATS_PER_BATCH, Rat, RatRng, rat_system, spawn_rats};
@@ -103,6 +104,7 @@ fn main() {
                 )
                     .chain(),
                 reinforcement_system,
+                spawn_telegraph_system,
                 switch_visual_system,
                 switch_prompt_system,
                 draw_door_switch_glyphs,
