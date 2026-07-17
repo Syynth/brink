@@ -27,6 +27,7 @@ fn tiny_config(name: &str, turn_weight: TurnWeight) -> ScenarioConfig {
         turn_weight,
         frames: 4,
         seed: 42,
+        collection_global: false,
     }
 }
 
@@ -99,8 +100,17 @@ fn every_turn_weight_compiles_and_drives_turns() {
 /// no wall-clock/OS entropy anywhere in the generator.
 #[test]
 fn story_generation_is_deterministic() {
-    let a = generate_story(TurnWeight::Heavy, 7);
-    let b = generate_story(TurnWeight::Heavy, 7);
+    let a = generate_story(TurnWeight::Heavy, 7, false);
+    let b = generate_story(TurnWeight::Heavy, 7, false);
+    assert_eq!(a, b);
+}
+
+/// Same determinism proof, with the collection-typed axis enabled — the
+/// generator branch isn't only exercised for its default-off shape.
+#[test]
+fn story_generation_is_deterministic_with_collection_global() {
+    let a = generate_story(TurnWeight::Medium, 7, true);
+    let b = generate_story(TurnWeight::Medium, 7, true);
     assert_eq!(a, b);
 }
 
@@ -123,6 +133,7 @@ fn zero_flows_errors_cleanly() {
         turn_weight: TurnWeight::Light,
         frames: 1,
         seed: 1,
+        collection_global: false,
     };
     assert!(run_scenario(&config).is_err());
 }
@@ -140,8 +151,36 @@ fn fully_parked_scenario_completes_zero_turns() {
         turn_weight: TurnWeight::Light,
         frames: 3,
         seed: 9,
+        collection_global: false,
     };
     let result = run_scenario(&config).expect("all-parked scenario should still run");
     assert_eq!(result.turns_completed, 0);
     assert_eq!(result.flow_anomalies, 0);
+}
+
+/// BH follow-up (#911, deliverable 3): with the `bench-counters` feature
+/// and `collection_global` enabled, `cow_copies`/`arc_clones` actually move
+/// off zero — proving the counters forward through `bevy-brink`'s scenario
+/// harness at all. Every *other* config in this file (and every checked-in
+/// `serial-driver.csv` baseline row) is scalar-only, so its `Some(0)` is
+/// indistinguishable from an unwired counter; this is the one config that
+/// can tell the difference.
+#[cfg(feature = "bench-counters")]
+#[test]
+fn collection_global_axis_forwards_nonzero_counters() {
+    let config = ScenarioConfig {
+        collection_global: true,
+        frames: 5,
+        ..tiny_config("collection-global", TurnWeight::Medium)
+    };
+    let result = run_scenario(&config).expect("collection-global scenario should run cleanly");
+    assert_result_is_sane(&config, &result);
+    assert!(
+        result.cow_copies.unwrap_or(0) > 0,
+        "expected at least one COW copy once `live` is mutated while shared into `history`: {result:?}"
+    );
+    assert!(
+        result.arc_clones.unwrap_or(0) > 0,
+        "expected at least one Arc-clone once a collection-typed global is read/shared: {result:?}"
+    );
 }
