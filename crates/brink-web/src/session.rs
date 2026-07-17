@@ -200,6 +200,27 @@ impl WebSession {
             .map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// Run a shared flow to its next terminal line. Returns JSON array of
+    /// `Line` objects, capped at `FlowInstance::LINE_LIMIT` (10,000) lines —
+    /// the same bound `continue_story`/`continue_single` enforce for the
+    /// primary flow, so an infinite-emitting flow errors instead of hanging
+    /// or exhausting memory on the host. Externals resolve via the ink fallback body only
+    /// and are never journaled (same as `continue_flow`).
+    pub fn continue_flow_maximally(&self, name: &str) -> Result<String, JsError> {
+        let _guard = BusyGuard::acquire(&self.busy)
+            .ok_or_else(|| reentrant_error("continue_flow_maximally"))?;
+        let mut borrow = self.session.borrow_mut();
+        let session = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        let lines = session
+            .story_mut()
+            .continue_flow_maximally_shared_with(name, &brink_runtime::FallbackHandler)
+            .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
+        let resp: Vec<LineJs> = lines.into_iter().map(line_to_js).collect();
+        serde_json::to_string(&resp).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
     /// Select a choice in a shared flow.
     pub fn choose_flow(&self, name: &str, index: usize) -> Result<(), JsError> {
         let _guard =
@@ -740,7 +761,7 @@ fn step_outcome_to_js<R: brink_runtime::StoryRng>(
 #[cfg(all(test, target_arch = "wasm32"))]
 mod websession_wasm_tests {
     use super::WebSession;
-    use wasm_bindgen::JsValue;
+    use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn session_bytes(src: &str) -> Vec<u8> {
@@ -1004,6 +1025,57 @@ mod websession_wasm_tests {
             !s.flow_names()
                 .expect("flow_names after destroy")
                 .contains("\"f\"")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn continue_flow_maximally_returns_every_line_to_the_terminal() {
+        // Per the `Line` contract (CLAUDE.md "Runtime public API" /
+        // docs/execution-model): terminal variants *carry* the text produced
+        // since the last yield, rather than being a content-free marker
+        // following a separate line for that text. So driving "One.\nTwo.\n"
+        // to its `-> END` yields two `Line`s, not three: a `Text` for "One."
+        // and a terminal `End` whose own `text` field holds "Two." — matching
+        // native `Story::continue_flow_maximally_shared`/`drive_to_terminal`
+        // exactly (verified directly against the native API for this same
+        // story/flow before writing this assertion).
+        let s = new_session("-> END\n=== bump ===\nOne.\nTwo.\n-> END\n");
+        s.spawn_flow("f", Some("bump".to_owned())).expect("spawn");
+        let json = s
+            .continue_flow_maximally("f")
+            .expect("drives the flow to its terminal line");
+        let lines: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let arr = lines.as_array().expect("array of Line");
+        assert_eq!(arr.len(), 2, "{json}"); // "One.", then the terminal `end` carrying "Two."
+        assert_eq!(arr[0]["type"], "text");
+        assert_eq!(arr[0]["text"], "One.\n");
+        assert_eq!(arr[1]["type"], "end");
+        assert_eq!(arr[1]["text"], "Two.\n");
+        let full_text: String = arr
+            .iter()
+            .map(|l| l["text"].as_str().expect("text field"))
+            .collect();
+        assert_eq!(full_text, "One.\nTwo.\n");
+    }
+
+    /// #999: a shared flow that emits text forever must error at the wasm
+    /// leg's `continue_flow_maximally` binding — the same
+    /// `RuntimeError::LineLimitExceeded` bound `continue_story` enforces for
+    /// the primary flow — rather than the caller looping `continue_flow`
+    /// client-side without a cap and growing an array/hanging on an
+    /// infinite-emitting story.
+    #[wasm_bindgen_test]
+    fn continue_flow_maximally_errors_at_line_limit_on_infinite_emitting_flow() {
+        let s = new_session("-> spam\n\n=== spam ===\nLine.\n-> spam\n");
+        s.spawn_flow("f", None).expect("spawn");
+        let err = s
+            .continue_flow_maximally("f")
+            .expect_err("infinite-emitting flow should error, not hang or grow unbounded");
+        let js_err: JsValue = err.into();
+        let message: String = js_err.unchecked_into::<js_sys::Error>().message().into();
+        assert!(
+            message.contains("line limit exceeded"),
+            "error shape should match `continue_story`'s `LineLimitExceeded`; got: {message}"
         );
     }
 
