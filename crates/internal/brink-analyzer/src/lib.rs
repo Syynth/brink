@@ -53,6 +53,7 @@ pub use manifest::{ModuleMap, ResolvedModule};
 pub use resolve::ImportScope;
 pub use signature::{Sig, signature};
 pub use strict::{TypePolicy, effective_severity};
+pub use structs::{ShapeInfo, declared_shapes};
 
 use brink_format::DefinitionId;
 use brink_ir::{
