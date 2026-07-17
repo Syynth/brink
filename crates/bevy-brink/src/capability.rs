@@ -89,6 +89,13 @@ pub struct CapabilityEffects {
 /// …) — this type only names `name` and `effects`; every other key present in
 /// a real manifest file is ignored by `serde`'s default "unknown fields are
 /// fine" behavior, so the same file serves both consumers.
+///
+/// **Not converged onto `brink_ir::host_manifest::ManifestExternal`** (issue
+/// #911, BH follow-up deliverable 1) — see that type's module doc for the
+/// full rationale (opposite-direction crate dependency the two sides must
+/// never take on each other). The two shared keys (`externals`, `name`) are
+/// pinned by `brink_format::manifest_field_names`; `tests/manifest_field_convergence.rs`
+/// cross-validates one manifest literal against both types.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapabilityManifestExternal {
     pub name: String,
@@ -839,12 +846,45 @@ mod tests {
         app.update();
 
         let table = app.world().resource::<CapabilityTable<()>>();
-        let access = table
+        let access_table = table
             .access_for(program_id)
             .expect("capability join ran for the loaded story off the plugin's own system");
+        // Harden past non-emptiness (issue #911, BH follow-up deliverable
+        // 2): this story has exactly one container (`start`), which calls
+        // `get_position` — assert the *actual* joined set the plugin's own
+        // system produced (reads == [Transform], no writes, not opaque),
+        // not merely that the table has *some* entry in it.
+        assert_eq!(
+            access_table.len(),
+            1,
+            "expected exactly one container row (the story's single `start` knot): {access_table:?}"
+        );
+        let access = access_table
+            .values()
+            .next()
+            .expect("checked len() == 1 above");
+        let transform_id = app
+            .world()
+            .resource::<CapabilityRegistry<()>>()
+            .component_id("Transform")
+            .expect("Transform was registered above");
+        assert_eq!(
+            access.reads,
+            vec!["Transform".to_string()],
+            "joined reads should be exactly what get_position's manifest entry declares"
+        );
         assert!(
-            !access.is_empty(),
-            "start's row should be present in the joined table"
+            access.writes.is_empty(),
+            "get_position's manifest entry declares no writes"
+        );
+        assert!(
+            access.access.has_read(transform_id),
+            "the joined bevy Access should carry a read on Transform's ComponentId"
+        );
+        assert!(!access.access.has_write(transform_id));
+        assert!(
+            !access.opaque,
+            "no call in this story hits the opaque fallback"
         );
         drop(program_handle);
     }

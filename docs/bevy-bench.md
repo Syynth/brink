@@ -76,10 +76,17 @@ This is the load-bearing section; read it before trusting any number here.
   global is a scalar `Int` (`turn_count`); it never touches an
   `Array`/`Map`/`Record` global, so it never reaches the
   `array_make_mut`/`map_make_mut`/`record_make_mut`/`GetGlobal`-collection
-  call sites these counters instrument. A future scenario axis exercising
-  collection-typed globals (the corpus's `loop-append`/`share-then-mutate`
-  shape) would be needed to see nonzero counts here — not attempted in
-  this seed (scope).
+  call sites these counters instrument. **A collection-typed scenario axis
+  now exists** (issue #911, `ScenarioConfig::collection_global`): a
+  `live`/`history` array pair shared then mutated every turn (the
+  `snapshot-retention-g10-m10` bench story's share-then-mutate shape,
+  scaled to one generation per turn) — proven to move both counters off
+  zero in `crates/bevy-brink/tests/scenario_bench_model.rs`'s
+  `collection_global_axis_forwards_nonzero_counters` (feature-gated on
+  `bench-counters`, since without it the fields are always `None`). The
+  checked-in `serial-driver.csv` baselines below deliberately still hold
+  this axis `false` — this is a proof the plumbing carries a real value,
+  not a new baseline dimension.
 - **`flow_anomalies`** counts any Step outcome other than reaching
   `Choices` cleanly (an error, or an unexpected `Done`/`End`/
   `AwaitingQuery`) — always 0 for a correct run of the generated,
@@ -105,9 +112,20 @@ cargo bench -p bevy-brink --features bench-counters --bench scenario_bench
 Writes `crates/bevy-brink/benches/baselines/serial-driver.csv` and
 `serial-driver.md` (the full axis matrix, machine-readable + human-
 readable) — these are the in-repo SERIAL baselines this issue asks for.
-Update the "Baseline" section below by hand after regenerating (there is
-no automated baseline-diff tripwire yet — a later `BH-B` slice's job, not
-this seed's, matching the #821 epic's own Workstream D precedent).
+Update the "Baseline" section below by hand after regenerating.
+
+**Baseline-diff tripwire (issue #911, the seed of `BH-3`'s serial-vs-
+parallel comparator):**
+`crates/bevy-brink/tests/scenario_baseline_tripwire.rs`'s
+`checked_in_baseline_matches_a_fresh_mini_run` re-runs the checked-in
+`serial-1` row's exact config in an ordinary `cargo test` pass and
+compares it against the checked-in CSV. Deterministic fields
+(`turns_completed`, `flow_anomalies`) are asserted exactly — same seed,
+same config, no wall-clock dependency, so a mismatch means the harness's
+*behavior* changed, not that the machine is slower. Timing fields
+(`frame_p50_ms`, `turns_per_sec`) are reported (`eprintln!`) for
+visibility, never gated — advisory by design, since they will legitimately
+differ from the baseline's capture machine on every runner.
 
 ## Baseline
 

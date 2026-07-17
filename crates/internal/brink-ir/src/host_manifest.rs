@@ -11,6 +11,21 @@
 //!    lowering into [`DocBlock`]), and
 //! 2. a registered [`HostManifest`] (host-owned, project-wide), deserialized
 //!    from JSON.
+//!
+//! **Shared file, separate type (issue #911, BH follow-up deliverable 1).**
+//! `bevy-brink`'s `CapabilityManifest`/`CapabilityManifestExternal`
+//! (`crates/bevy-brink/src/capability.rs`) deserializes this **same**
+//! on-disk manifest file for a disjoint purpose (the host/ECS capability
+//! grammar, `docs/effects-spec.md` §13.2) — reading only its `effects` key
+//! and ignoring everything [`ManifestExternal`] owns, the same way this type
+//! ignores `effects`. The two types are not converged onto one canonical
+//! shape: `brink-ir` is compiler/IDE-only and must never depend on
+//! `bevy-brink`'s ECS types, and the reverse edge is equally unwanted, so a
+//! shared type would need a new third crate for two fields (`externals[].name`)
+//! in common. Instead, `brink_format::manifest_field_names` pins the shared
+//! key spellings (`externals`, `name`) both types' serde derives must keep
+//! matching, and `crates/bevy-brink/tests/manifest_field_convergence.rs`
+//! cross-validates one manifest literal against both types.
 
 use serde::{Deserialize, Serialize};
 
@@ -259,6 +274,50 @@ pub struct DocBlock {
     pub returns: Option<TypeRef>,
     /// `@kind <kind>`.
     pub kind: Option<ExternalKind>,
+}
+
+/// De-drift enforcement for issue #911's manifest convergence decision: the
+/// wire keys [`HostManifest`]/[`ManifestExternal`] actually serialize under
+/// must literally match `brink_format::manifest_field_names`'s constants —
+/// the shared spellings `bevy_brink::capability::CapabilityManifest` also
+/// depends on for the same on-disk file. If either side's `#[serde]` shape
+/// ever renames `externals` or an external's `name`, this test's substring
+/// checks fail here rather than the drift only surfacing as a silently
+/// unparsed field on the other consumer.
+#[cfg(test)]
+mod manifest_field_name_tests {
+    use brink_format::manifest_field_names::{EXTERNALS, NAME};
+
+    use super::{HostManifest, ManifestExternal};
+
+    #[test]
+    fn serialized_wire_keys_match_the_shared_field_name_constants() {
+        let manifest = HostManifest {
+            externals: vec![ManifestExternal {
+                name: "has".to_string(),
+                params: vec![],
+                returns: super::TypeRef::default(),
+                kind: super::ExternalKind::default(),
+                doc: None,
+                widgets: vec![],
+                path: vec![],
+            }],
+            types: vec![],
+        };
+        let json = serde_json::to_string(&manifest).expect("serialize");
+        assert!(
+            json.contains(&format!("\"{EXTERNALS}\":")),
+            "top-level wrapper key drifted from manifest_field_names::EXTERNALS: {json}"
+        );
+        assert!(
+            json.contains(&format!("\"{NAME}\":\"has\"")),
+            "external entry's name key drifted from manifest_field_names::NAME: {json}"
+        );
+
+        // Round-trips through the constant-derived shape unchanged.
+        let parsed: HostManifest = serde_json::from_str(&json).expect("re-parse");
+        assert_eq!(parsed, manifest);
+    }
 }
 
 #[cfg(test)]

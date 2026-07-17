@@ -72,6 +72,19 @@ pub struct ScenarioConfig {
     /// story or the scenario itself, so a run is byte-identical across
     /// machines (deterministic per the epic's gate).
     pub seed: u64,
+    /// BH follow-up (#911, deliverable 3): when `true`, the generated story
+    /// carries a collection-typed global (`live`, an `Array`) that every
+    /// turn shares into a second global (`history`, an Arc-clone —
+    /// `arc_clones` moves) and then mutates in place while shared (a
+    /// `Value::array_make_mut` COW — `cow_copies` moves), mirroring
+    /// `benchmarks/stories/snapshot-retention-g10-m10/story.ink`'s
+    /// share-then-mutate shape. Every other scenario config in this file
+    /// holds this `false` and stays scalar-only — this is a deliberately
+    /// separate exploration axis, not a change to the checked-in
+    /// `serial-driver.csv` baselines (`docs/bevy-bench.md`'s honesty note
+    /// on why `cow_copies`/`arc_clones` read 0 there is unaffected by this
+    /// axis existing).
+    pub collection_global: bool,
 }
 
 // ── 2. Synthetic story generator — corpus PCG idiom ─────────────────────
@@ -132,13 +145,21 @@ fn sentence(rng: &mut Lcg, min_words: usize, max_words: usize) -> String {
 /// a sticky choice back to itself. Every active flow's "turn" is therefore
 /// always the same shape (text → `Choices`, auto-picked) — deliberately
 /// simple so `flow_count` scaling is the only variable under test.
-pub fn generate_story(turn_weight: TurnWeight, seed: u64) -> String {
+///
+/// `collection_global` (#911, deliverable 3) layers in a `live`/`history`
+/// array pair — see [`ScenarioConfig::collection_global`]'s doc for the
+/// share-then-mutate mechanism this exercises.
+pub fn generate_story(turn_weight: TurnWeight, seed: u64, collection_global: bool) -> String {
     let mut rng = Lcg::new(seed);
     let mut s = String::from("// Synthetic scenario story — generated, deterministic (#900).\n");
 
     let needs_counter = matches!(turn_weight, TurnWeight::Medium | TurnWeight::Heavy);
     if needs_counter {
         s.push_str("VAR turn_count = 0\n");
+    }
+    if collection_global {
+        s.push_str("VAR live = 0\nVAR history = 0\n");
+        s.push_str("~ {\n    live = #[0, 0, 0, 0]\n    history = #[]\n}\n");
     }
     s.push_str("-> loop_knot\n\n=== loop_knot ===\n");
 
@@ -157,6 +178,15 @@ pub fn generate_story(turn_weight: TurnWeight, seed: u64) -> String {
     }
     if matches!(turn_weight, TurnWeight::Heavy) {
         s.push_str("{turn_count mod 2 == 0: An even beat settles.|An odd beat lingers.}\n");
+    }
+    if collection_global {
+        // Every turn: share `live` into `history` (a collection-typed
+        // global read — `arc_clones` moves), then mutate `live` in place
+        // while `history` still holds last turn's share (a
+        // `Value::array_make_mut` COW — `cow_copies` moves). Steady state
+        // after the first turn: one shared owner (`history`'s latest
+        // entry) exists whenever `live` is next mutated.
+        s.push_str("~ {\n    push(history, live)\n    live[0] = len(history)\n}\n");
     }
     s.push_str("+ [Continue]\n    -> loop_knot\n");
     s
@@ -377,17 +407,33 @@ pub fn run_scenario(config: &ScenarioConfig) -> Result<ScenarioResult, Box<dyn s
         return Err(Box::new(ScenarioError::NoFlows));
     }
 
-    let source = generate_story(config.turn_weight, config.seed);
-    let output = brink_compiler::compile("scenario.ink", |path| {
-        if path == "scenario.ink" {
-            Ok(source.clone())
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("unexpected include: {path}"),
-            ))
-        }
-    })?;
+    let source = generate_story(config.turn_weight, config.seed, config.collection_global);
+    // Brink dialect (docs/t1b-surface-spec.md §1): the `collection_global`
+    // axis's `~ { … }` blocks, `#[…]` array literals, `push`/`len`, and
+    // postfix indexing are brink-extension syntax the default `StrictInk`
+    // dialect rejects at compile time (`E051`). The gate is purely a
+    // diagnostic (dialect_gate.rs: "LIR lowering doesn't consult the
+    // dialect at all") — it never changes codegen for a story that uses
+    // none of that syntax, so enabling it unconditionally here doesn't
+    // affect the scalar-only baseline configs' compiled output or timings.
+    let options = brink_compiler::AnalysisOptions {
+        dialect: brink_compiler::Dialect::Brink,
+        ..Default::default()
+    };
+    let output = brink_compiler::compile_with_options(
+        "scenario.ink",
+        |path| {
+            if path == "scenario.ink" {
+                Ok(source.clone())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("unexpected include: {path}"),
+                ))
+            }
+        },
+        options,
+    )?;
     let (program, line_tables) = brink_runtime::link(&output.data)?;
 
     let mut app = App::new();

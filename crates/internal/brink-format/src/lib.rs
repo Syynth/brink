@@ -21,6 +21,7 @@ mod id;
 mod inkb;
 mod inkl;
 mod line;
+pub mod manifest_field_names;
 mod opcode;
 mod save;
 mod story;

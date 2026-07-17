@@ -149,6 +149,12 @@ fn baseline_configs(frames: usize) -> Vec<ScenarioConfig> {
         turn_weight: BASELINE_TURN_WEIGHT,
         frames,
         seed: BASELINE_SEED,
+        // The checked-in baselines stay scalar-only (docs/bevy-bench.md's
+        // honesty note on cow_copies/arc_clones reading 0 here) — the
+        // collection-typed axis is a separate exploration path (#911),
+        // proven to move the counters in tests/scenario_bench_model.rs
+        // instead of in this checked-in matrix.
+        collection_global: false,
     });
     let turn_weight_rows = [
         ("serial-100-light", TurnWeight::Light),
@@ -163,6 +169,7 @@ fn baseline_configs(frames: usize) -> Vec<ScenarioConfig> {
         turn_weight,
         frames,
         seed: BASELINE_SEED,
+        collection_global: false,
     });
     flow_count_rows.chain(turn_weight_rows).collect()
 }
