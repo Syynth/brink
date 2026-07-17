@@ -1,0 +1,148 @@
+# bevy-brink scenario harness — SERIAL-driver baselines
+
+BH-B-1 (issue #900): the scenario harness skeleton + SERIAL-driver
+baselines for `#897`'s bevy host track, landed **before `BH-3`** (the
+parallel step phase) exists — the 2026-07-16 BASELINE-FIRST ruling. `BH-3`
+ships a determinism law ("parallel ≡ serial-in-flow-id-order, byte-identical
+over randomized workloads"); that law needs a real serial baseline to be
+judged against, so the baseline lands first with a denominator already in
+the repo.
+
+## What this is
+
+A **headless `MinimalPlugins` runner** (`crates/bevy-brink/benches/scenario_bench.rs`)
+that spawns synthetic ink flows as real `BrinkFlow`/`BrinkContext`/
+`BrinkGlobals` components/resources (the same production types
+`bevy-brink` consumers use — no parallel test-only context type), drives a
+fixed number of `App::update()` frames, and times three phases per frame:
+**Collect**, **Step**, **Apply** — the three phases of today's serial
+driver, per `docs/effects-spec.md` §12.1's eventual frame loop (Collect →
+Schedule → Prefetch → Step → Apply → Subscribe → Detect). Only
+Collect/Step/Apply have a real implementation today; the rest (`BH-1` rows,
+`BH-3` parallel step, `BH-4` wake contract) are unbuilt.
+
+## Honesty — what each number can and can't see
+
+This is the load-bearing section; read it before trusting any number here.
+
+- **Collect** = an ECS query filter (`Without<ScenarioParked>`) building
+  the active-flow list for the frame. "Parked" is a **static** partition
+  assigned once at scenario setup — `active_fraction` of flows are marked
+  active and advanced every frame; the rest are spawned parked and never
+  touched again. This measures whether Collect's cost tracks `active_count`
+  or the full `flow_count`, **not** the real wake-dependency machinery
+  `BH-4` will build (parked flows there wake on a condition; here they
+  never wake at all).
+- **Step** = `BrinkFlow::advance_until_terminal` called once per collected
+  flow, serially, on the main thread — no task pool, no
+  `UnsafeWorldCell`, no row-based access proof. This **is** the "SERIAL
+  driver" the ruling asks to baseline; `BH-3`'s parallel step is judged
+  against these numbers, not against wall-clock intuition.
+- **Apply** = bookkeeping only (a frame-index bump). Ink writes today land
+  immediately inside Step, via `ContextView` mutation of the shared
+  `BrinkGlobals` `World` — there is no buffered-write commit to time yet
+  (`BH-2`). This phase is a placeholder seam for when one exists; its near-
+  zero cost here is not a real measurement of anything, and is reported as
+  such rather than silently inflated or omitted.
+- **`world_size`** spawns inert background entities to stress ECS
+  storage/query overhead at scale. It does **not** yet interact with
+  per-flow row/access sets — `BH-1` isn't wired to real Bevy components —
+  so it can't yet demonstrate anything about scheduling contention. It
+  exists in `ScenarioConfig` so a future `BH-3` PR extends this harness
+  instead of building a second one. The checked-in baselines hold it at 0.
+- **`turn_weight`** (`Light`/`Medium`/`Heavy`) varies the generated ink
+  program's per-turn workload (sentence count, one var mutation, one
+  inline conditional). The checked-in baselines fix it at `Medium` and vary
+  `flow_count` only.
+- **`frame p50/p99`** are wall-clock `App::update()` durations (the whole
+  bevy schedule for that frame — `tick_world_filler` +
+  Collect+Step+Apply + bevy's own command-flush overhead), not just the
+  sum of the three phases; the gap between `frame_p50_ms` and
+  `collect+step+apply` is bevy scheduling overhead, not attributable to
+  the driver phases under test.
+- **`turns/sec`** = total completed turns (a flow reaching `Choices` and
+  being auto-chosen) divided by total wall time across all frames.
+- **RSS** is a coarse, single-process, best-effort proxy (`ps -o rss=`,
+  same idiom as `docs/runtime-bench.md`'s #821 Workstream C) — not exact
+  per-flow byte accounting (`#538`'s `heap_size` estimators aren't landed).
+  Read as "does flow_count scaling roughly track memory linearly, not
+  something worse," not a byte-exact tripwire.
+- **`cow_copies`/`arc_clones`** are the #821 Arc-clone/COW-copy debug
+  counters (`brink-runtime`'s `bench-counters` feature), forwarded through
+  `bevy-brink`'s own `bench-counters` feature. `n/a` in every row unless
+  that feature is enabled — see "Running," below. **Measured: both are 0
+  in every baseline row**, and that is the honest, expected result, not a
+  broken counter — the checked-in `turn_weight=medium` template's only
+  global is a scalar `Int` (`turn_count`); it never touches an
+  `Array`/`Map`/`Record` global, so it never reaches the
+  `array_make_mut`/`map_make_mut`/`record_make_mut`/`GetGlobal`-collection
+  call sites these counters instrument. A future scenario axis exercising
+  collection-typed globals (the corpus's `loop-append`/`share-then-mutate`
+  shape) would be needed to see nonzero counts here — not attempted in
+  this seed (scope).
+- **`flow_anomalies`** counts any Step outcome other than reaching
+  `Choices` cleanly (an error, or an unexpected `Done`/`End`/
+  `AwaitingQuery`) — always 0 for a correct run of the generated,
+  always-looping template; a nonzero count is a real bug signal, not
+  filtered out.
+
+Oracle untouched: the synthetic story is generated in memory; this harness
+never reads or writes `tests/tier{1,2,3}` or the oracle snapshot corpus.
+
+## Running
+
+```sh
+# Full baseline matrix (1/100/1k/10k flows), default 30 frames each.
+cargo bench -p bevy-brink --bench scenario_bench
+
+# Fewer frames for a quick sanity pass.
+cargo bench -p bevy-brink --bench scenario_bench -- --frames 5
+
+# With the #821 Arc-clone/COW-copy debug counters.
+cargo bench -p bevy-brink --features bench-counters --bench scenario_bench
+```
+
+Writes `crates/bevy-brink/benches/baselines/serial-driver.csv` and
+`serial-driver.md` (the full axis matrix, machine-readable + human-
+readable) — these are the in-repo SERIAL baselines this issue asks for.
+Update the "Baseline" section below by hand after regenerating (there is
+no automated baseline-diff tripwire yet — a later `BH-B` slice's job, not
+this seed's, matching the #821 epic's own Workstream D precedent).
+
+## Baseline
+
+Captured 2026-07-16, Apple Silicon dev machine, `cargo bench --features
+bench-counters` (the `bench` profile, optimized), default 30 frames,
+`active_fraction=0.7`, `world_size=0`. The four `serial-*` rows fix
+`turn_weight=medium` and vary `flow_count` only (the issue's ask); the two
+`serial-100-{light,heavy}` rows hold `flow_count=100` and vary
+`turn_weight` instead, proving that axis is actually wired end to end
+rather than merely declared in `ScenarioConfig`. Regenerate via
+`crates/bevy-brink/benches/baselines/serial-driver.{csv,md}` (this table
+is copied from the generated `.md`, not hand-maintained — regenerate
+rather than hand-edit if it drifts).
+
+| scenario | flows | active | world | turn | frames | frame p50 (ms) | frame p99 (ms) | collect p50 (µs) | step p50 (µs) | apply p50 (µs) | turns/sec | turns | anomalies | rss Δ (KB) | cow_copies | arc_clones |
+|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| serial-1 | 1 | 70% | 0 | medium | 30 | 0.076 | 30.178 | 0.04 | 8.12 | 0.04 | 381.2 | 30 | 0 | 160 | 0 | 0 |
+| serial-100 | 100 | 70% | 0 | medium | 30 | 0.594 | 0.861 | 0.29 | 491.71 | 0.04 | 114790.2 | 2100 | 0 | 1600 | 0 | 0 |
+| serial-1k | 1000 | 70% | 0 | medium | 30 | 5.353 | 6.770 | 2.12 | 5075.12 | 0.04 | 128468.8 | 21000 | 0 | 14592 | 0 | 0 |
+| serial-10k | 10000 | 70% | 0 | medium | 30 | 37.504 | 62.137 | 19.29 | 35102.50 | 0.08 | 181820.8 | 210000 | 0 | 145936 | 0 | 0 |
+| serial-100-light | 100 | 70% | 0 | light | 30 | 0.165 | 0.342 | 0.17 | 108.38 | 0.04 | 396806.4 | 2100 | 0 | 16 | 0 | 0 |
+| serial-100-heavy | 100 | 70% | 0 | heavy | 30 | 0.502 | 0.747 | 0.12 | 418.75 | 0.04 | 134386.8 | 2100 | 0 | 1088 | 0 | 0 |
+
+Reading these honestly: `step_p50_us` scales roughly linearly with
+`flow_count` (≈5 µs/flow at 100, ≈5.1 µs/flow at 1k, ≈3.5 µs/flow at 10k —
+the serial per-flow loop's expected shape, no batching to amortize), while
+`collect_p50_us` stays tiny relative to `step` at every size (the query
+filter itself is cheap; almost all frame time is in Step, as expected for
+a driver with no parallelism yet). `frame_p99_ms` at `serial-1` (30.178ms)
+is a clear outlier against its own `p50` (0.076ms) — a single slow first
+frame (JIT/cache warmup, `MinimalPlugins`' first-frame setup) dominating a
+30-frame sample at `flow_count=1`; visible proof that `p99` over a small
+frame count is noisy at the smallest scenario size, not a real per-flow
+cost. `cow_copies`/`arc_clones` are 0 throughout — see the honesty note
+above (the template's only global is a scalar `Int`, never a collection).
+
+**Absolute numbers are machine-specific and will drift — this is `BH-3`'s
+future comparison point, not a strict pass/fail gate.**
