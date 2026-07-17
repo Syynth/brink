@@ -13,16 +13,20 @@ use std::io;
 use std::time::{Duration, Instant};
 
 use bevy::MinimalPlugins;
+use bevy::app::{
+    PluginGroup as _, TaskPoolOptions, TaskPoolPlugin, TaskPoolThreadAssignmentPolicy,
+};
 use bevy::asset::{AssetPlugin, Assets};
 use bevy::ecs::system::SystemId;
 use bevy::prelude::{
     App, Commands, Component, Entity, IntoScheduleConfigs as _, Query, Res, ResMut, Resource,
     Update, With, Without, World as EcsWorld,
 };
+use bevy::tasks::ComputeTaskPool;
 use bevy_brink::{
     Advance, BrinkContext, BrinkFlow, BrinkGlobals, BrinkPlugin, BrinkProgram, BrinkStory,
     FallbackHandler, FlowInstance, Line, LineTablesAsset, Program, ProgramAsset, advance_batch,
-    flow_context_view,
+    advance_batch_parallel, flow_context_view,
 };
 
 // ── 1. Scenario configuration — the pre-parallelism axes ───────────────
@@ -642,6 +646,59 @@ fn choose_batch_flows(
     clock.apply = start.elapsed();
 }
 
+/// Which batch-family driver the batch-like scenario runner registers —
+/// BH-2's serial [`advance_batch`] or BH-3's [`advance_batch_parallel`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BatchDriverKind {
+    Serial,
+    Parallel,
+}
+
+/// Best-effort read of the process-global [`ComputeTaskPool`]'s thread
+/// count — the parallel driver's Step-phase worker count. `None` before any
+/// `App` has initialized the pool (it is created once per process by the
+/// first `TaskPoolPlugin`). Reported so a parallel baseline capture can
+/// record the thread count it actually ran with, instead of guessing from
+/// core counts.
+pub fn compute_pool_threads() -> Option<usize> {
+    ComputeTaskPool::try_get().map(|pool| pool.thread_num())
+}
+
+/// [`MinimalPlugins`] with the [`ComputeTaskPool`] size pinned to
+/// `compute_threads` (io/async-compute pools pinned to 1 thread each so
+/// they never eat the budget). `None` keeps bevy's defaults.
+///
+/// Honesty caveat: bevy's task pools are **process-global** — the first
+/// `App` in the process creates them and every later `TaskPoolPlugin` is a
+/// no-op (`get_or_init`). The override therefore only takes effect when the
+/// process has not built an `App` yet; the bench binary runs one mode per
+/// invocation, so a `--compute-threads` run is configured from its first
+/// scenario. One process = one thread count — a thread *curve* is separate
+/// invocations, by construction.
+fn minimal_plugins_with_compute_threads(
+    compute_threads: Option<usize>,
+) -> bevy::app::PluginGroupBuilder {
+    let group = MinimalPlugins.build();
+    let Some(n) = compute_threads else {
+        return group;
+    };
+    let pinned = |threads: usize| TaskPoolThreadAssignmentPolicy {
+        min_threads: threads,
+        max_threads: threads,
+        percent: 1.0,
+        on_thread_spawn: None,
+        on_thread_destroy: None,
+    };
+    group.set(TaskPoolPlugin {
+        task_pool_options: TaskPoolOptions {
+            io: pinned(1),
+            async_compute: pinned(1),
+            compute: pinned(n),
+            ..TaskPoolOptions::default()
+        },
+    })
+}
+
 /// Batch-mode counterpart of [`run_scenario`]: the same generated story,
 /// axes, seed, and measurement tail, but flows advance through
 /// [`advance_batch`] (BH-2's frame-start-consistent batch driver, §12.4)
@@ -669,6 +726,35 @@ fn choose_batch_flows(
 pub fn run_batch_scenario(
     config: &ScenarioConfig,
 ) -> Result<ScenarioResult, Box<dyn std::error::Error>> {
+    run_batchlike_scenario(config, BatchDriverKind::Serial, None)
+}
+
+/// Parallel-mode counterpart of [`run_batch_scenario`] (BH-3, #927): the
+/// identical setup, story, axes, seed, and measurement tail, but the batch
+/// turn runs through [`advance_batch_parallel`] — the Step phase on
+/// [`ComputeTaskPool`] through an `UnsafeWorldCell` — instead of the serial
+/// main-thread Step loop. Everything else (frame-start snapshot, per-flow
+/// buffered writes, flow-id-ordered Apply) is shared verbatim between the
+/// two drivers, so a parallel row differs from its batch-serial twin only
+/// in *where* Step ran — exactly the comparison the BH-3 baselines exist to
+/// make. Same column mapping as batch mode: the whole batch turn lands in
+/// `step`, the host auto-pick in `apply`, `collect` reads 0.
+///
+/// `compute_threads` pins the [`ComputeTaskPool`] size for thread-curve
+/// exploration runs (`None` = bevy's defaults) — see
+/// [`minimal_plugins_with_compute_threads`]'s process-global caveat.
+pub fn run_parallel_scenario(
+    config: &ScenarioConfig,
+    compute_threads: Option<usize>,
+) -> Result<ScenarioResult, Box<dyn std::error::Error>> {
+    run_batchlike_scenario(config, BatchDriverKind::Parallel, compute_threads)
+}
+
+fn run_batchlike_scenario(
+    config: &ScenarioConfig,
+    driver: BatchDriverKind,
+    compute_threads: Option<usize>,
+) -> Result<ScenarioResult, Box<dyn std::error::Error>> {
     if config.flow_count == 0 {
         return Err(Box::new(ScenarioError::NoFlows));
     }
@@ -676,7 +762,7 @@ pub fn run_batch_scenario(
     let (program, line_tables) = compile_scenario_story(config)?;
 
     let mut app = App::new();
-    app.add_plugins(MinimalPlugins);
+    app.add_plugins(minimal_plugins_with_compute_threads(compute_threads));
     app.add_plugins(AssetPlugin::default());
     app.add_plugins(BrinkPlugin::<ScenarioFlow>::default());
     app.insert_resource(PhaseClock::default());
@@ -740,9 +826,14 @@ pub fn run_batch_scenario(
             .spawn((ScenarioWorldFiller, WorldFillerTicks::default()));
     }
 
-    let batch_id = app
-        .world_mut()
-        .register_system(advance_batch::<ScenarioFlow>);
+    let batch_id = match driver {
+        BatchDriverKind::Serial => app
+            .world_mut()
+            .register_system(advance_batch::<ScenarioFlow>),
+        BatchDriverKind::Parallel => app
+            .world_mut()
+            .register_system(advance_batch_parallel::<ScenarioFlow>),
+    };
     app.insert_resource(BatchDriver(batch_id));
     app.add_systems(
         Update,

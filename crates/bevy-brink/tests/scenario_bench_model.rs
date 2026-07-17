@@ -15,8 +15,8 @@
 mod model;
 
 use model::{
-    ScenarioConfig, ScenarioResult, TurnWeight, active_count, generate_story, run_batch_scenario,
-    run_scenario,
+    ScenarioConfig, ScenarioResult, TurnWeight, active_count, compute_pool_threads, generate_story,
+    run_batch_scenario, run_parallel_scenario, run_scenario,
 };
 
 fn tiny_config(name: &str, turn_weight: TurnWeight) -> ScenarioConfig {
@@ -181,6 +181,38 @@ fn batch_driver_completes_the_same_turn_count_as_serial() {
     assert_eq!(
         serial.turns_completed, result.turns_completed,
         "batch and serial drivers agree on turn accounting for the same config"
+    );
+}
+
+/// The parallel-mode driver (BH-3, #927) runs the same generated template
+/// cleanly end to end with the same turn accounting as its batch-serial
+/// twin — the harness-level echo of the determinism law (`advance_batch` ≡
+/// `advance_batch_parallel` in flow-id order; the byte-identical law itself
+/// is gated in `src/batch/tests.rs`). Also proves the process-global
+/// `ComputeTaskPool` is actually initialized and readable after a parallel
+/// run — the thread count every canonical capture must record.
+#[test]
+fn parallel_driver_completes_the_same_turn_count_as_batch() {
+    let config = tiny_config("parallel-smoke", TurnWeight::Medium);
+    let result =
+        run_parallel_scenario(&config, None).expect("parallel smoke scenario should run cleanly");
+    assert_result_is_sane(&config, &result);
+
+    let expected_turns =
+        u64::try_from(active_count(config.flow_count, config.active_fraction) * config.frames)
+            .expect("tiny scenario turn count fits u64");
+    assert_eq!(
+        result.turns_completed, expected_turns,
+        "every active flow completes exactly one turn per frame in parallel mode"
+    );
+    let batch = run_batch_scenario(&config).expect("batch twin should run cleanly");
+    assert_eq!(
+        batch.turns_completed, result.turns_completed,
+        "parallel and batch drivers agree on turn accounting for the same config"
+    );
+    assert!(
+        compute_pool_threads().is_some_and(|n| n >= 1),
+        "ComputeTaskPool must be initialized (and its thread count readable) after a parallel run"
     );
 }
 
