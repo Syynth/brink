@@ -60,6 +60,28 @@ impl LowerExpr for ast::FunctionCall {
     }
 }
 
+// ─── Computed-callee call attempt (docs/t1c-spec.md §3/§10, issue #869) ──
+
+impl LowerExpr for ast::CallExpr {
+    /// `expr(args…)` where `expr` isn't a bare name (`CALL_EXPR` — see the
+    /// grammar comment on that kind). Always rejected: Direct-call syntax
+    /// is RULED to a bare variable/temp/param callee (t1c-spec §3), and
+    /// dispatch through a computed callee via bare-call sugar
+    /// ("method-call syntax") is explicitly out of T1c (§10). The author's
+    /// fix is the ratified Explicit form, `call(f, args…)`, which already
+    /// dispatches through exactly this class of expression correctly (it
+    /// reuses the same `CallValue` runtime op). Pre-#869 this construct
+    /// wasn't even representable — the parser left the trailing `(args…)`
+    /// unconsumed and it resurfaced as prose TEXT on the content line, so
+    /// the call silently vanished *and* corrupted output; a diagnostic
+    /// here is strictly a fix, never a regression on previously-working
+    /// source (nothing could reach this node before the grammar existed).
+    fn lower_expr(&self, _scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Expr> {
+        let range = self.syntax().text_range();
+        Err(sink.diagnose(range, DiagnosticCode::E104))
+    }
+}
+
 // ─── Divert targets and list literals ───────────────────────────────
 
 impl LowerExpr for ast::DivertTargetExpr {

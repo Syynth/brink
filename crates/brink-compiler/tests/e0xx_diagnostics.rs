@@ -839,3 +839,74 @@ fn ref_marked_bare_var_arg_compiles_clean_through_the_real_pipeline() {
         .unwrap_or_else(|e| panic!("a bare single-name `ref` must compile clean: {e:?}"));
     assert!(out.warnings.is_empty(), "{:?}", out.warnings);
 }
+
+// ─── Computed-callee call attempt (E104, docs/t1c-spec.md §3/§10, #869) ──
+//
+// A direct call `expr(args…)` where `expr` isn't a bare variable/temp/param
+// name — pre-#869 this silently dropped the call entirely (the parser left
+// `(args…)` unconsumed, so it resurfaced as prose text on the content
+// line). Direct-call syntax is RULED (t1c-spec §3) to a bare-name callee
+// only, and dispatch through a computed callee via bare-call sugar
+// ("method-call syntax") is explicitly out of T1c (§10) — so every shape
+// below is a loud compile error, never a silent no-op. One fixture per
+// non-bare-name callee shape the npc-fsm/behavior-tree tier1 corpus
+// fixtures found (indexed, dotted field, call-result), plus proof that the
+// ratified `call(f, args…)` Explicit form and the bare-name Direct form are
+// both untouched.
+
+#[test]
+fn e104_indexed_callee() {
+    let source = "VAR handlers = #{}\nVAR state = \"x\"\n=== main ===\n\
+                  ~ handlers[state](1)\n-> DONE\n";
+    assert_error_at(
+        source,
+        brink_options(),
+        DiagnosticCode::E104,
+        "handlers[state](1)",
+    );
+}
+
+#[test]
+fn e104_dotted_field_callee() {
+    let source = "VAR obj = #{}\n=== main ===\n~ obj.field()\n-> DONE\n";
+    assert_error_at(source, brink_options(), DiagnosticCode::E104, "obj.field()");
+}
+
+#[test]
+fn e104_call_result_callee_dialect_independent() {
+    // No brink-only construct in sight (a plain `function`, `return`, two
+    // ordinary calls) — proves E104 fires the same under strict-ink
+    // (`default_options()`) as under brink, unlike every dialect-gated T1b/
+    // T1c construct: a computed callee is invalid syntax in every dialect,
+    // not a brink extension strict-ink rejects.
+    let source = "=== function get_handler() ===\n~ return 1\n\n\
+                  === main ===\n~ get_handler()()\n-> DONE\n";
+    assert_error_at(
+        source,
+        default_options(),
+        DiagnosticCode::E104,
+        "get_handler()()",
+    );
+}
+
+#[test]
+fn bare_name_direct_call_unaffected_by_e104() {
+    let source = "=== function bare(a, b) ===\n~ return a + b\n\n\
+                  === main ===\n~ bare(1, 2)\n-> DONE\n";
+    let out = compile(source, brink_options())
+        .unwrap_or_else(|e| panic!("a bare-name direct call must compile clean: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}
+
+#[test]
+fn explicit_call_form_unaffected_by_e104() {
+    // `call(f, args…)` lowers as an ordinary named call (`Expr::Call(path =
+    // "call", …)`), never as the new `CALL_EXPR` shape — the same
+    // computed-callee expression that's rejected via bare-call sugar above
+    // dispatches correctly through the ratified Explicit form.
+    let source = "VAR handlers = #{}\nVAR state = \"x\"\n=== main ===\n\
+                  ~ call(handlers[state], 1)\n-> DONE\n";
+    let out = compile(source, brink_options())
+        .unwrap_or_else(|e| panic!("call(f, args…) must compile clean: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}

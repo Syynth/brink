@@ -1634,6 +1634,20 @@ pub enum DiagnosticCode {
     /// surface ever produces — an inferred row that is narrower than the
     /// bound is silent; there is no drift policy.
     E103,
+
+    // ── Computed-callee call attempt (docs/t1c-spec.md §3/§10, issue #869) ──
+    /// A call `expr(args…)` whose callee isn't a bare variable/temp/param
+    /// name (an `INDEX_EXPR`, `FIELD_ACCESS_EXPR`, chained call result,
+    /// parenthesized expr, …). Direct-call syntax is RULED (t1c-spec §3) to
+    /// a bare-name callee only; "method-call syntax" through a computed
+    /// callee is explicitly out of T1c (§10). Always rejected — every
+    /// dialect, every mode — pointing at the ratified `call(f, args…)`
+    /// form, which already dispatches through exactly this class of
+    /// expression correctly. Replaces the pre-existing silent drop (the
+    /// parser used to leave `(args…)` unconsumed, so it resurfaced as
+    /// trailing prose text on the content line and the call itself
+    /// vanished) with a loud, unconditional compile error.
+    E104,
 }
 
 impl DiagnosticCode {
@@ -1748,6 +1762,7 @@ impl DiagnosticCode {
             Self::E101 => "E101",
             Self::E102 => "E102",
             Self::E103 => "E103",
+            Self::E104 => "E104",
         }
     }
 
@@ -1879,6 +1894,9 @@ impl DiagnosticCode {
             Self::E101 => "malformed `#@effects` clause (unknown keyword or non-identifier value)",
             Self::E102 => "`#@effects` clause names an unknown global cell or external",
             Self::E103 => "inferred effects exceed the `#@effects` assertion's declared bound",
+            Self::E104 => {
+                "direct-call syntax requires a bare variable/temp/param callee — use `call(f, args…)` for a computed callee"
+            }
         }
     }
 
@@ -2016,6 +2034,7 @@ impl DiagnosticCode {
             "E101" => Some(Self::E101),
             "E102" => Some(Self::E102),
             "E103" => Some(Self::E103),
+            "E104" => Some(Self::E104),
             _ => None,
         }
     }

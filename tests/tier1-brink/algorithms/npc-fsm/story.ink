@@ -53,12 +53,16 @@
 // - `call(handlers[state], event)`, never `handlers[state](event)` — see
 //   behavior-tree/story.ink finding #3: calling a function value reached
 //   through a map/array index (or a struct field) via direct-call syntax
-//   silently fails to invoke it (compiles clean, returns the bare
+//   used to silently fail to invoke it (compiled clean, returned the bare
 //   function value instead of calling it) rather than being rejected.
 //   Confirmed again here on a map-indexed callee specifically (the
 //   earlier repros covered a struct field and an array element), so the
-//   restriction is confirmed to hold across all three non-bare-name
-//   callee shapes brink's indexing/field-access surface has.
+//   restriction was confirmed to hold across all three non-bare-name
+//   callee shapes brink's indexing/field-access surface has. As of #869
+//   this is now a compile-time `E104` diagnostic naming `call(f, args…)`
+//   as the fix, never a silent no-op — the workaround above stays the
+//   right code to write either way, since `call(...)` is the ratified
+//   form for a computed callee (t1c-spec §3), not a stopgap.
 // - `state` is `#@local`: this is the FSM's own persistent turn-to-turn
 //   memory (which dialogue state the NPC is currently in), the same
 //   category of thing `memoized-fibonacci`'s memo map and

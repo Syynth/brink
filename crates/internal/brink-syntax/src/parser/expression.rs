@@ -1,7 +1,7 @@
 use crate::SyntaxKind::{
-    self, AMP_AMP, ARRAY_LITERAL, BANG, BANG_EQ, BANG_QUESTION, BOOLEAN_LIT, CARET, COLON, COMMA,
-    DIVERT, DIVERT_TARGET_EXPR, DOT, EOF, EQ_EQ, FIELD_ACCESS_EXPR, FLOAT, FLOAT_LIT, FN_LITERAL,
-    FUNCTION_CALL, GT, GT_EQ, HASH, IDENT, IDENTIFIER, INDEX_EXPR, INFIX_EXPR, INTEGER,
+    self, AMP_AMP, ARRAY_LITERAL, BANG, BANG_EQ, BANG_QUESTION, BOOLEAN_LIT, CALL_EXPR, CARET,
+    COLON, COMMA, DIVERT, DIVERT_TARGET_EXPR, DOT, EOF, EQ_EQ, FIELD_ACCESS_EXPR, FLOAT, FLOAT_LIT,
+    FN_LITERAL, FUNCTION_CALL, GT, GT_EQ, HASH, IDENT, IDENTIFIER, INDEX_EXPR, INFIX_EXPR, INTEGER,
     INTEGER_LIT, KW_AND, KW_FALSE, KW_HAS, KW_HASNT, KW_MOD, KW_NOT, KW_OR, KW_REF, KW_TRUE,
     L_BRACE, L_BRACKET, L_PAREN, LIST_EXPR, LT, LT_EQ, MAP_ENTRY, MAP_LITERAL, MINUS, MINUS_EQ,
     NEWLINE, PAREN_EXPR, PERCENT, PIPE, PLUS, PLUS_EQ, POSTFIX_EXPR, PREFIX_EXPR, QUESTION, QUOTE,
@@ -137,6 +137,37 @@ fn expression_bp(p: &mut Parser<'_, '_>, min_bp: Prec) {
             p.start_node(IDENTIFIER);
             p.bump(); // field name
             p.finish_node();
+            p.finish_node();
+            continue;
+        }
+
+        // Postfix call attempt on a non-bare-name callee: `expr(args…)`.
+        // The bare-name shape (`ident` immediately followed by `(`) is
+        // already fully consumed by `function_call` in `atom()` before this
+        // loop ever runs, so reaching `(` here means the callee just parsed
+        // is something else — an `INDEX_EXPR`, `FIELD_ACCESS_EXPR`,
+        // `PAREN_EXPR`, a chained `FUNCTION_CALL` result, etc. Direct-call
+        // syntax is RULED (t1c-spec §3) to a bare variable/temp/param
+        // callee only — dispatch through a computed callee is the
+        // Explicit `call(f, args…)` form instead, and "method-call syntax"
+        // is explicitly out of T1c (§10) — so this is never a legal
+        // construct. Parse it anyway (mirrors `FUNCTION_CALL`'s shape)
+        // rather than leaving `(args…)` unconsumed: today that tail
+        // silently reappears as trailing prose TEXT on the content line,
+        // corrupting output on top of dropping the call entirely (issue
+        // #869's "silent no-op" class — confirmed on all three
+        // non-bare-name callee shapes by the npc-fsm/behavior-tree tier1
+        // corpus fixtures). `brink-ir`'s HIR lowering turns this into a
+        // loud E104 diagnostic instead of a silent drop.
+        if p.current() == L_PAREN {
+            p.start_node_at(checkpoint, CALL_EXPR);
+            p.bump(); // (
+            p.skip_ws();
+            if p.current() != R_PAREN {
+                super::divert::arg_list(p);
+            }
+            p.skip_ws();
+            p.expect(R_PAREN);
             p.finish_node();
             continue;
         }
