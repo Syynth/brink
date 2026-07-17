@@ -1030,6 +1030,15 @@ mod websession_wasm_tests {
 
     #[wasm_bindgen_test]
     fn continue_flow_maximally_returns_every_line_to_the_terminal() {
+        // Per the `Line` contract (CLAUDE.md "Runtime public API" /
+        // docs/execution-model): terminal variants *carry* the text produced
+        // since the last yield, rather than being a content-free marker
+        // following a separate line for that text. So driving "One.\nTwo.\n"
+        // to its `-> END` yields two `Line`s, not three: a `Text` for "One."
+        // and a terminal `End` whose own `text` field holds "Two." — matching
+        // native `Story::continue_flow_maximally_shared`/`drive_to_terminal`
+        // exactly (verified directly against the native API for this same
+        // story/flow before writing this assertion).
         let s = new_session("-> END\n=== bump ===\nOne.\nTwo.\n-> END\n");
         s.spawn_flow("f", Some("bump".to_owned())).expect("spawn");
         let json = s
@@ -1037,10 +1046,16 @@ mod websession_wasm_tests {
             .expect("drives the flow to its terminal line");
         let lines: serde_json::Value = serde_json::from_str(&json).unwrap();
         let arr = lines.as_array().expect("array of Line");
-        assert_eq!(arr.len(), 3, "{json}"); // "One.", "Two.", then the terminal `end`
+        assert_eq!(arr.len(), 2, "{json}"); // "One.", then the terminal `end` carrying "Two."
         assert_eq!(arr[0]["type"], "text");
-        assert_eq!(arr[1]["type"], "text");
-        assert_eq!(arr[2]["type"], "end");
+        assert_eq!(arr[0]["text"], "One.\n");
+        assert_eq!(arr[1]["type"], "end");
+        assert_eq!(arr[1]["text"], "Two.\n");
+        let full_text: String = arr
+            .iter()
+            .map(|l| l["text"].as_str().expect("text field"))
+            .collect();
+        assert_eq!(full_text, "One.\nTwo.\n");
     }
 
     /// #999: a shared flow that emits text forever must error at the wasm
