@@ -32,6 +32,12 @@ serde_json = { workspace = true }
 insta = { workspace = true }
 proptest = { workspace = true }
 brink-syntax = { path = "../brink-syntax" }
+# For the corpus differential oracle (issue #898): extracting a fixed
+# corpus case's seeded VAR literal (grid/weights/values/sequences) out of
+# its story.ink source text, and its printed result out of the golden
+# transcript — already a workspace dep (brink-ir uses it for the
+# dialogue-dialect pattern subset), no new dependency added.
+regex = { workspace = true }
 
 [features]
 # T2 ground-truth effect-completeness harness (issue #870): forwards to

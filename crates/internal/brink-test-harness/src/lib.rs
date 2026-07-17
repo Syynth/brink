@@ -8,6 +8,7 @@ pub mod corpus;
 pub mod diff;
 pub mod episode;
 pub mod explorer;
+pub mod ground_truth;
 pub mod oracle;
 pub mod runner;
 pub mod snapshot_fmt;

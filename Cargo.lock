@@ -2282,6 +2282,7 @@ dependencies = [
  "brink-syntax",
  "insta",
  "proptest",
+ "regex",
  "serde",
  "serde_json",
 ]
