@@ -1,0 +1,5 @@
+flows,serial_batch_turn_ms,parallel_batch_turn_ms,serial_us_per_flow,parallel_us_per_flow,speedup,writes_applied
+1,0.321,0.034,321.29,33.92,9.47,2
+64,0.265,0.165,4.15,2.58,1.61,128
+512,1.089,0.743,2.13,1.45,1.47,1024
+4096,6.538,6.442,1.60,1.57,1.02,8192
