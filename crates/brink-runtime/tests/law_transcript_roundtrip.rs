@@ -22,23 +22,23 @@
 //!   original parts" holds as a plain identity rather than needing a
 //!   filter-then-compare dance.
 //!
-//! ## One real finding, deliberately left unfixed here (see PR scope notes)
+//! ## `Fragment::tags` — fixed (#953)
 //!
-//! `Fragment::tags` does **not** round-trip: `write_transcript` never
-//! serializes a fragment's `tags` field at all, and `read_transcript`
-//! unconditionally reconstructs every decoded fragment with `tags:
-//! Vec::new()`. This is live, populated data in production
+//! `Fragment::tags` used to **not** round-trip: `write_transcript` never
+//! serialized a fragment's `tags` field at all, and `read_transcript`
+//! unconditionally reconstructed every decoded fragment with `tags:
+//! Vec::new()`. This was live, populated data in production
 //! (`OutputBuffer::end_fragment`/`push_fragment_tag`,
 //! `crates/brink-runtime/src/output.rs`) — a real silent-data-drop bug per
 //! `CLAUDE.md`'s "flag silent data drops" rule, found by building this law.
-//! It is **not** a value-model-spec §4 concern (it's the `.brkt` wire
-//! layout for `Fragment`, not `Value` semantics), and fixing it changes the
-//! per-fragment byte layout — a `.brkt` wire-format change wants its own
-//! versioning/back-compat consideration, out of scope for this test-only
-//! issue. So: the main round-trip law below compares `Fragment::parts` only
-//! (documented exclusion, not an oversight), and
-//! `fragment_tags_do_not_round_trip` pins the gap as a named, tracked
-//! regression rather than a silent one.
+//! Fixed by appending a trailing tag section to the `.brkt` body (after the
+//! fragment section) rather than changing the per-fragment record layout —
+//! see `write_transcript`/`read_transcript`'s comments in
+//! `crates/brink-runtime/src/transcript.rs` — so pre-fix `.brkt` files (with
+//! no tag section) keep decoding, falling back to empty tags exactly as
+//! before. The main round-trip law below now compares the full `Fragment`
+//! (parts *and* tags), and `fragment_tags_round_trip_through_transcript_codec`
+//! pins the fix as a named regression test.
 //!
 //! Reproducibility (house determinism rule, `CLAUDE.md`): proptest's default
 //! RNG is entropy-seeded per run, not fixed — generated cases differ run to
@@ -194,10 +194,8 @@ fn arb_output_part() -> impl Strategy<Value = OutputPart> {
 }
 
 /// One `Fragment` — a small run of parts plus tags. `tags` is generated
-/// (never empty-by-construction) specifically so the round-trip law below
-/// exercises — and the dedicated regression test pins — the known
-/// tags-don't-round-trip gap (module doc) rather than vacuously passing
-/// because every generated fragment happened to have no tags.
+/// (including the empty case) so the round-trip law below exercises the
+/// full `Fragment` — parts *and* tags — pinning the #953 fix (module doc).
 fn arb_fragment() -> impl Strategy<Value = Fragment> {
     (
         prop::collection::vec(arb_output_part(), 0..6),
@@ -225,20 +223,18 @@ proptest! {
         prop_assert_eq!(&data.parts, &parts);
         prop_assert_eq!(data.fragments.len(), fragments.len());
         for (decoded, original) in data.fragments.iter().zip(fragments.iter()) {
-            // `.tags` deliberately excluded — see module doc's "known
-            // finding" section and `fragment_tags_do_not_round_trip` below.
             prop_assert_eq!(&decoded.parts, &original.parts);
+            prop_assert_eq!(&decoded.tags, &original.tags);
         }
     }
 }
 
-/// Pins the `Fragment::tags` data-drop as a named, tracked regression
-/// (module doc) rather than letting the property test above silently
-/// exclude it forever. If this test ever starts failing (i.e. tags do come
-/// back non-empty), the gap has been fixed — update/remove this test and
-/// fold `tags` into the main round-trip law's fragment comparison instead.
+/// Pins the #953 fix as a named regression test: `Fragment::tags` now
+/// round-trips through the `.brkt` transcript codec. If this test starts
+/// failing, the trailing tag section (`write_transcript`/`read_transcript`
+/// in `crates/brink-runtime/src/transcript.rs`) has regressed.
 #[test]
-fn fragment_tags_do_not_round_trip_through_transcript_codec() {
+fn fragment_tags_round_trip_through_transcript_codec() {
     let fragment = Fragment {
         parts: vec![OutputPart::Text("hello".to_string())],
         tags: vec!["a_tag".to_string()],
@@ -247,15 +243,9 @@ fn fragment_tags_do_not_round_trip_through_transcript_codec() {
     let data = read_transcript(&bytes).expect("well-formed transcript must decode");
 
     assert_eq!(data.fragments.len(), 1);
+    assert_eq!(data.fragments[0].parts, fragment.parts, "parts round-trip");
     assert_eq!(
-        data.fragments[0].parts, fragment.parts,
-        "parts do round-trip"
-    );
-    assert!(
-        data.fragments[0].tags.is_empty(),
-        "known gap (issue #746): Fragment::tags is silently dropped by the \
-         .brkt transcript codec — write_transcript never serializes it and \
-         read_transcript always reconstructs an empty Vec. If this assertion \
-         starts failing, the codec has been fixed; update this test."
+        data.fragments[0].tags, fragment.tags,
+        "tags round-trip (fixed by #953)"
     );
 }

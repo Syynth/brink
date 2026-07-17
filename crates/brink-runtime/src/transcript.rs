@@ -221,6 +221,22 @@ pub fn write_transcript(
         }
     }
 
+    // Serialize fragment tags, appended as a trailing section *after* every
+    // fragment's parts (rather than inline per-fragment) so that a `.brkt`
+    // file written before this section existed remains readable: the reader
+    // detects the section's absence via a plain "any bytes left?" check (the
+    // same backward-compat idiom already used for the fragment section
+    // itself, above) and falls back to empty tags, instead of misreading a
+    // later fragment's part bytes as an earlier fragment's tag bytes (which
+    // an inline per-fragment layout could not distinguish after the fact).
+    // Fixes #953: `Fragment::tags` was silently dropped by this codec.
+    for fragment in fragments {
+        write_u32(&mut body, fragment.tags.len() as u32);
+        for tag in &fragment.tags {
+            write_str(&mut body, tag);
+        }
+    }
+
     // Build header
     let content_crc = crc32(&body);
     let mut buf = Vec::with_capacity(HEADER_SIZE + body.len());
@@ -250,6 +266,11 @@ pub struct TranscriptData {
 }
 
 /// Deserialize a transcript from the `.brkt` binary format.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per part tag, duplicated for the top-level parts \
+              and the per-fragment parts, plus the #953 trailing tag section"
+)]
 pub fn read_transcript(bytes: &[u8]) -> Result<TranscriptData, TranscriptError> {
     if bytes.len() < HEADER_SIZE {
         return Err(TranscriptError::UnexpectedEof);
@@ -354,6 +375,24 @@ pub fn read_transcript(bytes: &[u8]) -> Result<TranscriptData, TranscriptError> 
             parts: frag_parts,
             tags: Vec::new(),
         });
+    }
+
+    // Fragment tags (fixes #953): a trailing section written after every
+    // fragment's parts (see `write_transcript`'s matching comment). Older
+    // transcripts written before this section existed end exactly at the
+    // fragment section, so `off == bytes.len()` there and every fragment
+    // keeps the empty `tags` it was constructed with above — the same
+    // observable (if buggy) behavior those files always had, preserved for
+    // backward compatibility rather than erroring on legacy saves.
+    if off < bytes.len() {
+        for fragment in &mut fragments {
+            let tag_count = read_u32(bytes, &mut off)? as usize;
+            let mut tags = Vec::with_capacity(tag_count.min(bytes.len().saturating_sub(off)));
+            for _ in 0..tag_count {
+                tags.push(read_str(bytes, &mut off)?);
+            }
+            fragment.tags = tags;
+        }
     }
 
     Ok(TranscriptData {
@@ -1023,6 +1062,69 @@ mod tests {
         assert_eq!(data.parts.len(), 2); // Checkpoint filtered
         assert!(matches!(&data.parts[0], OutputPart::Text(_)));
         assert!(matches!(&data.parts[1], OutputPart::Newline));
+    }
+
+    // ── #953: Fragment::tags round-trip ─────────────────────────────────────
+    //
+    // `write_transcript` never serialized `Fragment::tags` and
+    // `read_transcript` always reconstructed an empty `Vec` — a transcript
+    // with tagged fragments (live, populated data — see
+    // `OutputBuffer::push_fragment_tag`) round-tripped to untagged. This
+    // pins the fix: tags now travel through the `.brkt` codec.
+    #[test]
+    fn round_trip_fragment_tags() {
+        let fragments = vec![
+            crate::output::Fragment {
+                parts: vec![OutputPart::Text("hp: 10".to_string())],
+                tags: vec!["a_tag".to_string(), "b_tag".to_string()],
+            },
+            crate::output::Fragment {
+                parts: vec![OutputPart::Newline],
+                tags: Vec::new(),
+            },
+        ];
+        let bytes = write_transcript(&[], 0, &fragments);
+        let data = read_transcript(&bytes).unwrap();
+
+        assert_eq!(data.fragments.len(), 2);
+        assert_eq!(
+            data.fragments[0].tags,
+            vec!["a_tag".to_string(), "b_tag".to_string()]
+        );
+        assert_eq!(data.fragments[0].parts, fragments[0].parts);
+        assert!(data.fragments[1].tags.is_empty());
+    }
+
+    // Every `.brkt` file written before this fix has the fragment section
+    // (fragment_count + per-fragment parts) with NO trailing tag section —
+    // the reader must keep decoding those files (not error), falling back
+    // to empty tags per fragment, exactly as it did before this fix. This
+    // hand-builds that exact pre-fix byte shape rather than relying on the
+    // current writer (which now always appends the tag section) so the
+    // legacy shape is pinned even after the writer changes further.
+    #[test]
+    fn legacy_transcript_without_tag_section_reads_as_empty_tags() {
+        let mut body = Vec::new();
+        write_u32(&mut body, 0); // part count
+        write_u32(&mut body, 1); // fragment count
+        write_u32(&mut body, 1); // fragment 0's part count
+        write_u8(&mut body, TAG_TEXT);
+        write_str(&mut body, "legacy");
+        // (no tag section appended — matches the pre-#953 writer)
+
+        let content_crc = crc32(&body);
+        let mut bytes = Vec::with_capacity(HEADER_SIZE + body.len());
+        bytes.extend_from_slice(MAGIC);
+        write_u16(&mut bytes, VERSION);
+        write_u16(&mut bytes, 0);
+        write_u32(&mut bytes, 0xCAFE_BABE);
+        write_u32(&mut bytes, content_crc);
+        bytes.extend(body);
+
+        let data = read_transcript(&bytes).expect("legacy transcript must still decode");
+        assert_eq!(data.fragments.len(), 1);
+        assert!(matches!(&data.fragments[0].parts[0], OutputPart::Text(s) if s == "legacy"));
+        assert!(data.fragments[0].tags.is_empty());
     }
 
     #[test]

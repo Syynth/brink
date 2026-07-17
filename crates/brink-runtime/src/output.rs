@@ -266,7 +266,7 @@ fn resolve_select<'a>(
 }
 
 /// A finalized fragment — structural output parts plus any associated tags.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Fragment {
     pub parts: Vec<OutputPart>,
     pub tags: Vec<String>,
