@@ -6,7 +6,7 @@ use bevy_asset::{Asset, AssetLoader, Handle, LoadContext, io::Reader};
 use bevy_ecs::bundle::Bundle;
 use bevy_ecs::component::Component;
 use bevy_reflect::TypePath;
-use brink_format::LineEntry;
+use brink_format::{EffectRowEntry, LineEntry};
 use brink_runtime::{FlowInstance, Program, RuntimeError, World};
 
 use crate::line_tables::BrinkLocale;
@@ -40,6 +40,16 @@ use crate::line_tables::BrinkLocale;
 pub struct ProgramAsset {
     pub program: Program,
     pub initial_context: World,
+    /// The story's decoded `EffectRows` `DefinitionId → row` table (T2-3,
+    /// `docs/effects-spec.md` §11; PR #878) — carried here rather than on
+    /// [`Program`] itself because BH-1's capability join
+    /// (`crate::capability::compute_container_access`) needs a live
+    /// `CapabilityRegistry` resource (app `World` access) to resolve
+    /// capability names to `ComponentId`s, which an [`AssetLoader`] never
+    /// has; the join runs later, in a system reacting to this asset's load
+    /// event, so the rows must survive to that point. Empty for stories
+    /// compiled before T2-3 shipped rows, or that declare no knots/stitches.
+    pub effect_rows: Vec<EffectRowEntry>,
 }
 
 /// The localized line-table portion of a compiled story — the swappable
@@ -115,7 +125,12 @@ impl AssetLoader for InkbLoader {
         reader.read_to_end(&mut bytes).await?;
         let story_data = brink_format::read_inkb(&bytes)?;
         let (program, tables) = brink_runtime::link(&story_data)?;
-        Ok(emit_story_assets(load_context, program, tables))
+        Ok(emit_story_assets(
+            load_context,
+            program,
+            tables,
+            story_data.effect_rows,
+        ))
     }
 
     fn extensions(&self) -> &[&str] {
@@ -140,6 +155,7 @@ pub(crate) fn emit_story_assets(
     load_context: &mut LoadContext<'_>,
     program: Program,
     tables: Vec<Vec<LineEntry>>,
+    effect_rows: Vec<EffectRowEntry>,
 ) -> BrinkStoryAsset {
     let initial_context = fresh_context(&program);
     let program = load_context.add_labeled_asset(
@@ -147,6 +163,7 @@ pub(crate) fn emit_story_assets(
         ProgramAsset {
             program,
             initial_context,
+            effect_rows,
         },
     );
     let line_tables =

@@ -145,7 +145,12 @@ impl AssetLoader for InkLoader {
             })
         })?;
         let (program, tables) = brink_runtime::link(&output.data)?;
-        Ok(emit_story_assets(load_context, program, tables))
+        Ok(emit_story_assets(
+            load_context,
+            program,
+            tables,
+            output.data.effect_rows,
+        ))
     }
 
     fn extensions(&self) -> &[&str] {
