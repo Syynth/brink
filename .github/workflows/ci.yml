@@ -80,6 +80,36 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - run: cargo test --workspace
 
+  # `--features bench-counters` is off by default (it's a compile-time cut,
+  # not a runtime toggle — see `crates/brink-runtime/src/bench_counters.rs`),
+  # so the `test` job above never builds or runs anything gated on it. PR
+  # #921's counter-forwarding proofs
+  # (`collection_global_axis_forwards_nonzero_counters` plus the
+  # bench-counters-gated scenario-story compile+run) only ever ran locally
+  # until this job existed (#923, tracked from #897). A separate job (not a
+  # step folded into `test`) so its own distinct feature/cache combination is
+  # visible in the checks list and a failure here can't be masked by the
+  # default-feature run passing.
+  test-bench-counters:
+    name: Test (bench-counters)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      # Same bevy-brink dev-dependency system libs as the `test` job above.
+      - name: Install Linux dependencies (bevy)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: bench-counters
+      - run: cargo test -p bevy-brink -p brink-runtime --features bench-counters
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest

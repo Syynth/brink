@@ -18,7 +18,13 @@ use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::query::Without;
 use bevy_ecs::system::{Commands, Query, Res, ResMut};
-use bevy_log::{error, warn};
+use bevy_log::error;
+// Only the `#[cfg(debug_assertions)]` variant of `warn_post_fulfillment_mutations`
+// below calls `warn!`; in non-debug builds (e.g. the `bench` profile used by
+// `benches/scenario_bench.rs` under `--features bench-counters`) that variant
+// isn't compiled, so an unconditional import would be unused there.
+#[cfg(debug_assertions)]
+use bevy_log::warn;
 use brink_runtime::{FlowInstance, FlowLocal, World};
 
 use crate::asset::{BrinkStory, BrinkStoryAsset, ProgramAsset};
@@ -222,7 +228,19 @@ pub fn warn_post_fulfillment_mutations<M: Send + Sync + 'static>(
     }
 }
 
+// Never called: `BrinkPlugin::build` only wires the debug variant above
+// (its `app.add_systems` call is itself `#[cfg(debug_assertions)]`-gated),
+// so this stub exists purely to give the generic a body in non-debug
+// builds. Confirmed via `RUSTFLAGS="-C debug-assertions=off" cargo clippy
+// -p bevy-brink --features bench-counters` (#923) — the profile that
+// actually flips `debug_assertions` off is `bench` (built by
+// `benches/scenario_bench.rs`, gated on this same feature), which no
+// default CI job exercised until #923 wired one up.
 #[cfg(not(debug_assertions))]
+#[expect(
+    dead_code,
+    reason = "generic stub kept for API parity with the debug_assertions variant; never called in release/bench profiles"
+)]
 pub fn warn_post_fulfillment_mutations<M: Send + Sync + 'static>() {}
 
 #[cfg(test)]
