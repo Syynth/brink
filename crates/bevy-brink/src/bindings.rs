@@ -863,7 +863,10 @@ fn emit_line_event_world<M: Send + Sync + 'static>(world: &mut World, entity: En
                 BrinkChoicesPresented::<M>::new(e, text.clone(), tags.clone(), choices.clone())
             });
         }
-        Line::Done { text, tags } => {
+        // A park (`Line::Suspended`, FS-3r) is a turn boundary like `Done`;
+        // runtime-unreachable today behind the E052 fence, grouped here so
+        // the exhaustive match keeps compiling as the variant lands.
+        Line::Done { text, tags } | Line::Suspended { text, tags } => {
             world
                 .entity_mut(entity)
                 .trigger(|e| BrinkTurnDone::<M>::new(e, text.clone(), tags.clone()));

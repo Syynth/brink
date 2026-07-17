@@ -308,7 +308,10 @@ pub(crate) fn emit_event<M: Send + Sync + 'static>(
             tags.clone(),
             choices.clone(),
         )),
-        Line::Done { text, tags } => {
+        // A park (`Line::Suspended`, FS-3r) is a turn boundary like `Done`;
+        // runtime-unreachable today behind the E052 fence, grouped here so
+        // the exhaustive match keeps compiling as the variant lands.
+        Line::Done { text, tags } | Line::Suspended { text, tags } => {
             commands.trigger(BrinkTurnDone::<M>::new(entity, text.clone(), tags.clone()));
         }
         Line::End { text, tags } => commands.trigger(BrinkStoryEnded::<M>::new(

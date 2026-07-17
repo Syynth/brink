@@ -741,6 +741,18 @@ pub(crate) fn line_to_js(line: brink_runtime::Line) -> LineJs {
             choices: None,
             name: None,
         },
+        // FS-3w (`docs/flow-suspension-spec.md` §10.1): a flow parked at an
+        // `await`. Runtime-unreachable until FS-3r — the E052 fence keeps
+        // `await` from producing bytecode — but its marshal leg ships now so
+        // the `@brink-lang/web` `Line` union carries `"suspended"` and hosts
+        // migrate the API shape early.
+        brink_runtime::Line::Suspended { text, tags } => LineJs {
+            r#type: "suspended",
+            text,
+            tags,
+            choices: None,
+            name: None,
+        },
     }
 }
 

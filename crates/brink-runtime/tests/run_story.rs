@@ -38,7 +38,7 @@ fn run_story_data(data: &brink_format::StoryData, inputs: &[usize]) -> String {
     loop {
         match story.continue_single().unwrap() {
             Line::Text { text, .. } => output.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } => {
+            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
                 output.push_str(&text);
                 return output;
             }

@@ -252,6 +252,24 @@ impl WebSession {
             .map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// Re-evaluate parked flows' wake conditions and return a JSON array of
+    /// the flow ids that woke (`docs/flow-suspension-spec.md` §10.2).
+    /// Waking never auto-continues — drive a woken flow with `continueFlow`.
+    ///
+    /// **Returns `[]` until parks exist (FS-3r).** No flow can park in
+    /// today's runtime (the E052 fence keeps `await` from lowering, so
+    /// `Line::Suspended` is unreachable). Exported now so hosts wire the
+    /// wake loop against a stable shape.
+    pub fn wake_check(&self) -> Result<String, JsError> {
+        let _guard = BusyGuard::acquire(&self.busy).ok_or_else(|| reentrant_error("wake_check"))?;
+        let mut borrow = self.session.borrow_mut();
+        let session = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("session not initialized"))?;
+        serde_json::to_string(&session.story_mut().wake_check())
+            .map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
     // ── Stepping ──────────────────────────────────────────────────
 
     /// Advance one step. Returns `StepOutcomeJs` JSON: `{ "type": "line",

@@ -60,6 +60,23 @@ pub enum Line {
     },
     /// The story has permanently ended (ink `-> END`).
     End { text: String, tags: Vec<String> },
+    /// A flow parked at an `await` site (the `FlowFrame` model,
+    /// `docs/flow-suspension-spec.md` §10.1). Like `Done`, a park is a
+    /// **turn boundary**: text accumulated before the park flushes with
+    /// it, so the pre-`await` state is never held hostage. The host wakes
+    /// the flow via [`Story::wake_check`] and drives it when it wants
+    /// output — a park never auto-continues.
+    ///
+    /// **Runtime-unreachable until FS-3r.** No code path in today's
+    /// runtime constructs this variant — the E052 lowering fence
+    /// (`docs/flow-suspension-spec.md` §11.4) keeps `await` from
+    /// producing bytecode, so `park`/`spill`/`resume` do not yet exist.
+    /// It ships now (FS-3w, the web-surface slice) purely so consumers
+    /// migrate the API *shape* early: every marshal leg over `Line` names
+    /// it, and adding it makes each missed leg a compile error by design.
+    /// See `line_suspended_is_terminal_and_never_constructed_in_runtime`
+    /// for the "nothing constructs it" guard.
+    Suspended { text: String, tags: Vec<String> },
 }
 
 impl Line {
@@ -69,7 +86,8 @@ impl Line {
             Self::Text { text, .. }
             | Self::Done { text, .. }
             | Self::Choices { text, .. }
-            | Self::End { text, .. } => text,
+            | Self::End { text, .. }
+            | Self::Suspended { text, .. } => text,
         }
     }
 
@@ -79,11 +97,14 @@ impl Line {
             Self::Text { tags, .. }
             | Self::Done { tags, .. }
             | Self::Choices { tags, .. }
-            | Self::End { tags, .. } => tags,
+            | Self::End { tags, .. }
+            | Self::Suspended { tags, .. } => tags,
         }
     }
 
-    /// Returns true if this is a terminal variant (`Done`, `Choices`, or `End`).
+    /// Returns true if this is a terminal variant (`Done`, `Choices`,
+    /// `End`, or `Suspended`) — anything but `Text`. A park is a turn
+    /// boundary, so `Suspended` is terminal.
     pub fn is_terminal(&self) -> bool {
         !matches!(self, Self::Text { .. })
     }
@@ -2695,6 +2716,28 @@ impl<R: StoryRng> Story<R> {
         names
     }
 
+    /// Re-evaluate the wake conditions of parked flows and return the ids
+    /// of the flows that woke, sorted for determinism
+    /// (`docs/flow-suspension-spec.md` §10.2). Waking never auto-continues:
+    /// the host drives a woken flow via [`Story::continue_flow_single`] when
+    /// it wants output.
+    ///
+    /// **Returns an empty list until parks exist (FS-3r).** No flow can be
+    /// parked in today's runtime — the E052 lowering fence keeps `await`
+    /// from producing bytecode ([`Line::Suspended`] is unreachable), so
+    /// there are no conditions to re-evaluate. The method ships now (FS-3w)
+    /// so hosts wire the wake loop against a stable shape; FS-3r fills in
+    /// real condition evaluation + dirty-tracking without changing this
+    /// signature. Dirty-tracking is not built here — this is the free stub.
+    #[must_use]
+    pub fn wake_check(&mut self) -> Vec<String> {
+        // FS-3r: iterate parked flows, re-evaluate each dirty condition in
+        // the owning flow's context via the isolated function-eval
+        // machinery, collect woken ids. No flow can be parked yet, so the
+        // woken set is always empty.
+        Vec::new()
+    }
+
     // ── Shared flows (#200) ─────────────────────────────────────────
     // Spawn a flow that **shares** `default_context` (globals / visit counts /
     // rng) with the default flow — true ink concurrent-flow semantics — while
@@ -3197,6 +3240,7 @@ mod tests {
                 Line::Text { .. } => {}
                 Line::Done { .. } => panic!("story hit Done before presenting choices"),
                 Line::End { .. } => panic!("story ended before presenting choices"),
+                Line::Suspended { .. } => panic!("story parked before presenting choices"),
             }
         }
     }
@@ -3209,7 +3253,8 @@ mod tests {
             match story.continue_single().unwrap() {
                 Line::Choices { text: t, .. }
                 | Line::Done { text: t, .. }
-                | Line::End { text: t, .. } => {
+                | Line::End { text: t, .. }
+                | Line::Suspended { text: t, .. } => {
                     text.push_str(&t);
                     return text;
                 }
@@ -3263,6 +3308,61 @@ mod tests {
         let data = brink_format::read_inkb(&bytes).expect("decode");
         let (prog, tables) = link(&data).expect("link");
         Story::new(Arc::new(prog), tables)
+    }
+
+    /// FS-3w guard (`docs/flow-suspension-spec.md` §10.1): `Line::Suspended`
+    /// ships on the `Line` surface now but is **runtime-unreachable until
+    /// FS-3r** — the E052 lowering fence keeps `await` from producing
+    /// bytecode, so no `park`/`spill`/`resume` path exists to construct it.
+    /// This pins both halves: the variant's accessor/terminal contract, and
+    /// that driving a representative story (including one that spins up a
+    /// shared flow) never yields a `Suspended` line, and that `wake_check`
+    /// reports no woken flows because none can park.
+    #[test]
+    fn line_suspended_is_terminal_and_never_constructed_in_runtime() {
+        // The variant behaves like any other terminal: it carries text/tags
+        // and reports terminal.
+        let parked = Line::Suspended {
+            text: "pre-await".to_owned(),
+            tags: vec!["t".to_owned()],
+        };
+        assert_eq!(parked.text(), "pre-await");
+        assert_eq!(parked.tags(), ["t".to_owned()]);
+        assert!(parked.is_terminal(), "a park is a turn boundary");
+
+        // Drive a small story with a shared flow to a terminal; nothing the
+        // runtime produces is ever `Suspended`.
+        let src = "Hello -> knot\n== knot ==\nWorld\n-> DONE\n";
+        let mut story = story_from_source(src);
+        story
+            .spawn_flow_shared("f", None)
+            .expect("spawn shared flow");
+        for _ in 0..64 {
+            let line = story.continue_single().expect("continue");
+            assert!(
+                !matches!(line, Line::Suspended { .. }),
+                "runtime must never construct Line::Suspended before FS-3r"
+            );
+            if line.is_terminal() {
+                break;
+            }
+        }
+        for _ in 0..64 {
+            let line = story.continue_flow_single("f").expect("continue flow");
+            assert!(
+                !matches!(line, Line::Suspended { .. }),
+                "a shared flow must never construct Line::Suspended before FS-3r"
+            );
+            if line.is_terminal() {
+                break;
+            }
+        }
+
+        // No flow can park, so `wake_check` reports an empty woken set.
+        assert!(
+            story.wake_check().is_empty(),
+            "wake_check returns no woken flows until parks exist (FS-3r)"
+        );
     }
 
     /// `Choice.index` (the live, visible choice list) must be the *raw*

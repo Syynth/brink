@@ -119,7 +119,10 @@ pub fn record(
                 });
             }
 
-            Line::Done { text, tags } => {
+            // `Suspended` (an FS-3r park) is a terminal turn boundary
+            // recorded exactly like `Done`; runtime-unreachable today behind
+            // the E052 fence, grouped so the arm bodies stay identical.
+            Line::Done { text, tags } | Line::Suspended { text, tags } => {
                 steps.push(StepRecord {
                     text,
                     tags,
@@ -239,7 +242,9 @@ pub fn run_text(
             .map_err(|e| format!("runtime error: {e}"))?;
         output.push_str(line.text());
         match &line {
-            Line::Done { .. } | Line::End { .. } => return Ok(output),
+            // `Suspended` (FS-3r park) is a terminal turn boundary, grouped
+            // with the other terminals; runtime-unreachable today.
+            Line::Done { .. } | Line::End { .. } | Line::Suspended { .. } => return Ok(output),
             Line::Text { .. } => {} // keep going
             Line::Choices { choices, .. } => {
                 if input_idx >= inputs.len() {

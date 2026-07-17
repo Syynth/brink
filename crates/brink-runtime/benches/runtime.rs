@@ -194,7 +194,7 @@ fn run_to_completion(
         for line in story.continue_maximally().unwrap() {
             match line {
                 Line::Text { .. } => {}
-                Line::Done { .. } | Line::End { .. } => {
+                Line::Done { .. } | Line::End { .. } | Line::Suspended { .. } => {
                     done = true;
                 }
                 Line::Choices { choices, .. } => {
@@ -236,7 +236,7 @@ fn run_to_completion_keep_story(
         for line in story.continue_maximally().unwrap() {
             match line {
                 Line::Text { .. } => {}
-                Line::Done { .. } | Line::End { .. } => {
+                Line::Done { .. } | Line::End { .. } | Line::Suspended { .. } => {
                     done = true;
                 }
                 Line::Choices { choices, .. } => {

@@ -205,6 +205,28 @@ fn explore_inner(
                 return;
             }
 
+            // Runtime-unreachable until FS-3r (the E052 fence keeps `await`
+            // from producing bytecode, so no flow can park). A park is a
+            // turn boundary; if one ever surfaced here, record it as a
+            // completed turn so exploration terminates cleanly rather than
+            // silently dropping the step.
+            Line::Suspended { text, tags } => {
+                steps.push(StepRecord {
+                    text,
+                    tags,
+                    outcome: StepOutcome::Done,
+                    external_calls: Vec::new(),
+                    writes,
+                });
+                episodes.push(Episode {
+                    steps,
+                    outcome: Outcome::Done,
+                    choice_path,
+                    initial_state: initial_state.clone(),
+                });
+                return;
+            }
+
             Line::Choices {
                 text,
                 tags,
