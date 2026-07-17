@@ -838,20 +838,33 @@ fn parse_effect_row(pair: &P<'_>) -> Result<EffectRowEntry, InktParseError> {
             .next()
             .ok_or_else(|| err(pair, "expected row def_id"))?,
     )?;
-    let reads = parse_effect_cells(inner.next().ok_or_else(|| err(pair, "expected reads"))?)?;
-    let writes = parse_effect_cells(inner.next().ok_or_else(|| err(pair, "expected writes"))?)?;
-    let calls = parse_effect_calls(inner.next().ok_or_else(|| err(pair, "expected calls"))?)?;
+    // #882 freeze bit: defaults to `true` (host entry point) — `internal_flag`
+    // is present only for a `#@private` def (see `EffectRowEntry::is_entry`'s
+    // doc). Parsed rule-by-rule (not positionally) because this optional
+    // token sits before the mandatory reads/writes/calls triple.
+    let mut is_entry = true;
+    let mut reads = None;
+    let mut writes = None;
+    let mut calls = None;
     let mut opaque = false;
     let mut dispatches = Vec::new();
     for rest in inner {
         match rest.as_rule() {
+            Rule::internal_flag => is_entry = false,
+            Rule::effects_reads => reads = Some(parse_effect_cells(rest)?),
+            Rule::effects_writes => writes = Some(parse_effect_cells(rest)?),
+            Rule::effects_calls => calls = Some(parse_effect_calls(rest)?),
             Rule::opaque_flag => opaque = true,
             Rule::dispatch_entry => dispatches.push(parse_dispatch_entry(&rest)?),
             _ => {}
         }
     }
+    let reads = reads.ok_or_else(|| err(pair, "expected reads"))?;
+    let writes = writes.ok_or_else(|| err(pair, "expected writes"))?;
+    let calls = calls.ok_or_else(|| err(pair, "expected calls"))?;
     Ok(EffectRowEntry {
         def,
+        is_entry,
         direct: DirectEffects {
             reads,
             writes,

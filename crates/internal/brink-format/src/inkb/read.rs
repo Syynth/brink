@@ -654,11 +654,14 @@ pub fn read_section_effect_rows(
         });
     }
     let count = read_u32(buf, &mut off)? as usize;
-    // Minimum per-entry footprint: def_id(8) + direct(3×u32 counts + opaque) +
-    // dispatch count(4) = 8 + 12 + 1 + 4 = 25 bytes.
-    let mut rows = Vec::with_capacity(safe_capacity(count, buf.len(), off, 25));
+    // Minimum per-entry footprint: def_id(8) + is_entry(1) +
+    // direct(3×u32 counts + opaque) + dispatch count(4) = 8 + 1 + 12 + 1 + 4
+    // = 26 bytes.
+    let mut rows = Vec::with_capacity(safe_capacity(count, buf.len(), off, 26));
     for _ in 0..count {
         let def = read_def_id(buf, &mut off)?;
+        // #882 freeze bit — see `EffectRowEntry::is_entry`'s doc.
+        let is_entry = read_u8(buf, &mut off)? != 0;
         let direct = decode_direct_effects(buf, &mut off)?;
         let dispatch_count = read_u32(buf, &mut off)? as usize;
         let mut dispatches = Vec::with_capacity(safe_capacity(dispatch_count, buf.len(), off, 13));
@@ -674,6 +677,7 @@ pub fn read_section_effect_rows(
         }
         rows.push(EffectRowEntry {
             def,
+            is_entry,
             direct,
             dispatches,
         });

@@ -260,7 +260,10 @@ fn write_effect_rows(w: &mut dyn fmt::Write, rows: &[EffectRowEntry]) -> fmt::Re
     writeln!(w)?;
     writeln!(w, "  (effect_rows")?;
     for row in rows {
-        writeln!(w, "    (row {}", row.def)?;
+        // #882 freeze bit: `internal` prints only when the row is NOT a host
+        // entry point (`#@private` — see `EffectRowEntry::is_entry`'s doc).
+        let internal = if row.is_entry { "" } else { " internal" };
+        writeln!(w, "    (row {}{internal}", row.def)?;
         write_direct_effects(w, &row.direct, 6)?;
         for d in &row.dispatches {
             let narrowable = if d.narrowable { " narrowable" } else { "" };
