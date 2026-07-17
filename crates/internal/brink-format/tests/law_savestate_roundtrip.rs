@@ -32,7 +32,7 @@ mod law_support;
 use std::collections::BTreeMap;
 
 use brink_format::{DefinitionId, SAVE_FORMAT_VERSION, SaveState, Value, VisitEntry};
-use law_support::{arb_def_id, arb_value_full};
+use law_support::{arb_def_id, arb_suspended_flow, arb_value_full};
 use proptest::prelude::*;
 
 fn arb_visit_entry() -> impl Strategy<Value = VisitEntry> {
@@ -83,9 +83,19 @@ fn arb_save_state() -> impl Strategy<Value = SaveState> {
         any::<u32>(),
         any::<i32>(),
         any::<i32>(),
+        prop::option::of(arb_suspended_flow()),
     )
         .prop_map(
-            |(globals, global_ids, visits, turns, turn_index, rng_seed, previous_random)| {
+            |(
+                globals,
+                global_ids,
+                visits,
+                turns,
+                turn_index,
+                rng_seed,
+                previous_random,
+                suspended,
+            )| {
                 SaveState {
                     version: SAVE_FORMAT_VERSION,
                     globals,
@@ -95,6 +105,7 @@ fn arb_save_state() -> impl Strategy<Value = SaveState> {
                     turn_index,
                     rng_seed,
                     previous_random,
+                    suspended,
                 }
             },
         )
@@ -134,6 +145,7 @@ proptest! {
             turn_index: 0,
             rng_seed: 0,
             previous_random: 0,
+            suspended: None,
         };
 
         let json = serde_json::to_string(&save).expect("serialize SaveState");
