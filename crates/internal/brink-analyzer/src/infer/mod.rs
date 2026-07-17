@@ -234,7 +234,12 @@ fn index_resolutions_by_file(
 /// has no `Fn` form (`Sig::fn_type`'s doc) — the two are mutually exclusive
 /// per declaration, so trying `value_type` first and falling back to
 /// `fn_type` never masks either.
-fn collect_globals(
+///
+/// `pub(crate)` (issue #670) so `structs::check`'s non-literal struct-field
+/// classification can resolve a variable-valued initializer that names a
+/// global `VAR`/`CONST` against this exact same declaration-derived type,
+/// rather than re-deriving it.
+pub(crate) fn collect_globals(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
     manifest: Option<&HostManifest>,

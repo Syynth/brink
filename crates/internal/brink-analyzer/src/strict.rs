@@ -169,7 +169,7 @@ pub fn check(
     out.extend(check_value_calls(files, index, inference));
     // TM-4b (docs/typed-mode-spec.md §6): missing/extra/mistyped struct
     // construction-literal fields — strict-mode-only, per the crate doc.
-    out.extend(crate::structs::check(files, index));
+    out.extend(crate::structs::check(files, index, inference, resolutions));
     // T1e-1 (docs/t1e-spec.md §6, issue #831): a `ref lvalue-path`
     // projection's segments (dotted fields, `[…]` indices) checked against
     // the root's statically-known declared shape — strict-mode-only, same
