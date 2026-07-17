@@ -755,3 +755,120 @@ fn move_file_json_preview_has_the_mutation_shape() {
     assert!(v["introducedDiagnostics"].as_array().unwrap().is_empty());
     fs::remove_dir_all(&dir).ok();
 }
+
+// ── effects-diff (T2-4, #863, docs/effects-spec.md §10) ─────────────────
+
+/// A baseline project: `spend` reads + writes `gold`.
+const EFFECTS_BASE: &str =
+    "VAR gold = 10\n-> spend\n\n=== spend ===\n~ gold = gold - 1\nSpent.\n-> END\n";
+
+/// The same project after an edit: `spend` now also reads + writes `silver`.
+const EFFECTS_HEAD: &str = "VAR gold = 10\nVAR silver = 5\n-> spend\n\n=== spend ===\n~ gold = gold - 1\n~ silver = silver + 1\nSpent.\n-> END\n";
+
+#[test]
+fn effects_diff_base_reports_a_changed_row_as_markdown() {
+    let base = write("effdiff-base", EFFECTS_BASE);
+    let head = write("effdiff-head", EFFECTS_HEAD);
+    let out = brink()
+        .args(["ide", "effects-diff", "--base"])
+        .arg(&base)
+        .arg("-e")
+        .arg(&head)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("## Effect row diff"), "{stdout}");
+    assert!(stdout.contains("**knot spend** — changed"), "{stdout}");
+    assert!(stdout.contains("silver"), "{stdout}");
+    fs::remove_file(&base).ok();
+    fs::remove_file(&head).ok();
+}
+
+#[test]
+fn effects_diff_json_shape() {
+    let base = write("effdiff-json-base", EFFECTS_BASE);
+    let head = write("effdiff-json-head", EFFECTS_HEAD);
+    let out = brink()
+        .args(["ide", "effects-diff", "--format", "json", "--base"])
+        .arg(&base)
+        .arg("-e")
+        .arg(&head)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["changed"], 1, "{v}");
+    assert_eq!(v["added"], 0, "{v}");
+    assert_eq!(v["removed"], 0, "{v}");
+    let entry = &v["entries"][0];
+    assert_eq!(entry["def"], "knot spend", "{v}");
+    assert_eq!(entry["change"], "changed", "{v}");
+    assert!(
+        entry["head"]["writes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x == "silver"),
+        "{v}"
+    );
+    fs::remove_file(&base).ok();
+    fs::remove_file(&head).ok();
+}
+
+#[test]
+fn effects_diff_exit_code_flag_fails_on_change_and_passes_when_identical() {
+    let base = write("effdiff-ec-base", EFFECTS_BASE);
+    let head = write("effdiff-ec-head", EFFECTS_HEAD);
+    // --exit-code: nonzero when rows moved.
+    let changed = brink()
+        .args(["ide", "effects-diff", "--exit-code", "--base"])
+        .arg(&base)
+        .arg("-e")
+        .arg(&head)
+        .output()
+        .unwrap();
+    assert_eq!(changed.status.code(), Some(1), "changed rows must exit 1");
+    // Identical projects: no change, exit 0, reassuring message.
+    let same = brink()
+        .args(["ide", "effects-diff", "--exit-code", "--base"])
+        .arg(&head)
+        .arg("-e")
+        .arg(&head)
+        .output()
+        .unwrap();
+    assert!(same.status.success(), "identical rows must exit 0");
+    assert!(
+        String::from_utf8(same.stdout)
+            .unwrap()
+            .contains("No effect row changes"),
+        "identical projects report no changes"
+    );
+    fs::remove_file(&base).ok();
+    fs::remove_file(&head).ok();
+}
+
+#[test]
+fn effects_diff_requires_a_baseline_selector() {
+    let head = write("effdiff-nobaseline", EFFECTS_HEAD);
+    let out = brink()
+        .args(["ide", "effects-diff", "-e"])
+        .arg(&head)
+        .output()
+        .unwrap();
+    // No --rev / --base → usage error (exit 2), not a panic.
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "missing baseline is a usage error"
+    );
+    fs::remove_file(&head).ok();
+}
