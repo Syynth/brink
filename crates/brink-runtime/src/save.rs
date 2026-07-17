@@ -141,6 +141,10 @@ pub fn save_state<C: ContextAccess + ?Sized>(program: &Program, ctx: &C) -> Save
         turn_index: ctx.turn_index(),
         rng_seed: ctx.rng_seed(),
         previous_random: ctx.previous_random(),
+        // FS-1 is format-only (`docs/flow-suspension-spec.md` §9): the
+        // runtime spill/restore that would populate a live suspended flow
+        // here is FS-3 scope. Always `None` until then.
+        suspended: None,
     }
 }
 
