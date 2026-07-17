@@ -61,6 +61,7 @@ pub use async_bind::{
     BrinkAwaiting, BrinkExternalAwaited, BrinkPendingTask, BrinkResolveExternalExt,
     poll_brink_tasks,
 };
+pub use batch::parallel::advance_batch_parallel;
 pub use batch::{BrinkBatchReport, FlowAccessRecord, advance_batch};
 /// `#[derive(BrinkCommand)]` — generates [`BrinkCommand::from_ink_args`].
 /// Shares its name with the trait (macro vs. type namespace), so a single
