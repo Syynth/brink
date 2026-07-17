@@ -36,6 +36,8 @@ mod collection_ops;
 mod collections;
 mod conversion_ops;
 mod debug;
+#[cfg(feature = "effect-trace")]
+pub mod effect_trace;
 mod error;
 mod external_policy;
 mod linker;
