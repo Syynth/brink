@@ -345,7 +345,7 @@ Capabilities extend the existing JSON manifest per external:
 
 ```json
 { "name": "get_position",
-  "params": [{"type": "handle<Npc>"}],
+  "params": [{"name": "npc", "ty": "handle<Npc>"}],
   "effects": { "reads": ["Transform"],
                "detect": {"Transform": true} } }
 ```
