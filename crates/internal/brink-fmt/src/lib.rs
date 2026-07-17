@@ -626,12 +626,21 @@ fn classify_node(
                     lines[line_idx].kind = LineKind::Tag;
                 }
             }
-            SyntaxKind::VAR_DECL
-            | SyntaxKind::CONST_DECL
-            | SyntaxKind::LIST_DECL
-            | SyntaxKind::INCLUDE_STMT
-            | SyntaxKind::IMPORT_STMT
-            | SyntaxKind::EXTERNAL_DECL => {
+            SyntaxKind::VAR_DECL | SyntaxKind::CONST_DECL | SyntaxKind::LIST_DECL => {
+                if line_idx < lines.len() {
+                    lines[line_idx].kind = LineKind::Declaration;
+                    lines[line_idx].depth = 0;
+                    // Carry the CST node so `render()` can retokenize the
+                    // declaration through `join_token_text` (#642 fix): that
+                    // joiner emits string-literal token text byte-for-byte,
+                    // so a colon canonicalized inside a string value like
+                    // `VAR msg = "time 12:30"` never mutates the literal —
+                    // unlike the raw-text `collapse_whitespace` pass, which
+                    // is string-unaware and corrupted such literals.
+                    lines[line_idx].cst_node = Some(child.clone());
+                }
+            }
+            SyntaxKind::INCLUDE_STMT | SyntaxKind::IMPORT_STMT | SyntaxKind::EXTERNAL_DECL => {
                 if line_idx < lines.len() {
                     lines[line_idx].kind = LineKind::Declaration;
                     lines[line_idx].depth = 0;
@@ -919,7 +928,16 @@ fn render(source: &str, lines: &[ClassifiedLine], config: &FormatConfig) -> Stri
                     || raw.trim_start().starts_with("CONST")
                     || raw.trim_start().starts_with("LIST")
                 {
-                    out.push_str(&format_declaration_with_annotations(raw));
+                    // Retokenize through the CST via `join_token_text` when
+                    // available (#642 fix) so string-literal initializers
+                    // (`VAR msg = "time 12:30"`) are emitted byte-for-byte
+                    // instead of having their colon/whitespace mutated by
+                    // the string-unaware `collapse_whitespace` fallback.
+                    if let Some(node) = &line.cst_node {
+                        out.push_str(&format_declaration_from_cst(node));
+                    } else {
+                        out.push_str(&format_declaration_with_annotations(raw));
+                    }
                 } else {
                     out.push_str(raw.trim_end());
                 }
@@ -1042,8 +1060,26 @@ fn format_knot_header(raw: &str) -> String {
 
 /// Format a VAR/CONST/LIST declaration: canonicalize type annotation colons
 /// (no space before, one space after) while preserving the rest of the line.
+///
+/// Raw-text fallback used only when no CST node is attached to the line
+/// (shouldn't happen for a well-formed `VAR_DECL`/`CONST_DECL`/`LIST_DECL` —
+/// see `format_declaration_from_cst` for the normal, string-literal-safe
+/// path). Kept total via `collapse_whitespace`, which is character-based and
+/// therefore must never be applied to a line that might contain a string
+/// literal with a colon or internal whitespace inside it.
 fn format_declaration_with_annotations(raw: &str) -> String {
     collapse_whitespace(raw.trim_end())
+}
+
+/// Format a VAR/CONST/LIST declaration by retokenizing its CST node through
+/// [`join_token_text`] (#642 fix): that joiner emits token text — including
+/// string-literal tokens — byte-for-byte, and only canonicalizes whitespace
+/// *between* tokens, so a colon or internal whitespace inside a string value
+/// (`VAR msg = "time 12:30"`, `CONST url = "http://x.com"`) is preserved
+/// exactly while the declaration's own type-annotation colon still gets
+/// canonical `name: type` spacing.
+fn format_declaration_from_cst(node: &SyntaxNode) -> String {
+    join_token_text(node.descendants_with_tokens())
 }
 
 /// Collapse runs of whitespace into single spaces, and canonicalize type
@@ -2096,6 +2132,51 @@ STRUCT Point=#{x:int,y: float}
         assert_eq!(
             output, output2,
             "mixed spacing fixture should be idempotent"
+        );
+    }
+
+    // ── #642 review fix: string-literal values must be byte-preserved ───
+    // The declaration path's colon canonicalization is now retokenized
+    // through `join_token_text` (like logic lines and struct fields)
+    // instead of the character-based, string-unaware `collapse_whitespace`,
+    // which previously mutated string contents containing a colon or
+    // internal whitespace (regression caught in review of PR #971).
+
+    #[test]
+    fn var_string_initializer_with_colon_no_following_space_is_preserved() {
+        // Character-based collapse_whitespace saw the `:` inside the string
+        // and inserted a space after it: `"time 12:30"` -> `"time 12: 30"`.
+        assert_eq!(
+            fmt("VAR msg = \"time 12:30\"\n"),
+            "VAR msg = \"time 12:30\"\n"
+        );
+    }
+
+    #[test]
+    fn const_string_initializer_url_colon_is_preserved() {
+        // Same corruption broke URLs: `"http://x.com"` -> `"http: //x.com"`.
+        assert_eq!(
+            fmt("CONST url = \"http://x.com\"\n"),
+            "CONST url = \"http://x.com\"\n"
+        );
+    }
+
+    #[test]
+    fn var_string_initializer_internal_multiple_spaces_are_preserved() {
+        // Character-based collapse_whitespace ran its whitespace-run
+        // collapsing over the whole line, including inside the string
+        // literal: `"Monsieur  Fogg"` -> `"Monsieur Fogg"`.
+        assert_eq!(
+            fmt("VAR name = \"Monsieur  Fogg\"\n"),
+            "VAR name = \"Monsieur  Fogg\"\n"
+        );
+    }
+
+    #[test]
+    fn var_string_initializer_colon_no_space_variant_is_preserved() {
+        assert_eq!(
+            fmt("VAR title = \"Chapter:One\"\n"),
+            "VAR title = \"Chapter:One\"\n"
         );
     }
 
