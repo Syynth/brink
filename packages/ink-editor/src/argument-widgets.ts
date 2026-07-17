@@ -407,8 +407,15 @@ class FillGhostWidget extends WidgetType {
 
 // ── Host widgets (argument-widget-spec §3) ──────────────────────────
 
-/** A host widget registered for a slot's widget kind or its semantic type. */
-function matchHostWidget(slot: SlotWidget): ArgumentWidget | undefined {
+/**
+ * A host widget registered for a slot's declared widget kind, falling back to
+ * its type name — which may itself be a base type (`bool`/`int`/`float`/
+ * `string`), not just a semantic type (argument-widget-spec §3.1, #990). This
+ * is the one fallback path base-type registration relies on: a host that
+ * calls `setHostWidgets([{ type: "bool", … }])` matches every `bool` slot
+ * with no per-slot `widget` declaration required.
+ */
+export function matchHostWidget(slot: SlotWidget): ArgumentWidget | undefined {
   if (slot.widget !== undefined) {
     const byKind = getHostWidget(slot.widget);
     if (byKind) return byKind;
