@@ -107,6 +107,28 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         // `app.add_systems(Update, advance_batch::<M>)` when it wants
         // frame-start-consistent batched stepping.
         app.init_resource::<crate::batch::BrinkBatchReport<M>>();
+        // BH-4 (docs/effects-spec.md §13.1; #973): reactive sleep. `FlowSleep`
+        // is a standing wake policy on a flow entity; parked flows are skipped
+        // by Collect (`advance_batch`). `mark_wake_dirty` consults the `#913`
+        // detect verdict + `BrinkGlobals` change detection to flag which parked
+        // conditions need re-evaluation; `run_flow_sleep` (exclusive — it
+        // re-enters the VM via `call_ink_function`) re-evaluates flagged
+        // conditions in each flow's own context and wakes on true. Gated so
+        // neither does work until a flow actually sleeps. Ordered
+        // dirty-then-eval so a same-frame World change is seen this pass.
+        app.add_systems(
+            Update,
+            (
+                crate::sleep::mark_wake_dirty::<M>,
+                crate::sleep::run_flow_sleep::<M>,
+            )
+                .chain()
+                .run_if(
+                    bevy_ecs::schedule::common_conditions::any_with_component::<
+                        crate::sleep::FlowSleep<M>,
+                    >,
+                ),
+        );
         // Auto-render BrinkTranscript<M> for any flow that has it.
         // No-op for flows that don't (the query just yields nothing).
         app.add_systems(Update, crate::transcript::refresh_transcripts::<M>);
