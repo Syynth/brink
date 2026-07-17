@@ -30,6 +30,15 @@ use brink_ir::{
 use rowan::TextRange;
 
 use crate::infer::EffectRow;
+use crate::resolve::{ImportScope, lookup_by_name};
+
+/// The index + import scope every name lookup in this module needs together
+/// (issue #881) — bundled so `check_one` doesn't carry them as two separate
+/// parameters (`clippy::too_many_arguments`).
+struct Ctx<'a> {
+    index: &'a SymbolIndex,
+    scope: &'a ImportScope,
+}
 
 /// Check every knot/stitch's `#@effects(…)` assertion in `hir` against
 /// `rows` — that def's inferred [`EffectRow`], however the caller computed
@@ -44,13 +53,23 @@ use crate::infer::EffectRow;
 /// `rows`, produces no diagnostic here — both are the caller's contract to
 /// uphold (every assertion-carrying def gets an entry), not a case this
 /// function can distinguish from "not computed yet".
+///
+/// `scope` is `hir`'s own [`ImportScope`] (issue #881, the T2 follow-up to
+/// M-2d/#790): a `reads`/`writes`/`calls` clause name is resolved through the
+/// exact same import-scoped [`lookup_by_name`] the reference resolver uses,
+/// so a `#@effects` assertion in a file that imports one of several
+/// same-name cross-module cells binds to *that* importer's cell — never a
+/// flat first-inserted winner that could silently name a different module's
+/// definition than the one the body's own inferred row actually touches.
 #[must_use]
 pub fn check(
     file: FileId,
     hir: &HirFile,
     index: &SymbolIndex,
+    scope: &ImportScope,
     rows: &BTreeMap<DefinitionId, EffectRow>,
 ) -> Vec<Diagnostic> {
+    let ctx = Ctx { index, scope };
     let mut out = Vec::new();
     for knot in &hir.knots {
         let kind = match knot.ptr {
@@ -62,7 +81,7 @@ pub fn check(
             knot.effects_assertion.as_ref(),
             kind,
             &knot.name.text,
-            index,
+            &ctx,
             rows,
             &mut out,
         );
@@ -73,7 +92,7 @@ pub fn check(
                 stitch.effects_assertion.as_ref(),
                 SymbolKind::Stitch,
                 &qualified,
-                index,
+                &ctx,
                 rows,
                 &mut out,
             );
@@ -116,21 +135,21 @@ fn check_one(
     assertion: Option<&EffectsAssertion>,
     kind: SymbolKind,
     name: &str,
-    index: &SymbolIndex,
+    ctx: &Ctx<'_>,
     rows: &BTreeMap<DefinitionId, EffectRow>,
     out: &mut Vec<Diagnostic>,
 ) {
     let Some(assertion) = assertion else {
         return;
     };
-    let Some(def_id) = find_def_id(index, file, kind, name) else {
+    let Some(def_id) = find_def_id(ctx.index, file, kind, name) else {
         return;
     };
 
     let mut well_formed = true;
     let mut declared_reads = BTreeSet::new();
     for n in &assertion.reads {
-        if let Some(id) = resolve_cell(index, n) {
+        if let Some(id) = resolve_cell(ctx, n) {
             declared_reads.insert(id);
         } else {
             out.push(unknown_name_diagnostic(file, assertion.range, n));
@@ -139,7 +158,7 @@ fn check_one(
     }
     let mut declared_writes = BTreeSet::new();
     for n in &assertion.writes {
-        if let Some(id) = resolve_cell(index, n) {
+        if let Some(id) = resolve_cell(ctx, n) {
             declared_writes.insert(id);
         } else {
             out.push(unknown_name_diagnostic(file, assertion.range, n));
@@ -148,7 +167,7 @@ fn check_one(
     }
     let mut declared_calls = BTreeSet::new();
     for n in &assertion.calls {
-        if external_declared(index, n) {
+        if external_declared(ctx, n) {
             declared_calls.insert(n.clone());
         } else {
             out.push(unknown_name_diagnostic(file, assertion.range, n));
@@ -176,7 +195,7 @@ fn check_one(
             file,
             range: assertion.range,
             code: DiagnosticCode::E103,
-            message: exceedance_message(&declared_row, inferred, index),
+            message: exceedance_message(&declared_row, inferred, ctx.index),
         });
     }
 }
@@ -201,37 +220,32 @@ fn find_def_id(
 }
 
 /// Resolve a `reads`/`writes` clause name to a global `VAR`/`CONST`
-/// [`DefinitionId`]. Picks the smallest id among same-named candidates for
-/// a deterministic answer (module-scoped disambiguation is out of scope —
-/// same simplification `resolve_cell`'s doc-neighbor `external_declared`
-/// makes for `calls`).
-fn resolve_cell(index: &SymbolIndex, name: &str) -> Option<DefinitionId> {
-    index
-        .by_name
-        .get(name)?
-        .iter()
-        .copied()
-        .filter(|id| {
-            index.symbols.get(id).is_some_and(|info| {
-                matches!(info.kind, SymbolKind::Variable | SymbolKind::Constant)
-            })
-        })
-        .min()
+/// [`DefinitionId`], through the same import-scoped [`lookup_by_name`] the
+/// reference resolver uses (issue #881 — the T2 follow-up to M-2d/#790:
+/// "twin semantic checks share one helper, never re-derive", #811's
+/// lesson). Before this fix the clause was resolved by an independent
+/// flat `by_name` scan picking the smallest same-named `DefinitionId`,
+/// which could silently disagree with which module's cell the assertion's
+/// own def actually reads/writes whenever two declared modules publicly
+/// define the same name — `lookup_by_name` picks the referrer's own-module
+/// candidate first, then an imported one, exactly like every other
+/// reference in this file resolves.
+fn resolve_cell(ctx: &Ctx<'_>, name: &str) -> Option<DefinitionId> {
+    lookup_by_name(
+        ctx.index,
+        ctx.scope,
+        name,
+        &[SymbolKind::Variable, SymbolKind::Constant],
+    )
 }
 
-/// Whether `name` is a declared `EXTERNAL` anywhere in the project. `calls`
-/// clauses match [`EffectRow::calls`] by raw name (T2-1 collects external
-/// call atoms the same way), so no id resolution is needed — only
-/// existence.
-fn external_declared(index: &SymbolIndex, name: &str) -> bool {
-    index.by_name.get(name).is_some_and(|ids| {
-        ids.iter().any(|id| {
-            index
-                .symbols
-                .get(id)
-                .is_some_and(|info| info.kind == SymbolKind::External)
-        })
-    })
+/// Whether `name` is a declared `EXTERNAL` visible to this file's import
+/// scope (issue #881, same fix as [`resolve_cell`]). `calls` clauses match
+/// [`EffectRow::calls`] by raw name (T2-1 collects external call atoms the
+/// same way), so only existence of an in-scope candidate is needed, not its
+/// id.
+fn external_declared(ctx: &Ctx<'_>, name: &str) -> bool {
+    lookup_by_name(ctx.index, ctx.scope, name, &[SymbolKind::External]).is_some()
 }
 
 fn unknown_name_diagnostic(file: FileId, range: TextRange, name: &str) -> Diagnostic {
