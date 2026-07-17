@@ -371,6 +371,7 @@ mod tests {
     /// decode failure. This proves the encoding carries what FS-3 needs
     /// without implementing FS-3's reconciliation itself.
     #[test]
+    #[expect(clippy::panic, reason = "test assertion on a specific enum variant")]
     fn suspended_flow_frame_drift_is_representable() {
         let mut old_shape = OrderedMap::new();
         old_shape.insert(MapKey::from("hp"), Value::Int(7));
