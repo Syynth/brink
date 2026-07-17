@@ -49,6 +49,7 @@ mod plugin;
 #[cfg(feature = "dev")]
 mod replay;
 mod request;
+mod sleep;
 #[cfg(feature = "dev")]
 mod source_loader;
 #[cfg(test)]
@@ -155,6 +156,9 @@ pub use plugin::{BrinkAssetsPlugin, BrinkPlugin};
 #[cfg(feature = "dev")]
 pub use replay::{BrinkReplayConfig, BrinkReplayLog, ReplayQueryModeOverride, replay_on_reload};
 pub use request::{BrinkFlowRequest, FlowStart, fulfill_flow_requests};
+pub use sleep::{
+    DetectSummary, FlowSleep, SleepState, WakeArming, mark_wake_dirty, run_flow_sleep,
+};
 #[cfg(feature = "dev")]
 pub use source_loader::{InkLoader, InkLoaderError};
 pub use transcript::{BrinkTranscript, refresh_transcripts};
