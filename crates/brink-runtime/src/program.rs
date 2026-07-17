@@ -445,7 +445,13 @@ impl Program {
     /// Whether the compiler marked anything flow-private. When `false`
     /// (all existing unannotated ink), policy resolution keeps its
     /// all-`World` fast path.
-    pub(crate) fn has_local_defaults(&self) -> bool {
+    ///
+    /// Public so the bevy host (`bevy-brink`'s batch driver) can guard
+    /// against batching a `#@local`-annotated story: batch mode routes only
+    /// the shared `World`, never a flow's private `FlowLocal`, so a story
+    /// carrying compiled flow-private defaults must stay on the serial API
+    /// (`docs/effects-spec.md` §12; bevy-brink #925).
+    pub fn has_local_defaults(&self) -> bool {
         !self.local_scope_defaults.is_empty() || self.globals.iter().any(|g| g.local)
     }
 
