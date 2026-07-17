@@ -644,3 +644,45 @@ fn inkt_roundtrip_corpus_smoke() {
         failures.join("\n")
     );
 }
+
+// Regression for #745: the fuzz matrix's very first CI run found that
+// `read_inkt` accepted a `(params N …)` clause whose declared count `N`
+// disagreed with the number of `(mode id)` metadata entries that followed —
+// producing a `ContainerDef` violating its own documented invariant
+// (`params.len()` always equals `param_count`, see `definition.rs`). That
+// silently-inconsistent value then made `write_inkt`'s `(params {c.param_count}
+// ...)` clause (gated on `param_count != 0`) drop the params metadata
+// entirely on the next write when count said 0 but params was non-empty.
+// The reader must reject the mismatch outright rather than construct
+// invariant-violating data for downstream code to mishandle.
+#[test]
+fn params_count_mismatch_is_a_parse_error() {
+    let inkt = r#"(story
+
+  (name_table
+    0 ""
+  )
+
+  (addresses
+    (address $01_406ea523c53def -> $01_406ea523c53def +0)
+  )
+
+  (address_paths
+    (path 0 -> $01_406ea523c53def)
+  )
+
+  (container $01_406ea523c53def
+    (params 0 (val 0))
+    (code
+      done
+    )
+  )
+)
+"#;
+
+    let err = brink_format::read_inkt(inkt).expect_err("count/metadata mismatch must not parse");
+    assert!(
+        err.message.contains("params metadata count"),
+        "unexpected error: {err}"
+    );
+}

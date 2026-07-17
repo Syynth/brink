@@ -1169,6 +1169,26 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
                         is_ref,
                     });
                 }
+                // `ContainerDef::params`'s doc invariant: `params.len()`
+                // always equals `param_count` whenever per-param metadata is
+                // present at all (empty `params` is the separate, legitimate
+                // "count only, no metadata" case — e.g. the converter
+                // pipeline). A `.inkt` file asserting otherwise (fuzz-found,
+                // #745) is malformed input, not silently-acceptable data:
+                // `write_inkt`'s `(params N …)` clause is gated on
+                // `param_count != 0`, so an inconsistent `param_count: 0` with
+                // non-empty `params` would round-trip by silently dropping
+                // the params entirely on the next write.
+                if !params.is_empty() && params.len() != usize::from(param_count) {
+                    return Err(InktParseError {
+                        message: format!(
+                            "params metadata count ({}) does not match declared param_count ({param_count})",
+                            params.len()
+                        ),
+                        line: 0,
+                        col: 0,
+                    });
+                }
             }
             Rule::local_flag => local = true,
             Rule::lines_field => {
