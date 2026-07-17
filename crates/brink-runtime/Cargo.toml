@@ -52,6 +52,7 @@ effect-trace = ["std"]
 brink-compiler = { path = "../brink-compiler" }
 serde_json.workspace = true
 divan.workspace = true
+proptest.workspace = true
 
 [[bench]]
 name = "runtime"
