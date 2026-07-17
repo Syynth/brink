@@ -96,6 +96,9 @@ pub fn add_story_assets(
         .add(ProgramAsset {
             program,
             initial_context,
+            // Test-harness helper for fulfillment/replay/locale tests, none
+            // of which exercise BH-1's capability join — empty is correct.
+            effect_rows: Vec::new(),
         });
     let tables_handle = world
         .resource_mut::<Assets<LineTablesAsset>>()
