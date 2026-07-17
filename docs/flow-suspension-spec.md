@@ -226,3 +226,55 @@ manual (non-bevy) hosts.
   version stamped into StoryData + save units; load-time migration
   ladder = name-keyed rebind → `#@was` → author migration hooks →
   journal replay → unresumable-with-report. Rungs 1/2/5 exist today.
+
+## 11. Implementation design — RULED 2026-07-18 (FS-3 implementation round)
+
+### 11.1 Continuation-splitting (the center)
+
+No instruction offsets (§3) is honored by **splitting containers at
+await sites**: everything after an `await` becomes a synthesized
+**continuation container**; parking = evaluate condition → false →
+spill live locals per the FS-2 frame shape → record
+`FlowFrame { container: <continuation id>, return_stack, frame,
+wake }` → unwind. Resuming = restore the frame into a fresh
+environment and **enter the continuation container from its top** —
+an ordinary divert, no program-counter archaeology. Continuation
+containers take **stable identities from their await site**
+(module, enclosing def, site index), so frames survive recompiles via
+the same name-keyed rehydration as everything else. The VM learns
+one park outcome and one resume path; the cleverness lives in
+codegen.
+
+### 11.2 Continuation containers are INVISIBLE — RULED
+
+No visit counts (they would pollute `shuffle`/`once` semantics in
+behavior loops), not valid divert targets, absent from IDE
+navigation/completion (debug views may show them). They are compiler
+plumbing, not story structure — a new "hidden" container category in
+the format, marked as such.
+
+### 11.3 Reuse
+
+- `wakeCheck()` condition evaluation reuses the isolated
+  function-eval machinery (`begin_function_eval` lineage:
+  output-isolated, transcript-untouched), evaluated in the owning
+  flow's context (§10.2).
+- Frame-shape tables ride a new StoryData section with `.inkt` dump
+  parity (atoms land with the reader).
+- Persistence is FS-1's SuspendedFlow section, already on main.
+
+### 11.4 Slicing — RULED (maintainer approval between slices)
+
+1. **FS-3w — web surface first**: flow-addressed API (flow handles,
+   per-flow Line streams, `Line::Suspended` variant surface,
+   `wakeCheck()` exported, returning empty until parks exist). Ships
+   against today's runtime: consumers migrate API shape early;
+   FS-3r later changes behavior, not interface.
+2. **FS-3c — compiler**: liveness (#928's remainder), frame-shape
+   emission, continuation-splitting, invisible-container category,
+   `.inkt` parity. E052 fence STAYS UP.
+3. **FS-3r — runtime**: park/spill/resume, real wakeCheck +
+   dirty-tracking, save/load integration + rehydration report +
+   Lenient/Strict, and the E052 fence finally drops.
+
+Nothing half-exists on main: the fence falls only in FS-3r.
