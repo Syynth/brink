@@ -105,8 +105,25 @@ pub fn hover(
             .and_then(|hir| crate::fn_value_hover::fn_value_slot_signature(analysis, hir, info))
             .map_or(String::new(), |sig| format!("\n\n`{sig}`"));
 
+        // T2-4 (#863, docs/effects-spec.md §10): a knot/stitch's *inferred*
+        // effect row — the boring, stable reads/writes/calls display. Only
+        // knots/stitches have a `DefinitionId → row` (`db.effects` is `None`
+        // for every other symbol), so this suffix is empty everywhere else.
+        // Purely advisory: it *shows* the row; the only contract is the
+        // optional `#@effects` assertion (checked in the analyzer, `E103`).
+        let effect_row_str = matches!(
+            info.kind,
+            brink_ir::SymbolKind::Knot | brink_ir::SymbolKind::Stitch
+        )
+        .then(|| db.effects(info.id))
+        .flatten()
+        .map_or(String::new(), |row| {
+            let view = crate::effects::EffectRowView::from_row(&row, &analysis.index);
+            format!("\n\n**effects** `{}`", view.display_line())
+        });
+
         format!(
-            "**{kind_str}** `{}{inferred_local_str}{value_str}{params_str}{ret_str}`{detail_str}{kind_tag}{doc_block}{file_note}{fn_value_str}",
+            "**{kind_str}** `{}{inferred_local_str}{value_str}{params_str}{ret_str}`{detail_str}{kind_tag}{doc_block}{file_note}{fn_value_str}{effect_row_str}",
             info.name
         )
     } else {
@@ -486,6 +503,45 @@ VAR healer = 0
         let src = "VAR health = 100\n-> END\n";
         let content = hover_at(src, "health = 100");
         assert!(!content.contains("fn "), "{content}");
+    }
+
+    // ── T2-4 (#863): inferred effect row in hover ───────────────────────
+
+    #[test]
+    fn hover_shows_a_knots_inferred_effect_row() {
+        let src = "\
+VAR gold = 10
+EXTERNAL PlaySound(id)
+-> spend
+
+=== spend ===
+~ gold = gold - 1
+~ PlaySound(1)
+Spent.
+-> END
+";
+        let content = hover_at(src, "spend ===");
+        assert!(content.contains("**knot**"), "{content}");
+        assert!(content.contains("**effects**"), "{content}");
+        assert!(content.contains("reads: gold"), "{content}");
+        assert!(content.contains("writes: gold"), "{content}");
+        assert!(content.contains("calls: PlaySound"), "{content}");
+    }
+
+    #[test]
+    fn hover_shows_pure_for_an_effectless_knot() {
+        let src = "=== function double(n) ===\n~ return n + n\n";
+        let content = hover_at(src, "double(n)");
+        assert!(content.contains("**effects** `pure`"), "{content}");
+    }
+
+    #[test]
+    fn hover_shows_no_effect_row_for_a_non_callable_symbol() {
+        // A VAR is not a knot/stitch — `db.effects` is `None`, so no effect
+        // row suffix appears (only knots/stitches ship a row, spec §10).
+        let src = "VAR health = 100\n-> END\n";
+        let content = hover_at(src, "health = 100");
+        assert!(!content.contains("**effects**"), "{content}");
     }
 
     #[test]

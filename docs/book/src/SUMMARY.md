@@ -28,6 +28,7 @@
   - [Standard Library](./toolchain/dialect/stdlib.md)
   - [Types](./toolchain/dialect/types.md)
   - [Function Values](./toolchain/dialect/function-values.md)
+  - [Effects](./toolchain/dialect/effects.md)
   - [Path Projections](./toolchain/dialect/path-projections.md)
   - [Modules](./toolchain/dialect/modules.md)
   - [Conformance](./toolchain/dialect/conformance.md)
