@@ -494,14 +494,26 @@ export interface ArgumentWidgetEditorHost {
  * host-rendered, into a studio-owned popover/modal via a mount-callback.
  */
 export interface ArgumentWidget {
-  /** Semantic type / widget id this renders for. Host ids: `host.<vendor>.<name>`. */
+  /** Semantic type / widget id this renders for. Either a host id
+   *  (`host.<vendor>.<name>`) or a **base type** (`bool` | `int` | `float` |
+   *  `string`) — registering against a base type gives every param of that
+   *  primitive type the host's control (e.g. a `bool` toggle), with no brink
+   *  built-in opinion (argument-widget-spec §3.1, #990). Matched against a
+   *  slot's declared `widget` kind first, falling back to its `type_name`
+   *  (base or semantic) — see `matchHostWidget`. */
   type: string;
   /** Optional inline label data — the studio draws the chip from it. */
   inline?(ctx: ArgumentWidgetContext): { text: string; className?: string };
   /** The editor — the only host-rendered surface. Mount the body into
    *  `container`, resolve/cancel through `host`, and return a teardown. */
   editor: {
-    surface?: "popover" | "modal";
+    /** `"popover"` (default) or `"modal"` for a rich picker anchored/overlaid
+     *  on the call site; `"inline"` mounts the control directly in the Form
+     *  row where a text field would sit (argument-widget-spec §3.1, #990) —
+     *  the right shape for a primitive (a bool toggle, a number stepper).
+     *  Only `buildField`'s Form honors `"inline"`; the in-editor call/Edit/
+     *  Fill affordances have no row to mount into and fall back to popover. */
+    surface?: "popover" | "modal" | "inline";
     render(
       ctx: ArgumentWidgetContext,
       host: ArgumentWidgetEditorHost,
