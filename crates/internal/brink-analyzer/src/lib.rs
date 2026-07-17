@@ -568,7 +568,15 @@ pub fn whole_project_diagnostics(
         let rows =
             infer::effects_project(&hir_inputs, index, resolutions, opts.host_manifest.as_ref());
         for &(file_id, hir) in &hir_inputs {
-            diagnostics.extend(effects_assertions::check(file_id, hir, index, &rows));
+            // Import-scoped resolution (issue #881, the T2 follow-up to
+            // M-2d/#790): the assertion's own `reads`/`writes`/`calls` clause
+            // names must resolve through this file's own declared module +
+            // imports, exactly like every other reference does — see
+            // `effects_assertions::check`'s doc.
+            let scope = ImportScope::new(hir.module.as_ref().map(|m| m.name.clone()), &hir.imports);
+            diagnostics.extend(effects_assertions::check(
+                file_id, hir, index, &scope, &rows,
+            ));
         }
     }
 
