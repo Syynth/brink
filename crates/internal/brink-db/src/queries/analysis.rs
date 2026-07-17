@@ -49,8 +49,8 @@ use brink_ir::{
 };
 
 use super::{
-    ProjectInput, SourceFile, inference_index_query, lowered_query, resolution_index_query,
-    resolve_query, symbol_index_query, type_inference_query,
+    DefKey, ProjectInput, SourceFile, effects_query, inference_index_query, lowered_query,
+    resolution_index_query, resolve_query, symbol_index_query, type_inference_query,
 };
 
 /// Index + resolutions, aggregated across every file's [`resolve_query`]
@@ -269,6 +269,47 @@ pub(crate) fn call_site_diagnostics_query(
     ))
 }
 
+/// One file's `#@effects(…)` exceedance diagnostics (T2-2,
+/// docs/effects-spec.md §10, issue #861). Brink-only, same TM-2
+/// content-check precedent [`per_file_diagnostics_query`]'s doc cites: under
+/// `strict-ink` the directive is already rejected whole by `dialect_gate`'s
+/// `E051`, so checking its declared names here would be noise.
+///
+/// Reads only the def ids [`brink_analyzer::effects_assertion_defs`] finds
+/// in *this file's* HIR (a structural scan — no inference triggered by the
+/// scan itself) and, for exactly those defs, the salsa-memoized per-def
+/// [`effects_query`]. A file with no `#@effects` directive at all never
+/// calls `effects_query`, so an unannotated project stays effect-inference-
+/// free — T2-1's advisory/lazy posture, preserved.
+///
+/// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 4096)]
+pub(crate) fn effects_assertion_diagnostics_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+) -> Arc<Vec<Diagnostic>> {
+    if project.analysis_options(db).dialect != brink_analyzer::Dialect::Brink {
+        return Arc::new(Vec::new());
+    }
+    let file_id = file.file_id(db);
+    let hir = &lowered_query(db, file).hir;
+    let index = resolution_index_query(db, project);
+    let def_ids = brink_analyzer::effects_assertion_defs(hir, index, file_id);
+    if def_ids.is_empty() {
+        return Arc::new(Vec::new());
+    }
+    let mut rows = BTreeMap::new();
+    for id in def_ids {
+        if let Some(row) = effects_query(db, project, DefKey::new(db, id)) {
+            rows.insert(id, (*row).clone());
+        }
+    }
+    Arc::new(brink_analyzer::effects_assertion_diagnostics(
+        file_id, hir, index, &rows,
+    ))
+}
+
 /// Whole-project diagnostics + `symbol_meta` (issue #632 / FG-3 design doc
 /// §1), now a thin aggregator (issue #750 / FG-3 completion) over the
 /// decomposed external-check family — [`external_meta_query`] + per-file
@@ -356,6 +397,17 @@ pub(crate) fn whole_project_diagnostics_query(
     for file in project.files(db) {
         diagnostics.extend(
             call_site_diagnostics_query(db, project, *file)
+                .iter()
+                .cloned(),
+        );
+    }
+    // T2-2 `#@effects(…)` exceedance check (docs/effects-spec.md §10, issue
+    // #861) — per-file, lazy (see `effects_assertion_diagnostics_query`'s
+    // doc): a project with no `#@effects` directive never triggers effect
+    // inference here.
+    for file in project.files(db) {
+        diagnostics.extend(
+            effects_assertion_diagnostics_query(db, project, *file)
                 .iter()
                 .cloned(),
         );

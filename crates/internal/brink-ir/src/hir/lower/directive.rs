@@ -563,6 +563,17 @@ pub(super) fn apply_scope_directives(
         } else if d.name == "was" {
             // Rename directive (M-3, modules-spec §5) — handled by
             // [`was_from_directives`]; not an unknown-directive error here.
+        } else if d.name == "effects" {
+            // T2-2 (docs/effects-spec.md §10, issue #861): the effects
+            // assertion only attaches at the knot/stitch top-of-body
+            // placement — parsed by `effects_assertion_from_directives` at
+            // that call site. A `#@effects` collected via a declaration's
+            // `directives_before` lookback (VAR/CONST/LIST/EXTERNAL) is an
+            // invalid target, since only `directives_before` owners reach
+            // this arm.
+            if !matches!(target, DirectiveTarget::Knot | DirectiveTarget::Stitch) {
+                sink.diagnose(d.range, DiagnosticCode::E049);
+            }
         } else if d.name == "module" {
             // File-level module declaration (M-1, modules-spec §1) — handled
             // by [`file_module_declaration`]'s own top-of-file scan. Named
@@ -623,6 +634,171 @@ pub(super) fn was_from_directives(
         chosen = Some((name.clone(), d.range));
     }
     chosen
+}
+
+/// Interpret the `#@effects(…)` assertion directive among a knot/stitch's
+/// collected directives (T2-2, docs/effects-spec.md §10, sitting 2 —
+/// 2026-07-14 — issue #861). `#@effects(pure)` is sugar for the empty row;
+/// otherwise the argument is a comma-separated list of `reads:`/`writes:`/
+/// `calls:` clauses, each naming zero or more identifiers — a bare value
+/// with no `key:` prefix continues the most recently opened clause, so
+/// `reads: a, b` is one clause naming two cells, not two clauses.
+///
+/// Returns `None` when no `#@effects` directive is present (or every
+/// occurrence was malformed and already diagnosed). Malformed forms
+/// diagnose: dynamic content is `E046` (the generic directive-content
+/// code); a missing/empty argument (bare `#@effects`, `#@effects()`,
+/// `#@effects(  )`) is `E100`; an unrecognized clause keyword, a
+/// non-identifier value, or a bare value with no clause open yet is `E101`;
+/// a second `#@effects` on the same target is `E048` (the same
+/// duplicate-directive code `apply_scope_directives` uses for a repeated
+/// `#@local`) — the first valid occurrence wins. Resolving the declared
+/// names against the project symbol index, and the exceedance check
+/// itself, are `brink-analyzer`'s job — this function only parses the
+/// directive's own grammar.
+pub(super) fn effects_assertion_from_directives(
+    dirs: &[ParsedDirective],
+    sink: &mut impl LowerSink,
+) -> Option<crate::EffectsAssertion> {
+    let mut chosen: Option<crate::EffectsAssertion> = None;
+    for d in dirs {
+        if d.name != "effects" {
+            continue;
+        }
+        if d.dynamic {
+            sink.diagnose(d.range, DiagnosticCode::E046);
+            continue;
+        }
+        let raw = if d.bare { None } else { d.arg.as_deref() };
+        let Some(raw) = raw else {
+            sink.diagnose(d.range, DiagnosticCode::E100);
+            continue;
+        };
+        let trimmed = raw.trim();
+        let parsed = if trimmed.is_empty() {
+            sink.diagnose(d.range, DiagnosticCode::E100);
+            None
+        } else if trimmed == "pure" {
+            Some(crate::EffectsAssertion {
+                pure: true,
+                reads: Vec::new(),
+                writes: Vec::new(),
+                calls: Vec::new(),
+                range: d.range,
+            })
+        } else {
+            parse_effects_clauses(trimmed, d.range, sink)
+        };
+        let Some(parsed) = parsed else {
+            continue; // already diagnosed
+        };
+        if chosen.is_some() {
+            sink.diagnose(d.range, DiagnosticCode::E048);
+            continue;
+        }
+        chosen = Some(parsed);
+    }
+    chosen
+}
+
+/// Which clause a bare (no `key:` prefix) value continues.
+#[derive(Clone, Copy)]
+enum EffectsClauseKind {
+    Reads,
+    Writes,
+    Calls,
+}
+
+/// Parse the non-`pure` `#@effects(…)` argument mini-grammar: a
+/// comma-separated sequence of `reads:`/`writes:`/`calls:` clause openers,
+/// each optionally followed by identifier values (more values continue as
+/// bare, comma-separated tokens until the next `key:` opener). Diagnoses
+/// `E101` (at the whole directive's range — the raw argument text carries no
+/// per-token sub-spans) and returns `None` on any malformed piece.
+fn parse_effects_clauses(
+    text: &str,
+    range: TextRange,
+    sink: &mut impl LowerSink,
+) -> Option<crate::EffectsAssertion> {
+    let mut reads = Vec::new();
+    let mut writes = Vec::new();
+    let mut calls = Vec::new();
+    let mut current: Option<EffectsClauseKind> = None;
+    let mut ok = true;
+
+    let mut push = |kind: EffectsClauseKind, value: &str| -> bool {
+        if !is_effects_ident(value) {
+            return false;
+        }
+        match kind {
+            EffectsClauseKind::Reads => reads.push(value.to_string()),
+            EffectsClauseKind::Writes => writes.push(value.to_string()),
+            EffectsClauseKind::Calls => calls.push(value.to_string()),
+        }
+        true
+    };
+
+    for piece in text.split(',') {
+        let piece = piece.trim();
+        if piece.is_empty() {
+            // Tolerate a stray/trailing comma — not itself a clause.
+            continue;
+        }
+        if let Some((key, rest)) = piece.split_once(':') {
+            let key = key.trim();
+            let kind = match key {
+                "reads" => EffectsClauseKind::Reads,
+                "writes" => EffectsClauseKind::Writes,
+                "calls" => EffectsClauseKind::Calls,
+                _ => {
+                    ok = false;
+                    continue;
+                }
+            };
+            current = Some(kind);
+            let rest = rest.trim();
+            if !rest.is_empty() && !push(kind, rest) {
+                ok = false;
+            }
+        } else {
+            let Some(kind) = current else {
+                ok = false;
+                continue;
+            };
+            if !push(kind, piece) {
+                ok = false;
+            }
+        }
+    }
+
+    if !ok {
+        sink.diagnose(range, DiagnosticCode::E101);
+        return None;
+    }
+    if reads.is_empty() && writes.is_empty() && calls.is_empty() {
+        sink.diagnose(range, DiagnosticCode::E100);
+        return None;
+    }
+    Some(crate::EffectsAssertion {
+        pure: false,
+        reads,
+        writes,
+        calls,
+        range,
+    })
+}
+
+/// A plain identifier (letter/underscore start, alphanumeric/underscore
+/// rest) — the only legal shape for a `#@effects` clause value. No dotted
+/// paths, no qualified names: the spec's vocabulary is bare global cell
+/// names and external names.
+fn is_effects_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Interpret the `#@private` / `#@public` visibility directives among a

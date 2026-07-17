@@ -9,6 +9,7 @@ mod annotations;
 mod conversions;
 mod determinism;
 mod dialect_gate;
+mod effects_assertions;
 mod external_check;
 mod fn_values;
 mod infer;
@@ -30,6 +31,9 @@ pub use annotations::{
 pub use brink_ir::FileId;
 pub use brink_ir::ResolutionMap;
 pub use dialect_gate::Dialect;
+pub use effects_assertions::{
+    assertion_defs as effects_assertion_defs, check as effects_assertion_diagnostics,
+};
 pub use external_check::{
     ExternalCheckSeverity, InferredType, ResolvedParam, ResolvedType,
     SemanticTypeDiagnosticSeverity, SymbolMeta, ValueMeta,
@@ -548,7 +552,38 @@ pub fn whole_project_diagnostics(
         }
     }
 
+    // T2-2 `#@effects(…)` exceedance check (docs/effects-spec.md §10, issue
+    // #861) — brink-only, same TM-2 "content checks skip strict-ink"
+    // precedent `per_file_diagnostics` documents (the directive is already
+    // rejected whole by `dialect_gate`'s `E051` under strict-ink). Only pays
+    // for `effects_project`'s whole-project inference when at least one
+    // assertion actually exists anywhere in the project — an unannotated
+    // project stays effects-inference-free, matching T2-1's advisory-only
+    // posture.
+    if opts.dialect == Dialect::Brink
+        && hir_inputs
+            .iter()
+            .any(|&(_, hir)| hir_has_effects_assertion(hir))
+    {
+        let rows =
+            infer::effects_project(&hir_inputs, index, resolutions, opts.host_manifest.as_ref());
+        for &(file_id, hir) in &hir_inputs {
+            diagnostics.extend(effects_assertions::check(file_id, hir, index, &rows));
+        }
+    }
+
     (diagnostics, symbol_meta)
+}
+
+/// Cheap structural scan: does any knot/stitch in `hir` carry a
+/// `#@effects(…)` assertion? The laziness gate for
+/// [`whole_project_diagnostics`]'s exceedance pass — avoids running
+/// [`infer::effects_project`] at all for a project that never uses the
+/// directive.
+fn hir_has_effects_assertion(hir: &HirFile) -> bool {
+    hir.knots.iter().any(|k| {
+        k.effects_assertion.is_some() || k.stitches.iter().any(|s| s.effects_assertion.is_some())
+    })
 }
 
 /// Assemble the final [`AnalysisResult`] from the already-computed layer-2

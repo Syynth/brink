@@ -1,0 +1,2 @@
+Stream length: 12. Reservoir size: 3.
+Reservoir (uniform sample of the whole stream): [flee_line_b, combat_taunt_c, victory_line_b].

@@ -261,6 +261,36 @@ fn npc_fsm_dispatches_dialogue_state_through_a_map_of_fn_handlers() {
     assert_case("npc-fsm");
 }
 
+#[test]
+fn pcg_rng_streams_deterministic_draws_from_an_explicit_state_value() {
+    assert_case("pcg-rng");
+    assert_case_is_deterministic_across_runs("pcg-rng");
+}
+
+#[test]
+fn weighted_loot_table_scans_a_hand_rolled_cumulative_array() {
+    assert_case("weighted-loot-table");
+    assert_case_is_deterministic_across_runs("weighted-loot-table");
+}
+
+#[test]
+fn alias_method_draws_in_constant_time_via_voses_table() {
+    assert_case("alias-method");
+    assert_case_is_deterministic_across_runs("alias-method");
+}
+
+#[test]
+fn shuffle_bag_refills_and_reshuffles_on_empty() {
+    assert_case("shuffle-bag");
+    assert_case_is_deterministic_across_runs("shuffle-bag");
+}
+
+#[test]
+fn reservoir_sampling_keeps_a_bounded_uniform_sample_of_the_stream() {
+    assert_case("reservoir-sampling");
+    assert_case_is_deterministic_across_runs("reservoir-sampling");
+}
+
 /// Every `tests/tier1-brink/algorithms/` case directory is exercised by a
 /// `#[test]` above — a directory with no matching test would silently
 /// never run (same invariant `tier1_brink.rs` enforces for its own flat
@@ -289,6 +319,11 @@ fn every_algorithms_case_directory_has_a_test() {
         "utility-ai",
         "minimax-tictactoe",
         "npc-fsm",
+        "pcg-rng",
+        "weighted-loot-table",
+        "alias-method",
+        "shuffle-bag",
+        "reservoir-sampling",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink/algorithms")

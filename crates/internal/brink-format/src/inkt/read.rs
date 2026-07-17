@@ -1677,6 +1677,66 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         "begin_fragment" => Ok(Opcode::BeginFragment),
         "end_fragment" => Ok(Opcode::EndFragment),
 
+        // Records (TM-4, `docs/typed-mode-spec.md` §6) — read-side leg paired
+        // with `write_opcode`'s `record_new`/`record_get_dyn`/`record_set_dyn`/
+        // `record_get`/`record_set` mnemonics (issue #871, the #742 write/read
+        // asymmetry class).
+        "record_new" => Ok(Opcode::RecordNew(parse_operand_u32(
+            &operands, 0, mnemonic,
+        )?)),
+        "record_get_dyn" => Ok(Opcode::RecordGetDyn(parse_operand_u16(
+            &operands, 0, mnemonic,
+        )?)),
+        "record_set_dyn" => Ok(Opcode::RecordSetDyn(parse_operand_u16(
+            &operands, 0, mnemonic,
+        )?)),
+        "record_get" => Ok(Opcode::RecordGet(parse_operand_u16(
+            &operands, 0, mnemonic,
+        )?)),
+        "record_set" => Ok(Opcode::RecordSet(parse_operand_u16(
+            &operands, 0, mnemonic,
+        )?)),
+
+        // Conversion intrinsics (TM-3 completion, issue #659/#871)
+        "convert_int" => Ok(Opcode::ConvertInt),
+        "convert_float" => Ok(Opcode::ConvertFloat),
+        "convert_string" => Ok(Opcode::ConvertString),
+
+        // Function values (T1c, `docs/t1c-spec.md` §3/§6, issue #871) —
+        // read-side leg paired with `write_opcode`'s `push_fn_ref`/
+        // `make_closure`/`call_value`/`bind_value` mnemonics.
+        "push_fn_ref" => Ok(Opcode::PushFnRef(parse_operand_def_id(
+            &operands, 0, mnemonic,
+        )?)),
+        "make_closure" => {
+            let target = parse_operand_def_id(&operands, 0, mnemonic)?;
+            let bound_count = parse_kv_operand_u8(&operands, 1, "bound=", mnemonic)?;
+            Ok(Opcode::MakeClosure {
+                target,
+                bound_count,
+            })
+        }
+        "call_value" => Ok(Opcode::CallValue(parse_kv_operand_u8(
+            &operands, 0, "argc=", mnemonic,
+        )?)),
+        "bind_value" => Ok(Opcode::BindValue(parse_kv_operand_u8(
+            &operands, 0, "argc=", mnemonic,
+        )?)),
+
+        // Path projections (T1e, `docs/t1e-spec.md` §3, issue #871) —
+        // read-side leg paired with `write_opcode`'s `make_projection`/
+        // `proj_read`/`proj_write` mnemonics.
+        "make_projection" => {
+            let root = parse_operand_def_id(&operands, 0, mnemonic)?;
+            let segment_count = parse_kv_operand_u8(&operands, 1, "segments=", mnemonic)?;
+            Ok(Opcode::MakeProjection {
+                root,
+                segment_count,
+            })
+        }
+        "proj_read" => Ok(Opcode::ProjRead),
+        "proj_write" => Ok(Opcode::ProjWrite),
+
         // Stdlib slice 1 completion (#857)
         "char_at" => Ok(Opcode::CharAt),
 
@@ -1808,6 +1868,26 @@ fn parse_operand_u32(operands: &[P<'_>], idx: usize, context: &str) -> Result<u3
     let s = operand_str(operands, idx, context)?;
     s.parse().map_err(|_| InktParseError {
         message: format!("invalid u32 operand for {context}: {s}"),
+        line: 0,
+        col: 0,
+    })
+}
+
+/// Parse a `kv_operand` of the form `"<prefix><value>"` (e.g. `"bound=3"`,
+/// `"segments=2"`) into its numeric value. Mirrors the inline `argc=`
+/// stripping already used by `call_variable`/`call_external`, generalized so
+/// `make_closure`'s `bound=` and `make_projection`'s `segments=` operands
+/// (issue #871) don't each duplicate it.
+fn parse_kv_operand_u8(
+    operands: &[P<'_>],
+    idx: usize,
+    prefix: &str,
+    context: &str,
+) -> Result<u8, InktParseError> {
+    let kv_str = operand_str(operands, idx, context)?;
+    let value_str = kv_str.strip_prefix(prefix).unwrap_or(kv_str);
+    value_str.parse().map_err(|_| InktParseError {
+        message: format!("invalid {prefix}value in {context}: {kv_str}"),
         line: 0,
         col: 0,
     })
