@@ -51,26 +51,42 @@ use crate::infer::Ty;
 /// e.g. an unrecognized type name, already flagged elsewhere by
 /// `annotations::check`'s `E061`).
 ///
-/// `pub(crate)` (issue #831): `ref_projection`'s strict-mode path-segment
-/// check reuses this exact shape table for `ref lvalue-path` field segments
-/// — "reuse existing machinery" (docs/t1e-spec.md §6) rather than building a
-/// second one.
-pub(crate) struct ShapeInfo {
+/// Originally `pub(crate)` (issue #831) so `ref_projection`'s strict-mode
+/// path-segment check could reuse this exact shape table for `ref
+/// lvalue-path` field segments — "reuse existing machinery"
+/// (docs/t1e-spec.md §6) rather than building a second one. Promoted to a
+/// crate-public API (issue #858) so out-of-crate tooling (e.g. `brink-ide`
+/// struct-field ref-path completion, T1e-3's deferred "path continuations
+/// after a `.`/`[`" item) can query declared shapes without duplicating this
+/// table.
+pub struct ShapeInfo {
     fields: Vec<(String, Ty)>,
 }
 
 impl ShapeInfo {
-    pub(crate) fn field_ty(&self, name: &str) -> Option<&Ty> {
+    /// The declared type of `name`, or `None` if the shape has no such
+    /// field.
+    #[must_use]
+    pub fn field_ty(&self, name: &str) -> Option<&Ty> {
         self.fields.iter().find(|(n, _)| n == name).map(|(_, t)| t)
     }
 
-    pub(crate) fn has_field(&self, name: &str) -> bool {
+    /// Whether the shape declares a field named `name`.
+    #[must_use]
+    pub fn has_field(&self, name: &str) -> bool {
         self.fields.iter().any(|(n, _)| n == name)
     }
 }
 
 /// Every declared `STRUCT` shape in the project, by name.
-pub(crate) fn declared_shapes(
+///
+/// Public (issue #858) so tooling outside `brink-analyzer` can resolve a
+/// `STRUCT`'s declared fields — e.g. offering field-name completions after
+/// `npc.` in a `ref lvalue-path` — without re-deriving the shape table this
+/// crate already builds for its own construction-literal checks
+/// ([`check`]) and `ref`-projection path-segment validation.
+#[must_use]
+pub fn declared_shapes(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
 ) -> BTreeMap<String, ShapeInfo> {

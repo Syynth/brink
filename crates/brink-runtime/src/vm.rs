@@ -607,11 +607,11 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         // ── Casts ───────────────────────────────────────────────────
         Opcode::CastToInt => {
             let val = flow.pop_value()?;
-            flow.value_stack.push(value_ops::cast_to_int(&val));
+            flow.value_stack.push(value_ops::cast_to_int(&val)?);
         }
         Opcode::CastToFloat => {
             let val = flow.pop_value()?;
-            flow.value_stack.push(value_ops::cast_to_float(&val));
+            flow.value_stack.push(value_ops::cast_to_float(&val)?);
         }
 
         // ── Math ────────────────────────────────────────────────────

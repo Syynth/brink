@@ -395,9 +395,9 @@ struct ClassifiedLine {
     end: usize,
     /// Indentation depth from HIR structure.
     depth: u32,
-    /// The `LOGIC_LINE` CST node for a [`LineKind::LogicBlock`] line, or
-    /// the `STRUCT_DECL` CST node for a [`LineKind::StructDecl`] line —
-    /// `None` for every other kind.
+    /// The `LOGIC_LINE` CST node for a [`LineKind::LogicBlock`] or
+    /// single-line [`LineKind::Logic`] line, or the `STRUCT_DECL` CST node
+    /// for a [`LineKind::StructDecl`] line — `None` for every other kind.
     cst_node: Option<SyntaxNode>,
 }
 
@@ -606,6 +606,14 @@ fn classify_node(
                     }
                 } else if line_idx < lines.len() {
                     lines[line_idx].kind = LineKind::Logic;
+                    // Single-line `~ expr` form (issue #858): carry the
+                    // `LOGIC_LINE` node itself so `render()` can retokenize
+                    // the statement through `join_token_text` instead of
+                    // reformatting the raw source text, matching the
+                    // normalization multi-line `~ { … }` bodies already get
+                    // (canonical single-space operators, zero-space
+                    // `.`/`[`/`]`, comments preserved).
+                    lines[line_idx].cst_node = Some(child.clone());
                 }
             }
             SyntaxKind::CONTENT_LINE => {
@@ -881,7 +889,17 @@ fn render(source: &str, lines: &[ClassifiedLine], config: &FormatConfig) -> Stri
             LineKind::Logic => {
                 let indent = indent_str(config, line.depth);
                 out.push_str(&indent);
-                out.push_str(&format_logic(raw));
+                // Retokenize through the CST when available (issue #858) so
+                // a single-line `~ expr` gets the same canonical spacing as
+                // multi-line `~ { … }` block statements — falling back to
+                // the raw-text formatter only for the defensive case where
+                // no CST node was attached (shouldn't happen for a
+                // well-formed `LOGIC_LINE`, but keeps this path total).
+                if let Some(node) = &line.cst_node {
+                    out.push_str(&format_logic_line(node));
+                } else {
+                    out.push_str(&format_logic(raw));
+                }
                 out.push('\n');
             }
             LineKind::Content | LineKind::Tag | LineKind::Comment | LineKind::Other => {
@@ -1120,10 +1138,50 @@ fn format_gather(raw: &str) -> String {
     }
 }
 
-/// Format a logic line: `~ {rest}`
+/// Format a logic line: `~ {rest}`. Raw-text fallback for when no CST node
+/// is available — the normal path is [`format_logic_line`], which
+/// retokenizes through the CST instead of passing the source text through
+/// unchanged.
 fn format_logic(raw: &str) -> String {
     let trimmed = raw.trim();
     let rest = trimmed.strip_prefix('~').unwrap_or(trimmed).trim();
+
+    if rest.is_empty() {
+        "~".to_owned()
+    } else {
+        format!("~ {rest}")
+    }
+}
+
+/// Format a single-line `~ expr` logic line (a `LOGIC_LINE` CST node whose
+/// child is a single statement, not a `~ { … }` block — see
+/// [`mark_logic_block_span`] for the block case) by retokenizing its
+/// statement through [`join_token_text`], the same joiner multi-line
+/// `~ { … }` block bodies use via [`render_flat_stmt_text`].
+///
+/// Before issue #858, single-line logic lines only had their outer `~ `
+/// prefix normalized (via [`format_logic`]) — the statement body passed
+/// through as raw source text, so e.g. `~   temp   name:string=who` kept its
+/// internal ragged spacing (`temp   name:string=who`) instead of getting the
+/// canonical single-space-around-tokens rendering a `~ { temp name: string
+/// = who }` block form already received. This closes that gap: both forms
+/// of a logic line now render through the same token joiner.
+fn format_logic_line(node: &SyntaxNode) -> String {
+    // The `LOGIC_LINE` node's first token is always the leading `~`
+    // (`logic_line`'s first act after `start_node` is `p.bump()` for it —
+    // see `brink-syntax`'s `parser::logic::logic_line`). Everything from
+    // just after it — the optional whitespace and then the statement's own
+    // tokens, recursively — gets joined; `join_token_text` already collapses
+    // the leading whitespace to nothing since its "pending space" only
+    // fires once output has started.
+    let Some(tilde) = node.children_with_tokens().next() else {
+        return "~".to_owned();
+    };
+    let after_tilde = tilde.text_range().end();
+    let rest = join_token_text(
+        node.descendants_with_tokens()
+            .filter(|e| e.text_range().start() >= after_tilde),
+    );
 
     if rest.is_empty() {
         "~".to_owned()
@@ -1935,9 +1993,22 @@ mod tests {
 
     #[test]
     fn temp_ascription_normalizes_whitespace_like_any_other_logic_line() {
+        // Issue #858: before the single-line `~ expr` retokenize fix, this
+        // line's *inner* spacing (`temp   name:string=who`) passed through
+        // untouched — only the outer `~` prefix got trimmed. Now it goes
+        // through the same `join_token_text` joiner multi-line `~ { … }`
+        // block statements use: runs of existing whitespace collapse to one
+        // space (`temp   name` -> `temp name`), matching
+        // `block_collapses_messy_spacing_and_reindents`'s established
+        // convention for the block form. Tokens with *no* whitespace
+        // between them in the source (`name:string=who`) still get no
+        // space inserted — that joiner has never inserted whitespace, only
+        // collapsed existing runs, the same as every multi-line block
+        // statement test already documents (e.g. `temp x=0` stays `temp
+        // x=0` in `block_idempotent_after_reindenting_messy_input`).
         assert_eq!(
             fmt("=== knot ===\n~   temp   name:string=who\n"),
-            "=== knot ===\n  ~ temp   name:string=who\n"
+            "=== knot ===\n  ~ temp name:string=who\n"
         );
     }
 
@@ -2016,6 +2087,48 @@ mod tests {
         // Only the T1b multi-line block form goes through the block
         // renderer — ordinary `~` logic lines keep normal behavior.
         assert_eq!(fmt("~   x = 5\n"), "~ x = 5\n");
+    }
+
+    #[test]
+    fn single_line_logic_collapses_messy_operator_spacing() {
+        // Issue #858: a single-line `~ expr` retokenizes through the CST
+        // now, same as a `~ { … }` block statement — ragged whitespace
+        // around operators collapses to one space, matching
+        // `block_collapses_messy_spacing_and_reindents`'s expectation for
+        // the equivalent block-form input (`temp x   =   0`).
+        assert_eq!(fmt("~ temp x   =   0\n"), "~ temp x = 0\n");
+        assert_eq!(fmt("~ x   =   x  +  1\n"), "~ x = x + 1\n");
+    }
+
+    #[test]
+    fn single_line_logic_ref_path_normalizes_like_block_form() {
+        // Issue #858: the `ref lvalue-path` zero-space convention around
+        // `.`/`[`/`]` (T1e, issue #850) already applied to `~ { … }` block
+        // statements (`block_ref_path_mixed_field_and_index_argument_normalizes_spacing`)
+        // now applies to the single-line form too, since both render
+        // through the same `join_token_text` joiner.
+        assert_eq!(
+            fmt("~ heal(ref  party[ leader ] . hp,   5)\n"),
+            "~ heal(ref party[leader].hp, 5)\n"
+        );
+    }
+
+    #[test]
+    fn single_line_logic_retokenize_is_idempotent() {
+        let input = "~   temp   name : string  =  who\n";
+        let once = fmt(input);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn single_line_logic_preserves_string_literal_internal_spacing() {
+        // The joiner emits token text byte-for-byte — a string literal's
+        // own internal spacing must never be touched, single-line or block
+        // (mirrors `block_preserves_string_literal_internal_spacing`).
+        assert_eq!(
+            fmt("~   temp msg   =   \"hello   world\"\n"),
+            "~ temp msg = \"hello   world\"\n"
+        );
     }
 
     #[test]
