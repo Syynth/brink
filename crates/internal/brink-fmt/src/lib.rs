@@ -910,10 +910,16 @@ fn render(source: &str, lines: &[ClassifiedLine], config: &FormatConfig) -> Stri
             }
             LineKind::Declaration => {
                 // Module `IMPORT` statements (M-4, modules-spec §2/§9) get
-                // canonical inner spacing; every other declaration is passed
-                // through with only trailing whitespace trimmed.
+                // canonical inner spacing; VAR/CONST/LIST declarations (#642)
+                // canonicalize type annotation colons; other declarations are
+                // passed through with only trailing whitespace trimmed.
                 if raw.trim_start().starts_with("IMPORT") {
                     out.push_str(&format_import(raw));
+                } else if raw.trim_start().starts_with("VAR")
+                    || raw.trim_start().starts_with("CONST")
+                    || raw.trim_start().starts_with("LIST")
+                {
+                    out.push_str(&format_declaration_with_annotations(raw));
                 } else {
                     out.push_str(raw.trim_end());
                 }
@@ -1034,7 +1040,14 @@ fn format_knot_header(raw: &str) -> String {
     format!("=== {normalized} ===")
 }
 
-/// Collapse runs of whitespace into single spaces.
+/// Format a VAR/CONST/LIST declaration: canonicalize type annotation colons
+/// (no space before, one space after) while preserving the rest of the line.
+fn format_declaration_with_annotations(raw: &str) -> String {
+    collapse_whitespace(raw.trim_end())
+}
+
+/// Collapse runs of whitespace into single spaces, and canonicalize type
+/// annotation colons (#642) to have no space before and one space after.
 fn collapse_whitespace(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev_ws = false;
@@ -1044,6 +1057,15 @@ fn collapse_whitespace(s: &str) -> String {
                 out.push(' ');
             }
             prev_ws = true;
+        } else if c == ':' {
+            // Type annotation canonicalization (#642): no space before colon,
+            // one space after. Remove any trailing space before the colon.
+            while out.ends_with(' ') {
+                out.pop();
+            }
+            out.push(':');
+            out.push(' ');
+            prev_ws = true; // Treat as if we just output a space.
         } else {
             out.push(c);
             prev_ws = false;
@@ -1221,17 +1243,22 @@ fn block_indent(base_indent: &str, level: u32) -> String {
 /// parenthesized expression) are kept verbatim with a single space on each
 /// side. Node boundaries are transparent; only tokens contribute text.
 ///
-/// One exception to the "collapse to one space" rule: whitespace directly
-/// touching a `.` field-access dot, or a `[`/`]` index bracket, collapses to
-/// *zero* space instead — `party [ leader ] . hp` renders `party[leader].hp`.
-/// This is the path-projection display convention itself
-/// (`docs/t1e-spec.md` §4: `ref npc.inventory[3]`, no spaces) applied
-/// uniformly to every dotted-path/indexed construct this joiner ever
-/// renders, T1e `ref lvalue-path` arguments (`brink-fmt path-ref argument
-/// formatting`, issue #850) included — not a special case keyed off `ref`,
-/// since the CST gives no cheaper way to tell a path-projection segment
-/// from any other field access or index expression at this token-stream
-/// level, and there's no reason the two should format differently anyway.
+/// Two exceptions to the "collapse to one space" rule:
+/// - Whitespace directly touching a `.` field-access dot, or a `[`/`]` index
+///   bracket, collapses to *zero* space instead — `party [ leader ] . hp`
+///   renders `party[leader].hp`. This is the path-projection display
+///   convention itself (`docs/t1e-spec.md` §4: `ref npc.inventory[3]`, no
+///   spaces) applied uniformly to every dotted-path/indexed construct this
+///   joiner ever renders, T1e `ref lvalue-path` arguments (`brink-fmt
+///   path-ref argument formatting`, issue #850) included — not a special case
+///   keyed off `ref`, since the CST gives no cheaper way to tell a
+///   path-projection segment from any other field access or index expression
+///   at this token-stream level, and there's no reason the two should format
+///   differently anyway.
+/// - Type annotation colons (#642): `:` always renders with no space before
+///   and one space after, regardless of source spacing. This canonicalizes
+///   `name:type` to `name: type` uniformly across parameters, declarations,
+///   and logic lines.
 fn join_token_text(elems: impl Iterator<Item = SyntaxElement>) -> String {
     let mut out = String::new();
     let mut pending_space = false;
@@ -1253,6 +1280,13 @@ fn join_token_text(elems: impl Iterator<Item = SyntaxElement>) -> String {
                 out.push_str(tok.text());
                 pending_space = true;
                 last_kind = Some(tok.kind());
+            }
+            SyntaxKind::COLON => {
+                // Type annotation canonicalization: no space before, one after.
+                // Don't emit pending space, then emit colon, then force space.
+                out.push_str(tok.text());
+                pending_space = true;
+                last_kind = Some(SyntaxKind::COLON);
             }
             kind => {
                 let zero_space =
@@ -1969,10 +2003,13 @@ mod tests {
     // tests pin that down explicitly rather than relying on it implicitly.
 
     #[test]
-    fn param_and_return_type_annotations_normalize_whitespace() {
+    fn param_and_return_type_annotations_canonicalize() {
+        // #642: type annotations should render as `name: type` (no space before,
+        // one space after), regardless of source spacing. Mixed annotation
+        // spacing: `hp:int` (no space), `amount:  int` (multiple spaces).
         assert_eq!(
             fmt("===function heal(hp:int,amount:  int)  :  int===\n~ return hp\n"),
-            "=== function heal(hp:int,amount: int) : int ===\n  ~ return hp\n"
+            "=== function heal(hp: int,amount: int): int ===\n  ~ return hp\n"
         );
     }
 
@@ -1992,34 +2029,41 @@ mod tests {
     }
 
     #[test]
-    fn temp_ascription_normalizes_whitespace_like_any_other_logic_line() {
+    fn temp_ascription_canonicalizes_annotations() {
         // Issue #858: before the single-line `~ expr` retokenize fix, this
         // line's *inner* spacing (`temp   name:string=who`) passed through
         // untouched — only the outer `~` prefix got trimmed. Now it goes
         // through the same `join_token_text` joiner multi-line `~ { … }`
         // block statements use: runs of existing whitespace collapse to one
-        // space (`temp   name` -> `temp name`), matching
-        // `block_collapses_messy_spacing_and_reindents`'s established
-        // convention for the block form. Tokens with *no* whitespace
-        // between them in the source (`name:string=who`) still get no
-        // space inserted — that joiner has never inserted whitespace, only
-        // collapsed existing runs, the same as every multi-line block
-        // statement test already documents (e.g. `temp x=0` stays `temp
-        // x=0` in `block_idempotent_after_reindenting_messy_input`).
+        // space (`temp   name` -> `temp name`).
+        // Issue #642: type annotations also get canonicalized to `name: type`
+        // (no space before, one space after).
         assert_eq!(
             fmt("=== knot ===\n~   temp   name:string=who\n"),
-            "=== knot ===\n  ~ temp name:string=who\n"
+            "=== knot ===\n  ~ temp name: string=who\n"
         );
     }
 
     #[test]
     fn type_annotations_are_idempotent() {
         for input in [
-            "=== function heal(hp: int, amount: int): int ===\n~ return hp\n",
+            // Already formatted correctly
+            "=== function heal(hp: int,amount: int): int ===\n~ return hp\n",
+            // Missing spaces after colons
+            "=== function heal(hp:int,amount:int):int ===\n~ return hp\n",
+            // VAR with canonical spacing
             "VAR gold: int = 100\n",
-            "=== knot ===\n~ temp name: string = who\n",
-            "VAR w: list<Weathers> = 0\nVAR m: map<string, int> = 0\n",
-            "VAR cb: fn(int, int): bool = 0\n",
+            // VAR without spaces after colon
+            "VAR gold:int=100\n",
+            // Temp with canonical spacing
+            "=== knot ===\n~ temp name: string=who\n",
+            // Temp without spaces after colon
+            "=== knot ===\n~temp name:string=who\n",
+            // Complex types
+            "VAR w: list<Weathers> = 0\nVAR m: map<string,int> = 0\n",
+            // Function type
+            "VAR cb: fn(int,int): bool = 0\n",
+            // CONST
             "CONST speed: float = 0.5\n",
         ] {
             let first = fmt(input);
@@ -2029,6 +2073,30 @@ mod tests {
                 "type-annotated formatting should be idempotent for {input:?}"
             );
         }
+    }
+
+    #[test]
+    fn type_annotations_mixed_spacing_fixture() {
+        // Comprehensive fixture with mixed annotation spacing: no spaces,
+        // single spaces, and multiple spaces (PR #640 compatibility test).
+        let input = "\
+=== function greet(name:string,age:  int):string ===
+  VAR greeting:string=\"Hello\"
+  CONST max_age:int=120
+  ~ temp result:string=greeting
+
+=== helper(x: int, y:int ): int ===
+  ~ return x + y
+
+STRUCT Point=#{x:int,y: float}
+";
+        let output = fmt(input);
+        // Re-formatting should be idempotent
+        let output2 = fmt(&output);
+        assert_eq!(
+            output, output2,
+            "mixed spacing fixture should be idempotent"
+        );
     }
 
     // ── T1b `~ { … }` blocks: indentation-aware reformatting ────────────
