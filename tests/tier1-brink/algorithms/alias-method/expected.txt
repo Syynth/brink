@@ -1,0 +1,3 @@
+Weights: [4, 3, 2, 1]. Prob table: [1, 0.6, 0.8, 0.4]. Alias table: [0, 0, 0, 1].
+20 draws: [stone, bronze, gold, silver, gold, gold, gold, stone, gold, silver, gold, gold, silver, silver, gold, stone, silver, gold, stone, bronze].
+Tally: {stone: 4, bronze: 2, gold: 9, silver: 5}.
