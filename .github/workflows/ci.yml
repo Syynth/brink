@@ -110,6 +110,76 @@ jobs:
           shared-key: bench-counters
       - run: cargo test -p bevy-brink -p brink-runtime --features bench-counters
 
+  # #956 (tracked from #897): the standard `clippy`/`test` jobs below only
+  # ever build the workspace's *default* feature sets, so a feature-gated
+  # module can bitrot invisibly. That's exactly how #765's xliff2 CDATA gap
+  # (found by a hand-run `clippy --all-features`) and #923's bench-counters
+  # gap got in — each closed one feature at a time (`test-bench-counters`
+  # above). One `--all-features` leg closes the whole class at once instead
+  # of chasing each gap after the fact.
+  #
+  # Feature unification across the workspace made `--workspace --all-features`
+  # feasible here (verified: no combination conflicts among xliff2's
+  # `metadata`, brink-format's `inkt`/`std`, brink-runtime's
+  # `bench-counters`/`effect-trace`/`testing`, bevy-brink's
+  # `dev`/`bench-counters`/`effect-trace`, brink-db's `memory-introspection`,
+  # or brink-test-harness's `effect-trace` forwarding) — if a future feature
+  # ever proves mutually exclusive workspace-wide, fall back to a per-crate
+  # `-p` matrix here rather than dropping the leg.
+  #
+  # This subsumes #947 (a proposed `--features effect-trace` leg for
+  # brink-runtime + bevy-brink): both crates' `effect-trace` feature is part
+  # of `--all-features`, so their ground-truth tests
+  # (`brink-runtime::effect_trace`'s recorder-backed assertions and
+  # `bevy-brink::ground_truth`'s `#[cfg(test)]` module, gated by
+  # `#[cfg(feature = "effect-trace")] mod ground_truth;` in
+  # `crates/bevy-brink/src/lib.rs`) already run here — no separate job
+  # needed.
+  clippy-all-features:
+    name: Clippy (all features)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      # Same bevy-brink dev-dependency system libs as the `test` job above.
+      - name: Install Linux dependencies (bevy)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: all-features
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  # Companion to `clippy-all-features` above — see its comment for why this
+  # leg exists and how it subsumes #947. Runtime cost measured comparable to
+  # the default `test` job (workspace test compile dominates; the extra
+  # feature-gated test functions are a handful of fast unit/integration
+  # tests), so it runs `cargo test`, not just clippy.
+  test-all-features:
+    name: Test (all features)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      # Same bevy-brink dev-dependency system libs as the `test` job above.
+      - name: Install Linux dependencies (bevy)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: all-features
+      - run: cargo test --workspace --all-features
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
