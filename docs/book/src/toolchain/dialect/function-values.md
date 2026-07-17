@@ -82,10 +82,13 @@ Total: 17.
 ```
 
 `adder(7)` would have produced the same `17` — `call(f, args…)` exists for
-the shapes where writing `f(args…)` directly isn't syntactically available
-(a function value stored behind an index expression, a field, or handed
-back from another expression), not as a second calling convention with
-different semantics.
+the shapes where the direct-call form `f(args…)` isn't accepted (a function
+value stored behind an index expression, a field, or handed back from
+another expression), not as a second calling convention with different
+semantics. Direct-call syntax only ever binds a bare variable/temp/param
+name; writing `handlers[state](event)` or `obj.field()` in its place is a
+compile error (`E100`) naming `call(f, args…)` as the fix, not a silent
+no-op — see issue #869.
 
 ## `bind()`: currying an existing function value
 

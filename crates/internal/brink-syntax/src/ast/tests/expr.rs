@@ -330,3 +330,43 @@ fn choice_condition_expr_infix() {
     let expr = cond.expr().unwrap();
     assert!(matches!(expr, Expr::Infix(_)));
 }
+
+// ── CallExpr (computed-callee call attempt, issue #869) ──────────────
+//
+// `expr(args…)` where `expr` isn't a bare identifier immediately followed
+// by `(` — the shape that used to leave `(args…)` unconsumed (silently
+// reappearing as prose text) instead of parsing as a call at all. These
+// prove the parser now captures all three non-bare-name callee shapes the
+// npc-fsm/behavior-tree tier1 corpus fixtures found (indexed, field
+// access, call-result), and leaves the bare-name fast path untouched.
+
+#[test]
+fn call_expr_indexed_callee() {
+    let ce = parse_first::<CallExpr>("=== k ===\n~ temp x = handlers[state](event)\n");
+    assert!(matches!(ce.callee(), Some(Expr::Index(_))));
+    assert_eq!(ce.arg_list().unwrap().arg_count(), 1);
+}
+
+#[test]
+fn call_expr_field_access_callee() {
+    let ce = parse_first::<CallExpr>("=== k ===\n~ temp x = obj.field()\n");
+    // `obj.field` is a bare dotted chain, so it lowers as one `PATH` node
+    // (see `FIELD_ACCESS_EXPR`'s doc) — not `Expr::FieldAccess`.
+    assert!(matches!(ce.callee(), Some(Expr::Path(_))));
+    assert!(ce.arg_list().is_none_or(|a| a.arg_count() == 0));
+}
+
+#[test]
+fn call_expr_call_result_callee() {
+    let ce = parse_first::<CallExpr>("=== k ===\n~ temp x = get_handler()()\n");
+    assert!(matches!(ce.callee(), Some(Expr::FunctionCall(_))));
+}
+
+#[test]
+fn call_expr_does_not_capture_bare_name_call() {
+    // The bare-name fast path (`FUNCTION_CALL`, consumed at `atom()`)
+    // must stay a `FunctionCall`, never a `CallExpr` — direct-call syntax
+    // for a plain name is unaffected by this construct.
+    let expr = parse_first::<Expr>("=== k ===\n~ temp x = bare(1, 2)\n");
+    assert!(matches!(expr, Expr::FunctionCall(_)));
+}

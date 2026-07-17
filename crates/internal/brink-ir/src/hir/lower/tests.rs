@@ -195,6 +195,76 @@ fn logic_line_emits_diagnostic_on_malformed() {
     );
 }
 
+// ─── Computed-callee call attempt (docs/t1c-spec.md §3/§10, issue #869) ──
+//
+// `expr(args…)` where `expr` isn't a bare variable/temp/param name is
+// always rejected (E100) rather than silently dropped — proven for all
+// three non-bare-name callee shapes the npc-fsm/behavior-tree tier1
+// corpus fixtures found (indexed, field access, call-result), plus a
+// sanity check that the ratified `call(f, args…)` Explicit form (which
+// already dispatches through exactly these callee shapes correctly) is
+// untouched by this rejection.
+
+#[test]
+fn computed_callee_indexed_emits_e100() {
+    let source = "~ temp x = handlers[state](event)\n";
+    let (_, diags, _) = lower_body(source);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E100),
+        "expected E100 diagnostic, got: {:?}",
+        diags.iter().map(|d| d.code.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn computed_callee_field_access_emits_e100() {
+    let source = "~ temp x = obj.field()\n";
+    let (_, diags, _) = lower_body(source);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E100),
+        "expected E100 diagnostic, got: {:?}",
+        diags.iter().map(|d| d.code.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn computed_callee_call_result_emits_e100() {
+    let source = "~ temp x = get_handler()()\n";
+    let (_, diags, _) = lower_body(source);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E100),
+        "expected E100 diagnostic, got: {:?}",
+        diags.iter().map(|d| d.code.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn bare_name_direct_call_never_emits_e100() {
+    // The bare-name Direct-call fast path (RULED, t1c-spec §3) must never
+    // trip the new rejection.
+    let source = "~ temp x = bare(1, 2)\n";
+    let (_, diags, _) = lower_body(source);
+    assert!(
+        !diags.iter().any(|d| d.code == DiagnosticCode::E100),
+        "bare-name call incorrectly rejected: {:?}",
+        diags.iter().map(|d| d.code.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn explicit_call_form_never_emits_e100() {
+    // `call(f, args…)` — the ratified Explicit form — lowers as an
+    // ordinary named call (`Expr::Call(path = "call", …)`), never as the
+    // new `CALL_EXPR` shape, so it must stay untouched by E100.
+    let source = "~ temp x = call(handlers[state], event)\n";
+    let (_, diags, _) = lower_body(source);
+    assert!(
+        !diags.iter().any(|d| d.code == DiagnosticCode::E100),
+        "call(f, args…) incorrectly rejected: {:?}",
+        diags.iter().map(|d| d.code.as_str()).collect::<Vec<_>>()
+    );
+}
+
 // ─── Mock sink tests ────────────────────────────────────────────────
 
 #[test]

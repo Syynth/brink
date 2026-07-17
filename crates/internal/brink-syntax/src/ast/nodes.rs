@@ -158,6 +158,10 @@ ast_node!(FnLiteral, FN_LITERAL);
 
 ast_node!(RefExpr, REF_EXPR);
 
+// ── Computed-callee call attempt (docs/t1c-spec.md §3/§10, issue #869) ──
+
+ast_node!(CallExpr, CALL_EXPR);
+
 // ── Diverts ──────────────────────────────────────────────────────────
 
 ast_node!(DivertNode, DIVERT_NODE);
@@ -318,6 +322,14 @@ pub enum Expr {
     /// position (calls, `#fn(…)`, `bind(…)`) — a `brink-analyzer` concern,
     /// not a grammar one.
     RefExpr(RefExpr),
+    /// `expr(args…)` where `expr` isn't a bare identifier immediately
+    /// followed by `(` (that shape is `FunctionCall`) — a computed callee
+    /// (indexed, field access, call-result, parenthesized, …). Parses so
+    /// the call syntax and its args aren't silently reinterpreted as
+    /// trailing prose text; always rejected at HIR lowering (E100,
+    /// docs/t1c-spec.md §3/§10, issue #869) since Direct-call syntax is
+    /// RULED to a bare variable/temp/param callee only.
+    ComputedCall(CallExpr),
 }
 
 impl std::fmt::Debug for Expr {
@@ -355,6 +367,7 @@ impl crate::ast::AstNode for Expr {
                 | SyntaxKind::FIELD_ACCESS_EXPR
                 | SyntaxKind::FN_LITERAL
                 | SyntaxKind::REF_EXPR
+                | SyntaxKind::CALL_EXPR
         )
     }
 
@@ -379,6 +392,7 @@ impl crate::ast::AstNode for Expr {
             SyntaxKind::FIELD_ACCESS_EXPR => FieldAccessExpr::cast(node).map(Expr::FieldAccess),
             SyntaxKind::FN_LITERAL => FnLiteral::cast(node).map(Expr::FnLiteral),
             SyntaxKind::REF_EXPR => RefExpr::cast(node).map(Expr::RefExpr),
+            SyntaxKind::CALL_EXPR => CallExpr::cast(node).map(Expr::ComputedCall),
             _ => None,
         }
     }
@@ -404,6 +418,7 @@ impl crate::ast::AstNode for Expr {
             Expr::FieldAccess(n) => n.syntax(),
             Expr::FnLiteral(n) => n.syntax(),
             Expr::RefExpr(n) => n.syntax(),
+            Expr::ComputedCall(n) => n.syntax(),
         }
     }
 }
@@ -1709,6 +1724,21 @@ impl FunctionCall {
 
     pub fn name(&self) -> Option<String> {
         self.identifier().and_then(|id| id.name())
+    }
+
+    pub fn arg_list(&self) -> Option<ArgList> {
+        support::child(&self.syntax)
+    }
+}
+
+// ── CallExpr (computed-callee call attempt, issue #869) ──────────────
+
+impl CallExpr {
+    /// The callee expression — the first (and only non-`ARG_LIST`) child.
+    /// Always some non-identifier-immediately-followed-by-`(` shape
+    /// (`FUNCTION_CALL`'s bare-name fast path never reaches this node).
+    pub fn callee(&self) -> Option<Expr> {
+        self.syntax.children().find_map(Expr::cast)
     }
 
     pub fn arg_list(&self) -> Option<ArgList> {

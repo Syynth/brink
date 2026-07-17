@@ -77,32 +77,34 @@
 //      closure returning a closure — is precisely the #521 evidence this
 //      port was commissioned to produce.
 //
-// 3. SILENT MISCOMPILE ON A DIRECT CALL THROUGH A NON-BARE-NAME CALLEE
-//    (flagged as a probable compiler bug, not a design tradeoff — see
-//    scopeNotes / the accompanying PR for the follow-up task). Before
-//    settling on `call(node.action)` below, `node.action()` (calling a
-//    `fn(): int` struct field directly, without `call()`) was tried
-//    first, since `function-values.md` only says direct call syntax
-//    "isn't syntactically available" for a callee "stored behind an
-//    index expression [or] a field" — read at face value, that sounds
-//    like a parse rejection. It is not: `node.action()` (and the same
-//    shape over an array element, `arr[0]()`) COMPILES with zero
-//    diagnostics and RUNS, but silently does not invoke the function —
-//    the trailing `(...)` is dropped and the expression evaluates to the
-//    bare function value itself (`out = b.action()` in the minimal repro
-//    that motivated this produced the STRING `fn give_five()`, not the
-//    `5` the call should have returned). Binding the same field to a
-//    `temp` first and calling THAT (`temp f = b.action; f()`) works
-//    correctly, confirming the restriction is real but that its failure
-//    mode is a silent wrong-value, not a diagnostic. This is worse than a
-//    hard parse error would have been — it is exactly the kind of "calls
-//    the wrong thing and says nothing" failure this project's own rules
+// 3. SILENT MISCOMPILE ON A DIRECT CALL THROUGH A NON-BARE-NAME CALLEE —
+//    FIXED as of #869 (was: flagged as a probable compiler bug, not a
+//    design tradeoff). Before settling on `call(node.action)` below,
+//    `node.action()` (calling a `fn(): int` struct field directly,
+//    without `call()`) was tried first, since `function-values.md` only
+//    said direct call syntax "isn't syntactically available" for a
+//    callee "stored behind an index expression [or] a field" — read at
+//    face value, that sounds like a parse rejection. At the time it was
+//    not: `node.action()` (and the same shape over an array element,
+//    `arr[0]()`) COMPILED with zero diagnostics and RAN, but silently did
+//    not invoke the function — the trailing `(...)` was dropped and the
+//    expression evaluated to the bare function value itself (`out =
+//    b.action()` in the minimal repro that motivated this produced the
+//    STRING `fn give_five()`, not the `5` the call should have
+//    returned). Binding the same field to a `temp` first and calling
+//    THAT (`temp f = b.action; f()`) worked correctly, confirming the
+//    restriction was real but that its failure mode was a silent
+//    wrong-value, not a diagnostic — exactly the kind of "calls the
+//    wrong thing and says nothing" failure this project's own rules
 //    treat as a bug, just surfacing in call position instead of a
-//    collection mutator. Every function-value invocation in this file
-//    goes through `call(...)` for that reason, even in the two or three
-//    spots where the callee happens to already be a bare name and
-//    wouldn't have needed it — consistency here is cheaper than
-//    remembering which shape is safe on a case-by-case basis.
+//    collection mutator. #869 replaced the silent drop with a
+//    compile-time `E100` diagnostic naming `call(f, args…)` as the fix.
+//    Every function-value invocation in this file still goes through
+//    `call(...)`, even in the two or three spots where the callee
+//    happens to already be a bare name and wouldn't strictly need it —
+//    consistency here is cheaper than remembering which shape is safe on
+//    a case-by-case basis, and it's the ratified form for a computed
+//    callee regardless (t1c-spec §3).
 //
 // 4. RUNNING STATUS AND `#@local` AS THE TREE'S OWN MEMORY. `do_reload`
 //    below takes two ticks (`RUNNING` on the first, `SUCCESS` on the
