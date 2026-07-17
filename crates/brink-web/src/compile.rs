@@ -201,6 +201,11 @@ pub(crate) struct DiagnosticJs {
     pub(crate) start: u32,
     pub(crate) end: u32,
     pub(crate) severity: String,
+    /// Structured diagnostic code (e.g. `"E065"`), so consumers can filter or
+    /// group diagnostics programmatically rather than string-matching the
+    /// human-readable `message` (issue #1004: the compile/warnings channel
+    /// previously carried `severity` but not the code itself).
+    pub(crate) code: String,
     /// Path of the file this diagnostic belongs to. In a multi-file project a
     /// diagnostic may live in an included file rather than the entry, so the
     /// editor uses this to place it on the right tab.

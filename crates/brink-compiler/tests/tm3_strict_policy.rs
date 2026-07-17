@@ -46,6 +46,116 @@ fn diagnostics_of(err: brink_compiler::CompileError) -> Vec<brink_compiler::Reso
     }
 }
 
+fn compile_mem_manifest(
+    source: &str,
+    manifest: Option<brink_ir::HostManifest>,
+) -> Result<brink_compiler::CompileOutput, brink_compiler::CompileError> {
+    let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
+    let options = AnalysisOptions {
+        dialect: Dialect::Brink,
+        types: TypePolicy::Strict,
+        host_manifest: manifest,
+        ..AnalysisOptions::default()
+    };
+    brink_compiler::compile_with_options(
+        "main.ink",
+        |path| {
+            files.get(path).map(|s| (*s).to_string()).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("file not found: {path}"),
+                )
+            })
+        },
+        options,
+    )
+}
+
+/// A host manifest declaring `get_thing(id)` whose param `id` has type `ty`
+/// (a `TypeRef` string). `types` registers `thing_id` as a scalar (base int)
+/// semantic type so a `"thing_id"` `ty` resolves; pass `""` for an
+/// unresolvable declared type.
+fn get_thing_manifest(ty: &str) -> brink_ir::HostManifest {
+    brink_ir::HostManifest {
+        types: vec![brink_ir::SemanticTypeDef {
+            name: "thing_id".to_string(),
+            base: brink_ir::BaseType::Int,
+            constraint: None,
+            values: None,
+            widget: None,
+        }],
+        externals: vec![brink_ir::ManifestExternal {
+            name: "get_thing".to_string(),
+            params: vec![brink_ir::ManifestParam {
+                name: "id".to_string(),
+                ty: brink_ir::TypeRef(ty.to_string()),
+            }],
+            returns: brink_ir::TypeRef("float".to_string()),
+            kind: brink_ir::ExternalKind::default(),
+            doc: None,
+            widgets: Vec::new(),
+            path: Vec::new(),
+        }],
+    }
+}
+
+// ── Issue #1004: external-declaration escape checking at the compile layer ──
+//
+// The compile pipeline's strict pass now escape-checks each registered
+// `EXTERNAL`'s own params against the manifest signatures — the same
+// `collect_external_sigs` resolution the analysis path seeds — through the
+// shared `strict_diagnostics` seam. These pin the three regimes at the
+// native `compile_with_options` layer (the wasm `compileProject` regression
+// tests live in `brink-web`).
+
+const EXT_SRC: &str =
+    "EXTERNAL get_thing(id)\n=== start ===\n{get_thing(1) == 2:\n  yes\n}\n-> DONE\n";
+
+#[test]
+fn strict_manifest_typed_external_param_compiles_clean() {
+    // A manifest `ty` naming a registered semantic type resolves the external
+    // param — no escape, story compiles.
+    let result = compile_mem_manifest(EXT_SRC, Some(get_thing_manifest("thing_id")));
+    assert!(
+        result.is_ok(),
+        "a manifest-typed external param must not escape under strict: {result:?}"
+    );
+}
+
+#[test]
+fn strict_unresolvable_external_param_escapes_with_e065_at_decl_span() {
+    // Registered, but the declared `ty` is empty — genuinely untyped, so it
+    // escapes (don't-over-suppress guard), anchored at the external's own
+    // `get_thing` declaration span (bytes 9..18 of `EXTERNAL get_thing(id)`).
+    let err = compile_mem_manifest(EXT_SRC, Some(get_thing_manifest("")))
+        .expect_err("an unresolvable external param type must fail strict compilation");
+    let diags = diagnostics_of(err);
+    let escape = diags
+        .iter()
+        .find(|d| d.code == DiagnosticCode::E065)
+        .unwrap_or_else(|| panic!("expected an E065 escape: {diags:?}"));
+    assert!(
+        escape.message.contains("get_thing") && escape.message.contains("parameter `id`"),
+        "escape must name the offending external param: {escape:?}"
+    );
+    assert_eq!(
+        (escape.range.start().into(), escape.range.end().into()),
+        (9u32, 18u32),
+        "escape anchors at the external's own declaration span, not a fixed line: {escape:?}"
+    );
+}
+
+#[test]
+fn strict_unregistered_external_stays_unchecked() {
+    // No manifest at all: the bare-identifier external params have no
+    // in-language type source, so strict leaves them unchecked (compiles).
+    let result = compile_mem_manifest(EXT_SRC, None);
+    assert!(
+        result.is_ok(),
+        "an unregistered external's params must stay unchecked under strict: {result:?}"
+    );
+}
+
 #[test]
 fn default_types_is_gradual() {
     // No `types` set — `AnalysisOptions::default()` — under `dialect =

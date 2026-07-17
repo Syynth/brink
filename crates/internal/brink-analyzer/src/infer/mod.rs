@@ -266,6 +266,19 @@ pub(crate) fn collect_globals(
 /// #805 widens this to the manifest's full scalar-semantic-type vocabulary
 /// and to inline-doc-only bindings).
 ///
+/// **Two consumers share this one resolution (issue #1004).** Both the
+/// call-site seeding — this map is folded into `solve_scc`/`infer_project`'s
+/// `known_sigs` so a call to a registered `EXTERNAL` checks its *arguments*
+/// against the declared param types — and [`crate::strict::check_external_escapes`]
+/// (the escape check over the *declarations themselves*, so a registered
+/// binding whose `ManifestParam.ty` fails to resolve is reported rather than
+/// silently treated as an untyped call) read the identical `(params, return)`
+/// signatures from here. The strict-escape reader lives on the shared
+/// [`crate::strict_diagnostics`] seam, so the analysis path
+/// (`analyze_with_options`) and the compile path (`brink-db`'s
+/// `whole_project_diagnostics_query`) get byte-identical external escapes
+/// from one helper — never a second, drift-prone re-resolution.
+///
 /// `EXTERNAL name(params)` has no ink-side type-annotation grammar (unlike a
 /// knot/stitch's `(x: T)`/`): T ===`), so a binding's *declared*
 /// parameter/return types can only come from two sources — exactly the two
@@ -308,7 +321,7 @@ pub(crate) fn collect_globals(
 /// slot in this module gets. `Ty::Unknown` params are inert at the
 /// call-checking site (`BodyCtx::observe` is a documented no-op against
 /// `Ty::Unknown`), so this never fabricates a false mismatch.
-fn collect_external_sigs(
+pub fn collect_external_sigs(
     index: &SymbolIndex,
     manifest: Option<&HostManifest>,
     inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
