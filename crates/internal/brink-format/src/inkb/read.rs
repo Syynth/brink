@@ -6,8 +6,9 @@ use alloc::vec::Vec;
 use crate::codec::{crc32, read_def_id, read_i32, read_str, read_u8, read_u16, read_u32, read_u64};
 use crate::counting::CountingFlags;
 use crate::definition::{
-    AddressDef, AddressPath, AliasEntry, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry,
-    ListDef, ListItemDef, ParamMeta, ScopeLineTable, SlotInfo, SourceLocation, StructShapeDef,
+    AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef, DirectEffects,
+    DispatchEntry, EffectRowEntry, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
+    ParamMeta, ScopeLineTable, SlotInfo, SourceLocation, StructShapeDef,
 };
 use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -17,14 +18,15 @@ use crate::value::{
     ClosureEnvEntry, ListValue, MAX_DECODE_DEPTH, MapKey, OrderedMap, ShapeId, Value, ValueType,
 };
 
-use super::write::ALIAS_TABLE_SECTION_VERSION;
+use super::write::{ALIAS_TABLE_SECTION_VERSION, EFFECT_ROWS_SECTION_VERSION};
 use super::{
-    CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HEADER_PREAMBLE, InkbIndex,
-    KEY_CARDINAL, KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN, LINE_TEMPLATE, MAGIC,
-    PART_LITERAL, PART_SELECT, PART_SLOT, PROJ_SEG_INDEX, PROJ_SEG_KEY, SECTION_ENTRY_SIZE,
-    SectionEntry, SectionKind, VAL_ARRAY, VAL_BOOL, VAL_CLOSURE, VAL_DIVERT_TARGET, VAL_FLOAT,
-    VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT, VAL_LIST, VAL_MAP, VAL_NULL, VAL_PROJECTION,
-    VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION, safe_capacity,
+    CAP_PARAM_ANY, CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HANDLE_PARAM_NONE,
+    HEADER_PREAMBLE, InkbIndex, KEY_CARDINAL, KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN,
+    LINE_TEMPLATE, MAGIC, PART_LITERAL, PART_SELECT, PART_SLOT, PROJ_SEG_INDEX, PROJ_SEG_KEY,
+    SECTION_ENTRY_SIZE, SectionEntry, SectionKind, VAL_ARRAY, VAL_BOOL, VAL_CLOSURE,
+    VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT, VAL_LIST,
+    VAL_MAP, VAL_NULL, VAL_PROJECTION, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION,
+    safe_capacity,
 };
 
 // ── Tier 1: Full story read ─────────────────────────────────────────────────
@@ -57,6 +59,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
     let struct_shapes = read_section_struct_shapes(buf, &index)?;
     let private_defs = read_section_visibility(buf, &index)?;
     let alias_table = read_section_alias_table(buf, &index)?;
+    let effect_rows = read_section_effect_rows(buf, &index)?;
 
     Ok(StoryData {
         containers,
@@ -73,6 +76,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
         struct_shapes,
         private_defs,
         alias_table,
+        effect_rows,
         source_checksum: index.checksum,
     })
 }
@@ -627,6 +631,102 @@ pub fn read_section_alias_table(
         entries.push(AliasEntry { old, new });
     }
     Ok(entries)
+}
+
+/// Read the T2-3 `EffectRows` section (`docs/effects-spec.md` §11) from a
+/// complete `.inkb` file using its index. Absent section (converter output, or
+/// a story compiled before this slice) decodes as empty, mirroring
+/// [`read_section_alias_table`]. The section-local version byte is checked
+/// independently of the whole-file `VERSION` — see [`EFFECT_ROWS_SECTION_VERSION`].
+pub fn read_section_effect_rows(
+    buf: &[u8],
+    index: &InkbIndex,
+) -> Result<Vec<EffectRowEntry>, DecodeError> {
+    let Some(range) = index.section_range(SectionKind::EffectRows) else {
+        return Ok(Vec::new());
+    };
+    let mut off = range.start;
+    let section_version = read_u8(buf, &mut off)?;
+    if section_version != EFFECT_ROWS_SECTION_VERSION {
+        return Err(DecodeError::UnsupportedSectionVersion {
+            section: SectionKind::EffectRows as u8,
+            version: section_version,
+        });
+    }
+    let count = read_u32(buf, &mut off)? as usize;
+    // Minimum per-entry footprint: def_id(8) + direct(3×u32 counts + opaque) +
+    // dispatch count(4) = 8 + 12 + 1 + 4 = 25 bytes.
+    let mut rows = Vec::with_capacity(safe_capacity(count, buf.len(), off, 25));
+    for _ in 0..count {
+        let def = read_def_id(buf, &mut off)?;
+        let direct = decode_direct_effects(buf, &mut off)?;
+        let dispatch_count = read_u32(buf, &mut off)? as usize;
+        let mut dispatches = Vec::with_capacity(safe_capacity(dispatch_count, buf.len(), off, 13));
+        for _ in 0..dispatch_count {
+            let cell = read_def_id(buf, &mut off)?;
+            let narrowable = read_u8(buf, &mut off)? != 0;
+            let fallback = decode_direct_effects(buf, &mut off)?;
+            dispatches.push(DispatchEntry {
+                cell,
+                narrowable,
+                fallback,
+            });
+        }
+        rows.push(EffectRowEntry {
+            def,
+            direct,
+            dispatches,
+        });
+    }
+    Ok(rows)
+}
+
+/// Decode a [`DirectEffects`] block written by `encode_direct_effects`.
+fn decode_direct_effects(buf: &[u8], off: &mut usize) -> Result<DirectEffects, DecodeError> {
+    let read_count = read_u32(buf, off)? as usize;
+    let mut reads = Vec::with_capacity(safe_capacity(read_count, buf.len(), *off, 8));
+    for _ in 0..read_count {
+        reads.push(read_def_id(buf, off)?);
+    }
+    let write_count = read_u32(buf, off)? as usize;
+    let mut writes = Vec::with_capacity(safe_capacity(write_count, buf.len(), *off, 8));
+    for _ in 0..write_count {
+        writes.push(read_def_id(buf, off)?);
+    }
+    let call_count = read_u32(buf, off)? as usize;
+    let mut calls = Vec::with_capacity(safe_capacity(call_count, buf.len(), *off, 4));
+    for _ in 0..call_count {
+        calls.push(decode_call_atom(buf, off)?);
+    }
+    let opaque = read_u8(buf, off)? != 0;
+    Ok(DirectEffects {
+        reads,
+        writes,
+        calls,
+        opaque,
+    })
+}
+
+/// Decode a single [`CallAtom`] written by `encode_call_atom`. The strict
+/// reader rejects a non-`Any` capability tag (path-granular is reserved, #826)
+/// and a non-`None` handle-parameter slot (reserved, `docs/t1d-spec.md` §7) —
+/// the same reservation discipline the projection range segment follows.
+fn decode_call_atom(buf: &[u8], off: &mut usize) -> Result<CallAtom, DecodeError> {
+    let name = NameId(read_u16(buf, off)?);
+    let cap_tag = read_u8(buf, off)?;
+    let capability = match cap_tag {
+        CAP_PARAM_ANY => CapabilityParam::Any,
+        other => return Err(DecodeError::InvalidEffectCapParam(other)),
+    };
+    let handle_tag = read_u8(buf, off)?;
+    if handle_tag != HANDLE_PARAM_NONE {
+        return Err(DecodeError::InvalidEffectHandleParam(handle_tag));
+    }
+    Ok(CallAtom {
+        name,
+        capability,
+        handle_param: None,
+    })
 }
 
 fn decode_external(buf: &[u8], off: &mut usize) -> Result<ExternalFnDef, DecodeError> {

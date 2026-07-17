@@ -453,6 +453,14 @@ pub enum DecodeError {
     /// `docs/format-v4-rfc.md` §1), which nothing emits in T1e and the
     /// reader therefore rejects (`docs/t1e-spec.md` §3).
     InvalidProjSegmentKind(u8),
+    /// An `EffectRows` call atom carried an unknown capability-parameter tag
+    /// (T2-3, `docs/effects-spec.md` §11). Only `Any` (`0`) is legal in this
+    /// section version; path-granular tags are reserved (#826).
+    InvalidEffectCapParam(u8),
+    /// An `EffectRows` call atom carried a non-`None` handle-parameter slot
+    /// (T2-3, `docs/effects-spec.md` §11, `docs/t1d-spec.md` §7). The slot is
+    /// reserved — nothing emits a bound handle in this section version.
+    InvalidEffectHandleParam(u8),
 }
 
 impl fmt::Display for DecodeError {
@@ -505,6 +513,12 @@ impl fmt::Display for DecodeError {
             }
             Self::InvalidProjSegmentKind(b) => {
                 write!(f, "invalid projection segment kind: {b:#04x}")
+            }
+            Self::InvalidEffectCapParam(b) => {
+                write!(f, "invalid effect capability-parameter tag: {b:#04x}")
+            }
+            Self::InvalidEffectHandleParam(b) => {
+                write!(f, "reserved effect handle-parameter slot set: {b:#04x}")
             }
         }
     }
