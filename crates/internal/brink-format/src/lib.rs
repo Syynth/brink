@@ -56,7 +56,10 @@ pub use line::{
     LineContent, LineFlags, LinePart, LineTemplate, PluralCategory, PluralResolver, SelectKey,
 };
 pub use opcode::{ChoiceFlags, DecodeError, Opcode, SequenceKind};
-pub use save::{LoadReport, SAVE_FORMAT_VERSION, SaveState, VisitEntry};
+pub use save::{
+    LoadReport, SAVE_FORMAT_VERSION, SUSPENDED_FLOW_SECTION_VERSION, SaveState, SuspendedFlow,
+    VisitEntry, WakePolicy, WakeSource,
+};
 pub use story::StoryData;
 pub use value::{
     ClosureEnvEntry, ClosureValue, ListValue, MAX_DECODE_DEPTH, MapKey, OrderedMap, ProjSegment,

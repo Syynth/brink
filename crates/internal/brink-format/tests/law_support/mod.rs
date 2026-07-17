@@ -11,7 +11,8 @@
 //! through `serde_json`, which has no such restriction.
 
 use brink_format::{
-    ClosureEnvEntry, DefinitionId, DefinitionTag, MapKey, NameId, OrderedMap, ShapeId, Value,
+    ClosureEnvEntry, DefinitionId, DefinitionTag, MapKey, NameId, OrderedMap,
+    SUSPENDED_FLOW_SECTION_VERSION, ShapeId, SuspendedFlow, Value, WakePolicy, WakeSource,
 };
 use proptest::prelude::*;
 
@@ -81,6 +82,47 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
         // one included, must be reachable from `arb_value_full`.
         (arb_name_id(), any::<u64>()).prop_map(|(kind, id)| Value::handle(kind, id)),
     ]
+}
+
+/// A [`WakePolicy`] (`docs/flow-suspension-spec.md` §2 point 4): a
+/// `Condition`-sourced policy always carries a condition fn token; a
+/// `Host`-sourced one never does (§3 — no compiled ink fn exists for a
+/// host-driven wake source).
+pub fn arb_wake_policy() -> impl Strategy<Value = WakePolicy> {
+    (arb_def_id(), any::<bool>(), arb_def_id()).prop_map(|(site, is_condition, condition)| {
+        if is_condition {
+            WakePolicy {
+                site,
+                condition: Some(condition),
+                source: WakeSource::Condition,
+            }
+        } else {
+            WakePolicy {
+                site,
+                condition: None,
+                source: WakeSource::Host,
+            }
+        }
+    })
+}
+
+/// A [`SuspendedFlow`] (the `FlowFrame`, `docs/flow-suspension-spec.md` §2):
+/// current container, a bounded tunnel-return stack, a name-keyed frame
+/// record (an arbitrary [`Value`], typically a map), and a wake policy.
+pub fn arb_suspended_flow() -> impl Strategy<Value = SuspendedFlow> {
+    (
+        arb_def_id(),
+        prop::collection::vec(arb_def_id(), 0..4),
+        arb_value_full(),
+        arb_wake_policy(),
+    )
+        .prop_map(|(current, return_stack, frame, wake)| SuspendedFlow {
+            version: SUSPENDED_FLOW_SECTION_VERSION,
+            current,
+            return_stack,
+            frame,
+            wake,
+        })
 }
 
 /// Every [`Value`] variant, with `Array`/`Map`/`Record` (value-model-spec §4)
