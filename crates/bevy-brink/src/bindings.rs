@@ -52,7 +52,11 @@ use bevy_app::App;
 use bevy_asset::Assets;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::event::Event;
+#[cfg(feature = "effect-trace")]
+use bevy_ecs::query::Access;
 use bevy_ecs::resource::Resource;
+#[cfg(feature = "effect-trace")]
+use bevy_ecs::system::BoxedSystem;
 use bevy_ecs::system::{Commands, In, IntoSystem, Query, Res, ResMut, SystemId, SystemState};
 use bevy_ecs::world::World;
 use bevy_log::warn;
@@ -173,6 +177,13 @@ pub struct BrinkBindings<M: Send + Sync + 'static = ()> {
     pure: HashMap<String, PureFn>,
     commands: HashMap<String, CommandFn>,
     queries: HashMap<String, QuerySystemId>,
+    /// Each query binding's real, bevy-declared [`Access`], captured once at
+    /// `bind_brink_query` registration time (issue #938's host-side
+    /// ground-truth check — see `crate::ground_truth`'s module docs for why
+    /// registration time is the right moment: bevy's own component access
+    /// is static, so it never varies dispatch to dispatch).
+    #[cfg(feature = "effect-trace")]
+    query_access: HashMap<String, Access>,
     /// Async (defer-across-frames) bindings: `bind_brink_async` (event) and
     /// `bind_brink_task` (detached task). A flow pauses on these and resolves
     /// out-of-band.
@@ -186,6 +197,8 @@ impl<M: Send + Sync + 'static> Default for BrinkBindings<M> {
             pure: HashMap::new(),
             commands: HashMap::new(),
             queries: HashMap::new(),
+            #[cfg(feature = "effect-trace")]
+            query_access: HashMap::new(),
             async_bindings: HashMap::new(),
             _marker: PhantomData,
         }
@@ -212,6 +225,14 @@ impl<M: Send + Sync + 'static> BrinkBindings<M> {
     /// The [`SystemId`] of the query binding registered under `name`, if any.
     fn query(&self, name: &str) -> Option<QuerySystemId> {
         self.queries.get(name).copied()
+    }
+
+    /// The real bevy [`Access`] a `bind_brink_query` binding's system
+    /// carries, if `name` was registered while the `effect-trace` feature
+    /// was enabled (see [`crate::ground_truth`]'s `check` function).
+    #[cfg(feature = "effect-trace")]
+    pub(crate) fn query_access(&self, name: &str) -> Option<&Access> {
+        self.query_access.get(name)
     }
 }
 
@@ -464,11 +485,32 @@ impl BrinkBindingsAppExt for App {
         S: IntoSystem<In<BrinkQueryInput>, Value, SM> + 'static,
     {
         let name = name.into();
+        // With `effect-trace`, capture the system's real bevy-declared
+        // `Access` once, at registration — bevy's own component access is
+        // static (a `Query<&Foo>` declares the same access whether or not it
+        // ever matches an entity), so this is the exact ground truth
+        // `crate::ground_truth::check` later compares real dispatches
+        // against. `register_boxed_system` (rather than `register_system`)
+        // lets us call `System::initialize` ourselves first without needing
+        // `S: Clone`; the already-initialized boxed system is then handed to
+        // bevy exactly as `register_system` would have built it, so the
+        // registered binding behaves identically either way.
+        #[cfg(feature = "effect-trace")]
+        let (id, access) = {
+            let mut boxed: BoxedSystem<In<BrinkQueryInput>, Value> =
+                Box::new(IntoSystem::into_system(system));
+            let access = boxed.initialize(self.world_mut()).combined_access().clone();
+            let id = self.world_mut().register_boxed_system(boxed);
+            (id, access)
+        };
+        #[cfg(not(feature = "effect-trace"))]
         let id = self.world_mut().register_system(system);
         {
             let mut reg = self
                 .world_mut()
                 .get_resource_or_insert_with(BrinkBindings::<M>::default);
+            #[cfg(feature = "effect-trace")]
+            reg.query_access.insert(name.clone(), access);
             reg.queries.insert(name, id);
         }
         self
@@ -1024,9 +1066,11 @@ enum Dispatch {
     Query {
         system: QuerySystemId,
         qargs: Vec<Value>,
-        /// External name, carried only in dev builds so the resolved query
-        /// result can be recorded into the flow's replay log.
-        #[cfg(feature = "dev")]
+        /// External name, carried in dev builds so the resolved query result
+        /// can be recorded into the flow's replay log, and in `effect-trace`
+        /// builds so the dispatch can be logged against the binding's
+        /// captured `Access` (issue #938's ground-truth check).
+        #[cfg(any(feature = "dev", feature = "effect-trace"))]
         name: String,
     },
     /// `bind_brink_async` (event): fire [`BrinkExternalAwaited`] + insert the
@@ -1100,7 +1144,7 @@ fn decide_dispatch<M: Send + Sync + 'static>(world: &mut World, entity: Entity) 
         Dispatch::Query {
             system,
             qargs,
-            #[cfg(feature = "dev")]
+            #[cfg(any(feature = "dev", feature = "effect-trace"))]
             name,
         }
     } else if let Some(kind) = bindings.async_bindings.get(&name) {
@@ -1137,12 +1181,28 @@ fn dispatch_one_external<M: Send + Sync + 'static>(world: &mut World, entity: En
         Dispatch::Query {
             system,
             qargs,
-            #[cfg(feature = "dev")]
+            #[cfg(any(feature = "dev", feature = "effect-trace"))]
             name,
         } => match world.run_system_with(system, (entity, qargs.clone())) {
             Ok(value) => {
                 #[cfg(feature = "dev")]
                 crate::replay::record_external::<M>(world, entity, &name, &qargs, &value);
+                // Issue #938's host-side ground-truth check: log this real
+                // dispatch's binding-declared `Access` (captured at
+                // `bind_brink_query` registration) so a test/harness can
+                // later assert it stayed a subset of BH-1's row-join
+                // (`crate::ground_truth::check`). A missing `BrinkBindings<M>`
+                // resource or an unregistered binding name (should not
+                // happen — this dispatch only runs for a name `bindings.query`
+                // just resolved) skips recording rather than panicking.
+                #[cfg(feature = "effect-trace")]
+                if let Some(access) = world
+                    .get_resource::<BrinkBindings<M>>()
+                    .and_then(|b| b.query_access(&name))
+                    .cloned()
+                {
+                    crate::ground_truth::record::<M>(world, entity, &name, access);
+                }
                 let mut flows = world.query::<&mut BrinkFlow<M>>();
                 if let Ok(mut flow) = flows.get_mut(world, entity) {
                     flow.inner.resolve_external(value);
