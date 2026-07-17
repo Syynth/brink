@@ -235,6 +235,12 @@ fn walk_stmt_for_depth(
         // of the block's *internals* (nested statements, `if`/`while`/`for`
         // bodies) is computed separately at the CST level by
         // `render_logic_block` (#573), not through this depth map.
+        // `~ await <cond>` (docs/flow-suspension-spec.md §3) is a logic line
+        // like `TempDecl`/`Assignment` — its own line depth is inherited from
+        // context, so tag its range at the current depth.
+        brink_ir::Stmt::Await(a) => {
+            set_depth_for_range(a.ptr.text_range(), depth, line_starts, depth_map);
+        }
         brink_ir::Stmt::ExprStmt(_) | brink_ir::Stmt::EndOfLine | brink_ir::Stmt::LogicBlock(_) => {
         }
     }
@@ -256,6 +262,7 @@ fn stmt_start_line(stmt: &brink_ir::Stmt, line_starts: &[usize]) -> Option<usize
         brink_ir::Stmt::Sequence(s) => s.ptr.text_range(),
         brink_ir::Stmt::ExprStmt(_) | brink_ir::Stmt::EndOfLine => return None,
         brink_ir::Stmt::LogicBlock(lb) => lb.ptr.text_range(),
+        brink_ir::Stmt::Await(a) => a.ptr.text_range(),
     };
     let offset: usize = range.start().into();
     Some(line_for_offset(line_starts, offset))

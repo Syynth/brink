@@ -1074,6 +1074,15 @@ impl InferPass<'_, '_> {
             }
             Stmt::EndOfLine => {}
             Stmt::LogicBlock(lb) => self.infer_logic_block(lb),
+            // `~ await <cond>` (docs/flow-suspension-spec.md §3): the condition
+            // sits in condition position (no forcing) — its reads become the
+            // wake dependency set, and the standalone purity gate (E105) is
+            // what rejects a condition that also writes/calls.
+            Stmt::Await(a) => {
+                if let Some(cond) = &a.condition {
+                    self.infer_expr(cond);
+                }
+            }
         }
     }
 
@@ -1183,6 +1192,13 @@ impl InferPass<'_, '_> {
             BlockStmt::Break(_) | BlockStmt::Continue(_) => {}
             BlockStmt::ExprStmt(e) => {
                 self.infer_expr(e);
+            }
+            // `await <cond>` inside a `~ { … }` block — condition position, as
+            // for the top-level `~ await` (docs/flow-suspension-spec.md §3).
+            BlockStmt::Await(a) => {
+                if let Some(cond) = &a.condition {
+                    self.infer_expr(cond);
+                }
             }
         }
     }

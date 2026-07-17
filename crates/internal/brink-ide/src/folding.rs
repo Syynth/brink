@@ -254,12 +254,14 @@ fn collect_block_stmt_folds(
                 collect_block_stmt_folds(inner, source, idx, out);
             }
         }
+        // `await <cond>` is a single-line suspension point — no fold region.
         brink_ir::hir::BlockStmt::TempDecl(_)
         | brink_ir::hir::BlockStmt::Assignment(_)
         | brink_ir::hir::BlockStmt::Return(_)
         | brink_ir::hir::BlockStmt::Break(_)
         | brink_ir::hir::BlockStmt::Continue(_)
-        | brink_ir::hir::BlockStmt::ExprStmt(_) => {}
+        | brink_ir::hir::BlockStmt::ExprStmt(_)
+        | brink_ir::hir::BlockStmt::Await(_) => {}
     }
 }
 

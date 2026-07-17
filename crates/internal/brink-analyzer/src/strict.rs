@@ -687,6 +687,14 @@ fn check_void_stmt(
                 check_void_block_stmt(file, bs, void_defs, resolution_by_range, out);
             }
         }
+        // `~ await <cond>` (docs/flow-suspension-spec.md §3): the condition is
+        // a value position, so a void-returning call used there is the same
+        // strict-mode error it is anywhere else a value is expected.
+        Stmt::Await(a) => {
+            if let Some(cond) = &a.condition {
+                check_void_root(file, cond, void_defs, resolution_by_range, out);
+            }
+        }
         Stmt::Divert(_)
         | Stmt::TunnelCall(_)
         | Stmt::ThreadStart(_)
@@ -748,6 +756,11 @@ fn check_void_block_stmt(
         BlockStmt::For(f) => {
             for s in &f.body {
                 check_void_block_stmt(file, s, void_defs, resolution_by_range, out);
+            }
+        }
+        BlockStmt::Await(a) => {
+            if let Some(cond) = &a.condition {
+                check_void_root(file, cond, void_defs, resolution_by_range, out);
             }
         }
         BlockStmt::Return(_)
@@ -904,12 +917,15 @@ fn collect_temps_stmt(
                 collect_temps_block_stmt(bs, names, out);
             }
         }
+        // An `await` condition is an expression — it declares no temps
+        // (docs/flow-suspension-spec.md §3).
         Stmt::Divert(_)
         | Stmt::TunnelCall(_)
         | Stmt::ThreadStart(_)
         | Stmt::Assignment(_)
         | Stmt::Return(_)
         | Stmt::ExprStmt(_)
+        | Stmt::Await(_)
         | Stmt::EndOfLine => {}
     }
 }
@@ -972,6 +988,7 @@ fn collect_temps_block_stmt(
         BlockStmt::Assignment(_)
         | BlockStmt::Return(_)
         | BlockStmt::ExprStmt(_)
+        | BlockStmt::Await(_)
         | BlockStmt::Break(_)
         | BlockStmt::Continue(_) => {}
     }

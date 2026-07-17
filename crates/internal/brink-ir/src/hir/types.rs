@@ -340,6 +340,11 @@ pub enum Stmt {
     /// in T1b-1, docs/t1b-surface-spec.md §2). Never lowers to LIR — gated
     /// out by `brink-analyzer`'s dialect check under both dialects.
     LogicBlock(LogicBlock),
+    /// `~ await <cond>` — a FlowFrame suspension point at logic-line position
+    /// (docs/flow-suspension-spec.md §3). Brink extension; the condition is
+    /// checked effect-free (the purity gate, E105) and lowering to the VM is
+    /// fenced (E052) until the runtime spill/restore slice (FS-3) lands.
+    Await(AwaitStmt),
 }
 
 // ─── T1b superset: multi-line `~ { … }` blocks ──────────────────────
@@ -370,6 +375,9 @@ pub enum BlockStmt {
     Continue(SyntaxNodePtr),
     /// A bare expression statement (function/external calls).
     ExprStmt(Expr),
+    /// `await <cond>` — a FlowFrame suspension point inside a `~ { … }` block
+    /// (docs/flow-suspension-spec.md §3).
+    Await(AwaitStmt),
 }
 
 /// `if cond { … } (else …)?`.
@@ -390,12 +398,34 @@ pub enum ElseBranch {
     Else(Vec<BlockStmt>),
 }
 
-/// `while cond { … }`.
+/// `while cond { … }`, or the persistent-await form `while await cond { … }`
+/// (docs/flow-suspension-spec.md §3) when [`Self::is_await`] is set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WhileStmt {
     pub ptr: SyntaxNodePtr,
     pub condition: Expr,
     pub body: Vec<BlockStmt>,
+    /// `while await cond { … }`: yield-with-policy — waking IS condition-true
+    /// (docs/flow-suspension-spec.md §3, the wake contract). A plain `while`
+    /// loop leaves this `false`. Set, the condition rides the same effect-free
+    /// purity gate (E105) a bare `await` condition does, and lowering is fenced
+    /// (E052) until FS-3.
+    pub is_await: bool,
+}
+
+/// `await <cond>` — a FlowFrame suspension point
+/// (docs/flow-suspension-spec.md §3). The condition is captured as a
+/// compiler-synthesized *pure* function per §5: its identity is the await
+/// site's synthesized resume-container path (site-stable), and its effect row
+/// must be read-only (the purity gate, E105) — the row IS the wake map's
+/// dependency set. Mid-expression `await` is permanently out (§3): this only
+/// ever appears at statement/logic position.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AwaitStmt {
+    pub ptr: SyntaxNodePtr,
+    /// The condition expression. `None` only for a malformed bare `await`
+    /// (the parser already diagnosed the missing expression).
+    pub condition: Option<Expr>,
 }
 
 /// `for name in expr { … }`.
@@ -1233,11 +1263,14 @@ pub enum DiagnosticCode {
     /// A brink-extension construct parses and analyzes cleanly under the
     /// `brink` dialect, but its LIR lowering hasn't landed yet. Originally
     /// minted for T1b-1 (every T1b construct lowers since T1b-2, #570), then
-    /// revived by T1c-1 (#699) as the `#fn(…)` lowering fence. **No production
-    /// emit site remains** since T1c-2 (#700): `#fn(…)` now lowers for real
-    /// (expression position and declaration defaults). Reserved, not reused —
-    /// available again for the next brink extension that parses/analyzes
-    /// before its lowering lands.
+    /// revived by T1c-1 (#699) as the `#fn(…)` lowering fence, retired again by
+    /// T1c-2 (#700). **Now the `await` fence** (FS-2,
+    /// docs/flow-suspension-spec.md §3, issue #928): `await <cond>` /
+    /// `while await <cond>` parse to HIR and pass the effect-free purity gate
+    /// (E105), but their runtime spill/restore semantics are FS-3 — every
+    /// `await` construct is fenced here at LIR lowering until that lands. The
+    /// code stays a general "parses/analyzes before its lowering lands" fence,
+    /// reused as each new extension needs it.
     E052,
     /// RETIRED (T1b-2, #570) — previously a non-suppressible backstop
     /// rejecting T1b brink-extension HIR nodes (`LogicBlock`, `ArrayLiteral`,

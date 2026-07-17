@@ -81,6 +81,14 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
             }));
         }
         hir::BlockStmt::While(w) => {
+            // `while await cond { … }` (docs/flow-suspension-spec.md §3): the
+            // persistent-await loop is a suspension point, fenced at lowering
+            // (E052) exactly like a bare `await` until FS-3. A plain `while`
+            // loop lowers as usual.
+            if w.is_await {
+                super::stmts::emit_await_lowering_fence(ctx, w.ptr.text_range());
+                return;
+            }
             let condition = lower_expr(&w.condition, ctx);
             ctx.push_block_scope();
             ctx.loop_depth += 1;
@@ -104,6 +112,12 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
             if !try_lower_mutator_stmt(expr, ctx, out) {
                 out.push(lir::Stmt::ExprStmt(lower_expr(expr, ctx)));
             }
+        }
+        // `await <cond>` inside a `~ { … }` block (docs/flow-suspension-spec.md
+        // §3) — fenced at lowering (E052) until FS-3, same as the top-level
+        // `~ await` and `while await` forms.
+        hir::BlockStmt::Await(a) => {
+            super::stmts::emit_await_lowering_fence(ctx, a.ptr.text_range());
         }
     }
 }

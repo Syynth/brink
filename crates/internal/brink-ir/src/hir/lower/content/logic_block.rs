@@ -8,7 +8,7 @@
 
 use brink_syntax::ast::{self, AstNode, SyntaxNodePtr};
 
-use crate::hir::types::{BlockStmt, ElseBranch, ForStmt, IfStmt, WhileStmt};
+use crate::hir::types::{AwaitStmt, BlockStmt, ElseBranch, ForStmt, IfStmt, WhileStmt};
 use crate::symbols::LocalSymbol;
 use crate::{AssignOp, Assignment, DiagnosticCode, Return, SymbolKind, TempDecl};
 
@@ -46,6 +46,22 @@ fn lower_block_stmt(
             Ok(BlockStmt::Continue(SyntaxNodePtr::from_node(c.syntax())))
         }
         ast::BlockStmt::ExprStmt(stmt) => lower_block_expr_stmt(stmt, scope, sink),
+        ast::BlockStmt::Await(a) => Ok(BlockStmt::Await(lower_await_stmt(a, scope, sink))),
+    }
+}
+
+/// Lower an `await <cond>` suspension point (docs/flow-suspension-spec.md §3).
+/// Structural only — a malformed condition sub-lowering already diagnosed;
+/// the purity gate (E105) and the lowering fence (E052) run downstream.
+pub(crate) fn lower_await_stmt(
+    a: &ast::AwaitStmt,
+    scope: &LowerScope,
+    sink: &mut impl LowerSink,
+) -> AwaitStmt {
+    let condition = a.condition().and_then(|e| e.lower_expr(scope, sink).ok());
+    AwaitStmt {
+        ptr: SyntaxNodePtr::from_node(a.syntax()),
+        condition,
     }
 }
 
@@ -138,6 +154,7 @@ fn lower_while_stmt(
         ptr: SyntaxNodePtr::from_node(w.syntax()),
         condition,
         body,
+        is_await: w.is_await(),
     }))
 }
 
