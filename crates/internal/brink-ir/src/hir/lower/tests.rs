@@ -744,18 +744,21 @@ fn effects_non_identifier_value_is_e101() {
 
 #[test]
 fn effects_dynamic_content_is_e046() {
-    // Two `E046`s, not one: `apply_scope_directives`'s own generic
-    // `d.dynamic` check fires first, and `effects_assertion_from_directives`
-    // independently re-checks `d.dynamic` on the same directive — the same
-    // pre-existing double-diagnostic shape `was_from_directives`/
-    // `visibility_from_directives` already have for a dynamic `#@was`/
-    // `#@private`. Not fixed here (pre-existing, shared by every directive
-    // with its own extraction function — out of scope for this issue).
+    // Single E046 for dynamic `#@effects` directive. The dynamic check
+    // is deferred to `effects_assertion_from_directives`, not handled by
+    // the generic check in `apply_scope_directives`, to avoid double-emitting.
     let (_hir, diags) = lower_hir("== guard ==\n#@effects({x})\nHalt!\n");
-    assert_eq!(
-        codes(&diags),
-        vec![DiagnosticCode::E046, DiagnosticCode::E046]
-    );
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E046]);
+}
+
+#[test]
+fn was_dynamic_content_is_e046() {
+    // Same fix, sibling path: `#@was` above a knot's body also has its own
+    // dynamic check in `was_from_directives`, called alongside
+    // `apply_scope_directives` on the same collected directives — the
+    // generic check must not also fire for it.
+    let (_hir, diags) = lower_hir("== guard ==\n#@was({x})\nHalt!\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E046]);
 }
 
 #[test]
