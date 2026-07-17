@@ -752,6 +752,16 @@ fn effects_dynamic_content_is_e046() {
 }
 
 #[test]
+fn was_dynamic_content_is_e046() {
+    // Same fix, sibling path: `#@was` above a knot's body also has its own
+    // dynamic check in `was_from_directives`, called alongside
+    // `apply_scope_directives` on the same collected directives — the
+    // generic check must not also fire for it.
+    let (_hir, diags) = lower_hir("== guard ==\n#@was({x})\nHalt!\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E046]);
+}
+
+#[test]
 fn duplicate_effects_directive_is_e048_first_wins() {
     let (hir, diags) = lower_hir("== guard ==\n#@effects(reads: a)\n#@effects(reads: b)\nHalt!\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E048]);
