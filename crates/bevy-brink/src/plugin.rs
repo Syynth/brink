@@ -99,6 +99,14 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         app.init_resource::<crate::capability::CapabilityRegistry<M>>();
         app.init_resource::<crate::capability::CapabilityTable<M>>();
         app.add_systems(Update, crate::capability::rebuild_capability_table::<M>);
+        // BH-2 (docs/effects-spec.md §12.4; #914): the batch-turn report
+        // resource, always present so a host that opts into
+        // `advance_batch::<M>` (not auto-registered — batch mode is opt-in,
+        // like `advance_flows`) gets its per-flow capability/access bookkeeping
+        // recorded. The batch driver itself is NOT added here; a host adds
+        // `app.add_systems(Update, advance_batch::<M>)` when it wants
+        // frame-start-consistent batched stepping.
+        app.init_resource::<crate::batch::BrinkBatchReport<M>>();
         // Auto-render BrinkTranscript<M> for any flow that has it.
         // No-op for flows that don't (the query just yields nothing).
         app.add_systems(Update, crate::transcript::refresh_transcripts::<M>);
