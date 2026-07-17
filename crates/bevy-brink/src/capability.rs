@@ -39,15 +39,20 @@
 //!   to the per-container `Access` table rather than a `SystemParamBuilder`).
 //! - [`dump_container_access`] — the dev-visible debug fn (container → access
 //!   set), for BH-B's scenario harness and interactive debugging.
-//! - [`missing_capabilities`]/[`MissingCapability`]/[`CapabilityError::LoadRejected`]
-//!   — issue #912's load-boundary admission check: the manifest stays
-//!   app-global while [`CapabilityRegistry`] is per-marker `M`, so a story
-//!   loaded under a marker whose registry lacks a manifest-required
-//!   capability must fail to load *at all* under that marker, loudly,
-//!   rather than joining to a silently-incomplete `UnknownCapability`
-//!   err-table at call time. `bevy-brink`'s `fulfill_flow_requests::<M>`
-//!   (`crates/bevy-brink/src/request.rs`) calls this at the story-load
-//!   boundary and refuses the request outright when it's non-empty.
+//! - [`missing_capabilities`]/[`MissingCapability`]/[`CapabilityError::LoadRejected`]/
+//!   [`check_load_capability_gate`] — issue #912's load-boundary admission
+//!   check: the manifest stays app-global while [`CapabilityRegistry`] is
+//!   per-marker `M`, so a story loaded under a marker whose registry lacks a
+//!   manifest-required capability must fail to load *at all* under that
+//!   marker, loudly, rather than joining to a silently-incomplete
+//!   `UnknownCapability` err-table at call time.
+//!   [`check_load_capability_gate`] is the one shared helper every
+//!   load-shaped entry point must call before constructing a `FlowInstance`
+//!   from a `ProgramAsset` (#997): `bevy-brink`'s `fulfill_flow_requests::<M>`
+//!   (`crates/bevy-brink/src/request.rs`, the initial load) and
+//!   `replay_on_reload::<M>` (`crates/bevy-brink/src/replay.rs`, the dev-only
+//!   hot-reload reconstruction) both call it at their respective
+//!   story-construction boundary and refuse to proceed when it errs.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
@@ -506,6 +511,41 @@ pub fn missing_capabilities<M: Send + Sync + 'static>(
             capability,
         })
         .collect()
+}
+
+/// The shared load-boundary gate (issue #912's admission rule, extended by
+/// #997 to every load-shaped entry point): runs [`missing_capabilities`] and,
+/// if it finds any gap, builds the [`CapabilityError::LoadRejected`] error
+/// naming `marker`, `story`, and every missing capability. `Ok(())` means the
+/// story's capabilities all resolve under this marker's registry and the
+/// construction may proceed.
+///
+/// **Every** story-construction path that builds a `FlowInstance` from a
+/// `ProgramAsset` must call this before doing so — not just the initial
+/// `fulfill_flow_requests` load. PR #989 (closing #912) only wired this into
+/// that one path; #997 found the dev-only hot-reload reconstruction in
+/// `crate::replay::replay_on_reload` builds a fresh `FlowInstance` against
+/// the (possibly changed) reloaded program without re-running the check,
+/// letting a story that lost a manifest-required capability across a reload
+/// slip past the hard-error boundary. Both call sites now share this one
+/// function so a third load-shaped path can't repeat the gap.
+pub fn check_load_capability_gate<M: Send + Sync + 'static>(
+    program: &Program,
+    effect_rows: &[EffectRowEntry],
+    manifest: &CapabilityManifest,
+    registry: &CapabilityRegistry<M>,
+    story: String,
+) -> Result<(), CapabilityError> {
+    let missing = missing_capabilities(program, effect_rows, manifest, registry);
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(CapabilityError::LoadRejected {
+            marker: std::any::type_name::<M>(),
+            story,
+            missing,
+        })
+    }
 }
 
 // ── Load/unload boundary ──────────────────────────────────────────────────
