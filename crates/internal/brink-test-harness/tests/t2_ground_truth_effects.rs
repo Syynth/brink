@@ -28,7 +28,7 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use brink_compiler::{AnalysisOptions, Dialect};
 use brink_db::ProjectDb;
@@ -36,6 +36,22 @@ use brink_driver::Driver;
 use brink_format::DefinitionId;
 use brink_runtime::effect_trace::{self, ObservedRow};
 use brink_test_harness::explorer::{ExploreConfig, explore};
+
+/// `brink_runtime::effect_trace`'s `OBSERVED` map is a single process-wide
+/// static (by design — see its module docs), and `cargo test` runs every
+/// `#[test]` in this file on its own thread by default. Without this lock,
+/// two tests' `observe()` calls interleave on the *same* recorder: test A's
+/// `reset()` can land between test B's `reset()` and `snapshot()` and wipe
+/// atoms B is mid-way through recording, or B's VM run can deposit atoms
+/// that A's snapshot then picks up as its own — a false "under-report"
+/// attributed to the wrong def. Reproduced locally: `ref_param_write_
+/// ground_truth_matches_the_866_regression_shape` and a sibling test both
+/// failed under ordinary parallel `cargo test`, passed every time run
+/// `--test-threads=1` or in isolation. Serializing the whole reset→explore
+/// →snapshot cycle here (not just individual recorder calls, which
+/// `effect_trace`'s own `Mutex` already does) is what actually fixes it —
+/// the race is between *cycles*, not between individual map mutations.
+static OBSERVE_LOCK: Mutex<()> = Mutex::new(());
 
 fn corpus_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -88,6 +104,11 @@ fn observe(label: &str, db: &ProjectDb) -> BTreeMap<DefinitionId, ObservedRow> {
     let (program, line_tables) =
         brink_runtime::link(&story_data).unwrap_or_else(|e| panic!("{label}: link: {e}"));
 
+    // Hold the lock across the whole reset→explore→snapshot cycle — see
+    // `OBSERVE_LOCK`'s docs for why a per-call recorder lock isn't enough.
+    let _guard = OBSERVE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     effect_trace::reset();
     let _episodes = explore(
         Arc::new(program),
