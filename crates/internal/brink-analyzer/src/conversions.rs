@@ -14,12 +14,12 @@
 //!
 //! Scoped to **statically classifiable** argument literals — a divert-target
 //! expression (`-> knot`), a LIST literal, or a `#[...]`/`#{...}`/`Name#{...}`
-//! collection/struct literal passed *directly* as the argument — the same
-//! "statically classifiable, anything else silently clean" posture
-//! `structs::check`'s own `E071` (mistyped field) takes: a variable/call/
-//! index argument's type would need the whole-project body inference this
-//! diagnostics-only slice doesn't thread through arbitrary call-argument
-//! positions (deeper type-propagation territory, TM-5+). The runtime fault
+//! collection/struct literal passed *directly* as the argument. Unlike
+//! `structs::check`'s `E071` (mistyped field, issue #670), this pass does
+//! *not* extend to variable/call/index-valued arguments — that would need
+//! whole-project body inference threaded through arbitrary call-argument
+//! positions, a wider surface than this diagnostics-only slice takes on
+//! (deeper type-propagation territory, TM-5+). The runtime fault
 //! (`InvalidConversionDomain`) is the backstop that still catches those
 //! cases at execution time even under `types = strict` — this pass is an
 //! additional compile-time convenience for the obvious cases, not the sole

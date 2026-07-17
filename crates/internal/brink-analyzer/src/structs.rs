@@ -18,13 +18,21 @@
 //! - **Extra** (`E070`): an initializer for a field the shape doesn't
 //!   declare.
 //! - **Mistyped** (`E071`): an initializer whose *statically
-//!   classifiable* type disagrees with the field's declared type. Scoped to
-//!   literal-shaped initializers (int/float/bool/string/array/map/nested
-//!   struct literals) — a variable/call/index initializer's type would need
-//!   the whole-project body inference this diagnostics-only slice doesn't
-//!   thread through arbitrary expression positions (TM-4c/deeper
-//!   type-propagation territory); those stay silently unchecked here, same
-//!   "Unknown never disagrees" spirit as `annotations::mismatches`.
+//!   classifiable* type disagrees with the field's declared type.
+//!   Literal-shaped initializers (int/float/bool/string/array/map/nested
+//!   struct literals) classify from their own shape alone. A variable-,
+//!   call-, or index-valued initializer (issue #670) instead consults the
+//!   inference substrate already threaded into `strict::check`: a `Path`
+//!   resolving to a param/temp reads its finalized type from that def's own
+//!   `BodyTypes::locals`; a `Path` resolving to a global `VAR`/`CONST` reads
+//!   its declaration-derived type (`infer::collect_globals`, the same
+//!   source `infer::body` itself reads through the firewall); a call reads
+//!   the resolved callee's `InferredSig::return_ty`; an index expression
+//!   recurses into its base's classified type and takes the
+//!   array-element/map-value type. Whenever that resolution lands on
+//!   `Unknown` or `Conflicted` (unresolved, unannotated, or genuinely
+//!   contradictory), the field stays silently unchecked — same "Unknown
+//!   never disagrees" spirit as `annotations::mismatches`.
 //!
 //! An unresolved shape name (`E068`, already reported by
 //! `resolve::resolve_struct_ref`) is not re-reported here — a construction
@@ -40,11 +48,16 @@
 
 use std::collections::BTreeMap;
 
+use brink_format::DefinitionId;
 use brink_ir::hir::visit::{self, HirVisitor};
-use brink_ir::{Diagnostic, DiagnosticCode, Expr, FileId, HirFile, StructLiteral, SymbolIndex};
+use brink_ir::{
+    Diagnostic, DiagnosticCode, Expr, FileId, HirFile, Knot, ResolutionMap, Stitch, StructLiteral,
+    SymbolIndex, SymbolKind,
+};
+use rowan::TextRange;
 
 use crate::annotations;
-use crate::infer::Ty;
+use crate::infer::{InferenceResult, InferredSig, Ty};
 
 /// One declared struct shape: fields in declaration order, name -> declared
 /// type (`Ty::Unknown` if the field's own annotation doesn't resolve —
@@ -117,34 +130,152 @@ pub fn declared_shapes(
 /// project. Callers only reach this once `strict::config_error` has
 /// confirmed `types = strict` + `dialect = brink` (mirrors
 /// `strict::check`'s own entry condition).
+///
+/// `inference`/`resolutions` (issue #670): the same whole-project
+/// `InferenceResult`/`ResolutionMap` `strict::check` already computes for
+/// its own escape/mismatch checks — this is what lets the mistyped-field
+/// check (`E071`) classify a variable/call/index-valued initializer instead
+/// of only literal-shaped ones (see the module doc).
 #[must_use]
-pub fn check(files: &[(FileId, &HirFile)], index: &SymbolIndex) -> Vec<Diagnostic> {
+pub fn check(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    inference: &InferenceResult,
+    resolutions: &ResolutionMap,
+) -> Vec<Diagnostic> {
     let shapes = declared_shapes(files, index);
+    // No manifest access at this call site, same as `declared_shapes` above
+    // — a global's own annotation resolving against `handle<K>` isn't in
+    // this check's scope any more than a struct field's is.
+    let globals = crate::infer::collect_globals(files, index, None);
     let mut out = Vec::new();
     for &(file, hir) in files {
+        let resolution_by_range = resolution_index(resolutions, file);
         let mut v = ConstructionVisitor {
             file,
             shapes: &shapes,
+            index,
+            globals: &globals,
+            signatures: &inference.signatures,
+            bodies: &inference.bodies,
+            resolution_by_range: &resolution_by_range,
+            current_knot_name: None,
+            knot_locals: None,
+            stitch_locals: None,
             diagnostics: &mut out,
         };
         visit::visit(hir, &mut v);
         // File-level declaration initializers aren't part of `visit::visit`'s
         // block-tree walk (see its module doc) — same pattern
-        // `dialect_gate`/`annotations` use for VAR/CONST.
+        // `dialect_gate`/`annotations` use for VAR/CONST. No enclosing def
+        // here, so `locals` is `None` — only a reference to a global
+        // VAR/CONST is classifiable at file scope, matching `infer::body`'s
+        // own firewall (a body never sees another def's locals either).
+        let ctx = MistypeCtx {
+            index,
+            globals: &globals,
+            signatures: &inference.signatures,
+            resolution_by_range: &resolution_by_range,
+            locals: None,
+        };
         for var in &hir.variables {
-            check_expr(&var.value, file, &shapes, &mut out);
+            check_expr(&var.value, file, &shapes, &ctx, &mut out);
         }
         for c in &hir.constants {
-            check_expr(&c.value, file, &shapes, &mut out);
+            check_expr(&c.value, file, &shapes, &ctx, &mut out);
         }
     }
     out
 }
 
+/// `TextRange` has no `Ord` impl, so a `Path`/`Call` reference's range keys
+/// this file-local `BTreeMap` as a `(start, end)` `u32` pair — mirrors
+/// `infer::mod`'s and `strict`'s own identically-named helper (each module
+/// owns its own copy rather than centralizing; the codebase's established
+/// convention for this exact utility).
+fn range_key(range: TextRange) -> (u32, u32) {
+    (range.start().into(), range.end().into())
+}
+
+/// This file's own reference resolutions, projected to a range-keyed lookup
+/// — mirrors `strict::resolution_index`, narrowed to one file at a time (a
+/// `Path`'s range is only unique within its own file).
+fn resolution_index(
+    resolutions: &ResolutionMap,
+    file: FileId,
+) -> BTreeMap<(u32, u32), DefinitionId> {
+    resolutions
+        .iter()
+        .filter(|r| r.file == file)
+        .map(|r| (range_key(r.range), r.target))
+        .collect()
+}
+
+/// Everything [`classify_expr_ty`] needs to resolve a non-literal
+/// initializer's type: the project symbol index, declaration-derived
+/// global types, every inferable def's finalized signature (for a
+/// call-valued initializer's return type), this file's range→`DefinitionId`
+/// resolutions, and — when the struct literal sits inside a knot/stitch
+/// body — that def's own finalized `BodyTypes::locals` (`None` at file
+/// scope, where only globals are in play).
+struct MistypeCtx<'a> {
+    index: &'a SymbolIndex,
+    globals: &'a BTreeMap<DefinitionId, Ty>,
+    signatures: &'a BTreeMap<DefinitionId, InferredSig>,
+    resolution_by_range: &'a BTreeMap<(u32, u32), DefinitionId>,
+    locals: Option<&'a BTreeMap<String, Ty>>,
+}
+
 struct ConstructionVisitor<'a> {
     file: FileId,
     shapes: &'a BTreeMap<String, ShapeInfo>,
+    index: &'a SymbolIndex,
+    globals: &'a BTreeMap<DefinitionId, Ty>,
+    signatures: &'a BTreeMap<DefinitionId, InferredSig>,
+    bodies: &'a BTreeMap<DefinitionId, crate::infer::BodyTypes>,
+    resolution_by_range: &'a BTreeMap<(u32, u32), DefinitionId>,
+    /// The currently-open knot's own name — `enter_stitch` needs it to
+    /// reconstruct the qualified `knot.stitch` name a stitch is indexed
+    /// under (mirrors `strict::check_value_calls`' own lookup).
+    current_knot_name: Option<String>,
+    /// The enclosing knot's own finalized locals, set for the duration of
+    /// its body (and every stitch nested inside it — `visit::visit` walks a
+    /// knot's own body before descending into its stitches, so a stitch's
+    /// `enter_stitch` overrides this with its *own* locals rather than
+    /// inheriting the parent knot's).
+    knot_locals: Option<&'a BTreeMap<String, Ty>>,
+    /// The currently-open stitch's own finalized locals, if any — takes
+    /// priority over `knot_locals` while set.
+    stitch_locals: Option<&'a BTreeMap<String, Ty>>,
     diagnostics: &'a mut Vec<Diagnostic>,
+}
+
+impl<'a> ConstructionVisitor<'a> {
+    fn current_locals(&self) -> Option<&'a BTreeMap<String, Ty>> {
+        self.stitch_locals.or(self.knot_locals)
+    }
+
+    fn ctx(&self) -> MistypeCtx<'a> {
+        MistypeCtx {
+            index: self.index,
+            globals: self.globals,
+            signatures: self.signatures,
+            resolution_by_range: self.resolution_by_range,
+            locals: self.current_locals(),
+        }
+    }
+
+    /// The `DefinitionId` a knot/stitch's own name resolves to, mirroring
+    /// `strict::check_escapes`'/`check_value_calls`' own lookup — a top-level
+    /// stitch promoted to knot status is indexed under `SymbolKind::Stitch`
+    /// (#626), hence the `knot.ptr`-derived `kind`.
+    fn knot_def_id(&self, knot: &Knot) -> Option<DefinitionId> {
+        let kind = match knot.ptr {
+            brink_ir::ContainerPtr::Knot(_) => SymbolKind::Knot,
+            brink_ir::ContainerPtr::Stitch(_) => SymbolKind::Stitch,
+        };
+        annotations::def_id_for(self.index, self.file, kind, &knot.name.text)
+    }
 }
 
 impl HirVisitor for ConstructionVisitor<'_> {
@@ -152,9 +283,41 @@ impl HirVisitor for ConstructionVisitor<'_> {
         true
     }
 
+    fn enter_knot(&mut self, knot: &Knot) {
+        self.current_knot_name = Some(knot.name.text.clone());
+        self.knot_locals = self
+            .knot_def_id(knot)
+            .and_then(|id| self.bodies.get(&id))
+            .map(|b| &b.locals);
+    }
+
+    fn exit_knot(&mut self, _knot: &Knot) {
+        self.current_knot_name = None;
+        self.knot_locals = None;
+    }
+
+    fn enter_stitch(&mut self, stitch: &Stitch) {
+        // Stitches are indexed by qualified `knot.stitch` name (mirrors
+        // `strict::check_escapes`'/`check_value_calls`' own lookup).
+        // `visit::visit` only ever calls `enter_stitch` nested inside an
+        // `enter_knot`/`exit_knot` pair, so `current_knot_name` is always
+        // set here.
+        self.stitch_locals = self.current_knot_name.as_ref().and_then(|knot_name| {
+            let qualified = format!("{knot_name}.{}", stitch.name.text);
+            annotations::def_id_for(self.index, self.file, SymbolKind::Stitch, &qualified)
+                .and_then(|id| self.bodies.get(&id))
+                .map(|b| &b.locals)
+        });
+    }
+
+    fn exit_stitch(&mut self, _stitch: &Stitch) {
+        self.stitch_locals = None;
+    }
+
     fn enter_expr(&mut self, expr: &Expr) {
         if let Expr::StructLiteral(sl) = expr {
-            check_literal(sl, self.file, self.shapes, self.diagnostics);
+            let ctx = self.ctx();
+            check_literal(sl, self.file, self.shapes, &ctx, self.diagnostics);
         }
     }
 }
@@ -245,13 +408,14 @@ fn check_expr(
     expr: &Expr,
     file: FileId,
     shapes: &BTreeMap<String, ShapeInfo>,
+    ctx: &MistypeCtx<'_>,
     out: &mut Vec<Diagnostic>,
 ) {
     if let Expr::StructLiteral(sl) = expr {
-        check_literal(sl, file, shapes, out);
+        check_literal(sl, file, shapes, ctx, out);
     }
     for child in expr_children(expr) {
-        check_expr(child, file, shapes, out);
+        check_expr(child, file, shapes, ctx, out);
     }
 }
 
@@ -298,6 +462,7 @@ fn check_literal(
     sl: &StructLiteral,
     file: FileId,
     shapes: &BTreeMap<String, ShapeInfo>,
+    ctx: &MistypeCtx<'_>,
     out: &mut Vec<Diagnostic>,
 ) {
     let Some(shape) = shapes.get(&sl.shape.text) else {
@@ -340,8 +505,9 @@ fn check_literal(
         }
     }
 
-    // Mistyped fields — only for statically classifiable initializers (see
-    // module doc).
+    // Mistyped fields — only for classifiable initializers (see module doc:
+    // literal-shaped classify from their own shape; variable/call/index-
+    // valued ones consult `ctx`'s inference substrate).
     for (name, value) in &sl.fields {
         let Some(declared_ty) = shape.field_ty(&name.text) else {
             continue; // already flagged as an extra field above
@@ -349,8 +515,8 @@ fn check_literal(
         if declared_ty.is_unresolved() {
             continue; // the field's own annotation didn't resolve (E061)
         }
-        let Some(actual_ty) = literal_ty(value) else {
-            continue; // not statically classifiable — see module doc
+        let Some(actual_ty) = classify_expr_ty(value, ctx) else {
+            continue; // not classifiable — see module doc
         };
         if &actual_ty != declared_ty && crate::infer::unify(declared_ty, &actual_ty) != *declared_ty
         {
@@ -372,8 +538,10 @@ fn check_literal(
 
 /// Classify a struct-field initializer's type when it's statically obvious
 /// from its own shape — literals, and (recursively) array/map/struct
-/// literals. Anything else (a variable/call/index/…) returns `None`
-/// ("not statically classifiable"), which [`check_literal`] treats as
+/// literals. Anything else (a variable/call/index/…) returns `None` here;
+/// [`classify_expr_ty`] is the entry point [`check_literal`] actually calls,
+/// falling back to the inference-substrate classification for those forms
+/// (issue #670) before finally treating an unclassifiable expression as
 /// silently clean — the same "Unknown never disagrees" posture
 /// `annotations::mismatches` takes.
 fn literal_ty(expr: &Expr) -> Option<Ty> {
@@ -406,6 +574,71 @@ fn literal_ty(expr: &Expr) -> Option<Ty> {
     }
 }
 
+/// Classify a struct-field initializer's type — [`literal_ty`]'s
+/// literal-shaped classification first, falling back to the non-literal
+/// forms issue #670 adds: a `Path` (variable), a `Call` (function), or an
+/// `Index` expression, each resolved through `ctx`'s inference substrate.
+/// `None` — "not classifiable" — whenever the resolved type is itself
+/// `Unknown`/`Conflicted`, or the expression shape isn't handled at all
+/// (e.g. a field access, an infix expression): the same "Unknown never
+/// disagrees" posture [`literal_ty`] and `annotations::mismatches` both take.
+fn classify_expr_ty(expr: &Expr, ctx: &MistypeCtx<'_>) -> Option<Ty> {
+    if let Some(ty) = literal_ty(expr) {
+        return Some(ty);
+    }
+    match expr {
+        Expr::Path(p) => resolved_symbol_ty(p.range, ctx),
+        Expr::Call(path, _args) => {
+            // Only a direct call to a known inferable knot/stitch is
+            // classified here — a call through a function *value* is T1c's
+            // own domain (`strict::check_value_calls`'s `ValueCallFact`s),
+            // not this diagnostic's.
+            let def = ctx.resolution_by_range.get(&range_key(path.range))?;
+            let sig = ctx.signatures.get(def)?;
+            (!sig.return_ty.is_unresolved()).then(|| sig.return_ty.clone())
+        }
+        Expr::Index(idx) => {
+            let base_ty = classify_expr_ty(&idx.base, ctx)?;
+            match base_ty {
+                Ty::Array(elem) if !elem.is_unresolved() => Some(*elem),
+                Ty::Map(_key, val) if !val.is_unresolved() => Some(*val),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Resolve a `Path` expression's own range to a concrete [`Ty`]: a
+/// param/temp reads the enclosing def's finalized `BodyTypes::locals`
+/// (`ctx.locals`, `None` at file scope — see [`MistypeCtx`]'s doc); a
+/// global `VAR`/`CONST` reads `infer::collect_globals`'s declaration-derived
+/// type; a `LIST`/list-item name is nominally `list<L>`. Mirrors
+/// `infer::body::InferPass::ty_of_def`'s own dispatch exactly (the same
+/// firewall a body's own inference already enforces), just read post hoc
+/// from the finalized results instead of live during a body solve.
+fn resolved_symbol_ty(range: TextRange, ctx: &MistypeCtx<'_>) -> Option<Ty> {
+    let def = *ctx.resolution_by_range.get(&range_key(range))?;
+    let info = ctx.index.symbols.get(&def)?;
+    let ty = match info.kind {
+        SymbolKind::Param | SymbolKind::Temp => ctx.locals?.get(&info.name)?.clone(),
+        SymbolKind::Variable | SymbolKind::Constant => ctx.globals.get(&def)?.clone(),
+        SymbolKind::List => Ty::List(info.name.clone()),
+        SymbolKind::ListItem => {
+            let (list, _item) = info.name.split_once('.')?;
+            Ty::List(list.to_string())
+        }
+        SymbolKind::Knot
+        | SymbolKind::Stitch
+        | SymbolKind::External
+        | SymbolKind::Struct
+        | SymbolKind::Label => {
+            return None;
+        }
+    };
+    if ty.is_unresolved() { None } else { Some(ty) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,23 +651,48 @@ mod tests {
         (hir, (*index).clone())
     }
 
+    /// Like [`build`], but also computes real resolutions and a whole-project
+    /// [`InferenceResult`] — needed by every test exercising the non-literal
+    /// (variable/call/index) classification issue #670 adds, since that path
+    /// consults exactly this substrate.
+    fn build_with_inference(src: &str) -> (HirFile, SymbolIndex, ResolutionMap, InferenceResult) {
+        let parsed = brink_syntax::parse(src);
+        let (hir, manifest, _diag) = lower(FileId(0), &parsed.tree());
+        let (index, _diag) = crate::symbol_index(&[(FileId(0), &manifest)]);
+        let (resolutions, _diag) =
+            crate::resolve(FileId(0), &manifest, &index, &crate::ImportScope::default());
+        let inference = crate::infer_project(
+            &[(FileId(0), &hir)],
+            &index,
+            &resolutions,
+            None,
+            &BTreeMap::new(),
+        );
+        (hir, (*index).clone(), (*resolutions).clone(), inference)
+    }
+
+    /// [`check`] driven by [`build_with_inference`]'s output — the harness
+    /// every non-literal-classification test below shares.
+    fn check_all(src: &str) -> Vec<Diagnostic> {
+        let (hir, index, resolutions, inference) = build_with_inference(src);
+        check(&[(FileId(0), &hir)], &index, &inference, &resolutions)
+    }
+
     #[test]
     fn clean_construction_produces_no_diagnostics() {
-        let (hir, index) = build(
+        let diags = check_all(
             "STRUCT Point = #{x: float, y: float}\n\
              === main ===\n~ p = Point#{x: 1.0, y: 2.0}\n-> DONE\n",
         );
-        let diags = check(&[(FileId(0), &hir)], &index);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
     fn missing_field_is_e069_naming_the_field() {
-        let (hir, index) = build(
+        let diags = check_all(
             "STRUCT Point = #{x: float, y: float}\n\
              === main ===\n~ p = Point#{x: 1.0}\n-> DONE\n",
         );
-        let diags = check(&[(FileId(0), &hir)], &index);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E069);
         assert!(diags[0].message.contains('y'), "{:?}", diags[0].message);
@@ -442,11 +700,10 @@ mod tests {
 
     #[test]
     fn extra_field_is_e070_naming_the_field() {
-        let (hir, index) = build(
+        let diags = check_all(
             "STRUCT Point = #{x: float}\n\
              === main ===\n~ p = Point#{x: 1.0, z: 2.0}\n-> DONE\n",
         );
-        let diags = check(&[(FileId(0), &hir)], &index);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E070);
         assert!(diags[0].message.contains('z'), "{:?}", diags[0].message);
@@ -454,11 +711,10 @@ mod tests {
 
     #[test]
     fn mistyped_field_is_e071_naming_the_field() {
-        let (hir, index) = build(
+        let diags = check_all(
             "STRUCT Point = #{x: float}\n\
              === main ===\n~ p = Point#{x: \"hi\"}\n-> DONE\n",
         );
-        let diags = check(&[(FileId(0), &hir)], &index);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E071);
         assert!(diags[0].message.contains('x'), "{:?}", diags[0].message);
@@ -467,23 +723,120 @@ mod tests {
     #[test]
     fn int_initializer_for_a_float_field_is_the_legal_coercion() {
         // §4's directional int -> float coercion applies here too.
-        let (hir, index) = build(
+        let diags = check_all(
             "STRUCT Point = #{x: float}\n\
              === main ===\n~ p = Point#{x: 1}\n-> DONE\n",
         );
-        let diags = check(&[(FileId(0), &hir)], &index);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    // ── issue #670: variable/call/index-valued initializers ────────────
+
+    #[test]
+    fn global_variable_valued_initializer_fires_when_provably_mistyped() {
+        // `v`'s declaration-derived type is a concrete `string` (its own
+        // literal initializer) — disagrees with `Point.x`'s declared
+        // `float`, so this now fires exactly like a literal `"hi"` would.
+        let diags = check_all(
+            "STRUCT Point = #{x: float}\n\
+             VAR v = \"hi\"\n=== main ===\n~ p = Point#{x: v}\n-> DONE\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E071);
+        assert!(diags[0].message.contains('x'), "{:?}", diags[0].message);
+    }
+
+    #[test]
+    fn global_variable_valued_initializer_of_the_right_type_is_clean() {
+        let diags = check_all(
+            "STRUCT Point = #{x: float}\n\
+             VAR v = 1.0\n=== main ===\n~ p = Point#{x: v}\n-> DONE\n",
+        );
         assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
-    fn non_literal_initializer_is_not_checked_for_mistype() {
-        // A variable-valued initializer isn't statically classifiable in
-        // this slice — stays silently clean rather than false-flagging.
-        let (hir, index) = build(
+    fn param_variable_valued_initializer_fires_when_provably_mistyped() {
+        // `n`'s only use in the body is compared against a string literal,
+        // so its inferred `BodyTypes::locals` type is a concrete `string` —
+        // disagrees with `Point.x`'s declared `float`.
+        let diags = check_all(
             "STRUCT Point = #{x: float}\n\
-             VAR v = \"hi\"\n=== main ===\n~ p = Point#{x: v}\n-> DONE\n",
+             === main(n) ===\n\
+             {n == \"a\":\n  yes\n}\n~ p = Point#{x: n}\n-> DONE\n",
         );
-        let diags = check(&[(FileId(0), &hir)], &index);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E071);
+    }
+
+    #[test]
+    fn unused_param_variable_valued_initializer_stays_silent_when_unknown() {
+        // `n` is never used anywhere else in the body, so it stays `Unknown`
+        // — "Unknown never disagrees" holds even for a variable initializer.
+        let diags = check_all(
+            "STRUCT Point = #{x: float}\n\
+             === main(n) ===\n~ p = Point#{x: n}\n-> DONE\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn call_valued_initializer_fires_when_provably_mistyped() {
+        // `label()`'s only `~ return` is a string literal, so its
+        // finalized `InferredSig::return_ty` is a concrete `string`.
+        let diags = check_all(
+            "STRUCT Point = #{x: float}\n\
+             === function label() ===\n~ return \"a\"\n\
+             === main ===\n~ p = Point#{x: label()}\n-> DONE\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E071);
+    }
+
+    #[test]
+    fn call_valued_initializer_of_the_right_type_is_clean() {
+        let diags = check_all(
+            "STRUCT Point = #{x: float}\n\
+             === function label() ===\n~ return 1.0\n\
+             === main ===\n~ p = Point#{x: label()}\n-> DONE\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn index_valued_initializer_fires_when_provably_mistyped() {
+        // `xs` is a local `~ temp` bound to a `#[...]` array-of-strings
+        // literal, so its finalized locals type is `array<string>` — indexing
+        // it yields `string`, disagreeing with `Point.x`'s declared `float`.
+        let diags = check_all(
+            "STRUCT Point = #{x: float}\n\
+             === main ===\n\
+             ~ temp xs = #[\"a\", \"b\"]\n~ p = Point#{x: xs[0]}\n-> DONE\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E071);
+    }
+
+    #[test]
+    fn index_valued_initializer_of_the_right_type_is_clean() {
+        let diags = check_all(
+            "STRUCT Point = #{x: float}\n\
+             === main ===\n\
+             ~ temp xs = #[1.0, 2.0]\n~ p = Point#{x: xs[0]}\n-> DONE\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn index_valued_initializer_stays_silent_when_unknown() {
+        // `xs` is only ever indexed, never assigned/observed to a concrete
+        // type elsewhere — reading through an `Unknown` base never learns an
+        // array shape (`infer::body`'s own `Expr::Index` arm), so this stays
+        // silent rather than false-flagging.
+        let diags = check_all(
+            "STRUCT Point = #{x: float}\n\
+             === main(xs) ===\n~ p = Point#{x: xs[0]}\n-> DONE\n",
+        );
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -491,38 +844,88 @@ mod tests {
     fn unresolved_shape_name_is_not_double_reported_here() {
         // No `STRUCT Bogus` declared — `resolve::resolve_struct_ref` already
         // reports E068 elsewhere; this pass has nothing to check against.
-        let (hir, index) = build("=== main ===\n~ p = Bogus#{x: 1}\n-> DONE\n");
-        let diags = check(&[(FileId(0), &hir)], &index);
+        let diags = check_all("=== main ===\n~ p = Bogus#{x: 1}\n-> DONE\n");
         assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
     fn nested_struct_literal_field_is_checked_by_shape_name() {
-        let (hir, index) = build(
+        let diags = check_all(
             "STRUCT Inner = #{v: float}\nSTRUCT Outer = #{inner: Inner}\n\
              === main ===\n~ o = Outer#{inner: Inner#{v: 1.0}}\n-> DONE\n",
         );
-        let diags = check(&[(FileId(0), &hir)], &index);
         assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
     fn nested_struct_literal_mistyped_field_still_flags_outer() {
-        let (hir, index) = build(
+        let diags = check_all(
             "STRUCT Wrong = #{v: float}\nSTRUCT Inner = #{v: float}\nSTRUCT Outer = #{inner: Inner}\n\
              === main ===\n~ o = Outer#{inner: Wrong#{v: 1.0}}\n-> DONE\n",
         );
-        let diags = check(&[(FileId(0), &hir)], &index);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E071);
     }
 
     #[test]
     fn struct_literal_inside_var_initializer_is_checked() {
-        let (hir, index) = build("STRUCT Point = #{x: float}\nVAR p = Point#{x: \"hi\"}\n");
-        let diags = check(&[(FileId(0), &hir)], &index);
+        let diags = check_all("STRUCT Point = #{x: float}\nVAR p = Point#{x: \"hi\"}\n");
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E071);
+    }
+
+    #[test]
+    fn variable_valued_initializer_inside_var_initializer_uses_global_scope_only() {
+        // A struct literal in a file-level VAR/CONST initializer has no
+        // enclosing knot/stitch body — only a reference to *another* global
+        // is classifiable there (never a param/temp, which can't exist at
+        // file scope). `other`'s declared type disagrees with `Point.x`.
+        let diags =
+            check_all("STRUCT Point = #{x: float}\nVAR other = \"hi\"\nVAR p = Point#{x: other}\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E071);
+    }
+
+    #[test]
+    fn stitch_local_variable_valued_initializer_fires_when_provably_mistyped() {
+        // Every other non-literal-classification test above only ever
+        // exercises knot scope (`main`), file scope, or `main(n)`'s own
+        // params — never a stitch body. This drives the `enter_stitch`/
+        // `stitch_locals` dispatch path specifically: `t`'s finalized
+        // `BodyTypes::locals` type (a concrete `string`, from its own
+        // literal initializer) disagrees with `Point.x`'s declared `float`.
+        let diags = check_all(
+            "STRUCT Point = #{x: float}\n\
+             === room ===\n= inside\n~ temp t = \"hi\"\n~ p = Point#{x: t}\n-> DONE\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E071);
+        assert!(diags[0].message.contains('x'), "{:?}", diags[0].message);
+    }
+
+    #[test]
+    fn mistyped_variable_field_diagnostic_is_order_independent() {
+        // Issue #670's own scope names "order-independence property tests
+        // per the #627 discipline" as a deliverable — mirrors strict.rs's
+        // `escape_diagnostics_are_order_independent` forward/reversed
+        // pattern. `v`'s mistyped classification (and the resulting E071)
+        // must not depend on which position its field initializer occupies
+        // in the literal.
+        let forward = "STRUCT Point = #{x: float, y: float}\n\
+             VAR v = \"hi\"\n=== main ===\n~ p = Point#{x: v, y: 1.0}\n-> DONE\n";
+        let reversed = "STRUCT Point = #{x: float, y: float}\n\
+             VAR v = \"hi\"\n=== main ===\n~ p = Point#{y: 1.0, x: v}\n-> DONE\n";
+
+        let diags_f = check_all(forward);
+        let diags_r = check_all(reversed);
+
+        assert_eq!(diags_f.len(), 1, "{diags_f:?}");
+        assert_eq!(diags_f[0].code, DiagnosticCode::E071);
+        assert!(diags_f[0].message.contains('x'), "{:?}", diags_f[0].message);
+
+        assert_eq!(diags_r.len(), 1, "{diags_r:?}");
+        assert_eq!(diags_r[0].code, DiagnosticCode::E071);
+        assert!(diags_r[0].message.contains('x'), "{:?}", diags_r[0].message);
     }
 
     // ─── check_duplicates (E084, issue #675) ──────────────────────────
