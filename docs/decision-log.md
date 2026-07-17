@@ -1564,3 +1564,11 @@
 - **SCOPE:** moderate (observable == semantics, wasm-observable)
 - **WHAT:** `#{a:1, b:2} == #{b:2, a:1}` is TRUE — map and record equality compares content (key→value pairs), never insertion order. OrderedMap's derived order-sensitive PartialEq is a bug (#909); ==, contains()-style membership, and any equality-derived operation must use content comparison. Iteration and serialization order remain insertion-order (unchanged) — only equality ignores it.
 - **WHY:** Equality reflects value semantics, not construction history; two maps holding the same data are the same value regardless of the order keys were added.
+
+## Pump communication is durable-by-default: findings and context go to GitHub, not just the workflow
+- **WHEN:** 2026-07-18
+- **PROJECT:** brink
+- **SYSTEM:** pump-process
+- **SCOPE:** moderate (process)
+- **WHAT:** Pump agents post their substantive outputs to GitHub as they work: reviewers always comment their verdict on the PR (approvals included, with scope gaps); build agents comment scope-overflow notes on the issue; fix agents comment applied/skipped dispositions on the PR; merge agents comment only when noteworthy (conflicts, semantic fixes); lessons + scope reconciliation append one comment per wave to the standing "Pump: wave ledger" issue (#967). Labels for visibility/search: pump:ledger, pump:scope (reconciliation-filed issues), pump:lesson (graduated lessons). Workflow-internal messages remain the orchestration mechanism, never the only record.
+- **WHY:** Findings and inter-agent context were evaporating with sessions — durable, natively-readable history on the PRs/issues matches the repo's issue-driven workflow and lets humans audit what reviewers actually said.
