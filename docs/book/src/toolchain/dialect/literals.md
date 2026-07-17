@@ -57,6 +57,57 @@ Expression position has no such clash — `#` can never begin an ordinary ink
 expression there, so the sigil is collision-free. This is the honest scope
 of "collision-proof": true in expression position, not true in prose.
 
+## A bare `#` in prose swallows the rest of the line
+
+Because `#` opens a tag anywhere in prose, an author writing a literal `#`
+into narrative text — a hashtag, a shorthand for "number", a stray comment
+marker — silently turns everything from that `#` to the next `#` or the end
+of the line into **tag data**. It never reaches the printed text, and
+brink emits no diagnostic:
+
+```ink
+This costs # 5 dollars, more or less.
+-> END
+```
+
+```text
+This costs
+```
+
+`# 5 dollars, more or less.` is consumed whole as one tag's text (readable
+via the `Line`/`Choice` `tags` field — see [Runtime API](../reference/runtime-api.md))
+— it never prints. This is not a brink bug: it's stock ink behavior, byte-
+for-byte identical to the reference C# implementation and inklecate for this
+input (verified directly against a local build, issue #858). If prose text
+needs a literal `#`, the only way to keep it in the printed line today is to
+avoid a bare `#` in content position entirely — e.g. spell out "number" or
+move the `#` into a tag deliberately and give it its own line.
+
+## Trailing whitespace on a printed line is stripped
+
+Whitespace at the end of a line of content — including whitespace that comes
+*after* interpolated `{…}` content — never reaches the printed text, even
+though it's present in the source:
+
+```ink
+VAR name = "World"
+Hello,    
+Hello, {name}    
+-> END
+```
+
+```text
+Hello,
+Hello, World
+```
+
+Both lines lose their trailing spaces; the second loses them even though
+they sit after the interpolation is resolved, not after literal source text.
+Again, this matches the reference C# ink compiler exactly (verified against
+inklecate, issue #858) — it is not a brink-specific stripping bug to fix.
+Leading and *internal* whitespace are unaffected; only the run of whitespace
+immediately before the line's terminating newline is dropped.
+
 ## The pattern: build in a `temp`, interpolate the temp
 
 Since a literal can't appear directly in prose, the idiom is to build the
