@@ -72,7 +72,8 @@ the same way dividing by zero already does:
 | Situation | What happens |
 |---|---|
 | `a[i]` / `a[i] = v` with `i` outside `[0, len(a))` | Fault — array index out of bounds |
-| `m[k]` / `m[k] = v` with `k` not already a key in `m` | Fault — map has no such key |
+| `m[k]` with `k` not already a key in `m` | Fault — map has no such key |
+| `m[k] = v` with `k` not already a key in `m` | Inserts the key-value pair |
 | Indexing into a value that isn't an array or a map | Fault — not indexable |
 | An array index expression that isn't an `Int` | Fault — invalid array index |
 | A map key expression outside the key domain (not `int`/`string`/`bool`) | Fault — invalid map key type |
@@ -84,10 +85,10 @@ Two points worth being explicit about:
   faults. If you want to grow a collection, use the stdlib mutators
   ([Standard Library](./stdlib.md)) — `push`/`insert` are the only
   operations that add elements, and they say so in their name.
-- **An indexed map write never inserts.** `m["new_key"] = v` on a key that
-  isn't already present faults, the same as reading it would. Indexing
-  assumes the shape is already there; `insert()` is the operation that adds
-  a key.
+- **An indexed map write inserts on a missing key.** `m["new_key"] = v`
+  inserts the key-value pair if the key isn't already present. Reading a
+  missing key, however, still faults; `m["new_key"]` (without the assignment)
+  requires the key to already exist.
 
 These are total operations with a well-defined failure outcome, not
 undefined behavior — a fault is deterministic, gets recorded in the
