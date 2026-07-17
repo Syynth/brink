@@ -3,7 +3,7 @@
 
 WHITESPACE = _{ " " | "\t" | NEWLINE }
 
-story = { SOI ~ "(" ~ "story" ~ story_checksum? ~ name_table? ~ globals? ~ lists? ~ list_items? ~ externals? ~ addresses? ~ address_paths? ~ list_literals? ~ literal_pool? ~ visibility? ~ alias_table? ~ effect_rows? ~ container* ~ ")" ~ EOI }
+story = { SOI ~ "(" ~ "story" ~ story_checksum? ~ name_table? ~ globals? ~ lists? ~ list_items? ~ externals? ~ addresses? ~ address_paths? ~ list_literals? ~ literal_pool? ~ struct_shapes? ~ visibility? ~ alias_table? ~ effect_rows? ~ container* ~ ")" ~ EOI }
 story_checksum = { "checksum=" ~ hex_literal }
 
 // ── Name table ──────────────────────────────────────────────────────────────
@@ -79,6 +79,16 @@ list_literal_entry = { "(" ~ "list" ~ list_value_items ~ list_value_origins ~ ")
 // ── Literal pool (T1b, docs/format-v4-rfc.md §2) ─────────────────────────────
 
 literal_pool = { "(" ~ "literal_pool" ~ value* ~ ")" }
+
+// ── Struct shapes (TM-4, docs/format-v4-rfc.md §1) ───────────────────────────
+// Mirrors the `.inkb` `StructShapes` section: shape id, name, then its
+// ordered field `NameId`s. Reader lands with the writer in the same PR
+// (the #742/#883 lesson — this was previously write-only through `.inkb`
+// only, with `.inkt` dropping the section entirely).
+
+struct_shapes = { "(" ~ "struct_shapes" ~ struct_shape_entry* ~ ")" }
+struct_shape_entry = { "(" ~ "struct" ~ integer ~ "(" ~ "name" ~ integer ~ ")" ~ struct_field* ~ ")" }
+struct_field = { "(" ~ "field" ~ integer ~ ")" }
 
 // ── Visibility (M-2b, docs/modules-spec.md §4) ───────────────────────────────
 

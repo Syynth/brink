@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use crate::counting::CountingFlags;
 use crate::definition::{
     AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef, DirectEffects,
-    EffectRowEntry, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
+    EffectRowEntry, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef, StructShapeDef,
 };
 use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, SelectKey};
@@ -38,6 +38,7 @@ pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
     write_address_paths(w, &story.address_paths)?;
     write_list_literals(w, &story.list_literals)?;
     write_literal_pool(w, &story.literal_pool)?;
+    write_struct_shapes(w, &story.struct_shapes)?;
     write_visibility(w, &story.private_defs)?;
     write_alias_table(w, &story.alias_table)?;
     write_effect_rows(w, &story.effect_rows)?;
@@ -189,6 +190,28 @@ fn write_literal_pool(w: &mut dyn fmt::Write, literal_pool: &[Value]) -> fmt::Re
     writeln!(w, "  )")
 }
 
+/// TM-4 (`docs/format-v4-rfc.md` §1): mirrors the `.inkb` `StructShapes`
+/// section — shape id, name, then its ordered field `NameId`s. The reader
+/// lands with the writer in the same PR (the #742/#883 lesson): this
+/// section used to round-trip through `.inkb` only, with `.inkt` silently
+/// dropping it entirely.
+fn write_struct_shapes(w: &mut dyn fmt::Write, struct_shapes: &[StructShapeDef]) -> fmt::Result {
+    if struct_shapes.is_empty() {
+        return Ok(());
+    }
+    writeln!(w)?;
+    writeln!(w, "  (struct_shapes")?;
+    for shape in struct_shapes {
+        writeln!(w, "    (struct {}", shape.id.0)?;
+        writeln!(w, "      (name {})", shape.name.0)?;
+        for field in &shape.fields {
+            writeln!(w, "      (field {})", field.0)?;
+        }
+        writeln!(w, "    )")?;
+    }
+    writeln!(w, "  )")
+}
+
 fn write_externals(w: &mut dyn fmt::Write, externals: &[ExternalFnDef]) -> fmt::Result {
     if externals.is_empty() {
         return Ok(());
@@ -251,8 +274,8 @@ fn write_alias_table(w: &mut dyn fmt::Write, aliases: &[AliasEntry]) -> fmt::Res
 
 /// T2-3 (`docs/effects-spec.md` §11): the factored `EffectRows` table. Written
 /// only when non-empty, mirroring the other optional sections. The reader lands
-/// with the writer in the same PR (the #742 lesson) — unlike `struct_shapes`,
-/// this section is fully round-tripped through `.inkt`.
+/// with the writer in the same PR (the #742 lesson) — this section is fully
+/// round-tripped through `.inkt`.
 fn write_effect_rows(w: &mut dyn fmt::Write, rows: &[EffectRowEntry]) -> fmt::Result {
     if rows.is_empty() {
         return Ok(());
