@@ -360,6 +360,34 @@ pub(crate) fn binary_op(
         (Value::Handle { .. }, Value::Handle { .. }) if op == BinaryOp::NotEqual => {
             Ok(Value::Bool(left != right))
         }
+        // Map equality (value-model-spec §4): structural, with the
+        // `Arc::ptr_eq` fast path — both delegated to `Value`'s own
+        // `PartialEq` impl, the same structural comparison `contains()`
+        // (`collection_ops::map_contains`'s Array branch) already exercises
+        // for element containment. Only `==`/`!=` are defined here; any
+        // ordering op falls through to the `TypeError` fault below — maps
+        // have no ordering. NOTE: whether two maps with the same entries in
+        // a different insertion order compare equal is exactly the question
+        // parked for a maintainer ruling in #909 — this arm just forwards
+        // whatever `OrderedMap`'s current (derived) `PartialEq` decides
+        // today; it does not itself decide order-sensitivity.
+        (Value::Map(_), Value::Map(_)) if op == BinaryOp::Equal => Ok(Value::Bool(left == right)),
+        (Value::Map(_), Value::Map(_)) if op == BinaryOp::NotEqual => {
+            Ok(Value::Bool(left != right))
+        }
+        // Record equality (typed-dialect era, TM-4; `docs/value-model-spec.md`
+        // §11c / `docs/typed-mode-spec.md` §6): structural — same shape and
+        // equal fields, with the `Arc::ptr_eq` fast path — delegated to
+        // `Value`'s `PartialEq`, which already refuses equality across
+        // mismatched shapes even when the field vectors happen to coincide.
+        // Only `==`/`!=` are defined; any ordering op falls through to the
+        // `TypeError` fault below — records have no ordering.
+        (Value::Record { .. }, Value::Record { .. }) if op == BinaryOp::Equal => {
+            Ok(Value::Bool(left == right))
+        }
+        (Value::Record { .. }, Value::Record { .. }) if op == BinaryOp::NotEqual => {
+            Ok(Value::Bool(left != right))
+        }
         // Equality for null
         (Value::Null, Value::Null) if op == BinaryOp::Equal => Ok(Value::Bool(true)),
         (Value::Null, Value::Null) if op == BinaryOp::NotEqual => Ok(Value::Bool(false)),
@@ -1070,5 +1098,190 @@ mod tests {
             origins: vec![list_def_id],
         };
         assert_eq!(stringify(&Value::List(Arc::new(lv)), &p), "low, mid");
+    }
+
+    // ── Map/Record equality (issue #908, value-model-spec §4) ───────────────
+    //
+    // `binary_op` had no Map/Map or Record/Record arm at all — `==`/`!=`
+    // faulted with a `TypeError` instead of comparing, even though `Value`'s
+    // own `PartialEq` already implements the ratified structural-equality-
+    // with-`ptr_eq`-fast-path rule these tests exercise through the operator.
+
+    use brink_format::{OrderedMap, ShapeId};
+
+    #[test]
+    fn map_equality_is_structural() {
+        let p = dummy_program();
+        let mut m1 = OrderedMap::new();
+        m1.insert("a".into(), Value::Int(1));
+        m1.insert("b".into(), Value::Int(2));
+        let mut m2 = OrderedMap::new();
+        m2.insert("a".into(), Value::Int(1));
+        m2.insert("b".into(), Value::Int(2));
+
+        let a = Value::map(m1);
+        let b = Value::map(m2);
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &b, &p).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            binary_op(BinaryOp::NotEqual, &a, &b, &p).unwrap(),
+            Value::Bool(false)
+        );
+
+        let mut m3 = OrderedMap::new();
+        m3.insert("a".into(), Value::Int(1));
+        m3.insert("b".into(), Value::Int(99));
+        let c = Value::map(m3);
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &c, &p).unwrap(),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn map_equality_ptr_eq_fast_path() {
+        // Same Arc (a clone of the snapshot): the `ptr_eq` fast path wins
+        // immediately, without needing structural comparison at all.
+        let p = dummy_program();
+        let mut m = OrderedMap::new();
+        m.insert("k".into(), Value::Int(1));
+        let a = Value::map(m);
+        let snapshot = a.clone();
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &snapshot, &p).unwrap(),
+            Value::Bool(true)
+        );
+    }
+
+    /// NaN composes structurally through map values: two distinct maps
+    /// (distinct `Arc`s) each holding a NaN never compare equal, but a map
+    /// compared against its own shared snapshot does — the `ptr_eq` fast
+    /// path short-circuits before the NaN-bearing structural compare runs
+    /// (value-model-spec §4: sharing an identical snapshot is equal to
+    /// itself even with a NaN payload; this is stated as harmless).
+    #[test]
+    fn map_equality_nan_composition() {
+        let p = dummy_program();
+        let mut m1 = OrderedMap::new();
+        m1.insert("n".into(), Value::Float(f32::NAN));
+        let mut m2 = OrderedMap::new();
+        m2.insert("n".into(), Value::Float(f32::NAN));
+
+        let a = Value::map(m1);
+        let b = Value::map(m2);
+        // Distinct Arcs, NaN != NaN structurally.
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &b, &p).unwrap(),
+            Value::Bool(false)
+        );
+        // Same Arc (snapshot): ptr_eq wins regardless of NaN.
+        let snapshot = a.clone();
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &snapshot, &p).unwrap(),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn record_equality_is_structural() {
+        let p = dummy_program();
+        let shape = ShapeId(0);
+        let a = Value::record(shape, vec![Value::Int(1), Value::String("x".into())]);
+        let b = Value::record(shape, vec![Value::Int(1), Value::String("x".into())]);
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &b, &p).unwrap(),
+            Value::Bool(true)
+        );
+
+        let c = Value::record(shape, vec![Value::Int(2), Value::String("x".into())]);
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &c, &p).unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            binary_op(BinaryOp::NotEqual, &a, &c, &p).unwrap(),
+            Value::Bool(true)
+        );
+
+        // Same field vectors, different shapes: never equal, even though the
+        // fields happen to coincide.
+        let other_shape = Value::record(ShapeId(1), vec![Value::Int(1), Value::String("x".into())]);
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &other_shape, &p).unwrap(),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn record_equality_ptr_eq_fast_path() {
+        let p = dummy_program();
+        let a = Value::record(ShapeId(0), vec![Value::Int(1)]);
+        let snapshot = a.clone();
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &snapshot, &p).unwrap(),
+            Value::Bool(true)
+        );
+    }
+
+    /// Nested collections: a map holding a record and an array, compared
+    /// against a structurally-identical but distinct-Arc counterpart.
+    #[test]
+    fn nested_map_and_record_equality() {
+        let p = dummy_program();
+        let shape = ShapeId(0);
+        let mut m1 = OrderedMap::new();
+        m1.insert(
+            "rec".into(),
+            Value::record(shape, vec![Value::Array(Arc::new(vec![Value::Int(1)]))]),
+        );
+        let mut m2 = OrderedMap::new();
+        m2.insert(
+            "rec".into(),
+            Value::record(shape, vec![Value::Array(Arc::new(vec![Value::Int(1)]))]),
+        );
+        let a = Value::map(m1);
+        let b = Value::map(m2);
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &b, &p).unwrap(),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn map_has_no_ordering() {
+        let p = dummy_program();
+        let a = Value::map(OrderedMap::new());
+        let b = Value::map(OrderedMap::new());
+        for op in [
+            BinaryOp::Less,
+            BinaryOp::Greater,
+            BinaryOp::LessOrEqual,
+            BinaryOp::GreaterOrEqual,
+        ] {
+            assert!(
+                binary_op(op, &a, &b, &p).is_err(),
+                "{op:?} on two maps must fault, not silently order them"
+            );
+        }
+    }
+
+    #[test]
+    fn record_has_no_ordering() {
+        let p = dummy_program();
+        let a = Value::record(ShapeId(0), vec![Value::Int(1)]);
+        let b = Value::record(ShapeId(0), vec![Value::Int(2)]);
+        for op in [
+            BinaryOp::Less,
+            BinaryOp::Greater,
+            BinaryOp::LessOrEqual,
+            BinaryOp::GreaterOrEqual,
+        ] {
+            assert!(
+                binary_op(op, &a, &b, &p).is_err(),
+                "{op:?} on two records must fault, not silently order them"
+            );
+        }
     }
 }
