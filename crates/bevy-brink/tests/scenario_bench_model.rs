@@ -15,7 +15,8 @@
 mod model;
 
 use model::{
-    ScenarioConfig, ScenarioResult, TurnWeight, active_count, generate_story, run_scenario,
+    ScenarioConfig, ScenarioResult, TurnWeight, active_count, generate_story, run_batch_scenario,
+    run_scenario,
 };
 
 fn tiny_config(name: &str, turn_weight: TurnWeight) -> ScenarioConfig {
@@ -154,6 +155,51 @@ fn fully_parked_scenario_completes_zero_turns() {
         collection_global: false,
     };
     let result = run_scenario(&config).expect("all-parked scenario should still run");
+    assert_eq!(result.turns_completed, 0);
+    assert_eq!(result.flow_anomalies, 0);
+}
+
+/// The batch-mode driver (BH-2, #914) runs the same generated template
+/// cleanly end to end: every active flow completes one turn per frame
+/// (batch turn to `Choices`, host auto-pick), with zero anomalies — the
+/// same turn accounting the serial driver produces for this config, so the
+/// two drivers' `turns_completed` are directly comparable.
+#[test]
+fn batch_driver_completes_the_same_turn_count_as_serial() {
+    let config = tiny_config("batch-smoke", TurnWeight::Medium);
+    let result = run_batch_scenario(&config).expect("batch smoke scenario should run cleanly");
+    assert_result_is_sane(&config, &result);
+
+    let expected_turns =
+        u64::try_from(active_count(config.flow_count, config.active_fraction) * config.frames)
+            .expect("tiny scenario turn count fits u64");
+    assert_eq!(
+        result.turns_completed, expected_turns,
+        "every active flow completes exactly one turn per frame in batch mode"
+    );
+    let serial = run_scenario(&config).expect("serial twin should run cleanly");
+    assert_eq!(
+        serial.turns_completed, result.turns_completed,
+        "batch and serial drivers agree on turn accounting for the same config"
+    );
+}
+
+/// A fully-parked batch scenario completes zero turns with zero anomalies —
+/// parked flows (spawned without the `BrinkStory` bundle) must never enter
+/// `advance_batch`'s query at all.
+#[test]
+fn fully_parked_batch_scenario_completes_zero_turns() {
+    let config = ScenarioConfig {
+        name: "batch-all-parked".to_string(),
+        flow_count: 5,
+        active_fraction: 0.0,
+        world_size: 0,
+        turn_weight: TurnWeight::Light,
+        frames: 3,
+        seed: 9,
+        collection_global: false,
+    };
+    let result = run_batch_scenario(&config).expect("all-parked batch scenario should still run");
     assert_eq!(result.turns_completed, 0);
     assert_eq!(result.flow_anomalies, 0);
 }
