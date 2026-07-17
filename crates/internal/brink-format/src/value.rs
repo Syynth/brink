@@ -692,9 +692,40 @@ impl From<Arc<str>> for MapKey {
 /// overwrites its value in place (keeping the key's original position), and
 /// `remove` shifts later entries down. Lookups are linear; that is the
 /// intended trade for small maps and stable ordering.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+///
+/// `PartialEq` is hand-written, not derived (issue #909, ruled 2026-07-18 —
+/// `docs/decision-log.md` "Map/record equality is insertion-order-insensitive"):
+/// equality is **content-based**, comparing key→value pairs regardless of
+/// insertion order — `#{a:1,b:2} == #{b:2,a:1}` is `true`. Only equality
+/// ignores order; [`iter`](Self::iter)/[`keys`](Self::keys)/[`values`](Self::values)
+/// and every codec still walk `entries` in insertion order, unchanged. The
+/// derived `PartialEq` this replaces compared `entries` as a `Vec`, which is
+/// order-sensitive — the bug. `Value::Map`'s `Arc::ptr_eq` fast path (same
+/// snapshot → instant `true`) lives one level up in `impl PartialEq for
+/// Value`; this impl is the structural fallback it calls into.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OrderedMap {
     entries: Vec<(MapKey, Value)>,
+}
+
+impl PartialEq for OrderedMap {
+    /// Content comparison: same number of entries, and every key in `self`
+    /// maps to an equal value in `other`. Order-insensitive by construction
+    /// (a lookup by key, not a positional walk) — the len check is a fast
+    /// path (mismatched sizes can never be equal, and it makes the
+    /// same-length-different-keys case cheap to reject), and the per-entry
+    /// `get` gives each comparison the same `Value::eq` `Arc::ptr_eq`
+    /// shortcuts as any other structural compare. `O(n)` entries, each a
+    /// linear `get` — `O(n^2)` worst case, the accepted trade for small,
+    /// game-scale maps (same trade `get`/`insert`/`remove` already make).
+    fn eq(&self, other: &Self) -> bool {
+        self.entries.len() == other.entries.len()
+            && self.entries.iter().all(|(key, value)| {
+                other
+                    .get(key)
+                    .is_some_and(|other_value| other_value == value)
+            })
+    }
 }
 
 impl OrderedMap {
@@ -1068,9 +1099,11 @@ mod tests {
     }
 
     #[test]
-    fn map_equality_is_order_sensitive() {
-        // Insertion order is observable, so two maps with the same entries in
-        // different order are distinct values.
+    fn map_equality_is_content_based_insertion_order_insensitive() {
+        // Issue #909, ruled 2026-07-18: #{a:1,b:2} == #{b:2,a:1} is TRUE.
+        // Two maps with the same key/value pairs inserted in different
+        // orders are the same value — equality ignores insertion order even
+        // though iteration/serialization order still follows it.
         let m1: OrderedMap = [
             (MapKey::from("a"), Value::Int(1)),
             (MapKey::from("b"), Value::Int(2)),
@@ -1083,8 +1116,89 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        assert_ne!(Value::map(m1.clone()), Value::map(m2));
-        assert_eq!(Value::map(m1.clone()), Value::map(m1));
+        // Both directions — PartialEq::eq isn't assumed symmetric by the
+        // impl, so both orderings of the comparison are checked explicitly.
+        assert_eq!(Value::map(m1.clone()), Value::map(m2.clone()));
+        assert_eq!(Value::map(m2.clone()), Value::map(m1.clone()));
+        assert_eq!(Value::map(m1.clone()), Value::map(m1.clone()));
+
+        // Iteration order is unaffected by the equality ruling — each map
+        // still yields its own entries in the order they were inserted.
+        assert_eq!(
+            m1.keys().cloned().collect::<Vec<_>>(),
+            vec![MapKey::from("a"), MapKey::from("b")]
+        );
+        assert_eq!(
+            m2.keys().cloned().collect::<Vec<_>>(),
+            vec![MapKey::from("b"), MapKey::from("a")]
+        );
+    }
+
+    #[test]
+    fn map_equality_still_rejects_different_content() {
+        // Content-based equality must still distinguish maps that genuinely
+        // differ — same key count, different values; and different key
+        // counts entirely (exercises the len fast-path).
+        let a: OrderedMap = [(MapKey::from("a"), Value::Int(1))].into_iter().collect();
+        let b: OrderedMap = [(MapKey::from("a"), Value::Int(2))].into_iter().collect();
+        assert_ne!(Value::map(a.clone()), Value::map(b));
+
+        let c: OrderedMap = [
+            (MapKey::from("a"), Value::Int(1)),
+            (MapKey::from("b"), Value::Int(2)),
+        ]
+        .into_iter()
+        .collect();
+        assert_ne!(Value::map(a), Value::map(c));
+    }
+
+    #[test]
+    fn nested_map_equality_is_order_insensitive_at_every_level() {
+        // A map value nested inside another map/array is compared through
+        // the same content-based rule, recursively — reordering the inner
+        // map's keys must not change the outer value's equality.
+        let inner1: OrderedMap = [
+            (MapKey::from("x"), Value::Int(1)),
+            (MapKey::from("y"), Value::Int(2)),
+        ]
+        .into_iter()
+        .collect();
+        let inner2: OrderedMap = [
+            (MapKey::from("y"), Value::Int(2)),
+            (MapKey::from("x"), Value::Int(1)),
+        ]
+        .into_iter()
+        .collect();
+
+        let outer1: OrderedMap = [
+            (MapKey::from("inner"), Value::map(inner1)),
+            (MapKey::from("other"), Value::Int(9)),
+        ]
+        .into_iter()
+        .collect();
+        let outer2: OrderedMap = [
+            (MapKey::from("other"), Value::Int(9)),
+            (MapKey::from("inner"), Value::map(inner2)),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(Value::map(outer1), Value::map(outer2));
+    }
+
+    #[test]
+    fn record_equality_is_unaffected_by_map_ordering_ruling() {
+        // Records are shape-ordered, not insertion-ordered (fields have a
+        // fixed position from the closed shape) — the map ruling must not
+        // change record equality, which stays a positional field compare
+        // gated on matching `ShapeId`. Field order can't be reordered
+        // through the public API, so this locks the existing behavior
+        // rather than exercising a new order-insensitivity path.
+        let shape = ShapeId(0);
+        let r1 = Value::record(shape, vec![Value::Int(1), Value::Int(2)]);
+        let r2 = Value::record(shape, vec![Value::Int(1), Value::Int(2)]);
+        let r3 = Value::record(shape, vec![Value::Int(2), Value::Int(1)]);
+        assert_eq!(r1, r2);
+        assert_ne!(r1, r3);
     }
 
     #[test]

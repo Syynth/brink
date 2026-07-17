@@ -430,10 +430,12 @@ pub(crate) fn binary_op(
         // for element containment. Only `==`/`!=` are defined here; any
         // ordering op falls through to the `TypeError` fault below — maps
         // have no ordering. NOTE: whether two maps with the same entries in
-        // a different insertion order compare equal is exactly the question
-        // parked for a maintainer ruling in #909 — this arm just forwards
-        // whatever `OrderedMap`'s current (derived) `PartialEq` decides
-        // today; it does not itself decide order-sensitivity.
+        // a different insertion order compare equal was ruled in #909
+        // (2026-07-18, `docs/decision-log.md` "Map/record equality is
+        // insertion-order-insensitive"): map equality is content-based and
+        // insertion-order-insensitive — this arm forwards to `OrderedMap`'s
+        // hand-written `PartialEq` (see `OrderedMap`'s doc comment in
+        // `brink-format::value`), which now implements exactly that.
         (Value::Map(_), Value::Map(_)) if op == BinaryOp::Equal => Ok(Value::Bool(left == right)),
         (Value::Map(_), Value::Map(_)) if op == BinaryOp::NotEqual => {
             Ok(Value::Bool(left != right))
