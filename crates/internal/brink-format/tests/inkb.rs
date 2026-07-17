@@ -1122,3 +1122,76 @@ fn roundtrip_line_entry_with_audio_ref() {
         Some("audio/hello.wav".to_string())
     );
 }
+
+// Regression for #954, sibling of the `.inkt` reader's guard (#745): a
+// mutated `.inkb` can declare a `param_count` that disagrees with the number
+// of per-param name/mode metadata entries that actually follow it. Before
+// this fix, `decode_container` built the inconsistent `ContainerDef` anyway
+// (violating its own documented invariant that `params.len()` always equals
+// `param_count`), the same silently-invalid state the `.inkt` reader now
+// rejects. The strict `.inkb` reader must reject it too, with a decode
+// error, never a panic (fuzz targets exercise this exact path).
+#[test]
+fn container_param_count_mismatch_is_a_decode_error() {
+    use brink_format::{
+        ContainerDef, CountingFlags, DefinitionId, DefinitionTag, InkbIndex, NameId, ParamMeta,
+        SectionEntry,
+    };
+
+    let id = DefinitionId::new(DefinitionTag::Address, 1);
+    // A recognizable path_hash sentinel we can locate in the encoded bytes
+    // to find the `param_count` byte that immediately follows it, without
+    // hardcoding unrelated field-width assumptions (e.g. def_id encoding).
+    let sentinel_path_hash: i32 = 0x7EAD_BEEF_u32.cast_signed();
+    let container = ContainerDef {
+        id,
+        scope_id: id,
+        name: None,
+        bytecode: vec![],
+        counting_flags: CountingFlags::empty(),
+        path_hash: sentinel_path_hash,
+        param_count: 1,
+        params: vec![ParamMeta {
+            name: NameId(0),
+            is_ref: false,
+        }],
+        local: false,
+    };
+
+    let mut buf = Vec::new();
+    write_section_containers(&[container], &mut buf);
+
+    // Locate the sentinel path_hash's little-endian bytes; `param_count`
+    // (a single byte) immediately follows it in the encoding.
+    let sentinel_bytes = sentinel_path_hash.to_le_bytes();
+    let sentinel_pos = buf
+        .windows(4)
+        .position(|w| w == sentinel_bytes)
+        .expect("sentinel path_hash bytes not found in encoded container");
+    let param_count_pos = sentinel_pos + 4;
+    assert_eq!(buf[param_count_pos], 1, "expected param_count byte");
+
+    // Corrupt param_count to disagree with the single ParamMeta entry that
+    // follows it, producing the exact malformed shape a mutated .inkb fuzz
+    // input would carry.
+    buf[param_count_pos] = 0;
+
+    let index = InkbIndex {
+        version: 5,
+        file_size: u32::try_from(buf.len()).unwrap(),
+        checksum: 0,
+        sections: vec![SectionEntry {
+            kind: SectionKind::Containers,
+            offset: 0,
+        }],
+    };
+
+    let err = read_section_containers(&buf, &index).unwrap_err();
+    assert_eq!(
+        err,
+        DecodeError::ParamCountMismatch {
+            declared: 0,
+            actual: 1,
+        }
+    );
+}

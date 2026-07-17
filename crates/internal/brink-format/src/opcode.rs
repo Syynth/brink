@@ -461,6 +461,14 @@ pub enum DecodeError {
     /// (T2-3, `docs/effects-spec.md` §11, `docs/t1d-spec.md` §7). The slot is
     /// reserved — nothing emits a bound handle in this section version.
     InvalidEffectHandleParam(u8),
+    /// A `ContainerDef`'s declared `param_count` disagreed with the number
+    /// of per-param name/mode metadata entries that followed it (#954,
+    /// sibling of the `.inkt` reader's same guard, #745). `ContainerDef`'s
+    /// documented invariant is that `params.len()` always equals
+    /// `param_count` whenever per-param metadata is present at all (empty
+    /// `params` is the separate, legitimate "count only, no metadata" case).
+    /// A mutated/corrupt `.inkb` asserting otherwise is malformed input.
+    ParamCountMismatch { declared: u8, actual: usize },
 }
 
 impl fmt::Display for DecodeError {
@@ -519,6 +527,12 @@ impl fmt::Display for DecodeError {
             }
             Self::InvalidEffectHandleParam(b) => {
                 write!(f, "reserved effect handle-parameter slot set: {b:#04x}")
+            }
+            Self::ParamCountMismatch { declared, actual } => {
+                write!(
+                    f,
+                    "container params metadata count ({actual}) does not match declared param_count ({declared})"
+                )
             }
         }
     }
