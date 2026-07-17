@@ -107,12 +107,27 @@ cargo bench -p bevy-brink --bench scenario_bench -- --frames 5
 
 # With the #821 Arc-clone/COW-copy debug counters.
 cargo bench -p bevy-brink --features bench-counters --bench scenario_bench
+
+# BH-2 batch-mode driver (advance_batch, #914) over the same axis matrix.
+cargo bench -p bevy-brink --features bench-counters --bench scenario_bench -- --mode batch
 ```
 
 Writes `crates/bevy-brink/benches/baselines/serial-driver.csv` and
 `serial-driver.md` (the full axis matrix, machine-readable + human-
 readable) — these are the in-repo SERIAL baselines this issue asks for.
 Update the "Baseline" section below by hand after regenerating.
+
+`--mode batch` runs the same matrix through BH-2's batch driver
+(`advance_batch`: frame-start read pinning, per-flow buffered
+writes/commands, flow-id-ordered Apply — `docs/effects-spec.md` §12.4) and
+writes `batch-serial-driver.{csv,md}` instead, never touching the serial
+pair. Batch-mode column mapping (the driver fuses Collect/Step/Apply
+inside `advance_batch`, so the harness can't time them separately):
+`step p50` is the whole batch turn including its command flush, `apply p50`
+is the harness's host-side auto-choose pass, and `collect p50` reads 0.
+The canonical batch capture, its machine context, and the batch-vs-serial
+comparison live in `batch-serial-driver.md` itself (hand-maintained header
+over the generated matrix — re-add after regenerating).
 
 **Baseline-diff tripwire (issue #911, the seed of `BH-3`'s serial-vs-
 parallel comparator):**

@@ -360,6 +360,22 @@ pub(crate) fn binary_op(
         (Value::Handle { .. }, Value::Handle { .. }) if op == BinaryOp::NotEqual => {
             Ok(Value::Bool(left != right))
         }
+        // Array equality (value-model-spec §4): structural, with the
+        // `Arc::ptr_eq` fast path — delegated to `Value`'s own `PartialEq`
+        // impl, the same structural comparison `collection_ops::map_contains`'s
+        // Array branch already exercises for element containment. Only
+        // `==`/`!=` are defined; any ordering op falls through to the
+        // `TypeError` fault below — arrays have no ordering. Unlike maps
+        // (#909, parked), array equality is unambiguously order-sensitive by
+        // construction — element order is observable array structure, not an
+        // incidental insertion artifact, so there is no analogous ruling to
+        // park here.
+        (Value::Array(_), Value::Array(_)) if op == BinaryOp::Equal => {
+            Ok(Value::Bool(left == right))
+        }
+        (Value::Array(_), Value::Array(_)) if op == BinaryOp::NotEqual => {
+            Ok(Value::Bool(left != right))
+        }
         // Map equality (value-model-spec §4): structural, with the
         // `Arc::ptr_eq` fast path — both delegated to `Value`'s own
         // `PartialEq` impl, the same structural comparison `contains()`
@@ -1108,6 +1124,148 @@ mod tests {
     // with-`ptr_eq`-fast-path rule these tests exercise through the operator.
 
     use brink_format::{OrderedMap, ShapeId};
+
+    // Regression tests for #922 (sibling of #908 above): `binary_op` had no
+    // Array/Array arm at all — `==`/`!=` faulted with a `TypeError` instead
+    // of comparing, even though `Value`'s own `PartialEq` already implements
+    // the ratified structural-equality-with-`ptr_eq`-fast-path rule these
+    // tests exercise through the operator. Unlike maps (#909, parked), array
+    // equality is unambiguously order-sensitive by construction, so there is
+    // no analogous ordering question to park here.
+
+    #[test]
+    fn array_equality_is_structural() {
+        let prog = dummy_program();
+        let arr1 = Value::array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        let arr2 = Value::array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &arr1, &arr2, &prog).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            binary_op(BinaryOp::NotEqual, &arr1, &arr2, &prog).unwrap(),
+            Value::Bool(false)
+        );
+
+        // Different contents.
+        let different_contents = Value::array(vec![Value::Int(1), Value::Int(99), Value::Int(3)]);
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &arr1, &different_contents, &prog).unwrap(),
+            Value::Bool(false)
+        );
+
+        // Same elements, different order: arrays are order-sensitive by
+        // construction (unlike the parked map-ordering question in #909) —
+        // this must NOT compare equal.
+        let reordered = Value::array(vec![Value::Int(3), Value::Int(2), Value::Int(1)]);
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &arr1, &reordered, &prog).unwrap(),
+            Value::Bool(false)
+        );
+
+        // Different lengths.
+        let shorter = Value::array(vec![Value::Int(1), Value::Int(2)]);
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &arr1, &shorter, &prog).unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            binary_op(BinaryOp::NotEqual, &arr1, &shorter, &prog).unwrap(),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn array_equality_ptr_eq_fast_path() {
+        // Same Arc (a clone of the snapshot): the `ptr_eq` fast path wins
+        // immediately, without needing structural comparison at all.
+        let p = dummy_program();
+        let a = Value::array(vec![Value::Int(1), Value::Int(2)]);
+        let snapshot = a.clone();
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &snapshot, &p).unwrap(),
+            Value::Bool(true)
+        );
+    }
+
+    /// Nested arrays and mixed-type elements: structural comparison must
+    /// recurse through nested collections and compare heterogeneous element
+    /// types (Int vs String vs nested Array) elementwise.
+    #[test]
+    fn array_equality_nested_and_mixed_types() {
+        let p = dummy_program();
+        let a = Value::array(vec![
+            Value::Int(1),
+            Value::String("x".into()),
+            Value::array(vec![Value::Bool(true), Value::Int(2)]),
+        ]);
+        let b = Value::array(vec![
+            Value::Int(1),
+            Value::String("x".into()),
+            Value::array(vec![Value::Bool(true), Value::Int(2)]),
+        ]);
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &b, &p).unwrap(),
+            Value::Bool(true)
+        );
+
+        // Divergent nested element.
+        let c = Value::array(vec![
+            Value::Int(1),
+            Value::String("x".into()),
+            Value::array(vec![Value::Bool(false), Value::Int(2)]),
+        ]);
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &c, &p).unwrap(),
+            Value::Bool(false)
+        );
+    }
+
+    /// NaN composes structurally through array elements: two distinct arrays
+    /// (distinct `Arc`s) each holding a NaN never compare equal, but an array
+    /// compared against its own shared snapshot does — the `ptr_eq` fast
+    /// path short-circuits before the NaN-bearing structural compare runs
+    /// (value-model-spec §4: sharing an identical snapshot is equal to
+    /// itself even with a NaN payload; this is stated as harmless).
+    #[test]
+    fn array_equality_nan_composition() {
+        let p = dummy_program();
+        let a = Value::array(vec![Value::Float(f32::NAN)]);
+        let b = Value::array(vec![Value::Float(f32::NAN)]);
+        // Distinct Arcs, NaN != NaN structurally.
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &b, &p).unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            binary_op(BinaryOp::NotEqual, &a, &b, &p).unwrap(),
+            Value::Bool(true)
+        );
+        // Same Arc (snapshot): ptr_eq wins regardless of NaN.
+        let snapshot = a.clone();
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &snapshot, &p).unwrap(),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn array_has_no_ordering() {
+        let p = dummy_program();
+        let a = Value::array(vec![Value::Int(1)]);
+        let b = Value::array(vec![Value::Int(2)]);
+        for op in [
+            BinaryOp::Less,
+            BinaryOp::Greater,
+            BinaryOp::LessOrEqual,
+            BinaryOp::GreaterOrEqual,
+        ] {
+            assert!(
+                binary_op(op, &a, &b, &p).is_err(),
+                "{op:?} on two arrays must fault, not silently order them"
+            );
+        }
+    }
 
     #[test]
     fn map_equality_is_structural() {
