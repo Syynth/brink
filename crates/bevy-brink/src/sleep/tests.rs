@@ -476,8 +476,7 @@ fn wake_fan_out_scenario_ratios() {
     let mut max_stepped = 0usize;
     for _ in 0..12 {
         storm_app.update();
-        max_stepped =
-            max_stepped.max(storm_app.world().resource::<BrinkBatchReport<()>>().stepped);
+        max_stepped = max_stepped.max(storm_app.world().resource::<BrinkBatchReport<()>>().stepped);
     }
     assert_eq!(
         max_stepped, storm_n,
