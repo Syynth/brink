@@ -2,9 +2,9 @@
 
 use brink_format::{
     AddressPath, ClosureEnvEntry, ContainerDef, CountingFlags, DefinitionId, DefinitionTag,
-    ExternalFnDef, GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, MapKey,
-    NameId, OrderedMap, PluralCategory, ScopeLineTable, SectionKind, SelectKey, ShapeId, SlotInfo,
-    SourceLocation, StoryData, Value, ValueType, read_inkb, read_inkb_index, write_inkb,
+    ExternalFnDef, GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, ListValue,
+    MapKey, NameId, OrderedMap, PluralCategory, ScopeLineTable, SectionKind, SelectKey, ShapeId,
+    SlotInfo, SourceLocation, StoryData, Value, ValueType, read_inkb, read_inkb_index, write_inkb,
 };
 use proptest::prelude::*;
 
@@ -135,6 +135,11 @@ fn arb_value_type() -> impl Strategy<Value = ValueType> {
         // T1e projection value type (docs/t1e-spec.md §3): `arb_value` below
         // can now produce a `Projection` payload, same rationale.
         Just(ValueType::Projection),
+        // The ink LIST value type (value-model-spec §4's nominal list
+        // domain, `VAL_LIST` on the wire): issue #746 — `arb_value` below
+        // can now produce a `List` payload, same rationale as every other
+        // family above.
+        Just(ValueType::List),
     ]
 }
 
@@ -191,6 +196,19 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
             prop::collection::vec(arb_proj_segment(), 0..4)
         )
             .prop_map(|(cell, segments)| Value::projection(cell, segments)),
+        // Ink LIST values (value-model-spec §4, `VAL_LIST` on the wire):
+        // issue #746 — the one member of this leaf family that was still
+        // missing from this fuzzer even though the `.inkb` writer/reader
+        // have supported `VAL_LIST` since the format's original list
+        // support landed. `items`/`origins` are both `ListItem`-tagged
+        // `DefinitionId`s in production, but the round-trip codec never
+        // inspects the tag, so any `arb_def_id()` exercises the same
+        // encode/decode arms.
+        (
+            prop::collection::vec(arb_def_id(), 0..4),
+            prop::collection::vec(arb_def_id(), 0..4),
+        )
+            .prop_map(|(items, origins)| Value::List(ListValue { items, origins }.into())),
     ]
 }
 
@@ -227,6 +245,39 @@ fn arb_closure() -> impl Strategy<Value = Value> {
     );
     (arb_def_id(), prop::collection::vec(entry, 0..4))
         .prop_map(|(target, env)| Value::closure(target, env))
+}
+
+/// Structural exhaustiveness guard (issue #667, mirroring the identical guard
+/// `proptest_inkt.rs` added for #883/#397): a match over every current
+/// [`Value`] variant with **no wildcard arm**, so this fails to compile the
+/// moment a new variant is added to the enum. Never called — the only
+/// purpose is the compile-time forcing function: whoever adds a `Value`
+/// variant must also add an arm here (and, per the doc, teach
+/// `arb_value`/`arb_value_leaf` above to generate it), instead of the new
+/// variant silently escaping this `.inkb` writer/reader fuzz coverage the way
+/// `Record`'s `value_to_js` wildcard let it escape the wasm marshal boundary
+/// (#667: PR #664's review finding).
+#[expect(dead_code, reason = "compile-time-only exhaustiveness guard, see doc")]
+fn assert_value_variants_exhaustive(value: &Value) {
+    match value {
+        Value::Int(_)
+        | Value::Float(_)
+        | Value::Bool(_)
+        | Value::String(_)
+        | Value::List(_)
+        | Value::DivertTarget(_)
+        | Value::VariablePointer(_)
+        | Value::TempPointer { .. }
+        | Value::Null
+        | Value::FragmentRef(_)
+        | Value::Array(_)
+        | Value::Map(_)
+        | Value::Record { .. }
+        | Value::FnRef(_)
+        | Value::Closure(_)
+        | Value::Handle { .. }
+        | Value::Projection(_) => {}
+    }
 }
 
 fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ScopeLineTable)> {

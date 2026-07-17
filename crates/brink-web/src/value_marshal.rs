@@ -88,7 +88,24 @@ pub(crate) fn value_to_js(v: &Value) -> JsValue {
             );
             obj.into()
         }
-        _ => JsValue::NULL,
+        // Every remaining variant is VM-internal (a pointer, a divert target,
+        // a fragment ref, a raw list, or an unmaterialized fn/projection
+        // value) and has no useful native-JS shape at this scalar-only
+        // binding-argument boundary, so it maps to `null` — same as before.
+        // Spelled out explicitly, not folded into a trailing `_` wildcard:
+        // the #667 hazard is precisely a wildcard silently absorbing a
+        // *future* `Value` variant (the way `Record` once did, PR #664, and
+        // `Handle` almost did). Listing every variant by name makes adding
+        // one to the enum a compile error here, not a silent null.
+        Value::List(_)
+        | Value::DivertTarget(_)
+        | Value::VariablePointer(_)
+        | Value::TempPointer { .. }
+        | Value::Null
+        | Value::FragmentRef(_)
+        | Value::FnRef(_)
+        | Value::Closure(_)
+        | Value::Projection(_) => JsValue::NULL,
     }
 }
 

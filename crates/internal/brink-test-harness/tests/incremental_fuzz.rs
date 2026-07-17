@@ -250,6 +250,60 @@ fn assert_fg3_families_match(
     }
 }
 
+/// FG-1 (#630)/FG-2 (#631)/T2-1 (#860, swept in via #746): assert every
+/// per-def/per-SCC query family agrees between a long-lived incremental db
+/// and a from-scratch one, for every non-local def:
+///
+/// - `signature(def)` (FG-1) — the equivalence gate the design doc asks
+///   `incremental_fuzz` to carry for the narrowed dependency edge
+///   (declaring-file-only, not every project file's HIR);
+/// - `inferred_signature(def)`/`infer_body(def)` (FG-2) — the per-def/
+///   per-SCC inference views, per the design doc §7's explicit ask to sweep
+///   every new per-def family into this harness;
+/// - `effects(def)` (T2-1, #860) — the same shape of per-def/per-SCC query,
+///   sited beside `inferred_signature` in `brink-db` with its own per-SCC
+///   fixpoint (`solve_scc_effects`), so it gets the identical gate.
+///
+/// Extracted from the main fuzz loop to keep it under clippy's line-count
+/// lint, the same reason `assert_fg3_families_match` above was extracted.
+fn assert_per_def_families_match(db: &ProjectDb, fresh_db: &ProjectDb, project: &str, step: u64) {
+    let mut defs: Vec<_> = db
+        .symbol_index()
+        .symbols
+        .iter()
+        .filter(|(_, info)| {
+            !matches!(
+                info.kind,
+                brink_ir::SymbolKind::Param | brink_ir::SymbolKind::Temp
+            )
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    defs.sort();
+    for def in defs {
+        assert_eq!(
+            db.signature(def),
+            fresh_db.signature(def),
+            "{project}: signature({def:?}) diverged from fresh compile after edit {step}"
+        );
+        assert_eq!(
+            db.inferred_signature(def),
+            fresh_db.inferred_signature(def),
+            "{project}: inferred_signature({def:?}) diverged from fresh compile after edit {step}"
+        );
+        assert_eq!(
+            db.infer_body(def),
+            fresh_db.infer_body(def),
+            "{project}: infer_body({def:?}) diverged from fresh compile after edit {step}"
+        );
+        assert_eq!(
+            db.effects(def),
+            fresh_db.effects(def),
+            "{project}: effects({def:?}) diverged from fresh compile after edit {step}"
+        );
+    }
+}
+
 #[test]
 fn incremental_story_data_equals_fresh_compile() {
     let root = workspace_root().join("tests");
@@ -335,46 +389,11 @@ fn incremental_story_data_equals_fresh_compile() {
             // explicit sweep-every-new-family ask).
             assert_fg3_families_match(&db, &fresh_db, project, &paths, step);
 
-            // FG-1 (#630): the per-def `signature(def)` query must agree
-            // between the long-lived incremental db and a from-scratch one,
-            // for every non-local def — the equivalence gate the design doc
-            // asks incremental_fuzz to carry for the narrowed dependency
-            // edge (declaring-file-only, not every project file's HIR).
-            //
-            // FG-2 (#631): extend the same equivalence gate to the new
-            // per-def/per-SCC inference views — `inferred_signature(def)`
-            // and `infer_body(def)` — per the design doc §7's explicit ask
-            // to sweep every new per-def family into this harness.
-            let mut defs: Vec<_> = db
-                .symbol_index()
-                .symbols
-                .iter()
-                .filter(|(_, info)| {
-                    !matches!(
-                        info.kind,
-                        brink_ir::SymbolKind::Param | brink_ir::SymbolKind::Temp
-                    )
-                })
-                .map(|(id, _)| *id)
-                .collect();
-            defs.sort();
-            for def in defs {
-                assert_eq!(
-                    db.signature(def),
-                    fresh_db.signature(def),
-                    "{project}: signature({def:?}) diverged from fresh compile after edit {step}"
-                );
-                assert_eq!(
-                    db.inferred_signature(def),
-                    fresh_db.inferred_signature(def),
-                    "{project}: inferred_signature({def:?}) diverged from fresh compile after edit {step}"
-                );
-                assert_eq!(
-                    db.infer_body(def),
-                    fresh_db.infer_body(def),
-                    "{project}: infer_body({def:?}) diverged from fresh compile after edit {step}"
-                );
-            }
+            // FG-1/FG-2/T2-1 per-def query families — extracted to its own
+            // function (see its doc) to keep this loop under clippy's
+            // line-count lint, the same reason `assert_fg3_families_match`
+            // was extracted above.
+            assert_per_def_families_match(&db, &fresh_db, project, step);
         }
     }
 
