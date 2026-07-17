@@ -3,12 +3,23 @@
 //! a top-level `tests/<name>.rs` file) so cargo does not treat it as its own
 //! test binary — each law file does `mod law_support;` to pull it in.
 //!
-//! `arb_value_full` covers every [`Value`] variant, unlike the
-//! writer/reader-specific `arb_value` helpers in `proptest_inkb.rs` /
-//! `proptest_inkt.rs`, which deliberately restrict themselves to what their
-//! wire format can round-trip (see those files' own doc comments). This
-//! module's consumer ([`law_savestate_roundtrip`](super)) round-trips
-//! through `serde_json`, which has no such restriction.
+//! `arb_value_full` covers every [`Value`] variant except the runtime-only
+//! `TempPointer` (which never round-trips through any wire format — it
+//! collapses to `VAL_NULL` on write, see `law_transcript_roundtrip.rs`'s
+//! doc), unlike the writer/reader-specific `arb_value` helpers in
+//! `proptest_inkb.rs` / `proptest_inkt.rs`, which deliberately restrict
+//! themselves to what their wire format can round-trip (see those files'
+//! own doc comments). This module's consumers
+//! ([`law_savestate_roundtrip`](super), [`law_deep_equality`](super))
+//! round-trip/compare through paths with no such restriction.
+
+// Each `tests/law_*.rs` binary compiles this module independently (`mod
+// law_support;`) and dead-code analysis runs per binary — a helper only
+// some consumers need (e.g. `arb_wake_policy`/`arb_suspended_flow`, used by
+// `law_savestate_roundtrip` alone) reads as genuinely dead in every other
+// binary that pulls this module in. Mirrors the identical `#![allow]` on
+// `brink-test-harness/tests/law_support/mod.rs` for the same reason.
+#![allow(dead_code)]
 
 use brink_format::{
     ClosureEnvEntry, DefinitionId, DefinitionTag, ListValue, MapKey, NameId, OrderedMap,
@@ -78,10 +89,9 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
         any::<f32>().prop_map(Value::Float),
         any::<bool>().prop_map(Value::Bool),
         ".*".prop_map(|s: String| Value::String(s.into())),
-        // List values (#746: this generator once omitted `List` entirely —
-        // the exact "generator-coverage gap" class #667 tracks — so every
-        // `Value` variant must be reachable from `arb_value_full`, this one
-        // included).
+        // Ink LIST values (value-model-spec §4): issue #746's named gap in
+        // this generator, closed here so `arb_value_full` (and every law
+        // suite built on it) reaches this variant.
         (
             prop::collection::vec(arb_def_id(), 0..3),
             prop::collection::vec(arb_def_id(), 0..3),
@@ -99,9 +109,7 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
             prop::collection::vec(arb_closure_env_entry(), 0..3)
         )
             .prop_map(|(target, env)| Value::closure(target, env)),
-        // Handle values (T1d, docs/t1d-spec.md §2): the #746 List-gap class
-        // this generator is written to avoid — every `Value` variant, this
-        // one included, must be reachable from `arb_value_full`.
+        // Handle values (T1d, docs/t1d-spec.md §2).
         (arb_name_id(), any::<u64>()).prop_map(|(kind, id)| Value::handle(kind, id)),
     ]
 }

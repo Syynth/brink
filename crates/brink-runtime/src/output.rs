@@ -19,7 +19,13 @@ use crate::value_ops;
 /// the current line tables and plural resolver. This enables locale-hot-swap:
 /// the same transcript can be re-rendered in different languages without
 /// re-executing the story.
-#[derive(Debug, Clone)]
+///
+/// `PartialEq` (issue #746): structural equality over the part's own fields
+/// — used by the `.brkt` transcript round-trip law
+/// (`brink-runtime/tests/law_transcript_roundtrip.rs`) to assert decoded
+/// parts equal the originals. Every field type already implements it
+/// (`Value`'s hand-written impl, `LineFlags`'s derive).
+#[derive(Debug, Clone, PartialEq)]
 pub enum OutputPart {
     /// Eagerly-resolved text. Not produced by the VM in production —
     /// used in tests and available for external transcript construction.

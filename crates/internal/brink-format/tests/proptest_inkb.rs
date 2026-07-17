@@ -2,9 +2,9 @@
 
 use brink_format::{
     AddressPath, ClosureEnvEntry, ContainerDef, CountingFlags, DefinitionId, DefinitionTag,
-    ExternalFnDef, GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, MapKey,
-    NameId, OrderedMap, PluralCategory, ScopeLineTable, SectionKind, SelectKey, ShapeId, SlotInfo,
-    SourceLocation, StoryData, Value, ValueType, read_inkb, read_inkb_index, write_inkb,
+    ExternalFnDef, GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, ListValue,
+    MapKey, NameId, OrderedMap, PluralCategory, ScopeLineTable, SectionKind, SelectKey, ShapeId,
+    SlotInfo, SourceLocation, StoryData, Value, ValueType, read_inkb, read_inkb_index, write_inkb,
 };
 use proptest::prelude::*;
 
@@ -135,6 +135,11 @@ fn arb_value_type() -> impl Strategy<Value = ValueType> {
         // T1e projection value type (docs/t1e-spec.md §3): `arb_value` below
         // can now produce a `Projection` payload, same rationale.
         Just(ValueType::Projection),
+        // The ink LIST value type (value-model-spec §4's nominal list
+        // domain, `VAL_LIST` on the wire): issue #746 — `arb_value` below
+        // can now produce a `List` payload, same rationale as every other
+        // family above.
+        Just(ValueType::List),
     ]
 }
 
@@ -191,6 +196,19 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
             prop::collection::vec(arb_proj_segment(), 0..4)
         )
             .prop_map(|(cell, segments)| Value::projection(cell, segments)),
+        // Ink LIST values (value-model-spec §4, `VAL_LIST` on the wire):
+        // issue #746 — the one member of this leaf family that was still
+        // missing from this fuzzer even though the `.inkb` writer/reader
+        // have supported `VAL_LIST` since the format's original list
+        // support landed. `items`/`origins` are both `ListItem`-tagged
+        // `DefinitionId`s in production, but the round-trip codec never
+        // inspects the tag, so any `arb_def_id()` exercises the same
+        // encode/decode arms.
+        (
+            prop::collection::vec(arb_def_id(), 0..4),
+            prop::collection::vec(arb_def_id(), 0..4),
+        )
+            .prop_map(|(items, origins)| Value::List(ListValue { items, origins }.into())),
     ]
 }
 
