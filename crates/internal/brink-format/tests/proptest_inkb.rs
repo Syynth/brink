@@ -247,6 +247,39 @@ fn arb_closure() -> impl Strategy<Value = Value> {
         .prop_map(|(target, env)| Value::closure(target, env))
 }
 
+/// Structural exhaustiveness guard (issue #667, mirroring the identical guard
+/// `proptest_inkt.rs` added for #883/#397): a match over every current
+/// [`Value`] variant with **no wildcard arm**, so this fails to compile the
+/// moment a new variant is added to the enum. Never called — the only
+/// purpose is the compile-time forcing function: whoever adds a `Value`
+/// variant must also add an arm here (and, per the doc, teach
+/// `arb_value`/`arb_value_leaf` above to generate it), instead of the new
+/// variant silently escaping this `.inkb` writer/reader fuzz coverage the way
+/// `Record`'s `value_to_js` wildcard let it escape the wasm marshal boundary
+/// (#667: PR #664's review finding).
+#[expect(dead_code, reason = "compile-time-only exhaustiveness guard, see doc")]
+fn assert_value_variants_exhaustive(value: &Value) {
+    match value {
+        Value::Int(_)
+        | Value::Float(_)
+        | Value::Bool(_)
+        | Value::String(_)
+        | Value::List(_)
+        | Value::DivertTarget(_)
+        | Value::VariablePointer(_)
+        | Value::TempPointer { .. }
+        | Value::Null
+        | Value::FragmentRef(_)
+        | Value::Array(_)
+        | Value::Map(_)
+        | Value::Record { .. }
+        | Value::FnRef(_)
+        | Value::Closure(_)
+        | Value::Handle { .. }
+        | Value::Projection(_) => {}
+    }
+}
+
 fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ScopeLineTable)> {
     (
         arb_def_id(),

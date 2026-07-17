@@ -40,9 +40,14 @@
 //! `fragment_tags_do_not_round_trip` pins the gap as a named, tracked
 //! regression rather than a silent one.
 //!
-//! Deterministic seeds (house determinism rule, `CLAUDE.md`): every
-//! `proptest!` block fixes `ProptestConfig::with_cases` and relies on
-//! proptest's own default fixed RNG seed.
+//! Reproducibility (house determinism rule, `CLAUDE.md`): proptest's default
+//! RNG is entropy-seeded per run, not fixed — generated cases differ run to
+//! run. Reproducibility instead comes from `ProptestConfig::with_cases`
+//! (a fixed, deterministic *count* of cases every run) and from proptest's
+//! own failure-persistence file (`.proptest-regressions`), which pins the
+//! exact seed of any failing case for replay. Set `PROPTEST_RNG_SEED` if
+//! bit-for-bit seed reproducibility across every run — not just failures —
+//! is ever required.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
