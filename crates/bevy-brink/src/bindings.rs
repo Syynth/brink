@@ -144,7 +144,13 @@ enum AsyncKind {
 }
 /// A deferred World mutation that triggers a parsed command event. Boxed
 /// so heterogeneous command types share one buffer; run during flush.
-type TriggerFn = Box<dyn FnOnce(&mut World) + Send>;
+///
+/// `pub(crate)` so the batch driver ([`crate::batch`]) can hold a flow's
+/// buffered command triggers across the batch's Step phase and replay them
+/// in deterministic flow-id order at Apply (`docs/effects-spec.md` §12.4),
+/// rather than flushing each flow's commands immediately as the serial API
+/// does.
+pub(crate) type TriggerFn = Box<dyn FnOnce(&mut World) + Send>;
 
 /// A parsed command ready to be triggered against the World, plus the
 /// value to return to ink.
@@ -234,8 +240,11 @@ impl<M: Send + Sync + 'static> BrinkHandler<'_, M> {
 
     /// Take the buffered command-event triggers, leaving the handler empty.
     /// Used by [`advance_flow`] to accumulate triggers across the
-    /// suspensions of a single line and flush them against the World.
-    fn take_queued(&self) -> Vec<TriggerFn> {
+    /// suspensions of a single line and flush them against the World, and by
+    /// the batch driver ([`crate::batch`]) to move a flow's buffered command
+    /// triggers into its per-flow batch outcome for deterministic flow-id-
+    /// ordered replay at Apply.
+    pub(crate) fn take_queued(&self) -> Vec<TriggerFn> {
         std::mem::take(&mut self.queued.borrow_mut())
     }
 

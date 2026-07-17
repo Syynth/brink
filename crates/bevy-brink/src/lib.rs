@@ -31,9 +31,11 @@ extern crate self as bevy_brink;
 
 mod asset;
 mod async_bind;
+mod batch;
 mod bindings;
 mod brkt;
 mod call;
+mod capability;
 mod event;
 mod flow;
 mod globals;
@@ -59,6 +61,7 @@ pub use async_bind::{
     BrinkAwaiting, BrinkExternalAwaited, BrinkPendingTask, BrinkResolveExternalExt,
     poll_brink_tasks,
 };
+pub use batch::{BrinkBatchReport, FlowAccessRecord, advance_batch};
 /// `#[derive(BrinkCommand)]` — generates [`BrinkCommand::from_ink_args`].
 /// Shares its name with the trait (macro vs. type namespace), so a single
 /// `use bevy_brink::BrinkCommand;` brings both into scope.
@@ -115,6 +118,12 @@ pub use brkt::{
 pub use call::{
     BrinkCallCommandsExt, BrinkCallFailed, BrinkCallRequest, BrinkCallResolved, IntoBrinkArgs,
     resolve_brink_calls,
+};
+pub use capability::{
+    BrinkCapabilityAppExt, CapabilityEffects, CapabilityError, CapabilityManifest,
+    CapabilityManifestExternal, CapabilityRegistry, CapabilityTable, ContainerAccess,
+    ContainerAccessTable, compute_container_access, dump_container_access,
+    rebuild_capability_table,
 };
 #[cfg(feature = "dev")]
 pub use event::BrinkFlowReset;

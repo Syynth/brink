@@ -7,7 +7,7 @@ use crate::counting::CountingFlags;
 use crate::definition::{
     AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef, DirectEffects,
     DispatchEntry, EffectRowEntry, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
-    ParamMeta, ScopeLineTable, SlotInfo, SourceLocation,
+    ParamMeta, ScopeLineTable, SlotInfo, SourceLocation, StructShapeDef,
 };
 use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -86,6 +86,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
     let mut private_defs = Vec::new();
     let mut alias_table = Vec::new();
     let mut effect_rows = Vec::new();
+    let mut struct_shapes = Vec::new();
     let mut source_checksum = 0u32;
 
     for inner in pair.into_inner() {
@@ -104,6 +105,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
             Rule::address_paths => address_paths = parse_address_paths(inner)?,
             Rule::list_literals => list_literals = parse_list_literals(inner)?,
             Rule::literal_pool => literal_pool = parse_literal_pool(inner)?,
+            Rule::struct_shapes => struct_shapes = parse_struct_shapes(inner)?,
             Rule::visibility => private_defs = parse_visibility(inner)?,
             Rule::alias_table => alias_table = parse_alias_table(inner)?,
             Rule::effect_rows => effect_rows = parse_effect_rows(inner)?,
@@ -137,10 +139,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
         name_table,
         list_literals,
         literal_pool,
-        // TM-4 `StructShapes`: not yet round-tripped through the `.inkt`
-        // textual format (always empty in this PR — nothing emits a
-        // non-empty table). See the format-spec doc note.
-        struct_shapes: Vec::new(),
+        struct_shapes,
         private_defs,
         alias_table,
         effect_rows,
@@ -643,6 +642,64 @@ fn parse_list_entry(pair: P<'_>) -> Result<ListDef, InktParseError> {
     }
 
     Ok(ListDef { id, name, items })
+}
+
+// ── Struct shapes (TM-4, docs/format-v4-rfc.md §1) ───────────────────────────
+// Mirrors the `.inkb` `StructShapes` section reader (the #742/#883 lesson —
+// the writer and reader land together).
+
+fn parse_struct_shapes(pair: P<'_>) -> Result<Vec<StructShapeDef>, InktParseError> {
+    let mut shapes = Vec::new();
+    for entry in pair.into_inner() {
+        if entry.as_rule() == Rule::struct_shape_entry {
+            shapes.push(parse_struct_shape_entry(entry)?);
+        }
+    }
+    Ok(shapes)
+}
+
+fn parse_struct_shape_entry(pair: P<'_>) -> Result<StructShapeDef, InktParseError> {
+    let mut inner = pair.into_inner();
+    let id = ShapeId(
+        inner
+            .next()
+            .ok_or_else(|| InktParseError {
+                message: "expected shape id in struct".into(),
+                line: 0,
+                col: 0,
+            })?
+            .as_str()
+            .parse()
+            .map_err(|_| InktParseError {
+                message: "invalid struct shape id".into(),
+                line: 0,
+                col: 0,
+            })?,
+    );
+
+    let name_int = inner.next().ok_or_else(|| InktParseError {
+        message: "expected name integer in struct".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let name = NameId(parse_u16(&name_int)?);
+
+    let mut fields = Vec::new();
+    for remaining in inner {
+        if remaining.as_rule() == Rule::struct_field {
+            let field_int = remaining
+                .into_inner()
+                .next()
+                .ok_or_else(|| InktParseError {
+                    message: "expected name integer in struct field".into(),
+                    line: 0,
+                    col: 0,
+                })?;
+            fields.push(NameId(parse_u16(&field_int)?));
+        }
+    }
+
+    Ok(StructShapeDef { id, name, fields })
 }
 
 // ── List items ──────────────────────────────────────────────────────────────

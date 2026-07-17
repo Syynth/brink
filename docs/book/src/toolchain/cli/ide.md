@@ -216,6 +216,31 @@ brink ide actions --at main.ink:7:5 -e main.ink --format json
 
 JSON: an array of `{ "title", "kind" }` (kind: `quickfix`, `refactor`, `source`).
 
+### `effects-diff` — how a change moved the inferred effect rows
+
+Every knot/stitch has an inferred **effect row** — the cells it reads and
+writes plus the externals it calls (see [Effects](../dialect/effects.md)).
+`effects-diff` compares those rows against a baseline and prints a
+CI-comment-friendly Markdown summary. It is *visibility*, not a gate: effect
+rows are inference output, not a checked-in artifact, so there is no lockfile
+to drift against — this just shows what your edit did.
+
+The baseline is either a git revision of the same project (`--rev`, read via
+`git show`) or a second entry file (`--base`):
+
+```sh
+brink ide effects-diff --rev HEAD -e main.ink          # working tree vs HEAD
+brink ide effects-diff --rev main -e main.ink          # vs another branch
+brink ide effects-diff --base ../old/main.ink -e main.ink
+brink ide effects-diff --rev HEAD -e main.ink --exit-code   # exit 1 if rows moved
+```
+
+`--exit-code` makes the command exit 1 when any row changed (0 otherwise) —
+for wiring into a CI check. Without it, exit is always 0 on success. JSON:
+`{ "changed", "added", "removed", "entries": [{ "def", "change", "base"?,
+"head"? }] }`, where each `base`/`head` is `{ "reads": [name, …], "writes":
+[…], "calls": […], "opaque": bool }`.
+
 ---
 
 ## Mutations
@@ -346,6 +371,7 @@ Locations are always `{ "path", "line" (1-based), "col" (1-based), "byte_start",
 | `graph` | `{ nodes: [{ id, name, kind, parent }], edges: [{ from, to, kind }] }` |
 | `lines` | `[{ line, element, depth }]` |
 | `actions` | `[{ title, kind }]` |
+| `effects-diff` | `{ changed, added, removed, entries: [{ def, change, base?, head? }] }` |
 | `rename` (preview) | `{ edits: [{ location, old, new }], introducedDiagnostics, safe }` |
 | `move-file` / `refactor` (preview) | `{ diff, files: [path], introducedDiagnostics, safe }` |
 

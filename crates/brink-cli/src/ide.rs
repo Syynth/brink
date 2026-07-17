@@ -12,17 +12,18 @@
 //! discovers the project from an entry `.ink` (following `INCLUDE`s) — identical
 //! to `brink compile`. See `docs/cli-ide-inventory.md`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 
 use brink_analyzer::AnalysisResult;
 use brink_driver::Driver;
 use brink_ide::LineIndex;
 use brink_ide::code_actions::{CodeActionKind, code_actions};
 use brink_ide::document::{DocumentSymbol, document_symbols, workspace_symbols};
+use brink_ide::effects::EffectRowView;
 use brink_ide::file_rename::rename_file;
 use brink_ide::formatting::{format_region, sort_knots_in_source, sort_stitches_in_knot};
 use brink_ide::hover::hover;
@@ -239,6 +240,46 @@ Examples:
         #[command(flatten)]
         opts: CommonOpts,
     },
+    /// Diff every knot/stitch's inferred effect row against a baseline.
+    ///
+    /// The ruled drift-*visibility* tool (docs/effects-spec.md §10): effect
+    /// rows are inference output, not a checked-in artifact, so there is no
+    /// lockfile — this surfaces what an author's change did to the shipped
+    /// rows. Output is a CI-comment-friendly Markdown summary (or `--format
+    /// json`). Baseline is either another entry file (`--base`) or a git
+    /// revision of the same project (`--rev`, e.g. `--rev HEAD` for
+    /// working-tree-vs-HEAD).
+    #[command(after_help = "\
+Examples:
+  brink ide effects-diff --rev HEAD -e main.ink       # working tree vs HEAD
+  brink ide effects-diff --rev main -e main.ink --format json
+  brink ide effects-diff --base ../old/main.ink -e main.ink
+  brink ide effects-diff --rev HEAD -e main.ink --exit-code   # exit 1 if rows moved")]
+    EffectsDiff {
+        #[command(flatten)]
+        opts: EffectsDiffOpts,
+    },
+}
+
+/// Options for `brink ide effects-diff`. A dedicated struct (not `CommonOpts`)
+/// — it has no `--kind`/symbol addressing, and it owns the baseline selectors.
+#[derive(Args)]
+pub struct EffectsDiffOpts {
+    /// Entry-point `.ink` file; `INCLUDE`s are followed to build the project.
+    #[arg(long, short = 'e', value_name = "FILE")]
+    entry: PathBuf,
+    /// Baseline: a git revision of *this* project (read via `git show`).
+    #[arg(long, value_name = "REV", conflicts_with = "base")]
+    rev: Option<String>,
+    /// Baseline: a second entry file (e.g. an older checkout) to diff against.
+    #[arg(long, value_name = "FILE", conflicts_with = "rev")]
+    base: Option<PathBuf>,
+    /// Exit 1 (not 0) when any effect row changed — for CI gating.
+    #[arg(long)]
+    exit_code: bool,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = Format::Text)]
+    format: Format,
 }
 
 /// A structural refactor operation. Each addresses a knot/stitch by its
@@ -546,6 +587,7 @@ pub fn run(cmd: &IdeCommand) -> ExitCode {
         IdeCommand::MoveFile { old, new, mode } => run_move_file(old, new, mode),
         IdeCommand::Refactor { op } => run_refactor(op),
         IdeCommand::Actions { at, opts } => run_actions(at, opts),
+        IdeCommand::EffectsDiff { opts } => run_effects_diff(opts),
     };
     match result {
         Ok(code) => code,
@@ -1411,6 +1453,177 @@ fn run_actions(at: &str, opts: &CommonOpts) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
+// ── effects-diff (T2-4, #863, docs/effects-spec.md §10) ─────────────
+
+/// One definition's effect-row change between a baseline and the head.
+#[derive(serde::Serialize)]
+struct EffectDiffEntry {
+    /// `"knot spend"` / `"stitch hub.market"` — kind + qualified name, the
+    /// stable key shared across the two builds.
+    def: String,
+    /// `"added"` / `"removed"` / `"changed"`.
+    change: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base: Option<EffectRowView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    head: Option<EffectRowView>,
+}
+
+/// Diff every knot/stitch's inferred effect row against a baseline (another
+/// entry file, or a git revision of the same project). Drift *visibility*
+/// only — advisory, no policy (spec §10).
+fn run_effects_diff(opts: &EffectsDiffOpts) -> Result<ExitCode, String> {
+    let head = Project::load(&opts.entry)?;
+    let head_rows = head.collect_effect_rows();
+
+    let base_rows = match (opts.rev.as_deref(), opts.base.as_deref()) {
+        (Some(rev), None) => load_git_baseline(&opts.entry, rev)?.collect_effect_rows(),
+        (None, Some(base_entry)) => Project::load(base_entry)?.collect_effect_rows(),
+        _ => return Err("provide exactly one of --rev <REV> or --base <FILE>".to_string()),
+    };
+
+    let entries = diff_effect_rows(&base_rows, &head_rows);
+    let changed = entries.iter().filter(|e| e.change == "changed").count();
+    let added = entries.iter().filter(|e| e.change == "added").count();
+    let removed = entries.iter().filter(|e| e.change == "removed").count();
+
+    let mut out = io::stdout().lock();
+    match opts.format {
+        Format::Json => {
+            let v = serde_json::json!({
+                "changed": changed,
+                "added": added,
+                "removed": removed,
+                "entries": entries,
+            });
+            writeln!(out, "{}", to_json(&v)?).map_err(|e| e.to_string())?;
+        }
+        Format::Text => {
+            write!(out, "{}", render_effects_diff_markdown(&entries)).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(if opts.exit_code && !entries.is_empty() {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+/// Build a baseline [`Project`] from the *same* entry path, but reading every
+/// file's content from git revision `rev` (`git show <rev>:./<path>`) instead
+/// of the working tree — the working-tree-vs-HEAD story. A file absent from
+/// `rev` reads as not-found, so its defs surface as `added` in the diff.
+fn load_git_baseline(entry: &Path, rev: &str) -> Result<Project, String> {
+    let entry_s = entry.to_string_lossy().into_owned();
+    let mut driver = Driver::new();
+    driver
+        .discover(&entry_s, |p| git_show(rev, p))
+        .map_err(|e| format!("baseline {rev}: {e}"))?;
+    let analysis = driver.analyze().clone();
+    let entry_id = driver
+        .db()
+        .file_id(&entry_s)
+        .ok_or_else(|| format!("entry file not found in {rev}: {entry_s}"))?;
+    Ok(Project {
+        driver,
+        analysis,
+        entry_id,
+    })
+}
+
+/// Read `path` (project-relative, as discovered) at git revision `rev`. The
+/// `./` prefix makes git resolve the pathspec relative to the current working
+/// directory, matching how the entry/`INCLUDE` paths were given on the command
+/// line. A non-zero git exit (file absent in `rev`, not a repo, …) maps to a
+/// `NotFound` error the discovery walk reports.
+fn git_show(rev: &str, path: &str) -> Result<String, io::Error> {
+    let spec = format!("{rev}:./{path}");
+    let output = Command::new("git").args(["show", &spec]).output()?;
+    if output.status.success() {
+        String::from_utf8(output.stdout)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{path}: {e}")))
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{path} not in {rev}"),
+        ))
+    }
+}
+
+/// Union-diff two `def → row` maps into per-definition change entries, in
+/// deterministic key order (both maps are `BTreeMap`). Unchanged rows are
+/// omitted.
+fn diff_effect_rows(
+    base: &BTreeMap<String, EffectRowView>,
+    head: &BTreeMap<String, EffectRowView>,
+) -> Vec<EffectDiffEntry> {
+    let mut keys: BTreeSet<&String> = BTreeSet::new();
+    keys.extend(base.keys());
+    keys.extend(head.keys());
+
+    let mut out = Vec::new();
+    for key in keys {
+        match (base.get(key), head.get(key)) {
+            (None, Some(h)) => out.push(EffectDiffEntry {
+                def: key.clone(),
+                change: "added",
+                base: None,
+                head: Some(h.clone()),
+            }),
+            (Some(b), None) => out.push(EffectDiffEntry {
+                def: key.clone(),
+                change: "removed",
+                base: Some(b.clone()),
+                head: None,
+            }),
+            (Some(b), Some(h)) if b != h => out.push(EffectDiffEntry {
+                def: key.clone(),
+                change: "changed",
+                base: Some(b.clone()),
+                head: Some(h.clone()),
+            }),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Render the diff as a CI-comment-friendly Markdown block. Empty diff → a
+/// single reassuring line (spec §10: this is visibility, never a gate by
+/// itself).
+fn render_effects_diff_markdown(entries: &[EffectDiffEntry]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::new();
+    let _ = writeln!(s, "## Effect row diff");
+    let _ = writeln!(s);
+    if entries.is_empty() {
+        let _ = writeln!(s, "No effect row changes.");
+        return s;
+    }
+    let changed = entries.iter().filter(|e| e.change == "changed").count();
+    let added = entries.iter().filter(|e| e.change == "added").count();
+    let removed = entries.iter().filter(|e| e.change == "removed").count();
+    let _ = writeln!(s, "_{changed} changed, {added} added, {removed} removed._");
+    let _ = writeln!(s);
+    for e in entries {
+        let base_line = e
+            .base
+            .as_ref()
+            .map_or("—".to_string(), EffectRowView::display_line);
+        let head_line = e
+            .head
+            .as_ref()
+            .map_or("—".to_string(), EffectRowView::display_line);
+        let _ = writeln!(
+            s,
+            "- **{}** — {}: `{base_line}` → `{head_line}`",
+            e.def, e.change
+        );
+    }
+    s
+}
+
 fn action_kind_name(k: &CodeActionKind) -> &'static str {
     match k {
         CodeActionKind::QuickFix => "quickfix",
@@ -1625,6 +1838,27 @@ impl Project {
                 ))
             }
         }
+    }
+
+    /// Every knot/stitch's inferred effect row, keyed by `"<kind> <name>"`
+    /// (e.g. `"knot spend"`, `"stitch hub.market"`) — the stable identity the
+    /// `effects-diff` compares across two builds. `db.effects` is `None` for
+    /// any non-callable def, so only real container rows appear. Deterministic
+    /// (`BTreeMap`, and `EffectRowView` sorts its members by name).
+    fn collect_effect_rows(&self) -> BTreeMap<String, EffectRowView> {
+        let db = self.driver.db();
+        let mut rows = BTreeMap::new();
+        for info in self.analysis.index.symbols.values() {
+            if !matches!(info.kind, SymbolKind::Knot | SymbolKind::Stitch) {
+                continue;
+            }
+            let Some(row) = db.effects(info.id) else {
+                continue;
+            };
+            let key = format!("{} {}", kind_name(info.kind), info.name);
+            rows.insert(key, EffectRowView::from_row(&row, &self.analysis.index));
+        }
+        rows
     }
 
     fn location_of(&self, file: FileId, range: TextRange) -> Loc {

@@ -907,6 +907,7 @@ mod tests {
             turn_index: 0,
             rng_seed: 0,
             previous_random: 0,
+            suspended: None,
         };
         save.globals.insert("mood".to_string(), Value::Int(42));
         save.globals
@@ -1032,6 +1033,7 @@ mod tests {
             turn_index: 0,
             rng_seed: 0,
             previous_random: 0,
+            suspended: None,
         };
         save.globals.insert("mood".to_string(), Value::Int(5));
         save.globals

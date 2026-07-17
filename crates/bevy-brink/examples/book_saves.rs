@@ -137,6 +137,7 @@ fn build_story(app: &mut App) -> Option<Handle<BrinkStoryAsset>> {
         .add(ProgramAsset {
             program,
             initial_context,
+            effect_rows: Vec::new(),
         });
     let tables_h = world
         .resource_mut::<Assets<LineTablesAsset>>()

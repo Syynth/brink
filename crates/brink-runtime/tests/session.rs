@@ -143,6 +143,7 @@ fn journal_roundtrips_with_collection_values() {
         turn_index: 3,
         rng_seed: 1,
         previous_random: 0,
+        suspended: None,
     });
 
     let json = serde_json::to_string(&journal).unwrap();
@@ -666,6 +667,7 @@ fn mutation_mid_turn_is_rejected() {
         turn_index: 0,
         rng_seed: 0,
         previous_random: 0,
+        suspended: None,
     };
     let err = session.load_state(&save).unwrap_err();
     assert!(

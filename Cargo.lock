@@ -462,6 +462,7 @@ dependencies = [
  "brink-compiler",
  "brink-format",
  "brink-intl",
+ "brink-ir",
  "brink-runtime",
  "brink-syntax",
  "serde",
@@ -2282,6 +2283,7 @@ dependencies = [
  "brink-syntax",
  "insta",
  "proptest",
+ "regex",
  "serde",
  "serde_json",
 ]
