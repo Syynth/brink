@@ -1990,6 +1990,19 @@ export class StorySessionHandle {
     return JSON.parse(this.session.flow_debug_snapshot(name)) as DebugState;
   }
 
+  /** Re-evaluate parked flows' wake conditions and return the flow ids that
+   * woke (`docs/flow-suspension-spec.md` §10.2). Waking never
+   * auto-continues — drive a woken flow via `continueFlow`/`chooseFlow` when
+   * you want its output.
+   *
+   * **Returns `[]` until parks exist (FS-3r).** No flow can park in today's
+   * runtime — the E052 fence keeps `await` from lowering, so
+   * `Line.type === "suspended"` is never produced. Exported now (FS-3w) so
+   * hosts wire the wake loop against a stable shape. */
+  wakeCheck(): string[] {
+    return JSON.parse(this.session.wake_check()) as string[];
+  }
+
   /** Export the session journal — the durable save artifact (embeds a
    * fast-restore checkpoint). Persist this; `StorySessionHandle.restore`
    * rebuilds a session from it. */

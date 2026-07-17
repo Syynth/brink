@@ -20,7 +20,7 @@ interface shape early (FS-3r later changes behavior, not interface):
   Runtime-unreachable until FS-3r — the E052 fence keeps `await` from
   lowering, so nothing constructs it today; it ships now purely so the API
   shape is stable.
-- **`wakeCheck()`** (on `StoryRunnerHandle` and the raw `WebSession`)
-  re-evaluates parked flows' wake conditions and returns the woken flow
-  ids. Returns an empty list until parks exist (FS-3r); dirty-tracking is
-  not built here.
+- **`wakeCheck()`** (on `StoryRunnerHandle`, `StorySessionHandle`, and the
+  raw `WebSession`) re-evaluates parked flows' wake conditions and returns
+  the woken flow ids. Returns an empty list until parks exist (FS-3r);
+  dirty-tracking is not built here.
