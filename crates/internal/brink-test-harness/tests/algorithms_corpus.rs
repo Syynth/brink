@@ -1,5 +1,5 @@
 //! Algorithms corpus — sorting/searching + graphs + DP + procgen +
-//! AI-decision lanes (issue #822, epic #397/#822).
+//! AI-decision + spatial lanes (issue #822, epic #397/#822).
 //!
 //! Sibling of `tier1_brink.rs`'s flat `tests/tier1-brink/<name>/` corpus,
 //! scoped to `tests/tier1-brink/algorithms/<name>/`: classic algorithms
@@ -324,6 +324,10 @@ fn every_algorithms_case_directory_has_a_test() {
         "alias-method",
         "shuffle-bag",
         "reservoir-sampling",
+        "bresenham-line",
+        "spatial-hash-grid",
+        "quadtree",
+        "shadowcasting-fov",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink/algorithms")
@@ -335,4 +339,28 @@ fn every_algorithms_case_directory_has_a_test() {
     let mut expected: Vec<String> = known.iter().map(|s| (*s).to_string()).collect();
     expected.sort();
     assert_eq!(found, expected, "add a #[test] for every case directory");
+}
+
+#[test]
+fn bresenham_line_rasterizes_all_octants_and_reports_direction_asymmetry() {
+    assert_case("bresenham-line");
+    assert_case_is_deterministic_across_runs("bresenham-line");
+}
+
+#[test]
+fn spatial_hash_grid_query_matches_brute_force_scan() {
+    assert_case("spatial-hash-grid");
+    assert_case_is_deterministic_across_runs("spatial-hash-grid");
+}
+
+#[test]
+fn quadtree_insert_and_range_query_match_brute_force_scan() {
+    assert_case("quadtree");
+    assert_case_is_deterministic_across_runs("quadtree");
+}
+
+#[test]
+fn shadowcasting_fov_casts_symmetric_shadows_from_symmetric_walls() {
+    assert_case("shadowcasting-fov");
+    assert_case_is_deterministic_across_runs("shadowcasting-fov");
 }

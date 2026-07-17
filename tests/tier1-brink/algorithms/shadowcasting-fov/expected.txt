@@ -1,0 +1,16 @@
+Origin (6,6), radius 6, on a 13x13 grid with 4 symmetric wall pillars.
+Legend: origin marked, wall cells solid, visible floor a dot, hidden floor a dash.
+-------------
+---...-...---
+--....-....--
+-.....#.....-
+-...........-
+-...........-
+---#..@..#---
+-...........-
+-...........-
+-.....#.....-
+--....-....--
+---...-...---
+-------------
+Visible cells (including origin and lit walls): 101.
