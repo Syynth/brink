@@ -150,3 +150,79 @@ logical end, and the sharpest differentiator versus "just embed Lua."
    dormant spawn, `wake_once`, cancellation → false.
 5. **FS-5 tail**: book chapter, corpus (an ambient-NPC example
    program), IDE (await-site hover: frame shape + dependency set).
+
+## 10. Host surface & rehydration — RULED 2026-07-18 (FS-3 design round)
+
+Ruled with the maintainer against two real consumers (a SpacetimeDB
+server module + React/Three client, and an RPG Maker MZ plugin), both
+manual (non-bevy) hosts.
+
+### 10.1 Flow-addressed consumption
+
+- **`continue` lives on the flow, not the story.** Story-level drive
+  methods are sugar for the primary flow. Spawned/ambient flows are
+  addressable handles; each has its own `Line` stream.
+- **`Line::Suspended { text, tags }`** is a first-class per-flow
+  terminal variant. Text accumulated before the park **flushes with
+  it** into that flow's stream (parks are turn boundaries; pre-await
+  text describes the pre-wait state and must not be held hostage).
+- **Waking never auto-continues.** `wakeCheck()` reports runnable
+  flows; the host drives them when it wants output (a reducer decides
+  which transaction produces story output).
+
+### 10.2 wakeCheck & dirty-tracking
+
+- `wakeCheck()` (FlowInstance + web wrapper) re-evaluates **dirty**
+  parked conditions and returns the woken flow ids. Empty = ~free.
+- Dirtiness comes from the condition's read-set (the effect rows):
+  host `setGlobal` and flow writes mark readers dirty. A write to a
+  flow's `#@local` dirties only that flow's conditions.
+- **Conditions are always evaluated in-context** — against the owning
+  flow's environment (world + its locals), never a bare world view.
+- **Pure manifest externals are legal conditions** (the purity gate
+  judges their declared row). Conditions reading a host external are
+  **always-dirty** (the host's world is opaque); finer invalidation
+  hints are a compatible later addition, not v1. This is the manual-
+  host analogue of §13's host-source wake — the FS-1 wire
+  discriminant already covers it.
+
+### 10.3 Save/load of parked flows
+
+- A save captures **all** flows (primary + spawned): FlowFrame + wake
+  policy + `#@local` store each, beside the shared world state.
+- **Never-fail-load** (T1d posture): drift (vanished await site,
+  missing condition token, frame name lost without `#@was`) never
+  aborts a load. Each parked flow rehydrates **rebound** or
+  **unresumable**; load yields a **rehydration report**; policy knob
+  `Lenient` (production default) vs `Strict` (dev/CI: unresumable
+  parked flows fail the load loudly).
+- **Missing frame name without `#@was` ⇒ unresumable**, never
+  resume-with-default (silent state change mid-flight is the banned
+  laundering pattern). Unresumable flows remain handles in a terminal
+  state; kill/restart is host policy.
+- `wake_once` needs no cross-save ceremony — wake is condition truth
+  at `wakeCheck()`, not a queued event.
+- **Decomposed persistence**: the per-flow unit (`SuspendedFlow`) is
+  independently encodable/decodable, version-stamped per unit — the
+  row-per-flow shape (one world row + N flow rows) is a supported
+  opt-in; the single-blob SaveState stays the default.
+
+### 10.4 Caps and acceptance
+
+- **Park-depth cap = 8**; at-cap is a turn-terminating runtime fault
+  (parks nest only through tunnel chains; real stories sit at 1–2).
+- **Oracle bar**: FS-3's opcodes are vanilla-unreachable; the ratchet
+  stays byte-identical at 5,577 with no corpus regeneration. That is
+  the acceptance criterion.
+
+### 10.5 Recorded future directions (icebox, not designed)
+
+- **Journal-replay resume** (rung between rebind and unresumable):
+  per-flow opt-in journaling; on drift, re-run from knot entry under
+  the new story feeding recorded externals against a visit/RNG
+  snapshot; any divergence aborts to unresumable. Best-effort tier
+  for hosts that ship story changes continuously.
+- **Story-version & migration facility**: author-declared story
+  version stamped into StoryData + save units; load-time migration
+  ladder = name-keyed rebind → `#@was` → author migration hooks →
+  journal replay → unresumable-with-report. Rungs 1/2/5 exist today.

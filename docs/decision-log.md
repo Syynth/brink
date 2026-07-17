@@ -1564,3 +1564,11 @@
 - **SCOPE:** moderate (observable == semantics, wasm-observable)
 - **WHAT:** `#{a:1, b:2} == #{b:2, a:1}` is TRUE — map and record equality compares content (key→value pairs), never insertion order. OrderedMap's derived order-sensitive PartialEq is a bug (#909); ==, contains()-style membership, and any equality-derived operation must use content comparison. Iteration and serialization order remain insertion-order (unchanged) — only equality ignores it.
 - **WHY:** Equality reflects value semantics, not construction history; two maps holding the same data are the same value regardless of the order keys were added.
+
+## FS-3 design round: flow-addressed wake API, parked-flow save/load, caps
+- **WHEN:** 2026-07-18
+- **PROJECT:** brink
+- **SYSTEM:** runtime + web surface (flow suspension)
+- **SCOPE:** architectural
+- **WHAT:** (1) Flow-addressed consumption: continue lives on flows, story methods = primary-flow sugar; `Line::Suspended {text,tags}` per-flow terminal variant, pre-park text flushes with it; waking never auto-continues. (2) `wakeCheck()` re-evaluates dirty parked conditions (read-set/effect-row dirty-tracking; `#@local` writes dirty only their flow; conditions always evaluated in the owning flow's context; pure manifest externals are legal conditions and always-dirty). (3) Save/load: all flows captured; never-fail-load with per-flow rebound/unresumable + rehydration report + Lenient/Strict knob; missing frame name without #@was = unresumable (never resume-with-default); per-flow SuspendedFlow independently serializable (row-per-flow persistence opt-in). (4) Park-depth cap 8, at-cap = turn-terminating fault; oracle bar = vanilla-unreachable opcodes, ratchet byte-identical, no regen. Futures RECORDED not designed: journal-replay resume rung; story-version + migration-hook facility. Spec §10.
+- **WHY:** Ruled against two real manual hosts (SpacetimeDB reducers, RPG Maker MZ): reducers are short-lived and transactional (no push wakes, host controls when output is produced, durable park is a hard requirement); flush-at-park because pre-await text describes the pre-wait state; flow-addressed because multi-flow ambient casts make a single story stream the wrong shape; unresumable-over-default because silent state substitution is the banned laundering pattern.
