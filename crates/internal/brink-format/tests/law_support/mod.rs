@@ -7,11 +7,20 @@
 //! writer/reader-specific `arb_value` helpers in `proptest_inkb.rs` /
 //! `proptest_inkt.rs`, which deliberately restrict themselves to what their
 //! wire format can round-trip (see those files' own doc comments). This
-//! module's consumer ([`law_savestate_roundtrip`](super)) round-trips
-//! through `serde_json`, which has no such restriction.
+//! module's consumers ([`law_savestate_roundtrip`](super),
+//! [`law_deep_equality`](super)) round-trip/compare through paths with no
+//! such restriction.
+
+// Each `tests/law_*.rs` binary compiles this module independently (`mod
+// law_support;`) and dead-code analysis runs per binary — a helper only
+// some consumers need (e.g. `arb_wake_policy`/`arb_suspended_flow`, used by
+// `law_savestate_roundtrip` alone) reads as genuinely dead in every other
+// binary that pulls this module in. Mirrors the identical `#![allow]` on
+// `brink-test-harness/tests/law_support/mod.rs` for the same reason.
+#![allow(dead_code)]
 
 use brink_format::{
-    ClosureEnvEntry, DefinitionId, DefinitionTag, MapKey, NameId, OrderedMap,
+    ClosureEnvEntry, DefinitionId, DefinitionTag, ListValue, MapKey, NameId, OrderedMap,
     SUSPENDED_FLOW_SECTION_VERSION, ShapeId, SuspendedFlow, Value, WakePolicy, WakeSource,
 };
 use proptest::prelude::*;
@@ -81,6 +90,15 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
         // this generator is written to avoid — every `Value` variant, this
         // one included, must be reachable from `arb_value_full`.
         (arb_name_id(), any::<u64>()).prop_map(|(kind, id)| Value::handle(kind, id)),
+        // Ink LIST values (value-model-spec §4): issue #746's actual
+        // named gap — closed here so `arb_value_full` (and every law suite
+        // built on it: `law_savestate_roundtrip`, `law_cow_sharing`) now
+        // reaches every `Value` variant.
+        (
+            prop::collection::vec(arb_def_id(), 0..3),
+            prop::collection::vec(arb_def_id(), 0..3),
+        )
+            .prop_map(|(items, origins)| Value::List(ListValue { items, origins }.into())),
     ]
 }
 
