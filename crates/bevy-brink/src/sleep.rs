@@ -103,6 +103,7 @@ use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::query::QueryState;
+use bevy_ecs::reflect::ReflectComponent;
 use bevy_ecs::system::{Local, Query, Res};
 use bevy_ecs::world::World as EcsWorld;
 use bevy_log::warn;
@@ -215,6 +216,7 @@ impl DetectSummary {
 /// chaining [`with_args`](Self::with_args), [`with_detect`](Self::with_detect),
 /// and [`dormant`](Self::dormant).
 #[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct FlowSleep<M: Send + Sync + 'static = ()> {
     /// The ink function name whose (pure) return value is the wake condition.
     /// A diagnostic label only when [`condition_value`](Self::condition_value)
