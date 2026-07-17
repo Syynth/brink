@@ -99,6 +99,7 @@ use crate::capability::{CapabilityTable, ContainerAccessTable};
 use crate::flow::{BrinkFlow, emit_event};
 use crate::globals::{BrinkGlobals, BrinkWorldPolicy};
 use crate::line_tables::BrinkLocale;
+use crate::sleep::FlowSleep;
 
 /// BH-3's sanctioned-unsafe parallel Step phase (`ComputeTaskPool` +
 /// `UnsafeWorldCell`). The workspace-wide `unsafe_code` deny stands
@@ -594,7 +595,13 @@ pub(crate) fn flush_deferred<M: Send + Sync + 'static>(
     reason = "bevy systems take Res/Query by value; the flow query tuple is inherently wide, and the phase inputs (globals, policy, assets, bindings, capability table, report) are each a distinct system param"
 )]
 pub fn advance_batch<M: Send + Sync + 'static>(
-    mut flows: Query<(Entity, &mut BrinkFlow<M>, &BrinkProgram<M>, &BrinkLocale<M>)>,
+    mut flows: Query<(
+        Entity,
+        &mut BrinkFlow<M>,
+        &BrinkProgram<M>,
+        &BrinkLocale<M>,
+        Option<&FlowSleep<M>>,
+    )>,
     globals: Option<ResMut<BrinkGlobals<M>>>,
     policy: Option<Res<BrinkWorldPolicy<M>>>,
     programs: Res<Assets<ProgramAsset>>,
@@ -615,10 +622,17 @@ pub fn advance_batch<M: Send + Sync + 'static>(
     // ── Collect ── pending flows in flow-id (Entity) order. A stable total
     // order within the batch is all the frame-start guarantee needs: Step is
     // order-invariant, and Apply is deterministic in exactly this order.
+    //
+    // BH-4 (§13.1; #973): a flow under a `FlowSleep` policy that isn't woken
+    // (parked / cancelled / faulted) is **skipped by Collect** — a parked
+    // reactive-sleep flow costs zero per turn. A flow with no policy, or a
+    // woken one, collects normally.
     let mut collected: Vec<Entity> = flows
         .iter()
-        .filter(|(_, flow, _, _)| !flow.inner.has_pending_external())
-        .map(|(e, _, _, _)| e)
+        .filter(|(_, flow, _, _, sleep)| {
+            !flow.inner.has_pending_external() && sleep.is_none_or(FlowSleep::wants_collect)
+        })
+        .map(|(e, _, _, _, _)| e)
         .collect();
     collected.sort_unstable();
 
@@ -630,7 +644,7 @@ pub fn advance_batch<M: Send + Sync + 'static>(
     // (each flow reads only `frame_start` ⊕ its own buffer).
     let mut outcomes: Vec<FlowBatchOutcome> = Vec::with_capacity(collected.len());
     for &entity in &collected {
-        let Ok((_, mut flow, program_ref, locale)) = flows.get_mut(entity) else {
+        let Ok((_, mut flow, program_ref, locale, _)) = flows.get_mut(entity) else {
             continue;
         };
         let Some(program_asset) = programs.get(&program_ref.handle) else {

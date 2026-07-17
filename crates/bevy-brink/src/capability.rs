@@ -76,8 +76,9 @@ pub struct CapabilityEffects {
     pub writes: Vec<String>,
     /// Capability name → change-detection-backed bit: `true` means bevy's
     /// own change ticks can back a wake/reactive-sleep dependency on this
-    /// capability; `false` (or absent) means it must be polled. Captured
-    /// here but not consumed until BH-4.
+    /// capability; `false` (or absent) means it must be polled. Consumed by
+    /// BH-4's Detect phase (`crate::sleep`) after the per-container
+    /// AND/conservative merge (`#913`).
     #[serde(default)]
     pub detect: BTreeMap<String, bool>,
 }
@@ -236,9 +237,13 @@ pub struct ContainerAccess {
     pub reads: Vec<String>,
     /// Capability names this container writes, sorted.
     pub writes: Vec<String>,
-    /// Capability name → change-detection-backed bit, unioned from every
-    /// call this container's row (and its dispatch fallbacks) may perform.
-    /// Diagnostic surface for BH-4; BH-1 only captures it.
+    /// Capability name → change-detection-backed bit, **AND-merged** across
+    /// every call this container's row (and its dispatch fallbacks) may
+    /// perform (`#913`, ruled 2026-07-18): the capability is detect-capable
+    /// for this container only if EVERY read of it is detect-capable, so a
+    /// single non-detectable read folds the bit to the conservative `false`
+    /// (must-poll). BH-4's Detect phase (`crate::sleep`) consumes this to
+    /// decide a sleeping flow's re-evaluation cadence.
     pub detect: BTreeMap<String, bool>,
     /// Whether any part of this row hit the pessimal top element
     /// (`docs/effects-spec.md` §3: a call whose effects inference couldn't
@@ -323,7 +328,18 @@ fn resolve_call_atom<M: Send + Sync + 'static>(
         acc.writes.insert(name.clone());
     }
     for (name, bit) in &external.effects.detect {
-        acc.detect.insert(name.clone(), *bit);
+        // #913 (ruled 2026-07-18, decision-log): AND/conservative merge, NOT
+        // last-write-wins. A capability is change-detection-backed for this
+        // container only if EVERY read of it is detect-capable; two externals
+        // touching the same capability with conflicting `detect` bits fold to
+        // the conservative `false` (must-poll). A missed wake is the
+        // engine-race class; an extra poll is a wasted microsecond (§3
+        // soundness direction: over-report, never under-report). BH-4's Detect
+        // phase (`crate::sleep`) consumes exactly this merged bit.
+        acc.detect
+            .entry(name.clone())
+            .and_modify(|merged| *merged = *merged && *bit)
+            .or_insert(*bit);
     }
     Ok(())
 }
@@ -701,6 +717,129 @@ mod tests {
         assert_eq!(access.writes, vec!["AudioSink".to_string()]);
         assert_eq!(access.detect.get("Transform"), Some(&true));
         assert!(!access.opaque);
+    }
+
+    /// #913 (ruled 2026-07-18): when one container calls two externals that
+    /// touch the **same** capability with **conflicting** `detect` bits, the
+    /// folded bit is the AND (conservative `false` / must-poll) — never the
+    /// accidental last-write-wins that `BTreeMap::insert` used to give. Order
+    /// must not matter: `true`-then-`false` and `false`-then-`true` both fold
+    /// to `false`.
+    #[test]
+    fn conflicting_detect_bits_fold_conservative_and_not_last_write_wins() {
+        let mut app = App::new();
+        app.register_capability::<(), Transform>("Transform");
+        let registry = app.world().resource::<CapabilityRegistry<()>>();
+
+        // Two externals, both reading `Transform`, one detect-capable (true),
+        // one opaque (false). A container that calls both must classify
+        // `Transform` as must-poll (false) regardless of manifest order.
+        let mut manifest = CapabilityManifest::default();
+        manifest.externals.push(CapabilityManifestExternal {
+            name: "watch_pos".to_string(),
+            effects: CapabilityEffects {
+                reads: vec!["Transform".to_string()],
+                writes: vec![],
+                detect: [("Transform".to_string(), true)].into_iter().collect(),
+            },
+        });
+        manifest.externals.push(CapabilityManifestExternal {
+            name: "poke_pos".to_string(),
+            effects: CapabilityEffects {
+                reads: vec!["Transform".to_string()],
+                writes: vec![],
+                detect: [("Transform".to_string(), false)].into_iter().collect(),
+            },
+        });
+
+        let source = "EXTERNAL watch_pos(id)\nEXTERNAL poke_pos(id)\n=== start ===\n~ temp x = watch_pos(0)\n~ temp y = poke_pos(0)\nHi.\n-> END\n";
+        let (program, _tables, _ctx) = compile_test_story(source);
+        let watch = program.name_id("watch_pos").expect("interned");
+        let poke = program.name_id("poke_pos").expect("interned");
+
+        // Order A: watch (true) then poke (false).
+        let row_a = EffectRowEntry {
+            def: DefinitionId::new(DefinitionTag::Address, 0),
+            is_entry: true,
+            direct: DirectEffects {
+                reads: vec![],
+                writes: vec![],
+                calls: vec![atom(watch), atom(poke)],
+                opaque: false,
+            },
+            dispatches: vec![],
+        };
+        let table_a =
+            compute_container_access(&program, std::slice::from_ref(&row_a), &manifest, registry)
+                .expect("join succeeds");
+        assert_eq!(
+            table_a[&row_a.def].detect.get("Transform"),
+            Some(&false),
+            "true-then-false must AND to false (must-poll), not last-write-wins to false-by-luck"
+        );
+
+        // Order B: poke (false) then watch (true) — last write is `true`; a
+        // last-write-wins fold would wrongly yield `true`. AND still gives false.
+        let row_b = EffectRowEntry {
+            def: DefinitionId::new(DefinitionTag::Address, 0),
+            is_entry: true,
+            direct: DirectEffects {
+                reads: vec![],
+                writes: vec![],
+                calls: vec![atom(poke), atom(watch)],
+                opaque: false,
+            },
+            dispatches: vec![],
+        };
+        let table_b =
+            compute_container_access(&program, std::slice::from_ref(&row_b), &manifest, registry)
+                .expect("join succeeds");
+        assert_eq!(
+            table_b[&row_b.def].detect.get("Transform"),
+            Some(&false),
+            "false-then-true must AND to false — the regression #913 fixes: \
+             last-write-wins would have left it `true` and risked a missed wake"
+        );
+    }
+
+    /// Two detect-capable reads of the same capability keep the bit `true`
+    /// (AND of `true`s) — the merge is conservative, not blindly pessimistic.
+    #[test]
+    fn all_detect_capable_reads_keep_the_bit_true() {
+        let mut app = App::new();
+        app.register_capability::<(), Transform>("Transform");
+        let registry = app.world().resource::<CapabilityRegistry<()>>();
+
+        let mut manifest = CapabilityManifest::default();
+        for ext in ["watch_a", "watch_b"] {
+            manifest.externals.push(CapabilityManifestExternal {
+                name: ext.to_string(),
+                effects: CapabilityEffects {
+                    reads: vec!["Transform".to_string()],
+                    writes: vec![],
+                    detect: [("Transform".to_string(), true)].into_iter().collect(),
+                },
+            });
+        }
+        let source = "EXTERNAL watch_a(id)\nEXTERNAL watch_b(id)\n=== start ===\n~ temp x = watch_a(0)\n~ temp y = watch_b(0)\nHi.\n-> END\n";
+        let (program, _tables, _ctx) = compile_test_story(source);
+        let a = program.name_id("watch_a").expect("interned");
+        let b = program.name_id("watch_b").expect("interned");
+        let row = EffectRowEntry {
+            def: DefinitionId::new(DefinitionTag::Address, 0),
+            is_entry: true,
+            direct: DirectEffects {
+                reads: vec![],
+                writes: vec![],
+                calls: vec![atom(a), atom(b)],
+                opaque: false,
+            },
+            dispatches: vec![],
+        };
+        let table =
+            compute_container_access(&program, std::slice::from_ref(&row), &manifest, registry)
+                .expect("join succeeds");
+        assert_eq!(table[&row.def].detect.get("Transform"), Some(&true));
     }
 
     #[test]
