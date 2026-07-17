@@ -27,7 +27,10 @@ use bevy::prelude::*;
 
 use crate::alarm::{Alarm, SpottedEvent, alarm_system};
 use crate::cameras::{camera_ai_system, camera_interact_system, draw_camera_cones};
-use crate::doors::{Door, door_sync_system, switch_interact_system, switch_visual_system};
+use crate::doors::{
+    Door, door_sync_system, draw_door_switch_glyphs, switch_interact_system, switch_prompt_system,
+    switch_visual_system,
+};
 use crate::guards::{
     ReinforcementSpawner, draw_guard_cones, guard_ai_system, reinforcement_system,
 };
@@ -101,6 +104,8 @@ fn main() {
                     .chain(),
                 reinforcement_system,
                 switch_visual_system,
+                switch_prompt_system,
+                draw_door_switch_glyphs,
                 player_movement,
                 camera_interact_system,
                 switch_interact_system,

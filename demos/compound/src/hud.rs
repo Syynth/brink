@@ -18,7 +18,12 @@ use crate::timing::{BehaviorTimings, micros};
 #[derive(Component, Debug)]
 pub struct HudText;
 
-/// Spawn the HUD text in the top-left corner.
+/// The one-line goal reminder (#1009): a persistent top-center banner so the
+/// player never has to guess what "winning" means or how doors open.
+const OBJECTIVE_TEXT: &str = "Reach the green exit — flip switches (E) to open doors";
+
+/// Spawn the HUD text in the top-left corner, plus the top-center objective
+/// banner.
 pub fn setup_hud(mut commands: Commands) {
     commands.spawn((
         Text::new(""),
@@ -35,6 +40,26 @@ pub fn setup_hud(mut commands: Commands) {
         },
         HudText,
     ));
+
+    commands
+        .spawn(Node {
+            position_type: PositionType::Absolute,
+            top: px(8),
+            left: px(0),
+            right: px(0),
+            justify_content: JustifyContent::Center,
+            ..default()
+        })
+        .with_children(|parent| {
+            parent.spawn((
+                Text::new(OBJECTIVE_TEXT),
+                TextFont {
+                    font_size: FontSize::Px(17.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.95, 0.95, 0.85)),
+            ));
+        });
 }
 
 /// Refresh the HUD every frame.
