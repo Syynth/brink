@@ -73,10 +73,11 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::query::Access;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{Commands, Query, Res, ResMut};
+use bevy_log::warn;
 use brink_format::{DefinitionId, LineEntry, Value};
 use brink_runtime::{
     ContextAccess, DriveOutcome, ExternalFnHandler, FallbackHandler, FastRng, FlowInstance, Line,
-    Program, World, WriteObserver,
+    Program, RuntimeError, World, WriteObserver,
 };
 
 use crate::asset::{BrinkProgram, LineTablesAsset, ProgramAsset};
@@ -184,6 +185,12 @@ pub(crate) struct FlowBatchOutcome {
     /// `true` if the flow paused on a deferred external during Step (parked,
     /// not advanced to terminal) — left for the plugin's existing resolver.
     awaiting: bool,
+    /// `true` if `step_flow` returned a [`RuntimeError`] (e.g. the
+    /// [`FlowInstance::LINE_LIMIT`] budget tripping `LineLimitExceeded`).
+    /// Mutually exclusive with `awaiting`: an errored flow reached neither a
+    /// terminal line nor a deferred-external park this turn, and must not be
+    /// counted as either at Apply.
+    errored: bool,
     /// The flow's story's aggregate container access (union across all
     /// containers), from BH-1's [`CapabilityTable`]. `None` if no table is
     /// loaded for the story (no manifest/registry wired).
@@ -206,7 +213,11 @@ fn aggregate_access(table: &ContainerAccessTable) -> Access {
 
 /// Step one flow to a terminal line against `frame_start` (the pinned
 /// frame-start world), buffering its world writes into `buf` and returning
-/// the produced lines plus whether it parked on a deferred external.
+/// the produced lines, whether it parked on a deferred external, and (on
+/// fault) the [`RuntimeError`] that ended its turn early — e.g. the
+/// [`FlowInstance::LINE_LIMIT`] budget tripping `LineLimitExceeded`. A fault
+/// is never silently folded into a normal terminal outcome: the caller must
+/// surface it (log + distinct bookkeeping), not count it as a stepped flow.
 ///
 /// The flow steps against a **private clone** of `frame_start` wrapped in an
 /// [`ObservedContext`](brink_runtime::ObservedContext): reads resolve against
@@ -221,7 +232,7 @@ fn step_flow(
     line_tables: &[Vec<LineEntry>],
     handler: &dyn ExternalFnHandler,
     buf: &mut WriteBuffer,
-) -> (Vec<Line>, bool) {
+) -> (Vec<Line>, bool, Option<RuntimeError>) {
     let mut scratch = frame_start.clone();
     let mut observed = brink_runtime::ObservedContext::new(&mut scratch, buf);
     let mut budget = FlowInstance::LINE_LIMIT;
@@ -233,9 +244,9 @@ fn step_flow(
         None,
         &mut budget,
     ) {
-        Ok(DriveOutcome::Terminal(lines)) => (lines, false),
-        Ok(DriveOutcome::AwaitingExternal(lines)) => (lines, true),
-        Err(_) => (Vec::new(), false),
+        Ok(DriveOutcome::Terminal(lines)) => (lines, false, None),
+        Ok(DriveOutcome::AwaitingExternal(lines)) => (lines, true, None),
+        Err(err) => (Vec::new(), false, Some(err)),
     }
 }
 
@@ -255,6 +266,10 @@ pub struct FlowAccessRecord {
     pub access: Option<Access>,
     /// `true` if the flow parked on a deferred external this turn.
     pub awaiting: bool,
+    /// `true` if the flow's Step faulted with a [`RuntimeError`] this turn
+    /// (e.g. `LineLimitExceeded`) — logged via `bevy_log::warn!` and counted
+    /// in [`BrinkBatchReport::errored`], never folded into `stepped`.
+    pub errored: bool,
 }
 
 /// Diagnostic record of the most recent [`advance_batch`] turn under marker
@@ -268,6 +283,12 @@ pub struct BrinkBatchReport<M: Send + Sync + 'static = ()> {
     pub stepped: usize,
     /// Flows that parked on a deferred external this turn.
     pub awaiting: usize,
+    /// Flows whose Step faulted with a [`RuntimeError`] this turn (e.g. the
+    /// [`FlowInstance::LINE_LIMIT`] budget tripping `LineLimitExceeded`).
+    /// Disjoint from both `stepped` and `awaiting` — a faulted flow's turn
+    /// produced no lines and is not parked, so it must not be silently
+    /// counted as a normal terminal step.
+    pub errored: usize,
     /// Total buffered world writes applied this turn (across all flows).
     pub writes_applied: usize,
     /// Total buffered command triggers applied this turn (across all flows).
@@ -281,6 +302,7 @@ impl<M: Send + Sync + 'static> Default for BrinkBatchReport<M> {
             flows: Vec::new(),
             stepped: 0,
             awaiting: 0,
+            errored: 0,
             writes_applied: 0,
             commands_applied: 0,
             _marker: PhantomData,
@@ -365,7 +387,7 @@ pub fn advance_batch<M: Send + Sync + 'static>(
             Some(h) => h,
             None => &FallbackHandler,
         };
-        let (lines, awaiting) = step_flow(
+        let (lines, awaiting, error) = step_flow(
             &frame_start,
             &mut flow.inner,
             &program_asset.program,
@@ -373,6 +395,15 @@ pub fn advance_batch<M: Send + Sync + 'static>(
             handler_ref,
             &mut buf,
         );
+        let errored = if let Some(err) = &error {
+            warn!(
+                "batch step faulted for flow {entity:?} (story {:?}): {err}",
+                program_ref.handle.id()
+            );
+            true
+        } else {
+            false
+        };
         let triggers = handler.map(|h| h.take_queued()).unwrap_or_default();
 
         outcomes.push(FlowBatchOutcome {
@@ -382,6 +413,7 @@ pub fn advance_batch<M: Send + Sync + 'static>(
             triggers,
             lines,
             awaiting,
+            errored,
             access,
         });
     }
@@ -392,6 +424,7 @@ pub fn advance_batch<M: Send + Sync + 'static>(
     let mut report_flows = Vec::with_capacity(outcomes.len());
     let mut stepped = 0usize;
     let mut awaiting_count = 0usize;
+    let mut errored_count = 0usize;
     let mut writes_applied = 0usize;
     let mut commands_applied = 0usize;
     for outcome in outcomes {
@@ -404,7 +437,9 @@ pub fn advance_batch<M: Send + Sync + 'static>(
         for line in &outcome.lines {
             emit_event::<M>(line, outcome.entity, &mut commands);
         }
-        if outcome.awaiting {
+        if outcome.errored {
+            errored_count += 1;
+        } else if outcome.awaiting {
             awaiting_count += 1;
         } else {
             stepped += 1;
@@ -414,6 +449,7 @@ pub fn advance_batch<M: Send + Sync + 'static>(
             story: outcome.story,
             access: outcome.access,
             awaiting: outcome.awaiting,
+            errored: outcome.errored,
         });
     }
 
@@ -421,10 +457,12 @@ pub fn advance_batch<M: Send + Sync + 'static>(
         report.flows = report_flows;
         report.stepped = stepped;
         report.awaiting = awaiting_count;
+        report.errored = errored_count;
         report.writes_applied = writes_applied;
         report.commands_applied = commands_applied;
     }
 }
 
 #[cfg(test)]
+#[expect(clippy::panic, reason = "tests assert via panic on the error arm")]
 mod tests;

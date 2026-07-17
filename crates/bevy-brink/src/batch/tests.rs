@@ -52,7 +52,7 @@ fn run_batch_permuted(
 
     // Step — in the given (possibly permuted) order.
     for &i in step_order {
-        let (lines, _awaiting) = step_flow(
+        let (lines, _awaiting, _error) = step_flow(
             frame_start,
             &mut flows[i],
             program,
@@ -80,7 +80,7 @@ fn reads_pin_to_frame_start_not_a_peers_buffered_write() {
 
     let mut flow_a = FlowInstance::new_at_root(&program).0;
     let mut buf_a = WriteBuffer::default();
-    let (lines_a, _) = step_flow(
+    let (lines_a, _, _) = step_flow(
         &frame_start,
         &mut flow_a,
         &program,
@@ -105,7 +105,7 @@ fn reads_pin_to_frame_start_not_a_peers_buffered_write() {
     // B, stepped against the same untouched frame-start, still reads g=0.
     let mut flow_b = FlowInstance::new_at_root(&program).0;
     let mut buf_b = WriteBuffer::default();
-    let (lines_b, _) = step_flow(
+    let (lines_b, _, _) = step_flow(
         &frame_start,
         &mut flow_b,
         &program,
@@ -320,6 +320,76 @@ fn advance_batch_system_drives_and_applies() {
     let globals = app.world().resource::<BrinkGlobals<Batched>>();
     // g is the only global → index 0.
     assert_eq!(globals.inner.global(0), &Value::Int(3));
+}
+
+/// `step_flow` surfaces a `RuntimeError` (rather than silently discarding it)
+/// when a flow's Step faults — e.g. a knot that reprints and re-diverts into
+/// itself forever trips `FlowInstance::LINE_LIMIT` before any terminal line.
+#[test]
+fn step_flow_returns_the_runtime_error_on_fault() {
+    let (program, tables, frame_start) = fixture("-> spam\n\n=== spam ===\nLine.\n-> spam\n");
+    let mut flow = FlowInstance::new_at_root(&program).0;
+    let mut buf = WriteBuffer::default();
+    let (lines, awaiting, error) = step_flow(
+        &frame_start,
+        &mut flow,
+        &program,
+        &tables,
+        &FallbackHandler,
+        &mut buf,
+    );
+    assert!(lines.is_empty(), "a faulted step produces no lines");
+    assert!(!awaiting, "a faulted step is not a deferred-external park");
+    match error {
+        Some(brink_runtime::RuntimeError::LineLimitExceeded(n)) => {
+            assert_eq!(n, FlowInstance::LINE_LIMIT);
+        }
+        other => panic!("expected Some(LineLimitExceeded), got {other:?}"),
+    }
+}
+
+/// A flow whose Step faults (line-limit exceeded) must be counted in
+/// `BrinkBatchReport::errored`, not silently folded into `stepped` — the
+/// regression this test guards: an ignored `RuntimeError` used to make an
+/// errored flow indistinguishable from one that reached a real terminal line.
+#[test]
+fn errored_flow_is_reported_distinctly_not_counted_as_stepped() {
+    let mut app = App::new();
+    app.add_plugins(AssetPlugin::default());
+    app.add_plugins(crate::BrinkPlugin::<Batched>::default());
+    app.add_systems(Update, advance_batch::<Batched>);
+
+    // A knot that reprints and re-diverts into itself forever: never reaches
+    // a terminal line, so Step must fault with `LineLimitExceeded`.
+    let (program, tables, ctx) = compile_test_story("-> spam\n\n=== spam ===\nLine.\n-> spam\n");
+    let story = add_story_assets(&mut app, program, tables, ctx);
+    app.world_mut().spawn(
+        BrinkFlowRequest::<Batched>::builder()
+            .story(story.clone())
+            .build(),
+    );
+
+    app.update(); // fulfill
+    app.update(); // batch turn: the flow's Step faults
+
+    let report = app.world().resource::<BrinkBatchReport<Batched>>();
+    assert_eq!(
+        report.errored, 1,
+        "the faulted flow must be counted as errored"
+    );
+    assert_eq!(
+        report.stepped, 0,
+        "a faulted flow must not be counted as stepped"
+    );
+    assert_eq!(
+        report.awaiting, 0,
+        "a faulted flow is not a deferred-external park"
+    );
+    assert_eq!(report.flows.len(), 1);
+    assert!(
+        report.flows[0].errored,
+        "the flow's own FlowAccessRecord must also flag errored"
+    );
 }
 
 /// Buffered command triggers flush in flow-id order at Apply. A command
