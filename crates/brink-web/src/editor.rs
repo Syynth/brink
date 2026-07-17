@@ -77,6 +77,13 @@ pub struct EditorSession {
     /// forwarded to `IdeSession::set_language_dialect`, so it gates the
     /// background analysis pass's `E051` diagnostic too.
     dialect: brink_analyzer::Dialect,
+    /// Whether `set_language_dialect` has been called explicitly on this
+    /// session (#1005). `apply_project_config` skips `dialect` when true —
+    /// explicit API calls always override a discovered `brink.toml`'s
+    /// `[project] dialect`, mirroring the CLI's `--dialect` flag precedence.
+    dialect_explicit: bool,
+    /// Same as `dialect_explicit`, for `set_type_policy` (#1005).
+    types_explicit: bool,
 }
 
 impl Default for EditorSession {
@@ -98,6 +105,8 @@ impl EditorSession {
             next_doc_id: 1,
             fold_runs_enabled: false,
             dialect: brink_analyzer::Dialect::StrictInk,
+            dialect_explicit: false,
+            types_explicit: false,
         }
     }
 
@@ -197,6 +206,7 @@ impl EditorSession {
             "brink" => brink_analyzer::Dialect::Brink,
             _ => brink_analyzer::Dialect::StrictInk,
         };
+        self.dialect_explicit = true;
         self.session.set_language_dialect(self.dialect);
     }
 
@@ -223,7 +233,48 @@ impl EditorSession {
             "strict" => brink_analyzer::TypePolicy::Strict,
             _ => brink_analyzer::TypePolicy::Gradual,
         };
+        self.types_explicit = true;
         self.session.set_type_policy(types);
+    }
+
+    /// Parse a `brink.toml` project-settings file (#1005) and apply its
+    /// `[project] dialect`/`types` to this session — the wasm/editor-mount
+    /// wiring for the config file every compiler mount reads. The CLI
+    /// discovers + reads `brink.toml` straight off disk
+    /// (`brink_project_config::load_from_entry`); the wasm sandbox has no
+    /// filesystem of its own, so the embedder reads the file with its own
+    /// host APIs (Node `fs`, the File System Access API, …) and hands the
+    /// text here.
+    ///
+    /// Call this once, at session construction, before any explicit
+    /// `set_language_dialect`/`set_type_policy` call — a field already set
+    /// explicitly on this session is left untouched (explicit calls always
+    /// win over the file, matching the CLI's `--dialect`/`--types`
+    /// precedence). Re-analyzes immediately for whichever field the file
+    /// actually sets (like `set_language_dialect`/`set_type_policy`
+    /// themselves).
+    ///
+    /// Returns the list of warning strings for unrecognized keys — as JSON
+    /// (a `string[]`) — never an error (forward compat). Errors only on
+    /// malformed TOML or a recognized key with an invalid value.
+    pub fn apply_project_config(&mut self, toml: &str) -> Result<String, JsError> {
+        let (config, warnings) = brink_project_config::parse_str(toml)
+            .map_err(|e| JsError::new(&format!("invalid brink.toml: {e}")))?;
+        if !self.dialect_explicit
+            && let Some(dialect) = config.dialect
+        {
+            self.dialect = dialect;
+            self.session.set_language_dialect(dialect);
+        }
+        if !self.types_explicit
+            && let Some(types) = config.types
+        {
+            self.session.set_type_policy(types);
+        }
+        Ok(
+            serde_json::to_string(&warnings.into_iter().map(|w| w.0).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        )
     }
 
     /// Push the host's current values for `host`-source semantic types (Tier 3,
@@ -4658,6 +4709,115 @@ mod tests {
             analysis.diagnostics
         );
     }
+
+    // ── Project config file (#1005) ────────────────────────────────────
+
+    #[test]
+    fn apply_project_config_applies_dialect_from_file() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", BRINK_EXT_SRC);
+        let warnings = s
+            .apply_project_config("[project]\ndialect = \"brink\"\n")
+            .expect("valid brink.toml");
+        assert_eq!(warnings, "[]");
+        let analysis = s.session.analysis().expect("analysis");
+        assert!(
+            !analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+            "brink.toml's dialect = brink: no E051 on valid extension syntax: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn apply_project_config_applies_types_from_file() {
+        let mut s = EditorSession::new();
+        s.apply_project_config("[project]\ndialect = \"brink\"\ntypes = \"strict\"\n")
+            .expect("valid brink.toml");
+        s.update_file("main.ink", "=== noop(x) ===\nHello.\n-> DONE\n");
+        let analysis = s.session.analysis().expect("analysis");
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E065),
+            "brink.toml's types = strict: expected E065 on unused param `x`: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn apply_project_config_no_file_values_leaves_defaults() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", BRINK_EXT_SRC);
+        let warnings = s.apply_project_config("").expect("empty document is valid");
+        assert_eq!(warnings, "[]");
+        let analysis = s.session.analysis().expect("analysis");
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+            "no [project] table: StrictInk default stands: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn apply_project_config_after_explicit_set_language_dialect_is_a_no_op_for_dialect() {
+        // #1005 precedence: an explicit `set_language_dialect` call always
+        // wins over a later `apply_project_config` — the file only ever
+        // supplies a default.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", BRINK_EXT_SRC);
+        s.set_language_dialect("strict-ink");
+        s.apply_project_config("[project]\ndialect = \"brink\"\n")
+            .expect("valid brink.toml");
+        let analysis = s.session.analysis().expect("analysis");
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+            "explicit set_language_dialect(\"strict-ink\") must survive a later \
+             apply_project_config(dialect = brink): {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn apply_project_config_before_explicit_set_language_dialect_lets_explicit_win() {
+        // The opposite ordering: config first (typical embedder flow — load
+        // at mount time), then an explicit call after — last-write-wins,
+        // same as the CLI's flag always overriding the file.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", BRINK_EXT_SRC);
+        s.apply_project_config("[project]\ndialect = \"brink\"\n")
+            .expect("valid brink.toml");
+        s.set_language_dialect("strict-ink");
+        let analysis = s.session.analysis().expect("analysis");
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+            "a later explicit set_language_dialect must win: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn apply_project_config_reports_unknown_keys_as_warnings() {
+        let mut s = EditorSession::new();
+        let warnings = s
+            .apply_project_config("[project]\ndialect = \"brink\"\nfuture_key = \"x\"\n")
+            .expect("unknown keys are warnings, not errors");
+        let parsed: Vec<String> = serde_json::from_str(&warnings).expect("valid json");
+        assert_eq!(parsed.len(), 1);
+        assert!(parsed[0].contains("project.future_key"));
+    }
 }
 
 // ── Dialect (#368) wasm-only error-path tests ─────────────────────────
@@ -4690,5 +4850,20 @@ mod dialect_wasm_tests {
             .unwrap()
             .push(serde_json::Value::String("nonexistent".to_owned()));
         assert!(s.set_dialect(&value.to_string()).is_err());
+    }
+
+    #[wasm_bindgen_test]
+    fn apply_project_config_rejects_malformed_toml() {
+        let mut s = EditorSession::new();
+        assert!(s.apply_project_config("this is not [ valid toml").is_err());
+    }
+
+    #[wasm_bindgen_test]
+    fn apply_project_config_rejects_invalid_dialect_value() {
+        let mut s = EditorSession::new();
+        assert!(
+            s.apply_project_config("[project]\ndialect = \"sideways\"\n")
+                .is_err()
+        );
     }
 }

@@ -73,15 +73,19 @@ enum Commands {
         /// diagnostic; `brink` accepts and compiles the syntax (T1b-2 and
         /// T1b-3 are live). Mount-time only:
         /// never embedded in `.inkb`, never delivered to the runtime.
-        #[arg(long, value_enum, default_value_t = DialectArg::StrictInk)]
-        dialect: DialectArg,
+        /// Overrides `[project] dialect` in a discovered `brink.toml`
+        /// (#1005) — omit this flag to use the file's value, if any.
+        #[arg(long, value_enum)]
+        dialect: Option<DialectArg>,
         /// Typed-mode policy (docs/typed-mode-spec.md §1, TM-3). `gradual`
         /// (default) is today's behavior, byte-identical forever. `strict`
         /// makes `Unknown`/`Conflicted`-escaping inference a compile error
         /// and requires `--dialect brink` (a config error otherwise).
-        /// Mount-time only: never embedded in `.inkb`.
-        #[arg(long, value_enum, default_value_t = TypesArg::Gradual)]
-        types: TypesArg,
+        /// Mount-time only: never embedded in `.inkb`. Overrides
+        /// `[project] types` in a discovered `brink.toml` (#1005) — omit
+        /// this flag to use the file's value, if any.
+        #[arg(long, value_enum)]
+        types: Option<TypesArg>,
     },
     /// Convert between ink formats (.inkb, .inkt)
     Convert {
@@ -213,7 +217,12 @@ fn run_command(command: Commands) -> ExitCode {
             dialect,
             types,
         } => {
-            if let Err(e) = run_compile(&input, output.as_deref(), dialect.into(), types.into()) {
+            if let Err(e) = run_compile(
+                &input,
+                output.as_deref(),
+                dialect.map(Into::into),
+                types.map(Into::into),
+            ) {
                 tracing::error!("{e}");
                 return ExitCode::FAILURE;
             }
@@ -304,17 +313,50 @@ fn run_command(command: Commands) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Resolve `AnalysisOptions` for `entry`, layering (in increasing priority):
+/// 1. `AnalysisOptions::default()` (`strict-ink` / `gradual`);
+/// 2. a discovered `brink.toml`'s `[project] dialect`/`types` (#1005) — the
+///    file walks up from `entry`'s directory to the nearest ancestor
+///    containing `brink.toml`; a missing file changes nothing;
+/// 3. `--dialect`/`--types`, if the user actually passed them — an explicit
+///    flag always overrides the file (never the other way around).
+///
+/// Unknown keys in the file are logged as warnings, never treated as
+/// errors (forward compat: an older `brink` shouldn't refuse to compile a
+/// `brink.toml` written for a newer schema).
+fn resolve_analysis_options(
+    entry: &std::path::Path,
+    dialect: Option<brink_compiler::Dialect>,
+    types: Option<brink_compiler::TypePolicy>,
+) -> Result<brink_compiler::AnalysisOptions, Box<dyn std::error::Error>> {
+    let mut options = brink_compiler::AnalysisOptions::default();
+    if let Some(loaded) = brink_project_config::load_from_entry(entry)? {
+        for warning in &loaded.warnings {
+            tracing::warn!("[{}] {warning}", loaded.path.display());
+        }
+        brink_project_config::apply_to_options(
+            &mut options,
+            &loaded.config,
+            dialect.is_some(),
+            types.is_some(),
+        );
+    }
+    if let Some(dialect) = dialect {
+        options.dialect = dialect;
+    }
+    if let Some(types) = types {
+        options.types = types;
+    }
+    Ok(options)
+}
+
 fn run_compile(
     input: &std::path::Path,
     output: Option<&std::path::Path>,
-    dialect: brink_compiler::Dialect,
-    types: brink_compiler::TypePolicy,
+    dialect: Option<brink_compiler::Dialect>,
+    types: Option<brink_compiler::TypePolicy>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let options = brink_compiler::AnalysisOptions {
-        dialect,
-        types,
-        ..brink_compiler::AnalysisOptions::default()
-    };
+    let options = resolve_analysis_options(input, dialect, types)?;
     let output_result = brink_compiler::compile_path_with_options(input, options)?;
     for w in &output_result.warnings {
         tracing::warn!("[{}] {}", w.code.as_str(), w.message);

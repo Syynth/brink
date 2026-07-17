@@ -52,8 +52,9 @@ brink at once:
 Defaulting to `strict-ink` means a project has to make a **visible, one-time
 choice** to leave the oracle-anchored subset. You don't fall out of
 conformance by accident because you typed `#` in the wrong place; you fall
-out of it by passing `--dialect brink` (or setting the equivalent project
-config), and that's exactly the choice this flag exists to make explicit.
+out of it by passing `--dialect brink` (or setting the equivalent
+[`brink.toml`](../project-config.md) `[project] dialect`), and that's exactly
+the choice this flag exists to make explicit.
 
 The compiler's own test suite follows the same rule: the entire oracle
 corpus — every `.ink` file with a golden C# transcript — compiles under

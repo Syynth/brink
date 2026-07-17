@@ -18,6 +18,10 @@ brink-runtime = { workspace = true }
 brink-syntax = { workspace = true }
 brink-analyzer = { workspace = true }
 brink-ir = { workspace = true }
+# `brink.toml` project settings file (#1005): `parse_str` only (no fs use —
+# the wasm sandbox has none of its own; the embedder reads the file with its
+# own host APIs and hands the text to `EditorSession::apply_project_config`).
+brink-project-config = { workspace = true }
 # `inkt-write` exposes the dependency-free `.inkt` writer for the Program
 # Explorer (`StoryRunner::program_inkt`) — no `pest` reader pulled into the wasm.
 brink-format = { workspace = true, features = ["inkt-write"] }

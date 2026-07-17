@@ -304,6 +304,32 @@ export class EditorSessionHandle {
     this.session.set_type_policy(value);
   }
 
+  /**
+   * Parse a `brink.toml` project settings file (#1005 — dialect + type
+   * policy, one config every compiler mount reads) and apply its
+   * `[project] dialect`/`types` to this session. The wasm sandbox has no
+   * filesystem of its own: read `brink.toml`'s text with whatever host API
+   * your embedder has (Node `fs`, the File System Access API, a bundler
+   * import, …) and pass it here — this method does the discovery-free
+   * parsing + application, mirroring what `brink compile`/`brink ide` do
+   * with real filesystem discovery.
+   *
+   * Call this once, right after construction, before any explicit
+   * {@link setLanguageDialect}/{@link setTypePolicy} call — an explicit
+   * call always overrides the file for that field (matches the CLI's
+   * `--dialect`/`--types` flag precedence: the file is the default, code
+   * wins). Re-analyzes immediately for whichever field the file sets.
+   *
+   * Returns the list of warning strings for unrecognized keys — never an
+   * error (forward compat). Throws only on malformed TOML or a recognized
+   * key with an invalid value.
+   */
+  applyProjectConfig(toml: string): string[] {
+    this.bump();
+    const json = this.session.apply_project_config(toml);
+    return JSON.parse(json) as string[];
+  }
+
   setActiveFile(path: string): boolean {
     return this.session.set_active_file(path);
   }

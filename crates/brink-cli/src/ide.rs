@@ -1766,10 +1766,30 @@ struct Project {
 
 impl Project {
     /// Discover + analyze the project rooted at `entry` (follows `INCLUDE`s),
-    /// exactly like `brink compile`.
+    /// exactly like `brink compile`. Also discovers a `brink.toml` (#1005)
+    /// starting from `entry`'s directory and applies its `[project]
+    /// dialect`/`types` to analysis — `brink ide` has no `--dialect`/
+    /// `--types` flags of its own, so the file (or, absent one,
+    /// `AnalysisOptions::default()`, byte-identical to pre-#1005 behavior)
+    /// is the only source. Unknown keys in the file are reported as
+    /// warnings on stderr, never treated as errors.
     fn load(entry: &Path) -> Result<Self, String> {
         let entry = entry.to_string_lossy().into_owned();
         let mut driver = Driver::new();
+        let mut options = brink_analyzer::AnalysisOptions::default();
+        if let Some(loaded) =
+            brink_project_config::load_from_entry(Path::new(&entry)).map_err(|e| format!("{e}"))?
+        {
+            for warning in &loaded.warnings {
+                let _ = writeln!(
+                    io::stderr(),
+                    "warning: [{}] {warning}",
+                    loaded.path.display()
+                );
+            }
+            brink_project_config::apply_to_options(&mut options, &loaded.config, false, false);
+        }
+        driver.set_analysis_options(options);
         driver
             .discover(&entry, |p| {
                 std::fs::read_to_string(p)

@@ -74,11 +74,11 @@ book-test:
 
     export CARGO_TARGET_DIR=target/book-doctest
     deps="$CARGO_TARGET_DIR/debug/deps"
-    pkgs="-p brink-runtime -p brink-compiler -p brink-format -p brink-intl -p bevy-brink"
+    pkgs="-p brink-runtime -p brink-compiler -p brink-format -p brink-intl -p bevy-brink -p brink-project-config"
 
     # Self-heal: if any crate has more than one hash, the dir is polluted.
     if [ -d "$deps" ]; then
-        for c in brink_format brink_runtime brink_compiler brink_intl bevy_brink; do
+        for c in brink_format brink_runtime brink_compiler brink_intl bevy_brink brink_project_config; do
             n=$(ls "$deps" 2>/dev/null | sed -nE "s/^lib${c}-([0-9a-f]+)\.(rlib|rmeta)$/\1/p" | sort -u | wc -l | tr -d ' ')
             if [ "$n" -gt 1 ]; then
                 echo "book-test: stale artifacts for ${c} (${n} hashes) — rebuilding clean"
