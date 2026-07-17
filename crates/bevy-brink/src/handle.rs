@@ -898,6 +898,7 @@ mod tests {
             rng_seed: 0,
             previous_random: 0,
             global_ids: BTreeMap::new(),
+            suspended: None,
         }
     }
 
