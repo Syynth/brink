@@ -10,10 +10,11 @@ use bevy::prelude::*;
 use std::time::Instant;
 
 use crate::alarm::SpottedEvent;
+use crate::layout_gen::LayoutData;
 use crate::rounds::{Round, RoundScoped};
 use crate::stats::{Loadout, PlayerStats};
 use crate::timing::BehaviorTimings;
-use crate::world::{Player, point_in_cone};
+use crate::world::{Collider, Player, Wall, point_in_cone, raycast_clear};
 
 const CAMERA_RANGE: f32 = 210.0;
 const CAMERA_HALF_ANGLE: f32 = 0.45;
@@ -60,6 +61,7 @@ pub fn camera_ai_system(
     loadout: Res<Loadout>,
     player: Query<(&Transform, &PlayerStats), With<Player>>,
     mut cameras: Query<(&Transform, &mut SecurityCamera, &mut Sprite)>,
+    walls: Query<(&Transform, &Collider), With<Wall>>,
     mut spotted: MessageWriter<SpottedEvent>,
     mut timings: ResMut<BehaviorTimings>,
 ) {
@@ -73,6 +75,12 @@ pub fn camera_ai_system(
     let player_pos = player_tf.translation.truncate();
     let effective_range =
         (CAMERA_RANGE * loadout.enemy_vision_scale - stats.stealth_radius).max(24.0);
+
+    // Wall rectangles the camera's line of sight must clear (plan §10.2).
+    let blockers: Vec<(Vec2, Vec2)> = walls
+        .iter()
+        .map(|(t, c)| (t.translation.truncate(), c.half_extents))
+        .collect();
 
     for (tf, mut cam, mut sprite) in &mut cameras {
         if cam.disabled {
@@ -89,7 +97,7 @@ pub fn camera_ai_system(
             CAMERA_HALF_ANGLE,
             effective_range,
             player_pos,
-        );
+        ) && raycast_clear(apex, player_pos, &blockers);
         if sees {
             spotted.write(SpottedEvent {
                 intensity: 1.0 * dt,
@@ -133,6 +141,8 @@ pub fn camera_interact_system(
     if let Some((_, mut cam)) = best {
         cam.disabled = true;
         round.cameras_disabled += 1;
+        // Bounty is carried gold — banked on exit, lost if caught (§10.3).
+        round.carried += CAMERA_BOUNTY;
     }
 }
 
@@ -154,21 +164,14 @@ pub fn draw_camera_cones(cameras: Query<(&Transform, &SecurityCamera)>, mut gizm
     }
 }
 
-/// Spawn the round's cameras. Called from the round-start handler so each
-/// round begins with every camera live.
-pub fn spawn_cameras(commands: &mut Commands) {
-    // (position, center facing angle)
-    let placements = [
-        (Vec2::new(-200.0, 250.0), -std::f32::consts::FRAC_PI_2),
-        (Vec2::new(200.0, -250.0), std::f32::consts::FRAC_PI_2),
-        (Vec2::new(0.0, 0.0), 0.0),
-        (Vec2::new(420.0, 260.0), std::f32::consts::PI),
-    ];
-    for (pos, angle) in placements {
+/// Spawn the cameras the layout's `CameraNest` recipes placed. Each round
+/// begins with every camera live.
+pub fn spawn_cameras_from_layout(commands: &mut Commands, layout: &LayoutData) {
+    for c in &layout.cameras {
         commands.spawn((
             Sprite::from_color(Color::srgb(0.8, 0.7, 0.2), CAMERA_HALF * 2.0),
-            Transform::from_translation(pos.extend(1.0)),
-            SecurityCamera::new(angle),
+            Transform::from_translation(c.pos.extend(1.0)),
+            SecurityCamera::new(c.angle),
             RoundScoped,
         ));
     }

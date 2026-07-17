@@ -1164,6 +1164,18 @@ export class StoryRunnerHandle {
     return JSON.parse(this.runner.continue_flow(name)) as Line;
   }
 
+  /** Drive a shared flow to its next terminal line, collecting every `Line`
+   * up to and including it — the raw entry point behind
+   * `flow(name).continueMaximally()`. Capped at the runtime's
+   * `FlowInstance::LINE_LIMIT` (10,000 lines/turn), the same bound
+   * `continueStory` enforces for the primary flow: an infinite-emitting flow
+   * throws (the wasm `RuntimeError::LineLimitExceeded` surfaced as a JS
+   * `Error`, matching `continueStory`'s error shape) instead of growing an
+   * unbounded array and hanging the host (#999). */
+  continueFlowMaximally(name: string): Line[] {
+    return JSON.parse(this.runner.continue_flow_maximally(name)) as Line[];
+  }
+
   /** Select a choice in a shared flow. */
   chooseFlow(name: string, index: number): void {
     this.runner.choose_flow(name, index);
@@ -1456,20 +1468,35 @@ export class StoryRunnerHandle {
 }
 
 /**
- * An addressable handle for one spawned/ambient flow of a
- * {@link StoryRunnerHandle} (FS-3w, `docs/flow-suspension-spec.md` §10.1).
+ * The name-addressed flow methods a {@link FlowHandle} needs from its owner.
+ * Both {@link StoryRunnerHandle} and {@link StorySessionHandle} implement
+ * this shape (#1000 — the two session surfaces stay parallel), so a
+ * `FlowHandle` works identically whichever one spawned it.
+ */
+interface FlowHost {
+  continueFlow(name: string): Line;
+  continueFlowMaximally(name: string): Line[];
+  chooseFlow(name: string, index: number): void;
+  flowDebugSnapshot(name: string): DebugState;
+  destroyFlow(name: string): void;
+}
+
+/**
+ * An addressable handle for one spawned/ambient flow of a {@link FlowHost}
+ * (a {@link StoryRunnerHandle} or {@link StorySessionHandle}) (FS-3w,
+ * `docs/flow-suspension-spec.md` §10.1).
  *
- * Each flow shares its runner's globals / visit counts / rng (true ink
+ * Each flow shares its owner's globals / visit counts / rng (true ink
  * flow semantics) but keeps its own call stack and its own `Line` stream —
  * `continue`/`choose` here drive *this* flow, not the primary one. The
- * handle is a thin, allocation-free view over the runner's name-addressed
- * flow methods (`continueFlow`/`chooseFlow`/…); it holds only the runner
+ * handle is a thin, allocation-free view over the owner's name-addressed
+ * flow methods (`continueFlow`/`chooseFlow`/…); it holds only the owner
  * and the flow's name, so obtaining one never has to precede driving the
  * flow, and a flow can be driven by name without a handle at all.
  */
 export class FlowHandle {
   constructor(
-    private readonly runner: StoryRunnerHandle,
+    private readonly host: FlowHost,
     /** This flow's id (its spawn name). */
     readonly name: string,
   ) {}
@@ -1478,34 +1505,36 @@ export class FlowHandle {
    * may be `{ type: "suspended" }` once FS-3r lands parks; today it never
    * is. */
   continue(): Line {
-    return this.runner.continueFlow(this.name);
+    return this.host.continueFlow(this.name);
   }
 
   /** Drive this flow to its next pause, collecting every `Line` up to and
    * including the terminal one (the per-flow analogue of the primary
-   * flow's `continueStory`). */
+   * flow's `continueStory`).
+   *
+   * Bounded by the runtime's `FlowInstance::LINE_LIMIT` (10,000 lines/turn),
+   * enforced wasm-side (`continue_flow_maximally`) rather than looped
+   * client-side — an infinite-emitting flow throws (matching
+   * `continueStory`'s `RuntimeError::LineLimitExceeded` error shape)
+   * instead of growing this method's returned array without bound and
+   * hanging the host (#999). */
   continueMaximally(): Line[] {
-    const lines: Line[] = [];
-    for (;;) {
-      const line = this.continue();
-      lines.push(line);
-      if (line.type !== "text") return lines; // done | choices | end | suspended
-    }
+    return this.host.continueFlowMaximally(this.name);
   }
 
   /** Select a choice presented by this flow. */
   choose(index: number): void {
-    this.runner.chooseFlow(this.name, index);
+    this.host.chooseFlow(this.name, index);
   }
 
   /** Per-flow debug snapshot (State View) for this flow. */
   debugSnapshot(): DebugState {
-    return this.runner.flowDebugSnapshot(this.name);
+    return this.host.flowDebugSnapshot(this.name);
   }
 
   /** Destroy this flow. The handle is inert afterward. */
   destroy(): void {
-    this.runner.destroyFlow(this.name);
+    this.host.destroyFlow(this.name);
   }
 }
 
@@ -1960,14 +1989,33 @@ export class StorySessionHandle {
   // design (docs/story-session-spec.md's "shared flows keep working; their
   // externals never journal").
 
-  /** Spawn a shared-context flow at the program root (or `path`). */
-  spawnFlow(name: string, path?: string): void {
+  /** Spawn a shared-context flow at the program root (or `path`), returning
+   * an addressable {@link FlowHandle} for it — aligned with
+   * `StoryRunnerHandle.spawnFlow` (#1000), whose `FlowHandle` return this
+   * mirrors so session consumers can drive a spawned flow the same way. */
+  spawnFlow(name: string, path?: string): FlowHandle {
     this.session.spawn_flow(name, path);
+    return new FlowHandle(this, name);
+  }
+
+  /** An addressable handle for a spawned/ambient flow of this session — its
+   * own `Line` stream, choices, debug snapshot, and teardown. Mirrors
+   * `StoryRunnerHandle.flow`. */
+  flow(name: string): FlowHandle {
+    return new FlowHandle(this, name);
   }
 
   /** Advance a shared flow by one line. */
   continueFlow(name: string): Line {
     return JSON.parse(this.session.continue_flow(name)) as Line;
+  }
+
+  /** Drive a shared flow to its next terminal line, collecting every `Line`
+   * up to and including it. Capped at the runtime's `FlowInstance::LINE_LIMIT`
+   * (10,000 lines/turn) — an infinite-emitting flow throws instead of
+   * growing an unbounded array and hanging the host (#999). */
+  continueFlowMaximally(name: string): Line[] {
+    return JSON.parse(this.session.continue_flow_maximally(name)) as Line[];
   }
 
   /** Select a choice in a shared flow. */
