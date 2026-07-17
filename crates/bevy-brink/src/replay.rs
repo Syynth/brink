@@ -27,6 +27,7 @@ use brink_runtime::{
 };
 
 use crate::asset::{BrinkProgram, BrinkStoryAsset, LineTablesAsset, ProgramAsset};
+use crate::capability::{CapabilityManifest, CapabilityRegistry, check_load_capability_gate};
 use crate::event::BrinkFlowReset;
 use crate::flow::BrinkFlow;
 use crate::globals::{BrinkContext, BrinkGlobals, flow_context_view};
@@ -120,6 +121,14 @@ impl<M: Send + Sync + 'static> BrinkReplayLog<M> {
     clippy::type_complexity,
     reason = "bevy systems take Res/Query by value and have complex query tuples"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bevy system: flow/program/story/line-table state plus the #997 capability manifest+registry gate"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "bevy system: hot-reload reconstruction plus the #997 capability load-boundary gate"
+)]
 pub fn replay_on_reload<M: Send + Sync + 'static>(
     mut events: MessageReader<AssetEvent<ProgramAsset>>,
     mut flows: Query<(
@@ -133,6 +142,8 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
     programs: Res<Assets<ProgramAsset>>,
     stories: Res<Assets<BrinkStoryAsset>>,
     line_tables_assets: Res<Assets<LineTablesAsset>>,
+    capability_manifest: Res<CapabilityManifest>,
+    capability_registry: Res<CapabilityRegistry<M>>,
     mut commands: Commands,
 ) {
     let Some(mut globals) = globals else {
@@ -154,6 +165,30 @@ pub fn replay_on_reload<M: Send + Sync + 'static>(
         let Some(program_asset) = programs.get(&brink_program.handle) else {
             continue;
         };
+
+        // Issue #997 (the #912 load-boundary gate's sibling-path gap): the
+        // reloaded program's capabilities must re-clear this marker's
+        // registry before we reconstruct anything against it — a hot
+        // reload that drops (or never had) a manifest-required capability
+        // must fail exactly as loudly as the initial `fulfill_flow_requests`
+        // load, not silently rebuild a flow that can no longer resolve its
+        // externals. Checked before the `BrinkFlowReset` trigger fires, so
+        // a rejected reload leaves the entity's existing (pre-reload) flow
+        // untouched rather than resetting it and then aborting partway.
+        let story_ident = log
+            .story
+            .path()
+            .map_or_else(|| format!("{:?}", log.story.id()), ToString::to_string);
+        if let Err(err) = check_load_capability_gate(
+            &program_asset.program,
+            &program_asset.effect_rows,
+            &capability_manifest,
+            &capability_registry,
+            story_ident,
+        ) {
+            warn!("replay: {err}; leaving entity {entity:?} on its pre-reload flow");
+            continue;
+        }
 
         // Look up the new line tables via the story bundle. Without
         // this, the post-reload walk would read NEW program against
@@ -355,5 +390,229 @@ pub(crate) fn record_external<M: Send + Sync + 'static>(
 ) {
     if let Some(mut log) = world.get_mut::<BrinkReplayLog<M>>(entity) {
         log.recorder.record(name, args, result);
+    }
+}
+
+// ── Issue #997: the #912 load-boundary capability gate must also cover ────
+// this dev-only hot-reload reconstruction path, not just the initial
+// `fulfill_flow_requests` load.
+#[cfg(test)]
+mod tests {
+    use bevy_app::App;
+    use bevy_asset::Assets;
+    use bevy_ecs::component::Component;
+    use bevy_ecs::prelude::*;
+
+    use crate::capability::{
+        BrinkCapabilityAppExt as _, CapabilityEffects, CapabilityManifest,
+        CapabilityManifestExternal,
+    };
+    use crate::request::BrinkFlowRequest;
+    use crate::test_support::{add_story_assets, compile_test_story};
+
+    /// Counts `BrinkFlowReset<()>` triggers. `replay_on_reload` fires this
+    /// *after* the capability gate clears (see the gate's placement ahead of
+    /// the trigger in the function body) — so a count of 0 after a simulated
+    /// reload means the gate refused the rebuild before touching the entity
+    /// at all; a count of 1 means the reload proceeded normally.
+    #[derive(Resource, Default)]
+    struct ResetCount(u32);
+
+    fn install_reset_counter(app: &mut App) {
+        app.insert_resource(ResetCount::default());
+        app.add_observer(
+            |_: On<crate::event::BrinkFlowReset<()>>, mut count: ResMut<ResetCount>| {
+                count.0 += 1;
+            },
+        );
+    }
+
+    /// Compile `source` and return `(Program, line tables, EffectRowEntry
+    /// rows)` — unlike `test_support::compile_test_story`, this keeps the
+    /// real compiled effect rows (rather than discarding them) so a test can
+    /// exercise `missing_capabilities`/`check_load_capability_gate` against a
+    /// program that actually calls a manifest-declared external.
+    fn compile_with_effect_rows(
+        source: &str,
+    ) -> (
+        brink_runtime::Program,
+        Vec<Vec<brink_format::LineEntry>>,
+        Vec<brink_format::EffectRowEntry>,
+    ) {
+        let source = source.to_string();
+        let out = brink_compiler::compile("t.ink", move |p| {
+            if p == "t.ink" {
+                Ok(source.clone())
+            } else {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "x"))
+            }
+        })
+        .expect("test fixture should compile");
+        let mut inkb = Vec::new();
+        brink_format::write_inkb(&out.data, &mut inkb);
+        let loaded = brink_format::read_inkb(&inkb).expect("read_inkb");
+        let (program, tables) = brink_runtime::link(&loaded).expect("link");
+        (program, tables, loaded.effect_rows)
+    }
+
+    /// A manifest declaring that the `get_position` external reads the
+    /// `Transform` capability — shared by both tests below. Whether the
+    /// reload is admitted or refused depends solely on whether the
+    /// marker's `CapabilityRegistry` has `Transform` registered.
+    fn install_transform_manifest(app: &mut App) {
+        let mut manifest = CapabilityManifest::default();
+        manifest.externals.push(CapabilityManifestExternal {
+            name: "get_position".to_string(),
+            effects: CapabilityEffects {
+                reads: vec!["Transform".to_string()],
+                writes: vec![],
+                detect: std::collections::BTreeMap::new(),
+            },
+        });
+        app.insert_resource(manifest);
+    }
+
+    #[derive(Component)]
+    struct Transform;
+
+    const V1_SOURCE: &str = "=== start ===\nhello\n-> END\n";
+    const V2_SOURCE_CALLS_GET_POSITION: &str = "EXTERNAL get_position(id)\n=== start ===\n~ temp x = get_position(0)\nBRAND NEW WORDS\n-> END\n";
+
+    /// Hot-reload with a missing capability fails loudly: reloading to a
+    /// program version that calls an external requiring a capability this
+    /// marker's registry never registered must refuse to rebuild the flow
+    /// (no `BrinkFlowReset` fires), exactly as the initial load boundary
+    /// (#912) already refuses to admit such a story in the first place.
+    #[test]
+    fn hot_reload_missing_capability_refuses_rebuild() {
+        let mut app = App::new();
+        app.add_plugins(bevy_asset::AssetPlugin::default());
+        app.add_plugins(crate::BrinkPlugin::<()>::default());
+        install_transform_manifest(&mut app);
+        install_reset_counter(&mut app);
+        // Deliberately never call `register_capability::<(), Transform>` —
+        // this marker's registry has no `Transform` entry.
+
+        let (program_v1, tables_v1, ctx_v1) = compile_test_story(V1_SOURCE);
+        let story = add_story_assets(&mut app, program_v1, tables_v1, ctx_v1);
+        app.world_mut().spawn(
+            BrinkFlowRequest::<()>::builder()
+                .story(story.clone())
+                .build(),
+        );
+        app.update(); // fulfill
+
+        let (program_v2, tables_v2, effect_rows_v2) =
+            compile_with_effect_rows(V2_SOURCE_CALLS_GET_POSITION);
+
+        let program_handle = {
+            let stories = app.world().resource::<Assets<crate::BrinkStoryAsset>>();
+            stories.get(&story).expect("story bundle").program.clone()
+        };
+        let line_tables_handle = {
+            let stories = app.world().resource::<Assets<crate::BrinkStoryAsset>>();
+            stories
+                .get(&story)
+                .expect("story bundle")
+                .line_tables
+                .clone()
+        };
+        {
+            let mut programs = app
+                .world_mut()
+                .resource_mut::<Assets<crate::asset::ProgramAsset>>();
+            if let Some(mut slot) = programs.get_mut(&program_handle) {
+                slot.program = program_v2;
+                slot.effect_rows = effect_rows_v2;
+            }
+        }
+        {
+            let mut tables = app
+                .world_mut()
+                .resource_mut::<Assets<crate::asset::LineTablesAsset>>();
+            if let Some(mut slot) = tables.get_mut(&line_tables_handle) {
+                slot.tables = tables_v2;
+            }
+        }
+
+        // Two ticks: propagate the asset event, then flush any deferred
+        // triggers — mirrors the pattern the existing hot-reload tests use.
+        app.update();
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<ResetCount>().0,
+            0,
+            "a reload that would drop below the manifest-required Transform \
+             capability must be refused before BrinkFlowReset fires — the \
+             #912 hard-error boundary must hold on the replay path too"
+        );
+    }
+
+    /// Normal reload is unaffected: the exact same reload as above, but with
+    /// `Transform` registered on this marker's registry, must proceed and
+    /// rebuild the flow exactly as before this gate was added to the replay
+    /// path — proving the fix doesn't regress the ordinary hot-reload case.
+    #[test]
+    fn hot_reload_with_satisfied_capability_rebuilds_normally() {
+        let mut app = App::new();
+        app.add_plugins(bevy_asset::AssetPlugin::default());
+        app.add_plugins(crate::BrinkPlugin::<()>::default());
+        install_transform_manifest(&mut app);
+        install_reset_counter(&mut app);
+        app.register_capability::<(), Transform>("Transform");
+
+        let (program_v1, tables_v1, ctx_v1) = compile_test_story(V1_SOURCE);
+        let story = add_story_assets(&mut app, program_v1, tables_v1, ctx_v1);
+        app.world_mut().spawn(
+            BrinkFlowRequest::<()>::builder()
+                .story(story.clone())
+                .build(),
+        );
+        app.update(); // fulfill
+
+        let (program_v2, tables_v2, effect_rows_v2) =
+            compile_with_effect_rows(V2_SOURCE_CALLS_GET_POSITION);
+
+        let program_handle = {
+            let stories = app.world().resource::<Assets<crate::BrinkStoryAsset>>();
+            stories.get(&story).expect("story bundle").program.clone()
+        };
+        let line_tables_handle = {
+            let stories = app.world().resource::<Assets<crate::BrinkStoryAsset>>();
+            stories
+                .get(&story)
+                .expect("story bundle")
+                .line_tables
+                .clone()
+        };
+        {
+            let mut programs = app
+                .world_mut()
+                .resource_mut::<Assets<crate::asset::ProgramAsset>>();
+            if let Some(mut slot) = programs.get_mut(&program_handle) {
+                slot.program = program_v2;
+                slot.effect_rows = effect_rows_v2;
+            }
+        }
+        {
+            let mut tables = app
+                .world_mut()
+                .resource_mut::<Assets<crate::asset::LineTablesAsset>>();
+            if let Some(mut slot) = tables.get_mut(&line_tables_handle) {
+                slot.tables = tables_v2;
+            }
+        }
+
+        app.update();
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<ResetCount>().0,
+            1,
+            "a reload whose required capabilities are all registered must \
+             proceed exactly as before — the gate must not block a \
+             legitimate reload"
+        );
     }
 }
