@@ -1,8 +1,8 @@
 use crate::SyntaxKind::{
-    ASSIGNMENT, BREAK_STMT, CONTINUE_STMT, DOT, ELSE_CLAUSE, EOF, EQ, EXPR_STMT, FIELD_ACCESS_EXPR,
-    FOR_STMT, IDENT, IDENTIFIER, IF_STMT, INDEX_EXPR, KW_ELSE, KW_RETURN, KW_TEMP, L_BRACE,
-    L_BRACKET, LOGIC_LINE, MINUS_EQ, NEWLINE, PLUS_EQ, R_BRACE, R_BRACKET, RETURN_STMT, STMT_BLOCK,
-    TEMP_DECL, WHILE_STMT,
+    ASSIGNMENT, AWAIT_STMT, BREAK_STMT, CONTINUE_STMT, DOT, ELSE_CLAUSE, EOF, EQ, EXPR_STMT,
+    FIELD_ACCESS_EXPR, FOR_STMT, IDENT, IDENTIFIER, IF_STMT, INDEX_EXPR, KW_ELSE, KW_RETURN,
+    KW_TEMP, L_BRACE, L_BRACKET, LOGIC_LINE, MINUS_EQ, NEWLINE, PLUS_EQ, R_BRACE, R_BRACKET,
+    RETURN_STMT, STMT_BLOCK, TEMP_DECL, WHILE_STMT,
 };
 
 use super::Parser;
@@ -33,6 +33,7 @@ pub(crate) fn logic_line(p: &mut Parser<'_, '_>) {
     match p.current() {
         KW_RETURN => return_statement(p),
         KW_TEMP => temp_declaration(p),
+        IDENT if p.at_kw_text("await") && !is_assignment_ahead(p) => await_statement(p),
         IDENT if is_assignment_ahead(p) => assignment(p),
         _ => {
             // Bare expression
@@ -96,6 +97,25 @@ fn return_statement(p: &mut Parser<'_, '_>) {
     p.skip_ws();
     if !matches!(p.current(), NEWLINE | EOF | R_BRACE) {
         super::expression::expression(p);
+    }
+    p.finish_node();
+}
+
+/// Parse `await <cond>` — a FlowFrame suspension point
+/// (docs/flow-suspension-spec.md §3). `await` is a contextual (soft) keyword,
+/// already matched by the caller. Statement/logic position only; the
+/// condition is an ordinary expression (mid-expression `await` is permanently
+/// out — §3). Purity of the condition is enforced downstream (the effect-row
+/// gate), and lowering to the VM is fenced until FS-3 lands — this only builds
+/// the CST node.
+fn await_statement(p: &mut Parser<'_, '_>) {
+    p.start_node(AWAIT_STMT);
+    p.bump(); // "await" (IDENT)
+    p.skip_ws();
+    if !matches!(p.current(), NEWLINE | EOF | R_BRACE) {
+        super::expression::expression(p);
+    } else {
+        p.error("expected a condition expression after `await`".into());
     }
     p.finish_node();
 }
@@ -256,6 +276,7 @@ fn block_stmt(p: &mut Parser<'_, '_>) {
     match p.current() {
         KW_RETURN => return_statement(p),
         KW_TEMP => temp_declaration(p),
+        IDENT if p.at_kw_text("await") && !is_assignment_ahead(p) => await_statement(p),
         IDENT if p.at_kw_text("if") => if_stmt(p),
         IDENT if p.at_kw_text("while") => while_stmt(p),
         IDENT if p.at_kw_text("for") => for_stmt(p),
@@ -297,11 +318,23 @@ fn if_stmt(p: &mut Parser<'_, '_>) {
     p.finish_node();
 }
 
-/// `while cond { … }`.
+/// `while cond { … }`, or the persistent-await form `while await cond { … }`
+/// (docs/flow-suspension-spec.md §3). The optional `await` keyword after
+/// `while` is consumed here as an ordinary token inside the `WHILE_STMT` — the
+/// AST/HIR reads its presence to distinguish the yield-with-policy desugar
+/// from a plain loop. `await` stays a contextual soft keyword.
 fn while_stmt(p: &mut Parser<'_, '_>) {
     p.start_node(WHILE_STMT);
     p.bump(); // "while" (IDENT)
     p.skip_ws();
+    // `while await cond { … }` — the persistent-await loop. Only treat `await`
+    // as the marker when a condition expression follows it; `while await { … }`
+    // (a plain loop over a variable literally named `await`) has `{` right
+    // after, so `await` stays the ordinary loop condition there.
+    if p.at_kw_text("await") && p.nth(1) != L_BRACE {
+        p.bump(); // "await" (IDENT) — marks the persistent-await loop
+        p.skip_ws();
+    }
     super::expression::expression(p);
     p.skip_ws();
     stmt_block(p);

@@ -52,6 +52,7 @@ ast_node!(StrayClosingBrace, STRAY_CLOSING_BRACE);
 ast_node!(ReturnStmt, RETURN_STMT);
 ast_node!(TempDecl, TEMP_DECL);
 ast_node!(Assignment, ASSIGNMENT);
+ast_node!(AwaitStmt, AWAIT_STMT);
 
 // ── Content ──────────────────────────────────────────────────────────
 
@@ -786,6 +787,12 @@ impl LogicLine {
         support::child(&self.syntax)
     }
 
+    /// The `~ await <cond>` FlowFrame suspension point, if this logic line is
+    /// one (docs/flow-suspension-spec.md §3).
+    pub fn await_stmt(&self) -> Option<AwaitStmt> {
+        support::child(&self.syntax)
+    }
+
     /// The T1b `~ { … }` multi-line block body, if this logic line opens one
     /// (docs/t1b-surface-spec.md §2) rather than a single statement.
     pub fn stmt_block(&self) -> Option<StmtBlock> {
@@ -815,6 +822,17 @@ impl ReturnStmt {
     /// Returns `true` if the return has a value expression.
     pub fn has_value(&self) -> bool {
         self.value().is_some()
+    }
+}
+
+// ── AwaitStmt ────────────────────────────────────────────────────────
+
+impl AwaitStmt {
+    /// The condition expression — the `<cond>` in `await <cond>`
+    /// (docs/flow-suspension-spec.md §3). Absent only for a malformed bare
+    /// `await` with no expression (the parser emits a diagnostic there).
+    pub fn condition(&self) -> Option<Expr> {
+        self.syntax.children().find_map(Expr::cast)
     }
 }
 
@@ -886,6 +904,9 @@ pub enum BlockStmt {
     Break(BreakStmt),
     Continue(ContinueStmt),
     ExprStmt(ExprStmt),
+    /// `await <cond>` — a FlowFrame suspension point inside a `~ { … }` block
+    /// (docs/flow-suspension-spec.md §3).
+    Await(AwaitStmt),
 }
 
 impl std::fmt::Debug for BlockStmt {
@@ -907,6 +928,7 @@ impl crate::ast::AstNode for BlockStmt {
                 | SyntaxKind::BREAK_STMT
                 | SyntaxKind::CONTINUE_STMT
                 | SyntaxKind::EXPR_STMT
+                | SyntaxKind::AWAIT_STMT
         )
     }
 
@@ -921,6 +943,7 @@ impl crate::ast::AstNode for BlockStmt {
             SyntaxKind::BREAK_STMT => BreakStmt::cast(node).map(BlockStmt::Break),
             SyntaxKind::CONTINUE_STMT => ContinueStmt::cast(node).map(BlockStmt::Continue),
             SyntaxKind::EXPR_STMT => ExprStmt::cast(node).map(BlockStmt::ExprStmt),
+            SyntaxKind::AWAIT_STMT => AwaitStmt::cast(node).map(BlockStmt::Await),
             _ => None,
         }
     }
@@ -936,6 +959,7 @@ impl crate::ast::AstNode for BlockStmt {
             BlockStmt::Break(n) => n.syntax(),
             BlockStmt::Continue(n) => n.syntax(),
             BlockStmt::ExprStmt(n) => n.syntax(),
+            BlockStmt::Await(n) => n.syntax(),
         }
     }
 }
@@ -992,6 +1016,19 @@ impl WhileStmt {
 
     pub fn body(&self) -> Option<StmtBlock> {
         support::child(&self.syntax)
+    }
+
+    /// Whether this is the persistent-await form `while await cond { … }`
+    /// (docs/flow-suspension-spec.md §3) rather than a plain `while` loop. The
+    /// parser bumps the marker `await` as a direct `IDENT` token child (the
+    /// `while` keyword is the only other direct `IDENT` token; the condition
+    /// lives inside an `Expr` node, never a bare token), so the presence of an
+    /// `IDENT` token spelled `await` here is the unambiguous marker.
+    pub fn is_await(&self) -> bool {
+        self.syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .any(|tok| tok.kind() == SyntaxKind::IDENT && tok.text() == "await")
     }
 }
 
