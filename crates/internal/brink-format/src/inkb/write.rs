@@ -561,7 +561,10 @@ pub fn write_section_alias_table(entries: &[AliasEntry], buf: &mut Vec<u8>) {
 /// `docs/effects-spec.md` §11) — independent of the `.inkb` format `VERSION`,
 /// so the factored-row encoding can change without another whole-format bump
 /// (the reservation this section graduates was made for exactly this).
-pub(crate) const EFFECT_ROWS_SECTION_VERSION: u8 = 1;
+///
+/// Bumped 1 → 2 for #882: each row gains a leading `is_entry` byte (the
+/// freeze bit — see [`EffectRowEntry::is_entry`]).
+pub(crate) const EFFECT_ROWS_SECTION_VERSION: u8 = 2;
 
 /// Write the T2-3 `EffectRows` section (no header framing): a one-byte
 /// section-local version, then the `DefinitionId → row` table of factored
@@ -574,6 +577,10 @@ pub fn write_section_effect_rows(rows: &[EffectRowEntry], buf: &mut Vec<u8>) {
     write_u32(buf, rows.len() as u32);
     for row in rows {
         write_def_id(buf, row.def);
+        // #882 freeze bit: whether this row is a legitimate host entry point
+        // (see `EffectRowEntry::is_entry`'s doc — `false` only for
+        // `#@private` defs, and the row still ships either way).
+        write_u8(buf, u8::from(row.is_entry));
         encode_direct_effects(&row.direct, buf);
         // Per-dispatch entries (v1 emits none, but the encoding ships the
         // structure — a flat row forecloses §7 narrowing).

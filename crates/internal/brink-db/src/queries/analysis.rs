@@ -50,7 +50,8 @@ use brink_ir::{
 
 use super::{
     DefKey, ProjectInput, SourceFile, effects_query, inference_index_query, lowered_query,
-    resolution_index_query, resolve_query, symbol_index_query, type_inference_query,
+    module_map_query, resolution_index_query, resolve_query, symbol_index_query,
+    type_inference_query,
 };
 
 /// Index + resolutions, aggregated across every file's [`resolve_query`]
@@ -282,6 +283,13 @@ pub(crate) fn call_site_diagnostics_query(
 /// calls `effects_query`, so an unannotated project stays effect-inference-
 /// free — T2-1's advisory/lazy posture, preserved.
 ///
+/// The assertion's `reads`/`writes`/`calls` clause names are resolved
+/// through this file's own [`brink_analyzer::ImportScope`] (issue #881, the
+/// T2 follow-up to M-2d/#790), built from [`module_map_query`] + this file's
+/// own `IMPORT`s exactly like [`resolve_query`] builds it — so the checker
+/// can never attribute a clause to a different declared module's same-name
+/// cell than the one this file's own resolution binds.
+///
 /// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
 #[salsa::tracked(lru = 4096)]
 pub(crate) fn effects_assertion_diagnostics_query(
@@ -305,8 +313,14 @@ pub(crate) fn effects_assertion_diagnostics_query(
             rows.insert(id, (*row).clone());
         }
     }
+    let (module_map, _module_diags) = module_map_query(db, project);
+    let file_module = module_map
+        .get(&file_id)
+        .filter(|m| m.declared)
+        .map(|m| m.name.clone());
+    let scope = brink_analyzer::ImportScope::new(file_module, &hir.imports);
     Arc::new(brink_analyzer::effects_assertion_diagnostics(
-        file_id, hir, index, &rows,
+        file_id, hir, index, &scope, &rows,
     ))
 }
 

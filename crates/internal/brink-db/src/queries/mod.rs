@@ -1765,6 +1765,16 @@ pub struct CompileProduct {
 /// - the per-dispatch entry list is empty in v1 (call-through-value is inferred
 ///   as opaque, folded into the direct part) — but the row structure ships the
 ///   slot so §7 narrowing is not structurally foreclosed.
+/// - **#882 freeze semantics**: `is_entry` is `false` exactly when `def` is in
+///   `story.private_defs` (already populated by codegen from
+///   `Program::private_defs` — `#@private`, `docs/modules-spec.md` §4 — by
+///   the time this runs), `true` otherwise. This is the *only* filter T2-3 was
+///   missing: every row still ships regardless (a `#@private` knot/stitch can
+///   still be captured as a fn-value token a *public* path holds, and the
+///   dispatch-narrowing machinery resolves that token by `DefinitionId`, not
+///   by name — `#@private` hides the name, not the cell). `is_entry` only
+///   gates whether the row is a legitimate *host-lookup* target; it is never
+///   used to drop a row from this table.
 ///
 /// Appending call names to `name_table` is safe for inertness: existing
 /// `NameId` indices are unchanged, and the only references to the appended
@@ -1783,6 +1793,21 @@ fn populate_effect_rows(db: &dyn salsa::Database, project: ProjectInput, story: 
         .enumerate()
         .map(|(i, s)| (s.clone(), i as u16))
         .collect();
+
+    // `story.private_defs` is sorted ascending by raw id (codegen hands it
+    // straight from `Program::private_defs`, itself sorted by
+    // `brink_ir::lir::lower::build_prelude_decls` — see that fn's doc). Cloned
+    // once up front (small — one `u64` per `#@private` def, empty for the
+    // all-public pre-modules world) so the loop below can freely mutate
+    // `story.name_table` alongside without a field-borrow conflict; membership
+    // is then a deterministic, order-independent binary search (mirrors
+    // `brink_runtime::Program::is_private`).
+    let private_defs = story.private_defs.clone();
+    let is_private = |def: DefinitionId| {
+        private_defs
+            .binary_search_by_key(&def.to_raw(), |d| d.to_raw())
+            .is_ok()
+    };
 
     let mut rows: Vec<EffectRowEntry> = Vec::with_capacity(inferable.len());
     for &def in inferable {
@@ -1807,6 +1832,7 @@ fn populate_effect_rows(db: &dyn salsa::Database, project: ProjectInput, story: 
         }
         rows.push(EffectRowEntry {
             def,
+            is_entry: !is_private(def),
             direct: DirectEffects {
                 reads: row.reads.iter().copied().collect(),
                 writes: row.writes.iter().copied().collect(),

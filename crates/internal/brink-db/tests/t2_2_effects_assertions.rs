@@ -144,3 +144,107 @@ fn unannotated_project_produces_no_effects_diagnostics() {
     );
     assert!(diags.is_empty(), "{diags:?}");
 }
+
+// ── Import-scoped `resolve_cell`/`external_declared` (issue #881, the T2
+// follow-up to M-2d/#790) ───────────────────────────────────────────────
+//
+// Two declared modules each publicly export a VAR named `gold`. Before this
+// fix, `resolve_cell` picked an arbitrary (flat, smallest-id) same-named
+// candidate regardless of which module the asserting file actually
+// imported, while the assertion's own def's *inferred* row (via the real
+// import-scoped reference resolver) read whichever module's `gold` the
+// import actually bound — a mismatch between the two ids produced a
+// spurious `E103` exceedance (or, by luck of id ordering, silently matched)
+// independent of which module was really imported.
+
+fn analyze_files(files: &[(&str, &str)]) -> Vec<brink_ir::Diagnostic> {
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(brink_opts());
+    for &(path, source) in files {
+        db.set_file(path, source.to_owned());
+    }
+    db.analysis().diagnostics.clone()
+}
+
+const QUEST_A: &str = "#@module(quest_a)\n#@public\nVAR gold = 100\n";
+const QUEST_B: &str = "#@module(quest_b)\n#@public\nVAR gold = 200\n";
+
+#[test]
+fn effects_row_attributes_the_assertion_to_the_actually_imported_modules_cell() {
+    // `main` bare-imports quest_a's `gold` — the assertion's declared
+    // `reads: gold` must resolve to quest_a's cell, matching the body's own
+    // (import-scoped) read, so the assertion is satisfied.
+    let diags = analyze_files(&[
+        ("quest_a.ink", QUEST_A),
+        ("quest_b.ink", QUEST_B),
+        (
+            "main.ink",
+            "IMPORT { gold } FROM quest_a\n\
+             === function spend() ===\n#@effects(reads: gold)\n~ return gold\n",
+        ),
+    ]);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code != DiagnosticCode::E103 && d.code != DiagnosticCode::E102),
+        "importing quest_a's `gold` must satisfy `reads: gold` with no spurious \
+         exceedance or unknown-name diagnostic: {diags:?}"
+    );
+}
+
+#[test]
+fn effects_row_attributes_the_assertion_to_the_other_importers_cell() {
+    // Same fixture, but `main` imports quest_b's `gold` instead — the
+    // opposite module wins this time. A flat (import-blind) `resolve_cell`
+    // can bind at most one of these two directions correctly by luck of id
+    // ordering; both directions must independently be silent.
+    let diags = analyze_files(&[
+        ("quest_a.ink", QUEST_A),
+        ("quest_b.ink", QUEST_B),
+        (
+            "main.ink",
+            "IMPORT { gold } FROM quest_b\n\
+             === function spend() ===\n#@effects(reads: gold)\n~ return gold\n",
+        ),
+    ]);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code != DiagnosticCode::E103 && d.code != DiagnosticCode::E102),
+        "importing quest_b's `gold` must satisfy `reads: gold` with no spurious \
+         exceedance or unknown-name diagnostic: {diags:?}"
+    );
+}
+
+#[test]
+fn unimported_cross_module_reference_attributes_consistently_with_resolution() {
+    // `main` imports neither module's `gold` — the bare body reference and
+    // the assertion's clause both fall back to the exact same (import-blind)
+    // flat first-winner `lookup_by_name` already uses elsewhere (M-2d), so
+    // they can never disagree on *which* module's cell is meant, even
+    // though the reference itself is separately flagged `E025`
+    // (import-required) by the cross-module module gate. The point under
+    // test is that this un-imported case produces no exceedance —
+    // `resolve_cell` and the body's own resolution are the same function
+    // call, so they cannot diverge.
+    let diags = analyze_files(&[
+        ("quest_a.ink", QUEST_A),
+        ("quest_b.ink", QUEST_B),
+        (
+            "main.ink",
+            "=== function spend() ===\n#@effects(reads: gold)\n~ return gold\n",
+        ),
+    ]);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E025),
+        "the un-imported bare cross-module reference must still be gated: {diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code != DiagnosticCode::E103 && d.code != DiagnosticCode::E102),
+        "the assertion and the body reference must resolve to the same cell \
+         (both via the same import-blind fallback), so no exceedance or \
+         unknown-name diagnostic can fire: {diags:?}"
+    );
+}
