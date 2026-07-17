@@ -48,6 +48,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 print!("{text}");
                 break;
             }
+            // Reserved for flow suspension; not yet emitted.
+            Line::Suspended { text, .. } => {
+                print!("{text}");
+                break;
+            }
         }
     }
 
