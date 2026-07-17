@@ -191,7 +191,7 @@ fn stmt_heap(s: &Stmt) -> usize {
         Stmt::Conditional(c) => conditional_heap(c),
         Stmt::Sequence(s) => sequence_heap(s),
         Stmt::LogicBlock(lb) => block_stmts_heap(&lb.stmts),
-        Stmt::Assignment(_) | Stmt::ExprStmt(_) | Stmt::EndOfLine => 0,
+        Stmt::Assignment(_) | Stmt::ExprStmt(_) | Stmt::Await(_) | Stmt::EndOfLine => 0,
     }
 }
 
@@ -215,7 +215,8 @@ fn block_stmt_heap(bs: &BlockStmt) -> usize {
         BlockStmt::Assignment(_)
         | BlockStmt::Break(_)
         | BlockStmt::Continue(_)
-        | BlockStmt::ExprStmt(_) => 0,
+        | BlockStmt::ExprStmt(_)
+        | BlockStmt::Await(_) => 0,
     }
 }
 

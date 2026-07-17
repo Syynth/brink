@@ -187,8 +187,19 @@ impl GateVisitor<'_> {
                     }
                 }
                 BlockStmt::If(i) => self.flag_if_stmt(i),
-                BlockStmt::While(w) => self.flag_block_stmts(&w.body),
+                BlockStmt::While(w) => {
+                    // `while await cond { … }` — the persistent-await marker is
+                    // itself a brink extension (docs/flow-suspension-spec.md
+                    // §3), flagged under strict-ink like a bare `await`.
+                    if w.is_await {
+                        self.flag(w.ptr.text_range(), "`await` suspension point");
+                    }
+                    self.flag_block_stmts(&w.body);
+                }
                 BlockStmt::For(f) => self.flag_block_stmts(&f.body),
+                BlockStmt::Await(a) => {
+                    self.flag(a.ptr.text_range(), "`await` suspension point");
+                }
                 BlockStmt::Assignment(_)
                 | BlockStmt::Return(_)
                 | BlockStmt::ExprStmt(_)
@@ -253,6 +264,10 @@ impl HirVisitor for GateVisitor<'_> {
                     self.flag(ann.range(), "type annotation");
                 }
             }
+            // `~ await <cond>` — a FlowFrame suspension point
+            // (docs/flow-suspension-spec.md §3), a brink extension rejected
+            // under strict-ink like every other superset construct.
+            Stmt::Await(a) => self.flag(a.ptr.text_range(), "`await` suspension point"),
             _ => {}
         }
     }

@@ -324,6 +324,51 @@ pub(crate) fn effects_assertion_diagnostics_query(
     ))
 }
 
+/// One file's FS-2 `await`-condition purity diagnostics (E105,
+/// docs/flow-suspension-spec.md §3/§5, issue #928). Brink-only + lazy, the
+/// same posture as [`effects_assertion_diagnostics_query`]: a file with no
+/// `await` never fetches a single per-def effect row, so an await-free project
+/// stays effect-inference-free.
+///
+/// Unlike the assertion query (which knows its target defs up front), the
+/// callees a condition names are discovered by resolving the condition's
+/// calls ([`brink_analyzer::await_condition_callees`]); each is judged by its
+/// salsa-memoized per-def [`effects_query`] row — the incremental analogue of
+/// the monolithic path's whole-project `effects_project` table.
+///
+/// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 4096)]
+pub(crate) fn await_purity_diagnostics_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+) -> Arc<Vec<Diagnostic>> {
+    if project.analysis_options(db).dialect != brink_analyzer::Dialect::Brink {
+        return Arc::new(Vec::new());
+    }
+    let file_id = file.file_id(db);
+    let hir = &lowered_query(db, file).hir;
+    if !brink_analyzer::hir_has_await(hir) {
+        return Arc::new(Vec::new());
+    }
+    let (file_resolutions, _diags) = resolve_query(db, project, file);
+    let index = resolution_index_query(db, project);
+    let callee_defs = brink_analyzer::await_condition_callees(file_id, hir, file_resolutions);
+    let mut rows = BTreeMap::new();
+    for id in callee_defs {
+        if let Some(row) = effects_query(db, project, DefKey::new(db, id)) {
+            rows.insert(id, (*row).clone());
+        }
+    }
+    Arc::new(brink_analyzer::await_purity_diagnostics(
+        file_id,
+        hir,
+        index,
+        file_resolutions,
+        &rows,
+    ))
+}
+
 /// Whole-project diagnostics + `symbol_meta` (issue #632 / FG-3 design doc
 /// §1), now a thin aggregator (issue #750 / FG-3 completion) over the
 /// decomposed external-check family — [`external_meta_query`] + per-file
@@ -422,6 +467,17 @@ pub(crate) fn whole_project_diagnostics_query(
     for file in project.files(db) {
         diagnostics.extend(
             effects_assertion_diagnostics_query(db, project, *file)
+                .iter()
+                .cloned(),
+        );
+    }
+    // FS-2 `await`-condition purity gate (E105,
+    // docs/flow-suspension-spec.md §3/§5, issue #928) — per-file, lazy (see
+    // `await_purity_diagnostics_query`'s doc): an await-free project never
+    // triggers effect inference here.
+    for file in project.files(db) {
+        diagnostics.extend(
+            await_purity_diagnostics_query(db, project, *file)
                 .iter()
                 .cloned(),
         );

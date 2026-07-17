@@ -1710,3 +1710,39 @@ fn error_sequence_empty_branches() {
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
 }
+
+// ── FlowFrame `await` (docs/flow-suspension-spec.md §3) ─────────────
+
+/// `~ await gold > 100` — the condition is an ordinary infix expression
+/// wrapped in an `AWAIT_STMT` node.
+#[test]
+fn await_infix_condition() {
+    assert_equivalent(
+        parse("~ await gold > 100\n"),
+        cst!(SOURCE_FILE {
+            LOGIC_LINE {
+                AWAIT_STMT {
+                    INFIX_EXPR {
+                        PATH
+                        INTEGER_LIT
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// `~ await alarm_raised` — a bare-name dynamic condition.
+#[test]
+fn await_bare_name_condition() {
+    assert_equivalent(
+        parse("~ await alarm_raised\n"),
+        cst!(SOURCE_FILE {
+            LOGIC_LINE {
+                AWAIT_STMT {
+                    PATH
+                }
+            }
+        }),
+    );
+}

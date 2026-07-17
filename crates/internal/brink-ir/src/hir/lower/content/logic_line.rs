@@ -1,6 +1,6 @@
 use brink_syntax::ast::{self, AstNode, SyntaxNodePtr};
 
-use crate::hir::types::LogicBlock;
+use crate::hir::types::{AwaitStmt, LogicBlock};
 use crate::{AssignOp, Assignment, DiagnosticCode, Expr, Return, Stmt, TempDecl};
 
 use super::super::context::{LowerScope, LowerSink, Lowered};
@@ -8,7 +8,7 @@ use super::super::expr::LowerExpr;
 use super::super::helpers::{expr_contains_call, name_from_ident};
 use super::super::types::lower_type_annotation;
 use super::LowerBody;
-use super::logic_block::lower_stmt_block;
+use super::logic_block::{lower_await_stmt, lower_stmt_block};
 
 /// Structured output from lowering a [`ast::LogicLine`].
 pub enum LogicLineOutput {
@@ -20,6 +20,10 @@ pub enum LogicLineOutput {
     /// §2, brink extension). Never lowers past HIR — see
     /// `brink_ir::hir::types::Stmt::LogicBlock`.
     Block(LogicBlock),
+    /// `~ await <cond>` — a `FlowFrame` suspension point
+    /// (docs/flow-suspension-spec.md §3, brink extension). Fenced at LIR
+    /// lowering (E052) until FS-3.
+    Await(AwaitStmt),
 }
 
 impl LogicLineOutput {
@@ -30,7 +34,11 @@ impl LogicLineOutput {
             Self::ExprStmt(expr) => expr_contains_call(expr),
             Self::TempDecl(td) => td.value.as_ref().is_some_and(expr_contains_call),
             Self::Assignment(a) => expr_contains_call(&a.value),
-            Self::Return(_) | Self::Block(_) => false,
+            // An `await` condition may itself contain a call, but the await is
+            // a suspension point, not a content-emitting logic line — it never
+            // needs the trailing `EndOfLine` inklecate emits after a call on a
+            // content line.
+            Self::Return(_) | Self::Block(_) | Self::Await(_) => false,
         }
     }
 
@@ -42,6 +50,7 @@ impl LogicLineOutput {
             Self::Assignment(a) => Stmt::Assignment(a),
             Self::ExprStmt(e) => Stmt::ExprStmt(e),
             Self::Block(lb) => Stmt::LogicBlock(lb),
+            Self::Await(a) => Stmt::Await(a),
         }
     }
 }
@@ -62,6 +71,14 @@ impl LowerBody for ast::LogicLine {
                 ptr: SyntaxNodePtr::from_node(block.syntax()),
                 stmts,
             }));
+        }
+
+        if let Some(await_stmt) = self.await_stmt() {
+            return Ok(LogicLineOutput::Await(lower_await_stmt(
+                &await_stmt,
+                scope,
+                sink,
+            )));
         }
 
         if let Some(ret) = self.return_stmt() {

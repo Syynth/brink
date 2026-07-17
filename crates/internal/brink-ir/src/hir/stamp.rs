@@ -269,7 +269,12 @@ fn stamp_stmt(
         | hir::Stmt::Return(_)
         | hir::Stmt::ExprStmt(_)
         | hir::Stmt::EndOfLine
-        | hir::Stmt::LogicBlock(_) => {}
+        | hir::Stmt::LogicBlock(_)
+        // `await` (docs/flow-suspension-spec.md §3): the resume-container
+        // synthesis (§3, a synthetic container id + tunnel-return stack) is
+        // FS-2's later step, gated behind the FS-3 runtime; the construct is
+        // fenced at LIR lowering (E052) here and stamps no container yet.
+        | hir::Stmt::Await(_) => {}
     }
 }
 

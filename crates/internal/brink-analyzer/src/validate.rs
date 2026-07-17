@@ -272,6 +272,7 @@ fn stmt_range(stmt: &Stmt) -> Option<rowan::TextRange> {
         Stmt::LabeledBlock(b) => b.label.as_ref().map(|l| l.range),
         Stmt::ExprStmt(_) | Stmt::EndOfLine => None,
         Stmt::LogicBlock(lb) => Some(lb.ptr.text_range()),
+        Stmt::Await(a) => Some(a.ptr.text_range()),
     }
 }
 

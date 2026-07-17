@@ -80,6 +80,47 @@ fn block_break_continue() {
     check("~ {\nwhile true {\nbreak\ncontinue\n}\n}\n");
 }
 
+// ── FlowFrame `await` (docs/flow-suspension-spec.md §3) ─────────────
+
+/// `~ await cond` — top-level logic-line suspension point.
+#[test]
+fn await_logic_line() {
+    check("~ await gold > 100\n");
+}
+
+/// `~ await some_fn_value` — a bare dynamic-condition suspension point.
+#[test]
+fn await_logic_line_bare_ident() {
+    check("~ await alarm_raised\n");
+}
+
+/// `await cond` inside a `~ { … }` block.
+#[test]
+fn block_await() {
+    check("~ {\nawait gold > 100\n}\n");
+}
+
+/// `while await cond { … }` — the persistent-await loop.
+#[test]
+fn block_while_await() {
+    check("~ {\nwhile await alarm_raised {\ntotal = total - 1\n}\n}\n");
+}
+
+/// `await` stays an ordinary assignable identifier — `await = 5` is an
+/// assignment to a variable named `await`, not a suspension point.
+#[test]
+fn await_as_assignment_target() {
+    check("~ {\nawait = 5\n}\n");
+}
+
+/// `while await { … }` (a plain loop over a variable literally named
+/// `await`) is NOT the persistent-await form — `{` follows `await`
+/// directly, so `await` is the loop condition.
+#[test]
+fn while_over_variable_named_await() {
+    check("~ {\nwhile await {\ntotal = total - 1\n}\n}\n");
+}
+
 #[test]
 fn block_return_bare() {
     check("~ {\nreturn\n}\n");

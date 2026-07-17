@@ -261,6 +261,12 @@ pub enum SyntaxKind {
     CONTINUE_STMT,
     /// A bare expression statement inside a block (function/external calls).
     EXPR_STMT,
+    /// `await <cond>` — `FlowFrame` suspension point (docs/flow-suspension-spec.md
+    /// §3). Statement/logic position only (`~ await …` logic line or inside a
+    /// `~ { … }` block). Brink extension; `await` is a contextual (soft)
+    /// keyword recognized only in this statement position, so it stays an
+    /// ordinary identifier everywhere else. Wraps the condition expression.
+    AWAIT_STMT,
     /// `#[expr, …]` — array sigil literal (§3). Expression position only.
     ARRAY_LITERAL,
     /// `#{key: expr, …}` — map sigil literal (§3). Expression position only.
