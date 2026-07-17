@@ -882,7 +882,13 @@ pub(crate) fn lookup_by_name(
 }
 
 /// Result of a bare list item lookup.
-enum BareItemResult {
+///
+/// `pub(crate)` (issue #628): the phase-0 `Sig` stub's list-literal type
+/// inference (`external_check::resolve_list_item_name`) reuses this exact
+/// bare-name resolution — the declaring LIST is always a project-global
+/// lookup, never locally scoped, so that stub can call straight in without
+/// threading an `ImportScope` through `signature()`.
+pub(crate) enum BareItemResult {
     /// Exactly one match.
     Unique(DefinitionId),
     /// Multiple matches across different lists — caller must qualify.
@@ -894,7 +900,7 @@ enum BareItemResult {
 /// Look up a list item by its bare (unqualified) name.
 /// Searches all `ListName.ItemName` entries for a suffix match.
 /// Returns `Ambiguous` if multiple lists contain an item with this name.
-fn lookup_list_item_bare(index: &SymbolIndex, bare_name: &str) -> BareItemResult {
+pub(crate) fn lookup_list_item_bare(index: &SymbolIndex, bare_name: &str) -> BareItemResult {
     let suffix = format!(".{bare_name}");
     let mut found: Option<DefinitionId> = None;
     for (name, ids) in &index.by_name {

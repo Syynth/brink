@@ -915,7 +915,7 @@ pub(crate) fn solve_scc_query<'db>(
     let mut globals: BTreeMap<DefinitionId, brink_analyzer::Ty> = BTreeMap::new();
     for gid in global_ids {
         if let Some(sig) = signature_query(db, project, DefKey::new(db, gid)) {
-            if let Some(vt) = sig.value_type {
+            if let Some(vt) = sig.value_type.clone() {
                 globals.insert(gid, brink_analyzer::Ty::from(vt));
             } else if let Some(ft) = sig.fn_type.clone() {
                 globals.insert(gid, ft);
