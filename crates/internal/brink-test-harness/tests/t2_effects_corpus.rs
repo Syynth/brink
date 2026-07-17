@@ -80,9 +80,17 @@ fn cell_names(db: &ProjectDb, ids: &std::collections::BTreeSet<DefinitionId>) ->
     names
 }
 
+/// Maximum `continue_single` calls per case before aborting. Guards against
+/// an infinite-output program (e.g. a self-looping knot) spinning this test
+/// forever — each call is itself bounded by `Story::STEP_LIMIT`, but that
+/// only caps a single call, not the outer drive loop across calls. Matches
+/// `explorer.rs`'s `STEP_LIMIT` convention.
+const STEP_LIMIT: usize = 10_000;
+
 /// Compile `source` (brink dialect) and run it to completion, returning the
-/// concatenated output. Panics on any compile/runtime error or a choice —
-/// every case here is a choice-free straight-line program.
+/// concatenated output. Panics on any compile/runtime error, a choice —
+/// every case here is a choice-free straight-line program — or exceeding
+/// `STEP_LIMIT` lines.
 fn run_brink(source: &str) -> String {
     let output =
         brink_compiler::compile_with_options("main.ink", |_| Ok(source.to_owned()), brink_opts())
@@ -90,7 +98,14 @@ fn run_brink(source: &str) -> String {
     let (program, line_tables) = brink_runtime::link(&output.data).expect("link");
     let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
     let mut out = String::new();
+    let mut step_count = 0;
     loop {
+        step_count += 1;
+        assert!(
+            step_count <= STEP_LIMIT,
+            "case exceeded {STEP_LIMIT} lines without completing \
+             (must be straight-line and terminating):\n{source}"
+        );
         match story.continue_single().expect("runtime error") {
             Line::Text { text, .. } => out.push_str(&text),
             Line::Done { text, .. } | Line::End { text, .. } => {
@@ -272,4 +287,18 @@ fn a_bound_cannot_cover_an_opaque_row_e103() {
         "expected E103 for an unbounded (opaque) row, got {:?}",
         error_codes(source)
     );
+}
+
+// ── `run_brink` outer-loop step cap ──────────────────────────────────────
+
+#[test]
+#[should_panic(expected = "exceeded")]
+fn run_brink_bounds_the_outer_drive_loop_on_infinite_output() {
+    // A knot that unconditionally diverts to itself emits one `Line::Text`
+    // per `continue_single` call forever — each call is under
+    // `Story::STEP_LIMIT`, so nothing faults, but the outer loop across
+    // calls must still be capped or this spins forever (see `STEP_LIMIT`
+    // above, matching `explorer.rs`'s convention).
+    let source = "-> loop\n=== loop ===\nx\n-> loop\n";
+    run_brink(source);
 }

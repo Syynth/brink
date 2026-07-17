@@ -75,10 +75,17 @@ fn brink_opts() -> AnalysisOptions {
     }
 }
 
+/// Maximum `continue_single` calls per example before aborting. Guards
+/// against an infinite-output program (e.g. a self-looping knot) spinning
+/// this test forever — each call is itself bounded by `Story::STEP_LIMIT`,
+/// but that only caps a single call, not the outer drive loop across calls.
+/// Matches `explorer.rs`'s `STEP_LIMIT` convention.
+const STEP_LIMIT: usize = 10_000;
+
 /// Compile `ink_src` (brink dialect) and run to completion, returning the
-/// concatenated output. Panics on any compile/runtime error or a choice —
+/// concatenated output. Panics on any compile/runtime error, a choice —
 /// every runnable example in this chapter is a choice-free straight-line
-/// program.
+/// program — or exceeding `STEP_LIMIT` lines.
 fn run_ink(ink_src: &str) -> String {
     let output =
         brink_compiler::compile_with_options("main.ink", |_| Ok(ink_src.to_owned()), brink_opts())
@@ -88,7 +95,14 @@ fn run_ink(ink_src: &str) -> String {
     let (program, line_tables) = brink_runtime::link(&output.data).expect("link");
     let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
     let mut out = String::new();
+    let mut step_count = 0;
     loop {
+        step_count += 1;
+        assert!(
+            step_count <= STEP_LIMIT,
+            "chapter example exceeded {STEP_LIMIT} lines without completing \
+             (must be straight-line and terminating):\n{ink_src}"
+        );
         match story
             .continue_single()
             .unwrap_or_else(|e| panic!("chapter example faulted: {e:?}\n--- source ---\n{ink_src}"))
@@ -168,4 +182,19 @@ fn every_ink_example_in_the_effects_chapter_checks_out() {
         error_examples >= 1,
         "expected the chapter's exceedance (E103) example — found {error_examples}"
     );
+}
+
+// ── `run_ink` outer-loop step cap ────────────────────────────────────────
+
+#[test]
+#[should_panic(expected = "exceeded")]
+fn run_ink_bounds_the_outer_drive_loop_on_infinite_output() {
+    // A knot that unconditionally diverts to itself emits one `Line::Text`
+    // per `continue_single` call forever — each call is under
+    // `Story::STEP_LIMIT`, so nothing faults, but the outer loop across
+    // calls must still be capped or a future chapter edit that introduces
+    // a non-terminating example would hang this test forever (see
+    // `STEP_LIMIT` above, matching `explorer.rs`'s convention).
+    let source = "-> loop\n=== loop ===\nx\n-> loop\n";
+    run_ink(source);
 }
