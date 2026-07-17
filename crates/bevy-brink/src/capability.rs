@@ -39,6 +39,15 @@
 //!   to the per-container `Access` table rather than a `SystemParamBuilder`).
 //! - [`dump_container_access`] — the dev-visible debug fn (container → access
 //!   set), for BH-B's scenario harness and interactive debugging.
+//! - [`missing_capabilities`]/[`MissingCapability`]/[`CapabilityError::LoadRejected`]
+//!   — issue #912's load-boundary admission check: the manifest stays
+//!   app-global while [`CapabilityRegistry`] is per-marker `M`, so a story
+//!   loaded under a marker whose registry lacks a manifest-required
+//!   capability must fail to load *at all* under that marker, loudly,
+//!   rather than joining to a silently-incomplete `UnknownCapability`
+//!   err-table at call time. `bevy-brink`'s `fulfill_flow_requests::<M>`
+//!   (`crates/bevy-brink/src/request.rs`) calls this at the story-load
+//!   boundary and refuses the request outright when it's non-empty.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
@@ -150,6 +159,49 @@ pub enum CapabilityError {
         external: String,
         capability: String,
     },
+    /// Load-boundary hard error (issue #912, RULED 2026-07-18 option (b)):
+    /// a story failed to load under a marker because that marker's
+    /// [`CapabilityRegistry`] is missing one or more manifest-required
+    /// capabilities. Raised by `bevy-brink`'s `fulfill_flow_requests` at
+    /// the story-load boundary itself — the tier-1 admission posture
+    /// applied per-marker. Before this variant existed, an unregistered
+    /// name only ever surfaced as a per-story [`UnknownCapability`] logged
+    /// into [`CapabilityTable`] at call time (a silent err-table); this is
+    /// the load refusing to happen at all, loudly, naming the marker, the
+    /// story, and every missing capability at once (not just the first).
+    #[error(
+        "story `{story}` failed to load under marker `{marker}`: this marker's \
+         CapabilityRegistry is missing {} manifest-required capability name(s): {}",
+        missing.len(),
+        missing
+            .iter()
+            .map(|m| format!("`{}` (required by external `{}`)", m.capability, m.external))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )]
+    LoadRejected {
+        /// The marker type name (`std::any::type_name::<M>()`) the story
+        /// was loading under.
+        marker: &'static str,
+        /// A human-readable identifier for the story — its asset path if
+        /// the handle carries one, otherwise its `AssetId` debug form.
+        story: String,
+        /// Every manifest-required capability name this marker's registry
+        /// doesn't recognize, deduplicated and sorted (`external`, then
+        /// `capability`).
+        missing: Vec<MissingCapability>,
+    },
+}
+
+/// One manifest-declared capability name a marker's [`CapabilityRegistry`]
+/// doesn't recognize — the unit [`missing_capabilities`] collects and
+/// [`CapabilityError::LoadRejected`] reports in full (issue #912).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MissingCapability {
+    /// The external whose manifest entry declares the missing capability.
+    pub external: String,
+    /// The capability name itself (engine vocabulary, e.g. `"Transform"`).
+    pub capability: String,
 }
 
 // ── Registry: name → ComponentId (mirrors HandleKind's registration) ────
@@ -383,6 +435,77 @@ pub fn compute_container_access<M: Send + Sync + 'static>(
         out.insert(row.def, acc.into_container_access());
     }
     Ok(out)
+}
+
+/// Fold one [`DirectEffects`] row's calls into `missing` — the
+/// [`missing_capabilities`] counterpart to [`join_direct`], collecting
+/// every unregistered name instead of erroring on the first one.
+fn collect_missing_from_direct<M: Send + Sync + 'static>(
+    direct: &DirectEffects,
+    program: &Program,
+    manifest: &CapabilityManifest,
+    registry: &CapabilityRegistry<M>,
+    missing: &mut BTreeSet<(String, String)>,
+) {
+    for call in &direct.calls {
+        let Some(external_name) = program.name_checked(call.name) else {
+            continue;
+        };
+        let Some(external) = manifest.external(external_name) else {
+            continue;
+        };
+        for name in external
+            .effects
+            .reads
+            .iter()
+            .chain(external.effects.writes.iter())
+        {
+            if registry.component_id(name).is_none() {
+                missing.insert((external_name.to_string(), name.clone()));
+            }
+        }
+    }
+}
+
+/// The load-boundary admission check (issue #912, RULED option (b)): every
+/// manifest-declared capability name — from externals this story's effect
+/// rows actually call, direct part and every dispatch's static fallback,
+/// the same walk [`compute_container_access`] does — that `registry`
+/// doesn't recognize. Empty means this story's capabilities all resolve
+/// under this marker's registry and the load may proceed.
+///
+/// Unlike [`compute_container_access`] (which errors on the first miss,
+/// suited to the call-time join), this collects every miss so a load
+/// rejection ([`CapabilityError::LoadRejected`]) can name the full gap in
+/// one shot instead of a fix/reload/fix cycle. Deduplicated and sorted
+/// (`BTreeSet`) — CLAUDE.md's determinism rule.
+#[must_use]
+pub fn missing_capabilities<M: Send + Sync + 'static>(
+    program: &Program,
+    effect_rows: &[EffectRowEntry],
+    manifest: &CapabilityManifest,
+    registry: &CapabilityRegistry<M>,
+) -> Vec<MissingCapability> {
+    let mut missing = BTreeSet::new();
+    for row in effect_rows {
+        collect_missing_from_direct(&row.direct, program, manifest, registry, &mut missing);
+        for dispatch in &row.dispatches {
+            collect_missing_from_direct(
+                &dispatch.fallback,
+                program,
+                manifest,
+                registry,
+                &mut missing,
+            );
+        }
+    }
+    missing
+        .into_iter()
+        .map(|(external, capability)| MissingCapability {
+            external,
+            capability,
+        })
+        .collect()
 }
 
 // ── Load/unload boundary ──────────────────────────────────────────────────
@@ -1085,5 +1208,145 @@ mod tests {
                 .is_none()
         );
         drop(program_handle);
+    }
+
+    // ── Issue #912: load-boundary admission check ──────────────────────
+
+    /// [`missing_capabilities`] must collect **every** manifest-declared
+    /// capability the registry doesn't recognize — not just the first,
+    /// unlike [`compute_container_access`]'s call-time short-circuit —
+    /// since the whole point of a load-boundary error is to show the host
+    /// the full gap in one shot.
+    #[test]
+    fn missing_capabilities_collects_every_gap_not_just_the_first() {
+        let registry = CapabilityRegistry::<()>::default(); // nothing registered at all
+
+        let mut manifest = CapabilityManifest::default();
+        manifest.externals.push(CapabilityManifestExternal {
+            name: "get_position".to_string(),
+            effects: CapabilityEffects {
+                reads: vec!["Transform".to_string()],
+                writes: vec![],
+                detect: BTreeMap::new(),
+            },
+        });
+        manifest.externals.push(CapabilityManifestExternal {
+            name: "play_sfx".to_string(),
+            effects: CapabilityEffects {
+                reads: vec![],
+                writes: vec!["AudioSink".to_string()],
+                detect: BTreeMap::new(),
+            },
+        });
+
+        let source = "EXTERNAL get_position(id)\nEXTERNAL play_sfx(id)\n\
+                       === start ===\n~ temp x = get_position(0)\n~ play_sfx(0)\nHello.\n-> END\n";
+        let (program, _tables, _ctx) = compile_test_story(source);
+        let get_position = program.name_id("get_position").expect("interned");
+        let play_sfx = program.name_id("play_sfx").expect("interned");
+
+        let row = EffectRowEntry {
+            def: DefinitionId::new(DefinitionTag::Address, 0),
+            is_entry: true,
+            direct: DirectEffects {
+                reads: vec![],
+                writes: vec![],
+                calls: vec![atom(get_position), atom(play_sfx)],
+                opaque: false,
+            },
+            dispatches: vec![],
+        };
+
+        let missing = missing_capabilities(&program, &[row], &manifest, &registry);
+        assert_eq!(
+            missing.len(),
+            2,
+            "both externals' missing capabilities should be reported: {missing:?}"
+        );
+        assert!(missing.contains(&MissingCapability {
+            external: "get_position".to_string(),
+            capability: "Transform".to_string(),
+        }));
+        assert!(missing.contains(&MissingCapability {
+            external: "play_sfx".to_string(),
+            capability: "AudioSink".to_string(),
+        }));
+    }
+
+    /// A capability the registry *does* recognize contributes nothing to
+    /// `missing_capabilities` — the happy path a single-satisfied marker
+    /// takes at load time.
+    #[test]
+    fn missing_capabilities_is_empty_when_registry_covers_every_declared_name() {
+        let mut app = App::new();
+        app.register_capability::<(), Transform>("Transform");
+        let registry = app.world().resource::<CapabilityRegistry<()>>();
+
+        let mut manifest = CapabilityManifest::default();
+        manifest.externals.push(CapabilityManifestExternal {
+            name: "get_position".to_string(),
+            effects: CapabilityEffects {
+                reads: vec!["Transform".to_string()],
+                writes: vec![],
+                detect: BTreeMap::new(),
+            },
+        });
+
+        let source = "EXTERNAL get_position(id)\n=== start ===\n~ temp x = get_position(0)\nHello.\n-> END\n";
+        let (program, _tables, _ctx) = compile_test_story(source);
+        let get_position = program.name_id("get_position").expect("interned");
+
+        let row = EffectRowEntry {
+            def: DefinitionId::new(DefinitionTag::Address, 0),
+            is_entry: true,
+            direct: DirectEffects {
+                reads: vec![],
+                writes: vec![],
+                calls: vec![atom(get_position)],
+                opaque: false,
+            },
+            dispatches: vec![],
+        };
+
+        let missing = missing_capabilities(&program, &[row], &manifest, registry);
+        assert!(missing.is_empty(), "got {missing:?}");
+    }
+
+    /// The load-rejection error (this issue's user-facing surface) must
+    /// name the marker, the story, and every missing capability — not a
+    /// generic "something's missing" message the host has to go dig for.
+    #[test]
+    fn load_rejected_error_names_marker_story_and_every_missing_capability() {
+        let err = CapabilityError::LoadRejected {
+            marker: "my_game::DreamSequence",
+            story: "dialogue.ink".to_string(),
+            missing: vec![
+                MissingCapability {
+                    external: "get_position".to_string(),
+                    capability: "Transform".to_string(),
+                },
+                MissingCapability {
+                    external: "play_sfx".to_string(),
+                    capability: "AudioSink".to_string(),
+                },
+            ],
+        };
+        let message = err.to_string();
+        assert!(
+            message.contains("my_game::DreamSequence"),
+            "should name the marker: {message}"
+        );
+        assert!(
+            message.contains("dialogue.ink"),
+            "should name the story: {message}"
+        );
+        assert!(
+            message.contains("Transform") && message.contains("get_position"),
+            "should name the first missing capability and its external: {message}"
+        );
+        assert!(
+            message.contains("AudioSink") && message.contains("play_sfx"),
+            "should name the second missing capability and its external too: {message}"
+        );
     }
 }
