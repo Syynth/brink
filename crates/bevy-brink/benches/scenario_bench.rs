@@ -59,13 +59,17 @@
 //! cargo bench -p bevy-brink --bench scenario_bench -- --frames 5
 //! # With the #821 Arc-clone/COW-copy debug counters:
 //! cargo bench -p bevy-brink --features bench-counters --bench scenario_bench
+//! # BH-2 batch-mode driver (advance_batch) over the same axis matrix:
+//! cargo bench -p bevy-brink --features bench-counters --bench scenario_bench -- --mode batch
 //! ```
 //!
 //! Writes `benches/baselines/serial-driver.csv` and
 //! `benches/baselines/serial-driver.md` (relative to this crate's root) —
-//! the in-repo SERIAL baselines at flow counts 1/100/1k/10k. See
-//! `docs/bevy-bench.md` for the captured baseline and regeneration
-//! instructions.
+//! the in-repo SERIAL baselines at flow counts 1/100/1k/10k. `--mode batch`
+//! runs BH-2's batch driver (`advance_batch`, #914) over the same matrix
+//! instead and writes `benches/baselines/batch-serial-driver.{csv,md}`,
+//! never touching the serial pair. See `docs/bevy-bench.md` for the
+//! captured baselines and regeneration instructions.
 //!
 //! This target is `test = false` in `Cargo.toml`: `cargo test` never runs
 //! it (running `main()` would execute the whole baseline matrix and
