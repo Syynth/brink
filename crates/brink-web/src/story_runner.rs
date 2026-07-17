@@ -675,6 +675,33 @@ impl StoryRunner {
             .map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// Run a shared flow to its next terminal line. Returns JSON array of
+    /// `Line` objects, capped at `FlowInstance::LINE_LIMIT` (10,000) lines —
+    /// the same bound `continue_story` enforces for the primary flow, so an
+    /// infinite-emitting flow errors instead of hanging or exhausting memory on the host
+    /// (`FlowHandle.continueMaximally`'s wasm leg).
+    pub fn continue_flow_maximally(&self, name: &str) -> Result<String, JsError> {
+        let _guard = BusyGuard::acquire(&self.busy)
+            .ok_or_else(|| reentrant_error("continue_flow_maximally"))?;
+        let bindings = self.bindings.borrow();
+        // A plain handler — flow stepping is not part of the default flow's
+        // choice-log replay, so it must not touch the recorder.
+        let handler = JsHandler {
+            bindings: &bindings,
+            lenient: self.lenient_unbound.get(),
+            pending: &self.pending_promise,
+        };
+        let mut borrow = self.story.borrow_mut();
+        let story = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        let lines = story
+            .continue_flow_maximally_shared_with(name, &handler)
+            .map_err(|e| JsError::new(&format!("runtime error: {e}")))?;
+        let resp: Vec<LineJs> = lines.into_iter().map(line_to_js).collect();
+        serde_json::to_string(&resp).map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
     /// Select a choice in a shared flow.
     pub fn choose_flow(&self, name: &str, index: usize) -> Result<(), JsError> {
         let _guard =

@@ -2806,6 +2806,43 @@ impl<R: StoryRng> Story<R> {
         )
     }
 
+    /// Run a shared flow to its next terminal line (against the shared
+    /// context) — the shared-flow analogue of [`Self::continue_flow_maximally`]
+    /// (which drives an *isolated* flow instead). Bounded by
+    /// [`FlowInstance::LINE_LIMIT`] via
+    /// [`drive_to_terminal`](FlowInstance::drive_to_terminal): an
+    /// infinite-emitting flow errors with [`RuntimeError::LineLimitExceeded`]
+    /// rather than growing the returned `Vec` without bound (guard against
+    /// unbounded growth).
+    pub fn continue_flow_maximally_shared(
+        &mut self,
+        name: &str,
+    ) -> Result<Vec<Line>, RuntimeError> {
+        self.continue_flow_maximally_shared_with(name, &FallbackHandler)
+    }
+
+    /// Run a shared flow to its next terminal line with an external-function
+    /// handler. See [`Self::continue_flow_maximally_shared`].
+    pub fn continue_flow_maximally_shared_with(
+        &mut self,
+        name: &str,
+        handler: &dyn ExternalFnHandler,
+    ) -> Result<Vec<Line>, RuntimeError> {
+        let resolver = self.resolver.as_deref();
+        let instance = self
+            .shared_instances
+            .get_mut(name)
+            .ok_or_else(|| RuntimeError::UnknownFlow(name.to_owned()))?;
+        let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
+        instance.drive_to_terminal::<R>(
+            &self.program,
+            &self.line_tables,
+            &mut view,
+            handler,
+            resolver,
+        )
+    }
+
     /// Select a choice in a shared flow (against the shared context).
     pub fn choose_flow_shared(&mut self, name: &str, index: usize) -> Result<(), RuntimeError> {
         let instance = self
@@ -3363,6 +3400,29 @@ mod tests {
             story.wake_check().is_empty(),
             "wake_check returns no woken flows until parks exist (FS-3r)"
         );
+    }
+
+    /// #999: a shared flow that emits text forever must error at
+    /// `FlowInstance::LINE_LIMIT` rather than growing `continue_flow_maximally_shared`'s
+    /// returned `Vec<Line>` without bound — the shared-flow analogue of
+    /// `drive_to_terminal_errors_at_line_limit` above, exercised through the
+    /// `Story`-level entry point the wasm leg (`brink-web`) actually calls.
+    #[test]
+    fn continue_flow_maximally_shared_errors_at_line_limit() {
+        let src = "-> spam\n\n=== spam ===\nLine.\n-> spam\n";
+        let mut story = story_from_source(src);
+        story
+            .spawn_flow_shared("f", None)
+            .expect("spawn shared flow at the root (immediately diverts into `spam`)");
+        let err = story
+            .continue_flow_maximally_shared("f")
+            .expect_err("infinite-emitting flow should hit the line limit rather than hang");
+        match err {
+            RuntimeError::LineLimitExceeded(n) => {
+                assert_eq!(n, FlowInstance::LINE_LIMIT);
+            }
+            other => panic!("expected LineLimitExceeded, got {other:?}"),
+        }
     }
 
     /// `Choice.index` (the live, visible choice list) must be the *raw*
