@@ -176,11 +176,9 @@ scheduling sound as content loads.
   is closed by this; its types half stands (manifest-listed
   host-callable functions require annotations).
 
-**Host-side mechanics — SETTLED (sitting 3, 2026-07-15)**: see §12.
-Still OPEN for the final host sitting: the manifest capability
-*grammar* (how a binding author writes `reads Transform`;
-entity-granular syntax space reserved) and the reactive-sleep
-*author-facing API surface*.
+**Host-side mechanics — SETTLED (sitting 3, 2026-07-15); author
+surface — SETTLED (sitting 4, 2026-07-16)**: see §12–§13. The T2
+design round is CLOSED; everything remaining is implementation.
 
 ## 11. Invariants and non-goals
 
@@ -301,3 +299,69 @@ Manifest capability grammar (author-facing spelling; the
 change-detectable-vs-opaque read bit per binding); reactive-sleep
 author-facing API surface; serial-mode documentation. Everything else
 in the host half is settled above.
+
+
+## 13. The host author surface — RULED (sitting 4, 2026-07-16; the round's final sitting)
+
+### 13.1 Reactive sleep is host-driven (no language change)
+
+Sleeping is a bevy-brink API, not an ink construct. The game sets a
+flow's **standing wake policy**; ink authors write ordinary knots. A
+language-level `await {cond}` primitive is recorded as a **future
+direction** (a real design round: new park kind, save/replay
+semantics) — attractive later, not foreclosed, not v1.
+
+**The wake contract** (ruled precisely):
+
+1. `wake_when(cond)` does not park — flows park at their natural
+   yield points (turn end, `-> DONE`). The policy governs *waking*:
+   a parked flow under a policy is skipped by Collect entirely; its
+   condition's dependency set (computable from effect rows) sits in
+   the wake map. Parked cost: zero.
+2. A dependency changing triggers **re-evaluation, not waking** —
+   the condition (a pure fn per its effect row; purity is checkable
+   now) is evaluated only when a dependency moved, and the flow
+   wakes only on condition-true.
+3. A woken flow runs a normal turn; the condition has no mid-turn
+   influence.
+4. Policies are **persistent by default** (re-arm when the flow
+   re-parks); `wake_once` covers one-shots; the host may clear or
+   replace a policy anytime.
+5. The policy applies to **turn-boundary parks only**. Choice-blocked
+   and external-blocked flows have their own resume paths (`choose`,
+   `resolve_external`); `-> END` flows are dead and the policy is
+   inert.
+6. `spawn_flow(...).wake_when(cond)` spawns **dormant**: parked at
+   entry, first turn runs on first condition-true.
+
+**Bevy shape**: a `FlowSleep` component on the flow entity (condition
++ dependency set) — ECS-idiomatic, inspector-visible; the wake system
+is a query over `FlowSleep`. (The callback-registry alternative is
+rejected.)
+
+### 13.2 Manifest capability grammar
+
+Capabilities extend the existing JSON manifest per external:
+
+```json
+{ "name": "get_position",
+  "params": [{"type": "handle<Npc>"}],
+  "effects": { "reads": ["Transform"],
+               "detect": {"Transform": true} } }
+```
+
+- Capability names are **engine-vocabulary strings, compiler-opaque**
+  — the compiler validates structure only; bevy-brink maps
+  name → `ComponentId` at registration (the `HandleKind` pattern).
+  This is what keeps the format host-agnostic (ruled value).
+- The **`detect` bit** marks a read as change-detection-backed
+  (bevy ticks) vs opaque (must poll for sleep purposes).
+- Entity-granular parameter syntax: **reserved, not designed**
+  (matches the wire slot).
+
+### 13.3 Serial mode
+
+The ruled semantics (serial host stepping = immediate write
+visibility; batch scheduling = frame-start consistency, §12.4) get a
+book section with the host implementation. Documentation deliverable
+only.
