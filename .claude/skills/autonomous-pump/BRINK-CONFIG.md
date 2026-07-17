@@ -43,3 +43,16 @@ Fill pump.js's CONFIG from these when running the pump on this repo.
 ## Quiet-window measurement (decision 2026-07-17, night-shift rule)
 - Perf baselines / BH-B numbers are CANONICAL only from a SOLO run while nothing else executes on the machine (no wave, no sibling builds). Harness code and provisional in-wave numbers may land with their slice, labeled provisional; canonical numbers are re-collected in the inter-wave gap (wave completes → boundary sweep → solo measurement agent → commit baselines → next wave) and committed to crates/bevy-brink/benches/baselines/.
 - Measurement agents: gates may use the shared cache, but BENCH runs use the worktree-local target dir; record machine context (cores, thread-pool size, OS, rustc) in the baseline .md.
+
+## Demo lane (drive-it loop, 2026-07-18)
+- Drive-session findings on demos/compound are filed with the `drive-it` label and ride ordinary waves as demo-lane items: gate override = `DEMO_GATE` (fmt/clippy/test inside demos/compound + root `cargo check --workspace` proving the demo stays excluded). No oracle, no wasm build — minutes.
+- Design-shaped findings do NOT go straight to the pump: ruling conversation → drive-app-plan § amendment → then wave-able (design-before-implementation, applied to the demo).
+- Phase-1 migration ports are wave items (one entity per issue, friction-journal requirement in the brief, DEMO_GATE + full GATE both — ports touch bevy-brink).
+
+## Agent-liveness rules (2026-07-18 incidents)
+- NEVER end a turn waiting on a backgrounded command — the wake will not come; run gates FOREGROUND (two agents parked mid-wave on backgrounded cargo test; recovered via resume-with-corrective).
+- USER INTERRUPTS KILL ALL BACKGROUND TASKS (waves, agents, watchers). After any interrupt: probe the task registry + journal mtimes, then resume waves via resumeFromRunId and relaunch agents — worktrees survive.
+
+## Disk sweep, widened (2026-07-18: dp-review + stray-clone incidents)
+- Boundary sweeps audit ANY /tmp dir over 500M (pattern-blind — glob-matching missed 4G of orphans for days) AND hunt ~/code for stray clones/target dirs (`find ~/code -maxdepth 4 -type d -name target`) — a measurement agent once left a 26G target in a stray clone at ~/code/rs/.
+- The shared cache regrows ~20-45G per wave era: wipe it at EVERY boundary where no wave is imminent, not just when tight.
