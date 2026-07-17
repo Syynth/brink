@@ -12,6 +12,13 @@ export interface Diagnostic {
   end: number;
   message: string;
   severity: "Error" | "Warning";
+  /**
+   * Structured diagnostic code, e.g. `"E065"` (issue #1004). Lets consumers
+   * filter or group diagnostics programmatically instead of string-matching
+   * `message`. Optional for backward compatibility with older mocks/fixtures;
+   * the wasm compile channel always populates it.
+   */
+  code?: string;
   /** Path of the file this diagnostic belongs to (may be an INCLUDEd file). */
   file: string;
 }

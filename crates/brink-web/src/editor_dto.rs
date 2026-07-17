@@ -558,6 +558,7 @@ pub(crate) fn diagnostic_to_js(
         start: byte_to_utf16(source, d.range.start().into()),
         end: byte_to_utf16(source, d.range.end().into()),
         severity: format!("{:?}", d.code.severity()),
+        code: d.code.as_str().to_owned(),
         file: d.path.clone(),
     }
 }
