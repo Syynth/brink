@@ -15,19 +15,21 @@
 use bevy::prelude::*;
 use std::time::Instant;
 
+use crate::layout_gen::LayoutData;
 use crate::rounds::RoundScoped;
 use crate::timing::BehaviorTimings;
 use crate::world::{Collider, Player};
 
 const SWITCH_HALF: Vec2 = Vec2::new(14.0, 14.0);
 const INTERACT_RADIUS: f32 = 46.0;
-const DOOR_HALF: Vec2 = Vec2::new(10.0, 135.0);
 
 /// Per-id accent color shared by a switch and the door(s) it opens, so the
 /// association reads as "same color = same circuit" without needing a legend.
-const ACCENT_COLORS: [Color; 2] = [
-    Color::srgb(0.25, 0.75, 0.95), // id 0 — cyan
-    Color::srgb(0.95, 0.6, 0.2),   // id 1 — amber
+const ACCENT_COLORS: [Color; 4] = [
+    Color::srgb(0.25, 0.75, 0.95), // cyan
+    Color::srgb(0.95, 0.6, 0.2),   // amber
+    Color::srgb(0.7, 0.45, 0.95),  // violet
+    Color::srgb(0.35, 0.9, 0.55),  // green
 ];
 
 #[must_use]
@@ -148,14 +150,14 @@ pub fn switch_prompt_system(
 /// This is core gameplay feedback, not a debug overlay, so it stays on
 /// regardless of the vision-cone toggle.
 pub fn draw_door_switch_glyphs(
-    doors: Query<(&Transform, &Door)>,
+    doors: Query<(&Transform, &Door, &Collider)>,
     switches: Query<(&Transform, &Switch)>,
     mut gizmos: Gizmos,
 ) {
-    for (tf, door) in &doors {
+    for (tf, door, collider) in &doors {
         let pos = tf.translation.truncate();
         let accent = accent_color(door.switch_id);
-        gizmos.rect_2d(pos, DOOR_HALF * 2.0, accent);
+        gizmos.rect_2d(pos, collider.half_extents * 2.0, accent);
         if !door.open {
             draw_lock_glyph(&mut gizmos, pos);
         }
@@ -187,26 +189,23 @@ fn draw_lock_glyph(gizmos: &mut Gizmos, center: Vec2) {
     );
 }
 
-/// Spawn the round's doors and switches (closed / off), plus their id labels
-/// and the switch interact prompts. Called from round start.
-pub fn spawn_doors(commands: &mut Commands) {
-    // (door center, switch position, id)
-    let pairs = [
-        (Vec2::new(-200.0, 195.0), Vec2::new(-460.0, 150.0), 0u8),
-        (Vec2::new(200.0, -195.0), Vec2::new(-40.0, -250.0), 1u8),
-    ];
-    for (door_pos, switch_pos, id) in pairs {
+/// Spawn the layout's **locked** doors and their switches (closed / off), plus
+/// id labels and interact prompts. Unlocked and loop connections are just
+/// carved gaps in the wall geometry — they need no entity.
+pub fn spawn_doors_from_layout(commands: &mut Commands, layout: &LayoutData) {
+    for d in layout.doors.iter().filter(|d| d.locked) {
+        let id = d.id;
         let accent = accent_color(id);
 
         commands.spawn((
-            Sprite::from_color(Color::srgb(0.55, 0.18, 0.18), DOOR_HALF * 2.0),
-            Transform::from_translation(door_pos.extend(0.5)),
+            Sprite::from_color(Color::srgb(0.55, 0.18, 0.18), d.half * 2.0),
+            Transform::from_translation(d.center.extend(0.5)),
             Door {
                 switch_id: id,
                 open: false,
             },
             Collider {
-                half_extents: DOOR_HALF,
+                half_extents: d.half,
             },
             RoundScoped,
         ));
@@ -217,9 +216,15 @@ pub fn spawn_doors(commands: &mut Commands) {
                 ..default()
             },
             TextColor(accent),
-            Transform::from_translation(door_pos.extend(1.5)),
+            Transform::from_translation(d.center.extend(1.5)),
             RoundScoped,
         ));
+    }
+
+    for s in &layout.switches {
+        let id = s.id;
+        let accent = accent_color(id);
+        let switch_pos = s.pos;
 
         commands.spawn((
             Sprite::from_color(Color::srgb(0.85, 0.75, 0.3), SWITCH_HALF * 2.0),
