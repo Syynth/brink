@@ -1,20 +1,30 @@
-//! The Compound — Phase 0.
+//! The Compound — a small, complete, playable top-down stealth game built in
+//! pure Bevy. It is the *control group* for the drive-app plan
+//! (`docs/drive-app-plan.md`): every entity's behavior is written in plain,
+//! legible Rust so that Phase 1 can port each archetype to ink one module at a
+//! time and diff the result against this baseline — including the per-frame
+//! behavior-system timing readout in the HUD.
 //!
-//! A small, complete, playable top-down stealth game built in pure Bevy. It is
-//! the *control group* for the drive-app plan (`docs/drive-app-plan.md`): every
-//! entity's behavior is written in plain, legible Rust so that Phase 1 can port
-//! each archetype to ink one module at a time and diff the result against this
-//! baseline — including the per-frame behavior-system timing readout in the HUD.
+//! Gameplay v2 (plan §10): each round draws a fresh seeded **BSP layout**
+//! (`layout_gen`) with room recipes; guards climb an **MGS-lenient suspicion
+//! ladder** where breaking line of sight is the only escape (`guards`); and the
+//! round is a push-your-luck of **greed vs safety** (gold banked only on exit),
+//! **speed vs noise** (running is fast but loud), and consumable **coins/smoke**
+//! (`loot`, `noise`).
 //!
-//! Module map (one entity archetype per file, migration order-of-battle):
-//!   guards · cameras · doors · alarm · rats · rounds · shop · stats
-//! plus infrastructure: world (arena + geometry), hud, timing.
+//! Module map (one entity archetype per file):
+//!   `layout_gen` · `guards` · `cameras` · `doors` · `alarm` · `loot` ·
+//!   `noise` · `rats` · `rounds` · `shop` · `stats` · plus infrastructure:
+//!   `world` · `hud` · `timing`.
 
 mod alarm;
 mod cameras;
 mod doors;
 mod guards;
 mod hud;
+mod layout_gen;
+mod loot;
+mod noise;
 mod rats;
 mod rounds;
 mod shop;
@@ -25,20 +35,26 @@ mod world;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
 
-use crate::alarm::{Alarm, SpottedEvent, alarm_system};
+use crate::alarm::{Alarm, GlobalAlarm, SpottedEvent, alarm_system};
 use crate::cameras::{camera_ai_system, camera_interact_system, draw_camera_cones};
 use crate::doors::{
     Door, door_sync_system, draw_door_switch_glyphs, switch_interact_system, switch_prompt_system,
     switch_visual_system,
 };
 use crate::guards::{
-    ReinforcementSpawner, draw_guard_cones, guard_ai_system, reinforcement_system,
-    spawn_telegraph_system,
+    ReinforcementSpawner, draw_guard_cones, draw_guard_tells, guard_ai_system,
+    reinforcement_system, spawn_telegraph_system,
 };
 use crate::hud::{setup_hud, update_hud};
+use crate::loot::gold_pickup_system;
+use crate::noise::{
+    NoiseEvent, RunNoiseClock, coin_system, is_running, run_noise_system, smoke_system, spawn_coin,
+    spawn_smoke,
+};
 use crate::rats::{RATS_PER_BATCH, Rat, RatRng, rat_system, spawn_rats};
 use crate::rounds::{
-    LastOutcome, Phase, PlayerCaught, Round, StartRound, round_outcome_system, start_round_system,
+    CurrentLayout, LastOutcome, Phase, PlayerCaught, Round, StartRound, round_outcome_system,
+    start_round_system,
 };
 use crate::shop::{setup_shop, shop_button_system, shop_refresh_system, teardown_shop};
 use crate::stats::{Loadout, PlayerStats};
@@ -55,7 +71,7 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "The Compound — Phase 0".into(),
+                title: "The Compound".into(),
                 resolution: (1280u32, 720u32).into(),
                 ..default()
             }),
@@ -66,13 +82,17 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06)))
         .init_resource::<Alarm>()
         .init_resource::<Round>()
+        .init_resource::<CurrentLayout>()
         .init_resource::<LastOutcome>()
         .init_resource::<Loadout>()
         .init_resource::<BehaviorTimings>()
         .init_resource::<ReinforcementSpawner>()
         .init_resource::<RatRng>()
+        .init_resource::<RunNoiseClock>()
         .insert_resource(ShowCones(true))
         .add_message::<SpottedEvent>()
+        .add_message::<GlobalAlarm>()
+        .add_message::<NoiseEvent>()
         .add_message::<PlayerCaught>()
         .add_message::<StartRound>()
         .add_systems(
@@ -108,9 +128,16 @@ fn main() {
                 switch_visual_system,
                 switch_prompt_system,
                 draw_door_switch_glyphs,
+                draw_guard_tells,
                 player_movement,
                 camera_interact_system,
                 switch_interact_system,
+                gold_pickup_system,
+                run_noise_system,
+                coin_system,
+                smoke_system,
+                throw_coin_system,
+                use_smoke_system,
                 round_outcome_system,
                 reset_round_key,
             )
@@ -131,7 +158,8 @@ fn kick_off_first_round(mut start: MessageWriter<StartRound>) {
     start.write(StartRound);
 }
 
-/// WASD movement with axis-separated wall/door collision.
+/// WASD movement with axis-separated wall/door collision. Holding Shift runs:
+/// faster, but the noise it makes (see [`run_noise_system`]) draws guards.
 fn player_movement(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
@@ -160,8 +188,14 @@ fn player_movement(
         return;
     }
 
+    let speed = if is_running(&keys) {
+        stats.run_speed()
+    } else {
+        stats.move_speed
+    };
+
     let from = tf.translation.truncate();
-    let desired = from + dir.normalize() * stats.move_speed * time.delta_secs();
+    let desired = from + dir.normalize() * speed * time.delta_secs();
 
     let mut blockers: Vec<Blocker> = walls
         .iter()
@@ -177,6 +211,59 @@ fn player_movement(
     let out = resolve_collision(from, desired, PLAYER_HALF, &blockers);
     tf.translation.x = out.x;
     tf.translation.y = out.y;
+}
+
+/// Throw a coin toward the mouse cursor (a lure): spends one coin and spawns a
+/// projectile that emits noise where it lands.
+fn throw_coin_system(
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut commands: Commands,
+    mut loadout: ResMut<Loadout>,
+    windows: Query<&Window>,
+    cameras: Query<(&Camera, &GlobalTransform)>,
+    player: Query<&Transform, With<Player>>,
+) {
+    if !mouse.just_pressed(MouseButton::Left) || loadout.coins == 0 {
+        return;
+    }
+    let Ok(ptf) = player.single() else {
+        return;
+    };
+    let ppos = ptf.translation.truncate();
+    let aim = cursor_world(&windows, &cameras).unwrap_or(ppos + Vec2::X * 100.0);
+    let dir = aim - ppos;
+    if dir.length() < 1.0 {
+        return;
+    }
+    spawn_coin(&mut commands, ppos, dir);
+    loadout.coins -= 1;
+}
+
+/// Drop a smoke bomb on the player (breaks a chase): spends one smoke charge.
+fn use_smoke_system(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut commands: Commands,
+    mut loadout: ResMut<Loadout>,
+    player: Query<&Transform, With<Player>>,
+) {
+    if !keys.just_pressed(KeyCode::KeyQ) || loadout.smokes == 0 {
+        return;
+    }
+    if let Ok(ptf) = player.single() {
+        spawn_smoke(&mut commands, ptf.translation.truncate());
+        loadout.smokes -= 1;
+    }
+}
+
+/// Convert the cursor's screen position to a world position via the 2D camera.
+fn cursor_world(
+    windows: &Query<&Window>,
+    cameras: &Query<(&Camera, &GlobalTransform)>,
+) -> Option<Vec2> {
+    let window = windows.iter().next()?;
+    let cursor = window.cursor_position()?;
+    let (camera, cam_tf) = cameras.iter().next()?;
+    camera.viewport_to_world_2d(cam_tf, cursor).ok()
 }
 
 /// F1 toggles the vision-cone overlay.
@@ -218,15 +305,21 @@ fn reset_round_key(keys: Res<ButtonInput<KeyCode>>, mut start: MessageWriter<Sta
 #[cfg(test)]
 mod behavior_cost {
     use super::*;
-    use crate::cameras::{camera_ai_system, spawn_cameras};
-    use crate::doors::door_sync_system;
-    use crate::guards::spawn_round_guards;
+    use crate::alarm::spawn_alarm_panels;
+    use crate::cameras::spawn_cameras_from_layout;
+    use crate::doors::spawn_doors_from_layout;
+    use crate::guards::spawn_round_guards_from_layout;
+    use crate::layout_gen::generate;
+    use crate::world::spawn_layout_walls;
 
     fn seed(mut commands: Commands, mut rng: ResMut<RatRng>) {
         commands.spawn((Transform::default(), PlayerStats::default(), Player));
-        spawn_round_guards(&mut commands, 12);
-        spawn_cameras(&mut commands);
-        crate::doors::spawn_doors(&mut commands);
+        let layout = generate(42);
+        spawn_layout_walls(&mut commands, &layout);
+        spawn_doors_from_layout(&mut commands, &layout);
+        spawn_cameras_from_layout(&mut commands, &layout);
+        spawn_alarm_panels(&mut commands, &layout);
+        spawn_round_guards_from_layout(&mut commands, &layout, 12);
         spawn_rats(&mut commands, &mut rng, 0, 1000);
     }
 
@@ -238,9 +331,11 @@ mod behavior_cost {
             .init_resource::<Loadout>()
             .init_resource::<BehaviorTimings>()
             .init_resource::<RatRng>()
-            .init_resource::<crate::guards::ReinforcementSpawner>()
+            .init_resource::<ReinforcementSpawner>()
             .init_resource::<Round>()
             .add_message::<SpottedEvent>()
+            .add_message::<GlobalAlarm>()
+            .add_message::<NoiseEvent>()
             .add_message::<PlayerCaught>()
             .add_systems(Startup, seed)
             .add_systems(
@@ -261,9 +356,8 @@ mod behavior_cost {
         }
         let t = *app.world().resource::<BehaviorTimings>();
 
-        // Report the numbers (visible with `cargo test -- --nocapture`).
         eprintln!(
-            "behavior cost (12 guards, 4 cameras, 2 doors, 1000 rats):\n  \
+            "behavior cost (12 guards, seeded layout, 1000 rats):\n  \
              guards {:?}  cameras {:?}  doors {:?}  alarm {:?}  rats {:?}  TOTAL {:?}",
             t.guards,
             t.cameras,
@@ -273,7 +367,6 @@ mod behavior_cost {
             t.total()
         );
 
-        // Sanity: the whole stack stays well under a 60 FPS frame budget.
         assert!(
             t.total() < core::time::Duration::from_millis(16),
             "behavior stack should fit a frame: {:?}",
