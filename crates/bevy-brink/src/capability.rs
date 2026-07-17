@@ -520,7 +520,7 @@ mod tests {
             "externals": [
                 {
                     "name": "get_position",
-                    "params": [{"type": "handle<Npc>"}],
+                    "params": [{"name": "npc", "ty": "handle<Npc>"}],
                     "effects": {
                         "reads": ["Transform"],
                         "detect": {"Transform": true}
