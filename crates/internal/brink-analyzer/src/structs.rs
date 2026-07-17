@@ -886,6 +886,48 @@ mod tests {
         assert_eq!(diags[0].code, DiagnosticCode::E071);
     }
 
+    #[test]
+    fn stitch_local_variable_valued_initializer_fires_when_provably_mistyped() {
+        // Every other non-literal-classification test above only ever
+        // exercises knot scope (`main`), file scope, or `main(n)`'s own
+        // params — never a stitch body. This drives the `enter_stitch`/
+        // `stitch_locals` dispatch path specifically: `t`'s finalized
+        // `BodyTypes::locals` type (a concrete `string`, from its own
+        // literal initializer) disagrees with `Point.x`'s declared `float`.
+        let diags = check_all(
+            "STRUCT Point = #{x: float}\n\
+             === room ===\n= inside\n~ temp t = \"hi\"\n~ p = Point#{x: t}\n-> DONE\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E071);
+        assert!(diags[0].message.contains('x'), "{:?}", diags[0].message);
+    }
+
+    #[test]
+    fn mistyped_variable_field_diagnostic_is_order_independent() {
+        // Issue #670's own scope names "order-independence property tests
+        // per the #627 discipline" as a deliverable — mirrors strict.rs's
+        // `escape_diagnostics_are_order_independent` forward/reversed
+        // pattern. `v`'s mistyped classification (and the resulting E071)
+        // must not depend on which position its field initializer occupies
+        // in the literal.
+        let forward = "STRUCT Point = #{x: float, y: float}\n\
+             VAR v = \"hi\"\n=== main ===\n~ p = Point#{x: v, y: 1.0}\n-> DONE\n";
+        let reversed = "STRUCT Point = #{x: float, y: float}\n\
+             VAR v = \"hi\"\n=== main ===\n~ p = Point#{y: 1.0, x: v}\n-> DONE\n";
+
+        let diags_f = check_all(forward);
+        let diags_r = check_all(reversed);
+
+        assert_eq!(diags_f.len(), 1, "{diags_f:?}");
+        assert_eq!(diags_f[0].code, DiagnosticCode::E071);
+        assert!(diags_f[0].message.contains('x'), "{:?}", diags_f[0].message);
+
+        assert_eq!(diags_r.len(), 1, "{diags_r:?}");
+        assert_eq!(diags_r[0].code, DiagnosticCode::E071);
+        assert!(diags_r[0].message.contains('x'), "{:?}", diags_r[0].message);
+    }
+
     // ─── check_duplicates (E084, issue #675) ──────────────────────────
 
     #[test]
