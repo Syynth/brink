@@ -24,6 +24,17 @@
 //! memo surviving the remove/re-add round-trip diverges from the fresh
 //! compile.
 //!
+//! Call-graph topology op (issue #639): every other mutation op edits a
+//! def's body without changing which defs call which — a pure body edit
+//! never changes `scc_membership()`'s condensation, only
+//! `call_edges(def)`-level topology changes do (design doc §9's FG-2
+//! bullet). `mutate()`'s op 7 adds or removes a `~ callee(args)` call or a
+//! `-> callee(args)` divert-with-args edge between defs that already exist
+//! in the project (self-recursion counts — it turns a singleton SCC into a
+//! self-loop), marked so the same op can find and remove it again later.
+//! This is on top of, not instead of, FG-2's own hand-crafted
+//! `fg2_scc_dependency_edges.rs` regression test.
+//!
 //! Bounded: `EDITS_PER_PROJECT` edits over a fixed project list; every step
 //! is a small-project compile, so the whole test stays well under the
 //! workspace's test-time budget and cannot hang (no loops without bounds).
@@ -34,6 +45,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use brink_driver::ProjectDb;
+use regex::Regex;
 
 /// Seeded edits applied to each project.
 const EDITS_PER_PROJECT: u64 = 16;
@@ -105,9 +117,68 @@ fn load_project(dir: &Path) -> BTreeMap<String, String> {
     files
 }
 
+/// A top-level knot/function def discovered by scanning the project's
+/// *original* source for `== name ==` / `=== function name(params) ===`
+/// style headers (issue #639). Single-`=` stitch headers are excluded —
+/// stitches need a dotted, parent-knot-qualified name to call from outside
+/// their own knot, which this synthetic edge doesn't model.
+///
+/// Computed once per project from `originals` (headers are never added or
+/// removed by any mutation op, this one included — only the call/divert
+/// *sites* referencing them churn), so every step's `mutate()` call reuses
+/// the same candidate list.
+struct CallableDef {
+    name: String,
+    arity: usize,
+}
+
+/// Marks a call/divert-with-args line this file's `mutate()` op 7 inserted,
+/// so a later invocation of the same op can find and remove it again (the
+/// "remove" half of "add/remove a call-graph edge"). A valid ink line
+/// comment, so it never changes the statement it trails.
+const CALL_EDGE_MARKER: &str = "// fz-call-edge";
+
+/// Scan every file's text for def headers eligible as a call/divert-with-
+/// args target: `={2,}` (excludes single-`=` stitches), an optional
+/// `function` keyword, a name, and an optional parenthesized param list
+/// whose comma count gives the arity a synthetic call site must match.
+fn discover_callable_defs(files: &BTreeMap<String, String>) -> Vec<CallableDef> {
+    let header = Regex::new(
+        r"^\s*={2,}\s*(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(([^)]*)\))?\s*=*\s*$",
+    )
+    .expect("valid regex");
+    let mut defs: Vec<CallableDef> = Vec::new();
+    for text in files.values() {
+        for line in text.lines() {
+            let Some(caps) = header.captures(line) else {
+                continue;
+            };
+            let name = caps[1].to_owned();
+            let arity = caps.get(2).map_or(0, |params| {
+                let params = params.as_str().trim();
+                if params.is_empty() {
+                    0
+                } else {
+                    params.split(',').count()
+                }
+            });
+            defs.push(CallableDef { name, arity });
+        }
+    }
+    defs.sort_by(|a, b| a.name.cmp(&b.name));
+    defs.dedup_by(|a, b| a.name == b.name);
+    defs
+}
+
 /// One seeded mutation of one file. Never creates or deletes `INCLUDE`
 /// lines, so the project file set is stable across the whole run.
-fn mutate(rng: &mut Lcg, original: &str, current: &str, step: u64) -> String {
+fn mutate(
+    rng: &mut Lcg,
+    original: &str,
+    current: &str,
+    step: u64,
+    callable_defs: &[CallableDef],
+) -> String {
     let lines: Vec<&str> = current.lines().collect();
     // Line indices that are safe to touch (not INCLUDE).
     let safe: Vec<usize> = (0..lines.len())
@@ -117,7 +188,7 @@ fn mutate(rng: &mut Lcg, original: &str, current: &str, step: u64) -> String {
         return current.to_owned();
     }
 
-    let op = rng.pick(8);
+    let op = rng.pick(9);
     let at = safe[rng.pick(safe.len())];
     let mut out: Vec<String> = lines.iter().map(|&l| l.to_owned()).collect();
     match op {
@@ -174,6 +245,40 @@ fn mutate(rng: &mut Lcg, original: &str, current: &str, step: u64) -> String {
         // family's incremental path; anywhere else it is harmless comment
         // churn that must still leave every query equal to fresh.
         6 => out.insert(at, format!("/// Fuzzed doc, step {step}.")),
+        // Call-graph topology op (issue #639): add or remove a call/
+        // divert-with-args edge between defs that already exist in this
+        // project — a body-only edit never changes `scc_membership()`'s
+        // condensation, only a topology change does, per the design doc's
+        // FG-2 ask that this harness fuzz that class of edit too.
+        7 => {
+            if callable_defs.is_empty() {
+                // No callable def exists in this project shape (a
+                // single-flow, no-knot corpus case) — harmless fallback,
+                // same shape as op 5's "not applicable here" branch.
+                out.insert(at, format!("A fuzzed line, step {step}."));
+            } else if let Some(idx) = out.iter().position(|l| l.contains(CALL_EDGE_MARKER)) {
+                // Remove: a prior invocation of this op already added a
+                // marked edge somewhere in the file — strip it. This is
+                // the topology-*removing* half of add/remove.
+                out.remove(idx);
+            } else {
+                // Add: a call or divert-with-args edge to a def that
+                // already exists in the project. Self-recursion is a
+                // legitimate topology change too — it turns a singleton
+                // SCC into a self-loop.
+                let callee = &callable_defs[rng.pick(callable_defs.len())];
+                let args = (0..callee.arity)
+                    .map(|_| rng.pick(9).to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let line = if rng.pick(2) == 0 {
+                    format!("~ {}({args}) {CALL_EDGE_MARKER}", callee.name)
+                } else {
+                    format!("-> {}({args}) {CALL_EDGE_MARKER}", callee.name)
+                };
+                out.insert(at, line);
+            }
+        }
         // Revert the file to its original content.
         _ => return original.to_owned(),
     }
@@ -314,6 +419,10 @@ fn incremental_story_data_equals_fresh_compile() {
         let originals = load_project(&dir);
         let mut current = originals.clone();
         let paths: Vec<String> = current.keys().cloned().collect();
+        // Call-graph topology op (#639): the candidate callee list is
+        // fixed per project — def headers are never added/removed by any
+        // mutation op, only the call/divert sites referencing them churn.
+        let callable_defs = discover_callable_defs(&originals);
 
         // Long-lived incremental db.
         let mut db = ProjectDb::new();
@@ -351,7 +460,13 @@ fn incremental_story_data_equals_fresh_compile() {
                     // INCLUDE of this path must now miss. Output is not
                     // compared here (the file set differs from `current`).
                     let _ = db.story_data().expect("entry still set");
-                    let edited = mutate(&mut rng, &originals[&path], &current[&path], step);
+                    let edited = mutate(
+                        &mut rng,
+                        &originals[&path],
+                        &current[&path],
+                        step,
+                        &callable_defs,
+                    );
                     current.insert(path.clone(), edited.clone());
                     let id_after = db.set_file(&path, edited);
                     assert_eq!(
@@ -361,7 +476,13 @@ fn incremental_story_data_equals_fresh_compile() {
                     );
                 } else {
                     let path = &paths[rng.pick(paths.len())];
-                    let edited = mutate(&mut rng, &originals[path], &current[path], step);
+                    let edited = mutate(
+                        &mut rng,
+                        &originals[path],
+                        &current[path],
+                        step,
+                        &callable_defs,
+                    );
                     current.insert(path.clone(), edited.clone());
                     db.update_file(path, edited);
                 }

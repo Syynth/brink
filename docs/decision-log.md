@@ -1572,3 +1572,34 @@
 - **SCOPE:** moderate (process)
 - **WHAT:** Pump agents post their substantive outputs to GitHub as they work: reviewers always comment their verdict on the PR (approvals included, with scope gaps); build agents comment scope-overflow notes on the issue; fix agents comment applied/skipped dispositions on the PR; merge agents comment only when noteworthy (conflicts, semantic fixes); lessons + scope reconciliation append one comment per wave to the standing "Pump: wave ledger" issue (#967). Labels for visibility/search: pump:ledger, pump:scope (reconciliation-filed issues), pump:lesson (graduated lessons). Workflow-internal messages remain the orchestration mechanism, never the only record.
 - **WHY:** Findings and inter-agent context were evaporating with sessions — durable, natively-readable history on the PRs/issues matches the repo's issue-driven workflow and lets humans audit what reviewers actually said.
+## FS-3 design round: flow-addressed wake API, parked-flow save/load, caps
+- **WHEN:** 2026-07-18
+- **PROJECT:** brink
+- **SYSTEM:** runtime + web surface (flow suspension)
+- **SCOPE:** architectural
+- **WHAT:** (1) Flow-addressed consumption: continue lives on flows, story methods = primary-flow sugar; `Line::Suspended {text,tags}` per-flow terminal variant, pre-park text flushes with it; waking never auto-continues. (2) `wakeCheck()` re-evaluates dirty parked conditions (read-set/effect-row dirty-tracking; `#@local` writes dirty only their flow; conditions always evaluated in the owning flow's context; pure manifest externals are legal conditions and always-dirty). (3) Save/load: all flows captured; never-fail-load with per-flow rebound/unresumable + rehydration report + Lenient/Strict knob; missing frame name without #@was = unresumable (never resume-with-default); per-flow SuspendedFlow independently serializable (row-per-flow persistence opt-in). (4) Park-depth cap 8, at-cap = turn-terminating fault; oracle bar = vanilla-unreachable opcodes, ratchet byte-identical, no regen. Futures RECORDED not designed: journal-replay resume rung; story-version + migration-hook facility. Spec §10.
+- **WHY:** Ruled against two real manual hosts (SpacetimeDB reducers, RPG Maker MZ): reducers are short-lived and transactional (no push wakes, host controls when output is produced, durable park is a hard requirement); flush-at-park because pre-await text describes the pre-wait state; flow-addressed because multi-flow ambient casts make a single story stream the wrong shape; unresumable-over-default because silent state substitution is the banned laundering pattern.
+
+## Multi-marker capability scoping: global manifest + per-marker registries, validated at load
+- **WHEN:** 2026-07-18
+- **PROJECT:** brink
+- **SYSTEM:** bevy-brink (capability system)
+- **SCOPE:** moderate
+- **WHAT:** #912 fork resolved as (b): the capability manifest stays app-global; registries stay per-marker; loading a story under a marker whose registry lacks a manifest-required capability is a HARD, immediate load error (the tier-1 admission posture applied per-marker). No per-marker manifest duplication; no silent UnknownCapability err-tables at call time.
+- **WHY:** Never-fail-silently at the admission boundary — a missing capability should be discovered at load, loudly, not at first call via logged error tables; per-marker manifests would force duplication for no added safety.
+
+## Detect-bit merge across calls in one container: AND (conservative)
+- **WHEN:** 2026-07-18
+- **PROJECT:** brink
+- **SYSTEM:** bevy-brink (capability join / wake system)
+- **SCOPE:** moderate
+- **WHAT:** #913 fork resolved as (b): when one container's externals touch the same capability with conflicting detect bits, the merged bit is the AND — the capability is change-detectable for the container only if ALL its reads are detect-capable; otherwise that container's wake conditions poll. Replaces the accidental last-write-wins BTreeMap::insert fold. BH-4's Detect phase consumes the merged bit.
+- **WHY:** Conservative-total is the house posture: a missed wake is the engine-race bug class (gameplay-visible, hard to diagnose); an unnecessary re-evaluation of a pure condition is a wasted microsecond. Per-call granularity (option c) adds scheduler complexity before any measurement says it matters.
+
+## FS-3 implementation: continuation-splitting, invisible containers, web-surface-first slicing
+- **WHEN:** 2026-07-18
+- **PROJECT:** brink
+- **SYSTEM:** compiler + runtime + web surface (flow suspension)
+- **SCOPE:** architectural
+- **WHAT:** (1) Await resume = continuation-splitting: await sites split containers; FlowFrame stores the synthesized continuation container id (stable identity from the await site); resume = ordinary divert into it. No instruction offsets, per spec §3. (2) Continuation containers are INVISIBLE: no visit counts, not divert targets, hidden from IDE nav (debug excepted). (3) Slicing: FS-3w (flow-addressed web surface, ships first against today's runtime), FS-3c (compiler: liveness/frame shapes/splitting, E052 stays), FS-3r (VM park/resume/wakeCheck/save, fence drops) — maintainer approval between slices. Spec §11.
+- **WHY:** Invisible containers because visit counts on plumbing would corrupt shuffle/once semantics in behavior loops; web-surface-first so real consumers (SpacetimeDB, RPG Maker MZ) migrate interface shape early and the VM slice changes behavior, not interface; slices keep each review humanly readable while the fence guarantees nothing half-exists on main.

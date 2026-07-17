@@ -169,7 +169,7 @@ pub fn check(
     out.extend(check_value_calls(files, index, inference));
     // TM-4b (docs/typed-mode-spec.md §6): missing/extra/mistyped struct
     // construction-literal fields — strict-mode-only, per the crate doc.
-    out.extend(crate::structs::check(files, index));
+    out.extend(crate::structs::check(files, index, inference, resolutions));
     // T1e-1 (docs/t1e-spec.md §6, issue #831): a `ref lvalue-path`
     // projection's segments (dotted fields, `[…]` indices) checked against
     // the root's statically-known declared shape — strict-mode-only, same
@@ -2130,6 +2130,63 @@ mod tests {
                 .iter()
                 .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
             "{:?}",
+            result.diagnostics
+        );
+    }
+
+    // ── issue #628: list-literal global VAR carries its nominal LIST type
+    //    (docs/typed-mode-spec.md §2/§5) ─────────────────────────────────
+
+    /// A VAR initialized directly to a list literal must infer its nominal
+    /// `list<L>` type end-to-end, not collapse to `Unknown` (the phase-0
+    /// `Sig` stub bug this issue reports). A temp assigned straight from
+    /// such a VAR is the concrete, checkable consequence: before the fix,
+    /// `weather`'s `Sig::value_type` fed `collect_globals` as `Ty::Unknown`
+    /// (`infer::mod`'s `From<InferredType> for Ty` collapse), so `w` would
+    /// spuriously trip the Unknown-escape check (`E065`) under strict even
+    /// though its value is plainly a `list<Weathers>` — the same "resolved
+    /// nominal type is clean" treatment `Ty::Struct`/`Ty::Handle` already
+    /// get (`classify`'s doc above).
+    #[test]
+    fn list_literal_global_var_temp_is_clean_under_strict() {
+        let (hir, index, res) = build(
+            "LIST Weathers = sunny, rainy, snowy\n\
+             VAR weather = (sunny)\n\
+             === main ===\n~ temp w = weather\n-> DONE\n",
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            diags.is_empty(),
+            "list-literal VAR's nominal type must flow through, not escape as Unknown: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn list_literal_global_var_is_clean_through_the_real_pipeline_under_strict() {
+        // analyze_with_options -> finish_analysis -> whole_project_
+        // diagnostics -> strict::check — the real production entry point
+        // (`brink-compiler`/IDE), proving the fix is reachable outside the
+        // unit-level `infer_project`/`check` harness too.
+        let parsed = brink_syntax::parse(
+            "LIST Weathers = sunny, rainy, snowy\n\
+             VAR weather = (sunny)\n\
+             === main ===\n~ temp w = weather\n-> DONE\n",
+        );
+        let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let opts = crate::AnalysisOptions {
+            dialect: crate::Dialect::Brink,
+            types: TypePolicy::Strict,
+            ..crate::AnalysisOptions::default()
+        };
+        let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E065),
+            "list-literal VAR must not escape as Unknown under strict: {:?}",
             result.diagnostics
         );
     }

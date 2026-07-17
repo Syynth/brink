@@ -62,7 +62,7 @@ pub fn hover(
             .and_then(|m| m.value.as_ref())
             .map_or(String::new(), |v| {
                 let mut s = String::new();
-                if let Some(ty) = v.ty {
+                if let Some(ty) = &v.ty {
                     let _ = write!(s, ": {}", ty.name());
                 }
                 if let Some(text) = &v.value_text {

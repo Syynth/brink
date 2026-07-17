@@ -150,3 +150,131 @@ logical end, and the sharpest differentiator versus "just embed Lua."
    dormant spawn, `wake_once`, cancellation → false.
 5. **FS-5 tail**: book chapter, corpus (an ambient-NPC example
    program), IDE (await-site hover: frame shape + dependency set).
+
+## 10. Host surface & rehydration — RULED 2026-07-18 (FS-3 design round)
+
+Ruled with the maintainer against two real consumers (a SpacetimeDB
+server module + React/Three client, and an RPG Maker MZ plugin), both
+manual (non-bevy) hosts.
+
+### 10.1 Flow-addressed consumption
+
+- **`continue` lives on the flow, not the story.** Story-level drive
+  methods are sugar for the primary flow. Spawned/ambient flows are
+  addressable handles; each has its own `Line` stream.
+- **`Line::Suspended { text, tags }`** is a first-class per-flow
+  terminal variant. Text accumulated before the park **flushes with
+  it** into that flow's stream (parks are turn boundaries; pre-await
+  text describes the pre-wait state and must not be held hostage).
+- **Waking never auto-continues.** `wakeCheck()` reports runnable
+  flows; the host drives them when it wants output (a reducer decides
+  which transaction produces story output).
+
+### 10.2 wakeCheck & dirty-tracking
+
+- `wakeCheck()` (FlowInstance + web wrapper) re-evaluates **dirty**
+  parked conditions and returns the woken flow ids. Empty = ~free.
+- Dirtiness comes from the condition's read-set (the effect rows):
+  host `setGlobal` and flow writes mark readers dirty. A write to a
+  flow's `#@local` dirties only that flow's conditions.
+- **Conditions are always evaluated in-context** — against the owning
+  flow's environment (world + its locals), never a bare world view.
+- **Pure manifest externals are legal conditions** (the purity gate
+  judges their declared row). Conditions reading a host external are
+  **always-dirty** (the host's world is opaque); finer invalidation
+  hints are a compatible later addition, not v1. This is the manual-
+  host analogue of §13's host-source wake — the FS-1 wire
+  discriminant already covers it.
+
+### 10.3 Save/load of parked flows
+
+- A save captures **all** flows (primary + spawned): FlowFrame + wake
+  policy + `#@local` store each, beside the shared world state.
+- **Never-fail-load** (T1d posture): drift (vanished await site,
+  missing condition token, frame name lost without `#@was`) never
+  aborts a load. Each parked flow rehydrates **rebound** or
+  **unresumable**; load yields a **rehydration report**; policy knob
+  `Lenient` (production default) vs `Strict` (dev/CI: unresumable
+  parked flows fail the load loudly).
+- **Missing frame name without `#@was` ⇒ unresumable**, never
+  resume-with-default (silent state change mid-flight is the banned
+  laundering pattern). Unresumable flows remain handles in a terminal
+  state; kill/restart is host policy.
+- `wake_once` needs no cross-save ceremony — wake is condition truth
+  at `wakeCheck()`, not a queued event.
+- **Decomposed persistence**: the per-flow unit (`SuspendedFlow`) is
+  independently encodable/decodable, version-stamped per unit — the
+  row-per-flow shape (one world row + N flow rows) is a supported
+  opt-in; the single-blob SaveState stays the default.
+
+### 10.4 Caps and acceptance
+
+- **Park-depth cap = 8**; at-cap is a turn-terminating runtime fault
+  (parks nest only through tunnel chains; real stories sit at 1–2).
+- **Oracle bar**: FS-3's opcodes are vanilla-unreachable; the ratchet
+  stays byte-identical at 5,577 with no corpus regeneration. That is
+  the acceptance criterion.
+
+### 10.5 Recorded future directions (icebox, not designed)
+
+- **Journal-replay resume** (rung between rebind and unresumable):
+  per-flow opt-in journaling; on drift, re-run from knot entry under
+  the new story feeding recorded externals against a visit/RNG
+  snapshot; any divergence aborts to unresumable. Best-effort tier
+  for hosts that ship story changes continuously.
+- **Story-version & migration facility**: author-declared story
+  version stamped into StoryData + save units; load-time migration
+  ladder = name-keyed rebind → `#@was` → author migration hooks →
+  journal replay → unresumable-with-report. Rungs 1/2/5 exist today.
+
+## 11. Implementation design — RULED 2026-07-18 (FS-3 implementation round)
+
+### 11.1 Continuation-splitting (the center)
+
+No instruction offsets (§3) is honored by **splitting containers at
+await sites**: everything after an `await` becomes a synthesized
+**continuation container**; parking = evaluate condition → false →
+spill live locals per the FS-2 frame shape → record
+`FlowFrame { container: <continuation id>, return_stack, frame,
+wake }` → unwind. Resuming = restore the frame into a fresh
+environment and **enter the continuation container from its top** —
+an ordinary divert, no program-counter archaeology. Continuation
+containers take **stable identities from their await site**
+(module, enclosing def, site index), so frames survive recompiles via
+the same name-keyed rehydration as everything else. The VM learns
+one park outcome and one resume path; the cleverness lives in
+codegen.
+
+### 11.2 Continuation containers are INVISIBLE — RULED
+
+No visit counts (they would pollute `shuffle`/`once` semantics in
+behavior loops), not valid divert targets, absent from IDE
+navigation/completion (debug views may show them). They are compiler
+plumbing, not story structure — a new "hidden" container category in
+the format, marked as such.
+
+### 11.3 Reuse
+
+- `wakeCheck()` condition evaluation reuses the isolated
+  function-eval machinery (`begin_function_eval` lineage:
+  output-isolated, transcript-untouched), evaluated in the owning
+  flow's context (§10.2).
+- Frame-shape tables ride a new StoryData section with `.inkt` dump
+  parity (atoms land with the reader).
+- Persistence is FS-1's SuspendedFlow section, already on main.
+
+### 11.4 Slicing — RULED (maintainer approval between slices)
+
+1. **FS-3w — web surface first**: flow-addressed API (flow handles,
+   per-flow Line streams, `Line::Suspended` variant surface,
+   `wakeCheck()` exported, returning empty until parks exist). Ships
+   against today's runtime: consumers migrate API shape early;
+   FS-3r later changes behavior, not interface.
+2. **FS-3c — compiler**: liveness (#928's remainder), frame-shape
+   emission, continuation-splitting, invisible-container category,
+   `.inkt` parity. E052 fence STAYS UP.
+3. **FS-3r — runtime**: park/spill/resume, real wakeCheck +
+   dirty-tracking, save/load integration + rehydration report +
+   Lenient/Strict, and the E052 fence finally drops.
+
+Nothing half-exists on main: the fence falls only in FS-3r.

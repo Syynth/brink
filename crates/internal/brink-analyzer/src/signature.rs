@@ -88,7 +88,7 @@ fn ty_to_inferred_type(ty: &Ty) -> Option<InferredType> {
         Ty::Bool => Some(InferredType::Bool),
         Ty::String => Some(InferredType::String),
         Ty::Divert => Some(InferredType::Divert),
-        Ty::List(_) => Some(InferredType::List),
+        Ty::List(name) => Some(InferredType::List(name.clone())),
         // `Conflicted` (#627): a genuine type conflict has no representable
         // `InferredType` any more than `Unknown` does — this stub is a
         // gradual/advisory consumer, so it reads both the same way.
@@ -261,7 +261,7 @@ pub fn signature(
                     is_local = v.is_local;
                     // TM-2: annotation wins over the literal-inferred type.
                     value_type = value_type_with_annotation_override(
-                        infer_literal_type(&v.value),
+                        infer_literal_type(&v.value, index),
                         v.annotation.as_ref(),
                         &names(),
                     );
@@ -283,7 +283,7 @@ pub fn signature(
                     // TM-2: annotation wins over the literal-inferred type
                     // (same firewall rule as VAR — see the `Variable` arm).
                     value_type = value_type_with_annotation_override(
-                        infer_literal_type(&c.value),
+                        infer_literal_type(&c.value, index),
                         c.annotation.as_ref(),
                         &names(),
                     );
