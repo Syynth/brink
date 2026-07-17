@@ -8,7 +8,7 @@ use super::*;
 use bevy_app::{App, Update};
 use bevy_ecs::observer::On;
 use bevy_ecs::resource::Resource;
-use bevy_ecs::system::ResMut;
+use bevy_ecs::system::{ResMut, RunSystemOnce as _};
 use brink_runtime::ContextAccess as _;
 
 use crate::advance_batch;
@@ -332,6 +332,63 @@ fn detect_summary_default_matches_vacuous_true_from_bits() {
     assert!(
         sleep.dependencies_all_detect_capable(),
         "a freshly built FlowSleep with no .with_detect must be all-detect-capable"
+    );
+}
+
+/// Review finding: `mark_wake_dirty`'s cheap re-evaluation signal is
+/// `BrinkGlobals` change detection only — it has no hook on a component's own
+/// change ticks. A detect-capable condition whose dependency is an ECS
+/// component (e.g. `is_player_nearby` reading `Transform`, this PR's own
+/// reachability example) must therefore still must-poll (be flagged every
+/// pass) whenever its `DetectSummary::bits` names any capability, even when
+/// every bit is `true` — trusting the AND-merge verdict alone here would gate
+/// re-evaluation on a signal a pure-component change never fires, and the flow
+/// would miss its wake.
+#[test]
+fn mark_wake_dirty_must_polls_a_component_backed_detect_capable_policy() {
+    let mut app = App::new();
+    let entity = app
+        .world_mut()
+        .spawn(
+            FlowSleep::<()>::persistent("should_wake")
+                .with_detect(DetectSummary::from_bits(
+                    [("Transform".to_string(), true)].into_iter().collect(),
+                ))
+                .dormant(),
+        )
+        .id();
+    assert!(
+        app.world()
+            .entity(entity)
+            .get::<FlowSleep<()>>()
+            .expect("just spawned")
+            .dependencies_all_detect_capable(),
+        "fixture sanity: the AND-merge verdict is all-true"
+    );
+
+    // Isolate the case under test: pretend the bootstrap evaluation already
+    // ran, so only the detect/world-changed gate is exercised (not the
+    // "never evaluated" first-run flag). No `BrinkGlobals` resource exists in
+    // this bare `App` at all, so `world_changed` is unconditionally `false` —
+    // modeling a frame where only a Transform (never observed here) moved.
+    app.world_mut()
+        .get_mut::<FlowSleep<()>>(entity)
+        .expect("policy present")
+        .evaluated_once = true;
+
+    app.world_mut()
+        .run_system_once(mark_wake_dirty::<()>)
+        .expect("mark_wake_dirty runs");
+
+    assert!(
+        app.world()
+            .entity(entity)
+            .get::<FlowSleep<()>>()
+            .expect("still attached")
+            .needs_eval,
+        "a policy whose detect map names a component capability must be \
+         must-polled every pass — mark_wake_dirty cannot see component-tick \
+         changes today, only BrinkGlobals"
     );
 }
 
