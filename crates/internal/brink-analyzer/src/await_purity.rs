@@ -178,6 +178,17 @@ fn collect_call_callees(
                 collect_call_callees(v, by_range, out);
             }
         }
+        // A struct-construction condition (`await Flag#{on: f()}`) evaluates
+        // each field initializer, so a call nested in one is a real call atom
+        // of the condition and must be recursed into (PR #935 review). The
+        // `Name` keys are not expressions.
+        Expr::StructLiteral(sl) => {
+            for (_, v) in &sl.fields {
+                collect_call_callees(v, by_range, out);
+            }
+        }
+        // A `FnLiteral` (lambda) is *not* recursed: its body is not invoked
+        // during condition re-evaluation, only the surrounding expression is.
         Expr::Int(_)
         | Expr::Float(_)
         | Expr::Bool(_)
@@ -186,7 +197,6 @@ fn collect_call_callees(
         | Expr::Path(_)
         | Expr::DivertTarget(_)
         | Expr::ListLiteral(_)
-        | Expr::StructLiteral(_)
         | Expr::FnLiteral(_)
         | Expr::RefArg(_) => {}
     }
@@ -249,9 +259,20 @@ impl Ctx<'_> {
                     self.walk_expr(v, effectful);
                 }
             }
+            // A struct-construction condition (`await Flag#{on: f()}`)
+            // evaluates each field initializer, so an effectful call nested in
+            // one makes the condition effectful — it must be recursed into (PR
+            // #935 review). The `Name` keys are not expressions.
+            Expr::StructLiteral(sl) => {
+                for (_, v) in &sl.fields {
+                    self.walk_expr(v, effectful);
+                }
+            }
             // Leaves and other expression kinds carry no call atoms of their
             // own (a bare `Path` — including a fn-value reference used as a
-            // dynamic condition — is read-only by construction, spec §3).
+            // dynamic condition — is read-only by construction, spec §3). A
+            // `FnLiteral` (lambda) is deliberately *not* recursed: its body is
+            // not invoked during condition re-evaluation.
             Expr::Int(_)
             | Expr::Float(_)
             | Expr::Bool(_)
@@ -260,7 +281,6 @@ impl Ctx<'_> {
             | Expr::Path(_)
             | Expr::DivertTarget(_)
             | Expr::ListLiteral(_)
-            | Expr::StructLiteral(_)
             | Expr::FnLiteral(_)
             | Expr::RefArg(_) => {}
         }

@@ -162,6 +162,57 @@ fn brink_effectful_condition_writing_global_is_rejected() {
     );
 }
 
+/// Transitive write, two hops out: the condition calls `outer()`, which calls
+/// `inner()`, which writes a global. The effect row is transitively closed, so
+/// `outer`'s row carries the write even though `outer` never touches the global
+/// directly — E105 must still fire (PR #935 review: transitive-write coverage).
+#[test]
+fn brink_effectful_condition_writing_global_two_hops_is_rejected() {
+    let source = concat!(
+        "VAR sirens = false\n",
+        "=== function inner() ===\n",
+        "~ sirens = true\n",
+        "~ return true\n",
+        "=== function outer() ===\n",
+        "~ return inner()\n",
+        "=== start ===\n",
+        "~ await outer()\n",
+        "-> END\n",
+    );
+    let err = compile_mem_with_dialect(source, Dialect::Brink).unwrap_err();
+    let diags = diagnostics_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E105),
+        "a two-hop transitive write must trip the purity gate: {diags:?}"
+    );
+}
+
+/// An effectful call nested inside a **struct-construction** condition
+/// (`await Flag#{on: raise_alarm()}`) must trip E105 — the field initializer is
+/// evaluated, so its write is observable on re-evaluation. Regression for the
+/// PR #935 review item: `Expr::StructLiteral` was a non-recursing leaf in the
+/// purity walk, so this write slipped past the gate.
+#[test]
+fn brink_effectful_call_in_struct_literal_condition_is_rejected() {
+    let source = concat!(
+        "STRUCT Flag = #{on: bool}\n",
+        "VAR sirens = false\n",
+        "=== function raise_alarm() ===\n",
+        "~ sirens = true\n",
+        "~ return true\n",
+        "=== start ===\n",
+        "~ await Flag#{on: raise_alarm()}\n",
+        "-> END\n",
+    );
+    let err = compile_mem_with_dialect(source, Dialect::Brink).unwrap_err();
+    let diags = diagnostics_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E105),
+        "an effectful call nested in a struct-construction condition must trip \
+         the purity gate: {diags:?}"
+    );
+}
+
 /// A condition calling a **pure** function (one that only reads a global)
 /// stays read-only → no E105 (still fenced by E052).
 #[test]
