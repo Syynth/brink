@@ -98,7 +98,7 @@
 //    wrong thing and says nothing" failure this project's own rules
 //    treat as a bug, just surfacing in call position instead of a
 //    collection mutator. #869 replaced the silent drop with a
-//    compile-time `E100` diagnostic naming `call(f, args…)` as the fix.
+//    compile-time `E104` diagnostic naming `call(f, args…)` as the fix.
 //    Every function-value invocation in this file still goes through
 //    `call(...)`, even in the two or three spots where the callee
 //    happens to already be a bare name and wouldn't strictly need it —

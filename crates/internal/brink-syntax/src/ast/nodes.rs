@@ -326,7 +326,7 @@ pub enum Expr {
     /// followed by `(` (that shape is `FunctionCall`) — a computed callee
     /// (indexed, field access, call-result, parenthesized, …). Parses so
     /// the call syntax and its args aren't silently reinterpreted as
-    /// trailing prose text; always rejected at HIR lowering (E100,
+    /// trailing prose text; always rejected at HIR lowering (E104,
     /// docs/t1c-spec.md §3/§10, issue #869) since Direct-call syntax is
     /// RULED to a bare variable/temp/param callee only.
     ComputedCall(CallExpr),

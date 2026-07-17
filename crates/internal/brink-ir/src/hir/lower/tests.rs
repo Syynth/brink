@@ -198,7 +198,7 @@ fn logic_line_emits_diagnostic_on_malformed() {
 // ─── Computed-callee call attempt (docs/t1c-spec.md §3/§10, issue #869) ──
 //
 // `expr(args…)` where `expr` isn't a bare variable/temp/param name is
-// always rejected (E100) rather than silently dropped — proven for all
+// always rejected (E104) rather than silently dropped — proven for all
 // three non-bare-name callee shapes the npc-fsm/behavior-tree tier1
 // corpus fixtures found (indexed, field access, call-result), plus a
 // sanity check that the ratified `call(f, args…)` Explicit form (which
@@ -206,60 +206,60 @@ fn logic_line_emits_diagnostic_on_malformed() {
 // untouched by this rejection.
 
 #[test]
-fn computed_callee_indexed_emits_e100() {
+fn computed_callee_indexed_emits_e104() {
     let source = "~ temp x = handlers[state](event)\n";
     let (_, diags, _) = lower_body(source);
     assert!(
-        diags.iter().any(|d| d.code == DiagnosticCode::E100),
-        "expected E100 diagnostic, got: {:?}",
+        diags.iter().any(|d| d.code == DiagnosticCode::E104),
+        "expected E104 diagnostic, got: {:?}",
         diags.iter().map(|d| d.code.as_str()).collect::<Vec<_>>()
     );
 }
 
 #[test]
-fn computed_callee_field_access_emits_e100() {
+fn computed_callee_field_access_emits_e104() {
     let source = "~ temp x = obj.field()\n";
     let (_, diags, _) = lower_body(source);
     assert!(
-        diags.iter().any(|d| d.code == DiagnosticCode::E100),
-        "expected E100 diagnostic, got: {:?}",
+        diags.iter().any(|d| d.code == DiagnosticCode::E104),
+        "expected E104 diagnostic, got: {:?}",
         diags.iter().map(|d| d.code.as_str()).collect::<Vec<_>>()
     );
 }
 
 #[test]
-fn computed_callee_call_result_emits_e100() {
+fn computed_callee_call_result_emits_e104() {
     let source = "~ temp x = get_handler()()\n";
     let (_, diags, _) = lower_body(source);
     assert!(
-        diags.iter().any(|d| d.code == DiagnosticCode::E100),
-        "expected E100 diagnostic, got: {:?}",
+        diags.iter().any(|d| d.code == DiagnosticCode::E104),
+        "expected E104 diagnostic, got: {:?}",
         diags.iter().map(|d| d.code.as_str()).collect::<Vec<_>>()
     );
 }
 
 #[test]
-fn bare_name_direct_call_never_emits_e100() {
+fn bare_name_direct_call_never_emits_e104() {
     // The bare-name Direct-call fast path (RULED, t1c-spec §3) must never
     // trip the new rejection.
     let source = "~ temp x = bare(1, 2)\n";
     let (_, diags, _) = lower_body(source);
     assert!(
-        !diags.iter().any(|d| d.code == DiagnosticCode::E100),
+        !diags.iter().any(|d| d.code == DiagnosticCode::E104),
         "bare-name call incorrectly rejected: {:?}",
         diags.iter().map(|d| d.code.as_str()).collect::<Vec<_>>()
     );
 }
 
 #[test]
-fn explicit_call_form_never_emits_e100() {
+fn explicit_call_form_never_emits_e104() {
     // `call(f, args…)` — the ratified Explicit form — lowers as an
     // ordinary named call (`Expr::Call(path = "call", …)`), never as the
-    // new `CALL_EXPR` shape, so it must stay untouched by E100.
+    // new `CALL_EXPR` shape, so it must stay untouched by E104.
     let source = "~ temp x = call(handlers[state], event)\n";
     let (_, diags, _) = lower_body(source);
     assert!(
-        !diags.iter().any(|d| d.code == DiagnosticCode::E100),
+        !diags.iter().any(|d| d.code == DiagnosticCode::E104),
         "call(f, args…) incorrectly rejected: {:?}",
         diags.iter().map(|d| d.code.as_str()).collect::<Vec<_>>()
     );
@@ -651,6 +651,131 @@ fn plain_tag_lines_are_unaffected() {
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let tags = all_content_tags(&hir);
     assert_eq!(tags.len(), 2, "both plain tags survive: {tags:?}");
+}
+
+// ─── T2-2 `#@effects(…)` assertion directive (docs/effects-spec.md §10,
+// issue #861) ──────────────────────────────────────────────────────
+
+#[test]
+fn effects_directive_parses_reads_writes_calls_on_a_knot() {
+    let (hir, diags) =
+        lower_hir("== guard ==\n#@effects(reads: gold, writes: alarm, calls: audio)\nHalt!\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let assertion = hir.knots[0]
+        .effects_assertion
+        .as_ref()
+        .expect("assertion present");
+    assert!(!assertion.pure);
+    assert_eq!(assertion.reads, vec!["gold".to_string()]);
+    assert_eq!(assertion.writes, vec!["alarm".to_string()]);
+    assert_eq!(assertion.calls, vec!["audio".to_string()]);
+    assert!(all_content_tags(&hir).is_empty());
+}
+
+#[test]
+fn effects_directive_reads_clause_continues_across_bare_values() {
+    // "reads: a, b" is ONE clause naming two cells, not two clauses — a
+    // bare value with no `key:` prefix continues the most recently opened
+    // clause (docs/effects-spec.md §10 grammar).
+    let (hir, diags) =
+        lower_hir("== guard ==\n#@effects(reads: a, b, writes: c, calls: d)\nHalt!\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let assertion = hir.knots[0].effects_assertion.as_ref().expect("present");
+    assert_eq!(assertion.reads, vec!["a".to_string(), "b".to_string()]);
+    assert_eq!(assertion.writes, vec!["c".to_string()]);
+    assert_eq!(assertion.calls, vec!["d".to_string()]);
+}
+
+#[test]
+fn effects_pure_sugar_sets_pure_with_empty_lists() {
+    let (hir, diags) = lower_hir("== guard ==\n#@effects(pure)\nHalt!\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let assertion = hir.knots[0].effects_assertion.as_ref().expect("present");
+    assert!(assertion.pure);
+    assert!(assertion.reads.is_empty());
+    assert!(assertion.writes.is_empty());
+    assert!(assertion.calls.is_empty());
+}
+
+#[test]
+fn effects_directive_marks_stitch() {
+    let (hir, diags) = lower_hir("== guard ==\nHalt!\n= mood\n#@effects(reads: gold)\ngrumpy\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(hir.knots[0].effects_assertion.is_none());
+    assert!(hir.knots[0].stitches[0].effects_assertion.is_some());
+}
+
+#[test]
+fn unmarked_knot_has_no_effects_assertion() {
+    let (hir, diags) = lower_hir("== guard ==\nHalt!\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(hir.knots[0].effects_assertion.is_none());
+}
+
+#[test]
+fn bare_effects_directive_is_e100() {
+    let (_hir, diags) = lower_hir("== guard ==\n#@effects\nHalt!\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E100]);
+}
+
+#[test]
+fn empty_effects_args_is_e100() {
+    let (_hir, diags) = lower_hir("== guard ==\n#@effects()\nHalt!\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E100]);
+}
+
+#[test]
+fn effects_unknown_clause_keyword_is_e101() {
+    let (_hir, diags) = lower_hir("== guard ==\n#@effects(frobs: gold)\nHalt!\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E101]);
+}
+
+#[test]
+fn effects_bare_value_with_no_open_clause_is_e101() {
+    let (_hir, diags) = lower_hir("== guard ==\n#@effects(gold)\nHalt!\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E101]);
+}
+
+#[test]
+fn effects_non_identifier_value_is_e101() {
+    let (_hir, diags) = lower_hir("== guard ==\n#@effects(reads: 1gold)\nHalt!\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E101]);
+}
+
+#[test]
+fn effects_dynamic_content_is_e046() {
+    // Two `E046`s, not one: `apply_scope_directives`'s own generic
+    // `d.dynamic` check fires first, and `effects_assertion_from_directives`
+    // independently re-checks `d.dynamic` on the same directive — the same
+    // pre-existing double-diagnostic shape `was_from_directives`/
+    // `visibility_from_directives` already have for a dynamic `#@was`/
+    // `#@private`. Not fixed here (pre-existing, shared by every directive
+    // with its own extraction function — out of scope for this issue).
+    let (_hir, diags) = lower_hir("== guard ==\n#@effects({x})\nHalt!\n");
+    assert_eq!(
+        codes(&diags),
+        vec![DiagnosticCode::E046, DiagnosticCode::E046]
+    );
+}
+
+#[test]
+fn duplicate_effects_directive_is_e048_first_wins() {
+    let (hir, diags) = lower_hir("== guard ==\n#@effects(reads: a)\n#@effects(reads: b)\nHalt!\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E048]);
+    let assertion = hir.knots[0].effects_assertion.as_ref().expect("present");
+    assert_eq!(assertion.reads, vec!["a".to_string()]);
+}
+
+#[test]
+fn effects_on_var_is_e049() {
+    let (_hir, diags) = lower_hir("#@effects(reads: gold)\nVAR gold = 0\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E049]);
+}
+
+#[test]
+fn effects_on_const_is_e049() {
+    let (_hir, diags) = lower_hir("#@effects(pure)\nCONST max = 3\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E049]);
 }
 
 // ─── TM-2 inline type annotations (docs/typed-mode-spec.md §3) ──────

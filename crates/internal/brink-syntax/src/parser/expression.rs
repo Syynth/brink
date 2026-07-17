@@ -158,7 +158,7 @@ fn expression_bp(p: &mut Parser<'_, '_>, min_bp: Prec) {
         // #869's "silent no-op" class — confirmed on all three
         // non-bare-name callee shapes by the npc-fsm/behavior-tree tier1
         // corpus fixtures). `brink-ir`'s HIR lowering turns this into a
-        // loud E100 diagnostic instead of a silent drop.
+        // loud E104 diagnostic instead of a silent drop.
         if p.current() == L_PAREN {
             p.start_node_at(checkpoint, CALL_EXPR);
             p.bump(); // (

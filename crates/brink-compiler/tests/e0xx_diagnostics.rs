@@ -840,7 +840,7 @@ fn ref_marked_bare_var_arg_compiles_clean_through_the_real_pipeline() {
     assert!(out.warnings.is_empty(), "{:?}", out.warnings);
 }
 
-// ─── Computed-callee call attempt (E100, docs/t1c-spec.md §3/§10, #869) ──
+// ─── Computed-callee call attempt (E104, docs/t1c-spec.md §3/§10, #869) ──
 //
 // A direct call `expr(args…)` where `expr` isn't a bare variable/temp/param
 // name — pre-#869 this silently dropped the call entirely (the parser left
@@ -855,27 +855,27 @@ fn ref_marked_bare_var_arg_compiles_clean_through_the_real_pipeline() {
 // both untouched.
 
 #[test]
-fn e100_indexed_callee() {
+fn e104_indexed_callee() {
     let source = "VAR handlers = #{}\nVAR state = \"x\"\n=== main ===\n\
                   ~ handlers[state](1)\n-> DONE\n";
     assert_error_at(
         source,
         brink_options(),
-        DiagnosticCode::E100,
+        DiagnosticCode::E104,
         "handlers[state](1)",
     );
 }
 
 #[test]
-fn e100_dotted_field_callee() {
+fn e104_dotted_field_callee() {
     let source = "VAR obj = #{}\n=== main ===\n~ obj.field()\n-> DONE\n";
-    assert_error_at(source, brink_options(), DiagnosticCode::E100, "obj.field()");
+    assert_error_at(source, brink_options(), DiagnosticCode::E104, "obj.field()");
 }
 
 #[test]
-fn e100_call_result_callee_dialect_independent() {
+fn e104_call_result_callee_dialect_independent() {
     // No brink-only construct in sight (a plain `function`, `return`, two
-    // ordinary calls) — proves E100 fires the same under strict-ink
+    // ordinary calls) — proves E104 fires the same under strict-ink
     // (`default_options()`) as under brink, unlike every dialect-gated T1b/
     // T1c construct: a computed callee is invalid syntax in every dialect,
     // not a brink extension strict-ink rejects.
@@ -884,13 +884,13 @@ fn e100_call_result_callee_dialect_independent() {
     assert_error_at(
         source,
         default_options(),
-        DiagnosticCode::E100,
+        DiagnosticCode::E104,
         "get_handler()()",
     );
 }
 
 #[test]
-fn bare_name_direct_call_unaffected_by_e100() {
+fn bare_name_direct_call_unaffected_by_e104() {
     let source = "=== function bare(a, b) ===\n~ return a + b\n\n\
                   === main ===\n~ bare(1, 2)\n-> DONE\n";
     let out = compile(source, brink_options())
@@ -899,7 +899,7 @@ fn bare_name_direct_call_unaffected_by_e100() {
 }
 
 #[test]
-fn explicit_call_form_unaffected_by_e100() {
+fn explicit_call_form_unaffected_by_e104() {
     // `call(f, args…)` lowers as an ordinary named call (`Expr::Call(path =
     // "call", …)`), never as the new `CALL_EXPR` shape — the same
     // computed-callee expression that's rejected via bare-call sugar above

@@ -59,7 +59,7 @@
 //   earlier repros covered a struct field and an array element), so the
 //   restriction was confirmed to hold across all three non-bare-name
 //   callee shapes brink's indexing/field-access surface has. As of #869
-//   this is now a compile-time `E100` diagnostic naming `call(f, args…)`
+//   this is now a compile-time `E104` diagnostic naming `call(f, args…)`
 //   as the fix, never a silent no-op — the workaround above stays the
 //   right code to write either way, since `call(...)` is the ratified
 //   form for a computed callee (t1c-spec §3), not a stopgap.

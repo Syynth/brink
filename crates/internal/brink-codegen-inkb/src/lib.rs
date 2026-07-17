@@ -145,6 +145,11 @@ pub fn emit(program: &lir::Program) -> Result<StoryData, CodegenError> {
         // through — the LIR already sorted it deterministically.
         private_defs: program.private_defs.clone(),
         alias_table: program.aliases.clone(),
+        // T2-3 `EffectRows`: codegen has no analyzer access, so it emits an
+        // empty table here. The `story_data` db query populates the real rows
+        // from `effects_query` after this `emit` (the one canonical codegen
+        // site) — see `docs/effects-spec.md` §11.
+        effect_rows: Vec::new(),
         source_checksum: 0,
     })
 }

@@ -78,7 +78,7 @@ impl LowerExpr for ast::CallExpr {
     /// source (nothing could reach this node before the grammar existed).
     fn lower_expr(&self, _scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Expr> {
         let range = self.syntax().text_range();
-        Err(sink.diagnose(range, DiagnosticCode::E100))
+        Err(sink.diagnose(range, DiagnosticCode::E104))
     }
 }
 

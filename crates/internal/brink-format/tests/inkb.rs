@@ -8,10 +8,10 @@ use brink_format::{
     read_section_line_tables, read_section_list_defs, read_section_list_items,
     read_section_list_literals, read_section_literal_pool, read_section_name_table,
     read_section_variables, write_inkb, write_section_address_paths, write_section_addresses,
-    write_section_alias_table, write_section_containers, write_section_externals,
-    write_section_line_tables, write_section_list_defs, write_section_list_items,
-    write_section_list_literals, write_section_literal_pool, write_section_name_table,
-    write_section_struct_shapes, write_section_variables,
+    write_section_alias_table, write_section_containers, write_section_effect_rows,
+    write_section_externals, write_section_line_tables, write_section_list_defs,
+    write_section_list_items, write_section_list_literals, write_section_literal_pool,
+    write_section_name_table, write_section_struct_shapes, write_section_variables,
 };
 
 fn i001_data() -> brink_format::StoryData {
@@ -275,6 +275,186 @@ fn roundtrip_alias_table() {
     let mut recovered = read_inkb(&buf).unwrap();
     recovered.source_checksum = data.source_checksum;
     assert_eq!(data, recovered);
+}
+
+// ── T2-3 EffectRows section (tag 0x0D) ──────────────────────────────────────
+
+/// A factored `EffectRows` table — direct part (reads/writes/call atoms/opaque)
+/// plus a per-dispatch entry with a narrowable bit and a static-fallback row —
+/// round-trips exactly through `.inkb`. Exercises the reader's dispatch path
+/// even though v1 emission produces none (writer and reader land together, the
+/// #742 lesson).
+#[test]
+fn roundtrip_effect_rows() {
+    use brink_format::{
+        CallAtom, CapabilityParam, DefinitionId, DefinitionTag, DirectEffects, DispatchEntry,
+        EffectRowEntry, NameId,
+    };
+
+    let cell = |n| DefinitionId::new(DefinitionTag::GlobalVar, n);
+    let mut data = i001_data();
+    data.effect_rows = vec![
+        EffectRowEntry {
+            def: DefinitionId::new(DefinitionTag::Address, 1),
+            direct: DirectEffects {
+                reads: vec![cell(1), cell(2)],
+                writes: vec![cell(3)],
+                calls: vec![
+                    CallAtom {
+                        name: NameId(5),
+                        capability: CapabilityParam::Any,
+                        handle_param: None,
+                    },
+                    CallAtom {
+                        name: NameId(6),
+                        capability: CapabilityParam::Any,
+                        handle_param: None,
+                    },
+                ],
+                opaque: false,
+            },
+            dispatches: vec![DispatchEntry {
+                cell: cell(9),
+                narrowable: true,
+                fallback: DirectEffects {
+                    reads: vec![cell(4)],
+                    writes: vec![],
+                    calls: vec![CallAtom {
+                        name: NameId(7),
+                        capability: CapabilityParam::Any,
+                        handle_param: None,
+                    }],
+                    opaque: true,
+                },
+            }],
+        },
+        EffectRowEntry {
+            def: DefinitionId::new(DefinitionTag::Address, 2),
+            direct: DirectEffects {
+                reads: vec![],
+                writes: vec![],
+                calls: vec![],
+                opaque: true,
+            },
+            dispatches: vec![],
+        },
+    ];
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
+    assert_eq!(data, recovered);
+}
+
+/// A `.inkb` with no `EffectRows` section (converter output, or a pre-T2-3
+/// file) decodes the table as empty rather than erroring —
+/// `read_section_effect_rows`'s absent-section path.
+#[test]
+fn missing_effect_rows_section_decodes_empty() {
+    use brink_format::{SectionKind, read_inkb_index};
+
+    let mut data = i001_data();
+    data.effect_rows = vec![];
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    // Sanity: the section is present (write_inkb always emits it, possibly
+    // empty), and an empty table round-trips as empty.
+    let index = read_inkb_index(&buf).unwrap();
+    assert!(index.section_range(SectionKind::EffectRows).is_some());
+    let recovered = read_inkb(&buf).unwrap();
+    assert!(recovered.effect_rows.is_empty());
+}
+
+/// Build a minimal one-entry `EffectRows` section body with one call atom
+/// carrying the given capability and handle-parameter tag bytes, wrapped in a
+/// hand-rolled [`brink_format::InkbIndex`] pointing at it. Lets the reserved-slot
+/// rejection tests exercise `read_section_effect_rows` directly.
+fn effect_rows_index_with_call_tags(
+    cap_tag: u8,
+    handle_tag: u8,
+) -> (Vec<u8>, brink_format::InkbIndex) {
+    use brink_format::{DefinitionId, DefinitionTag, InkbIndex, SectionEntry, SectionKind};
+
+    let mut buf = Vec::new();
+    buf.push(1u8); // section-local version
+    buf.extend_from_slice(&1u32.to_le_bytes()); // entry count
+    buf.extend_from_slice(
+        &DefinitionId::new(DefinitionTag::Address, 1)
+            .to_raw()
+            .to_le_bytes(),
+    );
+    buf.extend_from_slice(&0u32.to_le_bytes()); // reads
+    buf.extend_from_slice(&0u32.to_le_bytes()); // writes
+    buf.extend_from_slice(&1u32.to_le_bytes()); // calls
+    buf.extend_from_slice(&5u16.to_le_bytes()); // name
+    buf.push(cap_tag);
+    buf.push(handle_tag);
+    buf.push(0u8); // opaque
+    buf.extend_from_slice(&0u32.to_le_bytes()); // dispatch count
+
+    let file_size = u32::try_from(buf.len()).unwrap();
+    let index = InkbIndex {
+        version: 5,
+        file_size,
+        checksum: 0,
+        sections: vec![SectionEntry {
+            kind: SectionKind::EffectRows,
+            offset: 0,
+        }],
+    };
+    (buf, index)
+}
+
+/// The reserved handle-parameter slot (`docs/t1d-spec.md` §7) is rejected when
+/// non-zero — v1 emits only `None`, and the strict reader refuses a bound
+/// handle, the same reservation discipline the projection range segment follows.
+#[test]
+fn effect_rows_reader_rejects_reserved_handle_param() {
+    let (buf, index) = effect_rows_index_with_call_tags(0x00, 0x01);
+    let err = brink_format::read_section_effect_rows(&buf, &index).unwrap_err();
+    assert_eq!(err, DecodeError::InvalidEffectHandleParam(0x01));
+}
+
+/// A non-`Any` capability-parameter tag (path-granular is reserved, #826) is
+/// rejected by the strict reader.
+#[test]
+fn effect_rows_reader_rejects_reserved_cap_param() {
+    let (buf, index) = effect_rows_index_with_call_tags(0x01, 0x00);
+    let err = brink_format::read_section_effect_rows(&buf, &index).unwrap_err();
+    assert_eq!(err, DecodeError::InvalidEffectCapParam(0x01));
+}
+
+/// An `EffectRows` section carrying an unknown section-local version byte is
+/// rejected (the version prefix is the forward-compat mechanism, independent
+/// of the whole-file `VERSION`).
+#[test]
+fn effect_rows_reader_rejects_unknown_section_version() {
+    use brink_format::{InkbIndex, SectionEntry, SectionKind};
+
+    let mut buf = Vec::new();
+    buf.push(99u8); // unknown section-local version
+    buf.extend_from_slice(&0u32.to_le_bytes());
+    let index = InkbIndex {
+        version: 5,
+        file_size: u32::try_from(buf.len()).unwrap(),
+        checksum: 0,
+        sections: vec![SectionEntry {
+            kind: SectionKind::EffectRows,
+            offset: 0,
+        }],
+    };
+    let err = brink_format::read_section_effect_rows(&buf, &index).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            DecodeError::UnsupportedSectionVersion { version: 99, .. }
+        ),
+        "expected UnsupportedSectionVersion, got {err:?}"
+    );
 }
 
 /// A `.inkb` with no `AliasTable` section at all (a pre-M-3 file, or a
@@ -568,7 +748,7 @@ fn index_parsing() {
     let index = read_inkb_index(&buf).unwrap();
     assert_eq!(index.version, 5);
     assert_eq!(index.file_size as usize, buf.len());
-    assert_eq!(index.sections.len(), 13);
+    assert_eq!(index.sections.len(), 14);
 
     // Sections are in canonical order.
     assert_eq!(index.sections[0].kind, SectionKind::NameTable);
@@ -583,10 +763,11 @@ fn index_parsing() {
     assert_eq!(index.sections[9].kind, SectionKind::AddressPaths);
     assert_eq!(index.sections[10].kind, SectionKind::LiteralPool);
     assert_eq!(index.sections[11].kind, SectionKind::StructShapes);
-    assert_eq!(index.sections[12].kind, SectionKind::AliasTable);
+    assert_eq!(index.sections[12].kind, SectionKind::EffectRows);
+    assert_eq!(index.sections[13].kind, SectionKind::AliasTable);
 
-    // Header size is 16 + 8*13 = 120.
-    assert_eq!(index.header_size(), 120);
+    // Header size is 16 + 8*14 = 128.
+    assert_eq!(index.header_size(), 128);
 
     // First section starts right after header.
     assert_eq!(index.sections[0].offset as usize, index.header_size());
@@ -749,6 +930,9 @@ fn assemble_inkb_equivalence() {
     let mut alias_table_buf = Vec::new();
     write_section_alias_table(&data.alias_table, &mut alias_table_buf);
 
+    let mut effect_rows_buf = Vec::new();
+    write_section_effect_rows(&data.effect_rows, &mut effect_rows_buf);
+
     let mut assembled = Vec::new();
     assemble_inkb(
         &[
@@ -764,6 +948,7 @@ fn assemble_inkb_equivalence() {
             (SectionKind::AddressPaths, &ap_buf),
             (SectionKind::LiteralPool, &literal_pool_buf),
             (SectionKind::StructShapes, &struct_shapes_buf),
+            (SectionKind::EffectRows, &effect_rows_buf),
             (SectionKind::AliasTable, &alias_table_buf),
         ],
         &mut assembled,
@@ -851,6 +1036,7 @@ fn roundtrip_line_entry_with_audio_ref() {
         struct_shapes: vec![],
         private_defs: vec![],
         alias_table: vec![],
+        effect_rows: vec![],
         source_checksum: 0,
     };
 

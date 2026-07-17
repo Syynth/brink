@@ -87,7 +87,7 @@ value stored behind an index expression, a field, or handed back from
 another expression), not as a second calling convention with different
 semantics. Direct-call syntax only ever binds a bare variable/temp/param
 name; writing `handlers[state](event)` or `obj.field()` in its place is a
-compile error (`E100`) naming `call(f, args…)` as the fix, not a silent
+compile error (`E104`) naming `call(f, args…)` as the fix, not a silent
 no-op — see issue #869.
 
 ## `bind()`: currying an existing function value

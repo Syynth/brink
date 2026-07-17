@@ -355,6 +355,57 @@ fn alias_table_roundtrips() {
     assert_eq!(recovered.alias_table, data.alias_table);
 }
 
+/// T2-3 (`docs/effects-spec.md` §11): the `EffectRows` section round-trips
+/// through `.inkt` text — direct part (reads/writes/call atoms/opaque) plus a
+/// narrowable per-dispatch entry with a static-fallback row. Unlike
+/// `struct_shapes`, this section is fully round-tripped (writer + reader land
+/// together, the #742 lesson).
+#[test]
+fn effect_rows_roundtrips() {
+    use brink_format::{
+        CallAtom, CapabilityParam, DefinitionId, DefinitionTag, DirectEffects, DispatchEntry,
+        EffectRowEntry, NameId,
+    };
+
+    let cell = |n| DefinitionId::new(DefinitionTag::GlobalVar, n);
+    let mut data = i001_data();
+    data.effect_rows = vec![EffectRowEntry {
+        def: DefinitionId::new(DefinitionTag::Address, 0x01),
+        direct: DirectEffects {
+            reads: vec![cell(1), cell(2)],
+            writes: vec![cell(3)],
+            calls: vec![CallAtom {
+                name: NameId(5),
+                capability: CapabilityParam::Any,
+                handle_param: None,
+            }],
+            opaque: false,
+        },
+        dispatches: vec![DispatchEntry {
+            cell: cell(9),
+            narrowable: true,
+            fallback: DirectEffects {
+                reads: vec![cell(4)],
+                writes: vec![],
+                calls: vec![],
+                opaque: true,
+            },
+        }],
+    }];
+
+    let mut buf = String::new();
+    brink_format::write_inkt(&data, &mut buf).unwrap();
+    assert!(buf.contains("(effect_rows"), "{buf}");
+    assert!(buf.contains("(call 5 any)"), "{buf}");
+    assert!(
+        buf.contains("(dispatch $02_00000000000009 narrowable"),
+        "{buf}"
+    );
+
+    let recovered = brink_format::read_inkt(&buf).unwrap();
+    assert_eq!(recovered.effect_rows, data.effect_rows);
+}
+
 /// #742: a `Closure` default (`(closure <def_id> (val|ref <name> <value>)…)`)
 /// round-trips, including both `val` and `ref` env entries and a nested
 /// collection payload. Also exercises `:closure` as a `global_entry`

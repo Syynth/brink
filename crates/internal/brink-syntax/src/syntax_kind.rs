@@ -343,10 +343,10 @@ pub enum SyntaxKind {
     // (§10). Superset grammar — always parses, so the author's `(args…)`
     // is captured instead of silently reinterpreted as trailing prose text
     // (the pre-existing behavior, and the exact silent-no-op class #869
-    // reports); `brink-ir`'s HIR lowering always rejects it (E100), pointing
+    // reports); `brink-ir`'s HIR lowering always rejects it (E104), pointing
     // at the ratified `call(f, args…)` form.
     /// A postfix call applied to a callee that isn't a bare name — always
-    /// rejected at HIR lowering (E100).
+    /// rejected at HIR lowering (E104).
     CALL_EXPR,
 
     // Not a real kind — used only for `rowan::Language::kind_to_raw` bounds.
