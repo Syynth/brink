@@ -117,6 +117,7 @@ fn build_story_and_locale(app: &mut App) -> Option<(Handle<BrinkStoryAsset>, Han
         .add(ProgramAsset {
             program,
             initial_context,
+            effect_rows: Vec::new(),
         });
     let base_h = world
         .resource_mut::<Assets<LineTablesAsset>>()

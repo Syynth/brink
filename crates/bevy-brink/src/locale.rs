@@ -440,6 +440,7 @@ mod tests {
             .add(ProgramAsset {
                 program,
                 initial_context,
+                effect_rows: loaded.effect_rows,
             });
         let base_h = world
             .resource_mut::<Assets<LineTablesAsset>>()

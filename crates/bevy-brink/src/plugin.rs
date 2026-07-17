@@ -89,6 +89,16 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
             app.bind_brink_query::<M, _, _>("is_valid", crate::handle::is_valid_system::<M>);
         }
         app.add_observer(crate::handle::gc_on_turn_done::<M>);
+        // BH-1 (docs/effects-spec.md §9, §12–§13; #899): the capability
+        // registry (name -> ComponentId, empty until `register_capability`
+        // is called) and the per-story joined-access table, rebuilt whenever
+        // a `ProgramAsset` loads/unloads (§12.5's load-boundary invariant).
+        // `CapabilityManifest` inits empty too — a host that never inserts
+        // one just never gets ECS-capability access data.
+        app.init_resource::<crate::capability::CapabilityManifest>();
+        app.init_resource::<crate::capability::CapabilityRegistry<M>>();
+        app.init_resource::<crate::capability::CapabilityTable<M>>();
+        app.add_systems(Update, crate::capability::rebuild_capability_table::<M>);
         // Auto-render BrinkTranscript<M> for any flow that has it.
         // No-op for flows that don't (the query just yields nothing).
         app.add_systems(Update, crate::transcript::refresh_transcripts::<M>);

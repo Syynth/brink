@@ -34,6 +34,7 @@ mod async_bind;
 mod bindings;
 mod brkt;
 mod call;
+mod capability;
 mod event;
 mod flow;
 mod globals;
@@ -115,6 +116,12 @@ pub use brkt::{
 pub use call::{
     BrinkCallCommandsExt, BrinkCallFailed, BrinkCallRequest, BrinkCallResolved, IntoBrinkArgs,
     resolve_brink_calls,
+};
+pub use capability::{
+    BrinkCapabilityAppExt, CapabilityEffects, CapabilityError, CapabilityManifest,
+    CapabilityManifestExternal, CapabilityRegistry, CapabilityTable, ContainerAccess,
+    ContainerAccessTable, compute_container_access, dump_container_access,
+    rebuild_capability_table,
 };
 #[cfg(feature = "dev")]
 pub use event::BrinkFlowReset;

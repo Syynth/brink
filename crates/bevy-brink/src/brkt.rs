@@ -161,6 +161,7 @@ mod tests {
             ProgramAsset {
                 program,
                 initial_context,
+                effect_rows: loaded.effect_rows,
             },
             LineTablesAsset { tables },
         )
