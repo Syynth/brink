@@ -30,8 +30,7 @@ pub use annotations::{
     check as check_annotations, mismatches as annotation_mismatches, resolve as resolve_annotation,
 };
 pub use await_purity::{
-    check as await_purity_diagnostics, condition_callees as await_condition_callees,
-    hir_has_await,
+    check as await_purity_diagnostics, condition_callees as await_condition_callees, hir_has_await,
 };
 pub use brink_ir::FileId;
 pub use brink_ir::ResolutionMap;

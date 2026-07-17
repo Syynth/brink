@@ -261,7 +261,7 @@ pub enum SyntaxKind {
     CONTINUE_STMT,
     /// A bare expression statement inside a block (function/external calls).
     EXPR_STMT,
-    /// `await <cond>` — FlowFrame suspension point (docs/flow-suspension-spec.md
+    /// `await <cond>` — `FlowFrame` suspension point (docs/flow-suspension-spec.md
     /// §3). Statement/logic position only (`~ await …` logic line or inside a
     /// `~ { … }` block). Brink extension; `await` is a contextual (soft)
     /// keyword recognized only in this statement position, so it stays an

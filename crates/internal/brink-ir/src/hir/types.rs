@@ -340,7 +340,7 @@ pub enum Stmt {
     /// in T1b-1, docs/t1b-surface-spec.md §2). Never lowers to LIR — gated
     /// out by `brink-analyzer`'s dialect check under both dialects.
     LogicBlock(LogicBlock),
-    /// `~ await <cond>` — a FlowFrame suspension point at logic-line position
+    /// `~ await <cond>` — a `FlowFrame` suspension point at logic-line position
     /// (docs/flow-suspension-spec.md §3). Brink extension; the condition is
     /// checked effect-free (the purity gate, E105) and lowering to the VM is
     /// fenced (E052) until the runtime spill/restore slice (FS-3) lands.
@@ -375,7 +375,7 @@ pub enum BlockStmt {
     Continue(SyntaxNodePtr),
     /// A bare expression statement (function/external calls).
     ExprStmt(Expr),
-    /// `await <cond>` — a FlowFrame suspension point inside a `~ { … }` block
+    /// `await <cond>` — a `FlowFrame` suspension point inside a `~ { … }` block
     /// (docs/flow-suspension-spec.md §3).
     Await(AwaitStmt),
 }
@@ -413,7 +413,7 @@ pub struct WhileStmt {
     pub is_await: bool,
 }
 
-/// `await <cond>` — a FlowFrame suspension point
+/// `await <cond>` — a `FlowFrame` suspension point
 /// (docs/flow-suspension-spec.md §3). The condition is captured as a
 /// compiler-synthesized *pure* function per §5: its identity is the await
 /// site's synthesized resume-container path (site-stable), and its effect row
@@ -1947,7 +1947,9 @@ impl DiagnosticCode {
             Self::E104 => {
                 "direct-call syntax requires a bare variable/temp/param callee — use `call(f, args…)` for a computed callee"
             }
-            Self::E105 => "`await` condition must be effect-free (read-only) — it writes a global or performs an effectful call",
+            Self::E105 => {
+                "`await` condition must be effect-free (read-only) — it writes a global or performs an effectful call"
+            }
         }
     }
 

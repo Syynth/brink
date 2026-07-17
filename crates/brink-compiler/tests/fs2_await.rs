@@ -31,7 +31,10 @@ fn compile_mem_with_dialect(
         "main.ink",
         |path| {
             files.get(path).map(|s| (*s).to_string()).ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::NotFound, format!("file not found: {path}"))
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("file not found: {path}"),
+                )
             })
         },
         options,
@@ -45,10 +48,7 @@ fn diagnostics_of(err: brink_compiler::CompileError) -> Vec<brink_compiler::Reso
     }
 }
 
-fn has_code(
-    diags: &[brink_compiler::ResolvedDiagnostic],
-    code: DiagnosticCode,
-) -> bool {
+fn has_code(diags: &[brink_compiler::ResolvedDiagnostic], code: DiagnosticCode) -> bool {
     diags.iter().any(|d| d.code == code)
 }
 
@@ -84,8 +84,9 @@ fn brink_fences_await_logic_line() {
     let err = compile_mem_with_dialect(source, Dialect::Brink).unwrap_err();
     let diags = diagnostics_of(err);
     assert!(
-        diags.iter().any(|d| d.code == DiagnosticCode::E052
-            && d.message.contains("await")),
+        diags
+            .iter()
+            .any(|d| d.code == DiagnosticCode::E052 && d.message.contains("await")),
         "{diags:?}"
     );
 }
@@ -116,7 +117,10 @@ fn brink_pure_condition_passes_purity_gate() {
     let source = "VAR gold = 0\n=== start ===\n~ await gold > 100\n-> END\n";
     let err = compile_mem_with_dialect(source, Dialect::Brink).unwrap_err();
     let diags = diagnostics_of(err);
-    assert!(has_code(&diags, DiagnosticCode::E052), "expected fence: {diags:?}");
+    assert!(
+        has_code(&diags, DiagnosticCode::E052),
+        "expected fence: {diags:?}"
+    );
     assert!(
         !has_code(&diags, DiagnosticCode::E105),
         "a read-only condition must not trip the purity gate: {diags:?}"

@@ -20,7 +20,7 @@ pub enum LogicLineOutput {
     /// §2, brink extension). Never lowers past HIR — see
     /// `brink_ir::hir::types::Stmt::LogicBlock`.
     Block(LogicBlock),
-    /// `~ await <cond>` — a FlowFrame suspension point
+    /// `~ await <cond>` — a `FlowFrame` suspension point
     /// (docs/flow-suspension-spec.md §3, brink extension). Fenced at LIR
     /// lowering (E052) until FS-3.
     Await(AwaitStmt),

@@ -174,7 +174,7 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
 
 /// Emit the `await` lowering fence (`E052`, docs/flow-suspension-spec.md §3):
 /// the FS-2 compiler slice parses and purity-checks `await`, but its runtime
-/// semantics (spill/restore of the FlowFrame) are FS-3, so lowering is fenced.
+/// semantics (spill/restore of the `FlowFrame`) are FS-3, so lowering is fenced.
 /// Non-suppressible Error severity — the same shape as the other LIR fences —
 /// so a program using `await` refuses to lower to bytecode rather than
 /// silently dropping the suspension point.

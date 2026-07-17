@@ -101,7 +101,7 @@ fn return_statement(p: &mut Parser<'_, '_>) {
     p.finish_node();
 }
 
-/// Parse `await <cond>` — a FlowFrame suspension point
+/// Parse `await <cond>` — a `FlowFrame` suspension point
 /// (docs/flow-suspension-spec.md §3). `await` is a contextual (soft) keyword,
 /// already matched by the caller. Statement/logic position only; the
 /// condition is an ordinary expression (mid-expression `await` is permanently
@@ -112,10 +112,10 @@ fn await_statement(p: &mut Parser<'_, '_>) {
     p.start_node(AWAIT_STMT);
     p.bump(); // "await" (IDENT)
     p.skip_ws();
-    if !matches!(p.current(), NEWLINE | EOF | R_BRACE) {
-        super::expression::expression(p);
-    } else {
+    if matches!(p.current(), NEWLINE | EOF | R_BRACE) {
         p.error("expected a condition expression after `await`".into());
+    } else {
+        super::expression::expression(p);
     }
     p.finish_node();
 }

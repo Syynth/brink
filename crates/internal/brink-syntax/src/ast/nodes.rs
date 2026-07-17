@@ -787,7 +787,7 @@ impl LogicLine {
         support::child(&self.syntax)
     }
 
-    /// The `~ await <cond>` FlowFrame suspension point, if this logic line is
+    /// The `~ await <cond>` `FlowFrame` suspension point, if this logic line is
     /// one (docs/flow-suspension-spec.md §3).
     pub fn await_stmt(&self) -> Option<AwaitStmt> {
         support::child(&self.syntax)
@@ -904,7 +904,7 @@ pub enum BlockStmt {
     Break(BreakStmt),
     Continue(ContinueStmt),
     ExprStmt(ExprStmt),
-    /// `await <cond>` — a FlowFrame suspension point inside a `~ { … }` block
+    /// `await <cond>` — a `FlowFrame` suspension point inside a `~ { … }` block
     /// (docs/flow-suspension-spec.md §3).
     Await(AwaitStmt),
 }
