@@ -12,13 +12,19 @@ use crate::alarm::Alarm;
 use crate::guards::Guard;
 use crate::rats::Rat;
 use crate::rounds::Round;
+use crate::stats::Loadout;
 use crate::timing::{BehaviorTimings, micros};
 
 /// Marks the HUD text entity.
 #[derive(Component, Debug)]
 pub struct HudText;
 
-/// Spawn the HUD text in the top-left corner.
+/// The one-line goal reminder (#1009): a persistent top-center banner so the
+/// player never has to guess what "winning" means or how doors open.
+const OBJECTIVE_TEXT: &str = "Reach the green exit — flip switches (E) to open doors";
+
+/// Spawn the HUD text in the top-left corner, plus the top-center objective
+/// banner.
 pub fn setup_hud(mut commands: Commands) {
     commands.spawn((
         Text::new(""),
@@ -35,6 +41,26 @@ pub fn setup_hud(mut commands: Commands) {
         },
         HudText,
     ));
+
+    commands
+        .spawn(Node {
+            position_type: PositionType::Absolute,
+            top: px(8),
+            left: px(0),
+            right: px(0),
+            justify_content: JustifyContent::Center,
+            ..default()
+        })
+        .with_children(|parent| {
+            parent.spawn((
+                Text::new(OBJECTIVE_TEXT),
+                TextFont {
+                    font_size: FontSize::Px(17.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.95, 0.95, 0.85)),
+            ));
+        });
 }
 
 /// Refresh the HUD every frame.
@@ -42,6 +68,7 @@ pub fn setup_hud(mut commands: Commands) {
 pub fn update_hud(
     round: Res<Round>,
     alarm: Res<Alarm>,
+    loadout: Res<Loadout>,
     timings: Res<BehaviorTimings>,
     show_cones: Res<ShowCones>,
     diagnostics: Res<DiagnosticsStore>,
@@ -61,12 +88,22 @@ pub fn update_hud(
     let guard_n = guards.iter().count();
     let rat_n = rats.iter().count();
 
+    let alarm_state = if alarm.global {
+        "GLOBAL"
+    } else if alarm.tier() >= crate::alarm::REINFORCE_LEVEL {
+        "sweeping"
+    } else if alarm.level > 0.05 {
+        "alerted"
+    } else {
+        "calm"
+    };
+
     **text = format!(
-        "THE COMPOUND — Phase 0\n\
-         Round {round_n}   Gold {gold}   Cams disabled {cams}\n\
-         Alarm {alarm_lvl:.2} (tier {tier})   FPS {fps:.0}\n\
-         Guards {guard_n}   Rats {rat_n}\n\
-         Cones [F1] {cones}\n\
+        "THE COMPOUND\n\
+         Round {round_n}   Banked {banked}g   Carrying {carried}g\n\
+         Cams disabled {cams}   Coins {coins}   Smoke {smoke}\n\
+         Alarm {alarm_lvl:.2} (tier {tier}, {alarm_state})   FPS {fps:.0}\n\
+         Guards {guard_n}   Rats {rat_n}   Cones [F1] {cones}\n\
          \n\
          behavior systems (this frame):\n\
          \x20 guards  {t_guard}\n\
@@ -76,10 +113,13 @@ pub fn update_hud(
          \x20 rats    {t_rats}\n\
          \x20 TOTAL   {t_total}\n\
          \n\
-         WASD move  E interact  + rats  R reset",
+         WASD move  Shift run  E interact  LMB coin  Q smoke  + rats  R reset",
         round_n = round.number,
-        gold = round.gold,
+        banked = round.banked,
+        carried = round.carried,
         cams = round.cameras_disabled,
+        coins = loadout.coins,
+        smoke = loadout.smokes,
         alarm_lvl = alarm.level,
         tier = alarm.tier(),
         cones = if show_cones.0 { "on" } else { "off" },
