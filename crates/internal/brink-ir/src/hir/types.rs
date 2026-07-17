@@ -1697,6 +1697,21 @@ pub enum DiagnosticCode {
     /// dynamic condition (`await some_fn_value`, no call syntax) is read-only
     /// by construction and never flagged.
     E105,
+
+    // ── T1b map-literal key-domain warning (docs/t1b-surface-spec.md §3,
+    // issue #598) ──────────────────────────────────────────────────────
+    /// A `#{key: expr, …}` map-literal key is a statically-classifiable
+    /// literal outside the ratified int/string/bool key domain — a float,
+    /// array (`#[...]`), nested map (`#{...}`), struct (`Name#{...}`),
+    /// function-value (`#fn(...)`), ink `LIST`, or divert-target literal
+    /// used directly as a key. §3 rules the key domain to
+    /// int/string/bool at runtime (`RuntimeError::InvalidMapKeyType`) and
+    /// says the analyzer warns on statically-visible non-key types; this was
+    /// the missing half (`MapLiteral` lowering did zero key-domain checking).
+    /// A dynamic key (a variable, call, index, or any other non-literal
+    /// expression) is not statically visible and is never flagged here —
+    /// the runtime fault remains the sole backstop for those.
+    E106,
 }
 
 impl DiagnosticCode {
@@ -1813,6 +1828,7 @@ impl DiagnosticCode {
             Self::E103 => "E103",
             Self::E104 => "E104",
             Self::E105 => "E105",
+            Self::E106 => "E106",
         }
     }
 
@@ -1950,6 +1966,7 @@ impl DiagnosticCode {
             Self::E105 => {
                 "`await` condition must be effect-free (read-only) — it writes a global or performs an effectful call"
             }
+            Self::E106 => "map-literal key is outside the int/string/bool key domain",
         }
     }
 
@@ -1971,7 +1988,8 @@ impl DiagnosticCode {
             | Self::E054
             | Self::E063
             | Self::E092
-            | Self::E095 => Severity::Warning,
+            | Self::E095
+            | Self::E106 => Severity::Warning,
             _ => Severity::Error,
         }
     }
@@ -2089,6 +2107,7 @@ impl DiagnosticCode {
             "E103" => Some(Self::E103),
             "E104" => Some(Self::E104),
             "E105" => Some(Self::E105),
+            "E106" => Some(Self::E106),
             _ => None,
         }
     }
