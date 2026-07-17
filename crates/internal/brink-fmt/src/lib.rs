@@ -626,12 +626,21 @@ fn classify_node(
                     lines[line_idx].kind = LineKind::Tag;
                 }
             }
-            SyntaxKind::VAR_DECL
-            | SyntaxKind::CONST_DECL
-            | SyntaxKind::LIST_DECL
-            | SyntaxKind::INCLUDE_STMT
-            | SyntaxKind::IMPORT_STMT
-            | SyntaxKind::EXTERNAL_DECL => {
+            SyntaxKind::VAR_DECL | SyntaxKind::CONST_DECL | SyntaxKind::LIST_DECL => {
+                if line_idx < lines.len() {
+                    lines[line_idx].kind = LineKind::Declaration;
+                    lines[line_idx].depth = 0;
+                    // Carry the CST node so `render()` can retokenize the
+                    // declaration through `join_token_text` (#642 fix): that
+                    // joiner emits string-literal token text byte-for-byte,
+                    // so a colon canonicalized inside a string value like
+                    // `VAR msg = "time 12:30"` never mutates the literal —
+                    // unlike the raw-text `collapse_whitespace` pass, which
+                    // is string-unaware and corrupted such literals.
+                    lines[line_idx].cst_node = Some(child.clone());
+                }
+            }
+            SyntaxKind::INCLUDE_STMT | SyntaxKind::IMPORT_STMT | SyntaxKind::EXTERNAL_DECL => {
                 if line_idx < lines.len() {
                     lines[line_idx].kind = LineKind::Declaration;
                     lines[line_idx].depth = 0;
@@ -910,10 +919,25 @@ fn render(source: &str, lines: &[ClassifiedLine], config: &FormatConfig) -> Stri
             }
             LineKind::Declaration => {
                 // Module `IMPORT` statements (M-4, modules-spec §2/§9) get
-                // canonical inner spacing; every other declaration is passed
-                // through with only trailing whitespace trimmed.
+                // canonical inner spacing; VAR/CONST/LIST declarations (#642)
+                // canonicalize type annotation colons; other declarations are
+                // passed through with only trailing whitespace trimmed.
                 if raw.trim_start().starts_with("IMPORT") {
                     out.push_str(&format_import(raw));
+                } else if raw.trim_start().starts_with("VAR")
+                    || raw.trim_start().starts_with("CONST")
+                    || raw.trim_start().starts_with("LIST")
+                {
+                    // Retokenize through the CST via `join_token_text` when
+                    // available (#642 fix) so string-literal initializers
+                    // (`VAR msg = "time 12:30"`) are emitted byte-for-byte
+                    // instead of having their colon/whitespace mutated by
+                    // the string-unaware `collapse_whitespace` fallback.
+                    if let Some(node) = &line.cst_node {
+                        out.push_str(&format_declaration_from_cst(node));
+                    } else {
+                        out.push_str(&format_declaration_with_annotations(raw));
+                    }
                 } else {
                     out.push_str(raw.trim_end());
                 }
@@ -1034,7 +1058,32 @@ fn format_knot_header(raw: &str) -> String {
     format!("=== {normalized} ===")
 }
 
-/// Collapse runs of whitespace into single spaces.
+/// Format a VAR/CONST/LIST declaration: canonicalize type annotation colons
+/// (no space before, one space after) while preserving the rest of the line.
+///
+/// Raw-text fallback used only when no CST node is attached to the line
+/// (shouldn't happen for a well-formed `VAR_DECL`/`CONST_DECL`/`LIST_DECL` —
+/// see `format_declaration_from_cst` for the normal, string-literal-safe
+/// path). Kept total via `collapse_whitespace`, which is character-based and
+/// therefore must never be applied to a line that might contain a string
+/// literal with a colon or internal whitespace inside it.
+fn format_declaration_with_annotations(raw: &str) -> String {
+    collapse_whitespace(raw.trim_end())
+}
+
+/// Format a VAR/CONST/LIST declaration by retokenizing its CST node through
+/// [`join_token_text`] (#642 fix): that joiner emits token text — including
+/// string-literal tokens — byte-for-byte, and only canonicalizes whitespace
+/// *between* tokens, so a colon or internal whitespace inside a string value
+/// (`VAR msg = "time 12:30"`, `CONST url = "http://x.com"`) is preserved
+/// exactly while the declaration's own type-annotation colon still gets
+/// canonical `name: type` spacing.
+fn format_declaration_from_cst(node: &SyntaxNode) -> String {
+    join_token_text(node.descendants_with_tokens())
+}
+
+/// Collapse runs of whitespace into single spaces, and canonicalize type
+/// annotation colons (#642) to have no space before and one space after.
 fn collapse_whitespace(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev_ws = false;
@@ -1044,6 +1093,15 @@ fn collapse_whitespace(s: &str) -> String {
                 out.push(' ');
             }
             prev_ws = true;
+        } else if c == ':' {
+            // Type annotation canonicalization (#642): no space before colon,
+            // one space after. Remove any trailing space before the colon.
+            while out.ends_with(' ') {
+                out.pop();
+            }
+            out.push(':');
+            out.push(' ');
+            prev_ws = true; // Treat as if we just output a space.
         } else {
             out.push(c);
             prev_ws = false;
@@ -1221,17 +1279,22 @@ fn block_indent(base_indent: &str, level: u32) -> String {
 /// parenthesized expression) are kept verbatim with a single space on each
 /// side. Node boundaries are transparent; only tokens contribute text.
 ///
-/// One exception to the "collapse to one space" rule: whitespace directly
-/// touching a `.` field-access dot, or a `[`/`]` index bracket, collapses to
-/// *zero* space instead — `party [ leader ] . hp` renders `party[leader].hp`.
-/// This is the path-projection display convention itself
-/// (`docs/t1e-spec.md` §4: `ref npc.inventory[3]`, no spaces) applied
-/// uniformly to every dotted-path/indexed construct this joiner ever
-/// renders, T1e `ref lvalue-path` arguments (`brink-fmt path-ref argument
-/// formatting`, issue #850) included — not a special case keyed off `ref`,
-/// since the CST gives no cheaper way to tell a path-projection segment
-/// from any other field access or index expression at this token-stream
-/// level, and there's no reason the two should format differently anyway.
+/// Two exceptions to the "collapse to one space" rule:
+/// - Whitespace directly touching a `.` field-access dot, or a `[`/`]` index
+///   bracket, collapses to *zero* space instead — `party [ leader ] . hp`
+///   renders `party[leader].hp`. This is the path-projection display
+///   convention itself (`docs/t1e-spec.md` §4: `ref npc.inventory[3]`, no
+///   spaces) applied uniformly to every dotted-path/indexed construct this
+///   joiner ever renders, T1e `ref lvalue-path` arguments (`brink-fmt
+///   path-ref argument formatting`, issue #850) included — not a special case
+///   keyed off `ref`, since the CST gives no cheaper way to tell a
+///   path-projection segment from any other field access or index expression
+///   at this token-stream level, and there's no reason the two should format
+///   differently anyway.
+/// - Type annotation colons (#642): `:` always renders with no space before
+///   and one space after, regardless of source spacing. This canonicalizes
+///   `name:type` to `name: type` uniformly across parameters, declarations,
+///   and logic lines.
 fn join_token_text(elems: impl Iterator<Item = SyntaxElement>) -> String {
     let mut out = String::new();
     let mut pending_space = false;
@@ -1253,6 +1316,13 @@ fn join_token_text(elems: impl Iterator<Item = SyntaxElement>) -> String {
                 out.push_str(tok.text());
                 pending_space = true;
                 last_kind = Some(tok.kind());
+            }
+            SyntaxKind::COLON => {
+                // Type annotation canonicalization: no space before, one after.
+                // Don't emit pending space, then emit colon, then force space.
+                out.push_str(tok.text());
+                pending_space = true;
+                last_kind = Some(SyntaxKind::COLON);
             }
             kind => {
                 let zero_space =
@@ -1969,10 +2039,13 @@ mod tests {
     // tests pin that down explicitly rather than relying on it implicitly.
 
     #[test]
-    fn param_and_return_type_annotations_normalize_whitespace() {
+    fn param_and_return_type_annotations_canonicalize() {
+        // #642: type annotations should render as `name: type` (no space before,
+        // one space after), regardless of source spacing. Mixed annotation
+        // spacing: `hp:int` (no space), `amount:  int` (multiple spaces).
         assert_eq!(
             fmt("===function heal(hp:int,amount:  int)  :  int===\n~ return hp\n"),
-            "=== function heal(hp:int,amount: int) : int ===\n  ~ return hp\n"
+            "=== function heal(hp: int,amount: int): int ===\n  ~ return hp\n"
         );
     }
 
@@ -1992,34 +2065,41 @@ mod tests {
     }
 
     #[test]
-    fn temp_ascription_normalizes_whitespace_like_any_other_logic_line() {
+    fn temp_ascription_canonicalizes_annotations() {
         // Issue #858: before the single-line `~ expr` retokenize fix, this
         // line's *inner* spacing (`temp   name:string=who`) passed through
         // untouched — only the outer `~` prefix got trimmed. Now it goes
         // through the same `join_token_text` joiner multi-line `~ { … }`
         // block statements use: runs of existing whitespace collapse to one
-        // space (`temp   name` -> `temp name`), matching
-        // `block_collapses_messy_spacing_and_reindents`'s established
-        // convention for the block form. Tokens with *no* whitespace
-        // between them in the source (`name:string=who`) still get no
-        // space inserted — that joiner has never inserted whitespace, only
-        // collapsed existing runs, the same as every multi-line block
-        // statement test already documents (e.g. `temp x=0` stays `temp
-        // x=0` in `block_idempotent_after_reindenting_messy_input`).
+        // space (`temp   name` -> `temp name`).
+        // Issue #642: type annotations also get canonicalized to `name: type`
+        // (no space before, one space after).
         assert_eq!(
             fmt("=== knot ===\n~   temp   name:string=who\n"),
-            "=== knot ===\n  ~ temp name:string=who\n"
+            "=== knot ===\n  ~ temp name: string=who\n"
         );
     }
 
     #[test]
     fn type_annotations_are_idempotent() {
         for input in [
-            "=== function heal(hp: int, amount: int): int ===\n~ return hp\n",
+            // Already formatted correctly
+            "=== function heal(hp: int,amount: int): int ===\n~ return hp\n",
+            // Missing spaces after colons
+            "=== function heal(hp:int,amount:int):int ===\n~ return hp\n",
+            // VAR with canonical spacing
             "VAR gold: int = 100\n",
-            "=== knot ===\n~ temp name: string = who\n",
-            "VAR w: list<Weathers> = 0\nVAR m: map<string, int> = 0\n",
-            "VAR cb: fn(int, int): bool = 0\n",
+            // VAR without spaces after colon
+            "VAR gold:int=100\n",
+            // Temp with canonical spacing
+            "=== knot ===\n~ temp name: string=who\n",
+            // Temp without spaces after colon
+            "=== knot ===\n~temp name:string=who\n",
+            // Complex types
+            "VAR w: list<Weathers> = 0\nVAR m: map<string,int> = 0\n",
+            // Function type
+            "VAR cb: fn(int,int): bool = 0\n",
+            // CONST
             "CONST speed: float = 0.5\n",
         ] {
             let first = fmt(input);
@@ -2029,6 +2109,75 @@ mod tests {
                 "type-annotated formatting should be idempotent for {input:?}"
             );
         }
+    }
+
+    #[test]
+    fn type_annotations_mixed_spacing_fixture() {
+        // Comprehensive fixture with mixed annotation spacing: no spaces,
+        // single spaces, and multiple spaces (PR #640 compatibility test).
+        let input = "\
+=== function greet(name:string,age:  int):string ===
+  VAR greeting:string=\"Hello\"
+  CONST max_age:int=120
+  ~ temp result:string=greeting
+
+=== helper(x: int, y:int ): int ===
+  ~ return x + y
+
+STRUCT Point=#{x:int,y: float}
+";
+        let output = fmt(input);
+        // Re-formatting should be idempotent
+        let output2 = fmt(&output);
+        assert_eq!(
+            output, output2,
+            "mixed spacing fixture should be idempotent"
+        );
+    }
+
+    // ── #642 review fix: string-literal values must be byte-preserved ───
+    // The declaration path's colon canonicalization is now retokenized
+    // through `join_token_text` (like logic lines and struct fields)
+    // instead of the character-based, string-unaware `collapse_whitespace`,
+    // which previously mutated string contents containing a colon or
+    // internal whitespace (regression caught in review of PR #971).
+
+    #[test]
+    fn var_string_initializer_with_colon_no_following_space_is_preserved() {
+        // Character-based collapse_whitespace saw the `:` inside the string
+        // and inserted a space after it: `"time 12:30"` -> `"time 12: 30"`.
+        assert_eq!(
+            fmt("VAR msg = \"time 12:30\"\n"),
+            "VAR msg = \"time 12:30\"\n"
+        );
+    }
+
+    #[test]
+    fn const_string_initializer_url_colon_is_preserved() {
+        // Same corruption broke URLs: `"http://x.com"` -> `"http: //x.com"`.
+        assert_eq!(
+            fmt("CONST url = \"http://x.com\"\n"),
+            "CONST url = \"http://x.com\"\n"
+        );
+    }
+
+    #[test]
+    fn var_string_initializer_internal_multiple_spaces_are_preserved() {
+        // Character-based collapse_whitespace ran its whitespace-run
+        // collapsing over the whole line, including inside the string
+        // literal: `"Monsieur  Fogg"` -> `"Monsieur Fogg"`.
+        assert_eq!(
+            fmt("VAR name = \"Monsieur  Fogg\"\n"),
+            "VAR name = \"Monsieur  Fogg\"\n"
+        );
+    }
+
+    #[test]
+    fn var_string_initializer_colon_no_space_variant_is_preserved() {
+        assert_eq!(
+            fmt("VAR title = \"Chapter:One\"\n"),
+            "VAR title = \"Chapter:One\"\n"
+        );
     }
 
     // ── T1b `~ { … }` blocks: indentation-aware reformatting ────────────
