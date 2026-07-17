@@ -1,8 +1,15 @@
 //! Batch-mode flow advancement — the frame-start consistency semantics core
-//! (`docs/effects-spec.md` §12.4; BH-2, #914). **Serial only**: no `unsafe`,
-//! no task pool, no parallelism. This slice implements and *proves* the
-//! frame-start guarantee in a serial driver first; BH-3 later replaces the
-//! serial Step loop with a parallel one against the same semantics.
+//! (`docs/effects-spec.md` §12.4; BH-2, #914).
+//!
+//! The Collect / Step / Apply phase model, the per-flow buffered writes, and
+//! the flow-id-ordered Apply live here and are `unsafe`-free. Two drivers share
+//! them: the serial [`advance_batch`] (this module) and the **parallel**
+//! [`advance_batch_parallel`](parallel::advance_batch_parallel) (BH-3, #927 —
+//! the sanctioned-unsafe [`parallel`] submodule). They are **byte-identical**
+//! by construction (the determinism law): the parallel driver only moves the
+//! Step *loop* onto [`ComputeTaskPool`](bevy_tasks::ComputeTaskPool); every
+//! flow still steps against a private frame-start clone, so thread interleaving
+//! cannot affect any outcome, and Apply flushes in flow-id order either way.
 //!
 //! ## What batch mode changes
 //!
@@ -47,15 +54,21 @@
 //!   policy (every unit World-scoped — the common case, and what the property
 //!   test and scenario harness exercise) this is exactly complete. A host that
 //!   opts units into `Local` via a policy should keep those flows on the
-//!   serial API for now; batch-mode `Local` routing is BH-3/BH-4 follow-up.
-//! - **No prefetch, no parallelism.** World-access (`bind_brink_query`) and
-//!   async bindings still park (`AwaitingExternal`); a parked flow is simply
-//!   left for the plugin's existing resolver and re-collected next batch.
-//!   §12.3 prefetch (synchronous world reads under a held borrow) is BH-3.
-//! - **Per-flow snapshot clone.** Serial correctness here comes from cloning
-//!   the frame-start world per flow. §12.2's "borrow, don't copy" (one
-//!   `UnsafeWorldCell` scope, no clones) is the BH-3 optimization; this slice
-//!   trades that throughput for a `unsafe`-free, serially-provable core.
+//!   serial API. **BH-3 (#925) now *guards* this** rather than leaving it
+//!   silent: a Local-policy flow (host-installed or compiled `#@local`) is
+//!   skipped with a `warn!` and counted in
+//!   [`BrinkBatchReport::skipped_local`], never stepped — the full `Local`
+//!   routing itself remains a BH-4 follow-up.
+//! - **No prefetch.** World-access (`bind_brink_query`) and async bindings
+//!   still park (`AwaitingExternal`); a parked flow is simply left for the
+//!   plugin's existing resolver and re-collected next batch. §12.3 prefetch
+//!   (synchronous world reads under a held borrow) is a later slice.
+//! - **Per-flow snapshot clone.** Both drivers step each flow against a
+//!   private clone of the frame-start world. BH-3 parallelizes *that* Step
+//!   (the clone is what makes the concurrent step trivially race-free); §12.2's
+//!   "borrow, don't copy" (one `UnsafeWorldCell` scope over the *shared* world,
+//!   no clones) is a further optimization that trades this clone for a
+//!   narrower, rows-proven borrow — a later slice.
 //!
 //! ## Capability bookkeeping (BH-1 wiring)
 //!
@@ -77,15 +90,35 @@ use bevy_log::warn;
 use brink_format::{DefinitionId, LineEntry, Value};
 use brink_runtime::{
     ContextAccess, DriveOutcome, ExternalFnHandler, FallbackHandler, FastRng, FlowInstance, Line,
-    Program, RuntimeError, World, WriteObserver,
+    Program, RuntimeError, Scope, World, WorldPolicy, WriteObserver,
 };
 
 use crate::asset::{BrinkProgram, LineTablesAsset, ProgramAsset};
 use crate::bindings::{BrinkBindings, TriggerFn};
 use crate::capability::{CapabilityTable, ContainerAccessTable};
 use crate::flow::{BrinkFlow, emit_event};
-use crate::globals::BrinkGlobals;
+use crate::globals::{BrinkGlobals, BrinkWorldPolicy};
 use crate::line_tables::BrinkLocale;
+
+/// BH-3's sanctioned-unsafe parallel Step phase (`ComputeTaskPool` +
+/// `UnsafeWorldCell`). The workspace-wide `unsafe_code` deny stands
+/// everywhere else; this is the one exempt module.
+pub mod parallel;
+
+/// Does a host-installed [`WorldPolicy`] home **any** unit of story-state to
+/// [`Scope::Local`]? Batch mode ([`advance_batch`], [`advance_batch_parallel`])
+/// routes only the shared [`World`]; a flow whose policy homes anything to
+/// `Local` reads/writes a per-flow `FlowLocal` layer batch mode never wraps,
+/// so batching it would silently drop those reads/writes. This is the cheap
+/// interim guard's host-side half (#925): the whole batch shares one
+/// `BrinkWorldPolicy<M>`, so a single check gates every flow under `M`; the
+/// per-story compiled-`#@local` half rides [`Program::has_local_defaults`].
+pub(crate) fn homes_any_local(policy: &WorldPolicy) -> bool {
+    policy.default == Scope::Local
+        || policy.turn_index == Scope::Local
+        || policy.rng == Scope::Local
+        || policy.overrides.values().any(|s| *s == Scope::Local)
+}
 
 // ── Buffered world writes ───────────────────────────────────────────────────
 
@@ -191,10 +224,108 @@ pub(crate) struct FlowBatchOutcome {
     /// terminal line nor a deferred-external park this turn, and must not be
     /// counted as either at Apply.
     errored: bool,
+    /// `true` if the flow was **skipped**, not stepped, because its policy
+    /// homes state to [`Scope::Local`] (the #925 guard). A skipped flow
+    /// produced no lines, buffered no writes, and is not parked — it is left
+    /// untouched for the serial API and counted distinctly, never folded into
+    /// `stepped`/`awaiting`/`errored`.
+    skipped_local: bool,
     /// The flow's story's aggregate container access (union across all
     /// containers), from BH-1's [`CapabilityTable`]. `None` if no table is
     /// loaded for the story (no manifest/registry wired).
     access: Option<Access>,
+}
+
+impl FlowBatchOutcome {
+    /// Build the outcome for a flow **skipped** by the Local-policy guard
+    /// (#925): no Step ran, so no lines/writes/triggers, `skipped_local` set.
+    /// Its BH-1 `access` is still recorded for the batch report.
+    pub(crate) fn skipped_local(
+        entity: Entity,
+        story: AssetId<ProgramAsset>,
+        access: Option<Access>,
+    ) -> Self {
+        Self {
+            entity,
+            story,
+            writes: WriteBuffer::default(),
+            triggers: Vec::new(),
+            lines: Vec::new(),
+            awaiting: false,
+            errored: false,
+            skipped_local: true,
+            access,
+        }
+    }
+
+    /// The flow-id (Entity) this outcome belongs to — Apply orders by it.
+    pub(crate) fn entity(&self) -> Entity {
+        self.entity
+    }
+}
+
+/// Step exactly one flow for a batch turn and package its
+/// [`FlowBatchOutcome`] — the per-flow work shared by the serial
+/// ([`advance_batch`]) and parallel
+/// ([`parallel::advance_batch_parallel`]) drivers, so both produce
+/// **byte-identical** per-flow outcomes (the determinism law). Creates the
+/// flow's own command-trigger-buffering handler, runs [`step_flow`] against
+/// `frame_start`, drains the buffered triggers, and (on a [`RuntimeError`])
+/// `warn!`s + flags `errored` so the fault is surfaced, never laundered into
+/// a normal terminal step.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct, already-resolved Step input (frame-start, flow, program, tables, bindings, story, entity, access); bundling them into a struct would just relocate the same fields with no clarity gain and force both call sites to build it"
+)]
+pub(crate) fn step_one<M: Send + Sync + 'static>(
+    frame_start: &World,
+    flow_inner: &mut FlowInstance,
+    program: &Program,
+    tables: &[Vec<LineEntry>],
+    bindings: Option<&BrinkBindings<M>>,
+    story: AssetId<ProgramAsset>,
+    entity: Entity,
+    access: Option<Access>,
+) -> FlowBatchOutcome {
+    let mut buf = WriteBuffer::default();
+    // A `BrinkBindings` handler buffers command triggers per flow (drained
+    // after Step, flushed at Apply in flow-id order); with no bindings
+    // registered, the fallback handler runs the in-story fallback bodies and
+    // buffers nothing. The handler is created here, used only by this one
+    // flow, and dropped before the outcome is returned — never shared across
+    // flows (so the parallel driver's per-task handler is race-free).
+    let handler = bindings.map(BrinkBindings::handler);
+    let handler_ref: &dyn ExternalFnHandler = match &handler {
+        Some(h) => h,
+        None => &FallbackHandler,
+    };
+    let (lines, awaiting, error) = step_flow(
+        frame_start,
+        flow_inner,
+        program,
+        tables,
+        handler_ref,
+        &mut buf,
+    );
+    let errored = if let Some(err) = &error {
+        warn!("batch step faulted for flow {entity:?} (story {story:?}): {err}");
+        true
+    } else {
+        false
+    };
+    let triggers = handler.map(|h| h.take_queued()).unwrap_or_default();
+
+    FlowBatchOutcome {
+        entity,
+        story,
+        writes: buf,
+        triggers,
+        lines,
+        awaiting,
+        errored,
+        skipped_local: false,
+        access,
+    }
 }
 
 /// Fold a story's whole [`ContainerAccessTable`] into one aggregate
@@ -270,6 +401,10 @@ pub struct FlowAccessRecord {
     /// (e.g. `LineLimitExceeded`) — logged via `bevy_log::warn!` and counted
     /// in [`BrinkBatchReport::errored`], never folded into `stepped`.
     pub errored: bool,
+    /// `true` if the flow was skipped by the Local-policy guard (#925) — its
+    /// policy homes state to [`Scope::Local`], which batch mode does not
+    /// route, so it was left for the serial API rather than stepped.
+    pub skipped_local: bool,
 }
 
 /// Diagnostic record of the most recent [`advance_batch`] turn under marker
@@ -289,6 +424,11 @@ pub struct BrinkBatchReport<M: Send + Sync + 'static = ()> {
     /// produced no lines and is not parked, so it must not be silently
     /// counted as a normal terminal step.
     pub errored: usize,
+    /// Flows skipped by the Local-policy guard this turn (#925): their policy
+    /// homes state to [`Scope::Local`], which batch mode does not route.
+    /// Disjoint from `stepped`/`awaiting`/`errored` — a skipped flow was never
+    /// stepped, so it must not be counted as any of those.
+    pub skipped_local: usize,
     /// Total buffered world writes applied this turn (across all flows).
     pub writes_applied: usize,
     /// Total buffered command triggers applied this turn (across all flows).
@@ -303,9 +443,128 @@ impl<M: Send + Sync + 'static> Default for BrinkBatchReport<M> {
             stepped: 0,
             awaiting: 0,
             errored: 0,
+            skipped_local: 0,
             writes_applied: 0,
             commands_applied: 0,
             _marker: PhantomData,
+        }
+    }
+}
+
+impl<M: Send + Sync + 'static> BrinkBatchReport<M> {
+    /// Overwrite this report with the outcome of a batch turn's Apply phase.
+    fn record(&mut self, result: BatchApplyResult) {
+        self.flows = result.flows;
+        self.stepped = result.stepped;
+        self.awaiting = result.awaiting;
+        self.errored = result.errored;
+        self.skipped_local = result.skipped_local;
+        self.writes_applied = result.writes_applied;
+        self.commands_applied = result.commands_applied;
+    }
+}
+
+// ── Apply: shared between the serial and parallel drivers ────────────────────
+
+/// The counts + per-flow records an Apply pass produces — folded into a
+/// [`BrinkBatchReport`] by whichever driver ran. Shared so the serial
+/// ([`advance_batch`]) and parallel ([`parallel::advance_batch_parallel`])
+/// drivers report identically.
+pub(crate) struct BatchApplyResult {
+    pub flows: Vec<FlowAccessRecord>,
+    pub stepped: usize,
+    pub awaiting: usize,
+    pub errored: usize,
+    pub skipped_local: usize,
+    pub writes_applied: usize,
+    pub commands_applied: usize,
+}
+
+/// One flow's deferred Apply work — the command triggers and line events that
+/// flush through a [`Commands`] *after* all buffered writes have landed. Held
+/// so the write pass (which needs `&mut World`) and the flush pass (which needs
+/// `&mut Commands`) don't fight over the world borrow in the exclusive-system
+/// parallel driver; the two passes are order-equivalent because commands and
+/// events are deferred regardless of when they're queued within the turn.
+pub(crate) struct DeferredFlush {
+    entity: Entity,
+    triggers: Vec<TriggerFn>,
+    lines: Vec<Line>,
+}
+
+/// Apply pass 1 — flush every flow's buffered world writes onto `world` (the
+/// shared [`BrinkGlobals`] world) in flow-id order (`outcomes` must already be
+/// flow-id-sorted). Write-write conflicts resolve by this order (§12.4).
+/// Builds the [`BatchApplyResult`] counts + per-flow records and hands back the
+/// deferred command/event work for [`flush_deferred`] to queue.
+pub(crate) fn apply_batch_writes(
+    outcomes: Vec<FlowBatchOutcome>,
+    world: &mut World,
+) -> (BatchApplyResult, Vec<DeferredFlush>) {
+    let mut flows = Vec::with_capacity(outcomes.len());
+    let mut deferred = Vec::with_capacity(outcomes.len());
+    let mut stepped = 0usize;
+    let mut awaiting = 0usize;
+    let mut errored = 0usize;
+    let mut skipped_local = 0usize;
+    let mut writes_applied = 0usize;
+    let mut commands_applied = 0usize;
+
+    for outcome in outcomes {
+        outcome.writes.apply_to(world);
+        writes_applied += outcome.writes.writes.len();
+        commands_applied += outcome.triggers.len();
+        if outcome.skipped_local {
+            skipped_local += 1;
+        } else if outcome.errored {
+            errored += 1;
+        } else if outcome.awaiting {
+            awaiting += 1;
+        } else {
+            stepped += 1;
+        }
+        flows.push(FlowAccessRecord {
+            entity: outcome.entity,
+            story: outcome.story,
+            access: outcome.access,
+            awaiting: outcome.awaiting,
+            errored: outcome.errored,
+            skipped_local: outcome.skipped_local,
+        });
+        deferred.push(DeferredFlush {
+            entity: outcome.entity,
+            triggers: outcome.triggers,
+            lines: outcome.lines,
+        });
+    }
+
+    (
+        BatchApplyResult {
+            flows,
+            stepped,
+            awaiting,
+            errored,
+            skipped_local,
+            writes_applied,
+            commands_applied,
+        },
+        deferred,
+    )
+}
+
+/// Apply pass 2 — queue every flow's buffered command triggers then its line
+/// events, in flow-id order (`deferred` preserves the sort). Both are deferred
+/// through `commands`, so this runs after all writes have already landed.
+pub(crate) fn flush_deferred<M: Send + Sync + 'static>(
+    deferred: Vec<DeferredFlush>,
+    commands: &mut Commands,
+) {
+    for flush in deferred {
+        for trigger in flush.triggers {
+            commands.queue(trigger);
+        }
+        for line in &flush.lines {
+            emit_event::<M>(line, flush.entity, commands);
         }
     }
 }
@@ -329,11 +588,12 @@ impl<M: Send + Sync + 'static> Default for BrinkBatchReport<M> {
     clippy::needless_pass_by_value,
     clippy::type_complexity,
     clippy::too_many_arguments,
-    reason = "bevy systems take Res/Query by value; the flow query tuple is inherently wide, and the phase inputs (globals, assets, bindings, capability table, report) are each a distinct system param"
+    reason = "bevy systems take Res/Query by value; the flow query tuple is inherently wide, and the phase inputs (globals, policy, assets, bindings, capability table, report) are each a distinct system param"
 )]
 pub fn advance_batch<M: Send + Sync + 'static>(
     mut flows: Query<(Entity, &mut BrinkFlow<M>, &BrinkProgram<M>, &BrinkLocale<M>)>,
     globals: Option<ResMut<BrinkGlobals<M>>>,
+    policy: Option<Res<BrinkWorldPolicy<M>>>,
     programs: Res<Assets<ProgramAsset>>,
     line_tables_assets: Res<Assets<LineTablesAsset>>,
     bindings: Option<Res<BrinkBindings<M>>>,
@@ -344,6 +604,10 @@ pub fn advance_batch<M: Send + Sync + 'static>(
     let Some(mut globals) = globals else {
         return;
     };
+
+    // Host-installed policy: if it homes any unit to `Local`, batch mode can't
+    // route those flows (#925) — every flow under `M` shares this one policy.
+    let policy_local = policy.is_some_and(|p| homes_any_local(&p.policy));
 
     // ── Collect ── pending flows in flow-id (Entity) order. A stable total
     // order within the batch is all the frame-start guarantee needs: Step is
@@ -373,93 +637,41 @@ pub fn advance_batch<M: Send + Sync + 'static>(
             continue;
         };
 
-        let access = cap_table
-            .access_for(program_ref.handle.id())
-            .map(aggregate_access);
+        let story = program_ref.handle.id();
+        let access = cap_table.access_for(story).map(aggregate_access);
 
-        let mut buf = WriteBuffer::default();
-        // A `BrinkBindings` handler buffers command triggers per flow (drained
-        // after Step, flushed at Apply in flow-id order); with no bindings
-        // registered, the fallback handler runs the in-story fallback bodies
-        // and buffers nothing.
-        let handler = bindings.as_deref().map(BrinkBindings::handler);
-        let handler_ref: &dyn ExternalFnHandler = match &handler {
-            Some(h) => h,
-            None => &FallbackHandler,
-        };
-        let (lines, awaiting, error) = step_flow(
+        // Local-policy guard (#925): skip (don't step) a flow whose policy —
+        // host-installed or compiled `#@local` — homes state to `Local`, so
+        // batch mode never silently drops its `FlowLocal` reads/writes.
+        if policy_local || program_asset.program.has_local_defaults() {
+            warn!(
+                "batch skipping Local-policy flow {entity:?} (story {story:?}): \
+                 batch mode routes only shared World state — keep it on the serial API"
+            );
+            outcomes.push(FlowBatchOutcome::skipped_local(entity, story, access));
+            continue;
+        }
+
+        outcomes.push(step_one::<M>(
             &frame_start,
             &mut flow.inner,
             &program_asset.program,
             &lt_asset.tables,
-            handler_ref,
-            &mut buf,
-        );
-        let errored = if let Some(err) = &error {
-            warn!(
-                "batch step faulted for flow {entity:?} (story {:?}): {err}",
-                program_ref.handle.id()
-            );
-            true
-        } else {
-            false
-        };
-        let triggers = handler.map(|h| h.take_queued()).unwrap_or_default();
-
-        outcomes.push(FlowBatchOutcome {
+            bindings.as_deref(),
+            story,
             entity,
-            story: program_ref.handle.id(),
-            writes: buf,
-            triggers,
-            lines,
-            awaiting,
-            errored,
             access,
-        });
+        ));
     }
 
     // ── Apply ── flush buffered writes, then command triggers, then line
     // events, in flow-id order (`outcomes` is already flow-id-sorted, matching
     // `collected`). Write-write conflicts resolve by this order (§12.4).
-    let mut report_flows = Vec::with_capacity(outcomes.len());
-    let mut stepped = 0usize;
-    let mut awaiting_count = 0usize;
-    let mut errored_count = 0usize;
-    let mut writes_applied = 0usize;
-    let mut commands_applied = 0usize;
-    for outcome in outcomes {
-        outcome.writes.apply_to(&mut globals.inner);
-        writes_applied += outcome.writes.writes.len();
-        for trigger in outcome.triggers {
-            commands.queue(trigger);
-            commands_applied += 1;
-        }
-        for line in &outcome.lines {
-            emit_event::<M>(line, outcome.entity, &mut commands);
-        }
-        if outcome.errored {
-            errored_count += 1;
-        } else if outcome.awaiting {
-            awaiting_count += 1;
-        } else {
-            stepped += 1;
-        }
-        report_flows.push(FlowAccessRecord {
-            entity: outcome.entity,
-            story: outcome.story,
-            access: outcome.access,
-            awaiting: outcome.awaiting,
-            errored: outcome.errored,
-        });
-    }
+    let (result, deferred) = apply_batch_writes(outcomes, &mut globals.inner);
+    flush_deferred::<M>(deferred, &mut commands);
 
     if let Some(mut report) = report {
-        report.flows = report_flows;
-        report.stepped = stepped;
-        report.awaiting = awaiting_count;
-        report.errored = errored_count;
-        report.writes_applied = writes_applied;
-        report.commands_applied = commands_applied;
+        report.record(result);
     }
 }
 
