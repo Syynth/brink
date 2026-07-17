@@ -61,15 +61,23 @@
 //! cargo bench -p bevy-brink --features bench-counters --bench scenario_bench
 //! # BH-2 batch-mode driver (advance_batch) over the same axis matrix:
 //! cargo bench -p bevy-brink --features bench-counters --bench scenario_bench -- --mode batch
+//! # BH-3 parallel driver (advance_batch_parallel) over the same axis matrix:
+//! cargo bench -p bevy-brink --features bench-counters --bench scenario_bench -- --mode parallel
+//! # Thread-curve exploration (one ComputeTaskPool size per process; prints
+//! # only, never writes baseline files):
+//! cargo bench -p bevy-brink --features bench-counters --bench scenario_bench -- --mode parallel --compute-threads 2
 //! ```
 //!
 //! Writes `benches/baselines/serial-driver.csv` and
 //! `benches/baselines/serial-driver.md` (relative to this crate's root) —
 //! the in-repo SERIAL baselines at flow counts 1/100/1k/10k. `--mode batch`
 //! runs BH-2's batch driver (`advance_batch`, #914) over the same matrix
-//! instead and writes `benches/baselines/batch-serial-driver.{csv,md}`,
-//! never touching the serial pair. See `docs/bevy-bench.md` for the
-//! captured baselines and regeneration instructions.
+//! instead and writes `benches/baselines/batch-serial-driver.{csv,md}`;
+//! `--mode parallel` runs BH-3's parallel driver (`advance_batch_parallel`,
+//! #927) and writes `benches/baselines/parallel-driver.{csv,md}` — each
+//! mode owns its file pair and never touches the others'. See
+//! `docs/bevy-bench.md` for the captured baselines and regeneration
+//! instructions.
 //!
 //! This target is `test = false` in `Cargo.toml`: `cargo test` never runs
 //! it (running `main()` would execute the whole baseline matrix and
