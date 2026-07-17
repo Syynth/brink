@@ -1681,6 +1681,22 @@ pub enum DiagnosticCode {
     /// trailing prose text on the content line and the call itself
     /// vanished) with a loud, unconditional compile error.
     E104,
+
+    // ── `await` condition purity gate (docs/flow-suspension-spec.md §3/§5, ──
+    // ── issue #928, FS-2) ─────────────────────────────────────────────────
+    /// An `await <cond>` / `while await <cond>` condition is not effect-free.
+    /// The condition is captured as a compiler-synthesized *pure* function
+    /// (docs/flow-suspension-spec.md §5): its effect row must be read-only —
+    /// reads are the wake map's dependency set, but a transitive **write** to a
+    /// global cell, or an effectful host **call**, makes the condition
+    /// re-evaluation itself observable, which the wake contract forbids. Built
+    /// on the effects machinery (#859): the condition's transitive effect row
+    /// (via the whole-project [`crate`]-level effect table) must have empty
+    /// `writes`/`calls` and not be opaque. Brink-only (under strict-ink the
+    /// whole `await` is already `E051`); a bare fn-value reference used as a
+    /// dynamic condition (`await some_fn_value`, no call syntax) is read-only
+    /// by construction and never flagged.
+    E105,
 }
 
 impl DiagnosticCode {
@@ -1796,6 +1812,7 @@ impl DiagnosticCode {
             Self::E102 => "E102",
             Self::E103 => "E103",
             Self::E104 => "E104",
+            Self::E105 => "E105",
         }
     }
 
@@ -1930,6 +1947,7 @@ impl DiagnosticCode {
             Self::E104 => {
                 "direct-call syntax requires a bare variable/temp/param callee — use `call(f, args…)` for a computed callee"
             }
+            Self::E105 => "`await` condition must be effect-free (read-only) — it writes a global or performs an effectful call",
         }
     }
 
@@ -2068,6 +2086,7 @@ impl DiagnosticCode {
             "E102" => Some(Self::E102),
             "E103" => Some(Self::E103),
             "E104" => Some(Self::E104),
+            "E105" => Some(Self::E105),
             _ => None,
         }
     }

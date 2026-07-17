@@ -6,6 +6,7 @@
 //! consume the analysis result.
 
 mod annotations;
+mod await_purity;
 mod conversions;
 mod determinism;
 mod dialect_gate;
@@ -27,6 +28,10 @@ use std::sync::Arc;
 
 pub use annotations::{
     check as check_annotations, mismatches as annotation_mismatches, resolve as resolve_annotation,
+};
+pub use await_purity::{
+    check as await_purity_diagnostics, condition_callees as await_condition_callees,
+    hir_has_await,
 };
 pub use brink_ir::FileId;
 pub use brink_ir::ResolutionMap;
@@ -560,11 +565,17 @@ pub fn whole_project_diagnostics(
     // assertion actually exists anywhere in the project — an unannotated
     // project stays effects-inference-free, matching T2-1's advisory-only
     // posture.
-    if opts.dialect == Dialect::Brink
-        && hir_inputs
-            .iter()
-            .any(|&(_, hir)| hir_has_effects_assertion(hir))
-    {
+    //
+    // The FS-2 `await`-condition purity gate (E105,
+    // docs/flow-suspension-spec.md §3/§5, issue #928) rides the same
+    // whole-project effect table and the same brink-only + laziness posture:
+    // it needs `effects_project`'s rows to judge a condition's transitive
+    // effect, so both passes share one inference when *either* an `#@effects`
+    // assertion or an `await` appears anywhere in the project.
+    let needs_effects = hir_inputs
+        .iter()
+        .any(|&(_, hir)| hir_has_effects_assertion(hir) || await_purity::hir_has_await(hir));
+    if opts.dialect == Dialect::Brink && needs_effects {
         let rows =
             infer::effects_project(&hir_inputs, index, resolutions, opts.host_manifest.as_ref());
         for &(file_id, hir) in &hir_inputs {
@@ -577,6 +588,10 @@ pub fn whole_project_diagnostics(
             diagnostics.extend(effects_assertions::check(
                 file_id, hir, index, &scope, &rows,
             ));
+            // The `await` purity gate resolves each condition's calls through
+            // this file's own resolution records (`resolutions` carries file
+            // provenance, filtered inside `await_purity::check`).
+            diagnostics.extend(await_purity::check(file_id, hir, index, resolutions, &rows));
         }
     }
 
