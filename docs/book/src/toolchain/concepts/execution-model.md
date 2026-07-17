@@ -33,6 +33,12 @@ loop {
             print!("{text}");
             break;
         }
+        // The flow parked on a wake condition (flow suspension). Reserved:
+        // not emitted by the runtime until the suspension milestone lands.
+        Line::Suspended { text, tags } => {
+            print!("{text}");
+            break;
+        }
     }
 }
 # Ok(())
@@ -52,6 +58,7 @@ loop {
 | `Done { text, tags }` | The turn's output is complete (ink `done`). The story is **not** over. | Call `continue_single()` again for the next turn. |
 | `Choices { text, tags, choices }` | The story is waiting for a choice. | Call `story.choose(index)`, then continue. |
 | `End { text, tags }` | The story reached `-> END`. Permanently finished. | Stop stepping. |
+| `Suspended { text, tags }` | The flow parked on a wake condition (brink flow suspension). **Reserved** — not yet emitted by the runtime. | Stop driving; resume when the host's wake surface reports the flow runnable. |
 
 Every variant carries the `text` produced since the last yield point and any ink
 tags (`# tag`) attached to it. The helpers `line.text()`, `line.tags()`, and
@@ -64,7 +71,7 @@ but `Text`).
   that reveal content a line at a time.
 - `continue_maximally() -> Vec<Line>` runs until a terminal line and returns
   every line produced along the way; the **last** element is always a terminal
-  variant (`Done`, `Choices`, or `End`). Ideal for click-to-continue UIs that
+  variant (`Done`, `Choices`, `End`, or — once flow suspension lands — `Suspended`). Ideal for click-to-continue UIs that
   show a whole passage at once.
 
 ```rust

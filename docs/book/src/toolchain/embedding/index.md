@@ -88,6 +88,8 @@ loop {
             story.choose(/* player's pick */ choices[0].index)?;
         }
         Line::End { text, .. } => { print!("{text}"); break; }
+        // Reserved for flow suspension; not yet emitted.
+        Line::Suspended { text, .. } => { print!("{text}"); break; }
     }
 }
 # Ok(())
