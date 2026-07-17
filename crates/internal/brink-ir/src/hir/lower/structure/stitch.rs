@@ -6,7 +6,10 @@ use crate::{Block, ContainerPtr, DiagnosticCode, Knot, ParamInfo, Stitch, Symbol
 
 use super::super::block::LowerBlock;
 use super::super::context::{LowerScope, LowerSink, Lowered};
-use super::super::directive::{DirectiveTarget, apply_scope_directives, leading_body_directives};
+use super::super::directive::{
+    DirectiveTarget, apply_scope_directives, effects_assertion_from_directives,
+    leading_body_directives,
+};
 use super::super::doc_comment::{DocPolicy, parse_doc_comment};
 use super::super::helpers::make_name;
 use super::knot::lower_knot_params;
@@ -69,11 +72,14 @@ pub(super) fn lower_top_level_stitch(
     });
     scope.current_knot = None;
 
-    // `#@local` and `#@private`/`#@public` directives in the leading
-    // tag-line run of the body.
-    let is_local = stitch.body().is_some_and(|b| {
+    // `#@local`, `#@private`/`#@public`, and `#@effects(…)` directives in
+    // the leading tag-line run of the body.
+    let mut is_local = false;
+    let mut effects_assertion = None;
+    if let Some(b) = stitch.body() {
         let dirs = leading_body_directives(b.syntax());
-        let local = apply_scope_directives(&dirs, DirectiveTarget::Stitch, sink);
+        is_local = apply_scope_directives(&dirs, DirectiveTarget::Stitch, sink);
+        effects_assertion = effects_assertion_from_directives(&dirs, sink);
         if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
             sink.set_visibility(crate::SymbolKind::Stitch, &name_text, vis);
         }
@@ -86,8 +92,7 @@ pub(super) fn lower_top_level_stitch(
                 sink.set_was(crate::SymbolKind::Stitch, &name_text, old_name, was_range);
             }
         }
-        local
-    });
+    }
 
     Ok(Knot {
         ptr: ContainerPtr::Stitch(AstPtr::new(stitch)),
@@ -97,6 +102,7 @@ pub(super) fn lower_top_level_stitch(
         body,
         stitches: Vec::new(),
         is_local,
+        effects_assertion,
         // `= stitch` headers never carry a return-type annotation — that
         // grammar only exists on `== knot ==` headers (TM-2, docs/typed-mode-spec.md
         // §3: `): type ===`), which this promoted-top-level-stitch path
@@ -162,11 +168,14 @@ pub(super) fn lower_stitch(
     });
     scope.current_stitch = None;
 
-    // `#@local` and `#@private`/`#@public` directives in the leading
-    // tag-line run of the body.
-    let is_local = stitch.body().is_some_and(|b| {
+    // `#@local`, `#@private`/`#@public`, and `#@effects(…)` directives in
+    // the leading tag-line run of the body.
+    let mut is_local = false;
+    let mut effects_assertion = None;
+    if let Some(b) = stitch.body() {
         let dirs = leading_body_directives(b.syntax());
-        let local = apply_scope_directives(&dirs, DirectiveTarget::Stitch, sink);
+        is_local = apply_scope_directives(&dirs, DirectiveTarget::Stitch, sink);
+        effects_assertion = effects_assertion_from_directives(&dirs, sink);
         if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
             sink.set_visibility(crate::SymbolKind::Stitch, &qualified, vis);
         }
@@ -189,8 +198,7 @@ pub(super) fn lower_stitch(
                 );
             }
         }
-        local
-    });
+    }
 
     Ok(Stitch {
         ptr: AstPtr::new(stitch),
@@ -198,5 +206,6 @@ pub(super) fn lower_stitch(
         params,
         body,
         is_local,
+        effects_assertion,
     })
 }

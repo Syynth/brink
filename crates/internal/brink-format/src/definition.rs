@@ -174,6 +174,107 @@ pub struct AliasEntry {
     pub new: DefinitionId,
 }
 
+/// The capability-parameter slot carried by every call atom in a factored
+/// effect row (T2-3, `docs/effects-spec.md` §11; ruled 2026-07-14,
+/// `docs/t1d-spec.md` §7).
+///
+/// v1 populates every atom as [`CapabilityParam::Any`] — component-granular,
+/// the whole capability unrefined. Path-granular refinement (#826) and the
+/// instance-resolving handle parameter are later narrowing rungs; their
+/// discriminants are reserved (the strict reader rejects them until a section
+/// version graduates them), the same reservation discipline the projection
+/// range segment follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CapabilityParam {
+    /// The whole capability, unrefined — the only value v1 ever emits.
+    #[default]
+    Any,
+}
+
+/// A single call atom in an effect row's direct part (`docs/effects-spec.md`
+/// §2/§11): the name of an `EXTERNAL` binding (a call-kind), plus its
+/// [capability-parameter slot](CapabilityParam) and a **reserved
+/// handle-parameter slot**.
+///
+/// The handle-parameter slot (`docs/t1d-spec.md` §7) is where a
+/// handle-parameterized atom (`Transform(@argN)`) will record which minted
+/// handle bounds the capability; v1 leaves it `None` (the reserved wire byte is
+/// `0`). Possession-bounded capabilities are the tier-2 security model — out of
+/// scope for this slice, but the slot ships now so the row encoding need not
+/// change to carry it later.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallAtom {
+    /// The `EXTERNAL` binding name (interned into the story's `name_table`).
+    pub name: NameId,
+    /// Capability-parameter slot — v1 always [`CapabilityParam::Any`].
+    pub capability: CapabilityParam,
+    /// Reserved handle-parameter slot — v1 always `None`. A non-`None` value
+    /// is never emitted in this section version.
+    pub handle_param: Option<u8>,
+}
+
+/// The direct part of a factored effect row (`docs/effects-spec.md` §7/§11):
+/// the atoms a definition (and everything it statically calls) may perform,
+/// independent of any dispatch-cell narrowing. Mirrors the analyzer's flat
+/// `EffectRow`, lowered to wire vocabulary (cells as [`DefinitionId`]s, call
+/// kinds as [`CallAtom`]s).
+///
+/// Sets are stored as vectors already sorted/deduplicated by the producer so
+/// the encoding is deterministic (the analyzer sources them from `BTreeSet`s).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DirectEffects {
+    /// Global cells this row may read.
+    pub reads: Vec<DefinitionId>,
+    /// Global cells this row may write.
+    pub writes: Vec<DefinitionId>,
+    /// Call-kind atoms this row may transitively perform.
+    pub calls: Vec<CallAtom>,
+    /// The pessimal top element (`docs/effects-spec.md` §3): this row performs
+    /// a call whose effects inference cannot summarize.
+    pub opaque: bool,
+}
+
+/// A per-dispatch entry in a factored effect row (`docs/effects-spec.md` §7):
+/// the row a call through a dispatch `cell` contributes, whether that dispatch
+/// is runtime-**narrowable** (its cell is not in the entry's own write set),
+/// and the **static fallback** row used when narrowing does not apply.
+///
+/// v1 emits none of these (call-through-value is inferred as opaque, folded
+/// into the direct part) — but the encoding ships the structure now, because a
+/// flat row structurally forecloses the §7 narrowing the host will do at
+/// schedule-commit. The reader round-trips a populated dispatch list so writer
+/// and reader stay paired (the #742 lesson).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchEntry {
+    /// The dispatch cell whose live fn tokens the host may narrow against.
+    pub cell: DefinitionId,
+    /// Whether this dispatch is statically narrowable (`docs/effects-spec.md`
+    /// §7 soundness gate: the cell is not in the entry's own write set).
+    pub narrowable: bool,
+    /// The static fallback row — the conservative join used when the host does
+    /// not (or cannot) narrow.
+    pub fallback: DirectEffects,
+}
+
+/// One entry in the `EffectRows` `DefinitionId → row` table (T2-3,
+/// `docs/effects-spec.md` §11, `docs/format-v4-rfc.md` §2 `EffectRows`
+/// reservation): a factored effect row for one definition.
+///
+/// Every knot/stitch ships one — the per-container row is the host's
+/// resume-scheduling estimate (`docs/effects-spec.md` §12.1: a flow resumes
+/// from wherever it parked). The row is additive metadata; the runtime does
+/// not consume it yet (`sleep`/narrowing are the future clients), so a story
+/// carrying rows is byte-identical in behavior to one without.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectRowEntry {
+    /// The definition (knot/stitch) this row summarizes.
+    pub def: DefinitionId,
+    /// The direct part — atoms independent of dispatch narrowing.
+    pub direct: DirectEffects,
+    /// Per-dispatch entries (empty in v1).
+    pub dispatches: Vec<DispatchEntry>,
+}
+
 /// A single list item definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ListItemDef {

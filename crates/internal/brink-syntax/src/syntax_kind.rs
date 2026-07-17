@@ -334,6 +334,21 @@ pub enum SyntaxKind {
     /// dotted field chain, `[…]` indexing, or a mix of the two.
     REF_EXPR,
 
+    // ── Computed-callee call attempt (docs/t1c-spec.md §3/§10, issue #869) ──
+    // `expr(args…)` where `expr` isn't a bare identifier immediately
+    // followed by `(` (that shape is `FUNCTION_CALL`, consumed at `atom()`).
+    // Direct-call syntax is RULED (t1c-spec §3) to a bare variable/temp/param
+    // callee only; "method-call syntax" (dispatch through an indexed/field/
+    // call-result callee via bare-call sugar) is explicitly out of T1c
+    // (§10). Superset grammar — always parses, so the author's `(args…)`
+    // is captured instead of silently reinterpreted as trailing prose text
+    // (the pre-existing behavior, and the exact silent-no-op class #869
+    // reports); `brink-ir`'s HIR lowering always rejects it (E104), pointing
+    // at the ratified `call(f, args…)` form.
+    /// A postfix call applied to a callee that isn't a bare name — always
+    /// rejected at HIR lowering (E104).
+    CALL_EXPR,
+
     // Not a real kind — used only for `rowan::Language::kind_to_raw` bounds.
     #[doc(hidden)]
     __LAST,

@@ -250,6 +250,12 @@ impl ContainerEmitter<'_> {
                 self.emit(Opcode::MapRemove);
             }
 
+            lir::Expr::CharAt { s, index } => {
+                self.emit_expr(s, false);
+                self.emit_expr(index, false);
+                self.emit(Opcode::CharAt);
+            }
+
             // ── Records (TM-4c) ──────────────────────────────────────
             lir::Expr::RecordNew {
                 shape_id,

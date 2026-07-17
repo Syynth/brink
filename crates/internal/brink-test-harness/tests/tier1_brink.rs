@@ -103,6 +103,17 @@ fn nested_index_assignment_is_rmw() {
     assert_case("nested-index-assignment");
 }
 
+/// `memo[k] = v` on a fresh key inserts (JS/Python semantics) instead of
+/// faulting `MapKeyNotFound` — issue #856, ruled 2026-07-15. Covers all
+/// three of the ruling's acceptance shapes in one straight-line program:
+/// fresh-key assign inserts (`"a"` then `"b"`), a repeat assign to the same
+/// key overwrites in place rather than growing the map (`memo["a"] = 2`
+/// after `memo["a"] = 1` leaves `len(memo) == 2`, not 3).
+#[test]
+fn map_index_assign_inserts_fresh_key() {
+    assert_case("map-index-assign-inserts-fresh-key");
+}
+
 // ── #673: collection literals as VAR/CONST declaration defaults ─────────
 //
 // Deliberately does NOT use the `VAR p = 0` + reassignment workaround idiom
@@ -240,6 +251,14 @@ fn stdlib_author_function_shadows_builtin() {
     assert_case("stdlib-shadowing");
 }
 
+// ── Stdlib slice 1 completion: char_at (docs/t1b-surface-spec.md §5,
+// issue #857) ──────────────────────────────────────────────────────────────
+
+#[test]
+fn stdlib_char_at_indexes_chars_not_bytes() {
+    assert_case("stdlib-char-at");
+}
+
 // ── TM-3 completion: conversion intrinsics (docs/typed-mode-spec.md §4,
 // maintainer ruling 2026-07-13, issue #659) ───────────────────────────────
 
@@ -348,6 +367,7 @@ fn every_case_directory_has_a_test() {
         "stdlib-remove",
         "stdlib-mutator-nested-lvalue",
         "stdlib-shadowing",
+        "stdlib-char-at",
         "stdlib-conversions",
         "deep-nesting-control-flow",
         "deep-nesting-collections",
@@ -356,6 +376,7 @@ fn every_case_directory_has_a_test() {
         "shadowing-triple-nested-blocks",
         "shadowing-for-loop-variable",
         "map-key-domain-contains-edges",
+        "map-index-assign-inserts-fresh-key",
         "rmw-self-referential-flat-assignment",
         "rmw-chain-self-referential",
         "rmw-shared-map-cow",
@@ -953,6 +974,25 @@ fn push_on_a_non_collection_faults() {
 // asymmetry is the exact edge value-model-spec §11c draws: `contains` has no
 // "the key isn't there" failure mode to escalate to a fault, but
 // indexing/`insert`/`remove` do.
+
+// ── #856: map[newKey] = value inserts, but reads still fault ─────────────
+//
+// Ruled 2026-07-15: indexed *assignment* to an absent map key now inserts
+// (JS/Python semantics — `map-index-assign-inserts-fresh-key` above), but
+// this doesn't loosen reads (`m[k]`, `IndexGet`) at all — those still fault
+// `MapKeyNotFound` on a missing key, exactly as before, per
+// value-model-spec §11c.
+
+#[test]
+fn map_index_get_absent_key_still_faults() {
+    let source =
+        "VAR m = 0\n~ {\n    m = #{\"a\": 1}\n    temp x = m[\"absent\"]\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::MapKeyNotFound { ref key } if key == "absent"),
+        "expected MapKeyNotFound {{ key: \"absent\" }}, got {err:?}"
+    );
+}
 
 #[test]
 fn map_index_get_with_non_key_domain_float_faults() {
@@ -1636,6 +1676,72 @@ fn direct_call_with_correct_arity_still_works() {
     let mut story = Story::<DotNetRng>::new(program, tables);
     let out = run_to_end(&mut story);
     assert_eq!(out, "42.\n");
+}
+
+// ── Stdlib slice 1 completion: char_at (docs/t1b-surface-spec.md §5,
+// issue #857) ──────────────────────────────────────────────────────────────
+
+#[test]
+fn char_at_out_of_range_index_is_a_turn_terminating_fault() {
+    // §11c's "no silent garbage" default — an out-of-range index faults
+    // rather than clamping or returning an empty string.
+    let src = "~ temp c = char_at(\"hi\", 5)\nUnreachable {c}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("out-of-range char_at must fault");
+    assert!(
+        matches!(
+            err,
+            brink_runtime::RuntimeError::CharAtOutOfBounds { index: 5, len: 2 }
+        ),
+        "expected CharAtOutOfBounds, got {err:?}"
+    );
+}
+
+#[test]
+fn char_at_negative_index_is_a_turn_terminating_fault() {
+    let src = "~ temp c = char_at(\"hi\", -1)\nUnreachable {c}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("negative char_at index must fault");
+    assert!(
+        matches!(
+            err,
+            brink_runtime::RuntimeError::CharAtOutOfBounds { index: -1, len: 2 }
+        ),
+        "expected CharAtOutOfBounds, got {err:?}"
+    );
+}
+
+#[test]
+fn char_at_on_a_non_string_is_a_turn_terminating_fault() {
+    let src = "~ temp c = char_at(5, 0)\nUnreachable {c}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("char_at on a non-string must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::NotIndexable("int")),
+        "expected NotIndexable, got {err:?}"
+    );
+}
+
+#[test]
+fn char_at_with_a_non_int_index_is_a_turn_terminating_fault() {
+    let src = "~ temp c = char_at(\"hi\", \"x\")\nUnreachable {c}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("non-int char_at index must fault");
+    assert!(
+        matches!(
+            err,
+            brink_runtime::RuntimeError::CharAtIndexNotInt("string")
+        ),
+        "expected CharAtIndexNotInt, got {err:?}"
+    );
+}
+
+#[test]
+fn char_at_author_shadow_wins_over_the_builtin() {
+    // §5's shadowing ruling: an author-defined `char_at` function resolves
+    // normally instead of dispatching to the VM-native intrinsic.
+    let src = "~ temp r = char_at(1, 2)\n{r}\n-> END\n\n\
+               === function char_at(a, b) ===\n~ return a + b\n";
+    let (program, tables) = compile_and_link(src);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    let out = run_to_end(&mut story);
+    assert_eq!(out, "3\n");
 }
 
 // ── T1c-2 (#700): persistence + rehydration (spec §6) ───────────────────

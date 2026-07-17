@@ -151,9 +151,12 @@ pub enum RuntimeError {
     /// Array index read/write out of bounds (`0 <= index < len` required).
     #[error("array index {index} out of bounds (len {len})")]
     IndexOutOfBounds { index: i32, len: usize },
-    /// Map key read/write on a key that isn't present. Indexed *write*
-    /// (`m[k] = v`) requires the key to already exist — it never inserts;
-    /// use the `insert()` stdlib mutator (T1b-3) to add a new key.
+    /// Map key *read* (`m[k]`, `MapGet`) on a key that isn't present, or a
+    /// path-projection *write* through a `ref` whose final segment key
+    /// isn't present (`docs/t1e-spec.md` §4). Indexed *assignment*
+    /// (`m[k] = v` via the `IndexSet` opcode) no longer raises this fault on
+    /// a missing key — it inserts instead (JS/Python semantics, issue #856,
+    /// ruled 2026-07-15).
     #[error("map has no key {key}")]
     MapKeyNotFound { key: String },
     /// `a[i]`/`a[i] = v`/`m[k]`/`m[k] = v` where `a`/`m` isn't an
@@ -270,4 +273,18 @@ pub enum RuntimeError {
     /// message, or a root-resolution failure).
     #[error("projection invalidated: {0}")]
     ProjectionInvalidated(String),
+
+    // ── Stdlib slice 1 completion: `char_at` (`docs/t1b-surface-spec.md`
+    // §5, issue #857) ──────────────────────────────────────────────────────
+    /// `char_at(s, i)`'s index expression didn't evaluate to an `Int`.
+    #[error("char_at index must be an int, got {0}")]
+    CharAtIndexNotInt(&'static str),
+    /// `char_at(s, i)` where `i` is outside `[0, char_count)` — chars
+    /// (Unicode scalar values), not UTF-8 bytes (the issue's "author
+    /// sanity" ruling), so `len` is `s.chars().count()`, never
+    /// `s.len()`. Turn-terminating fault, no silent empty/clamped result
+    /// (value-model-spec §11c) — matches `IndexOutOfBounds`'s posture for
+    /// arrays.
+    #[error("char_at index {index} out of bounds ({len} chars)")]
+    CharAtOutOfBounds { index: i32, len: usize },
 }

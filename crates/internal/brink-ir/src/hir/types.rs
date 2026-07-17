@@ -146,6 +146,31 @@ pub struct VisibilityDirective {
     pub range: TextRange,
 }
 
+/// A `#@effects(…)` author-facing assertion (T2-2, docs/effects-spec.md
+/// §10, issue #861) — an upper bound on the definition's inferred effect
+/// row. `#@effects(pure)` sets `pure` and leaves the three lists empty (the
+/// empty-row sugar); otherwise `pure` is `false` and `reads`/`writes`/
+/// `calls` hold the raw identifier text of each clause's declared names —
+/// global `VAR`/`CONST` names for `reads`/`writes`, `EXTERNAL` names for
+/// `calls`. Resolving those names against the project symbol index (and the
+/// exceedance check itself: inferred row ⊄ this bound) is
+/// `brink-analyzer`'s job — this struct only carries what the directive
+/// text said. Brink-dialect-gated syntax (`E051` under strict-ink, per
+/// `dialect_gate`), same superset-parse-then-reject shape as `#@module`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectsAssertion {
+    /// `#@effects(pure)` — sugar for the empty row.
+    pub pure: bool,
+    /// Declared `reads:` clause names, in source order.
+    pub reads: Vec<String>,
+    /// Declared `writes:` clause names, in source order.
+    pub writes: Vec<String>,
+    /// Declared `calls:` clause names, in source order.
+    pub calls: Vec<String>,
+    /// Source range of the whole `#@effects(…)` directive tag.
+    pub range: TextRange,
+}
+
 // ─── Containers ─────────────────────────────────────────────────────
 
 /// Pointer back to the AST node that defined a knot-level container.
@@ -184,6 +209,9 @@ pub struct Knot {
     /// the body. Covers the whole definition subtree at runtime policy
     /// resolution (`docs/directive-annotations-spec.md`).
     pub is_local: bool,
+    /// The `#@effects(…)` assertion directive line at the top of the body,
+    /// if any (T2-2, docs/effects-spec.md §10, issue #861).
+    pub effects_assertion: Option<EffectsAssertion>,
     /// The function-header return type annotation (TM-2, docs/typed-mode-spec.md
     /// §3: `): type ===`), brink-dialect-gated syntax. `None` when absent —
     /// not the same as an explicit `void`, which lowers as
@@ -201,6 +229,9 @@ pub struct Stitch {
     /// Marked flow-private via a `#@local` directive line at the top of
     /// the body (`docs/directive-annotations-spec.md`).
     pub is_local: bool,
+    /// The `#@effects(…)` assertion directive line at the top of the body,
+    /// if any (T2-2, docs/effects-spec.md §10, issue #861).
+    pub effects_assertion: Option<EffectsAssertion>,
 }
 
 /// A parameter on a knot, stitch, or function.
@@ -1581,6 +1612,42 @@ pub enum DiagnosticCode {
     /// bare single-name `ref x` (zero segments) never hits this — it lowers
     /// exactly like today's unmarked ref-argument binding.
     E099,
+
+    // ── T2-2 `#@effects(…)` assertion surface (docs/effects-spec.md §10,
+    // issue #861) ──────────────────────────────────────────────────
+    /// `#@effects` with no argument at all (`#@effects`, `#@effects()`, or
+    /// an argument that parses to nothing) — the directive always requires
+    /// either `pure` or at least one `reads:`/`writes:`/`calls:` clause.
+    E100,
+    /// A malformed `#@effects(…)` argument: an unrecognized clause keyword
+    /// (only `reads`/`writes`/`calls` are valid), a value that isn't a bare
+    /// identifier, or a bare value with no preceding clause to attach to.
+    E101,
+    /// A `#@effects(…)` clause names an identifier that isn't a declared
+    /// global `VAR`/`CONST` (for `reads`/`writes`) or a declared `EXTERNAL`
+    /// (for `calls`) anywhere in the project.
+    E102,
+    /// **The exceedance error** (docs/effects-spec.md §10, sitting 2,
+    /// 2026-07-14 ruling): the definition's inferred effect row is not
+    /// covered by (`⊄`) its `#@effects(…)` assertion's declared upper
+    /// bound. Per the ruling, this is the *only* diagnostic the assertion
+    /// surface ever produces — an inferred row that is narrower than the
+    /// bound is silent; there is no drift policy.
+    E103,
+
+    // ── Computed-callee call attempt (docs/t1c-spec.md §3/§10, issue #869) ──
+    /// A call `expr(args…)` whose callee isn't a bare variable/temp/param
+    /// name (an `INDEX_EXPR`, `FIELD_ACCESS_EXPR`, chained call result,
+    /// parenthesized expr, …). Direct-call syntax is RULED (t1c-spec §3) to
+    /// a bare-name callee only; "method-call syntax" through a computed
+    /// callee is explicitly out of T1c (§10). Always rejected — every
+    /// dialect, every mode — pointing at the ratified `call(f, args…)`
+    /// form, which already dispatches through exactly this class of
+    /// expression correctly. Replaces the pre-existing silent drop (the
+    /// parser used to leave `(args…)` unconsumed, so it resurfaced as
+    /// trailing prose text on the content line and the call itself
+    /// vanished) with a loud, unconditional compile error.
+    E104,
 }
 
 impl DiagnosticCode {
@@ -1691,6 +1758,11 @@ impl DiagnosticCode {
             Self::E097 => "E097",
             Self::E098 => "E098",
             Self::E099 => "E099",
+            Self::E100 => "E100",
+            Self::E101 => "E101",
+            Self::E102 => "E102",
+            Self::E103 => "E103",
+            Self::E104 => "E104",
         }
     }
 
@@ -1818,6 +1890,13 @@ impl DiagnosticCode {
             Self::E097 => "`ref` projection expression outside ref-argument position",
             Self::E098 => "ref-argument path segment disagrees with the statically-known shape",
             Self::E099 => "path-projection ref-argument is not yet lowerable (T1e-2, #828)",
+            Self::E100 => "`#@effects` requires `pure` or at least one reads/writes/calls clause",
+            Self::E101 => "malformed `#@effects` clause (unknown keyword or non-identifier value)",
+            Self::E102 => "`#@effects` clause names an unknown global cell or external",
+            Self::E103 => "inferred effects exceed the `#@effects` assertion's declared bound",
+            Self::E104 => {
+                "direct-call syntax requires a bare variable/temp/param callee — use `call(f, args…)` for a computed callee"
+            }
         }
     }
 
@@ -1951,6 +2030,11 @@ impl DiagnosticCode {
             "E097" => Some(Self::E097),
             "E098" => Some(Self::E098),
             "E099" => Some(Self::E099),
+            "E100" => Some(Self::E100),
+            "E101" => Some(Self::E101),
+            "E102" => Some(Self::E102),
+            "E103" => Some(Self::E103),
+            "E104" => Some(Self::E104),
             _ => None,
         }
     }

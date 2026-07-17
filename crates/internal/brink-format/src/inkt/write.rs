@@ -12,8 +12,8 @@ use std::collections::HashMap;
 
 use crate::counting::CountingFlags;
 use crate::definition::{
-    AddressDef, AddressPath, AliasEntry, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry,
-    ListDef, ListItemDef,
+    AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef, DirectEffects,
+    EffectRowEntry, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
 };
 use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, SelectKey};
@@ -40,6 +40,7 @@ pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
     write_literal_pool(w, &story.literal_pool)?;
     write_visibility(w, &story.private_defs)?;
     write_alias_table(w, &story.alias_table)?;
+    write_effect_rows(w, &story.effect_rows)?;
 
     // Build a lookup from scope_id → line table for writing
     let line_map: HashMap<DefinitionId, &[LineEntry]> = story
@@ -246,6 +247,69 @@ fn write_alias_table(w: &mut dyn fmt::Write, aliases: &[AliasEntry]) -> fmt::Res
         writeln!(w, "    (alias {} -> {})", a.old, a.new)?;
     }
     writeln!(w, "  )")
+}
+
+/// T2-3 (`docs/effects-spec.md` §11): the factored `EffectRows` table. Written
+/// only when non-empty, mirroring the other optional sections. The reader lands
+/// with the writer in the same PR (the #742 lesson) — unlike `struct_shapes`,
+/// this section is fully round-tripped through `.inkt`.
+fn write_effect_rows(w: &mut dyn fmt::Write, rows: &[EffectRowEntry]) -> fmt::Result {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    writeln!(w)?;
+    writeln!(w, "  (effect_rows")?;
+    for row in rows {
+        writeln!(w, "    (row {}", row.def)?;
+        write_direct_effects(w, &row.direct, 6)?;
+        for d in &row.dispatches {
+            let narrowable = if d.narrowable { " narrowable" } else { "" };
+            writeln!(w, "      (dispatch {}{}", d.cell, narrowable)?;
+            write_direct_effects(w, &d.fallback, 8)?;
+            writeln!(w, "      )")?;
+        }
+        writeln!(w, "    )")?;
+    }
+    writeln!(w, "  )")
+}
+
+/// Write a [`DirectEffects`] block (`(reads …) (writes …) (calls …) opaque?`)
+/// at the given indent.
+fn write_direct_effects(
+    w: &mut dyn fmt::Write,
+    direct: &DirectEffects,
+    indent: usize,
+) -> fmt::Result {
+    let pad = " ".repeat(indent);
+    write!(w, "{pad}(reads")?;
+    for id in &direct.reads {
+        write!(w, " {id}")?;
+    }
+    writeln!(w, ")")?;
+    write!(w, "{pad}(writes")?;
+    for id in &direct.writes {
+        write!(w, " {id}")?;
+    }
+    writeln!(w, ")")?;
+    write!(w, "{pad}(calls")?;
+    for atom in &direct.calls {
+        write_call_atom(w, atom)?;
+    }
+    writeln!(w, ")")?;
+    if direct.opaque {
+        writeln!(w, "{pad}opaque")?;
+    }
+    Ok(())
+}
+
+/// Write a single [`CallAtom`]: `(call <name> any)`. The capability-parameter
+/// slot renders as `any` (the v1 value); the reserved handle-parameter slot is
+/// `None` in v1 and therefore omitted.
+fn write_call_atom(w: &mut dyn fmt::Write, atom: &CallAtom) -> fmt::Result {
+    let cap = match atom.capability {
+        CapabilityParam::Any => "any",
+    };
+    write!(w, " (call {} {cap})", atom.name.0)
 }
 
 fn write_container(w: &mut dyn fmt::Write, c: &ContainerDef, lines: &[LineEntry]) -> fmt::Result {
@@ -598,6 +662,9 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         } => write!(w, "make_projection {root} segments={segment_count}"),
         Opcode::ProjRead => write!(w, "proj_read"),
         Opcode::ProjWrite => write!(w, "proj_write"),
+
+        // Stdlib slice 1 completion (#857)
+        Opcode::CharAt => write!(w, "char_at"),
     }
 }
 
@@ -824,6 +891,7 @@ mod tests {
             struct_shapes: vec![],
             private_defs: vec![],
             alias_table: vec![],
+            effect_rows: vec![],
             source_checksum: 0,
         };
         let mut buf = String::new();

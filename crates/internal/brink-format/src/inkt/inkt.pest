@@ -3,7 +3,7 @@
 
 WHITESPACE = _{ " " | "\t" | NEWLINE }
 
-story = { SOI ~ "(" ~ "story" ~ story_checksum? ~ name_table? ~ globals? ~ lists? ~ list_items? ~ externals? ~ addresses? ~ address_paths? ~ list_literals? ~ literal_pool? ~ visibility? ~ alias_table? ~ container* ~ ")" ~ EOI }
+story = { SOI ~ "(" ~ "story" ~ story_checksum? ~ name_table? ~ globals? ~ lists? ~ list_items? ~ externals? ~ addresses? ~ address_paths? ~ list_literals? ~ literal_pool? ~ visibility? ~ alias_table? ~ effect_rows? ~ container* ~ ")" ~ EOI }
 story_checksum = { "checksum=" ~ hex_literal }
 
 // ── Name table ──────────────────────────────────────────────────────────────
@@ -53,6 +53,19 @@ address_path_entry = { "(" ~ "path" ~ integer ~ "->" ~ def_id ~ ")" }
 
 alias_table = { "(" ~ "alias_table" ~ alias_entry* ~ ")" }
 alias_entry = { "(" ~ "alias" ~ def_id ~ "->" ~ def_id ~ ")" }
+
+// ── Effect rows (T2-3, docs/effects-spec.md §11) ─────────────────────────────
+
+effect_rows = { "(" ~ "effect_rows" ~ effect_row* ~ ")" }
+effect_row = { "(" ~ "row" ~ def_id ~ effects_reads ~ effects_writes ~ effects_calls ~ opaque_flag? ~ dispatch_entry* ~ ")" }
+dispatch_entry = { "(" ~ "dispatch" ~ def_id ~ narrowable_flag? ~ effects_reads ~ effects_writes ~ effects_calls ~ opaque_flag? ~ ")" }
+effects_reads = { "(" ~ "reads" ~ def_id* ~ ")" }
+effects_writes = { "(" ~ "writes" ~ def_id* ~ ")" }
+effects_calls = { "(" ~ "calls" ~ call_atom* ~ ")" }
+call_atom = { "(" ~ "call" ~ integer ~ cap_param ~ ")" }
+cap_param = { "any" }
+opaque_flag = { "opaque" }
+narrowable_flag = { "narrowable" }
 
 // ── List literals ────────────────────────────────────────────────────────────
 

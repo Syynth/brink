@@ -4,8 +4,8 @@
 use brink_format::{
     AddressPath, ClosureEnvEntry, ContainerDef, CountingFlags, DefinitionId, DefinitionTag,
     ExternalFnDef, GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, ListValue,
-    MapKey, NameId, Opcode, OrderedMap, PluralCategory, ScopeLineTable, SelectKey, ShapeId,
-    SlotInfo, SourceLocation, StoryData, Value,
+    MapKey, NameId, Opcode, OrderedMap, PluralCategory, ProjSegment, ScopeLineTable, SelectKey,
+    ShapeId, SlotInfo, SourceLocation, StoryData, Value,
 };
 use proptest::prelude::*;
 
@@ -165,12 +165,28 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
     ]
 }
 
-/// `Array`/`Map`/`Record`/`Closure` (value-model-spec §4, t1c-spec §1/§6)
-/// nested to a bounded depth — the `.inkt` reader's `array_value`/
-/// `map_value`/`record_value`/`closure_value` rules support all four, so
-/// this closes the "value -> inkt text -> value == identity" law (issue
-/// #672 workstream B item 2, extended by #742 to the T1c function-value
-/// tags) for every recursive `Value` variant, not just scalars.
+/// One projection segment: `Index` (leaf) or `Key` (nests an arbitrary
+/// `Value` at bounded depth, e.g. a struct-field-name string or a non-`Int`
+/// map key).
+fn arb_proj_segment(
+    inner: impl Strategy<Value = Value> + Clone,
+) -> impl Strategy<Value = ProjSegment> {
+    prop_oneof![
+        any::<i32>().prop_map(ProjSegment::Index),
+        inner.prop_map(ProjSegment::Key),
+    ]
+}
+
+/// `Array`/`Map`/`Record`/`Closure`/`Projection` (value-model-spec §4,
+/// t1c-spec §1/§6, t1e-spec §3) nested to a bounded depth — the `.inkt`
+/// reader's `array_value`/`map_value`/`record_value`/`closure_value`/
+/// `projection_value` rules support all five, so this closes the
+/// "value -> inkt text -> value == identity" law (issue #672 workstream B
+/// item 2, extended by #742/#871 to the T1c function-value and T1e
+/// projection tags) for every recursive `Value` variant, not just scalars.
+/// `Projection` was the one member of this family issue #871 found still
+/// missing coverage here — its reader (`parse_projection_value`) already
+/// existed, but nothing had ever generated a `Value::Projection` to prove it.
 fn arb_value() -> impl Strategy<Value = Value> {
     arb_value_leaf().prop_recursive(3, 16, 4, |inner| {
         prop_oneof![
@@ -184,6 +200,11 @@ fn arb_value() -> impl Strategy<Value = Value> {
             }),
             (arb_shape_id(), prop::collection::vec(inner.clone(), 0..4))
                 .prop_map(|(shape, fields)| Value::record(shape, fields)),
+            (
+                arb_def_id(),
+                prop::collection::vec(arb_proj_segment(inner.clone()), 0..3),
+            )
+                .prop_map(|(cell, segments)| Value::projection(cell, segments)),
             (
                 arb_def_id(),
                 prop::collection::vec((arb_name_id(), any::<bool>(), inner), 0..3),
@@ -247,6 +268,33 @@ fn arb_opcode() -> impl Strategy<Value = Opcode> {
         Just(Opcode::Done),
         Just(Opcode::End),
         Just(Opcode::Nop),
+        // Records (TM-4, issue #871: the `.inkt` reader had no case for any
+        // of these mnemonics, so a container emitting them failed to
+        // round-trip).
+        any::<u32>().prop_map(Opcode::RecordNew),
+        any::<u16>().prop_map(Opcode::RecordGetDyn),
+        any::<u16>().prop_map(Opcode::RecordSetDyn),
+        any::<u16>().prop_map(Opcode::RecordGet),
+        any::<u16>().prop_map(Opcode::RecordSet),
+        // Conversion intrinsics (TM-3 completion, issue #871).
+        Just(Opcode::ConvertInt),
+        Just(Opcode::ConvertFloat),
+        Just(Opcode::ConvertString),
+        // Function values (T1c, issue #871).
+        arb_def_id().prop_map(Opcode::PushFnRef),
+        (arb_def_id(), any::<u8>()).prop_map(|(target, bound_count)| Opcode::MakeClosure {
+            target,
+            bound_count,
+        }),
+        any::<u8>().prop_map(Opcode::CallValue),
+        any::<u8>().prop_map(Opcode::BindValue),
+        // Path projections (T1e, issue #871).
+        (arb_def_id(), any::<u8>()).prop_map(|(root, segment_count)| Opcode::MakeProjection {
+            root,
+            segment_count,
+        }),
+        Just(Opcode::ProjRead),
+        Just(Opcode::ProjWrite),
     ]
 }
 
@@ -392,6 +440,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                     struct_shapes: vec![],
                     private_defs: vec![],
                     alias_table: vec![],
+                    effect_rows: vec![],
                     source_checksum,
                 }
             },

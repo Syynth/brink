@@ -84,7 +84,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use brink_analyzer::{AnalysisOptions, CallGraph, InferenceResult, SccGraph, Sig, TypePolicy};
-use brink_format::{DefinitionId, StoryData};
+use brink_format::{
+    CallAtom, CapabilityParam, DefinitionId, DirectEffects, EffectRowEntry, NameId, StoryData,
+};
 use brink_ir::suppressions::{Suppressions, apply_suppressions, parse_suppressions};
 use brink_ir::{
     Diagnostic, DiagnosticCode, FileId, HirFile, ResolutionMap, Severity, SymbolIndex, SymbolKind,
@@ -102,9 +104,9 @@ mod heap_size;
 pub use analysis::ResolvedProject;
 pub(crate) use analysis::{
     analysis_diagnostics_query, analysis_query, call_site_diagnostics_query, call_site_metas_query,
-    contributor_diagnostics_query, diagnostics_query, external_meta_query, has_errors_query,
-    inline_docs_query, per_file_diagnostics_query, resolutions_index_query, value_meta_query,
-    whole_project_diagnostics_query,
+    contributor_diagnostics_query, diagnostics_query, effects_assertion_diagnostics_query,
+    external_meta_query, has_errors_query, inline_docs_query, per_file_diagnostics_query,
+    resolutions_index_query, value_meta_query, whole_project_diagnostics_query,
 };
 
 // ─── Database ────────────────────────────────────────────────────────
@@ -223,6 +225,19 @@ impl Default for BrinkDatabase {
                 .ingredient::<type_inference_query>()
                 .ingredient::<infer_body_query>()
                 .ingredient::<type_diagnostics_query>()
+                // T2-1 (issue #860): advisory effect-row inference, sited
+                // beside inferred_signature. def_effect_atoms_query is the
+                // per-def atom harvest (same body walk referenced_globals/
+                // call_edges drive); effects_scc_query lifts solve_scc's
+                // per-SCC fixpoint to the effect lattice; effects_query is the
+                // per-def view.
+                .ingredient::<def_effect_atoms_query>()
+                .ingredient::<effects_scc_query>()
+                .ingredient::<effects_query>()
+                // T2-2 (issue #861): the `#@effects(…)` assertion's
+                // per-file exceedance check, reading `effects_query` only
+                // for defs that actually carry an assertion.
+                .ingredient::<effects_assertion_diagnostics_query>()
                 // Layer 3.
                 .ingredient::<lir_query>()
                 .ingredient::<story_data_query>()
@@ -950,6 +965,128 @@ pub(crate) fn inferred_signature_query<'db>(
     solved.signatures.get(&def_id).cloned().map(Arc::new)
 }
 
+/// One def's raw effect atoms (T2-1, docs/effects-spec.md §2/§4, issue #860 —
+/// `def_effect_atoms(def)`). The per-def read/write/call-kind atom bundle the
+/// effect-row fixpoint closes over, harvested by the exact same body walk
+/// [`referenced_globals_query`]/[`call_edges_query`] already drive — same
+/// declaring-file-only HIR + resolution dependency edges, same index-sourced
+/// [`inferable_defs_query`] for classifying a call target as an edge vs. a
+/// terminal external. Passes `None` for the manifest for the same reason
+/// [`call_edges_query`] does: this pass discards every computed type, so the
+/// manifest can never change the *structural* atom sets it keeps.
+///
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 16384)]
+pub(crate) fn def_effect_atoms_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: ProjectInput,
+    def: DefKey<'db>,
+) -> Arc<brink_analyzer::EffectAtoms> {
+    let index = inference_index_query(db, project);
+    let def_id = def.def(db);
+    let Some(declaring_file) = index.symbols.get(&def_id).map(|info| info.file) else {
+        return Arc::new(brink_analyzer::EffectAtoms::default());
+    };
+    let Some(file) = project
+        .files(db)
+        .iter()
+        .find(|f| f.file_id(db) == declaring_file)
+    else {
+        return Arc::new(brink_analyzer::EffectAtoms::default());
+    };
+    let hir = &lowered_query(db, *file).hir;
+    let (resolutions, _diags) = resolve_query(db, project, *file);
+    let inferable = inferable_defs_query(db, project);
+    Arc::new(brink_analyzer::def_effect_atoms(
+        def_id,
+        &[(declaring_file, hir)],
+        index,
+        resolutions,
+        inferable,
+        None,
+    ))
+}
+
+/// One SCC's finalized effect rows (T2-1, docs/effects-spec.md §4, issue #860
+/// — the per-SCC effect fixpoint, lifting [`solve_scc_query`]'s exact shape to
+/// the effect lattice). Reads every condensation-predecessor SCC's
+/// `effects_scc_query` first for `known_rows` (recursion is acyclic — the
+/// condensation is a DAG, same Fork 1 ruling [`solve_scc_query`] relies on, so
+/// salsa never sees a cycle), collects every member's
+/// [`def_effect_atoms_query`], then runs [`brink_analyzer::solve_scc_effects`]
+/// for this component's own members. Returns an empty map for an id that isn't
+/// any component's minimum member (defensive — never panics on a stale key).
+///
+/// `lru = 16384`: per-def (per-SCC) runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 16384)]
+pub(crate) fn effects_scc_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: ProjectInput,
+    scc: DefKey<'db>,
+) -> Arc<BTreeMap<DefinitionId, brink_analyzer::EffectRow>> {
+    let scc_id: SccId = scc.def(db);
+    let membership = scc_membership_query(db, project);
+    let Some(batch) = membership
+        .order
+        .iter()
+        .find(|comp| comp.iter().next().copied() == Some(scc_id))
+    else {
+        return Arc::new(BTreeMap::new());
+    };
+
+    let mut known_rows: BTreeMap<DefinitionId, brink_analyzer::EffectRow> = BTreeMap::new();
+    if let Some(deps) = membership.depends_on.get(&scc_id) {
+        for &dep in deps {
+            let solved = effects_scc_query(db, project, DefKey::new(db, dep));
+            known_rows.extend(solved.iter().map(|(k, v)| (*k, v.clone())));
+        }
+    }
+
+    let atoms: BTreeMap<DefinitionId, brink_analyzer::EffectAtoms> = batch
+        .iter()
+        .map(|&id| {
+            (
+                id,
+                (*def_effect_atoms_query(db, project, DefKey::new(db, id))).clone(),
+            )
+        })
+        .collect();
+
+    Arc::new(brink_analyzer::solve_scc_effects(
+        batch,
+        &atoms,
+        &known_rows,
+    ))
+}
+
+/// Per-def effect row (T2-1, docs/effects-spec.md §4, issue #860 —
+/// `effects(def)`, the advisory row query sited beside
+/// [`inferred_signature_query`]). Routes through the def's SCC exactly as
+/// [`inferred_signature_query`] routes through [`solve_scc_query`]. `None` for
+/// a def with no inferable body (not a knot/stitch, or an unknown id) — same
+/// contract as [`inferred_signature_query`]/[`infer_body_query`].
+///
+/// **Consumed by `story_data` since T2-3** (#862): `populate_effect_rows`
+/// reads this for every inferable def to emit the `EffectRows` section. The
+/// row is still additive metadata the *runtime* does not consume (the linker
+/// never reads `effect_rows`), so the oracle stays byte-identical — but the row
+/// now ships in the `.inkb`, so this is no longer advisory-only. `lir_product`
+/// and `diagnostics` still do not read it.
+///
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 16384)]
+pub(crate) fn effects_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: ProjectInput,
+    def: DefKey<'db>,
+) -> Option<Arc<brink_analyzer::EffectRow>> {
+    let def_id = def.def(db);
+    let membership = scc_membership_query(db, project);
+    let scc_id = *membership.member_of.get(&def_id)?;
+    let solved = effects_scc_query(db, project, DefKey::new(db, scc_id));
+    solved.get(&def_id).cloned().map(Arc::new)
+}
+
 /// Whole-project type inference — now an aggregation over
 /// [`scc_membership_query`] + [`solve_scc_query`] (FG-2, issue #631; was a
 /// single monolithic [`brink_analyzer::infer_project`] call
@@ -1613,6 +1750,76 @@ pub struct CompileProduct {
 /// with an empty range) rather than silently downgrading to `story: None`
 /// with an empty `errors` — which would look like "nothing to compile" to
 /// every caller instead of "codegen refused to compile this."
+/// Populate the T2-3 `EffectRows` table (#862, `docs/effects-spec.md` §11):
+/// one factored row per inferable definition (every knot/stitch — the host's
+/// resume-scheduling estimate, §12.1). Rows are read straight off the advisory
+/// [`effects_query`] fixpoint and lowered to wire vocabulary:
+///
+/// - `reads`/`writes` cells ride through as [`DefinitionId`]s (already sorted —
+///   they come from `BTreeSet`s).
+/// - each call-kind name is interned into the story's `name_table`
+///   (find-or-append, in the row's sorted call order for determinism) and
+///   emitted as a [`CallAtom`] with the capability-parameter slot populated
+///   `Any` (component-granular, the v1 value) and the reserved
+///   handle-parameter slot left `None`.
+/// - the per-dispatch entry list is empty in v1 (call-through-value is inferred
+///   as opaque, folded into the direct part) — but the row structure ships the
+///   slot so §7 narrowing is not structurally foreclosed.
+///
+/// Appending call names to `name_table` is safe for inertness: existing
+/// `NameId` indices are unchanged, and the only references to the appended
+/// names are from `effect_rows`, which the runtime does not read.
+#[expect(clippy::cast_possible_truncation)]
+fn populate_effect_rows(db: &dyn salsa::Database, project: ProjectInput, story: &mut StoryData) {
+    let inferable = inferable_defs_query(db, project);
+    if inferable.is_empty() {
+        return;
+    }
+
+    // Owned name→id lookup so we can both read and append to `name_table`.
+    let mut name_lookup: BTreeMap<String, u16> = story
+        .name_table
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.clone(), i as u16))
+        .collect();
+
+    let mut rows: Vec<EffectRowEntry> = Vec::with_capacity(inferable.len());
+    for &def in inferable {
+        let Some(row) = effects_query(db, project, DefKey::new(db, def)) else {
+            continue;
+        };
+        let mut calls: Vec<CallAtom> = Vec::with_capacity(row.calls.len());
+        for name in &row.calls {
+            let id = if let Some(&id) = name_lookup.get(name) {
+                id
+            } else {
+                let id = story.name_table.len() as u16;
+                story.name_table.push(name.clone());
+                name_lookup.insert(name.clone(), id);
+                id
+            };
+            calls.push(CallAtom {
+                name: NameId(id),
+                capability: CapabilityParam::Any,
+                handle_param: None,
+            });
+        }
+        rows.push(EffectRowEntry {
+            def,
+            direct: DirectEffects {
+                reads: row.reads.iter().copied().collect(),
+                writes: row.writes.iter().copied().collect(),
+                calls,
+                opaque: row.opaque,
+            },
+            dispatches: Vec::new(),
+        });
+    }
+    // `inferable` is a `BTreeSet`, so `rows` is already sorted by `def`.
+    story.effect_rows = rows;
+}
+
 #[salsa::tracked(returns(ref))]
 pub(crate) fn story_data_query(db: &dyn salsa::Database, project: ProjectInput) -> CompileProduct {
     let lir = lir_query(db, project);
@@ -1624,11 +1831,20 @@ pub(crate) fn story_data_query(db: &dyn salsa::Database, project: ProjectInput) 
         };
     };
     match brink_codegen_inkb::emit(program) {
-        Ok(story) => CompileProduct {
-            story: Some(Arc::new(story)),
-            errors: lir.errors.clone(),
-            warnings: lir.warnings.clone(),
-        },
+        Ok(mut story) => {
+            // T2-3 (#862, `docs/effects-spec.md` §11): first real emission into
+            // the `EffectRows` section. Codegen has no analyzer access, so the
+            // rows are attached here — this query is the one canonical codegen
+            // site (FG-6), so there is exactly one emission point. The rows are
+            // additive metadata the runtime does not consume yet, so episodes
+            // stay byte-identical (the linker never reads `effect_rows`).
+            populate_effect_rows(db, project, &mut story);
+            CompileProduct {
+                story: Some(Arc::new(story)),
+                errors: lir.errors.clone(),
+                warnings: lir.warnings.clone(),
+            }
+        }
         Err(err) => {
             let mut errors = lir.errors.clone();
             errors.push(Diagnostic {

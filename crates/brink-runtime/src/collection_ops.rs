@@ -2,13 +2,24 @@
 //! "Collections (T1a)"; fault semantics from `docs/value-model-spec.md`
 //! §11c).
 //!
-//! Every op here is total: out-of-bounds array indices and missing map keys
-//! are turn-terminating `RuntimeError`s (propagated via `?`, unwinding
-//! `step()` exactly like `DivisionByZero` does), never silent
-//! growth/insertion. Mutation goes through `Value::array_make_mut`/
-//! `map_make_mut` — the take → `make_mut` → write-back RMW discipline
-//! (value-model-spec §5): an unshared collection mutates in place, a shared
-//! one COWs exactly once.
+//! Reads and out-of-bounds array writes are total: a missing map key on a
+//! *read* (`IndexGet`/`MapGet`) or an out-of-bounds array index (read or
+//! write) is a turn-terminating `RuntimeError` (propagated via `?`,
+//! unwinding `step()` exactly like `DivisionByZero` does), never silent
+//! growth. A missing map key on an indexed *write* (`IndexSet`, i.e.
+//! `m[k] = v`) instead **inserts** (JS/Python semantics, issue #856,
+//! ruled 2026-07-15) — array writes still never grow past the end (no
+//! silent growth there; `push`/`insert` are the stdlib mutators for that).
+//! Mutation goes through `Value::array_make_mut`/`map_make_mut` — the take
+//! → `make_mut` → write-back RMW discipline (value-model-spec §5): an
+//! unshared collection mutates in place, a shared one COWs exactly once.
+//!
+//! `write_index` (used by path-projection writes, `proj_ops::write` —
+//! `docs/t1e-spec.md` §4) keeps the strict fault-on-missing-key behavior:
+//! that spec explicitly ratifies "a missing key ... at write time is the
+//! §1(2) fault, consistent with §11c" for writes through a `ref` projection.
+//! `write_index_upsert` is the insert-on-absent variant, used only by
+//! `index_set` (the direct `IndexSet` opcode — #856's assign path).
 
 use alloc::string::ToString;
 use alloc::vec::Vec;
@@ -68,14 +79,15 @@ pub(crate) fn index_get(flow: &mut Flow) -> Result<(), RuntimeError> {
 /// `make_mut` → write-back on `container` (already a stack value here — the
 /// caller's job, per the RMW discipline the compiler emits, is to read the
 /// root cell, call this, then write the result back). Fault on
-/// out-of-bounds array index (no silent growth on write-past-end) or
-/// missing map key (an indexed *write* never inserts — see
-/// `RuntimeError::MapKeyNotFound`).
+/// out-of-bounds array index (no silent growth on write-past-end); a
+/// missing map key **inserts** rather than faulting (issue #856, ruled
+/// 2026-07-15: `memo[k] = v` on a fresh key works, JS/Python semantics) —
+/// see [`write_index_upsert`].
 pub(crate) fn index_set(flow: &mut Flow) -> Result<(), RuntimeError> {
     let value = flow.pop_value()?;
     let index = flow.pop_value()?;
     let mut container = flow.pop_value()?;
-    write_index(&mut container, &index, value)?;
+    write_index_upsert(&mut container, &index, value)?;
     flow.value_stack.push(container);
     Ok(())
 }
@@ -157,8 +169,9 @@ pub(crate) fn map_get(flow: &mut Flow) -> Result<(), RuntimeError> {
 /// existing map-shaped opcodes are the natural, frozen-numbering-compatible
 /// targets — see the T1b-3 PR description):
 ///
-/// - **Map**: insert-or-overwrite by key. Unlike `IndexSet`, a missing key
-///   is not a fault.
+/// - **Map**: insert-or-overwrite by key — same insert-on-absent semantics
+///   `IndexSet` now has too (issue #856); this opcode predates that ruling
+///   and remains the stdlib `insert()`/`push()` mutators' primitive.
 /// - **Array**: `Vec::insert(index, value)`, shifting later elements right.
 ///   `index` must be an `Int` in `[0, len]` inclusive — `index == len` is
 ///   "insert at the end", i.e. `push(a, v)` lowers to
@@ -378,15 +391,56 @@ pub(crate) fn read_index<'a>(
     }
 }
 
+/// How [`write_index_impl`] handles a map write whose key isn't already
+/// present.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MissingMapKey {
+    /// Fault (`RuntimeError::MapKeyNotFound`) — [`write_index`]'s behavior,
+    /// used by path-projection writes.
+    Fault,
+    /// Insert the key (JS/Python semantics) — [`write_index_upsert`]'s
+    /// behavior, used by the `IndexSet` opcode (issue #856).
+    Insert,
+}
+
 /// Write `container[index] = value` in place via the take → `make_mut` →
 /// write-back discipline. Array writes never grow past the end (no
-/// out-of-bounds write ever succeeds); map writes never insert a new key
-/// (missing key is a fault — see `RuntimeError::MapKeyNotFound`'s doc).
-/// `pub(crate)`: also reused by [`crate::proj_ops`] — see [`read_index`].
+/// out-of-bounds write ever succeeds). Map writes never insert a new key —
+/// missing key is a fault (see `RuntimeError::MapKeyNotFound`'s doc). This
+/// is the STRICT variant: `pub(crate)`, reused verbatim by
+/// [`crate::proj_ops`] for path-projection writes, which must keep this
+/// fault-on-missing-key behavior per `docs/t1e-spec.md` §4 ("a missing key
+/// ... at write time is the §1(2) fault, consistent with §11c") — see
+/// [`read_index`]. For the `IndexSet` opcode's insert-on-absent semantics
+/// (issue #856), see [`write_index_upsert`] instead.
 pub(crate) fn write_index(
     container: &mut Value,
     index: &Value,
     value: Value,
+) -> Result<(), RuntimeError> {
+    write_index_impl(container, index, value, MissingMapKey::Fault)
+}
+
+/// Write `container[index] = value`, inserting a new map key on a miss
+/// (JS/Python semantics, issue #856, ruled 2026-07-15) instead of faulting.
+/// Array bounds behavior is unchanged from [`write_index`] (never grows
+/// past the end — no silent growth on write-past-end). Used only by
+/// `IndexSet` (indexed assignment's assign-path opcode, `index_set`); reads
+/// (`IndexGet`/`MapGet`) and path-projection writes still fault on a
+/// missing key per value-model-spec §11c / t1e-spec.md §4.
+pub(crate) fn write_index_upsert(
+    container: &mut Value,
+    index: &Value,
+    value: Value,
+) -> Result<(), RuntimeError> {
+    write_index_impl(container, index, value, MissingMapKey::Insert)
+}
+
+fn write_index_impl(
+    container: &mut Value,
+    index: &Value,
+    value: Value,
+    on_missing: MissingMapKey,
 ) -> Result<(), RuntimeError> {
     match container {
         Value::Array(_) => {
@@ -404,11 +458,13 @@ pub(crate) fn write_index(
         }
         Value::Map(_) => {
             let key = to_map_key(index)?;
-            let has_key = container.as_map().is_some_and(|map| map.contains_key(&key));
-            if !has_key {
-                return Err(RuntimeError::MapKeyNotFound {
-                    key: map_key_display(&key),
-                });
+            if on_missing == MissingMapKey::Fault {
+                let has_key = container.as_map().is_some_and(|map| map.contains_key(&key));
+                if !has_key {
+                    return Err(RuntimeError::MapKeyNotFound {
+                        key: map_key_display(&key),
+                    });
+                }
             }
             note_map_mutation(container);
             let Some(map) = container.map_make_mut() else {
@@ -589,6 +645,97 @@ mod tests {
         };
         assert_eq!(m.len(), 2);
         assert_eq!(m.get(&MapKey::Str(Arc::from("b"))), Some(&Value::Int(2)));
+    }
+
+    // ── IndexSet: map[newKey] = value inserts (issue #856, ruled 2026-07-15) ──
+
+    #[test]
+    fn index_set_map_fresh_key_inserts() {
+        // memo[k] = v on a fresh key: no fault, key present afterward
+        // (JS/Python semantics — the whole point of #856).
+        let mut map = OrderedMap::new();
+        map.insert(MapKey::Str(Arc::from("a")), Value::Int(1));
+        let mut flow = test_flow();
+        push_args(
+            &mut flow,
+            vec![Value::map(map), Value::from("fresh"), Value::Int(99)],
+        );
+        index_set(&mut flow).unwrap();
+        let result = flow.pop_value().unwrap();
+        let Value::Map(m) = result else {
+            unreachable!("index_set on a map must return a map")
+        };
+        assert_eq!(m.len(), 2);
+        assert_eq!(
+            m.get(&MapKey::Str(Arc::from("fresh"))),
+            Some(&Value::Int(99))
+        );
+        assert_eq!(m.get(&MapKey::Str(Arc::from("a"))), Some(&Value::Int(1)));
+    }
+
+    #[test]
+    fn index_set_map_existing_key_overwrites() {
+        let mut map = OrderedMap::new();
+        map.insert(MapKey::Str(Arc::from("a")), Value::Int(1));
+        let mut flow = test_flow();
+        push_args(
+            &mut flow,
+            vec![Value::map(map), Value::from("a"), Value::Int(42)],
+        );
+        index_set(&mut flow).unwrap();
+        let result = flow.pop_value().unwrap();
+        let Value::Map(m) = result else {
+            unreachable!("index_set on a map must return a map")
+        };
+        assert_eq!(m.len(), 1, "overwrite must not grow the map");
+        assert_eq!(m.get(&MapKey::Str(Arc::from("a"))), Some(&Value::Int(42)));
+    }
+
+    #[test]
+    fn index_set_map_invalid_key_type_still_faults() {
+        // The insert-on-absent ruling only waives the *presence* check —
+        // the key-domain check (int/string/bool) is unaffected.
+        let mut map = OrderedMap::new();
+        map.insert(MapKey::Int(1), Value::Int(1));
+        let mut flow = test_flow();
+        push_args(
+            &mut flow,
+            vec![Value::map(map), Value::Float(3.5), Value::Int(9)],
+        );
+        let err = index_set(&mut flow).unwrap_err();
+        assert_eq!(err, RuntimeError::InvalidMapKeyType("float"));
+    }
+
+    #[test]
+    fn index_set_array_out_of_bounds_still_faults() {
+        // Array indexed-assignment is untouched by #856: still no silent
+        // growth on write-past-end.
+        let mut flow = test_flow();
+        push_args(
+            &mut flow,
+            vec![
+                arr(vec![Value::Int(1), Value::Int(2)]),
+                Value::Int(5),
+                Value::Int(9),
+            ],
+        );
+        let err = index_set(&mut flow).unwrap_err();
+        assert_eq!(err, RuntimeError::IndexOutOfBounds { index: 5, len: 2 });
+    }
+
+    #[test]
+    fn write_index_strict_still_faults_on_missing_key() {
+        // `write_index` (the path-projection variant, `docs/t1e-spec.md`
+        // §4) is untouched by #856 — only `write_index_upsert` (IndexSet's
+        // implementation) gained insert-on-absent.
+        let mut container = Value::map(OrderedMap::new());
+        let err = write_index(&mut container, &Value::from("k"), Value::Int(1)).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::MapKeyNotFound {
+                key: "k".to_string()
+            }
+        );
     }
 
     // ── MapRemove generalized for Array ───────────────────────────────────

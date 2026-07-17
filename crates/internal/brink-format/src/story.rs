@@ -2,8 +2,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::definition::{
-    AddressDef, AddressPath, AliasEntry, ContainerDef, ExternalFnDef, GlobalVarDef, ListDef,
-    ListItemDef, ScopeLineTable, StructShapeDef,
+    AddressDef, AddressPath, AliasEntry, ContainerDef, EffectRowEntry, ExternalFnDef, GlobalVarDef,
+    ListDef, ListItemDef, ScopeLineTable, StructShapeDef,
 };
 use crate::id::DefinitionId;
 use crate::value::ListValue;
@@ -63,6 +63,14 @@ pub struct StoryData {
     /// every story that uses no `#@was` — including the entire pre-M-3
     /// corpus and converter output.
     pub alias_table: Vec<AliasEntry>,
+    /// The T2-3 `EffectRows` table (`docs/effects-spec.md` §11, format section
+    /// tag `0x0D`): one factored effect row per knot/stitch — the host's
+    /// resume-scheduling estimate (§12.1). **Additive metadata**: the runtime
+    /// does not consume rows yet (`sleep`/narrowing are the future clients), so
+    /// a story that carries rows runs byte-identically to one that does not.
+    /// Empty for converter output and any story compiled before this slice.
+    /// Sorted by `def` (ascending raw id) for determinism.
+    pub effect_rows: Vec<EffectRowEntry>,
     /// CRC-32 checksum from the `.inkb` header, used for locale validation.
     /// Zero for stories not loaded from `.inkb`.
     pub source_checksum: u32,

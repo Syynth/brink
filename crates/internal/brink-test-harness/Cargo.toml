@@ -33,5 +33,17 @@ insta = { workspace = true }
 proptest = { workspace = true }
 brink-syntax = { path = "../brink-syntax" }
 
+[features]
+# T2 ground-truth effect-completeness harness (issue #870): forwards to
+# `brink-runtime`'s bench/test-only `effect-trace` recorder. Not part of
+# `default` — `cargo test --workspace` never builds
+# `tests/t2_ground_truth_effects.rs` (see that file's `required-features`);
+# CI runs it as its own job with `--features effect-trace`.
+effect-trace = ["brink-runtime/effect-trace"]
+
+[[test]]
+name = "t2_ground_truth_effects"
+required-features = ["effect-trace"]
+
 [lints]
 workspace = true

@@ -5,8 +5,9 @@ use pest_derive::Parser;
 
 use crate::counting::CountingFlags;
 use crate::definition::{
-    AddressDef, AddressPath, AliasEntry, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry,
-    ListDef, ListItemDef, ParamMeta, ScopeLineTable, SlotInfo, SourceLocation,
+    AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef, DirectEffects,
+    DispatchEntry, EffectRowEntry, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
+    ParamMeta, ScopeLineTable, SlotInfo, SourceLocation,
 };
 use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -84,6 +85,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
     let mut literal_pool = Vec::new();
     let mut private_defs = Vec::new();
     let mut alias_table = Vec::new();
+    let mut effect_rows = Vec::new();
     let mut source_checksum = 0u32;
 
     for inner in pair.into_inner() {
@@ -104,6 +106,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
             Rule::literal_pool => literal_pool = parse_literal_pool(inner)?,
             Rule::visibility => private_defs = parse_visibility(inner)?,
             Rule::alias_table => alias_table = parse_alias_table(inner)?,
+            Rule::effect_rows => effect_rows = parse_effect_rows(inner)?,
             Rule::container => {
                 let (container, lt) = parse_container(inner)?;
                 let is_scope_owner = container.scope_id == container.id;
@@ -140,6 +143,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
         struct_shapes: Vec::new(),
         private_defs,
         alias_table,
+        effect_rows,
         source_checksum,
     })
 }
@@ -814,6 +818,118 @@ fn parse_alias_entry(pair: P<'_>) -> Result<AliasEntry, InktParseError> {
         col: 0,
     })?)?;
     Ok(AliasEntry { old, new })
+}
+
+/// T2-3 (`docs/effects-spec.md` §11): parse `(effect_rows (row …) …)`.
+fn parse_effect_rows(pair: P<'_>) -> Result<Vec<EffectRowEntry>, InktParseError> {
+    let mut rows = Vec::new();
+    for entry in pair.into_inner() {
+        if entry.as_rule() == Rule::effect_row {
+            rows.push(parse_effect_row(&entry)?);
+        }
+    }
+    Ok(rows)
+}
+
+fn parse_effect_row(pair: &P<'_>) -> Result<EffectRowEntry, InktParseError> {
+    let mut inner = pair.clone().into_inner();
+    let def = parse_def_id(
+        inner
+            .next()
+            .ok_or_else(|| err(pair, "expected row def_id"))?,
+    )?;
+    let reads = parse_effect_cells(inner.next().ok_or_else(|| err(pair, "expected reads"))?)?;
+    let writes = parse_effect_cells(inner.next().ok_or_else(|| err(pair, "expected writes"))?)?;
+    let calls = parse_effect_calls(inner.next().ok_or_else(|| err(pair, "expected calls"))?)?;
+    let mut opaque = false;
+    let mut dispatches = Vec::new();
+    for rest in inner {
+        match rest.as_rule() {
+            Rule::opaque_flag => opaque = true,
+            Rule::dispatch_entry => dispatches.push(parse_dispatch_entry(&rest)?),
+            _ => {}
+        }
+    }
+    Ok(EffectRowEntry {
+        def,
+        direct: DirectEffects {
+            reads,
+            writes,
+            calls,
+            opaque,
+        },
+        dispatches,
+    })
+}
+
+fn parse_dispatch_entry(pair: &P<'_>) -> Result<DispatchEntry, InktParseError> {
+    let mut cell = None;
+    let mut narrowable = false;
+    let mut reads = Vec::new();
+    let mut writes = Vec::new();
+    let mut calls = Vec::new();
+    let mut opaque = false;
+    for part in pair.clone().into_inner() {
+        match part.as_rule() {
+            Rule::def_id => cell = Some(parse_def_id(part)?),
+            Rule::narrowable_flag => narrowable = true,
+            Rule::effects_reads => reads = parse_effect_cells(part)?,
+            Rule::effects_writes => writes = parse_effect_cells(part)?,
+            Rule::effects_calls => calls = parse_effect_calls(part)?,
+            Rule::opaque_flag => opaque = true,
+            _ => {}
+        }
+    }
+    let cell = cell.ok_or_else(|| err(pair, "expected dispatch cell def_id"))?;
+    Ok(DispatchEntry {
+        cell,
+        narrowable,
+        fallback: DirectEffects {
+            reads,
+            writes,
+            calls,
+            opaque,
+        },
+    })
+}
+
+/// Parse a `(reads …)` / `(writes …)` cell list — a run of `def_id`s.
+fn parse_effect_cells(pair: P<'_>) -> Result<Vec<DefinitionId>, InktParseError> {
+    let mut cells = Vec::new();
+    for id in pair.into_inner() {
+        if id.as_rule() == Rule::def_id {
+            cells.push(parse_def_id(id)?);
+        }
+    }
+    Ok(cells)
+}
+
+/// Parse a `(calls (call <name> any) …)` atom list.
+fn parse_effect_calls(pair: P<'_>) -> Result<Vec<CallAtom>, InktParseError> {
+    let mut calls = Vec::new();
+    for atom in pair.into_inner() {
+        if atom.as_rule() == Rule::call_atom {
+            calls.push(parse_call_atom(&atom)?);
+        }
+    }
+    Ok(calls)
+}
+
+fn parse_call_atom(pair: &P<'_>) -> Result<CallAtom, InktParseError> {
+    let mut inner = pair.clone().into_inner();
+    let name_pair = inner
+        .next()
+        .ok_or_else(|| err(pair, "expected call atom name"))?;
+    let name = NameId(parse_u16(&name_pair)?);
+    // The capability-parameter slot: `any` is the only v1 value (the grammar's
+    // `cap_param` rule accepts only that literal). The reserved handle-parameter
+    // slot is `None` in v1 — nothing textual carries a bound handle.
+    let capability = CapabilityParam::Any;
+    Ok(CallAtom {
+        name,
+        capability,
+        handle_param: None,
+    })
 }
 
 fn parse_address_paths(pair: P<'_>) -> Result<Vec<AddressPath>, InktParseError> {
@@ -1561,6 +1677,69 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         "begin_fragment" => Ok(Opcode::BeginFragment),
         "end_fragment" => Ok(Opcode::EndFragment),
 
+        // Records (TM-4, `docs/typed-mode-spec.md` §6) — read-side leg paired
+        // with `write_opcode`'s `record_new`/`record_get_dyn`/`record_set_dyn`/
+        // `record_get`/`record_set` mnemonics (issue #871, the #742 write/read
+        // asymmetry class).
+        "record_new" => Ok(Opcode::RecordNew(parse_operand_u32(
+            &operands, 0, mnemonic,
+        )?)),
+        "record_get_dyn" => Ok(Opcode::RecordGetDyn(parse_operand_u16(
+            &operands, 0, mnemonic,
+        )?)),
+        "record_set_dyn" => Ok(Opcode::RecordSetDyn(parse_operand_u16(
+            &operands, 0, mnemonic,
+        )?)),
+        "record_get" => Ok(Opcode::RecordGet(parse_operand_u16(
+            &operands, 0, mnemonic,
+        )?)),
+        "record_set" => Ok(Opcode::RecordSet(parse_operand_u16(
+            &operands, 0, mnemonic,
+        )?)),
+
+        // Conversion intrinsics (TM-3 completion, issue #659/#871)
+        "convert_int" => Ok(Opcode::ConvertInt),
+        "convert_float" => Ok(Opcode::ConvertFloat),
+        "convert_string" => Ok(Opcode::ConvertString),
+
+        // Function values (T1c, `docs/t1c-spec.md` §3/§6, issue #871) —
+        // read-side leg paired with `write_opcode`'s `push_fn_ref`/
+        // `make_closure`/`call_value`/`bind_value` mnemonics.
+        "push_fn_ref" => Ok(Opcode::PushFnRef(parse_operand_def_id(
+            &operands, 0, mnemonic,
+        )?)),
+        "make_closure" => {
+            let target = parse_operand_def_id(&operands, 0, mnemonic)?;
+            let bound_count = parse_kv_operand_u8(&operands, 1, "bound=", mnemonic)?;
+            Ok(Opcode::MakeClosure {
+                target,
+                bound_count,
+            })
+        }
+        "call_value" => Ok(Opcode::CallValue(parse_kv_operand_u8(
+            &operands, 0, "argc=", mnemonic,
+        )?)),
+        "bind_value" => Ok(Opcode::BindValue(parse_kv_operand_u8(
+            &operands, 0, "argc=", mnemonic,
+        )?)),
+
+        // Path projections (T1e, `docs/t1e-spec.md` §3, issue #871) —
+        // read-side leg paired with `write_opcode`'s `make_projection`/
+        // `proj_read`/`proj_write` mnemonics.
+        "make_projection" => {
+            let root = parse_operand_def_id(&operands, 0, mnemonic)?;
+            let segment_count = parse_kv_operand_u8(&operands, 1, "segments=", mnemonic)?;
+            Ok(Opcode::MakeProjection {
+                root,
+                segment_count,
+            })
+        }
+        "proj_read" => Ok(Opcode::ProjRead),
+        "proj_write" => Ok(Opcode::ProjWrite),
+
+        // Stdlib slice 1 completion (#857)
+        "char_at" => Ok(Opcode::CharAt),
+
         // Debug
         "source_location" => {
             // Written as "source_location LINE:COL" — parsed as source_loc operand
@@ -1689,6 +1868,26 @@ fn parse_operand_u32(operands: &[P<'_>], idx: usize, context: &str) -> Result<u3
     let s = operand_str(operands, idx, context)?;
     s.parse().map_err(|_| InktParseError {
         message: format!("invalid u32 operand for {context}: {s}"),
+        line: 0,
+        col: 0,
+    })
+}
+
+/// Parse a `kv_operand` of the form `"<prefix><value>"` (e.g. `"bound=3"`,
+/// `"segments=2"`) into its numeric value. Mirrors the inline `argc=`
+/// stripping already used by `call_variable`/`call_external`, generalized so
+/// `make_closure`'s `bound=` and `make_projection`'s `segments=` operands
+/// (issue #871) don't each duplicate it.
+fn parse_kv_operand_u8(
+    operands: &[P<'_>],
+    idx: usize,
+    prefix: &str,
+    context: &str,
+) -> Result<u8, InktParseError> {
+    let kv_str = operand_str(operands, idx, context)?;
+    let value_str = kv_str.strip_prefix(prefix).unwrap_or(kv_str);
+    value_str.parse().map_err(|_| InktParseError {
+        message: format!("invalid {prefix}value in {context}: {kv_str}"),
         line: 0,
         col: 0,
     })

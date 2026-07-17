@@ -1,5 +1,5 @@
-//! Algorithms corpus — sorting/searching + graphs + DP + procgen lanes
-//! (issue #822, epic #397/#822).
+//! Algorithms corpus — sorting/searching + graphs + DP + procgen +
+//! AI-decision lanes (issue #822, epic #397/#822).
 //!
 //! Sibling of `tier1_brink.rs`'s flat `tests/tier1-brink/<name>/` corpus,
 //! scoped to `tests/tier1-brink/algorithms/<name>/`: classic algorithms
@@ -241,6 +241,56 @@ fn edit_distance_computes_levenshtein_distance_via_bottom_up_table() {
     assert_case("edit-distance");
 }
 
+#[test]
+fn behavior_tree_composes_sequence_selector_and_invert_over_a_blackboard() {
+    assert_case("behavior-tree");
+}
+
+#[test]
+fn utility_ai_scores_actions_by_weighted_considerations() {
+    assert_case("utility-ai");
+}
+
+#[test]
+fn minimax_tictactoe_finds_wins_and_blocks_under_strict_types() {
+    assert_case_with_types("minimax-tictactoe", TypePolicy::Strict);
+}
+
+#[test]
+fn npc_fsm_dispatches_dialogue_state_through_a_map_of_fn_handlers() {
+    assert_case("npc-fsm");
+}
+
+#[test]
+fn pcg_rng_streams_deterministic_draws_from_an_explicit_state_value() {
+    assert_case("pcg-rng");
+    assert_case_is_deterministic_across_runs("pcg-rng");
+}
+
+#[test]
+fn weighted_loot_table_scans_a_hand_rolled_cumulative_array() {
+    assert_case("weighted-loot-table");
+    assert_case_is_deterministic_across_runs("weighted-loot-table");
+}
+
+#[test]
+fn alias_method_draws_in_constant_time_via_voses_table() {
+    assert_case("alias-method");
+    assert_case_is_deterministic_across_runs("alias-method");
+}
+
+#[test]
+fn shuffle_bag_refills_and_reshuffles_on_empty() {
+    assert_case("shuffle-bag");
+    assert_case_is_deterministic_across_runs("shuffle-bag");
+}
+
+#[test]
+fn reservoir_sampling_keeps_a_bounded_uniform_sample_of_the_stream() {
+    assert_case("reservoir-sampling");
+    assert_case_is_deterministic_across_runs("reservoir-sampling");
+}
+
 /// Every `tests/tier1-brink/algorithms/` case directory is exercised by a
 /// `#[test]` above — a directory with no matching test would silently
 /// never run (same invariant `tier1_brink.rs` enforces for its own flat
@@ -265,6 +315,15 @@ fn every_algorithms_case_directory_has_a_test() {
         "knapsack-01",
         "longest-common-subsequence",
         "edit-distance",
+        "behavior-tree",
+        "utility-ai",
+        "minimax-tictactoe",
+        "npc-fsm",
+        "pcg-rng",
+        "weighted-loot-table",
+        "alias-method",
+        "shuffle-bag",
+        "reservoir-sampling",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink/algorithms")
