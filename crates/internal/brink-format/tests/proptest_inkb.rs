@@ -348,6 +348,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                     struct_shapes: vec![],
                     private_defs: vec![],
                     alias_table: vec![],
+                    effect_rows: vec![],
                     source_checksum: 0,
                 }
             },
@@ -374,8 +375,8 @@ proptest! {
         // Correct version.
         prop_assert_eq!(index.version, 5);
 
-        // Exactly 13 sections in canonical order.
-        prop_assert_eq!(index.sections.len(), 13);
+        // Exactly 14 sections in canonical order.
+        prop_assert_eq!(index.sections.len(), 14);
         prop_assert_eq!(index.sections[0].kind, SectionKind::NameTable);
         prop_assert_eq!(index.sections[1].kind, SectionKind::Variables);
         prop_assert_eq!(index.sections[2].kind, SectionKind::ListDefs);
@@ -388,7 +389,8 @@ proptest! {
         prop_assert_eq!(index.sections[9].kind, SectionKind::AddressPaths);
         prop_assert_eq!(index.sections[10].kind, SectionKind::LiteralPool);
         prop_assert_eq!(index.sections[11].kind, SectionKind::StructShapes);
-        prop_assert_eq!(index.sections[12].kind, SectionKind::AliasTable);
+        prop_assert_eq!(index.sections[12].kind, SectionKind::EffectRows);
+        prop_assert_eq!(index.sections[13].kind, SectionKind::AliasTable);
 
         let header_size = u32::try_from(index.header_size()).unwrap();
 

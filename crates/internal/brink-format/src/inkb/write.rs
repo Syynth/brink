@@ -7,8 +7,9 @@ use crate::codec::{
     crc32, write_def_id, write_i32, write_str, write_u8, write_u16, write_u32, write_u64,
 };
 use crate::definition::{
-    AddressDef, AddressPath, AliasEntry, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry,
-    ListDef, ListItemDef, ScopeLineTable, StructShapeDef,
+    AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef, DirectEffects,
+    EffectRowEntry, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef, ScopeLineTable,
+    StructShapeDef,
 };
 use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -16,12 +17,12 @@ use crate::story::StoryData;
 use crate::value::{ListValue, MapKey, ProjSegment, Value, ValueType};
 
 use super::{
-    CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HEADER_PREAMBLE, KEY_CARDINAL,
-    KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN, LINE_TEMPLATE, MAGIC, PART_LITERAL,
-    PART_SELECT, PART_SLOT, PROJ_SEG_INDEX, PROJ_SEG_KEY, SECTION_COUNT, SECTION_ENTRY_SIZE,
-    SectionKind, VAL_ARRAY, VAL_BOOL, VAL_CLOSURE, VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FN_REF,
-    VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT, VAL_LIST, VAL_MAP, VAL_NULL, VAL_PROJECTION, VAL_RECORD,
-    VAL_STRING, VAL_VAR_POINTER, VERSION,
+    CAP_PARAM_ANY, CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HANDLE_PARAM_NONE,
+    HEADER_PREAMBLE, KEY_CARDINAL, KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN, LINE_TEMPLATE,
+    MAGIC, PART_LITERAL, PART_SELECT, PART_SLOT, PROJ_SEG_INDEX, PROJ_SEG_KEY, SECTION_COUNT,
+    SECTION_ENTRY_SIZE, SectionKind, VAL_ARRAY, VAL_BOOL, VAL_CLOSURE, VAL_DIVERT_TARGET,
+    VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT, VAL_LIST, VAL_MAP, VAL_NULL,
+    VAL_PROJECTION, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION,
 };
 
 // ── Tier 1: Full story write ────────────────────────────────────────────────
@@ -104,6 +105,13 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
     section!(
         SectionKind::StructShapes,
         write_section_struct_shapes(&story.struct_shapes, buf)
+    );
+    // EffectRows (T2-3, tag 0x0D) is mandatory — always present (possibly
+    // empty), section-locally versioned. Emitted between StructShapes and the
+    // optional Visibility section so tags stay in canonical ascending order.
+    section!(
+        SectionKind::EffectRows,
+        write_section_effect_rows(&story.effect_rows, buf)
     );
     if has_visibility {
         section!(
@@ -547,6 +555,68 @@ pub fn write_section_alias_table(entries: &[AliasEntry], buf: &mut Vec<u8>) {
         write_def_id(buf, entry.old);
         write_def_id(buf, entry.new);
     }
+}
+
+/// Section-local encoding version for `EffectRows` (T2-3,
+/// `docs/effects-spec.md` §11) — independent of the `.inkb` format `VERSION`,
+/// so the factored-row encoding can change without another whole-format bump
+/// (the reservation this section graduates was made for exactly this).
+pub(crate) const EFFECT_ROWS_SECTION_VERSION: u8 = 1;
+
+/// Write the T2-3 `EffectRows` section (no header framing): a one-byte
+/// section-local version, then the `DefinitionId → row` table of factored
+/// effect rows (`docs/effects-spec.md` §11). One entry per knot/stitch — the
+/// host's resume-scheduling estimate (§12.1). Entries are written in the order
+/// given; callers sort by `def` for determinism.
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_effect_rows(rows: &[EffectRowEntry], buf: &mut Vec<u8>) {
+    write_u8(buf, EFFECT_ROWS_SECTION_VERSION);
+    write_u32(buf, rows.len() as u32);
+    for row in rows {
+        write_def_id(buf, row.def);
+        encode_direct_effects(&row.direct, buf);
+        // Per-dispatch entries (v1 emits none, but the encoding ships the
+        // structure — a flat row forecloses §7 narrowing).
+        write_u32(buf, row.dispatches.len() as u32);
+        for d in &row.dispatches {
+            write_def_id(buf, d.cell);
+            write_u8(buf, u8::from(d.narrowable));
+            encode_direct_effects(&d.fallback, buf);
+        }
+    }
+}
+
+/// Encode a [`DirectEffects`] block: reads, writes, call atoms, opaque flag.
+#[expect(clippy::cast_possible_truncation)]
+fn encode_direct_effects(direct: &DirectEffects, buf: &mut Vec<u8>) {
+    write_u32(buf, direct.reads.len() as u32);
+    for id in &direct.reads {
+        write_def_id(buf, *id);
+    }
+    write_u32(buf, direct.writes.len() as u32);
+    for id in &direct.writes {
+        write_def_id(buf, *id);
+    }
+    write_u32(buf, direct.calls.len() as u32);
+    for atom in &direct.calls {
+        encode_call_atom(atom, buf);
+    }
+    write_u8(buf, u8::from(direct.opaque));
+}
+
+/// Encode a single [`CallAtom`]: interned name, the capability-parameter slot
+/// (`(any)` in v1), then the reserved handle-parameter slot (`None` in v1 —
+/// `docs/t1d-spec.md` §7). A bound handle is never emitted in this section
+/// version.
+fn encode_call_atom(atom: &CallAtom, buf: &mut Vec<u8>) {
+    write_u16(buf, atom.name.0);
+    let cap_tag = match atom.capability {
+        CapabilityParam::Any => CAP_PARAM_ANY,
+    };
+    write_u8(buf, cap_tag);
+    // Reserved handle-parameter slot: v1 is always `None`. A `Some` is
+    // structurally representable but never encoded in this section version.
+    write_u8(buf, atom.handle_param.unwrap_or(HANDLE_PARAM_NONE));
 }
 
 fn encode_external(ext: &ExternalFnDef, buf: &mut Vec<u8>) {

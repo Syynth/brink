@@ -84,7 +84,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use brink_analyzer::{AnalysisOptions, CallGraph, InferenceResult, SccGraph, Sig, TypePolicy};
-use brink_format::{DefinitionId, StoryData};
+use brink_format::{
+    CallAtom, CapabilityParam, DefinitionId, DirectEffects, EffectRowEntry, NameId, StoryData,
+};
 use brink_ir::suppressions::{Suppressions, apply_suppressions, parse_suppressions};
 use brink_ir::{
     Diagnostic, DiagnosticCode, FileId, HirFile, ResolutionMap, Severity, SymbolIndex, SymbolKind,
@@ -1064,10 +1066,12 @@ pub(crate) fn effects_scc_query<'db>(
 /// a def with no inferable body (not a knot/stitch, or an unknown id) — same
 /// contract as [`inferred_signature_query`]/[`infer_body_query`].
 ///
-/// **Advisory-only** (issue #860): nothing in `story_data`, `lir_product`, or
-/// `diagnostics` reads this — the row is additive metadata the runtime doesn't
-/// yet consume, so the oracle stays byte-identical. Calling it is the only
-/// thing that triggers the underlying atom harvest + fixpoint.
+/// **Consumed by `story_data` since T2-3** (#862): `populate_effect_rows`
+/// reads this for every inferable def to emit the `EffectRows` section. The
+/// row is still additive metadata the *runtime* does not consume (the linker
+/// never reads `effect_rows`), so the oracle stays byte-identical — but the row
+/// now ships in the `.inkb`, so this is no longer advisory-only. `lir_product`
+/// and `diagnostics` still do not read it.
 ///
 /// `lru = 16384`: per-def runaway-guard ceiling (issue #647).
 #[salsa::tracked(lru = 16384)]
@@ -1746,6 +1750,76 @@ pub struct CompileProduct {
 /// with an empty range) rather than silently downgrading to `story: None`
 /// with an empty `errors` — which would look like "nothing to compile" to
 /// every caller instead of "codegen refused to compile this."
+/// Populate the T2-3 `EffectRows` table (#862, `docs/effects-spec.md` §11):
+/// one factored row per inferable definition (every knot/stitch — the host's
+/// resume-scheduling estimate, §12.1). Rows are read straight off the advisory
+/// [`effects_query`] fixpoint and lowered to wire vocabulary:
+///
+/// - `reads`/`writes` cells ride through as [`DefinitionId`]s (already sorted —
+///   they come from `BTreeSet`s).
+/// - each call-kind name is interned into the story's `name_table`
+///   (find-or-append, in the row's sorted call order for determinism) and
+///   emitted as a [`CallAtom`] with the capability-parameter slot populated
+///   `Any` (component-granular, the v1 value) and the reserved
+///   handle-parameter slot left `None`.
+/// - the per-dispatch entry list is empty in v1 (call-through-value is inferred
+///   as opaque, folded into the direct part) — but the row structure ships the
+///   slot so §7 narrowing is not structurally foreclosed.
+///
+/// Appending call names to `name_table` is safe for inertness: existing
+/// `NameId` indices are unchanged, and the only references to the appended
+/// names are from `effect_rows`, which the runtime does not read.
+#[expect(clippy::cast_possible_truncation)]
+fn populate_effect_rows(db: &dyn salsa::Database, project: ProjectInput, story: &mut StoryData) {
+    let inferable = inferable_defs_query(db, project);
+    if inferable.is_empty() {
+        return;
+    }
+
+    // Owned name→id lookup so we can both read and append to `name_table`.
+    let mut name_lookup: BTreeMap<String, u16> = story
+        .name_table
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.clone(), i as u16))
+        .collect();
+
+    let mut rows: Vec<EffectRowEntry> = Vec::with_capacity(inferable.len());
+    for &def in inferable {
+        let Some(row) = effects_query(db, project, DefKey::new(db, def)) else {
+            continue;
+        };
+        let mut calls: Vec<CallAtom> = Vec::with_capacity(row.calls.len());
+        for name in &row.calls {
+            let id = if let Some(&id) = name_lookup.get(name) {
+                id
+            } else {
+                let id = story.name_table.len() as u16;
+                story.name_table.push(name.clone());
+                name_lookup.insert(name.clone(), id);
+                id
+            };
+            calls.push(CallAtom {
+                name: NameId(id),
+                capability: CapabilityParam::Any,
+                handle_param: None,
+            });
+        }
+        rows.push(EffectRowEntry {
+            def,
+            direct: DirectEffects {
+                reads: row.reads.iter().copied().collect(),
+                writes: row.writes.iter().copied().collect(),
+                calls,
+                opaque: row.opaque,
+            },
+            dispatches: Vec::new(),
+        });
+    }
+    // `inferable` is a `BTreeSet`, so `rows` is already sorted by `def`.
+    story.effect_rows = rows;
+}
+
 #[salsa::tracked(returns(ref))]
 pub(crate) fn story_data_query(db: &dyn salsa::Database, project: ProjectInput) -> CompileProduct {
     let lir = lir_query(db, project);
@@ -1757,11 +1831,20 @@ pub(crate) fn story_data_query(db: &dyn salsa::Database, project: ProjectInput) 
         };
     };
     match brink_codegen_inkb::emit(program) {
-        Ok(story) => CompileProduct {
-            story: Some(Arc::new(story)),
-            errors: lir.errors.clone(),
-            warnings: lir.warnings.clone(),
-        },
+        Ok(mut story) => {
+            // T2-3 (#862, `docs/effects-spec.md` §11): first real emission into
+            // the `EffectRows` section. Codegen has no analyzer access, so the
+            // rows are attached here — this query is the one canonical codegen
+            // site (FG-6), so there is exactly one emission point. The rows are
+            // additive metadata the runtime does not consume yet, so episodes
+            // stay byte-identical (the linker never reads `effect_rows`).
+            populate_effect_rows(db, project, &mut story);
+            CompileProduct {
+                story: Some(Arc::new(story)),
+                errors: lir.errors.clone(),
+                warnings: lir.warnings.clone(),
+            }
+        }
         Err(err) => {
             let mut errors = lir.errors.clone();
             errors.push(Diagnostic {

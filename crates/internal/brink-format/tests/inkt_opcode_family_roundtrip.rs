@@ -31,6 +31,7 @@ fn empty_story() -> StoryData {
         struct_shapes: vec![],
         private_defs: vec![],
         alias_table: vec![],
+        effect_rows: vec![],
         source_checksum: 0,
     }
 }
