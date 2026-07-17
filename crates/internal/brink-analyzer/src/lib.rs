@@ -15,6 +15,7 @@ mod external_check;
 mod fn_values;
 mod infer;
 mod manifest;
+mod map_keys;
 mod modules;
 mod ref_projection;
 mod resolve;
@@ -256,6 +257,13 @@ pub fn per_file_diagnostics(
         // structural mistake detectable from the literal alone, with no
         // shape resolution or whole-project inference needed.
         out.extend(structs::check_duplicates(&files));
+        // Map-literal key-domain warning (E106, issue #598,
+        // docs/t1b-surface-spec.md §3) — same brink-only rule and the same
+        // policy-independence `structs::check_duplicates` documents: a
+        // statically-visible non-key-domain literal key is a structural
+        // authoring mistake detectable from the literal alone, no shape
+        // resolution or whole-project inference needed.
+        out.extend(map_keys::check(&files));
     }
     out
 }
