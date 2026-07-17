@@ -1,5 +1,12 @@
 # @brink-lang/editor
 
+## 0.12.0
+
+### Patch Changes
+
+- Updated dependencies [6cb663a]
+  - @brink-lang/web@0.12.0
+
 ## 0.11.1
 
 ### Patch Changes
