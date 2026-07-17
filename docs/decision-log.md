@@ -1603,3 +1603,11 @@
 - **SCOPE:** architectural
 - **WHAT:** (1) Await resume = continuation-splitting: await sites split containers; FlowFrame stores the synthesized continuation container id (stable identity from the await site); resume = ordinary divert into it. No instruction offsets, per spec §3. (2) Continuation containers are INVISIBLE: no visit counts, not divert targets, hidden from IDE nav (debug excepted). (3) Slicing: FS-3w (flow-addressed web surface, ships first against today's runtime), FS-3c (compiler: liveness/frame shapes/splitting, E052 stays), FS-3r (VM park/resume/wakeCheck/save, fence drops) — maintainer approval between slices. Spec §11.
 - **WHY:** Invisible containers because visit counts on plumbing would corrupt shuffle/once semantics in behavior loops; web-surface-first so real consumers (SpacetimeDB, RPG Maker MZ) migrate interface shape early and the VM slice changes behavior, not interface; slices keep each review humanly readable while the fence guarantees nothing half-exists on main.
+
+## Compound gameplay v2: BSP room-recipes, MGS-lenient suspicion, LOS-mandatory escape, clock-as-consequence
+- **WHEN:** 2026-07-18
+- **PROJECT:** brink (drive-app demo)
+- **SYSTEM:** demos/compound
+- **SCOPE:** moderate (demo design; feeds #905/#901/#827 evidence)
+- **WHAT:** Layout = BSP + room recipes, solvable-by-construction, seeded pure fn (rejects the 3-column spine — "looks like jezzball"). Guards = MGS-lenient suspicion accumulation with visible tells; escape requires breaking LOS (guards track last-known-position, search, decay — running never wins); no telepathy (shout recruitment; global alarm only via a reachable Alarm-panel room). Dynamics: gold-in-danger + exit-banking push-your-luck; run-noise vs walk-silent + thrown coins; clock pressure ONLY at alarm ≥ 2 or the opt-in timed Vault; sidegrades not upgrades. Drive-app plan §10.
+- **WHY:** Drive-session verdict: no opposing dynamics → no decisions ("it literally isn't a game"); difficulty was monotonic in upgrades. Every mechanic doubles as migration evidence: Investigate = the wake-on-stimulus archetype, recipes/generation = the systems-logic pure-fn specimen, per-guard memory = #@local.
