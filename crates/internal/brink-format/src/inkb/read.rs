@@ -773,6 +773,19 @@ fn decode_container(buf: &[u8], off: &mut usize) -> Result<ContainerDef, DecodeE
         let is_ref = read_u8(buf, off)? != 0;
         params.push(ParamMeta { name, is_ref });
     }
+    // `ContainerDef::params`'s doc invariant: `params.len()` always equals
+    // `param_count` whenever per-param metadata is present at all (empty
+    // `params` is the separate, legitimate "count only, no metadata" case).
+    // A mutated `.inkb` asserting otherwise is malformed input, not
+    // silently-acceptable data — mirrors the `.inkt` reader's guard (#745,
+    // #954), rejecting with a decode error rather than constructing an
+    // inconsistent `ContainerDef`.
+    if !params.is_empty() && params.len() != usize::from(param_count) {
+        return Err(DecodeError::ParamCountMismatch {
+            declared: param_count,
+            actual: params.len(),
+        });
+    }
 
     let bytecode_len = read_u32(buf, off)? as usize;
     if *off + bytecode_len > buf.len() {
