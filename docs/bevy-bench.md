@@ -110,6 +110,15 @@ cargo bench -p bevy-brink --features bench-counters --bench scenario_bench
 
 # BH-2 batch-mode driver (advance_batch, #914) over the same axis matrix.
 cargo bench -p bevy-brink --features bench-counters --bench scenario_bench -- --mode batch
+
+# BH-3 parallel driver (advance_batch_parallel, #927) over the same axis matrix.
+cargo bench -p bevy-brink --features bench-counters --bench scenario_bench -- --mode parallel
+
+# Thread-curve exploration: pin the ComputeTaskPool size (one size per
+# process — bevy's pools are process-global). Prints results only; never
+# writes baseline files, so a non-default pool size can't clobber the
+# checked-in pair.
+cargo bench -p bevy-brink --features bench-counters --bench scenario_bench -- --mode parallel --compute-threads 2
 ```
 
 Writes `crates/bevy-brink/benches/baselines/serial-driver.csv` and
@@ -128,6 +137,19 @@ is the harness's host-side auto-choose pass, and `collect p50` reads 0.
 The canonical batch capture, its machine context, and the batch-vs-serial
 comparison live in `batch-serial-driver.md` itself (hand-maintained header
 over the generated matrix — re-add after regenerating).
+
+`--mode parallel` runs the matrix through BH-3's parallel driver
+(`advance_batch_parallel`, #927: the Step phase on `ComputeTaskPool`
+through an `UnsafeWorldCell`; Collect/Step/Apply shared verbatim with
+`advance_batch`, so the two are byte-identical — the determinism law) and
+writes `parallel-driver.{csv,md}`. Column mapping is identical to batch
+mode. The run prints `compute_task_pool_threads=` — bevy's task pools are
+process-global, so record that number with any capture; `--compute-threads
+N` pins the pool size for thread-curve exploration (print-only, one size
+per process). The canonical parallel capture, its machine context, thread
+count, and the parallel-vs-serial/-vs-batch comparisons live in
+`parallel-driver.md` itself (hand-maintained header over the generated
+matrix — re-add after regenerating).
 
 **Baseline-diff tripwire (issue #911, the seed of `BH-3`'s serial-vs-
 parallel comparator):**
