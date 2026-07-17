@@ -1588,3 +1588,11 @@
 - **SCOPE:** moderate
 - **WHAT:** #913 fork resolved as (b): when one container's externals touch the same capability with conflicting detect bits, the merged bit is the AND — the capability is change-detectable for the container only if ALL its reads are detect-capable; otherwise that container's wake conditions poll. Replaces the accidental last-write-wins BTreeMap::insert fold. BH-4's Detect phase consumes the merged bit.
 - **WHY:** Conservative-total is the house posture: a missed wake is the engine-race bug class (gameplay-visible, hard to diagnose); an unnecessary re-evaluation of a pure condition is a wasted microsecond. Per-call granularity (option c) adds scheduler complexity before any measurement says it matters.
+
+## FS-3 implementation: continuation-splitting, invisible containers, web-surface-first slicing
+- **WHEN:** 2026-07-18
+- **PROJECT:** brink
+- **SYSTEM:** compiler + runtime + web surface (flow suspension)
+- **SCOPE:** architectural
+- **WHAT:** (1) Await resume = continuation-splitting: await sites split containers; FlowFrame stores the synthesized continuation container id (stable identity from the await site); resume = ordinary divert into it. No instruction offsets, per spec §3. (2) Continuation containers are INVISIBLE: no visit counts, not divert targets, hidden from IDE nav (debug excepted). (3) Slicing: FS-3w (flow-addressed web surface, ships first against today's runtime), FS-3c (compiler: liveness/frame shapes/splitting, E052 stays), FS-3r (VM park/resume/wakeCheck/save, fence drops) — maintainer approval between slices. Spec §11.
+- **WHY:** Invisible containers because visit counts on plumbing would corrupt shuffle/once semantics in behavior loops; web-surface-first so real consumers (SpacetimeDB, RPG Maker MZ) migrate interface shape early and the VM slice changes behavior, not interface; slices keep each review humanly readable while the fence guarantees nothing half-exists on main.
