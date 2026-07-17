@@ -554,9 +554,7 @@ pub(super) fn apply_scope_directives(
 ) -> bool {
     let mut is_local = false;
     for d in dirs {
-        if d.dynamic {
-            sink.diagnose(d.range, DiagnosticCode::E046);
-        } else if d.name == "private" || d.name == "public" {
+        if d.name == "private" || d.name == "public" {
             // Visibility directives (M-2, modules-spec §4) — handled by
             // [`visibility_from_directives`]; not an unknown-directive error
             // here.
@@ -586,7 +584,12 @@ pub(super) fn apply_scope_directives(
             // owner would otherwise misfire `E044` on a directive that
             // already validated cleanly at the file level.
         } else if d.name != "local" {
-            sink.diagnose(d.range, DiagnosticCode::E044);
+            // Unknown directive — emit E046 for dynamic content, E044 otherwise.
+            if d.dynamic {
+                sink.diagnose(d.range, DiagnosticCode::E046);
+            } else {
+                sink.diagnose(d.range, DiagnosticCode::E044);
+            }
         } else if !d.bare {
             sink.diagnose(d.range, DiagnosticCode::E050);
         } else if !target.supports_local() {

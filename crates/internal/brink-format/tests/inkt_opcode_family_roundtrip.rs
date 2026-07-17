@@ -12,7 +12,7 @@
 
 use brink_format::{
     ContainerDef, CountingFlags, DefinitionId, DefinitionTag, GlobalVarDef, NameId, Opcode,
-    ProjSegment, ScopeLineTable, ShapeId, StoryData, Value,
+    ProjSegment, ScopeLineTable, ShapeId, StoryData, StructShapeDef, Value,
 };
 
 fn empty_story() -> StoryData {
@@ -184,6 +184,34 @@ fn projection_family_roundtrips() {
                 ProjSegment::Index(3),
                 ProjSegment::Key(Value::String("field".into())),
             ],
+        ),
+    ));
+    assert_roundtrips(&story);
+}
+
+/// TM-4 (`docs/format-v4-rfc.md` §1), tracked from #397: `struct_shapes` was
+/// write-only through `.inkb` while `.inkt` dropped the section entirely
+/// (issue #883, the #742/#871 class). A shape with zero fields and one with
+/// several are both covered — the empty-fields case exercises the writer's
+/// `struct_field*` (zero-or-more) grammar branch.
+#[test]
+fn struct_shapes_family_roundtrips() {
+    let mut story = empty_story();
+    story.struct_shapes.push(StructShapeDef {
+        id: ShapeId(1),
+        name: NameId(10),
+        fields: vec![NameId(11), NameId(12), NameId(13)],
+    });
+    story.struct_shapes.push(StructShapeDef {
+        id: ShapeId(2),
+        name: NameId(20),
+        fields: vec![],
+    });
+    story.variables.push(global(
+        8,
+        Value::record(
+            ShapeId(1),
+            vec![Value::Int(1), Value::Bool(false), Value::String("x".into())],
         ),
     ));
     assert_roundtrips(&story);
