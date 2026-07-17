@@ -137,6 +137,45 @@ fn compile_unknown_config_key_is_a_warning_not_a_compile_failure() {
     fs::remove_dir_all(&dir).ok();
 }
 
+// ── brink convert ────────────────────────────────────────────────────
+
+/// Regression for the review finding on `load_story_data` (the shared loader
+/// behind `brink convert`/`play`/`replay`/`export-xliff`): it compiled raw
+/// `.ink` via `compile_path` (always `AnalysisOptions::default()`), ignoring
+/// any discovered `brink.toml` — contradicting the PR's "every mount that
+/// compiles from source reads brink.toml" claim, since these mounts are
+/// inside `brink-cli` itself. `brink convert` must discover + apply the same
+/// file `brink compile` does.
+#[test]
+fn convert_discovers_and_applies_dialect_from_brink_toml() {
+    let dir = project_dir("convert-config-applies");
+    let story = write_story(&dir, EXTENSION_FIXTURE);
+    write_config(&dir, "[project]\ndialect = \"brink\"\n");
+
+    let out = brink().arg("convert").arg(&story).output().unwrap();
+    assert!(
+        out.status.success(),
+        "brink convert should discover + apply brink.toml's dialect = \"brink\": {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn convert_no_config_extension_syntax_fails_unchanged_behavior() {
+    let dir = project_dir("convert-no-config");
+    let story = write_story(&dir, EXTENSION_FIXTURE);
+
+    let out = brink().arg("convert").arg(&story).output().unwrap();
+    assert!(
+        !out.status.success(),
+        "strict-ink (no brink.toml) must still reject brink-extension syntax via convert"
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
 // ── brink ide ────────────────────────────────────────────────────────
 
 #[test]
@@ -180,3 +219,58 @@ fn ide_check_discovers_and_applies_dialect_from_brink_toml() {
 
     fs::remove_dir_all(&dir).ok();
 }
+
+/// A renameable `gold` var alongside the brink-extension construct, so a
+/// `brink ide rename` can be exercised on a project that only compiles
+/// cleanly under `dialect = brink`.
+const EXTENSION_RENAME_FIXTURE: &str = "\
+VAR gold = 0
+~ { gold = #[1, 2, 3][0] }
+
+-> intro
+
+=== intro ===
+You have {gold} gold.
+-> END
+";
+
+/// Regression for the review finding on `introduced_diagnostics`'s
+/// re-analysis `Driver`: it used to be built with
+/// `AnalysisOptions::default()` (always `strict-ink`) regardless of the
+/// baseline project's discovered `brink.toml`. On a `dialect = brink`
+/// project using extension syntax, that re-analysis driver would emit a
+/// spurious E051 on every valid construct, which `emit_mutation` counted as
+/// an "introduced diagnostic" and refused the rename outright — even though
+/// the rename itself introduces nothing. The re-analysis driver must apply
+/// the same `brink.toml` the baseline `Project::load` did.
+#[test]
+fn ide_rename_write_succeeds_under_brink_dialect_extension_syntax() {
+    let dir = project_dir("ide-rename-brink-dialect");
+    let story = write_story(&dir, EXTENSION_RENAME_FIXTURE);
+    write_config(&dir, "[project]\ndialect = \"brink\"\n");
+
+    let out = brink()
+        .args(["ide", "rename", "gold", "--to", "coins", "--write", "-e"])
+        .arg(&story)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "rename must not be refused by a re-analysis driver that ignores brink.toml: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let src = fs::read_to_string(&story).unwrap();
+    assert!(src.contains("VAR coins"), "declaration renamed: {src}");
+    assert!(src.contains("{coins}"), "reference renamed: {src}");
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+// `load_git_baseline` (used by `brink ide effects-diff --rev`) has its own
+// regression test as a unit test in `crates/brink-cli/src/ide.rs` — its
+// `AnalysisOptions` divergence from `Project::load` isn't observable through
+// `effects-diff`'s CLI output (dialect/types only gate diagnostic severity,
+// never effect-row content — the dialect grammar is a superset that always
+// parses, per `brink-analyzer::dialect_gate`), so a black-box CLI assertion
+// here would pass identically with or without the fix. The unit test
+// compares `analysis_options()` directly instead.

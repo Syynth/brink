@@ -397,8 +397,15 @@ fn load_story_data(
 ) -> Result<brink_format::StoryData, Box<dyn std::error::Error>> {
     let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
     if ext == "ink" {
-        // Raw .ink source — compile in-memory via the native pipeline.
-        let output_result = brink_compiler::compile_path(input)?;
+        // Raw .ink source — compile in-memory via the native pipeline,
+        // discovering + applying a `brink.toml` (#1005) just like `brink
+        // compile` does. Every mount that compiles from source (`brink
+        // convert`, `brink play`, `brink replay`, `brink export-xliff`) reads
+        // the same file `brink compile` does, rather than silently falling
+        // back to `AnalysisOptions::default()` and rejecting extension
+        // syntax on a `dialect = "brink"` project.
+        let options = resolve_analysis_options(input, None, None)?;
+        let output_result = brink_compiler::compile_path_with_options(input, options)?;
         for w in &output_result.warnings {
             tracing::warn!("[{}] {}", w.code.as_str(), w.message);
         }

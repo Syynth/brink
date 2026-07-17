@@ -1517,6 +1517,7 @@ fn run_effects_diff(opts: &EffectsDiffOpts) -> Result<ExitCode, String> {
 fn load_git_baseline(entry: &Path, rev: &str) -> Result<Project, String> {
     let entry_s = entry.to_string_lossy().into_owned();
     let mut driver = Driver::new();
+    driver.set_analysis_options(resolve_analysis_options(entry)?);
     driver
         .discover(&entry_s, |p| git_show(rev, p))
         .map_err(|e| format!("baseline {rev}: {e}"))?;
@@ -1758,6 +1759,31 @@ fn write_graph_dot(out: &mut impl Write, graph: &StoryGraph) -> Result<(), Strin
 
 // ── Project loader ──────────────────────────────────────────────────
 
+/// Discover + apply `brink.toml` (#1005) to a fresh `AnalysisOptions`,
+/// honoring the "explicit flag always wins over the file" precedence rule.
+/// This is the single source every `brink ide` code path that builds its own
+/// `Driver` from scratch must call — `Project::load` (the baseline), the
+/// re-analysis driver in `introduced_diagnostics`, and the git-baseline
+/// driver in `load_git_baseline` — so none of them can silently disagree
+/// about which dialect/type-policy governs the same project. Unknown keys in
+/// the file are reported as warnings on stderr, never treated as errors.
+fn resolve_analysis_options(entry: &Path) -> Result<brink_analyzer::AnalysisOptions, String> {
+    let mut options = brink_analyzer::AnalysisOptions::default();
+    if let Some(loaded) =
+        brink_project_config::load_from_entry(entry).map_err(|e| format!("{e}"))?
+    {
+        for warning in &loaded.warnings {
+            let _ = writeln!(
+                io::stderr(),
+                "warning: [{}] {warning}",
+                loaded.path.display()
+            );
+        }
+        brink_project_config::apply_to_options(&mut options, &loaded.config, false, false);
+    }
+    Ok(options)
+}
+
 struct Project {
     driver: Driver,
     analysis: AnalysisResult,
@@ -1776,20 +1802,7 @@ impl Project {
     fn load(entry: &Path) -> Result<Self, String> {
         let entry = entry.to_string_lossy().into_owned();
         let mut driver = Driver::new();
-        let mut options = brink_analyzer::AnalysisOptions::default();
-        if let Some(loaded) =
-            brink_project_config::load_from_entry(Path::new(&entry)).map_err(|e| format!("{e}"))?
-        {
-            for warning in &loaded.warnings {
-                let _ = writeln!(
-                    io::stderr(),
-                    "warning: [{}] {warning}",
-                    loaded.path.display()
-                );
-            }
-            brink_project_config::apply_to_options(&mut options, &loaded.config, false, false);
-        }
-        driver.set_analysis_options(options);
+        driver.set_analysis_options(resolve_analysis_options(Path::new(&entry))?);
         driver
             .discover(&entry, |p| {
                 std::fs::read_to_string(p)
@@ -1944,6 +1957,7 @@ impl Project {
     ) -> Result<Vec<DiagEntry>, String> {
         let entry_s = entry.to_string_lossy().into_owned();
         let mut driver = Driver::new();
+        driver.set_analysis_options(resolve_analysis_options(entry)?);
         driver
             .discover(&entry_s, |p| {
                 // A moved file no longer exists at its old path: surface any
@@ -2312,4 +2326,94 @@ struct EditEntry {
     location: Loc,
     old: String,
     new: String,
+}
+
+#[cfg(test)]
+mod git_baseline_config_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Serializes tests in this module that change the process cwd —
+    /// `git_show` spawns `git show <rev>:./<path>` with no explicit
+    /// `Command::current_dir`, so it inherits whatever the process's cwd is
+    /// at call time. There is only one such test today; the lock is cheap
+    /// insurance against a future one racing it.
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
+
+    struct CwdGuard(std::path::PathBuf);
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.0);
+        }
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Regression for the review finding on `load_git_baseline` (the
+    /// baseline driver behind `brink ide effects-diff --rev`): it used to
+    /// build its `Driver` with a bare `AnalysisOptions::default()`, ignoring
+    /// any discovered `brink.toml`, while `Project::load` (the head side of
+    /// the very same diff) discovers + applies it. This is not observable
+    /// through `effects-diff`'s CLI output today — dialect/types only gate
+    /// diagnostic severity, never effect-row content, since the dialect
+    /// grammar is a superset that always parses (see
+    /// `brink_analyzer::dialect_gate`) — so it must be caught by comparing
+    /// the resolved `AnalysisOptions` directly instead.
+    #[test]
+    fn load_git_baseline_matches_project_load_analysis_options() {
+        let _lock = CWD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let original_cwd = std::env::current_dir().unwrap();
+
+        let dir = std::env::temp_dir().join(format!(
+            "brink-ide-unit-git-baseline-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("brink.toml"), "[project]\ndialect = \"brink\"\n").unwrap();
+        std::fs::write(dir.join("story.ink"), "Hello.\n-> END\n").unwrap();
+        git(&dir, &["init", "-q"]);
+        git(&dir, &["config", "user.email", "test@example.com"]);
+        git(&dir, &["config", "user.name", "test"]);
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-q", "-m", "initial"]);
+
+        // Match the process cwd to `dir` for the duration of the two loads
+        // below, so `git_show`'s `./`-relative pathspec resolves — restored
+        // by `CwdGuard` on drop (including on assertion panic).
+        std::env::set_current_dir(&dir).unwrap();
+        let cwd_guard = CwdGuard(original_cwd);
+
+        let entry = Path::new("story.ink");
+        let head = Project::load(entry).expect("head loads");
+        let baseline = load_git_baseline(entry, "HEAD").expect("git baseline loads");
+
+        assert_eq!(
+            head.driver.db().analysis_options().dialect,
+            baseline.driver.db().analysis_options().dialect,
+            "load_git_baseline must apply the same brink.toml dialect as Project::load"
+        );
+        assert_eq!(
+            head.driver.db().analysis_options().dialect,
+            brink_analyzer::Dialect::Brink,
+            "sanity: brink.toml's dialect = \"brink\" must actually be in effect"
+        );
+
+        // Restore cwd (still holding `_lock`) before removing `dir`.
+        drop(cwd_guard);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
