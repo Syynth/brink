@@ -5,7 +5,7 @@ use brink_format::{
     AddressPath, ClosureEnvEntry, ContainerDef, CountingFlags, DefinitionId, DefinitionTag,
     ExternalFnDef, GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, ListValue,
     MapKey, NameId, Opcode, OrderedMap, PluralCategory, ProjSegment, ScopeLineTable, SelectKey,
-    ShapeId, SlotInfo, SourceLocation, StoryData, Value,
+    ShapeId, SlotInfo, SourceLocation, StoryData, StructShapeDef, Value,
 };
 use proptest::prelude::*;
 
@@ -224,6 +224,40 @@ fn arb_value() -> impl Strategy<Value = Value> {
     })
 }
 
+/// Structural exhaustiveness guard (issue #883, tracked from #397): a match
+/// over every current [`Value`] variant with **no wildcard arm**, so this
+/// function fails to compile the moment a new variant is added to the enum.
+/// It is never called — the only purpose is the compile-time forcing
+/// function: whoever adds a `Value` variant must also add an arm here (and,
+/// per the doc, teach `arb_value`/`arb_value_leaf` to generate it), instead
+/// of the new family silently escaping this file's fuzz/round-trip coverage
+/// the way the `.inkt` `struct_shapes` section did (the #742/#871/#883
+/// recurring class — a new payload with no reader, or with no proptest
+/// generator, both look "done" until a story that actually uses it is
+/// written by hand).
+#[expect(dead_code, reason = "compile-time-only exhaustiveness guard, see doc")]
+fn assert_value_variants_exhaustive(value: &Value) {
+    match value {
+        Value::Int(_)
+        | Value::Float(_)
+        | Value::Bool(_)
+        | Value::String(_)
+        | Value::List(_)
+        | Value::DivertTarget(_)
+        | Value::VariablePointer(_)
+        | Value::TempPointer { .. }
+        | Value::Null
+        | Value::FragmentRef(_)
+        | Value::Array(_)
+        | Value::Map(_)
+        | Value::Record { .. }
+        | Value::FnRef(_)
+        | Value::Closure(_)
+        | Value::Handle { .. }
+        | Value::Projection(_) => {}
+    }
+}
+
 /// Generate valid opcodes (not random bytes).
 fn arb_opcode() -> impl Strategy<Value = Opcode> {
     prop_oneof![
@@ -296,6 +330,151 @@ fn arb_opcode() -> impl Strategy<Value = Opcode> {
         Just(Opcode::ProjRead),
         Just(Opcode::ProjWrite),
     ]
+}
+
+/// Structural exhaustiveness guard (issue #883, tracked from #397): a match
+/// over every current [`Opcode`] variant with **no wildcard arm**, so this
+/// function fails to compile the moment a new variant is added to the enum.
+/// It is never called — see [`assert_value_variants_exhaustive`]'s doc for
+/// why a compile-time forcing function, rather than a runtime check, is the
+/// mechanical fix for this recurring class (`arb_opcode` not yet covering
+/// every arm listed here is a separate, pre-existing gap this guard does not
+/// paper over — it only stops the gap from growing silently).
+#[expect(dead_code, reason = "compile-time-only exhaustiveness guard, see doc")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per Opcode variant (126 today) — splitting would just hide \
+              the count this guard exists to make visible"
+)]
+fn assert_opcode_variants_exhaustive(op: &Opcode) {
+    match op {
+        Opcode::PushInt(_)
+        | Opcode::PushFloat(_)
+        | Opcode::PushBool(_)
+        | Opcode::PushString(_)
+        | Opcode::PushList(_)
+        | Opcode::PushDivertTarget(_)
+        | Opcode::PushNull
+        | Opcode::Pop
+        | Opcode::Duplicate
+        | Opcode::Add
+        | Opcode::Subtract
+        | Opcode::Multiply
+        | Opcode::Divide
+        | Opcode::Modulo
+        | Opcode::Negate
+        | Opcode::Equal
+        | Opcode::NotEqual
+        | Opcode::Greater
+        | Opcode::GreaterOrEqual
+        | Opcode::Less
+        | Opcode::LessOrEqual
+        | Opcode::Not
+        | Opcode::And
+        | Opcode::Or
+        | Opcode::GetGlobal(_)
+        | Opcode::SetGlobal(_)
+        | Opcode::DeclareTemp(_)
+        | Opcode::GetTemp(_)
+        | Opcode::SetTemp(_)
+        | Opcode::GetTempRaw(_)
+        | Opcode::PushVarPointer(_)
+        | Opcode::PushTempPointer(_)
+        | Opcode::Jump(_)
+        | Opcode::JumpIfFalse(_)
+        | Opcode::Goto(_)
+        | Opcode::GotoIf(_)
+        | Opcode::GotoVariable
+        | Opcode::EnterContainer(_)
+        | Opcode::ExitContainer
+        | Opcode::Call(_)
+        | Opcode::Return
+        | Opcode::TunnelCall(_)
+        | Opcode::TunnelReturn
+        | Opcode::TunnelCallVariable
+        | Opcode::CallVariable(_)
+        | Opcode::ThreadCall(_)
+        | Opcode::ThreadStart
+        | Opcode::ThreadDone
+        | Opcode::EmitLine(_, _)
+        | Opcode::EmitValue
+        | Opcode::EmitNewline
+        | Opcode::Spring
+        | Opcode::Glue
+        | Opcode::BeginTag
+        | Opcode::EndTag
+        | Opcode::EvalLine(_, _)
+        | Opcode::BeginFragment
+        | Opcode::EndFragment
+        | Opcode::BeginChoice(_, _)
+        | Opcode::EndChoice
+        | Opcode::Sequence(_, _)
+        | Opcode::SequenceBranch(_)
+        | Opcode::VisitCount
+        | Opcode::CurrentVisitCount
+        | Opcode::TurnsSince
+        | Opcode::TurnIndex
+        | Opcode::ChoiceCount
+        | Opcode::Random
+        | Opcode::SeedRandom
+        | Opcode::CastToInt
+        | Opcode::CastToFloat
+        | Opcode::Floor
+        | Opcode::Ceiling
+        | Opcode::Pow
+        | Opcode::Min
+        | Opcode::Max
+        | Opcode::CallExternal(_, _)
+        | Opcode::ListContains
+        | Opcode::ListNotContains
+        | Opcode::ListIntersect
+        | Opcode::ListAll
+        | Opcode::ListInvert
+        | Opcode::ListCount
+        | Opcode::ListMin
+        | Opcode::ListMax
+        | Opcode::ListValue
+        | Opcode::ListRange
+        | Opcode::ListFromInt
+        | Opcode::ListRandom
+        | Opcode::ArrayNew(_)
+        | Opcode::MapNew(_)
+        | Opcode::IndexGet
+        | Opcode::IndexSet
+        | Opcode::CollectionLen
+        | Opcode::MapGet
+        | Opcode::MapInsert
+        | Opcode::MapRemove
+        | Opcode::MapContains
+        | Opcode::CollectionKeys
+        | Opcode::CollectionValues
+        | Opcode::PushLiteral(_)
+        | Opcode::TakeGlobal(_)
+        | Opcode::TakeTemp(_)
+        | Opcode::RecordNew(_)
+        | Opcode::RecordGetDyn(_)
+        | Opcode::RecordSetDyn(_)
+        | Opcode::RecordGet(_)
+        | Opcode::RecordSet(_)
+        | Opcode::ConvertInt
+        | Opcode::ConvertFloat
+        | Opcode::ConvertString
+        | Opcode::PushFnRef(_)
+        | Opcode::MakeClosure { .. }
+        | Opcode::CallValue(_)
+        | Opcode::BindValue(_)
+        | Opcode::MakeProjection { .. }
+        | Opcode::ProjRead
+        | Opcode::ProjWrite
+        | Opcode::CharAt
+        | Opcode::Done
+        | Opcode::Yield
+        | Opcode::End
+        | Opcode::Nop
+        | Opcode::BeginStringEval
+        | Opcode::EndStringEval
+        | Opcode::SourceLocation(_, _) => {}
+    }
 }
 
 fn arb_bytecode() -> impl Strategy<Value = Vec<u8>> {
@@ -400,6 +579,21 @@ fn arb_address_path() -> impl Strategy<Value = AddressPath> {
     (arb_name_id(), arb_def_id()).prop_map(|(path, target)| AddressPath { path, target })
 }
 
+/// TM-4 (`docs/format-v4-rfc.md` §1), issue #883: `struct_shapes` used to be
+/// hardcoded to `vec![]` in `arb_story_data`, so this proptest could never
+/// generate a non-empty table and never caught `.inkt` dropping the section
+/// entirely — the dedicated `struct_shapes_family_roundtrips` unit test
+/// (`inkt_opcode_family_roundtrip.rs`) proves the fix; this closes the gap
+/// for the fuzz law below too.
+fn arb_struct_shape() -> impl Strategy<Value = StructShapeDef> {
+    (
+        arb_shape_id(),
+        arb_name_id(),
+        prop::collection::vec(arb_name_id(), 0..5),
+    )
+        .prop_map(|(id, name, fields)| StructShapeDef { id, name, fields })
+}
+
 fn arb_story_data() -> impl Strategy<Value = StoryData> {
     (
         prop::collection::vec(arb_container_with_lines(), 0..5),
@@ -408,6 +602,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
         prop::collection::vec(arb_list_item(), 0..5),
         prop::collection::vec(arb_external(), 0..5),
         prop::collection::vec(arb_address_path(), 0..5),
+        prop::collection::vec(arb_struct_shape(), 0..5),
         prop::collection::vec("[^\"\\\\\x00]*", 0..8),
         any::<u32>(),
     )
@@ -419,6 +614,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                 list_items,
                 externals,
                 address_paths,
+                struct_shapes,
                 name_table,
                 source_checksum,
             )| {
@@ -437,7 +633,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                     name_table,
                     list_literals: vec![],
                     literal_pool: vec![],
-                    struct_shapes: vec![],
+                    struct_shapes,
                     private_defs: vec![],
                     alias_table: vec![],
                     effect_rows: vec![],
