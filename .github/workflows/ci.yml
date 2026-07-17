@@ -214,6 +214,54 @@ jobs:
           mkdir -p corpus/${{ matrix.target }}
           cargo +nightly fuzz run ${{ matrix.target }} corpus/${{ matrix.target }} ${{ matrix.seed_dir }} -- -seed=1 -max_total_time=30 -max_len=8192
 
+  # BH-3's determinism law (#927, closing #926): the parallel batch driver
+  # must be byte-identical to the serial driver, in flow-id order, over
+  # randomized workloads. It already runs inside the `test` job's
+  # `cargo test --workspace` above, but sharing that job means a law
+  # violation is just one more failure buried in a huge workspace test blob
+  # instead of naming itself in the checks list (#897, tracked to #940).
+  #
+  # Same fuzz-smoke shape as the `fuzz` matrix above: an independent job (not
+  # a step folded into `test`), a seed PINNED via env var rather than left to
+  # the test's hardcoded default (reproducible across runs, and the matrix
+  # shape lets a future PR add more pinned-seed lanes without any one
+  # violation silently skipping the others), and a modest fixed iteration
+  # budget (64 randomized workloads) — this is a correctness gate on every
+  # PR, not a soak/fuzz campaign.
+  determinism-law:
+    name: Determinism law (BH-3) — seed ${{ matrix.seed }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - seed: 918273645
+            iterations: 64
+    # Hard backstop: this test is a handful of seconds of work, so a hang
+    # here means the parallel driver deadlocked, not that the budget was too
+    # tight.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      BRINK_DETERMINISM_LAW_SEED: ${{ matrix.seed }}
+      BRINK_DETERMINISM_LAW_ITERATIONS: ${{ matrix.iterations }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      # Same bevy-brink dev-dependency system libs as the `test` job above.
+      - name: Install Linux dependencies (bevy)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: determinism-law-${{ matrix.seed }}
+      - name: Determinism law (pinned seed ${{ matrix.seed }}, ${{ matrix.iterations }} iterations)
+        run: cargo test -p bevy-brink --lib batch::tests::parallel_equals_serial_over_randomized_workloads -- --exact
+
   book:
     name: Book
     runs-on: ubuntu-latest

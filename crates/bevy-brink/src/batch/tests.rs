@@ -616,9 +616,28 @@ fn batch_parallel_scenario_numbers() {
 /// then runs both drivers over an identical setup and asserts the converged
 /// world, the batch report, the per-flow flags, and the emitted line events all
 /// match exactly.
+///
+/// Both the base seed and the iteration count are overridable via env vars
+/// (`BRINK_DETERMINISM_LAW_SEED`, `BRINK_DETERMINISM_LAW_ITERATIONS`) — unset,
+/// this test behaves exactly as before (base seed 0, 64 iterations). CI's
+/// dedicated `determinism-law` lane (#940) sets both explicitly so the law is
+/// exercised under a seed pinned in the workflow file rather than only the
+/// hardcoded default, without duplicating this test's logic. Parsing never
+/// panics on a malformed value — an unparsable override silently falls back
+/// to the default rather than failing the whole suite on an env-var typo.
 #[test]
 fn parallel_equals_serial_over_randomized_workloads() {
-    for seed in 0u64..64 {
+    let base_seed: u64 = std::env::var("BRINK_DETERMINISM_LAW_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let iterations: u64 = std::env::var("BRINK_DETERMINISM_LAW_ITERATIONS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(64);
+
+    for offset in 0u64..iterations {
+        let seed = base_seed.wrapping_add(offset);
         let mut rng = TestRng::new(seed ^ 0x9E37_79B9_7F4A_7C15);
         let flow_count = rng.pick(1, 10);
         let assignments: Vec<usize> = (0..flow_count)
