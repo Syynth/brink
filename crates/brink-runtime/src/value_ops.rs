@@ -255,12 +255,21 @@ fn stringify_list(lv: &ListValue, program: &Program) -> String {
 /// Binary arithmetic/comparison operation.
 #[expect(
     clippy::match_same_arms,
-    reason = "the FnRef/Closure and Handle equality arms have identical bodies \
-              (both delegate to Value's PartialEq) but must stay separate \
-              match arms, not merged into one shared pattern: a fn value and \
-              a handle are unrelated opaque-identity types, and comparing \
-              across them must still hit the TypeError fault below, not \
-              silently return false the way the Null cross-type rule does"
+    reason = "the FnRef/Closure, Handle, VariablePointer/TempPointer, and \
+              Projection equality arms have identical bodies (all delegate \
+              to Value's PartialEq) but must stay separate match arms, not \
+              merged into one shared pattern: these are unrelated opaque- \
+              identity types, and comparing across them must still hit the \
+              TypeError fault below, not silently return false the way the \
+              Null cross-type rule does"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match per Value variant pair, each documenting a distinct \
+              spec ruling (value-model-spec §4, t1c-spec §5, t1d-spec §6, \
+              t1e-spec §4) — splitting the match would scatter the single \
+              source of truth for == /!= semantics across helper functions \
+              for no clarity gain"
 )]
 pub(crate) fn binary_op(
     op: BinaryOp,
@@ -330,6 +339,30 @@ pub(crate) fn binary_op(
         (Value::DivertTarget(a), Value::DivertTarget(b)) if op == BinaryOp::NotEqual => {
             Ok(Value::Bool(a != b))
         }
+        // VariablePointer/TempPointer equality (issue #939, value-model-spec
+        // §4 total-equality sweep): token equality — same identity-carrying,
+        // non-collection shape as `DivertTarget` above (both are "a value
+        // with an identity, not a collection", per this module's
+        // `is_truthy` grouping), delegated to `Value`'s own `PartialEq`
+        // rather than re-spelled here, mirroring the `FnRef`/`Closure`/
+        // `Handle` pattern PRs #918/#931 established. `VariablePointer`
+        // compares by target `DefinitionId`; `TempPointer` compares by
+        // `(slot, frame_depth)`. Only `==`/`!=` are defined; any ordering op
+        // falls through to the `TypeError` fault below — these are call-
+        // argument-passing tokens (T1c `ref` params, T1e `ref` projections'
+        // root), never orderable values.
+        (Value::VariablePointer(_), Value::VariablePointer(_)) if op == BinaryOp::Equal => {
+            Ok(Value::Bool(left == right))
+        }
+        (Value::VariablePointer(_), Value::VariablePointer(_)) if op == BinaryOp::NotEqual => {
+            Ok(Value::Bool(left != right))
+        }
+        (Value::TempPointer { .. }, Value::TempPointer { .. }) if op == BinaryOp::Equal => {
+            Ok(Value::Bool(left == right))
+        }
+        (Value::TempPointer { .. }, Value::TempPointer { .. }) if op == BinaryOp::NotEqual => {
+            Ok(Value::Bool(left != right))
+        }
         // Function-value equality (T1c-3, spec §5): structural — same fn
         // token and equal bound rows (`ref` entries by bound cell, `val` by
         // value), delegated to `Value`'s `PartialEq`. Only `==`/`!=` are
@@ -358,6 +391,20 @@ pub(crate) fn binary_op(
             Ok(Value::Bool(left == right))
         }
         (Value::Handle { .. }, Value::Handle { .. }) if op == BinaryOp::NotEqual => {
+            Ok(Value::Bool(left != right))
+        }
+        // Projection equality (T1e, issue #939, `docs/t1e-spec.md` §4
+        // PROPOSED): "equality structural (same root cell + equal
+        // segments); not a map key; no ordering" — delegated to `Value`'s
+        // own `PartialEq`, which already applies the `Arc::ptr_eq` fast path
+        // for this variant (same COW-heap-allocated shape as `Closure`).
+        // Only `==`/`!=` are defined; any ordering op falls through to the
+        // `TypeError` fault below, per the spec's explicit "no ordering"
+        // ruling.
+        (Value::Projection(_), Value::Projection(_)) if op == BinaryOp::Equal => {
+            Ok(Value::Bool(left == right))
+        }
+        (Value::Projection(_), Value::Projection(_)) if op == BinaryOp::NotEqual => {
             Ok(Value::Bool(left != right))
         }
         // Array equality (value-model-spec §4): structural, with the
@@ -651,6 +698,14 @@ fn int_op(op: BinaryOp, a: i32, b: i32) -> Result<Value, RuntimeError> {
 // default feature set) — the `Err` arm only exists under the mutually
 // exclusive `not(feature = "std")` config.
 #[cfg_attr(feature = "std", expect(clippy::unnecessary_wraps))]
+#[expect(
+    clippy::float_cmp,
+    reason = "exact IEEE == is the deliberate choice (issue #939, see the \
+              Equal/NotEqual arm's own comment): it matches the C# reference \
+              runtime's float == and Value's own PartialEq for floats nested \
+              inside collections, not an oversight clippy's margin-of-error \
+              suggestion would fix"
+)]
 fn float_op(op: BinaryOp, a: f32, b: f32) -> Result<Value, RuntimeError> {
     Ok(match op {
         BinaryOp::Add => Value::Float(a + b),
@@ -658,8 +713,40 @@ fn float_op(op: BinaryOp, a: f32, b: f32) -> Result<Value, RuntimeError> {
         BinaryOp::Multiply => Value::Float(a * b),
         BinaryOp::Divide => Value::Float(a / b),
         BinaryOp::Modulo => Value::Float(a % b),
-        BinaryOp::Equal => Value::Bool((a - b).abs() < f32::EPSILON),
-        BinaryOp::NotEqual => Value::Bool((a - b).abs() >= f32::EPSILON),
+        // Exact IEEE `==`/`!=` — NOT an epsilon-tolerant comparison (issue
+        // #939, value-model-spec §4). Two facts settle this:
+        //
+        // 1. The C# reference runtime (trust-hierarchy tier 2,
+        //    `ink-engine-runtime/NativeFunctionCall.cs`) defines float `==`
+        //    as plain `(x, y) => x == y` — no tolerance. That's the oracle
+        //    ground truth this VM is conforming to.
+        // 2. `Value`'s own hand-written `PartialEq` (used for every
+        //    float-inside-a-collection comparison — array/map/record
+        //    elements, list ordinals via other arms, and this same
+        //    `Equal`/`NotEqual` dispatch for nested values) already does
+        //    exact `a == b` (`crates/internal/brink-format/src/value.rs`) and
+        //    is the basis for the ratified "NaN-bearing collections never
+        //    compare equal" rule (§4) — that rule is just IEEE composition,
+        //    which only holds if the leaf float comparison is exact. An
+        //    epsilon fudge at this scalar arm while collections stay exact
+        //    was the inconsistency PR #931's review flagged: `5.0 == 5.0`
+        //    outside a collection tolerated a `< f32::EPSILON` slop window
+        //    that `[5.0] == [5.0]` never got, even though both routes
+        //    ultimately answer "are these two floats the same value".
+        //
+        // The alternative (epsilon-tolerant scalar `==`, kept as `Value`'s
+        // `PartialEq` stays exact) was considered and rejected: it would
+        // leave direct float `==` diverging from the C# oracle on any
+        // rounding-adjacent pair, and — since `Value::PartialEq` is also
+        // what several format/save/dedup paths key equality off of, not
+        // just this operator — going the other way (making collections
+        // epsilon-tolerant too) would mean touching that hand-written impl
+        // and contradicts the already-ratified NaN-composition wording in
+        // §4. Exact equality is the one change that makes both paths agree
+        // *and* matches the oracle; flagged here per issue #939 rather than
+        // silently parked.
+        BinaryOp::Equal => Value::Bool(a == b),
+        BinaryOp::NotEqual => Value::Bool(a != b),
         BinaryOp::Greater => Value::Bool(a > b),
         BinaryOp::GreaterOrEqual => Value::Bool(a >= b),
         BinaryOp::Less => Value::Bool(a < b),
@@ -1441,5 +1528,346 @@ mod tests {
                 "{op:?} on two records must fault, not silently order them"
             );
         }
+    }
+
+    // ── VariablePointer/TempPointer/Projection equality (issue #939,
+    //    value-model-spec §4 total-equality sweep) ──────────────────────
+    //
+    // `binary_op` had no arm at all for these three variants — `==`/`!=`
+    // fell through to the catch-all and faulted with a `TypeError`, even
+    // though `Value`'s own `PartialEq` already implements the correct
+    // token/structural equality for all three (mirroring the #918/#931
+    // pattern for `FnRef`/`Closure`/`Handle`/`Array`/`Map`/`Record`).
+
+    use brink_format::ProjSegment;
+
+    #[test]
+    fn variable_pointer_equality_is_token_equality() {
+        let p = dummy_program();
+        let cell_a = DefinitionId::new(DefinitionTag::GlobalVar, 1);
+        let cell_b = DefinitionId::new(DefinitionTag::GlobalVar, 2);
+        let ptr_a1 = Value::VariablePointer(cell_a);
+        let ptr_a2 = Value::VariablePointer(cell_a);
+        let ptr_b = Value::VariablePointer(cell_b);
+
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &ptr_a1, &ptr_a2, &p).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            binary_op(BinaryOp::NotEqual, &ptr_a1, &ptr_b, &p).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &ptr_a1, &ptr_b, &p).unwrap(),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn variable_pointer_has_no_ordering() {
+        let p = dummy_program();
+        let a = Value::VariablePointer(DefinitionId::new(DefinitionTag::GlobalVar, 1));
+        let b = Value::VariablePointer(DefinitionId::new(DefinitionTag::GlobalVar, 2));
+        for op in [
+            BinaryOp::Less,
+            BinaryOp::Greater,
+            BinaryOp::LessOrEqual,
+            BinaryOp::GreaterOrEqual,
+        ] {
+            assert!(
+                binary_op(op, &a, &b, &p).is_err(),
+                "{op:?} on two variable pointers must fault, not silently order them"
+            );
+        }
+    }
+
+    #[test]
+    fn temp_pointer_equality_is_token_equality() {
+        let p = dummy_program();
+        let t_a1 = Value::TempPointer {
+            slot: 3,
+            frame_depth: 1,
+        };
+        let t_a2 = Value::TempPointer {
+            slot: 3,
+            frame_depth: 1,
+        };
+        // Same slot, different frame depth — not the same temp.
+        let t_b = Value::TempPointer {
+            slot: 3,
+            frame_depth: 2,
+        };
+        // Different slot, same frame depth — not the same temp either.
+        let t_c = Value::TempPointer {
+            slot: 4,
+            frame_depth: 1,
+        };
+
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &t_a1, &t_a2, &p).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            binary_op(BinaryOp::NotEqual, &t_a1, &t_b, &p).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &t_a1, &t_c, &p).unwrap(),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn temp_pointer_has_no_ordering() {
+        let p = dummy_program();
+        let a = Value::TempPointer {
+            slot: 1,
+            frame_depth: 0,
+        };
+        let b = Value::TempPointer {
+            slot: 2,
+            frame_depth: 0,
+        };
+        for op in [
+            BinaryOp::Less,
+            BinaryOp::Greater,
+            BinaryOp::LessOrEqual,
+            BinaryOp::GreaterOrEqual,
+        ] {
+            assert!(
+                binary_op(op, &a, &b, &p).is_err(),
+                "{op:?} on two temp pointers must fault, not silently order them"
+            );
+        }
+    }
+
+    #[test]
+    fn projection_equality_is_structural() {
+        let p = dummy_program();
+        let cell = DefinitionId::new(DefinitionTag::GlobalVar, 10);
+        let a = Value::projection(
+            cell,
+            vec![
+                ProjSegment::Index(3),
+                ProjSegment::Key(Value::String("hp".into())),
+            ],
+        );
+        let b = Value::projection(
+            cell,
+            vec![
+                ProjSegment::Index(3),
+                ProjSegment::Key(Value::String("hp".into())),
+            ],
+        );
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &b, &p).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            binary_op(BinaryOp::NotEqual, &a, &b, &p).unwrap(),
+            Value::Bool(false)
+        );
+
+        // Same root cell, different segments: not equal.
+        let different_segments = Value::projection(cell, vec![ProjSegment::Index(4)]);
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &different_segments, &p).unwrap(),
+            Value::Bool(false)
+        );
+
+        // Different root cell, same segments: not equal.
+        let other_cell = DefinitionId::new(DefinitionTag::GlobalVar, 11);
+        let different_root = Value::projection(
+            other_cell,
+            vec![
+                ProjSegment::Index(3),
+                ProjSegment::Key(Value::String("hp".into())),
+            ],
+        );
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &different_root, &p).unwrap(),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn projection_equality_ptr_eq_fast_path() {
+        let p = dummy_program();
+        let cell = DefinitionId::new(DefinitionTag::GlobalVar, 10);
+        let a = Value::projection(cell, vec![ProjSegment::Index(0)]);
+        let snapshot = a.clone();
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &snapshot, &p).unwrap(),
+            Value::Bool(true)
+        );
+    }
+
+    /// A projection whose path contains a float-typed map key composes
+    /// structurally through `ProjSegment::Key(Value::Float(_))`'s own
+    /// `PartialEq` — same exact-IEEE composition as any other nested float
+    /// (this module's `float_equality_is_exact_ieee_not_epsilon_tolerant`
+    /// test covers the direct scalar case this must stay consistent with).
+    #[test]
+    fn projection_equality_nested_float_segment() {
+        let p = dummy_program();
+        let cell = DefinitionId::new(DefinitionTag::GlobalVar, 20);
+        let a = Value::projection(cell, vec![ProjSegment::Key(Value::Float(1.5))]);
+        let b = Value::projection(cell, vec![ProjSegment::Key(Value::Float(1.5))]);
+        let c = Value::projection(cell, vec![ProjSegment::Key(Value::Float(1.500_000_1))]);
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &b, &p).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &c, &p).unwrap(),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn projection_has_no_ordering() {
+        let p = dummy_program();
+        let cell = DefinitionId::new(DefinitionTag::GlobalVar, 10);
+        let a = Value::projection(cell, vec![ProjSegment::Index(0)]);
+        let b = Value::projection(cell, vec![ProjSegment::Index(1)]);
+        for op in [
+            BinaryOp::Less,
+            BinaryOp::Greater,
+            BinaryOp::LessOrEqual,
+            BinaryOp::GreaterOrEqual,
+        ] {
+            assert!(
+                binary_op(op, &a, &b, &p).is_err(),
+                "{op:?} on two projections must fault, not silently order them"
+            );
+        }
+    }
+
+    /// Cross-variant identity types must still fault, not silently return
+    /// `false` — same reasoning as `handle_equality_does_not_leak_across_to_
+    /// other_identity_types` above (this function's `match_same_arms`
+    /// `#[expect]` covers exactly this: identical arm bodies, deliberately
+    /// unmerged patterns so unrelated identity types don't compare).
+    #[test]
+    fn pointer_and_projection_equality_does_not_leak_across_variants() {
+        let p = dummy_program();
+        let cell = DefinitionId::new(DefinitionTag::GlobalVar, 1);
+        let var_ptr = Value::VariablePointer(cell);
+        let temp_ptr = Value::TempPointer {
+            slot: 0,
+            frame_depth: 0,
+        };
+        let projection = Value::projection(cell, vec![]);
+        let divert = Value::DivertTarget(cell);
+
+        for (a, b) in [
+            (&var_ptr, &temp_ptr),
+            (&var_ptr, &projection),
+            (&var_ptr, &divert),
+            (&temp_ptr, &projection),
+            (&temp_ptr, &divert),
+            (&projection, &divert),
+        ] {
+            assert!(
+                binary_op(BinaryOp::Equal, a, b, &p).is_err(),
+                "{a:?} == {b:?} must fault, not silently compare across variants"
+            );
+            assert!(
+                binary_op(BinaryOp::NotEqual, a, b, &p).is_err(),
+                "{a:?} != {b:?} must fault, not silently compare across variants"
+            );
+        }
+    }
+
+    // ── Float equality: exact IEEE, not epsilon-tolerant (issue #939) ──────
+    //
+    // `float_op`'s `Equal`/`NotEqual` used to fudge with `(a - b).abs() <
+    // f32::EPSILON` while every float nested inside a collection (array/map/
+    // record/projection) compared via `Value`'s own exact `PartialEq`. That
+    // was the inconsistency PR #931's review flagged. These tests pin down
+    // that both routes now agree.
+
+    /// One ULP at `0.5` is `f32::EPSILON / 2` (the exponent is one less than
+    /// at `1.0`, halving the ULP) — a nonzero difference that still sits
+    /// strictly inside the old `< f32::EPSILON` tolerance window. The old
+    /// epsilon-fudged `float_op` would have called these equal; exact IEEE
+    /// `==` must not.
+    fn one_ulp_apart() -> (f32, f32) {
+        let a = 0.5_f32;
+        let b = f32::from_bits(a.to_bits() + 1);
+        assert!(
+            (a - b).abs() < f32::EPSILON,
+            "fixture must stay inside the old epsilon window"
+        );
+        (a, b)
+    }
+
+    #[test]
+    fn float_equality_is_exact_ieee_not_epsilon_tolerant() {
+        let p = dummy_program();
+        // Equal bit patterns compare equal, as before.
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &Value::Float(1.5), &Value::Float(1.5), &p).unwrap(),
+            Value::Bool(true)
+        );
+        // A difference well inside the old `f32::EPSILON` (~1.19e-7) window
+        // must now compare NOT equal — the old epsilon fudge would have
+        // silently called these equal.
+        let (a, b) = one_ulp_apart();
+        assert_ne!(
+            a.to_bits(),
+            b.to_bits(),
+            "test fixture must pick genuinely distinct f32 bit patterns"
+        );
+        let (a, b) = (Value::Float(a), Value::Float(b));
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &b, &p).unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            binary_op(BinaryOp::NotEqual, &a, &b, &p).unwrap(),
+            Value::Bool(true)
+        );
+    }
+
+    /// Direct scalar float `==` and float-inside-an-array `==` must agree —
+    /// the exact inconsistency PR #931's review flagged, now resolved by
+    /// making both exact-IEEE.
+    #[test]
+    fn float_equality_direct_and_inside_array_are_consistent() {
+        let p = dummy_program();
+        let (a, b) = one_ulp_apart();
+        let (near_a, near_b) = (Value::Float(a), Value::Float(b));
+
+        let direct = binary_op(BinaryOp::Equal, &near_a, &near_b, &p).unwrap();
+
+        let arr_a = Value::array(vec![near_a.clone()]);
+        let arr_b = Value::array(vec![near_b.clone()]);
+        let nested = binary_op(BinaryOp::Equal, &arr_a, &arr_b, &p).unwrap();
+
+        assert_eq!(
+            direct, nested,
+            "direct float == and float-inside-array == must use the same semantics"
+        );
+        assert_eq!(direct, Value::Bool(false));
+    }
+
+    #[test]
+    fn float_nan_never_equals_itself_directly() {
+        // Matches the collection-level NaN rule (value-model-spec §4: "NaN-
+        // bearing collections never compare equal") composing all the way
+        // down to the scalar level now that both use exact IEEE `==`.
+        let p = dummy_program();
+        let a = Value::Float(f32::NAN);
+        let b = Value::Float(f32::NAN);
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &a, &b, &p).unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            binary_op(BinaryOp::NotEqual, &a, &b, &p).unwrap(),
+            Value::Bool(true)
+        );
     }
 }
