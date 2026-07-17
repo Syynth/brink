@@ -135,3 +135,58 @@ the friction it generates is #827's evidence.
   later. (Amends §8's examples/ placement — the API-honesty check
   moves to Phase 1's migration diffs, which are better evidence
   anyway.)
+
+## 10. Gameplay v2 — RULED 2026-07-18 (the "it isn't a game" round)
+
+Drive-session verdict (maintainer): no opposing dynamics → no
+decisions; unfair pre-upgrades, trivial after. The v2 core loop,
+ruled point by point:
+
+### 10.1 Layout: BSP + room recipes (rejects the 3-column spine — "jezzball")
+
+- BSP-partition the compound into leaf rooms (min sizes), connect
+  via spanning tree + a few extra loops (route choice), doors on the
+  connections. **Solvable by construction**: locked-door/switch
+  dependencies form a DAG — each door's switch placed in territory
+  reachable before it. Seeded per round; **pure fn `seed →
+  LayoutData`** (the future systems-logic ink-migration specimen).
+- **Room recipes place the gameplay**: Entry, Exit, Guard post
+  (patrol anchors), Camera nest, Storage (gold pickups in danger),
+  Switch room, **Alarm panel** (see 10.2), **Vault** (opt-in timed
+  high-value — the ONLY ambient clock), Barracks (reinforcement
+  entry), corridors. The generator is the encounter designer.
+
+### 10.2 Guards: MGS-lenient suspicion, LOS-mandatory escape
+
+- **Suspicion accumulates, never snaps** (MGS-lenient): cone-edge
+  glimpses build slowly with distance/angle falloff + a grace
+  period; sustained close unobstructed sight escalates. Cones
+  respect walls (verify + fix). Every state has a visible tell
+  (?, !, color) — north star: **readable at a glance, counterplay
+  at every rung**.
+- Ladder: Patrol → Curious (turn toward stimulus) → Investigate
+  (walk to last-known-position, peek 2–3 spots, mutter, return) →
+  Chase (requires held LOS; **breaking LOS is mandatory to escape**
+  — guards converge on LKP, search, decay; pure running never wins).
+  Catch = sustained contact in Chase only.
+- **No telepathy**: alert guards shout (radius recruitment); the
+  GLOBAL alarm requires a guard reaching an Alarm-panel room —
+  intercept-or-flee counterplay. Hiding spots: NOT in v2 (LOS-break
+  + search suffices); future.
+
+### 10.3 Opposing dynamics
+
+- **Greed vs safety**: gold as placed pickups in dangerous recipes;
+  **banked only on exit; caught loses the unbanked haul**
+  (push-your-luck).
+- **Speed vs noise**: run = fast + noise radius (guards go
+  Curious/Investigate toward the sound's origin); walk = silent.
+  Thrown **coins** (shop ammo) spawn noise where aimed.
+- **Clock only as consequence or choice** (ruled: rare, not
+  ambient): sweep escalation exists ONLY at alarm ≥ 2 (hide and it
+  decays away); the Vault's timer is opt-in time pressure.
+- **Sidegrades, not upgrades**: boots (+speed +noise), cloak
+  (−enemy cone range −run speed), muffled soles (−noise −top
+  speed); consumable coins + one smoke (breaks a chase). Rounds
+  escalate the compound (guards + layout richness), not the player.
+- Fixes ride along: #1024 double-reward (edge-trigger round end).

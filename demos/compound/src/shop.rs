@@ -75,14 +75,14 @@ pub fn setup_shop(
             ));
             parent.spawn((
                 text(
-                    format!("Gold: {}", round.gold),
+                    format!("Gold: {}", round.banked),
                     24.0,
                     Color::srgb(0.95, 0.85, 0.3),
                 ),
                 GoldLabel,
             ));
             for i in 0..CATALOGUE.len() {
-                spawn_item_button(parent, i, round.gold, &loadout);
+                spawn_item_button(parent, i, round.banked, &loadout);
             }
             spawn_continue_button(parent);
         });
@@ -185,9 +185,9 @@ pub fn shop_button_system(
                     continue;
                 };
                 if let Some(price) =
-                    apply_purchase(&CATALOGUE[i], round.gold, &mut stats, &mut loadout)
+                    apply_purchase(&CATALOGUE[i], round.banked, &mut stats, &mut loadout)
                 {
-                    round.gold -= price;
+                    round.banked -= price;
                 }
             }
             ShopButton::Continue => {
@@ -208,14 +208,14 @@ pub fn shop_refresh_system(
     mut buttons: Query<(&ShopButton, &mut BackgroundColor)>,
 ) {
     for mut text in &mut gold_labels {
-        **text = format!("Gold: {}", round.gold);
+        **text = format!("Gold: {}", round.banked);
     }
     for (mut text, label) in &mut item_labels {
         **text = item_label(label.0, &loadout);
     }
     for (button, mut bg) in &mut buttons {
         if let ShopButton::Item(i) = *button {
-            *bg = if can_buy(&CATALOGUE[i], round.gold, &loadout) {
+            *bg = if can_buy(&CATALOGUE[i], round.banked, &loadout) {
                 AFFORD_BG.into()
             } else {
                 DENY_BG.into()

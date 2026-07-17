@@ -14,9 +14,6 @@ use crate::stats::PlayerStats;
 /// scrolling camera.
 pub const ARENA_HALF: Vec2 = Vec2::new(600.0, 330.0);
 
-/// Wall / door thickness.
-const WALL_T: f32 = 20.0;
-
 /// Player collision + render half-size.
 pub const PLAYER_HALF: Vec2 = Vec2::new(12.0, 12.0);
 
@@ -103,6 +100,62 @@ fn overlaps(a: Vec2, ahalf: Vec2, b: Vec2, bhalf: Vec2) -> bool {
     (a.x - b.x).abs() < ahalf.x + bhalf.x && (a.y - b.y).abs() < ahalf.y + bhalf.y
 }
 
+/// Whether the straight segment `from → to` is unobstructed by any blocker
+/// rectangle. This is the wall line-of-sight test that makes vision cones
+/// respect geometry (plan §10.2): a guard whose cone mathematically covers the
+/// player still cannot *see* them through a wall. Uses the slab method against
+/// each axis-aligned box and reports "blocked" if the segment enters any box
+/// strictly before reaching the target.
+#[must_use]
+pub fn raycast_clear(from: Vec2, to: Vec2, blockers: &[Blocker]) -> bool {
+    let d = to - from;
+    let len2 = d.length_squared();
+    if len2 < f32::EPSILON {
+        return true;
+    }
+    for &(center, half) in blockers {
+        if segment_hits_aabb(from, d, center, half) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Slab intersection of the parametric segment `from + t*d`, `t ∈ [0,1)`,
+/// against the box `center ± half`. Returns true if it enters the box before
+/// `t = 1` (the target). The tiny epsilons keep a ray that merely grazes the
+/// target's own containing box (t≈1) from counting as blocked.
+fn segment_hits_aabb(from: Vec2, d: Vec2, center: Vec2, half: Vec2) -> bool {
+    let min = center - half;
+    let max = center + half;
+    let mut t_enter = 0.0f32;
+    let mut t_exit = 1.0f32;
+    for axis in 0..2 {
+        let (o, dir, lo, hi) = (from[axis], d[axis], min[axis], max[axis]);
+        if dir.abs() < f32::EPSILON {
+            // Parallel to this slab: miss if the origin is outside it.
+            if o < lo || o > hi {
+                return false;
+            }
+        } else {
+            let inv = 1.0 / dir;
+            let mut t0 = (lo - o) * inv;
+            let mut t1 = (hi - o) * inv;
+            if t0 > t1 {
+                std::mem::swap(&mut t0, &mut t1);
+            }
+            t_enter = t_enter.max(t0);
+            t_exit = t_exit.min(t1);
+            if t_enter > t_exit {
+                return false;
+            }
+        }
+    }
+    // Blocked only if the overlap interval starts before the target and has
+    // positive length inside the segment.
+    t_enter < t_exit && t_enter < 1.0 - 1e-3 && t_exit > 1e-3
+}
+
 /// Draw a vision-cone outline (apex → arc → apex) with immediate-mode gizmos.
 /// Shared by the guard and camera debug overlays.
 pub fn draw_cone(
@@ -134,8 +187,10 @@ const FLOOR_COLOR: Color = Color::srgb(0.11, 0.12, 0.14);
 const EXIT_COLOR: Color = Color::srgb(0.2, 0.85, 0.35);
 const PLAYER_COLOR: Color = Color::srgb(0.3, 0.7, 1.0);
 
-/// Spawn the camera, floor, static walls, exit, and player. Doors and switches
-/// are spawned by [`crate::doors::spawn_doors`].
+/// Spawn the persistent scene: the render camera, the floor backdrop, and the
+/// player. The compound itself (walls, doors, exit, gold, guards, …) is
+/// generated per round and instantiated by [`spawn_layout`], since every round
+/// draws a fresh seeded layout (plan §10.1).
 pub fn setup_static_world(mut commands: Commands) {
     commands.spawn(Camera2d);
 
@@ -145,43 +200,7 @@ pub fn setup_static_world(mut commands: Commands) {
         Transform::from_xyz(0.0, 0.0, -10.0),
     ));
 
-    // Outer border walls (top, bottom, left, right).
-    let w = ARENA_HALF.x;
-    let h = ARENA_HALF.y;
-    spawn_wall(&mut commands, Vec2::new(0.0, h), Vec2::new(w, WALL_T / 2.0));
-    spawn_wall(
-        &mut commands,
-        Vec2::new(0.0, -h),
-        Vec2::new(w, WALL_T / 2.0),
-    );
-    spawn_wall(
-        &mut commands,
-        Vec2::new(-w, 0.0),
-        Vec2::new(WALL_T / 2.0, h),
-    );
-    spawn_wall(&mut commands, Vec2::new(w, 0.0), Vec2::new(WALL_T / 2.0, h));
-
-    // Left divider at x=-200, leaving a doorway gap near the top.
-    spawn_wall(
-        &mut commands,
-        Vec2::new(-200.0, -135.0),
-        Vec2::new(WALL_T / 2.0, 195.0),
-    );
-    // Right divider at x=200, leaving a doorway gap near the bottom.
-    spawn_wall(
-        &mut commands,
-        Vec2::new(200.0, 135.0),
-        Vec2::new(WALL_T / 2.0, 195.0),
-    );
-
-    // Exit objective, top-right room.
-    commands.spawn((
-        Sprite::from_color(EXIT_COLOR, Vec2::new(60.0, 60.0)),
-        Transform::from_xyz(540.0, 270.0, -1.0),
-        Exit,
-    ));
-
-    // Player.
+    // Player (repositioned to the layout's entry room each round).
     commands.spawn((
         Sprite::from_color(PLAYER_COLOR, PLAYER_HALF * 2.0),
         Transform::from_translation(PLAYER_START.extend(1.0)),
@@ -190,12 +209,28 @@ pub fn setup_static_world(mut commands: Commands) {
     ));
 }
 
-fn spawn_wall(commands: &mut Commands, center: Vec2, half: Vec2) {
+/// Spawn the generated compound's walls and exit as round-scoped entities.
+/// Doors/switches, cameras, gold, guards, and alarm panels are instantiated by
+/// their own modules from the same [`LayoutData`].
+pub fn spawn_layout_walls(commands: &mut Commands, layout: &crate::layout_gen::LayoutData) {
+    for w in &layout.walls {
+        commands.spawn((
+            Sprite::from_color(WALL_COLOR, w.half * 2.0),
+            Transform::from_translation(w.center.extend(0.0)),
+            Wall,
+            Collider {
+                half_extents: w.half,
+            },
+            crate::rounds::RoundScoped,
+        ));
+    }
+
+    // Exit objective.
     commands.spawn((
-        Sprite::from_color(WALL_COLOR, half * 2.0),
-        Transform::from_translation(center.extend(0.0)),
-        Wall,
-        Collider { half_extents: half },
+        Sprite::from_color(EXIT_COLOR, Vec2::new(56.0, 56.0)),
+        Transform::from_translation(layout.exit.extend(-1.0)),
+        Exit,
+        crate::rounds::RoundScoped,
     ));
 }
 
@@ -259,6 +294,59 @@ mod tests {
         let out = resolve_collision(from, desired, Vec2::new(10.0, 10.0), &blockers);
         assert!((out.x - from.x).abs() < f32::EPSILON, "x should be blocked");
         assert!((out.y - 20.0).abs() < f32::EPSILON, "y should slide");
+    }
+
+    #[test]
+    fn raycast_clear_with_no_blockers() {
+        assert!(raycast_clear(
+            Vec2::new(-100.0, 0.0),
+            Vec2::new(100.0, 0.0),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn raycast_blocked_by_wall_between() {
+        // Wall centered at origin, spanning y. A horizontal ray through it is
+        // blocked.
+        let blockers = [(Vec2::ZERO, Vec2::new(10.0, 100.0))];
+        assert!(!raycast_clear(
+            Vec2::new(-100.0, 0.0),
+            Vec2::new(100.0, 0.0),
+            &blockers
+        ));
+    }
+
+    #[test]
+    fn raycast_clear_when_wall_is_off_to_the_side() {
+        // Wall well above the ray line: no obstruction.
+        let blockers = [(Vec2::new(0.0, 200.0), Vec2::new(10.0, 30.0))];
+        assert!(raycast_clear(
+            Vec2::new(-100.0, 0.0),
+            Vec2::new(100.0, 0.0),
+            &blockers
+        ));
+    }
+
+    #[test]
+    fn raycast_clear_when_wall_is_behind_the_target() {
+        // Wall past the target along the ray direction is not "between".
+        let blockers = [(Vec2::new(200.0, 0.0), Vec2::new(10.0, 100.0))];
+        assert!(raycast_clear(
+            Vec2::new(-100.0, 0.0),
+            Vec2::new(100.0, 0.0),
+            &blockers
+        ));
+    }
+
+    #[test]
+    fn raycast_blocked_diagonally() {
+        let blockers = [(Vec2::ZERO, Vec2::new(15.0, 15.0))];
+        assert!(!raycast_clear(
+            Vec2::new(-80.0, -80.0),
+            Vec2::new(80.0, 80.0),
+            &blockers
+        ));
     }
 
     #[test]
