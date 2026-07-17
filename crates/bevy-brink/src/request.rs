@@ -28,6 +28,7 @@ use bevy_log::warn;
 use brink_runtime::{FlowInstance, FlowLocal, World};
 
 use crate::asset::{BrinkStory, BrinkStoryAsset, ProgramAsset};
+use crate::capability::{CapabilityError, CapabilityManifest, CapabilityRegistry};
 use crate::flow::BrinkFlow;
 use crate::globals::{BrinkContext, BrinkGlobals, BrinkWorldPolicy};
 
@@ -87,6 +88,17 @@ pub struct BrinkFlowRequest<M: Send + Sync + 'static = ()> {
 ///
 /// - Skips requests whose `BrinkStoryAsset` (or any of its sub-assets)
 ///   isn't loaded yet — the request just waits.
+/// - Once the program asset is available, runs the load-boundary
+///   admission check (issue #912, RULED option (b)): if this marker's
+///   [`CapabilityRegistry<M>`] is missing any manifest-required
+///   capability the story's externals declare, the load is refused
+///   outright — logged as a [`CapabilityError::LoadRejected`] naming the
+///   marker, the story, and every missing capability, and the request is
+///   removed without ever creating a flow. This is the hard, immediate,
+///   per-marker version of the tier-1 admission rule
+///   [`compute_container_access`](crate::capability::compute_container_access)
+///   already applies at call time — the load itself now fails loudly
+///   instead of joining to a silently-incomplete access table.
 /// - On first fulfillment for marker `M`, creates the single shared
 ///   [`BrinkGlobals<M>`] `World` via [`World::new`], resolving the policy
 ///   installed at [`BrinkPlugin::with_policy`](crate::BrinkPlugin::with_policy)
@@ -113,6 +125,8 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
     requests: Query<(Entity, &BrinkFlowRequest<M>), Without<BrinkFlow<M>>>,
     stories: Res<Assets<BrinkStoryAsset>>,
     programs: Res<Assets<ProgramAsset>>,
+    capability_manifest: Res<CapabilityManifest>,
+    capability_registry: Res<CapabilityRegistry<M>>,
     globals: Option<Res<BrinkGlobals<M>>>,
     policy: Res<BrinkWorldPolicy<M>>,
     current_locale: Option<Res<crate::locale::BrinkCurrentLocale<M>>>,
@@ -134,6 +148,34 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
         let Some(program_asset) = programs.get(&bundle.program) else {
             continue;
         };
+
+        // Issue #912's load-boundary admission check: the manifest is
+        // app-global but the registry is per-marker, so this story's
+        // externals must resolve every manifest-required capability
+        // against *this marker's* CapabilityRegistry<M> before the load
+        // may proceed — a hard, immediate error naming the marker, the
+        // story, and every missing capability, not a silent
+        // per-container UnknownCapability err-table discovered later.
+        let missing = crate::capability::missing_capabilities(
+            &program_asset.program,
+            &program_asset.effect_rows,
+            &capability_manifest,
+            &capability_registry,
+        );
+        if !missing.is_empty() {
+            let story = req
+                .story
+                .path()
+                .map_or_else(|| format!("{:?}", req.story.id()), ToString::to_string);
+            let err = CapabilityError::LoadRejected {
+                marker: std::any::type_name::<M>(),
+                story,
+                missing,
+            };
+            error!("BrinkFlowRequest: {err}; removing request");
+            commands.entity(entity).remove::<BrinkFlowRequest<M>>();
+            continue;
+        }
 
         if !globals_ready {
             match World::new(&program_asset.program, &policy.policy) {
@@ -1082,6 +1124,161 @@ mod tests {
             view.global(mood_idx),
             &Value::Int(5),
             "the known global should still apply even though another was unknown"
+        );
+    }
+
+    /// Issue #912 (RULED 2026-07-18, option (b)): the manifest is
+    /// app-global but `CapabilityRegistry<M>` is per-marker, so a
+    /// multi-marker app can have one marker whose registry satisfies a
+    /// story's manifest-required capabilities and another whose registry
+    /// doesn't — for the *same* story asset, loaded under both markers at
+    /// once. Loading under the marker that has the capability registered
+    /// must succeed exactly as the single-marker path always has; loading
+    /// under the marker that doesn't must be refused outright (no
+    /// `BrinkFlow` inserted, request removed) rather than silently
+    /// producing a story with an incomplete capability join.
+    #[test]
+    fn per_marker_capability_gate_admits_one_marker_and_rejects_another() {
+        use bevy_asset::AssetPlugin;
+        use bevy_ecs::component::Component;
+
+        use crate::asset::{LineTablesAsset, fresh_context};
+        use crate::capability::{
+            BrinkCapabilityAppExt as _, CapabilityEffects, CapabilityManifest,
+            CapabilityManifestExternal,
+        };
+
+        #[derive(Component)]
+        struct Transform;
+
+        struct MarkerHasCapability;
+        struct MarkerMissingCapability;
+
+        let mut app = App::new();
+        app.add_plugins(AssetPlugin::default());
+        app.add_plugins(crate::BrinkPlugin::<MarkerHasCapability>::default());
+        app.add_plugins(crate::BrinkPlugin::<MarkerMissingCapability>::default());
+
+        // Only the "has" marker ever registers Transform.
+        app.register_capability::<MarkerHasCapability, Transform>("Transform");
+
+        // The manifest is a single, app-global resource — shared by both
+        // markers, per the ruling.
+        let mut manifest = CapabilityManifest::default();
+        manifest.externals.push(CapabilityManifestExternal {
+            name: "get_position".to_string(),
+            effects: CapabilityEffects {
+                reads: vec!["Transform".to_string()],
+                writes: vec![],
+                detect: std::collections::BTreeMap::new(),
+            },
+        });
+        app.insert_resource(manifest);
+
+        let source = "EXTERNAL get_position(id)\n=== start ===\n\
+                       ~ temp x = get_position(0)\nHello.\n-> END\n";
+        let out = brink_compiler::compile("t.ink", move |p| {
+            if p == "t.ink" {
+                Ok(source.to_string())
+            } else {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "x"))
+            }
+        })
+        .expect("compile");
+        let mut inkb = Vec::new();
+        brink_format::write_inkb(&out.data, &mut inkb);
+        let loaded = brink_format::read_inkb(&inkb).expect("read_inkb");
+        let (program, tables) = brink_runtime::link(&loaded).expect("link");
+        let initial_context = fresh_context(&program);
+
+        let world = app.world_mut();
+        let program_handle = world
+            .resource_mut::<Assets<ProgramAsset>>()
+            .add(ProgramAsset {
+                program,
+                initial_context,
+                effect_rows: loaded.effect_rows,
+            });
+        let tables_handle = world
+            .resource_mut::<Assets<LineTablesAsset>>()
+            .add(LineTablesAsset { tables });
+        let story_handle = world
+            .resource_mut::<Assets<BrinkStoryAsset>>()
+            .add(BrinkStoryAsset {
+                program: program_handle,
+                line_tables: tables_handle,
+            });
+
+        let entity_has = app
+            .world_mut()
+            .spawn(
+                BrinkFlowRequest::<MarkerHasCapability>::builder()
+                    .story(story_handle.clone())
+                    .build(),
+            )
+            .id();
+        let entity_missing = app
+            .world_mut()
+            .spawn(
+                BrinkFlowRequest::<MarkerMissingCapability>::builder()
+                    .story(story_handle)
+                    .build(),
+            )
+            .id();
+
+        app.update();
+
+        let world = app.world();
+        assert!(
+            world
+                .entity(entity_has)
+                .contains::<BrinkFlow<MarkerHasCapability>>(),
+            "marker with Transform registered should load successfully"
+        );
+        assert!(
+            !world
+                .entity(entity_has)
+                .contains::<BrinkFlowRequest<MarkerHasCapability>>(),
+            "fulfilled request should be removed"
+        );
+
+        assert!(
+            !world
+                .entity(entity_missing)
+                .contains::<BrinkFlow<MarkerMissingCapability>>(),
+            "marker missing Transform must not get a flow — the load must be rejected"
+        );
+        assert!(
+            !world
+                .entity(entity_missing)
+                .contains::<BrinkFlowRequest<MarkerMissingCapability>>(),
+            "the rejected request must be removed too, not left pending forever"
+        );
+    }
+
+    /// Single-marker apps (the common case, `M = ()`) never insert a
+    /// `CapabilityManifest` or call `register_capability` — both default
+    /// to empty via `init_resource`. An empty manifest declares no
+    /// capabilities for any external, so `missing_capabilities` is always
+    /// empty and every existing single-marker fulfillment behaves exactly
+    /// as before this issue's gate was added.
+    #[test]
+    fn single_marker_path_with_no_manifest_is_unaffected_by_the_gate() {
+        let mut app = make_test_app();
+        let (program, tables, ctx) =
+            compile_test_story("=== start ===\nhello\n* [Continue] -> END\n");
+        let story = add_story_assets(&mut app, program, tables, ctx);
+
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+
+        app.update();
+
+        assert!(
+            app.world().entity(entity).contains::<BrinkFlow<()>>(),
+            "no manifest means no required capabilities, so fulfillment proceeds as before"
         );
     }
 }
