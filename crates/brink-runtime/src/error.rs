@@ -211,16 +211,26 @@ pub enum RuntimeError {
     /// zero-defaulting, no silent garbage (ruling 1: "Parse failure is a
     /// turn-terminating fault... like a missing map key"). Unlike this,
     /// the classic uppercase `INT()`/`FLOAT()` builtins keep their
-    /// pre-existing silent-0 legacy behavior (`value_ops::cast_to_int`/
-    /// `cast_to_float`) — untouched, oracle-byte-identical, a distinct
-    /// code path.
+    /// pre-existing silent-0-on-string-parse-failure legacy behavior
+    /// (`value_ops::cast_to_int`/`cast_to_float`) untouched within their own
+    /// `Int`/`Float`/`Bool`/`String` domain — oracle-byte-identical, a
+    /// distinct code path. Outside that domain (divert targets, pointers,
+    /// collections, records, function/handle/projection values), the
+    /// uppercase builtins now raise [`InvalidConversionDomain`](Self::InvalidConversionDomain)
+    /// too (issue #955) instead of the wildcard-fold-to-zero they used to —
+    /// those variants were never oracle-reachable through `INT()`/`FLOAT()`.
     #[error("cannot parse {input:?} as {target}")]
     ConversionParseFailure { target: &'static str, input: String },
     /// `int(x)`/`float(x)` where `x` is outside the permissive
     /// numeric+bool domain (divert targets, LIST values, arrays, maps,
     /// records) — compile error under `types = strict` (`brink-analyzer`'s
     /// intrinsic typing/domain check), turn-terminating fault under
-    /// `types = gradual` (ruling 2).
+    /// `types = gradual` (ruling 2). Also raised by the classic uppercase
+    /// `INT()`/`FLOAT()` builtins (`value_ops::cast_to_int`/`cast_to_float`)
+    /// for the same reason, with an uppercase `target` label (issue #955) —
+    /// no spec (`value-model-spec.md`, `t1c`/`t1d`/`t1e-spec.md`) rules a
+    /// conversion for those variants, so faulting is the conservative
+    /// default rather than the old silent zero.
     #[error("cannot convert a {got} value to {target}")]
     InvalidConversionDomain {
         target: &'static str,

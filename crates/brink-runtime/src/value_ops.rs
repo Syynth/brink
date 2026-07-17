@@ -790,27 +790,111 @@ fn bool_op(op: BinaryOp, a: bool, b: bool) -> Result<Value, RuntimeError> {
     })
 }
 
-/// Cast value to int.
-pub(crate) fn cast_to_int(v: &Value) -> Value {
-    match v {
+/// Cast value to int — the classic uppercase `INT()` builtin (vanilla ink,
+/// `Opcode::CastToInt`). Distinct from the T1b lowercase `int()` intrinsic
+/// (`conversion_ops::convert_to_int`), which has its own fault semantics.
+///
+/// The `Int`/`Float`/`Bool`/`String` domain and the string-parse-failure
+/// silent-0 fallback are **unchanged** — kept exactly as-is per issue #955's
+/// "do not change any currently-reachable behavior", regardless of which of
+/// these arms the oracle corpus actually exercises today.
+///
+/// Every other `Value` variant used to fall through a `_ => Value::Int(0)`
+/// wildcard — the wildcard-fan-out hazard (#667/#955): a future variant
+/// would silently cast to zero instead of getting a considered answer. None
+/// of `value-model-spec.md`, `t1c-spec.md`, `t1d-spec.md`, or `t1e-spec.md`
+/// rule a conversion for `List`/`DivertTarget`/`VariablePointer`/
+/// `TempPointer`/`Null`/`FragmentRef`/`Array`/`Map`/`Record`/`FnRef`/
+/// `Closure`/`Handle`/`Projection` — genuinely unruled, so per the issue's
+/// own conservative default and the value-model-spec §11c fault precedent
+/// ("no silent garbage"), they now fault the same way the T1b lowercase
+/// `int()` intrinsic already does for its own out-of-domain inputs
+/// (`RuntimeError::InvalidConversionDomain`). The match is exhaustive by
+/// name (no wildcard) so a future `Value` variant is a compile error here,
+/// not a silent zero.
+pub(crate) fn cast_to_int(v: &Value) -> Result<Value, RuntimeError> {
+    Ok(match v {
         Value::Int(_) => v.clone(),
         #[expect(clippy::cast_possible_truncation)]
         Value::Float(f) => Value::Int(*f as i32),
         Value::Bool(b) => Value::Int(i32::from(*b)),
         Value::String(s) => Value::Int(s.parse::<i32>().unwrap_or(0)),
-        _ => Value::Int(0),
-    }
+        Value::List(_)
+        | Value::DivertTarget(_)
+        | Value::VariablePointer(_)
+        | Value::TempPointer { .. }
+        | Value::Null
+        | Value::FragmentRef(_)
+        | Value::Array(_)
+        | Value::Map(_)
+        | Value::Record { .. }
+        | Value::FnRef(_)
+        | Value::Closure(_)
+        | Value::Handle { .. }
+        | Value::Projection(_) => {
+            return Err(RuntimeError::InvalidConversionDomain {
+                target: "INT",
+                got: cast_type_name(v),
+            });
+        }
+    })
 }
 
-/// Cast value to float.
-pub(crate) fn cast_to_float(v: &Value) -> Value {
-    match v {
+/// Cast value to float — the classic uppercase `FLOAT()` builtin. See
+/// [`cast_to_int`]'s doc comment for the full rationale; the same
+/// domain-preservation and exhaustiveness reasoning applies here.
+pub(crate) fn cast_to_float(v: &Value) -> Result<Value, RuntimeError> {
+    Ok(match v {
         Value::Float(_) => v.clone(),
         #[expect(clippy::cast_precision_loss)]
         Value::Int(n) => Value::Float(*n as f32),
         Value::Bool(b) => Value::Float(if *b { 1.0 } else { 0.0 }),
         Value::String(s) => Value::Float(s.parse::<f32>().unwrap_or(0.0)),
-        _ => Value::Float(0.0),
+        Value::List(_)
+        | Value::DivertTarget(_)
+        | Value::VariablePointer(_)
+        | Value::TempPointer { .. }
+        | Value::Null
+        | Value::FragmentRef(_)
+        | Value::Array(_)
+        | Value::Map(_)
+        | Value::Record { .. }
+        | Value::FnRef(_)
+        | Value::Closure(_)
+        | Value::Handle { .. }
+        | Value::Projection(_) => {
+            return Err(RuntimeError::InvalidConversionDomain {
+                target: "FLOAT",
+                got: cast_type_name(v),
+            });
+        }
+    })
+}
+
+/// Type-name label for [`RuntimeError::InvalidConversionDomain`] as raised by
+/// [`cast_to_int`]/[`cast_to_float`] — mirrors `collection_ops`'/
+/// `record_ops`'/`conversion_ops`'s own small hand-duplicated `type_name`
+/// helpers (no shared export exists for this purpose across the ops
+/// modules). Named distinctly (`cast_type_name`) since this module already
+/// has other private helpers.
+fn cast_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Int(_) => "int",
+        Value::Float(_) => "float",
+        Value::Bool(_) => "bool",
+        Value::String(_) => "string",
+        Value::List(_) => "list",
+        Value::DivertTarget(_) => "divert_target",
+        Value::VariablePointer(_) => "var_pointer",
+        Value::TempPointer { .. } => "temp_pointer",
+        Value::Null => "null",
+        Value::FragmentRef(_) => "fragment_ref",
+        Value::Array(_) => "array",
+        Value::Map(_) => "map",
+        Value::Record { .. } => "record",
+        Value::FnRef(_) | Value::Closure(_) => "fn",
+        Value::Handle { .. } => "handle",
+        Value::Projection(_) => "projection",
     }
 }
 
@@ -1868,6 +1952,128 @@ mod tests {
         assert_eq!(
             binary_op(BinaryOp::NotEqual, &a, &b, &p).unwrap(),
             Value::Bool(true)
+        );
+    }
+
+    // ── cast_to_int / cast_to_float (issue #955) ────────────────────────
+    //
+    // The in-domain arms (Int/Float/Bool/String) must keep their exact
+    // pre-#955 behavior — oracle-anchored, byte-identical. The
+    // out-of-domain arms used to silently fold to 0/0.0 through a wildcard;
+    // they must now fault with `InvalidConversionDomain`.
+
+    #[test]
+    fn cast_to_int_identity_and_widening_domain_unchanged() {
+        assert_eq!(cast_to_int(&Value::Int(7)).unwrap(), Value::Int(7));
+        assert_eq!(cast_to_int(&Value::Float(2.9)).unwrap(), Value::Int(2));
+        assert_eq!(cast_to_int(&Value::Float(-2.9)).unwrap(), Value::Int(-2));
+        assert_eq!(cast_to_int(&Value::Bool(true)).unwrap(), Value::Int(1));
+        assert_eq!(cast_to_int(&Value::Bool(false)).unwrap(), Value::Int(0));
+        assert_eq!(
+            cast_to_int(&Value::String("42".into())).unwrap(),
+            Value::Int(42)
+        );
+    }
+
+    #[test]
+    fn cast_to_int_unparseable_string_keeps_legacy_silent_zero() {
+        // The pre-#955 legacy behavior for a failed string parse — distinct
+        // from the T1b lowercase `int()` intrinsic, which faults on this
+        // exact input (`conversion_ops::int_parse_failure_faults`).
+        assert_eq!(
+            cast_to_int(&Value::String("potato".into())).unwrap(),
+            Value::Int(0)
+        );
+    }
+
+    #[test]
+    fn cast_to_float_identity_and_widening_domain_unchanged() {
+        assert_eq!(
+            cast_to_float(&Value::Float(1.5)).unwrap(),
+            Value::Float(1.5)
+        );
+        assert_eq!(cast_to_float(&Value::Int(3)).unwrap(), Value::Float(3.0));
+        assert_eq!(
+            cast_to_float(&Value::Bool(true)).unwrap(),
+            Value::Float(1.0)
+        );
+        assert_eq!(
+            cast_to_float(&Value::Bool(false)).unwrap(),
+            Value::Float(0.0)
+        );
+        assert_eq!(
+            cast_to_float(&Value::String("2.5".into())).unwrap(),
+            Value::Float(2.5)
+        );
+    }
+
+    #[test]
+    fn cast_to_float_unparseable_string_keeps_legacy_silent_zero() {
+        assert_eq!(
+            cast_to_float(&Value::String("nope".into())).unwrap(),
+            Value::Float(0.0)
+        );
+    }
+
+    #[test]
+    fn cast_to_int_out_of_domain_variants_fault_instead_of_folding_to_zero() {
+        let cases: Vec<Value> = vec![
+            Value::List(
+                ListValue {
+                    items: vec![],
+                    origins: vec![],
+                }
+                .into(),
+            ),
+            Value::DivertTarget(DefinitionId::new(DefinitionTag::Address, 0)),
+            Value::VariablePointer(DefinitionId::new(DefinitionTag::Address, 0)),
+            Value::TempPointer {
+                slot: 0,
+                frame_depth: 0,
+            },
+            Value::Null,
+            Value::FragmentRef(0),
+            Value::array(vec![Value::Int(1)]),
+            Value::map(OrderedMap::new()),
+            Value::record(brink_format::ShapeId(0), vec![Value::Int(1)]),
+            Value::FnRef(DefinitionId::new(DefinitionTag::Address, 0)),
+            Value::Handle {
+                kind: NameId(0),
+                id: 0,
+            },
+        ];
+        for v in cases {
+            let err = cast_to_int(&v).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    RuntimeError::InvalidConversionDomain { target: "INT", .. }
+                ),
+                "expected InvalidConversionDomain{{target: \"INT\", ..}} for {v:?}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cast_to_float_out_of_domain_variants_fault_instead_of_folding_to_zero() {
+        let v = Value::array(vec![Value::Int(1)]);
+        let err = cast_to_float(&v).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::InvalidConversionDomain {
+                target: "FLOAT",
+                got: "array",
+            }
+        );
+
+        let v = Value::record(brink_format::ShapeId(0), vec![Value::Int(1)]);
+        let err = cast_to_float(&v).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::InvalidConversionDomain {
+                target: "FLOAT",
+                got: "record",
+            }
         );
     }
 }
