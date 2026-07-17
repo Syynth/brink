@@ -181,10 +181,11 @@ impl From<crate::InferredType> for Ty {
             crate::InferredType::Bool => Ty::Bool,
             crate::InferredType::String => Ty::String,
             crate::InferredType::Divert => Ty::Divert,
-            // The initializer-derived stub records only "this was a list
-            // literal", not which LIST it belongs to — conservatively
-            // Unknown rather than guessing (legal; advisory-only slice).
-            crate::InferredType::List => Ty::Unknown,
+            // Issue #628: the initializer-derived stub now carries the
+            // declaring LIST's name, so this round-trips to the same
+            // nominal `Ty::List` the annotation/body-inference paths use —
+            // no more conservative collapse to `Unknown`.
+            crate::InferredType::List(name) => Ty::List(name),
         }
     }
 }
@@ -244,7 +245,7 @@ fn collect_globals(
         if matches!(info.kind, SymbolKind::Variable | SymbolKind::Constant)
             && let Some(sig) = crate::signature::signature(id, index, files, manifest)
         {
-            if let Some(vt) = sig.value_type {
+            if let Some(vt) = sig.value_type.clone() {
                 globals.insert(id, Ty::from(vt));
             } else if let Some(ft) = sig.fn_type.clone() {
                 globals.insert(id, ft);
@@ -2074,7 +2075,7 @@ mod tests {
             let mut globals: BTreeMap<DefinitionId, Ty> = BTreeMap::new();
             for gid in global_ids {
                 if let Some(sig) = crate::signature::signature(gid, &index, &files, None)
-                    && let Some(vt) = sig.value_type
+                    && let Some(vt) = sig.value_type.clone()
                 {
                     globals.insert(gid, Ty::from(vt));
                 }
