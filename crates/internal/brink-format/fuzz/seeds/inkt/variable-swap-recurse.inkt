@@ -1,0 +1,98 @@
+(story checksum=0x29962889
+
+  (name_table
+    0 "x"
+    1 "y"
+    2 ""
+    3 "f"
+  )
+
+  (addresses
+    (address $01_406ea523c53def -> $01_406ea523c53def +0)
+    (address $01_5bc8457c28ed91 -> $01_5bc8457c28ed91 +0)
+    (address $01_2cf1477cf7282a -> $01_2cf1477cf7282a +0)
+    (address $01_d0c1bde4b91f28 -> $01_d0c1bde4b91f28 +0)
+  )
+
+  (address_paths
+    (path 2 -> $01_406ea523c53def)
+    (path 3 -> $01_5bc8457c28ed91)
+  )
+
+  (visibility
+    (private $07_0c104cf93ec305)
+    (private $07_1f749e60c388c4)
+  )
+
+  (effect_rows
+    (row $01_5bc8457c28ed91
+      (reads)
+      (writes)
+      (calls)
+    )
+  )
+
+  (container $01_406ea523c53def
+    (name 2)
+    (code
+      push_int 1
+      push_int 1
+      call $01_5bc8457c28ed91
+      pop
+      emit_newline
+      done
+    )
+  )
+
+  (container $01_5bc8457c28ed91
+    (name 3)
+    (path_hash 102)
+    (params 2 (val 0) (val 1))
+    (code
+      declare_temp 1
+      declare_temp 0
+      get_temp 0
+      push_int 1
+      equal
+      get_temp 1
+      push_int 1
+      equal
+      and
+      jump_if_false 14
+      enter_container $01_2cf1477cf7282a
+      jump 9
+      enter_container $01_d0c1bde4b91f28
+      emit_newline
+      push_null
+      return
+    )
+  )
+
+  (container $01_2cf1477cf7282a
+    (scope $01_5bc8457c28ed91)
+    (path_hash 196)
+    (code
+      emit_newline
+      push_int 2
+      set_temp 0
+      get_temp 1
+      get_temp 0
+      call $01_5bc8457c28ed91
+      pop
+      emit_newline
+    )
+  )
+
+  (container $01_d0c1bde4b91f28
+    (scope $01_5bc8457c28ed91)
+    (path_hash 197)
+    (code
+      get_temp 0
+      emit_value
+      get_temp 1
+      emit_value
+      spring
+      emit_newline
+    )
+  )
+)

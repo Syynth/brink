@@ -190,6 +190,30 @@ jobs:
           - target: vm_no_panic
             crate_dir: crates/brink-runtime/fuzz
             seed_dir: seeds/vm_no_panic
+          # brink-format's 6 targets (#745) — never previously wired into
+          # this matrix despite existing in-tree. The two shared seed
+          # dirs mirror the shape above: `seeds/inkb` for the four targets
+          # that take a `.inkb` byte buffer, `seeds/inkt` for the two that
+          # take a `.inkt` string, same as brink-syntax's single
+          # `seeds/ink` dir shared by its two `&str`-input targets.
+          - target: read_no_panic
+            crate_dir: crates/internal/brink-format/fuzz
+            seed_dir: seeds/inkb
+          - target: write_read_roundtrip
+            crate_dir: crates/internal/brink-format/fuzz
+            seed_dir: seeds/inkb
+          - target: read_index_no_panic
+            crate_dir: crates/internal/brink-format/fuzz
+            seed_dir: seeds/inkb
+          - target: section_reads_no_panic
+            crate_dir: crates/internal/brink-format/fuzz
+            seed_dir: seeds/inkb
+          - target: read_inkt_no_panic
+            crate_dir: crates/internal/brink-format/fuzz
+            seed_dir: seeds/inkt
+          - target: inkt_write_read_roundtrip
+            crate_dir: crates/internal/brink-format/fuzz
+            seed_dir: seeds/inkt
     # Hard backstop independent of the target's own `-max_total_time`
     # budget (30s of intended fuzz time) — if a target ever fails to
     # self-terminate, the job dies here instead of burning CI minutes
