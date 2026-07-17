@@ -228,10 +228,18 @@ impl HirVisitor for GateVisitor<'_> {
         if let Some(ret) = &knot.return_type {
             self.flag(ret.range(), "type annotation");
         }
+        // T2-2 (docs/effects-spec.md §10, issue #861): `#@effects(…)` is
+        // brink-only, same superset-parse-then-reject shape as `#@module`.
+        if let Some(assertion) = &knot.effects_assertion {
+            self.flag(assertion.range, "`#@effects` directive");
+        }
     }
 
     fn enter_stitch(&mut self, stitch: &Stitch) {
         self.flag_params(&stitch.params);
+        if let Some(assertion) = &stitch.effects_assertion {
+            self.flag(assertion.range, "`#@effects` directive");
+        }
     }
 
     fn enter_stmt(&mut self, stmt: &Stmt) {
@@ -333,6 +341,33 @@ mod tests {
     #[test]
     fn brink_dialect_allows_module_directive() {
         let hir = lower_src("#@module(quest)\nHi\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::Brink);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    // ── T2-2 `#@effects(…)` assertion surface (docs/effects-spec.md §10,
+    // issue #861) ──────────────────────────────────────────────────
+
+    #[test]
+    fn strict_ink_flags_effects_directive_on_knot() {
+        let hir = lower_src("== guard ==\n#@effects(pure)\nHalt!\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E051);
+        assert!(diags[0].message.contains("#@effects"));
+    }
+
+    #[test]
+    fn strict_ink_flags_effects_directive_on_stitch() {
+        let hir = lower_src("== guard ==\nHalt!\n= mood\n#@effects(reads: gold)\ngrumpy\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E051);
+    }
+
+    #[test]
+    fn brink_dialect_allows_effects_directive() {
+        let hir = lower_src("== guard ==\n#@effects(reads: gold, calls: audio)\nHalt!\n");
         let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::Brink);
         assert!(diags.is_empty(), "{diags:?}");
     }
