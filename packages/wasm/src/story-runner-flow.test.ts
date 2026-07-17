@@ -14,6 +14,14 @@ import { describe, it, expect, vi } from "vitest";
 //   2. The new flow-addressed surface (`flow()`/`spawnFlow()` handles,
 //      per-flow `Line` streams, and `wakeCheck()` returning an empty woken
 //      list) forwards to the raw session methods with the right arguments.
+//
+// #999: `FlowHandle.continueMaximally` forwards to the raw
+// `continue_flow_maximally` wasm binding in ONE call rather than looping the
+// single-line `continue_flow` client-side without a cap — the actual
+// line-limit enforcement (and its infinite-emitting-story proof) lives in
+// `crates/brink-runtime` (`continue_flow_maximally_shared_errors_at_line_limit`)
+// and `crates/brink-web` (`continue_flow_maximally_errors_at_line_limit_on_infinite_emitting_flow`);
+// this file just pins that the wrapper doesn't reintroduce an unbounded loop.
 
 const hoisted = vi.hoisted(() => {
   const calls: Array<{ method: string; args: unknown[] }> = [];
@@ -37,11 +45,20 @@ const hoisted = vi.hoisted(() => {
     }
     continue_flow(name: unknown): string {
       calls.push({ method: "continue_flow", args: [name] });
-      // one text line, then a terminal — exercises continueMaximally's loop
-      const step = calls.filter((c) => c.method === "continue_flow").length;
-      return step === 1
-        ? JSON.stringify({ type: "text", text: "npc", tags: [] })
-        : JSON.stringify({ type: "done", text: "", tags: [] });
+      return JSON.stringify({ type: "text", text: "npc", tags: [] });
+    }
+    continue_flow_maximally(name: unknown): string {
+      calls.push({ method: "continue_flow_maximally", args: [name] });
+      if (name === "boom") {
+        // Mirrors the wasm leg's `RuntimeError::LineLimitExceeded` shape
+        // (`JsError::new(&format!("runtime error: {e}"))`) for an
+        // infinite-emitting flow (#999).
+        throw new Error("runtime error: line limit exceeded (10000 lines in a single turn)");
+      }
+      return JSON.stringify([
+        { type: "text", text: "npc", tags: [] },
+        { type: "done", text: "", tags: [] },
+      ]);
     }
     choose_flow(name: unknown, index: unknown): void {
       calls.push({ method: "choose_flow", args: [name, index] });
@@ -126,10 +143,23 @@ describe("flow-addressed consumption (FS-3w §10.1)", () => {
     });
   });
 
-  it("FlowHandle.continueMaximally collects up to the terminal line", () => {
+  it("FlowHandle.continueMaximally forwards to the raw continue_flow_maximally in one call (#999)", () => {
     const runner = newRunner();
     const lines = runner.flow("npc").continueMaximally();
     expect(lines.map((l) => l.type)).toEqual(["text", "done"]);
+    // Exactly one call — proves the cap lives wasm-side (a single
+    // round-trip), not a client-side loop over `continue_flow`.
+    expect(hoisted.calls.filter((c) => c.method === "continue_flow_maximally")).toHaveLength(1);
+    expect(hoisted.calls.filter((c) => c.method === "continue_flow")).toHaveLength(0);
+  });
+
+  it("FlowHandle.continueMaximally propagates the wasm leg's line-limit error unchanged (#999)", () => {
+    const runner = newRunner();
+    // An infinite-emitting flow's wasm leg throws rather than the wrapper
+    // looping forever — this pins that the error surfaces to the caller
+    // as-is (same shape `continueStory`'s cap error takes), not swallowed
+    // or reshaped.
+    expect(() => runner.flow("boom").continueMaximally()).toThrow(/line limit exceeded/);
   });
 
   it("FlowHandle.choose / debugSnapshot / destroy forward with the flow id", () => {
