@@ -182,6 +182,6 @@ Same axes, story, and seed as serial baselines, but flows advance through `advan
 
 ### Parallel driver (BH-3 — parallel batch Step, determinism proof)
 
-**Status:** In development on `bench/bh3-parallel-baselines`. When merged, canonical source will be `crates/bevy-brink/benches/baselines/parallel-driver.{csv,md}`.
+**Canonical source:** `crates/bevy-brink/benches/baselines/parallel-driver.{csv,md}`
 
-The parallel Step is judged against these serial and batch baselines, per the determinism law ("parallel ≡ serial-in-flow-id-order, byte-identical over randomized workloads"). Regenerate via `cargo bench -p bevy-brink --bench scenario_bench -- --mode parallel` once `BH-3` lands.
+The parallel Step is judged against these serial and batch baselines, per the determinism law ("parallel ≡ serial-in-flow-id-order, byte-identical over randomized workloads"). **Regenerate via `cargo bench -p bevy-brink --bench scenario_bench -- --mode parallel`** and see the generated file's hand-maintained header section for interpretation.
