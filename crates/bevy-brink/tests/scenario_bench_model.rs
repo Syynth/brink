@@ -15,8 +15,9 @@
 mod model;
 
 use model::{
-    ScenarioConfig, ScenarioResult, TurnWeight, active_count, compute_pool_threads, generate_story,
-    run_batch_scenario, run_parallel_scenario, run_scenario,
+    ScenarioConfig, ScenarioResult, TurnWeight, WakeConfig, WakeKind, active_count,
+    compute_pool_threads, generate_story, generate_wake_story, run_batch_scenario,
+    run_parallel_scenario, run_scenario, run_wake_scenario,
 };
 
 fn tiny_config(name: &str, turn_weight: TurnWeight) -> ScenarioConfig {
@@ -234,6 +235,92 @@ fn fully_parked_batch_scenario_completes_zero_turns() {
     let result = run_batch_scenario(&config).expect("all-parked batch scenario should still run");
     assert_eq!(result.turns_completed, 0);
     assert_eq!(result.flow_anomalies, 0);
+}
+
+// ── BH-4 wake driver (#973) ──────────────────────────────────────────────
+
+fn tiny_wake_config(
+    name: &str,
+    active: usize,
+    sleeping: usize,
+    kind: WakeKind,
+    drive_batch: bool,
+) -> WakeConfig {
+    WakeConfig {
+        name: name.to_string(),
+        active,
+        sleeping,
+        kind,
+        drive_batch,
+        turn_weight: TurnWeight::Medium,
+        frames: 4,
+        seed: 42,
+    }
+}
+
+/// The generated wake story compiles and its two condition functions resolve:
+/// deterministic generation, plus an idle-wake run (sleeping flows, no batch
+/// turn) that must complete **zero** turns — the Collect-skip / zero-cost-parked
+/// contract, exercised through the real driver.
+#[test]
+fn wake_idle_scenario_completes_zero_turns() {
+    let a = generate_wake_story(TurnWeight::Medium, 7);
+    let b = generate_wake_story(TurnWeight::Medium, 7);
+    assert_eq!(a, b, "wake story generation is deterministic");
+    assert!(a.contains("=== function never_wake()"));
+    assert!(a.contains("=== function always_wake()"));
+
+    for kind in [WakeKind::DetectSkip, WakeKind::MustPoll] {
+        let config = tiny_wake_config("wake-idle-smoke", 0, 5, kind, false);
+        let result = run_wake_scenario(&config).expect("idle wake scenario should run cleanly");
+        assert_eq!(result.flow_count, 5);
+        assert_eq!(
+            result.turns_completed, 0,
+            "a purely-sleeping (never-wake) population steps zero turns: {kind:?}"
+        );
+        assert_eq!(result.flow_anomalies, 0);
+    }
+}
+
+/// A `drive_batch` wake run with active (no-policy) flows steps exactly those
+/// active flows each frame, and dormant never-wake sleepers never step — so the
+/// turn count is `active × frames`, and the sleepers add zero to it.
+#[test]
+fn wake_ratio_scenario_steps_only_active_flows() {
+    let active = 2usize;
+    let sleeping = 4usize;
+    let config = tiny_wake_config(
+        "wake-ratio-smoke",
+        active,
+        sleeping,
+        WakeKind::DetectSkip,
+        true,
+    );
+    let result = run_wake_scenario(&config).expect("ratio wake scenario should run cleanly");
+
+    assert_eq!(result.flow_count, active + sleeping);
+    assert_eq!(result.flow_anomalies, 0);
+    let expected = u64::try_from(active * config.frames).expect("fits u64");
+    assert_eq!(
+        result.turns_completed, expected,
+        "only the active flows step; dormant never-wake sleepers are skipped by Collect"
+    );
+    assert!(result.frame_p50_ms >= 0.0 && result.step_p50_us >= 0.0);
+}
+
+/// A wake-storm (persistent, always-true, must-poll) actually wakes and steps
+/// its whole population under the batch driver — turns must exceed zero, proving
+/// the wake path fires end to end (not merely that parked flows stay parked).
+#[test]
+fn wake_storm_scenario_wakes_and_steps() {
+    let config = tiny_wake_config("wake-storm-smoke", 0, 4, WakeKind::Storm, true);
+    let result = run_wake_scenario(&config).expect("storm wake scenario should run cleanly");
+    assert_eq!(result.flow_count, 4);
+    assert_eq!(result.flow_anomalies, 0);
+    assert!(
+        result.turns_completed > 0,
+        "a wake storm must wake and step its flows: {result:?}"
+    );
 }
 
 /// BH follow-up (#911, deliverable 3): with the `bench-counters` feature

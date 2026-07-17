@@ -114,6 +114,11 @@ cargo bench -p bevy-brink --features bench-counters --bench scenario_bench -- --
 # BH-3 parallel driver (advance_batch_parallel, #927) over the same axis matrix.
 cargo bench -p bevy-brink --features bench-counters --bench scenario_bench -- --mode parallel
 
+# BH-4 wake driver (FlowSleep reactive-wake contract, #973): parked/active
+# ratios, an idle-wake zero-cost-parked sweep, detect-vs-must-poll, and a
+# wake-storm. Writes wake-driver.{csv,md}.
+cargo bench -p bevy-brink --features bench-counters --bench scenario_bench -- --mode wake
+
 # Thread-curve exploration: pin the ComputeTaskPool size (one size per
 # process — bevy's pools are process-global). Prints results only; never
 # writes baseline files, so a non-default pool size can't clobber the
@@ -151,6 +156,24 @@ count, and the parallel-vs-serial/-vs-batch comparisons live in
 `parallel-driver.md` itself (hand-maintained header over the generated
 matrix — re-add after regenerating).
 
+`--mode wake` runs BH-4's wake driver (`FlowSleep` reactive-sleep contract,
+#973) and writes `wake-driver.{csv,md}`. It has its own axis (parked:active
+population) rather than the shared flow-count matrix: `wake-idle-*` rows drive
+a purely-sleeping population with **no** batch turn on a quiet World (the clean
+**zero-cost-parked** measurement, and the detect-vs-must-poll contrast),
+`wake-*-{90to10,99to1}` mix active steppers with detect-capable sleepers under
+a batch turn, and `wake-storm-*` are the thundering-herd extreme (capped at 1k).
+Column mapping matches batch/parallel: `step p50` is the `advance_batch` turn (0
+on an idle-wake row), `collect`/`apply` read 0, `frame p50/p99` is the whole
+reactive frame. **Honesty note:** the `drive_batch` rows step to `-> DONE`,
+which fires the plugin's `gc_on_turn_done` reachable-handle sweep (O(total flows)
+per `-> DONE`, a T1d GC cost) — so those rows are dominated by handle-GC, **not**
+the wake systems, and must not be compared against batch/parallel `frame p50` as
+if they measured the wake path; the linear, cheap wake-system cost is isolated in
+the `wake-idle-*` rows. The canonical capture, machine context, the
+zero-cost-parked verdict, and the gc finding live in `wake-driver.md` itself
+(hand-maintained header — re-add after regenerating).
+
 **Baseline-diff tripwire (issue #911, the seed of `BH-3`'s serial-vs-
 parallel comparator):**
 `crates/bevy-brink/tests/scenario_baseline_tripwire.rs`'s
@@ -185,3 +208,9 @@ Same axes, story, and seed as serial baselines, but flows advance through `advan
 **Canonical source:** `crates/bevy-brink/benches/baselines/parallel-driver.{csv,md}`
 
 The parallel Step is judged against these serial and batch baselines, per the determinism law ("parallel ≡ serial-in-flow-id-order, byte-identical over randomized workloads"). **Regenerate via `cargo bench -p bevy-brink --bench scenario_bench -- --mode parallel`** and see the generated file's hand-maintained header section for interpretation.
+
+### Wake driver (BH-4 — FlowSleep reactive-wake contract, #973)
+
+**Canonical source:** `crates/bevy-brink/benches/baselines/wake-driver.{csv,md}`
+
+The reactive-sleep wake contract (`docs/effects-spec.md` §13.1): a parked flow is skipped by Collect (zero steps), and `mark_wake_dirty` → `run_flow_sleep` re-evaluate a pure condition and wake only on true. The `wake-idle-*` rows are the clean **zero-cost-parked** headline (~1.6 µs/parked-flow/frame, linear; detect-skip vs must-poll indistinguishable for a trivial condition); the `drive_batch` rows (ratios + storm) are dominated by the T1d `gc_on_turn_done` O(total)-per-`-> DONE` handle sweep, not the wake systems — see the file header. **Regenerate via `cargo bench -p bevy-brink --bench scenario_bench -- --mode wake`** and re-add the hand-maintained header.
