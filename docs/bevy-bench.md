@@ -166,38 +166,22 @@ differ from the baseline's capture machine on every runner.
 
 ## Baseline
 
-Captured 2026-07-16, Apple Silicon dev machine, `cargo bench --features
-bench-counters` (the `bench` profile, optimized), default 30 frames,
-`active_fraction=0.7`, `world_size=0`. The four `serial-*` rows fix
-`turn_weight=medium` and vary `flow_count` only (the issue's ask); the two
-`serial-100-{light,heavy}` rows hold `flow_count=100` and vary
-`turn_weight` instead, proving that axis is actually wired end to end
-rather than merely declared in `ScenarioConfig`. Regenerate via
-`crates/bevy-brink/benches/baselines/serial-driver.{csv,md}` (this table
-is copied from the generated `.md`, not hand-maintained — regenerate
-rather than hand-edit if it drifts).
+Baselines are captured in quiet-window solo runs and stored in the repo as canonical reference points against which optimizations and parallel drivers are judged. Do not hand-edit the tables below — regenerate instead per the instructions in each baseline file's header.
 
-| scenario | flows | active | world | turn | frames | frame p50 (ms) | frame p99 (ms) | collect p50 (µs) | step p50 (µs) | apply p50 (µs) | turns/sec | turns | anomalies | rss Δ (KB) | cow_copies | arc_clones |
-|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| serial-1 | 1 | 70% | 0 | medium | 30 | 0.076 | 30.178 | 0.04 | 8.12 | 0.04 | 381.2 | 30 | 0 | 160 | 0 | 0 |
-| serial-100 | 100 | 70% | 0 | medium | 30 | 0.594 | 0.861 | 0.29 | 491.71 | 0.04 | 114790.2 | 2100 | 0 | 1600 | 0 | 0 |
-| serial-1k | 1000 | 70% | 0 | medium | 30 | 5.353 | 6.770 | 2.12 | 5075.12 | 0.04 | 128468.8 | 21000 | 0 | 14592 | 0 | 0 |
-| serial-10k | 10000 | 70% | 0 | medium | 30 | 37.504 | 62.137 | 19.29 | 35102.50 | 0.08 | 181820.8 | 210000 | 0 | 145936 | 0 | 0 |
-| serial-100-light | 100 | 70% | 0 | light | 30 | 0.165 | 0.342 | 0.17 | 108.38 | 0.04 | 396806.4 | 2100 | 0 | 16 | 0 | 0 |
-| serial-100-heavy | 100 | 70% | 0 | heavy | 30 | 0.502 | 0.747 | 0.12 | 418.75 | 0.04 | 134386.8 | 2100 | 0 | 1088 | 0 | 0 |
+### Serial driver (SERIAL — per-flow serial loop, the baseline for parallelism claims)
 
-Reading these honestly: `step_p50_us` scales roughly linearly with
-`flow_count` (≈5 µs/flow at 100, ≈5.1 µs/flow at 1k, ≈3.5 µs/flow at 10k —
-the serial per-flow loop's expected shape, no batching to amortize), while
-`collect_p50_us` stays tiny relative to `step` at every size (the query
-filter itself is cheap; almost all frame time is in Step, as expected for
-a driver with no parallelism yet). `frame_p99_ms` at `serial-1` (30.178ms)
-is a clear outlier against its own `p50` (0.076ms) — a single slow first
-frame (JIT/cache warmup, `MinimalPlugins`' first-frame setup) dominating a
-30-frame sample at `flow_count=1`; visible proof that `p99` over a small
-frame count is noisy at the smallest scenario size, not a real per-flow
-cost. `cow_copies`/`arc_clones` are 0 throughout — see the honesty note
-above (the template's only global is a scalar `Int`, never a collection).
+**Canonical source:** `crates/bevy-brink/benches/baselines/serial-driver.{csv,md}`
 
-**Absolute numbers are machine-specific and will drift — this is `BH-3`'s
-future comparison point, not a strict pass/fail gate.**
+Captured 2026-07-16 on Apple Silicon (`M2`), `cargo bench --features bench-counters` (the `bench` profile, optimized), default 30 frames, `active_fraction=0.7`, `world_size=0`. The four `serial-*` rows fix `turn_weight=medium` and vary `flow_count` only; the two `serial-100-{light,heavy}` rows hold `flow_count=100` and vary `turn_weight`, proving that axis wires end to end. **Regenerate via `cargo bench -p bevy-brink --bench scenario_bench`** and copy the table from the generated `serial-driver.md`.
+
+### Batch-serial driver (BH-2 — advance_batch fused Collect/Step/Apply, for comparison)
+
+**Canonical source:** `crates/bevy-brink/benches/baselines/batch-serial-driver.{csv,md}`
+
+Same axes, story, and seed as serial baselines, but flows advance through `advance_batch` (frame-start read pinning, per-flow buffered writes/commands, flow-id-ordered Apply). Batch is expected to sit above serial (due to per-flow frame-start snapshot clone) until `BH-3`'s borrow-don't-copy optimization lands. **Regenerate via `cargo bench -p bevy-brink --bench scenario_bench -- --mode batch`** and see the generated file's hand-maintained header section for interpretation.
+
+### Parallel driver (BH-3 — parallel batch Step, determinism proof)
+
+**Canonical source:** `crates/bevy-brink/benches/baselines/parallel-driver.{csv,md}`
+
+The parallel Step is judged against these serial and batch baselines, per the determinism law ("parallel ≡ serial-in-flow-id-order, byte-identical over randomized workloads"). **Regenerate via `cargo bench -p bevy-brink --bench scenario_bench -- --mode parallel`** and see the generated file's hand-maintained header section for interpretation.
