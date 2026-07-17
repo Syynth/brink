@@ -95,4 +95,80 @@ fn story_data_emits_a_populated_effect_rows_table() {
         call_name, "play_sfx",
         "call atom resolves to the external kind"
     );
+
+    // #882: the pre-modules all-public world ships every row as an entry.
+    assert!(spend_row.is_entry, "public def ships as a host entry point");
+}
+
+/// #882 — the freeze semantics T2-3 was missing: a `#@private` def's row is
+/// excluded from the **entry set** (`is_entry: false` — not a legitimate
+/// host-lookup target, `docs/effects-spec.md` §10 / `docs/modules-spec.md` §4
+/// rule 2) but the row itself is NOT dropped from the `DefinitionId -> row`
+/// table — `#@private` hides the *name*, not the *cell* (modules-spec §4 rule
+/// 1). Here a *public* function holds a call-token to a *private* one
+/// (`secret_heal`), so the dispatch-narrowing machinery must still be able to
+/// resolve `secret_heal`'s row by `DefinitionId` even though it is not a host
+/// entry point. The public knot/function stay unaffected (`is_entry: true`).
+#[test]
+fn private_def_row_stays_in_table_but_not_the_entry_set() {
+    use brink_analyzer::{AnalysisOptions, Dialect};
+
+    let mut db = ProjectDb::new();
+    // `#@private` is dialect-gated (M-2, docs/modules-spec.md §2/§4) — under
+    // the default `StrictInk` it still computes visibility (superset-parse-
+    // then-reject) but also raises an E051-class dialect diagnostic that
+    // would block `story_data`'s LIR gate, so this test opts into `Brink`
+    // like the other M-2 db-level tests (`brink_opts()` precedent).
+    db.set_analysis_options(AnalysisOptions {
+        dialect: Dialect::Brink,
+        ..AnalysisOptions::default()
+    });
+    db.set_file(
+        "main.ink",
+        "VAR hp = 10\n\
+         === function secret_heal(amount) ===\n#@private\n~ hp = hp + amount\n~ return hp\n\
+         === start ===\n~ secret_heal(5)\n-> DONE\n"
+            .to_owned(),
+    );
+    db.set_entry("main.ink");
+
+    let secret_heal = def_named(&db, "secret_heal");
+    let start = def_named(&db, "start");
+
+    let product = db.story_data().expect("entry is set");
+    let story = product.story.as_ref().expect("story compiles cleanly");
+
+    assert!(
+        story.private_defs.contains(&secret_heal),
+        "sanity: secret_heal is recorded #@private"
+    );
+
+    // Not an entry: `secret_heal`'s row opts out of the entry set.
+    let secret_row = story
+        .effect_rows
+        .iter()
+        .find(|r| r.def == secret_heal)
+        .expect("private def's row still resolvable via the DefinitionId table");
+    assert!(
+        !secret_row.is_entry,
+        "#@private def's row is not a host entry point"
+    );
+
+    // Still in the table: the entry set never controls table membership.
+    assert!(
+        !story
+            .effect_rows
+            .iter()
+            .filter(|r| r.is_entry)
+            .any(|r| r.def == secret_heal),
+        "the entry set (is_entry rows) excludes the private def"
+    );
+
+    // Public def unaffected.
+    let start_row = story
+        .effect_rows
+        .iter()
+        .find(|r| r.def == start)
+        .expect("start ships a row");
+    assert!(start_row.is_entry, "public def is unaffected");
 }

@@ -296,6 +296,7 @@ fn roundtrip_effect_rows() {
     data.effect_rows = vec![
         EffectRowEntry {
             def: DefinitionId::new(DefinitionTag::Address, 1),
+            is_entry: true,
             direct: DirectEffects {
                 reads: vec![cell(1), cell(2)],
                 writes: vec![cell(3)],
@@ -330,6 +331,7 @@ fn roundtrip_effect_rows() {
         },
         EffectRowEntry {
             def: DefinitionId::new(DefinitionTag::Address, 2),
+            is_entry: true,
             direct: DirectEffects {
                 reads: vec![],
                 writes: vec![],
@@ -346,6 +348,73 @@ fn roundtrip_effect_rows() {
     let mut recovered = read_inkb(&buf).unwrap();
     recovered.source_checksum = data.source_checksum;
     assert_eq!(data, recovered);
+}
+
+/// #882: the freeze bit (`EffectRowEntry::is_entry`) round-trips through
+/// `.inkb`. A `#@private` def's row (`is_entry: false`) is not dropped from
+/// the table — it stays resolvable by `def` after the round trip, alongside
+/// an unaffected public row (`docs/effects-spec.md` §10; `docs/modules-spec.md`
+/// §4 rule 1: private hides the name, not the cell).
+#[test]
+fn roundtrip_effect_rows_freeze_bit() {
+    use brink_format::{
+        CallAtom, CapabilityParam, DefinitionId, DefinitionTag, DirectEffects, EffectRowEntry,
+        NameId,
+    };
+
+    let private_def = DefinitionId::new(DefinitionTag::Address, 1);
+    let public_def = DefinitionId::new(DefinitionTag::Address, 2);
+    let mut data = i001_data();
+    data.effect_rows = vec![
+        EffectRowEntry {
+            def: private_def,
+            is_entry: false,
+            direct: DirectEffects {
+                reads: vec![],
+                writes: vec![],
+                calls: vec![CallAtom {
+                    name: NameId(5),
+                    capability: CapabilityParam::Any,
+                    handle_param: None,
+                }],
+                opaque: false,
+            },
+            dispatches: vec![],
+        },
+        EffectRowEntry {
+            def: public_def,
+            is_entry: true,
+            direct: DirectEffects {
+                reads: vec![],
+                writes: vec![],
+                calls: vec![],
+                opaque: false,
+            },
+            dispatches: vec![],
+        },
+    ];
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
+    assert_eq!(data, recovered);
+
+    let private_row = recovered
+        .effect_rows
+        .iter()
+        .find(|r| r.def == private_def)
+        .expect("private def's row still resolvable via the table");
+    assert!(!private_row.is_entry);
+    assert_eq!(private_row.direct.calls.len(), 1);
+
+    let public_row = recovered
+        .effect_rows
+        .iter()
+        .find(|r| r.def == public_def)
+        .expect("public def's row unaffected");
+    assert!(public_row.is_entry);
 }
 
 /// A `.inkb` with no `EffectRows` section (converter output, or a pre-T2-3
@@ -380,13 +449,14 @@ fn effect_rows_index_with_call_tags(
     use brink_format::{DefinitionId, DefinitionTag, InkbIndex, SectionEntry, SectionKind};
 
     let mut buf = Vec::new();
-    buf.push(1u8); // section-local version
+    buf.push(2u8); // section-local version (#882: bumped 1 -> 2 for is_entry)
     buf.extend_from_slice(&1u32.to_le_bytes()); // entry count
     buf.extend_from_slice(
         &DefinitionId::new(DefinitionTag::Address, 1)
             .to_raw()
             .to_le_bytes(),
     );
+    buf.push(1u8); // is_entry
     buf.extend_from_slice(&0u32.to_le_bytes()); // reads
     buf.extend_from_slice(&0u32.to_le_bytes()); // writes
     buf.extend_from_slice(&1u32.to_le_bytes()); // calls

@@ -57,7 +57,7 @@ alias_entry = { "(" ~ "alias" ~ def_id ~ "->" ~ def_id ~ ")" }
 // ── Effect rows (T2-3, docs/effects-spec.md §11) ─────────────────────────────
 
 effect_rows = { "(" ~ "effect_rows" ~ effect_row* ~ ")" }
-effect_row = { "(" ~ "row" ~ def_id ~ effects_reads ~ effects_writes ~ effects_calls ~ opaque_flag? ~ dispatch_entry* ~ ")" }
+effect_row = { "(" ~ "row" ~ def_id ~ internal_flag? ~ effects_reads ~ effects_writes ~ effects_calls ~ opaque_flag? ~ dispatch_entry* ~ ")" }
 dispatch_entry = { "(" ~ "dispatch" ~ def_id ~ narrowable_flag? ~ effects_reads ~ effects_writes ~ effects_calls ~ opaque_flag? ~ ")" }
 effects_reads = { "(" ~ "reads" ~ def_id* ~ ")" }
 effects_writes = { "(" ~ "writes" ~ def_id* ~ ")" }
@@ -66,6 +66,10 @@ call_atom = { "(" ~ "call" ~ integer ~ cap_param ~ ")" }
 cap_param = { "any" }
 opaque_flag = { "opaque" }
 narrowable_flag = { "narrowable" }
+// #882 freeze bit: present only when the row is NOT a host entry point
+// (a `#@private` def — see `EffectRowEntry::is_entry`'s doc). Absent means
+// `is_entry = true`, the default for every public knot/stitch.
+internal_flag = { "internal" }
 
 // ── List literals ────────────────────────────────────────────────────────────
 

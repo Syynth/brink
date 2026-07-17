@@ -269,6 +269,30 @@ pub struct DispatchEntry {
 pub struct EffectRowEntry {
     /// The definition (knot/stitch) this row summarizes.
     pub def: DefinitionId,
+    /// The freeze bit (#882, `docs/effects-spec.md` §10 sitting-2 ruling;
+    /// corroborated on `main` by `docs/modules-spec.md` §4 boundary rule 1/2
+    /// and the 2026-07-14 "Modules & visibility rulings" decision-log entry —
+    /// `docs/effects-spec.md` itself never merged past `docs/effects-skeleton`).
+    ///
+    /// `true` for every def by default: the row is a legitimate host
+    /// **entry point** (host-callable by path/name — `begin_function_eval`,
+    /// entry lookup, play-from-here). `false` for a `#@private` definition:
+    /// **not an entry** — host-facing name lookup on it is refused (the
+    /// load-error class effects-spec §10 rules) — but the row itself is not
+    /// dropped from the table. `#@private` hides the *name*, not the *cell*:
+    /// a private knot/stitch can still be captured as a first-class fn-value
+    /// token that a *public* path holds and later calls through, and the
+    /// dispatch-narrowing machinery (§7) resolves such a token by
+    /// `DefinitionId`, not by name — so the row must stay resolvable in this
+    /// table regardless of `is_entry`. This is unconditional (never a
+    /// reachability computation over whether some public path actually holds
+    /// such a token today): proving that would need whole-program fn-value
+    /// capture analysis, which conservative-total rows do not attempt.
+    /// Dev-tooling (play-from-here, `brink ide` effects-diff) is the
+    /// documented visibility override (modules-spec §4 rule 3) and may read
+    /// a non-entry row directly from this table; only *host* semantic lookup
+    /// respects `is_entry`.
+    pub is_entry: bool,
     /// The direct part — atoms independent of dispatch narrowing.
     pub direct: DirectEffects,
     /// Per-dispatch entries (empty in v1).

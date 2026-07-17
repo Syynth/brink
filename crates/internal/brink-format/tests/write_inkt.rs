@@ -371,6 +371,7 @@ fn effect_rows_roundtrips() {
     let mut data = i001_data();
     data.effect_rows = vec![EffectRowEntry {
         def: DefinitionId::new(DefinitionTag::Address, 0x01),
+        is_entry: true,
         direct: DirectEffects {
             reads: vec![cell(1), cell(2)],
             writes: vec![cell(3)],
@@ -401,9 +402,84 @@ fn effect_rows_roundtrips() {
         buf.contains("(dispatch $02_00000000000009 narrowable"),
         "{buf}"
     );
+    // An entry row (`is_entry: true`, the default) never prints the `internal`
+    // freeze-bit token (#882).
+    assert!(!buf.contains("internal"), "{buf}");
 
     let recovered = brink_format::read_inkt(&buf).unwrap();
     assert_eq!(recovered.effect_rows, data.effect_rows);
+}
+
+/// #882: the freeze bit round-trips through `.inkt` — a `#@private` def's row
+/// prints (and re-parses) `is_entry: false` via the `internal` token, while a
+/// sibling public row's `is_entry: true` stays the default (no token). Both
+/// rows remain present in the recovered table — `docs/effects-spec.md` §10 and
+/// `docs/modules-spec.md` §4's first boundary rule both hold that private
+/// hides the *name*, not the *cell* — so the private row's own effects are
+/// still resolvable by `def`, proving the table (not just the entry set)
+/// survives the round trip.
+#[test]
+fn effect_rows_internal_flag_roundtrips() {
+    use brink_format::{
+        CallAtom, CapabilityParam, DefinitionId, DefinitionTag, DirectEffects, EffectRowEntry,
+        NameId,
+    };
+
+    let private_def = DefinitionId::new(DefinitionTag::Address, 0x01);
+    let public_def = DefinitionId::new(DefinitionTag::Address, 0x02);
+    let mut data = i001_data();
+    data.effect_rows = vec![
+        EffectRowEntry {
+            def: private_def,
+            is_entry: false,
+            direct: DirectEffects {
+                reads: vec![],
+                writes: vec![],
+                calls: vec![CallAtom {
+                    name: NameId(5),
+                    capability: CapabilityParam::Any,
+                    handle_param: None,
+                }],
+                opaque: false,
+            },
+            dispatches: vec![],
+        },
+        EffectRowEntry {
+            def: public_def,
+            is_entry: true,
+            direct: DirectEffects {
+                reads: vec![],
+                writes: vec![],
+                calls: vec![],
+                opaque: false,
+            },
+            dispatches: vec![],
+        },
+    ];
+
+    let mut buf = String::new();
+    brink_format::write_inkt(&data, &mut buf).unwrap();
+    assert!(buf.contains("internal"), "{buf}");
+
+    let recovered = brink_format::read_inkt(&buf).unwrap();
+    assert_eq!(recovered.effect_rows, data.effect_rows);
+
+    // The private row's own call atom is still resolvable via the table by
+    // `def` — freezing it out of the entry set never drops the row.
+    let private_row = recovered
+        .effect_rows
+        .iter()
+        .find(|r| r.def == private_def)
+        .expect("private def's row still resolvable via the table");
+    assert!(!private_row.is_entry);
+    assert_eq!(private_row.direct.calls.len(), 1);
+
+    let public_row = recovered
+        .effect_rows
+        .iter()
+        .find(|r| r.def == public_def)
+        .expect("public def's row unaffected");
+    assert!(public_row.is_entry);
 }
 
 /// #742: a `Closure` default (`(closure <def_id> (val|ref <name> <value>)…)`)
