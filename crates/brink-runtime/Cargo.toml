@@ -38,6 +38,15 @@ testing = []
 # builds pay exactly zero cost. See `crates/brink-runtime/src/bench_counters.rs`
 # and `docs/runtime-bench.md`.
 bench-counters = []
+# Ground-truth effect-atom recorder (issue #870, T2 effects epic — the
+# effects analogue of the oracle): records per-executing-def cell
+# reads/writes and external-kind calls actually observed at runtime, for
+# `brink-test-harness` to compare against the statically-inferred
+# `effects(def)` row. Test/bench-only — pulls in `std` (a `Mutex`-guarded
+# recorder) and is never part of `default`, so an ordinary build (or
+# `cargo build -p brink-runtime`) never compiles it in: no module, no
+# lock, no call-site branches. See `crates/brink-runtime/src/effect_trace.rs`.
+effect-trace = ["std"]
 
 [dev-dependencies]
 brink-compiler = { path = "../brink-compiler" }

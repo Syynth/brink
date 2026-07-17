@@ -274,6 +274,14 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
             flow.value_stack.push(Value::DivertTarget(id));
         }
         Opcode::PushVarPointer(id) => {
+            // A `ref` argument targeting a global — emitted only at the
+            // call site passing it (see `effect_trace`'s module docs): the
+            // caller's own bytecode is what's executing here, so recording
+            // a write now (conservatively, matching `record_ref_param_
+            // writes`'s "a ref param might write" model) attributes it to
+            // the same def the static analyzer charges, not to whichever
+            // def eventually dereferences the pointer.
+            note_effect_write(flow, program, id);
             flow.value_stack.push(Value::VariablePointer(id));
         }
         Opcode::Pop => {
@@ -326,6 +334,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 .ok_or(RuntimeError::UnresolvedGlobal(id))?;
             let val = context.global(idx).clone();
             note_value_share(&val);
+            note_effect_read(flow, program, id);
             flow.value_stack.push(val);
         }
         Opcode::SetGlobal(id) => {
@@ -343,6 +352,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
             {
                 Arc::make_mut(new_lv).origins.clone_from(&old_lv.origins);
             }
+            note_effect_write(flow, program, id);
             context.set_global(idx, val);
         }
 
@@ -488,6 +498,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 .resolve_global(id)
                 .ok_or(RuntimeError::UnresolvedGlobal(id))?;
             let val = context.take_global(idx);
+            note_effect_read(flow, program, id);
             flow.value_stack.push(val);
         }
         Opcode::TakeTemp(slot) => {
@@ -930,6 +941,10 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 segments.push(brink_format::ProjSegment::from_value(flow.pop_value()?));
             }
             segments.reverse();
+            // Emitted only for a `ref` argument targeting a projected path
+            // (`brink-codegen-inkb/src/expr.rs`) — same construction-time
+            // attribution rationale as `PushVarPointer` above.
+            note_effect_write(flow, program, root);
             flow.value_stack.push(Value::projection(root, segments));
         }
         Opcode::ProjRead => {
@@ -1192,6 +1207,12 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
             }
             args.reverse(); // Args were pushed left-to-right, popped right-to-left.
 
+            // Attribute the call-kind atom to the *caller* — whichever def
+            // is executing right before the external frame goes on the
+            // stack — mirroring `record_call_edge`'s `external_calls`
+            // (recorded while walking the calling def's own body).
+            note_effect_call(flow, program, fn_id);
+
             let current_pos = current_position(flow)?;
             let thread = flow.current_thread_mut();
             thread.call_stack.push(CallFrame {
@@ -1231,6 +1252,60 @@ pub(crate) fn note_value_share(val: &Value) {
 #[cfg(not(feature = "bench-counters"))]
 #[inline(always)]
 pub(crate) fn note_value_share(_val: &Value) {}
+
+// ── Ground-truth effect-atom recorder (issue #870, T2 effects epic) ──────────
+//
+// `note_effect_*` attribute an observed atom to the definition scope
+// (`ContainerDef::scope_id` — the nearest enclosing knot/stitch/root,
+// `Program::scope_ids`/`scope_table_idx`) executing *right now*: the
+// current call frame's current container position, looked up the same way
+// `world.rs`'s `interior_containers_by_scope`/`expand_knot_scope` already
+// do. A silent `Err`/`None` (an exhausted call stack, an unresolved scope
+// table) skips recording rather than propagating — this instrumentation
+// must never turn a benign state into a hard error; see
+// `crate::effect_trace`'s module docs for exactly which opcodes call these
+// and why (attribution at pointer/projection *construction* time, not
+// dereference time, to match the static analyzer's own call-site model).
+// No-op — the scope lookup itself compiles out — unless the `effect-trace`
+// feature is enabled.
+#[cfg(feature = "effect-trace")]
+fn effect_trace_current_def(flow: &Flow, program: &Program) -> Option<DefinitionId> {
+    let pos = current_position(flow).ok()?;
+    let scope_idx = program.scope_table_idx(pos.container_idx) as usize;
+    program.scope_ids.get(scope_idx).copied()
+}
+
+#[cfg(feature = "effect-trace")]
+fn note_effect_read(flow: &Flow, program: &Program, cell: DefinitionId) {
+    if let Some(def) = effect_trace_current_def(flow, program) {
+        crate::effect_trace::record_read(def, cell);
+    }
+}
+#[cfg(not(feature = "effect-trace"))]
+#[inline(always)]
+fn note_effect_read(_flow: &Flow, _program: &Program, _cell: DefinitionId) {}
+
+#[cfg(feature = "effect-trace")]
+fn note_effect_write(flow: &Flow, program: &Program, cell: DefinitionId) {
+    if let Some(def) = effect_trace_current_def(flow, program) {
+        crate::effect_trace::record_write(def, cell);
+    }
+}
+#[cfg(not(feature = "effect-trace"))]
+#[inline(always)]
+fn note_effect_write(_flow: &Flow, _program: &Program, _cell: DefinitionId) {}
+
+#[cfg(feature = "effect-trace")]
+fn note_effect_call(flow: &Flow, program: &Program, fn_id: DefinitionId) {
+    if let Some(def) = effect_trace_current_def(flow, program)
+        && let Some(entry) = program.external_fn(fn_id)
+    {
+        crate::effect_trace::record_call(def, program.name(entry.name).to_string());
+    }
+}
+#[cfg(not(feature = "effect-trace"))]
+#[inline(always)]
+fn note_effect_call(_flow: &Flow, _program: &Program, _fn_id: DefinitionId) {}
 
 // ── Function values (T1c, docs/t1c-spec.md §3/§6, #700) ──────────────────────
 
