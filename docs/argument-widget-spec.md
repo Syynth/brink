@@ -91,7 +91,7 @@ from `values`** (§host-argument-picker-spec): `values` is a *list of pickable v
 
 // Param / arg-group widget on an external (host editor by id):
 { "name": "place_object",
-  "params": [["x", "int"], ["y", "int"]],
+  "params": [{"name": "x", "ty": "int"}, {"name": "y", "ty": "int"}],
   "widgets": [
     { "group": [0, 1],            // arg indices the widget spans
       "type": "map_point",        // semantic type / widget id

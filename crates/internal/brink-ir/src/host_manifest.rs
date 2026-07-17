@@ -377,3 +377,81 @@ mod value_source_tests {
         assert_eq!(BaseType::from_keyword("handle"), Some(BaseType::Handle));
     }
 }
+
+/// Guards the drift class flagged twice against `docs/host-capability-manifest.md`
+/// (during #911's batch work and again in #921's review, tracked from #897 as
+/// issue #924): the docs' Tier-1 JSON examples and `bevy-brink::capability`'s
+/// doc-header example previously showed `params` as 2-tuples (`["item","string"]`)
+/// or `{"type": "handle<Npc>"}`, but [`ManifestParam`]'s real serde shape is
+/// `{"name": ..., "ty": ...}`. This test parses the doc's actual Tier-1 example
+/// JSON (`docs/host-capability-manifest.md` §"Tier 1") verbatim and round-trips
+/// it through serde, so if a future edit reintroduces the wrong param shape in
+/// either the docs or this fixture, the mismatch fails here instead of staying
+/// latent (no real consumer round-trips this JSON yet).
+#[cfg(test)]
+mod doc_example_tests {
+    use super::{ExternalKind, HostManifest, ManifestExternal, ManifestParam, TypeRef};
+
+    #[test]
+    fn tier_1_doc_example_roundtrips_through_manifest_param() {
+        // Verbatim (minus jsonc comments) from the Tier 1 section of
+        // docs/host-capability-manifest.md.
+        let json = r#"
+        { "externals": [
+            { "name": "has",    "params": [{"name": "item", "ty": "string"}], "returns": "bool", "kind": "query" },
+            { "name": "camera", "params": [{"name": "target", "ty": "string"}], "returns": "void", "kind": "presentation" },
+            { "name": "grant",  "params": [{"name": "item", "ty": "string"}], "returns": "void", "kind": "effect" }
+        ] }
+        "#;
+
+        let manifest: HostManifest = serde_json::from_str(json).expect("parse doc example");
+        assert_eq!(manifest.externals.len(), 3);
+
+        let has = &manifest.externals[0];
+        assert_eq!(has.name, "has");
+        assert_eq!(
+            has.params,
+            vec![ManifestParam {
+                name: "item".to_string(),
+                ty: TypeRef("string".to_string()),
+            }]
+        );
+        assert_eq!(has.kind, ExternalKind::Query);
+
+        // Round-trips unchanged: re-serializing and re-parsing produces the
+        // same manifest, proving `{"name", "ty"}` is really the wire shape
+        // ManifestParam's serde derive emits and accepts (not just something
+        // this literal happens to parse into via defaulting).
+        let serialized = serde_json::to_string(&manifest).expect("serialize");
+        let round_tripped: HostManifest =
+            serde_json::from_str(&serialized).expect("re-parse serialized manifest");
+        assert_eq!(manifest, round_tripped);
+
+        // The re-serialized wire form actually uses the documented keys, not
+        // just field access we can pun on defaults.
+        assert!(serialized.contains(r#""name":"item""#));
+        assert!(serialized.contains(r#""ty":"string""#));
+
+        let camera_params = &manifest.externals[1].params;
+        assert_eq!(camera_params[0].name, "target");
+
+        // A bare `ManifestExternal` literal in the exact shape used for the
+        // `example(int actor)` "path" example a few paragraphs later.
+        let set_move_route: ManifestExternal = serde_json::from_str(
+            r#"{ "name": "set_move_route", "params": [{"name": "actor", "ty": "int"}],
+                 "returns": "void", "kind": "effect", "path": ["Map", "Movement"] }"#,
+        )
+        .expect("parse path example");
+        assert_eq!(
+            set_move_route.params,
+            vec![ManifestParam {
+                name: "actor".to_string(),
+                ty: TypeRef("int".to_string()),
+            }]
+        );
+        assert_eq!(
+            set_move_route.path,
+            vec!["Map".to_string(), "Movement".to_string()]
+        );
+    }
+}
