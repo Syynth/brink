@@ -66,7 +66,10 @@ fn run_to_end(story: &mut Story<DotNetRng>) -> String {
     loop {
         match story.continue_single().expect("runtime error") {
             Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Choices { text, .. } => {
+            Line::Done { text, .. }
+            | Line::End { text, .. }
+            | Line::Choices { text, .. }
+            | Line::Suspended { text, .. } => {
                 out.push_str(&text);
                 break;
             }
@@ -87,7 +90,12 @@ fn run_entry_until_fault(source: &str, entry: &str) -> RuntimeError {
     loop {
         match story.continue_single() {
             Ok(Line::Text { .. }) => {}
-            Ok(Line::Done { .. } | Line::End { .. } | Line::Choices { .. }) => {
+            Ok(
+                Line::Done { .. }
+                | Line::End { .. }
+                | Line::Choices { .. }
+                | Line::Suspended { .. },
+            ) => {
                 panic!("expected a ProjectionInvalidated fault, but the story ran to completion")
             }
             Err(e) => return e,

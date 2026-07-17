@@ -945,11 +945,28 @@ export class StoryRunnerHandle {
     return this.runner.call_function(name, args) as ExternalValue;
   }
 
+  // ── Primary-flow drive (documented sugar) ────────────────────────
+  //
+  // FS-3w (`docs/flow-suspension-spec.md` §10.1): `continue` lives on the
+  // flow, not the story. These story-level drive methods
+  // (`continueStory`/`continueSingle`/`continueStoryAsync`/…) are
+  // documented **sugar for the primary flow** — the always-present default
+  // flow this runner was constructed with. Spawned/ambient flows are
+  // addressable via `flow(name)` / `continueFlow(name)`, each with its own
+  // `Line` stream. Nothing here changes behavior: the primary flow is what
+  // every prior consumer has always been driving.
+
+  /** Drive the **primary flow** to its next pause, returning every `Line`
+   * up to and including the terminal one. Documented sugar for the default
+   * flow (see the section note above); `flow(name).continueMaximally()` is
+   * the per-flow equivalent for a spawned flow. */
   continueStory(): Line[] {
     const json = this.runner.continue_story();
     return JSON.parse(json) as Line[];
   }
 
+  /** Produce one `Line` from the **primary flow**. Documented sugar for the
+   * default flow (see the section note above). */
   continueSingle(): Line {
     const json = this.runner.continue_single();
     return JSON.parse(json) as Line;
@@ -1116,18 +1133,33 @@ export class StoryRunnerHandle {
     return this.runner.checksum();
   }
 
-  // ── Shared flows (#200) ──────────────────────────────────────────
+  // ── Flow-addressed consumption (#200, FS-3w) ─────────────────────
   // Concurrent flows of one story that SHARE this runner's globals / visit
-  // counts / rng (true ink flow semantics), each with its own call stack.
-  // Drives the studio's "+ new flow". Distinct from a separate
-  // `StoryRunnerHandle`, which is an isolated playthrough.
+  // counts / rng (true ink flow semantics), each with its own call stack
+  // and its own `Line` stream. Drives the studio's "+ new flow". Distinct
+  // from a separate `StoryRunnerHandle`, which is an isolated playthrough.
+  //
+  // FS-3w (`docs/flow-suspension-spec.md` §10.1): spawned/ambient flows are
+  // **addressable handles**. Use `flow(name)` for an object handle, or the
+  // name-addressed methods below directly. The primary flow is driven by
+  // the story-level `continue*` methods above (documented sugar).
 
-  /** Spawn a shared-context flow at the program root (or `path`). */
-  spawnFlow(name: string, path?: string): void {
+  /** Spawn a shared-context flow at the program root (or `path`), returning
+   * an addressable {@link FlowHandle} for it (FS-3w §10.1). */
+  spawnFlow(name: string, path?: string): FlowHandle {
     this.runner.spawn_flow(name, path);
+    return new FlowHandle(this, name);
   }
 
-  /** Advance a shared flow by one line. */
+  /** An addressable handle for a spawned/ambient flow — its own `Line`
+   * stream, choices, debug snapshot, and teardown. A thin, allocation-free
+   * view over the name-addressed methods; does not have to exist for those
+   * to work. */
+  flow(name: string): FlowHandle {
+    return new FlowHandle(this, name);
+  }
+
+  /** Advance a shared flow by one line (that flow's `Line` stream). */
   continueFlow(name: string): Line {
     return JSON.parse(this.runner.continue_flow(name)) as Line;
   }
@@ -1150,6 +1182,19 @@ export class StoryRunnerHandle {
   /** Per-flow debug snapshot (State View) for a named flow. */
   flowDebugSnapshot(name: string): DebugState {
     return JSON.parse(this.runner.flow_debug_snapshot(name)) as DebugState;
+  }
+
+  /** Re-evaluate parked flows' wake conditions and return the flow ids that
+   * woke (`docs/flow-suspension-spec.md` §10.2). Waking never
+   * auto-continues — drive a woken flow via `continueFlow`/`flow(id)` when
+   * you want its output.
+   *
+   * **Returns `[]` until parks exist (FS-3r).** No flow can park in today's
+   * runtime — the E052 fence keeps `await` from lowering, so
+   * `Line.type === "suspended"` is never produced. Exported now (FS-3w) so
+   * hosts wire the wake loop against a stable shape. */
+  wakeCheck(): string[] {
+    return JSON.parse(this.runner.wake_check()) as string[];
   }
 
   // ── Speculative evaluation (F4.3, docs/speculative-eval-spec.md) ─
@@ -1407,6 +1452,60 @@ export class StoryRunnerHandle {
 
   free(): void {
     this.runner.free();
+  }
+}
+
+/**
+ * An addressable handle for one spawned/ambient flow of a
+ * {@link StoryRunnerHandle} (FS-3w, `docs/flow-suspension-spec.md` §10.1).
+ *
+ * Each flow shares its runner's globals / visit counts / rng (true ink
+ * flow semantics) but keeps its own call stack and its own `Line` stream —
+ * `continue`/`choose` here drive *this* flow, not the primary one. The
+ * handle is a thin, allocation-free view over the runner's name-addressed
+ * flow methods (`continueFlow`/`chooseFlow`/…); it holds only the runner
+ * and the flow's name, so obtaining one never has to precede driving the
+ * flow, and a flow can be driven by name without a handle at all.
+ */
+export class FlowHandle {
+  constructor(
+    private readonly runner: StoryRunnerHandle,
+    /** This flow's id (its spawn name). */
+    readonly name: string,
+  ) {}
+
+  /** Advance this flow by one line (this flow's `Line` stream). The line
+   * may be `{ type: "suspended" }` once FS-3r lands parks; today it never
+   * is. */
+  continue(): Line {
+    return this.runner.continueFlow(this.name);
+  }
+
+  /** Drive this flow to its next pause, collecting every `Line` up to and
+   * including the terminal one (the per-flow analogue of the primary
+   * flow's `continueStory`). */
+  continueMaximally(): Line[] {
+    const lines: Line[] = [];
+    for (;;) {
+      const line = this.continue();
+      lines.push(line);
+      if (line.type !== "text") return lines; // done | choices | end | suspended
+    }
+  }
+
+  /** Select a choice presented by this flow. */
+  choose(index: number): void {
+    this.runner.chooseFlow(this.name, index);
+  }
+
+  /** Per-flow debug snapshot (State View) for this flow. */
+  debugSnapshot(): DebugState {
+    return this.runner.flowDebugSnapshot(this.name);
+  }
+
+  /** Destroy this flow. The handle is inert afterward. */
+  destroy(): void {
+    this.runner.destroyFlow(this.name);
   }
 }
 

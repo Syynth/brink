@@ -115,7 +115,7 @@ fn run_case_with_types(dir: &Path, types: TypePolicy) -> String {
     loop {
         match story.continue_single().expect(&step_msg) {
             Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } => {
+            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
                 out.push_str(&text);
                 break;
             }
@@ -149,7 +149,7 @@ fn run_source(label: &str, source: &str) -> String {
             .unwrap_or_else(|e| panic!("runtime error in {label}: {e}"))
         {
             Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } => {
+            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
                 out.push_str(&text);
                 break;
             }

@@ -99,7 +99,7 @@ fn run_ink(ink_src: &str) -> String {
             .unwrap_or_else(|e| panic!("chapter example faulted: {e:?}\n--- source ---\n{ink_src}"))
         {
             Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } => {
+            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
                 out.push_str(&text);
                 break;
             }

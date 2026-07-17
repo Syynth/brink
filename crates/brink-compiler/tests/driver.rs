@@ -209,7 +209,7 @@ fn compile_and_run(source: &str, inputs: &[usize]) -> String {
         let lines = story.continue_maximally().unwrap();
         let last = lines.last().unwrap();
         match last {
-            Line::Text { .. } | Line::Done { .. } | Line::End { .. } => {
+            Line::Text { .. } | Line::Done { .. } | Line::End { .. } | Line::Suspended { .. } => {
                 for line in &lines {
                     output.push_str(line.text());
                 }
@@ -1385,7 +1385,7 @@ fn compile_and_run_steps(source: &str, inputs: &[usize]) -> Vec<(String, Option<
         let combined_text: String = lines.iter().map(Line::text).collect();
         let last = lines.last().unwrap();
         match last {
-            Line::Text { .. } | Line::Done { .. } | Line::End { .. } => {
+            Line::Text { .. } | Line::Done { .. } | Line::End { .. } | Line::Suspended { .. } => {
                 steps.push((combined_text, None));
                 break;
             }
@@ -1915,6 +1915,7 @@ fn glue_in_choice_body_runtime_joins_text() {
         Line::Text { text, .. } => text.clone(),
         Line::End { text, .. } => text.clone(),
         Line::Done { text, .. } => text.clone(),
+        Line::Suspended { text, .. } => text.clone(),
         Line::Choices { .. } => panic!("expected text output, got choices"),
     };
     eprintln!("got text: {text:?}");

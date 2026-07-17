@@ -20,7 +20,12 @@ fn run_flow(story: &mut Story<DotNetRng>, name: &str) {
     for _ in 0..1000 {
         match story.continue_flow_single(name).unwrap() {
             Line::Text { .. } => {}
-            Line::Done { .. } | Line::End { .. } | Line::Choices { .. } => return,
+            Line::Done { .. }
+            | Line::End { .. }
+            | Line::Choices { .. }
+            | Line::Suspended { .. } => {
+                return;
+            }
         }
     }
     panic!("flow did not terminate");

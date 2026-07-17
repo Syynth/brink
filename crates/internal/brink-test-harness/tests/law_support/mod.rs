@@ -51,7 +51,10 @@ pub fn run_to_completion_or_fault(story: &mut Story<DotNetRng>) -> Result<String
     loop {
         match story.continue_single()? {
             Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Choices { text, .. } => {
+            Line::Done { text, .. }
+            | Line::End { text, .. }
+            | Line::Choices { text, .. }
+            | Line::Suspended { text, .. } => {
                 out.push_str(&text);
                 return Ok(out);
             }

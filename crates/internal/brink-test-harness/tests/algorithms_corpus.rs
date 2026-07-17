@@ -64,7 +64,7 @@ fn run_case_with_types(dir: &Path, types: TypePolicy) -> String {
     loop {
         match story.continue_single().expect(&step_msg) {
             Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } => {
+            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
                 out.push_str(&text);
                 break;
             }

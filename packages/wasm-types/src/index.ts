@@ -107,6 +107,17 @@ export type LineType =
   | "done"
   | "choices"
   | "end"
+  /**
+   * A flow parked at an `await` (`docs/flow-suspension-spec.md` §10.1).
+   * Like `"done"`, a park is a turn boundary — text accumulated before it
+   * flushes with the line. Drive the flow again via `continueFlow`/
+   * `wakeCheck` when the host wants output; a park never auto-continues.
+   *
+   * **Runtime-unreachable until FS-3r.** No `Line` the runtime produces
+   * today carries this type (the E052 fence keeps `await` from lowering).
+   * It ships now (FS-3w) so hosts migrate the API shape early.
+   */
+  | "suspended"
   | "awaiting_external";
 
 export interface Line {
@@ -174,7 +185,9 @@ export type JournalValue = unknown;
  * because `StepOutcome` below never carries the `awaiting_external` variant —
  * that lives on `StepOutcome` itself). */
 export interface SessionLine {
-  type: "text" | "done" | "choices" | "end";
+  /** `"suspended"` (a flow parked at an `await`) is runtime-unreachable
+   * until FS-3r — see {@link LineType}. */
+  type: "text" | "done" | "choices" | "end" | "suspended";
   text: string;
   tags: string[];
   choices?: Choice[];

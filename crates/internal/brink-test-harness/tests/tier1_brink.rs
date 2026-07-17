@@ -49,7 +49,7 @@ fn run_case(dir: &Path) -> String {
     loop {
         match story.continue_single().expect(&step_msg) {
             Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } => {
+            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
                 out.push_str(&text);
                 break;
             }
@@ -922,7 +922,7 @@ fn keys_on_an_array_is_identity_pass_through_not_a_fault() {
     loop {
         match story.continue_single().expect("no fault expected") {
             Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } => {
+            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
                 out.push_str(&text);
                 break;
             }
@@ -1143,7 +1143,9 @@ fn int_of_negative_float_truncates_toward_zero_not_floor() {
     let (program, line_tables) = brink_runtime::link(&output.data).expect("link");
     let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
     match story.continue_single().expect("no fault expected") {
-        Line::Done { text, .. } | Line::End { text, .. } => assert_eq!(text.trim(), "-2"),
+        Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
+            assert_eq!(text.trim(), "-2");
+        }
         other => panic!("expected terminal line, got {other:?}"),
     }
 }
@@ -1211,7 +1213,7 @@ fn string_of_a_divert_target_never_faults() {
     loop {
         match story.continue_single().expect("string() must never fault") {
             Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } => {
+            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
                 out.push_str(&text);
                 break;
             }
@@ -1514,7 +1516,7 @@ fn run_expecting_fault(source: &str) -> Option<brink_runtime::RuntimeError> {
     let mut story = Story::<DotNetRng>::new(program, tables);
     for _ in 0..64 {
         match story.continue_single() {
-            Ok(Line::Done { .. } | Line::End { .. }) => return None,
+            Ok(Line::Done { .. } | Line::End { .. } | Line::Suspended { .. }) => return None,
             Ok(_) => {}
             Err(e) => return Some(e),
         }
@@ -1779,7 +1781,10 @@ fn run_to_end(story: &mut Story<DotNetRng>) -> String {
     loop {
         match story.continue_single().expect("runtime error") {
             Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Choices { text, .. } => {
+            Line::Done { text, .. }
+            | Line::End { text, .. }
+            | Line::Choices { text, .. }
+            | Line::Suspended { text, .. } => {
                 out.push_str(&text);
                 break;
             }
@@ -1890,7 +1895,7 @@ Result {r}.
     let mut err = None;
     for _ in 0..8 {
         match s2.continue_single() {
-            Ok(Line::Done { .. } | Line::End { .. }) => break,
+            Ok(Line::Done { .. } | Line::End { .. } | Line::Suspended { .. }) => break,
             Ok(_) => {}
             Err(e) => {
                 err = Some(e);

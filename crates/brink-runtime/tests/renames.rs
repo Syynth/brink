@@ -34,7 +34,10 @@ fn run_to_terminal(story: &mut Story<DotNetRng>) -> String {
     let mut out = String::new();
     for line in story.continue_maximally().unwrap() {
         match line {
-            Line::Text { text, .. } | Line::Done { text, .. } | Line::End { text, .. } => {
+            Line::Text { text, .. }
+            | Line::Done { text, .. }
+            | Line::End { text, .. }
+            | Line::Suspended { text, .. } => {
                 out.push_str(&text);
             }
             Line::Choices { text, .. } => out.push_str(&text),

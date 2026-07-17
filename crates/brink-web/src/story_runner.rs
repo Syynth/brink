@@ -724,6 +724,23 @@ impl StoryRunner {
             .map_err(|e| JsError::new(&format!("json error: {e}")))
     }
 
+    /// Re-evaluate parked flows' wake conditions and return a JSON array of
+    /// the flow ids that woke (`docs/flow-suspension-spec.md` §10.2).
+    /// Waking never auto-continues — drive a woken flow with `continueFlow`.
+    ///
+    /// **Returns `[]` until parks exist (FS-3r).** No flow can park in
+    /// today's runtime (the E052 fence keeps `await` from lowering, so
+    /// `Line::Suspended` is unreachable). Exported now so hosts wire the
+    /// wake loop against a stable shape.
+    pub fn wake_check(&self) -> Result<String, JsError> {
+        let mut borrow = self.story.borrow_mut();
+        let story = borrow
+            .as_mut()
+            .ok_or_else(|| JsError::new("story not initialized"))?;
+        serde_json::to_string(&story.wake_check())
+            .map_err(|e| JsError::new(&format!("json error: {e}")))
+    }
+
     /// Fork a [`WebSpeculation`] — a sandboxed, side-effect-proof speculative
     /// run over the current story state (F4.3). It exposes its own composable
     /// verbs (`go_to_path`/`advance`/`choose`/`eval_function`/

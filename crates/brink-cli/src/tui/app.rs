@@ -121,7 +121,10 @@ impl App {
                     then: AfterPassage::ShowChoices(entries),
                 };
             }
-            Some(Line::Done { .. } | Line::End { .. }) => {
+            // A park (`Line::Suspended`, FS-3r) is a terminal turn boundary;
+            // runtime-unreachable today behind the E052 fence, grouped with
+            // the other terminals so the exhaustive match keeps compiling.
+            Some(Line::Done { .. } | Line::End { .. } | Line::Suspended { .. }) => {
                 self.phase = Phase::Typing {
                     typewriter: TypewriterState::new(text, self.char_delay),
                     then: AfterPassage::End,

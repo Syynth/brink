@@ -108,7 +108,7 @@ fn run_brink(source: &str) -> String {
         );
         match story.continue_single().expect("runtime error") {
             Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } => {
+            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
                 out.push_str(&text);
                 break;
             }
