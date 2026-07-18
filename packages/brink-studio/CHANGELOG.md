@@ -1,5 +1,15 @@
 # @brink-lang/studio
 
+## 0.13.0
+
+### Patch Changes
+
+- Updated dependencies [17ad933]
+- Updated dependencies [f53c6c7]
+- Updated dependencies [7e8aa7f]
+- Updated dependencies [b9a86e2]
+  - @brink-lang/web@0.13.0
+
 ## 0.12.0
 
 ### Patch Changes
