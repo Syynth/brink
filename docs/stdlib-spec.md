@@ -337,13 +337,12 @@ precedent, oracle byte-identical):
    authored land. No `std::prelude` module — the prelude is a
    compiler-curated name set, not an importable place (imports are
    naming-only; the prelude is pre-granted naming).
-6. **The protocol registry (converged in the 2026-07-18
-   conversation — recorded here for the formal nod; see the PR
-   #1100 thread for the full reasoning).** A CLOSED set of
-   compiler-declared protocols that user types may *implement*
-   but never *declare* — no bounds, no user generics; the
-   two-tier discipline holds: closed overload families (math kit,
-   tower, len/contains) stay mechanism-free intrinsics, and
+6. **The protocol registry (RULED 2026-07-18 — nodded in the same
+   conversation; full reasoning on the PR #1100 thread).** A
+   CLOSED set of compiler-declared protocols that user types may
+   *implement* but never *declare* — no bounds, no user generics;
+   the two-tier discipline holds: closed overload families (math
+   kit, tower, len/contains) stay mechanism-free intrinsics, and
    registry entries exist only where user types participate in a
    compiler behavior, promotion evidence-gated via #1090. V1
    entries, each with an **effect contract**:
@@ -377,11 +376,15 @@ precedent, oracle byte-identical):
   Option=absence doctrine, `or`, display-boundary forgiveness
   (§1.1/§1.4/§1.6) — and the seq/text/map flips (§§3–5). Recorded
   in the decision log.
+- **Also RULED 2026-07-18**: the protocol registry (§9.6) —
+  closed set, v1 = `display`/`compare`/`iterate` (pull-shaped),
+  per-protocol effect contracts, two-tier discipline. Its
+  interior ⏳s (impl spelling, ordering doctrine content, the
+  compare/equality coherence line) remain open.
 - Still awaiting the nod: the three sitting-3 🔶s (UFCS auto-ref ·
   naming convention · eager trio) · §§5–9's remaining proposal
   content (updated to conform to the Option ruling but not
-  themselves ruled) · the protocol registry (§9.6, converged in
-  conversation).
+  themselves ruled).
 - In-section ⏳s: tower mini-spec (§2b) · view-materialization
   ratio (§3b) · intrinsic display notation lives in §9.4 now ·
   flags numeric-coupling ruling (§6) · rand::int empty-range
