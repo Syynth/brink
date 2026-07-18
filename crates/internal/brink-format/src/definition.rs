@@ -299,6 +299,41 @@ pub struct EffectRowEntry {
     pub dispatches: Vec<DispatchEntry>,
 }
 
+/// The name-keyed **frame shape** for one `await` site
+/// (`docs/flow-suspension-spec.md` §4/§11): the static description of which
+/// locals cross the park at that site, so the runtime knows what to
+/// spill on park and restore on wake.
+///
+/// Emitted into the `FrameShapes` [`StoryData`](crate::StoryData) section
+/// (`.inkb` tag `0x10`,
+/// `.inkt` `(frame_shapes …)`). The shape is **name-keyed** — the runtime
+/// spills/restores crossing locals by name, riding the same rehydration
+/// machinery as `#@was`/saves (spec §7), so a frame survives recompiles
+/// without instruction offsets (spec §2/§3).
+///
+/// **Reserved-through-fence**: the FS-3c compiler slice lands this section's
+/// encoding (writer + reader + round-trips) but does not yet *emit* a
+/// non-empty table — the E052 `await` lowering fence keeps `await` from
+/// producing any `StoryData`. First emission rides the continuation-splitting
+/// codegen when the fence drops (FS-3r), the same reserved-then-materialized
+/// discipline `StructShapes` followed. `frame_shapes` is therefore empty for
+/// every story compiled today (and for all converter output).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameShapeDef {
+    /// The `await` site's stable identity — the [`DefinitionId`] of the
+    /// synthesized resume/continuation container (spec §11.1: stable identity
+    /// = module + enclosing def + site index). This is both the wake-policy
+    /// site id and the container the runtime enters from its top on resume.
+    pub site: DefinitionId,
+    /// The name-keyed crossing locals, in stable declared order (spec §4).
+    /// Each entry is the local's interned [`NameId`] (into the story's
+    /// `name_table`); the runtime's frame record is keyed by these names.
+    /// Values are not stored here — the shape is static; the live values live
+    /// in the save-time `SuspendedFlow.frame` (`docs/flow-suspension-spec.md`
+    /// §2, FS-1).
+    pub slots: Vec<NameId>,
+}
+
 /// A single list item definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ListItemDef {

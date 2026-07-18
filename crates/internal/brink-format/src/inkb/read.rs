@@ -7,8 +7,8 @@ use crate::codec::{crc32, read_def_id, read_i32, read_str, read_u8, read_u16, re
 use crate::counting::CountingFlags;
 use crate::definition::{
     AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef, DirectEffects,
-    DispatchEntry, EffectRowEntry, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
-    ParamMeta, ScopeLineTable, SlotInfo, SourceLocation, StructShapeDef,
+    DispatchEntry, EffectRowEntry, ExternalFnDef, FrameShapeDef, GlobalVarDef, LineEntry, ListDef,
+    ListItemDef, ParamMeta, ScopeLineTable, SlotInfo, SourceLocation, StructShapeDef,
 };
 use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -18,7 +18,9 @@ use crate::value::{
     ClosureEnvEntry, ListValue, MAX_DECODE_DEPTH, MapKey, OrderedMap, ShapeId, Value, ValueType,
 };
 
-use super::write::{ALIAS_TABLE_SECTION_VERSION, EFFECT_ROWS_SECTION_VERSION};
+use super::write::{
+    ALIAS_TABLE_SECTION_VERSION, EFFECT_ROWS_SECTION_VERSION, FRAME_SHAPES_SECTION_VERSION,
+};
 use super::{
     CAP_PARAM_ANY, CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HANDLE_PARAM_NONE,
     HEADER_PREAMBLE, InkbIndex, KEY_CARDINAL, KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN,
@@ -60,6 +62,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
     let private_defs = read_section_visibility(buf, &index)?;
     let alias_table = read_section_alias_table(buf, &index)?;
     let effect_rows = read_section_effect_rows(buf, &index)?;
+    let frame_shapes = read_section_frame_shapes(buf, &index)?;
 
     Ok(StoryData {
         containers,
@@ -77,6 +80,7 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
         private_defs,
         alias_table,
         effect_rows,
+        frame_shapes,
         source_checksum: index.checksum,
     })
 }
@@ -689,6 +693,42 @@ pub fn read_section_effect_rows(
         });
     }
     Ok(rows)
+}
+
+/// Read the FS-3 `FrameShapes` section (`docs/flow-suspension-spec.md`
+/// §4/§11) from a complete `.inkb` file using its index. Absent section (every
+/// story compiled behind the E052 fence, and all converter output) decodes as
+/// empty, mirroring [`read_section_visibility`]. The section-local version byte
+/// is checked independently of the whole-file `VERSION` — see
+/// [`FRAME_SHAPES_SECTION_VERSION`].
+pub fn read_section_frame_shapes(
+    buf: &[u8],
+    index: &InkbIndex,
+) -> Result<Vec<FrameShapeDef>, DecodeError> {
+    let Some(range) = index.section_range(SectionKind::FrameShapes) else {
+        return Ok(Vec::new());
+    };
+    let mut off = range.start;
+    let section_version = read_u8(buf, &mut off)?;
+    if section_version != FRAME_SHAPES_SECTION_VERSION {
+        return Err(DecodeError::UnsupportedSectionVersion {
+            section: SectionKind::FrameShapes as u8,
+            version: section_version,
+        });
+    }
+    let count = read_u32(buf, &mut off)? as usize;
+    // Minimum per-entry footprint: site def_id(8) + slot count(4) = 12 bytes.
+    let mut shapes = Vec::with_capacity(safe_capacity(count, buf.len(), off, 12));
+    for _ in 0..count {
+        let site = read_def_id(buf, &mut off)?;
+        let slot_count = read_u32(buf, &mut off)? as usize;
+        let mut slots = Vec::with_capacity(safe_capacity(slot_count, buf.len(), off, 2));
+        for _ in 0..slot_count {
+            slots.push(NameId(read_u16(buf, &mut off)?));
+        }
+        shapes.push(FrameShapeDef { site, slots });
+    }
+    Ok(shapes)
 }
 
 /// Decode a [`DirectEffects`] block written by `encode_direct_effects`.

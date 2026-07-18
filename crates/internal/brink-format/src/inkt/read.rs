@@ -6,8 +6,8 @@ use pest_derive::Parser;
 use crate::counting::CountingFlags;
 use crate::definition::{
     AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef, DirectEffects,
-    DispatchEntry, EffectRowEntry, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
-    ParamMeta, ScopeLineTable, SlotInfo, SourceLocation, StructShapeDef,
+    DispatchEntry, EffectRowEntry, ExternalFnDef, FrameShapeDef, GlobalVarDef, LineEntry, ListDef,
+    ListItemDef, ParamMeta, ScopeLineTable, SlotInfo, SourceLocation, StructShapeDef,
 };
 use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -86,6 +86,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
     let mut private_defs = Vec::new();
     let mut alias_table = Vec::new();
     let mut effect_rows = Vec::new();
+    let mut frame_shapes = Vec::new();
     let mut struct_shapes = Vec::new();
     let mut source_checksum = 0u32;
 
@@ -109,6 +110,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
             Rule::visibility => private_defs = parse_visibility(inner)?,
             Rule::alias_table => alias_table = parse_alias_table(inner)?,
             Rule::effect_rows => effect_rows = parse_effect_rows(inner)?,
+            Rule::frame_shapes => frame_shapes = parse_frame_shapes(inner)?,
             Rule::container => {
                 let (container, lt) = parse_container(inner)?;
                 let is_scope_owner = container.scope_id == container.id;
@@ -143,6 +145,7 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
         private_defs,
         alias_table,
         effect_rows,
+        frame_shapes,
         source_checksum,
     })
 }
@@ -888,6 +891,34 @@ fn parse_alias_entry(pair: P<'_>) -> Result<AliasEntry, InktParseError> {
     Ok(AliasEntry { old, new })
 }
 
+/// FS-3 (`docs/flow-suspension-spec.md` §4/§11): parse
+/// `(frame_shapes (frame $site $slot …) …)`. Each `frame` entry is the
+/// `await` site's stable `DefinitionId` followed by its name-keyed
+/// crossing-local slots (interned `NameId`s).
+fn parse_frame_shapes(pair: P<'_>) -> Result<Vec<FrameShapeDef>, InktParseError> {
+    let mut shapes = Vec::new();
+    for entry in pair.into_inner() {
+        if entry.as_rule() == Rule::frame_shape_entry {
+            shapes.push(parse_frame_shape_entry(entry)?);
+        }
+    }
+    Ok(shapes)
+}
+
+fn parse_frame_shape_entry(pair: P<'_>) -> Result<FrameShapeDef, InktParseError> {
+    let mut inner = pair.into_inner();
+    let site = parse_def_id(inner.next().ok_or_else(|| InktParseError {
+        message: "expected site def_id in frame shape".into(),
+        line: 0,
+        col: 0,
+    })?)?;
+    let mut slots = Vec::new();
+    for slot in inner {
+        slots.push(NameId(parse_u16(&slot)?));
+    }
+    Ok(FrameShapeDef { site, slots })
+}
+
 /// T2-3 (`docs/effects-spec.md` §11): parse `(effect_rows (row …) …)`.
 fn parse_effect_rows(pair: P<'_>) -> Result<Vec<EffectRowEntry>, InktParseError> {
     let mut rows = Vec::new();
@@ -1128,6 +1159,7 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
                             "visits" => counting_flags |= CountingFlags::VISITS,
                             "turns" => counting_flags |= CountingFlags::TURNS,
                             "start_only" => counting_flags |= CountingFlags::COUNT_START_ONLY,
+                            "invisible" => counting_flags |= CountingFlags::INVISIBLE,
                             _ => {}
                         }
                     }

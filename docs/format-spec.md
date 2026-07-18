@@ -533,6 +533,7 @@ Each offset table entry (8 bytes):
 | `0x0A` | Address paths | Per entry: qualified-path hash → target `DefinitionId` |
 | `0x0E` | Visibility (M-2b) | Per entry: the `DefinitionId` of a `#@private` definition, sorted ascending. **Optional** — omitted when empty. See below. |
 | `0x0F` | Alias table (M-3) | Section-local version byte, then per entry: old `DefinitionId` → new `DefinitionId`, sorted by old. Always present (possibly empty). See below. |
+| `0x10` | Frame shapes (FS-3) | Section-local version byte, then per `await` site: the site's stable `DefinitionId` (the synthesized continuation container) + its name-keyed crossing-local slots (`NameId`s), sorted by site. **Optional** — omitted when empty. See below. |
 
 **Reserved v4 sections** — numeric assignments are frozen by the §9 one-bump
 rule (`docs/format-v4-rfc.md` §2 "Sections") but not `SectionKind` variants
@@ -572,6 +573,29 @@ introduction is its own one-bump event: `.inkb` format version 4 → 5 (the
 row encoding itself stays section-locally versioned so it can still evolve
 without a further whole-file bump). `0x0E` is taken by `Visibility`, so this
 takes the next free tag, `0x0F`.
+
+**`FrameShapes` section (`0x10`, FS-3)** — carries per-`await`-site frame
+shapes (`docs/flow-suspension-spec.md` §4/§11): a one-byte section-local
+version, then a `u32` count, then that many entries, each the site's stable
+`DefinitionId` (the synthesized **continuation container** the runtime enters
+on resume — its identity is `module + enclosing def + site index`, never an
+instruction offset) followed by a `u32` slot count and that many `NameId`
+slots — the name-keyed locals that cross the park (what the runtime spills on
+park / restores on wake). Like `Visibility`, it is **optional** — omitted
+entirely when empty — so its introduction needed **no** `VERSION` bump, and
+every existing story stays byte-identical. Behind the E052 `await` lowering
+fence (FS-3c) no `await` compiles, so this section is empty for every story
+produced today; its first non-empty emission rides the continuation-splitting
+codegen when the fence drops (FS-3r), the same reserved-then-materialized
+discipline `StructShapes` followed. `0x0F` is taken by `AliasTable`, so this
+takes the next free tag, `0x10`.
+
+The synthesized continuation containers this section names are **invisible**
+(`docs/flow-suspension-spec.md` §11.2): marked with the `CountingFlags`
+`INVISIBLE` bit (`0x08`), they carry no visit counts, are not valid divert
+targets, and are hidden from IDE navigation/completion (debug views such as
+the `.inkt` dump excepted). The flag rides the container's existing counting
+byte — no new field, no layout change.
 
 #### Value type tags in `.inkb`
 

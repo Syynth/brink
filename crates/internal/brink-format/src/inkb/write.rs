@@ -8,8 +8,8 @@ use crate::codec::{
 };
 use crate::definition::{
     AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef, DirectEffects,
-    EffectRowEntry, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef, ScopeLineTable,
-    StructShapeDef,
+    EffectRowEntry, ExternalFnDef, FrameShapeDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
+    ScopeLineTable, StructShapeDef,
 };
 use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -39,7 +39,13 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
     // `AliasTable` section, always present — possibly empty — from v5
     // onward; see `SectionKind::AliasTable`).
     let has_visibility = !story.private_defs.is_empty();
-    let section_count = SECTION_COUNT as usize + usize::from(has_visibility);
+    // The `FrameShapes` section (FS-3, tag `0x10`) is likewise **optional**:
+    // emitted only when the story carries `await` frame shapes. Behind the
+    // E052 fence no `await` compiles, so this is always empty today and every
+    // existing story omits it (byte-identical, no `VERSION` bump).
+    let has_frame_shapes = !story.frame_shapes.is_empty();
+    let section_count =
+        SECTION_COUNT as usize + usize::from(has_visibility) + usize::from(has_frame_shapes);
     let header_size = HEADER_PREAMBLE + section_count * SECTION_ENTRY_SIZE;
 
     // Write placeholder header (zeros) — we'll patch it after writing sections.
@@ -125,6 +131,15 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
         SectionKind::AliasTable,
         write_section_alias_table(&story.alias_table, buf)
     );
+    // FrameShapes (FS-3, tag 0x10) is optional — emitted last (highest tag) so
+    // the offset table stays in canonical ascending tag order, and omitted
+    // entirely when empty so existing stories stay byte-identical.
+    if has_frame_shapes {
+        section!(
+            SectionKind::FrameShapes,
+            write_section_frame_shapes(&story.frame_shapes, buf)
+        );
+    }
 
     let file_size = (buf.len() - base) as u32;
     let checksum = crc32(&buf[base + header_size..]);
@@ -554,6 +569,31 @@ pub fn write_section_alias_table(entries: &[AliasEntry], buf: &mut Vec<u8>) {
     for entry in entries {
         write_def_id(buf, entry.old);
         write_def_id(buf, entry.new);
+    }
+}
+
+/// Section-local encoding version for `FrameShapes` (FS-3,
+/// `docs/flow-suspension-spec.md` §4/§11) — independent of the `.inkb` format
+/// `VERSION`, so the shape encoding can grow (e.g. per-slot type metadata)
+/// without another whole-format bump.
+pub(crate) const FRAME_SHAPES_SECTION_VERSION: u8 = 1;
+
+/// Write the FS-3 `FrameShapes` section (no header framing): a one-byte
+/// section-local version, then one entry per `await` site
+/// (`docs/flow-suspension-spec.md` §4/§11) — the site's stable `DefinitionId`
+/// (the synthesized continuation container id) followed by its name-keyed
+/// crossing-local slots. Entries are written in the order given; callers sort
+/// by `site` for determinism. Callers emit this section only when non-empty.
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_frame_shapes(shapes: &[FrameShapeDef], buf: &mut Vec<u8>) {
+    write_u8(buf, FRAME_SHAPES_SECTION_VERSION);
+    write_u32(buf, shapes.len() as u32);
+    for shape in shapes {
+        write_def_id(buf, shape.site);
+        write_u32(buf, shape.slots.len() as u32);
+        for slot in &shape.slots {
+            write_u16(buf, slot.0);
+        }
     }
 }
 

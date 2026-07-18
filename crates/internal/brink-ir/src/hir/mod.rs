@@ -5,12 +5,14 @@
 //! stay as trees, choices and conditionals keep their branch structure, diverts
 //! are semantic nodes — with weave nesting resolved and syntactic sugar stripped.
 
+pub mod frame_shape;
 pub mod lower;
 mod normalize;
 mod stamp;
 mod types;
 pub mod visit;
 
+pub use frame_shape::{AwaitFrameShape, ContinuationSite, compute_frame_shapes};
 pub use lower::{WeaveItem, fold_weave, lower, lower_single_knot, lower_top_level};
 pub use normalize::normalize_file;
 pub use stamp::stamp_container_ids;

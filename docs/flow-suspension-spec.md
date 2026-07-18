@@ -272,7 +272,15 @@ the format, marked as such.
    FS-3r later changes behavior, not interface.
 2. **FS-3c — compiler**: liveness (#928's remainder), frame-shape
    emission, continuation-splitting, invisible-container category,
-   `.inkt` parity. E052 fence STAYS UP.
+   `.inkt` parity. E052 fence STAYS UP. *(Landed: the `FrameShapes`
+   StoryData section — `.inkb` tag `0x10` + `.inkt` `(frame_shapes …)`,
+   optional/omitted-when-empty, writer+reader+per-codec round-trips — the
+   `CountingFlags::INVISIBLE` continuation-container marker, and the
+   per-await-site liveness → name-keyed frame-shape analysis
+   (`brink_ir::hir::compute_frame_shapes`, computing crossing locals + the
+   `module + enclosing def + site index` continuation identity). Behind the
+   fence the section stays empty from compilation; wiring the analysis into
+   the continuation-splitting codegen that populates it is FS-3r.)*
 3. **FS-3r — runtime**: park/spill/resume, real wakeCheck +
    dirty-tracking, save/load integration + rehydration report +
    Lenient/Strict, and the E052 fence finally drops.

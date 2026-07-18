@@ -760,3 +760,54 @@ fn distinct_map_keys_parse_cleanly() {
     let data = brink_format::read_inkt(inkt).expect("distinct keys must parse");
     assert_eq!(data.literal_pool.len(), 1);
 }
+
+// ── FS-3 FrameShapes + invisible container flag through .inkt ────────────────
+
+#[test]
+fn frame_shapes_roundtrip_through_inkt() {
+    use brink_format::{DefinitionId, DefinitionTag, FrameShapeDef, NameId};
+
+    let mut data = i001_data();
+    data.frame_shapes = vec![
+        FrameShapeDef {
+            site: DefinitionId::new(DefinitionTag::Address, 4),
+            slots: vec![NameId(1), NameId(2)],
+        },
+        FrameShapeDef {
+            site: DefinitionId::new(DefinitionTag::Address, 9),
+            slots: vec![],
+        },
+    ];
+
+    let mut buf = String::new();
+    brink_format::write_inkt(&data, &mut buf).unwrap();
+    assert!(
+        buf.contains("(frame_shapes"),
+        "dump carries the section:\n{buf}"
+    );
+
+    let recovered = brink_format::read_inkt(&buf).unwrap();
+    assert_eq!(data.frame_shapes, recovered.frame_shapes);
+    assert_eq!(data, recovered);
+}
+
+#[test]
+fn invisible_container_flag_roundtrips_through_inkt() {
+    use brink_format::CountingFlags;
+
+    let mut data = i001_data();
+    assert!(!data.containers.is_empty());
+    data.containers[0].counting_flags |= CountingFlags::INVISIBLE;
+
+    let mut buf = String::new();
+    brink_format::write_inkt(&data, &mut buf).unwrap();
+    assert!(buf.contains("invisible"), "dump names the flag:\n{buf}");
+
+    let recovered = brink_format::read_inkt(&buf).unwrap();
+    assert!(
+        recovered.containers[0]
+            .counting_flags
+            .contains(CountingFlags::INVISIBLE)
+    );
+    assert_eq!(data, recovered);
+}

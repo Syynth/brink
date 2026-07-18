@@ -637,6 +637,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                     private_defs: vec![],
                     alias_table: vec![],
                     effect_rows: vec![],
+                    frame_shapes: vec![],
                     source_checksum,
                 }
             },
