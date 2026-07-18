@@ -71,6 +71,25 @@ fn compile(
     )
 }
 
+fn compile_multifile(
+    entry: &str,
+    files: HashMap<&str, &str>,
+    options: AnalysisOptions,
+) -> Result<brink_compiler::CompileOutput, brink_compiler::CompileError> {
+    brink_compiler::compile_with_options(
+        entry,
+        |path| {
+            files.get(path).map(|s| (*s).to_string()).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("file not found: {path}"),
+                )
+            })
+        },
+        options,
+    )
+}
+
 fn default_options() -> AnalysisOptions {
     AnalysisOptions::default()
 }
@@ -368,6 +387,43 @@ fn e027_ambiguous_bare_list_item_reference() {
     let diags = errors_of(err);
     // The ambiguous *reference* is the third `shared`.
     assert_code_at_nth(&diags, DiagnosticCode::E027, source, "shared", 2);
+}
+
+#[test]
+fn e025_multifile_with_earlier_multibyte_utf8_maintains_byte_offsets() {
+    // Regression test for cross-file diagnostic offset tracking when an
+    // earlier included file contains multi-byte UTF-8 content (#1056).
+    // An included file with UTF-8 multi-byte characters (e.g., "café" or emoji)
+    // should not cause byte-offset miscalculation for diagnostics in later files.
+    let files: HashMap<&str, &str> = HashMap::from([
+        ("helpers.ink", "== café ==\nWelcome to the café.\n-> END\n"),
+        ("main.ink", "INCLUDE helpers.ink\n~ temp t = missing\nHi\n"),
+    ]);
+    let err = compile_multifile("main.ink", files, default_options())
+        .map(|_| ())
+        .expect_err("unresolved reference should fail compile");
+    let diags = errors_of(err);
+
+    // The diagnostic for the unresolved `missing` reference should exist,
+    // and its byte offset within main.ink should point to "missing".
+    // The multi-byte content in helpers.ink must not shift offsets in main.ink.
+    let main_content = "INCLUDE helpers.ink\n~ temp t = missing\nHi\n";
+    let expected_byte_offset = find_nth(main_content, "missing", 0);
+    assert!(
+        diags.iter().any(|d| {
+            let start = usize::from(d.range.start());
+            d.code == DiagnosticCode::E025
+                && d.path.contains("main.ink")
+                && expected_byte_offset <= start
+                && start <= expected_byte_offset + "missing".len()
+        }),
+        "expected E025 for 'missing' at byte offset {} in main.ink, got: {:?}",
+        expected_byte_offset,
+        diags
+            .iter()
+            .map(|d| format!("{}@{}:{:?}", d.code.as_str(), d.path, d.range))
+            .collect::<Vec<_>>()
+    );
 }
 
 // ─── Structural validation (E032, E034, E036, E037) ──────────────────
