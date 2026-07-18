@@ -12,7 +12,7 @@ use brink_analyzer::{
     AnalysisOptions, AnalysisResult, Dialect, ExternalCheckSeverity,
     SemanticTypeDiagnosticSeverity, TypePolicy,
 };
-use brink_db::ProjectDb;
+use brink_db::{CompileProduct, ProjectDb};
 use brink_ir::{FileId, HirFile, HostManifest, ResolvedDialect, SymbolManifest};
 
 use crate::hir_projection::{Projection, project_hir, project_hir_structural};
@@ -45,6 +45,17 @@ impl IdeSnapshot {
         };
         brink_analyzer::analyze_with_options(&refs, &opts)
     }
+}
+
+/// Why [`IdeSession::compile`] could not produce an artifact for the requested
+/// entry point. Diagnostics that merely *prevent* a successful compile (parse,
+/// lowering, analysis errors) are carried in [`CompileProduct::errors`], not
+/// here — this is only the "there is nothing to compile" precondition.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CompileEntryError {
+    /// The requested entry path is not a file loaded in this session.
+    #[error("entry file not found in session: {0}")]
+    EntryNotFound(String),
 }
 
 /// Stateful IDE session — owns `ProjectDb` + cached `AnalysisResult`.
@@ -386,6 +397,50 @@ impl IdeSession {
             dialect: self.language_dialect,
             types: self.type_policy,
         }
+    }
+
+    /// Compile the project rooted at `entry` on **this session's own
+    /// `ProjectDb`** — the same db the analysis path reads (#1032). Sets the
+    /// db's compile entry and analysis options as salsa inputs, then pulls the
+    /// memoized `story_data` artifact query. Because compile and analysis now
+    /// share one db (one file set, one lowering, one options input), a compile
+    /// can never diverge from analysis on manifest/dialect/policy/file-state:
+    /// the divergence that produced #1004 (manifest missing from compile) and
+    /// its siblings is structurally unrepresentable rather than closed by
+    /// wiring each input into a second, throwaway driver.
+    ///
+    /// `options` are the analysis options to compile under — pass
+    /// [`analysis_options`](Self::analysis_options) for the session default, or
+    /// an override for a per-call variation (e.g. compile-for-export). They are
+    /// written to the db as an input; an unchanged value is a salsa no-op (no
+    /// memo invalidation), so repeated compiles under the same options reuse the
+    /// warm db's incremental results.
+    ///
+    /// **Does not perturb editor diagnostic state.** The editor's cached
+    /// analysis (`self.analysis`) and projection cache are computed off-db (via
+    /// [`snapshot`](Self::snapshot)/[`analyze`](IdeSnapshot::analyze)) and are
+    /// left untouched; the db-level `analysis`/`lir`/`story_data` salsa queries
+    /// this sets inputs for are read only here, on the compile path.
+    ///
+    /// The returned [`CompileProduct`]'s diagnostics are keyed by [`FileId`]
+    /// into **this** db, so a caller resolves each to a path/source through the
+    /// same session (`file_path`/`source`) — no throwaway-driver id remapping.
+    ///
+    /// # Errors
+    /// Returns [`CompileEntryError::EntryNotFound`] if `entry` is not a file
+    /// loaded in this session.
+    pub fn compile(
+        &mut self,
+        entry: &str,
+        options: &AnalysisOptions,
+    ) -> Result<CompileProduct, CompileEntryError> {
+        if self.db.set_entry(entry).is_none() {
+            return Err(CompileEntryError::EntryNotFound(entry.to_owned()));
+        }
+        self.db.set_analysis_options(options.clone());
+        // `story_data()` is `Some` whenever an entry is set (just done above);
+        // clone the memoized product out so the borrow on the db ends here.
+        Ok(self.db.story_data().cloned().unwrap_or_default())
     }
 
     /// Look up a file's ID by path.
