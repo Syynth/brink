@@ -1214,9 +1214,21 @@ fn dynamic_fn_value_pure_condition_wakes_normally_through_run_flow_sleep() {
     app.update(); // fulfill
 
     set_gate(&mut app, gate_idx, 1);
+    // Same margin, same reason as `pure_condition_wakes_normally_through_run_flow_sleep`
+    // above (issue #1082): `advance_batch` is unordered w.r.t. the plugin's
+    // own wake-condition systems, so whether it observes the newly-Woken
+    // flow on the wake's own frame or the frame after is unconstrained by
+    // `run_flow_sleep`'s own docs. Three frames is enough for the wake *and*
+    // its turn to have run either way, without being enough for a second
+    // (illegitimate) wake — the empty-turn guard (issue #1082) means no idle
+    // frame here can manufacture one.
     pump(&mut app, 3);
 
-    assert_eq!(single_sleep(&mut app), SleepState::Woken);
+    let state = single_sleep(&mut app);
+    assert!(
+        matches!(state, SleepState::Woken | SleepState::Parked),
+        "a pure dynamic fn-value condition must wake the flow and let its turn run, not fault or vanish: got {state:?}"
+    );
     assert!(
         app.world().resource::<TextLog>().0.contains("Woke up!"),
         "a pure dynamic fn-value condition must be evaluated and wake the flow normally"
