@@ -101,9 +101,11 @@ function findDFlagCalls(source: string): number[] {
       }
       i++;
     }
-    const lastArg = (args[args.length - 1] ?? "").trim();
-    if (/^["'`][a-z]*d[a-z]*["'`]$/i.test(lastArg)) {
-      hits.push(m.index);
+    if (args.length >= 2) {
+      const lastArg = (args[args.length - 1] ?? "").trim();
+      if (/^["'`][a-z]*d[a-z]*["'`]$/i.test(lastArg)) {
+        hits.push(m.index);
+      }
     }
   }
   return hits;
