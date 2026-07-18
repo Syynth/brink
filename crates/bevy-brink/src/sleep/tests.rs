@@ -91,6 +91,16 @@ const LOOPING_STORY: &str = "VAR gate = 1\n\
      Beat.\n-> DONE\n-> beat\n\
      === function should_wake() ===\n~ return gate\n";
 
+/// Like [`LOOPING_STORY`] but starts with `gate == 0` (closed/false) instead
+/// of `1` — used by the [`WakeArming::Latch`] tests, which need to observe
+/// the "stays parked while false" state from frame one (before ever setting
+/// the gate), unlike `LOOPING_STORY`'s always-true wake-storm fixture.
+const LATCH_STORY: &str = "VAR gate = 0\n\
+     -> beat\n\
+     === beat ===\n\
+     Beat.\n-> DONE\n-> beat\n\
+     === function should_wake() ===\n~ return gate\n";
+
 /// Like [`GATED_STORY`] but also declares (and, from a knot no purity test
 /// ever plays, calls — so the names actually intern into the story's name
 /// table exactly as a real compiled `.inkb` would) two `EXTERNAL` bindings
@@ -227,6 +237,85 @@ fn persistent_policy_reparks_when_condition_goes_false() {
         "once the condition is false the flow must stop running (parked, zero cost)"
     );
     assert_eq!(single_sleep(&mut app), SleepState::Parked);
+}
+
+/// Issue #1081: a [`WakeArming::Latch`] policy wakes on a transition, then
+/// goes quiet until the *opposite* transition, repeating indefinitely — a
+/// reversible boolean latch (a door that re-locks), unlike `Once` (fires
+/// forever after the first wake) or `Persistent` (re-steps every turn
+/// boundary while the condition stays true). Driven end-to-end through the
+/// plugin's registered wake systems + `advance_batch`, across several flips.
+#[test]
+fn latch_wakes_on_each_transition_and_cycles_across_multiple_flips() {
+    let mut app = build_app();
+    let (program, tables, ctx) = compile_test_story(LATCH_STORY);
+    let gate_idx = program.global_index("gate").expect("gate global exists");
+    let story = add_story_assets(&mut app, program, tables, ctx);
+
+    app.world_mut().spawn((
+        BrinkFlowRequest::<()>::builder().story(story).build(),
+        FlowSleep::<()>::latch("should_wake")
+            .dormant()
+            .with_detect(DetectSummary::from_bits(
+                [("Poll".to_string(), false)].into_iter().collect(),
+            )),
+    ));
+
+    pump(&mut app, 4);
+    assert!(
+        app.world().resource::<TextLog>().0.is_empty(),
+        "must stay parked while the condition is false: got {:?}",
+        app.world().resource::<TextLog>().0
+    );
+
+    // Rising edge #1: fires exactly once, then re-arms watching for false —
+    // NOT the Persistent wake-storm shape (which would keep re-stepping
+    // every turn while the condition stays true).
+    set_gate(&mut app, gate_idx, 1);
+    pump(&mut app, 8);
+    let after_first_rise = app.world().resource::<TextLog>().0.matches("Beat.").count();
+    assert_eq!(
+        after_first_rise, 1,
+        "a Latch policy must fire exactly once per edge, not re-step while \
+         the condition stays true"
+    );
+    pump(&mut app, 6); // still true, still parked watching for the fall
+    assert_eq!(
+        app.world().resource::<TextLog>().0.matches("Beat.").count(),
+        1,
+        "must not re-fire again while the condition is still true (waiting for the fall)"
+    );
+
+    // Falling edge #1: the opposite transition fires again — proving the
+    // policy re-armed for the opposite edge instead of retiring like `Once`.
+    set_gate(&mut app, gate_idx, 0);
+    pump(&mut app, 8);
+    assert_eq!(
+        app.world().resource::<TextLog>().0.matches("Beat.").count(),
+        2,
+        "the falling edge must also fire, and the component must still be \
+         attached (Latch never retires, unlike Once)"
+    );
+    assert!(
+        {
+            let mut q = app.world_mut().query::<&FlowSleep<()>>();
+            q.iter(app.world()).next().is_some()
+        },
+        "a Latch policy must never be removed"
+    );
+
+    // Cycle through several more flips to prove this repeats indefinitely,
+    // not just once each way.
+    for expected_count in 3..=6 {
+        let on = expected_count % 2 == 1;
+        set_gate(&mut app, gate_idx, i32::from(on));
+        pump(&mut app, 8);
+        assert_eq!(
+            app.world().resource::<TextLog>().0.matches("Beat.").count(),
+            expected_count,
+            "flip #{expected_count} (gate={on}) must fire exactly one more wake"
+        );
+    }
 }
 
 /// Point 4: `wake_once` fires exactly once, then the policy is removed and the

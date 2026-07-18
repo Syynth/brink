@@ -19,9 +19,12 @@
 //!    never a bare world) via [`call_ink_function`](crate::call_ink_function).
 //! 3. A woken flow runs a normal turn; the condition has no mid-turn influence.
 //! 4. Policies are **persistent by default** (re-arm when the flow re-parks);
-//!    [`WakeArming::Once`] covers one-shots; the host may clear (remove the
-//!    component) or replace a policy anytime, and [`FlowSleep::cancel`] resolves
-//!    a policy to a permanent **false** (the flow is never woken by it again).
+//!    [`WakeArming::Once`] covers one-shots; [`WakeArming::Latch`] (issue
+//!    #1081) covers the reversible boolean-latch shape (wake on a
+//!    transition, then go quiet until the opposite transition — a door that
+//!    re-locks); the host may clear (remove the component) or replace a
+//!    policy anytime, and [`FlowSleep::cancel`] resolves a policy to a
+//!    permanent **false** (the flow is never woken by it again).
 //! 5. The policy applies to **turn-boundary parks only**
 //!    ([`StoryStatus::Done`]). Choice-blocked ([`WaitingForChoice`]) and
 //!    external-blocked flows keep their own resume paths (`choose`,
@@ -128,6 +131,21 @@ pub enum WakeArming {
     /// Fire exactly once: after the first wake runs its turn, the policy is
     /// removed and the flow reverts to ordinary per-turn advancement.
     Once,
+    /// A reversible boolean latch (issue #1081, `docs/effects-spec.md` §13.1's
+    /// wake contract conventions): wakes on a rising edge (the condition
+    /// transitioning to the value this policy is currently watching for),
+    /// then re-arms watching for the **opposite** value — so the next wake
+    /// only fires on the falling edge, and so on indefinitely. Never retires.
+    ///
+    /// This expresses "wake on a transition, then go quiet until the
+    /// opposite transition" — the natural shape for a boolean-latch reactive
+    /// entity (a door: wake+open on switch-on, wake+re-lock on switch-off)
+    /// — **without** requiring the condition itself to track any state: the
+    /// condition stays an ordinary level predicate (e.g. "is the switch
+    /// on?"), and this policy does the edge detection by comparing each
+    /// reading against [`FlowSleep::latch_waiting_for`] rather than against
+    /// a fixed `true`.
+    Latch,
 }
 
 /// The lifecycle state of a [`FlowSleep`] policy — inspector-visible, and the
@@ -140,7 +158,8 @@ pub enum SleepState {
     Parked,
     /// Woken: the condition evaluated true; Collect steps the flow this turn.
     /// On reaching its next turn boundary the policy re-arms
-    /// ([`WakeArming::Persistent`]) or is removed ([`WakeArming::Once`]).
+    /// ([`WakeArming::Persistent`], [`WakeArming::Latch`]) or is removed
+    /// ([`WakeArming::Once`]).
     Woken,
     /// Cancelled by the host ([`FlowSleep::cancel`]): the condition is
     /// permanently **false**. The flow stays parked and is never re-evaluated
@@ -242,6 +261,11 @@ pub struct FlowSleep<M: Send + Sync + 'static = ()> {
     /// all-detect-capable policy still gets its initial evaluation even on a
     /// frame the World didn't change.
     evaluated_once: bool,
+    /// [`WakeArming::Latch`] only: the boolean value the condition must next
+    /// equal to fire (flipped every time it does). Starts `true` — a fresh
+    /// latch watches for the condition to become true first. Inert (never
+    /// read or flipped) for `Persistent`/`Once`.
+    waiting_for: bool,
     _marker: PhantomData<fn() -> M>,
 }
 
@@ -261,6 +285,14 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
         Self::new(condition.into(), WakeArming::Once)
     }
 
+    /// A **reversible latch** policy (issue #1081): wakes on a transition to
+    /// `true`, then re-arms watching for the transition back to `false`, and
+    /// so on indefinitely. See [`WakeArming::Latch`] for the full contract.
+    #[must_use]
+    pub fn latch(condition: impl Into<String>) -> Self {
+        Self::new(condition.into(), WakeArming::Latch)
+    }
+
     fn new(condition: String, arming: WakeArming) -> Self {
         Self {
             condition,
@@ -278,6 +310,7 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
             dormant: false,
             needs_eval: false,
             evaluated_once: false,
+            waiting_for: true,
             _marker: PhantomData,
         }
     }
@@ -372,6 +405,18 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
     #[must_use]
     pub fn arming(&self) -> WakeArming {
         self.arming
+    }
+
+    /// [`WakeArming::Latch`] only: the boolean value the condition must next
+    /// equal to fire. This doubles as an outside observer's read of which
+    /// side of the latch the policy currently sits on — e.g. for a door
+    /// whose condition is "is the switch on?": `true` means the policy is
+    /// waiting for the switch to turn on (the door is currently locked);
+    /// `false` means it is waiting for the switch to turn off (the door is
+    /// currently open). Always `true` (and unused) for `Persistent`/`Once`.
+    #[must_use]
+    pub fn latch_waiting_for(&self) -> bool {
+        self.waiting_for
     }
 
     /// Whether every dependency capability is change-detection-backed (`#913`
@@ -923,7 +968,7 @@ pub fn run_flow_sleep<M: Send + Sync + 'static>(
                         reparks.push((
                             entity,
                             match sleep.arming {
-                                WakeArming::Persistent => ReparkAction::Rearm,
+                                WakeArming::Persistent | WakeArming::Latch => ReparkAction::Rearm,
                                 WakeArming::Once => ReparkAction::Remove,
                             },
                         ));
@@ -1044,10 +1089,22 @@ pub fn run_flow_sleep<M: Send + Sync + 'static>(
         sleep.evaluated_once = true;
         match outcome {
             Ok(value) => {
-                if is_condition_true(&value) {
+                let raw = is_condition_true(&value);
+                // `Persistent`/`Once` wake on a plain true reading; `Latch`
+                // (issue #1081) wakes only on the edge it is currently
+                // watching for (`waiting_for`), then flips that target so
+                // the next wake requires the opposite edge.
+                let fires = match sleep.arming {
+                    WakeArming::Persistent | WakeArming::Once => raw,
+                    WakeArming::Latch => raw == sleep.waiting_for,
+                };
+                if fires {
                     // Wake: Collect steps it next turn. `dormant` is cleared
                     // when the woken turn re-parks (or on removal for Once).
                     sleep.state = SleepState::Woken;
+                    if sleep.arming == WakeArming::Latch {
+                        sleep.waiting_for = !sleep.waiting_for;
+                    }
                 }
             }
             Err(err) => {
