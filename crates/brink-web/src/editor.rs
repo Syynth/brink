@@ -5071,12 +5071,32 @@ mod tests {
     fn compile_project_does_not_perturb_editor_diagnostic_state() {
         // Care point (#1032): assembling the compile artifact points the
         // shared db at this entry and syncs its options input — but must NOT
-        // mutate the editor's cached analysis (computed off-db). Pin it: the
-        // cached diagnostics are identical before and after a compile.
+        // mutate the editor's cached analysis (computed off-db), nor perturb
+        // the db-derived per-file diagnostics query on a *repeat* compile
+        // under unchanged options (`compile`'s own doc: "an unchanged value
+        // is a salsa no-op — repeated compiles under the same options reuse
+        // the warm db's incremental results").
+        //
+        // `s.session.analysis()` alone is a tautology (PR #1048 review
+        // finding): it reads the off-db cached `self.analysis` field, which
+        // `compile()` provably never writes, so comparing it before/after
+        // passes regardless of whether `compile()`'s db-input writes
+        // (`set_entry`/`set_analysis_options`) are actually correct. Add
+        // `db().diagnostics(file)` — a real db-input-derived salsa query —
+        // to the comparison. The *first* compile call legitimately changes
+        // it (it's what first syncs the db's `AnalysisOptions` input to the
+        // editor's already-active dialect/policy, which until then had only
+        // lived in the off-db cached fields `analysis()` reads), so settle
+        // that with a first compile before snapshotting; the *second*
+        // compile (same entry, same options) is the one that must be a
+        // true no-op on both surfaces.
         let mut s = EditorSession::new();
         s.set_language_dialect("brink");
         s.set_type_policy("strict");
         s.update_file("main.ink", "=== noop(x) ===\nHello.\n-> DONE\n");
+        let file = s.session.file_id("main.ink").expect("main.ink loaded");
+
+        let _ = s.compile_project("main.ink");
 
         let before: Vec<_> = s
             .session
@@ -5086,6 +5106,19 @@ mod tests {
             .iter()
             .map(|d| d.code)
             .collect();
+        let before_db: Vec<_> = s
+            .session
+            .db()
+            .diagnostics(file)
+            .expect("main.ink loaded")
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            before_db.contains(&brink_ir::DiagnosticCode::E065),
+            "sanity: the db-derived query must see the strict+brink policy \
+             the first compile settled: {before_db:?}"
+        );
 
         let _ = s.compile_project("main.ink");
 
@@ -5097,9 +5130,22 @@ mod tests {
             .iter()
             .map(|d| d.code)
             .collect();
+        let after_db: Vec<_> = s
+            .session
+            .db()
+            .diagnostics(file)
+            .expect("main.ink loaded")
+            .iter()
+            .map(|d| d.code)
+            .collect();
         assert_eq!(
             before, after,
             "compile_project must not perturb the editor's cached analysis"
+        );
+        assert_eq!(
+            before_db, after_db,
+            "a repeat compile_project under unchanged options must not \
+             perturb the db-derived per-file diagnostics query either"
         );
     }
 
