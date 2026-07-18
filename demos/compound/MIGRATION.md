@@ -159,3 +159,160 @@ arithmetic is directly comparable. **Status: green.**
   into a `BrinkStoryAsset` for tests/tools; the four-step
   compile→link→context→insert dance is copy-pasted from the `engine_bindings`
   example.
+
+---
+
+## Phase 1b — doors/switches (`doors.rs` → `doors.ink` + `src/ink_doors.rs`)
+
+**Issue:** #1068. **Port order:** second (README §"Suggested migration
+order") — "await on a value," the minimal REACTIVE entity: a door does
+nothing until its switch flips. Chosen specifically to prove the BH-4 host
+wake surface (`FlowSleep`/wake_when, `docs/effects-spec.md` §13.1) end to
+end — ink-level `await` stays fenced until FS-3r, so this port is the
+**first real consumer of BH-4 outside its own test suite**, and *that* is
+the interesting datapoint, not the (trivial) door logic itself.
+
+### What moved
+
+Each locked door becomes its own ink flow instance under one shared
+`DoorsStory` marker, running `assets/doors.ink`. The flow entity **is** the
+door entity — `src/ink_doors.rs::attach_ink_door_flows` attaches
+`BrinkFlowRequest<DoorsStory>` + a dormant, one-shot `FlowSleep<DoorsStory>`
+straight onto the same `Door` sprite entity `doors::spawn_doors_from_layout`
+already spawns (unmodified — it's still the source of both the `Door`
+sprites and the `Switch` entities, for **both** implementations; only its
+`accent_color`/`ACCENT_COLORS` helpers got a `pub(crate)` bump so the ink
+read-seam can reuse them instead of forking a second copy).
+
+`--doors-impl rust|ink` picks exactly one writer per round, same shape as
+Phase 1a's `--alarm-impl`.
+
+### The wake seam, and why it inverts Phase 1a's shape
+
+Phase 1a's write seam pushes engine events *into* ink every frame
+(`call_ink_function`). A door's seam runs the other way: `should_open`
+(`assets/doors.ink`) calls a `bind_brink_query` world-access binding
+(`is_switch_on`) that reads the live `Switch` component straight out of the
+ECS **at evaluation time** — there is no per-frame mirror system at all.
+`run_flow_sleep` (BH-4's own exclusive re-evaluation driver) resolves that
+binding inline, exactly the way `call_ink_function` resolves one from a
+normal engine→ink call (`bevy-brink/examples/engine_bindings.rs`'s
+`can_advance()` / `enemy_count()` pattern). This is a genuine ergonomics win
+over Phase 1a: **no G1/G2-style mirroring boilerplate was needed to feed the
+condition** — the direction (engine state → ink read) is exactly what
+`bind_brink_query` is for.
+
+### What was awkward — the wake_when authoring ergonomics (the actual finding)
+
+1. **A component-backed condition always must-polls, with no way to avoid
+   it — now confirmed by a real consumer, not just a unit test.**
+   `should_open`'s dependency is the `Switch` component, not a
+   `BrinkGlobals` variable, so `mark_wake_dirty` has no change-tick hook on
+   it (`docs/effects-spec.md` §12.5 is not wired — the `sleep` module's own
+   doc comments anticipate exactly this case, "e.g. `is_player_nearby`
+   reading `Transform`"). The only way to get a *sound* wake is
+   `.with_detect(...)` with a non-empty (any-value) bit, which forces
+   **every** parked door to re-evaluate its condition **every frame** while
+   locked — not "on switch change." For one door this is invisible; for a
+   compound with dozens of locked doors it is dozens of
+   `call_ink_function`+`bind_brink_query` round trips a frame, paid purely
+   because there is no cheaper option today. Filed as **G4 (#\<see PR\>)**.
+2. **`WakeArming` has no "toggle" shape, forcing a real design compromise.**
+   `Once` fires exactly one wake and is done forever; `Persistent` re-arms
+   and re-*steps* every single turn boundary while the condition stays true
+   — for a door that means continuously running "the door is open" turns
+   every other frame for as long as the switch stays on, purely to keep
+   re-asserting a fact that hasn't changed. Neither shape expresses "wake on
+   a *transition*, then go quiet until the *opposite* transition" — the
+   natural shape for a boolean-latch reactive entity (a door, a light
+   switch, a pressure plate). We chose `Once`: the door opens and **never
+   re-locks**, even if the Rust baseline's switch is later flipped back off
+   (`doors::door_sync_system` is fully bidirectional — it does re-lock).
+   That divergence is deliberate and directly tested (see below), not a
+   bug — but it is a real behavior gap versus the Rust baseline, and
+   modeling the reversible case properly would need per-flow `Local`-scoped
+   ink state (`docs/scoped-flow-state-spec.md`) to give each door instance
+   its own private "am I open" bit, which is out of scope for this minimal
+   port. Filed as **G5 (#\<see PR\>)**.
+3. **Many instances of one program, one marker: works, but undocumented.**
+   Spawning N flows of the same `assets/doors.ink` program under a single
+   `DoorsStory` marker relies on a fact that isn't obvious from the
+   `bevy-brink` docs: `BrinkGlobals<M>` is **one shared World per marker**,
+   so any `VAR` the story declares would be shared across every door
+   instance, not private per-instance. `doors.ink` sidesteps this by
+   declaring **no globals at all** — every door's own state lives entirely
+   in its flow entity's own `BrinkFlow`/`FlowSleep` components, read via
+   `bind_brink_query`'s `(Entity, Vec<Value>)` input instead. This worked
+   out cleanly here, but the "N instances, one marker, zero globals" pattern
+   is worth a doc callout rather than something the next port has to
+   rediscover by reading `globals.rs`'s source.
+
+None of these **blocked** the port — every locked door correctly stays shut
+until its switch flips, and the divergence from the Rust baseline (no
+re-lock) is explicit and tested, not silent. They are ergonomics findings
+for the charter, same as Phase 1a's G1–G3.
+
+### LOC
+
+| Piece | Rust | ink |
+|---|---:|---:|
+| Reactive logic (the semantics) | 4 (`door_sync_system`'s body) | 3 (`doors.ink`'s `should_open` + root turn) |
+| Per-frame writer / seam | — (Rust needs none; it's a plain query) | ~90 (`ink_doors.rs`, non-test): marker, impl toggle, attach system, binding, read seam |
+
+Unlike Phase 1a, there is no per-frame *write* seam at all (no
+`call_ink_function` mirror loop) — the entire seam is the one-time `attach`
+(spawn-time) plus the `bind_brink_query` binding the wake condition calls.
+The logic itself is trivially small on both sides; the seam is still the
+whole cost, exactly as Phase 1a predicted ("the interesting number is how
+much of this shrinks... by the second... port" — here it shrank by
+eliminating the write-seam category entirely, at the cost of the must-poll
+finding above).
+
+### Measured cost
+
+Measured by `ink_doors::tests::measure_ink_door_wake_cost` (10k-iteration
+average, debug-opt profile — the same build the HUD numbers come from; run
+`cargo test measure_ink_door_wake_cost -- --nocapture` to reproduce). See the
+test output for the exact numbers on your machine; the shape to expect is
+the same order of magnitude as Phase 1a's `call_ink_function` cost
+(µs-scale per call, dominated by VM-eval setup) for `should_open`, against a
+sub-microsecond Rust `Vec`/query scan. Because gap G4 forces every locked
+door to pay this cost **every frame** while parked (not just on a switch
+change), this number is the one that matters most for a compound with many
+simultaneously-locked doors — it is the direct multiplier on "how many
+locked doors can this scene afford."
+
+The HUD's `doors` line prints the live cost (µs resolution) beside the
+active impl label, the same shape as the alarm's ns-resolution line.
+
+### Semantics parity
+
+`ink_doors::tests` drives the reactive contract end to end (through the
+plugin's own `mark_wake_dirty`/`run_flow_sleep` + a host-registered
+`advance_batch::<DoorsStory>` — no direct calls into BH-4 internals):
+
+- a door stays locked (zero-cost, dormant/parked) while its switch is off,
+  and opens once the switch flips on, then stays open;
+- two doors sharing one switch id open together; a door watching a
+  *different* id is unaffected;
+- frame-by-frame parity against the Rust baseline for the common
+  (monotonic) case — every frame before the first flip, both
+  implementations agree the door is closed;
+- the **documented divergence**: a scripted flip sequence that ends with the
+  switch back off proves the ink door stays open while the Rust baseline
+  re-locks — asserted explicitly (`assert_ne!`), not hidden.
+
+**Status: green** (including the intentional, tested divergence).
+
+### API gaps filed
+
+- **G4** — a `FlowSleep` condition backed by an ECS component (not a
+  `BrinkGlobals` variable) has no way to avoid must-polling every wake pass;
+  `docs/effects-spec.md` §12.5's component-tick wiring doesn't exist yet.
+  Already anticipated in the `sleep` module's own doc comments; this port is
+  the first real (non-test) consumer to actually pay the cost.
+- **G5** — `WakeArming` offers only `Once` (permanent) or `Persistent`
+  (re-steps every turn boundary while true); there is no "wake on
+  transition, park until the opposite transition" toggle shape for a
+  boolean-latch reactive entity. Forced a documented behavioral
+  simplification (doors never re-lock) rather than a faithful port.

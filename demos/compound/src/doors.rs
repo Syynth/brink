@@ -25,7 +25,10 @@ const INTERACT_RADIUS: f32 = 46.0;
 
 /// Per-id accent color shared by a switch and the door(s) it opens, so the
 /// association reads as "same color = same circuit" without needing a legend.
-const ACCENT_COLORS: [Color; 4] = [
+/// `pub(crate)`: the Phase 1b ink port (`ink_doors.rs`) reuses this exact
+/// table for its own read-seam recoloring instead of forking a second copy
+/// that could silently drift from this one.
+pub(crate) const ACCENT_COLORS: [Color; 4] = [
     Color::srgb(0.25, 0.75, 0.95), // cyan
     Color::srgb(0.95, 0.6, 0.2),   // amber
     Color::srgb(0.7, 0.45, 0.95),  // violet
@@ -33,7 +36,7 @@ const ACCENT_COLORS: [Color; 4] = [
 ];
 
 #[must_use]
-fn accent_color(id: u8) -> Color {
+pub(crate) fn accent_color(id: u8) -> Color {
     ACCENT_COLORS[id as usize % ACCENT_COLORS.len()]
 }
 
