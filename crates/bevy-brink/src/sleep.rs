@@ -233,6 +233,14 @@ impl DetectSummary {
 /// chaining [`with_args`](Self::with_args), [`with_detect`](Self::with_detect),
 /// and [`dormant`](Self::dormant).
 #[derive(Component)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent lifecycle/cadence flag with its \
+              own doc comment, not a state machine in disguise (`dormant`, \
+              `needs_eval`, and `evaluated_once` are orthogonal cadence \
+              signals; `waiting_for` (issue #1081) is Latch-only edge state) \
+              — see the ChoiceFlags precedent in brink-format::opcode"
+)]
 pub struct FlowSleep<M: Send + Sync + 'static = ()> {
     /// The ink function name whose (pure) return value is the wake condition.
     /// A diagnostic label only when [`condition_value`](Self::condition_value)
