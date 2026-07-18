@@ -159,3 +159,29 @@ The Fogg passage (WritingWithInk) and FUNC_populate_options_thread
 served as sitting-1's concrete anchors; respelled versions live in
 the sitting transcript and should graduate into the spec's examples
 when drafting begins.
+
+## 10. Audience & evaluation (added after the critical review, 2026-07-18)
+
+- **Beginner-friendliness is an elevated, named driver.** The
+  maintainer is onboarding a writer who is willing to learn but not
+  ink-fluent; the surface is designed for the person *joining* the
+  project, not for preserving fluent-reader reflexes. RULED framing:
+  the semantics fix the concept inventory either way, so **more
+  distinct syntax = fewer overloaded spellings per concept** — the
+  pedagogically cheaper direction even with a longer glyph list.
+  Overloading (one brace, four meanings) is where beginner confusion
+  lives; one-spelling-per-concept is the target.
+- **The validation instrument**: the writer is the designated cold
+  reader. When a prototype parser exists, their first authored
+  scenes — and every confusion they hit — form the syntax friction
+  journal (the Compound-journal method applied to notation).
+  Ratification should follow real authored content, not exhibits.
+- **Honest caveats carried from the critical review** (open, not
+  blockers): (a) the flat choice-run — ink's most scannable form —
+  pays a ceremony tax in the redesign; a compact spelling for the
+  bodiless flat case stays on the open list (§8). (b) The
+  annotated-brace family's at-a-glance legibility leans on syntax
+  highlighting and the rendered editor; the bare-diff/grep
+  experience should be checked deliberately during prototyping.
+  (c) Total mark vocabulary grows even as overloading falls —
+  the docs must teach by concept, not by glyph list.
