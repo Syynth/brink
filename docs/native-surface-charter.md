@@ -233,3 +233,115 @@ first extension; designed in its own mini-sitting.
 Remaining open in the narrative layer: the flat-choice-run compact
 spelling (§10 caveat a) — everything else is converged. Next sitting:
 the code/scripting dialect (§7).
+
+## 12. Sitting 3 — the scripting dialect (2026-07-18)
+
+### 12.1 Ground-rule amendment: the same-semantics wall is scoped
+Ink-heritage semantics stay frozen (oracle-guarded, compat forever).
+**Brink-native additions (structs, fn values, handles, projections,
+typed syntax, sigil literals, await's shape) are revisable during
+this design** — zero real authored code depends on their v1
+spellings or edges. Corpus updates + changesets are the only tax.
+
+### 12.2 A third design driver: the author's agent
+Expected authoring model: **the human writes dialogue; their LLM
+agent writes the script code.** The surface must be agent-friendly:
+explicit over emergent, one spelling per concept, strict ASTs,
+canonical fmt, files that carry their own truth (no inference
+ripple across files). This driver retroactively explains most prior
+rulings and decides several below.
+
+### 12.3 RustScript
+The code dialect's pole star is **Rust, not Lua** (the engine's
+language; the maintainer's muscle memory). Adopted: `let` bindings,
+`match`, expression-orientation (block value = final expression),
+**semicolons** as statement terminators, `name: type` (the TM
+syntax verbatim), `fn f(a: int) -> int` (the return arrow cannot
+collide with diverts — fn bodies have no story-time). Deliberately
+NOT adopted: ownership/lifetimes/borrows (COW value model; `ref`
+params stay), traits, generics (§12.9).
+
+### 12.4 Declarations & annotations
+- The scope ladder, one keyword each: `var` (world) · `local`
+  (per-flow, durable) · `let` (call-transient) · `const`.
+  `local x = 5;` — no modifier stacking.
+- **The deletable-metadata razor**: grammar for behavior
+  (`private`, `local`, `module name`); **annotations `@[name(args)]`**
+  for checked metadata — `@[was(courtyard)]`, `@[effects(pure,
+  silent)]` — Rust attribute grammar wearing `@[` (the `#` channel
+  belongs to tags).
+
+### 12.5 UFCS (ruled, four rules)
+`x.foo(a)` ≡ `foo(x, a)` (receiver = first arg, always). Field
+beats function (shadow warning). Candidates = lexical scope via
+module imports — no type-directed lookup. Typing inherited from
+ordinary calls; dot-completion filters by receiver type.
+
+### 12.6 Control flow
+`while` / `for x in e` / `loop` / `break` / `continue` in code
+contexts. In flow bodies: pure respelling (divert-loop lowering —
+the hand-written label+divert idiom). In fn bodies: **flagged
+additive** (the expression-time evaluator gains loop support; no
+existing program changes; recursion-lowering rejected for its
+hidden stack texture). `loop` guarded by the standing step limits.
+Iteration protocol over flags/sequences designed in the stdlib
+sitting.
+
+### 12.7 Dialect grounds & escapes (completes §8.2)
+Defaults: `flow` bodies open in prose ground, `fn` bodies in code
+ground. **Two escape glyphs, each active only in the other ground,
+at three grains** (line / block / whole-body): `~` = code follows
+(`~ stmt;`, `~ { … }`, `flow g() ~{ … }`); `>` = content follows
+(`> line`, `> { … }`, `fn f() >{ … }`). Content lines in code carry
+interpolation/glue and anchor the #1087 emits effect. Inline grain:
+`{expr}` interpolation only (no code→prose inline — a `>` line is
+the minimum emission). **Rare dialects get named brace annotations,
+not glyphs**: `flow guard(post) chart{ … }` — sigils are earned by
+frequency; every future per-domain frontend arrives as a name.
+
+### 12.8 Structs & construction
+Rust form: `struct Point { x: float = 0.0, y: float }` (field
+defaults RULED in), construction `Point { x: 1.0 }` under Rust's
+ambiguity conventions (RULED). **Brace-construction is a language
+capability**: `Type { …elements… }` with the element grammar
+determined by the type (struct→fields, map→`k: v` pairs, flags→
+members; compiler-known for builtins v1; a user-facing protocol
+may be earned via the #1090 ledger). Arrays: `[1, 2, 3]`. Maps: a
+type we already have that's owed surface (literal + verbs + typed
+params), not a new type. Anonymous-record literals (`#{…}`):
+**deferred into the stdlib/native-types sitting** — judged against
+declared-shapes + map literals once those exist.
+
+### 12.9 Typing regime
+**The native surface is statically typed with no gradual tier** —
+`Unknown` is a compile error everywhere; gradual remains the ink
+dialect's world. Inference-first (the mono-HM substrate carries
+it); **committed source always shows explicit signatures**, made
+free by **typed holes**: `fn dist(a: _, b: _) -> _` checks against
+the inferred types and **fmt materializes them into the source**
+(fmt gains an analyzer dependency — first such feature; holes
+never survive `fmt --check`). Locals infer (`let`, annotation
+optional). Host boundary typed by the manifest. **Expression holes
+(`?name`) chartered as the sibling feature** — the author↔agent
+handoff primitive (author leaves `?give_reward`; the file checks;
+the agent's work queue is greppable); dev-warning vs
+release-error decided at its design.
+Generics: middle-ground posture, evidence ledger #1090 (candidates
+a–e recorded there); mandatory static typing will feed it fast, by
+design.
+
+### 12.10 Flows and values
+Flows have **no return type in v1** (functions return values;
+tunnels return control — semantically honest asymmetry). **Typed
+tunnel results are chartered as a named post-FS-3r addition**:
+`let x = -> negotiate(stakes) ->;` restricted to statement
+position (binds at the continuation-split's resume point — no
+mid-expression suspension), with `return expr` filling a typed
+slot and flow signatures gaining `-> T` then.
+
+### 12.11 Remaining for the stdlib sitting (the last box)
+The verb inventory (heap, floor-div, `char_at` family, weighted
+tables), real sequences + the `list` name reclaim, map surface,
+the iteration protocol, the #827 vec decision (structs + UFCS +
+initializers may suffice), anonymous-record fate, the effects/
+holes assertion spellings' final forms.
