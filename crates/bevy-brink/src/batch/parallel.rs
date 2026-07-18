@@ -55,8 +55,8 @@ use brink_format::LineEntry;
 use brink_runtime::{Program, World as BrinkWorld};
 
 use super::{
-    BrinkBatchReport, FlowBatchOutcome, aggregate_access, apply_batch_writes, flush_deferred,
-    homes_any_local, step_one,
+    BatchApplyResult, BrinkBatchReport, FlowBatchOutcome, aggregate_access, apply_batch_writes,
+    flush_deferred, homes_any_local, step_one,
 };
 use crate::asset::{BrinkProgram, LineTablesAsset, ProgramAsset};
 use crate::bindings::BrinkBindings;
@@ -159,7 +159,14 @@ pub fn advance_batch_parallel<M: Send + Sync + 'static>(world: &mut World) {
     // deferred command triggers + line events. Two passes so the `&mut World`
     // write borrow and the `Commands` flush borrow don't fight; they are
     // order-equivalent because commands/events defer regardless.
-    let (result, deferred) = {
+    //
+    // Mirrors the serial driver's empty-turn guard (issue #1082): skip ever
+    // taking `&mut` on `BrinkGlobals` when nothing was collected, so an empty
+    // turn can't trip Bevy change detection and manufacture a spurious
+    // "World changed" signal for `mark_wake_dirty`.
+    let (result, deferred) = if outcomes.is_empty() {
+        (BatchApplyResult::default(), Vec::new())
+    } else {
         let mut globals = world.resource_mut::<BrinkGlobals<M>>();
         apply_batch_writes(outcomes, &mut globals.inner)
     };

@@ -1056,12 +1056,91 @@ fn pure_condition_wakes_normally_through_run_flow_sleep() {
     app.update(); // fulfill
 
     set_gate(&mut app, gate_idx, 1);
+    // Margin, deliberately not a single exact frame (issue #1082): whether
+    // `advance_batch` (added by `build_app`, unordered w.r.t. the plugin's
+    // own wake-condition systems — a host system, not one `BrinkPlugin`
+    // knows to order against) observes the newly-Woken flow in the very
+    // frame `run_flow_sleep` wakes it, or only the frame after, is exactly
+    // the ordering `run_flow_sleep`'s own docs call out as unconstrained
+    // ("whether it runs before or after the batch driver in a frame, a wake
+    // takes effect on the following frame's Collect"). Three frames is
+    // comfortably enough for the wake *and* its turn to have run either way,
+    // without also being enough for a second (illegitimate) wake — this
+    // policy's one dependency change was the single `set_gate` call above,
+    // and the empty-turn guard (issue #1082) means no idle frame here can
+    // manufacture another.
     pump(&mut app, 3);
 
-    assert_eq!(single_sleep(&mut app), SleepState::Woken);
+    let state = single_sleep(&mut app);
+    assert!(
+        matches!(state, SleepState::Woken | SleepState::Parked),
+        "a pure condition must wake the flow and let its turn run, not fault or vanish: got {state:?}"
+    );
     assert!(
         app.world().resource::<TextLog>().0.contains("Woke up!"),
         "a pure condition must be evaluated and wake the flow normally"
+    );
+}
+
+/// Regression test for issue #1082: `advance_batch` must not touch
+/// `BrinkGlobals` on a turn that collects zero flows. Before the fix,
+/// `advance_batch` took `&mut globals.inner` (via `apply_batch_writes`)
+/// *unconditionally*, which trips Bevy's change detection the instant the
+/// reference is taken — regardless of whether anything was actually
+/// written. `mark_wake_dirty` treats *any* `BrinkGlobals` change as "recheck
+/// every Parked all-detect-capable policy" (its only signal, since no
+/// per-capability component-tick hook exists yet — see the module docs), so
+/// an idle turn manufactured a spurious wake-up check on literally every
+/// frame `advance_batch` ran. For a **persistent** policy whose condition is
+/// never reset back to false (as here — `gate` is set once and never
+/// cleared), that spurious signal alone was enough to re-wake the flow over
+/// and over with no further `set_gate` call, racing it through every
+/// remaining turn (here, all the way past `-> END`) purely as a function of
+/// how many frames happened to elapse before an assertion ran — which is
+/// exactly the "passes in isolation, flakes under full-suite timing"
+/// signature reported in #1082, not state leaking between tests.
+///
+/// This pins the fix directly: once the one legitimate wake (from the one
+/// real `set_gate` write) has run its turn and re-parked, the policy must
+/// stay `Parked` — and the story must never advance past its first turn —
+/// no matter how many additional frames pass with nothing left to collect.
+#[test]
+fn idle_turns_never_manufacture_a_spurious_wake_signal() {
+    let mut app = build_app();
+    let (program, tables, ctx) = compile_test_story(GATED_STORY);
+    let gate_idx = program.global_index("gate").expect("gate global exists");
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let story =
+        add_story_assets_with_effect_rows(&mut app, program, tables, ctx, vec![no_write_row(def)]);
+
+    app.world_mut().spawn((
+        BrinkFlowRequest::<()>::builder().story(story).build(),
+        FlowSleep::<()>::persistent("should_wake").dormant(),
+    ));
+    app.update(); // fulfill
+
+    // The one and only dependency change this test ever makes.
+    set_gate(&mut app, gate_idx, 1);
+
+    // Pump well past the single legitimate wake+step+rearm cycle. With the
+    // bug, this reliably (not just occasionally) re-wakes the flow, runs its
+    // second turn, reaches `-> END`, and the plugin retires the dead flow's
+    // `FlowSleep` policy — `single_sleep` then panics on a zero count, the
+    // exact symptom #1082 reported.
+    pump(&mut app, 20);
+
+    assert_eq!(
+        single_sleep(&mut app),
+        SleepState::Parked,
+        "a persistent policy's one true evaluation must wake exactly once and then \
+         stay parked — a turn with nothing to collect must never manufacture another"
+    );
+    let log = &app.world().resource::<TextLog>().0;
+    assert!(
+        log.contains("Woke up!") && !log.contains("Second turn."),
+        "the flow must run its one woken turn and no further turn: got {log:?}"
     );
 }
 
