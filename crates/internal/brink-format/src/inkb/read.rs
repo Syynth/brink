@@ -408,6 +408,12 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Deco
             for _ in 0..len {
                 let key = decode_map_key(buf, off)?;
                 let val = decode_value(buf, off, depth + 1)?;
+                // A repeated key would violate the content-based `OrderedMap`
+                // `Eq` (#909); reject rather than silently keeping the last
+                // occurrence (#985).
+                if map.contains_key(&key) {
+                    return Err(DecodeError::DuplicateMapKey);
+                }
                 map.insert(key, val);
             }
             Ok(Value::map(map))
@@ -943,5 +949,66 @@ fn decode_plural_category(buf: &[u8], off: &mut usize) -> Result<PluralCategory,
         CAT_MANY => Ok(PluralCategory::Many),
         CAT_OTHER => Ok(PluralCategory::Other),
         _ => Err(DecodeError::InvalidPluralCategory(tag)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codec::{write_u8, write_u32};
+
+    /// Hand-build a `VAL_MAP` payload carrying the same `int` key twice — no
+    /// legitimate encoder emits this (`OrderedMap::insert` de-duplicates on
+    /// the write side), so this is the "crafted payload" scenario issue #985
+    /// guards against: the reader must reject it with a decode error, never
+    /// construct an `OrderedMap` that violates the content-based `Eq`
+    /// invariant (#909) by silently keeping the last occurrence.
+    fn duplicate_int_key_map_bytes() -> Vec<u8> {
+        let mut buf = Vec::new();
+        write_u8(&mut buf, VAL_MAP);
+        write_u32(&mut buf, 2); // two entries
+        // entry 0: key = int(0), value = int(1)
+        write_u8(&mut buf, VAL_INT);
+        buf.extend_from_slice(&0i32.to_le_bytes());
+        write_u8(&mut buf, VAL_INT);
+        buf.extend_from_slice(&1i32.to_le_bytes());
+        // entry 1: key = int(0) again, value = int(2)
+        write_u8(&mut buf, VAL_INT);
+        buf.extend_from_slice(&0i32.to_le_bytes());
+        write_u8(&mut buf, VAL_INT);
+        buf.extend_from_slice(&2i32.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn decode_value_rejects_duplicate_map_key() {
+        let buf = duplicate_int_key_map_bytes();
+        let mut off = 0;
+        assert_eq!(
+            decode_value(&buf, &mut off, 0),
+            Err(DecodeError::DuplicateMapKey)
+        );
+    }
+
+    #[test]
+    fn decode_value_accepts_distinct_map_keys() {
+        let mut buf = Vec::new();
+        write_u8(&mut buf, VAL_MAP);
+        write_u32(&mut buf, 2);
+        write_u8(&mut buf, VAL_INT);
+        buf.extend_from_slice(&0i32.to_le_bytes());
+        write_u8(&mut buf, VAL_INT);
+        buf.extend_from_slice(&1i32.to_le_bytes());
+        write_u8(&mut buf, VAL_INT);
+        buf.extend_from_slice(&5i32.to_le_bytes());
+        write_u8(&mut buf, VAL_INT);
+        buf.extend_from_slice(&2i32.to_le_bytes());
+
+        let mut off = 0;
+        let value = decode_value(&buf, &mut off, 0).expect("distinct keys decode cleanly");
+        let Value::Map(map) = value else {
+            unreachable!("expected a map value");
+        };
+        assert_eq!(map.len(), 2);
     }
 }

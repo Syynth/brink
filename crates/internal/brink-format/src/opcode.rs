@@ -469,6 +469,13 @@ pub enum DecodeError {
     /// `params` is the separate, legitimate "count only, no metadata" case).
     /// A mutated/corrupt `.inkb` asserting otherwise is malformed input.
     ParamCountMismatch { declared: u8, actual: usize },
+    /// A `VAL_MAP` entry list carried the same key twice. A legitimate
+    /// encoder never emits this — `OrderedMap::insert` de-duplicates on the
+    /// write side — so a repeated key is a corrupt or crafted `.inkb`; the
+    /// content-based `OrderedMap` `Eq` (issue #909) assumes each key appears
+    /// once, so this is rejected rather than silently keeping the last
+    /// occurrence (issue #985).
+    DuplicateMapKey,
 }
 
 impl fmt::Display for DecodeError {
@@ -534,6 +541,7 @@ impl fmt::Display for DecodeError {
                     "container params metadata count ({actual}) does not match declared param_count ({declared})"
                 )
             }
+            Self::DuplicateMapKey => write!(f, "duplicate key in map value"),
         }
     }
 }

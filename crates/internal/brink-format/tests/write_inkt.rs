@@ -686,3 +686,77 @@ fn params_count_mismatch_is_a_parse_error() {
         "unexpected error: {err}"
     );
 }
+
+// Issue #985 (follow-up to #909): `OrderedMap`'s `Eq` is content-based and
+// assumes each key appears at most once. A legitimate `write_inkt` never
+// emits a duplicate `(map ...)` key — `OrderedMap::insert` de-duplicates on
+// the write side — so a `(map (0 1) (0 2))` literal only ever arises from a
+// hand-crafted or corrupted `.inkt` file. `read_inkt` must reject it with a
+// parse error rather than silently keeping the last occurrence and handing
+// callers an `OrderedMap` that violates the invariant its `Eq` relies on.
+#[test]
+fn duplicate_map_key_is_a_parse_error() {
+    let inkt = r#"(story
+
+  (name_table
+    0 ""
+  )
+
+  (addresses
+    (address $01_406ea523c53def -> $01_406ea523c53def +0)
+  )
+
+  (address_paths
+    (path 0 -> $01_406ea523c53def)
+  )
+
+  (literal_pool
+    (map (0 1) (0 2))
+  )
+
+  (container $01_406ea523c53def
+    (code
+      done
+    )
+  )
+)
+"#;
+
+    let err = brink_format::read_inkt(inkt).expect_err("duplicate map key must not parse");
+    assert!(
+        err.message.contains("duplicate key in map value"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn distinct_map_keys_parse_cleanly() {
+    let inkt = r#"(story
+
+  (name_table
+    0 ""
+  )
+
+  (addresses
+    (address $01_406ea523c53def -> $01_406ea523c53def +0)
+  )
+
+  (address_paths
+    (path 0 -> $01_406ea523c53def)
+  )
+
+  (literal_pool
+    (map (0 1) (5 2))
+  )
+
+  (container $01_406ea523c53def
+    (code
+      done
+    )
+  )
+)
+"#;
+
+    let data = brink_format::read_inkt(inkt).expect("distinct keys must parse");
+    assert_eq!(data.literal_pool.len(), 1);
+}
