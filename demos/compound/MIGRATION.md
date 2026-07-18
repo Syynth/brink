@@ -217,7 +217,9 @@ condition** — the direction (engine state → ink read) is exactly what
    locked — not "on switch change." For one door this is invisible; for a
    compound with dozens of locked doors it is dozens of
    `call_ink_function`+`bind_brink_query` round trips a frame, paid purely
-   because there is no cheaper option today. Filed as **G4 (#\<see PR\>)**.
+   because there is no cheaper option today. Same interim #996 already
+   tracks — commented there with this port's concrete cost data point
+   rather than filing a duplicate: **G4 (#996)**.
 2. **`WakeArming` has no "toggle" shape, forcing a real design compromise.**
    `Once` fires exactly one wake and is done forever; `Persistent` re-arms
    and re-*steps* every single turn boundary while the condition stays true
@@ -234,7 +236,7 @@ condition** — the direction (engine state → ink read) is exactly what
    modeling the reversible case properly would need per-flow `Local`-scoped
    ink state (`docs/scoped-flow-state-spec.md`) to give each door instance
    its own private "am I open" bit, which is out of scope for this minimal
-   port. Filed as **G5 (#\<see PR\>)**.
+   port. Filed as **G5 (#1081)**.
 3. **Many instances of one program, one marker: works, but undocumented.**
    Spawning N flows of the same `assets/doors.ink` program under a single
    `DoorsStory` marker relies on a fact that isn't obvious from the
@@ -307,13 +309,15 @@ plugin's own `mark_wake_dirty`/`run_flow_sleep` + a host-registered
 
 ### API gaps filed
 
-- **G4** — a `FlowSleep` condition backed by an ECS component (not a
+- **G4 (#996)** — a `FlowSleep` condition backed by an ECS component (not a
   `BrinkGlobals` variable) has no way to avoid must-polling every wake pass;
   `docs/effects-spec.md` §12.5's component-tick wiring doesn't exist yet.
-  Already anticipated in the `sleep` module's own doc comments; this port is
-  the first real (non-test) consumer to actually pay the cost.
-- **G5** — `WakeArming` offers only `Once` (permanent) or `Persistent`
-  (re-steps every turn boundary while true); there is no "wake on
-  transition, park until the opposite transition" toggle shape for a
+  Already anticipated in the `sleep` module's own doc comments, and already
+  tracked by #996; this port is the first real (non-test) consumer to
+  actually pay the cost, so it's a comment on #996 with a concrete data
+  point, not a new issue.
+- **G5 (#1081)** — `WakeArming` offers only `Once` (permanent) or
+  `Persistent` (re-steps every turn boundary while true); there is no "wake
+  on transition, park until the opposite transition" toggle shape for a
   boolean-latch reactive entity. Forced a documented behavioral
   simplification (doors never re-lock) rather than a faithful port.
