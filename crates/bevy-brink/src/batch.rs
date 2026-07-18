@@ -474,6 +474,14 @@ impl<M: Send + Sync + 'static> BrinkBatchReport<M> {
 /// [`BrinkBatchReport`] by whichever driver ran. Shared so the serial
 /// ([`advance_batch`]) and parallel ([`parallel::advance_batch_parallel`])
 /// drivers report identically.
+///
+/// `Default` is the all-zero/empty "nothing happened" result — used when a
+/// turn collects zero flows, so the caller can skip ever touching
+/// [`BrinkGlobals`](crate::globals::BrinkGlobals) (see the call sites: taking
+/// `&mut` on an empty batch would still trip Bevy change detection, sending a
+/// **spurious** "the World changed" signal to [`crate::sleep::mark_wake_dirty`]
+/// on a turn where nothing did — issue #1082).
+#[derive(Default)]
 pub(crate) struct BatchApplyResult {
     pub flows: Vec<FlowAccessRecord>,
     pub stepped: usize,
@@ -684,7 +692,20 @@ pub fn advance_batch<M: Send + Sync + 'static>(
     // ── Apply ── flush buffered writes, then command triggers, then line
     // events, in flow-id order (`outcomes` is already flow-id-sorted, matching
     // `collected`). Write-write conflicts resolve by this order (§12.4).
-    let (result, deferred) = apply_batch_writes(outcomes, &mut globals.inner);
+    //
+    // A turn that collects nothing must not touch `globals` at all (issue
+    // #1082): `&mut globals.inner` trips Bevy change detection the instant
+    // it's taken, regardless of whether anything is actually written, and
+    // `mark_wake_dirty` treats *any* `BrinkGlobals` change as "re-check every
+    // Parked all-detect-capable policy" — so an empty turn would otherwise
+    // manufacture a spurious wake-up signal on every single frame this system
+    // runs, self-sustaining a persistent condition's re-evaluation long after
+    // its one real dependency change was already consumed.
+    let (result, deferred) = if outcomes.is_empty() {
+        (BatchApplyResult::default(), Vec::new())
+    } else {
+        apply_batch_writes(outcomes, &mut globals.inner)
+    };
     flush_deferred::<M>(deferred, &mut commands);
 
     if let Some(mut report) = report {
