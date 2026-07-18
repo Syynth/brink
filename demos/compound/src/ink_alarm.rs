@@ -31,7 +31,6 @@ use std::time::Instant;
 
 use bevy::ecs::system::SystemState;
 use bevy::prelude::*;
-use bevy_brink::runtime::ContextAccess as _;
 use bevy_brink::{
     BrinkFlow, BrinkFlowRequest, BrinkGlobals, BrinkProgram, BrinkStoryAsset, ProgramAsset, Value,
     call_ink_function,
@@ -185,11 +184,11 @@ fn call_alarm_fn(world: &mut World, flow: Entity, name: &str, args: &[Value]) {
 }
 
 /// Read the ink-owned `alarm_level` / `alarm_global` globals out of the story
-/// `World`. This is the literal world-policy read: resolve each name to its
-/// global slot on the [`Program`](bevy_brink::runtime), then read the slot from
-/// [`BrinkGlobals`]. Tier is derived Rust-side by [`Alarm::tier`] exactly as in
-/// the baseline (`level.floor()`), so the tier every reader sees is a floor of
-/// ink-owned state.
+/// `World`. This is the literal world-policy read, via [`BrinkGlobals::get`]
+/// (#1059) — a single name-keyed lookup instead of the old three-step
+/// `Program::global_index` + `ContextAccess::global` reach. Tier is derived
+/// Rust-side by [`Alarm::tier`] exactly as in the baseline (`level.floor()`),
+/// so the tier every reader sees is a floor of ink-owned state.
 fn read_alarm_state(world: &World, flow: Entity) -> (f32, bool) {
     let Some(prog) = world.get::<BrinkProgram<AlarmStory>>(flow) else {
         return (0.0, false);
@@ -203,13 +202,13 @@ fn read_alarm_state(world: &World, flow: Entity) -> (f32, bool) {
     let Some(globals) = world.get_resource::<BrinkGlobals<AlarmStory>>() else {
         return (0.0, false);
     };
-    let level = program
-        .global_index("alarm_level")
-        .and_then(|i| globals.inner.global(i).as_float())
+    let level = globals
+        .get(program, "alarm_level")
+        .and_then(Value::as_float)
         .unwrap_or(0.0);
-    let global = program
-        .global_index("alarm_global")
-        .and_then(|i| globals.inner.global(i).as_bool())
+    let global = globals
+        .get(program, "alarm_global")
+        .and_then(Value::as_bool)
         .unwrap_or(false);
     (level, global)
 }
@@ -221,8 +220,7 @@ fn read_alarm_state(world: &World, flow: Entity) -> (f32, bool) {
 mod tests {
     use super::*;
     use bevy::asset::AssetPlugin;
-    use bevy_brink::runtime::FlowInstance;
-    use bevy_brink::{BrinkPlugin, LineTablesAsset};
+    use bevy_brink::BrinkPlugin;
 
     /// One scripted frame applied identically to both implementations.
     struct Frame {
@@ -233,40 +231,12 @@ mod tests {
     }
 
     /// Compile `assets/alarm.ink` inline (deterministic, no async `AssetServer`)
-    /// and insert the story assets, mirroring what `InkLoader` does at runtime.
+    /// and insert the story assets, via [`bevy_brink::compile_story_inline`]
+    /// (#1060) — the one-liner that replaces the old four-step
+    /// compile → link → `FlowInstance::new_at_root` → hand-insert dance.
     fn build_alarm_story(app: &mut App) -> Handle<BrinkStoryAsset> {
-        let src = include_str!("../assets/alarm.ink").to_string();
-        let output = brink_compiler::compile("alarm.ink", move |path| {
-            if path == "alarm.ink" {
-                Ok(src.clone())
-            } else {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "no includes",
-                ))
-            }
-        })
-        .expect("alarm.ink compiles");
-        let (program, tables) = bevy_brink::runtime::link(&output.data).expect("alarm.ink links");
-        let (_, initial_context) = FlowInstance::new_at_root(&program);
-
-        let world = app.world_mut();
-        let program = world
-            .resource_mut::<Assets<ProgramAsset>>()
-            .add(ProgramAsset {
-                program,
-                initial_context,
-                effect_rows: Vec::new(),
-            });
-        let line_tables = world
-            .resource_mut::<Assets<LineTablesAsset>>()
-            .add(LineTablesAsset { tables });
-        world
-            .resource_mut::<Assets<BrinkStoryAsset>>()
-            .add(BrinkStoryAsset {
-                program,
-                line_tables,
-            })
+        let src = include_str!("../assets/alarm.ink");
+        bevy_brink::compile_story_inline(app, "alarm.ink", src).expect("alarm.ink compiles")
     }
 
     /// Drive one frame of the ink alarm through the same call sequence
