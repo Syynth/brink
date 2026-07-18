@@ -1,6 +1,6 @@
 {
   "name": "@brink-lang/studio",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Embeddable brink studio — a full ink IDE (CodeMirror editor, compiler diagnostics, story player, binder, story graph) mounted into a DOM element with one call.",
   "license": "MIT",
   "type": "module",

@@ -1,5 +1,49 @@
 # @brink-lang/web
 
+## 0.14.0
+
+### Minor Changes
+
+- 9481137: `brink.toml` — the project settings file for dialect + type policy (#1005).
+
+  New API surface: `EditorSessionHandle.applyProjectConfig(toml: string): string[]`.
+  Parses a `brink.toml`'s `[project] dialect`/`types` and applies it to the
+  session (dialect/type-policy warnings for unrecognized keys are returned,
+  never thrown). Call it once at session construction, before any explicit
+  `setLanguageDialect`/`setTypePolicy` — those calls always override the file
+  (the file supplies the default; explicit calls win), matching the new
+  `brink compile`/`brink ide` behavior: both now discover a `brink.toml`
+  (walking up from the entry file to the nearest ancestor) and apply its
+  `[project] dialect`/`types`, with `--dialect`/`--types` overriding the file
+  when actually passed. A missing `brink.toml` changes nothing — no
+  regression for existing consumers that don't ship one.
+
+### Patch Changes
+
+- a6e8a6a: Analyzer: strict-mode `E078` (`int()`/`float()` out-of-domain argument)
+  no longer classifies only literal-shaped arguments (issue #983, sibling of
+  #670).
+
+  `conversions::check`'s domain check previously only recognized a
+  divert-target expression, a LIST literal, or a `#[...]`/`#{...}`/`Name#{...}`
+  collection/struct literal passed _directly_ as the `int(x)`/`float(x)`
+  argument — a variable-, call-, or index-valued argument with a statically
+  provable out-of-domain type slipped through uncaught at compile time (still
+  caught at runtime by the `InvalidConversionDomain` fault, but only strict
+  mode's compile-time convenience was missing it).
+
+  `conversions::check` now reuses `structs::classify_expr_ty`/
+  `structs::MistypeCtx` verbatim — the exact inference-substrate
+  classification issue #670 added for `structs::check`'s own `E071` — to
+  resolve a `Path` (param/temp via `BodyTypes::locals`, or global `VAR`/CONST
+  via its declaration-derived type), a `Call` (the resolved callee's
+  `InferredSig::return_ty`), or an `Index` expression (its base's classified
+  array-element/map-value type) to a concrete `Ty`, then checks whether that
+  `Ty` falls outside the permitted `int`/`float`/`bool`/`string` domain.
+  Whenever the resolution lands on `Unknown` or `Conflicted`, the argument
+  stays silently unchecked — the same gradual-mode conservatism the literal
+  check already had.
+
 ## 0.13.0
 
 ### Patch Changes
