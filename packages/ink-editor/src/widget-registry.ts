@@ -46,22 +46,34 @@ export function getBuiltinWidget(kind: string): BuiltinWidget | undefined {
   return registry.get(kind);
 }
 
-// ── Host widgets (argument-widget-spec §3) ──────────────────────────
+// ── Host widgets (argument-widget-spec §3, §3.1) ─────────────────────
 //
 // Host-provided widgets (data-only inline label + mount-callback editor),
 // registered at mount from `StudioExtensions.argumentWidgets`. Kept in a
 // separate registry from built-ins: the studio renders built-in inlines as DOM
 // (the color swatch) but host inlines as a chip from label data.
+//
+// `ArgumentWidget.type` is keyed as either a namespaced host id
+// (`host.<vendor>.<name>`) OR a **base type** (`bool` | `int` | `float` |
+// `string`) — the same registry, the same lookup. Registering
+// `{ type: "bool", … }` gives every `bool`-typed argument (any external, any
+// param) the host's control (e.g. celeris's studio-ui toggle) with zero
+// brink-shipped opinion on primitives (#990). This was already reachable
+// through `matchHostWidget`'s `type_name` fallback (argument-widgets.ts) —
+// this is that behavior made intentional, tested, and documented, not new
+// matching logic.
 
 const hostRegistry = new Map<string, ArgumentWidget>();
 
-/** Register host argument widgets (replacing any previous set — mount-time). */
+/** Register host argument widgets (replacing any previous set — mount-time).
+ *  `widgets[].type` may be a `host.<vendor>.<name>` semantic id or a base
+ *  type (`bool`/`int`/`float`/`string`) — see the module doc above. */
 export function setHostWidgets(widgets: readonly ArgumentWidget[]): void {
   hostRegistry.clear();
   for (const w of widgets) hostRegistry.set(w.type, w);
 }
 
-/** Look up a host widget by semantic type / id. */
+/** Look up a host widget by semantic type, base type, or widget-kind id. */
 export function getHostWidget(type: string): ArgumentWidget | undefined {
   return hostRegistry.get(type);
 }

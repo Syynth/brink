@@ -78,7 +78,7 @@ use brink_ir::{
 use rowan::TextRange;
 
 use crate::annotations;
-use crate::infer::{InferenceResult, Ty};
+use crate::infer::{InferenceResult, InferredSig, Ty};
 
 /// `types` project policy (docs/typed-mode-spec.md §1). `Gradual` (the
 /// default) is today's behavior, byte-identical forever — `Unknown` unifies
@@ -180,10 +180,16 @@ pub fn check(
         index,
         resolutions,
     ));
-    // TM-3 completion (docs/typed-mode-spec.md §4, issue #659): `int(x)`/
-    // `float(x)` statically out-of-domain argument literals —
-    // strict-mode-only, per `conversions`'s own module doc.
-    out.extend(crate::conversions::check(files, resolutions));
+    // TM-3 completion (docs/typed-mode-spec.md §4, issue #659; extended to
+    // variable/call/index-valued arguments by issue #983): `int(x)`/
+    // `float(x)` statically out-of-domain arguments — strict-mode-only, per
+    // `conversions`'s own module doc.
+    out.extend(crate::conversions::check(
+        files,
+        index,
+        inference,
+        resolutions,
+    ));
     out
 }
 
@@ -240,6 +246,71 @@ fn check_escapes(
                     );
                 }
             }
+        }
+    }
+    out
+}
+
+/// Unknown-escape (`E065`) + Conflicted-escape (`E066`) over every
+/// **registered** `EXTERNAL` declaration's own parameter types (issue #1004).
+///
+/// An `EXTERNAL name(params)` carries no ink-side type-annotation grammar
+/// (its parameters are bare identifiers — `external_declaration` parses no
+/// `(x: T)`), so a binding's declared parameter types can only come from the
+/// host manifest (or an inline `///` `@param` doc). [`check`] above walks
+/// `hir.knots` and therefore never sees these declarations; without this
+/// pass a manifest whose `ManifestParam.ty` fails to resolve (an empty `ty`,
+/// or one naming a semantic type absent from the `types` vocabulary) is
+/// silently treated as an untyped call rather than the strict escape it is.
+///
+/// The signatures come from [`crate::collect_external_sigs`] — the *same*
+/// resolution that seeds call-site argument checking into
+/// `infer_project`/`solve_scc` — so a param typed by the manifest resolves to
+/// its own [`Ty`] (a scalar semantic type as its `base`, a handle kind as
+/// `Ty::Handle`) and stays clean, while one that resolves to [`Ty::Unknown`]
+/// escapes. An `EXTERNAL` with *no* declared signature at all (neither a
+/// manifest entry nor an inline doc) is absent from `external_sigs` and stays
+/// entirely unchecked — the deliberate "unregistered external's call sites
+/// stay unchecked" posture (see `collect_external_sigs`'s own doc), so this
+/// never turns a bare, host-only `EXTERNAL` into a strict error.
+///
+/// Each diagnostic anchors at the external's *own* declaration span
+/// (`SymbolInfo::range`), fixing the #1004 secondary defect where every
+/// external escape collapsed onto one arbitrary line. Externals are visited
+/// in `(file, declaration offset)` order — the same deterministic ordering
+/// [`crate::external_check::analyze_externals`] uses — so diagnostic order is
+/// source order, not `DefinitionId`-hash order.
+#[must_use]
+pub(crate) fn check_external_escapes(
+    index: &SymbolIndex,
+    external_sigs: &BTreeMap<DefinitionId, InferredSig>,
+) -> Vec<brink_ir::Diagnostic> {
+    // Resolve each signed external to its `SymbolInfo`, then order by
+    // (file, declaration offset) for deterministic, source-ordered output.
+    let mut externals: Vec<(&brink_ir::SymbolInfo, &InferredSig)> = external_sigs
+        .iter()
+        .filter_map(|(id, sig)| index.symbols.get(id).map(|info| (info, sig)))
+        .filter(|(info, _)| info.kind == SymbolKind::External)
+        .collect();
+    externals.sort_by_key(|(info, _)| (info.file.0, info.range.start()));
+
+    let mut out = Vec::new();
+    for (info, sig) in externals {
+        for (i, param) in info.params.iter().enumerate() {
+            let ty = sig.params.get(i).unwrap_or(&Ty::Unknown);
+            emit_escape(
+                info.file,
+                &info.name,
+                &format!("parameter `{}`", param.name),
+                info.range,
+                ty,
+                // No inline-annotation exemption exists for an `EXTERNAL`
+                // (bare-identifier params): the resolved manifest/doc type
+                // *is* the declared type, so an `Unknown` here is a genuine
+                // "no resolvable type" escape, not a merely-uninferred slot.
+                false,
+                &mut out,
+            );
         }
     }
     out
@@ -1231,6 +1302,49 @@ mod tests {
         );
     }
 
+    /// Issue #994: a dotted field read on a `Struct`-typed temp (`t.x`) must
+    /// not corrupt `t`'s own accumulated type with the field-read's usage
+    /// context. Before the fix, `infer::body::InferPass::observe` joined
+    /// `useInt`'s `int` param type into temp `t`'s own slot (the TM-4b
+    /// resolution fallback maps the whole dotted path's range to `t`'s
+    /// `DefinitionId` — no static field-type table exists yet, so `t.x` and
+    /// bare `t` were indistinguishable to `observe`), producing
+    /// `unify(Struct(Point), int) == Conflicted` and a spurious `E066` on
+    /// `t` even though `t` itself — a `Point` — is never actually misused.
+    #[test]
+    fn temp_headed_dotted_field_read_does_not_corrupt_the_temp_s_own_type() {
+        let src = "STRUCT Point = #{x: float}\n\
+                   === function useInt(n: int): int ===\n~ return n\n\
+                   === main ===\n~ temp t = Point#{x: 1.0}\n~ temp r = useInt(t.x)\n-> DONE\n";
+        let (hir, index, res) = build(src);
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            diags.iter().all(|d| d.code != DiagnosticCode::E066),
+            "a dotted field read must never Conflicted-escape its head temp: {diags:?}"
+        );
+    }
+
+    /// Control for the #994 fix above: the segment-count guard in `observe`
+    /// only exempts a *dotted* field read — a bare (single-segment) temp
+    /// whose own uses genuinely disagree must still Conflicted-escape.
+    #[test]
+    fn bare_temp_with_genuinely_conflicting_uses_still_escapes_as_conflicted() {
+        let src = "=== function useInt(n: int): int ===\n~ return n\n\
+                   === main ===\n~ temp t = \"hello\"\n~ temp r = useInt(t)\n-> DONE\n";
+        let (hir, index, res) = build(src);
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E066 && d.message.contains("temp `t`")),
+            "a bare temp with genuinely conflicting uses must still Conflicted-escape: {diags:?}"
+        );
+    }
+
     /// Before T1d-2b (issue #774), this exact cross-kind fixture was
     /// silently unreachable: `infer_project`/`solve_scc` had no manifest
     /// seam, so `handle<K>` return annotations never resolved during body
@@ -1472,6 +1586,133 @@ mod tests {
         assert!(
             diags.is_empty(),
             "an unregistered external's call sites stay unchecked: {diags:?}"
+        );
+    }
+
+    // ── `EXTERNAL` *declaration* escape checking (issue #1004) ───────────
+    //
+    // The checks above verify call *arguments* against a binding's declared
+    // param types. #1004 adds the dual: the binding's own declared params are
+    // escape-checked, so a manifest whose `ManifestParam.ty` fails to resolve
+    // is reported rather than silently treated as an untyped call. Exercised
+    // through the shared `strict_diagnostics` seam (where `check_external_escapes`
+    // is wired), the exact path both the analysis and compile pipelines take.
+
+    fn get_thing_manifest(ty: &str) -> brink_ir::HostManifest {
+        brink_ir::HostManifest {
+            types: vec![brink_ir::SemanticTypeDef {
+                name: "thing_id".to_string(),
+                base: brink_ir::BaseType::Int,
+                constraint: None,
+                values: None,
+                widget: None,
+            }],
+            externals: vec![brink_ir::ManifestExternal {
+                name: "get_thing".to_string(),
+                params: vec![brink_ir::ManifestParam {
+                    name: "id".to_string(),
+                    ty: brink_ir::TypeRef(ty.to_string()),
+                }],
+                returns: brink_ir::TypeRef("float".to_string()),
+                kind: brink_ir::ExternalKind::default(),
+                doc: None,
+                widgets: Vec::new(),
+                path: Vec::new(),
+            }],
+        }
+    }
+
+    fn strict_opts(manifest: Option<brink_ir::HostManifest>) -> crate::AnalysisOptions {
+        crate::AnalysisOptions {
+            host_manifest: manifest,
+            dialect: crate::Dialect::Brink,
+            types: TypePolicy::Strict,
+            ..Default::default()
+        }
+    }
+
+    const EXT_SRC: &str = "EXTERNAL get_thing(id)\n=== start ===\n{get_thing(1)}\n-> DONE\n";
+
+    #[test]
+    fn manifest_typed_external_param_is_clean_under_strict() {
+        let (hir, index, res) = build(EXT_SRC);
+        let diags = crate::strict_diagnostics(
+            &[(FileId(0), &hir)],
+            &index,
+            &res,
+            &strict_opts(Some(get_thing_manifest("thing_id"))),
+            None,
+            &BTreeMap::new(),
+        );
+        assert!(
+            diags.is_empty(),
+            "a manifest-typed external param must not escape: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn unresolvable_external_param_escapes_at_its_own_decl_span() {
+        let (hir, index, res) = build(EXT_SRC);
+        let diags = crate::strict_diagnostics(
+            &[(FileId(0), &hir)],
+            &index,
+            &res,
+            &strict_opts(Some(get_thing_manifest(""))),
+            None,
+            &BTreeMap::new(),
+        );
+        let escape = diags
+            .iter()
+            .find(|d| d.code == DiagnosticCode::E065)
+            .expect("expected an E065 escape from the unresolvable external param");
+        assert!(
+            escape.message.contains("get_thing") && escape.message.contains("parameter `id`"),
+            "escape must name the offending external param: {escape:?}"
+        );
+        // `EXTERNAL get_thing(id)` — the `get_thing` name spans bytes 9..18.
+        assert_eq!(
+            (
+                u32::from(escape.range.start()),
+                u32::from(escape.range.end())
+            ),
+            (9, 18),
+            "escape anchors at the external's own declaration span: {escape:?}"
+        );
+    }
+
+    #[test]
+    fn unregistered_external_declaration_stays_unchecked_under_strict() {
+        let (hir, index, res) = build(EXT_SRC);
+        let diags = crate::strict_diagnostics(
+            &[(FileId(0), &hir)],
+            &index,
+            &res,
+            &strict_opts(None),
+            None,
+            &BTreeMap::new(),
+        );
+        assert!(
+            diags.is_empty(),
+            "an unregistered external's params must stay unchecked: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn external_declaration_escapes_never_fire_under_gradual() {
+        let (hir, index, res) = build(EXT_SRC);
+        let mut opts = strict_opts(Some(get_thing_manifest("")));
+        opts.types = TypePolicy::Gradual;
+        let diags = crate::strict_diagnostics(
+            &[(FileId(0), &hir)],
+            &index,
+            &res,
+            &opts,
+            None,
+            &BTreeMap::new(),
+        );
+        assert!(
+            diags.is_empty(),
+            "gradual mode never escape-checks external declarations: {diags:?}"
         );
     }
 

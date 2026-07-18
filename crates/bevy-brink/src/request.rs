@@ -28,7 +28,7 @@ use bevy_log::warn;
 use brink_runtime::{FlowInstance, FlowLocal, World};
 
 use crate::asset::{BrinkStory, BrinkStoryAsset, ProgramAsset};
-use crate::capability::{CapabilityError, CapabilityManifest, CapabilityRegistry};
+use crate::capability::{CapabilityManifest, CapabilityRegistry, check_load_capability_gate};
 use crate::flow::BrinkFlow;
 use crate::globals::{BrinkContext, BrinkGlobals, BrinkWorldPolicy};
 
@@ -92,7 +92,7 @@ pub struct BrinkFlowRequest<M: Send + Sync + 'static = ()> {
 ///   admission check (issue #912, RULED option (b)): if this marker's
 ///   [`CapabilityRegistry<M>`] is missing any manifest-required
 ///   capability the story's externals declare, the load is refused
-///   outright — logged as a [`CapabilityError::LoadRejected`] naming the
+///   outright — logged as a [`crate::capability::CapabilityError::LoadRejected`] naming the
 ///   marker, the story, and every missing capability, and the request is
 ///   removed without ever creating a flow. This is the hard, immediate,
 ///   per-marker version of the tier-1 admission rule
@@ -156,22 +156,17 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
         // may proceed — a hard, immediate error naming the marker, the
         // story, and every missing capability, not a silent
         // per-container UnknownCapability err-table discovered later.
-        let missing = crate::capability::missing_capabilities(
+        let story = req
+            .story
+            .path()
+            .map_or_else(|| format!("{:?}", req.story.id()), ToString::to_string);
+        if let Err(err) = check_load_capability_gate(
             &program_asset.program,
             &program_asset.effect_rows,
             &capability_manifest,
             &capability_registry,
-        );
-        if !missing.is_empty() {
-            let story = req
-                .story
-                .path()
-                .map_or_else(|| format!("{:?}", req.story.id()), ToString::to_string);
-            let err = CapabilityError::LoadRejected {
-                marker: std::any::type_name::<M>(),
-                story,
-                missing,
-            };
+            story,
+        ) {
             error!("BrinkFlowRequest: {err}; removing request");
             commands.entity(entity).remove::<BrinkFlowRequest<M>>();
             continue;

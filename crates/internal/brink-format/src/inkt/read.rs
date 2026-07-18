@@ -450,8 +450,19 @@ fn parse_map_value(pair: P<'_>) -> Result<Value, InktParseError> {
             line: 0,
             col: 0,
         })?;
+        let (line, col) = key_pair.line_col();
         let key = parse_map_key(key_pair)?;
         let value = parse_value(value_pair, None)?;
+        // A repeated key would violate the content-based `OrderedMap` `Eq`
+        // (#909); reject rather than silently keeping the last occurrence
+        // (#985).
+        if map.contains_key(&key) {
+            return Err(InktParseError {
+                message: "duplicate key in map value".into(),
+                line,
+                col,
+            });
+        }
         map.insert(key, value);
     }
     Ok(Value::map(map))

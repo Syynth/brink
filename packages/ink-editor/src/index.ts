@@ -103,10 +103,15 @@ export { openArgumentForm } from "./argument-form.js";
 export type { FormField, FormGroup, ArgumentFormOptions } from "./argument-form.js";
 export type { FormGlyphMode } from "./argument-widgets.js";
 // Live source range of an argument literal (quoted or bare) — host-widget edits.
-export { liveArgRange } from "./argument-widgets.js";
-// Host argument widgets (argument-widget-spec §3): registered at mount from
-// StudioExtensions.argumentWidgets.
-export { setHostWidgets } from "./widget-registry.js";
+// `openCallForm` opens the whole-call Form for a resolved `CallWidgetSite`
+// (the in-editor glyph / hover-card entry point); `matchHostWidget` is the
+// slot → host-widget resolution it (and the CM decorations) share, including
+// the base-type fallback (argument-widget-spec §3.1, #990).
+export { liveArgRange, openCallForm, matchHostWidget } from "./argument-widgets.js";
+// Host argument widgets (argument-widget-spec §3, §3.1): registered at mount
+// from StudioExtensions.argumentWidgets. `type` may be a `host.<vendor>.<name>`
+// semantic id or a base type (`bool`/`int`/`float`/`string`).
+export { setHostWidgets, getHostWidget } from "./widget-registry.js";
 
 // Types for line classification
 export { elementTypeField, ElementType, assignOptionPaths } from "./element-type.js";

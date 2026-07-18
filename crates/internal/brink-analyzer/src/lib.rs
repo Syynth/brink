@@ -45,9 +45,9 @@ pub use external_check::{
 };
 pub use infer::{
     BodyTypes, CallGraph, Def, EffectAtoms, EffectRow, InferenceResult, InferredSig, SccGraph, Ty,
-    ValueCallFact, ValueCallKind, call_edges, def_body, def_effect_atoms, effects_project,
-    infer_project, inferable_defs, inferable_defs_from_index, referenced_globals, scc_graph,
-    solve_scc, solve_scc_effects, unify, unify_all,
+    ValueCallFact, ValueCallKind, call_edges, collect_external_sigs, def_body, def_effect_atoms,
+    effects_project, infer_project, inferable_defs, inferable_defs_from_index, referenced_globals,
+    scc_graph, solve_scc, solve_scc_effects, unify, unify_all,
 };
 pub use manifest::{ModuleMap, ResolvedModule};
 pub use resolve::ImportScope;
@@ -478,6 +478,19 @@ pub fn strict_diagnostics(
                 resolutions,
                 opts.host_manifest.as_ref(),
             ));
+            // Issue #1004: escape-check each registered `EXTERNAL`
+            // declaration's own param types against the manifest/inline-doc
+            // signatures. `strict::check` above only walks `hir.knots`, so a
+            // manifest-typed external param would otherwise never be verified
+            // — resolved types stay clean, an unresolvable `ManifestParam.ty`
+            // reports `E065` at the external's own declaration span. Seeded
+            // from the same `collect_external_sigs` resolution that feeds
+            // call-site argument checking; runs on this shared
+            // `strict_diagnostics` seam so the pure `analyze_with_options`
+            // path and `brink-db`'s query path get byte-identical output.
+            let external_sigs =
+                infer::collect_external_sigs(index, opts.host_manifest.as_ref(), inline_docs);
+            diagnostics.extend(strict::check_external_escapes(index, &external_sigs));
         }
     }
     diagnostics

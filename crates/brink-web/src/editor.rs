@@ -4818,6 +4818,120 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         assert!(parsed[0].contains("project.future_key"));
     }
+
+    // ── Issue #1004: manifest-typed external params under strict ──────────
+    //
+    // The maintainer's exact repro (issue #1004 final comment): a host
+    // manifest typing an `EXTERNAL`'s param must make `compile_project`'s
+    // warnings channel clean under `dialect = brink, types = strict`. Before
+    // the fix the compile-path strict pass never escape-checked external
+    // declarations at all, so the guard below (a genuinely-unresolvable
+    // manifest `ty` still reports) pins that the clean result is real
+    // consumption of the manifest signature, not blanket suppression.
+
+    /// A manifest whose `TypeRef`s type an external's params resolves them in
+    /// strict inference — `compile_project().warnings` is EMPTY, and the story
+    /// still compiles (`ok: true`).
+    #[test]
+    fn issue_1004_manifest_typed_external_param_is_clean_under_strict() {
+        let mut s = EditorSession::new();
+        s.update_file(
+            "main.ink",
+            "EXTERNAL get_thing(id)\n=== start ===\n{get_thing(1) == 2:\n  yes\n}\n-> DONE\n",
+        );
+        s.set_host_manifest(
+            r#"{ "types": [{ "name": "thing_id", "base": "int", "values": { "source": "host" } }],
+                "externals": [{ "name": "get_thing", "params": [{ "name": "id", "ty": "thing_id" }], "returns": "float", "kind": "query" }] }"#,
+        )
+        .expect("valid manifest");
+        s.set_language_dialect("brink");
+        s.set_type_policy("strict");
+        let result = s.compile_project("main.ink");
+        let v: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        assert_eq!(
+            v["ok"], true,
+            "manifest-typed external must compile: {result}"
+        );
+        let warnings = v["warnings"].as_array().expect("warnings array");
+        assert!(
+            warnings.is_empty(),
+            "a manifest-typed external param must not escape under strict: {result}"
+        );
+    }
+
+    /// The don't-over-suppress guard: a *registered* external whose
+    /// `ManifestParam.ty` fails to resolve (empty `ty`) still escapes — the
+    /// warnings channel is NON-empty, the wire object carries the `E065`
+    /// `code`, and its span anchors at the external's own declaration (the
+    /// `get_thing` name in `EXTERNAL get_thing(id)`, bytes 9..18), not an
+    /// arbitrary fixed line.
+    #[test]
+    fn issue_1004_unresolvable_external_param_escapes_with_code_and_range() {
+        let mut s = EditorSession::new();
+        s.update_file(
+            "main.ink",
+            "EXTERNAL get_thing(id)\n=== start ===\n{get_thing(1) == 2:\n  yes\n}\n-> DONE\n",
+        );
+        s.set_host_manifest(
+            r#"{ "externals": [{ "name": "get_thing", "params": [{ "name": "id", "ty": "" }], "returns": "float", "kind": "query" }] }"#,
+        )
+        .expect("valid manifest");
+        s.set_language_dialect("brink");
+        s.set_type_policy("strict");
+        let result = s.compile_project("main.ink");
+        let v: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        let warnings = v["warnings"].as_array().expect("warnings array");
+        let escape = warnings
+            .iter()
+            .find(|w| w["code"] == "E065")
+            .expect("expected an E065 escape from the unresolvable external param");
+        assert!(
+            escape["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("get_thing"),
+            "escape must name the offending external: {result}"
+        );
+        // Anchored at the `get_thing` name in `EXTERNAL get_thing(id)`, not
+        // line 1 / a shared fixed span.
+        assert_eq!(
+            escape["start"], 9,
+            "escape anchors at the decl span: {result}"
+        );
+        assert_eq!(
+            escape["end"], 18,
+            "escape anchors at the decl span: {result}"
+        );
+    }
+
+    /// An `EXTERNAL` with no manifest entry at all stays entirely unchecked
+    /// under strict (the deliberate "unregistered external = unchecked"
+    /// posture): there is no in-language way to type its bare-identifier
+    /// params, so this never emits an unactionable escape.
+    #[test]
+    fn issue_1004_unregistered_external_stays_unchecked_under_strict() {
+        let mut s = EditorSession::new();
+        s.update_file(
+            "main.ink",
+            "EXTERNAL get_thing(id)\n=== start ===\n{get_thing(1) == 2:\n  yes\n}\n-> DONE\n",
+        );
+        s.set_language_dialect("brink");
+        s.set_type_policy("strict");
+        let result = s.compile_project("main.ink");
+        let v: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        assert_eq!(
+            v["ok"], true,
+            "unregistered external must compile: {result}"
+        );
+        assert!(
+            !v["warnings"]
+                .as_array()
+                .expect("warnings")
+                .iter()
+                .any(|w| w["code"] == "E065"),
+            "an unregistered external's params must stay unchecked: {result}"
+        );
+    }
 }
 
 // ── Dialect (#368) wasm-only error-path tests ─────────────────────────

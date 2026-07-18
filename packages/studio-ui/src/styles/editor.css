@@ -819,6 +819,14 @@
   border: 1px solid var(--bs-border, #444);
   border-radius: 4px;
 }
+/* Host widget with `editor.surface: "inline"` (#990): mounts directly where
+ * the text field would sit — a bool toggle, a number stepper — no chip/Edit. */
+.brink-arg-form-inline {
+  flex: 1;
+  min-width: 90px;
+  display: flex;
+  align-items: center;
+}
 /* Host-widget summary chip + Edit toggle + embedded editor. */
 .brink-arg-form-host {
   flex: 1;
