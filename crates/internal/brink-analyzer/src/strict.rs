@@ -362,8 +362,22 @@ fn check_def(
     // Return type: only function knots carry return-value semantics; a
     // `void`-annotated function never needs a concrete return type either.
     if is_function {
-        let is_void = return_type
+        let has_void_annotation = return_type
             .is_some_and(|rt| matches!(rt, TypeExpr::Named { name, .. } if name == "void"));
+        // Issue #1028: a function whose body never carries a value-returning
+        // `return <expr>` — it either falls off the end or only ever
+        // bare-`return`s — infers as void exactly like an explicit `: void`
+        // annotation, rather than escaping as Unknown. typed-mode-spec §3
+        // only documents `void` as something the *author* writes for a
+        // no-return function; it is silent on what a same-shaped body
+        // without the annotation should infer as. The conservative reading
+        // (spec gap, flagged in the PR) is that inference shouldn't demand
+        // an annotation to say what the body already proves: nothing ever
+        // flows out of it. `body_types.has_value_return` is exactly that
+        // proof — `sig.return_ty.is_unknown()` alone can't distinguish
+        // "never returns a value" from "returns a value inference couldn't
+        // pin down" (a genuine Unknown-escape, left unaffected below).
+        let is_void = has_void_annotation || !body_types.has_value_return;
         let annotated =
             is_void || return_type.is_some_and(|rt| annotations::resolve(rt, names).is_some());
         if !is_void {
@@ -1739,14 +1753,39 @@ mod tests {
     }
 
     #[test]
-    fn unannotated_function_return_escapes_as_unknown() {
+    fn unannotated_function_with_no_return_statement_infers_void() {
+        // Issue #1028: a function whose body never carries a value-returning
+        // `return <expr>` — this one has no `return` at all — infers as void
+        // exactly like an explicit `: void` annotation would, rather than
+        // escaping as Unknown. Before #1028 this asserted an `E065` escape;
+        // that was the exact gap the issue closed (typed-mode-spec §3 already
+        // treats "no-return function" as `void`'s job — the annotation just
+        // shouldn't be *required* to say what the body already proves).
         let (hir, index, res) = build("=== function noop() ===\nHello.\n");
         let inference =
             crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
-        assert_eq!(diags.len(), 1, "{diags:?}");
-        assert_eq!(diags[0].code, DiagnosticCode::E065);
-        assert!(diags[0].message.contains("return"));
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn unannotated_function_with_unresolvable_return_value_still_escapes() {
+        // Issue #1028's flip side: a function *does* have a value-returning
+        // `return`, but the value's own type can't be pinned down (`x` is an
+        // otherwise-unconstrained param, which escapes in its own right too).
+        // The return type must still `E065`-escape — void inference reads
+        // "never returns a value", never "returns a value inference gave up
+        // on".
+        let (hir, index, res) = build("=== function noop(x) ===\n~ return x\n");
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert_eq!(diags.len(), 2, "{diags:?}");
+        assert!(diags.iter().all(|d| d.code == DiagnosticCode::E065));
+        assert!(
+            diags.iter().any(|d| d.message.contains("return type")),
+            "expected a return-type escape among {diags:?}"
+        );
     }
 
     #[test]
@@ -1766,6 +1805,80 @@ mod tests {
         let inference =
             crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    // ── issue #1028: void-return inference for a void-external wrapper ──
+
+    fn notify_manifest() -> brink_ir::HostManifest {
+        brink_ir::HostManifest {
+            types: Vec::new(),
+            externals: vec![brink_ir::ManifestExternal {
+                name: "notify".to_string(),
+                params: Vec::new(),
+                returns: brink_ir::TypeRef("void".to_string()),
+                kind: brink_ir::ExternalKind::default(),
+                doc: None,
+                widgets: Vec::new(),
+                path: Vec::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn wrapper_around_void_external_with_no_explicit_return_infers_void_and_is_strict_clean() {
+        // The issue's own motivating shape: a function whose body only calls
+        // a void external and never returns explicitly.
+        let (hir, index, res) =
+            build("EXTERNAL notify()\n=== function wrap_notify() ===\n~ notify()\n");
+        let diags = crate::strict_diagnostics(
+            &[(FileId(0), &hir)],
+            &index,
+            &res,
+            &strict_opts(Some(notify_manifest())),
+            None,
+            &BTreeMap::new(),
+        );
+        assert!(
+            diags.is_empty(),
+            "a void-external wrapper with no explicit return must infer void, not \
+             Unknown-escape: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn wrapper_around_void_external_with_a_real_return_path_is_unaffected() {
+        // Adding a genuine value-returning path alongside the void-external
+        // call must suppress the void inference exactly as before #1028 —
+        // the wrapper's own return type still resolves concretely (`int`)
+        // and stays clean, not because it's void but because `5` is.
+        let (hir, index, res) = build(
+            "EXTERNAL notify()\n=== function wrap_and_report() ===\n~ notify()\n~ return 5\n",
+        );
+        let inference = crate::infer_project(
+            &[(FileId(0), &hir)],
+            &index,
+            &res,
+            Some(&notify_manifest()),
+            &BTreeMap::new(),
+        );
+        let wrap_id =
+            annotations::def_id_for(&index, FileId(0), SymbolKind::Knot, "wrap_and_report")
+                .expect("wrap_and_report must resolve");
+        assert_eq!(
+            inference.signatures.get(&wrap_id).map(|s| &s.return_ty),
+            Some(&Ty::Int),
+            "a real return path must still infer its own concrete type, unaffected by the \
+             sibling void-external call"
+        );
+        let diags = crate::strict_diagnostics(
+            &[(FileId(0), &hir)],
+            &index,
+            &res,
+            &strict_opts(Some(notify_manifest())),
+            None,
+            &BTreeMap::new(),
+        );
         assert!(diags.is_empty(), "{diags:?}");
     }
 

@@ -96,6 +96,18 @@ pub(super) struct BodyResult {
     /// full picture for hover/diagnostics consumers (TM-5).
     pub locals: BTreeMap<String, Ty>,
     pub return_ty: Ty,
+    /// Issue #1028: whether the body contains at least one `return <expr>`
+    /// (a value-carrying return) anywhere — a bare `return`/`return ->
+    /// onwards` never sets this, and neither does falling off the end of the
+    /// body with no `return` at all. `false` is the "this function never
+    /// produces a value" signal strict mode's void inference (spec §3's
+    /// `void` annotation, applied without requiring the annotation) reads
+    /// instead of trusting `return_ty.is_unknown()` alone — `return_ty` stays
+    /// `Unknown` in *both* the "genuinely never returns a value" case and the
+    /// "returns a value whose type inference couldn't pin down" case, and
+    /// those two need different strict-mode treatment (the former is clean
+    /// void; the latter is a real Unknown-escape).
+    pub has_value_return: bool,
     /// Resolved call targets encountered (only those in `inferable`) — feeds
     /// call-graph construction on the first pass; harmless to recompute on
     /// later passes.
@@ -164,6 +176,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         ctx,
         locals: BTreeMap::new(),
         return_ty: Ty::Unknown,
+        has_value_return: false,
         calls: BTreeSet::new(),
         referenced_globals: BTreeSet::new(),
         effect_writes: BTreeSet::new(),
@@ -207,6 +220,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         params: param_types,
         locals: pass.locals,
         return_ty,
+        has_value_return: pass.has_value_return,
         calls: pass.calls,
         referenced_globals: pass.referenced_globals,
         effect_writes: pass.effect_writes,
@@ -241,6 +255,9 @@ struct InferPass<'a, 'b> {
     ctx: &'a BodyCtx<'b>,
     locals: BTreeMap<String, Ty>,
     return_ty: Ty,
+    /// See [`BodyResult::has_value_return`] — set the moment any
+    /// `return <expr>` is walked, anywhere in the body.
+    has_value_return: bool,
     calls: BTreeSet<DefinitionId>,
     referenced_globals: BTreeSet<DefinitionId>,
     effect_writes: BTreeSet<DefinitionId>,
@@ -1109,6 +1126,7 @@ impl InferPass<'_, '_> {
 
     fn infer_return(&mut self, value: Option<&Expr>, onwards: &[Expr]) {
         if let Some(v) = value {
+            self.has_value_return = true;
             let ty = self.infer_expr(v);
             self.return_ty = unify(&self.return_ty, &ty);
         }
