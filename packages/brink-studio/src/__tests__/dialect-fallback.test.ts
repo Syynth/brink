@@ -185,4 +185,38 @@ describe("d-flag vs capture-group-walk fallback produce identical ranges (#1013)
     });
     expectEqualAcrossPaths(custom, "|Eve|");
   });
+
+  it("nested consumed groups with multiple siblings at the same nesting level", () => {
+    // A pattern where a parent group `wrapper` contains two sibling nested
+    // groups `inner1` and `inner2` separated by literal text. Both nested
+    // groups participate in the match and must be found correctly within
+    // their parent's span on the fallback path. The challenge: each nested
+    // group's search must start from where the previous one ended, just like
+    // at the top level.
+    const custom = extendDialect(AT_CUE_DIALECT, {
+      elements: [
+        {
+          kind: "bracketed",
+          nature: "narrative",
+          source: {
+            pattern: "^(?<wrapper>\\[(?<inner1>[^,]*)(?:,)(?<inner2>[^\\]]*)\\])$",
+            content_group: "wrapper",
+            hidden: [],
+            template: "[${inner1},${inner2}]",
+          },
+        },
+      ],
+    });
+    const match = expectEqualAcrossPaths(custom, "[first,second]");
+    expect(match).toEqual({
+      kind: "bracketed",
+      attrs: [
+        ["inner1", "first"],
+        ["inner2", "second"],
+        ["wrapper", "[first,second]"],
+      ],
+      hiddenSpans: [],
+      contentSpan: [0, 14],
+    });
+  });
 });
