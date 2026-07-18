@@ -69,8 +69,9 @@ fn run_case(dir: &Path) -> String {
 
 fn assert_case(name: &str) {
     let dir = corpus_dir().join(name);
-    let expected_msg = format!("read expected.txt for {name}");
-    let expected = std::fs::read_to_string(dir.join("expected.txt")).expect(&expected_msg);
+    let expected =
+        brink_test_harness::corpus::load_golden_transcript(&dir.join("expected.txt"), name)
+            .expect("golden transcript must be present and non-vacuous");
     let actual = run_case(&dir);
     assert_eq!(
         actual, expected,
