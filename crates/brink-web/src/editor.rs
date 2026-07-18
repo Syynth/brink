@@ -715,40 +715,37 @@ impl EditorSession {
             }
         };
 
-        match product.story {
-            Some(story) => {
-                let warnings: Vec<DiagnosticJs> = product.warnings.iter().map(to_js).collect();
+        if let Some(story) = product.story {
+            let warnings: Vec<DiagnosticJs> = product.warnings.iter().map(to_js).collect();
 
-                let mut bytes = Vec::new();
-                brink_format::write_inkb(&story, &mut bytes);
+            let mut bytes = Vec::new();
+            brink_format::write_inkb(&story, &mut bytes);
 
-                let resp = CompileResult {
-                    ok: true,
-                    story_bytes: Some(bytes),
-                    warnings,
-                    error: None,
-                };
-                serde_json::to_string(&resp).unwrap_or_default()
-            }
-            None => {
-                // Match the prior driver's failure shape: the diagnostics
-                // channel carries the errors that prevented compilation,
-                // followed by any warnings gathered alongside them.
-                let diagnostics: Vec<DiagnosticJs> = product
-                    .errors
-                    .iter()
-                    .chain(product.warnings.iter())
-                    .map(to_js)
-                    .collect();
+            let resp = CompileResult {
+                ok: true,
+                story_bytes: Some(bytes),
+                warnings,
+                error: None,
+            };
+            serde_json::to_string(&resp).unwrap_or_default()
+        } else {
+            // Match the prior driver's failure shape: the diagnostics
+            // channel carries the errors that prevented compilation,
+            // followed by any warnings gathered alongside them.
+            let diagnostics: Vec<DiagnosticJs> = product
+                .errors
+                .iter()
+                .chain(product.warnings.iter())
+                .map(to_js)
+                .collect();
 
-                let resp = CompileResult {
-                    ok: false,
-                    story_bytes: None,
-                    warnings: diagnostics,
-                    error: None,
-                };
-                serde_json::to_string(&resp).unwrap_or_default()
-            }
+            let resp = CompileResult {
+                ok: false,
+                story_bytes: None,
+                warnings: diagnostics,
+                error: None,
+            };
+            serde_json::to_string(&resp).unwrap_or_default()
         }
     }
 
