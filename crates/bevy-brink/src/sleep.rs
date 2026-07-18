@@ -75,7 +75,10 @@
 //!   effect the following frame either way. Before admitting a flagged policy
 //!   for evaluation it also runs the attach-time purity gate
 //!   ([`check_named_condition_purity`], issue #995, §13.1 point 2): a
-//!   condition whose effect row shows writes is rejected loudly
+//!   condition whose effect row shows writes — including writes performed
+//!   transitively through a host-registered `EXTERNAL` binding the
+//!   [`CapabilityManifest`] declares `writes` for (issue #1040, the #995
+//!   follow-up; `docs/effects-spec.md` §9/§13) — is rejected loudly
 //!   ([`WakeConditionPurityError`]) and never called, not even once.
 //!
 //! [`WaitingForChoice`]: brink_runtime::StoryStatus::WaitingForChoice
@@ -94,13 +97,13 @@ use bevy_ecs::query::QueryState;
 use bevy_ecs::system::{Local, Query, Res};
 use bevy_ecs::world::World as EcsWorld;
 use bevy_log::warn;
-use brink_format::{DefinitionId, EffectRowEntry, Value};
+use brink_format::{DefinitionId, DirectEffects, EffectRowEntry, Value};
 use brink_runtime::{Program, StoryStatus};
 use thiserror::Error;
 
 use crate::asset::{BrinkProgram, ProgramAsset};
 use crate::bindings::call_ink_function;
-use crate::capability::ContainerAccess;
+use crate::capability::{CapabilityManifest, ContainerAccess};
 use crate::flow::BrinkFlow;
 use crate::globals::BrinkGlobals;
 
@@ -367,12 +370,33 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
 // an opaque row (the §3 pessimal top: effects inference couldn't summarize a
 // call it makes) makes the condition impure and rejects loudly.
 //
-// **Scope note** (recorded on issue #995): this checks the row's own
-// ink-level writes, not writes performed transitively through a
-// host-registered `EXTERNAL` the condition calls (that axis needs the BH-1
-// capability join — `CapabilityManifest`/`CapabilityRegistry`/
-// `compute_container_access` — which is its own coupling; flagged as a
-// follow-up rather than folded into this fix).
+// **Closed follow-up** (issue #1040, tracked from #995/#897): the check also
+// walks every `EXTERNAL` call a row (or a dispatch's static fallback) makes
+// and consults the [`CapabilityManifest`]'s declared `effects.writes` for it
+// (`docs/effects-spec.md` §9's "the manifest IS the external's row", §13.2's
+// grammar) — a manifest entry declaring one or more `writes` capabilities
+// rejects the condition exactly like an ink-level global write does. Unlike
+// the BH-1 access join (`compute_container_access`), this needs no
+// `CapabilityRegistry`/`ComponentId` resolution: the yes/no purity verdict
+// only needs the capability *names* a manifest entry lists, not what
+// `ComponentId` they resolve to.
+//
+// A manifest entry with no `writes` (reads-only, or no `effects` key at all —
+// §13.2's opt-in default) is accepted: it does not touch a write-capable ECS
+// capability, and purity is exactly "no writes". An `EXTERNAL` name with **no
+// manifest entry at all** is likewise accepted, deliberately matching the
+// BH-1 access join's posture (`resolve_call_atom`, `crate::capability`):
+// "a call whose `NameId` doesn't resolve, or that has no manifest entry at
+// all, contributes no access — silently, since not every `EXTERNAL` touches
+// ECS state (§13.2's `effects` key is opt-in)". Rejecting an unregistered
+// external here would fault the flow permanently — the same missed-wake bug
+// class the #913 detect-merge ruling treats as the worse failure mode
+// (`docs/decision-log.md` 2026-07-18, "a missed wake is the engine-race bug
+// class") — for a binding (e.g. a `bind_brink_fn` helper) that legitimately
+// never touches ECS state and was accepted before this check existed. Only a
+// manifest entry that affirmatively declares `writes` is rejected; the
+// manifest is an honesty contract, not a security boundary (the host is the
+// TCB — `docs/effects-spec.md` §9).
 //
 // A story whose `EffectRows` table is empty entirely (a converter-built
 // program, or a program that never went through the compiler's effects
@@ -449,6 +473,26 @@ pub enum WakeConditionPurityError {
         /// The condition name/path/label.
         condition: String,
     },
+    /// The condition (or a dispatch fallback its row folds in) calls a
+    /// host-registered `EXTERNAL` binding whose [`CapabilityManifest`] entry
+    /// declares one or more `writes` capabilities (issue #1040, the #995
+    /// follow-up; `docs/effects-spec.md` §9/§13).
+    #[error(
+        "wake condition `{condition}` is not pure: it calls EXTERNAL `{external}`, whose \
+         capability manifest declares writes {writes:?} — a FlowSleep condition is \
+         re-evaluated whenever a dependency moves (docs/effects-spec.md §13.1 point 2), and a \
+         writing binding would let that re-evaluation observe or cause a mutation \
+         (docs/effects-spec.md §9/§13, issue #1040)"
+    )]
+    ExternalWrites {
+        /// The condition name/path/label.
+        condition: String,
+        /// The `EXTERNAL` binding's name.
+        external: String,
+        /// The written capability names the manifest declares, sorted and
+        /// deduplicated.
+        writes: Vec<String>,
+    },
 }
 
 /// Find the `EffectRows` entry for `def`, if this story's table carries one.
@@ -475,6 +519,7 @@ fn write_names(program: &Program, ids: &[DefinitionId]) -> Vec<String> {
 fn check_row_purity(
     program: &Program,
     row: &EffectRowEntry,
+    manifest: &CapabilityManifest,
     condition_label: &str,
 ) -> Result<(), WakeConditionPurityError> {
     if row.direct.opaque
@@ -487,6 +532,12 @@ fn check_row_purity(
             condition: condition_label.to_owned(),
         });
     }
+
+    check_external_calls_purity(program, &row.direct, manifest, condition_label)?;
+    for dispatch in &row.dispatches {
+        check_external_calls_purity(program, &dispatch.fallback, manifest, condition_label)?;
+    }
+
     let mut writes = write_names(program, &row.direct.writes);
     for dispatch in &row.dispatches {
         writes.extend(write_names(program, &dispatch.fallback.writes));
@@ -503,6 +554,41 @@ fn check_row_purity(
     }
 }
 
+/// Issue #1040 (the #995 follow-up): check every `EXTERNAL` call atom in
+/// `direct` (a row's direct part, or a dispatch's static fallback) against
+/// `manifest`'s declared `effects.writes`. See the module section above for
+/// the full contract: a manifest entry declaring `writes` rejects; a
+/// reads-only entry, a no-`effects`-key entry, or no manifest entry at all
+/// (the same opt-in posture `crate::capability::resolve_call_atom` applies)
+/// all accept.
+fn check_external_calls_purity(
+    program: &Program,
+    direct: &DirectEffects,
+    manifest: &CapabilityManifest,
+    condition_label: &str,
+) -> Result<(), WakeConditionPurityError> {
+    for call in &direct.calls {
+        let external_name = program
+            .name_checked(call.name)
+            .map_or_else(|| format!("<{:?}>", call.name), str::to_owned);
+        // No manifest entry at all accepts, same as a reads-only/no-`effects`
+        // entry — see the doc comment above.
+        if let Some(external) = manifest.external(&external_name)
+            && !external.effects.writes.is_empty()
+        {
+            let mut writes = external.effects.writes.clone();
+            writes.sort();
+            writes.dedup();
+            return Err(WakeConditionPurityError::ExternalWrites {
+                condition: condition_label.to_owned(),
+                external: external_name,
+                writes,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Check purity for a **named** wake condition (`FlowSleep::condition`'s
 /// shape) — resolves `condition` to a `DefinitionId` via
 /// [`Program::definition_id_for_path`], then inspects its `EffectRows` row.
@@ -512,11 +598,17 @@ fn check_row_purity(
 /// compiler's effects emission) is outside the guarantee this checks — see
 /// the module section above.
 ///
+/// `manifest` threads the host's [`CapabilityManifest`] (issue #1040) so a
+/// condition calling a host-registered `EXTERNAL` binding is checked against
+/// that binding's declared `effects.writes`, not just the row's own
+/// ink-level writes.
+///
 /// # Errors
 /// See [`WakeConditionPurityError`].
 pub fn check_named_condition_purity(
     program: &Program,
     effect_rows: &[EffectRowEntry],
+    manifest: &CapabilityManifest,
     condition: &str,
 ) -> Result<(), WakeConditionPurityError> {
     if effect_rows.is_empty() {
@@ -532,7 +624,7 @@ pub fn check_named_condition_purity(
             condition: condition.to_owned(),
         }
     })?;
-    check_row_purity(program, row, condition)
+    check_row_purity(program, row, manifest, condition)
 }
 
 /// Check purity for a **dynamic fn-value** wake condition — a `Value`
@@ -541,7 +633,8 @@ pub fn check_named_condition_purity(
 /// value's target via [`Value::fn_target`], then inspects the same
 /// `EffectRows` row [`check_named_condition_purity`] does.
 ///
-/// Same empty-`effect_rows` bypass as [`check_named_condition_purity`].
+/// Same empty-`effect_rows` bypass as [`check_named_condition_purity`]. Same
+/// `manifest` threading (issue #1040) as [`check_named_condition_purity`].
 ///
 /// # Errors
 /// See [`WakeConditionPurityError`]. [`WakeConditionPurityError::NotAFunctionValue`]
@@ -549,6 +642,7 @@ pub fn check_named_condition_purity(
 pub fn check_value_condition_purity(
     program: &Program,
     effect_rows: &[EffectRowEntry],
+    manifest: &CapabilityManifest,
     value: &Value,
 ) -> Result<(), WakeConditionPurityError> {
     if effect_rows.is_empty() {
@@ -565,7 +659,7 @@ pub fn check_value_condition_purity(
             condition: label.clone(),
         }
     })?;
-    check_row_purity(program, row, &label)
+    check_row_purity(program, row, manifest, &label)
 }
 
 /// Ink truthiness for a wake condition's return value: a `Bool(true)`, a
@@ -691,6 +785,11 @@ pub fn run_flow_sleep<M: Send + Sync + 'static>(
     let mut purity_faults: Vec<(Entity, WakeConditionPurityError)> = Vec::new();
     {
         let programs = world.resource::<Assets<ProgramAsset>>();
+        // The manifest is app-global (not per-marker `M` — `CapabilityRegistry`
+        // is, but `CapabilityManifest` is the one host-authored table every
+        // marker's stories share, per `crate::capability`'s module docs), so a
+        // single fetch here covers every candidate this pass gathers.
+        let manifest = world.resource::<CapabilityManifest>();
         for (entity, sleep, flow, program_ref) in gather.iter(world) {
             let status = flow.inner.status();
             // An `-> END` flow is dead; the policy is inert (§13.1 point 5).
@@ -729,6 +828,7 @@ pub fn run_flow_sleep<M: Send + Sync + 'static>(
                             match check_named_condition_purity(
                                 &asset.program,
                                 &asset.effect_rows,
+                                manifest,
                                 &sleep.condition,
                             ) {
                                 Ok(()) => candidates.push(WakeCandidate {

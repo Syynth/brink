@@ -2299,6 +2299,194 @@ mod tests {
         );
     }
 
+    // ─── T2 §8 precision rung (docs/effects-spec.md §6 item 3/§8, issue #872):
+    // reading a concrete `EffectRow` off a stored `Ty::Fn` at an indirect/
+    // value call site, instead of the pessimal placeholder, when the origin
+    // is statically known ──────────────────────────────────────────────
+
+    /// The core narrowing case: a write-once local holding a `#fn(target)`
+    /// literal, called with the direct `f(args)` syntax. `user`'s row must
+    /// stop being pessimal and instead cover `bar`'s real row (the write to
+    /// `total`) — the exact improvement over the old unconditional-opaque
+    /// floor `a_call_through_a_function_value_is_pessimal` still pins for
+    /// the genuinely-unknown (param) case.
+    #[test]
+    fn known_fn_value_call_narrows_the_row_instead_of_pessimal() {
+        let src = "VAR total = 0\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function user() ===\n~ temp f = #fn(bar)\n~ return f()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let total = id_of(&index, "total");
+        assert!(
+            !rows[&user].opaque,
+            "a call through a write-once local with a known #fn origin must narrow, not stay pessimal"
+        );
+        assert!(
+            rows[&user].writes.contains(&total),
+            "the narrowed row must cover bar's real write to total"
+        );
+    }
+
+    /// Same shape, through the explicit `call(f, …)` intrinsic form —
+    /// `check_value_call`'s other caller.
+    #[test]
+    fn known_fn_value_call_intrinsic_form_narrows_the_row() {
+        let src = "VAR total = 0\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function user() ===\n~ temp f = #fn(bar)\n~ return call(f)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let total = id_of(&index, "total");
+        assert!(
+            !rows[&user].opaque,
+            "call(f) through a known origin must narrow"
+        );
+        assert!(rows[&user].writes.contains(&total));
+    }
+
+    /// A `bind(…)`-wrapped fn-value ("bound fn-values", the issue's own
+    /// phrasing) stored in a write-once local — `bind` never changes which
+    /// def eventually runs, so the origin still traces through.
+    #[test]
+    fn bound_fn_value_through_a_write_once_local_narrows() {
+        let src = "VAR total = 0\n\
+                   === function bar(n) ===\n~ total = total + n\n~ return total\n\
+                   === function user() ===\n~ temp f = bind(#fn(bar), 5)\n~ return call(f)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let total = id_of(&index, "total");
+        assert!(
+            !rows[&user].opaque,
+            "a bind()-wrapped known origin stored write-once must still narrow"
+        );
+        assert!(rows[&user].writes.contains(&total));
+    }
+
+    /// A fully inline `#fn(target)` literal passed straight into `call(…)`
+    /// with no intermediate local at all — no stored-value/write-count
+    /// question applies, so this narrows unconditionally.
+    #[test]
+    fn inline_fn_literal_at_the_call_site_narrows_without_a_stored_local() {
+        let src = "VAR total = 0\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function user() ===\n~ return call(#fn(bar))\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let total = id_of(&index, "total");
+        assert!(
+            !rows[&user].opaque,
+            "an inline #fn literal callee must narrow"
+        );
+        assert!(rows[&user].writes.contains(&total));
+    }
+
+    /// Conservative-total's sacred guard: a local reassigned to a *second*,
+    /// different known origin must stay pessimal — the write-once check must
+    /// actually gate on the whole body's write count, not just "some origin
+    /// was seen at some point". Regression shape for the exact hazard the
+    /// ground-truth harness (#885/#891 lineage) exists to catch: narrowing
+    /// this would under-report whichever branch didn't run at analysis time.
+    #[test]
+    fn a_local_reassigned_to_a_different_known_origin_stays_pessimal() {
+        let src = "VAR total = 0\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function baz() ===\n~ total = total + 100\n~ return total\n\
+                   === function user(cond) ===\n~ temp f = #fn(bar)\n\
+                   {cond:\n  ~ f = #fn(baz)\n}\n~ return f()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        assert!(
+            rows[&user].opaque,
+            "a reassigned local must not be trusted as write-once — narrowing here would be unsound"
+        );
+    }
+
+    /// Transitive composition: narrowing must feed the *same* SCC effect
+    /// fixpoint a direct call edge does, so a callee-of-the-callee's atoms
+    /// still propagate all the way up through the narrowed edge — not just
+    /// the immediately-dispatched def's own atoms.
+    #[test]
+    fn narrowed_call_composes_transitively_through_the_callees_own_callee() {
+        let src = "VAR total = 0\n\
+                   === function baz() ===\n~ total = total + 1\n~ return total\n\
+                   === function bar() ===\n~ return baz()\n\
+                   === function user() ===\n~ temp f = #fn(bar)\n~ return f()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let total = id_of(&index, "total");
+        assert!(
+            !rows[&user].opaque,
+            "narrowing to bar must not itself force pessimal"
+        );
+        assert!(
+            rows[&user].writes.contains(&total),
+            "bar's own row already transitively covers baz's write to total \
+             (ordinary direct-call SCC propagation) — user's narrowed edge to \
+             bar must inherit that whole row, not just bar's own direct atoms"
+        );
+    }
+
+    /// The pre-existing pessimal-floor regression must hold unchanged: an
+    /// `Unknown`-typed callee (a param with no traceable origin at all) still
+    /// gets no narrowing — `local_call_origin` only recognizes a bare `Temp`
+    /// name, and a param is never classified as `Local` at all now, so the
+    /// floor holds regardless of write count.
+    #[test]
+    fn a_call_through_an_unresolvable_param_stays_pessimal() {
+        let src = "=== function apply(cb) ===\n~ return cb(1)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let apply = id_of(&index, "apply");
+        assert!(
+            rows[&apply].opaque,
+            "a call through a function value with no known origin must stay pessimal"
+        );
+    }
+
+    /// Soundness regression (review finding on #872's initial landing): a
+    /// `Param` carries an implicit caller-provided initial value that
+    /// `local_write_counts` never sees. If a param is reassigned exactly
+    /// once inside the body, its whole-body write count reaches 1 — but any
+    /// call site *reachable before* that reassignment still runs against
+    /// the caller's arbitrary (unknown) fn value, not the known origin the
+    /// single write traces to. `local_call_origin` narrowing a `Param` the
+    /// same way it narrows a write-once `Temp` would incorrectly narrow
+    /// that earlier call site too, under-reporting whatever effects the
+    /// caller's actual callee has that `bar` doesn't. `apply`'s row must
+    /// stay opaque: `cb` is a `Param`, never eligible for `Local` narrowing
+    /// regardless of how many times it's written.
+    #[test]
+    fn a_param_reassigned_once_called_before_the_write_stays_pessimal() {
+        let src = "VAR total = 0\n\
+                   === function bar(n) ===\n~ total = total + n\n~ return total\n\
+                   === function apply(cb, guard) ===\n\
+                   {guard:\n  ~ return cb(1)\n}\n~ cb = #fn(bar)\n~ return cb(1)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let apply = id_of(&index, "apply");
+        assert!(
+            rows[&apply].opaque,
+            "a param reassigned exactly once inside the body must not narrow \
+             calls reachable before that reassignment — the param still holds \
+             the caller's arbitrary fn value there"
+        );
+    }
+
     // ─── Issue #1027: `type_ref_to_ty` and `external_check::resolve_type`
     // agree on unregistered semantic-type names ──────────────────────────
 

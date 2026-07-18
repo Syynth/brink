@@ -131,11 +131,15 @@ pub(super) struct BodyResult {
     /// T2-1: the effect-atom *call-kind* set — the `EXTERNAL` binding names
     /// this body directly calls (spec §2's `call external-kind` atoms).
     pub external_calls: BTreeSet<String>,
-    /// T2-1: the body performed a call *through a function value* (or another
-    /// construct whose callee effects inference cannot summarize), so its
-    /// effect row is pessimal (docs/effects-spec.md §3/§4 — the
-    /// conservative-total floor; reading a concrete row off a stored `Ty::Fn`
-    /// is the §8 precision refinement, not this slice).
+    /// T2-1: the body performed a call *through a function value* whose
+    /// origin couldn't be narrowed (or another construct whose callee
+    /// effects inference cannot summarize), so its effect row is pessimal
+    /// (docs/effects-spec.md §3/§4 — the conservative-total floor). Issue
+    /// #872 (§8 precision rung) reads a concrete origin back off a
+    /// write-once local's stored `Ty::Fn` when one is statically known —
+    /// see `InferPass::resolve_pending_value_calls` — so this only stays
+    /// `true` when no such origin could be proven; the heap (VAR/CONST
+    /// cells) case remains coarse/pessimal, still unaddressed.
     pub effect_opaque: bool,
     /// T1c: statically-checkable call-through-value facts (see
     /// [`super::ValueCallFact`]) — recorded here because this walk is the
@@ -184,8 +188,15 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         effect_opaque: false,
         annotated,
         value_calls: Vec::new(),
+        local_write_counts: BTreeMap::new(),
+        local_fn_origin: BTreeMap::new(),
+        pending_value_calls: Vec::new(),
     };
     pass.infer_block(def.body);
+    // T2 §8 precision rung (issue #872): resolve every value-call site now
+    // that the whole body's write counts are final — see
+    // `resolve_pending_value_calls`'s doc for why this must run post-walk.
+    pass.resolve_pending_value_calls();
 
     let param_types = def
         .params
@@ -271,6 +282,55 @@ struct InferPass<'a, 'b> {
     /// two-independent-derivations comparison stays intact.
     annotated: BTreeMap<String, Ty>,
     value_calls: Vec<ValueCallFact>,
+    /// T2 §8 precision rung (docs/effects-spec.md §6 item 3/§8, issue #872): every
+    /// write (`TempDecl` initializer or bare-`Path` `Assignment`) to a
+    /// Temp local, by name, counted regardless of whether the write's
+    /// value traces to a known `#fn` origin. Param writes are deliberately
+    /// not counted here for narrowing purposes (see
+    /// [`InferPass::local_call_origin`]'s doc) — a Param carries an implicit
+    /// caller-provided initial value no write count can ever see. Consulted only after the whole
+    /// body is walked ([`InferPass::resolve_pending_value_calls`]) — a
+    /// single-pass "as accumulated so far" read would miss a reassignment
+    /// that appears later in program order but, inside a loop body, executes
+    /// *before* an earlier-positioned call on the next iteration: reading a
+    /// partial count there would risk narrowing a call whose live value
+    /// could actually vary, an unsound under-report. Whole-body-final counts
+    /// close that hole: a name is trusted only when it was written *exactly
+    /// once*, period, so loop-carried reassignment always poisons it.
+    local_write_counts: BTreeMap<String, u32>,
+    /// The `#fn(target, …)`/`bind(…)`-chain origin recorded at each local's
+    /// write (last-write-wins bookkeeping only) — meaningful only once
+    /// `local_write_counts` confirms that name had exactly one write.
+    local_fn_origin: BTreeMap<String, Option<DefinitionId>>,
+    /// Every value-call site's narrowing candidate, recorded during the walk
+    /// and resolved once by [`InferPass::resolve_pending_value_calls`] after
+    /// the whole body (and therefore `local_write_counts`) is final.
+    pending_value_calls: Vec<ValueCallOrigin>,
+}
+
+/// T2 §8 precision rung (docs/effects-spec.md §6 item 3/§8, issue #872): one
+/// value-call site's callee, classified for effect-row narrowing purposes.
+/// The optimizer-not-gatekeeper doctrine (spec §8) means every arm here is
+/// free to fall back to `Unknown` — narrowing only ever *removes* the
+/// pessimal floor when it holds a positive, whole-body-checked proof of a
+/// single origin; it never manufactures a new failure mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ValueCallOrigin {
+    /// The callee is a bare Temp local reference (never a Param — see
+    /// [`InferPass::local_call_origin`]'s doc for why a Param can't be
+    /// trusted here). Resolved post-walk: narrowable only if `name` was
+    /// written exactly once in the whole body and that write's value traced
+    /// to a single known def.
+    Local(String),
+    /// The callee is *itself* (optionally through one or more `bind(…)`
+    /// wrappers) an `#fn(target, …)` literal evaluated fresh at this call
+    /// site — no stored value, so no write-count question applies; always
+    /// narrowable.
+    Inline(DefinitionId),
+    /// Anything else (a VAR/CONST global — the heap case, still coarse per
+    /// spec §5/§8 — an index, a direct call's return value, a param with no
+    /// further trace, …): the pessimal floor, unchanged from today.
+    Unknown,
 }
 
 impl InferPass<'_, '_> {
@@ -386,6 +446,187 @@ impl InferPass<'_, '_> {
             // fixpoint-edge set) — the binding *name* is the terminal kind the
             // host acts on.
             self.external_calls.insert(info.name.clone());
+        }
+    }
+
+    // ── T2 §8 precision rung (docs/effects-spec.md §6 item 3/§8, issue #872) ──
+
+    /// The single def a `#fn(target, …)` literal (optionally through one or
+    /// more `bind(…)` wrappers — partial application never changes *which*
+    /// def eventually runs) traces to, if `expr` is exactly that shape.
+    /// `bind`'s intrinsic form is matched the same way `infer_intrinsic`
+    /// classifies it: an unresolved single-segment path named `bind` with a
+    /// non-empty argument list (a real `bind`-named def always wins
+    /// resolution first, same shadow-fallback precedent as every other
+    /// intrinsic dispatch in this module).
+    ///
+    /// Deliberately gated on [`Self::is_effect_edge_target`], **not**
+    /// `ctx.known_sigs`: `def_effect_atoms` (this pass's caller, for the
+    /// effects fixpoint specifically) always runs with an *empty*
+    /// `known_sigs` — effects inference is advisory and doesn't thread the
+    /// type-inference SCC fixpoint's signatures through (see
+    /// `def_effect_atoms`'s doc) — so a `known_sigs` check here would never
+    /// once succeed and this whole rung would be dead code. `inferable` and
+    /// the symbol index, unlike `known_sigs`, are always the real
+    /// project-wide sets in this context.
+    fn fn_literal_write_origin(&self, expr: &Expr) -> Option<DefinitionId> {
+        match expr {
+            Expr::FnLiteral(fl) => {
+                let def = self.resolve(fl.target.range)?;
+                self.is_effect_edge_target(def).then_some(def)
+            }
+            Expr::Call(path, args)
+                if path.segments.len() == 1
+                    && path.segments[0].text == "bind"
+                    && self.resolve(path.range).is_none()
+                    && !args.is_empty() =>
+            {
+                self.fn_literal_write_origin(&args[0])
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `def` is a legitimate effect-fixpoint edge target — an
+    /// inferable knot/stitch (joins via the SCC fixpoint) or an `EXTERNAL`
+    /// binding (a call-kind atom) — exactly the two cases
+    /// [`Self::record_call_edge`] does something with. Anything else (an
+    /// unresolvable/stray id) must **not** be treated as a known origin: a
+    /// narrowed call resolves through `record_call_edge`, which would
+    /// silently no-op for a target neither branch recognizes, dropping the
+    /// call atom entirely with no `effect_opaque` fallback — an under-report.
+    /// This gate is what keeps that path unreachable.
+    fn is_effect_edge_target(&self, def: DefinitionId) -> bool {
+        self.ctx.inferable.contains(&def)
+            || self
+                .ctx
+                .index
+                .symbols
+                .get(&def)
+                .is_some_and(|info| info.kind == SymbolKind::External)
+    }
+
+    /// Classify a resolved call-through-value target for narrowing: a bare
+    /// Temp local (checked post-walk against its whole-body write count) is
+    /// [`ValueCallOrigin::Local`]; anything else (a VAR/CONST global — the
+    /// heap case, still coarse per spec §5/§8 — a Param, or an
+    /// unresolvable/non-local kind) is [`ValueCallOrigin::Unknown`].
+    ///
+    /// **Param is deliberately excluded** (soundness, not a missed
+    /// optimization): a Temp cannot be referenced before its defining
+    /// `TempDecl`, so "written exactly once in the whole body" really does
+    /// bound its value at every read. A Param, by contrast, carries an
+    /// implicit caller-provided initial value that
+    /// [`Self::local_write_counts`] never counts — a param reassigned
+    /// exactly once inside the body would reach `write_count == 1` and
+    /// [`Self::resolve_pending_value_calls`] would narrow *every* call site
+    /// through it, including ones reachable before that single
+    /// reassignment, where the param still holds the caller's arbitrary
+    /// (unknown) fn value. That would violate the conservative-total
+    /// invariant this rung promises to preserve.
+    fn local_call_origin(&self, def: DefinitionId) -> ValueCallOrigin {
+        match self.ctx.index.symbols.get(&def) {
+            Some(info) if info.kind == SymbolKind::Temp => {
+                ValueCallOrigin::Local(info.name.clone())
+            }
+            _ => ValueCallOrigin::Unknown,
+        }
+    }
+
+    /// Classify an arbitrary callee *expression* (the `call(f, …)`/
+    /// `bind(f, …)` intrinsic forms' `f`, an arbitrary expression rather
+    /// than a resolvable `Path`) for narrowing: an inline `#fn`/`bind`-chain
+    /// literal is [`ValueCallOrigin::Inline`] (trusted immediately — no
+    /// stored value); a bare local reference (Param or Temp) defers to
+    /// [`Self::local_call_origin`], which only ever narrows the Temp case;
+    /// anything else is [`ValueCallOrigin::Unknown`].
+    fn value_call_origin(&self, expr: &Expr) -> ValueCallOrigin {
+        if let Some(def) = self.fn_literal_write_origin(expr) {
+            return ValueCallOrigin::Inline(def);
+        }
+        if let Expr::Path(p) = expr
+            && p.segments.len() == 1
+            && let Some(def) = self.resolve(p.range)
+        {
+            return self.local_call_origin(def);
+        }
+        ValueCallOrigin::Unknown
+    }
+
+    /// Record one write to a Param/Temp local for later write-count-gated
+    /// narrowing — a no-op for any other resolution (mirrors [`Self::observe`]'s
+    /// own guard: a VAR/CONST/other target isn't tracked by this local-only
+    /// rung at all, the heap case stays pessimal per spec §5/§8).
+    fn bump_local_write(&mut self, name: &str, origin: Option<DefinitionId>) {
+        *self.local_write_counts.entry(name.to_string()).or_insert(0) += 1;
+        self.local_fn_origin.insert(name.to_string(), origin);
+    }
+
+    /// [`Self::bump_local_write`] for an `Assignment`/`BlockStmt::Assignment`
+    /// target expression — only a bare single-segment `Path` resolving to a
+    /// Temp counts (a dotted/indexed target reassigns a *nested* slot, not
+    /// the local's own value, same guard [`Self::observe`] applies).
+    ///
+    /// Param is excluded here too — not for soundness (bumping a count only
+    /// ever makes [`Self::local_call_origin`]'s write-once check *stricter*,
+    /// since Param is never classified as [`ValueCallOrigin::Local`] in the
+    /// first place, so this can't under-report), but to avoid spuriously
+    /// pessimizing a same-named Temp elsewhere in the body: without this
+    /// guard, a Param write would bump `local_write_counts` under that
+    /// param's name, and if a Temp happens to share the name the two
+    /// tallies would collide in the same map entry.
+    fn record_fn_write(&mut self, target: &Expr, origin: Option<DefinitionId>) {
+        let Expr::Path(p) = target else { return };
+        if p.segments.len() != 1 {
+            return;
+        }
+        let Some(def) = self.resolve(p.range) else {
+            return;
+        };
+        let Some(info) = self.ctx.index.symbols.get(&def) else {
+            return;
+        };
+        if info.kind != SymbolKind::Temp {
+            return;
+        }
+        let name = info.name.clone();
+        self.bump_local_write(&name, origin);
+    }
+
+    /// Resolve every value-call site recorded during the walk
+    /// ([`Self::check_value_call`]'s `pending_value_calls.push`) against the
+    /// now-final `local_write_counts`/`local_fn_origin` — **must** run after
+    /// [`InferPass::infer_block`] finishes the whole body (see
+    /// `local_write_counts`'s field doc for the loop-carried-reassignment
+    /// hazard a mid-walk read would risk). `Inline` narrows unconditionally;
+    /// `Local` narrows only if its name was written exactly once and that
+    /// write traced to a known def; `Unknown` (and any `Local` that fails
+    /// the write-once check) keeps the pessimal floor — `effect_opaque =
+    /// true`, exactly what every value call unconditionally set before this
+    /// rung existed. A narrowed call routes through
+    /// [`Self::record_call_edge`], the same edge a direct call/`#fn` creation
+    /// site records, so it correctly lands in `self.calls` (inferable
+    /// knot/stitch — joins via the SCC effect fixpoint) or
+    /// `self.external_calls` (an `EXTERNAL` binding — a call-kind atom) per
+    /// what the origin actually is.
+    fn resolve_pending_value_calls(&mut self) {
+        let pending = std::mem::take(&mut self.pending_value_calls);
+        for origin in pending {
+            let narrowed = match origin {
+                ValueCallOrigin::Inline(def) => Some(def),
+                ValueCallOrigin::Local(name) => {
+                    if self.local_write_counts.get(&name).copied() == Some(1) {
+                        self.local_fn_origin.get(&name).copied().flatten()
+                    } else {
+                        None
+                    }
+                }
+                ValueCallOrigin::Unknown => None,
+            };
+            match narrowed {
+                Some(def) => self.record_call_edge(def),
+                None => self.effect_opaque = true,
+            }
         }
     }
 
@@ -704,7 +945,14 @@ impl InferPass<'_, '_> {
             .collect::<Vec<_>>()
             .join(".");
 
-        self.check_value_call(path.range, &callee, callee_ty, args, arg_tys)
+        // T2 §8 (issue #872): `f(args)`'s callee is always a resolvable
+        // name (a `HirPath`, never an inline expression), so its narrowing
+        // classification is always `local_call_origin(def)` — narrowable
+        // only for a bare Temp reference; a Param, a VAR/CONST global (the
+        // heap case, still coarse per spec §5/§8), or anything else is
+        // `Unknown`.
+        let narrow_hint = self.local_call_origin(def);
+        self.check_value_call(path.range, &callee, callee_ty, args, arg_tys, narrow_hint)
     }
 
     /// Boundary-annotation fallback for a callee whose body-inferred type
@@ -748,17 +996,21 @@ impl InferPass<'_, '_> {
         callee_ty: Ty,
         args: &[Expr],
         arg_tys: &[Ty],
+        narrow_hint: ValueCallOrigin,
     ) -> Ty {
         // T2-1 (docs/effects-spec.md §3/§4): this is a call *through a function
         // value* — `f(args)` or `call(f, args…)`, the one place a real
         // callee's effects escape the static call graph. Rows ride `Ty::Fn`
-        // (spec §5, the heap answer) but this advisory slice doesn't yet read a
-        // concrete row back off the value's type (the §8 precision rung), so
-        // the sound floor is pessimal: an `Unknown`-typed callee slot has no
-        // row → the enclosing def touches everything. `bind` creates a value
-        // rather than calling one, so it routes through `check_bind_value`, not
-        // here.
-        self.effect_opaque = true;
+        // (spec §5, the heap answer). T2 §8 (issue #872): when `narrow_hint`
+        // proves a single, statically-known origin def, that def's row gets
+        // pulled into this body's row transitively (same edge a direct call
+        // records) instead of falling to the pessimal floor — resolved once
+        // by `resolve_pending_value_calls` after the whole body is walked, so
+        // `effect_opaque` is *not* forced here; every other case (an
+        // ambiguous/unknown origin) still degrades to pessimal there, exactly
+        // this fn's old unconditional behavior. `bind` creates a value rather
+        // than calling one, so it routes through `check_bind_value`, not here.
+        self.pending_value_calls.push(narrow_hint);
         match callee_ty {
             Ty::Fn(params, ret) => {
                 if args.len() != params.len() {
@@ -1029,7 +1281,19 @@ impl InferPass<'_, '_> {
                     callee_ty = ann;
                 }
                 let callee = brink_ir::display_expr(&args[0]);
-                self.check_value_call(range, &callee, callee_ty, &args[1..], &arg_tys[1..])
+                // T2 §8 (issue #872): `call(f, …)`'s `f` is an arbitrary
+                // expression, not a resolvable `Path` the way a direct
+                // call's callee always is — `value_call_origin` covers both
+                // the inline-literal and bare-local shapes.
+                let narrow_hint = self.value_call_origin(&args[0]);
+                self.check_value_call(
+                    range,
+                    &callee,
+                    callee_ty,
+                    &args[1..],
+                    &arg_tys[1..],
+                    narrow_hint,
+                )
             }
             // `bind(f, args…)` — spec §3's "consume the head of the param
             // row" rule; the result is a new `fn(remaining…): R` value, not
@@ -1091,12 +1355,22 @@ impl InferPass<'_, '_> {
                 self.register_ascription(t);
                 let ty = t.value.as_ref().map_or(Ty::Unknown, |e| self.infer_expr(e));
                 self.bind_local(&t.name.text, &ty);
+                // T2 §8 (issue #872): track this write towards the local's
+                // whole-body write count/origin — see `bump_local_write`.
+                let origin = t
+                    .value
+                    .as_ref()
+                    .and_then(|e| self.fn_literal_write_origin(e));
+                self.bump_local_write(&t.name.text, origin);
             }
             Stmt::Assignment(a) => {
                 self.infer_expr(&a.target);
                 let ty = self.infer_expr(&a.value);
                 self.observe(&a.target, &ty);
                 self.record_write(&a.target);
+                // T2 §8 (issue #872): see `record_fn_write`.
+                let origin = self.fn_literal_write_origin(&a.value);
+                self.record_fn_write(&a.target, origin);
             }
             Stmt::Return(r) => self.infer_return(r.value.as_ref(), &r.onwards_args),
             Stmt::ChoiceSet(cs) => self.infer_choice_set(cs),
@@ -1201,12 +1475,21 @@ impl InferPass<'_, '_> {
                 self.register_ascription(t);
                 let ty = t.value.as_ref().map_or(Ty::Unknown, |e| self.infer_expr(e));
                 self.bind_local(&t.name.text, &ty);
+                // T2 §8 (issue #872): see `Stmt::TempDecl`'s twin above.
+                let origin = t
+                    .value
+                    .as_ref()
+                    .and_then(|e| self.fn_literal_write_origin(e));
+                self.bump_local_write(&t.name.text, origin);
             }
             BlockStmt::Assignment(a) => {
                 self.infer_expr(&a.target);
                 let ty = self.infer_expr(&a.value);
                 self.observe(&a.target, &ty);
                 self.record_write(&a.target);
+                // T2 §8 (issue #872): see `Stmt::Assignment`'s twin above.
+                let origin = self.fn_literal_write_origin(&a.value);
+                self.record_fn_write(&a.target, origin);
             }
             BlockStmt::Return(r) => self.infer_return(r.value.as_ref(), &r.onwards_args),
             BlockStmt::If(i) => self.infer_if(i),
