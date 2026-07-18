@@ -35,6 +35,16 @@
 //! This is on top of, not instead of, FG-2's own hand-crafted
 //! `fg2_scc_dependency_edges.rs` regression test.
 //!
+//! Topology-thin corpus (issue #986): the original `PROJECTS` list was
+//! mostly shallow, few-edge call graphs, so op 7 had little real
+//! dependency-graph structure to churn against. `tier2/callgraph/*` adds
+//! purpose-built seeds with deeper/wider shapes — a call chain, a
+//! diamond (fan-out/fan-in with a shared callee), and a genuine cycle built
+//! from mutually-tunneling knots — see `PROJECTS`'s doc comment for the
+//! per-fixture rationale. Deliberately excluded from the oracle corpus (no
+//! `oracle/` subdirectory) so they add real topology without moving the
+//! ratchet.
+//!
 //! Bounded: `EDITS_PER_PROJECT` edits over a fixed project list; every step
 //! is a small-project compile, so the whole test stays well under the
 //! workspace's test-time budget and cannot hang (no loops without bounds).
@@ -52,12 +62,36 @@ const EDITS_PER_PROJECT: u64 = 16;
 
 /// Corpus-derived projects under `tests/` (workspace root), chosen to cover
 /// single-file, flat-include, and nested-include shapes.
+///
+/// `tier2/callgraph/*` (issue #986): purpose-built fixtures — not part of
+/// the oracle corpus (no `oracle/` subdirectory, so `collect_oracle_cases`
+/// never sees them and the ratchet is untouched) — that give the call-graph
+/// topology op (issue #639, op 7 in `mutate()`) real dependency-graph depth
+/// and width to churn, instead of the few-edges-thin shapes the rest of
+/// `PROJECTS` happens to have:
+///
+/// - `deep-chain`: a 5-deep function-call chain and a parallel 5-deep
+///   knot-divert chain, so an added/removed edge can land mid-chain and
+///   shift `scc_membership()`'s condensation across real depth.
+/// - `diamond-shared-callee`: a fan-out/fan-in shape at both the function
+///   level (`diamond_top` calls `diamond_left` and `diamond_right`, both of
+///   which call the shared `diamond_bottom`) and the knot-divert level (a
+///   choice fans out to two branches that reconverge), exercising a
+///   dependency graph with real width and a shared descendant.
+/// - `cycle-via-tunnels`: a genuine 3-node call-graph cycle (`ping` tunnels
+///   to `pong`, `pong` tunnels to `ring`, `ring` tunnels back to `ping`,
+///   depth-guarded so it still terminates), giving op 7 a non-trivial SCC
+///   (size > 1) to add/remove edges against instead of every other
+///   project's DAG-only shape.
 const PROJECTS: &[&str] = &[
     "tier1/basics/I002-fogg-comforts-passepartout",
     "tier1/weave/I041-weave-gathers",
     "tier1/knots/I128-knot-stitch-gather-counts",
     "tier2/variabletext/sequence",
     "tier2/functions/using-function-and-increment-together",
+    "tier2/callgraph/deep-chain",
+    "tier2/callgraph/diamond-shared-callee",
+    "tier2/callgraph/cycle-via-tunnels",
     "tier3/misc/I024-includes",
     "tier3/misc/I025-nested-includes",
 ];
