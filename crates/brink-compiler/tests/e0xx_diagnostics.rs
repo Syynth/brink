@@ -73,7 +73,7 @@ fn compile(
 
 fn compile_multifile(
     entry: &str,
-    files: HashMap<&str, &str>,
+    files: &HashMap<&str, &str>,
     options: AnalysisOptions,
 ) -> Result<brink_compiler::CompileOutput, brink_compiler::CompileError> {
     brink_compiler::compile_with_options(
@@ -399,7 +399,7 @@ fn e025_multifile_with_earlier_multibyte_utf8_maintains_byte_offsets() {
         ("helpers.ink", "== café ==\nWelcome to the café.\n-> END\n"),
         ("main.ink", "INCLUDE helpers.ink\n~ temp t = missing\nHi\n"),
     ]);
-    let err = compile_multifile("main.ink", files, default_options())
+    let err = compile_multifile("main.ink", &files, default_options())
         .map(|_| ())
         .expect_err("unresolved reference should fail compile");
     let diags = errors_of(err);
