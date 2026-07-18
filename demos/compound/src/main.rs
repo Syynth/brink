@@ -23,6 +23,7 @@ mod doors;
 mod guards;
 mod hud;
 mod ink_alarm;
+mod ink_doors;
 mod layout_gen;
 mod loot;
 mod nav;
@@ -36,7 +37,7 @@ mod world;
 
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
-use bevy_brink::BrinkPlugin;
+use bevy_brink::{BrinkBindingsAppExt, BrinkPlugin, advance_batch};
 
 use crate::alarm::{Alarm, GlobalAlarm, SpottedEvent, alarm_system};
 use crate::cameras::{camera_ai_system, camera_interact_system, draw_camera_cones};
@@ -51,6 +52,10 @@ use crate::guards::{
 use crate::hud::{setup_hud, update_hud};
 use crate::ink_alarm::{
     AlarmImpl, AlarmStory, alarm_is_ink, alarm_is_rust, ink_alarm_system, spawn_ink_alarm,
+};
+use crate::ink_doors::{
+    DoorsImpl, DoorsStory, attach_ink_door_flows, doors_is_ink, doors_is_rust,
+    ink_door_sync_system, is_switch_on,
 };
 use crate::loot::gold_pickup_system;
 use crate::nav::NavGraph;
@@ -77,6 +82,8 @@ pub struct ShowCones(pub bool);
 fn main() {
     let alarm_impl = AlarmImpl::from_args();
     info!("[alarm] implementation: {}", alarm_impl.label());
+    let doors_impl = DoorsImpl::from_args();
+    info!("[doors] implementation: {}", doors_impl.label());
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -92,6 +99,12 @@ fn main() {
         // alarm flow is ever spawned); drives `assets/alarm.ink` in ink mode.
         .add_plugins(BrinkPlugin::<AlarmStory>::default())
         .insert_resource(alarm_impl)
+        // Phase 1b: doors/switches, the minimal reactive (BH-4 wake_when)
+        // entity. Harmless in Rust mode (no door flow requests are ever
+        // spawned); drives `assets/doors.ink` in ink mode.
+        .add_plugins(BrinkPlugin::<DoorsStory>::default())
+        .bind_brink_query::<DoorsStory, _, _>("is_switch_on", is_switch_on)
+        .insert_resource(doors_impl)
         .init_state::<Phase>()
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06)))
         .init_resource::<Alarm>()
@@ -119,7 +132,18 @@ fn main() {
         // Always-on systems.
         .add_systems(
             Update,
-            (start_round_system, update_hud, toggle_cones, spawn_rats_key),
+            (
+                start_round_system,
+                update_hud,
+                toggle_cones,
+                spawn_rats_key,
+                // Phase 1b (ink doors mode only): attach a fresh flow to
+                // every door a round just spawned, and drive the BH-4 batch
+                // Collect that steps a woken door's turn. Both are cheap
+                // no-ops once no door needs attaching / stepping this frame.
+                attach_ink_door_flows.run_if(doors_is_ink),
+                advance_batch::<DoorsStory>,
+            ),
         )
         // Debug cone gizmos, only when enabled.
         .add_systems(
@@ -132,14 +156,16 @@ fn main() {
             (
                 // The timed behavior systems, chained so their order (and thus
                 // the alarm's same-frame consistency) is deterministic. The
-                // alarm slot holds BOTH writers — run-conditions pick exactly
-                // one per the `--alarm-impl` toggle, so guards/cameras (which
-                // emit the alarm messages) always run before whichever writer
-                // folds them, and `rat_system` always runs after.
+                // door and alarm slots each hold BOTH writers — run-conditions
+                // pick exactly one per the `--doors-impl`/`--alarm-impl`
+                // toggles, so guards/cameras (which emit the alarm messages)
+                // always run before whichever writer folds them, and
+                // `rat_system` always runs after.
                 (
                     guard_ai_system,
                     camera_ai_system,
-                    door_sync_system,
+                    door_sync_system.run_if(doors_is_rust),
+                    ink_door_sync_system.run_if(doors_is_ink),
                     alarm_system.run_if(alarm_is_rust),
                     ink_alarm_system.run_if(alarm_is_ink),
                     rat_system,

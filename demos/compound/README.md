@@ -66,6 +66,16 @@ cargo run -- --alarm-impl rust   # the Phase-0 Rust alarm (default)
 cargo run -- --alarm-impl ink    # the ink port; HUD reports its µs/frame
 ```
 
+**Phase 1b is underway too**: doors/switches — the minimal REACTIVE entity —
+are ported to ink (`assets/doors.ink` + `src/ink_doors.rs`) via the host BH-4
+wake surface (`FlowSleep`/wake_when), side-by-side with the Rust baseline.
+Pick the writer at launch, independently of `--alarm-impl`:
+
+```sh
+cargo run -- --doors-impl rust   # the Phase-0 Rust doors (default)
+cargo run -- --doors-impl ink    # the ink port; HUD reports its µs/frame
+```
+
 The friction journal for each port lives in [`MIGRATION.md`](MIGRATION.md).
 As of Phase 1a the crate takes brink *path* dependencies (`bevy-brink`, plus
 `brink-compiler` as a dev-dep) — still workspace-excluded, still never built
