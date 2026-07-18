@@ -379,21 +379,24 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
 // the BH-1 access join (`compute_container_access`), this needs no
 // `CapabilityRegistry`/`ComponentId` resolution: the yes/no purity verdict
 // only needs the capability *names* a manifest entry lists, not what
-// `ComponentId` they resolve to. Two further postures, both conservative
-// (`docs/effects-spec.md` §3 — over-report, never under-report):
+// `ComponentId` they resolve to.
 //
-// - A manifest entry with no `writes` (reads-only, or no `effects` key at
-//   all — §13.2's opt-in default) is accepted: it does not touch a
-//   write-capable ECS capability, and purity is exactly "no writes".
-// - An `EXTERNAL` name with **no manifest entry at all** is rejected the
-//   same way an opaque compiler row is: absence from the manifest means its
-//   effects were never declared, not declared-empty — purity can't be
-//   proven, so it isn't assumed. This is a different posture than the BH-1
-//   access join (which treats an unlisted external as touching no ECS
-//   capability, since a manifest's `effects` key is informational/opt-in for
-//   *scheduling*); here the question is "can we prove this condition never
-//   mutates anything, ever", a stricter bar a silently-unlisted external
-//   cannot meet.
+// A manifest entry with no `writes` (reads-only, or no `effects` key at all —
+// §13.2's opt-in default) is accepted: it does not touch a write-capable ECS
+// capability, and purity is exactly "no writes". An `EXTERNAL` name with **no
+// manifest entry at all** is likewise accepted, deliberately matching the
+// BH-1 access join's posture (`resolve_call_atom`, `crate::capability`):
+// "a call whose `NameId` doesn't resolve, or that has no manifest entry at
+// all, contributes no access — silently, since not every `EXTERNAL` touches
+// ECS state (§13.2's `effects` key is opt-in)". Rejecting an unregistered
+// external here would fault the flow permanently — the same missed-wake bug
+// class the #913 detect-merge ruling treats as the worse failure mode
+// (`docs/decision-log.md` 2026-07-18, "a missed wake is the engine-race bug
+// class") — for a binding (e.g. a `bind_brink_fn` helper) that legitimately
+// never touches ECS state and was accepted before this check existed. Only a
+// manifest entry that affirmatively declares `writes` is rejected; the
+// manifest is an honesty contract, not a security boundary (the host is the
+// TCB — `docs/effects-spec.md` §9).
 //
 // A story whose `EffectRows` table is empty entirely (a converter-built
 // program, or a program that never went through the compiler's effects
@@ -490,26 +493,6 @@ pub enum WakeConditionPurityError {
         /// deduplicated.
         writes: Vec<String>,
     },
-    /// The condition (or a dispatch fallback its row folds in) calls a
-    /// host-registered `EXTERNAL` binding this story's [`CapabilityManifest`]
-    /// has no entry for at all. Absence from the manifest means the
-    /// binding's effects were never declared — not declared-empty — so
-    /// purity can't be proven; conservatively rejected the same way an
-    /// opaque compiler row is (issue #1040; `docs/effects-spec.md` §9/§13).
-    #[error(
-        "wake condition `{condition}` calls EXTERNAL `{external}`, which has no entry in this \
-         story's capability manifest — its effects were never declared (not declared-empty), so \
-         purity can't be proven and it is conservatively rejected the same way an opaque effect \
-         row is (docs/effects-spec.md §9/§13, issue #1040)"
-    )]
-    ExternalUnregistered {
-        /// The condition name/path/label.
-        condition: String,
-        /// The `EXTERNAL` binding's name (or a debug-formatted `NameId` if
-        /// the atom's name didn't even resolve in the story's name table —
-        /// an internal invariant violation, never a panic).
-        external: String,
-    },
 }
 
 /// Find the `EffectRows` entry for `def`, if this story's table carries one.
@@ -574,9 +557,10 @@ fn check_row_purity(
 /// Issue #1040 (the #995 follow-up): check every `EXTERNAL` call atom in
 /// `direct` (a row's direct part, or a dispatch's static fallback) against
 /// `manifest`'s declared `effects.writes`. See the module section above for
-/// the full contract and the two conservative postures (manifest-declared
-/// writes reject; no manifest entry at all also rejects; reads-only or
-/// no-`effects`-key accepts).
+/// the full contract: a manifest entry declaring `writes` rejects; a
+/// reads-only entry, a no-`effects`-key entry, or no manifest entry at all
+/// (the same opt-in posture `crate::capability::resolve_call_atom` applies)
+/// all accept.
 fn check_external_calls_purity(
     program: &Program,
     direct: &DirectEffects,
@@ -587,24 +571,19 @@ fn check_external_calls_purity(
         let external_name = program
             .name_checked(call.name)
             .map_or_else(|| format!("<{:?}>", call.name), str::to_owned);
-        match manifest.external(&external_name) {
-            None => {
-                return Err(WakeConditionPurityError::ExternalUnregistered {
-                    condition: condition_label.to_owned(),
-                    external: external_name,
-                });
-            }
-            Some(external) if !external.effects.writes.is_empty() => {
-                let mut writes = external.effects.writes.clone();
-                writes.sort();
-                writes.dedup();
-                return Err(WakeConditionPurityError::ExternalWrites {
-                    condition: condition_label.to_owned(),
-                    external: external_name,
-                    writes,
-                });
-            }
-            Some(_) => {}
+        // No manifest entry at all accepts, same as a reads-only/no-`effects`
+        // entry — see the doc comment above.
+        if let Some(external) = manifest.external(&external_name)
+            && !external.effects.writes.is_empty()
+        {
+            let mut writes = external.effects.writes.clone();
+            writes.sort();
+            writes.dedup();
+            return Err(WakeConditionPurityError::ExternalWrites {
+                condition: condition_label.to_owned(),
+                external: external_name,
+                writes,
+            });
         }
     }
     Ok(())

@@ -846,13 +846,17 @@ fn check_named_condition_purity_rejects_an_external_declared_write() {
     );
 }
 
-/// The third posture the issue names ("unregistered = consistent with
-/// #1041's opaque-row posture"): an `EXTERNAL` the manifest has **no entry
-/// for at all** can't be proven pure (its effects were never declared, not
-/// declared-empty) — conservatively rejected, distinct from the
-/// manifest-declared-writes case above.
+/// An `EXTERNAL` the manifest has **no entry for at all** is accepted, not
+/// rejected — matching the BH-1 access join's posture
+/// (`resolve_call_atom`/`collect_missing_from_direct` in
+/// `crate::capability`): not every `EXTERNAL` touches ECS state, and a
+/// manifest's `effects` key is opt-in (`docs/effects-spec.md` §13.2), so
+/// absence from the manifest contributes no access rather than proving
+/// impurity. Regression test for issue #1040's review fix: a pure binding
+/// (e.g. a `bind_brink_fn` helper with no manifest entry) used in a wake
+/// condition must not permanently Fault the flow.
 #[test]
-fn check_named_condition_purity_rejects_an_unregistered_external() {
+fn check_named_condition_purity_accepts_an_unregistered_external() {
     let (program, _tables, _ctx) = compile_test_story(GATED_STORY_WITH_EXTERNALS);
     let def = program
         .definition_id_for_path("should_wake")
@@ -864,15 +868,7 @@ fn check_named_condition_purity_rejects_an_unregistered_external() {
     // Empty manifest: `touch_state` has no entry at all.
     let manifest = CapabilityManifest::default();
 
-    let err = check_named_condition_purity(&program, &rows, &manifest, "should_wake").unwrap_err();
-    assert!(
-        matches!(
-            &err,
-            WakeConditionPurityError::ExternalUnregistered { condition, external }
-                if condition == "should_wake" && external == "touch_state"
-        ),
-        "got {err:?}"
-    );
+    assert!(check_named_condition_purity(&program, &rows, &manifest, "should_wake").is_ok());
 }
 
 /// A dispatch's static fallback calling a writing `EXTERNAL` also counts
