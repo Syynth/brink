@@ -1,7 +1,7 @@
 #![expect(clippy::unwrap_used, clippy::expect_used)]
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde_json::{Value, json};
 
@@ -1020,5 +1020,303 @@ fn brink_toml_dialect_neither_file_nor_option_defaults() {
         has_e051(&diags),
         "no brink.toml and no initializationOptions.dialect should default \
          to StrictInk and still flag E051, got: {diags:?}"
+    );
+}
+
+// ── #1055: malformed brink.toml diagnostic + live reload ───────────────
+//
+// Two related gaps closed together (see `backend.rs`): (1) a malformed
+// `brink.toml` must surface a client-visible `textDocument/publishDiagnostics`
+// on the file itself, not just a server-side `tracing::warn!`
+// (`config_error_diagnostic`, `resolve_language_options`); (2) the config is
+// re-read on `workspace/didChangeConfiguration` and on a file-watched change
+// to `brink.toml` itself, not only once at `initialize`
+// (`Backend::reload_brink_toml`), so edits apply without a client restart.
+
+/// #1055 gap 1: a `brink.toml` with malformed TOML syntax surfaces a
+/// `textDocument/publishDiagnostics` on the file itself during startup — a
+/// client-visible signal that the session silently fell back to defaults,
+/// where before only a server-side `tracing::warn!` fired (invisible to any
+/// real client).
+#[test]
+fn brink_toml_malformed_syntax_surfaces_diagnostic() {
+    // Backstop cap on the wait loop below — see that loop's comment.
+    const MAX_MESSAGES: u64 = 2000;
+
+    let root = unique_tmp_dir("malformed-toml");
+    std::fs::create_dir_all(&root).unwrap();
+    let toml_path = root.join("brink.toml");
+    std::fs::write(&toml_path, "this is not [ valid toml").unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_brink-lsp");
+    let mut child = Command::new(bin)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start brink-lsp");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "capabilities": {},
+                "rootUri": format!("file://{}", root.display()),
+            },
+        }),
+    );
+    let (_init_resp, _) = recv_response(&mut stdout, 1);
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }),
+    );
+
+    // Condition-driven wait (#695 convention, see the helpers above):
+    // `$/brink/backgroundAnalysisComplete` is sent unconditionally at the
+    // end of the startup analysis pass, strictly after `initialized()`'s
+    // brink.toml diagnostic publish — seeing it means that publish, if any,
+    // has already gone out.
+    let toml_uri = format!("file://{}", toml_path.display());
+    let mut toml_diags: Option<Vec<Value>> = None;
+    for _ in 0..MAX_MESSAGES {
+        let msg = recv(&mut stdout);
+        if msg["method"] == "textDocument/publishDiagnostics" && msg["params"]["uri"] == toml_uri {
+            toml_diags = msg["params"]["diagnostics"].as_array().cloned();
+        } else if msg["method"] == "$/brink/backgroundAnalysisComplete" {
+            break;
+        }
+    }
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    let diags = toml_diags.expect(
+        "expected a textDocument/publishDiagnostics notification for the malformed brink.toml",
+    );
+    assert!(
+        !diags.is_empty(),
+        "malformed brink.toml should surface at least one diagnostic, got an empty set"
+    );
+    assert_eq!(diags[0]["source"].as_str(), Some("brink.toml"));
+    assert_eq!(
+        diags[0]["severity"].as_u64(),
+        Some(1),
+        "expected ERROR severity, got: {:?}",
+        diags[0]
+    );
+}
+
+/// Spawn a session rooted at `root`, initialize + open a `.ink` file with
+/// [`DIALECT_PROBE_SOURCE`], and wait for the first background-analysis
+/// pass to settle. Returns the still-connected child/stdin/stdout — the
+/// caller drives further notifications on the same session — the opened
+/// file's URI, and the diagnostics observed for it after that first pass.
+fn start_dialect_probe_session(
+    root: &std::path::Path,
+) -> (
+    Child,
+    ChildStdin,
+    BufReader<ChildStdout>,
+    String,
+    Vec<Value>,
+) {
+    const MAX_MESSAGES: u64 = 2000;
+    let bin = env!("CARGO_BIN_EXE_brink-lsp");
+
+    let mut child = Command::new(bin)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start brink-lsp");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "capabilities": {},
+                "rootUri": format!("file://{}", root.display()),
+            },
+        }),
+    );
+    let (_init_resp, _) = recv_response(&mut stdout, 1);
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }),
+    );
+
+    let ink_uri = format!("file://{}", root.join("story.ink").display());
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": ink_uri,
+                    "languageId": "ink",
+                    "version": 1,
+                    "text": DIALECT_PROBE_SOURCE,
+                }
+            }
+        }),
+    );
+
+    let diags = wait_for_next_analysis_pass(&mut stdout, &ink_uri, MAX_MESSAGES);
+    (child, stdin, stdout, ink_uri, diags)
+}
+
+/// Read messages until a `$/brink/backgroundAnalysisComplete` reporting
+/// `file_count >= 1` arrives, returning the last version-less
+/// `textDocument/publishDiagnostics` set observed for `uri` along the way —
+/// the background-analysis set, per the #695 convention every helper above
+/// already relies on. Each call consumes only the messages up to and
+/// including its own terminal signal, so sequential calls on the same
+/// session observe successive passes without racing each other.
+fn wait_for_next_analysis_pass(
+    stdout: &mut BufReader<ChildStdout>,
+    uri: &str,
+    max_messages: u64,
+) -> Vec<Value> {
+    let mut last_diags: Vec<Value> = Vec::new();
+    let mut settled = false;
+    for _ in 0..max_messages {
+        let msg = recv(stdout);
+        if msg["method"] == "textDocument/publishDiagnostics"
+            && msg["params"]["uri"] == uri
+            && msg["params"]["version"].is_null()
+        {
+            last_diags = msg["params"]["diagnostics"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+        } else if msg["method"] == "$/brink/backgroundAnalysisComplete" {
+            let file_count = msg["params"]["file_count"].as_u64().unwrap_or(0);
+            if file_count >= 1 {
+                settled = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        settled,
+        "background analysis never signaled completion for {uri} within {max_messages} messages"
+    );
+    last_diags
+}
+
+/// #1055 gap 2 (file-watch path): editing `brink.toml` on disk and sending
+/// the `workspace/didChangeWatchedFiles` notification the server's own
+/// `initialized()`-time watcher registration asks for (`**/brink.toml`, in
+/// addition to `**/*.ink`) re-resolves the dialect and re-analyzes on the
+/// very next pass — no client restart, no re-`initialize`.
+#[test]
+fn brink_toml_file_watch_reload_applies_without_restart() {
+    let root = unique_tmp_dir("file-watch-reload");
+    std::fs::create_dir_all(&root).unwrap();
+    let toml_path = root.join("brink.toml");
+    std::fs::write(&toml_path, "[project]\ndialect = \"strict-ink\"\n").unwrap();
+
+    let (mut child, mut stdin, mut stdout, ink_uri, diags_before) =
+        start_dialect_probe_session(&root);
+
+    assert!(
+        has_e051(&diags_before),
+        "strict-ink (from brink.toml) should flag E051 before the reload, got: {diags_before:?}"
+    );
+
+    // Flip the file to `brink` dialect and send the file-watch notification
+    // a real client sends after the server's registered watcher fires —
+    // `type: 2` is `FileChangeType::Changed` per the LSP spec.
+    std::fs::write(&toml_path, "[project]\ndialect = \"brink\"\n").unwrap();
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeWatchedFiles",
+            "params": {
+                "changes": [{
+                    "uri": format!("file://{}", toml_path.display()),
+                    "type": 2,
+                }]
+            }
+        }),
+    );
+
+    let diags_after = wait_for_next_analysis_pass(&mut stdout, &ink_uri, 2000);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(
+        !has_e051(&diags_after),
+        "brink dialect after a file-watched brink.toml reload should not flag E051, got: {diags_after:?}"
+    );
+}
+
+/// #1055 gap 2 (`workspace/didChangeConfiguration` path): some clients send
+/// this notification, without a separate file-watch event, when workspace
+/// settings change — `brink.toml` must still be re-read and re-applied.
+#[test]
+fn brink_toml_did_change_configuration_reload_applies_without_restart() {
+    let root = unique_tmp_dir("did-change-configuration-reload");
+    std::fs::create_dir_all(&root).unwrap();
+    let toml_path = root.join("brink.toml");
+    std::fs::write(&toml_path, "[project]\ndialect = \"strict-ink\"\n").unwrap();
+
+    let (mut child, mut stdin, mut stdout, ink_uri, diags_before) =
+        start_dialect_probe_session(&root);
+
+    assert!(
+        has_e051(&diags_before),
+        "strict-ink (from brink.toml) should flag E051 before the reload, got: {diags_before:?}"
+    );
+
+    std::fs::write(&toml_path, "[project]\ndialect = \"brink\"\n").unwrap();
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeConfiguration",
+            "params": { "settings": {} }
+        }),
+    );
+
+    let diags_after = wait_for_next_analysis_pass(&mut stdout, &ink_uri, 2000);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(
+        !has_e051(&diags_after),
+        "brink dialect after a didChangeConfiguration reload should not flag E051, got: {diags_after:?}"
     );
 }
