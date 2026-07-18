@@ -1109,6 +1109,90 @@ fn writing_condition_is_rejected_and_never_evaluated_through_run_flow_sleep() {
     );
 }
 
+/// Reachability, end-to-end through `run_flow_sleep`, for the **dynamic
+/// fn-value** condition shape (issue #1078): a `FlowSleep` built with
+/// [`FlowSleep::with_condition_value`] resolves and evaluates the token
+/// directly (`call_ink_function_value`) instead of resolving `condition` by
+/// path — exactly like the named path, a pure token wakes the flow normally.
+#[test]
+fn dynamic_fn_value_pure_condition_wakes_normally_through_run_flow_sleep() {
+    let mut app = build_app();
+    let (program, tables, ctx) = compile_test_story(GATED_STORY);
+    let gate_idx = program.global_index("gate").expect("gate global exists");
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let token = Value::FnRef(def);
+    let story =
+        add_story_assets_with_effect_rows(&mut app, program, tables, ctx, vec![no_write_row(def)]);
+
+    app.world_mut().spawn((
+        BrinkFlowRequest::<()>::builder().story(story).build(),
+        FlowSleep::<()>::persistent("should_wake")
+            .with_condition_value(token)
+            .dormant(),
+    ));
+    app.update(); // fulfill
+
+    set_gate(&mut app, gate_idx, 1);
+    pump(&mut app, 3);
+
+    assert_eq!(single_sleep(&mut app), SleepState::Woken);
+    assert!(
+        app.world().resource::<TextLog>().0.contains("Woke up!"),
+        "a pure dynamic fn-value condition must be evaluated and wake the flow normally"
+    );
+}
+
+/// The dynamic-fn-value counterpart of
+/// `writing_condition_is_rejected_and_never_evaluated_through_run_flow_sleep`
+/// (issue #1078): a `FlowSleep` whose [`FlowSleep::with_condition_value`]
+/// token resolves to a row that writes a global is rejected — via
+/// `check_value_condition_purity` — before it is ever evaluated: never
+/// called even once, landing in `Faulted` rather than being silently
+/// retried.
+#[test]
+fn dynamic_fn_value_condition_with_writes_is_rejected_and_never_evaluated_through_run_flow_sleep() {
+    let mut app = build_app();
+    let (program, tables, ctx) = compile_test_story(GATED_STORY);
+    let gate_idx = program.global_index("gate").expect("gate global exists");
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let token = Value::FnRef(def);
+    let write_id = DefinitionId::new(DefinitionTag::GlobalVar, 999);
+    let story = add_story_assets_with_effect_rows(
+        &mut app,
+        program,
+        tables,
+        ctx,
+        vec![writing_row(def, write_id)],
+    );
+
+    app.world_mut().spawn((
+        BrinkFlowRequest::<()>::builder().story(story).build(),
+        FlowSleep::<()>::persistent("should_wake")
+            .with_condition_value(token)
+            .dormant(),
+    ));
+    app.update(); // fulfill
+
+    // Flip the gate true — a correctly-implemented (but impure) condition
+    // would return true and wake. It must never get the chance to run.
+    set_gate(&mut app, gate_idx, 1);
+    pump(&mut app, 5);
+
+    assert_eq!(
+        single_sleep(&mut app),
+        SleepState::Faulted,
+        "an impure dynamic fn-value condition's policy must land in Faulted, never Woken"
+    );
+    assert!(
+        app.world().resource::<TextLog>().0.is_empty(),
+        "the flow's turn must never run — the writing condition was never evaluated"
+    );
+}
+
 // ── helpers ─────────────────────────────────────────────────────────────────
 
 /// The lone `FlowSleep<()>` policy's state, for single-flow tests.
