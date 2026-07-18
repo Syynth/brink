@@ -1,5 +1,90 @@
 # @brink-lang/web
 
+## 0.13.0
+
+### Patch Changes
+
+- 17ad933: Strict typed mode now consumes host-manifest external signatures on the
+  compile path, and the compile/warnings diagnostic channel gained `code` and
+  real `range` fields (#1004).
+
+  Under `dialect = brink, types = strict`, a `compileProject` (or
+  `compileFragment`) whose host manifest types an `EXTERNAL`'s params no longer
+  reports those params as escaping strict inference — the manifest
+  `ManifestParam.ty` resolves the param the same way it already did for
+  hover/pickers. Each registered `EXTERNAL` declaration is escape-checked
+  against the exact `collect_external_sigs` resolution that seeds call-site
+  argument checking (one shared helper across the analysis and compile paths),
+  so a manifest-typed external stays clean while a genuinely unresolvable
+  declared type (an empty `ty`, or one naming a semantic type absent from the
+  manifest `types` vocabulary) is still reported — anchored at that external's
+  own declaration span rather than collapsing onto one arbitrary line. An
+  `EXTERNAL` with no manifest entry at all stays unchecked, as before.
+
+  Additive wire-shape change on the `CompileResult.warnings[]` diagnostic
+  objects (also `compile` / `compileFragment`): each entry now carries
+
+  - `code` — the structured diagnostic code string (e.g. `"E065"`), so
+    consumers can filter/group programmatically instead of string-matching
+    `message`; and
+  - `start` / `end` populated from the diagnostic's real source span (external
+    escapes previously would have anchored at a fallback location).
+
+  Existing fields (`message`, `start`, `end`, `severity`, `file`) are unchanged;
+  `code` is purely additive.
+
+- f53c6c7: `load_state`/`load_journal` (and any other JSON deserialize boundary that
+  walks a `Value::Map`) now reject a crafted or corrupted save payload that
+  carries a duplicate map key with a decode error, instead of silently
+  keeping the last occurrence (#985, follow-up to #909's content-based
+  `OrderedMap` equality).
+
+  `OrderedMap`'s `Eq` is content-based and assumes every key appears at most
+  once. Before this fix, `serde`'s derived `Deserialize` for `OrderedMap`
+  walked the wire `entries` list verbatim, so a hand-crafted save/journal
+  JSON payload with a repeated key could construct a map that violated that
+  invariant. `OrderedMap` now has a hand-written `Deserialize` that rejects a
+  repeat with a decode error (never a panic) — the same duplicate-key
+  rejection the `.inkb`/`.inkt`/transcript binary codecs already apply on
+  their own `VAL_MAP` decode paths. A save/journal file with no duplicate
+  keys round-trips exactly as before; this only changes behavior for
+  already-invalid input.
+
+- 7e8aa7f: Analyzer: strict-mode `E066` (Conflicted-escape) no longer spuriously fires
+  on a temp whose only "conflicting" use was a dotted field read (issue #994).
+
+  A dotted `Path` (`t.field`) whose head resolves to a `Param`/`Temp` reaches
+  the TM-4b resolution fallback (docs/typed-mode-spec.md §6), which maps the
+  whole multi-segment path's range to the _head_ variable's `DefinitionId` —
+  there is no static field-type table yet, so `t.field` and bare `t` were
+  indistinguishable to the body-inference pass's usage-observation step. That
+  step was folding the field-read's usage-context type back into the _head_
+  temp's own accumulated type, manufacturing a `Conflicted` join (and a
+  spurious `E066`) whenever the two disagreed, even though the temp itself
+  was never actually misused. A dotted head resolving to a global
+  `VAR`/`CONST` never had this problem (cross-type-reassignment detection for
+  globals isn't implemented in this slice) — a `Param`/`Temp` head now gets
+  the same treatment: a dotted field read is never folded back into the
+  head's own type, only a bare (single-segment) reference is.
+
+- b9a86e2: FS-3w review-fix cluster (#999, #1000).
+
+  - **`FlowHandle.continueMaximally` is now capped**, matching the Rust
+    runtime's `continue_maximally` (#999). It forwards to a new raw
+    `continue_flow_maximally` wasm binding (`StoryRunner`/`WebSession`,
+    backed by `Story::continue_flow_maximally_shared_with`) instead of
+    looping the single-line `continue_flow` client-side without a bound. An
+    infinite-emitting flow now throws at the runtime's
+    `FlowInstance::LINE_LIMIT` (10,000 lines/turn) — the same
+    `RuntimeError::LineLimitExceeded` shape `continueStory`'s cap already
+    surfaces — instead of growing an unbounded array and hanging or
+    exhausting memory on the host.
+  - **`StorySessionHandle.spawnFlow` now returns a `FlowHandle`**, aligned
+    with `StoryRunnerHandle.spawnFlow` (#1000). `StorySessionHandle` also
+    gains `flow(name)` and `continueFlowMaximally(name)` to match. Session
+    consumers can now drive a spawned flow via the flow-addressed API the
+    same way runner consumers already could.
+
 ## 0.12.0
 
 ### Minor Changes
