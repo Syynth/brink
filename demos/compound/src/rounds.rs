@@ -21,6 +21,7 @@ use crate::doors::spawn_doors_from_layout;
 use crate::guards::{ReinforcementSpawner, spawn_round_guards_from_layout};
 use crate::layout_gen::{LayoutData, generate};
 use crate::loot::spawn_gold_from_layout;
+use crate::nav::{NavGraph, RoomGraph};
 use crate::world::{Exit, Player, spawn_layout_walls};
 
 /// How close to the exit counts as escaping.
@@ -128,6 +129,7 @@ pub fn start_round_system(
     mut spawner: ResMut<ReinforcementSpawner>,
     mut round: ResMut<Round>,
     mut layout_res: ResMut<CurrentLayout>,
+    mut nav: ResMut<NavGraph>,
 ) {
     // Only act once even if several messages arrived.
     if start.read().count() == 0 {
@@ -158,6 +160,9 @@ pub fn start_round_system(
     spawn_gold_from_layout(&mut commands, &layout);
     spawn_alarm_panels(&mut commands, &layout);
     spawn_round_guards_from_layout(&mut commands, &layout, guard_count(round.number));
+
+    // Build the guard navigation graph for this layout (#1044).
+    nav.0 = Some(RoomGraph::from_layout(&layout));
 
     layout_res.0 = Some(layout);
 }
