@@ -6,22 +6,44 @@
 use super::*;
 
 use bevy_app::{App, Update};
+use bevy_ecs::component::Component;
 use bevy_ecs::observer::On;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{ResMut, RunSystemOnce as _};
+use brink_format::{CallAtom, CapabilityParam, DefinitionTag, DirectEffects, DispatchEntry};
 use brink_runtime::ContextAccess as _;
 
 use crate::advance_batch;
-use crate::capability::ContainerAccess;
+use crate::asset::{BrinkStoryAsset, LineTablesAsset};
+use crate::capability::{
+    BrinkCapabilityAppExt, CapabilityEffects, CapabilityManifest, CapabilityManifestExternal,
+    ContainerAccess,
+};
 use crate::event::{BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone};
 use crate::globals::BrinkGlobals;
 use crate::test_support::{add_story_assets, compile_test_story, make_test_app};
 use crate::{BrinkBatchReport, BrinkFlowRequest};
 
+/// A call atom naming `name`, v1's always-`Any` capability param, no handle
+/// param — the same shape `crate::capability`'s own tests build (`atom`).
+fn call_atom(name: brink_format::NameId) -> CallAtom {
+    CallAtom {
+        name,
+        capability: CapabilityParam::Any,
+        handle_param: None,
+    }
+}
+
 /// Accumulates every line/turn/end text an entity produces so a test can
 /// assert on player-visible output across frames.
 #[derive(Resource, Default)]
 struct TextLog(String);
+
+/// A dummy marker component registered under the `"GameState"` capability
+/// name (issue #1040's reachability test) — only the name resolving
+/// matters, not what the component actually is.
+#[derive(Component)]
+struct GameStateCap;
 
 /// A story that runs one turn ("Woke up!" `-> DONE`), then a second turn on
 /// resume ("Second turn." `-> END`). The wake condition `should_wake` returns
@@ -38,6 +60,27 @@ const LOOPING_STORY: &str = "VAR gate = 1\n\
      === beat ===\n\
      Beat.\n-> DONE\n-> beat\n\
      === function should_wake() ===\n~ return gate\n";
+
+/// Like [`GATED_STORY`] but also declares (and, from a knot no purity test
+/// ever plays, calls — so the names actually intern into the story's name
+/// table exactly as a real compiled `.inkb` would) two `EXTERNAL` bindings
+/// the issue #1040 purity tests below reference from a hand-built call atom.
+/// `should_wake`'s own body never calls either — these tests build their
+/// `EffectRowEntry`s by hand rather than relying on real effects inference
+/// (the same pattern [`no_write_row`]/[`writing_row`] already use), so a
+/// purity-rejected condition is exercised end-to-end through
+/// [`run_flow_sleep`] without ever needing a bound runtime handler for
+/// either external.
+const GATED_STORY_WITH_EXTERNALS: &str = "VAR gate = 0\n\
+     EXTERNAL touch_state(id)\n\
+     EXTERNAL read_state(id)\n\
+     Woke up!\n-> DONE\n\
+     Second turn.\n-> END\n\
+     === function should_wake() ===\n~ return gate\n\
+     === function uses_externals() ===\n\
+     ~ temp a = touch_state(0)\n\
+     ~ temp b = read_state(0)\n\
+     ~ return 0\n";
 
 fn build_app() -> App {
     let mut app = make_test_app();
@@ -481,6 +524,588 @@ fn wake_fan_out_scenario_ratios() {
     assert_eq!(
         max_stepped, storm_n,
         "wake storm: all {storm_n} flows wake and step together in a batch turn"
+    );
+}
+
+// ── Wake-condition purity (issue #995, BH-4 follow-up) ──────────────────────
+
+/// Like `add_story_assets`, but builds the `ProgramAsset` with `effect_rows`
+/// populated from construction — `add_story_assets` always ships an empty
+/// table (BH-1's capability join isn't what most tests exercise), so a
+/// purity test that needs a *real*, non-empty `EffectRows` entry wires it in
+/// here, exactly like a compiled `.inkb`'s loader would (`asset.rs`'s
+/// `InkbLoader::load` sets `effect_rows` from the decoded `StoryData` the
+/// same way).
+///
+/// Deliberately **not** `add_story_assets` + a post-hoc `Assets::get_mut`
+/// mutation (an earlier version of these tests did exactly that): mutating
+/// an already-`add`ed asset fires `AssetEvent::Modified`, and that is
+/// precisely the event the `dev`-feature's `replay_on_reload` hot-reload
+/// system watches for (`crate::replay`, on by default — `bevy-brink`'s
+/// `dev` feature is default-on). One frame later, once the entity is
+/// fulfilled (`BrinkReplayLog` attached), it would rebuild the flow *and*
+/// drive it to its first terminal via real `advance_until_terminal` events —
+/// completely out from under a still-`Parked`/dormant `FlowSleep` policy,
+/// corrupting these tests' state before the purity gate is ever exercised.
+/// Building the asset once via `Assets::add` (an `AssetEvent::Added`, which
+/// `replay_on_reload` never reacts to) sidesteps that footgun entirely.
+fn add_story_assets_with_effect_rows(
+    app: &mut App,
+    program: Program,
+    tables: Vec<Vec<brink_format::LineEntry>>,
+    initial_context: brink_runtime::World,
+    effect_rows: Vec<EffectRowEntry>,
+) -> bevy_asset::Handle<BrinkStoryAsset> {
+    let world = app.world_mut();
+    let program_handle = world
+        .resource_mut::<Assets<ProgramAsset>>()
+        .add(ProgramAsset {
+            program,
+            initial_context,
+            effect_rows,
+        });
+    let tables_handle = world
+        .resource_mut::<Assets<LineTablesAsset>>()
+        .add(LineTablesAsset { tables });
+    world
+        .resource_mut::<Assets<BrinkStoryAsset>>()
+        .add(BrinkStoryAsset {
+            program: program_handle,
+            line_tables: tables_handle,
+        })
+}
+
+fn no_write_row(def: DefinitionId) -> EffectRowEntry {
+    EffectRowEntry {
+        def,
+        is_entry: true,
+        direct: DirectEffects::default(),
+        dispatches: vec![],
+    }
+}
+
+fn writing_row(def: DefinitionId, write: DefinitionId) -> EffectRowEntry {
+    EffectRowEntry {
+        def,
+        is_entry: true,
+        direct: DirectEffects {
+            writes: vec![write],
+            ..DirectEffects::default()
+        },
+        dispatches: vec![],
+    }
+}
+
+fn opaque_row(def: DefinitionId) -> EffectRowEntry {
+    EffectRowEntry {
+        def,
+        is_entry: true,
+        direct: DirectEffects {
+            opaque: true,
+            ..DirectEffects::default()
+        },
+        dispatches: vec![],
+    }
+}
+
+/// A pure condition (empty writes, not opaque) passes the checker directly —
+/// the non-blocking baseline every other purity test contrasts with.
+#[test]
+fn check_named_condition_purity_accepts_a_pure_row() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY);
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let rows = vec![no_write_row(def)];
+    assert!(
+        check_named_condition_purity(
+            &program,
+            &rows,
+            &CapabilityManifest::default(),
+            "should_wake"
+        )
+        .is_ok()
+    );
+}
+
+/// The core rejection: a condition whose row writes a global is rejected with
+/// the named [`WakeConditionPurityError::Writes`] variant, not a panic.
+#[test]
+fn check_named_condition_purity_rejects_a_writing_row() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY);
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let write_id = DefinitionId::new(DefinitionTag::GlobalVar, 999);
+    let rows = vec![writing_row(def, write_id)];
+
+    let err = check_named_condition_purity(
+        &program,
+        &rows,
+        &CapabilityManifest::default(),
+        "should_wake",
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, WakeConditionPurityError::Writes { condition, .. } if condition == "should_wake"),
+        "got {err:?}"
+    );
+}
+
+/// A dispatch's static fallback write also counts (§7: v1 always folds a
+/// dispatch's conservative fallback in, no runtime narrowing) — not just the
+/// row's own direct writes.
+#[test]
+fn check_named_condition_purity_rejects_a_dispatch_fallback_write() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY);
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let write_id = DefinitionId::new(DefinitionTag::GlobalVar, 999);
+    let dispatch_cell = DefinitionId::new(DefinitionTag::GlobalVar, 1000);
+    let rows = vec![EffectRowEntry {
+        def,
+        is_entry: true,
+        direct: DirectEffects::default(),
+        dispatches: vec![DispatchEntry {
+            cell: dispatch_cell,
+            narrowable: false,
+            fallback: DirectEffects {
+                writes: vec![write_id],
+                ..DirectEffects::default()
+            },
+        }],
+    }];
+
+    let err = check_named_condition_purity(
+        &program,
+        &rows,
+        &CapabilityManifest::default(),
+        "should_wake",
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, WakeConditionPurityError::Writes { .. }),
+        "got {err:?}"
+    );
+}
+
+/// An opaque row (effects inference couldn't summarize a call) is rejected
+/// conservatively — purity can't be proven, so it isn't assumed.
+#[test]
+fn check_named_condition_purity_rejects_an_opaque_row() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY);
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let rows = vec![opaque_row(def)];
+
+    let err = check_named_condition_purity(
+        &program,
+        &rows,
+        &CapabilityManifest::default(),
+        "should_wake",
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, WakeConditionPurityError::Opaque { .. }),
+        "got {err:?}"
+    );
+}
+
+/// A condition name that doesn't resolve to any definition is its own named
+/// error, not confused with a purity failure.
+#[test]
+fn check_named_condition_purity_unknown_condition_is_named() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY);
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let rows = vec![no_write_row(def)];
+
+    let err = check_named_condition_purity(
+        &program,
+        &rows,
+        &CapabilityManifest::default(),
+        "no_such_fn",
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, WakeConditionPurityError::UnknownCondition { condition } if condition == "no_such_fn"),
+        "got {err:?}"
+    );
+}
+
+/// A story whose `EffectRows` table is empty entirely (never ran the
+/// compiler's effects emission — the same shape `add_story_assets` ships by
+/// default) is outside the guarantee this checks: the empty table bypasses
+/// the check rather than rejecting every condition such a story could name.
+#[test]
+fn check_named_condition_purity_bypasses_when_effect_rows_table_is_empty() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY);
+    assert!(
+        check_named_condition_purity(&program, &[], &CapabilityManifest::default(), "should_wake")
+            .is_ok()
+    );
+    // Even a name that wouldn't resolve at all is let through — there is no
+    // row-based guarantee to check against.
+    assert!(
+        check_named_condition_purity(&program, &[], &CapabilityManifest::default(), "no_such_fn")
+            .is_ok()
+    );
+}
+
+// ── Wake-condition purity: EXTERNAL-mediated writes (issue #1040) ───────────
+
+/// An `EffectRowEntry` whose direct part calls exactly one `EXTERNAL` (via
+/// `call`) and performs no ink-level reads/writes/opaque calls of its own —
+/// isolates the manifest-join check from the plain global-write check
+/// [`writing_row`]/[`no_write_row`] already cover.
+fn calling_row(def: DefinitionId, call: CallAtom) -> EffectRowEntry {
+    EffectRowEntry {
+        def,
+        is_entry: true,
+        direct: DirectEffects {
+            calls: vec![call],
+            ..DirectEffects::default()
+        },
+        dispatches: vec![],
+    }
+}
+
+/// A one-external [`CapabilityManifest`] — `name`'s manifest entry declares
+/// exactly `effects`.
+fn manifest_with(name: &str, effects: CapabilityEffects) -> CapabilityManifest {
+    CapabilityManifest {
+        externals: vec![CapabilityManifestExternal {
+            name: name.to_string(),
+            effects,
+        }],
+    }
+}
+
+/// Reads-only case: the condition calls an `EXTERNAL` whose manifest entry
+/// declares `reads` but no `writes` — accepted, exactly as the issue
+/// specifies ("reads-only accepted").
+#[test]
+fn check_named_condition_purity_accepts_a_reads_only_external_call() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY_WITH_EXTERNALS);
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let read_state = program
+        .name_id("read_state")
+        .expect("interned as a call kind");
+    let rows = vec![calling_row(def, call_atom(read_state))];
+    let manifest = manifest_with(
+        "read_state",
+        CapabilityEffects {
+            reads: vec!["GameState".to_string()],
+            writes: vec![],
+            detect: std::collections::BTreeMap::new(),
+        },
+    );
+
+    assert!(check_named_condition_purity(&program, &rows, &manifest, "should_wake").is_ok());
+}
+
+/// The core rejection this issue adds: a condition calling an `EXTERNAL`
+/// whose manifest entry declares `writes` is rejected with the named
+/// [`WakeConditionPurityError::ExternalWrites`] variant — not the ink-level
+/// `Writes` variant (that's a distinct axis: the row's own writes vs. writes
+/// mediated through a host binding), and not a panic.
+#[test]
+fn check_named_condition_purity_rejects_an_external_declared_write() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY_WITH_EXTERNALS);
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let touch_state = program
+        .name_id("touch_state")
+        .expect("interned as a call kind");
+    let rows = vec![calling_row(def, call_atom(touch_state))];
+    let manifest = manifest_with(
+        "touch_state",
+        CapabilityEffects {
+            reads: vec![],
+            writes: vec!["GameState".to_string()],
+            detect: std::collections::BTreeMap::new(),
+        },
+    );
+
+    let err = check_named_condition_purity(&program, &rows, &manifest, "should_wake").unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            WakeConditionPurityError::ExternalWrites { condition, external, writes }
+                if condition == "should_wake"
+                    && external == "touch_state"
+                    && writes == &vec!["GameState".to_string()]
+        ),
+        "got {err:?}"
+    );
+}
+
+/// An `EXTERNAL` the manifest has **no entry for at all** is accepted, not
+/// rejected — matching the BH-1 access join's posture
+/// (`resolve_call_atom`/`collect_missing_from_direct` in
+/// `crate::capability`): not every `EXTERNAL` touches ECS state, and a
+/// manifest's `effects` key is opt-in (`docs/effects-spec.md` §13.2), so
+/// absence from the manifest contributes no access rather than proving
+/// impurity. Regression test for issue #1040's review fix: a pure binding
+/// (e.g. a `bind_brink_fn` helper with no manifest entry) used in a wake
+/// condition must not permanently Fault the flow.
+#[test]
+fn check_named_condition_purity_accepts_an_unregistered_external() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY_WITH_EXTERNALS);
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let touch_state = program
+        .name_id("touch_state")
+        .expect("interned as a call kind");
+    let rows = vec![calling_row(def, call_atom(touch_state))];
+    // Empty manifest: `touch_state` has no entry at all.
+    let manifest = CapabilityManifest::default();
+
+    assert!(check_named_condition_purity(&program, &rows, &manifest, "should_wake").is_ok());
+}
+
+/// A dispatch's static fallback calling a writing `EXTERNAL` also counts
+/// (§7: v1 always folds a dispatch's conservative fallback in) — mirrors
+/// [`check_named_condition_purity_rejects_a_dispatch_fallback_write`] for the
+/// manifest-join axis.
+#[test]
+fn check_named_condition_purity_rejects_an_external_write_via_dispatch_fallback() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY_WITH_EXTERNALS);
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let touch_state = program
+        .name_id("touch_state")
+        .expect("interned as a call kind");
+    let dispatch_cell = DefinitionId::new(DefinitionTag::GlobalVar, 1001);
+    let rows = vec![EffectRowEntry {
+        def,
+        is_entry: true,
+        direct: DirectEffects::default(),
+        dispatches: vec![DispatchEntry {
+            cell: dispatch_cell,
+            narrowable: false,
+            fallback: DirectEffects {
+                calls: vec![call_atom(touch_state)],
+                ..DirectEffects::default()
+            },
+        }],
+    }];
+    let manifest = manifest_with(
+        "touch_state",
+        CapabilityEffects {
+            reads: vec![],
+            writes: vec!["GameState".to_string()],
+            detect: std::collections::BTreeMap::new(),
+        },
+    );
+
+    let err = check_named_condition_purity(&program, &rows, &manifest, "should_wake").unwrap_err();
+    assert!(
+        matches!(err, WakeConditionPurityError::ExternalWrites { .. }),
+        "got {err:?}"
+    );
+}
+
+/// Reachability, end-to-end through `run_flow_sleep` (the registered plugin
+/// system, not a direct unit call), mirroring
+/// `writing_condition_is_rejected_and_never_evaluated_through_run_flow_sleep`
+/// for the new axis: a condition calling a manifest-declared-writing
+/// `EXTERNAL` is rejected before it is ever evaluated — the flow never
+/// wakes, never runs its turn, and the policy lands in `Faulted`. The
+/// `CapabilityManifest` is a real app resource here (`app.insert_resource`),
+/// not a hand-passed argument — proving the check is actually wired into the
+/// live system, not just the unit-level helper function.
+#[test]
+fn writing_external_condition_is_rejected_and_never_evaluated_through_run_flow_sleep() {
+    let mut app = build_app();
+    let (program, tables, ctx) = compile_test_story(GATED_STORY_WITH_EXTERNALS);
+    let gate_idx = program.global_index("gate").expect("gate global exists");
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let touch_state = program
+        .name_id("touch_state")
+        .expect("interned as a call kind");
+    let story = add_story_assets_with_effect_rows(
+        &mut app,
+        program,
+        tables,
+        ctx,
+        vec![calling_row(def, call_atom(touch_state))],
+    );
+    app.insert_resource(manifest_with(
+        "touch_state",
+        CapabilityEffects {
+            reads: vec![],
+            writes: vec!["GameState".to_string()],
+            detect: std::collections::BTreeMap::new(),
+        },
+    ));
+    // The manifest names a "GameState" capability, so the load-boundary
+    // admission gate (issue #912) needs it registered or the story is
+    // rejected at load — before `run_flow_sleep`'s purity check would ever
+    // get a chance to run.
+    app.register_capability::<(), GameStateCap>("GameState");
+
+    app.world_mut().spawn((
+        BrinkFlowRequest::<()>::builder().story(story).build(),
+        FlowSleep::<()>::persistent("should_wake").dormant(),
+    ));
+    app.update(); // fulfill
+
+    // Flip the gate true — a correctly-implemented (but externally impure)
+    // condition would return true and wake. It must never get the chance.
+    set_gate(&mut app, gate_idx, 1);
+    pump(&mut app, 5);
+
+    assert_eq!(
+        single_sleep(&mut app),
+        SleepState::Faulted,
+        "a condition calling a manifest-declared-writing EXTERNAL must land in Faulted, never \
+         Woken"
+    );
+    assert!(
+        app.world().resource::<TextLog>().0.is_empty(),
+        "the flow's turn must never run — the externally-mediated write was never evaluated"
+    );
+}
+
+/// Dynamic fn-value condition resolution (a `Value::FnRef`/`Closure` token,
+/// e.g. one a host resolved dynamically rather than naming statically) is
+/// checked through the exact same row inspection as the named path — pure
+/// passes, writing rejects.
+#[test]
+fn check_value_condition_purity_checks_a_resolved_fn_value_token() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY);
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let token = Value::FnRef(def);
+
+    let pure_rows = vec![no_write_row(def)];
+    assert!(
+        check_value_condition_purity(&program, &pure_rows, &CapabilityManifest::default(), &token)
+            .is_ok()
+    );
+
+    let write_id = DefinitionId::new(DefinitionTag::GlobalVar, 999);
+    let writing_rows = vec![writing_row(def, write_id)];
+    let err = check_value_condition_purity(
+        &program,
+        &writing_rows,
+        &CapabilityManifest::default(),
+        &token,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, WakeConditionPurityError::Writes { .. }),
+        "a dynamic fn-value condition token must be purity-checked exactly like a named one; \
+         got {err:?}"
+    );
+}
+
+/// A `Value` that isn't a function value at all has no target to check — its
+/// own named error, not silently treated as pure.
+#[test]
+fn check_value_condition_purity_rejects_a_non_function_value() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY);
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let rows = vec![no_write_row(def)];
+    let err = check_value_condition_purity(
+        &program,
+        &rows,
+        &CapabilityManifest::default(),
+        &Value::Int(1),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, WakeConditionPurityError::NotAFunctionValue),
+        "got {err:?}"
+    );
+}
+
+/// Reachability, end-to-end through `run_flow_sleep` (the registered plugin
+/// system, not a direct unit call): a **pure** condition's row admits it into
+/// evaluation normally — the purity gate never blocks a legitimately pure
+/// wake condition. Contrasts with the writing-condition test below.
+#[test]
+fn pure_condition_wakes_normally_through_run_flow_sleep() {
+    let mut app = build_app();
+    let (program, tables, ctx) = compile_test_story(GATED_STORY);
+    let gate_idx = program.global_index("gate").expect("gate global exists");
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let story =
+        add_story_assets_with_effect_rows(&mut app, program, tables, ctx, vec![no_write_row(def)]);
+
+    app.world_mut().spawn((
+        BrinkFlowRequest::<()>::builder().story(story).build(),
+        FlowSleep::<()>::persistent("should_wake").dormant(),
+    ));
+    app.update(); // fulfill
+
+    set_gate(&mut app, gate_idx, 1);
+    pump(&mut app, 3);
+
+    assert_eq!(single_sleep(&mut app), SleepState::Woken);
+    assert!(
+        app.world().resource::<TextLog>().0.contains("Woke up!"),
+        "a pure condition must be evaluated and wake the flow normally"
+    );
+}
+
+/// The core enforcement, reachable end-to-end: a condition whose (real,
+/// non-empty) effect row writes a global is rejected before it is ever
+/// evaluated — the flow never wakes, never runs its turn, and the policy
+/// lands in `Faulted` (never silently retried into a spin) rather than being
+/// called anyway.
+#[test]
+fn writing_condition_is_rejected_and_never_evaluated_through_run_flow_sleep() {
+    let mut app = build_app();
+    let (program, tables, ctx) = compile_test_story(GATED_STORY);
+    let gate_idx = program.global_index("gate").expect("gate global exists");
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let write_id = DefinitionId::new(DefinitionTag::GlobalVar, 999);
+    let story = add_story_assets_with_effect_rows(
+        &mut app,
+        program,
+        tables,
+        ctx,
+        vec![writing_row(def, write_id)],
+    );
+
+    app.world_mut().spawn((
+        BrinkFlowRequest::<()>::builder().story(story).build(),
+        FlowSleep::<()>::persistent("should_wake").dormant(),
+    ));
+    app.update(); // fulfill
+
+    // Flip the gate true — a correctly-implemented (but impure) condition
+    // would return true and wake. It must never get the chance to run.
+    set_gate(&mut app, gate_idx, 1);
+    pump(&mut app, 5);
+
+    assert_eq!(
+        single_sleep(&mut app),
+        SleepState::Faulted,
+        "an impure condition's policy must land in Faulted, never Woken"
+    );
+    assert!(
+        app.world().resource::<TextLog>().0.is_empty(),
+        "the flow's turn must never run — the writing condition was never evaluated"
     );
 }
 

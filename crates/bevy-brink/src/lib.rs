@@ -157,8 +157,9 @@ pub use plugin::{BrinkAssetsPlugin, BrinkPlugin};
 pub use replay::{BrinkReplayConfig, BrinkReplayLog, ReplayQueryModeOverride, replay_on_reload};
 pub use request::{BrinkFlowRequest, FlowStart, fulfill_flow_requests};
 pub use sleep::{
-    DetectSummary, FlowSleep, SleepState, WakeArming, mark_wake_dirty, run_flow_sleep,
+    DetectSummary, FlowSleep, SleepState, WakeArming, WakeConditionPurityError,
+    check_named_condition_purity, check_value_condition_purity, mark_wake_dirty, run_flow_sleep,
 };
 #[cfg(feature = "dev")]
-pub use source_loader::{InkLoader, InkLoaderError};
+pub use source_loader::{CompileStoryInlineError, InkLoader, InkLoaderError, compile_story_inline};
 pub use transcript::{BrinkTranscript, refresh_transcripts};

@@ -72,7 +72,14 @@
 //!   `any_with_component::<FlowSleep<M>>`): re-evaluates the flagged conditions
 //!   in each flow's own context, wakes on true, and re-arms/removes policies at
 //!   turn boundaries. Order-independent w.r.t. [`advance_batch`]: waking takes
-//!   effect the following frame either way.
+//!   effect the following frame either way. Before admitting a flagged policy
+//!   for evaluation it also runs the attach-time purity gate
+//!   ([`check_named_condition_purity`], issue #995, §13.1 point 2): a
+//!   condition whose effect row shows writes — including writes performed
+//!   transitively through a host-registered `EXTERNAL` binding the
+//!   [`CapabilityManifest`] declares `writes` for (issue #1040, the #995
+//!   follow-up; `docs/effects-spec.md` §9/§13) — is rejected loudly
+//!   ([`WakeConditionPurityError`]) and never called, not even once.
 //!
 //! [`WaitingForChoice`]: brink_runtime::StoryStatus::WaitingForChoice
 //! [`Ended`]: brink_runtime::StoryStatus::Ended
@@ -82,6 +89,7 @@
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
+use bevy_asset::Assets;
 use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
@@ -89,11 +97,13 @@ use bevy_ecs::query::QueryState;
 use bevy_ecs::system::{Local, Query, Res};
 use bevy_ecs::world::World as EcsWorld;
 use bevy_log::warn;
-use brink_format::Value;
-use brink_runtime::StoryStatus;
+use brink_format::{DefinitionId, DirectEffects, EffectRowEntry, Value};
+use brink_runtime::{Program, StoryStatus};
+use thiserror::Error;
 
+use crate::asset::{BrinkProgram, ProgramAsset};
 use crate::bindings::call_ink_function;
-use crate::capability::ContainerAccess;
+use crate::capability::{CapabilityManifest, ContainerAccess};
 use crate::flow::BrinkFlow;
 use crate::globals::BrinkGlobals;
 
@@ -343,6 +353,315 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
     }
 }
 
+// ── Wake-condition purity (issue #995, BH-4 follow-up) ──────────────────────
+//
+// `docs/effects-spec.md` §13.1 point 2 requires a `FlowSleep` condition to be
+// a **pure** fn: it is re-evaluated whenever a dependency moves, and the
+// re-evaluate contract can never tolerate that re-evaluation observing (or
+// causing) a mutation. Before this slice, nothing checked that — a condition
+// naming a knot/function that writes a global would be called anyway, every
+// wake pass. `check_named_condition_purity` (a `&str` condition, the shape
+// every `FlowSleep` uses today) and `check_value_condition_purity` (a `Value`
+// fn-value token — `FnRef`/`Closure` — for a host that resolves its condition
+// dynamically) both resolve to a `DefinitionId` and inspect its `EffectRows`
+// row (T2-3, `docs/effects-spec.md` §11): any global-cell write in the row's
+// direct part, or in a dispatch's static fallback (v1 does no runtime
+// narrowing — §7 — so a dispatch's conservative fallback always applies), or
+// an opaque row (the §3 pessimal top: effects inference couldn't summarize a
+// call it makes) makes the condition impure and rejects loudly.
+//
+// **Closed follow-up** (issue #1040, tracked from #995/#897): the check also
+// walks every `EXTERNAL` call a row (or a dispatch's static fallback) makes
+// and consults the [`CapabilityManifest`]'s declared `effects.writes` for it
+// (`docs/effects-spec.md` §9's "the manifest IS the external's row", §13.2's
+// grammar) — a manifest entry declaring one or more `writes` capabilities
+// rejects the condition exactly like an ink-level global write does. Unlike
+// the BH-1 access join (`compute_container_access`), this needs no
+// `CapabilityRegistry`/`ComponentId` resolution: the yes/no purity verdict
+// only needs the capability *names* a manifest entry lists, not what
+// `ComponentId` they resolve to.
+//
+// A manifest entry with no `writes` (reads-only, or no `effects` key at all —
+// §13.2's opt-in default) is accepted: it does not touch a write-capable ECS
+// capability, and purity is exactly "no writes". An `EXTERNAL` name with **no
+// manifest entry at all** is likewise accepted, deliberately matching the
+// BH-1 access join's posture (`resolve_call_atom`, `crate::capability`):
+// "a call whose `NameId` doesn't resolve, or that has no manifest entry at
+// all, contributes no access — silently, since not every `EXTERNAL` touches
+// ECS state (§13.2's `effects` key is opt-in)". Rejecting an unregistered
+// external here would fault the flow permanently — the same missed-wake bug
+// class the #913 detect-merge ruling treats as the worse failure mode
+// (`docs/decision-log.md` 2026-07-18, "a missed wake is the engine-race bug
+// class") — for a binding (e.g. a `bind_brink_fn` helper) that legitimately
+// never touches ECS state and was accepted before this check existed. Only a
+// manifest entry that affirmatively declares `writes` is rejected; the
+// manifest is an honesty contract, not a security boundary (the host is the
+// TCB — `docs/effects-spec.md` §9).
+//
+// A story whose `EffectRows` table is empty entirely (a converter-built
+// program, or a program that never went through the compiler's effects
+// emission) is outside the guarantee this checks: "compiler rows guarantee
+// purity only for ink-authored conditions reaching codegen" (issue #995) — so
+// an empty table skips the check rather than rejecting every condition a
+// story like that could ever declare.
+//
+// `run_flow_sleep` calls this at the moment a parked policy is first admitted
+// for evaluation (dormant policies: immediately; persistent ones: their first
+// park) — before the condition is ever called, so an impure condition is
+// never evaluated even once. Faulted the same way a runtime eval error is
+// (never silently retried into a spin), but with its own distinct, named
+// error so the two classes of failure are never confused in a log.
+
+/// A wake condition failed the attach-time purity check. See the module
+/// section above for the contract this enforces.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum WakeConditionPurityError {
+    /// The condition name/path didn't resolve to any definition in this
+    /// story.
+    #[error(
+        "wake condition `{condition}` does not resolve to a known definition in this story \
+         (check the name/path is correct for the loaded story)"
+    )]
+    UnknownCondition {
+        /// The condition name/path (or a `divert_target_path` label for a
+        /// value-resolved condition) that failed to resolve.
+        condition: String,
+    },
+    /// The condition value wasn't a function value (`FnRef`/`Closure`) at
+    /// all — [`check_value_condition_purity`] only has a target definition to
+    /// inspect for an actual fn-value token.
+    #[error(
+        "wake condition value is not a function value (FnRef/Closure) — no target definition to \
+         check for purity"
+    )]
+    NotAFunctionValue,
+    /// The condition resolved to a definition, but this story's (non-empty)
+    /// `EffectRows` table has no row for it — an internal invariant
+    /// violation (every knot/stitch ships one once the table is populated at
+    /// all), never a panic: conservatively treated as impure.
+    #[error(
+        "wake condition `{condition}` resolved to a definition with no EffectRows entry — an \
+         internal invariant expects one once a story's EffectRows table is populated at all; \
+         treating conservatively as impure"
+    )]
+    MissingEffectRow {
+        /// The condition name/path/label this row lookup failed for.
+        condition: String,
+    },
+    /// The condition (or a dispatch fallback its row folds in) writes one or
+    /// more global cells.
+    #[error(
+        "wake condition `{condition}` is not pure: it writes global(s) {writes:?} — a FlowSleep \
+         condition is re-evaluated whenever a dependency moves (docs/effects-spec.md §13.1 point \
+         2), and a writing condition would let that re-evaluation observe or cause a mutation"
+    )]
+    Writes {
+        /// The condition name/path/label.
+        condition: String,
+        /// The written globals' names, sorted and deduplicated.
+        writes: Vec<String>,
+    },
+    /// The condition's row (or a dispatch fallback) is opaque — effects
+    /// inference couldn't summarize a call it makes (§3's pessimal top).
+    /// Purity can't be proven, so it's conservatively rejected.
+    #[error(
+        "wake condition `{condition}`'s effect row is opaque (a call it makes couldn't be \
+         summarized by effects inference) — purity can't be proven, so it is conservatively \
+         rejected"
+    )]
+    Opaque {
+        /// The condition name/path/label.
+        condition: String,
+    },
+    /// The condition (or a dispatch fallback its row folds in) calls a
+    /// host-registered `EXTERNAL` binding whose [`CapabilityManifest`] entry
+    /// declares one or more `writes` capabilities (issue #1040, the #995
+    /// follow-up; `docs/effects-spec.md` §9/§13).
+    #[error(
+        "wake condition `{condition}` is not pure: it calls EXTERNAL `{external}`, whose \
+         capability manifest declares writes {writes:?} — a FlowSleep condition is \
+         re-evaluated whenever a dependency moves (docs/effects-spec.md §13.1 point 2), and a \
+         writing binding would let that re-evaluation observe or cause a mutation \
+         (docs/effects-spec.md §9/§13, issue #1040)"
+    )]
+    ExternalWrites {
+        /// The condition name/path/label.
+        condition: String,
+        /// The `EXTERNAL` binding's name.
+        external: String,
+        /// The written capability names the manifest declares, sorted and
+        /// deduplicated.
+        writes: Vec<String>,
+    },
+}
+
+/// Find the `EffectRows` entry for `def`, if this story's table carries one.
+fn effect_row_for(effect_rows: &[EffectRowEntry], def: DefinitionId) -> Option<&EffectRowEntry> {
+    effect_rows.iter().find(|row| row.def == def)
+}
+
+/// Resolve global-cell `DefinitionId`s to their variable names for a
+/// human-readable error — falling back to the id's own debug form rather than
+/// panicking if the name table doesn't carry it (shouldn't happen for a
+/// well-formed row, but this is a diagnostic path, not a hot one).
+fn write_names(program: &Program, ids: &[DefinitionId]) -> Vec<String> {
+    ids.iter()
+        .map(|id| {
+            program
+                .global_var_name(*id)
+                .map_or_else(|| format!("<{id}>"), str::to_owned)
+        })
+        .collect()
+}
+
+/// The shared purity check once a condition token has resolved to a `row`
+/// (see the module section above for exactly what this inspects).
+fn check_row_purity(
+    program: &Program,
+    row: &EffectRowEntry,
+    manifest: &CapabilityManifest,
+    condition_label: &str,
+) -> Result<(), WakeConditionPurityError> {
+    if row.direct.opaque
+        || row
+            .dispatches
+            .iter()
+            .any(|dispatch| dispatch.fallback.opaque)
+    {
+        return Err(WakeConditionPurityError::Opaque {
+            condition: condition_label.to_owned(),
+        });
+    }
+
+    check_external_calls_purity(program, &row.direct, manifest, condition_label)?;
+    for dispatch in &row.dispatches {
+        check_external_calls_purity(program, &dispatch.fallback, manifest, condition_label)?;
+    }
+
+    let mut writes = write_names(program, &row.direct.writes);
+    for dispatch in &row.dispatches {
+        writes.extend(write_names(program, &dispatch.fallback.writes));
+    }
+    if writes.is_empty() {
+        Ok(())
+    } else {
+        writes.sort();
+        writes.dedup();
+        Err(WakeConditionPurityError::Writes {
+            condition: condition_label.to_owned(),
+            writes,
+        })
+    }
+}
+
+/// Issue #1040 (the #995 follow-up): check every `EXTERNAL` call atom in
+/// `direct` (a row's direct part, or a dispatch's static fallback) against
+/// `manifest`'s declared `effects.writes`. See the module section above for
+/// the full contract: a manifest entry declaring `writes` rejects; a
+/// reads-only entry, a no-`effects`-key entry, or no manifest entry at all
+/// (the same opt-in posture `crate::capability::resolve_call_atom` applies)
+/// all accept.
+fn check_external_calls_purity(
+    program: &Program,
+    direct: &DirectEffects,
+    manifest: &CapabilityManifest,
+    condition_label: &str,
+) -> Result<(), WakeConditionPurityError> {
+    for call in &direct.calls {
+        let external_name = program
+            .name_checked(call.name)
+            .map_or_else(|| format!("<{:?}>", call.name), str::to_owned);
+        // No manifest entry at all accepts, same as a reads-only/no-`effects`
+        // entry — see the doc comment above.
+        if let Some(external) = manifest.external(&external_name)
+            && !external.effects.writes.is_empty()
+        {
+            let mut writes = external.effects.writes.clone();
+            writes.sort();
+            writes.dedup();
+            return Err(WakeConditionPurityError::ExternalWrites {
+                condition: condition_label.to_owned(),
+                external: external_name,
+                writes,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Check purity for a **named** wake condition (`FlowSleep::condition`'s
+/// shape) — resolves `condition` to a `DefinitionId` via
+/// [`Program::definition_id_for_path`], then inspects its `EffectRows` row.
+///
+/// `Ok(())` when `effect_rows` is empty entirely: a story that never shipped
+/// an `EffectRows` table (converter-built, or otherwise never ran the
+/// compiler's effects emission) is outside the guarantee this checks — see
+/// the module section above.
+///
+/// `manifest` threads the host's [`CapabilityManifest`] (issue #1040) so a
+/// condition calling a host-registered `EXTERNAL` binding is checked against
+/// that binding's declared `effects.writes`, not just the row's own
+/// ink-level writes.
+///
+/// # Errors
+/// See [`WakeConditionPurityError`].
+pub fn check_named_condition_purity(
+    program: &Program,
+    effect_rows: &[EffectRowEntry],
+    manifest: &CapabilityManifest,
+    condition: &str,
+) -> Result<(), WakeConditionPurityError> {
+    if effect_rows.is_empty() {
+        return Ok(());
+    }
+    let def = program.definition_id_for_path(condition).ok_or_else(|| {
+        WakeConditionPurityError::UnknownCondition {
+            condition: condition.to_owned(),
+        }
+    })?;
+    let row = effect_row_for(effect_rows, def).ok_or_else(|| {
+        WakeConditionPurityError::MissingEffectRow {
+            condition: condition.to_owned(),
+        }
+    })?;
+    check_row_purity(program, row, manifest, condition)
+}
+
+/// Check purity for a **dynamic fn-value** wake condition — a `Value`
+/// (`FnRef`/`Closure`) resolved token rather than a static name, e.g. one a
+/// host obtained from a global or a `bind_brink_query` result. Resolves the
+/// value's target via [`Value::fn_target`], then inspects the same
+/// `EffectRows` row [`check_named_condition_purity`] does.
+///
+/// Same empty-`effect_rows` bypass as [`check_named_condition_purity`]. Same
+/// `manifest` threading (issue #1040) as [`check_named_condition_purity`].
+///
+/// # Errors
+/// See [`WakeConditionPurityError`]. [`WakeConditionPurityError::NotAFunctionValue`]
+/// if `value` isn't a function value at all.
+pub fn check_value_condition_purity(
+    program: &Program,
+    effect_rows: &[EffectRowEntry],
+    manifest: &CapabilityManifest,
+    value: &Value,
+) -> Result<(), WakeConditionPurityError> {
+    if effect_rows.is_empty() {
+        return Ok(());
+    }
+    let def = value
+        .fn_target()
+        .ok_or(WakeConditionPurityError::NotAFunctionValue)?;
+    let label = program
+        .divert_target_path(def)
+        .unwrap_or_else(|| format!("<{def}>"));
+    let row = effect_row_for(effect_rows, def).ok_or_else(|| {
+        WakeConditionPurityError::MissingEffectRow {
+            condition: label.clone(),
+        }
+    })?;
+    check_row_purity(program, row, manifest, &label)
+}
+
 /// Ink truthiness for a wake condition's return value: a `Bool(true)`, a
 /// nonzero `Int`, or a nonzero `Float` wakes the flow. Every other value
 /// (including `Null` and non-numeric types) is treated as **false** —
@@ -423,7 +742,12 @@ enum ReparkAction {
 
 /// The gather query [`run_flow_sleep`] caches across frames (kept as a
 /// `type` alias to satisfy `clippy::type_complexity` on the `Local` param).
-type SleepGatherQuery<M> = QueryState<(Entity, &'static FlowSleep<M>, &'static BrinkFlow<M>)>;
+type SleepGatherQuery<M> = QueryState<(
+    Entity,
+    &'static FlowSleep<M>,
+    &'static BrinkFlow<M>,
+    &'static BrinkProgram<M>,
+)>;
 
 /// Exclusive system: re-evaluate flagged wake conditions in each flow's own
 /// context, wake on true, and re-arm/remove policies at turn boundaries
@@ -433,6 +757,12 @@ type SleepGatherQuery<M> = QueryState<(Entity, &'static FlowSleep<M>, &'static B
 /// Order-independent w.r.t. [`advance_batch`](crate::advance_batch): whether it
 /// runs before or after the batch driver in a frame, a wake takes effect on the
 /// following frame's Collect.
+#[expect(
+    clippy::too_many_lines,
+    reason = "four coherent phases (gather, purity faults, re-park/retire, evaluate) that share \
+              locals across the whole pass; splitting would just move the length into extra \
+              parameter-passing"
+)]
 pub fn run_flow_sleep<M: Send + Sync + 'static>(
     world: &mut EcsWorld,
     // Cache the gather query across frames instead of rebuilding a fresh
@@ -442,14 +772,25 @@ pub fn run_flow_sleep<M: Send + Sync + 'static>(
     // spawned sleeping flows are picked up.
     mut gather: Local<SleepGatherQuery<M>>,
 ) {
-    // ── Gather ── inspect (FlowSleep, BrinkFlow) without holding the borrow
-    // across the `call_ink_function` re-entries below. Only entities that are
-    // fully fulfilled flows carry `BrinkFlow`, so unfulfilled requests are
-    // never touched (no spurious NotAFlow faults).
+    // ── Gather ── inspect (FlowSleep, BrinkFlow, BrinkProgram) without
+    // holding the borrow across the `call_ink_function` re-entries below.
+    // Only entities that are fully fulfilled flows carry `BrinkFlow`, so
+    // unfulfilled requests are never touched (no spurious NotAFlow faults).
     let mut candidates: Vec<WakeCandidate> = Vec::new();
     let mut reparks: Vec<(Entity, ReparkAction)> = Vec::new();
+    // Purity faults (issue #995): a condition rejected before its first
+    // evaluation this pass — never called even once. Named separately from
+    // `reparks` because it needs the (distinct) `WakeConditionPurityError` to
+    // log, not just a re-arm/remove action.
+    let mut purity_faults: Vec<(Entity, WakeConditionPurityError)> = Vec::new();
     {
-        for (entity, sleep, flow) in gather.iter(world) {
+        let programs = world.resource::<Assets<ProgramAsset>>();
+        // The manifest is app-global (not per-marker `M` — `CapabilityRegistry`
+        // is, but `CapabilityManifest` is the one host-authored table every
+        // marker's stories share, per `crate::capability`'s module docs), so a
+        // single fetch here covers every candidate this pass gathers.
+        let manifest = world.resource::<CapabilityManifest>();
+        for (entity, sleep, flow, program_ref) in gather.iter(world) {
             let status = flow.inner.status();
             // An `-> END` flow is dead; the policy is inert (§13.1 point 5).
             if status == StoryStatus::Ended {
@@ -477,14 +818,50 @@ pub fn run_flow_sleep<M: Send + Sync + 'static>(
                     // policy is additionally eligible before its first turn.
                     let eligible = sleep.dormant || status == StoryStatus::Done;
                     if eligible && sleep.needs_eval {
-                        candidates.push(WakeCandidate {
-                            entity,
-                            condition: sleep.condition.clone(),
-                            args: sleep.args.clone(),
-                        });
+                        // Purity gate (issue #995, §13.1 point 2): admitted
+                        // into `candidates` only if the condition's effect row
+                        // proves no writes. A missing `ProgramAsset` (the
+                        // story unloaded mid-frame) just skips this pass —
+                        // `needs_eval` stays set and it's retried once the
+                        // asset is back.
+                        if let Some(asset) = programs.get(&program_ref.handle) {
+                            match check_named_condition_purity(
+                                &asset.program,
+                                &asset.effect_rows,
+                                manifest,
+                                &sleep.condition,
+                            ) {
+                                Ok(()) => candidates.push(WakeCandidate {
+                                    entity,
+                                    condition: sleep.condition.clone(),
+                                    args: sleep.args.clone(),
+                                }),
+                                Err(err) => purity_faults.push((entity, err)),
+                            }
+                        }
                     }
                 }
             }
+        }
+    }
+
+    // ── Purity faults ── reject before evaluation so an impure condition is
+    // never called, not even once (issue #995). Faulted the same way a
+    // runtime eval error is (never silently retried into a spin) — logged
+    // with its own distinct, named error so the two failure classes are
+    // never confused.
+    for (entity, err) in purity_faults {
+        if let Some(mut sleep) = world.get_mut::<FlowSleep<M>>(entity)
+            && sleep.state == SleepState::Parked
+        {
+            warn!(
+                "brink wake condition `{}` rejected for flow {:?}: {err} — policy parked \
+                 (Faulted); a FlowSleep condition must be pure (docs/effects-spec.md §13.1 \
+                 point 2)",
+                sleep.condition, entity
+            );
+            sleep.state = SleepState::Faulted;
+            sleep.needs_eval = false;
         }
     }
 
