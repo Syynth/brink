@@ -11,6 +11,7 @@ use crate::ShowCones;
 use crate::alarm::Alarm;
 use crate::guards::Guard;
 use crate::ink_alarm::AlarmImpl;
+use crate::ink_cameras::CamerasImpl;
 use crate::ink_doors::DoorsImpl;
 use crate::rats::Rat;
 use crate::rounds::Round;
@@ -72,6 +73,7 @@ pub fn update_hud(
     alarm: Res<Alarm>,
     alarm_impl: Res<AlarmImpl>,
     doors_impl: Res<DoorsImpl>,
+    cameras_impl: Res<CamerasImpl>,
     loadout: Res<Loadout>,
     timings: Res<BehaviorTimings>,
     show_cones: Res<ShowCones>,
@@ -111,7 +113,7 @@ pub fn update_hud(
          \n\
          behavior systems (this frame):\n\
          \x20 guards  {t_guard}\n\
-         \x20 cameras {t_cam}\n\
+         \x20 cameras {t_cam}  [{cameras_impl_label}]\n\
          \x20 doors   {t_door}  [{doors_impl_label}]\n\
          \x20 alarm   {t_alarm}  [{impl_label}; rust baseline ~42 ns]\n\
          \x20 rats    {t_rats}\n\
@@ -129,6 +131,7 @@ pub fn update_hud(
         cones = if show_cones.0 { "on" } else { "off" },
         t_guard = micros(timings.guards),
         t_cam = micros(timings.cameras),
+        cameras_impl_label = cameras_impl.label(),
         t_door = micros(timings.doors),
         doors_impl_label = doors_impl.label(),
         // The alarm line is printed at ns resolution (42 ns rounds to 0 µs) so

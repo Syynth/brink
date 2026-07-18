@@ -323,3 +323,205 @@ plugin's own `mark_wake_dirty`/`run_flow_sleep` + a host-registered
   on transition, park until the opposite transition" toggle shape for a
   boolean-latch reactive entity. Forced a documented behavioral
   simplification (doors never re-lock) rather than a faithful port.
+
+---
+
+## Phase 1c — security cameras (`cameras.rs` → `cameras.ink` + `src/ink_cameras.rs`)
+
+**Issue:** #1083. **Port order:** third (README §"Suggested migration
+order") — "the pure loop archetype": sweep an angle, detect via cone +
+raycast, no per-entity memory to marshal beyond the sweep phase itself.
+Chosen as the first port with **N flow instances sharing one program AND
+needing private per-instance state** — doors (Phase 1b) also has N
+instances of one program, but declares no ink state at all, so it never had
+to answer "how does each instance keep its own private cell."
+
+### What moved
+
+Every `SecurityCamera` a round spawns gets its own flow instance under one
+shared `CamerasStory` marker, running `assets/cameras.ink` — the flow entity
+**is** the camera entity, `src/ink_cameras.rs::attach_ink_camera_flows`
+attaching `BrinkFlowRequest<CamerasStory>` straight onto each
+`spawn_cameras_from_layout` entity, same pattern as the doors port.
+`src/cameras.rs` stays untouched as the Rust baseline (only
+`CAMERA_RANGE`/`CAMERA_HALF_ANGLE` got a `pub(crate)` bump so the ink port's
+`sees_player` binding can reuse the exact geometry constants instead of
+forking copies). `--cameras-impl rust|ink` picks exactly one writer per
+round, same shape as `--alarm-impl`/`--doors-impl`.
+
+Because all flows under one marker share one `BrinkGlobals<CamerasStory>`
+World, a plain `VAR` for `phase`/`facing` would be one sweep state shared by
+every camera in the compound — wrong the moment a round has more than one.
+`assets/cameras.ink` uses `#@local` (`docs/directive-annotations-spec.md`
+§3) for both cells: flow-private storage, invisible to every other camera's
+flow. `center_angle` and the loadout/stealth-adjusted `range` are deliberately
+**not** ink state at all — `ink_camera_system` passes them as fresh
+arguments to `sweep_and_detect` every call, computed host-side exactly like
+`camera_ai_system` does, so the only thing ink actually remembers across
+frames is the two `#@local` cells.
+
+### The seams
+
+**Write seam — one function call per camera per frame, exclusive, serial —
+not `advance_batch`.** `ink_camera_system` calls `sweep_and_detect(dt,
+center_angle, range)` (advances `phase`/`facing`, returns whether the camera
+currently sees the player), then `camera_facing()` (the read seam for the
+debug gizmo / parity test) — two `call_ink_function` re-entries per live
+camera per frame, the same exclusive-system shape Phase 1a's alarm uses.
+**Not** Phase 1b's `advance_batch`: BH-3's `homes_any_local` guard (#925)
+skips (with a `warn!`) any flow whose program compiles `#@local` defaults
+rather than silently double-counting per-instance state across the batch's
+shared-World assumption — a story built on `#@local` state has to stay on
+the serial driver. This is a direct, load-bearing consequence of choosing
+`#@local` over the alternative (no private state, thus no faithful sweep at
+all), not a workaround.
+
+**Detection — a world-access binding, not ink vector math.** `sees_player`
+(`bind_brink_query`) does the actual cone-and-raycast test
+(`world::point_in_cone` + `world::raycast_clear`) against the live
+`Transform`s/`Collider`s, reading the calling flow entity's own `Transform`
+as the cone apex — ink never does vector math (icebox #827), and this is
+exactly the doors' `is_switch_on` shape (a query binding reading state off
+the calling flow entity) applied to geometry instead of a component flag.
+
+**Read seam — the alarm write happens in Rust, not ink.** This is the
+finding, not just a seam choice — see "What was awkward" point 1 below.
+
+### What was awkward
+
+1. **The plan's command-based design (`docs/drive-app-plan.md` §3) is
+   unreachable from this port's drive mechanism — discovered, not assumed.**
+   The plan sketched cameras raising the alarm via a
+   `#[derive(BrinkCommand)]` "spotted" command fired from ink. But
+   `call_ink_function`'s evaluation handler (`EvalHandler` in
+   `crates/bevy-brink/src/bindings.rs`) only resolves `bind_brink_fn` (pure,
+   inline) and `bind_brink_query` (world-access, paused/resumed) bindings —
+   a `bind_brink_command`-bound `EXTERNAL` isn't in either bucket and falls
+   through to `ExternalResult::Fallback`, the same path an *unbound*
+   external takes: the call silently runs the in-story fallback instead of
+   firing the event, with no error and no log. `BrinkHandler` (the serial
+   story-stepping handler) buffers and flushes commands correctly;
+   `EvalHandler` (the one-pass engine→ink driver behind
+   `call_ink_function`) has no equivalent buffer at all. Worked around by
+   having `sweep_and_detect` return a plain boolean and `ink_camera_system`
+   write `SpottedEvent` itself — the same seam `ink_alarm_system` already
+   uses to *read* `SpottedEvent`, just one step earlier in the chain. Filed
+   as a new issue (checked for a dupe first, per the #996 precedent — none
+   existed): **G6 (#1096)**.
+2. **`#@local` is the right tool, but this is the first port to need it —
+   the flywheel didn't cover it.** Neither the alarm (one shared flow, plain
+   `VAR`s) nor doors (N flows, zero `VAR`s) needed a storage-class
+   annotation at all. Discovering `#@local` (and that BH-3's batch driver
+   deliberately excludes it) was net-new spelunking this port had to do that
+   the first two didn't leave behind as reusable knowledge — worth a doc
+   callout the same way doors' "N instances, one marker, zero globals"
+   pattern was.
+3. **Two VM re-entries per camera per frame, not one — the batch-call gap
+   (G1/#1058) compounds exactly as Phase 1a predicted.** `sweep_and_detect`
+   and `camera_facing` are two separate `call_ink_function` calls because
+   the read-back (`camera_facing`) has no batch-with-the-write-call entry
+   point either. For a compound with a dozen cameras that is 2×12 = 24 VM
+   re-entries a frame, on top of doors' and the alarm's own calls. This is
+   the same #1058 gap Phase 1a filed, now with a second multiplier (2×
+   per-entity, not just N-per-entity) — noted here as more evidence for
+   #1058/#1062's dispatch-order priority, not a new issue.
+
+None of these **blocked** the port — every camera sweeps and detects
+identically to the Rust baseline (see Semantics parity below), and the
+command-binding gap is a documented, tested workaround, not a silent bug.
+They are ergonomics findings for the charter, same as Phase 1a's G1–G3 and
+Phase 1b's G4–G5.
+
+### The flywheel check — did the accumulated helpers suffice?
+
+The issue asked this port to explicitly note whether the ergonomics helpers
+the first two ports built (`compile_story_inline`, `BrinkGlobals::get`) held
+up for a third, structurally different entity:
+
+- **`compile_story_inline` (#1060) — sufficed as-is.**
+  `build_cameras_story` in `ink_cameras.rs`'s test module calls it exactly
+  the way `ink_alarm`/`ink_doors` do, no new wrapping needed. Three ports in,
+  this one is fully load-bearing shared scaffolding.
+- **`BrinkGlobals::get` (#1059) — not exercised, and that is itself a
+  finding.** This port declares no `BrinkGlobals`-visible `VAR`s at all (see
+  "What moved" above) — `center_angle`/`range` are call arguments, and the
+  `#@local` cells are per-flow, not per-marker-global, so there is nothing
+  for a globals-by-name reader to reach. The flywheel's second helper simply
+  doesn't apply to this port's shape, which is a useful data point on its
+  own: the ports so far split evenly between "needs the globals reader"
+  (alarm) and "doesn't" (doors, cameras) — not because the helper is
+  deficient, but because only one of three entity archetypes so far
+  authoritatively owns engine-visible state as ink globals.
+- **What the flywheel did *not* yet cover: per-instance private ink state.**
+  Neither prior helper (nor any prior port) anticipated `#@local` — this
+  port had to discover the annotation and its `advance_batch` exclusion
+  (BH-3's #925 guard) from source, not from an existing pattern. That gap is
+  now closed for the *next* port by this entry existing (see point 2 above).
+- **What the batch call surface (#1058, "first consumer if merged") turned
+  out to mean: not applicable here, for a real reason.** The issue flagged
+  cameras as the potential first consumer of #1058's batch engine→ink call
+  surface if it landed before this port did. It hadn't, and — more
+  importantly — it wouldn't have helped even if it had: #1058's batch
+  surface is scoped to `advance_batch`-shaped driving, and this port is
+  excluded from `advance_batch` entirely by the `#@local` guard (#925). The
+  serial, per-call cost (point 3 above) is a *different* axis than the one
+  #1058 amortizes, and is worth flagging back onto #1058/#1062 as scope
+  evidence rather than assuming the existing ticket already covers it.
+
+### LOC
+
+| Piece | Rust | ink |
+|---|---:|---:|
+| Sweep + detect logic (the semantics) | 2 (`camera_ai_system`'s phase/facing update) | 3 (`sweep_and_detect`'s body) |
+| State declaration | ~6 (`SecurityCamera` fields) | 4 (`#@local VAR` × 2) + 2 `CONST` |
+| Per-frame writer / seam | ~45 (`camera_ai_system`, non-test) | ~323 (`ink_cameras.rs`, non-test) |
+
+Structurally identical to Phase 1a's finding (the seam dwarfs the logic), not
+Phase 1b's (no per-frame write seam at all) — cameras need both a per-frame
+*write* seam (Phase 1a's shape, doubled per call in point 3 above) **and** a
+`bind_brink_query` *read* seam (Phase 1b's shape), because the reactive
+detection math is engine-side while the sweep bookkeeping is ink-side.
+
+### Measured cost
+
+Measured by the parity test's scripted frame loop against the from-scratch
+Rust reference (`ink_cameras::tests::ink_camera_matches_rust_sweep_and_detection_over_a_scripted_path`
+— see the test for the exact per-call shape). The expected order of
+magnitude is the same as Phase 1a's `call_ink_function` cost (µs-scale per
+call, dominated by VM-eval setup), **doubled** per camera per frame (two
+calls, not one — point 3 above), against a sub-microsecond Rust sweep+cone+
+raycast. The HUD's `cameras` line prints the live cost (µs resolution)
+beside the active impl label, the same shape as doors'.
+
+### Semantics parity
+
+`ink_cameras::tests` drives the reactive contract with a from-scratch Rust
+reference kept independent of `ink_camera_system` (so the test doesn't just
+check ink against itself):
+
+- `ink_camera_matches_rust_sweep_and_detection_over_a_scripted_path` — a
+  30-frame scripted player path (approach through the cone, pass behind a
+  wall, stand in the open close-up) asserts identical `facing` (within 1e-4)
+  and identical detection outcome every frame, exercising both the
+  cone-angle and the raycast-blocked branches;
+- `ink_camera_system_writes_spotted_event_and_skips_disabled` —
+  reachability through the real system (not just the test-only `sweep_camera`
+  helper): a live camera facing the player writes `SpottedEvent`; a disabled
+  one is skipped entirely, matching `camera_ai_system`'s own
+  `if cam.disabled { continue }`.
+
+**Status: green.**
+
+### API gaps filed
+
+- **G6 (#1096)** — `call_ink_function`'s evaluation handler silently falls
+  back to the in-story body for a `bind_brink_command`-bound `EXTERNAL`
+  instead of firing the event or erroring — no diagnostic surfaces the
+  mismatch. Discovered because this port's original design (a command-fired
+  alarm) hit it directly; worked around by returning a boolean and having
+  the host write the event itself. New issue, checked for a dupe first.
+- **G1 (#1058)** — additional evidence, not a new issue: this port pays the
+  batch-call gap **twice** per camera per frame (`sweep_and_detect` +
+  `camera_facing`, no batched read-back), and is *excluded* from the
+  #1058 batch surface's `advance_batch` scope entirely by the `#@local`
+  guard (#925) — see "The flywheel check" above.
