@@ -22,6 +22,7 @@ mod cameras;
 mod doors;
 mod guards;
 mod hud;
+mod ink_alarm;
 mod layout_gen;
 mod loot;
 mod nav;
@@ -35,6 +36,7 @@ mod world;
 
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
+use bevy_brink::BrinkPlugin;
 
 use crate::alarm::{Alarm, GlobalAlarm, SpottedEvent, alarm_system};
 use crate::cameras::{camera_ai_system, camera_interact_system, draw_camera_cones};
@@ -47,6 +49,9 @@ use crate::guards::{
     reinforcement_system, spawn_telegraph_system,
 };
 use crate::hud::{setup_hud, update_hud};
+use crate::ink_alarm::{
+    AlarmImpl, AlarmStory, alarm_is_ink, alarm_is_rust, ink_alarm_system, spawn_ink_alarm,
+};
 use crate::loot::gold_pickup_system;
 use crate::nav::NavGraph;
 use crate::noise::{
@@ -70,6 +75,9 @@ use crate::world::{
 pub struct ShowCones(pub bool);
 
 fn main() {
+    let alarm_impl = AlarmImpl::from_args();
+    info!("[alarm] implementation: {}", alarm_impl.label());
+
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -80,6 +88,10 @@ fn main() {
             ..default()
         }))
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
+        // Phase 1a: the brink runtime as a plugin. Harmless in Rust mode (no
+        // alarm flow is ever spawned); drives `assets/alarm.ink` in ink mode.
+        .add_plugins(BrinkPlugin::<AlarmStory>::default())
+        .insert_resource(alarm_impl)
         .init_state::<Phase>()
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06)))
         .init_resource::<Alarm>()
@@ -102,6 +114,8 @@ fn main() {
             Startup,
             (setup_static_world, setup_hud, kick_off_first_round),
         )
+        // Ink mode only: load alarm.ink and spawn its flow.
+        .add_systems(Startup, spawn_ink_alarm.run_if(alarm_is_ink))
         // Always-on systems.
         .add_systems(
             Update,
@@ -116,13 +130,18 @@ fn main() {
         .add_systems(
             Update,
             (
-                // The five timed behavior systems, chained so their order (and
-                // thus the alarm's same-frame consistency) is deterministic.
+                // The timed behavior systems, chained so their order (and thus
+                // the alarm's same-frame consistency) is deterministic. The
+                // alarm slot holds BOTH writers — run-conditions pick exactly
+                // one per the `--alarm-impl` toggle, so guards/cameras (which
+                // emit the alarm messages) always run before whichever writer
+                // folds them, and `rat_system` always runs after.
                 (
                     guard_ai_system,
                     camera_ai_system,
                     door_sync_system,
-                    alarm_system,
+                    alarm_system.run_if(alarm_is_rust),
+                    ink_alarm_system.run_if(alarm_is_ink),
                     rat_system,
                 )
                     .chain(),
