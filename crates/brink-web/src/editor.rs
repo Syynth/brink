@@ -12,8 +12,8 @@ use crate::editor_dto::{
     LocationJs, ParamLabelJs, ProjectFileJs, SignatureInfoJs, SlotStateJs, SlotWidgetJs,
     StoryGraphEdgeJs, StoryGraphEdgeOccurrenceJs, StoryGraphJs, StoryGraphNodeJs, TokenJs,
     ValueItemJs, code_action_kind_str, convert_document_symbol, declared_group_js,
-    dedupe_out_of_scope, diagnostic_to_js, fold_kind_str, inlay_hint_kind_str, span_kind_str,
-    story_edge_kind_str, story_node_kind_str, symbol_kind_str, typed_detail,
+    dedupe_out_of_scope, fold_kind_str, inlay_hint_kind_str, span_kind_str, story_edge_kind_str,
+    story_node_kind_str, symbol_kind_str, typed_detail,
 };
 use crate::editor_refactor::{
     AutoImportJs, dir_error_json, dir_move_result_json, error_json, gated_move_json,
@@ -669,73 +669,83 @@ impl EditorSession {
     }
 
     /// Compile the project using all loaded files. Returns JSON `CompileResult`.
-    pub fn compile_project(&self, entry: &str) -> String {
-        let session = &self.session;
-        // Carry the registered host manifest into compilation so its
-        // diagnostics (type/arity/domain) surface alongside compiler output.
-        let result = brink_compiler::compile_with_options(
-            entry,
-            |path| {
-                session
-                    .file_id(path)
-                    .and_then(|id| session.source(id))
-                    .map(str::to_owned)
-                    .ok_or_else(|| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::NotFound,
-                            format!("file not found: {path}"),
-                        )
-                    })
-            },
-            session.analysis_options(),
-        );
-
-        // Convert a diagnostic against its OWN file's source (offsets are
-        // file-relative); the resolved diagnostic already carries that file's
-        // path, so an INCLUDEd file's error lands on the right tab instead of
-        // collapsing onto the entry.
-        let to_js = |d: &brink_compiler::ResolvedDiagnostic| {
-            let src = session.source(d.file).unwrap_or("");
-            diagnostic_to_js(d, src)
-        };
-
-        match result {
-            Ok(output) => {
-                let warnings: Vec<DiagnosticJs> = output.warnings.iter().map(to_js).collect();
-
-                let data = output.data;
-                let mut bytes = Vec::new();
-                brink_format::write_inkb(&data, &mut bytes);
-
-                let resp = CompileResult {
-                    ok: true,
-                    story_bytes: Some(bytes),
-                    warnings,
-                    error: None,
-                };
-                serde_json::to_string(&resp).unwrap_or_default()
-            }
+    ///
+    /// The artifact is assembled by querying **the session's own `ProjectDb`**
+    /// — the same db the analysis path reads (#1032) — rather than spinning up
+    /// a fresh compiler driver per call. One db means one file set, one
+    /// lowering, and one analysis-options input shared by both compile and
+    /// analysis, so the two can never diverge on manifest/dialect/policy: the
+    /// class of bug that produced #1004 (manifest missing from compile) is
+    /// structurally unrepresentable. The registered host manifest, T1b dialect,
+    /// and TM-3 type policy are carried in through `analysis_options()`, exactly
+    /// as the background analysis pass reads them.
+    ///
+    /// Takes `&mut self` because pointing the shared db at this entry and
+    /// syncing its options input are salsa input writes; they do not touch the
+    /// editor's cached diagnostic state (see `IdeSession::compile`).
+    pub fn compile_project(&mut self, entry: &str) -> String {
+        let options = self.session.analysis_options();
+        let product = match self.session.compile(entry, &options) {
+            Ok(product) => product,
             Err(e) => {
-                let mut diagnostics = Vec::new();
-                let mut error_msg = None;
-
-                match e {
-                    brink_compiler::CompileError::Diagnostics(diags) => {
-                        diagnostics = diags.iter().map(to_js).collect();
-                    }
-                    other => {
-                        error_msg = Some(format!("{other}"));
-                    }
-                }
-
                 let resp = CompileResult {
                     ok: false,
                     story_bytes: None,
-                    warnings: diagnostics,
-                    error: error_msg,
+                    warnings: Vec::new(),
+                    error: Some(format!("{e}")),
                 };
-                serde_json::to_string(&resp).unwrap_or_default()
+                return serde_json::to_string(&resp).unwrap_or_default();
             }
+        };
+
+        // Diagnostics are keyed by `FileId` into this session's own db, so
+        // resolve each against its OWN file's source and path (offsets are
+        // file-relative) — an INCLUDEd file's error lands on the right tab
+        // instead of collapsing onto the entry. No throwaway-driver id
+        // remapping: the ids are already this db's.
+        let to_js = |d: &brink_ir::Diagnostic| {
+            let src = self.session.source(d.file).unwrap_or("");
+            DiagnosticJs {
+                message: d.message.clone(),
+                start: byte_to_utf16(src, d.range.start().into()),
+                end: byte_to_utf16(src, d.range.end().into()),
+                severity: format!("{:?}", d.code.severity()),
+                code: d.code.as_str().to_owned(),
+                file: self.session.file_path(d.file).unwrap_or("").to_owned(),
+            }
+        };
+
+        if let Some(story) = product.story {
+            let warnings: Vec<DiagnosticJs> = product.warnings.iter().map(to_js).collect();
+
+            let mut bytes = Vec::new();
+            brink_format::write_inkb(&story, &mut bytes);
+
+            let resp = CompileResult {
+                ok: true,
+                story_bytes: Some(bytes),
+                warnings,
+                error: None,
+            };
+            serde_json::to_string(&resp).unwrap_or_default()
+        } else {
+            // Match the prior driver's failure shape: the diagnostics
+            // channel carries the errors that prevented compilation,
+            // followed by any warnings gathered alongside them.
+            let diagnostics: Vec<DiagnosticJs> = product
+                .errors
+                .iter()
+                .chain(product.warnings.iter())
+                .map(to_js)
+                .collect();
+
+            let resp = CompileResult {
+                ok: false,
+                story_bytes: None,
+                warnings: diagnostics,
+                error: None,
+            };
+            serde_json::to_string(&resp).unwrap_or_default()
         }
     }
 
@@ -4930,6 +4940,321 @@ mod tests {
                 .iter()
                 .any(|w| w["code"] == "E065"),
             "an unregistered external's params must stay unchecked: {result}"
+        );
+    }
+
+    // ── #1032: compile ⇄ analysis agree because they share one ProjectDb ──
+    //
+    // The collapse (#1032): `compile_project` assembles its artifact by
+    // querying the session's OWN `ProjectDb` — the same db the background
+    // analysis pass reads — instead of building a throwaway compiler driver
+    // per call. With one db, one file set, and one analysis-options input
+    // feeding both, a compile can never diverge from analysis on
+    // manifest/dialect/policy: the class of bug that produced #1004 (manifest
+    // missing from compile) and its siblings becomes structurally
+    // unrepresentable. This suite pins that invariant — for every session
+    // input (host manifest, T1b dialect, TM-3 policy, and the `brink.toml`
+    // applied via `apply_project_config`), the option-driven diagnostic must
+    // appear on BOTH the analysis channel and `compile_project`'s.
+
+    /// Does the session's cached background analysis carry `code`?
+    fn analysis_has(s: &EditorSession, code: brink_ir::DiagnosticCode) -> bool {
+        s.session
+            .analysis()
+            .is_some_and(|a| a.diagnostics.iter().any(|d| d.code == code))
+    }
+
+    /// Does a `compile_project` result JSON carry a diagnostic with `code`?
+    /// (`warnings` carries success-path warnings and, on a failed compile, the
+    /// blocking errors too — see `compile_project`.)
+    fn compile_has(result_json: &str, code: &str) -> bool {
+        json(result_json)["warnings"]
+            .as_array()
+            .is_some_and(|w| w.iter().any(|d| d["code"] == code))
+    }
+
+    #[test]
+    fn manifest_domain_violation_agrees_across_analysis_and_compile() {
+        // A host manifest closing `tint`'s param to the `color` enum, and a
+        // literal violating it (`"nope"`). Analysis flags the closed-domain
+        // violation (E042); so must compile — the manifest is one input on the
+        // shared db, not a thing wired separately into a second driver.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "EXTERNAL tint(c)\n~ tint(\"nope\")\n-> END\n");
+        s.set_host_manifest(
+            r##"{ "types": [{ "name": "color", "base": "string", "constraint": { "kind": "enum", "values": ["#FF0000"] } }],
+                "externals": [{ "name": "tint", "params": [{ "name": "c", "ty": "color" }], "returns": "", "kind": "presentation" }] }"##,
+        )
+        .expect("valid manifest");
+
+        assert!(
+            analysis_has(&s, brink_ir::DiagnosticCode::E042),
+            "analysis flags the closed-domain violation"
+        );
+        let result = s.compile_project("main.ink");
+        assert!(
+            compile_has(&result, "E042"),
+            "compile must agree with analysis on the manifest-driven E042: {result}"
+        );
+    }
+
+    #[test]
+    fn dialect_e051_gate_agrees_across_analysis_and_compile() {
+        // A `~ { … }` multi-line logic block is brink-extension syntax:
+        // flagged E051 under the StrictInk default, silent under Brink. The
+        // gate must move identically on both channels.
+        let src = "~ {\n    temp x = 0\n}\n-> END\n";
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", src);
+        assert!(
+            analysis_has(&s, brink_ir::DiagnosticCode::E051),
+            "strict-ink default: analysis flags E051"
+        );
+        let strict = s.compile_project("main.ink");
+        assert!(
+            compile_has(&strict, "E051"),
+            "strict-ink default: compile flags E051 too: {strict}"
+        );
+
+        s.set_language_dialect("brink");
+        assert!(
+            !analysis_has(&s, brink_ir::DiagnosticCode::E051),
+            "brink dialect: analysis drops E051"
+        );
+        let brink = s.compile_project("main.ink");
+        assert!(
+            !compile_has(&brink, "E051"),
+            "brink dialect: compile drops E051 too: {brink}"
+        );
+    }
+
+    #[test]
+    fn type_policy_e065_agrees_across_analysis_and_compile() {
+        // `types = strict` under `dialect = brink` turns on the unused-param
+        // escape check (E065) on `=== noop(x) ===`. Both channels must fire.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== noop(x) ===\nHello.\n-> DONE\n");
+        s.set_language_dialect("brink");
+        s.set_type_policy("strict");
+        assert!(
+            analysis_has(&s, brink_ir::DiagnosticCode::E065),
+            "strict policy: analysis flags E065"
+        );
+        let result = s.compile_project("main.ink");
+        assert!(
+            compile_has(&result, "E065"),
+            "strict policy: compile flags E065 too: {result}"
+        );
+    }
+
+    #[test]
+    fn apply_project_config_strict_agrees_across_analysis_and_compile() {
+        // The `brink.toml` path (#1005) sets dialect + policy on the session;
+        // both compile and analysis read them off the shared db, so a
+        // config-driven E065 must appear on both.
+        let mut s = EditorSession::new();
+        s.apply_project_config("[project]\ndialect = \"brink\"\ntypes = \"strict\"\n")
+            .expect("valid config");
+        s.update_file("main.ink", "=== noop(x) ===\nHello.\n-> DONE\n");
+        assert!(
+            analysis_has(&s, brink_ir::DiagnosticCode::E065),
+            "config strict: analysis flags E065"
+        );
+        let result = s.compile_project("main.ink");
+        assert!(
+            compile_has(&result, "E065"),
+            "config strict: compile flags E065 too: {result}"
+        );
+    }
+
+    #[test]
+    fn compile_project_does_not_perturb_editor_diagnostic_state() {
+        // Care point (#1032): assembling the compile artifact points the
+        // shared db at this entry and syncs its options input — but must NOT
+        // mutate the editor's cached analysis (computed off-db), nor perturb
+        // the db-derived per-file diagnostics query on a *repeat* compile
+        // under unchanged options (`compile`'s own doc: "an unchanged value
+        // is a salsa no-op — repeated compiles under the same options reuse
+        // the warm db's incremental results").
+        //
+        // `s.session.analysis()` alone is a tautology (PR #1048 review
+        // finding): it reads the off-db cached `self.analysis` field, which
+        // `compile()` provably never writes, so comparing it before/after
+        // passes regardless of whether `compile()`'s db-input writes
+        // (`set_entry`/`set_analysis_options`) are actually correct. Add
+        // `db().diagnostics(file)` — a real db-input-derived salsa query —
+        // to the comparison. The *first* compile call legitimately changes
+        // it (it's what first syncs the db's `AnalysisOptions` input to the
+        // editor's already-active dialect/policy, which until then had only
+        // lived in the off-db cached fields `analysis()` reads), so settle
+        // that with a first compile before snapshotting; the *second*
+        // compile (same entry, same options) is the one that must be a
+        // true no-op on both surfaces.
+        let mut s = EditorSession::new();
+        s.set_language_dialect("brink");
+        s.set_type_policy("strict");
+        s.update_file("main.ink", "=== noop(x) ===\nHello.\n-> DONE\n");
+        let file = s.session.file_id("main.ink").expect("main.ink loaded");
+
+        let _ = s.compile_project("main.ink");
+
+        let before: Vec<_> = s
+            .session
+            .analysis()
+            .expect("analysis")
+            .diagnostics
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        let before_db: Vec<_> = s
+            .session
+            .db()
+            .diagnostics(file)
+            .expect("main.ink loaded")
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            before_db.contains(&brink_ir::DiagnosticCode::E065),
+            "sanity: the db-derived query must see the strict+brink policy \
+             the first compile settled: {before_db:?}"
+        );
+
+        let _ = s.compile_project("main.ink");
+
+        let after: Vec<_> = s
+            .session
+            .analysis()
+            .expect("analysis")
+            .diagnostics
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        let after_db: Vec<_> = s
+            .session
+            .db()
+            .diagnostics(file)
+            .expect("main.ink loaded")
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert_eq!(
+            before, after,
+            "compile_project must not perturb the editor's cached analysis"
+        );
+        assert_eq!(
+            before_db, after_db,
+            "a repeat compile_project under unchanged options must not \
+             perturb the db-derived per-file diagnostics query either"
+        );
+    }
+
+    #[test]
+    fn compile_project_unknown_entry_reports_an_error_not_a_panic() {
+        // Entry not loaded in the session → a clean `ok:false` error, mirroring
+        // the prior driver's file-not-found path.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "-> END\n");
+        let result = s.compile_project("nope.ink");
+        let v = json(&result);
+        assert_eq!(v["ok"], false, "{result}");
+        assert!(
+            v["error"].as_str().unwrap_or_default().contains("nope.ink"),
+            "error names the missing entry: {result}"
+        );
+    }
+
+    // ── #1032 collapse follow-up: closure-scoped compile gate ───────────
+    //
+    // PR #1048's adversarial review (finding 1) caught that collapsing
+    // compile onto the shared analysis `ProjectDb` silently widened the
+    // compile error-gate from entry-reachable to whole-project: any error
+    // anywhere in the session's loaded files — a WIP scratch file, a second
+    // unrelated story — now flipped `compileProject(entry)` from `ok:true`
+    // to `ok:false`, diverging from both the prior throwaway-driver
+    // behavior and the CLI's still-`discover`-scoped compile path. Ruled
+    // (issuecomment-5009848672): `compileProject` gates on `entry`'s
+    // `INCLUDE` closure only (`has_errors_in_closure_query`,
+    // `brink-db`'s `queries/analysis.rs`); errors outside that closure keep
+    // surfacing as diagnostics but no longer block the build. The two tests
+    // below pin exactly that: an unrelated broken file must not block a
+    // clean entry (closure scoping, not suppression), but a broken file the
+    // entry *does* `INCLUDE` must still block it.
+
+    #[test]
+    fn compile_project_ignores_an_unrelated_broken_file_but_still_diagnoses_it() {
+        // scratch.ink is loaded into the same session db as main.ink but
+        // main.ink never INCLUDEs it — exactly the "WIP scratch file" /
+        // "second unrelated story coexisting in one editor session" shape
+        // the finding named. Its unresolved divert (E024, unconditionally
+        // Error-severity, not gated by dialect/type-policy) must not block
+        // `main.ink`'s build, but must still show up on a whole-project
+        // diagnostics read.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "-> END\n");
+        s.update_file("scratch.ink", "== broken ==\n-> nowhere\n");
+
+        assert!(
+            analysis_has(&s, brink_ir::DiagnosticCode::E024),
+            "sanity: whole-project analysis flags the unrelated file's unresolved divert"
+        );
+
+        let result = s.compile_project("main.ink");
+        let v = json(&result);
+        assert_eq!(
+            v["ok"], true,
+            "an error in a file main.ink never INCLUDEs must not block its build: {result}"
+        );
+        assert!(
+            v["story_bytes"].is_array() || v["story_bytes"].is_string(),
+            "a successful compile must still hand back story bytes: {result}"
+        );
+        assert!(
+            !compile_has(&result, "E024"),
+            "the unrelated file's error must not leak into compileProject's own \
+             diagnostics either: {result}"
+        );
+
+        // The broken file's diagnostic must still be live on a whole-project
+        // read after the compile — closure scoping narrows the *build gate*,
+        // it is not suppression of the diagnostic itself.
+        let scratch = s
+            .session
+            .file_id("scratch.ink")
+            .expect("scratch.ink loaded");
+        let scratch_diags = s
+            .session
+            .db()
+            .diagnostics(scratch)
+            .expect("scratch.ink loaded");
+        assert!(
+            scratch_diags
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E024),
+            "the unrelated broken file must still report its own diagnostics \
+             after compileProject succeeds: {scratch_diags:?}"
+        );
+    }
+
+    #[test]
+    fn compile_project_fails_when_an_included_file_is_broken() {
+        // Same broken content as above, but this time main.ink actually
+        // INCLUDEs it — inside entry's closure, so the build must still
+        // fail. Proves the closure scoping is a *narrowing*, not a
+        // blanket "compile never fails on multi-file errors" regression.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "INCLUDE broken.ink\n-> END\n");
+        s.update_file("broken.ink", "== broken ==\n-> nowhere\n");
+
+        let result = s.compile_project("main.ink");
+        let v = json(&result);
+        assert_eq!(
+            v["ok"], false,
+            "an error in an INCLUDEd file must still block the entry's build: {result}"
+        );
+        assert!(
+            compile_has(&result, "E024"),
+            "the included file's unresolved divert must surface as a compile error: {result}"
         );
     }
 }

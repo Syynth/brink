@@ -105,9 +105,9 @@ pub use analysis::ResolvedProject;
 pub(crate) use analysis::{
     analysis_diagnostics_query, analysis_query, await_purity_diagnostics_query,
     call_site_diagnostics_query, call_site_metas_query, contributor_diagnostics_query,
-    diagnostics_query, effects_assertion_diagnostics_query, external_meta_query, has_errors_query,
-    inline_docs_query, per_file_diagnostics_query, resolutions_index_query, value_meta_query,
-    whole_project_diagnostics_query,
+    diagnostics_query, effects_assertion_diagnostics_query, external_meta_query,
+    has_errors_in_closure_query, has_errors_query, inline_docs_query, per_file_diagnostics_query,
+    resolutions_index_query, value_meta_query, whole_project_diagnostics_query,
 };
 
 // ─── Database ────────────────────────────────────────────────────────
@@ -190,6 +190,11 @@ impl Default for BrinkDatabase {
                 // an unrelated AnalysisOptions edit can't re-execute the
                 // `no_eq` lowering memo.
                 .ingredient::<has_errors_query>()
+                // Issue #1032 collapse ruling: the closure-scoped counterpart
+                // `compileProject`'s artifact path (`story_data_query`) reads
+                // instead of the whole-project `has_errors_query`/`lir_query`
+                // above — see `has_errors_in_closure_query`'s doc comment.
+                .ingredient::<has_errors_in_closure_query>()
                 .ingredient::<type_policy_query>()
                 // FG-4d (issue #830): per-knot LIR chunk memos + the
                 // cutoff-friendly struct-shape projection they read;
@@ -244,6 +249,7 @@ impl Default for BrinkDatabase {
                 .ingredient::<await_purity_diagnostics_query>()
                 // Layer 3.
                 .ingredient::<lir_query>()
+                .ingredient::<lir_in_closure_query>()
                 .ingredient::<story_data_query>()
                 .build(),
         }
@@ -1542,15 +1548,25 @@ pub(crate) fn type_policy_query(db: &dyn salsa::Database, project: ProjectInput)
 }
 
 /// FG-4d **link phase**: assemble the per-knot chunk memos and the whole-root
-/// chunk into a `Program`. Gated on `has_errors_query` (unchanged). See the
-/// section comment above for the byte-identity and non-re-execution
-/// arguments.
+/// chunk into a `Program`. See the section comment above for the
+/// byte-identity and non-re-execution arguments.
+///
+/// Gated on [`has_errors_in_closure_query`] (issue #1032 collapse ruling),
+/// not the whole-project [`has_errors_query`] — this function has two
+/// callers with different pre-conditions: [`lir_query`] already gates on the
+/// (stronger) whole-project check before ever calling here, so for that
+/// caller this is inert (whole-project-clean implies closure-clean, since
+/// the closure is a subset); [`lir_in_closure_query`] gates on exactly this
+/// (weaker) check itself, so this must use the same one to actually permit
+/// lowering when only a file outside `entry`'s closure is broken. The
+/// per-file lowering below was already scoped to `topological_order(entry)`
+/// (issue #815) regardless of which gate is used here.
 #[salsa::tracked(no_eq)]
 pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput) -> LirLowering {
     let Some(entry) = project.entry(db) else {
         return LirLowering::default();
     };
-    if has_errors_query(db, project) {
+    if has_errors_in_closure_query(db, project) {
         return LirLowering::default();
     }
 
@@ -1728,6 +1744,81 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
     }
 }
 
+/// The compile-scoped counterpart to [`lir_query`] (issue #1032 collapse
+/// ruling, option (a) "both, scoped"): gates on [`has_errors_in_closure_query`]
+/// — `entry`'s transitive `INCLUDE` closure — instead of the whole-project
+/// [`has_errors_query`]. [`lir_query`] itself is untouched: `db.lir_product()`
+/// and `db.has_errors()` stay whole-project-gated, exactly as FG-4a's
+/// dependency-edge tests (`fg4a_dependency_edges.rs`) pin.
+///
+/// This is what [`story_data_query`] reads, so `db.story_data()` —
+/// `compileProject`'s artifact path — no longer fails a clean entry just
+/// because some other file loaded into the same session db (a WIP scratch
+/// file, a second unrelated story) happens to have an error. That error
+/// still surfaces through `diagnostics_query`/`db.diagnostics(file)`
+/// (unchanged, whole-project) — this only narrows the *build gate*, not
+/// what's diagnosed. For the CLI driver (`brink-compiler`), whose db is
+/// already built from `brink-driver::discover(entry)` — entry plus its
+/// transitive `INCLUDE`s only — `project.files(db)` and the closure coincide,
+/// so this is behaviorally identical to the old whole-project gate there.
+///
+/// `errors`/`warnings` are computed the same closure-filtered way
+/// [`has_errors_in_closure_query`] computes its verdict, so a file outside
+/// `entry`'s closure never contributes to `compileProject`'s own error/
+/// warning list either.
+#[salsa::tracked(returns(ref), no_eq)]
+pub(crate) fn lir_in_closure_query(db: &dyn salsa::Database, project: ProjectInput) -> LirProduct {
+    let files = project.files(db);
+    let Some(entry) = project.entry(db) else {
+        return LirProduct::default();
+    };
+
+    let graph = include_graph_query(db, project);
+    let closure: LookupSet<FileId> = graph.topological_order(entry).into_iter().collect();
+
+    let diagnostics: Vec<Diagnostic> = analysis_diagnostics_query(db, project)
+        .iter()
+        .filter(|d| closure.contains(&d.file))
+        .cloned()
+        .collect();
+
+    let disable_all = files
+        .iter()
+        .find(|f| f.file_id(db) == entry)
+        .is_some_and(|f| suppressions_query(db, *f).disable_all);
+    let inputs: Vec<FileDiagnostics<'_>> = files
+        .iter()
+        .filter(|f| closure.contains(&f.file_id(db)))
+        .map(|f| FileDiagnostics {
+            file: f.file_id(db),
+            source: f.text(db),
+            suppressions: suppressions_query(db, *f),
+            lowering: &lowered_query(db, *f).diagnostics,
+        })
+        .collect();
+    let types = project.analysis_options(db).types;
+    let (mut errors, mut warnings) =
+        partition_diagnostics(&inputs, &diagnostics, disable_all, types);
+
+    if has_errors_in_closure_query(db, project) {
+        return LirProduct {
+            program: None,
+            errors,
+            warnings,
+        };
+    }
+
+    let lowering = lir_lowering_query(db, project);
+    errors.extend(lowering.errors);
+    warnings.extend(lowering.warnings);
+
+    LirProduct {
+        program: lowering.program,
+        errors,
+        warnings,
+    }
+}
+
 /// Outcome of the full pipeline: compiled [`StoryData`] or the diagnostics
 /// that prevented it. Batch compile = pull this one query (spec §5).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -1850,9 +1941,15 @@ fn populate_effect_rows(db: &dyn salsa::Database, project: ProjectInput, story: 
     story.effect_rows = rows;
 }
 
+/// Reads [`lir_in_closure_query`], not [`lir_query`] (issue #1032 collapse
+/// ruling): `db.story_data()` — `compileProject`'s artifact path — gates on
+/// `entry`'s `INCLUDE` closure only, so an error in some other file sharing
+/// the session db no longer blocks this entry's build. `db.lir_product()`/
+/// `db.has_errors()` stay on [`lir_query`]/[`has_errors_query`], whole-project
+/// as before.
 #[salsa::tracked(returns(ref))]
 pub(crate) fn story_data_query(db: &dyn salsa::Database, project: ProjectInput) -> CompileProduct {
-    let lir = lir_query(db, project);
+    let lir = lir_in_closure_query(db, project);
     let Some(program) = lir.program.as_ref() else {
         return CompileProduct {
             story: None,
