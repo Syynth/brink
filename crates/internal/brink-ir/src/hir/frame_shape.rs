@@ -297,9 +297,18 @@ impl Analyzer {
     }
 
     fn walk_assignment(&mut self, a: &Assignment, pos: usize) {
-        // A plain `=` target is a pure write (a binding position), not a read;
-        // a compound `+=`/`-=` reads the target too.
-        if a.op != AssignOp::Set {
+        // A plain `=` target is a pure write (a binding position), not a
+        // read — but only when the target *is* the binding itself, i.e. a
+        // single-segment `Expr::Path` (`x = value`). Targets can also lower
+        // from an arbitrary `Expr` (`logic_line.rs` uses `e.lower_expr`), so
+        // `~ arr[i] = x` / `~ obj.field = x` yield `Expr::Index`/
+        // `Expr::FieldAccess` targets whose base/index sub-expressions
+        // (`arr`, `i`) are genuine reads, not writes — skipping them would
+        // drop a local that's live only as an index/field base after a park.
+        // A compound `+=`/`-=` always reads the whole target too.
+        let is_plain_binding =
+            a.op == AssignOp::Set && matches!(&a.target, Expr::Path(p) if p.segments.len() == 1);
+        if !is_plain_binding {
             self.record_reads(&a.target, pos);
         }
         self.record_reads(&a.value, pos);
@@ -602,5 +611,53 @@ mod tests {
         let s = shapes("=== knot ===\n= inner\n~ temp x = 1\n~ await x > 0\nGot {x}\n-> END\n");
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].site.def_path, "knot.inner");
+    }
+
+    /// A local used *only* as the index of an indexed `Set` after a park
+    /// still crosses — the assignment target `arr[i]` is not itself a
+    /// binding position; `arr` and `i` are genuine reads (the base and the
+    /// index), only the indexed cell is written. Dropping them would lose
+    /// state on wake (spec's soundness invariant: never omit a genuinely
+    /// live local).
+    #[test]
+    fn index_target_base_and_index_cross_after_park() {
+        let s = shapes(
+            "=== task ===\n~ temp arr = #[1, 2, 3]\n~ temp i = 0\n~ await ready\n~ arr[i] = 99\n-> END\n",
+        );
+        assert_eq!(s.len(), 1);
+        assert!(
+            s[0].crossing_locals.contains(&"arr".to_owned()),
+            "index base must cross: {:?}",
+            s[0].crossing_locals
+        );
+        assert!(
+            s[0].crossing_locals.contains(&"i".to_owned()),
+            "index expression must cross: {:?}",
+            s[0].crossing_locals
+        );
+    }
+
+    /// Same shape but for a `FieldAccess` target: a bare `ident.ident`
+    /// assignment target lowers as a (multi-segment, out of scope for local
+    /// liveness) `Expr::Path`, so a genuine `Expr::FieldAccess` target only
+    /// arises with a non-`Path` base — `arr[i].field = x` (grammar note in
+    /// `brink-syntax`'s `indexable_lvalue`). Both `arr` and `i` are reads
+    /// (the indexed base), not writes, so they must cross a preceding park.
+    #[test]
+    fn field_access_target_index_base_crosses_after_park() {
+        let s = shapes(
+            "=== task ===\n~ temp arr = #[1, 2, 3]\n~ temp i = 0\n~ await ready\n~ arr[i].field = 99\n-> END\n",
+        );
+        assert_eq!(s.len(), 1);
+        assert!(
+            s[0].crossing_locals.contains(&"arr".to_owned()),
+            "field-access's index base must cross: {:?}",
+            s[0].crossing_locals
+        );
+        assert!(
+            s[0].crossing_locals.contains(&"i".to_owned()),
+            "field-access's index expression must cross: {:?}",
+            s[0].crossing_locals
+        );
     }
 }
