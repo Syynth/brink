@@ -1,11 +1,14 @@
 # Stdlib spec — DRAFT (checkpoint, 2026-07-19)
 
 Status: **the stdlib sitting in progress** — Phase A postures RULED,
-domains 1–3 ruled-or-proposed as marked, domains 4–8 + closers open.
-This document is the resumption point for any session (cloud
-included): read the native-surface charter (§12–§13) first, then
-this top-to-bottom; open items are marked ⏳, proposals awaiting the
-maintainer's nod are marked 🔶.
+domains 1–3 ruled-or-proposed as marked; domains 4–7 + closers
+DRAFTED as proposals (§§5–9, between-sittings, un-nodded). This
+document is the resumption point for any session (cloud included):
+read the native-surface charter (§11–§13) first, then this
+top-to-bottom; open items are marked ⏳, proposals awaiting the
+maintainer's nod are marked 🔶. (Charter numbering gap flagged: no
+§12 exists — headers jump §11→§13, and §13.1's "§12.8" reference
+dangles; charter fix owed.)
 
 ## 1. Phase A — the postures (RULED)
 
@@ -128,12 +131,17 @@ cross-referenced so views ≠ projections.
   Proposal: `get_or(m, k, default)` — total by construction, no
   sentinel; plus `contains_key` for the test-then-index idiom
   (turns are single-threaded; no TOCTOU). A bare `get` is
-  **Option martyr #3** — named hole, arrives with #1090, documented
-  in its slot now.
+  **Option martyr #3** — a martyr of a distinct kind from #1/#2
+  (those are sentinel-returners; this verb can't be written at all
+  until Option exists) — named hole, arrives with #1090,
+  documented in its slot now.
 - Verbs: `len contains_key get_or keys values remove clear`.
   `remove(ref m, k)` imperative/in-place per the mutation posture,
   total (removing an absent key is a no-op — deletion is
   idempotent; the faulting read covers "I expected it there").
+  `clear(ref m)` in-place, total. (Note: `get_or` is a fresh name
+  the pending naming-convention 🔶 doesn't cover — flagging so it
+  gets weighed with that nod, not smuggled past it.)
   `keys`/`values` → eager array snapshots in insertion order
   (iteration order is already insertion order; equality alone
   ignores it, per the 2026-07-18 ruling).
@@ -149,9 +157,16 @@ cross-referenced so views ≠ projections.
 
 Post-rename surface for `flags` (charter §13.2: ordered domain of
 named symbols, subset-valued variables). The audit disposes every
-inherited LIST operation — same runtime semantics underneath (ink
-compat + oracle hold them); the native surface renames or retires
-spellings only:
+inherited LIST operation. **Two species in the table** — pure
+respellings (same runtime op, same semantics; ink compat + oracle
+hold them) and **new stdlib verbs with totality-first postures the
+ink ops never had** (marked ✚). The ✚ rows follow the 2026-07-13
+two-surface precedent (`int()` faults, `INT()` keeps silent-0,
+byte-identical oracle): the frozen ink surface keeps its ops
+untouched; the native verbs are new siblings, not respellings.
+⏳ Needs the maintainer's explicit nod on exactly this split —
+which rows are respellings (must stay total) vs new verbs (may
+fault):
 
 | ink inheritance | native | disposition |
 |---|---|---|
@@ -161,17 +176,18 @@ spellings only:
 | `?` membership | `contains` | keep (verb; operator form ⏳ code-dialect sitting) |
 | `+=` / `-=` | `add` / `remove` | keep both operator and verb; `ref` first param, in-place |
 | `^` intersection | `intersect` | verb; operator form ⏳ |
-| `LIST_MIN`/`MAX` | `first` / `last` | RENAMED — domain-order vocabulary, not numeric; empty subset ⇒ fault (matches seq `min`/`max` posture) |
+| `LIST_MIN`/`MAX` | `first` / `last` | ✚ proposed rename — domain-order vocabulary, not numeric; empty subset ⇒ fault (matches seq `min`/`max` posture; ink's ops stay frozen-total) |
 | `LIST_VALUE` | `index_of`-shaped | ⏳ — needs the numeric-coupling question below |
 | `LIST_RANGE` | `range` | keep, `range(Mood, a, b)` inclusive by domain order |
 | `LIST_INVERT` | `invert` | keep — complement within the domain |
-| `LIST_RANDOM` | moves to domain 6 | `rand::pick` accepts a flags subset (closed iterable set member) |
+| `LIST_RANDOM` | moves to domain 6 | ✚ `rand::pick` accepts a flags subset (closed iterable set member); empty ⇒ fault where `LIST_RANDOM` was total — new verb, frozen ink op untouched |
 
-- `next`/`prev` step a **single-flag subset** by domain order.
+- `next`/`prev` (✚) step a **single-flag subset** by domain order.
   Off-the-edge yields `none` (ink's total, empty-result behavior —
   honest totality, kept); stepping a multi-flag or empty subset
-  **faults** (domain error: "step what?"). This splits ink's
-  silent-garbage cases from its honest one.
+  **faults** (domain error: "step what?"). Proposed as new verbs
+  splitting ink's silent-garbage cases from its honest one; ink's
+  own `+1`/`-1` stepping stays frozen.
 - **The numeric coupling** (⏳ needs a ruling): ink lets flags
   carry explicit numeric values and converts subsets↔ints. The
   clean native story is flags-as-symbols (ordinal queries via
@@ -183,7 +199,7 @@ spellings only:
 
 ## 7. Domain 6 — random 🔶 (proposed)
 
-- **THE effect answer — no new row dimension.** RNG state is a
+- **Proposed effect answer — no new row dimension.** RNG state is a
   named runtime state cell (`std::rand` owns it); every draw is an
   ordinary **write** to that cell in the def's row. Consequences,
   all free: wake conditions (pure-gated) statically exclude rng —
@@ -206,7 +222,9 @@ spellings only:
   [0,1), `chance(p)` → bool, `pick(iterable)` (any closed-set
   iterable incl. flags subsets; empty ⇒ fault, matching
   `min`/`max`), `shuffle(ref a)` in-place + `shuffled(a)`
-  functional (naming convention pair #1), `seed(n)`.
+  functional (the §4 naming-convention 🔶 exercised again),
+  `seed(n)`. `int` on an empty range (`0..0`, `5..5`) ⇒ fault
+  (nothing to draw; the pick/min/max posture).
 - Heritage: ink's `RANDOM(min, max)` / `SEED_RANDOM` stay
   ink-frozen spellings of the same cell — one RNG, two surfaces,
   no drift.
@@ -219,17 +237,22 @@ spellings only:
   1: shield }` (grammar `weight: value` as chartered; weights =
   positive ints v1). One draw verb: `rand::roll(w)` → T — lives in
   domain 6's namespace because its row writes the rng cell; total
-  (construction refuses empty/zero-weight tables at literal level —
-  compile error where classifiable, construction fault otherwise:
-  the E076/E078 split applied). `len`, iteration, and mutation ⏳ —
-  v1 is construct-and-roll; the dossier shows no mutation demand.
+  (construction refuses empty/zero/negative-weight tables — the
+  E078-style split: compile error where statically classifiable,
+  construction fault otherwise; the compile diagnostic is a NEW
+  code owed by Phase C, not an existing one). `len`, iteration,
+  and mutation ⏳ — v1 is construct-and-roll; the dossier shows no
+  mutation demand.
 - **Heap/priority queue — the humble form first.** Proposal: verbs
   over arrays, not a new type — `heap_push(ref a, x)`,
   `heap_pop(ref a)` (empty ⇒ fault), `heap_peek(a)` (empty ⇒
   fault), maintaining the invariant over an ordinary `[T]`
   (`std::collections`). Rationale: zero new value kinds, zero wire
-  work, the Lua posture; comparison = the value-model ordering
-  (min-heap; `sort`'s ordering, one ordering doctrine). If the
+  work, the Lua posture; min-heap. ⏳ **A total-ordering doctrine
+  is OWED, shared by `sort`/`sort_by`/heap** — the value model has
+  none today (map iteration order is itself an open ruling, and
+  NaN breaks float ordering: NaN-bearing `[float]` under
+  sort/heap is currently undefined — the doctrine must say). If the
   ledger later shows shape-confusion incidents (heap-array indexed
   as if sorted), a sealed `Heap[T]` builtin is the designed
   upgrade path — recorded, not built.
@@ -238,8 +261,8 @@ spellings only:
 
 ## 9. Closers 🔶 (proposed dispositions)
 
-1. **Anonymous records — KEEP, narrowed and renamed to their job:
-   structural records.** With maps homogeneous and structs
+1. **Anonymous records — proposed: keep, narrowed and renamed to
+   their job: structural records.** With maps homogeneous and structs
    declared, the anonymous record `#{ x: 1 }` (native spelling ⏳ —
    likely bare `{ x: 1 }` where unambiguous, code-dialect sitting
    owns the final call) survives as exactly two things: (a) the
@@ -253,10 +276,12 @@ spellings only:
 2. **Assertion spellings — final form** `@[effects(…)]` with args
    from `{pure, silent, total}`, any subset, comma-joined;
    exceedance-only errors (asserting less than reality is legal).
-   `@[effects(pure)]` ⊃ rng-freedom (§7). Holes' release policy ⏳
-   — **deliberately left for the maintainer** (release-gating
-   policy is an authorial-workflow value judgment, not derivable
-   from the charter).
+   `@[effects(pure)]` ⊃ rng-freedom (§7). Doc-sync owed: the
+   effects spec and #1087 still show the older `#@effects(…)`
+   spelling — supersession note there when this nods. Holes'
+   release policy ⏳ — **deliberately left for the maintainer**
+   (release-gating policy is an authorial-workflow value judgment,
+   not derivable from the charter).
 3. **Prelude — final list assembled from the per-domain marks:**
    entire math kit incl. trig (§2's generous ruling) · `len
    contains char_at` (text) · `len contains push` (seq) · `len`
@@ -287,9 +312,16 @@ spellings only:
   to react to.
 - In-section ⏳s: tower mini-spec (§2b) · view-materialization
   ratio (§3b) · intrinsic display notation lives in §9.4 now ·
-  flags numeric-coupling ruling (§6) · weighted-table mutation
-  surface (§8) · anonymous-record native spelling (§9.1, owned by
-  the code-dialect sitting) · holes' release policy (§9.2).
+  flags respelling-vs-new-verb split + numeric-coupling ruling
+  (§6) · total-ordering doctrine incl. NaN, shared by
+  sort/heap (§8) · weighted-table mutation surface (§8) ·
+  anonymous-record native spelling (§9.1, owned by the
+  code-dialect sitting) · holes' release policy (§9.2).
+- Maintainer-attention note: `remove` now names three verbs with
+  divergent postures — seq remove-by-index (OOB ⇒ fault, the
+  indexing contract), map remove-by-key (idempotent-total), flags
+  subtract (idempotent-total). Legal under intrinsic overloading;
+  flagged so the divergence is chosen, not accidental.
 - Then: **Phase C** — the full inventory tables (every verb ×
   signature × row × prelude flag) appended here, and
   implementation sequencing (the numeric tower and effect-row
