@@ -204,48 +204,18 @@ pub fn ink_door_sync_system(
 mod tests {
     use super::*;
     use bevy::asset::AssetPlugin;
-    use bevy_brink::runtime::FlowInstance;
-    use bevy_brink::{
-        BrinkBindingsAppExt, BrinkPlugin, LineTablesAsset, ProgramAsset, advance_batch,
-        call_ink_function,
-    };
+    use bevy_brink::{BrinkBindingsAppExt, BrinkPlugin, advance_batch, call_ink_function};
 
     /// Compile `assets/doors.ink` inline (deterministic, no async
-    /// `AssetServer`) and insert the story assets — mirrors what `InkLoader`
-    /// does at runtime, and `ink_alarm::tests::build_alarm_story`'s pattern.
+    /// `AssetServer`) and insert the story assets, via
+    /// [`bevy_brink::compile_story_inline`] (#1060, landed after this port
+    /// started — see `MIGRATION.md`'s G3 entry) instead of hand-rolling the
+    /// compile→link→context→insert dance; matches
+    /// `ink_alarm::tests::build_alarm_story`'s post-#1060 shape and drops
+    /// this demo's now-unnecessary direct `brink-compiler` dev-dependency.
     fn build_doors_story(app: &mut App) -> Handle<BrinkStoryAsset> {
-        let src = include_str!("../assets/doors.ink").to_string();
-        let output = brink_compiler::compile("doors.ink", move |path| {
-            if path == "doors.ink" {
-                Ok(src.clone())
-            } else {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "no includes",
-                ))
-            }
-        })
-        .expect("doors.ink compiles");
-        let (program, tables) = bevy_brink::runtime::link(&output.data).expect("doors.ink links");
-        let (_, initial_context) = FlowInstance::new_at_root(&program);
-
-        let world = app.world_mut();
-        let program = world
-            .resource_mut::<Assets<ProgramAsset>>()
-            .add(ProgramAsset {
-                program,
-                initial_context,
-                effect_rows: Vec::new(),
-            });
-        let line_tables = world
-            .resource_mut::<Assets<LineTablesAsset>>()
-            .add(LineTablesAsset { tables });
-        world
-            .resource_mut::<Assets<BrinkStoryAsset>>()
-            .add(BrinkStoryAsset {
-                program,
-                line_tables,
-            })
+        let src = include_str!("../assets/doors.ink");
+        bevy_brink::compile_story_inline(app, "doors.ink", src).expect("doors.ink compiles")
     }
 
     fn build_app() -> App {
