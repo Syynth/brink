@@ -1,5 +1,0 @@
-scenario,flows,parked,active,arming,condition,batch_turns,steps_from_parked,steps_from_active,step_ratio_active_to_total,notes
-fanout-6park-2active,8,6,2,persistent-dormant,gate==0,1,0,2,1.00,parked dormant flows skipped by Collect (zero cost)
-fanout-4park-4active,8,4,4,persistent-dormant,gate==0,1,0,4,1.00,half parked; only active flows step
-fanout-7park-1active,8,7,1,persistent-dormant,gate==0,1,0,1,1.00,heavily parked; one active flow steps
-wakestorm-5,5,0,5,persistent-mustpoll,gate!=0 always,1,5,0,1.00,all persistent + always-true wake and step together each turn

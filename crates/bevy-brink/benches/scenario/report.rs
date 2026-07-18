@@ -12,8 +12,8 @@ use std::io;
 use std::path::PathBuf;
 
 use super::model::{
-    ScenarioConfig, ScenarioResult, TurnWeight, compute_pool_threads, run_batch_scenario,
-    run_parallel_scenario, run_scenario,
+    ScenarioConfig, ScenarioResult, TurnWeight, WakeConfig, WakeKind, compute_pool_threads,
+    run_batch_scenario, run_parallel_scenario, run_scenario, run_wake_scenario,
 };
 
 // ── CSV + markdown matrix output ────────────────────────────────────────
@@ -130,6 +130,7 @@ enum DriverMode {
     Serial,
     Batch,
     Parallel,
+    Wake,
 }
 
 impl DriverMode {
@@ -138,6 +139,7 @@ impl DriverMode {
             Self::Serial => "serial",
             Self::Batch => "batch",
             Self::Parallel => "parallel",
+            Self::Wake => "wake",
         }
     }
 
@@ -147,6 +149,7 @@ impl DriverMode {
             Self::Serial => "serial-driver",
             Self::Batch => "batch-serial-driver",
             Self::Parallel => "parallel-driver",
+            Self::Wake => "wake-driver",
         }
     }
 }
@@ -174,9 +177,10 @@ fn parse_cli() -> Result<Cli, Box<dyn std::error::Error>> {
                 "serial" => DriverMode::Serial,
                 "batch" => DriverMode::Batch,
                 "parallel" => DriverMode::Parallel,
+                "wake" => DriverMode::Wake,
                 other => {
                     return Err(format!(
-                        "unknown --mode `{other}` (expected serial|batch|parallel)"
+                        "unknown --mode `{other}` (expected serial|batch|parallel|wake)"
                     )
                     .into());
                 }
@@ -242,6 +246,99 @@ fn baseline_configs(frames: usize, prefix: &str) -> Vec<ScenarioConfig> {
     flow_count_rows.chain(turn_weight_rows).collect()
 }
 
+/// The wake-driver matrix (BH-4, #973). Four groups:
+///
+/// - **idle-detect** (`active=0`, sleeping detect-capable, no batch turn): the
+///   zero-cost-parked residual — the per-frame cost of N purely-sleeping
+///   detect-capable flows on a quiet World (after the one-time bootstrap
+///   evaluation, `mark_wake_dirty` flags nothing → the wake systems are a bare
+///   query scan). Sweeps 0/100/1k/10k so the per-sleeper slope is readable, with
+///   the `0` row as the "N absent" zero baseline.
+/// - **idle-poll** (same, must-poll): the contrast — a non-empty detect bit
+///   forces `run_flow_sleep` to re-evaluate every sleeper's condition every
+///   frame (the `#996` interim). idle-poll − idle-detect at a fixed N is the
+///   price of the missing component-tick wiring.
+/// - **ratio** (mixed, batch turn running): the headline. A mostly-sleeping
+///   population under `advance_batch` costs like its **active** subset, not its
+///   total — parked flows are skipped by Collect. 90:10 and 99:1 at 100/1k/10k,
+///   to be read against the `batch-serial-driver` baselines at the same *total*.
+/// - **storm** (all sleeping, persistent + always-true + must-poll, batch turn):
+///   the thundering herd — the population re-wakes and steps under the driver.
+fn wake_configs(frames: usize) -> Vec<WakeConfig> {
+    let mk = |name: &str, active: usize, sleeping: usize, kind: WakeKind, drive_batch: bool| {
+        WakeConfig {
+            name: name.to_string(),
+            active,
+            sleeping,
+            kind,
+            drive_batch,
+            turn_weight: BASELINE_TURN_WEIGHT,
+            frames,
+            seed: BASELINE_SEED,
+        }
+    };
+    vec![
+        // ── idle-detect: zero-cost-parked residual (no batch turn) ──
+        mk("wake-idle-detect-0", 0, 0, WakeKind::DetectSkip, false),
+        mk("wake-idle-detect-100", 0, 100, WakeKind::DetectSkip, false),
+        mk("wake-idle-detect-1k", 0, 1_000, WakeKind::DetectSkip, false),
+        mk(
+            "wake-idle-detect-10k",
+            0,
+            10_000,
+            WakeKind::DetectSkip,
+            false,
+        ),
+        // ── idle-poll: must-poll contrast (no batch turn) ──
+        mk("wake-idle-poll-100", 0, 100, WakeKind::MustPoll, false),
+        mk("wake-idle-poll-1k", 0, 1_000, WakeKind::MustPoll, false),
+        mk("wake-idle-poll-10k", 0, 10_000, WakeKind::MustPoll, false),
+        // ── ratio: the headline (batch turn; parked detect-capable) ──
+        mk("wake-100-90to10", 10, 90, WakeKind::DetectSkip, true),
+        mk("wake-100-99to1", 1, 99, WakeKind::DetectSkip, true),
+        mk("wake-1k-90to10", 100, 900, WakeKind::DetectSkip, true),
+        mk("wake-1k-99to1", 10, 990, WakeKind::DetectSkip, true),
+        mk("wake-10k-90to10", 1_000, 9_000, WakeKind::DetectSkip, true),
+        mk("wake-10k-99to1", 100, 9_900, WakeKind::DetectSkip, true),
+        // ── storm: thundering herd (batch turn; all always-wake) ──
+        // Capped at 1k: a woken flow reaching `-> DONE` fires
+        // `gc_on_turn_done`, whose handle-registry sweep is O(total flows), so
+        // a storm is O(n²); at 10k that is ~27 s/frame (see the header's gc
+        // note). 100/1k keep the canonical run tractable while still exposing
+        // the quadratic — the 10k point is reported by extrapolation.
+        mk("wake-storm-100", 0, 100, WakeKind::Storm, true),
+        mk("wake-storm-1k", 0, 1_000, WakeKind::Storm, true),
+    ]
+}
+
+const WAKE_MD_TITLE: &str = "Scenario harness — WAKE-driver baselines (BH-4, issue #973)";
+const WAKE_MD_PREAMBLE: &str = "Generated by `cargo bench -p bevy-brink --bench scenario_bench -- --mode wake`. \
+     The reactive-sleep wake contract (`docs/effects-spec.md` §13.1): a `FlowSleep` policy \
+     parks a flow at its natural `-> DONE` yield; a **parked** flow is skipped by Collect (it \
+     steps zero times, §13.1 point 1), and the plugin's `mark_wake_dirty` → `run_flow_sleep` \
+     systems re-evaluate its pure condition — only when a dependency moved (`#913` detect verdict) \
+     — and wake it only on condition-true. Column mapping: `frame p50/p99` is the whole reactive \
+     frame (the wake systems over the sleeping population plus, on a `drive_batch` row, the batch \
+     turn that steps only the active/woken flows); `step p50` is the timed `advance_batch` turn \
+     alone (0 on an idle-wake row that runs no batch turn); `collect`/`apply` read 0. \
+     \
+     **Two regimes — read them differently.** (1) The `wake-idle-*` rows run **no** batch turn: \
+     they isolate the pure per-frame cost of the wake systems over a purely-sleeping population on \
+     a quiet World, and are the clean **zero-cost-parked** measurement. `wake-idle-detect-*` are \
+     detect-capable (re-evaluated only on a World change — none here, so after one bootstrap \
+     evaluation they cost only a query scan); `wake-idle-poll-*` force the must-poll cadence \
+     (`#996` interim: a component-backed condition re-evaluates every frame). These are linear in \
+     the sleeping count and are the headline. (2) The `wake-*-{90to10,99to1}` and `wake-storm-*` \
+     rows **do** run the batch turn: a woken/active flow steps to `-> DONE`, which fires the \
+     plugin's `gc_on_turn_done` handle-registry observer — and that observer sweeps **every flow \
+     under M** (T1d reachable-handle GC), i.e. it is **O(total flows) per `-> DONE`**. So a \
+     `drive_batch` row's cost is O(active × total) and a wake-storm is O(n²); at these sizes the \
+     gc sweep, **not** the wake systems, dominates the frame. This is a T1d handle-GC interaction \
+     orthogonal to the wake contract (the batch-serial baselines avoid it only because their \
+     synthetic story parks at a *choice*, never `-> DONE`); it is called out in the hand-maintained \
+     header and is the reason `wake-storm` is capped at 1k. See `docs/bevy-bench.md` for the \
+     shared honesty caveats.";
+
 const SERIAL_MD_TITLE: &str = "Scenario harness — SERIAL-driver baselines (issue #900)";
 const SERIAL_MD_PREAMBLE: &str = "Generated by `cargo bench -p bevy-brink --bench scenario_bench`. See \
      `docs/bevy-bench.md` for the honesty caveats (what each column can and \
@@ -287,11 +384,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     } = parse_cli()?;
     let label = mode.label();
     println!(
-        "scenario_bench | frames={frames} | mode={label} | headless MinimalPlugins runner (issue #900 / #914 / #927)"
+        "scenario_bench | frames={frames} | mode={label} | headless MinimalPlugins runner (issue #900 / #914 / #927 / #973)"
     );
     println!(
         "scenario_bench | scenario | flow_count | frame_p50_ms | frame_p99_ms | turns_per_sec | rss_delta_kb"
     );
+
+    if mode == DriverMode::Wake {
+        return run_wake(frames);
+    }
 
     let mut results = Vec::new();
     for config in baseline_configs(frames, label) {
@@ -299,6 +400,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             DriverMode::Serial => run_scenario(&config)?,
             DriverMode::Batch => run_batch_scenario(&config)?,
             DriverMode::Parallel => run_parallel_scenario(&config, compute_threads)?,
+            // Wake mode returns early via `run_wake` before this loop; it never
+            // reaches the baseline-matrix path.
+            DriverMode::Wake => {
+                return Err("wake mode is dispatched by run_wake, not the baseline loop".into());
+            }
         };
         println!(
             "scenario_bench | {:<11} | {:>10} | {:>12.3} | {:>12.3} | {:>13.1} | {:>12}",
@@ -341,6 +447,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         DriverMode::Serial => (SERIAL_MD_TITLE, SERIAL_MD_PREAMBLE),
         DriverMode::Batch => (BATCH_MD_TITLE, BATCH_MD_PREAMBLE),
         DriverMode::Parallel => (PARALLEL_MD_TITLE, PARALLEL_MD_PREAMBLE),
+        // Wake mode returns early (`run_wake`); this arm only keeps the match
+        // exhaustive.
+        DriverMode::Wake => (WAKE_MD_TITLE, WAKE_MD_PREAMBLE),
     };
     let stem = mode.file_stem();
     let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benches/baselines");
@@ -351,6 +460,49 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         &out_dir.join(format!("{stem}.md")),
         title,
         preamble,
+    )?;
+    println!(
+        "scenario_bench | wrote {}",
+        out_dir.join(format!("{stem}.{{csv,md}}")).display()
+    );
+
+    Ok(())
+}
+
+/// Run the wake-driver matrix (BH-4, #973) and write `wake-driver.{csv,md}`.
+/// Separate from [`run`]'s baseline-matrix loop because the wake axis has its
+/// own config type ([`WakeConfig`]) and runner ([`run_wake_scenario`]).
+fn run_wake(frames: usize) -> Result<(), Box<dyn std::error::Error>> {
+    let mut results = Vec::new();
+    for config in wake_configs(frames) {
+        let r = run_wake_scenario(&config)?;
+        println!(
+            "scenario_bench | {:<20} | {:>10} | {:>12.3} | {:>12.3} | {:>13.1} | {:>12}",
+            r.name,
+            r.flow_count,
+            r.frame_p50_ms,
+            r.frame_p99_ms,
+            r.turns_per_sec,
+            opt_i64(r.rss_delta_kb),
+        );
+        if r.flow_anomalies > 0 {
+            println!(
+                "scenario_bench | WARNING: {} flow anomalies in {} (unexpected batch outcomes — see module docs)",
+                r.flow_anomalies, r.name
+            );
+        }
+        results.push(r);
+    }
+
+    let stem = DriverMode::Wake.file_stem();
+    let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benches/baselines");
+    fs::create_dir_all(&out_dir)?;
+    write_csv(&results, &out_dir.join(format!("{stem}.csv")))?;
+    write_markdown(
+        &results,
+        &out_dir.join(format!("{stem}.md")),
+        WAKE_MD_TITLE,
+        WAKE_MD_PREAMBLE,
     )?;
     println!(
         "scenario_bench | wrote {}",

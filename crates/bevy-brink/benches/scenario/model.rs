@@ -24,9 +24,10 @@ use bevy::prelude::{
 };
 use bevy::tasks::ComputeTaskPool;
 use bevy_brink::{
-    Advance, BrinkContext, BrinkFlow, BrinkGlobals, BrinkPlugin, BrinkProgram, BrinkStory,
-    FallbackHandler, FlowInstance, Line, LineTablesAsset, Program, ProgramAsset, advance_batch,
-    advance_batch_parallel, flow_context_view,
+    Advance, BrinkBatchReport, BrinkContext, BrinkFlow, BrinkGlobals, BrinkPlugin, BrinkProgram,
+    BrinkStory, DetectSummary, FallbackHandler, FlowInstance, FlowSleep, Line, LineTablesAsset,
+    Program, ProgramAsset, advance_batch, advance_batch_parallel, flow_context_view,
+    run_flow_sleep,
 };
 
 // ── 1. Scenario configuration — the pre-parallelism axes ───────────────
@@ -841,4 +842,256 @@ fn run_batchlike_scenario(
     );
 
     Ok(measure_app(app, config))
+}
+
+// ── 7. Wake-mode scenario driver (BH-4, #973) ───────────────────────────
+
+/// How a wake-scenario population's sleeping flows are configured — the axis
+/// the wake driver explores (`docs/effects-spec.md` §13.1; BH-4, #973).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeKind {
+    /// Sleeping flows carry a **detect-capable** policy (empty
+    /// [`DetectSummary`] bits → vacuously all-detect-capable):
+    /// [`mark_wake_dirty`](bevy_brink::mark_wake_dirty) re-evaluates them only
+    /// when [`BrinkGlobals`] changed. Their condition (`never_wake`) is a
+    /// permanent false, so they never wake — the cheap zero-cost-parked path.
+    DetectSkip,
+    /// Sleeping flows carry a **must-poll** policy (a non-empty detect bit
+    /// forces polling — the conservative interim for component-backed
+    /// conditions, #996): re-evaluated **every** wake pass regardless of the
+    /// AND-merge verdict. Condition is a permanent false, so the poll cost is
+    /// paid every frame but no flow wakes — the worst-case idle wake cost.
+    MustPoll,
+    /// **Wake storm**: every flow carries a persistent, always-true, must-poll
+    /// policy, so the population re-wakes and steps under `advance_batch` — the
+    /// thundering-herd extreme for the wake systems.
+    Storm,
+}
+
+/// One wake-driver scenario: a fixed `active` (no-policy) + `sleeping`
+/// ([`FlowSleep`]-policy) flow population, driven for `frames` frames. See
+/// [`run_wake_scenario`].
+#[derive(Debug, Clone)]
+pub struct WakeConfig {
+    /// Human-readable row name (e.g. `"wake-1k-99to1-detect"`).
+    pub name: String,
+    /// Flows spawned with **no** policy — collected + stepped every batch turn
+    /// (only meaningful when `drive_batch`).
+    pub active: usize,
+    /// Flows spawned with a [`FlowSleep`] policy of kind `kind`.
+    pub sleeping: usize,
+    /// How the sleeping flows' policies are configured.
+    pub kind: WakeKind,
+    /// Whether the driver registers + times `advance_batch` each frame. `false`
+    /// is an **idle-wake** row (no batch turn at all): it isolates the pure
+    /// per-frame cost of the plugin's wake systems over a purely-sleeping
+    /// population — the detect-skip-vs-must-poll contrast and the
+    /// zero-cost-parked residual, on a quiet `BrinkGlobals` (nothing dirties it,
+    /// so a detect-capable policy stays on its cheap re-evaluate-only-on-change
+    /// path). `true` rows run the batch turn (active flows step, storm flows
+    /// wake+step) — and `advance_batch`'s `ResMut<BrinkGlobals>` marks the world
+    /// changed every turn, so detect-capable sleepers re-evaluate each frame
+    /// there, exactly as they would in a live game world.
+    pub drive_batch: bool,
+    /// Per-turn ink workload of the woken/active flows' generated story.
+    pub turn_weight: TurnWeight,
+    /// Frames to drive.
+    pub frames: usize,
+    /// Fixed PCG seed (deterministic generated story).
+    pub seed: u64,
+}
+
+/// Generate one flow's **wake-scenario** story: a knot that emits
+/// `turn_weight` sentences and parks at `-> DONE`, looping forever — the
+/// turn-boundary park the [`FlowSleep`] contract governs (§13.1 point 5) — plus
+/// the two pure wake-condition functions the driver's policies name
+/// (`never_wake` → `0`, `always_wake` → `1`).
+///
+/// Deliberately **globals-free** (no `VAR`, no counter/interpolation): the
+/// shared [`BrinkGlobals`] world stays quiet unless the batch driver dirties it,
+/// so an idle-wake row's detect-capable policies stay on their cheap
+/// re-evaluate-only-on-World-change path — the isolation the zero-cost-parked
+/// measurement needs.
+#[must_use]
+pub fn generate_wake_story(turn_weight: TurnWeight, seed: u64) -> String {
+    let mut rng = Lcg::new(seed);
+    let mut s =
+        String::from("// Synthetic wake-scenario story — generated, deterministic (#973, BH-4).\n");
+    s.push_str("-> loop_knot\n\n=== loop_knot ===\n");
+    let sentences = match turn_weight {
+        TurnWeight::Light => 1,
+        TurnWeight::Medium => 3,
+        TurnWeight::Heavy => 6,
+    };
+    for _ in 0..sentences {
+        s.push_str(&sentence(&mut rng, 5, 10));
+        s.push('\n');
+    }
+    s.push_str("-> DONE\n-> loop_knot\n\n");
+    s.push_str("=== function never_wake() ===\n~ return 0\n\n");
+    s.push_str("=== function always_wake() ===\n~ return 1\n");
+    s
+}
+
+/// Build the [`FlowSleep`] policy a sleeping flow of `kind` carries.
+fn wake_policy(kind: WakeKind) -> FlowSleep<ScenarioFlow> {
+    // A single non-detect-capable bit ("Poll") forces the must-poll cadence —
+    // the same fixture the in-crate wake tests use (`sleep::tests`).
+    let must_poll =
+        || DetectSummary::from_bits([("Poll".to_string(), false)].into_iter().collect());
+    match kind {
+        // Dormant + detect-capable + permanent-false: parked at entry, never
+        // woken, re-evaluated only on a World change.
+        WakeKind::DetectSkip => FlowSleep::persistent("never_wake").dormant(),
+        // Dormant + must-poll + permanent-false: parked at entry, re-evaluated
+        // every wake pass (but stays false).
+        WakeKind::MustPoll => FlowSleep::persistent("never_wake")
+            .with_detect(must_poll())
+            .dormant(),
+        // NOT dormant + must-poll + always-true: starts eligible to run, wakes,
+        // re-arms, and re-wakes under the batch driver.
+        WakeKind::Storm => FlowSleep::persistent("always_wake").with_detect(must_poll()),
+    }
+}
+
+/// Run one wake-mode batch turn (`advance_batch`) and fold its outcome into the
+/// [`PhaseClock`]/[`FrameCounters`]. Unlike the batch driver's [`run_batch_turn`]
+/// this also accumulates [`BrinkBatchReport::stepped`] into `turns_completed`:
+/// the wake story parks at `-> DONE`, so there is no host-side auto-choose pass
+/// to count turns from. Ordered **after** the plugin's `run_flow_sleep` so a
+/// flow woken this frame steps this frame (deterministic storm cadence).
+fn run_wake_turn(world: &mut EcsWorld) {
+    let id = world.resource::<BatchDriver>().0;
+    let start = Instant::now();
+    let result = world.run_system(id);
+    let elapsed = start.elapsed();
+    world.resource_mut::<PhaseClock>().step = elapsed;
+    if result.is_err() {
+        world.resource_mut::<FrameCounters>().flow_anomalies += 1;
+        return;
+    }
+    let stepped = world.resource::<BrinkBatchReport<ScenarioFlow>>().stepped;
+    world.resource_mut::<FrameCounters>().turns_completed += stepped as u64;
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "active-fraction is a UI-facing display ratio, not an exactness-critical count"
+)]
+fn wake_active_fraction(active: usize, total: usize) -> f64 {
+    if total == 0 {
+        0.0
+    } else {
+        (active as f64) / (total as f64)
+    }
+}
+
+/// Wake-driver counterpart of [`run_batch_scenario`] (BH-4, #973): spawns a
+/// fixed `active` (no-policy) + `sleeping` ([`FlowSleep`]-policy) flow
+/// population against a globals-free `-> DONE`-looping story and drives the
+/// plugin's registered wake systems (`mark_wake_dirty` → `run_flow_sleep`),
+/// optionally alongside a timed `advance_batch` turn.
+///
+/// The measured **frame** cost is the headline: it captures the whole reactive
+/// frame — the wake systems' per-sleeper cost **plus** the batch turn that
+/// steps only the active/woken flows (parked flows are skipped by Collect, so
+/// they never step; §13.1 point 1). `step p50` is the batch turn alone (0 on an
+/// idle-wake row that runs no batch turn); `collect`/`apply` read 0.
+pub fn run_wake_scenario(
+    config: &WakeConfig,
+) -> Result<ScenarioResult, Box<dyn std::error::Error>> {
+    let source = generate_wake_story(config.turn_weight, config.seed);
+    let options = brink_compiler::AnalysisOptions {
+        dialect: brink_compiler::Dialect::Brink,
+        ..Default::default()
+    };
+    let output = brink_compiler::compile_with_options(
+        "wake.ink",
+        |path| {
+            if path == "wake.ink" {
+                Ok(source.clone())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("unexpected include: {path}"),
+                ))
+            }
+        },
+        options,
+    )?;
+    let (program, line_tables) = brink_runtime::link(&output.data)?;
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    app.add_plugins(AssetPlugin::default());
+    app.add_plugins(BrinkPlugin::<ScenarioFlow>::default());
+    app.insert_resource(PhaseClock::default());
+    app.insert_resource(FrameCounters::default());
+    app.insert_resource(FrameIndex::default());
+
+    let total = config.active + config.sleeping;
+    let mut instances = Vec::with_capacity(total);
+    let mut shared_world = None;
+    for _ in 0..total {
+        let (flow_instance, world) = FlowInstance::new_at_root(&program);
+        if shared_world.is_none() {
+            shared_world = Some(world);
+        }
+        instances.push(flow_instance);
+    }
+    // The empty-baseline row (`total == 0`) still needs a shared World for
+    // `BrinkGlobals`; build a throwaway instance just for its initial context.
+    let shared_world = shared_world.unwrap_or_else(|| FlowInstance::new_at_root(&program).1);
+
+    let initial_context = shared_world.clone();
+    let program_handle = app
+        .world_mut()
+        .resource_mut::<Assets<ProgramAsset>>()
+        .add(ProgramAsset {
+            program,
+            initial_context,
+            effect_rows: Vec::new(),
+        });
+    let tables_handle = app
+        .world_mut()
+        .resource_mut::<Assets<LineTablesAsset>>()
+        .add(LineTablesAsset {
+            tables: line_tables,
+        });
+
+    for (i, flow_instance) in instances.into_iter().enumerate() {
+        let mut entity = app.world_mut().spawn((
+            BrinkFlow::<ScenarioFlow>::new(flow_instance),
+            BrinkContext::<ScenarioFlow>::default(),
+            BrinkStory::<ScenarioFlow>::new(program_handle.clone(), tables_handle.clone()),
+        ));
+        // The first `active` flows carry no policy (stepped every turn); the
+        // rest sleep under a `FlowSleep` policy (skipped by Collect until/unless
+        // woken).
+        if i >= config.active {
+            entity.insert(wake_policy(config.kind));
+        }
+    }
+    app.insert_resource(BrinkGlobals::<ScenarioFlow>::new(shared_world));
+
+    if config.drive_batch {
+        let batch_id = app
+            .world_mut()
+            .register_system(advance_batch::<ScenarioFlow>);
+        app.insert_resource(BatchDriver(batch_id));
+        // After `run_flow_sleep` so a flow woken this frame steps this frame.
+        app.add_systems(Update, run_wake_turn.after(run_flow_sleep::<ScenarioFlow>));
+    }
+
+    let scenario = ScenarioConfig {
+        name: config.name.clone(),
+        flow_count: total,
+        active_fraction: wake_active_fraction(config.active, total),
+        world_size: 0,
+        turn_weight: config.turn_weight,
+        frames: config.frames,
+        seed: config.seed,
+        collection_global: false,
+    };
+    Ok(measure_app(app, &scenario))
 }

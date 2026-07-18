@@ -448,13 +448,14 @@ fn condition_truthiness_matches_ink_coercion() {
     assert!(!is_condition_true(&Value::Null));
 }
 
-// ── BH-B: the wake-fan-out scenario (provisional night-data) ─────────────────
+// ── BH-B: the wake-fan-out scenario (structural step ratios) ─────────────────
 
-/// The BH-B wake-fan-out axis (this issue's night-data deliverable,
-/// **provisional**): parked flows cost zero (skipped by Collect) while active
-/// flows step, and a wake-storm (all-persistent, always-true) steps every flow
-/// every turn. Asserts the structural step ratios that back
-/// `benches/baselines/wake-fan-out-provisional.md`.
+/// The BH-B wake-fan-out axis: parked flows cost zero (skipped by Collect)
+/// while active flows step, and a wake-storm (all-persistent, always-true)
+/// steps every flow every turn. Asserts the structural, wall-clock-free step
+/// ratios; the canonical wall-clock wake baselines live in
+/// `benches/baselines/wake-driver.{csv,md}` (regenerate via
+/// `cargo bench -p bevy-brink --bench scenario_bench -- --mode wake`).
 #[test]
 fn wake_fan_out_scenario_ratios() {
     // 8 flows total; 6 parked (dormant, gate == 0), 2 active (no policy).
