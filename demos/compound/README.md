@@ -27,6 +27,17 @@ dynamics:
   way to escape is to **break line of sight** (running never works). Alerted
   guards shout to recruit neighbours and head for an **alarm panel** to wake
   the whole compound — intercept them or stay hidden until they give up.
+- **Guards navigate the compound, they don't phase through it.** Every guard
+  movement target — a patrol post, a last-known player position, an alarm
+  panel, a search point, a return-to-post — is routed by **room-graph
+  pathfinding** (`nav`): A* over the generator's rooms-and-doorways connectivity
+  produces a sequence of door-center waypoints, and the guard walks straight
+  lines only *within* a room. As defense in depth guards also run the **same
+  wall collision the player does**, so a guard can never end a frame inside a
+  wall even if a path were wrong. **Guards traverse doors regardless of lock
+  state** — staff carry keys, and it keeps the player's switch mechanic from
+  ever stranding the compound's guards; the player-only lock mechanic is
+  unchanged (#1044).
 - **Sidegrades, not upgrades.** The shop sells trade-offs (boots: +speed
   −quiet; cloak: −enemy vision −run speed; muffled soles: −noise −top speed)
   plus coin/smoke restocks. Rounds escalate the *compound* (more guards,
@@ -78,7 +89,8 @@ comparable and summable.
 | Module         | Owns                                                                   |
 |----------------|------------------------------------------------------------------------|
 | `layout_gen.rs`| **Seeded BSP layout generation** — the pure `generate(seed) → LayoutData` encounter designer: BSP rooms, spanning-tree + loop doorways, solvable-by-construction locked-door/switch DAG, and room recipes. A **new migration specimen** (the future systems-logic ink port); pure + heavily unit-tested. |
-| `guards.rs`    | Guard suspicion ladder `Patrol → Curious → Investigate → Chase`, wall-respecting vision cones, LOS-mandatory escape, shout recruitment, alarm-panel seeking, reinforcements. The transition rule + suspicion integrator are pure functions. |
+| `guards.rs`    | Guard suspicion ladder `Patrol → Curious → Investigate → Chase`, wall-respecting vision cones, LOS-mandatory escape, shout recruitment, alarm-panel seeking, reinforcements. Every movement target is routed through `nav` and every step runs the player's wall collision (never phase, #1044). The transition rule + suspicion integrator are pure functions. |
+| `nav.rs`       | **Guard room-graph pathfinding** (#1044): a pure `RoomGraph` built from the layout's rooms-and-doorways connectivity, with A* over door-center waypoints. Guards traverse every door regardless of lock (staff keys). Pure + unit-tested across generated seeds. |
 | `cameras.rs`   | Sweeping security cameras; wall-respecting LOS; raise the alarm on sight; `E` to disable for bounty. |
 | `doors.rs`     | Doors + switches; a locked door stays solid until its switch is flipped (reactive await-on-a-value). |
 | `alarm.rs`     | Global escalation `0..3` with slow decay; single-writer world policy fed by `SpottedEvent`; spotting soft-caps at tier 1 — only a guard reaching an alarm panel (`GlobalAlarm`) wakes the compound. |

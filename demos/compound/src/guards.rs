@@ -34,11 +34,12 @@ use std::time::Instant;
 
 use crate::alarm::{Alarm, AlarmPanel, GlobalAlarm, SpottedEvent, tier_speed_bonus};
 use crate::layout_gen::LayoutData;
+use crate::nav::{NavGraph, RoomGraph};
 use crate::noise::{NoiseEvent, SmokeCloud};
 use crate::rounds::{PlayerCaught, RoundScoped};
 use crate::stats::{Loadout, PlayerStats};
 use crate::timing::BehaviorTimings;
-use crate::world::{Blocker, Collider, Player, Wall, raycast_clear};
+use crate::world::{Blocker, Collider, Player, Wall, raycast_clear, resolve_collision};
 
 // --- Tunables ---------------------------------------------------------------
 
@@ -127,23 +128,61 @@ pub struct Guard {
     peek_points: Vec<Vec2>,
     peek_index: usize,
     peek_timer: f32,
+    /// Cached room-graph path to [`Guard::path_goal`]: the remaining door-center
+    /// waypoints, with the final destination as the last element (#1044). Empty
+    /// until the first `steer`.
+    path: Vec<Vec2>,
+    /// The destination the cached `path` was computed for; a new target beyond a
+    /// small epsilon triggers a replan.
+    path_goal: Vec2,
 }
 
 impl Guard {
-    /// A few spots to peek around a last-known position.
-    fn build_peeks(&mut self, lkp: Vec2) {
-        self.peek_points = vec![
+    /// Plan a search sweep around a last-known position, sampling the peek spots
+    /// **inside `room`** (the LKP's room) so a search never targets a point on
+    /// the far side of a wall (#1044). Each candidate offset is clamped into an
+    /// inset of the room rectangle.
+    fn build_peeks(&mut self, lkp: Vec2, room: Rect) {
+        // Inset so peek spots sit off the walls; never exceed half the room.
+        let inset_x = (room.width() * 0.5 - 8.0).clamp(0.0, 24.0);
+        let inset_y = (room.height() * 0.5 - 8.0).clamp(0.0, 24.0);
+        let lo = Vec2::new(room.min.x + inset_x, room.min.y + inset_y);
+        let hi = Vec2::new(room.max.x - inset_x, room.max.y - inset_y);
+        let clamp = |p: Vec2| Vec2::new(p.x.clamp(lo.x, hi.x), p.y.clamp(lo.y, hi.y));
+        self.peek_points = [
             lkp,
             lkp + Vec2::new(64.0, 0.0),
             lkp + Vec2::new(-56.0, 40.0),
             lkp + Vec2::new(0.0, -60.0),
-        ];
+        ]
+        .into_iter()
+        .map(clamp)
+        .collect();
         self.peek_index = 0;
         self.peek_timer = PEEK_DWELL;
     }
 
     fn peeks_done(&self) -> bool {
         !self.alerted && self.peek_index >= self.peek_points.len()
+    }
+
+    /// Update the cached room-graph path toward `goal` and return the immediate
+    /// point to move toward (the next unreached waypoint, or `goal` itself when
+    /// in the goal's room). Replans when the goal moves; pops waypoints as they
+    /// are reached, always keeping the final destination as the tail. This is
+    /// what routes **every** guard movement target through the room graph so a
+    /// cross-room goal never produces a straight line through a wall (#1044).
+    fn steer(&mut self, nav: &RoomGraph, pos: Vec2, goal: Vec2) -> Vec2 {
+        const GOAL_EPS: f32 = 4.0;
+        if self.path.is_empty() || self.path_goal.distance(goal) > GOAL_EPS {
+            self.path = nav.waypoints(pos, goal);
+            self.path_goal = goal;
+        }
+        // Drop reached waypoints, but never the final destination.
+        while self.path.len() > 1 && pos.distance(self.path[0]) < WAYPOINT_REACHED {
+            self.path.remove(0);
+        }
+        self.path.first().copied().unwrap_or(goal)
     }
 }
 
@@ -299,6 +338,7 @@ pub fn guard_ai_system(
     time: Res<Time>,
     alarm: Res<Alarm>,
     loadout: Res<Loadout>,
+    nav: Res<NavGraph>,
     player: Query<(&Transform, &PlayerStats), With<Player>>,
     walls: Query<(&Transform, &Collider), (With<Wall>, Without<Guard>)>,
     panels: Query<&Transform, (With<AlarmPanel>, Without<Guard>)>,
@@ -464,7 +504,12 @@ pub fn guard_ai_system(
             && !guard.alerted
         {
             let lkp = guard.last_seen;
-            guard.build_peeks(lkp);
+            // Sample search points strictly inside the LKP's room (#1044).
+            let room = nav.0.as_ref().map_or_else(
+                || Rect::from_center_half_size(lkp, Vec2::splat(80.0)),
+                |g| g.room_rect_at(lkp),
+            );
+            guard.build_peeks(lkp, room);
         }
 
         if new_state == GuardState::Chase || guard.alerted {
@@ -499,11 +544,24 @@ pub fn guard_ai_system(
         }
 
         // --- Move + face ---
-        let to_target = target - pos;
+        // Route the final `target` through the room graph so a cross-room goal
+        // never becomes a straight line through a wall; within a room this is a
+        // straight line to `target` (#1044). `move_to` is the next waypoint.
+        let move_to = match nav.0.as_ref() {
+            Some(g) => guard.steer(g, pos, target),
+            None => target,
+        };
+        let to_target = move_to - pos;
         if to_target.length() > 1.0 {
             let dir = to_target.normalize();
-            let step = dir * state_speed(new_state) * speed_bonus * dt;
-            tf.translation += step.extend(0.0);
+            let desired = pos + dir * state_speed(new_state) * speed_bonus * dt;
+            // Defense in depth (#1044): guards run the *same* wall collision the
+            // player does, so a guard can never end a frame inside a wall even if
+            // the path were wrong. Guards ignore doors (staff keys), so only wall
+            // blockers are applied — the player-only lock mechanic is untouched.
+            let resolved = resolve_collision(pos, desired, GUARD_HALF, &blockers);
+            tf.translation.x = resolved.x;
+            tf.translation.y = resolved.y;
             let face_dir = if has_los { player_pos - pos } else { to_target };
             if face_dir.length() > f32::EPSILON {
                 guard.facing = face_dir.y.atan2(face_dir.x);
@@ -721,6 +779,8 @@ fn spawn_guard(
             peek_points: Vec::new(),
             peek_index: 0,
             peek_timer: PEEK_DWELL,
+            path: Vec::new(),
+            path_goal: pos,
         },
         RoundScoped,
     ));
