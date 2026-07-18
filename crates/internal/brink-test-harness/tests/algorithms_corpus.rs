@@ -89,8 +89,10 @@ fn assert_case(name: &str) {
 /// Same as [`assert_case`], but lets a case opt into `types = strict`.
 fn assert_case_with_types(name: &str, types: TypePolicy) {
     let dir = corpus_dir().join(name);
-    let expected_msg = format!("read expected.txt for algorithms/{name}");
-    let expected = std::fs::read_to_string(dir.join("expected.txt")).expect(&expected_msg);
+    let case_label = format!("algorithms/{name}");
+    let expected =
+        brink_test_harness::corpus::load_golden_transcript(&dir.join("expected.txt"), &case_label)
+            .expect("golden transcript must be present and non-vacuous");
     let actual = run_case_with_types(&dir, types);
     assert_eq!(
         actual, expected,

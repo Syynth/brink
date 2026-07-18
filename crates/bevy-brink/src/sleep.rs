@@ -85,7 +85,10 @@
 //!   transitively through a host-registered `EXTERNAL` binding the
 //!   [`CapabilityManifest`] declares `writes` for (issue #1040, the #995
 //!   follow-up; `docs/effects-spec.md` §9/§13) — is rejected loudly
-//!   ([`WakeConditionPurityError`]) and never called, not even once.
+//!   ([`WakeConditionPurityError`]) and never called, not even once. A
+//!   dynamically-resolved fn-value condition
+//!   ([`FlowSleep::with_condition_value`], issue #1078) runs the same gate
+//!   via [`check_value_condition_purity`] instead.
 //!
 //! [`WaitingForChoice`]: brink_runtime::StoryStatus::WaitingForChoice
 //! [`Ended`]: brink_runtime::StoryStatus::Ended
@@ -108,7 +111,7 @@ use brink_runtime::{Program, StoryStatus};
 use thiserror::Error;
 
 use crate::asset::{BrinkProgram, ProgramAsset};
-use crate::bindings::call_ink_function;
+use crate::bindings::{call_ink_function, call_ink_function_value};
 use crate::capability::{
     CapabilityChanges, CapabilityManifest, CapabilityRegistry, ContainerAccess,
 };
@@ -213,7 +216,13 @@ impl DetectSummary {
 #[derive(Component)]
 pub struct FlowSleep<M: Send + Sync + 'static = ()> {
     /// The ink function name whose (pure) return value is the wake condition.
+    /// A diagnostic label only when [`condition_value`](Self::condition_value)
+    /// is `Some` — see [`with_condition_value`](Self::with_condition_value).
     condition: String,
+    /// A dynamically-resolved fn-value token (`Value::FnRef`/`Closure`) that
+    /// overrides `condition`'s by-name resolution — see
+    /// [`with_condition_value`](Self::with_condition_value).
+    condition_value: Option<Value>,
     /// Arguments passed to the condition function, in declaration order.
     args: Vec<Value>,
     /// The `detect`-bit verdict for the condition's dependencies (`#913`).
@@ -255,6 +264,7 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
     fn new(condition: String, arming: WakeArming) -> Self {
         Self {
             condition,
+            condition_value: None,
             args: Vec::new(),
             detect: DetectSummary::default(),
             arming,
@@ -276,6 +286,26 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
     #[must_use]
     pub fn with_args(mut self, args: Vec<Value>) -> Self {
         self.args = args;
+        self
+    }
+
+    /// Attach a dynamically-resolved fn-value token (`Value::FnRef`/
+    /// `Closure`) as the wake condition — for a host that obtained the
+    /// condition dynamically (a global's current value, a returned callback
+    /// token, a `bind_brink_query` result) rather than naming it statically
+    /// via [`persistent`](Self::persistent)/[`once`](Self::once).
+    ///
+    /// When set, this takes over **both** halves of condition resolution:
+    /// the attach-time purity gate checks `value`'s target row
+    /// ([`check_value_condition_purity`] instead of
+    /// [`check_named_condition_purity`]), and evaluation invokes the token
+    /// directly (`call_ink_function_value` instead of resolving `condition`
+    /// by path). `condition`'s string (from [`persistent`](Self::persistent)/
+    /// [`once`](Self::once)) remains only a diagnostic label at that point —
+    /// it is never resolved by path while a `condition_value` is set. Builder.
+    #[must_use]
+    pub fn with_condition_value(mut self, value: Value) -> Self {
+        self.condition_value = Some(value);
         self
     }
 
@@ -318,10 +348,18 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
         self.needs_eval = false;
     }
 
-    /// The ink function name of the wake condition.
+    /// The ink function name of the wake condition — a diagnostic label only
+    /// when [`condition_value`](Self::condition_value) is `Some`.
     #[must_use]
     pub fn condition(&self) -> &str {
         &self.condition
+    }
+
+    /// The dynamically-resolved fn-value token, if
+    /// [`with_condition_value`](Self::with_condition_value) set one.
+    #[must_use]
+    pub fn condition_value(&self) -> Option<&Value> {
+        self.condition_value.as_ref()
     }
 
     /// The current [`SleepState`].
@@ -423,6 +461,18 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
 // never evaluated even once. Faulted the same way a runtime eval error is
 // (never silently retried into a spin), but with its own distinct, named
 // error so the two classes of failure are never confused in a log.
+//
+// **Closed follow-up** (issue #1078, tracked from #1062): `check_row_purity`
+// (via `check_value_condition_purity`) has always covered a dynamically-
+// resolved fn-value token (`Value::FnRef`/`Closure`), but nothing in
+// `FlowSleep`/`run_flow_sleep` could ever produce one to check — the named
+// path (`FlowSleep::persistent`/`once`) was the only wake-condition shape
+// `run_flow_sleep` resolved. `FlowSleep::with_condition_value` adds the
+// missing shape: a host that obtains its condition dynamically (a global's
+// current value, a returned callback token, a `bind_brink_query` result)
+// attaches the token directly, and `run_flow_sleep`'s gather/evaluate phases
+// branch on it exactly like the named path — `check_value_condition_purity`
+// gates admission, `call_ink_function_value` (`crate::bindings`) evaluates.
 
 /// A wake condition failed the attach-time purity check. See the module
 /// section above for the contract this enforces.
@@ -788,7 +838,13 @@ pub fn mark_wake_dirty<M: Send + Sync + 'static>(
 /// One parked flow scheduled for condition re-evaluation this pass.
 struct WakeCandidate {
     entity: Entity,
+    /// The named condition to resolve by path — ignored (a diagnostic label
+    /// only) when `condition_value` is `Some`.
     condition: String,
+    /// A dynamically-resolved fn-value token (issue #1078): when present,
+    /// evaluation invokes it directly instead of resolving `condition` by
+    /// path.
+    condition_value: Option<Value>,
     args: Vec<Value>,
 }
 
@@ -884,16 +940,33 @@ pub fn run_flow_sleep<M: Send + Sync + 'static>(
                         // story unloaded mid-frame) just skips this pass —
                         // `needs_eval` stays set and it's retried once the
                         // asset is back.
+                        //
+                        // A dynamically-resolved fn-value token (issue #1078:
+                        // `FlowSleep::with_condition_value`) is checked via
+                        // `check_value_condition_purity` — the same row
+                        // inspection as the named path, just resolved through
+                        // the value's own target instead of a path lookup.
                         if let Some(asset) = programs.get(&program_ref.handle) {
-                            match check_named_condition_purity(
-                                &asset.program,
-                                &asset.effect_rows,
-                                manifest,
-                                &sleep.condition,
-                            ) {
+                            let purity = if let Some(value) = &sleep.condition_value {
+                                check_value_condition_purity(
+                                    &asset.program,
+                                    &asset.effect_rows,
+                                    manifest,
+                                    value,
+                                )
+                            } else {
+                                check_named_condition_purity(
+                                    &asset.program,
+                                    &asset.effect_rows,
+                                    manifest,
+                                    &sleep.condition,
+                                )
+                            };
+                            match purity {
                                 Ok(()) => candidates.push(WakeCandidate {
                                     entity,
                                     condition: sleep.condition.clone(),
+                                    condition_value: sleep.condition_value.clone(),
                                     args: sleep.args.clone(),
                                 }),
                                 Err(err) => purity_faults.push((entity, err)),
@@ -947,12 +1020,19 @@ pub fn run_flow_sleep<M: Send + Sync + 'static>(
     // ── Evaluate ── each condition runs in its owning flow's context (shared
     // World ⊕ that flow's locals) and cannot advance the visible story.
     for candidate in candidates {
-        let outcome = call_ink_function::<M>(
-            world,
-            candidate.entity,
-            &candidate.condition,
-            &candidate.args,
-        );
+        // A dynamically-resolved fn-value token (issue #1078) invokes
+        // directly; a named condition resolves by path — mirrors the purity
+        // gate's own branch above.
+        let outcome = if let Some(value) = &candidate.condition_value {
+            call_ink_function_value::<M>(world, candidate.entity, value, &candidate.args)
+        } else {
+            call_ink_function::<M>(
+                world,
+                candidate.entity,
+                &candidate.condition,
+                &candidate.args,
+            )
+        };
         let Some(mut sleep) = world.get_mut::<FlowSleep<M>>(candidate.entity) else {
             continue;
         };
