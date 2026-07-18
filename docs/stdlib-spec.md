@@ -1,8 +1,10 @@
 # Stdlib spec — DRAFT (checkpoint, 2026-07-19)
 
-Status: **the stdlib sitting in progress** — Phase A postures RULED,
-domains 1–3 ruled-or-proposed as marked; domains 4–7 + closers
-DRAFTED as proposals (§§5–9, between-sittings, un-nodded). This
+Status: **the stdlib sitting in progress** — Phase A postures RULED
+(amended 2026-07-18: the Option package, §1.1/§1.4/§1.6); domains
+1–3 ruled as marked with the 2026-07-18 absence flips applied;
+domains 4–7 + closers DRAFTED as proposals (§§5–9, updated to
+conform to the Option ruling, otherwise un-nodded). This
 document is the resumption point for any session (cloud included):
 read the native-surface charter (§11–§13) first, then this
 top-to-bottom; open items are marked ⏳, proposals awaiting the
@@ -12,12 +14,19 @@ dangles; charter fix owed.)
 
 ## 1. Phase A — the postures (RULED)
 
-1. **Errors: totality-first + faults; Result deferred-with-intent.**
-   Design every verb total where honest; turn-terminating faults for
-   true domain errors (the E078 lineage). Result/Option are PRESUMED
-   future arrivals via #1090 (the maintainer expects them "sooner
-   than later"); sentinel-returning verbs (`find`, `index_of` → -1)
-   are their designated motivating martyrs, documented as such.
+1. **Errors: totality-first + faults; Option NOW; Result
+   deferred-with-intent.** Design every verb total where honest;
+   turn-terminating faults for true domain errors (the E078
+   lineage). **RULED 2026-07-18 (supersedes the martyr strategy):
+   `Option[T]` is pulled forward as the third compiler-known
+   parameterized builtin (§1.4) — a compiler-owned enum, NO user
+   generics unlocked (the `[T]`/`[K: V]` door; evidence + shape on
+   #1090). Doctrine: a fault says "your program is wrong"; Option
+   says "the world didn't have one." The martyrs are redeemed —
+   `find`/`index_of`/map-`get`/`min`/`max` return Option (§§3–5);
+   their pressure arriving mid-draft IS the ledger evidence.**
+   Result stays deferred (#1097's fault-row bridge is its designed
+   arrival).
 2. **Fallibility is an effect dimension** (#1097): every verb's spec
    includes its full row — reads/writes/emits/tags/**faults** — the
    keyword-generics vaccine. `@[effects(total)]` assertable. Wake
@@ -30,16 +39,33 @@ dangles; charter fix owed.)
    `Map { k: v }`, `Flags { members }`, arrays `[…]`, structs by
    fields (+defaults). Struct patterns in `let` (match's grammar).
 4. **Intrinsic typing doctrine**: parameterized BUILTINS join the
-   static type language — `[T]` arrays, `[K: V]` maps (syntax
-   mirrors literals; statically homogeneous; NOT user generics —
-   #1090 candidate (b), promoted). Intrinsics carry checker-known
-   polymorphic signatures (closed set); UFCS completion reads them.
-   Docs display notation ⏳ (decide with the inventory).
+   static type language — `[T]` arrays, `[K: V]` maps, and
+   `Option[T]` (RULED 2026-07-18) (syntax mirrors literals;
+   statically homogeneous; NOT user generics — #1090 candidate
+   (b), promoted). Intrinsics carry checker-known polymorphic
+   signatures (closed set); UFCS completion reads them. A bare
+   `none` needs a type from context (concrete sites fine; a fresh
+   un-annotated `var x = none` errors — the empty-collection
+   posture). Docs display notation ⏳ (decide with the inventory).
 5. **Namespace**: `std::` tree (`math`, `text`, `seq`, `rand`,
    `collections` — layout finalizes with the inventory); a curated
    ambient PRELUDE (marked per-verb below); `host::` mounts from the
    capability manifest (paths declared per entry); in-tree
    `extern fn` = same species, `story::`-side.
+6. **Absence & the display boundary (RULED 2026-07-18 — ships as
+   one package with Option).** (a) `x or default` — the coalescing
+   spelling, total by construction, the value-position 90% case.
+   (b) **Display-boundary forgiveness**: an interpolation whose
+   FINAL value is None renders as nothing — absence renders as
+   absence, the honest narrative meaning. Everywhere else (guards,
+   arithmetic, bindings, arguments — anywhere in an A*
+   implementation) `Option[T]` ≠ `T`, strict. Cut by POSITION, not
+   dialect: nested compositions are never forgiven
+   (`{mood.first() + 1}` is a type error; only the boundary
+   shrugs). Riders: the forgiveness is TRACEABLE (transcript/debug
+   records None-renders; an always-None-interpolation lint ⏳);
+   choice-text and tag surfaces are named edges (accidental empty
+   choice text vs the deliberate `* []`) ⏳.
 
 ## 2. Domain 1 — math (RULED)
 
@@ -74,8 +100,10 @@ explicitly a RENDERING concern — out of core, ledger-worthy if
 authored code ever needs them). Casing = locale-independent Unicode
 simple mapping (Turkish-i named as out of scope; locale casing =
 intl pipeline). `char_at`/`slice` OOB fault (one indexing contract
-with arrays). `find` → index or -1 (Option martyr #1). Prelude:
-`len contains char_at`; rest `std::text`.
+with arrays — OOB indexing is a bug, not absence). `find` →
+`Option[int]` (martyr #1, redeemed by the 2026-07-18 ruling; the
+-1 sentinel dies unshipped). Prelude: `len contains char_at`;
+rest `std::text`.
 
 ### 3b. Views (RULED)
 **Views are a representation, not a type**: string/array
@@ -109,10 +137,16 @@ cross-referenced so views ≠ projections.
   (`inventory.push(sword);`; rvalue receiver = compile error).
   Naming: imperative = in-place (`sort push insert remove
   reverse`), past-participle = functional (`sorted reversed`).
-- Verbs: `len first last index_of (Option martyr #2) contains
-  slice(view) concat sort sort_by sorted reversed min max (empty ⇒
-  fault) push pop insert remove each map filter fold filter_map`.
-  Prelude: `len contains push`; rest `std::seq`.
+- Verbs: `len first last index_of contains slice(view) concat
+  sort sort_by sorted reversed min max push pop insert remove
+  each map filter fold filter_map`. **Absence returns (RULED
+  2026-07-18, flipping the earlier empty⇒fault posture — one
+  doctrine, no day-one exceptions)**: `first last min max pop` →
+  `Option` on empty; `index_of` → `Option[int]` (martyr #2,
+  redeemed). OOB *indexing* (`a[i]`, `insert`, remove-by-index)
+  stays a fault — an index you computed wrong is a bug; an empty
+  extremum is absence. Prelude: `len contains push`; rest
+  `std::seq`.
 - **The `list` reclaim dissolves**: type is `[T]`, literal `[…]`,
   vocabulary is "array"; the word "list" RETIRES entirely.
 
@@ -126,22 +160,18 @@ cross-referenced so views ≠ projections.
 - Indexing contract stands as ruled (#856): `m[k]` read faults on
   a missing key; `m[k] = v` inserts. No `insert` verb — write-index
   IS insertion (one spelling per concept).
-- **The non-faulting read**: no Option yet, and maps have no honest
-  in-band sentinel (unlike `find` → -1 — any V is a legal value).
-  Proposal: `get_or(m, k, default)` — total by construction, no
-  sentinel; plus `contains_key` for the test-then-index idiom
-  (turns are single-threaded; no TOCTOU). A bare `get` is
-  **Option martyr #3** — a martyr of a distinct kind from #1/#2
-  (those are sentinel-returners; this verb can't be written at all
-  until Option exists) — named hole, arrives with #1090,
-  documented in its slot now.
-- Verbs: `len contains_key get_or keys values remove clear`.
+- **The non-faulting read (updated per the 2026-07-18 Option
+  ruling)**: `get(m, k)` → `Option[V]` — martyr #3, redeemed
+  before it was ever martyred. `m.get(k) or default` covers the
+  with-default idiom, so no `get_or` verb ships (the `or`
+  spelling subsumes it — one spelling per concept); `contains_key`
+  stays for the pure membership test. The faulting `m[k]` remains
+  the "I expect it there" read (#856 unchanged).
+- Verbs: `len contains_key get keys values remove clear`.
   `remove(ref m, k)` imperative/in-place per the mutation posture,
   total (removing an absent key is a no-op — deletion is
   idempotent; the faulting read covers "I expected it there").
-  `clear(ref m)` in-place, total. (Note: `get_or` is a fresh name
-  the pending naming-convention 🔶 doesn't cover — flagging so it
-  gets weighed with that nod, not smuggled past it.)
+  `clear(ref m)` in-place, total.
   `keys`/`values` → eager array snapshots in insertion order
   (iteration order is already insertion order; equality alone
   ignores it, per the 2026-07-18 ruling).
@@ -157,16 +187,14 @@ cross-referenced so views ≠ projections.
 
 Post-rename surface for `flags` (charter §13.2: ordered domain of
 named symbols, subset-valued variables). The audit disposes every
-inherited LIST operation. **Two species in the table** — pure
-respellings (same runtime op, same semantics; ink compat + oracle
-hold them) and **new stdlib verbs with totality-first postures the
-ink ops never had** (marked ✚). The ✚ rows follow the 2026-07-13
-two-surface precedent (`int()` faults, `INT()` keeps silent-0,
-byte-identical oracle): the frozen ink surface keeps its ops
-untouched; the native verbs are new siblings, not respellings.
-⏳ Needs the maintainer's explicit nod on exactly this split —
-which rows are respellings (must stay total) vs new verbs (may
-fault):
+inherited LIST operation. **The respelling-vs-new-fault
+controversy this table originally carried is DISSOLVED by the
+2026-07-18 Option ruling**: absence-shaped results return
+`Option`, which is neither ink's silent-empty nor a fault — the
+rows marked ✚ are new native verbs whose absence returns are
+typed; the frozen ink ops keep their total-empty semantics
+untouched (two surfaces, one runtime — the `int()`/`INT()`
+precedent, oracle byte-identical):
 
 | ink inheritance | native | disposition |
 |---|---|---|
@@ -176,18 +204,18 @@ fault):
 | `?` membership | `contains` | keep (verb; operator form ⏳ code-dialect sitting) |
 | `+=` / `-=` | `add` / `remove` | keep both operator and verb; `ref` first param, in-place |
 | `^` intersection | `intersect` | verb; operator form ⏳ |
-| `LIST_MIN`/`MAX` | `first` / `last` | ✚ proposed rename — domain-order vocabulary, not numeric; empty subset ⇒ fault (matches seq `min`/`max` posture; ink's ops stay frozen-total) |
+| `LIST_MIN`/`MAX` | `first` / `last` | ✚ proposed rename — domain-order vocabulary, not numeric; empty subset → `none` via `Option` (matches the flipped seq `min`/`max`; ink's ops stay frozen-total) |
 | `LIST_VALUE` | `index_of`-shaped | ⏳ — needs the numeric-coupling question below |
 | `LIST_RANGE` | `range` | keep, `range(Mood, a, b)` inclusive by domain order |
 | `LIST_INVERT` | `invert` | keep — complement within the domain |
-| `LIST_RANDOM` | moves to domain 6 | ✚ `rand::pick` accepts a flags subset (closed iterable set member); empty ⇒ fault where `LIST_RANDOM` was total — new verb, frozen ink op untouched |
+| `LIST_RANDOM` | moves to domain 6 | ✚ `rand::pick` accepts a flags subset (closed iterable set member); empty → `Option` none (dynamic-content absence — §7); frozen ink op untouched |
 
-- `next`/`prev` (✚) step a **single-flag subset** by domain order.
-  Off-the-edge yields `none` (ink's total, empty-result behavior —
-  honest totality, kept); stepping a multi-flag or empty subset
-  **faults** (domain error: "step what?"). Proposed as new verbs
-  splitting ink's silent-garbage cases from its honest one; ink's
-  own `+1`/`-1` stepping stays frozen.
+- `next`/`prev` (✚) step a **single-flag subset** by domain order,
+  returning `Option` — off-the-edge is expected absence (`none`,
+  the typed version of ink's honest empty). Stepping a multi-flag
+  or empty subset **faults** — a malformed question is a bug, not
+  absence (the doctrine's two halves in one verb). Ink's own
+  `+1`/`-1` stepping stays frozen.
 - **The numeric coupling** (⏳ needs a ruling): ink lets flags
   carry explicit numeric values and converts subsets↔ints. The
   clean native story is flags-as-symbols (ordinal queries via
@@ -219,12 +247,16 @@ fault):
 - Verbs (`std::rand`, **no prelude entries** — draws are
   deliberate acts, namespaced): `int(range)` (range value —
   `0..10` / `0..=9` join as first-class arguments), `float()` →
-  [0,1), `chance(p)` → bool, `pick(iterable)` (any closed-set
-  iterable incl. flags subsets; empty ⇒ fault, matching
+  [0,1), `chance(p)` → bool, `pick(iterable)` →
+  `Option` (any closed-set iterable incl. flags subsets; empty →
+  `none` — dynamic-content absence, matching the flipped
   `min`/`max`), `shuffle(ref a)` in-place + `shuffled(a)`
   functional (the §4 naming-convention 🔶 exercised again),
-  `seed(n)`. `int` on an empty range (`0..0`, `5..5`) ⇒ fault
-  (nothing to draw; the pick/min/max posture).
+  `seed(n)`. `int` on an empty range (`0..0`, `5..5`) ⇒ **fault**
+  🔶 — proposed cut: a range is a shape you wrote, so an empty one
+  is a logic bug (and Option-wrapping every `rand::int(0..10)`
+  would be purgatory); `pick`'s iterable is dynamic content, so
+  its emptiness is absence. Confirm or flatten.
 - Heritage: ink's `RANDOM(min, max)` / `SEED_RANDOM` stay
   ink-frozen spellings of the same cell — one RNG, two surfaces,
   no drift.
@@ -245,8 +277,10 @@ fault):
   mutation demand.
 - **Heap/priority queue — the humble form first.** Proposal: verbs
   over arrays, not a new type — `heap_push(ref a, x)`,
-  `heap_pop(ref a)` (empty ⇒ fault), `heap_peek(a)` (empty ⇒
-  fault), maintaining the invariant over an ordinary `[T]`
+  `heap_pop(ref a)` → `Option`, `heap_peek(a)` → `Option` (empty
+  is absence, per the 2026-07-18 doctrine — and `while
+  heap_pop(ref open) as node { … }` is the natural drain loop),
+  maintaining the invariant over an ordinary `[T]`
   (`std::collections`). Rationale: zero new value kinds, zero wire
   work, the Lua posture; min-heap. ⏳ **A total-ordering doctrine
   is OWED, shared by `sort`/`sort_by`/heap** — the value model has
@@ -303,20 +337,59 @@ fault):
    authored land. No `std::prelude` module — the prelude is a
    compiler-curated name set, not an importable place (imports are
    naming-only; the prelude is pre-granted naming).
+6. **The protocol registry (converged in the 2026-07-18
+   conversation — recorded here for the formal nod; see the PR
+   #1100 thread for the full reasoning).** A CLOSED set of
+   compiler-declared protocols that user types may *implement*
+   but never *declare* — no bounds, no user generics; the
+   two-tier discipline holds: closed overload families (math kit,
+   tower, len/contains) stay mechanism-free intrinsics, and
+   registry entries exist only where user types participate in a
+   compiler behavior, promotion evidence-gated via #1090. V1
+   entries, each with an **effect contract**:
+   - `display` — `fn(T): string`, row ⊆ pure·silent·total; feeds
+     the §1.6 boundary; enums/structs get structural defaults,
+     user impls override. Machine states inherit it (#905).
+   - `compare` — `fn(T, T): int`, row ⊆ pure·silent·total; owns
+     the ⏳ total-ordering doctrine (§8) incl. the NaN decision,
+     made once. Coherence edge to state explicitly: user `compare`
+     vs ruled structural equality (`compare == 0` need not imply
+     `==`).
+   - `iterate` — **pull-shaped**: `next(ref Self): Option[T]`,
+     row ⊆ writes-receiver·silent·total, laws attached ("every
+     element once; `none` terminal and sticky" — property-harness
+     enforced; machine-form impls make them structural). Chosen
+     over push/`each` because a push-desugared `for` body is an
+     fn-value callback and **functions never await** — push would
+     ban `await` inside `for` bodies in flows; pull desugars
+     inline and iterators park across suspensions for free. `for`
+     is the only v1 consumer (concrete-site resolution under
+     mono-HM, zero generics); user iterables joining
+     `map`/`filter`/`fold` stays #1090-gated. `each`/`for_each`
+     remain ordinary derived verbs for pure-callback cases.
+   Implementation spelling (attribute vs impl-block) ⏳ —
+   code-dialect sitting.
 
 ## 10. Remaining docket ⏳
 
-- The three sitting-3 🔶s (UFCS auto-ref · naming convention ·
-  eager trio) and now §§5–9 above await the maintainer's nod —
-  **nothing in §§5–9 is ruled**; it is the between-sittings draft
-  to react to.
+- **RULED 2026-07-18 (in-conversation, this session)**: the
+  Option package — `Option[T]` as builtin #3, the fault=bug /
+  Option=absence doctrine, `or`, display-boundary forgiveness
+  (§1.1/§1.4/§1.6) — and the seq/text/map flips (§§3–5). Recorded
+  in the decision log.
+- Still awaiting the nod: the three sitting-3 🔶s (UFCS auto-ref ·
+  naming convention · eager trio) · §§5–9's remaining proposal
+  content (updated to conform to the Option ruling but not
+  themselves ruled) · the protocol registry (§9.6, converged in
+  conversation).
 - In-section ⏳s: tower mini-spec (§2b) · view-materialization
   ratio (§3b) · intrinsic display notation lives in §9.4 now ·
-  flags respelling-vs-new-verb split + numeric-coupling ruling
-  (§6) · total-ordering doctrine incl. NaN, shared by
-  sort/heap (§8) · weighted-table mutation surface (§8) ·
-  anonymous-record native spelling (§9.1, owned by the
-  code-dialect sitting) · holes' release policy (§9.2).
+  flags numeric-coupling ruling (§6) · rand::int empty-range
+  fault-vs-Option confirmation (§7) · total-ordering doctrine
+  incl. NaN, now homed in `compare` (§8/§9.6) · weighted-table
+  mutation surface (§8) · anonymous-record native spelling (§9.1,
+  owned by the code-dialect sitting) · holes' release policy
+  (§9.2) · protocol implementation spelling (§9.6).
 - Maintainer-attention note: `remove` now names three verbs with
   divergent postures — seq remove-by-index (OOB ⇒ fault, the
   indexing contract), map remove-by-key (idempotent-total), flags
@@ -332,9 +405,10 @@ fault):
 ## 11. Session-resumption notes
 
 Ruled context lives in: docs/native-surface-charter.md (§1–§13),
-this doc, issues #1087/#1090/#1093/#1097, and the decision log.
-§§1–4 are ruled as marked; **§§5–9 are proposals drafted between
-sittings (2026-07-19, cloud session) and carry no rulings** — the
-maintainer reacts top-to-bottom, then Phase C convenes. The
-native-surface prototype parser is the season's next artifact
-after this sitting closes.
+this doc, issues #1087/#1090/#1093/#1097/#905 (FSM sidebar), the
+PR #1100 conversation thread, and the decision log. §§1–4 are
+ruled as marked (Option package + absence flips ruled
+2026-07-18 in-conversation); **§§5–9 are proposals updated to
+conform, awaiting the nod** — the maintainer reacts top-to-bottom,
+then Phase C convenes. The native-surface prototype parser is the
+season's next artifact after this sitting closes.
