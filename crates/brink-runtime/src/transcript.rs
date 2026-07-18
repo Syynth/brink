@@ -116,6 +116,14 @@ pub enum TranscriptError {
     InvalidDefinitionId,
     #[error("value nesting exceeded max decode depth ({0})")]
     MaxDepthExceeded(usize),
+    /// A `VAL_MAP` entry list carried the same key twice. A legitimate
+    /// writer never emits this — `OrderedMap::insert` de-duplicates on the
+    /// write side — so a repeated key is a corrupt or crafted `.brkt`; the
+    /// content-based `OrderedMap` `Eq` (issue #909) assumes each key appears
+    /// once, so this is rejected rather than silently keeping the last
+    /// occurrence (issue #985).
+    #[error("duplicate key in map value")]
+    DuplicateMapKey,
 }
 
 // ── Write ─────────────────────────────────────────────────────────────────
@@ -735,6 +743,12 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Tran
             for _ in 0..len {
                 let key = decode_map_key(buf, off)?;
                 let val = decode_value(buf, off, depth + 1)?;
+                // A repeated key would violate the content-based `OrderedMap`
+                // `Eq` (#909); reject rather than silently keeping the last
+                // occurrence (#985).
+                if map.contains_key(&key) {
+                    return Err(TranscriptError::DuplicateMapKey);
+                }
                 map.insert(key, val);
             }
             Ok(Value::map(map))
@@ -1265,5 +1279,78 @@ mod tests {
             read_transcript(&bytes),
             Err(TranscriptError::MaxDepthExceeded(MAX_DECODE_DEPTH))
         ));
+    }
+
+    // Issue #985 (follow-up to #909): `OrderedMap`'s `Eq` is content-based
+    // and assumes each key appears at most once. A legitimate `write_transcript`
+    // never emits a duplicate `VAL_MAP` key — `OrderedMap::insert`
+    // de-duplicates on the write side, so `encode_value` can't be driven
+    // into producing one from an in-memory `Value`. This hand-builds the raw
+    // `VAL_MAP` bytes (the crafted/corrupt-payload scenario the issue
+    // describes) with the same `int` key twice, proving the reader rejects
+    // it with a decode error rather than silently keeping the last
+    // occurrence and handing back an invariant-violating `OrderedMap`.
+    fn duplicate_int_key_map_body() -> Vec<u8> {
+        let mut body = Vec::new();
+        write_u32(&mut body, 1); // part count
+        write_u8(&mut body, TAG_VALUE_REF);
+        write_u8(&mut body, VAL_MAP);
+        write_u32(&mut body, 2); // entry count
+        write_u8(&mut body, VAL_INT);
+        write_i32(&mut body, 0);
+        write_u8(&mut body, VAL_INT);
+        write_i32(&mut body, 1);
+        write_u8(&mut body, VAL_INT);
+        write_i32(&mut body, 0);
+        write_u8(&mut body, VAL_INT);
+        write_i32(&mut body, 2);
+        write_u32(&mut body, 0); // fragment count
+        body
+    }
+
+    fn wrap_body_as_transcript(body: &[u8]) -> Vec<u8> {
+        let content_crc = crc32(body);
+        let mut bytes = Vec::with_capacity(HEADER_SIZE + body.len());
+        bytes.extend_from_slice(MAGIC);
+        write_u16(&mut bytes, VERSION);
+        write_u16(&mut bytes, 0);
+        write_u32(&mut bytes, 0);
+        write_u32(&mut bytes, content_crc);
+        bytes.extend_from_slice(body);
+        bytes
+    }
+
+    #[test]
+    fn decode_value_rejects_duplicate_map_key() {
+        let bytes = wrap_body_as_transcript(&duplicate_int_key_map_body());
+        assert!(matches!(
+            read_transcript(&bytes),
+            Err(TranscriptError::DuplicateMapKey)
+        ));
+    }
+
+    #[test]
+    fn decode_value_accepts_distinct_map_keys() {
+        let mut body = Vec::new();
+        write_u32(&mut body, 1); // part count
+        write_u8(&mut body, TAG_VALUE_REF);
+        write_u8(&mut body, VAL_MAP);
+        write_u32(&mut body, 2); // entry count
+        write_u8(&mut body, VAL_INT);
+        write_i32(&mut body, 0);
+        write_u8(&mut body, VAL_INT);
+        write_i32(&mut body, 1);
+        write_u8(&mut body, VAL_INT);
+        write_i32(&mut body, 5);
+        write_u8(&mut body, VAL_INT);
+        write_i32(&mut body, 2);
+        write_u32(&mut body, 0); // fragment count
+
+        let bytes = wrap_body_as_transcript(&body);
+        let data = read_transcript(&bytes).expect("distinct keys must decode cleanly");
+        match &data.parts[0] {
+            OutputPart::ValueRef(Value::Map(map)) => assert_eq!(map.len(), 2),
+            other => unreachable!("expected ValueRef(map), got {other:?}"),
+        }
     }
 }

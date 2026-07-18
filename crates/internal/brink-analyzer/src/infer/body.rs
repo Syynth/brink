@@ -302,11 +302,32 @@ impl InferPass<'_, '_> {
     /// A no-op for any other expression shape or an unresolved/global path
     /// — this is how a use elsewhere in the body ("uses inside the body")
     /// narrows a param/temp's inferred type.
+    ///
+    /// Issue #994: a *dotted* `Path` (`t.field`, `t.field.nested`) whose head
+    /// resolves to a `Param`/`Temp` reaches here too — the TM-4b resolution
+    /// fallback (`resolve::resolve_variable` step 11, docs/typed-mode-spec.md
+    /// §6) maps the whole multi-segment path's range to the *head*
+    /// variable's `DefinitionId`, since no static field-type table exists
+    /// yet (`Expr::FieldAccess`'s own doc: "out of scope for this slice").
+    /// Joining the field-context type (`ty`, the RHS of `t.field = 5` or a
+    /// sibling operand's type in `t.field + 1`) into the *head*'s own
+    /// accumulated type conflates two unrelated types — `t`'s own shape and
+    /// one of its fields' — and manufactures a spurious Conflicted-escape
+    /// (`E066`) whenever they statically disagree, even though `t` itself is
+    /// never actually misused. A dotted head resolving to a global
+    /// `VAR`/`CONST` never reaches this join at all (excluded by the
+    /// `kind` guard below, since cross-type-reassignment detection for
+    /// globals isn't implemented in this slice) — this segment-count guard
+    /// makes a `Param`/`Temp` head behave the same way: observed only for a
+    /// genuine bare reference, never for a dotted field read.
     fn observe(&mut self, expr: &Expr, ty: &Ty) {
         if ty.is_unknown() {
             return;
         }
         let Expr::Path(p) = expr else { return };
+        if p.segments.len() > 1 {
+            return;
+        }
         let Some(def) = self.resolve(p.range) else {
             return;
         };

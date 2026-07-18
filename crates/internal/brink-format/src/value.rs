@@ -703,9 +703,42 @@ impl From<Arc<str>> for MapKey {
 /// order-sensitive — the bug. `Value::Map`'s `Arc::ptr_eq` fast path (same
 /// snapshot → instant `true`) lives one level up in `impl PartialEq for
 /// Value`; this impl is the structural fallback it calls into.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct OrderedMap {
     entries: Vec<(MapKey, Value)>,
+}
+
+impl<'de> Deserialize<'de> for OrderedMap {
+    /// Hand-written, not derived (issue #985, follow-up to #909): the derived
+    /// impl would deserialize `entries` verbatim as a `Vec<(MapKey, Value)>`,
+    /// letting a crafted or corrupt payload carry a duplicate key and
+    /// construct a map that violates the content-based `Eq` invariant above
+    /// — `Eq` assumes each key appears at most once. This decodes into the
+    /// same shape the derive would have produced, then walks the entries
+    /// through the same duplicate-key check the `.inkb`/`.inkt`/transcript
+    /// decoders use (rejecting rather than silently keeping the last
+    /// occurrence — a legitimate encoder never emits a repeat, since
+    /// `insert` de-duplicates on the write side, so a repeat is corrupt
+    /// input, never a panic).
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Shadow {
+            entries: Vec<(MapKey, Value)>,
+        }
+
+        let shadow = Shadow::deserialize(deserializer)?;
+        let mut map = Self::with_capacity(shadow.entries.len());
+        for (key, value) in shadow.entries {
+            if map.contains_key(&key) {
+                return Err(serde::de::Error::custom("duplicate key in map value"));
+            }
+            map.insert(key, value);
+        }
+        Ok(map)
+    }
 }
 
 impl PartialEq for OrderedMap {
@@ -989,6 +1022,64 @@ mod tests {
         let keys: Vec<&MapKey> = m.keys().collect();
         assert_eq!(keys, vec![&MapKey::from("a"), &MapKey::from("b")]);
         assert_eq!(m.get(&MapKey::from("a")), Some(&Value::Int(10)));
+    }
+
+    // ── OrderedMap::deserialize: duplicate-key rejection (#985, follow-up to
+    // #909) ──────────────────────────────────────────────────────────────
+    //
+    // `OrderedMap`'s `Eq` is content-based and assumes each key appears at
+    // most once. A legitimate `Serialize` never emits a duplicate key —
+    // `insert` de-duplicates on the write side — so a JSON payload with a
+    // repeated key only ever arises from a hand-crafted or corrupted save/
+    // journal file (the serde deserialize boundary `Story::load_state` and
+    // friends go through). The hand-written `Deserialize` below must reject
+    // it with a decode error, never silently keep the last occurrence and
+    // hand back a map that violates the invariant its `Eq` relies on.
+
+    #[test]
+    fn ordered_map_deserialize_rejects_duplicate_key() {
+        let json = r#"{"entries":[[{"Str":"a"},{"Int":1}],[{"Str":"a"},{"Int":2}]]}"#;
+        let err = serde_json::from_str::<OrderedMap>(json)
+            .expect_err("duplicate key must not deserialize");
+        assert!(
+            err.to_string().contains("duplicate key"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn ordered_map_deserialize_accepts_distinct_keys() {
+        let json = r#"{"entries":[[{"Str":"a"},{"Int":1}],[{"Str":"b"},{"Int":2}]]}"#;
+        let m: OrderedMap = serde_json::from_str(json).expect("distinct keys must deserialize");
+        assert_eq!(m.len(), 2);
+        assert_eq!(m.get(&MapKey::from("a")), Some(&Value::Int(1)));
+        assert_eq!(m.get(&MapKey::from("b")), Some(&Value::Int(2)));
+    }
+
+    #[test]
+    fn ordered_map_serde_json_round_trip_without_duplicates() {
+        let mut m = OrderedMap::new();
+        m.insert(MapKey::from("hp"), Value::Int(10));
+        m.insert(MapKey::from(true), Value::String("flag".into()));
+        m.insert(MapKey::from(7), Value::Float(1.5));
+        let json = serde_json::to_string(&m).expect("serialize");
+        let back: OrderedMap = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, m);
+    }
+
+    // A crafted `Value::Map` payload (the shape a `SaveState`/journal decode
+    // actually walks) must reject the same way as the bare `OrderedMap` case
+    // above — the duplicate-key check has to fire through `Value`'s derived
+    // `Deserialize` too, not just when `OrderedMap` is deserialized directly.
+    #[test]
+    fn value_map_deserialize_rejects_duplicate_key() {
+        let json = r#"{"Map":{"entries":[[{"Str":"a"},{"Int":1}],[{"Str":"a"},{"Int":2}]]}}"#;
+        let err =
+            serde_json::from_str::<Value>(json).expect_err("duplicate key must not deserialize");
+        assert!(
+            err.to_string().contains("duplicate key"),
+            "unexpected error: {err}"
+        );
     }
 
     // ── Copy-on-write mechanics (take → make_mut → write-back) ──────────────

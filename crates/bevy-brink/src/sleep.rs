@@ -90,7 +90,8 @@ use bevy_asset::Assets;
 use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
-use bevy_ecs::system::{Query, Res};
+use bevy_ecs::query::QueryState;
+use bevy_ecs::system::{Local, Query, Res};
 use bevy_ecs::world::World as EcsWorld;
 use bevy_log::warn;
 use brink_format::{DefinitionId, EffectRowEntry, Value};
@@ -641,6 +642,15 @@ enum ReparkAction {
     Remove,
 }
 
+/// The gather query [`run_flow_sleep`] caches across frames (kept as a
+/// `type` alias to satisfy `clippy::type_complexity` on the `Local` param).
+type SleepGatherQuery<M> = QueryState<(
+    Entity,
+    &'static FlowSleep<M>,
+    &'static BrinkFlow<M>,
+    &'static BrinkProgram<M>,
+)>;
+
 /// Exclusive system: re-evaluate flagged wake conditions in each flow's own
 /// context, wake on true, and re-arm/remove policies at turn boundaries
 /// (`docs/effects-spec.md` §13.1). Gated by the plugin on
@@ -649,7 +659,15 @@ enum ReparkAction {
 /// Order-independent w.r.t. [`advance_batch`](crate::advance_batch): whether it
 /// runs before or after the batch driver in a frame, a wake takes effect on the
 /// following frame's Collect.
-pub fn run_flow_sleep<M: Send + Sync + 'static>(world: &mut EcsWorld) {
+pub fn run_flow_sleep<M: Send + Sync + 'static>(
+    world: &mut EcsWorld,
+    // Cache the gather query across frames instead of rebuilding a fresh
+    // `QueryState` (archetype match + component-id resolution) on every call
+    // — the BH-5 prefetch pattern (#937 lineage; #1007 secondary). `iter`
+    // still folds in any archetypes added since the last frame, so newly
+    // spawned sleeping flows are picked up.
+    mut gather: Local<SleepGatherQuery<M>>,
+) {
     // ── Gather ── inspect (FlowSleep, BrinkFlow, BrinkProgram) without
     // holding the borrow across the `call_ink_function` re-entries below.
     // Only entities that are fully fulfilled flows carry `BrinkFlow`, so
@@ -662,10 +680,8 @@ pub fn run_flow_sleep<M: Send + Sync + 'static>(world: &mut EcsWorld) {
     // log, not just a re-arm/remove action.
     let mut purity_faults: Vec<(Entity, WakeConditionPurityError)> = Vec::new();
     {
-        let mut query =
-            world.query::<(Entity, &FlowSleep<M>, &BrinkFlow<M>, &BrinkProgram<M>)>();
         let programs = world.resource::<Assets<ProgramAsset>>();
-        for (entity, sleep, flow, program_ref) in query.iter(world) {
+        for (entity, sleep, flow, program_ref) in gather.iter(world) {
             let status = flow.inner.status();
             // An `-> END` flow is dead; the policy is inert (§13.1 point 5).
             if status == StoryStatus::Ended {
