@@ -9,9 +9,11 @@ use bevy_app::{App, Update};
 use bevy_ecs::observer::On;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{ResMut, RunSystemOnce as _};
+use brink_format::{DefinitionTag, DirectEffects, DispatchEntry};
 use brink_runtime::ContextAccess as _;
 
 use crate::advance_batch;
+use crate::asset::BrinkStoryAsset;
 use crate::capability::ContainerAccess;
 use crate::event::{BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone};
 use crate::globals::BrinkGlobals;
@@ -481,6 +483,282 @@ fn wake_fan_out_scenario_ratios() {
     assert_eq!(
         max_stepped, storm_n,
         "wake storm: all {storm_n} flows wake and step together in a batch turn"
+    );
+}
+
+// ── Wake-condition purity (issue #995, BH-4 follow-up) ──────────────────────
+
+/// Overwrite a loaded story's `ProgramAsset::effect_rows` — `add_story_assets`
+/// always ships an empty table (BH-1's capability join isn't what these
+/// non-purity tests exercise), so a purity test that needs a *real*,
+/// non-empty `EffectRows` entry wires it in directly here, exactly like a
+/// compiled `.inkb`'s loader would (`asset.rs`'s `InkbLoader::load` sets
+/// `effect_rows` from the decoded `StoryData` the same way).
+fn set_effect_rows(app: &mut App, story: &bevy_asset::Handle<BrinkStoryAsset>, rows: Vec<EffectRowEntry>) {
+    let world = app.world_mut();
+    let program_handle = world
+        .resource::<Assets<BrinkStoryAsset>>()
+        .get(story)
+        .expect("story asset loaded")
+        .program
+        .clone();
+    world
+        .resource_mut::<Assets<ProgramAsset>>()
+        .get_mut(&program_handle)
+        .expect("program asset loaded")
+        .effect_rows = rows;
+}
+
+fn no_write_row(def: DefinitionId) -> EffectRowEntry {
+    EffectRowEntry {
+        def,
+        is_entry: true,
+        direct: DirectEffects::default(),
+        dispatches: vec![],
+    }
+}
+
+fn writing_row(def: DefinitionId, write: DefinitionId) -> EffectRowEntry {
+    EffectRowEntry {
+        def,
+        is_entry: true,
+        direct: DirectEffects {
+            writes: vec![write],
+            ..DirectEffects::default()
+        },
+        dispatches: vec![],
+    }
+}
+
+fn opaque_row(def: DefinitionId) -> EffectRowEntry {
+    EffectRowEntry {
+        def,
+        is_entry: true,
+        direct: DirectEffects {
+            opaque: true,
+            ..DirectEffects::default()
+        },
+        dispatches: vec![],
+    }
+}
+
+/// A pure condition (empty writes, not opaque) passes the checker directly —
+/// the non-blocking baseline every other purity test contrasts with.
+#[test]
+fn check_named_condition_purity_accepts_a_pure_row() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY);
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let rows = vec![no_write_row(def)];
+    assert!(check_named_condition_purity(&program, &rows, "should_wake").is_ok());
+}
+
+/// The core rejection: a condition whose row writes a global is rejected with
+/// the named [`WakeConditionPurityError::Writes`] variant, not a panic.
+#[test]
+fn check_named_condition_purity_rejects_a_writing_row() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY);
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let write_id = DefinitionId::new(DefinitionTag::GlobalVar, 999);
+    let rows = vec![writing_row(def, write_id)];
+
+    let err = check_named_condition_purity(&program, &rows, "should_wake").unwrap_err();
+    assert!(
+        matches!(&err, WakeConditionPurityError::Writes { condition, .. } if condition == "should_wake"),
+        "got {err:?}"
+    );
+}
+
+/// A dispatch's static fallback write also counts (§7: v1 always folds a
+/// dispatch's conservative fallback in, no runtime narrowing) — not just the
+/// row's own direct writes.
+#[test]
+fn check_named_condition_purity_rejects_a_dispatch_fallback_write() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY);
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let write_id = DefinitionId::new(DefinitionTag::GlobalVar, 999);
+    let dispatch_cell = DefinitionId::new(DefinitionTag::GlobalVar, 1000);
+    let rows = vec![EffectRowEntry {
+        def,
+        is_entry: true,
+        direct: DirectEffects::default(),
+        dispatches: vec![DispatchEntry {
+            cell: dispatch_cell,
+            narrowable: false,
+            fallback: DirectEffects {
+                writes: vec![write_id],
+                ..DirectEffects::default()
+            },
+        }],
+    }];
+
+    let err = check_named_condition_purity(&program, &rows, "should_wake").unwrap_err();
+    assert!(
+        matches!(err, WakeConditionPurityError::Writes { .. }),
+        "got {err:?}"
+    );
+}
+
+/// An opaque row (effects inference couldn't summarize a call) is rejected
+/// conservatively — purity can't be proven, so it isn't assumed.
+#[test]
+fn check_named_condition_purity_rejects_an_opaque_row() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY);
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let rows = vec![opaque_row(def)];
+
+    let err = check_named_condition_purity(&program, &rows, "should_wake").unwrap_err();
+    assert!(
+        matches!(err, WakeConditionPurityError::Opaque { .. }),
+        "got {err:?}"
+    );
+}
+
+/// A condition name that doesn't resolve to any definition is its own named
+/// error, not confused with a purity failure.
+#[test]
+fn check_named_condition_purity_unknown_condition_is_named() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY);
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let rows = vec![no_write_row(def)];
+
+    let err = check_named_condition_purity(&program, &rows, "no_such_fn").unwrap_err();
+    assert!(
+        matches!(&err, WakeConditionPurityError::UnknownCondition { condition } if condition == "no_such_fn"),
+        "got {err:?}"
+    );
+}
+
+/// A story whose `EffectRows` table is empty entirely (never ran the
+/// compiler's effects emission — the same shape `add_story_assets` ships by
+/// default) is outside the guarantee this checks: the empty table bypasses
+/// the check rather than rejecting every condition such a story could name.
+#[test]
+fn check_named_condition_purity_bypasses_when_effect_rows_table_is_empty() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY);
+    assert!(check_named_condition_purity(&program, &[], "should_wake").is_ok());
+    // Even a name that wouldn't resolve at all is let through — there is no
+    // row-based guarantee to check against.
+    assert!(check_named_condition_purity(&program, &[], "no_such_fn").is_ok());
+}
+
+/// Dynamic fn-value condition resolution (a `Value::FnRef`/`Closure` token,
+/// e.g. one a host resolved dynamically rather than naming statically) is
+/// checked through the exact same row inspection as the named path — pure
+/// passes, writing rejects.
+#[test]
+fn check_value_condition_purity_checks_a_resolved_fn_value_token() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY);
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let token = Value::FnRef(def);
+
+    let pure_rows = vec![no_write_row(def)];
+    assert!(check_value_condition_purity(&program, &pure_rows, &token).is_ok());
+
+    let write_id = DefinitionId::new(DefinitionTag::GlobalVar, 999);
+    let writing_rows = vec![writing_row(def, write_id)];
+    let err = check_value_condition_purity(&program, &writing_rows, &token).unwrap_err();
+    assert!(
+        matches!(err, WakeConditionPurityError::Writes { .. }),
+        "a dynamic fn-value condition token must be purity-checked exactly like a named one; \
+         got {err:?}"
+    );
+}
+
+/// A `Value` that isn't a function value at all has no target to check — its
+/// own named error, not silently treated as pure.
+#[test]
+fn check_value_condition_purity_rejects_a_non_function_value() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY);
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let rows = vec![no_write_row(def)];
+    let err = check_value_condition_purity(&program, &rows, &Value::Int(1)).unwrap_err();
+    assert!(
+        matches!(err, WakeConditionPurityError::NotAFunctionValue),
+        "got {err:?}"
+    );
+}
+
+/// Reachability, end-to-end through `run_flow_sleep` (the registered plugin
+/// system, not a direct unit call): a **pure** condition's row admits it into
+/// evaluation normally — the purity gate never blocks a legitimately pure
+/// wake condition. Contrasts with the writing-condition test below.
+#[test]
+fn pure_condition_wakes_normally_through_run_flow_sleep() {
+    let mut app = build_app();
+    let (program, tables, ctx) = compile_test_story(GATED_STORY);
+    let gate_idx = program.global_index("gate").expect("gate global exists");
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let story = add_story_assets(&mut app, program, tables, ctx);
+    set_effect_rows(&mut app, &story, vec![no_write_row(def)]);
+
+    app.world_mut().spawn((
+        BrinkFlowRequest::<()>::builder().story(story).build(),
+        FlowSleep::<()>::persistent("should_wake").dormant(),
+    ));
+    app.update(); // fulfill
+
+    set_gate(&mut app, gate_idx, 1);
+    pump(&mut app, 3);
+
+    assert_eq!(single_sleep(&mut app), SleepState::Woken);
+    assert!(
+        app.world().resource::<TextLog>().0.contains("Woke up!"),
+        "a pure condition must be evaluated and wake the flow normally"
+    );
+}
+
+/// The core enforcement, reachable end-to-end: a condition whose (real,
+/// non-empty) effect row writes a global is rejected before it is ever
+/// evaluated — the flow never wakes, never runs its turn, and the policy
+/// lands in `Faulted` (never silently retried into a spin) rather than being
+/// called anyway.
+#[test]
+fn writing_condition_is_rejected_and_never_evaluated_through_run_flow_sleep() {
+    let mut app = build_app();
+    let (program, tables, ctx) = compile_test_story(GATED_STORY);
+    let gate_idx = program.global_index("gate").expect("gate global exists");
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let write_id = DefinitionId::new(DefinitionTag::GlobalVar, 999);
+    let story = add_story_assets(&mut app, program, tables, ctx);
+    set_effect_rows(&mut app, &story, vec![writing_row(def, write_id)]);
+
+    app.world_mut().spawn((
+        BrinkFlowRequest::<()>::builder().story(story).build(),
+        FlowSleep::<()>::persistent("should_wake").dormant(),
+    ));
+    app.update(); // fulfill
+
+    // Flip the gate true — a correctly-implemented (but impure) condition
+    // would return true and wake. It must never get the chance to run.
+    set_gate(&mut app, gate_idx, 1);
+    pump(&mut app, 5);
+
+    assert_eq!(
+        single_sleep(&mut app),
+        SleepState::Faulted,
+        "an impure condition's policy must land in Faulted, never Woken"
+    );
+    assert!(
+        app.world().resource::<TextLog>().0.is_empty(),
+        "the flow's turn must never run — the writing condition was never evaluated"
     );
 }
 
