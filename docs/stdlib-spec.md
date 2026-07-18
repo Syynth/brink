@@ -113,33 +113,196 @@ cross-referenced so views ≠ projections.
 - **The `list` reclaim dissolves**: type is `[T]`, literal `[…]`,
   vocabulary is "array"; the word "list" RETIRES entirely.
 
-## 5. Remaining docket ⏳
+## 5. Domain 4 — maps 🔶 (proposed, drafted between sittings)
 
-- **Domain 4 — maps**: verb set (`keys values entries remove len
-  contains_key`…), literal `Map { k: v }` details, `[K: V]` typing
-  edges.
-- **Domain 5 — flags**: verb surface post-rename (`count next prev
-  all none`…, LIST-op inheritance audit).
-- **Domain 6 — random**: THE effect question (rng draws write
-  runtime RNG state — rows say what exactly?), seeding/determinism
-  posture, shuffle/pick/weighted-roll relationship to domain 7.
-- **Domain 7 — collections+**: heap/priority queue, weighted
-  tables (dossier-evidenced; initializer grammar `weight: value`).
-- **Closers**: anonymous-record fate (vs finished maps+structs);
-  assertion spellings final form (`@[effects]` args, holes'
-  release policy); prelude final list; docs display notation for
-  intrinsic signatures; std:: tree final layout.
+- Type `[K: V]` (doctrine §1.4); literal `Map { k: v }` (Phase A
+  §1.3). Statically homogeneous both legs. **Key domain = the
+  scalar map-key set + unit enum variants** (charter §13.1); a
+  non-scalar key is the E076 lineage at compile time where
+  classifiable.
+- Indexing contract stands as ruled (#856): `m[k]` read faults on
+  a missing key; `m[k] = v` inserts. No `insert` verb — write-index
+  IS insertion (one spelling per concept).
+- **The non-faulting read**: no Option yet, and maps have no honest
+  in-band sentinel (unlike `find` → -1 — any V is a legal value).
+  Proposal: `get_or(m, k, default)` — total by construction, no
+  sentinel; plus `contains_key` for the test-then-index idiom
+  (turns are single-threaded; no TOCTOU). A bare `get` is
+  **Option martyr #3** — named hole, arrives with #1090, documented
+  in its slot now.
+- Verbs: `len contains_key get_or keys values remove clear`.
+  `remove(ref m, k)` imperative/in-place per the mutation posture,
+  total (removing an absent key is a no-op — deletion is
+  idempotent; the faulting read covers "I expected it there").
+  `keys`/`values` → eager array snapshots in insertion order
+  (iteration order is already insertion order; equality alone
+  ignores it, per the 2026-07-18 ruling).
+- **`entries` is gated on the anonymous-record closer** (§9.1): a
+  pair needs a shape; if anonymous records survive, `entries(m)` →
+  `[{ key, value }]` and struct patterns destructure it in `for`.
+  Not shipped before that ruling.
+- `for k in m` iterates keys (ruled); `m.keys()` is the same set
+  reified. Prelude: `len` only (already ambient); the rest
+  `std::map`.
+
+## 6. Domain 5 — flags 🔶 (proposed): the LIST-op audit
+
+Post-rename surface for `flags` (charter §13.2: ordered domain of
+named symbols, subset-valued variables). The audit disposes every
+inherited LIST operation — same runtime semantics underneath (ink
+compat + oracle hold them); the native surface renames or retires
+spellings only:
+
+| ink inheritance | native | disposition |
+|---|---|---|
+| `LIST_COUNT` | `count` | keep (verb) |
+| `LIST_ALL` | `all(Mood)` | keep — full-domain subset |
+| `()` empty | `none(Mood)` | new spelling; empty-subset literal |
+| `?` membership | `contains` | keep (verb; operator form ⏳ code-dialect sitting) |
+| `+=` / `-=` | `add` / `remove` | keep both operator and verb; `ref` first param, in-place |
+| `^` intersection | `intersect` | verb; operator form ⏳ |
+| `LIST_MIN`/`MAX` | `first` / `last` | RENAMED — domain-order vocabulary, not numeric; empty subset ⇒ fault (matches seq `min`/`max` posture) |
+| `LIST_VALUE` | `index_of`-shaped | ⏳ — needs the numeric-coupling question below |
+| `LIST_RANGE` | `range` | keep, `range(Mood, a, b)` inclusive by domain order |
+| `LIST_INVERT` | `invert` | keep — complement within the domain |
+| `LIST_RANDOM` | moves to domain 6 | `rand::pick` accepts a flags subset (closed iterable set member) |
+
+- `next`/`prev` step a **single-flag subset** by domain order.
+  Off-the-edge yields `none` (ink's total, empty-result behavior —
+  honest totality, kept); stepping a multi-flag or empty subset
+  **faults** (domain error: "step what?"). This splits ink's
+  silent-garbage cases from its honest one.
+- **The numeric coupling** (⏳ needs a ruling): ink lets flags
+  carry explicit numeric values and converts subsets↔ints. The
+  clean native story is flags-as-symbols (ordinal queries via
+  `index_of`-shaped verbs only); the numeric-values feature would
+  then be ink-frozen (compat surface, not respelled). Recommend:
+  freeze — the dossier shows no native-side demand, and enums with
+  payloads now cover "symbol with data".
+- Prelude: `contains count`; rest `std::flags`.
+
+## 7. Domain 6 — random 🔶 (proposed)
+
+- **THE effect answer — no new row dimension.** RNG state is a
+  named runtime state cell (`std::rand` owns it); every draw is an
+  ordinary **write** to that cell in the def's row. Consequences,
+  all free: wake conditions (pure-gated) statically exclude rng —
+  a re-evaluated draw would be re-roll-unstable, so this is the
+  correct exclusion, enforced by existing machinery; row-gated
+  fusion (§4) correctly refuses to fuse draw-bearing callbacks;
+  `@[effects(pure)]` already asserts rng-freedom. No sibling
+  dimension to #1087/#1097 needed — rng is state, not a new kind
+  of observation.
+- **Determinism posture**: algorithm pinned (implementation
+  chooses; stability is the contract), draws are a pure function
+  of RNG-state → (value, state'). RNG state saves/loads with the
+  story (it already lives in story state — same-semantics). Seeded
+  replay = identical transcript, cross-platform. `seed(n)` writes
+  the cell; unseeded stories seed from the host at story start
+  (host concern, manifest-visible).
+- Verbs (`std::rand`, **no prelude entries** — draws are
+  deliberate acts, namespaced): `int(range)` (range value —
+  `0..10` / `0..=9` join as first-class arguments), `float()` →
+  [0,1), `chance(p)` → bool, `pick(iterable)` (any closed-set
+  iterable incl. flags subsets; empty ⇒ fault, matching
+  `min`/`max`), `shuffle(ref a)` in-place + `shuffled(a)`
+  functional (naming convention pair #1), `seed(n)`.
+- Heritage: ink's `RANDOM(min, max)` / `SEED_RANDOM` stay
+  ink-frozen spellings of the same cell — one RNG, two surfaces,
+  no drift.
+
+## 8. Domain 7 — collections+ 🔶 (proposed)
+
+- **Weighted tables — the dossier's evidenced structure.** A
+  parameterized builtin `Weighted[T]`; construction reuses the map
+  literal shape with weights as keys: `Weighted { 3: sword,
+  1: shield }` (grammar `weight: value` as chartered; weights =
+  positive ints v1). One draw verb: `rand::roll(w)` → T — lives in
+  domain 6's namespace because its row writes the rng cell; total
+  (construction refuses empty/zero-weight tables at literal level —
+  compile error where classifiable, construction fault otherwise:
+  the E076/E078 split applied). `len`, iteration, and mutation ⏳ —
+  v1 is construct-and-roll; the dossier shows no mutation demand.
+- **Heap/priority queue — the humble form first.** Proposal: verbs
+  over arrays, not a new type — `heap_push(ref a, x)`,
+  `heap_pop(ref a)` (empty ⇒ fault), `heap_peek(a)` (empty ⇒
+  fault), maintaining the invariant over an ordinary `[T]`
+  (`std::collections`). Rationale: zero new value kinds, zero wire
+  work, the Lua posture; comparison = the value-model ordering
+  (min-heap; `sort`'s ordering, one ordering doctrine). If the
+  ledger later shows shape-confusion incidents (heap-array indexed
+  as if sorted), a sealed `Heap[T]` builtin is the designed
+  upgrade path — recorded, not built.
+- Anything further (deque, set-as-type) is **evidence-gated** —
+  `std::collections` is the landing zone, the dossier is the gate.
+
+## 9. Closers 🔶 (proposed dispositions)
+
+1. **Anonymous records — KEEP, narrowed and renamed to their job:
+   structural records.** With maps homogeneous and structs
+   declared, the anonymous record `#{ x: 1 }` (native spelling ⏳ —
+   likely bare `{ x: 1 }` where unambiguous, code-dialect sitting
+   owns the final call) survives as exactly two things: (a) the
+   **multi-return vehicle** (`fn stats(a): { min: int, max: int }`
+   — no tuples, by design), destructured by the ruled struct
+   patterns in `let`; (b) **`entries()`' element shape** (§5).
+   Structural typing, width-exact, no declaration. If (a)/(b) were
+   instead rejected, tuples would be back on the table — one or
+   the other, and records are already load-bearing in the value
+   model.
+2. **Assertion spellings — final form** `@[effects(…)]` with args
+   from `{pure, silent, total}`, any subset, comma-joined;
+   exceedance-only errors (asserting less than reality is legal).
+   `@[effects(pure)]` ⊃ rng-freedom (§7). Holes' release policy ⏳
+   — **deliberately left for the maintainer** (release-gating
+   policy is an authorial-workflow value judgment, not derivable
+   from the charter).
+3. **Prelude — final list assembled from the per-domain marks:**
+   entire math kit incl. trig (§2's generous ruling) · `len
+   contains char_at` (text) · `len contains push` (seq) · `len`
+   (maps) · `contains count` (flags) · nothing from rand/
+   collections. Name-collision policy: prelude names are
+   **shadowable with the E035-lineage warning** (stdlib-slice-1
+   posture carries over).
+4. **Docs display notation for intrinsic signatures**: the
+   pseudo-generic letter form — `fn sort_by(a: [T], cmp:
+   fn(T, T): int): [T]` — with a standing banner: *display
+   notation; `T` is not writable in source* (#1090 guards the
+   door). Chosen over concrete-example notation because UFCS
+   completion already shows this shape; docs and IDE should agree.
+5. **`std::` tree — final layout**: `std::math` (tower types are
+   global type names like `int`; their verbs live in the kit) ·
+   `std::text` · `std::seq` · `std::map` · `std::flags` ·
+   `std::rand` · `std::collections` (heap verbs, `Weighted`).
+   `host::` mounts per the manifest (charter §13.2); `story::` is
+   authored land. No `std::prelude` module — the prelude is a
+   compiler-curated name set, not an importable place (imports are
+   naming-only; the prelude is pre-granted naming).
+
+## 10. Remaining docket ⏳
+
+- The three sitting-3 🔶s (UFCS auto-ref · naming convention ·
+  eager trio) and now §§5–9 above await the maintainer's nod —
+  **nothing in §§5–9 is ruled**; it is the between-sittings draft
+  to react to.
+- In-section ⏳s: tower mini-spec (§2b) · view-materialization
+  ratio (§3b) · intrinsic display notation lives in §9.4 now ·
+  flags numeric-coupling ruling (§6) · weighted-table mutation
+  surface (§8) · anonymous-record native spelling (§9.1, owned by
+  the code-dialect sitting) · holes' release policy (§9.2).
 - Then: **Phase C** — the full inventory tables (every verb ×
-  signature × row × prelude flag) appended here, and implementation
-  sequencing (which waves build what — note the numeric tower and
-  effect-row extensions #1087/#1097 are compiler/runtime work that
-  can pump BEFORE the parser exists; the surface-syntax-dependent
-  parts wait on the prototype parser).
+  signature × row × prelude flag) appended here, and
+  implementation sequencing (the numeric tower and effect-row
+  extensions #1087/#1097 are compiler/runtime work that can pump
+  BEFORE the parser exists; the surface-syntax-dependent parts
+  wait on the prototype parser).
 
-## 6. Session-resumption notes
+## 11. Session-resumption notes
 
 Ruled context lives in: docs/native-surface-charter.md (§1–§13),
 this doc, issues #1087/#1090/#1093/#1097, and the decision log.
-The three 🔶 items above are the only un-nodded proposals. The
-native-surface prototype parser is the season's next artifact after
-this sitting closes.
+§§1–4 are ruled as marked; **§§5–9 are proposals drafted between
+sittings (2026-07-19, cloud session) and carry no rulings** — the
+maintainer reacts top-to-bottom, then Phase C convenes. The
+native-surface prototype parser is the season's next artifact
+after this sitting closes.
