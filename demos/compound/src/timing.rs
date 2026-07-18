@@ -37,3 +37,12 @@ impl BehaviorTimings {
 pub fn micros(d: Duration) -> String {
     format!("{:>5} µs", d.as_micros())
 }
+
+/// Format a duration as right-aligned integer nanoseconds, e.g. `"   42 ns"`.
+///
+/// The alarm is cheap enough (the Rust baseline is ~42 ns/frame) that integer
+/// microseconds round it to `0`; the ink port is measured against that number,
+/// so the HUD prints the alarm line at nanosecond resolution.
+pub fn nanos(d: Duration) -> String {
+    format!("{:>6} ns", d.as_nanos())
+}

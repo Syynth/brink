@@ -10,10 +10,11 @@ use bevy::prelude::*;
 use crate::ShowCones;
 use crate::alarm::Alarm;
 use crate::guards::Guard;
+use crate::ink_alarm::AlarmImpl;
 use crate::rats::Rat;
 use crate::rounds::Round;
 use crate::stats::Loadout;
-use crate::timing::{BehaviorTimings, micros};
+use crate::timing::{BehaviorTimings, micros, nanos};
 
 /// Marks the HUD text entity.
 #[derive(Component, Debug)]
@@ -68,6 +69,7 @@ pub fn setup_hud(mut commands: Commands) {
 pub fn update_hud(
     round: Res<Round>,
     alarm: Res<Alarm>,
+    alarm_impl: Res<AlarmImpl>,
     loadout: Res<Loadout>,
     timings: Res<BehaviorTimings>,
     show_cones: Res<ShowCones>,
@@ -109,7 +111,7 @@ pub fn update_hud(
          \x20 guards  {t_guard}\n\
          \x20 cameras {t_cam}\n\
          \x20 doors   {t_door}\n\
-         \x20 alarm   {t_alarm}\n\
+         \x20 alarm   {t_alarm}  [{impl_label}; rust baseline ~42 ns]\n\
          \x20 rats    {t_rats}\n\
          \x20 TOTAL   {t_total}\n\
          \n\
@@ -126,7 +128,10 @@ pub fn update_hud(
         t_guard = micros(timings.guards),
         t_cam = micros(timings.cameras),
         t_door = micros(timings.doors),
-        t_alarm = micros(timings.alarm),
+        // The alarm line is printed at ns resolution (42 ns rounds to 0 µs) so
+        // the ink port's per-frame cost is legible beside the Rust baseline.
+        t_alarm = nanos(timings.alarm),
+        impl_label = alarm_impl.label(),
         t_rats = micros(timings.rats),
         t_total = micros(timings.total()),
     );

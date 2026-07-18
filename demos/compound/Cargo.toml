@@ -2,8 +2,10 @@
 # docs/drive-app-plan.md and the root Cargo.toml `exclude = ["demos/*"]`).
 # The empty `[workspace]` table below makes this its own workspace root so
 # cargo's upward manifest walk stops here instead of pulling the crate into
-# the brink workspace. Phase 0 is pure bevy: no brink path-dependencies, no
-# workspace lints, nothing that could perturb the oracle or CI.
+# the brink workspace. As of Phase 1a the demo takes brink *path*
+# dependencies (`bevy-brink`, and `brink-compiler` for tests) — but the deps
+# point INWARD from an excluded crate, so `cargo build --workspace` at the
+# repo root still never builds the demo and it cannot perturb the oracle or CI.
 [workspace]
 
 [package]
@@ -16,6 +18,13 @@ description = "The Compound — Phase 0 pure-bevy stealth demo (brink #988)"
 [dependencies]
 bevy = "0.19"
 thiserror = "2"
+
+# Phase 1a: the brink runtime as a Bevy plugin. Path deps into the workspace
+# crates — fine from a workspace-EXCLUDED crate (the deps point *in*; the demo
+# is still never built by `cargo build --workspace`). `bevy-brink`'s default
+# `dev` feature registers the `.ink` source `InkLoader` (compile-at-load +
+# hot-reload) and re-exports `brink_runtime` as `bevy_brink::runtime`.
+bevy-brink = { path = "../../crates/bevy-brink" }
 
 # Keep the demo snappy to play even in a debug build: rats number in the
 # thousands and every guard runs a cone check each frame.
@@ -48,3 +57,9 @@ cast_sign_loss = "allow"
 unwrap_used = "deny"
 panic = "deny"
 todo = "deny"
+
+# The alarm semantics-parity test compiles `assets/alarm.ink` inline (rather
+# than through the async AssetServer) so it can drive both implementations
+# deterministically frame-by-frame. Only the test path needs the compiler.
+[dev-dependencies]
+brink-compiler = { path = "../../crates/brink-compiler" }
