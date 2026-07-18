@@ -45,29 +45,35 @@
 //!   reads only ink World state, so it is re-evaluated only when the shared
 //!   World actually changed (bevy change detection on [`BrinkGlobals`]) —
 //!   the cheap path.
-//! - **any capability dependency** (`bits` non-empty) — **always polls**,
-//!   re-evaluated every wake pass, *even if every bit is `true`*. The `#913`
-//!   AND-merge verdict promises a capability's reads are change-detection
-//!   *capable*, but [`mark_wake_dirty`] has no hook on a component's own
-//!   change ticks (`docs/effects-spec.md` §12.5 is not wired here) — only on
-//!   [`BrinkGlobals`]. Trusting an all-`true` verdict for a component-backed
-//!   condition (e.g. `is_player_nearby` reading `Transform`) would gate
-//!   re-evaluation on a signal ([`BrinkGlobals`]) that a pure-component
-//!   change never fires, and the flow would miss its wake. Conservative: a
-//!   wasted re-evaluation of a still-false condition just leaves the flow
-//!   parked (§3 soundness direction — over-report, never miss a wake).
+//! - **any must-poll dependency** (`#913` AND-merge folded a bit to `false`,
+//!   so `all_detect_capable` is `false`): re-evaluated every wake pass. That
+//!   capability's reads are not change-detection-backed, so there is no cheap
+//!   signal to gate on.
+//! - **every dependency change-detection-capable** (`bits` non-empty, `#913`
+//!   verdict all-`true`): the §12.5 cheap path (#996). Each dependency
+//!   capability's concrete component is tracked by a
+//!   [`detect_capability_changes`](crate::capability::detect_capability_changes)
+//!   system (wired per component by `register_capability`), which records —
+//!   through bevy's own `Changed<C>` window — whether that component moved
+//!   this frame. [`mark_wake_dirty`] re-evaluates such a condition only when
+//!   the shared World changed **or** one of its watched components' change
+//!   ticks advanced — not every frame. A capability the wake layer cannot
+//!   observe (unregistered, or with no verdict recorded yet) folds to a
+//!   conservative must-poll: it cannot prove the component is unchanged, and a
+//!   missed wake is the engine-race bug class.
 //!
 //! Re-evaluation is **always sound** regardless of the verdict: the detect bits
-//! only tune the *cadence*, and today that cadence is cheap **only** for the
-//! no-capability-dependency case above. That is also why `#913`'s fold must
-//! land first — a last-write-wins `true` on a capability that is really
-//! must-poll would compound the same class of missed wake once §12.5 lands.
+//! only tune the *cadence*. `#913`'s AND-merge must land before this cheap
+//! path — a last-write-wins `true` on a capability that is really must-poll
+//! would gate re-evaluation on a component-tick signal that its non-detectable
+//! read never fires, reintroducing the missed wake §12.5 is careful to avoid.
 //!
 //! ## Systems (auto-registered by [`BrinkPlugin`](crate::BrinkPlugin))
 //!
 //! - [`mark_wake_dirty`] (ordinary system): consults each parked policy's
-//!   [`DetectSummary`] + [`BrinkGlobals`] change detection and flags which
-//!   parked flows need a re-evaluation this frame.
+//!   [`DetectSummary`], [`BrinkGlobals`] change detection, and the
+//!   per-capability component-tick verdict (§12.5, #996) and flags which parked
+//!   flows need a re-evaluation this frame.
 //! - [`run_flow_sleep`] (exclusive system, gated on
 //!   `any_with_component::<FlowSleep<M>>`): re-evaluates the flagged conditions
 //!   in each flow's own context, wakes on true, and re-arms/removes policies at
@@ -103,7 +109,9 @@ use thiserror::Error;
 
 use crate::asset::{BrinkProgram, ProgramAsset};
 use crate::bindings::call_ink_function;
-use crate::capability::{CapabilityManifest, ContainerAccess};
+use crate::capability::{
+    CapabilityChanges, CapabilityManifest, CapabilityRegistry, ContainerAccess,
+};
 use crate::flow::BrinkFlow;
 use crate::globals::BrinkGlobals;
 
@@ -275,10 +283,13 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
     /// re-evaluation cadence. Without this the summary is empty — treated as
     /// all-detect-capable (re-evaluate only on a World change), the right
     /// default for a condition reading only ink World state. A summary whose
-    /// [`bits`](DetectSummary::bits) names any external (component)
-    /// capability always must-polls instead, regardless of the AND-merge
-    /// verdict — `mark_wake_dirty` has no per-capability component-tick hook
-    /// yet (`docs/effects-spec.md` §12.5), only `BrinkGlobals`. Builder.
+    /// [`bits`](DetectSummary::bits) names external (component) capabilities
+    /// that are **all** change-detection-capable (`#913` AND-merge verdict
+    /// all-`true`) gets the §12.5 cheap path (#996): re-evaluated only when one
+    /// of those components changed — provided each is registered via
+    /// `register_capability` (an unregistered capability the wake layer cannot
+    /// observe must-polls conservatively). A summary with any must-poll bit
+    /// re-evaluates every pass. Builder.
     #[must_use]
     pub fn with_detect(mut self, detect: DetectSummary) -> Self {
         self.detect = detect;
@@ -326,12 +337,13 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
     }
 
     /// Whether every dependency capability is change-detection-backed (`#913`
-    /// AND-merge verdict). `false` means the condition polls — but note `true`
-    /// does **not** by itself guarantee the cheap path: `mark_wake_dirty` only
-    /// takes it at face value when [`detect_summary`](Self::detect_summary)'s
-    /// [`bits`](DetectSummary::bits) is also empty (no external-capability
-    /// dependency); a non-empty `bits` map always polls regardless, pending
-    /// §12.5 component-tick wiring.
+    /// AND-merge verdict). `false` means the condition polls every pass. `true`
+    /// enables the cheap path: for an empty [`bits`](DetectSummary::bits) map
+    /// (no external dependency) that is re-evaluate-on-`BrinkGlobals`-change;
+    /// for a non-empty one it is re-evaluate-on-watched-component-change (§12.5,
+    /// #996), provided each named capability is registered via
+    /// `register_capability` so [`mark_wake_dirty`] can observe its ticks — an
+    /// unregistered capability the wake layer cannot observe still must-polls.
     #[must_use]
     pub fn dependencies_all_detect_capable(&self) -> bool {
         self.detect.all_detect_capable
@@ -675,35 +687,91 @@ fn is_condition_true(value: &Value) -> bool {
     }
 }
 
+/// Decide whether a parked policy needs its condition re-evaluated this pass,
+/// given the two change signals `mark_wake_dirty` can observe: the shared ink
+/// World ([`BrinkGlobals`], `world_changed`) and — new in #996 — the
+/// per-capability component-tick verdict [`CapabilityChanges`] (§12.5).
+///
+/// The cases, in order:
+///
+/// - **Never evaluated yet** (`!evaluated_once`): always re-evaluate. A
+///   dormant policy must get its first evaluation even on a quiet frame.
+/// - **No external-capability dependency** ([`DetectSummary::bits`] empty): the
+///   condition reads only ink World state, so [`BrinkGlobals`] change detection
+///   is the whole signal — re-evaluate only when it changed.
+/// - **Any dependency capability is must-poll** (`#913` AND-merge folded a bit
+///   to `false`, so `all_detect_capable` is `false`): re-evaluate every pass;
+///   that capability's reads are not change-detection-backed.
+/// - **Every dependency capability is change-detection-capable** (`#913`
+///   verdict all-`true`, `bits` non-empty): the §12.5 cheap path. Re-evaluate
+///   only if the shared World changed (the condition may also read ink globals)
+///   **or** one of the watched components' change ticks advanced this pass
+///   ([`CapabilityChanges`]). A capability the wake layer cannot observe —
+///   unregistered (no [`CapabilityRegistry::type_id`]), or tracked but with no
+///   verdict recorded yet ([`CapabilityChanges::changed`] returns `None`) —
+///   folds to a conservative must-poll: it cannot prove the component is
+///   unchanged, and a missed wake is the engine-race bug class (over-report,
+///   never under-report — §3 soundness direction).
+fn wake_needs_reeval<M: Send + Sync + 'static>(
+    sleep: &FlowSleep<M>,
+    registry: &CapabilityRegistry<M>,
+    changes: &CapabilityChanges<M>,
+    world_changed: bool,
+) -> bool {
+    if !sleep.evaluated_once {
+        return true;
+    }
+    let detect = &sleep.detect;
+    if detect.bits.is_empty() {
+        // No external-capability dependency (`bits` empty is vacuously
+        // all-detect-capable — see `DetectSummary::from_bits`): the shared ink
+        // World is the only signal, so re-evaluate exactly when it changed.
+        return world_changed;
+    }
+    if !detect.all_detect_capable {
+        return true;
+    }
+    // All dependency capabilities are change-detection-capable and non-empty:
+    // the §12.5 cheap path.
+    if world_changed {
+        return true;
+    }
+    detect.bits.keys().any(|name| {
+        // Untracked (name unregistered, or no verdict recorded yet) → `true`
+        // (conservative must-poll); tracked → the recorded changed bit.
+        registry
+            .type_id(name)
+            .and_then(|ty| changes.changed(ty))
+            .unwrap_or(true)
+    })
+}
+
 /// Ordinary (non-exclusive) system: flag which parked policies need their
-/// condition re-evaluated this frame, consuming the `#913` `detect` verdict.
+/// condition re-evaluated this frame, consuming the `#913` `detect` verdict and
+/// the two change signals it can observe.
 ///
-/// The only change signal this system can observe is [`BrinkGlobals`] (the
-/// ink shared World) — there is no per-capability component-tick wiring yet
-/// (`docs/effects-spec.md` §12.5 is not implemented here). So:
+/// - [`BrinkGlobals`] change detection covers conditions that read the shared
+///   ink World.
+/// - The per-capability component-tick verdict [`CapabilityChanges`] (§12.5,
+///   #996) covers component-backed **detect-capable** conditions — e.g. an
+///   `is_player_nearby` reading `Transform`, or a door's `should_open` reading
+///   a `Switch` — so they re-evaluate only when the watched component actually
+///   changed, not every frame. A [`detect_capability_changes`](crate::capability::detect_capability_changes)
+///   tracker (wired per registered component by `register_capability`, ordered
+///   before this system) supplies that verdict.
 ///
-/// - A policy whose [`DetectSummary::bits`] is **non-empty** — its condition
-///   depends on at least one external (component) capability, e.g. an
-///   `is_player_nearby` reading `Transform` — is **always** flagged
-///   (must-polled), *regardless* of the `#913` AND-merge verdict. A `true`
-///   bit only promises the capability's *reads* are change-detection-backed
-///   in principle; this system has no hook on those component ticks, so
-///   trusting the bit here would silently miss a component-only change (the
-///   engine-race class this module exists to avoid).
-/// - A policy with an **empty** `bits` map (no external-capability
-///   dependency — it reads only ink World state) is the one case
-///   [`BrinkGlobals`] change detection actually covers: flagged only when
-///   [`BrinkGlobals`] changed, or if it has never been evaluated (so a
-///   dormant policy still gets its first evaluation on a quiet frame).
-///
-/// Only [`Parked`](SleepState::Parked) policies are touched; woken, cancelled,
-/// and faulted policies are left alone.
+/// The per-policy decision is [`wake_needs_reeval`]; see it for the exact
+/// cadence and the conservative-must-poll fallback for capabilities this layer
+/// cannot observe. Only [`Parked`](SleepState::Parked) policies are touched;
+/// woken, cancelled, and faulted policies are left alone.
 #[expect(
     clippy::needless_pass_by_value,
     reason = "bevy systems take Res/Query by value"
 )]
 pub fn mark_wake_dirty<M: Send + Sync + 'static>(
     globals: Option<Res<BrinkGlobals<M>>>,
+    registry: Res<CapabilityRegistry<M>>,
+    changes: Res<CapabilityChanges<M>>,
     mut sleepers: Query<&mut FlowSleep<M>>,
 ) {
     let world_changed = globals.as_ref().is_some_and(DetectChanges::is_changed);
@@ -711,15 +779,7 @@ pub fn mark_wake_dirty<M: Send + Sync + 'static>(
         if sleep.state != SleepState::Parked {
             continue;
         }
-        // A non-empty `bits` map names at least one external capability
-        // dependency; only `BrinkGlobals` change detection is wired below, so
-        // any such policy must must-poll regardless of `all_detect_capable`.
-        let has_capability_deps = !sleep.detect.bits.is_empty();
-        let should_flag = has_capability_deps
-            || !sleep.detect.all_detect_capable
-            || world_changed
-            || !sleep.evaluated_once;
-        if should_flag && !sleep.needs_eval {
+        if wake_needs_reeval(&sleep, &registry, &changes, world_changed) && !sleep.needs_eval {
             sleep.needs_eval = true;
         }
     }

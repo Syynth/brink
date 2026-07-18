@@ -54,3 +54,55 @@ consumes. Because parked-flow skipping and one-step-per-turn are deterministic
 (no wall-clock dependence), these structural ratios are exact and are asserted
 in-test; only the *throughput* numbers (deferred to the quiet-window canonical
 run) are machine-specific.
+
+## §12.5 component-tick cheap path — before/after (issue #996, PROVISIONAL)
+
+**Status: provisional, in-wave.** #996 wired ECS component change ticks into
+`mark_wake_dirty` per capability (`docs/effects-spec.md` §12.5), lifting the
+must-poll interim PR #991 shipped for component-backed detect-capable wake
+conditions. This is the wake-driver before/after data point the issue asks for.
+
+### What changed structurally
+
+The axis here is a **parked, component-backed, detect-capable** flow — the
+`is_player_nearby`-reading-`Transform` / door-`should_open`-reading-`Switch`
+shape (the first real consumer is `demos/compound`'s ink doors port, #1080).
+
+- **Before (must-poll interim):** because `mark_wake_dirty` had no hook on a
+  component's change ticks, any policy whose `DetectSummary::bits` named a
+  capability was flagged **every** wake pass. `run_flow_sleep` then re-evaluated
+  its condition — a full `bind_brink_query` round trip — **once per parked flow
+  per frame**, purely to (almost always) learn the condition is still false.
+  For N locked doors that is N condition re-evaluations every frame.
+- **After (this change):** a `detect_capability_changes::<M, C>` tracker (wired
+  per registered component by `register_capability`) runs one
+  `Query<(), Changed<C>>::is_empty()` check per frame — **shared across every
+  flow watching that component**, and near-free on a quiet frame (bevy skips
+  tables whose change tick didn't advance). While the component is unchanged,
+  `mark_wake_dirty` flags **zero** of the N parked flows, so `run_flow_sleep`
+  performs **zero** condition re-evaluations. The moment the component changes,
+  the tracker's verdict flips and every watching flow is re-evaluated that frame
+  (no missed wake). Marginal per-parked-flow cost while unchanged: 1 re-eval →
+  0.
+
+### The per-evaluation cost avoided
+
+`demos/compound`'s `ink_doors::tests::measure_ink_door_wake_cost` prints the
+cost of a single `should_open` re-evaluation (the `bind_brink_query` round trip
+that was paid per parked door per frame under the must-poll interim) against a
+trivial Rust bool-scan baseline — run
+`cargo test -p compound measure_ink_door_wake_cost -- --nocapture` for the
+machine-specific figure (the absolute wall-clock number is provisional and
+deliberately not pinned here, exactly like the BH-3 driver baselines are
+regenerated at the next quiet-window canonical run).
+
+The load-bearing before/after is **structural**, not that per-call µs figure:
+under the interim that per-call cost was paid `N_locked_doors × frames` (one
+condition re-eval per parked door every frame); under the §12.5 cheap path it
+is paid `0 × frames` while switches are idle, replaced by the single shared
+`Query<(), Changed<Switch>>::is_empty()` tick check per frame. N re-evals/frame
+→ 0 while unchanged, plus exactly one missed-wake-free wake on change — that is
+what #996 delivers, and it is asserted by
+`crate::sleep::tests::detect_capable_component_policy_is_not_reevaluated_while_unchanged`
+(no re-eval when unchanged) and
+`detect_capable_component_condition_wakes_on_component_change` (wakes on change).

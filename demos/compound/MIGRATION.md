@@ -205,21 +205,22 @@ condition** — the direction (engine state → ink read) is exactly what
 
 ### What was awkward — the wake_when authoring ergonomics (the actual finding)
 
-1. **A component-backed condition always must-polls, with no way to avoid
-   it — now confirmed by a real consumer, not just a unit test.**
-   `should_open`'s dependency is the `Switch` component, not a
-   `BrinkGlobals` variable, so `mark_wake_dirty` has no change-tick hook on
-   it (`docs/effects-spec.md` §12.5 is not wired — the `sleep` module's own
-   doc comments anticipate exactly this case, "e.g. `is_player_nearby`
-   reading `Transform`"). The only way to get a *sound* wake is
-   `.with_detect(...)` with a non-empty (any-value) bit, which forces
-   **every** parked door to re-evaluate its condition **every frame** while
-   locked — not "on switch change." For one door this is invisible; for a
-   compound with dozens of locked doors it is dozens of
-   `call_ink_function`+`bind_brink_query` round trips a frame, paid purely
-   because there is no cheaper option today. Same interim #996 already
-   tracks — commented there with this port's concrete cost data point
-   rather than filing a duplicate: **G4 (#996)**.
+1. **A component-backed condition always must-polls — RESOLVED by #996.**
+   _As originally found:_ `should_open`'s dependency is the `Switch`
+   component, not a `BrinkGlobals` variable, so `mark_wake_dirty` had no
+   change-tick hook on it and the only *sound* wake was `.with_detect(...)`
+   with a non-empty bit, forcing **every** parked door to re-evaluate its
+   condition **every frame** while locked — not "on switch change." For dozens
+   of locked doors that was dozens of `call_ink_function`+`bind_brink_query`
+   round trips a frame, paid purely because there was no cheaper option.
+   _Resolution:_ #996 wired `docs/effects-spec.md` §12.5's per-capability
+   component-tick path. `main.rs` now
+   `register_capability::<DoorsStory, Switch>("Switch")`, so `mark_wake_dirty`
+   gets a shared `Query<(), Changed<Switch>>` tracker: a parked door
+   re-evaluates `should_open` only when a `Switch` actually changes, zero
+   re-evals a frame while switches are idle. This port was the first real
+   consumer to pay the interim's cost and is now the first consumer of the
+   fix. See **G4 (#996)** below.
 2. **`WakeArming` has no "toggle" shape, forcing a real design compromise.**
    `Once` fires exactly one wake and is done forever; `Persistent` re-arms
    and re-*steps* every single turn boundary while the condition stays true
@@ -309,13 +310,14 @@ plugin's own `mark_wake_dirty`/`run_flow_sleep` + a host-registered
 
 ### API gaps filed
 
-- **G4 (#996)** — a `FlowSleep` condition backed by an ECS component (not a
-  `BrinkGlobals` variable) has no way to avoid must-polling every wake pass;
-  `docs/effects-spec.md` §12.5's component-tick wiring doesn't exist yet.
-  Already anticipated in the `sleep` module's own doc comments, and already
-  tracked by #996; this port is the first real (non-test) consumer to
-  actually pay the cost, so it's a comment on #996 with a concrete data
-  point, not a new issue.
+- **G4 (#996) — RESOLVED.** A `FlowSleep` condition backed by an ECS
+  component (not a `BrinkGlobals` variable) had no way to avoid must-polling
+  every wake pass, because `docs/effects-spec.md` §12.5's component-tick
+  wiring didn't exist yet. #996 wired it: `register_capability::<M, C>` now
+  installs a per-component `Changed<C>` tracker `mark_wake_dirty` reads, so a
+  component-backed detect-capable condition re-evaluates only on a real
+  component change. This port — the first real (non-test) consumer to pay the
+  interim's cost — now registers `Switch` and consumes the cheap path.
 - **G5 (#1081)** — `WakeArming` offers only `Once` (permanent) or
   `Persistent` (re-steps every turn boundary while true); there is no "wake
   on transition, park until the opposite transition" toggle shape for a

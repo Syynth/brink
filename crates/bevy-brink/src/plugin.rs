@@ -98,6 +98,11 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         app.init_resource::<crate::capability::CapabilityManifest>();
         app.init_resource::<crate::capability::CapabilityRegistry<M>>();
         app.init_resource::<crate::capability::CapabilityTable<M>>();
+        // BH detect path (docs/effects-spec.md §12.5; #996): the per-frame,
+        // per-capability change verdict `mark_wake_dirty` reads. Always present
+        // so the wake layer can take it as a plain `Res`; each
+        // `register_capability` call also wires the typed tracker that fills it.
+        app.init_resource::<crate::capability::CapabilityChanges<M>>();
         app.add_systems(Update, crate::capability::rebuild_capability_table::<M>);
         // BH-2 (docs/effects-spec.md §12.4; #914): the batch-turn report
         // resource, always present so a host that opts into
