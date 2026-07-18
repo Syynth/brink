@@ -233,3 +233,69 @@ first extension; designed in its own mini-sitting.
 Remaining open in the narrative layer: the flat-choice-run compact
 spelling (§10 caveat a) — everything else is converged. Next sitting:
 the code/scripting dialect (§7).
+
+## 13. Enums & the module system (sitting 3 continued, 2026-07-19)
+
+### 13.1 Enums (new feature — additive, brink-native)
+**`flags` is many-of; `enum` is one-of.** Rust-form declarations
+with **named-field payloads only** (no tuple variants — one
+construction syntax, §12.8's capability applied to variants) and
+**concrete payload types only** (no generics — `Option`/`Result`
+are the #1090 ledger's predicted first entries, by design):
+
+    enum Phase { Patrol, Suspicious { level: float }, Chase { target: Npc } }
+
+Exhaustive `match` under the static regime (missing variant =
+compile error — the agent-author's refactoring supervisor). Unit
+variants join the map-key domain. Variant access is **dot**
+(`Phase.Patrol`): the separator stratification below reserves `::`
+for module walls. Runtime tail (Value variant kind, wire form,
+marshal legs — #950's exhaustive matches enforce completeness),
+name-keyed rehydration + `@[was()]` on renames per standing
+posture. #905's statechart states inherit this feature as their
+vocabulary.
+
+### 13.2 The module system (respelled + resolved)
+- **Separator stratification**: `::` crosses module walls; `.`
+  walks everything inside (containers, fields, variants, UFCS).
+  `story::npcs::guard.patrol`.
+- **The tree is filesystem-derived** (directories = segments, files
+  = leaf modules; no mount ceremony — deviation from Rust, earned
+  by the auto-include heritage and the agent driver: path on disk
+  = path in language). Uniqueness comes from the filesystem;
+  declared `module name` blocks nest within files as before.
+- **`story::` is the absolute root and represents the whole
+  project.** One project = one story-universe = **one compiled
+  artifact**; runtime multiplicity is flows + `local` state (the
+  scoped-flow-state model IS the many-narratives machinery — no
+  multi-binary story needed).
+- **THE TREE IS THE COMPILATION UNIVERSE; IMPORTS ARE NAMING
+  ONLY.** Every file in the tree compiles and ships. `use` grants
+  source-visible names and nothing else. Consequences: textual
+  INCLUDE is dead; engine-only-reachable modules (an NPC dialogue
+  no module imports, spawned by the host by absolute path) are
+  first-class — the module graph has many roots; no re-export
+  ceremony exists or is needed (absolute paths + prelude +
+  visibility cover Rust's pub-use use cases).
+- **Rust's `use` syntax lifted verbatim** (`use
+  story::market::{barter, haggle};`), with the ceremony owned by
+  tooling (auto-import inserts, fmt organizes) — neither the
+  writer nor their agent types it by hand.
+- **Saves/wire always record absolute paths** regardless of
+  imports (DefinitionId = (module, name) as ruled; the #719
+  save-stability landmine stays defused).
+- **`host::` root (stdlib-sitting design)**: engine-reachable
+  functions mount into the graph from the capability manifest
+  (`host::audio::play_sound`) — the manifest gains namespace
+  discipline; unification with in-tree `extern fn` designed there.
+- Runtime-state sharing across simultaneously running flows/hosts
+  is a host wiring concern; module-level sharing is of
+  DECLARATIONS. (One line, so nobody conflates the two.)
+
+### 13.3 Stdlib-sitting docket (updated)
+Prelude design · `host::` mounting · the verb inventory · real
+sequences + the `list` reclaim · map surface · iteration protocol
+· #827 vec decision · anonymous-record fate · **faults-vs-Result
+posture for fallible functions** (now spicier: enums exist,
+`Result` is ledger-gated) · assertion spellings (`@[effects]`,
+holes' release policy).
