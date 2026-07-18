@@ -635,6 +635,23 @@ fn diagnostics_after_background_analysis_with_types(
     types: Option<&str>,
     source: &str,
 ) -> Vec<Value> {
+    diagnostics_after_background_analysis_full(None, dialect, types, source)
+}
+
+/// Same as [`diagnostics_after_background_analysis_with_types`], but also
+/// lets the caller set the session's workspace root (`rootUri`) to
+/// `root_dir` — so a `brink.toml` placed there (#1005) is discovered and
+/// reconciled with `initializationOptions.dialect`/`.types` per the #1030
+/// precedence rule (see `resolve_language_options` in `backend.rs`: the
+/// file supplies the default, an explicit client option always wins).
+/// `None` keeps `rootUri: null` (no workspace, no discovery), matching
+/// every other test in this file.
+fn diagnostics_after_background_analysis_full(
+    root_dir: Option<&std::path::Path>,
+    dialect: Option<&str>,
+    types: Option<&str>,
+    source: &str,
+) -> Vec<Value> {
     // Condition-driven wait (#695): the settling condition is the server's
     // own `$/brink/backgroundAnalysisComplete` signal reporting a pass whose
     // db snapshot already includes our (single, just-opened) file — not a
@@ -656,9 +673,10 @@ fn diagnostics_after_background_analysis_with_types(
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
 
+    let root_uri = root_dir.map(|d| format!("file://{}", d.display()));
     let mut init_params = json!({
         "capabilities": {},
-        "rootUri": null,
+        "rootUri": root_uri,
     });
     if dialect.is_some() || types.is_some() {
         let mut opts = serde_json::Map::new();
@@ -858,5 +876,149 @@ fn background_analysis_default_types_does_not_flag_e065() {
     assert!(
         e065.is_empty(),
         "default types (gradual) must not flag E065: {diags:?}"
+    );
+}
+
+// ── #1030: reconcile initializationOptions.dialect/.types with brink.toml ──
+//
+// The four scenarios below mirror `resolve_language_options`'s precedence
+// contract (`AnalysisOptions::default()` < discovered `brink.toml` (#1005)
+// < an explicit `initializationOptions` value): file-only, option-only,
+// both (option must win), neither (defaults). `apply_to_options` itself is
+// already exhaustively unit-tested in `brink-project-config`; these
+// exercise the LSP-specific wiring — workspace-root discovery,
+// `initializationOptions` reading, and writing the resolved value into
+// `LanguageOptions` — using the same `E051` postfix-indexing signal
+// (`background_analysis_uses_declared_*_dialect_*` above) to observe
+// `Dialect::Brink` vs. `Dialect::StrictInk`.
+
+/// A unique per-test scratch directory under the OS temp dir, cleaned up by
+/// the caller. Mirrors `brink-project-config`'s own test helper of the same
+/// name/shape (`crates/internal/brink-project-config/src/lib.rs`) — each
+/// test gets an isolated directory so parallel test runs never collide.
+fn unique_tmp_dir(tag: &str) -> std::path::PathBuf {
+    let mut dir = std::env::temp_dir();
+    dir.push(format!(
+        "brink-lsp-test-{tag}-{}-{:?}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    dir
+}
+
+/// Postfix array indexing (`a[0]`) — a `brink`-dialect extension syntax
+/// construct that `strict-ink` flags as `E051`. Shared by the four
+/// scenarios below, same source `background_analysis_uses_declared_brink_dialect_no_e051`
+/// (above) already uses to observe the dialect the session actually
+/// resolved.
+const DIALECT_PROBE_SOURCE: &str = "\
+VAR a = 0
+VAR x = 0
+== start ==
+~ x = a[0]
+Hello.
+-> DONE
+";
+
+fn has_e051(diags: &[Value]) -> bool {
+    diags.iter().any(|d| d["code"].as_str() == Some("E051"))
+}
+
+/// **File-only**: `brink.toml` sets `dialect = "brink"`, no
+/// `initializationOptions.dialect` at all. The file must supply the
+/// default — no `E051`.
+#[test]
+fn brink_toml_dialect_file_only_no_option() {
+    let root = unique_tmp_dir("dialect-file-only");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("brink.toml"), "[project]\ndialect = \"brink\"\n").unwrap();
+
+    let diags =
+        diagnostics_after_background_analysis_full(Some(&root), None, None, DIALECT_PROBE_SOURCE);
+
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(
+        !has_e051(&diags),
+        "brink.toml dialect=brink (file-only) should not flag E051, got: {diags:?}"
+    );
+}
+
+/// **Option-only**: a workspace root is configured (so discovery runs) but
+/// has no `brink.toml`; `initializationOptions.dialect = "brink"` is the
+/// only source. The option must still apply exactly as it did before
+/// #1030 — no `E051`.
+#[test]
+fn brink_toml_dialect_option_only_no_file() {
+    let root = unique_tmp_dir("dialect-option-only");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let diags = diagnostics_after_background_analysis_full(
+        Some(&root),
+        Some("brink"),
+        None,
+        DIALECT_PROBE_SOURCE,
+    );
+
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(
+        !has_e051(&diags),
+        "initializationOptions.dialect=brink (option-only, no brink.toml) \
+         should not flag E051, got: {diags:?}"
+    );
+}
+
+/// **Both, option wins**: `brink.toml` sets `dialect = "strict-ink"`
+/// (which alone would flag `E051`), but `initializationOptions.dialect =
+/// "brink"` is also set. The explicit client option must override the
+/// file — no `E051`.
+#[test]
+fn brink_toml_dialect_both_option_wins() {
+    let root = unique_tmp_dir("dialect-both");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("brink.toml"),
+        "[project]\ndialect = \"strict-ink\"\n",
+    )
+    .unwrap();
+
+    let diags = diagnostics_after_background_analysis_full(
+        Some(&root),
+        Some("brink"),
+        None,
+        DIALECT_PROBE_SOURCE,
+    );
+
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(
+        !has_e051(&diags),
+        "initializationOptions.dialect=brink must win over brink.toml's \
+         dialect=strict-ink, got: {diags:?}"
+    );
+}
+
+/// **Neither**: a workspace root is configured (discovery runs) but has no
+/// `brink.toml`, and no `initializationOptions.dialect` is set either. Must
+/// fall back to `AnalysisOptions::default()` (`StrictInk`) — `E051` still
+/// fires, exactly as pre-#1030 (and pre-#1005) behavior.
+#[test]
+fn brink_toml_dialect_neither_file_nor_option_defaults() {
+    let root = unique_tmp_dir("dialect-neither");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let diags =
+        diagnostics_after_background_analysis_full(Some(&root), None, None, DIALECT_PROBE_SOURCE);
+
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(
+        has_e051(&diags),
+        "no brink.toml and no initializationOptions.dialect should default \
+         to StrictInk and still flag E051, got: {diags:?}"
     );
 }

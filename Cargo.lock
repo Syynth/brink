@@ -2238,6 +2238,7 @@ dependencies = [
  "brink-fmt",
  "brink-ide",
  "brink-ir",
+ "brink-project-config",
  "brink-syntax",
  "rowan",
  "serde",
