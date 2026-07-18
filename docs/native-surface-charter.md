@@ -185,3 +185,51 @@ when drafting begins.
   experience should be checked deliberately during prototyping.
   (c) Total mark vocabulary grows even as overloading falls —
   the docs must teach by concept, not by glyph list.
+
+## 11. Sitting 2 — the narrative layer, completed (2026-07-18)
+
+Walked the full remaining concept inventory; every item disposed:
+
+- **Diverts — KEPT verbatim** (`->`, `-> knot(args)`, `-> END`/`-> DONE`,
+  divert-targets-as-values). Ink's best syntax; ratified untouched.
+- **Tunnel calls — KEPT as `-> place ->`** (RULED after weighing a
+  `<->` challenger: in content position the arrows are the prose
+  ground's motion vocabulary). **Tunnel return — RESPELLED as
+  `return`**, unified with the code dialect's "leave this container";
+  ink's return-redirect `->-> x` becomes the self-explanatory
+  composition `return -> x` (pop the obligation, then go), which also
+  documents the stack-effect difference from a plain divert that
+  ink's spelling hides.
+- **Threads — narrowed**: no native spelling for general `<-`; only
+  the scoped splice inside choice points survives. Runtime unchanged
+  (ink compat + oracle hold it); parking-lot note records the
+  maintainer's appetite for eventual removal.
+- **Glue — KEPT** (`<>`), with a parking-lot entry for its real cost:
+  boundary-retraction semantics force speculative lookahead in the
+  runtime. The sketched escape (semantics round, someday): eager
+  fragment delivery with a joins-previous flag — line assembly moves
+  to the presentation layer; the classic Line API keeps speculation
+  as a compatibility shim.
+- **Tags & speakers — KEPT**; the `@SPEAKER:<>` idiom is explicitly
+  assigned to the future Fountain-lineage dialogue-dialect sitting.
+- **Fallback choices — RESPELLED as `else`**: a choice point's
+  fallback is its else-branch — `else { … }` last in a `{?` block,
+  one per point. Ink's `* ->` cipher dies. (`* []` displayable-empty
+  choices are unrelated and pass through.)
+- **Choice labels — KEPT** in the one label syntax: `* (name) [text]`.
+- **Declarations — lowercased**: `var`, `const`, `struct`, `extern`
+  (short form ruled), `import`. **LIST is renamed `flags`** (RULED):
+  the concept is an ordered domain of named symbols with
+  subset-valued variables; `list` is reserved for real sequences
+  (stdlib season), `states` is radioactive (#905), `set` reads as an
+  imperative. `flags Mood = (calm), wary, hostile`.
+- **Trivia — KEPT**: `//`, `/* */`, `TODO:`.
+
+New sibling work discovered by the sitting: **#1087 — an `emits`
+effect** (statically know whether an invocation produces content;
+purity ≠ silence, so wake conditions want pure AND silent). T2's
+first extension; designed in its own mini-sitting.
+
+Remaining open in the narrative layer: the flat-choice-run compact
+spelling (§10 caveat a) — everything else is converged. Next sitting:
+the code/scripting dialect (§7).
