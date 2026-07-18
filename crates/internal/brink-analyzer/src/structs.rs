@@ -218,12 +218,18 @@ fn resolution_index(
 /// resolutions, and — when the struct literal sits inside a knot/stitch
 /// body — that def's own finalized `BodyTypes::locals` (`None` at file
 /// scope, where only globals are in play).
-struct MistypeCtx<'a> {
-    index: &'a SymbolIndex,
-    globals: &'a BTreeMap<DefinitionId, Ty>,
-    signatures: &'a BTreeMap<DefinitionId, InferredSig>,
-    resolution_by_range: &'a BTreeMap<(u32, u32), DefinitionId>,
-    locals: Option<&'a BTreeMap<String, Ty>>,
+///
+/// `pub(crate)` (issue #983) so `conversions::check`'s own non-literal
+/// `int()`/`float()` argument classification can reuse this exact
+/// inference-substrate plumbing instead of re-deriving it — same "reuse
+/// existing machinery" precedent `ref_projection` follows for
+/// [`ShapeInfo`].
+pub(crate) struct MistypeCtx<'a> {
+    pub(crate) index: &'a SymbolIndex,
+    pub(crate) globals: &'a BTreeMap<DefinitionId, Ty>,
+    pub(crate) signatures: &'a BTreeMap<DefinitionId, InferredSig>,
+    pub(crate) resolution_by_range: &'a BTreeMap<(u32, u32), DefinitionId>,
+    pub(crate) locals: Option<&'a BTreeMap<String, Ty>>,
 }
 
 struct ConstructionVisitor<'a> {
@@ -582,7 +588,9 @@ fn literal_ty(expr: &Expr) -> Option<Ty> {
 /// `Unknown`/`Conflicted`, or the expression shape isn't handled at all
 /// (e.g. a field access, an infix expression): the same "Unknown never
 /// disagrees" posture [`literal_ty`] and `annotations::mismatches` both take.
-fn classify_expr_ty(expr: &Expr, ctx: &MistypeCtx<'_>) -> Option<Ty> {
+///
+/// `pub(crate)` (issue #983) — see [`MistypeCtx`]'s doc for why.
+pub(crate) fn classify_expr_ty(expr: &Expr, ctx: &MistypeCtx<'_>) -> Option<Ty> {
     if let Some(ty) = literal_ty(expr) {
         return Some(ty);
     }

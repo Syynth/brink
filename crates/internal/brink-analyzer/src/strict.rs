@@ -180,10 +180,16 @@ pub fn check(
         index,
         resolutions,
     ));
-    // TM-3 completion (docs/typed-mode-spec.md §4, issue #659): `int(x)`/
-    // `float(x)` statically out-of-domain argument literals —
-    // strict-mode-only, per `conversions`'s own module doc.
-    out.extend(crate::conversions::check(files, resolutions));
+    // TM-3 completion (docs/typed-mode-spec.md §4, issue #659; extended to
+    // variable/call/index-valued arguments by issue #983): `int(x)`/
+    // `float(x)` statically out-of-domain arguments — strict-mode-only, per
+    // `conversions`'s own module doc.
+    out.extend(crate::conversions::check(
+        files,
+        index,
+        inference,
+        resolutions,
+    ));
     out
 }
 
