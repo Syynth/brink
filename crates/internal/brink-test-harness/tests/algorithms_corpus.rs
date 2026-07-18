@@ -297,6 +297,12 @@ fn goap_plans_and_executes_the_cheapest_action_sequence_to_the_goal() {
     assert_case_is_deterministic_across_runs("goap");
 }
 
+#[test]
+fn mcts_lite_explores_tree_via_ucb1_selection() {
+    assert_case("mcts-lite");
+    assert_case_is_deterministic_across_runs("mcts-lite");
+}
+
 /// Every `tests/tier1-brink/algorithms/` case directory is exercised by a
 /// `#[test]` above — a directory with no matching test would silently
 /// never run (same invariant `tier1_brink.rs` enforces for its own flat
@@ -335,6 +341,7 @@ fn every_algorithms_case_directory_has_a_test() {
         "quadtree",
         "shadowcasting-fov",
         "goap",
+        "mcts-lite",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink/algorithms")
