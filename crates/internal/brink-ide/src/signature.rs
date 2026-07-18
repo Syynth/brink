@@ -55,7 +55,7 @@ pub fn signature_help(
                 .and_then(|m| m.params.get(i))
                 .and_then(|rp| rp.ty.as_ref())
             {
-                let _ = write!(label, ": {}", ty.name);
+                let _ = write!(label, ": {}", crate::hover::honest_type_display(ty));
             }
             ParamLabel { label }
         })
@@ -63,7 +63,9 @@ pub fn signature_help(
 
     let ret = meta
         .and_then(|m| m.returns.as_ref())
-        .map_or(String::new(), |t| format!(" -> {}", t.name));
+        .map_or(String::new(), |t| {
+            format!(" -> {}", crate::hover::honest_type_display(t))
+        });
 
     let signature_label = format!(
         "{}({}){ret}",
