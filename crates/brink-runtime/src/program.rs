@@ -317,6 +317,18 @@ impl Program {
         self.address_by_path.get(path).map(|t| t.id)
     }
 
+    /// Public wrapper on [`find_path_target`](Self::find_path_target): resolve
+    /// a qualified ink path (same grammar as [`find_address`](Self::find_address))
+    /// to the `DefinitionId` of its target. Used by hosts that need the id
+    /// itself — e.g. `bevy-brink`'s wake-condition purity check (issue #995),
+    /// which looks the id up in the story's `EffectRows` table to inspect a
+    /// `FlowSleep` condition's effect row before admitting it into the wake
+    /// contract.
+    #[must_use]
+    pub fn definition_id_for_path(&self, path: &str) -> Option<DefinitionId> {
+        self.find_path_target(path)
+    }
+
     /// Declared parameter count of the container a `path` targets, for
     /// arity-checking a host-directed parameterized entry. `None` if the path
     /// is unknown. (Always `0` for converter-built programs, which don't
