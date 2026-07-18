@@ -377,32 +377,40 @@ pub fn collect_external_sigs(
 /// `Ty` (return-only, same as an annotation's `void`); an unresolved name —
 /// no manifest at all, or a name neither a base keyword nor a registered
 /// semantic type — types `Ty::Unknown` (unresolved — never a hard failure).
+///
+/// Classification goes through [`crate::type_resolution::classify`] — the
+/// same function `external_check::resolve_type` (hover/pickers) uses — so an
+/// **unregistered** name (`TypeShape::Unregistered`) types `Ty::Unknown`
+/// here exactly as consistently as it renders `base: None` there (#1027;
+/// closes the #1004 divergence where hover showed a confident `id: var_id`
+/// for a name inference correctly called `Unknown`).
 fn type_ref_to_ty(t: &TypeRef, types: &BTreeMap<String, brink_ir::SemanticTypeDef>) -> Ty {
-    let name = t.0.trim();
-    if name.is_empty() {
-        return Ty::Unknown;
-    }
-    match BaseType::from_keyword(name) {
-        Some(BaseType::String) => Ty::String,
-        Some(BaseType::Int) => Ty::Int,
-        Some(BaseType::Float) => Ty::Float,
-        Some(BaseType::Bool) => Ty::Bool,
-        // The `void`/`handle` keyword literals, and any name that isn't a
-        // base keyword at all (a registered semantic-type name — handle or
-        // scalar specialization), all fall through to the `types` table — a
-        // registered def's own `base` decides the resolved `Ty` (issue
-        // #805: this now covers scalar specializations like `switch_id`
-        // too, not just `base: Handle` kinds).
-        Some(BaseType::Void | BaseType::Handle) | None => match types.get(name) {
-            Some(def) => match def.base {
-                BaseType::String => Ty::String,
-                BaseType::Int => Ty::Int,
-                BaseType::Float => Ty::Float,
-                BaseType::Bool => Ty::Bool,
-                BaseType::Void => Ty::Unknown,
-                BaseType::Handle => Ty::Handle(name.to_string()),
-            },
-            None => Ty::Unknown,
+    use crate::type_resolution::{TypeShape, classify};
+
+    match classify(t, types) {
+        // Unspecified/unregistered are conservatively `Unknown` (#1027 —
+        // `TypeShape::Unregistered` is exactly the class
+        // `external_check::resolve_type` renders `base: None` for). The
+        // bare `void`/`handle` keyword literals join them here too: `void`
+        // is return-only (no represented `Ty`), and a bare `handle` (no
+        // kind name) isn't a `Ty::Handle` either — that needs the kind name
+        // itself, which only ever arrives as a *registered* name (i.e.
+        // `TypeShape::Registered` below), never as the literal keyword
+        // `handle`.
+        TypeShape::Unspecified
+        | TypeShape::Unregistered
+        | TypeShape::Base(BaseType::Void | BaseType::Handle) => Ty::Unknown,
+        TypeShape::Base(BaseType::String) => Ty::String,
+        TypeShape::Base(BaseType::Int) => Ty::Int,
+        TypeShape::Base(BaseType::Float) => Ty::Float,
+        TypeShape::Base(BaseType::Bool) => Ty::Bool,
+        TypeShape::Registered(def) => match def.base {
+            BaseType::String => Ty::String,
+            BaseType::Int => Ty::Int,
+            BaseType::Float => Ty::Float,
+            BaseType::Bool => Ty::Bool,
+            BaseType::Void => Ty::Unknown,
+            BaseType::Handle => Ty::Handle(t.0.trim().to_string()),
         },
     }
 }
@@ -2281,5 +2289,80 @@ mod tests {
             "inc's own body never names `val` — the write is only visible at \
              the call site, not inc's own atoms"
         );
+    }
+
+    // ─── Issue #1027: `type_ref_to_ty` and `external_check::resolve_type`
+    // agree on unregistered semantic-type names ──────────────────────────
+
+    /// The #1004/#1027 case, exercised through both real call sites for the
+    /// exact same input: an `EXTERNAL` param typed via inline `@param` doc
+    /// with a semantic-type name (`var_id`) the registered manifest does
+    /// *not* define (the manifest defines `actor_id`, a sibling type, so
+    /// the vocabulary genuinely reached the analyzer — this isn't the
+    /// "no manifest at all" tolerant case). `collect_external_sigs`
+    /// (consumed by strict inference) and `external_check::analyze_externals`
+    /// (consumed by hover/signature help) must both call `var_id`
+    /// unresolved: `Ty::Unknown` on one side, `ResolvedType { base: None,
+    /// .. }` on the other — never a confidently-resolved type on either
+    /// side. Both now delegate the base/registered/unregistered decision to
+    /// the same `type_resolution::classify` helper, so this is a genuine
+    /// agreement check, not a coincidence of two independently-written
+    /// `match`es.
+    #[test]
+    fn collect_external_sigs_and_resolve_type_agree_on_an_unregistered_semantic_type() {
+        let (_hir, index, _res, inline_docs) =
+            build_with_docs("/// @param id {var_id}\nEXTERNAL get_variable(id)\n-> DONE\n");
+        let manifest = brink_ir::HostManifest {
+            types: vec![brink_ir::SemanticTypeDef {
+                name: "actor_id".to_string(),
+                base: brink_ir::BaseType::String,
+                constraint: None,
+                values: None,
+                widget: None,
+            }],
+            externals: Vec::new(),
+        };
+
+        // Strict-inference side.
+        let sigs = collect_external_sigs(&index, Some(&manifest), &inline_docs);
+        let ext_id = index
+            .by_name
+            .get("get_variable")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("get_variable in index");
+        let sig = sigs.get(&ext_id).expect("seeded signature");
+        assert_eq!(
+            sig.params,
+            vec![Ty::Unknown],
+            "var_id is not registered — strict inference must not fabricate a type"
+        );
+
+        // Hover/signature-help side — same index, same inline_docs, same
+        // registered `types` vocabulary (`actor_id` only).
+        let (types, registered) = crate::manifest_maps(Some(&manifest));
+        let (metas, diags) = crate::external_check::analyze_externals(
+            &index,
+            &inline_docs,
+            &types,
+            &registered,
+            crate::ExternalCheckSeverity::Error,
+            true, // manifest registered → unknown types are checked (E040)
+        );
+        let meta = metas.get(&ext_id).expect("meta for get_variable");
+        assert!(
+            meta.params[0]
+                .ty
+                .as_ref()
+                .is_some_and(|t| !t.is_registered()),
+            "var_id must render as unregistered (base: None), not a confident type: {:?}",
+            meta.params[0].ty
+        );
+        assert_eq!(
+            diags.len(),
+            1,
+            "the same unregistered name also raises E040 on this path: {diags:?}"
+        );
+        assert_eq!(diags[0].code, brink_ir::DiagnosticCode::E040);
     }
 }
