@@ -22,6 +22,7 @@ mod resolve;
 mod signature;
 mod strict;
 mod structs;
+mod type_resolution;
 mod validate;
 
 use std::collections::BTreeMap;

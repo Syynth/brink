@@ -154,6 +154,21 @@ pub struct ResolvedType {
     pub widget: Option<brink_ir::WidgetDecl>,
 }
 
+impl ResolvedType {
+    /// Whether this type actually resolved against a base keyword or a
+    /// registered semantic type — `false` means `name` is neither (#1027):
+    /// [`resolve_type`] still builds a `ResolvedType` for an unregistered
+    /// name (so callers keep the written name for display), but `base` is
+    /// `None` in that case. Consumers that render a type with unconditional
+    /// confidence (hover, signature help) must check this first — showing
+    /// `id: var_id` for an unregistered `var_id` is exactly the #1004
+    /// divergence this issue closes.
+    #[must_use]
+    pub fn is_registered(&self) -> bool {
+        self.base.is_some()
+    }
+}
+
 /// Build the per-external enrichment map and collect manifest-driven
 /// diagnostics. The map is always returned; diagnostics are empty when the
 /// severity policy is `Off`.
@@ -539,6 +554,15 @@ fn path_display(path: &Path) -> String {
 /// validated against nothing) so an unresolved name is silently accepted as
 /// `base: None` rather than diagnosed (#339). Returns `None` for an
 /// unspecified (empty) ref.
+///
+/// Classification (base keyword / registered / unregistered) goes through
+/// [`crate::type_resolution::classify`] — the same function
+/// `infer::type_ref_to_ty` (strict inference) uses — so an unregistered name
+/// is classified identically on both paths (#1027). A `base: None`
+/// [`ResolvedType`] coming out of the `Unregistered` arm below is this
+/// function's honest way of saying "unresolved"; see
+/// [`ResolvedType::is_registered`] for the flag consumers must check before
+/// rendering the name with any confidence.
 fn resolve_type(
     t: &TypeRef,
     types: &BTreeMap<String, SemanticTypeDef>,
@@ -546,47 +570,47 @@ fn resolve_type(
     check_unknown_types: bool,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<ResolvedType> {
-    if t.is_unspecified() {
-        return None;
-    }
-    if let Some(base) = t.as_base() {
-        return Some(ResolvedType {
+    use crate::type_resolution::{TypeShape, classify};
+
+    match classify(t, types) {
+        TypeShape::Unspecified => None,
+        TypeShape::Base(base) => Some(ResolvedType {
             name: t.0.clone(),
             base: Some(base),
             constraint: None,
             values: None,
             widget: None,
-        });
-    }
-    if let Some(def) = types.get(t.0.trim()) {
-        return Some(ResolvedType {
+        }),
+        TypeShape::Registered(def) => Some(ResolvedType {
             name: t.0.clone(),
             base: Some(def.base),
             constraint: def.constraint.clone(),
             values: def.values.clone(),
             widget: def.widget.clone(),
-        });
+        }),
+        TypeShape::Unregistered => {
+            if check_unknown_types {
+                diags.push(Diagnostic {
+                    file: info.file,
+                    range: info.range,
+                    message: format!(
+                        "{}: `{}` (on `{}`)",
+                        DiagnosticCode::E040.title(),
+                        t.0.trim(),
+                        info.name,
+                    ),
+                    code: DiagnosticCode::E040,
+                });
+            }
+            Some(ResolvedType {
+                name: t.0.clone(),
+                base: None,
+                constraint: None,
+                values: None,
+                widget: None,
+            })
+        }
     }
-    if check_unknown_types {
-        diags.push(Diagnostic {
-            file: info.file,
-            range: info.range,
-            message: format!(
-                "{}: `{}` (on `{}`)",
-                DiagnosticCode::E040.title(),
-                t.0.trim(),
-                info.name,
-            ),
-            code: DiagnosticCode::E040,
-        });
-    }
-    Some(ResolvedType {
-        name: t.0.clone(),
-        base: None,
-        constraint: None,
-        values: None,
-        widget: None,
-    })
 }
 
 // ─── Call-site literal checks (E041 type, E042 closed-domain) ───────────
