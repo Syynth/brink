@@ -566,8 +566,10 @@ impl EditorSession {
     /// Argument-widget sites for a document handle (argument-widget spec §4):
     /// every call's per-parameter slots + state (Filled / Empty / Expr), for
     /// inline editing and empty-slot filling. Returns a JSON array of
-    /// `{ callee, slots: [{ param_name, widget?, type_name?, state }] }`
-    /// (UTF-16 offsets).
+    /// `{ callee, slots: [{ param_name, widget?, type_name?, type_display?, state }] }`
+    /// (UTF-16 offsets). `type_display` (#1027/#1053) is the honest render of
+    /// `type_name` — a warning marker for an unregistered semantic type; the
+    /// Form must render it instead of the raw `type_name`.
     pub fn argument_widgets_doc(&self, doc: u32, start: u32, end: u32) -> String {
         let Some(d) = self.docs.get(&doc) else {
             return "[]".to_owned();
@@ -2296,6 +2298,7 @@ impl EditorSession {
                             param_name: slot.param_name.clone(),
                             widget: slot.widget.clone(),
                             type_name: slot.type_name.clone(),
+                            type_display: slot.type_display.clone(),
                             values: slot
                                 .values
                                 .iter()

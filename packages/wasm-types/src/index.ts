@@ -407,8 +407,15 @@ export interface SlotWidget {
   param_name: string;
   /** The built-in widget kind for this slot's type (`color`, …), if any. */
   widget?: string;
-  /** The semantic-type name, if the param is typed. */
+  /** The semantic-type name, if the param is typed. Always the bare written
+   *  name — widget-kind matching (`matchHostWidget`'s fallback) uses this
+   *  field; render `type_display`, not this, for a user-visible label. */
   type_name?: string;
+  /** The honest display string for `type_name` (#1027/#1053): the bare name
+   *  when it resolves to a base keyword or a registered semantic type,
+   *  `name ⚠ unregistered semantic type — E040` otherwise. Present iff
+   *  `type_name` is present. */
+  type_display?: string;
   /** Static value-list items (#174) — the Form renders these as a dropdown. */
   values?: ValueItem[];
   state: SlotState;
