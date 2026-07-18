@@ -104,6 +104,13 @@ pub struct BodyTypes {
     pub params: Vec<(String, Ty)>,
     pub locals: BTreeMap<String, Ty>,
     pub return_ty: Ty,
+    /// Issue #1028: whether the body contains at least one value-carrying
+    /// `return <expr>` anywhere — see [`body::BodyResult::has_value_return`]
+    /// (the field this one is copied from) for why `return_ty.is_unknown()`
+    /// alone can't distinguish "never returns a value" (should infer void)
+    /// from "returns a value inference couldn't pin down" (a real
+    /// Unknown-escape).
+    pub has_value_return: bool,
     /// T1c (docs/t1c-spec.md §4): statically-checkable facts about calls
     /// *through a value* (a callee resolving to a param/temp/VAR/CONST
     /// rather than a callable def) observed in this body, in source-walk
@@ -595,6 +602,7 @@ fn solve_one_batch(
                     params: result.params,
                     locals: result.locals,
                     return_ty: result.return_ty,
+                    has_value_return: result.has_value_return,
                     value_calls: result.value_calls,
                 },
             )
