@@ -64,6 +64,8 @@ salsa = { version = "0.27.2", default-features = false, features = ["macros"] }
 bitflags = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
+# `brink.toml` project settings file (#1005): dialect + type policy.
+toml = "0.8"
 thiserror = "2"
 insta = "1.46.3"
 pest = "2"
@@ -96,6 +98,7 @@ brink-format = { path = "crates/internal/brink-format", version = "0.0.11" }
 brink-ide = { path = "crates/internal/brink-ide", version = "0.0.11" }
 brink-intl = { path = "crates/internal/brink-intl", version = "0.0.11" }
 brink-ir = { path = "crates/internal/brink-ir", version = "0.0.11" }
+brink-project-config = { path = "crates/internal/brink-project-config", version = "0.0.11" }
 brink-runtime = { path = "crates/brink-runtime", version = "0.0.11" }
 brink-syntax = { path = "crates/internal/brink-syntax", version = "0.0.11" }
 # Unpublished (dev-only): no version, so `cargo publish` strips it from dependents.

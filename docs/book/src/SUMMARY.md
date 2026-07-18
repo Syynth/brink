@@ -6,6 +6,7 @@
 
 - [Installation](./toolchain/installation.md)
 - [Your First Story](./toolchain/first-story.md)
+- [Project Settings (brink.toml)](./toolchain/project-config.md)
 - [The CLI](./toolchain/cli/index.md)
   - [brink compile](./toolchain/cli/compile.md)
   - [brink convert](./toolchain/cli/convert.md)

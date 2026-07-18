@@ -26,7 +26,11 @@ brink ide <command> [TARGET] --entry <FILE> [--format text|json] [options]
 
 - **`--entry <FILE>` / `-e`** — required on every command. The project's entry
   point; its `INCLUDE`s are followed to build the whole project. (Identical
-  discovery to `brink compile`.)
+  discovery to `brink compile`.) `brink ide` has no `--dialect`/`--types`
+  flags of its own — it discovers a [`brink.toml`](../project-config.md)
+  starting from the entry file's directory and analyzes under whatever
+  `[project] dialect`/`types` it declares (or the plain `strict-ink`/`gradual`
+  defaults, unchanged, if none exists).
 - **`TARGET`** — what the command operates on: a qualified symbol name, or a
   cursor position via `--at` (see [Addressing](#addressing)). Read queries that
   operate on a whole file take `--file` instead; cursor-only commands
