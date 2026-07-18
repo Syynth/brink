@@ -1611,3 +1611,11 @@
 - **SCOPE:** moderate (demo design; feeds #905/#901/#827 evidence)
 - **WHAT:** Layout = BSP + room recipes, solvable-by-construction, seeded pure fn (rejects the 3-column spine — "looks like jezzball"). Guards = MGS-lenient suspicion accumulation with visible tells; escape requires breaking LOS (guards track last-known-position, search, decay — running never wins); no telepathy (shout recruitment; global alarm only via a reachable Alarm-panel room). Dynamics: gold-in-danger + exit-banking push-your-luck; run-noise vs walk-silent + thrown coins; clock pressure ONLY at alarm ≥ 2 or the opt-in timed Vault; sidegrades not upgrades. Drive-app plan §10.
 - **WHY:** Drive-session verdict: no opposing dynamics → no decisions ("it literally isn't a game"); difficulty was monotonic in upgrades. Every mechanic doubles as migration evidence: Investigate = the wake-on-stimulus archetype, recipes/generation = the systems-logic pure-fn specimen, per-guard memory = #@local.
+
+## Compile error-gate is entry-closure-scoped; whole-project has_errors stays for IDE surfaces
+- **WHEN:** 2026-07-18
+- **PROJECT:** brink
+- **SYSTEM:** brink-db / wasm session (context collapse, #1032/PR #1048)
+- **SCOPE:** architectural
+- **WHAT:** compileProject(entry) gates artifact production on errors within the entry's INCLUDE-closure only (new closure-scoped query on the #815 reachability machinery). The whole-project has_errors query is unchanged — it serves IDE/project surfaces and FG-4a's tested aggregation invariant. Errors in unrelated session files still surface as diagnostics but never block an unrelated entry's build. The same semantics applies to every future context-assembly consolidation (compile_fragment, #1052).
+- **WHY:** The db collapse made "whole project" mean "everything the editor session ever loaded," so a broken scratch file would brick Play for an unrelated story — build-tool semantics (cargo builds -p foo despite broken bar) and consumer reality (multi-story editor sessions) both demand entry scoping; keeping both queries preserves FG-4a's invariant instead of trading it away.
