@@ -13,7 +13,8 @@ use std::collections::HashMap;
 use crate::counting::CountingFlags;
 use crate::definition::{
     AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef, DirectEffects,
-    EffectRowEntry, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef, StructShapeDef,
+    EffectRowEntry, ExternalFnDef, FrameShapeDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
+    StructShapeDef,
 };
 use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, SelectKey};
@@ -42,6 +43,7 @@ pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
     write_visibility(w, &story.private_defs)?;
     write_alias_table(w, &story.alias_table)?;
     write_effect_rows(w, &story.effect_rows)?;
+    write_frame_shapes(w, &story.frame_shapes)?;
 
     // Build a lookup from scope_id → line table for writing
     let line_map: HashMap<DefinitionId, &[LineEntry]> = story
@@ -299,6 +301,28 @@ fn write_effect_rows(w: &mut dyn fmt::Write, rows: &[EffectRowEntry]) -> fmt::Re
     writeln!(w, "  )")
 }
 
+/// FS-3 (`docs/flow-suspension-spec.md` §4/§11): the `FrameShapes` table.
+/// Written only when non-empty, mirroring the other optional sections. The
+/// reader lands with the writer in the same PR (the #742 lesson) — this
+/// section is fully round-tripped through `.inkt`. Each entry is the `await`
+/// site's stable `DefinitionId` (the synthesized continuation container id)
+/// followed by its name-keyed crossing-local slots (interned `NameId`s).
+fn write_frame_shapes(w: &mut dyn fmt::Write, shapes: &[FrameShapeDef]) -> fmt::Result {
+    if shapes.is_empty() {
+        return Ok(());
+    }
+    writeln!(w)?;
+    writeln!(w, "  (frame_shapes")?;
+    for shape in shapes {
+        write!(w, "    (frame {}", shape.site)?;
+        for slot in &shape.slots {
+            write!(w, " {}", slot.0)?;
+        }
+        writeln!(w, ")")?;
+    }
+    writeln!(w, "  )")
+}
+
 /// Write a [`DirectEffects`] block (`(reads …) (writes …) (calls …) opaque?`)
 /// at the given indent.
 fn write_direct_effects(
@@ -363,6 +387,9 @@ fn write_container(w: &mut dyn fmt::Write, c: &ContainerDef, lines: &[LineEntry]
         }
         if c.counting_flags.contains(CountingFlags::COUNT_START_ONLY) {
             write!(w, " start_only")?;
+        }
+        if c.counting_flags.contains(CountingFlags::INVISIBLE) {
+            write!(w, " invisible")?;
         }
         writeln!(w, ")")?;
     }
@@ -918,6 +945,7 @@ mod tests {
             private_defs: vec![],
             alias_table: vec![],
             effect_rows: vec![],
+            frame_shapes: Vec::new(),
             source_checksum: 0,
         };
         let mut buf = String::new();

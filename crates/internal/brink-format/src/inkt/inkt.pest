@@ -3,7 +3,7 @@
 
 WHITESPACE = _{ " " | "\t" | NEWLINE }
 
-story = { SOI ~ "(" ~ "story" ~ story_checksum? ~ name_table? ~ globals? ~ lists? ~ list_items? ~ externals? ~ addresses? ~ address_paths? ~ list_literals? ~ literal_pool? ~ struct_shapes? ~ visibility? ~ alias_table? ~ effect_rows? ~ container* ~ ")" ~ EOI }
+story = { SOI ~ "(" ~ "story" ~ story_checksum? ~ name_table? ~ globals? ~ lists? ~ list_items? ~ externals? ~ addresses? ~ address_paths? ~ list_literals? ~ literal_pool? ~ struct_shapes? ~ visibility? ~ alias_table? ~ effect_rows? ~ frame_shapes? ~ container* ~ ")" ~ EOI }
 story_checksum = { "checksum=" ~ hex_literal }
 
 // ── Name table ──────────────────────────────────────────────────────────────
@@ -59,6 +59,13 @@ alias_entry = { "(" ~ "alias" ~ def_id ~ "->" ~ def_id ~ ")" }
 effect_rows = { "(" ~ "effect_rows" ~ effect_row* ~ ")" }
 effect_row = { "(" ~ "row" ~ def_id ~ internal_flag? ~ effects_reads ~ effects_writes ~ effects_calls ~ opaque_flag? ~ dispatch_entry* ~ ")" }
 dispatch_entry = { "(" ~ "dispatch" ~ def_id ~ narrowable_flag? ~ effects_reads ~ effects_writes ~ effects_calls ~ opaque_flag? ~ ")" }
+// ── Frame shapes (FS-3, docs/flow-suspension-spec.md §4/§11) ──────────────────
+// One entry per `await` site: the site's stable def_id (the synthesized
+// continuation container id) followed by its name-keyed crossing-local slots.
+
+frame_shapes = { "(" ~ "frame_shapes" ~ frame_shape_entry* ~ ")" }
+frame_shape_entry = { "(" ~ "frame" ~ def_id ~ integer* ~ ")" }
+
 effects_reads = { "(" ~ "reads" ~ def_id* ~ ")" }
 effects_writes = { "(" ~ "writes" ~ def_id* ~ ")" }
 effects_calls = { "(" ~ "calls" ~ call_atom* ~ ")" }
@@ -106,7 +113,7 @@ param_meta = { "(" ~ param_mode ~ integer ~ ")" }
 param_mode = { "val" | "ref" }
 hash_field = { "(" ~ "hash" ~ hex_literal ~ ")" }
 flags_field = { "(" ~ "flags" ~ flag_name+ ~ ")" }
-flag_name = { "visits" | "turns" | "start_only" }
+flag_name = { "visits" | "turns" | "start_only" | "invisible" }
 lines_field = { "(" ~ "lines" ~ line_entry* ~ ")" }
 line_entry = { integer ~ line_content ~ source_hash ~ audio_field? ~ slots_field? ~ source_field? }
 audio_field = { "(" ~ "audio" ~ string ~ ")" }

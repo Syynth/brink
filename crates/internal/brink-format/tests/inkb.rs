@@ -1107,6 +1107,7 @@ fn roundtrip_line_entry_with_audio_ref() {
         private_defs: vec![],
         alias_table: vec![],
         effect_rows: vec![],
+        frame_shapes: Vec::new(),
         source_checksum: 0,
     };
 
@@ -1194,4 +1195,136 @@ fn container_param_count_mismatch_is_a_decode_error() {
             actual: 1,
         }
     );
+}
+
+// ── FS-3 FrameShapes section (tag 0x10) + invisible container flag ───────────
+
+#[test]
+fn roundtrip_frame_shapes_section() {
+    use brink_format::{DefinitionId, DefinitionTag, FrameShapeDef, NameId};
+
+    let mut data = i001_data();
+    // Two await sites, sorted ascending by `site` as the compiler will emit.
+    data.frame_shapes = vec![
+        FrameShapeDef {
+            site: DefinitionId::new(DefinitionTag::Address, 4),
+            slots: vec![NameId(1), NameId(2)],
+        },
+        FrameShapeDef {
+            site: DefinitionId::new(DefinitionTag::Address, 9),
+            slots: vec![],
+        },
+    ];
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    // The optional section appears in the offset table when non-empty.
+    let index = read_inkb_index(&buf).unwrap();
+    assert!(
+        index
+            .sections
+            .iter()
+            .any(|s| s.kind == SectionKind::FrameShapes),
+        "FrameShapes section present when non-empty"
+    );
+
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
+    assert_eq!(data.frame_shapes, recovered.frame_shapes);
+    assert_eq!(data, recovered);
+}
+
+#[test]
+fn frame_shapes_section_omitted_when_empty() {
+    // Behind the E052 fence every compiled story has no await frame shapes, so
+    // the section is omitted entirely and existing stories stay byte-identical.
+    let data = i001_data();
+    assert!(data.frame_shapes.is_empty());
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let index = read_inkb_index(&buf).unwrap();
+    assert!(
+        !index
+            .sections
+            .iter()
+            .any(|s| s.kind == SectionKind::FrameShapes),
+        "no FrameShapes section for a frame-shape-less story"
+    );
+
+    let recovered = read_inkb(&buf).unwrap();
+    assert!(recovered.frame_shapes.is_empty());
+}
+
+#[test]
+fn missing_frame_shapes_section_decodes_empty() {
+    use brink_format::read_section_frame_shapes;
+
+    // A buffer whose index carries no FrameShapes section reads back empty.
+    let data = i001_data();
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+    let index = read_inkb_index(&buf).unwrap();
+    assert!(read_section_frame_shapes(&buf, &index).unwrap().is_empty());
+}
+
+#[test]
+fn frame_shapes_rejects_unknown_section_version() {
+    use brink_format::{
+        DefinitionId, DefinitionTag, FrameShapeDef, InkbIndex, NameId, SectionEntry,
+        read_section_frame_shapes, write_section_frame_shapes,
+    };
+
+    // Encode a valid section, then corrupt its leading section-local version
+    // byte — the reader must reject rather than misparse.
+    let real = vec![FrameShapeDef {
+        site: DefinitionId::new(DefinitionTag::Address, 1),
+        slots: vec![NameId(0)],
+    }];
+    let mut buf = Vec::new();
+    write_section_frame_shapes(&real, &mut buf);
+    buf[0] = 0xFF; // bogus section version
+
+    let index = InkbIndex {
+        version: 5,
+        file_size: u32::try_from(buf.len()).unwrap(),
+        checksum: 0,
+        sections: vec![SectionEntry {
+            kind: SectionKind::FrameShapes,
+            offset: 0,
+        }],
+    };
+    let err = read_section_frame_shapes(&buf, &index).unwrap_err();
+    assert_eq!(
+        err,
+        DecodeError::UnsupportedSectionVersion {
+            section: SectionKind::FrameShapes as u8,
+            version: 0xFF,
+        }
+    );
+}
+
+#[test]
+fn roundtrip_invisible_container_flag() {
+    use brink_format::CountingFlags;
+
+    let mut data = i001_data();
+    assert!(!data.containers.is_empty());
+    // Mark a container invisible (the synthesized-continuation marker, §11.2).
+    data.containers[0].counting_flags |= CountingFlags::INVISIBLE;
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
+    assert!(
+        recovered.containers[0]
+            .counting_flags
+            .contains(CountingFlags::INVISIBLE),
+        "INVISIBLE flag survives the .inkb round-trip"
+    );
+    assert_eq!(data, recovered);
 }
