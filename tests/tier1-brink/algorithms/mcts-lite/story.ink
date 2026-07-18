@@ -53,65 +53,6 @@ VAR v4 = 0
 VAR v5 = 0
 VAR v6 = 0
 
-=== function rollout_sim(node_id) ===
-~ {
-    temp h = (node_id * 7 + 5) % 20
-    return h
-}
-
-=== function ucb1_score(parent_visits, child_visits, child_value_sum) ===
-~ {
-    if child_visits == 0 {
-        return 1000.0
-    }
-    temp avg = child_value_sum / child_visits
-    temp exploration = 1.4 * (parent_visits / (child_visits + 1))
-    return avg + exploration
-}
-
-=== function select_node() ===
-~ {
-    temp current = 0
-    temp depth = 0
-    while depth < 3 {
-        temp node = arena[current]
-        if len(node.children) == 0 {
-            return current
-        }
-        temp best = node.children[0]
-        temp best_score = ucb1_score(node.visits, arena[best].visits, arena[best].value_sum)
-        temp i = 1
-        while i < len(node.children) {
-            temp child_id = node.children[i]
-            temp child = arena[child_id]
-            temp score = ucb1_score(node.visits, child.visits, child.value_sum)
-            if score > best_score {
-                best_score = score
-                best = child_id
-            }
-            i = i + 1
-        }
-        current = best
-        depth = depth + 1
-    }
-    return current
-}
-
-=== function update_node(node_id, value) ===
-~ {
-    temp node = arena[node_id]
-    node.visits = node.visits + 1
-    node.value_sum = node.value_sum + value
-    arena[node_id] = node
-}
-
-=== function run_iteration() ===
-~ {
-    temp selected = select_node()
-    temp rollout = rollout_sim(selected)
-    update_node(selected, rollout)
-}
-
 ~ {
     // Build tree: 0 -> [1, 2], 1 -> [3, 4], 2 -> [5, 6], 3-6 are leaves
     push(arena, MCTSNode#{children: #[1, 2], visits: 0, value_sum: 0.0})
@@ -150,3 +91,78 @@ Node 5: visits={v5}
 Node 6: visits={v6}
 Done.
 -> END
+
+=== function rollout_sim(node_id) ===
+~ {
+    temp h = (node_id * 7 + 5) % 20
+    return h
+}
+
+=== function ucb1_score(parent_visits, child_visits, child_value_sum) ===
+~ {
+    if child_visits == 0 {
+        return 1000.0
+    }
+    temp avg = child_value_sum / child_visits
+    temp exploration = 1.4 * (parent_visits / (child_visits + 1))
+    return avg + exploration
+}
+
+=== function select_path() ===
+~ {
+    temp current = 0
+    temp depth = 0
+    temp path = #[0]
+    while depth < 3 {
+        temp node = arena[current]
+        if len(node.children) == 0 {
+            return path
+        }
+        temp best = node.children[0]
+        temp best_score = ucb1_score(node.visits, arena[best].visits, arena[best].value_sum)
+        temp i = 1
+        while i < len(node.children) {
+            temp child_id = node.children[i]
+            temp child = arena[child_id]
+            temp score = ucb1_score(node.visits, child.visits, child.value_sum)
+            if score > best_score {
+                best_score = score
+                best = child_id
+            }
+            i = i + 1
+        }
+        current = best
+        push(path, current)
+        depth = depth + 1
+    }
+    return path
+}
+
+=== function update_node(node_id, value) ===
+~ {
+    temp node = arena[node_id]
+    node.visits = node.visits + 1
+    node.value_sum = node.value_sum + value
+    arena[node_id] = node
+}
+
+// Backpropagation: every node on the path from the selected leaf back up to
+// the root gets its visit count and value sum updated, not just the leaf.
+// Without this, parent/root visits stay at 0 forever and UCB1's exploration
+// term (which divides by parent_visits) never engages.
+=== function backprop(path, value) ===
+~ {
+    temp i = 0
+    while i < len(path) {
+        update_node(path[i], value)
+        i = i + 1
+    }
+}
+
+=== function run_iteration() ===
+~ {
+    temp path = select_path()
+    temp selected = path[len(path) - 1]
+    temp rollout = rollout_sim(selected)
+    backprop(path, rollout)
+}

@@ -1,0 +1,10 @@
+MCTS Tree Search
+Final visit counts:
+Node 0: visits=30
+Node 1: visits=26
+Node 2: visits=4
+Node 3: visits=4
+Node 4: visits=22
+Node 5: visits=1
+Node 6: visits=3
+Done.
