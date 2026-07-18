@@ -31,13 +31,17 @@
 //!   live `Switch` component straight out of the ECS at evaluation time. No
 //!   per-frame mirror system is needed at all — a genuine ergonomics win
 //!   over Phase 1a's `call_ink_function`-every-frame shape.
-//! * **Detect verdict — must-poll, documented.** `should_open`'s dependency
-//!   is a `Switch` component, not a `BrinkGlobals` variable, so
-//!   `mark_wake_dirty` has no change-tick hook on it
-//!   (`docs/effects-spec.md` §12.5 is not wired — see [`switch_detect_summary`]
-//!   and the friction entry in `MIGRATION.md`). This is the exact
-//!   `is_player_nearby`-reading-`Transform` case the `sleep` module's own
-//!   docs anticipate, now hit by a real consumer instead of a unit test.
+//! * **Detect verdict — component change-tick, cheap path (#996).**
+//!   `should_open`'s dependency is a `Switch` component, not a `BrinkGlobals`
+//!   variable. `main.rs` registers that component
+//!   (`register_capability::<DoorsStory, Switch>("Switch")`), so
+//!   `mark_wake_dirty` gets a per-frame change-tracker for it
+//!   (`docs/effects-spec.md` §12.5, now wired — see [`switch_detect_summary`]).
+//!   A parked locked door re-evaluates `should_open` (a `bind_brink_query`
+//!   round trip) only when a `Switch` actually changes, not every frame —
+//!   lifting the must-poll interim this port originally documented. This is
+//!   the exact `is_player_nearby`-reading-`Transform` case the `sleep` module's
+//!   own docs anticipate, now a real consumer of the change-tick wiring.
 //! * **Open is a PERMANENT signal (`WakeArming::Once`).** A door's flow runs
 //!   its one turn and parks for good at `-> END`;
 //!   [`ink_door_sync_system`] treats `StoryStatus::Ended` as "open". This is
@@ -119,11 +123,12 @@ pub fn doors_is_ink(mode: Res<DoorsImpl>) -> bool {
 
 /// The `should_open` condition's dependency verdict (`#913`/§13.1): it reads
 /// a `Switch` component through [`is_switch_on`], not a `BrinkGlobals`
-/// variable, so `mark_wake_dirty` has no change-tick hook on it. A
-/// non-empty `bits` map forces the must-poll path regardless of the bool
-/// value — `true` here only documents that the dependency *would* be
-/// change-detection-capable if `docs/effects-spec.md` §12.5's component-tick
-/// wiring existed.
+/// variable. The `true` bit says the dependency is change-detection-capable;
+/// because `main.rs` registers the `Switch` component under this same `"Switch"`
+/// name (`register_capability::<DoorsStory, Switch>`), `mark_wake_dirty` now
+/// has a per-frame change-tracker for it (`docs/effects-spec.md` §12.5, #996),
+/// so a parked door re-evaluates `should_open` only when a `Switch` actually
+/// changes — the cheap path, not the must-poll interim this port first shipped.
 fn switch_detect_summary() -> DetectSummary {
     DetectSummary::from_bits(BTreeMap::from([("Switch".to_string(), true)]))
 }
@@ -204,7 +209,9 @@ pub fn ink_door_sync_system(
 mod tests {
     use super::*;
     use bevy::asset::AssetPlugin;
-    use bevy_brink::{BrinkBindingsAppExt, BrinkPlugin, advance_batch, call_ink_function};
+    use bevy_brink::{
+        BrinkBindingsAppExt, BrinkCapabilityAppExt, BrinkPlugin, advance_batch, call_ink_function,
+    };
 
     /// Compile `assets/doors.ink` inline (deterministic, no async
     /// `AssetServer`) and insert the story assets, via
@@ -222,6 +229,10 @@ mod tests {
         let mut app = App::new();
         app.add_plugins((AssetPlugin::default(), BrinkPlugin::<DoorsStory>::default()));
         app.bind_brink_query::<DoorsStory, _, _>("is_switch_on", is_switch_on);
+        // #996: register the `Switch` component so the wake layer's per-frame
+        // change-tracker (§12.5) covers `should_open`'s dependency — matching
+        // `main.rs`, so these tests exercise the same cheap path production does.
+        app.register_capability::<DoorsStory, Switch>("Switch");
         app.init_resource::<BehaviorTimings>();
         app.add_systems(Update, (advance_batch::<DoorsStory>, ink_door_sync_system));
         app
@@ -371,11 +382,16 @@ mod tests {
         );
     }
 
-    /// Measure the `should_open` wake condition's per-evaluation cost (the
-    /// number `run_flow_sleep` pays every must-polled wake pass while a door
-    /// stays locked) against a trivial Rust baseline. Prints the numbers for
-    /// the friction journal; run with
-    /// `cargo test measure_ink_door_wake_cost -- --nocapture`.
+    /// Measure the `should_open` wake condition's per-evaluation cost — the
+    /// `bind_brink_query` round trip `run_flow_sleep` used to pay **every**
+    /// wake pass while a door stayed locked (the must-poll interim) — against a
+    /// trivial Rust baseline. With #996's §12.5 change-tick wiring a parked
+    /// door now pays this cost **zero** times per frame while its `Switch` is
+    /// unchanged (replaced by one shared `Query<(), Changed<Switch>>::is_empty()`
+    /// tick check, amortized across all doors), so this number is now the cost
+    /// the cheap path *avoids*, not one paid per locked door per frame. Prints
+    /// the numbers for the friction journal / #996's before-after data point;
+    /// run with `cargo test measure_ink_door_wake_cost -- --nocapture`.
     #[test]
     fn measure_ink_door_wake_cost() {
         use std::hint::black_box;

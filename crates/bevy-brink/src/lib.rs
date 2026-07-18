@@ -124,10 +124,10 @@ pub use call::{
     resolve_brink_calls,
 };
 pub use capability::{
-    BrinkCapabilityAppExt, CapabilityEffects, CapabilityError, CapabilityManifest,
-    CapabilityManifestExternal, CapabilityRegistry, CapabilityTable, ContainerAccess,
-    ContainerAccessTable, compute_container_access, dump_container_access,
-    rebuild_capability_table,
+    BrinkCapabilityAppExt, CapabilityChanges, CapabilityEffects, CapabilityError,
+    CapabilityManifest, CapabilityManifestExternal, CapabilityRegistry, CapabilityTable,
+    ContainerAccess, ContainerAccessTable, compute_container_access, detect_capability_changes,
+    dump_container_access, rebuild_capability_table,
 };
 #[cfg(feature = "dev")]
 pub use event::BrinkFlowReset;

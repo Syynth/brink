@@ -37,13 +37,13 @@ mod world;
 
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
-use bevy_brink::{BrinkBindingsAppExt, BrinkPlugin, advance_batch};
+use bevy_brink::{BrinkBindingsAppExt, BrinkCapabilityAppExt, BrinkPlugin, advance_batch};
 
 use crate::alarm::{Alarm, GlobalAlarm, SpottedEvent, alarm_system};
 use crate::cameras::{camera_ai_system, camera_interact_system, draw_camera_cones};
 use crate::doors::{
-    Door, door_sync_system, draw_door_switch_glyphs, switch_interact_system, switch_prompt_system,
-    switch_visual_system,
+    Door, Switch, door_sync_system, draw_door_switch_glyphs, switch_interact_system,
+    switch_prompt_system, switch_visual_system,
 };
 use crate::guards::{
     ReinforcementSpawner, draw_guard_cones, draw_guard_tells, guard_ai_system,
@@ -104,6 +104,13 @@ fn main() {
         // spawned); drives `assets/doors.ink` in ink mode.
         .add_plugins(BrinkPlugin::<DoorsStory>::default())
         .bind_brink_query::<DoorsStory, _, _>("is_switch_on", is_switch_on)
+        // #996 (docs/effects-spec.md §12.5): register the `Switch` component
+        // under the same name a door's `should_open` detect summary declares,
+        // so `mark_wake_dirty` gets a per-frame change-tracker for it. A parked
+        // locked door then re-evaluates `should_open` (a `bind_brink_query`
+        // round trip) only when a `Switch` actually changes — not every frame —
+        // lifting the must-poll interim this port originally documented.
+        .register_capability::<DoorsStory, Switch>("Switch")
         .insert_resource(doors_impl)
         .init_state::<Phase>()
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06)))

@@ -9,15 +9,16 @@ use bevy_app::{App, Update};
 use bevy_ecs::component::Component;
 use bevy_ecs::observer::On;
 use bevy_ecs::resource::Resource;
-use bevy_ecs::system::{ResMut, RunSystemOnce as _};
+use bevy_ecs::system::{In, ResMut, RunSystemOnce as _};
 use brink_format::{CallAtom, CapabilityParam, DefinitionTag, DirectEffects, DispatchEntry};
 use brink_runtime::ContextAccess as _;
 
 use crate::advance_batch;
 use crate::asset::{BrinkStoryAsset, LineTablesAsset};
+use crate::bindings::BrinkBindingsAppExt as _;
 use crate::capability::{
-    BrinkCapabilityAppExt, CapabilityEffects, CapabilityManifest, CapabilityManifestExternal,
-    ContainerAccess,
+    BrinkCapabilityAppExt, CapabilityChanges, CapabilityEffects, CapabilityManifest,
+    CapabilityManifestExternal, CapabilityRegistry, ContainerAccess,
 };
 use crate::event::{BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone};
 use crate::globals::BrinkGlobals;
@@ -44,6 +45,35 @@ struct TextLog(String);
 /// matters, not what the component actually is.
 #[derive(Component)]
 struct GameStateCap;
+
+/// A component-backed capability the §12.5 detect-path tests (#996) watch:
+/// a wake condition reads `open` through [`is_gate_open`], so flipping it is
+/// exactly the "watched component changed" signal `mark_wake_dirty` must key
+/// off (the `is_player_nearby`-reading-`Transform` / door-reading-`Switch`
+/// shape, now with the change-tick wiring the earlier interim lacked).
+#[derive(Component)]
+struct Gate {
+    open: bool,
+}
+
+/// World-access binding: is the flow entity's own [`Gate`] open? The
+/// component-reading wake condition `should_wake` in [`GATED_GATE_STORY`]
+/// calls this — a real `bind_brink_query` round trip, the same seam a door's
+/// `is_switch_on` uses, so the detect-path win is exercised end-to-end and
+/// not just at the flag level.
+fn is_gate_open(
+    In((flow, _args)): In<crate::BrinkQueryInput>,
+    gates: bevy_ecs::system::Query<&Gate>,
+) -> Value {
+    Value::Bool(gates.get(flow).is_ok_and(|gate| gate.open))
+}
+
+/// A one-turn story whose wake condition reads a `Gate` **component** (via the
+/// [`is_gate_open`] `EXTERNAL`), not a `BrinkGlobals` variable — the §12.5
+/// component-backed detect case (#996).
+const GATED_GATE_STORY: &str = "EXTERNAL is_gate_open(id)\n\
+     Woke up!\n-> END\n\
+     === function should_wake() ===\n~ return is_gate_open(0)\n";
 
 /// A story that runs one turn ("Woke up!" `-> DONE`), then a second turn on
 /// resume ("Second turn." `-> END`). The wake condition `should_wake` returns
@@ -378,18 +408,20 @@ fn detect_summary_default_matches_vacuous_true_from_bits() {
     );
 }
 
-/// Review finding: `mark_wake_dirty`'s cheap re-evaluation signal is
-/// `BrinkGlobals` change detection only — it has no hook on a component's own
-/// change ticks. A detect-capable condition whose dependency is an ECS
-/// component (e.g. `is_player_nearby` reading `Transform`, this PR's own
-/// reachability example) must therefore still must-poll (be flagged every
-/// pass) whenever its `DetectSummary::bits` names any capability, even when
-/// every bit is `true` — trusting the AND-merge verdict alone here would gate
-/// re-evaluation on a signal a pure-component change never fires, and the flow
-/// would miss its wake.
+/// A component-backed detect-capable policy whose capability is **unregistered**
+/// (no `register_capability` call, so no change-tracker exists for it) must
+/// still must-poll — `mark_wake_dirty` cannot observe a component it has no
+/// tracker for, and folding an unobservable capability to the cheap path would
+/// gate re-evaluation on a signal that never fires (a missed wake). This is the
+/// conservative fallback the §12.5 wiring (#996) deliberately keeps for any
+/// capability the wake layer can't see.
 #[test]
-fn mark_wake_dirty_must_polls_a_component_backed_detect_capable_policy() {
+fn mark_wake_dirty_must_polls_an_unregistered_component_backed_policy() {
     let mut app = App::new();
+    // The two resources `mark_wake_dirty` reads exist, but the registry is
+    // empty (nothing registered) so "Transform" is untracked.
+    app.init_resource::<CapabilityRegistry<()>>();
+    app.init_resource::<CapabilityChanges<()>>();
     let entity = app
         .world_mut()
         .spawn(
@@ -412,8 +444,7 @@ fn mark_wake_dirty_must_polls_a_component_backed_detect_capable_policy() {
     // Isolate the case under test: pretend the bootstrap evaluation already
     // ran, so only the detect/world-changed gate is exercised (not the
     // "never evaluated" first-run flag). No `BrinkGlobals` resource exists in
-    // this bare `App` at all, so `world_changed` is unconditionally `false` —
-    // modeling a frame where only a Transform (never observed here) moved.
+    // this bare `App` at all, so `world_changed` is unconditionally `false`.
     app.world_mut()
         .get_mut::<FlowSleep<()>>(entity)
         .expect("policy present")
@@ -429,9 +460,121 @@ fn mark_wake_dirty_must_polls_a_component_backed_detect_capable_policy() {
             .get::<FlowSleep<()>>()
             .expect("still attached")
             .needs_eval,
-        "a policy whose detect map names a component capability must be \
-         must-polled every pass — mark_wake_dirty cannot see component-tick \
-         changes today, only BrinkGlobals"
+        "a detect-capable policy naming an UNREGISTERED capability must be \
+         must-polled — mark_wake_dirty has no change-tracker to observe it and \
+         must not risk a missed wake"
+    );
+}
+
+/// The §12.5 cheap path, part (a) — "does NOT re-evaluate when nothing
+/// changed" (#996). A registered, component-backed, detect-capable policy is
+/// **not** flagged on a quiet frame once its component's change tick has
+/// settled: the per-capability tracker records `Gate` as unchanged, so
+/// `mark_wake_dirty` leaves the parked policy alone (no wasted `bind_brink_query`
+/// re-evaluation every frame — the whole point of lifting the must-poll
+/// interim). Driven through the plugin's own registered systems
+/// (`detect_capability_changes` + `mark_wake_dirty`), not a direct call.
+#[test]
+fn detect_capable_component_policy_is_not_reevaluated_while_unchanged() {
+    let mut app = make_test_app();
+    app.register_capability::<(), Gate>("Gate");
+    // A Gate entity to watch, plus the parked, detect-capable policy. No
+    // fulfilled flow (no BrinkFlow) so `run_flow_sleep` never clears
+    // `needs_eval` — leaving the raw `mark_wake_dirty` verdict observable.
+    let gate = app.world_mut().spawn(Gate { open: false }).id();
+    let entity = app
+        .world_mut()
+        .spawn(
+            FlowSleep::<()>::persistent("should_wake")
+                .with_detect(DetectSummary::from_bits(
+                    [("Gate".to_string(), true)].into_iter().collect(),
+                ))
+                .dormant(),
+        )
+        .id();
+    // Skip the bootstrap first-eval flag so only the detect gate is exercised.
+    app.world_mut()
+        .get_mut::<FlowSleep<()>>(entity)
+        .expect("policy present")
+        .evaluated_once = true;
+
+    // Let the freshly-added Gate's change tick settle (Added counts as
+    // Changed for a couple frames), then clear any flag it raised.
+    pump(&mut app, 3);
+    app.world_mut()
+        .get_mut::<FlowSleep<()>>(entity)
+        .expect("policy present")
+        .needs_eval = false;
+
+    // A quiet frame: Gate untouched → tracker verdict false → not flagged.
+    app.update();
+    assert!(
+        !app.world()
+            .entity(entity)
+            .get::<FlowSleep<()>>()
+            .expect("still attached")
+            .needs_eval,
+        "a detect-capable component-backed policy must NOT be flagged on a \
+         frame where its watched component did not change — the §12.5 cheap path"
+    );
+
+    // Now mutate the watched component → the tracker sees the change → flagged.
+    app.world_mut().get_mut::<Gate>(gate).expect("gate").open = true;
+    app.update();
+    assert!(
+        app.world()
+            .entity(entity)
+            .get::<FlowSleep<()>>()
+            .expect("still attached")
+            .needs_eval,
+        "flipping the watched component must flag the policy for re-evaluation \
+         the same frame — the missed-wake class this issue closes"
+    );
+}
+
+/// The §12.5 cheap path, part (b) — "DOES wake when the watched component
+/// changes" (#996), end-to-end through the plugin's registered wake systems +
+/// `advance_batch`. A dormant, component-reading flow stays parked (never runs
+/// its turn) while its `Gate` is closed, then wakes and runs the moment the
+/// `Gate` flips open — a real `bind_brink_query` round trip, not a global.
+#[test]
+fn detect_capable_component_condition_wakes_on_component_change() {
+    let mut app = build_app();
+    app.register_capability::<(), Gate>("Gate");
+    app.bind_brink_query::<(), _, _>("is_gate_open", is_gate_open);
+    let (program, tables, ctx) = compile_test_story(GATED_GATE_STORY);
+    let story = add_story_assets(&mut app, program, tables, ctx);
+
+    // The flow entity IS the gate entity (the doors-port shape): one entity
+    // carries the Gate, the flow request, and a dormant one-shot policy whose
+    // condition reads that Gate.
+    let entity =
+        app.world_mut()
+            .spawn((
+                Gate { open: false },
+                BrinkFlowRequest::<()>::builder().story(story).build(),
+                FlowSleep::<()>::once("should_wake").dormant().with_detect(
+                    DetectSummary::from_bits([("Gate".to_string(), true)].into_iter().collect()),
+                ),
+            ))
+            .id();
+
+    // Gate closed: the flow must never wake or run its turn.
+    pump(&mut app, 6);
+    assert!(
+        app.world().resource::<TextLog>().0.is_empty(),
+        "a dormant component-backed flow must stay parked while its Gate is \
+         closed: got {:?}",
+        app.world().resource::<TextLog>().0
+    );
+
+    // Flip the watched component → the flow wakes and runs its turn.
+    app.world_mut().get_mut::<Gate>(entity).expect("gate").open = true;
+    pump(&mut app, 8);
+    assert!(
+        app.world().resource::<TextLog>().0.contains("Woke up!"),
+        "the flow must wake and run once its watched Gate opens: got {:?}",
+        app.world().resource::<TextLog>().0
     );
 }
 
