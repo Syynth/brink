@@ -134,6 +134,7 @@ export function openCallForm(anchor: HTMLElement, site: CallWidgetSite, view: Ed
       paramName: slot.param_name,
       paramIndex: i,
       typeName: slot.type_name,
+      typeDisplay: slot.type_display,
       widgetKind: slot.widget,
       values: slot.values,
       hostWidget: matchHostWidget(slot),

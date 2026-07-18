@@ -34,8 +34,15 @@ export interface FormField {
   /** Position in the call's argument list. Defaults to the field's array index
    *  (callers with arg-groups must set this explicitly). */
   paramIndex?: number;
-  /** Semantic-type name, shown in the label (e.g. `hex_color`). */
+  /** Semantic-type name (e.g. `hex_color`) — used for widget-kind matching
+   *  and as the text-field placeholder. The label renders `typeDisplay`
+   *  when present (#1027/#1053), not this raw name — an unregistered
+   *  semantic type must not be shown with false confidence. */
   typeName?: string;
+  /** The honest display string for `typeName` (#1027/#1053): the bare name
+   *  when registered, `name ⚠ unregistered semantic type — E040` otherwise.
+   *  The label prefers this over `typeName`. */
+  typeDisplay?: string;
   /** Built-in widget kind (`color`, …) → an embedded picker. */
   widgetKind?: string;
   /** Value-list options (#174) → a dropdown of `label`s inserting `value`s. */
@@ -193,11 +200,18 @@ export function openArgumentForm(anchor: HTMLElement, opts: ArgumentFormOptions)
   return () => popover?.close();
 }
 
-/** A label cell — `param: type` (or just `param`). */
-function labelCell(field: { paramName: string; typeName?: string }): HTMLElement {
+/** A label cell — `param: type` (or just `param`). Prefers `typeDisplay`
+ *  over `typeName` (#1027/#1053) — an unregistered semantic type renders
+ *  with the honesty marker instead of a bare, confident name. */
+function labelCell(field: {
+  paramName: string;
+  typeName?: string;
+  typeDisplay?: string;
+}): HTMLElement {
   const label = document.createElement("span");
   label.className = "brink-arg-form-label";
-  label.textContent = field.typeName ? `${field.paramName}: ${field.typeName}` : field.paramName;
+  const typeText = field.typeDisplay ?? field.typeName;
+  label.textContent = typeText ? `${field.paramName}: ${typeText}` : field.paramName;
   return label;
 }
 

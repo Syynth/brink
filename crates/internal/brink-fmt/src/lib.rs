@@ -635,8 +635,12 @@ fn classify_node(
                     // joiner emits string-literal token text byte-for-byte,
                     // so a colon canonicalized inside a string value like
                     // `VAR msg = "time 12:30"` never mutates the literal —
-                    // unlike the raw-text `collapse_whitespace` pass, which
-                    // is string-unaware and corrupted such literals.
+                    // unlike the character-based `collapse_whitespace` pass
+                    // formerly used here, which was string-unaware and
+                    // corrupted such literals (removed as dead code, #984:
+                    // this arm always sets `cst_node` alongside `kind`, so
+                    // `render()` never needs a raw-text fallback for these
+                    // three node kinds).
                     lines[line_idx].cst_node = Some(child.clone());
                 }
             }
@@ -928,16 +932,35 @@ fn render(source: &str, lines: &[ClassifiedLine], config: &FormatConfig) -> Stri
                     || raw.trim_start().starts_with("CONST")
                     || raw.trim_start().starts_with("LIST")
                 {
-                    // Retokenize through the CST via `join_token_text` when
-                    // available (#642 fix) so string-literal initializers
-                    // (`VAR msg = "time 12:30"`) are emitted byte-for-byte
-                    // instead of having their colon/whitespace mutated by
-                    // the string-unaware `collapse_whitespace` fallback.
-                    if let Some(node) = &line.cst_node {
-                        out.push_str(&format_declaration_from_cst(node));
-                    } else {
-                        out.push_str(&format_declaration_with_annotations(raw));
-                    }
+                    // Retokenize through the CST via `join_token_text` (#642
+                    // fix) so string-literal initializers (`VAR msg = "time
+                    // 12:30"`) are emitted byte-for-byte instead of having
+                    // their colon/whitespace mutated by a raw-text pass.
+                    //
+                    // `cst_node` is guaranteed `Some` here: `classify_node`'s
+                    // `VAR_DECL | CONST_DECL | LIST_DECL` arm sets `kind` and
+                    // `cst_node` together, unconditionally (no parse-error
+                    // check gates it, unlike the `STMT_BLOCK`/`STRUCT_DECL`
+                    // arms) — the parser is error-resilient, bracketing the
+                    // whole construct in its node via `start_node`/
+                    // `finish_node` regardless of what's between, so even a
+                    // malformed `VAR`/`CONST`/`LIST` line still produces a
+                    // node. No other code path sets `LineKind::Declaration`
+                    // with raw text starting `VAR`/`CONST`/`LIST` while
+                    // leaving `cst_node` unset. The character-based
+                    // `collapse_whitespace` fallback that used to run here
+                    // when `cst_node` was `None` was therefore dead code —
+                    // and unsafe dead code: a raw-text whitespace/colon pass
+                    // over a span that may contain a string literal is the
+                    // corruption class named in the wave-25 lesson. Removed
+                    // per issue #984.
+                    let Some(node) = &line.cst_node else {
+                        unreachable!(
+                            "classify_node always attaches a CST node to VAR/CONST/LIST \
+                             Declaration lines"
+                        );
+                    };
+                    out.push_str(&format_declaration_from_cst(node));
                 } else {
                     out.push_str(raw.trim_end());
                 }
@@ -1056,19 +1079,6 @@ fn format_knot_header(raw: &str) -> String {
 
     let normalized: String = collapse_whitespace(inner);
     format!("=== {normalized} ===")
-}
-
-/// Format a VAR/CONST/LIST declaration: canonicalize type annotation colons
-/// (no space before, one space after) while preserving the rest of the line.
-///
-/// Raw-text fallback used only when no CST node is attached to the line
-/// (shouldn't happen for a well-formed `VAR_DECL`/`CONST_DECL`/`LIST_DECL` —
-/// see `format_declaration_from_cst` for the normal, string-literal-safe
-/// path). Kept total via `collapse_whitespace`, which is character-based and
-/// therefore must never be applied to a line that might contain a string
-/// literal with a colon or internal whitespace inside it.
-fn format_declaration_with_annotations(raw: &str) -> String {
-    collapse_whitespace(raw.trim_end())
 }
 
 /// Format a VAR/CONST/LIST declaration by retokenizing its CST node through
@@ -2177,6 +2187,48 @@ STRUCT Point=#{x:int,y: float}
         assert_eq!(
             fmt("VAR title = \"Chapter:One\"\n"),
             "VAR title = \"Chapter:One\"\n"
+        );
+    }
+
+    // ── #984: raw-text declaration fallback proved unreachable, removed ─
+    // `render()`'s `LineKind::Declaration` VAR/CONST/LIST arm used to fall
+    // back to a character-based `collapse_whitespace` pass whenever
+    // `line.cst_node` was `None`. That fallback is now an `unreachable!()`:
+    // `classify_node`'s `VAR_DECL | CONST_DECL | LIST_DECL` arm sets `kind`
+    // and `cst_node` together, unconditionally, and the parser always
+    // wraps a `VAR`/`CONST`/`LIST` line in its node (bracketed by
+    // `start_node`/`finish_node`) even when the body has a parse error —
+    // so `cst_node` is never `None` for these lines. These cases exercise
+    // malformed declarations specifically to prove `fmt()` never panics
+    // (i.e. never hits the `unreachable!()`) even on error-recovered input.
+
+    #[test]
+    fn malformed_var_decl_missing_initializer_does_not_panic() {
+        // `VAR x =` with nothing after `=` (still followed by a newline) is
+        // a parse error, but the parser still emits a VAR_DECL node — the
+        // CST-retokenizing path must handle it without panicking.
+        let _ = fmt("VAR x =\n");
+    }
+
+    #[test]
+    fn malformed_const_decl_missing_value_does_not_panic() {
+        let _ = fmt("CONST x =\n");
+    }
+
+    #[test]
+    fn malformed_list_decl_missing_members_does_not_panic() {
+        let _ = fmt("LIST x =\n");
+    }
+
+    #[test]
+    fn malformed_var_decl_with_string_literal_does_not_corrupt_and_does_not_panic() {
+        // Malformed trailing content after a valid string-literal
+        // initializer: the CST path must still preserve the string
+        // byte-for-byte and must not panic.
+        let output = fmt("VAR msg = \"time 12:30\" +\n");
+        assert!(
+            output.contains("\"time 12:30\""),
+            "string literal must survive malformed declaration formatting: {output:?}"
         );
     }
 

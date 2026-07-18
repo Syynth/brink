@@ -87,8 +87,20 @@ pub struct SlotWidget {
     pub param_name: String,
     /// The built-in widget kind for this slot's type (`color`, …), if any.
     pub widget: Option<String>,
-    /// The semantic-type name, if the param is typed.
+    /// The semantic-type name, if the param is typed. Always the bare
+    /// written name — consumers matching against a widget kind
+    /// (`matchHostWidget`'s `type_name` fallback) must use this field, not
+    /// `type_display`.
     pub type_name: Option<String>,
+    /// The honest display string for `type_name` (#1027/#1053, reusing
+    /// `hover::honest_type_display`'s marker convention exactly): the bare
+    /// name when it resolves to a base keyword or a registered semantic
+    /// type, `name ⚠ unregistered semantic type — E040` otherwise. `None`
+    /// iff `type_name` is `None`. The Form's parameter label must render
+    /// this, not `type_name` — rendering a bare, confident name for an
+    /// unregistered type is exactly the #1004 divergence #1027 closed for
+    /// hover/signature help.
+    pub type_display: Option<String>,
     /// Pickable values for this slot's type (#174) — the Form renders these as a
     /// dropdown. Only static manifest items are surfaced here; empty otherwise.
     pub values: Vec<brink_ir::ValueItem>,
@@ -289,6 +301,7 @@ fn build_slots(
             param_name: param.name.clone(),
             widget: ty.and_then(|t| t.widget.as_ref()).map(|w| w.kind.clone()),
             type_name: ty.map(|t| t.name.clone()),
+            type_display: ty.map(crate::hover::honest_type_display),
             values,
             state: state_for(i),
         });
@@ -719,6 +732,102 @@ mod tests {
             .find(|c| c.callee == "go_region")
             .expect("call");
         assert!(call.slots[0].values.is_empty());
+    }
+
+    // ── Issue #1053: the argument-widget surface must be honest about an
+    // unregistered semantic type, not render it with the same bare
+    // confidence as a registered one (extends #1027's hover/signature-help
+    // fix to this surface). `type_name` stays the bare name (widget-kind
+    // matching depends on it); `type_display` carries the honesty marker. ──
+
+    #[test]
+    fn unregistered_semantic_type_slot_keeps_bare_type_name_but_flags_type_display() {
+        use brink_ir::{BaseType, HostManifest, SemanticTypeDef};
+
+        // `var_id` is named in the inline `@param` doc, but the registered
+        // manifest only defines a *sibling* type (`actor_id`) — the #1004/
+        // #1027 case, reproduced on the argument-widget surface.
+        let src = "/// @param id {var_id}\nEXTERNAL get_variable(id)\n~ get_variable(5)\n-> END\n";
+        let mut session = IdeSession::new();
+        session.update_and_analyze("test.ink", src.to_string());
+        session.set_host_manifest(HostManifest {
+            externals: vec![],
+            types: vec![SemanticTypeDef {
+                name: "actor_id".to_string(),
+                base: BaseType::String,
+                constraint: None,
+                values: None,
+                widget: None,
+            }],
+        });
+        let analysis = session.analysis().expect("analysis");
+        let parsed = brink_syntax::parse(src);
+        let sites = argument_widgets(
+            &parsed.syntax(),
+            analysis,
+            rowan::TextRange::new(0.into(), rowan::TextSize::of(src)),
+            None,
+        );
+        let call = sites
+            .iter()
+            .find(|c| c.callee == "get_variable")
+            .expect("call");
+        let slot = &call.slots[0];
+
+        assert_eq!(
+            slot.type_name.as_deref(),
+            Some("var_id"),
+            "type_name must stay the bare name — widget-kind matching depends on it"
+        );
+        let display = slot.type_display.as_deref().expect("type_display present");
+        assert!(
+            display.contains("var_id"),
+            "still shows the written name: {display}"
+        );
+        assert!(
+            display.contains('\u{26A0}'),
+            "must carry the explicit warning marker: {display}"
+        );
+        assert!(
+            display.contains("E040"),
+            "must cross-reference the E040 diagnostic code: {display}"
+        );
+    }
+
+    #[test]
+    fn registered_semantic_type_slot_has_matching_name_and_display_with_no_warning() {
+        use brink_ir::{BaseType, HostManifest, SemanticTypeDef};
+
+        let src =
+            "/// @param id {actor_id}\nEXTERNAL get_variable(id)\n~ get_variable(5)\n-> END\n";
+        let mut session = IdeSession::new();
+        session.update_and_analyze("test.ink", src.to_string());
+        session.set_host_manifest(HostManifest {
+            externals: vec![],
+            types: vec![SemanticTypeDef {
+                name: "actor_id".to_string(),
+                base: BaseType::String,
+                constraint: None,
+                values: None,
+                widget: None,
+            }],
+        });
+        let analysis = session.analysis().expect("analysis");
+        let parsed = brink_syntax::parse(src);
+        let sites = argument_widgets(
+            &parsed.syntax(),
+            analysis,
+            rowan::TextRange::new(0.into(), rowan::TextSize::of(src)),
+            None,
+        );
+        let call = sites
+            .iter()
+            .find(|c| c.callee == "get_variable")
+            .expect("call");
+        let slot = &call.slots[0];
+
+        assert_eq!(slot.type_name.as_deref(), Some("actor_id"));
+        assert_eq!(slot.type_display.as_deref(), Some("actor_id"));
     }
 
     #[test]

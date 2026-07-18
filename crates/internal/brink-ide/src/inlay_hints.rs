@@ -190,9 +190,18 @@ fn collect_param_hints(
         // A param whose type has a studio-builtin widget shows just `name:` —
         // the widget (e.g. the color swatch) conveys the type, so repeating it
         // is noise: `set_tint(color: ▮"#FF8800")`, not `color: hex_color`.
+        //
+        // The type portion goes through `honest_type_display` (#1027/#1053) —
+        // an unregistered semantic type renders with the same warning marker
+        // and E040 cross-reference hover/signature-help use, instead of a
+        // bare, confident name.
         let label = match ty {
             Some(ty) if ty.widget.is_none() => {
-                format!("{prefix}{}: {}", param.name, ty.name)
+                format!(
+                    "{prefix}{}: {}",
+                    param.name,
+                    crate::hover::honest_type_display(ty)
+                )
             }
             _ => format!("{prefix}{}:", param.name),
         };
@@ -473,6 +482,106 @@ EXTERNAL set_switch(id, on)
             !bare.iter().any(|h| matches!(h.kind, InlayHintKind::Value)),
             "no host label without the cache",
         );
+    }
+
+    // ── Issue #1053: parameter-type inlay hints must be honest about an
+    // unregistered semantic type, not render it with the same bare
+    // confidence as a registered one (extends #1027's hover/signature-help
+    // fix to this surface). ──────────────────────────────────────────────
+
+    #[test]
+    fn unregistered_semantic_type_param_hint_carries_the_warning_marker() {
+        use brink_ir::{BaseType, HostManifest, SemanticTypeDef};
+
+        // `var_id` is named in the inline `@param` doc, but the registered
+        // manifest only defines a *sibling* type (`actor_id`) — the
+        // vocabulary reached the analyzer, `var_id` just isn't in it (the
+        // #1004/#1027 case).
+        let src = "/// @param id {var_id}\nEXTERNAL get_variable(id)\n~ get_variable(5)\n-> END\n";
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.ink", src.to_string());
+        session.set_host_manifest(HostManifest {
+            externals: vec![],
+            types: vec![SemanticTypeDef {
+                name: "actor_id".to_string(),
+                base: BaseType::String,
+                constraint: None,
+                values: None,
+                widget: None,
+            }],
+        });
+        let analysis = session.analysis().expect("analysis");
+
+        let parsed = brink_syntax::parse(src);
+        let hints = inlay_hints(
+            &parsed.syntax(),
+            analysis,
+            session.db(),
+            file_id,
+            TextRange::new(TextSize::new(0), TextSize::of(src)),
+            None,
+        );
+        let param_label = hints
+            .iter()
+            .find(|h| matches!(h.kind, InlayHintKind::Parameter))
+            .map(|h| h.label.as_str())
+            .expect("a parameter hint for `id`");
+
+        assert_ne!(
+            param_label, "id: var_id",
+            "must not render var_id with bare, unqualified confidence"
+        );
+        assert!(
+            param_label.contains("var_id"),
+            "still shows the written name: {param_label}"
+        );
+        assert!(
+            param_label.contains('\u{26A0}'),
+            "must carry the explicit warning marker: {param_label}"
+        );
+        assert!(
+            param_label.contains("E040"),
+            "must cross-reference the E040 diagnostic code: {param_label}"
+        );
+    }
+
+    #[test]
+    fn registered_semantic_type_param_hint_has_no_warning() {
+        use brink_ir::{BaseType, HostManifest, SemanticTypeDef};
+
+        let src =
+            "/// @param id {actor_id}\nEXTERNAL get_variable(id)\n~ get_variable(5)\n-> END\n";
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.ink", src.to_string());
+        session.set_host_manifest(HostManifest {
+            externals: vec![],
+            types: vec![SemanticTypeDef {
+                name: "actor_id".to_string(),
+                base: BaseType::String,
+                constraint: None,
+                values: None,
+                widget: None,
+            }],
+        });
+        let analysis = session.analysis().expect("analysis");
+
+        let parsed = brink_syntax::parse(src);
+        let hints = inlay_hints(
+            &parsed.syntax(),
+            analysis,
+            session.db(),
+            file_id,
+            TextRange::new(TextSize::new(0), TextSize::of(src)),
+            None,
+        );
+        let param_label = hints
+            .iter()
+            .find(|h| matches!(h.kind, InlayHintKind::Parameter))
+            .map(|h| h.label.as_str())
+            .expect("a parameter hint for `id`");
+
+        assert_eq!(param_label, "id: actor_id");
+        assert!(!param_label.contains('\u{26A0}'), "{param_label}");
     }
 
     // ── TM-5 (#621): inferred-type inlay hints on unannotated `temp` decls ──
