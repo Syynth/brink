@@ -12,8 +12,13 @@
 //! - **Types**: rows conceptually ride `Ty::Fn` (spec §5, the heap answer);
 //!   this slice keeps the row *inference* advisory and treats every call
 //!   through a function value as **opaque** (the conservative floor — see
-//!   [`EffectRow::opaque`]), which is sound; reading a concrete row back off a
-//!   stored `Ty::Fn` value is the §8 precision refinement left for a follow-up.
+//!   [`EffectRow::opaque`]), which is sound. Issue #872 (§8's "read the
+//!   concrete row off a stored `Ty::Fn`" precision rung) narrows this for the
+//!   provably-known case — a call through a write-once local whose value
+//!   traces to a single `#fn(target, …)`/`bind(…)`-chain origin
+//!   (`InferPass::resolve_pending_value_calls` in `infer::body`) — while
+//!   leaving the heap (VAR/CONST cells joined project-wide, §5's "sound,
+//!   coarse, improvable") pessimal still.
 //!
 //! **Soundness direction (spec §3, conservative-total)**: rows may over-report,
 //! never under-report. Over-report costs parallelism or a spurious wakeup;
