@@ -5163,6 +5163,100 @@ mod tests {
             "error names the missing entry: {result}"
         );
     }
+
+    // ── #1032 collapse follow-up: closure-scoped compile gate ───────────
+    //
+    // PR #1048's adversarial review (finding 1) caught that collapsing
+    // compile onto the shared analysis `ProjectDb` silently widened the
+    // compile error-gate from entry-reachable to whole-project: any error
+    // anywhere in the session's loaded files — a WIP scratch file, a second
+    // unrelated story — now flipped `compileProject(entry)` from `ok:true`
+    // to `ok:false`, diverging from both the prior throwaway-driver
+    // behavior and the CLI's still-`discover`-scoped compile path. Ruled
+    // (issuecomment-5009848672): `compileProject` gates on `entry`'s
+    // `INCLUDE` closure only (`has_errors_in_closure_query`,
+    // `brink-db`'s `queries/analysis.rs`); errors outside that closure keep
+    // surfacing as diagnostics but no longer block the build. The two tests
+    // below pin exactly that: an unrelated broken file must not block a
+    // clean entry (closure scoping, not suppression), but a broken file the
+    // entry *does* `INCLUDE` must still block it.
+
+    #[test]
+    fn compile_project_ignores_an_unrelated_broken_file_but_still_diagnoses_it() {
+        // scratch.ink is loaded into the same session db as main.ink but
+        // main.ink never INCLUDEs it — exactly the "WIP scratch file" /
+        // "second unrelated story coexisting in one editor session" shape
+        // the finding named. Its unresolved divert (E024, unconditionally
+        // Error-severity, not gated by dialect/type-policy) must not block
+        // `main.ink`'s build, but must still show up on a whole-project
+        // diagnostics read.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "-> END\n");
+        s.update_file("scratch.ink", "== broken ==\n-> nowhere\n");
+
+        assert!(
+            analysis_has(&s, brink_ir::DiagnosticCode::E024),
+            "sanity: whole-project analysis flags the unrelated file's unresolved divert"
+        );
+
+        let result = s.compile_project("main.ink");
+        let v = json(&result);
+        assert_eq!(
+            v["ok"], true,
+            "an error in a file main.ink never INCLUDEs must not block its build: {result}"
+        );
+        assert!(
+            v["story_bytes"].is_array() || v["story_bytes"].is_string(),
+            "a successful compile must still hand back story bytes: {result}"
+        );
+        assert!(
+            !compile_has(&result, "E024"),
+            "the unrelated file's error must not leak into compileProject's own \
+             diagnostics either: {result}"
+        );
+
+        // The broken file's diagnostic must still be live on a whole-project
+        // read after the compile — closure scoping narrows the *build gate*,
+        // it is not suppression of the diagnostic itself.
+        let scratch = s
+            .session
+            .file_id("scratch.ink")
+            .expect("scratch.ink loaded");
+        let scratch_diags = s
+            .session
+            .db()
+            .diagnostics(scratch)
+            .expect("scratch.ink loaded");
+        assert!(
+            scratch_diags
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E024),
+            "the unrelated broken file must still report its own diagnostics \
+             after compileProject succeeds: {scratch_diags:?}"
+        );
+    }
+
+    #[test]
+    fn compile_project_fails_when_an_included_file_is_broken() {
+        // Same broken content as above, but this time main.ink actually
+        // INCLUDEs it — inside entry's closure, so the build must still
+        // fail. Proves the closure scoping is a *narrowing*, not a
+        // blanket "compile never fails on multi-file errors" regression.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "INCLUDE broken.ink\n-> END\n");
+        s.update_file("broken.ink", "== broken ==\n-> nowhere\n");
+
+        let result = s.compile_project("main.ink");
+        let v = json(&result);
+        assert_eq!(
+            v["ok"], false,
+            "an error in an INCLUDEd file must still block the entry's build: {result}"
+        );
+        assert!(
+            compile_has(&result, "E024"),
+            "the included file's unresolved divert must surface as a compile error: {result}"
+        );
+    }
 }
 
 // ── Dialect (#368) wasm-only error-path tests ─────────────────────────

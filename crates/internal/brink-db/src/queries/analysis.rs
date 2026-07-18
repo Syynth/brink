@@ -48,6 +48,8 @@ use brink_ir::{
     Diagnostic, DocBlock, FileId, HirFile, ResolutionMap, SymbolIndex, SymbolKind, SymbolManifest,
 };
 
+use crate::determinism::LookupSet;
+
 use super::{
     DefKey, ProjectInput, SourceFile, effects_query, inference_index_query, lowered_query,
     module_map_query, resolution_index_query, resolve_query, symbol_index_query,
@@ -609,5 +611,63 @@ pub(crate) fn has_errors_query(db: &dyn salsa::Database, project: ProjectInput) 
     let diagnostics = analysis_diagnostics_query(db, project);
     let (errors, _warnings) =
         super::partition_diagnostics(&inputs, diagnostics, disable_all, types);
+    !errors.is_empty()
+}
+
+/// The same [`partition_diagnostics`] "does at least one Error-severity
+/// diagnostic exist" verdict as [`has_errors_query`], but scoped to
+/// `project.entry(db)`'s transitive `INCLUDE` closure ([`include_graph_query`]'s
+/// `topological_order`, issue #815's established narrowing — the same
+/// reachability machinery `struct_shape_data_query`/`lir_prelude_decls_query`/
+/// `lir_lowering_query` in `queries/mod.rs` already use) instead of every file
+/// loaded into the project db.
+///
+/// [`has_errors_query`] itself is untouched and stays whole-project: it feeds
+/// `db.has_errors()`/`db.lir_product()`, IDE-surface reads FG-4a's
+/// dependency-edge tests pin on purpose (issue #791) — a broken file
+/// genuinely unrelated to any particular entry must still show up as a
+/// project-wide error signal there. This narrower query is the *additional*
+/// gate the #1032 collapse ruling adds for `compileProject`'s artifact path
+/// ([`super::lir_in_closure_query`] / `db.story_data()`): once the editor's
+/// session db and analysis db became the same db, a WIP scratch file or a
+/// second, `INCLUDE`-unrelated story sharing that db could flip
+/// `compileProject(entry)` from `ok:true` to `ok:false` even though codegen
+/// only ever lowered `entry`'s own closure (#815) — a false-negative gate,
+/// not corrupt output. Scoping the gate to match what codegen actually reads
+/// closes that gap: an unrelated file's error still surfaces through
+/// `diagnostics_query`/`db.diagnostics(file)` (both still whole-project,
+/// unchanged), it just no longer blocks a different entry's build.
+///
+/// [`include_graph_query`]: super::include_graph_query
+#[salsa::tracked]
+pub(crate) fn has_errors_in_closure_query(db: &dyn salsa::Database, project: ProjectInput) -> bool {
+    let Some(entry) = project.entry(db) else {
+        return false;
+    };
+    let files = project.files(db);
+    let graph = super::include_graph_query(db, project);
+    let closure: LookupSet<FileId> = graph.topological_order(entry).into_iter().collect();
+    let disable_all = files
+        .iter()
+        .find(|f| f.file_id(db) == entry)
+        .is_some_and(|f| super::suppressions_query(db, *f).disable_all);
+    let inputs: Vec<super::FileDiagnostics<'_>> = files
+        .iter()
+        .filter(|f| closure.contains(&f.file_id(db)))
+        .map(|f| super::FileDiagnostics {
+            file: f.file_id(db),
+            source: f.text(db),
+            suppressions: super::suppressions_query(db, *f),
+            lowering: &lowered_query(db, *f).diagnostics,
+        })
+        .collect();
+    let types = project.analysis_options(db).types;
+    let diagnostics: Vec<Diagnostic> = analysis_diagnostics_query(db, project)
+        .iter()
+        .filter(|d| closure.contains(&d.file))
+        .cloned()
+        .collect();
+    let (errors, _warnings) =
+        super::partition_diagnostics(&inputs, &diagnostics, disable_all, types);
     !errors.is_empty()
 }

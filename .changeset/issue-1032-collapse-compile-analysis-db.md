@@ -21,6 +21,16 @@ Observable through `@brink-lang/web`:
   that could index a different file in a multi-file project.
 - An unknown entry path now returns a clean `{ ok: false, error: "entry file
   not found in session: <path>" }` (previously a driver I/O error string).
+- **Bugfix:** an error in a file the compiled entry doesn't `INCLUDE` — a WIP
+  scratch file, a second unrelated story open in the same editor session — no
+  longer blocks that entry's `compileProject`. Sharing one db for compile and
+  analysis meant compile's error gate briefly widened from entry-reachable to
+  every file loaded in the session (a regression caught in review before this
+  shipped); it's now scoped back to the entry's transitive `INCLUDE` closure,
+  matching both the prior throwaway-driver behavior and the CLI's
+  `discover`-scoped compile path. The unrelated file's error still surfaces
+  through the editor's regular per-file diagnostics — it just no longer fails
+  a different entry's build.
 
 `compileProject`'s JS signature is unchanged. Manifest/dialect/policy behavior
 for single-file projects is unchanged. The CLI's one-driver-per-invocation
