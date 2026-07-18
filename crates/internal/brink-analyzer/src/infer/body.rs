@@ -284,8 +284,11 @@ struct InferPass<'a, 'b> {
     value_calls: Vec<ValueCallFact>,
     /// T2 §8 precision rung (docs/effects-spec.md §6 item 3/§8, issue #872): every
     /// write (`TempDecl` initializer or bare-`Path` `Assignment`) to a
-    /// Param/Temp local, by name, counted regardless of whether the write's
-    /// value traces to a known `#fn` origin. Consulted only after the whole
+    /// Temp local, by name, counted regardless of whether the write's
+    /// value traces to a known `#fn` origin. Param writes are deliberately
+    /// not counted here for narrowing purposes (see
+    /// [`InferPass::local_call_origin`]'s doc) — a Param carries an implicit
+    /// caller-provided initial value no write count can ever see. Consulted only after the whole
     /// body is walked ([`InferPass::resolve_pending_value_calls`]) — a
     /// single-pass "as accumulated so far" read would miss a reassignment
     /// that appears later in program order but, inside a loop body, executes
@@ -313,9 +316,11 @@ struct InferPass<'a, 'b> {
 /// single origin; it never manufactures a new failure mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ValueCallOrigin {
-    /// The callee is a bare Param/Temp local reference. Resolved post-walk:
-    /// narrowable only if `name` was written exactly once in the whole body
-    /// and that write's value traced to a single known def.
+    /// The callee is a bare Temp local reference (never a Param — see
+    /// [`InferPass::local_call_origin`]'s doc for why a Param can't be
+    /// trusted here). Resolved post-walk: narrowable only if `name` was
+    /// written exactly once in the whole body and that write's value traced
+    /// to a single known def.
     Local(String),
     /// The callee is *itself* (optionally through one or more `bind(…)`
     /// wrappers) an `#fn(target, …)` literal evaluated fresh at this call
@@ -502,13 +507,26 @@ impl InferPass<'_, '_> {
     }
 
     /// Classify a resolved call-through-value target for narrowing: a bare
-    /// Param/Temp local (checked post-walk against its whole-body write
-    /// count) is [`ValueCallOrigin::Local`]; anything else (a VAR/CONST
-    /// global — the heap case, still coarse per spec §5/§8 — or an
+    /// Temp local (checked post-walk against its whole-body write count) is
+    /// [`ValueCallOrigin::Local`]; anything else (a VAR/CONST global — the
+    /// heap case, still coarse per spec §5/§8 — a Param, or an
     /// unresolvable/non-local kind) is [`ValueCallOrigin::Unknown`].
+    ///
+    /// **Param is deliberately excluded** (soundness, not a missed
+    /// optimization): a Temp cannot be referenced before its defining
+    /// `TempDecl`, so "written exactly once in the whole body" really does
+    /// bound its value at every read. A Param, by contrast, carries an
+    /// implicit caller-provided initial value that
+    /// [`Self::local_write_counts`] never counts — a param reassigned
+    /// exactly once inside the body would reach `write_count == 1` and
+    /// [`Self::resolve_pending_value_calls`] would narrow *every* call site
+    /// through it, including ones reachable before that single
+    /// reassignment, where the param still holds the caller's arbitrary
+    /// (unknown) fn value. That would violate the conservative-total
+    /// invariant this rung promises to preserve.
     fn local_call_origin(&self, def: DefinitionId) -> ValueCallOrigin {
         match self.ctx.index.symbols.get(&def) {
-            Some(info) if matches!(info.kind, SymbolKind::Param | SymbolKind::Temp) => {
+            Some(info) if info.kind == SymbolKind::Temp => {
                 ValueCallOrigin::Local(info.name.clone())
             }
             _ => ValueCallOrigin::Unknown,
@@ -519,9 +537,9 @@ impl InferPass<'_, '_> {
     /// `bind(f, …)` intrinsic forms' `f`, an arbitrary expression rather
     /// than a resolvable `Path`) for narrowing: an inline `#fn`/`bind`-chain
     /// literal is [`ValueCallOrigin::Inline`] (trusted immediately — no
-    /// stored value); a bare Param/Temp reference defers to
-    /// [`Self::local_call_origin`]; anything else is
-    /// [`ValueCallOrigin::Unknown`].
+    /// stored value); a bare local reference (Param or Temp) defers to
+    /// [`Self::local_call_origin`], which only ever narrows the Temp case;
+    /// anything else is [`ValueCallOrigin::Unknown`].
     fn value_call_origin(&self, expr: &Expr) -> ValueCallOrigin {
         if let Some(def) = self.fn_literal_write_origin(expr) {
             return ValueCallOrigin::Inline(def);
@@ -546,8 +564,17 @@ impl InferPass<'_, '_> {
 
     /// [`Self::bump_local_write`] for an `Assignment`/`BlockStmt::Assignment`
     /// target expression — only a bare single-segment `Path` resolving to a
-    /// Param/Temp counts (a dotted/indexed target reassigns a *nested* slot,
-    /// not the local's own value, same guard [`Self::observe`] applies).
+    /// Temp counts (a dotted/indexed target reassigns a *nested* slot, not
+    /// the local's own value, same guard [`Self::observe`] applies).
+    ///
+    /// Param is excluded here too — not for soundness (bumping a count only
+    /// ever makes [`Self::local_call_origin`]'s write-once check *stricter*,
+    /// since Param is never classified as [`ValueCallOrigin::Local`] in the
+    /// first place, so this can't under-report), but to avoid spuriously
+    /// pessimizing a same-named Temp elsewhere in the body: without this
+    /// guard, a Param write would bump `local_write_counts` under that
+    /// param's name, and if a Temp happens to share the name the two
+    /// tallies would collide in the same map entry.
     fn record_fn_write(&mut self, target: &Expr, origin: Option<DefinitionId>) {
         let Expr::Path(p) = target else { return };
         if p.segments.len() != 1 {
@@ -559,7 +586,7 @@ impl InferPass<'_, '_> {
         let Some(info) = self.ctx.index.symbols.get(&def) else {
             return;
         };
-        if !matches!(info.kind, SymbolKind::Param | SymbolKind::Temp) {
+        if info.kind != SymbolKind::Temp {
             return;
         }
         let name = info.name.clone();
@@ -920,9 +947,10 @@ impl InferPass<'_, '_> {
 
         // T2 §8 (issue #872): `f(args)`'s callee is always a resolvable
         // name (a `HirPath`, never an inline expression), so its narrowing
-        // classification is always `local_call_origin(def)` — a bare
-        // Param/Temp reference or, for a VAR/CONST global, `Unknown` (the
-        // heap case, still coarse per spec §5/§8).
+        // classification is always `local_call_origin(def)` — narrowable
+        // only for a bare Temp reference; a Param, a VAR/CONST global (the
+        // heap case, still coarse per spec §5/§8), or anything else is
+        // `Unknown`.
         let narrow_hint = self.local_call_origin(def);
         self.check_value_call(path.range, &callee, callee_ty, args, arg_tys, narrow_hint)
     }

@@ -2441,9 +2441,9 @@ mod tests {
 
     /// The pre-existing pessimal-floor regression must hold unchanged: an
     /// `Unknown`-typed callee (a param with no traceable origin at all) still
-    /// gets no narrowing — `local_call_origin` only recognizes Param/Temp
-    /// *names*, but a param is never itself written inside its own body in
-    /// this fixture, so its write count never reaches 1 and the floor holds.
+    /// gets no narrowing — `local_call_origin` only recognizes a bare `Temp`
+    /// name, and a param is never classified as `Local` at all now, so the
+    /// floor holds regardless of write count.
     #[test]
     fn a_call_through_an_unresolvable_param_stays_pessimal() {
         let src = "=== function apply(cb) ===\n~ return cb(1)\n";
@@ -2454,6 +2454,36 @@ mod tests {
         assert!(
             rows[&apply].opaque,
             "a call through a function value with no known origin must stay pessimal"
+        );
+    }
+
+    /// Soundness regression (review finding on #872's initial landing): a
+    /// `Param` carries an implicit caller-provided initial value that
+    /// `local_write_counts` never sees. If a param is reassigned exactly
+    /// once inside the body, its whole-body write count reaches 1 — but any
+    /// call site *reachable before* that reassignment still runs against
+    /// the caller's arbitrary (unknown) fn value, not the known origin the
+    /// single write traces to. `local_call_origin` narrowing a `Param` the
+    /// same way it narrows a write-once `Temp` would incorrectly narrow
+    /// that earlier call site too, under-reporting whatever effects the
+    /// caller's actual callee has that `bar` doesn't. `apply`'s row must
+    /// stay opaque: `cb` is a `Param`, never eligible for `Local` narrowing
+    /// regardless of how many times it's written.
+    #[test]
+    fn a_param_reassigned_once_called_before_the_write_stays_pessimal() {
+        let src = "VAR total = 0\n\
+                   === function bar(n) ===\n~ total = total + n\n~ return total\n\
+                   === function apply(cb, guard) ===\n\
+                   {guard:\n  ~ return cb(1)\n}\n~ cb = #fn(bar)\n~ return cb(1)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let apply = id_of(&index, "apply");
+        assert!(
+            rows[&apply].opaque,
+            "a param reassigned exactly once inside the body must not narrow \
+             calls reachable before that reassignment — the param still holds \
+             the caller's arbitrary fn value there"
         );
     }
 
