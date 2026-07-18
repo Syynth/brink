@@ -141,6 +141,27 @@ pub fn hover(
     Some(HoverInfo { content, range })
 }
 
+/// Honest hover display for a resolved semantic type (#1027 — closes the
+/// #1004 divergence). `resolve_type` (`external_check`) still builds a
+/// [`brink_analyzer::ResolvedType`] for a semantic-type name that isn't
+/// registered in the host manifest — `name` is the bare written name (so
+/// callers keep it for the diagnostic message / partial rendering), but
+/// [`brink_analyzer::ResolvedType::is_registered`] is `false`. Rendering
+/// that bare name with no qualifier is exactly what made #1004 look like a
+/// strict-inference bug: hover showed `id: var_id` with full confidence
+/// while inference correctly resolved the same unregistered name to
+/// `Unknown`. A registered type (base keyword or a manifest-registered
+/// name) still renders as the bare name; an unregistered one gets an
+/// explicit warning marker and an `E040` cross-reference so a reader can't
+/// mistake it for a checked, host-backed type.
+pub(crate) fn honest_type_display(ty: &brink_analyzer::ResolvedType) -> String {
+    if ty.is_registered() {
+        ty.name.clone()
+    } else {
+        format!("{} ⚠ unregistered semantic type — E040", ty.name)
+    }
+}
+
 /// TM-5 (#621): a knot/stitch's parameter-list and return-type hover
 /// strings — `(params, return)` — layering three sources per position,
 /// most-authoritative first:
@@ -193,7 +214,7 @@ fn signature_strs(
                     .and_then(|m| m.params.get(i))
                     .and_then(|rp| rp.ty.as_ref())
                 {
-                    let _ = write!(s, ": {}", ty.name);
+                    let _ = write!(s, ": {}", honest_type_display(ty));
                 } else if let Some(ty) = declared_sig
                     .as_ref()
                     .and_then(|sig| sig.param_annotations.get(i))
@@ -215,7 +236,7 @@ fn signature_strs(
 
     let ret_str = meta
         .and_then(|m| m.returns.as_ref())
-        .map(|t| format!(" -> {}", t.name))
+        .map(|t| format!(" -> {}", honest_type_display(t)))
         .or_else(|| {
             declared_sig
                 .as_ref()
@@ -553,5 +574,100 @@ Spent.
         let content = hover_at(src, "f(x)");
         assert!(!content.contains("Unknown"), "{content}");
         assert!(!content.contains("x:"), "{content}");
+    }
+
+    // ── Issue #1027: hover must be honest about an unregistered semantic
+    // type, not render it with the same confidence as a registered one ────
+
+    fn actor_id_type() -> brink_ir::SemanticTypeDef {
+        brink_ir::SemanticTypeDef {
+            name: "actor_id".to_string(),
+            base: brink_ir::BaseType::String,
+            constraint: None,
+            values: None,
+            widget: None,
+        }
+    }
+
+    #[test]
+    fn hover_renders_unregistered_semantic_type_with_a_warning_not_a_bare_name() {
+        // The #1004 divergence, reproduced directly: `var_id` is named in an
+        // inline `@param` doc, but the registered manifest only defines a
+        // *sibling* type (`actor_id`) — the vocabulary genuinely reached the
+        // analyzer, `var_id` just isn't in it. Hover must not render
+        // `id: var_id` with the same bare confidence a registered type gets.
+        let src = "/// @param id {var_id}\nEXTERNAL get_variable(id)\n-> DONE\n";
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.ink", src.to_string());
+        session.set_host_manifest(brink_ir::HostManifest {
+            externals: vec![],
+            types: vec![actor_id_type()],
+        });
+        let analysis = session.analysis().expect("analysis");
+        let pos =
+            u32::try_from(src.find("get_variable(id)").expect("decl present")).expect("offset");
+        let content = hover(
+            analysis,
+            session.db(),
+            file_id,
+            src,
+            TextSize::from(pos),
+            &[],
+        )
+        .expect("hover")
+        .content;
+
+        assert!(
+            !content.contains("id: var_id)"),
+            "must not render var_id with bare, unqualified confidence: {content}"
+        );
+        assert!(
+            content.contains("var_id"),
+            "still shows the written name so the author can spot the typo: {content}"
+        );
+        assert!(
+            content.contains('\u{26A0}'),
+            "must carry an explicit warning marker: {content}"
+        );
+        assert!(
+            content.contains("E040"),
+            "must cross-reference the E040 diagnostic code: {content}"
+        );
+    }
+
+    #[test]
+    fn hover_renders_registered_semantic_type_with_no_warning() {
+        // Same shape as the unregistered case above, but `id`'s type
+        // (`actor_id`) IS registered — hover must render it exactly as
+        // before, no warning noise on a genuinely resolved type.
+        let src = "/// @param id {actor_id}\nEXTERNAL get_variable(id)\n-> DONE\n";
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.ink", src.to_string());
+        session.set_host_manifest(brink_ir::HostManifest {
+            externals: vec![],
+            types: vec![actor_id_type()],
+        });
+        let analysis = session.analysis().expect("analysis");
+        let pos =
+            u32::try_from(src.find("get_variable(id)").expect("decl present")).expect("offset");
+        let content = hover(
+            analysis,
+            session.db(),
+            file_id,
+            src,
+            TextSize::from(pos),
+            &[],
+        )
+        .expect("hover")
+        .content;
+
+        assert!(
+            content.contains("id: actor_id)"),
+            "a registered type still renders as the bare name: {content}"
+        );
+        assert!(
+            !content.contains('\u{26A0}'),
+            "no warning marker for a registered type: {content}"
+        );
     }
 }

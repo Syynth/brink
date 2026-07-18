@@ -450,10 +450,13 @@ pub fn generate(seed: u64) -> LayoutData {
                 vertical: d.vertical,
                 locked: false,
             });
+            // Record the door index (not `None`) so navigation can recover this
+            // doorway's geometry too; `solvable` treats an unlocked door as open
+            // regardless, so the reachability semantics are unchanged (#1044).
             connections.push(Connection {
                 a: d.a,
                 b: d.b,
-                door: None,
+                door: Some(door_index),
             });
         }
     }
@@ -630,6 +633,28 @@ impl LayoutData {
             }
         }
         reachable[exit]
+    }
+
+    /// Room-to-room connectivity for guard navigation, as
+    /// `(room_a, room_b, door_center)`. Guards traverse **every** door
+    /// regardless of lock state (staff carry keys, and it keeps the player's
+    /// switch mechanic from stranding guards — see `nav.rs`), so locked and
+    /// unlocked connections alike appear here. The door center is the waypoint a
+    /// guard walks to in order to cross between the two rooms.
+    #[must_use]
+    pub fn room_adjacency(&self) -> Vec<(usize, usize, Vec2)> {
+        self.connections
+            .iter()
+            .map(|c| {
+                let door = match c.door {
+                    Some(di) => self.doors[di].center,
+                    // No door index recorded (should not occur post-#1044):
+                    // fall back to the midpoint of the two room centers.
+                    None => (self.rooms[c.a].center() + self.rooms[c.b].center()) * 0.5,
+                };
+                (c.a, c.b, door)
+            })
+            .collect()
     }
 
     fn room_containing(&self, p: Vec2) -> usize {

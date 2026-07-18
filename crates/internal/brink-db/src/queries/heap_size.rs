@@ -540,6 +540,7 @@ mod tests {
                 params: vec![("x".to_string(), Ty::Int)],
                 locals: std::collections::BTreeMap::new(),
                 return_ty: Ty::Bool,
+                has_value_return: true,
                 value_calls: Vec::new(),
             },
         );
