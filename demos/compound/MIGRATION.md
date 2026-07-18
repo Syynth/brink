@@ -152,10 +152,11 @@ arithmetic is directly comparable. **Status: green.**
 - **G1 (#1058)** — no batch "apply these events / call this fn N times" entry
   point; every event is a separate `call_ink_function` + ~2.5 µs VM-eval setup
   from an exclusive system.
-- **G2 (#1059)** — no ergonomic host-side "read an ink global by name"
-  accessor on `BrinkGlobals`; today it is a manual `Program::global_index` +
-  `ContextAccess::global` reach requiring a trait import.
-- **G3 (#1060)** — no one-liner to compile an in-memory `.ink` source string
-  into a `BrinkStoryAsset` for tests/tools; the four-step
-  compile→link→context→insert dance is copy-pasted from the `engine_bindings`
-  example.
+- **G2 (#1059)** — **resolved.** `BrinkGlobals::get(&self, program, name)`
+  collapses the manual `Program::global_index` + `ContextAccess::global`
+  reach (and its trait import) into one call; `read_alarm_state` in
+  `src/ink_alarm.rs` now uses it.
+- **G3 (#1060)** — **resolved.** `bevy_brink::compile_story_inline(app, name,
+  source)` wraps the compile→link→context→insert dance in one call;
+  `build_alarm_story` in `src/ink_alarm.rs`'s test module now uses it instead
+  of hand-rolling the four steps.
