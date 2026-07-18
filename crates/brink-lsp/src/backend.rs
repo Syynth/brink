@@ -594,26 +594,97 @@ impl Backend {
     }
 }
 
-/// Read `initializationOptions.<key>` as a string and, if present, write the
-/// mapped value into `slot` (poisoned-lock-safe — a poisoned mutex silently
-/// keeps its prior value rather than panicking). Shared by `initialize`'s
-/// `dialect` and `types` (#660) handlers, which differ only in the key name
-/// and the string→enum mapping.
-fn apply_initialization_option<T: Copy>(
-    params: &InitializeParams,
-    key: &str,
-    slot: &Mutex<T>,
-    map: impl FnOnce(&str) -> T,
-) {
-    if let Some(requested) = params
+/// Read `initializationOptions.<key>` as a string, if the client set it at
+/// all — regardless of whether the value maps to a recognized variant. This
+/// is "the client passed an explicit value", the strongest tier of the
+/// #1030 precedence rule (see [`resolve_language_options`]): even an
+/// unrecognized string still counts as explicit (and falls through the
+/// dialect/types `match`es' `_` arm to the same default a missing key
+/// would), matching the pre-#1030 `apply_initialization_option` behavior.
+fn explicit_initialization_option<'a>(params: &'a InitializeParams, key: &str) -> Option<&'a str> {
+    params
         .initialization_options
         .as_ref()
         .and_then(|opts| opts.get(key))
         .and_then(|v| v.as_str())
-        && let Ok(mut guard) = slot.lock()
+}
+
+/// Resolve the effective dialect/types policy for this session, reconciling
+/// `initializationOptions.dialect`/`.types` with a discovered `brink.toml`
+/// (#1005) under the **same ruled precedence every other mount follows**
+/// (#1030): the file supplies the default, an explicit client option always
+/// wins over it. Layering, lowest to highest priority:
+///
+/// 1. `AnalysisOptions::default()` (`strict-ink` / `gradual`);
+/// 2. a `brink.toml` discovered from the (first) workspace root — a missing
+///    file changes nothing, byte-identical to pre-#1005/#1030 behavior;
+/// 3. `initializationOptions.dialect`/`.types`, if the client actually set
+///    them — this always overrides the file, never the other way around.
+///
+/// Discovery is relative to the **workspace root**, not any single open
+/// file: at `initialize` time the LSP has no "entry file" the way the CLI's
+/// `brink compile <entry>` does, only workspace folders. This reuses
+/// `brink-project-config`'s [`brink_project_config::find_config`] walk
+/// directly (rather than [`brink_project_config::discover_from_entry`],
+/// which expects a file path to take the parent of) — the walking logic
+/// itself is not duplicated. With multiple workspace folders, only the
+/// first is consulted, mirroring the single-session, single-project-root
+/// assumption `Backend::dialect()`/`language` already make elsewhere.
+///
+/// Unknown keys in the file are logged as warnings (never errors — forward
+/// compat, matching the CLI/`brink ide` surfaces); a malformed or unreadable
+/// `brink.toml` is also only ever a warning here, since a language server
+/// must keep serving the session rather than refuse to initialize.
+fn resolve_language_options(params: &InitializeParams, roots: &[PathBuf]) -> AnalysisOptions {
+    let explicit_dialect = explicit_initialization_option(params, "dialect");
+    let explicit_types = explicit_initialization_option(params, "types");
+
+    let mut options = AnalysisOptions::default();
+    if let Some(root) = roots.first()
+        && let Some(path) = brink_project_config::find_config(root)
     {
-        *guard = map(requested);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => match brink_project_config::parse_str(&text) {
+                Ok((config, warnings)) => {
+                    for warning in &warnings {
+                        tracing::warn!("[{}] {warning}", path.display());
+                    }
+                    brink_project_config::apply_to_options(
+                        &mut options,
+                        &config,
+                        explicit_dialect.is_some(),
+                        explicit_types.is_some(),
+                    );
+                }
+                Err(e) => tracing::warn!("failed to parse {}: {e}", path.display()),
+            },
+            Err(e) => tracing::warn!("failed to read {}: {e}", path.display()),
+        }
     }
+
+    // T1b compiler dialect (docs/t1b-surface-spec.md §1, #589): an explicit
+    // `initializationOptions.dialect` ("brink" or "strict-ink"; any other
+    // value keeps whatever the file/default already resolved to) always
+    // wins over the file, per the precedence above.
+    if let Some(v) = explicit_dialect {
+        options.dialect = match v {
+            "brink" => Dialect::Brink,
+            _ => Dialect::StrictInk,
+        };
+    }
+
+    // TM-3 typed-mode policy (docs/typed-mode-spec.md §1, #660): same rule,
+    // mirroring `dialect` directly above. `Strict` requires `dialect =
+    // brink` (a config-error diagnostic otherwise, `E064`) — the client's
+    // responsibility, same as the compiler CLI.
+    if let Some(v) = explicit_types {
+        options.types = match v {
+            "strict" => TypePolicy::Strict,
+            _ => TypePolicy::Gradual,
+        };
+    }
+
+    options
 }
 
 #[tower_lsp::async_trait]
@@ -637,31 +708,24 @@ impl LanguageServer for Backend {
                 roots.push(path);
             }
         }
+        // #1030: reconcile `initializationOptions.dialect`/`.types` with a
+        // discovered `brink.toml` (#1005), read once here (before `roots`
+        // moves into `workspace_roots` below) and shared unchanged for the
+        // life of the session — mirrors the previous dialect-only/types-only
+        // handling (#589, #660), now layered with the file. See
+        // `resolve_language_options` for the full precedence rule and
+        // discovery details.
+        let resolved = resolve_language_options(&params, &roots);
+        if let Ok(mut guard) = self.language.dialect.lock() {
+            *guard = resolved.dialect;
+        }
+        if let Ok(mut guard) = self.language.types.lock() {
+            *guard = resolved.types;
+        }
+
         if let Ok(mut ws) = self.workspace_roots.lock() {
             *ws = roots;
         }
-
-        // T1b compiler dialect (docs/t1b-surface-spec.md §1, #589): an
-        // authoring-time/tooling input, read once from
-        // `initializationOptions.dialect` ("brink" or "strict-ink"; any
-        // other value, or absence, keeps the `StrictInk` default). Gates
-        // stdlib slice 1 completion/signature help only — see the `dialect`
-        // field's doc comment.
-        apply_initialization_option(&params, "dialect", &self.language.dialect, |v| match v {
-            "brink" => Dialect::Brink,
-            _ => Dialect::StrictInk,
-        });
-
-        // TM-3 typed-mode policy (docs/typed-mode-spec.md §1, #660): read
-        // once from `initializationOptions.types` ("strict" or "gradual";
-        // any other value, or absence, keeps the `Gradual` default), mirroring
-        // the `dialect` handling directly above. `Strict` requires
-        // `dialect = brink` (a config-error diagnostic otherwise, `E064`) —
-        // the client's responsibility, same as the compiler CLI.
-        apply_initialization_option(&params, "types", &self.language.types, |v| match v {
-            "strict" => TypePolicy::Strict,
-            _ => TypePolicy::Gradual,
-        });
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
