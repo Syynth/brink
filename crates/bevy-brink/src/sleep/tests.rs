@@ -13,7 +13,7 @@ use brink_format::{DefinitionTag, DirectEffects, DispatchEntry};
 use brink_runtime::ContextAccess as _;
 
 use crate::advance_batch;
-use crate::asset::BrinkStoryAsset;
+use crate::asset::{BrinkStoryAsset, LineTablesAsset};
 use crate::capability::ContainerAccess;
 use crate::event::{BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone};
 use crate::globals::BrinkGlobals;
@@ -488,25 +488,50 @@ fn wake_fan_out_scenario_ratios() {
 
 // ── Wake-condition purity (issue #995, BH-4 follow-up) ──────────────────────
 
-/// Overwrite a loaded story's `ProgramAsset::effect_rows` — `add_story_assets`
-/// always ships an empty table (BH-1's capability join isn't what these
-/// non-purity tests exercise), so a purity test that needs a *real*,
-/// non-empty `EffectRows` entry wires it in directly here, exactly like a
-/// compiled `.inkb`'s loader would (`asset.rs`'s `InkbLoader::load` sets
-/// `effect_rows` from the decoded `StoryData` the same way).
-fn set_effect_rows(app: &mut App, story: &bevy_asset::Handle<BrinkStoryAsset>, rows: Vec<EffectRowEntry>) {
+/// Like `add_story_assets`, but builds the `ProgramAsset` with `effect_rows`
+/// populated from construction — `add_story_assets` always ships an empty
+/// table (BH-1's capability join isn't what most tests exercise), so a
+/// purity test that needs a *real*, non-empty `EffectRows` entry wires it in
+/// here, exactly like a compiled `.inkb`'s loader would (`asset.rs`'s
+/// `InkbLoader::load` sets `effect_rows` from the decoded `StoryData` the
+/// same way).
+///
+/// Deliberately **not** `add_story_assets` + a post-hoc `Assets::get_mut`
+/// mutation (an earlier version of these tests did exactly that): mutating
+/// an already-`add`ed asset fires `AssetEvent::Modified`, and that is
+/// precisely the event the `dev`-feature's `replay_on_reload` hot-reload
+/// system watches for (`crate::replay`, on by default — `bevy-brink`'s
+/// `dev` feature is default-on). One frame later, once the entity is
+/// fulfilled (`BrinkReplayLog` attached), it would rebuild the flow *and*
+/// drive it to its first terminal via real `advance_until_terminal` events —
+/// completely out from under a still-`Parked`/dormant `FlowSleep` policy,
+/// corrupting these tests' state before the purity gate is ever exercised.
+/// Building the asset once via `Assets::add` (an `AssetEvent::Added`, which
+/// `replay_on_reload` never reacts to) sidesteps that footgun entirely.
+fn add_story_assets_with_effect_rows(
+    app: &mut App,
+    program: Program,
+    tables: Vec<Vec<brink_format::LineEntry>>,
+    initial_context: brink_runtime::World,
+    effect_rows: Vec<EffectRowEntry>,
+) -> bevy_asset::Handle<BrinkStoryAsset> {
     let world = app.world_mut();
     let program_handle = world
-        .resource::<Assets<BrinkStoryAsset>>()
-        .get(story)
-        .expect("story asset loaded")
-        .program
-        .clone();
-    world
         .resource_mut::<Assets<ProgramAsset>>()
-        .get_mut(&program_handle)
-        .expect("program asset loaded")
-        .effect_rows = rows;
+        .add(ProgramAsset {
+            program,
+            initial_context,
+            effect_rows,
+        });
+    let tables_handle = world
+        .resource_mut::<Assets<LineTablesAsset>>()
+        .add(LineTablesAsset { tables });
+    world
+        .resource_mut::<Assets<BrinkStoryAsset>>()
+        .add(BrinkStoryAsset {
+            program: program_handle,
+            line_tables: tables_handle,
+        })
 }
 
 fn no_write_row(def: DefinitionId) -> EffectRowEntry {
@@ -704,8 +729,8 @@ fn pure_condition_wakes_normally_through_run_flow_sleep() {
     let def = program
         .definition_id_for_path("should_wake")
         .expect("should_wake resolves");
-    let story = add_story_assets(&mut app, program, tables, ctx);
-    set_effect_rows(&mut app, &story, vec![no_write_row(def)]);
+    let story =
+        add_story_assets_with_effect_rows(&mut app, program, tables, ctx, vec![no_write_row(def)]);
 
     app.world_mut().spawn((
         BrinkFlowRequest::<()>::builder().story(story).build(),
@@ -737,8 +762,13 @@ fn writing_condition_is_rejected_and_never_evaluated_through_run_flow_sleep() {
         .definition_id_for_path("should_wake")
         .expect("should_wake resolves");
     let write_id = DefinitionId::new(DefinitionTag::GlobalVar, 999);
-    let story = add_story_assets(&mut app, program, tables, ctx);
-    set_effect_rows(&mut app, &story, vec![writing_row(def, write_id)]);
+    let story = add_story_assets_with_effect_rows(
+        &mut app,
+        program,
+        tables,
+        ctx,
+        vec![writing_row(def, write_id)],
+    );
 
     app.world_mut().spawn((
         BrinkFlowRequest::<()>::builder().story(story).build(),

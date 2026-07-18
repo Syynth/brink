@@ -465,8 +465,7 @@ fn write_names(program: &Program, ids: &[DefinitionId]) -> Vec<String> {
         .map(|id| {
             program
                 .global_var_name(*id)
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("<{id}>"))
+                .map_or_else(|| format!("<{id}>"), str::to_owned)
         })
         .collect()
 }
@@ -478,7 +477,12 @@ fn check_row_purity(
     row: &EffectRowEntry,
     condition_label: &str,
 ) -> Result<(), WakeConditionPurityError> {
-    if row.direct.opaque || row.dispatches.iter().any(|dispatch| dispatch.fallback.opaque) {
+    if row.direct.opaque
+        || row
+            .dispatches
+            .iter()
+            .any(|dispatch| dispatch.fallback.opaque)
+    {
         return Err(WakeConditionPurityError::Opaque {
             condition: condition_label.to_owned(),
         });
@@ -659,6 +663,12 @@ type SleepGatherQuery<M> = QueryState<(
 /// Order-independent w.r.t. [`advance_batch`](crate::advance_batch): whether it
 /// runs before or after the batch driver in a frame, a wake takes effect on the
 /// following frame's Collect.
+#[expect(
+    clippy::too_many_lines,
+    reason = "four coherent phases (gather, purity faults, re-park/retire, evaluate) that share \
+              locals across the whole pass; splitting would just move the length into extra \
+              parameter-passing"
+)]
 pub fn run_flow_sleep<M: Send + Sync + 'static>(
     world: &mut EcsWorld,
     // Cache the gather query across frames instead of rebuilding a fresh
@@ -741,17 +751,17 @@ pub fn run_flow_sleep<M: Send + Sync + 'static>(
     // with its own distinct, named error so the two failure classes are
     // never confused.
     for (entity, err) in purity_faults {
-        if let Some(mut sleep) = world.get_mut::<FlowSleep<M>>(entity) {
-            if sleep.state == SleepState::Parked {
-                warn!(
-                    "brink wake condition `{}` rejected for flow {:?}: {err} — policy parked \
-                     (Faulted); a FlowSleep condition must be pure (docs/effects-spec.md §13.1 \
-                     point 2)",
-                    sleep.condition, entity
-                );
-                sleep.state = SleepState::Faulted;
-                sleep.needs_eval = false;
-            }
+        if let Some(mut sleep) = world.get_mut::<FlowSleep<M>>(entity)
+            && sleep.state == SleepState::Parked
+        {
+            warn!(
+                "brink wake condition `{}` rejected for flow {:?}: {err} — policy parked \
+                 (Faulted); a FlowSleep condition must be pure (docs/effects-spec.md §13.1 \
+                 point 2)",
+                sleep.condition, entity
+            );
+            sleep.state = SleepState::Faulted;
+            sleep.needs_eval = false;
         }
     }
 
