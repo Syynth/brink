@@ -161,5 +161,5 @@ pub use sleep::{
     check_named_condition_purity, check_value_condition_purity, mark_wake_dirty, run_flow_sleep,
 };
 #[cfg(feature = "dev")]
-pub use source_loader::{InkLoader, InkLoaderError};
+pub use source_loader::{CompileStoryInlineError, InkLoader, InkLoaderError, compile_story_inline};
 pub use transcript::{BrinkTranscript, refresh_transcripts};
