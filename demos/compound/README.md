@@ -57,6 +57,20 @@ cargo test         # unit tests for the FSM / alarm / shop / geometry logic
 cargo clippy --all-targets -- -D warnings
 ```
 
+**Phase 1a is underway**: the alarm system is ported to ink
+(`assets/alarm.ink` + `src/ink_alarm.rs`), side-by-side with the Rust
+baseline per the mixed-world end state. Pick the writer at launch:
+
+```sh
+cargo run -- --alarm-impl rust   # the Phase-0 Rust alarm (default)
+cargo run -- --alarm-impl ink    # the ink port; HUD reports its µs/frame
+```
+
+The friction journal for each port lives in [`MIGRATION.md`](MIGRATION.md).
+As of Phase 1a the crate takes brink *path* dependencies (`bevy-brink`, plus
+`brink-compiler` as a dev-dep) — still workspace-excluded, still never built
+by root CI.
+
 ## Controls
 
 | Key        | Action                                             |
