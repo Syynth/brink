@@ -49,7 +49,7 @@ fn run_case_with_types(dir: &Path, types: TypePolicy) -> String {
     let ink_path = dir.join("story.ink");
     let options = AnalysisOptions {
         dialect: Dialect::Brink,
-        types,
+        types: Some(types),
         ..AnalysisOptions::default()
     };
     let compile_msg = format!("compile {}", ink_path.display());

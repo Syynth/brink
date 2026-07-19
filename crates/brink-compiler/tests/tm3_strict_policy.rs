@@ -22,7 +22,7 @@ fn compile_mem(
     let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
     let options = AnalysisOptions {
         dialect,
-        types,
+        types: Some(types),
         ..AnalysisOptions::default()
     };
     brink_compiler::compile_with_options(
@@ -53,7 +53,7 @@ fn compile_mem_manifest(
     let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
     let options = AnalysisOptions {
         dialect: Dialect::Brink,
-        types: TypePolicy::Strict,
+        types: Some(TypePolicy::Strict),
         host_manifest: manifest,
         ..AnalysisOptions::default()
     };

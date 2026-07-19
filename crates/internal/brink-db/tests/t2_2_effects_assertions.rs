@@ -62,7 +62,7 @@ fn exceedance_on_an_extra_call() {
     // Declares `reads: gold` only; the body also calls the external.
     let diags = analyze(
         "VAR gold = 0\nEXTERNAL play_sfx(x)\n\
-         === function spend(cost) ===\n@[effects(reads(gold))]\n\
+         === function spend(cost: int) ===\n@[effects(reads(gold))]\n\
          ~ temp before = gold\n~ play_sfx(cost)\n~ return before\n",
     );
     assert_eq!(codes(&diags), vec![DiagnosticCode::E103], "{diags:?}");
@@ -278,13 +278,16 @@ fn tag_only_line_does_not_exceed_silent() {
 
 #[test]
 fn total_exceedance_on_an_indexing_construct_is_e109() {
-    let diags = analyze("=== function pick_first(a) ===\n@[effects(total)]\n~ return a[0]\n");
+    let diags = analyze(
+        "=== function pick_first(a: array<int>): int ===\n@[effects(total)]\n~ return a[0]\n",
+    );
     assert_eq!(codes(&diags), vec![DiagnosticCode::E109], "{diags:?}");
 }
 
 #[test]
 fn total_exceedance_on_division_is_e109() {
-    let diags = analyze("=== function ratio(a, b) ===\n@[effects(total)]\n~ return a / b\n");
+    let diags =
+        analyze("=== function ratio(a: int, b: int): int ===\n@[effects(total)]\n~ return a / b\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E109], "{diags:?}");
 }
 
@@ -292,14 +295,17 @@ fn total_exceedance_on_division_is_e109() {
 fn total_exceedance_on_a_faulting_stdlib_verb_is_e109() {
     // `min` carries `NotOrderable`/`StdlibWrongType` fault paths — §4b's
     // "orderings carry faults unconditionally" (mode-independent rows).
-    let diags = analyze("=== function lowest(a) ===\n@[effects(total)]\n~ return min(a) or 0\n");
+    let diags = analyze(
+        "=== function lowest(a: array<int>) ===\n@[effects(total)]\n~ return min(a) or 0\n",
+    );
     assert_eq!(codes(&diags), vec![DiagnosticCode::E109], "{diags:?}");
 }
 
 #[test]
 fn satisfied_silent_and_total_are_silent() {
-    let diags =
-        analyze("=== function add(a, b) ===\n@[effects(pure, silent, total)]\n~ return a + b\n");
+    let diags = analyze(
+        "=== function add(a: int, b: int): int ===\n@[effects(pure, silent, total)]\n~ return a + b\n",
+    );
     assert_eq!(codes(&diags), Vec::<DiagnosticCode>::new(), "{diags:?}");
 }
 
@@ -314,7 +320,13 @@ fn emitting_def_without_silent_assertion_is_legal() {
 #[test]
 fn opaque_row_exceeds_both_silent_and_total() {
     // A call through a function value is unbounded on every dimension.
-    let diags = analyze("=== function apply(cb) ===\n@[effects(silent, total)]\n~ return cb()\n");
+    // `cb` is annotated `fn(): int` — the value's *type* is known under the
+    // Brink strict default, but a call through a function value stays
+    // unbounded on the effects dimensions regardless (the row depends on
+    // which function flows in), which is exactly the subject here.
+    let diags = analyze(
+        "=== function apply(cb: fn(): int) ===\n@[effects(silent, total)]\n~ return cb()\n",
+    );
     assert_eq!(
         codes(&diags),
         vec![DiagnosticCode::E108, DiagnosticCode::E109],
@@ -330,7 +342,7 @@ fn deprecated_hash_spelling_reaches_per_file_diagnostics_as_e110_warning() {
     db.set_analysis_options(brink_opts());
     let id = db.set_file(
         "main.ink",
-        "=== function add(a, b) ===\n#@effects(pure)\n~ return a + b\n".to_owned(),
+        "=== function add(a: int, b: int): int ===\n#@effects(pure)\n~ return a + b\n".to_owned(),
     );
     let diags = db.diagnostics(id).expect("file known").to_vec();
     assert_eq!(codes(&diags), vec![DiagnosticCode::E110], "{diags:?}");
@@ -367,8 +379,11 @@ fn writes_rng_clause_covers_a_draw_bearing_def() {
 #[test]
 fn pure_assertion_exceeded_by_the_frozen_ink_spelling_too() {
     // One cell, two surfaces: ink's RANDOM writes the same cell and
-    // exceeds `pure` identically.
-    let diags = analyze("=== function roll() ===\n@[effects(pure)]\n~ return RANDOM(1, 6)\n");
+    // exceeds `pure` identically. The `: int` return annotation is needed
+    // because `infer_intrinsic` has no typing arm for the frozen ink
+    // spellings (they fall through to `Unknown`) — a pre-existing strict-
+    // inference gap, visible under the Brink dialect's strict default.
+    let diags = analyze("=== function roll(): int ===\n@[effects(pure)]\n~ return RANDOM(1, 6)\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E103], "{diags:?}");
     assert!(diags[0].message.contains("rng"), "{diags:?}");
 }

@@ -101,7 +101,7 @@ fn run_case_with_types(dir: &Path, types: TypePolicy) -> String {
     let ink_path = dir.join("story.ink");
     let options = AnalysisOptions {
         dialect: Dialect::Brink,
-        types,
+        types: Some(types),
         ..AnalysisOptions::default()
     };
     let compile_msg = format!("compile {}", ink_path.display());
@@ -131,10 +131,14 @@ fn run_case_with_types(dir: &Path, types: TypePolicy) -> String {
 }
 
 /// Compile+run an in-memory source string (used only by the sorting
-/// lane's property-mode test) under gradual types.
+/// lane's property-mode test) under gradual types — explicitly since
+/// NS-A9 (the Brink dialect's unset-`types` default is now strict; the
+/// generated source shares the gradual-idiom corpus stories the sibling
+/// tests run with `TypePolicy::Gradual`).
 fn run_source(label: &str, source: &str) -> String {
     let options = AnalysisOptions {
         dialect: Dialect::Brink,
+        types: Some(TypePolicy::Gradual),
         ..AnalysisOptions::default()
     };
     let output = brink_compiler::compile_with_options(label, |_| Ok(source.to_owned()), options)

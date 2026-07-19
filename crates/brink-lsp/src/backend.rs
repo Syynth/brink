@@ -91,19 +91,23 @@ pub struct LanguageOptions {
     /// client-declared dialect too, instead of always defaulting to
     /// `StrictInk`.
     dialect: Arc<Mutex<Dialect>>,
-    /// `"strict"` or `"gradual"`; defaults to `Gradual`, matching
-    /// `AnalysisOptions::default()`. Mirrors `dialect` exactly (#660: PR
-    /// #656 left this reachable only via the compiler CLI's `--types
-    /// strict`, never via the IDE/LSP surface) — feeds `analysis_loop` so
-    /// its diagnostics analyze under the client-declared types policy too.
-    types: Arc<Mutex<TypePolicy>>,
+    /// `"strict"` or `"gradual"`; `None` when neither the client nor a
+    /// `brink.toml` ever said — the effective policy is then the
+    /// dialect-keyed default (issue #1127, ruled 2026-07-19: brink →
+    /// strict, strict-ink → gradual), resolved by
+    /// `AnalysisOptions::type_policy()` at each analysis pass. Mirrors
+    /// `dialect` exactly (#660: PR #656 left this reachable only via the
+    /// compiler CLI's `--types strict`, never via the IDE/LSP surface) —
+    /// feeds `analysis_loop` so its diagnostics analyze under the
+    /// client-declared types policy too.
+    types: Arc<Mutex<Option<TypePolicy>>>,
 }
 
 impl LanguageOptions {
     pub fn new() -> Self {
         Self {
             dialect: Arc::new(Mutex::new(Dialect::default())),
-            types: Arc::new(Mutex::new(TypePolicy::default())),
+            types: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -659,10 +663,14 @@ impl Backend {
 /// Read `initializationOptions.<key>` as a string, if the client set it at
 /// all — regardless of whether the value maps to a recognized variant. This
 /// is "the client passed an explicit value", the strongest tier of the
-/// #1030 precedence rule (see [`resolve_language_options`]): even an
-/// unrecognized string still counts as explicit (and falls through the
-/// dialect/types `match`es' `_` arm to the same default a missing key
-/// would), matching the pre-#1030 `apply_initialization_option` behavior.
+/// #1030 precedence rule (see [`resolve_language_options`]). For `dialect`,
+/// an unrecognized string still counts as explicit and falls through the
+/// `match`'s `_` arm to the same default a missing key would. For `types`
+/// (NS-A9, #1127): an unrecognized string is treated as **unset** — the
+/// dialect-keyed default applies — because since the strict default landed,
+/// coercing garbage to a fixed policy would let a typo silently opt a
+/// brink-dialect project out of strict (mirrors the wasm editor's
+/// unrecognized-value behavior).
 fn explicit_initialization_option<'a>(params: &'a InitializeParams, key: &str) -> Option<&'a str> {
     params
         .initialization_options
@@ -690,9 +698,10 @@ impl ConfigOverrides {
                 "brink" => Dialect::Brink,
                 _ => Dialect::StrictInk,
             }),
-            types: explicit_initialization_option(params, "types").map(|v| match v {
-                "strict" => TypePolicy::Strict,
-                _ => TypePolicy::Gradual,
+            types: explicit_initialization_option(params, "types").and_then(|v| match v {
+                "strict" => Some(TypePolicy::Strict),
+                "gradual" => Some(TypePolicy::Gradual),
+                _ => None,
             }),
         }
     }
@@ -850,7 +859,7 @@ fn resolve_language_options(
     // brink` (a config-error diagnostic otherwise, `E064`) — the client's
     // responsibility, same as the compiler CLI.
     if let Some(types) = overrides.types {
-        options.types = types;
+        options.types = Some(types);
     }
 
     (options, outcome)
@@ -2298,10 +2307,7 @@ pub async fn analysis_loop(
                 .dialect
                 .lock()
                 .map_or_else(|_| Dialect::default(), |g| *g),
-            types: language
-                .types
-                .lock()
-                .map_or_else(|_| TypePolicy::default(), |g| *g),
+            types: language.types.lock().map_or_else(|_| None, |g| *g),
             ..AnalysisOptions::default()
         };
 

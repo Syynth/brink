@@ -32,7 +32,9 @@
 //! ```toml
 //! [project]
 //! dialect = "brink"      # "brink" | "strict-ink" (default: strict-ink)
-//! types   = "gradual"    # "gradual" | "strict"   (default: gradual)
+//! types   = "strict"     # "gradual" | "strict"   (default: dialect-keyed —
+//!                        # brink → strict, strict-ink → gradual; issue
+//!                        # #1127, ruled 2026-07-19)
 //! ```
 //!
 //! Both keys are optional; an empty or absent `[project]` table is valid and
@@ -295,7 +297,7 @@ pub fn apply_to_options(
         options.dialect = dialect;
     }
     if !types_overridden && let Some(types) = config.types {
-        options.types = types;
+        options.types = Some(types);
     }
 }
 
@@ -411,14 +413,14 @@ mod tests {
         };
         apply_to_options(&mut options, &config, false, false);
         assert_eq!(options.dialect, Dialect::Brink);
-        assert_eq!(options.types, TypePolicy::Strict);
+        assert_eq!(options.types, Some(TypePolicy::Strict));
     }
 
     #[test]
     fn apply_leaves_overridden_fields_alone() {
         let mut options = AnalysisOptions {
             dialect: Dialect::StrictInk,
-            types: TypePolicy::Gradual,
+            types: Some(TypePolicy::Gradual),
             ..AnalysisOptions::default()
         };
         let config = ProjectConfig {
@@ -428,14 +430,14 @@ mod tests {
         // Both overridden: explicit calls win, file is ignored entirely.
         apply_to_options(&mut options, &config, true, true);
         assert_eq!(options.dialect, Dialect::StrictInk);
-        assert_eq!(options.types, TypePolicy::Gradual);
+        assert_eq!(options.types, Some(TypePolicy::Gradual));
     }
 
     #[test]
     fn apply_mixed_override_only_touches_non_overridden_field() {
         let mut options = AnalysisOptions {
             dialect: Dialect::StrictInk,
-            types: TypePolicy::Gradual,
+            types: Some(TypePolicy::Gradual),
             ..AnalysisOptions::default()
         };
         let config = ProjectConfig {
@@ -446,19 +448,19 @@ mod tests {
         // (file wins, becomes Strict).
         apply_to_options(&mut options, &config, true, false);
         assert_eq!(options.dialect, Dialect::StrictInk);
-        assert_eq!(options.types, TypePolicy::Strict);
+        assert_eq!(options.types, Some(TypePolicy::Strict));
     }
 
     #[test]
     fn apply_with_no_config_values_leaves_options_untouched() {
         let mut options = AnalysisOptions {
             dialect: Dialect::Brink,
-            types: TypePolicy::Strict,
+            types: Some(TypePolicy::Strict),
             ..AnalysisOptions::default()
         };
         apply_to_options(&mut options, &ProjectConfig::default(), false, false);
         assert_eq!(options.dialect, Dialect::Brink);
-        assert_eq!(options.types, TypePolicy::Strict);
+        assert_eq!(options.types, Some(TypePolicy::Strict));
     }
 
     // ── discovery ─────────────────────────────────────────────────────

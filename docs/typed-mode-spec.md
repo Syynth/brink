@@ -11,11 +11,24 @@ doctrine (decision log 2026-07-12).
 
 A **project-level policy over one shared checker**, not a second checker:
 
-- `types = gradual` (default): the 2026-07-10 architecture unchanged —
+> **Amended 2026-07-19 (NS-A9, dialect-keyed default ruling):** the
+> unset-`types` default is now **dialect-keyed**, resolved by one seam
+> (`brink_analyzer::resolve_type_policy`): the **brink dialect defaults to
+> `types = strict`**; the strict-ink dialect defaults to `types = gradual`
+> (where `strict` remains the E064 config error it always was). An explicit
+> `types` choice — CLI flag, `brink.toml`, or API call — always wins over
+> the dialect-keyed default. Gradual is not removed: it remains the floor
+> and the strict-ink default, and any brink project can opt back out with
+> `types = gradual`; it is simply no longer the brink dialect's *implicit*
+> default. References to "gradual (default)" below predate this amendment.
+
+- `types = gradual` (the strict-ink dialect's default): the 2026-07-10
+  architecture unchanged —
   `Unknown` unifies with anything and defers to runtime coercion.
   Annotations are optional seasoning. This remains the floor forever;
   non-programmer-authored projects never see typed mode.
-- `types = strict`: `Unknown` escaping inference is a **compile error**
+- `types = strict` (the brink dialect's default since 2026-07-19):
+  `Unknown` escaping inference is a **compile error**
   ("annotate or restructure"); the coercion lattice narrows (§4);
   variables are mono-typed; collection element types must unify (§5).
 

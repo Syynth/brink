@@ -29,6 +29,15 @@ use proptest::prelude::*;
 
 /// Compile `source` (brink dialect) and link it to a runnable program —
 /// same shape `tier1_brink.rs::compile_and_link` uses.
+///
+/// NS-A9: explicitly gradual. This corpus's fixtures are structurally
+/// locked to the scalar-placeholder-default idiom (`VAR npc = 0`, real
+/// struct assigned in a knot body — a struct construction literal is not a
+/// legal `VAR` declaration default, E075; see the file header), which the
+/// strict regime types as the placeholder's scalar. The subjects here are
+/// runtime projection semantics (regime-independent); until E075 admits
+/// struct literals as declaration defaults these fixtures cannot be
+/// written strict-clean at all — flagged as a follow-up in NS-A9's PR.
 fn compile_and_link(source: &str) -> (Arc<brink_runtime::Program>, Vec<Vec<LineEntry>>) {
     let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
     let output = brink_compiler::compile_with_options(
@@ -41,6 +50,7 @@ fn compile_and_link(source: &str) -> (Arc<brink_runtime::Program>, Vec<Vec<LineE
         },
         AnalysisOptions {
             dialect: Dialect::Brink,
+            types: Some(brink_compiler::TypePolicy::Gradual),
             ..AnalysisOptions::default()
         },
     )

@@ -32,7 +32,7 @@ VAR npc = 0
 {npc.name} has {npc.hp} HP.
 -> END
 
-=== function heal(ref hp, amount) ===
+=== function heal(ref hp: int, amount: int) ===
 ~ hp = hp + amount
 ```
 
@@ -70,7 +70,7 @@ VAR inventory = 0
 {inventory[0]} {inventory[1]} {inventory[2]}
 -> END
 
-=== function bump(ref x, k) ===
+=== function bump(ref x: int, k: int) ===
 ~ x = x + k
 ```
 
@@ -99,7 +99,7 @@ VAR npc = 0
 {npc.hp}
 -> END
 
-=== function heal(ref hp, k) ===
+=== function heal(ref hp: int, k: int) ===
 ~ hp = hp + k
 ```
 
@@ -139,7 +139,7 @@ VAR npc = 0
 {result}
 -> END
 
-=== function heal(ref hp, amount) ===
+=== function heal(ref hp: int, amount: int): int ===
 ~ hp = hp + amount
 ~ return hp
 ```
@@ -171,7 +171,7 @@ VAR npc = 0
 {healer}
 -> END
 
-=== function heal(ref hp, amount) ===
+=== function heal(ref hp: int, amount: int) ===
 ~ hp = hp + amount
 ```
 

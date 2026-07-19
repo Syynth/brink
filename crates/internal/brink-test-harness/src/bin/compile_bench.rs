@@ -735,7 +735,7 @@ fn bench_synthetic_warm_strict(
         .ok_or_else(|| "warm setup: main.ink missing after discovery".to_string())?;
     driver.set_analysis_options(AnalysisOptions {
         dialect: Dialect::Brink,
-        types: TypePolicy::Strict,
+        types: Some(TypePolicy::Strict),
         ..AnalysisOptions::default()
     });
     let mut db = driver.into_db();
