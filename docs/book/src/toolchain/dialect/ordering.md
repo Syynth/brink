@@ -128,7 +128,7 @@ expression fails with `E056`, "`sort` mutates its first argument and
 returns nothing — it can only be used as a statement, not an
 expression":
 
-```ink,error
+```ink,error(E056)
 ~ temp tab = #[3, 1, 2]
 ~ temp tidy = sort(tab)
 {tidy}
@@ -148,7 +148,18 @@ Two properties hold across all four verbs, in every mode, forever:
 tab by amount and two 4-coin nights stay in chronological order — which
 is what makes sorting by one *aspect* of a value trustworthy:
 
-```ink
+<!-- The fence below is marked `ink,proposed` because it does not run today:
+     a genuine RUNTIME bug (not #1168). `len` on a string is ruled to return
+     the character count (stdlib-spec prelude lists `len` under text;
+     literals.md's verb table gives `len(… | string): int`), but the runtime's
+     CollectionLen opcode only handles Array/Map/Range and faults
+     `NotIndexable("string")` on a string. So the comparator's `len(a)` faults
+     mid-sort. The example is correct against the ruled surface; the runtime is
+     behind. Unmark to plain `ink` once `len(string)` is implemented (add a
+     `Value::String` arm to `collection_len` in
+     crates/brink-runtime/src/collection_ops.rs). Minimal repro:
+       {len("cider")}  ->  runtime fault NotIndexable("string") -->
+```ink,proposed
 ~ temp stock = #["cider", "ale", "bread", "gin"]
 ~ sort_by(stock, #fn(shortest_first))
 Shelved by label width: {stock}.
@@ -201,7 +212,7 @@ with "`sort_by`'s comparator `luckiest_first` reads lucky — a comparator
 must be a pure, silent `fn(T, T): int` (stdlib-spec §4b: the order must
 depend only on the two comparands)":
 
-```ink,error
+```ink,error(E119)
 VAR lucky = 4
 
 ~ temp dice = #[3, 6, 2]
@@ -382,8 +393,8 @@ The bounded-priority-queue loop, today's spelling:
 ~ temp calls = ""
 ~ {
     while len(bell) > 0 {
-        temp next = heap_pop(bell)
-        calls = calls + " " + string(next)
+        temp room = heap_pop(bell)
+        calls = calls + " " + string(room)
     }
 }
 Rooms answered in order:{calls}.

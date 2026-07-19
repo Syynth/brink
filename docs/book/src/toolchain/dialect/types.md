@@ -221,7 +221,7 @@ does, and the checker then verifies the body against the declaration. When
 the two disagree, that's `E063` — "annotated type `string` disagrees with
 the type inferred from usage (`int`)":
 
-```ink,error
+```ink,error(E063)
 -> tally("a quiet night")
 
 === tally(count: string) ===
@@ -252,7 +252,7 @@ because interpolation accepts every type. This fails with `E065`,
 "`serve`'s parameter `dish` escapes strict inference as Unknown — annotate
 or restructure":
 
-```ink,error
+```ink,error(E065)
 -> serve
 
 === serve(dish) ===
@@ -269,7 +269,7 @@ unconstrained — it's over-constrained, used as two irreconcilable types.
 This fails with `E066`, "`haggle`'s parameter `offer` is Conflicted under
 strict types — its uses disagree on its type":
 
-```ink,error
+```ink,error(E066)
 -> haggle
 
 === haggle(offer) ===
@@ -391,7 +391,7 @@ Under strict, element types unify per collection: every element in an
 collection's type is `Conflicted` and the binding holding it fails with
 `E066`:
 
-```ink,error
+```ink,error(E066)
 -> count_loot
 
 === count_loot ===

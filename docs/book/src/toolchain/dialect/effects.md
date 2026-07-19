@@ -162,7 +162,7 @@ inferred row is *not covered by* what you declared — the body reads, writes, o
 calls something the assertion didn't list — that's a compile error (`E103`,
 "inferred effects exceed the declared bound"):
 
-```ink,error
+```ink,error(E103)
 VAR gold = 0
 EXTERNAL play_sfx(x)
 -> shop
