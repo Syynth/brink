@@ -351,7 +351,10 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
         | Expr::SeqMax(e)
         | Expr::SeqFirst(e)
         | Expr::SeqLast(e)
-        | Expr::MapClear(e) => remap_expr(e, map),
+        | Expr::MapClear(e)
+        | Expr::RandChance(e)
+        | Expr::RandPick(e)
+        | Expr::RandShuffle(e) => remap_expr(e, map),
         Expr::Infix(l, _, r) => {
             remap_expr(l, map);
             remap_expr(r, map);
@@ -489,7 +492,8 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
         | Expr::DivertTarget(_)
         | Expr::ListLiteral { .. }
         | Expr::ConstLiteral(_)
-        | Expr::OptionNone => {}
+        | Expr::OptionNone
+        | Expr::RandFloat => {}
     }
 }
 

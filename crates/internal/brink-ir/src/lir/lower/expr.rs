@@ -964,12 +964,29 @@ fn lower_t1b_stdlib_call(
             }
             Some(lir::Expr::ConvertInt(Box::new(lower_expr(&args[0], ctx))))
         }
-        "float" => {
-            if !arity_ok(ctx, 1) {
-                return Some(lir::Expr::Null);
+        // `float` is two verbs disambiguated by arity (NS-A6, F4 resolved
+        // in-wave per `docs/stdlib-sequencing.md` §2 A6): nullary
+        // `float()` is the `std::rand` uniform-`[0,1)` draw
+        // (`docs/stdlib-spec.md` §7 — one RNG-cell write); unary
+        // `float(x)` stays the TM-3 pure conversion intrinsic. Any other
+        // arity is E031 naming both forms.
+        "float" => match args.len() {
+            0 => Some(lir::Expr::RandFloat),
+            1 => Some(lir::Expr::ConvertFloat(Box::new(lower_expr(&args[0], ctx)))),
+            n => {
+                ctx.diagnostics.push(crate::Diagnostic {
+                    file: ctx.file,
+                    range: call_range,
+                    message: format!(
+                        "{}: `float` expects 0 arguments (random draw in [0,1)) or 1 \
+                         argument (numeric conversion), got {n}",
+                        crate::DiagnosticCode::E031.title(),
+                    ),
+                    code: crate::DiagnosticCode::E031,
+                });
+                Some(lir::Expr::Null)
             }
-            Some(lir::Expr::ConvertFloat(Box::new(lower_expr(&args[0], ctx))))
-        }
+        },
         "string" => {
             if !arity_ok(ctx, 1) {
                 return Some(lir::Expr::Null);
@@ -977,6 +994,50 @@ fn lower_t1b_stdlib_call(
             Some(lir::Expr::ConvertString(Box::new(lower_expr(
                 &args[0], ctx,
             ))))
+        }
+        // ── NS-A6 rand verbs (issue #1112, `docs/stdlib-spec.md` §7).
+        // Draw semantics (clamping, Option-on-empty, the pinned draw
+        // chain) live entirely at the runtime ops — these lowerings just
+        // recognize the call shapes. `float()`'s nullary arm is above,
+        // merged with the conversion intrinsic (F4 arity split). ─────────
+        "chance" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::RandChance(Box::new(lower_expr(&args[0], ctx))))
+        }
+        "pick" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::RandPick(Box::new(lower_expr(&args[0], ctx))))
+        }
+        // `shuffled(a)` — the functional twin (§4's ruled naming
+        // convention): evaluates its argument, returns a new shuffled
+        // array; the argument itself is never written back.
+        "shuffled" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::RandShuffle(Box::new(lower_expr(&args[0], ctx))))
+        }
+        // `shuffle(a)` (in-place) and `seed(n)` (writes the RNG cell) are
+        // statement-only — recognized and fully lowered by
+        // `blocks::try_lower_mutator_stmt` before a call expression ever
+        // reaches here; expression position is the same E056 misuse the
+        // A1/slice-1 mutators get.
+        "shuffle" | "seed" => {
+            ctx.diagnostics.push(crate::Diagnostic {
+                file: ctx.file,
+                range: call_range,
+                message: format!(
+                    "{}: `{name}` returns nothing — it can only be used as a statement, \
+                     not an expression",
+                    crate::DiagnosticCode::E056.title(),
+                ),
+                code: crate::DiagnosticCode::E056,
+            });
+            Some(lir::Expr::Null)
         }
         // T1c (docs/t1c-spec.md §3): the explicit call form `call(f, args…)` —
         // dispatch through a function value where the callee is itself an
@@ -1089,6 +1150,16 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "contains_value"
             | "clear"
             | "some"
+            // NS-A6 (issue #1112, `docs/stdlib-spec.md` §7): the
+            // `std::rand` draw verbs. `float` (nullary draw / unary
+            // conversion, F4 arity split) and `int` (conversion only —
+            // `int(range)` is deferred to A5 with the inhabited-range
+            // refinement) are already listed above.
+            | "chance"
+            | "pick"
+            | "shuffle"
+            | "shuffled"
+            | "seed"
     )
 }
 

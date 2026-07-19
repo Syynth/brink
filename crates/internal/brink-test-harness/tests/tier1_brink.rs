@@ -252,6 +252,16 @@ fn stdlib_author_function_shadows_builtin() {
     assert_case("stdlib-shadowing");
 }
 
+// ── NS-A6: the std::rand draw verbs (docs/stdlib-spec.md §7, issue
+// #1112). The expected.txt is a pinned-algorithm golden: seed(7) +
+// DotNetRng fix every value, so any drift in the draw chain (seed
+// derivation, 24-bit float shaping, Fisher-Yates order) fails loudly. ────
+
+#[test]
+fn rand_verbs_draw_deterministically_under_seed() {
+    assert_case("rand-verbs");
+}
+
 // ── Stdlib slice 1 completion: char_at (docs/t1b-surface-spec.md §5,
 // issue #857) ──────────────────────────────────────────────────────────────
 
@@ -391,6 +401,7 @@ fn every_case_directory_has_a_test() {
         "fn-value-bind-triple-chain",
         "ref-call-with-block-temp",
         "option-verbs",
+        "rand-verbs",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink")

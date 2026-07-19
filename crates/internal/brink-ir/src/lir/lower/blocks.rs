@@ -834,6 +834,11 @@ enum MutatorKind {
     /// `clear(m)` — 1 arg (NS-A1, `docs/stdlib-spec.md` §5): empty the map
     /// in place, total.
     Clear,
+    /// `shuffle(a)` — 1 arg (NS-A6, `docs/stdlib-spec.md` §7): Fisher-Yates
+    /// shuffle of the array in place; every element swap draws through the
+    /// one RNG cell. `shuffled(a)` is the functional twin (ordinary
+    /// expression lowering).
+    Shuffle,
 }
 
 impl MutatorKind {
@@ -848,13 +853,14 @@ impl MutatorKind {
             "insert" => Some(Self::Insert),
             "remove" => Some(Self::Remove),
             "clear" => Some(Self::Clear),
+            "shuffle" => Some(Self::Shuffle),
             _ => None,
         }
     }
 
     fn expected_argc(self) -> usize {
         match self {
-            Self::Clear => 1,
+            Self::Clear | Self::Shuffle => 1,
             Self::Push | Self::Remove => 2,
             Self::Insert => 3,
         }
@@ -868,6 +874,7 @@ impl MutatorKind {
             Self::Insert => "insert(container, key_or_index, value)",
             Self::Remove => "remove(container, key_or_index)",
             Self::Clear => "clear(map)",
+            Self::Shuffle => "shuffle(array)",
         }
     }
 }
@@ -897,6 +904,44 @@ fn is_lvalue_expr(expr: &hir::Expr) -> bool {
 /// `lower_block_with_children`) — a function call used as a statement for
 /// its side effect is not a T1b-only concept (ordinary knots/externals are
 /// already callable that way outside any block).
+/// `seed(n)` (NS-A6, `docs/stdlib-spec.md` §7): statement-only like the
+/// mutators, but its argument is an ordinary value, not an lvalue
+/// receiver — it writes the RNG cell, not its argument — so it takes its
+/// own path rather than joining `MutatorKind`'s lvalue/RMW machinery. It
+/// lowers to the frozen `SEED_RANDOM` builtin (one RNG cell, two
+/// surfaces, no drift); `ExprStmt` discards the op's `Null`. Same shadow
+/// discipline as the mutators: a resolvable user symbol of the same name
+/// falls through to ordinary call lowering.
+fn try_lower_seed_stmt(
+    path: &hir::Path,
+    args: &[hir::Expr],
+    ctx: &mut LowerCtx<'_>,
+    out: &mut Vec<lir::Stmt>,
+) -> bool {
+    if ctx.temp_slot("seed").is_some() || ctx.resolve_path(path.range).is_some() {
+        return false;
+    }
+    if args.len() != 1 {
+        ctx.diagnostics.push(Diagnostic {
+            file: ctx.file,
+            range: path.range,
+            message: format!(
+                "{}: `seed` expects 1 argument(s), got {} — expected signature: `seed(n)`",
+                DiagnosticCode::E058.title(),
+                args.len(),
+            ),
+            code: DiagnosticCode::E058,
+        });
+        return true;
+    }
+    let arg = lower_expr(&args[0], ctx);
+    out.push(lir::Stmt::ExprStmt(lir::Expr::CallBuiltin {
+        builtin: lir::BuiltinFn::SeedRandom,
+        args: vec![arg],
+    }));
+    true
+}
+
 pub(super) fn try_lower_mutator_stmt(
     expr: &hir::Expr,
     ctx: &mut LowerCtx<'_>,
@@ -906,6 +951,14 @@ pub(super) fn try_lower_mutator_stmt(
         return false;
     };
     let name = super::expr::path_to_string(path);
+
+    if name == "seed" && try_lower_seed_stmt(path, args, ctx, out) {
+        return true;
+    }
+    if name == "seed" {
+        return false;
+    }
+
     let Some(kind) = MutatorKind::from_name(&name) else {
         return false;
     };
@@ -1009,6 +1062,7 @@ pub(super) fn try_lower_mutator_stmt(
             }
         }
         MutatorKind::Clear => lir::Expr::MapClear(Box::new(container())),
+        MutatorKind::Shuffle => lir::Expr::RandShuffle(Box::new(container())),
     };
 
     out.push(lir::Stmt::Assign {
@@ -1110,6 +1164,9 @@ fn lower_bare_mutator(
             key: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
         },
         MutatorKind::Clear => lir::Expr::MapClear(Box::new(lir::Expr::TakeTemp(c_slot, c_name))),
+        MutatorKind::Shuffle => {
+            lir::Expr::RandShuffle(Box::new(lir::Expr::TakeTemp(c_slot, c_name)))
+        }
     };
 
     out.push(lir::Stmt::Assign {

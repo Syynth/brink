@@ -853,6 +853,20 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "contains_value"
             | "clear"
             | "some"
+            // NS-A6 (issue #1112, `docs/stdlib-spec.md` §7): the
+            // `std::rand` draw verbs — every one an ordinary *write* to
+            // the RNG state cell (`DefinitionId::RNG_CELL`) in the effect
+            // row. `float` (nullary draw / unary conversion — the F4
+            // arity split, resolved in-wave) and `int` (conversion only;
+            // `int(range)` waits on A5's inhabited-range refinement) are
+            // already listed above. Same slice-1 machinery end to end:
+            // shadowable with E035, `strict-ink` rejection via the
+            // dialect gate.
+            | "chance"
+            | "pick"
+            | "shuffle"
+            | "shuffled"
+            | "seed"
     )
 }
 

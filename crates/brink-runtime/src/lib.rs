@@ -46,6 +46,7 @@ mod locale;
 mod output;
 mod program;
 mod proj_ops;
+mod rand_ops;
 mod record_ops;
 mod replay;
 pub mod rng;

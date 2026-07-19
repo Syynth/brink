@@ -832,6 +832,28 @@ pub enum Expr {
     /// write-back discipline as `CollectionInsert`/`CollectionRemove`.
     MapClear(Box<Expr>),
 
+    // ── NS-A6: the `std::rand` draw verbs (`docs/stdlib-spec.md` §7,
+    // issue #1112). Every one is a write to the RNG cell in the effect
+    // row; `seed(n)` has no variant here — it lowers to the frozen
+    // `CallBuiltin(SeedRandom)` (one cell, two surfaces, no drift). ─────
+    /// `float()` (nullary) → `Float` in `[0,1)` — `Opcode::RandFloat`. One
+    /// draw. The unary `float(x)` spelling stays `ConvertFloat`;
+    /// disambiguated by arity at lowering (F4, resolved in-wave).
+    RandFloat,
+    /// `chance(p)` → `Bool` — `Opcode::RandChance`. `p` clamped to
+    /// `[0,1]`, NaN → `false` (F3, ruled 2026-07-19); one draw always.
+    RandChance(Box<Expr>),
+    /// `pick(coll)` → `Option[T]` — `Opcode::RandPick`. Uniform draw from
+    /// an array or flags subset; empty → `none`. The range leg is deferred
+    /// to A5 (ranges as first-class values, F7).
+    RandPick(Box<Expr>),
+    /// The Fisher–Yates primitive — `Opcode::RandShuffle`: evaluates an
+    /// array, pushes the shuffled array. Two surfaces share it:
+    /// `shuffled(a)` (functional, ordinary expression lowering) and
+    /// `shuffle(a)` (statement-only mutator, RMW write-back via
+    /// `lir::lower::blocks` exactly like `MapClear`).
+    RandShuffle(Box<Expr>),
+
     // ── Records (TM-4c, `docs/typed-mode-spec.md` §6) ───────────────
     /// `Name#{field: expr, …}` construction. `fields` is in the exact order
     /// `RecordNew`'s VM opcode expects the values pushed — the shape's

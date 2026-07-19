@@ -1261,6 +1261,14 @@ impl InferPass<'_, '_> {
         // `call`/`bind` (their dispatch-fault marking lives at
         // `check_value_call`/`check_bind_value`, shared with direct value
         // calls).
+        // NS-A6 additions to the faulting set: `chance`/`pick`/`shuffle`/
+        // `shuffled` fault on a wrong-typed argument (`StdlibWrongType` —
+        // the malformed-question doctrine), like the NS-A1 verbs. NOT in
+        // the set: nullary `float()` (the rand draw — no argument, no
+        // fault path; the *unary* conversion keeps its E078-lineage fault)
+        // and `seed` (the frozen `SeedRandom` op coerces a non-int seed to
+        // 0, ink-heritage leniency — total).
+        let is_rand_float_draw = name == "float" && args.is_empty();
         if matches!(
             name,
             "len"
@@ -1283,7 +1291,12 @@ impl InferPass<'_, '_> {
                 | "get"
                 | "contains_value"
                 | "clear"
-        ) {
+                | "chance"
+                | "pick"
+                | "shuffle"
+                | "shuffled"
+        ) && !is_rand_float_draw
+        {
             self.effect_faults = true;
         }
         // The classic uppercase conversion builtins fault outside the
@@ -1292,6 +1305,31 @@ impl InferPass<'_, '_> {
         // they reach this arm as unresolved single-segment call names.
         if matches!(name, "INT" | "FLOAT") {
             self.effect_faults = true;
+        }
+        // NS-A6 (issue #1112, `docs/stdlib-spec.md` §7 — "every draw is an
+        // ordinary write"): a draw-bearing body writes the RNG state cell.
+        // Both surfaces harvest identically — the brink draw verbs AND the
+        // frozen ink spellings (`RANDOM`/`SEED_RANDOM`/`LIST_RANDOM`,
+        // which reach this arm as unresolved uppercase call names): one
+        // cell, two surfaces, one row entry. This is what makes the ruled
+        // free consequences fall out of existing machinery: pure-gated
+        // wake conditions exclude draw-bearing callees (E105), and
+        // `@[effects(pure)]` asserts rng-freedom (E103 exceedance names
+        // the cell as `rng`).
+        if is_rand_float_draw
+            || matches!(
+                name,
+                "chance"
+                    | "pick"
+                    | "shuffle"
+                    | "shuffled"
+                    | "seed"
+                    | "RANDOM"
+                    | "SEED_RANDOM"
+                    | "LIST_RANDOM"
+            )
+        {
+            self.effect_writes.insert(DefinitionId::RNG_CELL);
         }
         match name {
             // `len` (stdlib slice 1) and `int` (TM-3-completion conversion
@@ -1459,9 +1497,12 @@ impl InferPass<'_, '_> {
                 }
                 Ty::Bool
             }
-            // `clear(ref m)` (§5): statement-only mutator — a receiver
-            // write, no value.
-            "clear" => {
+            // `clear(ref m)` (§5) and `shuffle(ref a)` (§7, NS-A6):
+            // statement-only in-place mutators — a receiver write, no
+            // value (the `push` shape, #880: the intrinsics' effect
+            // behavior is declared at introduction). Arms merged per
+            // clippy match_same_arms (the #694 `len | int` precedent).
+            "clear" | "shuffle" => {
                 if let Some(container) = args.first() {
                     self.record_write(container);
                 }
@@ -1470,6 +1511,39 @@ impl InferPass<'_, '_> {
             // `some(x)` → `Option[typeof x]` (§1.4) — the constructor is
             // where a bare element type becomes optional.
             "some" => Ty::Option(Box::new(arg_tys.first().cloned().unwrap_or(Ty::Unknown))),
+            // ── NS-A6 rand verbs (issue #1112, `docs/stdlib-spec.md`
+            // §7). Effect harvest (the RNG-cell write) is above, before
+            // the match; these arms carry only the typing rules. Runtime
+            // domain checks (non-numeric `p`, non-array/subset container)
+            // stay at the ops, same split as the NS-A1 verbs. ───────────
+            //
+            // `chance(p)` → bool. `p` is numeric (int coerces to float per
+            // the ink-heritage promotion), so no `observe` narrowing — the
+            // multi-type domain is a runtime concern, exactly like the
+            // conversion intrinsics' arms above.
+            "chance" => Ty::Bool,
+            // `pick(coll)` → `Option[T]`: element from a known array,
+            // subset-of-the-same-list from a flags subset.
+            "pick" => match arg_tys.first() {
+                Some(Ty::Array(elem)) => Ty::Option(elem.clone()),
+                Some(Ty::List(origin)) => Ty::Option(Box::new(Ty::List(origin.clone()))),
+                _ => Ty::Option(Box::new(Ty::Unknown)),
+            },
+            // `shuffled(a)` → a new array of the same element type.
+            "shuffled" => match arg_tys.first() {
+                Some(Ty::Array(elem)) => Ty::Array(elem.clone()),
+                _ => Ty::Unknown,
+            },
+            // `seed(n)`: statement-only; `n` is an int by signature —
+            // observed so a strict project gets the narrowing (the
+            // gradual runtime stays lenient: the frozen `SeedRandom` op
+            // coerces non-ints to 0).
+            "seed" => {
+                if let Some(n) = args.first() {
+                    self.observe(n, &Ty::Int);
+                }
+                Ty::Unknown
+            }
             // T1c (docs/t1c-spec.md §3/§4, issue #733): the explicit call
             // forms. `f` (args[0]) is the callee — a value, not a
             // statically-named target — so its type comes from the

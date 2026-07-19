@@ -572,7 +572,7 @@ fn note_map_mutation(container: &Value) {
 #[inline(always)]
 fn note_map_mutation(_container: &Value) {}
 
-fn type_name(v: &Value) -> &'static str {
+pub(crate) fn type_name(v: &Value) -> &'static str {
     match v {
         Value::Int(_) => "int",
         Value::Float(_) => "float",

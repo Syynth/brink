@@ -1952,6 +1952,12 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         "map_contains_value" => Ok(Opcode::MapContainsValue),
         "map_clear" => Ok(Opcode::MapClear),
 
+        // NS-A6 rand verbs
+        "rand_float" => Ok(Opcode::RandFloat),
+        "rand_chance" => Ok(Opcode::RandChance),
+        "rand_pick" => Ok(Opcode::RandPick),
+        "rand_shuffle" => Ok(Opcode::RandShuffle),
+
         // Debug
         "source_location" => {
             // Written as "source_location LINE:COL" — parsed as source_loc operand

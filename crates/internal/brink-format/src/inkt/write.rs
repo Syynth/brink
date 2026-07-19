@@ -743,6 +743,11 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::MapGetOpt => write!(w, "map_get_opt"),
         Opcode::MapContainsValue => write!(w, "map_contains_value"),
         Opcode::MapClear => write!(w, "map_clear"),
+        // NS-A6 rand verbs (#1112).
+        Opcode::RandFloat => write!(w, "rand_float"),
+        Opcode::RandChance => write!(w, "rand_chance"),
+        Opcode::RandPick => write!(w, "rand_pick"),
+        Opcode::RandShuffle => write!(w, "rand_shuffle"),
     }
 }
 

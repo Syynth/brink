@@ -232,3 +232,25 @@ fn brink_condition_calling_pure_function_passes_purity_gate() {
         "a pure-function condition must not trip the purity gate: {diags:?}"
     );
 }
+
+/// NS-A6 (issue #1112, docs/stdlib-spec.md §7 — the ruled free
+/// consequence): a wake condition calling a draw-bearing function is
+/// excluded by the existing purity machinery, because the draw is an
+/// ordinary write (to the RNG cell) in the callee's row. A re-evaluated
+/// draw would be re-roll-unstable — E105 is the correct rejection.
+#[test]
+fn brink_draw_bearing_condition_is_rejected_by_the_purity_gate() {
+    let source = concat!(
+        "=== function lucky() ===\n",
+        "~ return chance(0.5)\n",
+        "=== start ===\n",
+        "~ await lucky()\n",
+        "-> END\n",
+    );
+    let err = compile_mem_with_dialect(source, Dialect::Brink).unwrap_err();
+    let diags = diagnostics_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E105),
+        "a draw-bearing condition must trip the purity gate: {diags:?}"
+    );
+}

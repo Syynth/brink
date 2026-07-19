@@ -2,11 +2,11 @@ use crate::SyntaxKind::{
     self, AMP_AMP, ARRAY_LITERAL, BANG, BANG_EQ, BANG_QUESTION, BOOLEAN_LIT, CALL_EXPR, CARET,
     COLON, COMMA, DIVERT, DIVERT_TARGET_EXPR, DOT, EOF, EQ_EQ, FIELD_ACCESS_EXPR, FLOAT, FLOAT_LIT,
     FN_LITERAL, FUNCTION_CALL, GT, GT_EQ, HASH, IDENT, IDENTIFIER, INDEX_EXPR, INFIX_EXPR, INTEGER,
-    INTEGER_LIT, KW_AND, KW_FALSE, KW_HAS, KW_HASNT, KW_MOD, KW_NOT, KW_OR, KW_REF, KW_TRUE,
-    L_BRACE, L_BRACKET, L_PAREN, LIST_EXPR, LT, LT_EQ, MAP_ENTRY, MAP_LITERAL, MINUS, MINUS_EQ,
-    NEWLINE, PAREN_EXPR, PERCENT, PIPE, PLUS, PLUS_EQ, POSTFIX_EXPR, PREFIX_EXPR, QUESTION, QUOTE,
-    R_BRACE, R_BRACKET, R_PAREN, REF_EXPR, SLASH, STAR, STRING_LIT, STRUCT_FIELD_INIT,
-    STRUCT_LITERAL,
+    INTEGER_LIT, KW_AND, KW_FALSE, KW_HAS, KW_HASNT, KW_MOD, KW_NOT, KW_OR, KW_REF, KW_SHUFFLE,
+    KW_TRUE, L_BRACE, L_BRACKET, L_PAREN, LIST_EXPR, LT, LT_EQ, MAP_ENTRY, MAP_LITERAL, MINUS,
+    MINUS_EQ, NEWLINE, PAREN_EXPR, PERCENT, PIPE, PLUS, PLUS_EQ, POSTFIX_EXPR, PREFIX_EXPR,
+    QUESTION, QUOTE, R_BRACE, R_BRACKET, R_PAREN, REF_EXPR, SLASH, STAR, STRING_LIT,
+    STRUCT_FIELD_INIT, STRUCT_LITERAL,
 };
 
 use super::Parser;
@@ -253,6 +253,18 @@ fn atom(p: &mut Parser<'_, '_>) -> bool {
                 // dotted_identifier
                 super::divert::path(p);
             }
+            true
+        }
+
+        // `shuffle(…)` in expression/statement position (NS-A6, issue
+        // #1112): `shuffle` is lexed as `KW_SHUFFLE` for the sequence
+        // header (`{shuffle: …}` — always followed by `:`), so the stdlib
+        // mutator call spelling needs this contextual arm. Gated on `(`,
+        // which a sequence header position can never produce; the AST
+        // layer's `Identifier::name`/`Path::segments` already accept
+        // keyword tokens as contextual identifiers.
+        KW_SHUFFLE if p.nth(1) == L_PAREN => {
+            function_call(p);
             true
         }
 
