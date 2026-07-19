@@ -128,6 +128,18 @@ form on this page is rejected whole with a targeted `E051`: "brink
 extension used under strict-ink dialect." Parse never fails; analysis
 refuses. See [Enabling the Dialect](enabling.md).)
 
+> **A bare `#` in prose swallows the rest of the line.** The tag grammar
+> that forces the expression-position rule has a sharper edge worth
+> knowing: because `#` opens a tag anywhere in prose, a literal `#` in
+> narrative text — a hashtag, a shorthand for "number" — silently turns
+> everything to the next `#` or end of line into tag data. `This costs
+> # 5 dollars.` prints `This costs` and files `5 dollars.` as a tag. This
+> is stock ink behavior, byte-identical to the reference implementation
+> (verified against inklecate, issue #858) — not a brink bug, but a trap
+> the sigil forms sit next to. Relatedly, trailing whitespace on a
+> printed line — including whitespace after a final interpolation — is
+> stripped before output, also matching the reference exactly.
+
 ## Typing a collection
 
 Collections are statically homogeneous: one element type per array, one
