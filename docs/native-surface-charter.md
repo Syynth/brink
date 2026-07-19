@@ -128,7 +128,11 @@ One brace grammar; the annotation position declares the kind:
 
 ## 7. Code-ground (sketch — own sitting pending)
 
-Lua-adjacent feel; expression-oriented (Rust's
+**North star: RustScript** (AMENDED 2026-07-19, superseding the
+original "Lua-adjacent feel" — ruled in the lambda sitting: the
+dialect was already Rust-shaped in every ruled bone — fn/let/match/
+enums/structs/use/::/@[…]/ranges — so family coherence IS the
+cold-reader story). Expression-oriented (Rust's
 everything-is-an-expression as the pole star, blocks-as-values on
 the watch list); no tildes — code is the ground. UFCS
 (`x.foo(y)` ≡ `foo(x, y)`) is the leading answer to the
