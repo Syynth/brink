@@ -255,6 +255,12 @@ Serves `sort`/`sort_by`/`min`/`max`/heap (§8) and `compare` (§9.6).
   worse." `heap_push` checks at entry — the invariant then holds
   over clean data.
 
+  **RULED by delegation 2026-07-19 (not fully reviewed — see the decision-log's "Delegated batch ruling" entry):** **F29(a)** — the symmetric
+  carve-out: a protocol `display`/`compare` impl whose inferred row is
+  provably total does NOT inherit the conservative faults bit; the
+  conservative union applies only when the impl's own row is opaque or
+  fault-bearing. (The post-A3 composition audit's C1/C2 finding; gates A4.)
+
 ## 5. Domain 4 — maps (RULED 2026-07-18)
 
 - Type `[K: V]` (doctrine §1.4); literal `Map { k: v }` (Phase A
@@ -410,6 +416,12 @@ precedent, oracle byte-identical):
 - Heritage: ink's `RANDOM(min, max)` / `SEED_RANDOM` stay
   ink-frozen spellings of the same cell — one RNG, two surfaces,
   no drift.
+
+  **RULED by delegation 2026-07-19 (not fully reviewed — see the decision-log's "Delegated batch ruling" entry):** **F30(a)** — content equality means the
+  **denoted integer sequence**: `1..=6 == 1..7` is true and all empty
+  ranges are mutually equal, while display and wire preserve the written
+  form (the #909 content-over-form precedent). Shipped in A5 (#1136),
+  now ratified.
 
 ## 8. Domain 7 — collections+ (RULED 2026-07-18)
 

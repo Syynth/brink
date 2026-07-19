@@ -42,6 +42,17 @@ the scalar kit (lerp/clamp/min/max/…) defined across the tower as
 its width-1 floor — all as already ruled in §2b, conventions now
 pinned to glam's.
 
+
+**RULED by delegation 2026-07-19 (not fully reviewed — see the decision-log's "Delegated batch ruling" entry):**
+- **F31 (partial-b):** the operator table gains `mat * mat` (composition),
+  `mat * scalar`, and `vec / scalar` as implemented rows; every other
+  glam-native form (`mat ± mat`, `quat * scalar`, `vec / vec`, …) keeps
+  faulting until asked for. Implementation is an A8 follow-up issue.
+- **F32(a):** tower values are **always truthy** (the compound-value-with-
+  identity precedent; F27's no-truthiness posture is Option-specific).
+- **F33(a):** `dot`/`cross` remain ambient intrinsics pre-B5; revisit when
+  namespacing lands.
+
 ## T4 — Equality & ordering
 
 Componentwise IEEE `==` — a NaN-bearing vec never equals itself,
