@@ -8,6 +8,6 @@ Result: {result}.
 HP cell is now {base_hp}.
 -> END
 
-=== function adjust(ref hp, delta1, delta2) ===
+=== function adjust(ref hp: int, delta1: int, delta2: int): int ===
 ~ hp = hp + delta1 + delta2
 ~ return hp

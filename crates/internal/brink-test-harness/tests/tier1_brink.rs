@@ -503,9 +503,75 @@ fn errors_of(err: &brink_compiler::CompileError) -> &[brink_compiler::ResolvedDi
     }
 }
 
+/// NS-A9: the Brink dialect's unset-`types` default is now STRICT. Tests in
+/// this file whose *subject* is the gradual regime's runtime semantics —
+/// dynamic dispatch/arity/conversion faults the strict checker would reject
+/// at compile time, or the `VAR x = 0` reassignment idiom — opt back into
+/// gradual explicitly through these variants. Everything else was made
+/// strict-clean with annotations instead (the per-fixture triage lives in
+/// the NS-A9 PR table).
+fn gradual_opts() -> AnalysisOptions {
+    AnalysisOptions {
+        dialect: Dialect::Brink,
+        types: Some(brink_compiler::TypePolicy::Gradual),
+        ..AnalysisOptions::default()
+    }
+}
+
+fn compile_and_link_gradual(
+    source: &str,
+) -> (
+    std::sync::Arc<brink_runtime::Program>,
+    Vec<Vec<brink_format::LineEntry>>,
+) {
+    let files: std::collections::HashMap<&str, &str> =
+        std::collections::HashMap::from([("main.ink", source)]);
+    let output = brink_compiler::compile_with_options(
+        "main.ink",
+        |path| {
+            files
+                .get(path)
+                .map(|s| (*s).to_string())
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, path))
+        },
+        gradual_opts(),
+    )
+    .expect("compile (explicit gradual)");
+    let (program, tables) = brink_runtime::link(&output.data).expect("link");
+    (std::sync::Arc::new(program), tables)
+}
+
+/// Gradual-regime counterpart of `run_expecting_fault` — for runtime faults
+/// that only exist under gradual (strict rejects the same shape statically).
+fn run_expecting_fault_gradual(source: &str) -> Option<brink_runtime::RuntimeError> {
+    let (program, tables) = compile_and_link_gradual(source);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    for _ in 0..64 {
+        match story.continue_single() {
+            Ok(Line::Done { .. } | Line::End { .. } | Line::Suspended { .. }) => return None,
+            Ok(_) => {}
+            Err(e) => return Some(e),
+        }
+    }
+    None
+}
+
+/// Gradual-regime counterpart of `run_to_error`.
+fn run_to_error_gradual(source: &str) -> brink_runtime::RuntimeError {
+    let (program, tables) = compile_and_link_gradual(source);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    loop {
+        match story.continue_single() {
+            Ok(Line::Text { .. }) => {}
+            Ok(other) => panic!("expected a runtime fault, story completed with {other:?}"),
+            Err(e) => return e,
+        }
+    }
+}
+
 #[test]
 fn author_defined_len_shadows_builtin_with_e035_warning() {
-    let source = "=== function len(x)\n~ return 999\n\nHello.\n-> END\n";
+    let source = "=== function len(x: int): int\n~ return 999\n\nHello.\n-> END\n";
     let out = compile_brink(source).expect("shadowing is a warning, not a compile error");
     assert!(
         out.warnings
@@ -1083,7 +1149,7 @@ fn map_remove_with_non_key_domain_float_key_faults() {
 
 #[test]
 fn author_defined_int_shadows_builtin_with_e035_warning() {
-    let source = "=== function int(x)\n~ return 999\n\nHello.\n-> END\n";
+    let source = "=== function int(x: int): int\n~ return 999\n\nHello.\n-> END\n";
     let out = compile_brink(source).expect("shadowing is a warning, not a compile error");
     assert!(
         out.warnings
@@ -1190,10 +1256,13 @@ fn int_of_negative_float_truncates_toward_zero_not_floor() {
 fn int_of_a_divert_target_faults_under_gradual() {
     // Root-level content is the entry point (`run_to_error`'s pattern
     // throughout this file) — `target` is declared only so `-> target` has
-    // somewhere to resolve; it's never actually reached.
+    // somewhere to resolve; it's never actually reached. NS-A9: gradual
+    // explicitly — the strict regime rejects this same shape at compile
+    // time as E078 (`strict_mode_rejects_int_of_a_divert_target_literal_
+    // with_e078` below is that companion).
     let source =
         "~ {\n    temp x = int(-> target)\n}\nDone.\n-> END\n=== target ===\nHi.\n-> DONE\n";
-    let err = run_to_error(source);
+    let err = run_to_error_gradual(source);
     assert_eq!(
         err,
         brink_runtime::RuntimeError::InvalidConversionDomain {
@@ -1205,8 +1274,9 @@ fn int_of_a_divert_target_faults_under_gradual() {
 
 #[test]
 fn float_of_a_list_faults_under_gradual() {
+    // NS-A9: gradual explicitly — strict rejects this as E078 at compile.
     let source = "LIST Colors = red, blue\n~ {\n    temp x = float((red))\n}\nDone.\n-> END\n";
-    let err = run_to_error(source);
+    let err = run_to_error_gradual(source);
     assert_eq!(
         err,
         brink_runtime::RuntimeError::InvalidConversionDomain {
@@ -1443,7 +1513,8 @@ fn fn_over_binding_is_e081() {
 fn well_formed_fn_creation_compiles_clean() {
     // A fully legal creation site under gradual types compiles clean in T1c-2
     // — no E079/E080/E081 creation noise and no E052 fence.
-    let source = "=== function heal(ref hp, amount) ===\n~ hp = hp + amount\n~ return hp\n\n\
+    let source =
+        "=== function heal(ref hp: int, amount: int): int ===\n~ hp = hp + amount\n~ return hp\n\n\
                   VAR player_hp = 10\n=== main ===\n~ temp f = #fn(heal, player_hp)\nDone.\n-> END\n";
     compile_brink(source).expect("a well-formed #fn creation compiles clean in T1c-2");
 }
@@ -1478,7 +1549,7 @@ fn block_scoped_temp_read_after_its_block_closes_is_e082() {
 #[test]
 fn block_scoped_temp_passed_by_ref_after_its_block_closes_is_e082() {
     let source = "VAR gold = 100\n~ {\n    temp name = \"hero\"\n}\n~ heal(name)\nDone.\n-> END\n\n\
-                  === function heal(ref hp) ===\n~ return hp\n";
+                  === function heal(ref hp: string): string ===\n~ return hp\n";
     let err =
         compile_brink(source).expect_err("passing an out-of-scope block temp by ref must fail");
     let diags = errors_of(&err);
@@ -1496,7 +1567,7 @@ fn ref_call_co_occurring_with_block_temp_is_not_e082() {
     // decl in the *same* block, temp never read after the block closes —
     // this compiles clean, proving `ref` calls were never the trigger.
     let source = "VAR gold = 100\n~ {\n    temp x = 1\n    heal(gold)\n}\nDone.\n-> END\n\n\
-                  === function heal(ref hp) ===\n~ return hp\n";
+                  === function heal(ref hp: int): int ===\n~ return hp\n";
     compile_brink(source)
         .expect("ref-argument call co-occurring with a temp decl in one block compiles clean");
 }
@@ -1578,7 +1649,7 @@ fn explicit_call_with_wrong_arity_is_a_turn_terminating_fault() {
     // mismatch faults exactly (spec §3/§4).
     let src = "~ temp d = #fn(double)\n~ temp r = call(d, 1, 2)\nUnreachable {r}.\n-> END\n\n\
                === function double(x) ===\n~ return x + x\n";
-    let err = run_expecting_fault(src).expect("wrong arity must fault");
+    let err = run_expecting_fault_gradual(src).expect("wrong arity must fault");
     assert!(
         matches!(err, brink_runtime::RuntimeError::FunctionValueArity { .. }),
         "expected FunctionValueArity, got {err:?}"
@@ -1590,9 +1661,10 @@ fn bind_over_binding_more_than_remaining_params_is_a_turn_terminating_fault() {
     // `bind(f, …)` that supplies more args than the target has remaining
     // params is a turn-terminating fault (spec §3) — never a silently
     // truncated bound row. `double` takes one param, so binding two faults.
+    // NS-A9: gradual explicitly — strict rejects over-binding statically.
     let src = "~ temp d = #fn(double)\n~ temp g = bind(d, 1, 2)\nUnreachable {g}.\n-> END\n\n\
                === function double(x) ===\n~ return x + x\n";
-    let err = run_expecting_fault(src).expect("over-binding must fault");
+    let err = run_expecting_fault_gradual(src).expect("over-binding must fault");
     assert!(
         matches!(err, brink_runtime::RuntimeError::FunctionValueArity { .. }),
         "expected FunctionValueArity, got {err:?}"
@@ -1615,7 +1687,7 @@ fn direct_call_with_too_many_args_is_a_turn_terminating_fault() {
     // `double` takes 1 param; the direct call supplies 2.
     let src = "~ temp d = #fn(double)\n~ temp r = d(1, 2)\nUnreachable {r}.\n-> END\n\n\
                === function double(x) ===\n~ return x + x\n";
-    let err = run_expecting_fault(src).expect("wrong arity must fault");
+    let err = run_expecting_fault_gradual(src).expect("wrong arity must fault");
     assert!(
         matches!(err, brink_runtime::RuntimeError::FunctionValueArity { .. }),
         "expected FunctionValueArity, got {err:?}"
@@ -1639,7 +1711,7 @@ fn direct_call_with_too_few_args_is_a_turn_terminating_fault() {
     // `add` takes 2 params; the direct call supplies 1.
     let src = "~ temp d = #fn(add)\n~ temp r = d(1)\nUnreachable {r}.\n-> END\n\n\
                === function add(x, y) ===\n~ return x + y\n";
-    let err = run_expecting_fault(src).expect("wrong arity must fault");
+    let err = run_expecting_fault_gradual(src).expect("wrong arity must fault");
     assert!(
         matches!(err, brink_runtime::RuntimeError::FunctionValueArity { .. }),
         "expected FunctionValueArity, got {err:?}"
@@ -1663,7 +1735,7 @@ fn calling_through_a_fn_value_with_a_wrong_typed_argument_is_a_turn_terminating_
     // argument (`string_op` only defines `Add`/`Equal`/`NotEqual`).
     let src = "~ temp d = #fn(square)\n~ temp r = d(\"nope\")\nUnreachable {r}.\n-> END\n\n\
                === function square(x) ===\n~ return x * x\n";
-    let err = run_expecting_fault(src).expect("wrong-typed argument must fault");
+    let err = run_expecting_fault_gradual(src).expect("wrong-typed argument must fault");
     assert!(
         matches!(err, brink_runtime::RuntimeError::TypeError(_)),
         "expected TypeError, got {err:?}"
@@ -1680,7 +1752,7 @@ fn invoking_a_closure_that_ref_binds_a_local_cell_is_a_cross_flow_fault() {
     // exercises the fault directly — no second flow needed.
     let src = "#@local\nVAR mood = 10\n\n\
                ~ temp healer = #fn(heal, mood)\n~ temp r = healer(5)\nUnreachable {r}.\n-> END\n\n\
-               === function heal(ref hp, amount) ===\n~ hp = hp + amount\n~ return hp\n";
+               === function heal(ref hp: int, amount: int): int ===\n~ hp = hp + amount\n~ return hp\n";
     let err = run_expecting_fault(src).expect("ref-binding a #@local cell must fault on invoke");
     assert!(
         matches!(
@@ -1697,7 +1769,7 @@ fn ordering_two_function_values_is_a_turn_terminating_fault() {
     // is not — a runtime fault in gradual mode (a compile error in strict).
     let src = "~ temp d = #fn(double)\n~ temp lt = d < d\nUnreachable {lt}.\n-> END\n\n\
                === function double(x) ===\n~ return x + x\n";
-    let err = run_expecting_fault(src).expect("ordering fn values must fault");
+    let err = run_expecting_fault_gradual(src).expect("ordering fn values must fault");
     assert!(
         matches!(err, brink_runtime::RuntimeError::TypeError(_)),
         "expected TypeError, got {err:?}"
@@ -1709,7 +1781,7 @@ fn direct_call_with_correct_arity_still_works() {
     // Regression guard: the argc-carrying dispatch must not disturb the
     // matching-arity happy path.
     let src = "~ temp d = #fn(double)\n~ temp r = d(21)\n{r}.\n-> END\n\n\
-               === function double(x) ===\n~ return x + x\n";
+               === function double(x: int): int ===\n~ return x + x\n";
     let (program, tables) = compile_and_link(src);
     let mut story = Story::<DotNetRng>::new(program, tables);
     let out = run_to_end(&mut story);
@@ -1775,7 +1847,7 @@ fn char_at_author_shadow_wins_over_the_builtin() {
     // §5's shadowing ruling: an author-defined `char_at` function resolves
     // normally instead of dispatching to the VM-native intrinsic.
     let src = "~ temp r = char_at(1, 2)\n{r}\n-> END\n\n\
-               === function char_at(a, b) ===\n~ return a + b\n";
+               === function char_at(a: int, b: int): int ===\n~ return a + b\n";
     let (program, tables) = compile_and_link(src);
     let mut story = Story::<DotNetRng>::new(program, tables);
     let out = run_to_end(&mut story);
@@ -1833,6 +1905,12 @@ fn run_to_end(story: &mut Story<DotNetRng>) -> String {
 // it from a separate `invoke` knot — so a save taken after `setup` carries a
 // live fn value, and `invoke` can be reached after a load without re-running
 // creation.
+//
+// NS-A9: the whole save/load quartet (scalar, array, map, rehydration)
+// compiles under explicit gradual — the `VAR stored = 0` reassignment idiom
+// gives `stored` a static int type under strict, making `stored(…)` E063.
+// The subject here is VM save/load of fn values, which is regime-independent
+// behavior; gradual is just the fixtures' native idiom.
 const SAVE_LOAD_SRC: &str = "\
 === function double(x) ===
 ~ return x + x
@@ -1852,7 +1930,7 @@ Result {r}.
 
 #[test]
 fn fn_value_save_load_invoke_equals_direct_invoke() {
-    let (program, tables) = compile_and_link(SAVE_LOAD_SRC);
+    let (program, tables) = compile_and_link_gradual(SAVE_LOAD_SRC);
 
     // Direct: setup, then invoke — no save/load in between.
     let mut direct = Story::<DotNetRng>::new(std::sync::Arc::clone(&program), tables.clone());
@@ -1916,13 +1994,13 @@ Result {r}.
 -> END
 ";
 
-    let (p1, t1) = compile_and_link(v1);
+    let (p1, t1) = compile_and_link_gradual(v1);
     let mut s1 = Story::<DotNetRng>::new(p1, t1);
     s1.choose_path_string("setup").expect("goto setup");
     let _ = run_to_end(&mut s1);
     let saved = s1.save_state();
 
-    let (p2, t2) = compile_and_link(v2);
+    let (p2, t2) = compile_and_link_gradual(v2);
     let mut s2 = Story::<DotNetRng>::new(p2, t2);
     let _ = s2.load_state(&saved);
     s2.choose_path_string("invoke").expect("goto invoke");
@@ -1985,7 +2063,7 @@ Result {r}.
 
 #[test]
 fn fn_value_inside_an_array_save_load_invoke_equals_direct_invoke() {
-    let (program, tables) = compile_and_link(SAVE_LOAD_ARRAY_SRC);
+    let (program, tables) = compile_and_link_gradual(SAVE_LOAD_ARRAY_SRC);
 
     let mut direct = Story::<DotNetRng>::new(std::sync::Arc::clone(&program), tables.clone());
     direct.choose_path_string("setup").expect("goto setup");
@@ -2036,7 +2114,7 @@ Result {r}.
 
 #[test]
 fn fn_value_inside_a_map_save_load_invoke_equals_direct_invoke() {
-    let (program, tables) = compile_and_link(SAVE_LOAD_MAP_SRC);
+    let (program, tables) = compile_and_link_gradual(SAVE_LOAD_MAP_SRC);
 
     let mut direct = Story::<DotNetRng>::new(std::sync::Arc::clone(&program), tables.clone());
     direct.choose_path_string("setup").expect("goto setup");
@@ -2094,7 +2172,8 @@ fn numeric_tower_end_to_end() {
 fn author_defined_find_shadows_builtin_with_e035_warning() {
     // The A1 names ride the same shadowing machinery as `len` (§9.3's
     // E035-lineage posture).
-    let source = "=== function find(s, x)\n~ return 999\n\nHi {find(\"a\", \"b\")}.\n-> END\n";
+    let source =
+        "=== function find(s: string, x: string): int\n~ return 999\n\nHi {find(\"a\", \"b\")}.\n-> END\n";
     let out = compile_brink(source).expect("shadowing is a warning, not a compile error");
     assert!(
         out.warnings
