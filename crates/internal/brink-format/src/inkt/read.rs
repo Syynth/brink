@@ -73,6 +73,13 @@ fn err(pair: &P<'_>, msg: impl Into<String>) -> InktParseError {
 
 fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
     let mut name_table = Vec::new();
+    // Fuzz-found (#1102): a `.inkt` document declaring the same container
+    // address twice is malformed input and must be rejected at read time.
+    // Accepting it poisons the roundtrip downstream: `write_inkt` collapses
+    // line tables through a `scope_id`-keyed `HashMap`, so the later
+    // duplicate's lines silently replace the earlier one's on the next write
+    // (same admission-check posture as the duplicate map key rejection, #985).
+    let mut seen_container_ids = std::collections::HashSet::new();
     let mut variables = Vec::new();
     let mut list_defs = Vec::new();
     let mut list_items = Vec::new();
@@ -112,7 +119,15 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
             Rule::effect_rows => effect_rows = parse_effect_rows(inner)?,
             Rule::frame_shapes => frame_shapes = parse_frame_shapes(inner)?,
             Rule::container => {
+                let (line, col) = inner.line_col();
                 let (container, lt) = parse_container(inner)?;
+                if !seen_container_ids.insert(container.id) {
+                    return Err(InktParseError {
+                        message: format!("duplicate container address: {}", container.id),
+                        line,
+                        col,
+                    });
+                }
                 let is_scope_owner = container.scope_id == container.id;
                 containers.push(container);
                 // Only add line tables for scope-owning containers.
