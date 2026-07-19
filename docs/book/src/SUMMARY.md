@@ -27,7 +27,7 @@
   - [Collections](./toolchain/dialect/literals.md)
   - [Indexing & Mutation](./toolchain/dialect/indexing.md)
   - [Standard Library](./toolchain/dialect/stdlib.md)
-  - [Types](./toolchain/dialect/types.md)
+  - [Values & Types](./toolchain/dialect/types.md)
   - [Function Values](./toolchain/dialect/function-values.md)
   - [Effects](./toolchain/dialect/effects.md)
   - [Path Projections](./toolchain/dialect/path-projections.md)
