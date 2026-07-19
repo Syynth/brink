@@ -104,10 +104,11 @@ mod heap_size;
 pub use analysis::ResolvedProject;
 pub(crate) use analysis::{
     analysis_diagnostics_query, analysis_query, await_purity_diagnostics_query,
-    call_site_diagnostics_query, call_site_metas_query, contributor_diagnostics_query,
-    diagnostics_query, effects_assertion_diagnostics_query, external_meta_query,
-    has_errors_in_closure_query, has_errors_query, inline_docs_query, per_file_diagnostics_query,
-    resolutions_index_query, value_meta_query, whole_project_diagnostics_query,
+    call_site_diagnostics_query, call_site_metas_query, comparator_contract_diagnostics_query,
+    contributor_diagnostics_query, diagnostics_query, effects_assertion_diagnostics_query,
+    external_meta_query, has_errors_in_closure_query, has_errors_query, inline_docs_query,
+    per_file_diagnostics_query, resolutions_index_query, value_meta_query,
+    whole_project_diagnostics_query,
 };
 
 // ─── Database ────────────────────────────────────────────────────────
@@ -247,6 +248,10 @@ impl Default for BrinkDatabase {
                 // FS-2 (issue #928): the `await`-condition purity gate (E105),
                 // reading `effects_query` only for defs a condition calls.
                 .ingredient::<await_purity_diagnostics_query>()
+                // NS-A4 (issue #1110): the comparator-contract gate (E119),
+                // reading `effects_query` only for defs named as inline
+                // `#fn` comparators of `sort_by`/`sorted_by`.
+                .ingredient::<comparator_contract_diagnostics_query>()
                 // Layer 3.
                 .ingredient::<lir_query>()
                 .ingredient::<lir_in_closure_query>()
