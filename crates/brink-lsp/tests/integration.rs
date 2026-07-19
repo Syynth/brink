@@ -861,12 +861,14 @@ fn background_analysis_uses_declared_strict_types_with_brink_dialect_flags_e065(
     );
 }
 
-/// #660: the default `types` (no `initializationOptions.types` at all, i.e.
-/// `Gradual`) must NOT flag the same unused-param construct as `E065` — the
-/// handler must not blanket-enable strict checks, only thread through the
-/// client's actual choice.
+/// #660 premise, rewritten for NS-A9 (#1127): the default `types` is now
+/// **dialect-keyed** — a brink-dialect project with no
+/// `initializationOptions.types` resolves strict (E065 fires on the escaping
+/// param), while the strict-ink default stays gradual forever (no E065). The
+/// handler still threads only the client's actual choice; what changed is
+/// what "no choice" means per dialect.
 #[test]
-fn background_analysis_default_types_does_not_flag_e065() {
+fn background_analysis_default_types_is_dialect_keyed() {
     let source = "=== noop(x) ===\nHello.\n-> DONE\n";
     let diags = diagnostics_after_background_analysis_with_types(Some("brink"), None, source);
     let e065: Vec<&Value> = diags
@@ -874,8 +876,35 @@ fn background_analysis_default_types_does_not_flag_e065() {
         .filter(|d| d["code"].as_str() == Some("E065"))
         .collect();
     assert!(
+        !e065.is_empty(),
+        "brink dialect + unset types now defaults strict: expected E065, got: {diags:?}"
+    );
+
+    let diags = diagnostics_after_background_analysis_with_types(None, None, source);
+    let e065: Vec<&Value> = diags
+        .iter()
+        .filter(|d| d["code"].as_str() == Some("E065"))
+        .collect();
+    assert!(
         e065.is_empty(),
-        "default types (gradual) must not flag E065: {diags:?}"
+        "strict-ink dialect + unset types stays gradual: must not flag E065: {diags:?}"
+    );
+}
+
+/// NS-A9 companion: an explicit `types: "gradual"` opt-out on a brink-dialect
+/// project suppresses the strict default's E065.
+#[test]
+fn background_analysis_explicit_gradual_opts_out_of_strict_default() {
+    let source = "=== noop(x) ===\nHello.\n-> DONE\n";
+    let diags =
+        diagnostics_after_background_analysis_with_types(Some("brink"), Some("gradual"), source);
+    let e065: Vec<&Value> = diags
+        .iter()
+        .filter(|d| d["code"].as_str() == Some("E065"))
+        .collect();
+    assert!(
+        e065.is_empty(),
+        "explicit types=gradual must opt out of the strict default: {diags:?}"
     );
 }
 

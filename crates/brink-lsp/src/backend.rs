@@ -663,10 +663,14 @@ impl Backend {
 /// Read `initializationOptions.<key>` as a string, if the client set it at
 /// all — regardless of whether the value maps to a recognized variant. This
 /// is "the client passed an explicit value", the strongest tier of the
-/// #1030 precedence rule (see [`resolve_language_options`]): even an
-/// unrecognized string still counts as explicit (and falls through the
-/// dialect/types `match`es' `_` arm to the same default a missing key
-/// would), matching the pre-#1030 `apply_initialization_option` behavior.
+/// #1030 precedence rule (see [`resolve_language_options`]). For `dialect`,
+/// an unrecognized string still counts as explicit and falls through the
+/// `match`'s `_` arm to the same default a missing key would. For `types`
+/// (NS-A9, #1127): an unrecognized string is treated as **unset** — the
+/// dialect-keyed default applies — because since the strict default landed,
+/// coercing garbage to a fixed policy would let a typo silently opt a
+/// brink-dialect project out of strict (mirrors the wasm editor's
+/// unrecognized-value behavior).
 fn explicit_initialization_option<'a>(params: &'a InitializeParams, key: &str) -> Option<&'a str> {
     params
         .initialization_options
@@ -694,9 +698,10 @@ impl ConfigOverrides {
                 "brink" => Dialect::Brink,
                 _ => Dialect::StrictInk,
             }),
-            types: explicit_initialization_option(params, "types").map(|v| match v {
-                "strict" => TypePolicy::Strict,
-                _ => TypePolicy::Gradual,
+            types: explicit_initialization_option(params, "types").and_then(|v| match v {
+                "strict" => Some(TypePolicy::Strict),
+                "gradual" => Some(TypePolicy::Gradual),
+                _ => None,
             }),
         }
     }
