@@ -125,8 +125,8 @@ places on a frontend. **RULED** = load-bearing today (a consumer depends on it);
   EndOfLine, LogicBlock, Await`. RULED classification invariants (F-I):
   - `Divert`/`Return` are terminal; `TunnelCall`/`ThreadStart` are not (drives
     `E033`, F-I#7).
-  - `Return.ptr = None` ⟺ tunnel return; `Some` ⟺ explicit `return` (F-I#6). UGLY
-    — a semantic bit smuggled through pointer presence (Q7).
+  - `Return.kind: ReturnKind { Explicit, TunnelRedirect }` — the explicit
+    semantic bit (B0.2). `ptr` presence carries no meaning (F-I#6 retired).
   - A divert must be *last* in an inline conditional/sequence branch (F-I#7).
 - `LogicBlock`/`BlockStmt` — the `~ { … }` closed statement set (no weave node by
   construction). `Await` at statement position only (F-H).
@@ -203,9 +203,9 @@ anchors (F-I#1, F-J).
 - **Must not embed dialect/type-policy in the tree** (F-I#10).
 - **Must not pre-resolve builtins** (`len`, `none`, `LIST_MIN`, …) — leave them
   as unresolved refs (F-I#9).
-- **Must not smuggle semantics through pointer presence** — but the *existing*
-  `Return.ptr` coupling does exactly this (F-I#6); until Q7 lands, a frontend
-  must replicate the `ptr==None`-means-tunnel-return convention.
+- **Must not smuggle semantics through pointer presence** — discharged for
+  `Return` by B0.2: a frontend stamps `ReturnKind` explicitly and may attach
+  (or omit) provenance freely on either kind (F-I#6 retired).
 
 ### 1.5 What the PIPELINE owns downstream (not the frontend)
 
@@ -240,7 +240,7 @@ happy path is: native constructs lower to *existing* HIR nodes. Where they do:
 | `{if}`/`{match}` | `Conditional{IfElse/Switch}` | reuse |
 | alternation `{~}{&}{!}{|}` | `Sequence` (bitmask) | reuse |
 | diverts / tunnels `-> x ->` | `Divert` / `TunnelCall` | reuse |
-| `return` / `return -> x` | `Return` | reuse (but see Q7) |
+| `return` / `return -> x` | `Return` | reuse (`ReturnKind` explicit, B0.2) |
 | `var`/`const`/`flags`/`extern` | `VarDecl`/`ConstDecl`/`ListDecl`/`ExternalDecl` | reuse |
 | `struct` | `StructDecl` | reuse |
 | UFCS `x.foo(y)` | `FieldAccess`/`Call` (analyzer disambiguates) | reuse |
@@ -385,6 +385,17 @@ should be optional/removed, not faked.
 
 ### D5. `Return.ptr` presence is a load-bearing semantic bit
 
+> **Status: DISCHARGED by B0.2 (branch `auto/b0-return-kind`).** `hir::Return`
+> now carries an explicit `kind: ReturnKind { Explicit, TunnelRedirect }`;
+> `E032` and LIR `is_tunnel` key off `kind`, never `ptr` presence. `Return.ptr`
+> is uniform carrying-or-not `Option<Provenance>` with no semantic load — a
+> provenance-carrying tunnel return is legal, admission-clean, and still
+> classifies as a tunnel (tested both directions: `brink-analyzer`
+> `validate.rs` unit fixtures + the `brink-ir` `lir_lowering.rs`
+> `provenance_carrying_tunnel_return_still_lowers_as_tunnel` pipeline test).
+> The B0.1 presence-semantics shim is retired. A native `return -> x` lowering
+> stamps `TunnelRedirect` explicitly.
+
 Whether a `Return` is an explicit `~ return` or a tunnel return is encoded *purely
 in whether a syntax pointer was attached* (`ptr.is_some()`, F-I#6). A frontend
 that attaches provenance uniformly (the natural thing to do) emits spurious
@@ -466,7 +477,7 @@ today silent (§3):
 3. **Name-convention conformance** (kills F-I#3 silent failures): stitch/label/
    list-item names match the required qualification shape (`.matches('.').count()`
    expectations made explicit and checked).
-4. **Control-flow classification** (kills D5/F-I#7): `Return.kind` (once Q7 lands)
+4. **Control-flow classification** (kills D5/F-I#7): `Return.kind` (landed, B0.2)
    is explicit; diverts are last in inline branches; terminal-stmt rules hold.
 5. **`ContainerPtr` ⇄ `SymbolKind`** consistency (kills the #626 trap, F-I#5).
 
@@ -587,7 +598,8 @@ gate?** (§4.4)
   extensions to a fixed base; native *is* the base and forbids the ink-only edges.
   An accept-list is the honest shape for a strict-only surface.
 
-**Q7 — Fix the `Return.ptr`-as-semantic-bit coupling now?** (D5)
+**Q7 — Fix the `Return.ptr`-as-semantic-bit coupling now?** (D5) — **RULED
+(a), LANDED by B0.2** (`ReturnKind` on `hir::Return`; see the D5 stamp).
 - (a) Add `Return.kind: ReturnKind { Explicit, TunnelRedirect }`; stop overloading
   pointer presence. Small, local.
 - (b) Leave it; document the `ptr==None`-means-tunnel convention as a contract
