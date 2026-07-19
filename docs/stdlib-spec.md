@@ -220,8 +220,9 @@ Serves `sort`/`sort_by`/`min`/`max`/heap (§8) and `compare` (§9.6).
   deterministic, saves/replay-safe); fabrication never does
   (`int("potato")`, OOB indexing stay always-fault). Checked int
   overflow is a noted sibling candidate for the same knob — not
-  ruled. Knob home (project config + host override?) ⏳ tooling
-  sitting.
+  ruled. Knob home RULED 2026-07-19: project config
+  (brink.toml profile) with a host-API override; tooling
+  implements when A4 needs it.
 - **Rows are mode-independent**: ordering verbs over `[float]`
   carry `faults` unconditionally (the conservative union — prod
   never fires it; the checker doesn't know modes exist).
@@ -594,7 +595,7 @@ precedent, oracle byte-identical):
   ratio (§3b) · weighted-table mutation surface (§8) · holes'
   release policy (§9.2, maintainer-parked) · protocol
   implementation spelling + compare/equality coherence line
-  (§9.6) · dev/prod knob home (§4b, tooling sitting) ·
+  (§9.6) ·
   inhabited-range type/validator spelling (§7, code-dialect
   sitting) · initializer protocol-vs-grammar (#1103,
   code-dialect sitting).
