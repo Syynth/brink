@@ -751,6 +751,9 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::RangeMakeExcl => write!(w, "range_make_excl"),
         Opcode::RangeMakeIncl => write!(w, "range_make_incl"),
         Opcode::RangeNonEmpty => write!(w, "range_non_empty"),
+        // NS-A4 ordering verbs (#1110).
+        Opcode::SeqSorted => write!(w, "seq_sorted"),
+        Opcode::SeqSortedBy => write!(w, "seq_sorted_by"),
 
         // NS-A8 numeric tower: the kind's own mnemonic IS the instruction
         // word (`make_vec2` … `tower_lerp`) — one wire opcode, thirteen

@@ -2091,6 +2091,10 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         "range_make_incl" => Ok(Opcode::RangeMakeIncl),
         "range_non_empty" => Ok(Opcode::RangeNonEmpty),
 
+        // NS-A4 ordering verbs (#1110)
+        "seq_sorted" => Ok(Opcode::SeqSorted),
+        "seq_sorted_by" => Ok(Opcode::SeqSortedBy),
+
         // Debug
         "source_location" => {
             // Written as "source_location LINE:COL" — parsed as source_loc operand
