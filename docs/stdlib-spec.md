@@ -65,7 +65,16 @@ dangles; charter fix owed.)
    shrugs). Riders: the forgiveness is TRACEABLE (transcript/debug
    records None-renders; an always-None-interpolation lint ⏳);
    choice-text and tag surfaces are named edges (accidental empty
-   choice text vs the deliberate `* []`) ⏳.
+   choice text vs the deliberate `* []`) ⏳. **F27 RULED
+   (2026-07-19): Option has NO truthiness** — a condition-position
+   `Option[T]` is a compile error under strict and a runtime fault
+   under gradual; the author writes `== none`, `== some(x)`, or
+   (post-B1) the `as`-binding. Truthiness is a quiet coercion of
+   exactly the kind `Option[T] ≠ T` exists to ban. (Supersedes
+   A1's shipped falsy-none — implementation fix owed.) **F28 RULED
+   (2026-07-19)**: `none`/`some(…)` render totally in display
+   until B4's boundary-forgiveness arrives; `string()`'s ruled
+   totality is preserved.
 
 ## 2. Domain 1 — math (RULED)
 
@@ -178,7 +187,7 @@ cross-referenced so views ≠ projections.
   confusion lattice closes from both sides (`let b = a.sort()` =
   unit type error; `a.sorted().push(x)` = rvalue error).
 - Verbs: `len first last index_of contains slice(view) concat
-  sort sort_by sorted reversed min max push pop insert remove
+  sort sort_by sorted sorted_by reversed min max push pop insert remove
   each map filter fold filter_map`. **Absence returns (RULED
   2026-07-18, flipping the earlier empty⇒fault posture — one
   doctrine, no day-one exceptions)**: `first last min max pop` →
@@ -232,6 +241,11 @@ Serves `sort`/`sort_by`/`min`/`max`/heap (§8) and `compare` (§9.6).
   `NaN == NaN` false — ink-inherited, oracle-guarded, total).
   Only the stdlib verbs carry the doctrine — the two-surface
   pattern's third application.
+- **F0 RULED (2026-07-19)**: `sort_by` is IN-PLACE
+  (`ref a`, imperative per the naming law); `sorted_by` is its
+  functional past-participle twin; the §9.4 display exemplar is
+  reselected to `map` so the notation banner stops teaching a
+  convention violation.
 - **`sort_by`**: the comparator falls under the trio's
   pure·silent rule plus the consistent-total-order LAW; the
   implementation may fault on detected inconsistency; the
@@ -276,7 +290,11 @@ Serves `sort`/`sort_by`/`min`/`max`/heap (§8) and `compare` (§9.6).
 - **No `entries` verb** (updated by the §9.1 closer ruling):
   **`for k, v in m`** two-binding iteration is the pair story —
   desugars to key-iteration + `let v = m[k]`, total by
-  construction, no pair shape ever materializes. A reified
+  construction, no pair shape ever materializes. F10 RULED
+  (2026-07-19): the key set is SNAPSHOTTED eagerly at loop entry —
+  maps' `for` is a deliberate exception to live pull iteration;
+  structural modification mid-loop sees the snapshot's keys, and a
+  snapshotted key since removed hits the faulting read honestly. A reified
   `entries()` array is evidence-gated.
 - `for k in m` iterates keys (ruled); `m.keys()` is the same set
   reified. Prelude: `len` only (already ambient); the rest
@@ -347,7 +365,8 @@ precedent, oracle byte-identical):
   (host concern, manifest-visible).
 - Verbs (`std::rand`, **no prelude entries** — draws are
   deliberate acts, namespaced): `int` · `float()` → [0,1) ·
-  `chance(p)` → bool · `pick` · `shuffle(ref a)` in-place +
+  `chance(p)` → bool (F3 RULED 2026-07-19: p clamped to [0,1] —
+  total; NaN → false; interpretation, not fabrication) · `pick` · `shuffle(ref a)` in-place +
   `shuffled(a)` functional (the ruled §4 naming convention
   exercised again) · `seed(n)`.
 - **`rand::int` is total BY TYPE — the invalid case is
@@ -375,7 +394,17 @@ precedent, oracle byte-identical):
   checker mints the evidence; no user-written predicates
   (liquid-types territory = its own evidence ledger if demand
   materializes; population today: one). Exact type/validator
-  spelling ⏳ code-dialect sitting.
+  spelling ⏳ code-dialect sitting. **F7 RULED (2026-07-19):
+  ranges are a REAL Value kind** — wire form, content equality,
+  display, save posture — because FlowFrame spills for-loop
+  iterators across `await` and a range iterator needs a durable
+  wire form (A5 specifies; the refinement is a refined view over
+  this value kind). **F8 RULED (2026-07-19): refinements in
+  gradual mode are inert with a runtime-fault residual** —
+  `rand::int` faults on an empty range under gradual, the
+  compile-time evidence machinery is strict-mode's (the
+  `int()`/E078 precedent); recorded as the GENERAL rule for all
+  future refinements.
 - Heritage: ink's `RANDOM(min, max)` / `SEED_RANDOM` stay
   ink-frozen spellings of the same cell — one RNG, two surfaces,
   no drift.
@@ -454,8 +483,8 @@ precedent, oracle byte-identical):
    **shadowable with the E035-lineage warning** (stdlib-slice-1
    posture carries over).
 4. **Docs display notation for intrinsic signatures**: the
-   pseudo-generic letter form — `fn sort_by(a: [T], cmp:
-   fn(T, T): int): [T]` — with a standing banner: *display
+   pseudo-generic letter form — `fn map(a: [T], f:
+   fn(T): U): [U]` — with a standing banner: *display
    notation; `T` is not writable in source* (#1090 guards the
    door). Chosen over concrete-example notation because UFCS
    completion already shows this shape; docs and IDE should agree.
@@ -479,6 +508,15 @@ precedent, oracle byte-identical):
    - `display` — `fn(T): string`, row ⊆ pure·silent·total; feeds
      the §1.6 boundary; enums/structs get structural defaults,
      user impls override. Machine states inherit it (#905).
+     **F1 RULED (2026-07-19)**: BOTH interpolation and the
+     `string()` conversion intrinsic dispatch through `display` —
+     one display path, honoring the 2026-07-13 "same as
+     interpolation" guarantee; `string()`'s totality survives
+     because the contract forbids faulting impls. **F6 RULED
+     (2026-07-19)**: the registry method names (`display`,
+     `compare`, `next`) are RESERVED — author shadowing is a hard
+     compile error, not an E035 warning; a shadowed `display`
+     would make interpolation untrustworthy.
    - `compare` — `fn(T, T): int`, row ⊆ pure·silent·total; user
      impls slot into the RULED ordering doctrine (§4b). Coherence
      edge still owed: user `compare` vs ruled structural equality
