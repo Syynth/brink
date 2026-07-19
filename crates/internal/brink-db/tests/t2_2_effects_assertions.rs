@@ -340,3 +340,47 @@ fn deprecated_hash_spelling_reaches_per_file_diagnostics_as_e110_warning() {
         "the alias is a warning, not an error"
     );
 }
+
+// ── NS-A6 (issue #1112, docs/stdlib-spec.md §7): the RNG cell in the
+// assertion surface — draws are ordinary writes ──────────────────────────
+
+#[test]
+fn pure_assertion_exceeded_by_a_draw() {
+    // `@[effects(pure)]` asserts rng-freedom (the ruled free consequence):
+    // a draw-bearing body writes the RNG cell, exceeding the empty bound.
+    let diags = analyze("=== function coin() ===\n@[effects(pure)]\n~ return chance(0.5)\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E103], "{diags:?}");
+    assert!(
+        diags[0].message.contains("rng"),
+        "the exceedance names the rng cell: {diags:?}"
+    );
+}
+
+#[test]
+fn writes_rng_clause_covers_a_draw_bearing_def() {
+    // The compiler-owned cell is nameable in a `writes` clause as `rng`,
+    // so a draw-bearing def can carry a covering bound.
+    let diags = analyze("=== function coin() ===\n@[effects(writes: rng)]\n~ return chance(0.5)\n");
+    assert_eq!(codes(&diags), Vec::<DiagnosticCode>::new(), "{diags:?}");
+}
+
+#[test]
+fn pure_assertion_exceeded_by_the_frozen_ink_spelling_too() {
+    // One cell, two surfaces: ink's RANDOM writes the same cell and
+    // exceeds `pure` identically.
+    let diags = analyze("=== function roll() ===\n@[effects(pure)]\n~ return RANDOM(1, 6)\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E103], "{diags:?}");
+    assert!(diags[0].message.contains("rng"), "{diags:?}");
+}
+
+#[test]
+fn user_var_named_rng_shadows_the_cell_name_in_clauses() {
+    // A user VAR `rng` wins the clause-name lookup (stdlib shadowing rule);
+    // the def writes only that VAR, and the bound covers it — silence. The
+    // draw-free body never touches the compiler cell, so no exceedance.
+    let diags = analyze(
+        "VAR rng = 0\n\
+         === function bump() ===\n@[effects(reads: rng, writes: rng)]\n~ rng = rng + 1\n~ return rng\n",
+    );
+    assert_eq!(codes(&diags), Vec::<DiagnosticCode>::new(), "{diags:?}");
+}

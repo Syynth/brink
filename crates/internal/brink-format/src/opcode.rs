@@ -338,6 +338,16 @@ const MAP_GET_OPT: u8 = 0xE9;
 const MAP_CONTAINS_VALUE: u8 = 0xEA;
 const MAP_CLEAR: u8 = 0xEB;
 
+// NS-A6 rand verbs (`docs/stdlib-spec.md` §7; this PR's own reservation,
+// same "assigned here" precedent as the NS-A1 block above): the four draw
+// ops fill the remaining bytes before the lifecycle block (0xF0+),
+// contiguously after NS-A1's 0xEB. `seed(n)` reuses the frozen
+// `SEED_RANDOM` byte (0x85) — one cell, two surfaces, no drift.
+const RAND_FLOAT: u8 = 0xEC;
+const RAND_CHANCE: u8 = 0xED;
+const RAND_PICK: u8 = 0xEE;
+const RAND_SHUFFLE: u8 = 0xEF;
+
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
 const LIST_NOT_CONTAINS: u8 = 0xB1;
@@ -953,6 +963,37 @@ pub enum Opcode {
     /// Fault on a non-map.
     MapClear,
 
+    // ── NS-A6: the `std::rand` draw verbs (`docs/stdlib-spec.md` §7,
+    // ruled 2026-07-18; `docs/stdlib-sequencing.md` §2 Wave A6). Every op
+    // below draws through the ONE RNG state cell (`rng_seed` +
+    // `previous_random` — the same cell ink's `RANDOM`/`SEED_RANDOM` have
+    // always used; one cell, two surfaces, no drift) and is an ordinary
+    // *write* to that cell in the effect row
+    // (`DefinitionId::RNG_CELL`). `seed(n)` needs no new op — it lowers to
+    // the frozen [`SeedRandom`](Self::SeedRandom). ────────────────────────
+    /// `[]` → `Float` uniform in `[0,1)`. One draw. The value is built from
+    /// the draw's top 24 bits (`draw >> 7`) divided by 2²⁴, so every result
+    /// is exactly representable in the f32 payload and 1.0 is unreachable —
+    /// part of the pinned-algorithm stability contract (see
+    /// `brink-runtime::rand_ops`).
+    RandFloat,
+    /// `[p]` → `Bool`: one uniform `[0,1)` draw `u`, result `u < p` with
+    /// `p` clamped to `[0,1]` and NaN → `false` (F3, ruled 2026-07-19:
+    /// interpretation, not fabrication — total over the numeric domain).
+    /// Always consumes exactly one draw, NaN included. Fault on a
+    /// non-numeric `p` (malformed question).
+    RandChance,
+    /// `[coll]` → `Option[T]`: uniform draw of one element from an array
+    /// (→ `some(elem)`) or a flags subset (→ `some(single-item list)`,
+    /// mirroring the frozen `ListRandom` selection). Empty → `none`
+    /// *without* consuming a draw. Fault on any other collection type.
+    RandPick,
+    /// `[a]` → `[a']`: Fisher-Yates shuffle of an array, `len-1` draws
+    /// (none for `len < 2`), each advancing the RNG cell. One op serves
+    /// both surfaces: `shuffle(a)` (statement-only, RMW write-back) and
+    /// `shuffled(a)` (functional). Fault on a non-array.
+    RandShuffle,
+
     // ── Lifecycle ───────────────────────────────────────────────────────
     Done,
     /// Pause for choice presentation. Like `Done` but does NOT set
@@ -1304,6 +1345,10 @@ impl Opcode {
             Self::MapGetOpt => write_u8(buf, MAP_GET_OPT),
             Self::MapContainsValue => write_u8(buf, MAP_CONTAINS_VALUE),
             Self::MapClear => write_u8(buf, MAP_CLEAR),
+            Self::RandFloat => write_u8(buf, RAND_FLOAT),
+            Self::RandChance => write_u8(buf, RAND_CHANCE),
+            Self::RandPick => write_u8(buf, RAND_PICK),
+            Self::RandShuffle => write_u8(buf, RAND_SHUFFLE),
 
             // Lifecycle
             Self::Done => write_u8(buf, DONE),
@@ -1540,6 +1585,10 @@ impl Opcode {
             MAP_GET_OPT => Self::MapGetOpt,
             MAP_CONTAINS_VALUE => Self::MapContainsValue,
             MAP_CLEAR => Self::MapClear,
+            RAND_FLOAT => Self::RandFloat,
+            RAND_CHANCE => Self::RandChance,
+            RAND_PICK => Self::RandPick,
+            RAND_SHUFFLE => Self::RandShuffle,
 
             // Lifecycle
             DONE => Self::Done,
@@ -1898,6 +1947,37 @@ mod tests {
             (0xE9, Opcode::MapGetOpt),
             (0xEA, Opcode::MapContainsValue),
             (0xEB, Opcode::MapClear),
+        ];
+        for (byte, op) in expected {
+            let mut buf = Vec::new();
+            op.encode(&mut buf);
+            assert_eq!(buf[0], byte, "{op:?} encoded to unexpected discriminant");
+        }
+    }
+
+    #[test]
+    fn roundtrip_ns_a6_rand_verbs() {
+        for op in [
+            Opcode::RandFloat,
+            Opcode::RandChance,
+            Opcode::RandPick,
+            Opcode::RandShuffle,
+        ] {
+            roundtrip(&op);
+        }
+    }
+
+    /// The NS-A6 block layout: the four rand draw ops fill 0xEC-0xEF,
+    /// contiguously after NS-A1's 0xEB, up against the lifecycle block
+    /// (0xF0+). `seed(n)` deliberately has no byte here — it reuses the
+    /// frozen `SeedRandom` (0x85): one RNG cell, two surfaces, no drift.
+    #[test]
+    fn ns_a6_opcode_block_layout() {
+        let expected: [(u8, Opcode); 4] = [
+            (0xEC, Opcode::RandFloat),
+            (0xED, Opcode::RandChance),
+            (0xEE, Opcode::RandPick),
+            (0xEF, Opcode::RandShuffle),
         ];
         for (byte, op) in expected {
             let mut buf = Vec::new();

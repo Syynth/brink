@@ -1,0 +1,8 @@
+in range: true, below one: true
+sure thing: true, no way: false, coin: false
+picked some(20) then some(40)
+empty pick: none
+shuffled: 30 10 40 20 50
+source keeps len 5, twin has len 5
+replay matches: true
+one then two: some(1) some(2)

@@ -516,6 +516,47 @@ mod tests {
         }
     }
 
+    // ── NS-A6 rand verbs (docs/stdlib-spec.md §7, issue #1112) ─────────
+
+    #[test]
+    fn strict_ink_flags_unresolved_rand_verb_calls() {
+        for src in [
+            "~ x = float()
+",
+            "~ x = chance(0.5)
+",
+            "~ x = pick(a)
+",
+            "~ x = shuffled(a)
+",
+            "~ shuffle(a)
+",
+            "~ seed(42)
+",
+        ] {
+            let hir = lower_src(src);
+            let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+            assert!(
+                diags.iter().any(|d| d.code == DiagnosticCode::E051),
+                "expected E051 for {src:?}, got {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn brink_dialect_does_not_flag_the_rand_surface() {
+        let hir = lower_src(
+            "~ x = chance(0.5)
+~ y = pick(a)
+~ shuffle(a)
+~ seed(42)
+~ z = float()
+",
+        );
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::Brink);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
     #[test]
     fn strict_ink_flags_a_bare_unresolved_none() {
         let hir = lower_src("~ x = none\n");

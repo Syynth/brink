@@ -283,12 +283,25 @@ fn find_def_id(
 /// candidate first, then an imported one, exactly like every other
 /// reference in this file resolves.
 fn resolve_cell(ctx: &Ctx<'_>, name: &str) -> Option<DefinitionId> {
-    lookup_by_name(
+    let resolved = lookup_by_name(
         ctx.index,
         ctx.scope,
         name,
         &[SymbolKind::Variable, SymbolKind::Constant],
-    )
+    );
+    if resolved.is_some() {
+        return resolved;
+    }
+    // NS-A6 (issue #1112, `docs/stdlib-spec.md` §7): `rng` names the
+    // compiler-owned `std::rand` RNG state cell — the cell every draw
+    // verb writes — so a draw-bearing def can carry a covering bound
+    // (`@[effects(writes rng)]`). A user-declared `VAR`/`CONST` named
+    // `rng` shadows this (the lookup above wins), consistent with the
+    // stdlib-name shadowing rule everywhere else.
+    if name == "rng" {
+        return Some(DefinitionId::RNG_CELL);
+    }
+    None
 }
 
 /// Whether `name` is a declared `EXTERNAL` visible to this file's import
@@ -323,6 +336,11 @@ fn exceedance_message(declared: &EffectRow, inferred: &EffectRow, index: &Symbol
             .to_string();
     }
     let name_of = |id: &DefinitionId| {
+        // The compiler-owned RNG cell has no symbol-index entry — name it
+        // the way the assertion surface spells it (`writes rng`).
+        if *id == DefinitionId::RNG_CELL {
+            return "rng (the std::rand RNG state cell)".to_string();
+        }
         index
             .symbols
             .get(id)

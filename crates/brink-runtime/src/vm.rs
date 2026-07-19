@@ -19,6 +19,7 @@ use crate::error::RuntimeError;
 use crate::list_ops;
 use crate::program::Program;
 use crate::proj_ops;
+use crate::rand_ops;
 use crate::record_ops;
 use crate::state::ContextAccess;
 use crate::story::{CallFrame, CallFrameType, ContainerPosition, Flow, PendingChoice, Stats};
@@ -1105,6 +1106,9 @@ fn step_impl<R: crate::rng::StoryRng>(
                 .push(Value::Int(flow.pending_choices.len() as i32));
         }
         Opcode::Random => {
+            // NS-A6: the frozen ink surface over the one RNG cell — same
+            // write the brink draw verbs record.
+            note_effect_write(flow, program, DefinitionId::RNG_CELL);
             // Reference pops max first, then min.
             let max_val = flow.pop_value()?;
             let min_val = flow.pop_value()?;
@@ -1141,6 +1145,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             flow.value_stack.push(Value::Int(result));
         }
         Opcode::SeedRandom => {
+            note_effect_write(flow, program, DefinitionId::RNG_CELL);
             let seed_val = flow.pop_value()?;
             let seed = match seed_val {
                 Value::Int(n) => n,
@@ -1197,7 +1202,10 @@ fn step_impl<R: crate::rng::StoryRng>(
         Opcode::ListValue => list_ops::list_value(flow, program)?,
         Opcode::ListRange => list_ops::list_range(flow, program)?,
         Opcode::ListFromInt => list_ops::list_from_int(flow, program)?,
-        Opcode::ListRandom => list_ops::list_random::<R>(flow, context)?,
+        Opcode::ListRandom => {
+            note_effect_write(flow, program, DefinitionId::RNG_CELL);
+            list_ops::list_random::<R>(flow, context)?;
+        }
 
         // ── Collections (T1b) ────────────────────────────────────────
         Opcode::ArrayNew(n) => collection_ops::array_new(flow, n)?,
@@ -1244,6 +1252,30 @@ fn step_impl<R: crate::rng::StoryRng>(
         Opcode::MapGetOpt => collection_ops::map_get_opt(flow)?,
         Opcode::MapContainsValue => collection_ops::map_contains_value(flow)?,
         Opcode::MapClear => collection_ops::map_clear(flow)?,
+
+        // ── NS-A6: the `std::rand` draw verbs (#1112,
+        // `docs/stdlib-spec.md` §7). Every draw is an ordinary write to
+        // the one RNG cell (`DefinitionId::RNG_CELL`) — recorded for the
+        // ground-truth harness exactly like a global-cell write. The
+        // frozen ink ops (`Random`/`SeedRandom`/`ListRandom`) write the
+        // same cell and carry the same instrumentation at their own
+        // arms. ─────────────────────────────────────────────────────────
+        Opcode::RandFloat => {
+            note_effect_write(flow, program, DefinitionId::RNG_CELL);
+            rand_ops::rand_float::<R>(flow, context);
+        }
+        Opcode::RandChance => {
+            note_effect_write(flow, program, DefinitionId::RNG_CELL);
+            rand_ops::rand_chance::<R>(flow, context)?;
+        }
+        Opcode::RandPick => {
+            note_effect_write(flow, program, DefinitionId::RNG_CELL);
+            rand_ops::rand_pick::<R>(flow, context)?;
+        }
+        Opcode::RandShuffle => {
+            note_effect_write(flow, program, DefinitionId::RNG_CELL);
+            rand_ops::rand_shuffle::<R>(flow, context)?;
+        }
 
         // ── External functions ──────────────────────────────────────
         Opcode::CallExternal(fn_id, arg_count) => {

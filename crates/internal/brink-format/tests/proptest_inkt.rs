@@ -351,6 +351,11 @@ fn arb_opcode() -> impl Strategy<Value = Opcode> {
         Just(Opcode::MapGetOpt),
         Just(Opcode::MapContainsValue),
         Just(Opcode::MapClear),
+        // NS-A6 rand verbs (#1112).
+        Just(Opcode::RandFloat),
+        Just(Opcode::RandChance),
+        Just(Opcode::RandPick),
+        Just(Opcode::RandShuffle),
     ]
 }
 
@@ -501,6 +506,10 @@ fn assert_opcode_variants_exhaustive(op: &Opcode) {
         | Opcode::MapGetOpt
         | Opcode::MapContainsValue
         | Opcode::MapClear
+        | Opcode::RandFloat
+        | Opcode::RandChance
+        | Opcode::RandPick
+        | Opcode::RandShuffle
         | Opcode::Done
         | Opcode::Yield
         | Opcode::End

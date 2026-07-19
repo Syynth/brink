@@ -326,6 +326,24 @@ impl ContainerEmitter<'_> {
                 self.emit(Opcode::MapContainsValue);
             }
 
+            // ── NS-A6: the `std::rand` draw verbs (#1112) ────────────
+            lir::Expr::RandFloat => self.emit(Opcode::RandFloat),
+
+            lir::Expr::RandChance(p) => {
+                self.emit_expr(p, false);
+                self.emit(Opcode::RandChance);
+            }
+
+            lir::Expr::RandPick(coll) => {
+                self.emit_expr(coll, false);
+                self.emit(Opcode::RandPick);
+            }
+
+            lir::Expr::RandShuffle(arr) => {
+                self.emit_expr(arr, false);
+                self.emit(Opcode::RandShuffle);
+            }
+
             lir::Expr::MapClear(inner) => {
                 self.emit_expr(inner, false);
                 self.emit(Opcode::MapClear);

@@ -2215,6 +2215,151 @@ mod tests {
         assert!(!row.opaque, "a fully-visible body is not pessimal");
     }
 
+    // ─── NS-A6 (issue #1112, docs/stdlib-spec.md §7): every draw is an
+    // ordinary write to the RNG cell in the row ─────────────────────────
+
+    /// Every brink draw-verb spelling harvests a write to
+    /// `DefinitionId::RNG_CELL` — the "draws = writes" half of the
+    /// rng-as-cell ruling.
+    #[test]
+    fn rand_draw_verbs_write_the_rng_cell() {
+        use brink_format::DefinitionId;
+        let cases: &[(&str, &str)] = &[
+            (
+                "float_draw",
+                "=== function float_draw() ===\n~ return float()\n",
+            ),
+            (
+                "chance_draw",
+                "=== function chance_draw() ===\n~ return chance(0.5)\n",
+            ),
+            (
+                "pick_draw",
+                "=== function pick_draw() ===\n~ temp a = #[1, 2, 3]\n~ return pick(a)\n",
+            ),
+            (
+                "shuffled_draw",
+                "=== function shuffled_draw() ===\n~ temp a = #[1, 2, 3]\n~ return shuffled(a)\n",
+            ),
+            (
+                "shuffle_stmt",
+                "VAR deck = 0\n=== function shuffle_stmt() ===\n~ shuffle(deck)\n~ return 0\n",
+            ),
+            (
+                "seed_stmt",
+                "=== function seed_stmt() ===\n~ seed(42)\n~ return 0\n",
+            ),
+        ];
+        for (name, src) in cases {
+            let (hir, index, res) = build(src);
+            let files = [(FileId(0), &hir)];
+            let rows = effects_project(&files, &index, &res, None);
+            let def = id_of(&index, name);
+            assert!(
+                rows[&def].writes.contains(&DefinitionId::RNG_CELL),
+                "`{name}`'s row must contain the RNG-cell write; got {:?}",
+                rows[&def].writes
+            );
+        }
+    }
+
+    /// The frozen ink spellings write the SAME cell — one RNG, two
+    /// surfaces, one row entry (no drift).
+    #[test]
+    fn frozen_ink_random_spellings_write_the_same_rng_cell() {
+        use brink_format::DefinitionId;
+        let cases: &[(&str, &str)] = &[
+            (
+                "roll_ink",
+                "=== function roll_ink() ===\n~ return RANDOM(1, 6)\n",
+            ),
+            (
+                "seed_ink",
+                "=== function seed_ink() ===\n~ SEED_RANDOM(9)\n~ return 0\n",
+            ),
+            (
+                "pick_ink",
+                "LIST moods = happy, sad\n=== function pick_ink() ===\n~ return LIST_RANDOM(moods)\n",
+            ),
+        ];
+        for (name, src) in cases {
+            let (hir, index, res) = build(src);
+            let files = [(FileId(0), &hir)];
+            let rows = effects_project(&files, &index, &res, None);
+            let def = id_of(&index, name);
+            assert!(
+                rows[&def].writes.contains(&DefinitionId::RNG_CELL),
+                "ink `{name}`'s row must contain the RNG-cell write; got {:?}",
+                rows[&def].writes
+            );
+        }
+    }
+
+    /// The unary `float(x)` conversion intrinsic stays pure — only the
+    /// nullary draw spelling touches the cell (the F4 arity split).
+    #[test]
+    fn unary_float_conversion_does_not_write_the_rng_cell() {
+        use brink_format::DefinitionId;
+        let src = "=== function conv(x) ===\n~ return float(x)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let def = id_of(&index, "conv");
+        assert!(
+            !rows[&def].writes.contains(&DefinitionId::RNG_CELL),
+            "unary float(x) is the conversion — no draw, no cell write"
+        );
+        // And the nullary draw is total: no fault path.
+        let src = "=== function draw() ===\n~ return float()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let draw = id_of(&index, "draw");
+        assert!(
+            !rows[&draw].faults,
+            "nullary float() has no argument and no fault path"
+        );
+    }
+
+    /// `shuffle(ref a)` records BOTH writes: the receiver cell (the #880
+    /// mutator-call lesson) and the RNG cell.
+    #[test]
+    fn shuffle_writes_both_the_receiver_and_the_rng_cell() {
+        use brink_format::DefinitionId;
+        let src = "VAR deck = 0\n=== function riffle() ===\n~ shuffle(deck)\n~ return 0\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let def = id_of(&index, "riffle");
+        let deck = id_of(&index, "deck");
+        assert!(rows[&def].writes.contains(&deck), "writes the receiver");
+        assert!(
+            rows[&def].writes.contains(&DefinitionId::RNG_CELL),
+            "writes the RNG cell"
+        );
+    }
+
+    /// The rng write propagates transitively like any other write atom —
+    /// a caller of a draw-bearing def carries the cell in its own row
+    /// (this is what makes the pure-gated machinery exclude draws for
+    /// free).
+    #[test]
+    fn rng_write_propagates_to_callers_through_the_fixpoint() {
+        use brink_format::DefinitionId;
+        let src = "=== function outer() ===\n~ return inner()\n\
+                   === function inner() ===\n~ return chance(0.25)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        for name in ["outer", "inner"] {
+            let def = id_of(&index, name);
+            assert!(
+                rows[&def].writes.contains(&DefinitionId::RNG_CELL),
+                "`{name}` must carry the transitive RNG-cell write"
+            );
+        }
+    }
+
     #[test]
     fn mutually_recursive_defs_share_the_unioned_row() {
         let src = "VAR gold = 0\nVAR hp = 10\n\

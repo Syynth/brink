@@ -188,6 +188,21 @@ scheduling sound as content loads.
   is tooling: a `brink ide` effects-diff subcommand (CI-surfaceable as a
   PR comment) and IDE hover (both show the emits/tags/faults dimensions
   alongside the sets since NS-A2).
+- **The RNG cell (NS-A6, #1112; stdlib-spec §7, ruled 2026-07-18).**
+  RNG state is a named runtime state cell owned by `std::rand`
+  (`DefinitionId::RNG_CELL` — the `rng_seed`/`previous_random` pair
+  stories have always saved); every draw is an ordinary **write** to it
+  in the row, on both surfaces (the frozen ink
+  `RANDOM`/`SEED_RANDOM`/`LIST_RANDOM` and the brink draw verbs). No new
+  row dimension. In `reads:`/`writes:` clauses the cell is spelled
+  **`rng`** (`@[effects(writes: rng)]` covers a draw-bearing def); a
+  user-declared `VAR`/`CONST` named `rng` shadows the spelling, per the
+  general stdlib shadowing rule. Consequences fall out of existing
+  machinery: `@[effects(pure)]` asserts rng-freedom (E103 names `rng`),
+  and the wake-condition purity gate (E105) rejects draw-bearing
+  conditions. Ink **shuffle sequences** (`{~a|b}`) are unchanged: they
+  derive from the seed + visit index without advancing the cell (a cell
+  *read*, which rows do not model — the pre-existing posture).
 - **Default-public entry set.** Every knot/stitch ships its row — no
   `#@entry` marker exists (play-from-here already makes any knot a
   host entry). `#@private` opts out: not an entry point, row stays
