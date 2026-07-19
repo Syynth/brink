@@ -39,11 +39,11 @@ pub use annotations::{
 pub use await_purity::{
     check as await_purity_diagnostics, condition_callees as await_condition_callees, hir_has_await,
 };
+pub use brink_ir::FileId;
+pub use brink_ir::ResolutionMap;
 pub use comparator_contract::{
     check as comparator_contract_diagnostics, comparator_callees, hir_has_comparator_site,
 };
-pub use brink_ir::FileId;
-pub use brink_ir::ResolutionMap;
 pub use dialect_gate::Dialect;
 pub use effects_assertions::{
     assertion_defs as effects_assertion_defs, check as effects_assertion_diagnostics,

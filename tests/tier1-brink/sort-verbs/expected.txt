@@ -1,0 +1,7 @@
+sorted copy: [1, 1, 2, 3]; source kept: [3, 1, 2, 1].
+sorted in place: [1, 1, 2, 3].
+mixed numerics: [1, 1.5, 2].
+words: [apple, fig, pear].
+lex: [[1], [1, 5], [2]].
+sort_by desc: [3, 2, 1].
+sorted_by desc: [4, 2, 1].

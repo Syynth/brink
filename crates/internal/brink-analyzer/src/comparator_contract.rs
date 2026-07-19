@@ -188,6 +188,7 @@ struct ComparatorSite {
 }
 
 fn collect_sites(hir: &HirFile, out: &mut Vec<ComparatorSite>) {
+    collect_block(&hir.root_content, out);
     for knot in &hir.knots {
         collect_block(&knot.body, out);
         for stitch in &knot.stitches {
@@ -338,10 +339,7 @@ fn collect_if(i: &brink_ir::IfStmt, out: &mut Vec<ComparatorSite>) {
 fn collect_expr(expr: &Expr, out: &mut Vec<ComparatorSite>) {
     match expr {
         Expr::Call(path, args) => {
-            let name = path
-                .segments
-                .last()
-                .map_or("", |seg| seg.text.as_str());
+            let name = path.segments.last().map_or("", |seg| seg.text.as_str());
             if is_comparator_verb(name)
                 && path.segments.len() == 1
                 && let Some(Expr::FnLiteral(fnl)) = args.get(1)

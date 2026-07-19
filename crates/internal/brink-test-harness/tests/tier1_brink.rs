@@ -2167,6 +2167,20 @@ fn numeric_tower_end_to_end() {
     assert_case("numeric-tower");
 }
 
+/// NS-A4 (`docs/stdlib-spec.md` §4b, issue #1110): the ordering verbs end
+/// to end in the brink dialect — the F0 four-verb family
+/// (`sort`/`sorted`/`sort_by`/`sorted_by`), the doctrine order over
+/// ints/mixed numerics/strings/lexicographic arrays, stability, and the
+/// re-entrant fn-value comparator. NaN-free data, so the default (dev)
+/// mode and prod agree exactly — the modes-agree leg of the §4b gate; the
+/// dev-fault / prod-order split is pinned by `brink-runtime`'s
+/// `collection_ops` unit tests and `brink-compiler`'s `ns_a4_ordering`
+/// ExecMode test.
+#[test]
+fn sort_verbs_end_to_end() {
+    assert_case("sort-verbs");
+}
+
 #[test]
 fn author_defined_find_shadows_builtin_with_e035_warning() {
     // The A1 names ride the same shadowing machinery as `len` (§9.3's
