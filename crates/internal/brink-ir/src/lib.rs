@@ -12,6 +12,7 @@ pub mod dialect;
 pub mod hir;
 pub mod host_manifest;
 pub mod lir;
+pub mod provenance;
 pub mod suppressions;
 pub mod symbols;
 
@@ -20,4 +21,5 @@ pub mod symbols;
 pub use dialect::{DialectError, DialogueDialect, ElementNature, ResolvedDialect};
 pub use hir::*;
 pub use host_manifest::*;
+pub use provenance::{KindToken, NodeClass, Provenance, ProvenanceResolver};
 pub use symbols::*;
