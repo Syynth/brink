@@ -414,6 +414,16 @@ enum TypedValueJs {
         end: i32,
         inclusive: bool,
     },
+    /// A numeric-tower value ([`Value::Vec2`] … [`Value::Mat4`], NS-A8,
+    /// `docs/tower-mini-spec.md`) as its lossless lane form: `kind` is the
+    /// tower type name (`"vec2"` … `"mat4"`), `lanes` the flat f32 lanes in
+    /// the pinned wire order (vec/quat `x, y(, z, w)`; matrices
+    /// column-major) — the same hand-serialized lane discipline as the
+    /// `.inkb` wire (T5), never glam's memory layout.
+    Tower {
+        kind: String,
+        lanes: Vec<f32>,
+    },
 }
 
 /// One [`Value::Projection`] path segment, typed (`docs/format-v4-rfc.md`
@@ -447,6 +457,14 @@ enum TypedMapKeyJs {
     Int { value: i32 },
     String { value: String },
     Bool { value: bool },
+}
+
+/// Build the lossless tower form (NS-A8): kind name + flat lanes.
+fn tower_typed_js(kind: &str, lanes: &[f32]) -> TypedValueJs {
+    TypedValueJs::Tower {
+        kind: kind.to_owned(),
+        lanes: lanes.to_vec(),
+    }
 }
 
 fn map_key_to_typed_js(key: &brink_format::MapKey) -> TypedMapKeyJs {
@@ -558,6 +576,15 @@ fn value_to_typed_js(v: &Value, program: &brink_runtime::Program) -> TypedValueJ
             end: *end,
             inclusive: *inclusive,
         },
+        // Tower values (NS-A8): lossless kind + lane form, lanes through
+        // glam's explicit array conversions (T5 — never memory layout).
+        Value::Vec2(v) => tower_typed_js("vec2", &v.to_array()),
+        Value::Vec3(v) => tower_typed_js("vec3", &v.to_array()),
+        Value::Vec4(v) => tower_typed_js("vec4", &v.to_array()),
+        Value::Quat(q) => tower_typed_js("quat", &q.to_array()),
+        Value::Mat2(m) => tower_typed_js("mat2", &m.to_cols_array()),
+        Value::Mat3(m) => tower_typed_js("mat3", &m.to_cols_array()),
+        Value::Mat4(m) => tower_typed_js("mat4", &m.to_cols_array()),
         Value::Null
         | Value::VariablePointer(_)
         | Value::TempPointer { .. }

@@ -197,9 +197,18 @@ impl<'p> NameResolver<'p> {
             // (`value_ops::stringify`).
             // Range values (NS-A5, F7) share the authoritative display too:
             // the written `0..10` / `1..=6` form.
-            Value::Projection(_) | Value::OptionVal(_) | Value::Range { .. } => {
-                value_ops::stringify(value, self.program)
-            }
+            // Tower values (NS-A8): same display form as the runtime's
+            // authoritative `string(v)` (`value_ops::stringify`).
+            Value::Projection(_)
+            | Value::OptionVal(_)
+            | Value::Range { .. }
+            | Value::Vec2(_)
+            | Value::Vec3(_)
+            | Value::Vec4(_)
+            | Value::Quat(_)
+            | Value::Mat2(_)
+            | Value::Mat3(_)
+            | Value::Mat4(_) => value_ops::stringify(value, self.program),
         }
     }
 }

@@ -135,6 +135,26 @@ pub(crate) const VAL_OPTION: u8 = 0x10;
 // reservation precedent as its neighbors. Distinct from the RESERVED
 // projection-*segment* kind 0x02 below — that is a different namespace.
 pub(crate) const VAL_RANGE: u8 = 0x11;
+// NS-A8 (`docs/tower-mini-spec.md` T5, issue #1114): the numeric tower.
+// Wire form is hand-serialized **explicit little-endian f32 lanes** — never
+// glam's memory layout (it varies with SIMD features and versions) and never
+// serde-through-glam. Lane order: vectors and the quat `x, y(, z, w)`;
+// matrices column-major, column-by-column. Fixed payload sizes (no counts,
+// no recursion — tower values are leaves, so like `VAL_RANGE` they do NOT
+// count toward `MAX_DECODE_DEPTH`): vec2 = 8 bytes, vec3 = 12,
+// vec4/quat/mat2 = 16, mat3 = 36, mat4 = 64. Next free tags after
+// `VAL_RANGE` (0x11); this PR's own reservation, the same "assigned here"
+// precedent as the record/handle/projection/option/range tags above. No
+// format `VERSION` bump — additive value tags follow the NS-A1 `VAL_OPTION`
+// precedent (an old reader rejects the unknown tag; an old file simply
+// never contains one).
+pub(crate) const VAL_VEC2: u8 = 0x12;
+pub(crate) const VAL_VEC3: u8 = 0x13;
+pub(crate) const VAL_VEC4: u8 = 0x14;
+pub(crate) const VAL_QUAT: u8 = 0x15;
+pub(crate) const VAL_MAT2: u8 = 0x16;
+pub(crate) const VAL_MAT3: u8 = 0x17;
+pub(crate) const VAL_MAT4: u8 = 0x18;
 /// Wire kind for a [`crate::ProjSegment::Index`] segment.
 pub(crate) const PROJ_SEG_INDEX: u8 = 0x00;
 /// Wire kind for a [`crate::ProjSegment::Key`] segment.

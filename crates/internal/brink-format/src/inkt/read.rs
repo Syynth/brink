@@ -266,6 +266,13 @@ fn parse_value_type(pair: P<'_>) -> Result<ValueType, InktParseError> {
         "projection" => Ok(ValueType::Projection),
         "option" => Ok(ValueType::Option),
         "range" => Ok(ValueType::Range),
+        "vec2" => Ok(ValueType::Vec2),
+        "vec3" => Ok(ValueType::Vec3),
+        "vec4" => Ok(ValueType::Vec4),
+        "quat" => Ok(ValueType::Quat),
+        "mat2" => Ok(ValueType::Mat2),
+        "mat3" => Ok(ValueType::Mat3),
+        "mat4" => Ok(ValueType::Mat4),
         _ => Err(err(&pair, format!("unknown value type: {s}"))),
     }
 }
@@ -388,6 +395,11 @@ fn parse_value(pair: P<'_>, type_hint: Option<ValueType>) -> Result<Value, InktP
                 }),
             }
         }
+        // NS-A8 tower values (docs/tower-mini-spec.md T5): `(vec2 <x> <y>)`
+        // … `(mat4 <16 lanes>)` — read-side leg paired with `write_value`'s
+        // tower atoms (the #742 dump/reader parity lesson). Lanes rebuild
+        // through glam's explicit array constructors.
+        Rule::tower_value => parse_tower_value(inner),
         // NS-A5 range values (docs/stdlib-spec.md §7, F7): `(range <start>
         // <end> incl|excl)` — read-side leg paired with `write_value`'s
         // Range atom (the #742 dump/reader parity lesson).
@@ -470,6 +482,77 @@ fn parse_handle_value(pair: P<'_>) -> Result<Value, InktParseError> {
         .parse()
         .map_err(|_| err(&id_pair, "invalid handle id"))?;
     Ok(Value::handle(NameId(kind), id))
+}
+
+/// Parse a `tower_value` node (NS-A8, `docs/tower-mini-spec.md` T5): the
+/// inner rule picks the kind, its children are the flat f32 lanes in the
+/// pinned order (vec/quat `x y (z w)`; matrices column-major). The lane
+/// count is enforced by the grammar; the glam value is rebuilt through the
+/// explicit `from_array`/`from_cols_array` constructors.
+fn parse_tower_value(pair: P<'_>) -> Result<Value, InktParseError> {
+    let inner = pair.into_inner().next().ok_or_else(|| InktParseError {
+        message: "empty tower value".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let rule = inner.as_rule();
+    let mut lanes = Vec::new();
+    for lane_pair in inner.into_inner() {
+        let n: f32 = lane_pair
+            .as_str()
+            .parse()
+            .map_err(|_| err(&lane_pair, "invalid tower lane"))?;
+        lanes.push(n);
+    }
+    let lane_array = |want: usize| -> Result<&[f32], InktParseError> {
+        if lanes.len() == want {
+            Ok(&lanes)
+        } else {
+            Err(InktParseError {
+                message: format!("expected {want} tower lanes, got {}", lanes.len()),
+                line: 0,
+                col: 0,
+            })
+        }
+    };
+    match rule {
+        Rule::vec2_value => {
+            let l = lane_array(2)?;
+            Ok(Value::Vec2(glam::Vec2::new(l[0], l[1])))
+        }
+        Rule::vec3_value => {
+            let l = lane_array(3)?;
+            Ok(Value::Vec3(glam::Vec3::new(l[0], l[1], l[2])))
+        }
+        Rule::vec4_value => {
+            let l = lane_array(4)?;
+            Ok(Value::Vec4(glam::Vec4::new(l[0], l[1], l[2], l[3])))
+        }
+        Rule::quat_value => {
+            let l = lane_array(4)?;
+            Ok(Value::Quat(glam::Quat::from_xyzw(l[0], l[1], l[2], l[3])))
+        }
+        Rule::mat2_value => {
+            let mut cols = [0.0f32; 4];
+            cols.copy_from_slice(lane_array(4)?);
+            Ok(Value::Mat2(glam::Mat2::from_cols_array(&cols)))
+        }
+        Rule::mat3_value => {
+            let mut cols = [0.0f32; 9];
+            cols.copy_from_slice(lane_array(9)?);
+            Ok(Value::Mat3(glam::Mat3::from_cols_array(&cols)))
+        }
+        Rule::mat4_value => {
+            let mut cols = [0.0f32; 16];
+            cols.copy_from_slice(lane_array(16)?);
+            Ok(Value::Mat4(glam::Mat4::from_cols_array(&cols)))
+        }
+        other => Err(InktParseError {
+            message: format!("unexpected tower variant: {other:?}"),
+            line: 0,
+            col: 0,
+        }),
+    }
 }
 
 /// Parse a `projection_value` node (`(projection <cell> (segments
@@ -2033,12 +2116,21 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
             Ok(Opcode::SourceLocation(line, col))
         }
 
-        _ => Err(InktParseError {
+        // NS-A8 numeric tower: the TowerOp mnemonic IS the instruction word
+        // (`make_vec2` … `tower_lerp`) — one wire opcode, thirteen
+        // spellings, `TowerOp::mnemonic`/`from_mnemonic` the single pairing.
+        _ => tower_mnemonic_opcode(mnemonic).ok_or_else(|| InktParseError {
             message: format!("unknown opcode: {mnemonic}"),
             line: mnemonic_pair.line_col().0,
             col: mnemonic_pair.line_col().1,
         }),
     }
+}
+
+/// The `.inkt` reader leg for the NS-A8 `Tower` opcode family: resolve a
+/// mnemonic to `Opcode::Tower(kind)` via [`crate::TowerOp::from_mnemonic`].
+fn tower_mnemonic_opcode(mnemonic: &str) -> Option<Opcode> {
+    crate::TowerOp::from_mnemonic(mnemonic).map(Opcode::Tower)
 }
 
 fn parse_choice_flags_operand(

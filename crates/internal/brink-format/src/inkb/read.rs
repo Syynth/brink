@@ -27,8 +27,9 @@ use super::{
     LINE_TEMPLATE, MAGIC, PART_LITERAL, PART_SELECT, PART_SLOT, PROJ_SEG_INDEX, PROJ_SEG_KEY,
     SECTION_ENTRY_SIZE, SectionEntry, SectionKind, VAL_ARRAY, VAL_BOOL, VAL_CLOSURE,
     VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT, VAL_LIST,
-    VAL_MAP, VAL_NULL, VAL_OPTION, VAL_PROJECTION, VAL_RANGE, VAL_RECORD, VAL_STRING,
-    VAL_VAR_POINTER, VERSION, safe_capacity,
+    VAL_MAP, VAL_MAT2, VAL_MAT3, VAL_MAT4, VAL_NULL, VAL_OPTION, VAL_PROJECTION, VAL_QUAT,
+    VAL_RANGE, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VAL_VEC2, VAL_VEC3, VAL_VEC4, VERSION,
+    safe_capacity,
 };
 
 // ── Tier 1: Full story read ─────────────────────────────────────────────────
@@ -360,8 +361,32 @@ fn decode_value_type(buf: &[u8], off: &mut usize) -> Result<ValueType, DecodeErr
         VAL_PROJECTION => Ok(ValueType::Projection),
         VAL_OPTION => Ok(ValueType::Option),
         VAL_RANGE => Ok(ValueType::Range),
+        VAL_VEC2 => Ok(ValueType::Vec2),
+        VAL_VEC3 => Ok(ValueType::Vec3),
+        VAL_VEC4 => Ok(ValueType::Vec4),
+        VAL_QUAT => Ok(ValueType::Quat),
+        VAL_MAT2 => Ok(ValueType::Mat2),
+        VAL_MAT3 => Ok(ValueType::Mat3),
+        VAL_MAT4 => Ok(ValueType::Mat4),
         _ => Err(DecodeError::InvalidValueType(tag)),
     }
+}
+
+/// NS-A8 (`docs/tower-mini-spec.md` T5): read `N` explicit little-endian
+/// f32 lanes — the hand-serialized tower wire form `write_f32_lanes`
+/// produced. The lanes are handed back as a plain array; the caller builds
+/// the glam value through its explicit `from_array`/`from_cols_array`
+/// constructor (never a memory-layout cast).
+fn read_f32_lanes<const N: usize>(buf: &[u8], off: &mut usize) -> Result<[f32; N], DecodeError> {
+    if *off + 4 * N > buf.len() {
+        return Err(DecodeError::UnexpectedEof);
+    }
+    let mut lanes = [0.0f32; N];
+    for lane in &mut lanes {
+        *lane = f32::from_le_bytes([buf[*off], buf[*off + 1], buf[*off + 2], buf[*off + 3]]);
+        *off += 4;
+    }
+    Ok(lanes)
 }
 
 #[expect(
@@ -497,6 +522,38 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Deco
             };
             Ok(Value::range(start, end, inclusive))
         }
+        // Tower values (NS-A8, `docs/tower-mini-spec.md` T5): explicit
+        // little-endian f32 lanes in the pinned order (vec/quat `x, y(, z,
+        // w)`; matrices column-major), rebuilt through glam's explicit
+        // array constructors. Fixed sizes — no counts, no recursion, no
+        // depth concerns (tower values are leaves).
+        VAL_VEC2 => Ok(Value::Vec2(glam::Vec2::from_array(read_f32_lanes::<2>(
+            buf, off,
+        )?))),
+        VAL_VEC3 => Ok(Value::Vec3(glam::Vec3::from_array(read_f32_lanes::<3>(
+            buf, off,
+        )?))),
+        VAL_VEC4 => Ok(Value::Vec4(glam::Vec4::from_array(read_f32_lanes::<4>(
+            buf, off,
+        )?))),
+        VAL_QUAT => Ok(Value::Quat(glam::Quat::from_array(read_f32_lanes::<4>(
+            buf, off,
+        )?))),
+        VAL_MAT2 => Ok(Value::Mat2(glam::Mat2::from_cols_array(&read_f32_lanes::<
+            4,
+        >(
+            buf, off
+        )?))),
+        VAL_MAT3 => Ok(Value::Mat3(glam::Mat3::from_cols_array(&read_f32_lanes::<
+            9,
+        >(
+            buf, off
+        )?))),
+        VAL_MAT4 => Ok(Value::Mat4(glam::Mat4::from_cols_array(&read_f32_lanes::<
+            16,
+        >(
+            buf, off
+        )?))),
         _ => Err(DecodeError::InvalidValueType(tag)),
     }
 }

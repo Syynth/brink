@@ -27,6 +27,11 @@ inkt = ["inkt-write", "dep:pest", "dep:pest_derive"]
 
 [dependencies]
 bitflags = { workspace = true }
+# NS-A8 numeric tower (T1): glam-backed value kinds. The workspace table pins
+# `default-features = false` + `libm`, which keeps this crate's no_std build
+# intact and keeps glam's `serde` feature OFF (T5: the wire is hand-written
+# little-endian f32 lanes — never glam memory layout, never serde-through-glam).
+glam = { workspace = true }
 pest = { workspace = true, optional = true }
 pest_derive = { workspace = true, optional = true }
 # Not `workspace = true`: this crate needs `default-features = false` (no

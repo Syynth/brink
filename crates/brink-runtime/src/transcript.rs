@@ -97,6 +97,18 @@ const VAL_OPTION: u8 = 0x10;
 /// the `.inkb` `VAL_RANGE` wire form exactly. Flat: never recurses, no
 /// depth accounting (a range holds two ints, never another value).
 const VAL_RANGE: u8 = 0x11;
+// NS-A8 tower value tags (`docs/tower-mini-spec.md` T5): explicit
+// little-endian f32 lanes — vec/quat `x, y(, z, w)`, matrices column-major
+// column-by-column — mirroring the `.inkb` wire form exactly, like every
+// tag above. NEVER glam's memory layout: lanes go through glam's explicit
+// `to_array`/`from_array`/`to_cols_array`/`from_cols_array` conversions.
+const VAL_VEC2: u8 = 0x12;
+const VAL_VEC3: u8 = 0x13;
+const VAL_VEC4: u8 = 0x14;
+const VAL_QUAT: u8 = 0x15;
+const VAL_MAT2: u8 = 0x16;
+const VAL_MAT3: u8 = 0x17;
+const VAL_MAT4: u8 = 0x18;
 const PROJ_SEG_INDEX: u8 = 0x00;
 const PROJ_SEG_KEY: u8 = 0x01;
 
@@ -697,7 +709,61 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
             write_i32(buf, *end);
             write_u8(buf, u8::from(*inclusive));
         }
+        // Tower values (NS-A8, `docs/tower-mini-spec.md` T5): explicit
+        // little-endian f32 lanes in the pinned order, via glam's explicit
+        // array conversions — mirrors the `.inkb` wire form exactly.
+        Value::Vec2(v) => {
+            write_u8(buf, VAL_VEC2);
+            write_f32_lanes(buf, &v.to_array());
+        }
+        Value::Vec3(v) => {
+            write_u8(buf, VAL_VEC3);
+            write_f32_lanes(buf, &v.to_array());
+        }
+        Value::Vec4(v) => {
+            write_u8(buf, VAL_VEC4);
+            write_f32_lanes(buf, &v.to_array());
+        }
+        Value::Quat(q) => {
+            write_u8(buf, VAL_QUAT);
+            write_f32_lanes(buf, &q.to_array());
+        }
+        Value::Mat2(m) => {
+            write_u8(buf, VAL_MAT2);
+            write_f32_lanes(buf, &m.to_cols_array());
+        }
+        Value::Mat3(m) => {
+            write_u8(buf, VAL_MAT3);
+            write_f32_lanes(buf, &m.to_cols_array());
+        }
+        Value::Mat4(m) => {
+            write_u8(buf, VAL_MAT4);
+            write_f32_lanes(buf, &m.to_cols_array());
+        }
     }
+}
+
+/// NS-A8 (`docs/tower-mini-spec.md` T5): write tower lanes as explicit
+/// little-endian f32s, one by one — the hand-serialized tower wire form
+/// (same helper shape as the `.inkb` writer's).
+fn write_f32_lanes(buf: &mut Vec<u8>, lanes: &[f32]) {
+    for lane in lanes {
+        buf.extend_from_slice(&lane.to_le_bytes());
+    }
+}
+
+/// NS-A8 (`docs/tower-mini-spec.md` T5): read `N` explicit little-endian
+/// f32 lanes; the caller rebuilds the glam value through its explicit
+/// `from_array`/`from_cols_array` constructor.
+fn read_f32_lanes<const N: usize>(
+    buf: &[u8],
+    off: &mut usize,
+) -> Result<[f32; N], TranscriptError> {
+    let mut lanes = [0.0f32; N];
+    for lane in &mut lanes {
+        *lane = read_f32(buf, off)?;
+    }
+    Ok(lanes)
 }
 
 /// Encode a [`MapKey`] using the scalar `VAL_*` tag surface (`int`/`string`/
@@ -859,6 +925,36 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Tran
             };
             Ok(Value::range(start, end, inclusive))
         }
+        // Tower values (NS-A8): fixed-size little-endian f32 lanes in the
+        // pinned order, rebuilt through glam's explicit array constructors.
+        // Leaves — no counts, no recursion, no depth concerns.
+        VAL_VEC2 => Ok(Value::Vec2(glam::Vec2::from_array(read_f32_lanes::<2>(
+            buf, off,
+        )?))),
+        VAL_VEC3 => Ok(Value::Vec3(glam::Vec3::from_array(read_f32_lanes::<3>(
+            buf, off,
+        )?))),
+        VAL_VEC4 => Ok(Value::Vec4(glam::Vec4::from_array(read_f32_lanes::<4>(
+            buf, off,
+        )?))),
+        VAL_QUAT => Ok(Value::Quat(glam::Quat::from_array(read_f32_lanes::<4>(
+            buf, off,
+        )?))),
+        VAL_MAT2 => Ok(Value::Mat2(glam::Mat2::from_cols_array(&read_f32_lanes::<
+            4,
+        >(
+            buf, off
+        )?))),
+        VAL_MAT3 => Ok(Value::Mat3(glam::Mat3::from_cols_array(&read_f32_lanes::<
+            9,
+        >(
+            buf, off
+        )?))),
+        VAL_MAT4 => Ok(Value::Mat4(glam::Mat4::from_cols_array(&read_f32_lanes::<
+            16,
+        >(
+            buf, off
+        )?))),
         _ => Err(TranscriptError::InvalidValueTag(tag)),
     }
 }
@@ -930,6 +1026,39 @@ mod tests {
         assert!(matches!(&data.parts[2], OutputPart::Newline));
         assert!(matches!(&data.parts[3], OutputPart::Tag(s) if s == "tag1"));
         assert!(matches!(&data.parts[4], OutputPart::Glue));
+    }
+
+    /// NS-A8 (`docs/tower-mini-spec.md` T5): a tower value in an
+    /// `OutputPart::ValueRef` crosses the `.brkt` round-trip as explicit
+    /// little-endian lanes — including a NaN lane, compared here by lane
+    /// bits (a NaN-bearing vector correctly never compares equal, T4).
+    #[test]
+    fn round_trip_value_ref_tower() {
+        let parts = vec![
+            OutputPart::ValueRef(Value::Vec3(glam::Vec3::new(1.5, -0.0, 3.0))),
+            OutputPart::ValueRef(Value::Quat(glam::Quat::from_xyzw(0.5, -0.5, 0.5, 0.5))),
+            OutputPart::ValueRef(Value::Mat2(glam::Mat2::from_cols_array(&[
+                1.0, 2.0, 3.0, 4.0,
+            ]))),
+            OutputPart::ValueRef(Value::Vec2(glam::Vec2::new(f32::NAN, 7.0))),
+        ];
+        let bytes = write_transcript(&parts, 0, &[]);
+        let data = read_transcript(&bytes).unwrap();
+        assert_eq!(data.parts.len(), 4);
+        assert!(
+            matches!(&data.parts[0], OutputPart::ValueRef(v) if *v == Value::Vec3(glam::Vec3::new(1.5, -0.0, 3.0)))
+        );
+        assert!(
+            matches!(&data.parts[1], OutputPart::ValueRef(v) if *v == Value::Quat(glam::Quat::from_xyzw(0.5, -0.5, 0.5, 0.5)))
+        );
+        assert!(
+            matches!(&data.parts[2], OutputPart::ValueRef(v) if *v == Value::Mat2(glam::Mat2::from_cols_array(&[1.0, 2.0, 3.0, 4.0])))
+        );
+        let OutputPart::ValueRef(Value::Vec2(v)) = &data.parts[3] else {
+            unreachable!("expected vec2 part, got {:?}", data.parts[3]);
+        };
+        assert_eq!(v.x.to_bits(), f32::NAN.to_bits(), "NaN lane bits drifted");
+        assert_eq!(v.y.to_bits(), 7.0f32.to_bits());
     }
 
     // A collection reaches the transcript through `Opcode::EmitValue`, which

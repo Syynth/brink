@@ -2168,6 +2168,7 @@ version = "0.0.11"
 dependencies = [
  "bitflags 2.13.0",
  "brink-compiler",
+ "glam",
  "insta",
  "pest",
  "pest_derive",
@@ -2265,6 +2266,7 @@ dependencies = [
  "brink-compiler",
  "brink-format",
  "divan",
+ "glam",
  "proptest",
  "serde",
  "serde_json",

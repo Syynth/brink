@@ -85,6 +85,15 @@ regex = "1"
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
+# NS-A8 numeric tower (`docs/tower-mini-spec.md` T1): glam is the in-memory
+# compute type for the tower value kinds. One workspace-pinned version shared
+# with the bevy dependency graph (bevy 0.19 → glam 0.32) so the bevy marshal
+# is identity on the same types. `default-features = false` deliberately:
+# NEVER the `serde` feature (T5 — the wire is hand-serialized little-endian
+# f32 lanes, not glam's memory layout or serde derives); `libm` (not `std`)
+# so `brink-format`'s no_std build works and math functions come from one
+# deterministic source.
+glam = { version = "0.32.1", default-features = false, features = ["libm"] }
 
 # Internal brink crates (versioned for crates.io publish; release-plz keeps these in sync)
 bevy-brink-derive = { path = "crates/internal/bevy-brink-derive", version = "0.0.11" }

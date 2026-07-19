@@ -25,6 +25,7 @@ use crate::record_ops;
 use crate::state::ContextAccess;
 use crate::story::{CallFrame, CallFrameType, ContainerPosition, Flow, PendingChoice, Stats};
 use crate::string_ops;
+use crate::tower_ops;
 use crate::value_ops::{self, BinaryOp};
 
 /// Result of a single VM instruction step.
@@ -334,6 +335,15 @@ fn step_impl<R: crate::rng::StoryRng>(
             let result = match val {
                 Value::Int(n) => Value::Int(-n),
                 Value::Float(n) => Value::Float(-n),
+                // Tower values negate componentwise (NS-A8, T3: glam's own
+                // `Neg` impls, wholesale — a vector is numeric).
+                Value::Vec2(v) => Value::Vec2(-v),
+                Value::Vec3(v) => Value::Vec3(-v),
+                Value::Vec4(v) => Value::Vec4(-v),
+                Value::Quat(q) => Value::Quat(-q),
+                Value::Mat2(m) => Value::Mat2(-m),
+                Value::Mat3(m) => Value::Mat3(-m),
+                Value::Mat4(m) => Value::Mat4(-m),
                 _ => {
                     return Err(RuntimeError::TypeError("cannot negate non-numeric".into()));
                 }
@@ -1302,6 +1312,11 @@ fn step_impl<R: crate::rng::StoryRng>(
         Opcode::RangeMakeIncl => range_ops::range_make(flow, true)?,
         Opcode::RangeNonEmpty => range_ops::range_non_empty(flow)?,
 
+        // ── NS-A8: the numeric tower (#1114) — constructors + verbs.
+        // Pure: no reads, no writes, no draws; wrong-operand-type is the
+        // only fault path (`tower_ops`' module doc).
+        Opcode::Tower(op) => tower_ops::tower_op(flow, op)?,
+
         // ── External functions ──────────────────────────────────────
         Opcode::CallExternal(fn_id, arg_count) => {
             // Pop arguments from the value stack.
@@ -1471,6 +1486,13 @@ fn value_type_name(v: &Value) -> &'static str {
         Value::Projection(_) => "projection",
         Value::OptionVal(_) => "option",
         Value::Range { .. } => "range",
+        Value::Vec2(_) => "vec2",
+        Value::Vec3(_) => "vec3",
+        Value::Vec4(_) => "vec4",
+        Value::Quat(_) => "quat",
+        Value::Mat2(_) => "mat2",
+        Value::Mat3(_) => "mat3",
+        Value::Mat4(_) => "mat4",
     }
 }
 
