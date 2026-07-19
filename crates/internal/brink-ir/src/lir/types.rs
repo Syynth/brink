@@ -791,8 +791,8 @@ pub enum Expr {
         needle: Box<Expr>,
     },
     /// `[a]` → `Option[T]`. The `min(a)` stdlib pure function (§4/§4b —
-    /// empty → `none`; NaN placed per the pinned prod order until A4's
-    /// dev-fault plumbing lands).
+    /// empty → `none`; float NaN is mode-dependent since NS-A4: dev-mode
+    /// fault / prod-mode pinned placement, decided at the runtime knob).
     SeqMin(Box<Expr>),
     /// `[a]` → `Option[T]`. The `max(a)` stdlib pure function.
     SeqMax(Box<Expr>),
@@ -831,6 +831,25 @@ pub enum Expr {
     /// mutator-statement desugaring (`lir::lower::blocks`), same RMW
     /// write-back discipline as `CollectionInsert`/`CollectionRemove`.
     MapClear(Box<Expr>),
+
+    // ── NS-A4: the ordering verbs (`docs/stdlib-spec.md` §4b, issue
+    // #1110) ────────────────────────────────────────────────────────────
+    /// `Opcode::SeqSorted`: evaluates an array, pushes it sorted ascending
+    /// by the §4b doctrine order (stable; dev-mode NaN fault / prod pinned
+    /// placement at the runtime knob). Two surfaces share it: `sorted(a)`
+    /// (functional, ordinary expression lowering) and `sort(a)`
+    /// (statement-only mutator, RMW write-back via `lir::lower::blocks`) —
+    /// the `RandShuffle` precedent.
+    SeqSorted(Box<Expr>),
+    /// `Opcode::SeqSortedBy`: evaluates an array and a comparator function
+    /// value (`fn(T, T): int`, F0), pushes the array sorted by the
+    /// comparator (stable; re-entrant VM evaluation at the op). Two
+    /// surfaces: `sorted_by(a, cmp)` (functional) and `sort_by(a, cmp)`
+    /// (statement-only mutator, RMW write-back).
+    SeqSortedBy {
+        seq: Box<Expr>,
+        cmp: Box<Expr>,
+    },
 
     // ── NS-A8: the numeric tower (`docs/tower-mini-spec.md`, issue
     // #1114) ────────────────────────────────────────────────────────────

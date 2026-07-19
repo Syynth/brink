@@ -1511,12 +1511,16 @@ impl InferPass<'_, '_> {
                 }
                 Ty::Bool
             }
-            // `clear(ref m)` (§5) and `shuffle(ref a)` (§7, NS-A6):
-            // statement-only in-place mutators — a receiver write, no
-            // value (the `push` shape, #880: the intrinsics' effect
-            // behavior is declared at introduction). Arms merged per
-            // clippy match_same_arms (the #694 `len | int` precedent).
-            "clear" | "shuffle" => {
+            // `clear(ref m)` (§5), `shuffle(ref a)` (§7, NS-A6), and
+            // `sort(ref a)` (§4b, NS-A4 — the F0 imperative twin of
+            // `sorted`): statement-only in-place mutators — a receiver
+            // write, no value (the `push` shape, #880: the intrinsics'
+            // effect behavior is declared at introduction). Arms merged
+            // per clippy match_same_arms (the #694 `len | int` precedent);
+            // `sort`'s mode-dependent NaN behavior is entirely the runtime
+            // op's (rows stay mode-independent — the conservative faults
+            // bit rides the intrinsic table).
+            "clear" | "shuffle" | "sort" => {
                 if let Some(container) = args.first() {
                     self.record_write(container);
                 }
@@ -1613,10 +1617,46 @@ impl InferPass<'_, '_> {
                 _ => Ty::Option(Box::new(Ty::Unknown)),
             },
             // `shuffled(a)` → a new array of the same element type.
-            "shuffled" => match arg_tys.first() {
+            // NS-A4: `sorted(a)` shares the exact shape (arms merged per
+            // clippy match_same_arms) — the §4b doctrine order needs no
+            // comparator, and the mode-dependent NaN behavior is entirely
+            // the runtime op's (rows stay mode-independent: the `faults`
+            // bit from the intrinsic table is the conservative union).
+            "shuffled" | "sorted" => match arg_tys.first() {
                 Some(Ty::Array(elem)) => Ty::Array(elem.clone()),
                 _ => Ty::Unknown,
             },
+            // NS-A4: the comparator pair. The comparator is a function
+            // value the *verb* will call — the one other place (besides
+            // `call(f)`/`f(args)`) a real callee's effects escape the
+            // static call graph, so its row composes through the same
+            // pending-value-call machinery (`⊕cmp`, F14): a provable
+            // single origin pulls that def's row in transitively;
+            // anything else degrades to the pessimal opaque floor.
+            // Dispatch faults (non-function comparator, non-int return,
+            // detected inconsistency) ride the intrinsic table's faults
+            // bit. The pure·silent contract itself is E119
+            // (`comparator_contract`), exceedance-only.
+            "sorted_by" => {
+                if let Some(cmp) = args.get(1) {
+                    let hint = self.value_call_origin(cmp);
+                    self.pending_value_calls.push(hint);
+                }
+                match arg_tys.first() {
+                    Some(Ty::Array(elem)) => Ty::Array(elem.clone()),
+                    _ => Ty::Unknown,
+                }
+            }
+            "sort_by" => {
+                if let Some(cmp) = args.get(1) {
+                    let hint = self.value_call_origin(cmp);
+                    self.pending_value_calls.push(hint);
+                }
+                if let Some(container) = args.first() {
+                    self.record_write(container);
+                }
+                Ty::Unknown
+            }
             // `seed(n)`: statement-only; `n` is an int by signature —
             // observed so a strict project gets the narrowing (the
             // gradual runtime stays lenient: the frozen `SeedRandom` op

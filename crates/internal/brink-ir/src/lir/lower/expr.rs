@@ -850,8 +850,10 @@ fn lower_t1b_stdlib_call(
         }
         // `clear` (NS-A1, `docs/stdlib-spec.md` §5) joins the statement-only
         // mutators: in-place, returns nothing, so expression position is the
-        // same E056 misuse the original three get.
-        "push" | "insert" | "remove" | "clear" => {
+        // same E056 misuse the original three get. NS-A4 adds `sort`/
+        // `sort_by` (F0: imperative = in-place, `void` — `sorted`/
+        // `sorted_by` are the expression twins below).
+        "push" | "insert" | "remove" | "clear" | "sort" | "sort_by" => {
             ctx.diagnostics.push(crate::Diagnostic {
                 file: ctx.file,
                 range: call_range,
@@ -1119,6 +1121,28 @@ fn lower_t1b_stdlib_call(
                 &args[0], ctx,
             ))))
         }
+        // ── NS-A4 ordering verbs (issue #1110, `docs/stdlib-spec.md`
+        // §4b). `sorted(a)`/`sorted_by(a, cmp)` are the functional
+        // past-participle twins (F0); the imperative `sort`/`sort_by` are
+        // statement-only — recognized by `blocks::try_lower_mutator_stmt`,
+        // E056 in expression position (the arm above). Ordering semantics
+        // (dev NaN-fault / prod pinned order, the comparator contract)
+        // live entirely at the runtime ops. ─────────────────────────────
+        "sorted" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::SeqSorted(Box::new(lower_expr(&args[0], ctx))))
+        }
+        "sorted_by" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::SeqSortedBy {
+                seq: Box::new(lower_expr(&args[0], ctx)),
+                cmp: Box::new(lower_expr(&args[1], ctx)),
+            })
+        }
         // `shuffled(a)` — the functional twin (§4's ruled naming
         // convention): evaluates its argument, returns a new shuffled
         // array; the argument itself is never written back.
@@ -1271,6 +1295,13 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             // inhabited-range validator. `int(range)` needs no entry —
             // `int` is listed above; the VM dispatches on the operand.
             | "non_empty"
+            // NS-A4 (issue #1110, `docs/stdlib-spec.md` §4b, F0): the
+            // ordering verbs — imperative in-place pair + functional
+            // past-participle twins.
+            | "sort"
+            | "sort_by"
+            | "sorted"
+            | "sorted_by"
             // NS-A8 (issue #1114, `docs/tower-mini-spec.md`; ruled shape
             // `docs/stdlib-spec.md` §2b): the numeric tower — constructors
             // (`vec2(x, y)` … `mat4(c0, c1, c2, c3)`, matrices from

@@ -83,6 +83,19 @@ pub(crate) fn intrinsic_effects(name: &str, arg_count: usize) -> IntrinsicEffect
                 | "shuffle"
                 | "shuffled"
                 | "non_empty"
+                // NS-A4 ordering verbs (issue #1110, stdlib-spec §4b):
+                // `sort`/`sorted` fault on wrong container type,
+                // unorderable elements, and (dev mode) NaN comparands —
+                // rows are mode-independent, so the bit is the
+                // conservative union (prod never fires the NaN leg).
+                // `sort_by`/`sorted_by` do NOT inherit the float fault
+                // (F14) but keep the bit for their own paths: comparator
+                // dispatch faults, non-int returns, `⊕cmp`, detected
+                // inconsistency.
+                | "sort"
+                | "sorted"
+                | "sort_by"
+                | "sorted_by"
                 | "INT"
                 | "FLOAT"
                 // NS-A8 tower (issue #1114): constructors fault on

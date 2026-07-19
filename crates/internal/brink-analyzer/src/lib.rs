@@ -7,6 +7,7 @@
 
 mod annotations;
 mod await_purity;
+mod comparator_contract;
 mod conversions;
 mod determinism;
 mod dialect_gate;
@@ -37,6 +38,9 @@ pub use annotations::{
 };
 pub use await_purity::{
     check as await_purity_diagnostics, condition_callees as await_condition_callees, hir_has_await,
+};
+pub use comparator_contract::{
+    check as comparator_contract_diagnostics, comparator_callees, hir_has_comparator_site,
 };
 pub use brink_ir::FileId;
 pub use brink_ir::ResolutionMap;
@@ -635,9 +639,16 @@ pub fn whole_project_diagnostics(
     // it needs `effects_project`'s rows to judge a condition's transitive
     // effect, so both passes share one inference when *either* an `#@effects`
     // assertion or an `await` appears anywhere in the project.
-    let needs_effects = hir_inputs
-        .iter()
-        .any(|&(_, hir)| hir_has_effects_assertion(hir) || await_purity::hir_has_await(hir));
+    // The NS-A4 comparator-contract gate (E119, docs/stdlib-spec.md §4b,
+    // issue #1110) rides the same whole-project effect table with the same
+    // brink-only + laziness posture: a project with no `sort_by`/
+    // `sorted_by`-with-inline-`#fn` site never triggers effect inference
+    // for it.
+    let needs_effects = hir_inputs.iter().any(|&(_, hir)| {
+        hir_has_effects_assertion(hir)
+            || await_purity::hir_has_await(hir)
+            || comparator_contract::hir_has_comparator_site(hir)
+    });
     if opts.dialect == Dialect::Brink && needs_effects {
         let rows =
             infer::effects_project(&hir_inputs, index, resolutions, opts.host_manifest.as_ref());
@@ -655,6 +666,16 @@ pub fn whole_project_diagnostics(
             // this file's own resolution records (`resolutions` carries file
             // provenance, filtered inside `await_purity::check`).
             diagnostics.extend(await_purity::check(file_id, hir, index, resolutions, &rows));
+            // The NS-A4 comparator-contract gate (E119) — same resolution
+            // discipline, judging inline `#fn(target)` comparators of
+            // `sort_by`/`sorted_by` against their target's row.
+            diagnostics.extend(comparator_contract::check(
+                file_id,
+                hir,
+                index,
+                resolutions,
+                &rows,
+            ));
         }
     }
 

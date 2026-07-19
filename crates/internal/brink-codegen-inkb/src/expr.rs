@@ -344,6 +344,18 @@ impl ContainerEmitter<'_> {
                 self.emit(Opcode::RandShuffle);
             }
 
+            // ── NS-A4: the ordering verbs (#1110, stdlib-spec §4b) ───
+            lir::Expr::SeqSorted(arr) => {
+                self.emit_expr(arr, false);
+                self.emit(Opcode::SeqSorted);
+            }
+
+            lir::Expr::SeqSortedBy { seq, cmp } => {
+                self.emit_expr(seq, false);
+                self.emit_expr(cmp, false);
+                self.emit(Opcode::SeqSortedBy);
+            }
+
             // ── NS-A5: range values (#1111) ──────────────────────────
             lir::Expr::RangeMake {
                 start,
