@@ -281,7 +281,7 @@ Serves `sort`/`sort_by`/`min`/`max`/heap (§8) and `compare` (§9.6).
   reified. Prelude: `len` only (already ambient); the rest
   `std::map`.
 
-## 6. Domain 5 — flags 🔶 (proposed): the LIST-op audit
+## 6. Domain 5 — flags (RULED 2026-07-18): the LIST-op audit
 
 Post-rename surface for `flags` (charter §13.2: ordered domain of
 named symbols, subset-valued variables). The audit disposes every
@@ -303,7 +303,7 @@ precedent, oracle byte-identical):
 | `+=` / `-=` | `add` / `remove` | keep both operator and verb; `ref` first param, in-place |
 | `^` intersection | `intersect` | verb; operator form ⏳ |
 | `LIST_MIN`/`MAX` | `first` / `last` | ✚ proposed rename — domain-order vocabulary, not numeric; empty subset → `none` via `Option` (matches the flipped seq `min`/`max`; ink's ops stay frozen-total) |
-| `LIST_VALUE` | `index_of`-shaped | ⏳ — needs the numeric-coupling question below |
+| `LIST_VALUE` | `index_of` | `index_of(flag)` → int — the honest ordinal query: total on a single flag (every flag has a position); multi/empty input faults (the `next`/`prev` shape). The subsets↔ints *conversion* is frozen (below) |
 | `LIST_RANGE` | `range` | keep, `range(Mood, a, b)` inclusive by domain order |
 | `LIST_INVERT` | `invert` | keep — complement within the domain |
 | `LIST_RANDOM` | moves to domain 6 | ✚ `rand::pick` accepts a flags subset (closed iterable set member); empty → `Option` none (dynamic-content absence — §7); frozen ink op untouched |
@@ -314,13 +314,15 @@ precedent, oracle byte-identical):
   or empty subset **faults** — a malformed question is a bug, not
   absence (the doctrine's two halves in one verb). Ink's own
   `+1`/`-1` stepping stays frozen.
-- **The numeric coupling** (⏳ needs a ruling): ink lets flags
-  carry explicit numeric values and converts subsets↔ints. The
-  clean native story is flags-as-symbols (ordinal queries via
-  `index_of`-shaped verbs only); the numeric-values feature would
-  then be ink-frozen (compat surface, not respelled). Recommend:
-  freeze — the dossier shows no native-side demand, and enums with
-  payloads now cover "symbol with data".
+- **The numeric coupling — FROZEN (RULED 2026-07-18)**: ink's
+  explicit numeric values on flags and the subsets↔ints
+  conversions stay on the ink-frozen surface, never respelled.
+  Native flags are pure ordered symbols; ordinal queries go
+  through `index_of` (the author writes it and owns the int);
+  "symbol with data" is enums-with-payloads' job. Migrating
+  stories that do LIST arithmetic keep that code on the frozen
+  surface or rewrite against `index_of` — that idiom is exactly
+  the LIST abuse machines and enums now serve properly.
 - Prelude: `contains count`; rest `std::flags`.
 
 ## 7. Domain 6 — random 🔶 (proposed)
@@ -495,14 +497,17 @@ precedent, oracle byte-identical):
   pinned non-fabricating total order in PROD; the dev/prod split
   fenced to placement-never-fabrication; rows mode-independent;
   the orderable-types roster; frozen IEEE operators.
+- **Also RULED 2026-07-18**: maps (§5 — `contains_value` added,
+  `insert` reserved) · flags (§6 — renames, `first`/`last`,
+  `next`/`prev`, `index_of`, numeric coupling FROZEN).
 - In-section ⏳s: tower mini-spec (§2b) · view-materialization
   ratio (§3b) · intrinsic display notation lives in §9.4 now ·
-  flags numeric-coupling ruling (§6) · rand::int empty-range
-  fault-vs-Option confirmation (§7) · weighted-table mutation
-  surface (§8) · anonymous-record native spelling (§9.1, owned by
-  the code-dialect sitting) · holes' release policy (§9.2) ·
-  protocol implementation spelling + compare/equality coherence
-  line (§9.6) · dev/prod knob home (§4b, tooling sitting).
+  rand::int empty-range fault-vs-Option confirmation (§7) ·
+  weighted-table mutation surface (§8) · anonymous-record native
+  spelling (§9.1, owned by the code-dialect sitting) · holes'
+  release policy (§9.2) · protocol implementation spelling +
+  compare/equality coherence line (§9.6) · dev/prod knob home
+  (§4b, tooling sitting).
 - Maintainer-attention note: `remove` now names three verbs with
   divergent postures — seq remove-by-index (OOB ⇒ fault, the
   indexing contract), map remove-by-key (idempotent-total), flags
