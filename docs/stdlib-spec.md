@@ -229,6 +229,10 @@ Serves `sort`/`sort_by`/`min`/`max`/heap (§8) and `compare` (§9.6).
   ruled. Knob home RULED 2026-07-19: project config
   (brink.toml profile) with a host-API override; tooling
   implements when A4 needs it.
+  *(Amended 2026-07-19, F35 RULED (b): `bevy-brink`'s default
+  `ExecMode` keys off `debug_assertions` — dev builds → Dev,
+  release builds → Prod; hosts can still set it explicitly. The
+  core runtime's default stays Dev.)*
 - **Rows are mode-independent**: ordering verbs over `[float]`
   carry `faults` unconditionally (the conservative union — prod
   never fires it; the checker doesn't know modes exist).
@@ -260,6 +264,13 @@ Serves `sort`/`sort_by`/`min`/`max`/heap (§8) and `compare` (§9.6).
   guarantee floor is "some permutation of the input, never
   worse." `heap_push` checks at entry — the invariant then holds
   over clean data.
+  *(Amended 2026-07-19, F34 RULED: the comparator write-guard
+  lands as a RUNTIME check keyed on `ExecMode` — **Dev faults** on
+  any world-write mid-comparator, via a new tracked fault
+  **`ComparatorWroteState`**; **Prod skips the check** — the write
+  executes, and the result is defined and deterministic since the
+  comparison sequence is fixed. This is §4b's
+  placement-never-fabrication pattern applied to effects.)*
 
   **RULED by delegation 2026-07-19 (not fully reviewed — see the decision-log's "Delegated batch ruling" entry):** **F29(a)** — the symmetric
   carve-out: a protocol `display`/`compare` impl whose inferred row is
@@ -476,6 +487,16 @@ precedent, oracle byte-identical):
   F17 multiset read through the #909 content-over-form lens); display
   and the roll walk keep construction order. Wire: one `Collect` opcode
   (0xFA + kind byte, the Tower economy) and value tag 0x19.)*
+
+  **F17 RULED 2026-07-19 (evening walkthrough) — CONFIRMED as landed:**
+  `Weighted[T]` **multiset equality** — order-insensitive,
+  multiplicity-sensitive content equality, the A7 extension via
+  content-over-form — is ratified as shipped in the as-built note
+  above. (This stamp closes the "thin ruling" flag: the equality
+  semantics previously rode only the as-built note, with no explicit
+  ruling.) Recorded with it: **internal sorted-canonicalization was
+  considered and REJECTED** — it requires a total order on `T`, and
+  `Weighted` of a non-orderable `T` is legal.
 
 ## 9. Closers (RULED 2026-07-18, except as marked)
 
