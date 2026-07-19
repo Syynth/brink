@@ -96,7 +96,9 @@ fn ty_heap(ty: &Ty) -> usize {
         | Ty::Unknown
         | Ty::Conflicted => 0,
         Ty::List(name) | Ty::Struct(name) | Ty::Handle(name) => string_heap(name),
-        Ty::Array(inner) | Ty::Option(inner) => size_of::<Ty>() + ty_heap(inner),
+        Ty::Array(inner) | Ty::Option(inner) | Ty::Weighted(inner) => {
+            size_of::<Ty>() + ty_heap(inner)
+        }
         Ty::Map(key, value) => size_of::<Ty>() * 2 + ty_heap(key) + ty_heap(value),
         Ty::Fn(params, ret) => {
             vec_heap(params)

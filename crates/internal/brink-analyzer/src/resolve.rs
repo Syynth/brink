@@ -875,6 +875,18 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             // shadowable with E035, `strict-ink` rejection via the
             // dialect gate.
             | "non_empty"
+            // NS-A7 (issue #1113, `docs/stdlib-spec.md` §8): `Weighted[T]`
+            // construction (`weighted(w1, v1, …)` — E120 refuses
+            // statically-malformed tables), the `roll(w)` draw (an
+            // RNG-cell write like the NS-A6 verbs), and the humble heap
+            // (`heap_push`/`heap_pop`/`heap_peek` over ordinary arrays,
+            // §4b ordering). Same slice-1 machinery: shadowable with
+            // E035, `strict-ink` rejection via the dialect gate.
+            | "weighted"
+            | "roll"
+            | "heap_push"
+            | "heap_pop"
+            | "heap_peek"
             // NS-A4 (issue #1110, `docs/stdlib-spec.md` §4b, F0): the
             // ordering verbs — imperative in-place `sort`/`sort_by` +
             // functional past-participle twins `sorted`/`sorted_by`.

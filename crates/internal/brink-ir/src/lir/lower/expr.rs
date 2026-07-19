@@ -1337,6 +1337,16 @@ fn lower_weighted_call(
                     &format!("weight {w} is not positive — weights are positive ints (v1)"),
                 );
             }
+            // `-3` parses as `Prefix(Negate, Int(3))` — a negated numeric
+            // literal is exactly as classifiable as a bare one.
+            hir::Expr::Prefix(hir::PrefixOp::Negate, inner)
+                if matches!(inner.as_ref(), hir::Expr::Int(_) | hir::Expr::Float(_)) =>
+            {
+                return refuse(
+                    ctx,
+                    "a negated literal weight is not positive — weights are positive ints (v1)",
+                );
+            }
             hir::Expr::Float(_) => {
                 return refuse(ctx, "weights are positive ints (v1), got a float literal");
             }

@@ -625,6 +625,18 @@ pub(crate) fn binary_op(
         (Value::Range { .. }, Value::Range { .. }) if op == BinaryOp::NotEqual => {
             Ok(Value::Bool(left != right))
         }
+        // Weighted equality (NS-A7, `docs/stdlib-spec.md` §8): multiset
+        // content — delegated to `Value`'s `PartialEq` (order-insensitive,
+        // multiplicity-sensitive, the F17 policy; `Arc::ptr_eq` fast path
+        // included). Only `==`/`!=` are defined; ordering a table (or
+        // comparing one against a non-Weighted) falls through to the
+        // `TypeError` fault below — no ordering, no quiet coercion.
+        (Value::Weighted(_), Value::Weighted(_)) if op == BinaryOp::Equal => {
+            Ok(Value::Bool(left == right))
+        }
+        (Value::Weighted(_), Value::Weighted(_)) if op == BinaryOp::NotEqual => {
+            Ok(Value::Bool(left != right))
+        }
         // Equality for null
         (Value::Null, Value::Null) if op == BinaryOp::Equal => Ok(Value::Bool(true)),
         (Value::Null, Value::Null) if op == BinaryOp::NotEqual => Ok(Value::Bool(false)),
