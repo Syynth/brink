@@ -1349,7 +1349,9 @@ fn note_effect_write(_flow: &Flow, _program: &Program, _cell: DefinitionId) {}
 /// dimension deliberately does not model them — the observation side
 /// under-approximates there, which is the sound direction for the
 /// observed ⊆ declared assertion. Fragment captures (choice text, line
-/// slots) ARE visible content and do record.
+/// slots) are visible content in principle, but `in_capture()` skips
+/// them too — the observation side under-approximates there as well
+/// (same sound direction); the static harvest still declares them.
 #[cfg(feature = "effect-trace")]
 fn note_effect_emit(flow: &Flow, program: &Program) {
     if flow.output.in_capture() {
