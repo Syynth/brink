@@ -148,6 +148,13 @@ cross-referenced so views ≠ projections.
   effectful one (`map_each`); the name is the speed bump. The
   trio's rejection error names both exits: "make it pure, or say
   map_each." Further `_each` variants only on evidence.
+- 🔶 **Mutating iteration — `for ref m in maps { m[k] = v }`**
+  (proposed; arose from the §5 array-of-maps case): a ref-binding
+  in `for` over arrays, desugaring to index-based access so
+  writes ride the existing RMW machinery — no element-projection
+  machinery (#829 stays icebox), lvalue rules apply. The
+  loop-shaped answer to "mutate each element"; a fn-value
+  mutating-each would need projections and is NOT proposed.
 - **Push/pull without laziness (RULED)**: (1) internal iteration —
   `each`/`for_each` — free today; (2) fused verbs (`filter_map`)
   for hot 2-stage chains; (3) **row-gated fusion**: the compiler
@@ -232,7 +239,7 @@ Serves `sort`/`sort_by`/`min`/`max`/heap (§8) and `compare` (§9.6).
   worse." `heap_push` checks at entry — the invariant then holds
   over clean data.
 
-## 5. Domain 4 — maps 🔶 (proposed, drafted between sittings)
+## 5. Domain 4 — maps (RULED 2026-07-18)
 
 - Type `[K: V]` (doctrine §1.4); literal `Map { k: v }` (Phase A
   §1.3). Statically homogeneous both legs. **Key domain = the
@@ -240,8 +247,13 @@ Serves `sort`/`sort_by`/`min`/`max`/heap (§8) and `compare` (§9.6).
   non-scalar key is the E076 lineage at compile time where
   classifiable.
 - Indexing contract stands as ruled (#856): `m[k]` read faults on
-  a missing key; `m[k] = v` inserts. No `insert` verb — write-index
-  IS insertion (one spelling per concept).
+  a missing key; `m[k] = v` inserts. No `insert` verb ships —
+  write-index IS insertion (one spelling per concept) — but
+  **`insert` is RESERVED** as the designated verb-form name:
+  syntax isn't passable, so value-position demand arrives with
+  lambdas/pipelines; it ships (or dissolves into something
+  better) with the code-dialect sitting's syntax-in-value-position
+  decision, where it is exhibit #1 (§10).
 - **The non-faulting read (updated per the 2026-07-18 Option
   ruling)**: `get(m, k)` → `Option[V]` — martyr #3, redeemed
   before it was ever martyred. `m.get(k) or default` covers the
@@ -249,7 +261,11 @@ Serves `sort`/`sort_by`/`min`/`max`/heap (§8) and `compare` (§9.6).
   spelling subsumes it — one spelling per concept); `contains_key`
   stays for the pure membership test. The faulting `m[k]` remains
   the "I expect it there" read (#856 unchanged).
-- Verbs: `len contains_key get keys values remove clear`.
+- Verbs: `len contains_key contains_value get keys values remove
+  clear`. `contains_value` — equality scan over values (content
+  equality per the ruled semantics), total, O(n) and honest about
+  it; the `contains_key`/`contains_value` pair kills the
+  ambiguity bare `contains` would carry on maps.
   `remove(ref m, k)` imperative/in-place per the mutation posture,
   total (removing an absent key is a no-op — deletion is
   idempotent; the faulting read covers "I expected it there").
@@ -492,12 +508,27 @@ precedent, oracle byte-identical):
   indexing contract), map remove-by-key (idempotent-total), flags
   subtract (idempotent-total). Legal under intrinsic overloading;
   flagged so the divergence is chosen, not accidental.
+- **Handed to the code-dialect sitting (recorded 2026-07-18)**:
+  (1) **Lambda/fn-value literal design is its OPENING item** —
+  the confession: the entire fn-value verb layer (trio, each,
+  map_each, sort_by, iterate laws, #872 composition) presumes
+  literals that have never been designed; Phase C must list it
+  as an implementation prerequisite. Pre-registered bet the
+  verbs leaned on: **capture is by-value** (COW makes it cheap;
+  no ref captures v1, so closures can't smuggle mutable aliases
+  past the auto-ref rules); rows compose through captures per
+  #872. Reopening capture reopens knowingly. (2)
+  **Syntax-in-value-position** — one coherent mechanism (operator
+  sections vs `(+)`-style operator-values vs named verb twins vs
+  nothing): exhibit #1 the reserved `insert` (§5), exhibit #2
+  fold-over-`+`.
 - Then: **Phase C** — the full inventory tables (every verb ×
   signature × row × prelude flag) appended here, and
-  implementation sequencing (the numeric tower and effect-row
-  extensions #1087/#1097 are compiler/runtime work that can pump
-  BEFORE the parser exists; the surface-syntax-dependent parts
-  wait on the prototype parser).
+  implementation sequencing (the numeric tower, effect-row
+  extensions #1087/#1097, and the Option/registry substrate are
+  compiler/runtime work that can pump BEFORE the parser exists;
+  the surface-syntax-dependent parts wait on the prototype
+  parser).
 
 ## 11. Session-resumption notes
 
