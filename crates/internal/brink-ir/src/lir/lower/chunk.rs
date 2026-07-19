@@ -355,7 +355,12 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
         | Expr::RandChance(e)
         | Expr::RandPick(e)
         | Expr::RandShuffle(e)
+        | Expr::SeqSorted(e)
         | Expr::RangeNonEmpty(e) => remap_expr(e, map),
+        Expr::SeqSortedBy { seq, cmp } => {
+            remap_expr(seq, map);
+            remap_expr(cmp, map);
+        }
         Expr::RangeMake { start, end, .. } => {
             remap_expr(start, map);
             remap_expr(end, map);

@@ -563,7 +563,17 @@ fn contract_error(
     // receiver-deref fault from a real domain fault, iterate's contract
     // skips the `faults` dimension — under-enforcement, chosen over a
     // dead protocol, and called out in the registry docs.
-    let faults_exceed = row.faults && !matches!(proto, Protocol::Iterate);
+    //
+    // NS-A4 / **F29(a)** (ruled by delegation 2026-07-19, stdlib-spec §4b
+    // — the symmetric carve-out, the post-A3 composition audit's C1/C2
+    // finding): `display`/`compare` are judged on the **refined** faults
+    // bit, not the conservative one. An impl whose row is provably total
+    // — every charge site discharged by local type evidence
+    // (`EffectRow::faults_refined`, invariant `refined → conservative`) —
+    // does NOT inherit the conservative bit; the conservative union
+    // applies only when the impl's own row is opaque (already a contract
+    // violation above) or genuinely fault-bearing.
+    let faults_exceed = row.faults_refined && !matches!(proto, Protocol::Iterate);
     if !row.opaque
         && row.reads.is_empty()
         && row.writes.is_empty()
@@ -902,11 +912,60 @@ mod tests {
 
     #[test]
     fn faulting_impl_exceeds_total() {
-        // `min` over an array is in the NS-A2 faults inventory
-        // (`NotOrderable`/`StdlibWrongType`) — a faulting callee breaks
-        // the `total` leg of the contract.
+        // `min` over a *float* array carries the §4b ordering fault
+        // unconditionally (mode-independent rows: dev NaN-fault / prod
+        // pinned order — the checker doesn't know modes exist), so the
+        // charge is NOT discharged (F29's carve-out only covers provably
+        // NaN-free element types) and breaks the `total` leg.
         let src = format!(
-            "{POINT}=== function cmp(a, b) ===\n~ temp lowest = min(#[1, 2])\n~ return 0\n"
+            "{POINT}=== function cmp(a, b) ===\n~ temp lowest = min(#[1.0, 2.0])\n~ return 0\n"
+        );
+        let diags = impl_diags(&src, &[decl(Protocol::Compare, "Point", "cmp")]);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E114);
+        assert!(diags[0].message.contains("fault"), "{}", diags[0].message);
+    }
+
+    // ─── F29(a) — the symmetric faults carve-out (ruled by delegation
+    // 2026-07-19, stdlib-spec §4b): a display/compare impl whose inferred
+    // row is PROVABLY total does not inherit the conservative faults bit;
+    // the conservative union applies only when the impl's own row is
+    // opaque or genuinely fault-bearing. ─────────────────────────────────
+
+    #[test]
+    fn f29_provably_total_impl_is_not_rejected_for_conservative_faults() {
+        // `min(#[1, 2])`/`len(#[1, 2])` carry the *conservative* faults
+        // bit (bool v1 — the wrong-type/NotOrderable paths exist in
+        // general) but are provably total here: int-array arguments
+        // discharge the charge (F29), so the impl's refined row is
+        // faults-free and E114 must NOT fire.
+        let src = format!(
+            "{POINT}=== function cmp(a, b) ===\n~ temp lowest = min(#[1, 2])\n~ temp n = len(#[1, 2])\n~ return 0\n"
+        );
+        let diags = impl_diags(&src, &[decl(Protocol::Compare, "Point", "cmp")]);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn f29_opaque_impl_keeps_the_conservative_union() {
+        // A call through a function value escapes the static call graph —
+        // the row is opaque, and F29's carve-out explicitly does NOT
+        // apply ("the conservative union applies only when the impl's own
+        // row is opaque or fault-bearing"). E114 names the opaque escape.
+        let src = format!(
+            "{POINT}=== function helper() ===\n~ return 1\n\n=== function shape(self) ===\n~ temp f = #fn(helper)\n~ temp n = call(f)\n~ return \"p\"\n"
+        );
+        let diags = impl_diags(&src, &[decl(Protocol::Display, "Point", "shape")]);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E114);
+    }
+
+    #[test]
+    fn f29_value_dependent_fault_still_rejects() {
+        // Indexing is value-dependent (OOB) — never discharged; the
+        // refined bit stays set and the contract still rejects.
+        let src = format!(
+            "{POINT}=== function cmp(a, b) ===\n~ temp arr = #[1, 2]\n~ temp x = arr[5]\n~ return 0\n"
         );
         let diags = impl_diags(&src, &[decl(Protocol::Compare, "Point", "cmp")]);
         assert_eq!(diags.len(), 1, "{diags:?}");

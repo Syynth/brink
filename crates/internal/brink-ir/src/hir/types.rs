@@ -1846,6 +1846,19 @@ pub enum DiagnosticCode {
     /// declared with the same name (tower type names are global like
     /// `int`).
     E118,
+
+    // ── NS-A4: the ordering doctrine (docs/stdlib-spec.md §4b, issue
+    // #1110) ─────────────────────────────────────────────────────────────
+    /// A `sort_by`/`sorted_by` comparator provably breaks the pure·silent
+    /// contract (§4b: "the comparator falls under the trio's pure·silent
+    /// rule plus the consistent-total-order LAW"). Exceedance-only, the
+    /// E114 posture: flagged when the comparator is a statically-named
+    /// `#fn(target)` whose inferred row shows a global read/write, an
+    /// external call, a content emission, or a tag touch — an opaque or
+    /// unresolvable comparator is not *proven* in violation and passes
+    /// (the gradual posture; the VM's isolation and
+    /// `ComparatorEscaped` fault are the runtime residual).
+    E119,
 }
 
 impl DiagnosticCode {
@@ -1975,6 +1988,7 @@ impl DiagnosticCode {
             Self::E116 => "E116",
             Self::E117 => "E117",
             Self::E118 => "E118",
+            Self::E119 => "E119",
         }
     }
 
@@ -2139,6 +2153,7 @@ impl DiagnosticCode {
             Self::E118 => {
                 "numeric-tower kinds are compiler-known and cannot implement registry protocols"
             }
+            Self::E119 => "sort comparator must be a pure, silent function",
         }
     }
 
@@ -2293,6 +2308,7 @@ impl DiagnosticCode {
             "E116" => Some(Self::E116),
             "E117" => Some(Self::E117),
             "E118" => Some(Self::E118),
+            "E119" => Some(Self::E119),
             _ => None,
         }
     }

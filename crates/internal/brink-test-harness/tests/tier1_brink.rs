@@ -425,6 +425,7 @@ fn every_case_directory_has_a_test() {
         "rand-verbs",
         "range-values",
         "numeric-tower",
+        "sort-verbs",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink")
@@ -2165,6 +2166,20 @@ fn option_verbs_end_to_end() {
 #[test]
 fn numeric_tower_end_to_end() {
     assert_case("numeric-tower");
+}
+
+/// NS-A4 (`docs/stdlib-spec.md` §4b, issue #1110): the ordering verbs end
+/// to end in the brink dialect — the F0 four-verb family
+/// (`sort`/`sorted`/`sort_by`/`sorted_by`), the doctrine order over
+/// ints/mixed numerics/strings/lexicographic arrays, stability, and the
+/// re-entrant fn-value comparator. NaN-free data, so the default (dev)
+/// mode and prod agree exactly — the modes-agree leg of the §4b gate; the
+/// dev-fault / prod-order split is pinned by `brink-runtime`'s
+/// `collection_ops` unit tests and this crate's `ns_a4_exec_mode`
+/// `ExecMode` test.
+#[test]
+fn sort_verbs_end_to_end() {
+    assert_case("sort-verbs");
 }
 
 #[test]

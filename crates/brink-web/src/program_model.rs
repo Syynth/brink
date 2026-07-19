@@ -635,6 +635,9 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         Opcode::RangeMakeExcl => "range_make_excl".to_owned(),
         Opcode::RangeMakeIncl => "range_make_incl".to_owned(),
         Opcode::RangeNonEmpty => "range_non_empty".to_owned(),
+        // NS-A4 ordering verbs (#1110).
+        Opcode::SeqSorted => "seq_sorted".to_owned(),
+        Opcode::SeqSortedBy => "seq_sorted_by".to_owned(),
 
         // NS-A8 numeric tower (#1114): one opcode, per-kind mnemonic —
         // same text as the `.inkt` disassembly.

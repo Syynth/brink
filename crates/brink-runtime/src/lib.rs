@@ -87,8 +87,8 @@ pub use session::{
 pub use speculation::{Budget, Speculation, SpeculationStep};
 pub use state::{ContextAccess, ObservedContext, WriteObserver};
 pub use story::{
-    Choice, DriveOutcome, ExternalFnHandler, ExternalResult, FallbackHandler, FlowInstance,
-    FunctionEval, Line, Stats, StepOutcome, Story, StorySnapshot, StoryStatus,
+    Choice, DriveOutcome, ExecMode, ExternalFnHandler, ExternalResult, FallbackHandler,
+    FlowInstance, FunctionEval, Line, Stats, StepOutcome, Story, StorySnapshot, StoryStatus,
 };
 pub use world::{
     CommitError, ContextView, FlowLocal, Mode, PolicyError, ResolvedPolicy, Scope, World,

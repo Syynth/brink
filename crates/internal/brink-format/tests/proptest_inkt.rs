@@ -398,6 +398,9 @@ fn arb_opcode() -> impl Strategy<Value = Opcode> {
         Just(Opcode::RangeMakeExcl),
         Just(Opcode::RangeMakeIncl),
         Just(Opcode::RangeNonEmpty),
+        // NS-A4 ordering verbs (#1110).
+        Just(Opcode::SeqSorted),
+        Just(Opcode::SeqSortedBy),
         // NS-A8 numeric tower (#1114): one opcode, thirteen kinds.
         prop::sample::select(brink_format::TowerOp::ALL.as_slice()).prop_map(Opcode::Tower),
     ]
@@ -557,6 +560,8 @@ fn assert_opcode_variants_exhaustive(op: &Opcode) {
         | Opcode::RangeMakeExcl
         | Opcode::RangeMakeIncl
         | Opcode::RangeNonEmpty
+        | Opcode::SeqSorted
+        | Opcode::SeqSortedBy
         | Opcode::Tower(_)
         | Opcode::Done
         | Opcode::Yield

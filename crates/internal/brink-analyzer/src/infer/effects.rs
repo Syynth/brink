@@ -88,6 +88,23 @@ pub struct EffectRow {
     /// faults, projection invalidation, value-call dispatch faults). Bool
     /// granularity v1; per-fault-kind is the reserved refinement.
     pub faults: bool,
+    /// NS-A4 / **F29(a)** (ruled by delegation 2026-07-19, stdlib-spec
+    /// §4b): the *refined* faults bit — like [`faults`](Self::faults) but
+    /// with charge sites **discharged by local type evidence** where the
+    /// walk can prove the construct total (a wrong-type-only intrinsic
+    /// over a provably-right-typed argument, float division, `for` over a
+    /// provable collection, an int-bounded range literal). Invariant:
+    /// `faults_refined → faults` (the refinement only ever *removes*
+    /// charges). Consumed by the protocol-impl contract gate (E114): a
+    /// `display`/`compare` impl whose row is provably total does NOT
+    /// inherit the conservative bit; the conservative union applies only
+    /// when the impl's own row is opaque or genuinely fault-bearing.
+    /// Deliberately NOT part of [`covers`](Self::covers)/
+    /// [`is_empty`](Self::is_empty) semantics (those stay anchored to the
+    /// conservative bit — the ground-truth harness and assertion checks
+    /// must keep the no-under-report property), and never serialized into
+    /// the `.inkb` `EffectRows` section.
+    pub faults_refined: bool,
 }
 
 impl EffectRow {
@@ -97,6 +114,10 @@ impl EffectRow {
     pub fn pessimal() -> Self {
         Self {
             opaque: true,
+            // F29: the conservative union applies to an opaque row — the
+            // refined bit never claims totality for a row inference
+            // cannot see.
+            faults_refined: true,
             ..Self::default()
         }
     }
@@ -126,6 +147,7 @@ impl EffectRow {
         self.emits |= other.emits;
         self.tags |= other.tags;
         self.faults |= other.faults;
+        self.faults_refined |= other.faults_refined;
     }
 
     /// Whether `self` conservatively covers (⊒) `other`: every atom `other`
@@ -182,6 +204,10 @@ pub struct EffectAtoms {
     /// NS-A2: this body directly contains a construct that can raise a
     /// turn-terminating fault (see [`EffectRow::faults`]).
     pub faults: bool,
+    /// NS-A4 / F29(a): the refined faults bit (see
+    /// [`EffectRow::faults_refined`]) — the same charge sites with local
+    /// type-evidence discharges applied. `faults_refined → faults`.
+    pub faults_refined: bool,
 }
 
 impl EffectAtoms {
@@ -198,6 +224,7 @@ impl EffectAtoms {
             emits: self.emits,
             tags: self.tags,
             faults: self.faults,
+            faults_refined: self.faults_refined,
         }
     }
 }

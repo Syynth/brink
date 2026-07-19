@@ -897,6 +897,7 @@ pub fn def_effect_atoms(
         emits: result.effect_emits,
         tags: result.effect_tags,
         faults: result.effect_faults,
+        faults_refined: result.effect_faults_refined,
     }
 }
 

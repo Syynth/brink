@@ -83,6 +83,19 @@ pub(crate) fn intrinsic_effects(name: &str, arg_count: usize) -> IntrinsicEffect
                 | "shuffle"
                 | "shuffled"
                 | "non_empty"
+                // NS-A4 ordering verbs (issue #1110, stdlib-spec §4b):
+                // `sort`/`sorted` fault on wrong container type,
+                // unorderable elements, and (dev mode) NaN comparands —
+                // rows are mode-independent, so the bit is the
+                // conservative union (prod never fires the NaN leg).
+                // `sort_by`/`sorted_by` do NOT inherit the float fault
+                // (F14) but keep the bit for their own paths: comparator
+                // dispatch faults, non-int returns, `⊕cmp`, detected
+                // inconsistency.
+                | "sort"
+                | "sorted"
+                | "sort_by"
+                | "sorted_by"
                 | "INT"
                 | "FLOAT"
                 // NS-A8 tower (issue #1114): constructors fault on
@@ -114,6 +127,64 @@ pub(crate) fn intrinsic_effects(name: &str, arg_count: usize) -> IntrinsicEffect
                 | "LIST_RANDOM"
         );
     IntrinsicEffects { faults, rng_write }
+}
+
+/// NS-A4 / **F29(a)** (ruled by delegation 2026-07-19, stdlib-spec §4b):
+/// whether an intrinsic call's fault charge is **discharged by local type
+/// evidence** — the call is provably total given the arguments' inferred
+/// types, so the *refined* faults bit (`EffectRow::faults_refined`) skips
+/// it while the conservative bit keeps it.
+///
+/// The audit, verb by verb (anything not listed keeps its charge):
+///
+/// - **Wrong-type-only faults** discharge when the container/argument type
+///   provably matches: `len` (array/map/string), `keys`/`values`/`clear`/
+///   `contains_value` (map), `contains`/`index_of`/`first`/`last`/`pop`/
+///   `push` (array — `push` appends at `len`, always in bounds), `find`
+///   (two strings), `get` (map with a scalar key type).
+/// - **`min`/`max` (one-arg) and `sort`/`sorted`** additionally require a
+///   provably NaN-free *element* type — int/string/bool, NOT float: §4b
+///   makes float orderings carry `faults` unconditionally
+///   (mode-independent rows; the dev-mode NaN fault is real). Nested
+///   arrays are conservatively kept (the recursive roster check belongs
+///   to a finer rung).
+/// - **Never discharged** (value-dependent or parse-domain faults):
+///   `insert`/`remove` (OOB), `char_at` (OOB), `int`/`float`/`INT`/
+///   `FLOAT` (parse/domain), `chance`/`pick`/`shuffle`/`shuffled`
+///   (wrong-type but rand-coupled — kept simple), `non_empty`, the tower
+///   family, `sort_by`/`sorted_by` (comparator dispatch + `⊕cmp`).
+pub(crate) fn intrinsic_fault_discharged(name: &str, arg_tys: &[super::Ty]) -> bool {
+    use super::Ty;
+    let scalar_orderable = |t: &Ty| matches!(t, Ty::Int | Ty::String | Ty::Bool);
+    match name {
+        "len" => matches!(
+            arg_tys.first(),
+            Some(Ty::Array(_) | Ty::Map(_, _) | Ty::String)
+        ),
+        "keys" | "values" | "clear" | "contains_value" => {
+            matches!(arg_tys.first(), Some(Ty::Map(_, _)))
+        }
+        "get" => matches!(
+            arg_tys.first(),
+            Some(Ty::Map(k, _)) if scalar_orderable(k)
+        ),
+        "contains" | "index_of" | "first" | "last" | "pop" | "push" => {
+            matches!(arg_tys.first(), Some(Ty::Array(_)))
+        }
+        "find" => matches!(
+            (arg_tys.first(), arg_tys.get(1)),
+            (Some(Ty::String), Some(Ty::String))
+        ),
+        "min" | "max" if arg_tys.len() == 1 => matches!(
+            arg_tys.first(),
+            Some(Ty::Array(elem)) if scalar_orderable(elem)
+        ),
+        "sort" | "sorted" => matches!(
+            arg_tys.first(),
+            Some(Ty::Array(elem)) if scalar_orderable(elem)
+        ),
+        _ => false,
+    }
 }
 
 /// Whether the intrinsic named `name` returns `Option[…]` — the NS-A1

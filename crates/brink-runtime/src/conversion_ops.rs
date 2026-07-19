@@ -165,6 +165,8 @@ mod tests {
             skipping_choice: false,
             did_safe_exit: false,
             did_unsafe_yield: false,
+            exec_mode: crate::story::ExecMode::default(),
+            comparator_depth: 0,
         }
     }
 

@@ -839,6 +839,14 @@ enum MutatorKind {
     /// one RNG cell. `shuffled(a)` is the functional twin (ordinary
     /// expression lowering).
     Shuffle,
+    /// `sort(a)` — 1 arg (NS-A4, `docs/stdlib-spec.md` §4b): sort the
+    /// array in place by the doctrine order (dev NaN-fault / prod pinned
+    /// placement at the runtime knob). `sorted(a)` is the functional twin.
+    Sort,
+    /// `sort_by(a, cmp)` — 2 args (NS-A4, F0 ruled 2026-07-19): sort the
+    /// array in place by a comparator function value `fn(T, T): int`.
+    /// `sorted_by(a, cmp)` is the functional twin.
+    SortBy,
 }
 
 impl MutatorKind {
@@ -854,14 +862,16 @@ impl MutatorKind {
             "remove" => Some(Self::Remove),
             "clear" => Some(Self::Clear),
             "shuffle" => Some(Self::Shuffle),
+            "sort" => Some(Self::Sort),
+            "sort_by" => Some(Self::SortBy),
             _ => None,
         }
     }
 
     fn expected_argc(self) -> usize {
         match self {
-            Self::Clear | Self::Shuffle => 1,
-            Self::Push | Self::Remove => 2,
+            Self::Clear | Self::Shuffle | Self::Sort => 1,
+            Self::Push | Self::Remove | Self::SortBy => 2,
             Self::Insert => 3,
         }
     }
@@ -875,6 +885,8 @@ impl MutatorKind {
             Self::Remove => "remove(container, key_or_index)",
             Self::Clear => "clear(map)",
             Self::Shuffle => "shuffle(array)",
+            Self::Sort => "sort(array)",
+            Self::SortBy => "sort_by(array, comparator)",
         }
     }
 }
@@ -1063,6 +1075,11 @@ pub(super) fn try_lower_mutator_stmt(
         }
         MutatorKind::Clear => lir::Expr::MapClear(Box::new(container())),
         MutatorKind::Shuffle => lir::Expr::RandShuffle(Box::new(container())),
+        MutatorKind::Sort => lir::Expr::SeqSorted(Box::new(container())),
+        MutatorKind::SortBy => lir::Expr::SeqSortedBy {
+            seq: Box::new(container()),
+            cmp: Box::new(lower_expr(&args[1], ctx)),
+        },
     };
 
     out.push(lir::Stmt::Assign {
@@ -1167,6 +1184,11 @@ fn lower_bare_mutator(
         MutatorKind::Shuffle => {
             lir::Expr::RandShuffle(Box::new(lir::Expr::TakeTemp(c_slot, c_name)))
         }
+        MutatorKind::Sort => lir::Expr::SeqSorted(Box::new(lir::Expr::TakeTemp(c_slot, c_name))),
+        MutatorKind::SortBy => lir::Expr::SeqSortedBy {
+            seq: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
+            cmp: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
+        },
     };
 
     out.push(lir::Stmt::Assign {

@@ -372,6 +372,18 @@ const RANGE_NON_EMPTY: u8 = 0xF6;
 // discipline as everywhere else).
 const TOWER: u8 = 0xF7;
 
+// NS-A4 ordering verbs (`docs/stdlib-spec.md` §4b, issue #1110; this PR's
+// own reservation, same "assigned here" precedent as the NS-A1/A5/A6/A8
+// blocks above). Two ops serve all four source verbs: `sort(a)` /
+// `sorted(a)` share `SeqSorted` (in-place-ness comes from the RMW
+// write-back, the `shuffle`/`shuffled` precedent), and `sort_by(a, cmp)` /
+// `sorted_by(a, cmp)` share `SeqSortedBy`. NaN placement is
+// mode-dependent (§4b: dev fault / prod pinned order) — the *mode* lives
+// in the runtime (host knob), never in the bytecode, so one compiled
+// story serves both modes.
+const SEQ_SORTED: u8 = 0xF8;
+const SEQ_SORTED_BY: u8 = 0xF9;
+
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
 const LIST_NOT_CONTAINS: u8 = 0xB1;
@@ -1160,6 +1172,36 @@ pub enum Opcode {
     /// write. Fault on a non-range operand.
     RangeNonEmpty,
 
+    // ── NS-A4: the ordering verbs (`docs/stdlib-spec.md` §4b, issue
+    // #1110) ────────────────────────────────────────────────────────────
+    /// `[a]` → `[a']`: the array sorted ascending by the §4b ordering
+    /// doctrine — int/float (numeric promotion), bool (`false < true`),
+    /// string (USV-lexicographic), arrays lexicographic element-wise
+    /// (recursively). Stable (equal elements keep their input order).
+    /// Float NaN is mode-dependent: DEV mode faults on any NaN comparand
+    /// (`UnorderedComparand` — the upstream bug surfaces at its first
+    /// ordering consumption); PROD mode places it by the pinned
+    /// non-fabricating total order (`-0 == +0` ties, NaN greatest,
+    /// NaN-vs-NaN ties). One op serves both surfaces: `sort(a)`
+    /// (statement-only, RMW write-back) and `sorted(a)` (functional) —
+    /// the `RandShuffle` precedent. Fault on a non-array or unorderable
+    /// elements (structs/enums without a registered `compare`, maps,
+    /// flags subsets, divert targets — malformed question, all modes).
+    SeqSorted,
+    /// `[a, cmp]` → `[a']`: the array sorted ascending by a user
+    /// comparator — `cmp` is a function value (`FnRef`/`Closure`) of
+    /// shape `fn(T, T): int` (negative = less, zero = tie, positive =
+    /// greater; F0 ruled 2026-07-19). Stable. The comparator runs under
+    /// the pure·silent contract (checker-enforced where provable); the
+    /// VM evaluates it re-entrantly with output isolated and faults if it
+    /// yields, presents choices, calls an external, or returns a
+    /// non-int. No NaN check here — F14: `sort_by` does not inherit
+    /// `F:float`; the comparator owns the element semantics. One op
+    /// serves `sort_by(a, cmp)` (statement-only, RMW write-back) and
+    /// `sorted_by(a, cmp)` (functional). Fault on a non-array or
+    /// non-function comparator.
+    SeqSortedBy,
+
     // ── NS-A8: the numeric tower (`docs/tower-mini-spec.md`, issue
     // #1114) ────────────────────────────────────────────────────────────
     /// One opcode, thirteen operations: the [`TowerOp`] immediate selects
@@ -1530,6 +1572,10 @@ impl Opcode {
             Self::RangeMakeIncl => write_u8(buf, RANGE_MAKE_INCL),
             Self::RangeNonEmpty => write_u8(buf, RANGE_NON_EMPTY),
 
+            // NS-A4 ordering verbs
+            Self::SeqSorted => write_u8(buf, SEQ_SORTED),
+            Self::SeqSortedBy => write_u8(buf, SEQ_SORTED_BY),
+
             // NS-A8 numeric tower: discriminant + TowerOp kind byte.
             Self::Tower(op) => {
                 write_u8(buf, TOWER);
@@ -1778,6 +1824,10 @@ impl Opcode {
             RANGE_MAKE_EXCL => Self::RangeMakeExcl,
             RANGE_MAKE_INCL => Self::RangeMakeIncl,
             RANGE_NON_EMPTY => Self::RangeNonEmpty,
+
+            // NS-A4 ordering verbs
+            SEQ_SORTED => Self::SeqSorted,
+            SEQ_SORTED_BY => Self::SeqSortedBy,
 
             // NS-A8 numeric tower: TowerOp kind byte follows; unknown
             // kinds are a decode error (reserved-tag discipline).
@@ -2205,6 +2255,22 @@ mod tests {
             let mut buf = Vec::new();
             op.encode(&mut buf);
             assert_eq!(buf[0], byte, "{op:?} encoded to unexpected discriminant");
+        }
+    }
+
+    /// The NS-A4 block layout: the two ordering ops take the next free
+    /// bytes after NS-A8's `Tower` discriminant (0xF7). Two ops serve
+    /// four source verbs — `sort`/`sorted` share `SeqSorted`,
+    /// `sort_by`/`sorted_by` share `SeqSortedBy` (in-place-ness comes
+    /// from the RMW write-back, the `shuffle`/`shuffled` precedent).
+    #[test]
+    fn ns_a4_opcode_block_layout() {
+        let expected: [(u8, Opcode); 2] = [(0xF8, Opcode::SeqSorted), (0xF9, Opcode::SeqSortedBy)];
+        for (byte, op) in expected {
+            let mut buf = Vec::new();
+            op.encode(&mut buf);
+            assert_eq!(buf[0], byte, "{op:?} encoded to unexpected discriminant");
+            roundtrip(&op);
         }
     }
 

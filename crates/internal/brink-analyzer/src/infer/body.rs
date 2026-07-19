@@ -155,6 +155,11 @@ pub(super) struct BodyResult {
     /// NS-A2: the body directly contains a construct that can raise a
     /// turn-terminating fault — see `EffectAtoms::faults`.
     pub effect_faults: bool,
+    /// NS-A4 / F29(a): the refined faults bit — the same charge sites with
+    /// local type-evidence discharges applied (see
+    /// `EffectRow::faults_refined`). `effect_faults_refined →
+    /// effect_faults`.
+    pub effect_faults_refined: bool,
     /// T1c: statically-checkable call-through-value facts (see
     /// [`super::ValueCallFact`]) — recorded here because this walk is the
     /// only place argument expressions have types; reported by strict mode
@@ -203,6 +208,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         effect_emits: false,
         effect_tags: false,
         effect_faults: false,
+        effect_faults_refined: false,
         annotated,
         value_calls: Vec::new(),
         local_write_counts: BTreeMap::new(),
@@ -216,6 +222,8 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
     // site), so a def declaring any `ref` param conservatively faults.
     if def.params.iter().any(|p| p.is_ref) {
         pass.effect_faults = true;
+        // F29: no discharge — the deref fault is value-dependent.
+        pass.effect_faults_refined = true;
     }
     pass.infer_block(def.body);
     // T2 §8 precision rung (issue #872): resolve every value-call site now
@@ -265,6 +273,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         effect_emits: pass.effect_emits,
         effect_tags: pass.effect_tags,
         effect_faults: pass.effect_faults,
+        effect_faults_refined: pass.effect_faults_refined,
         value_calls: pass.value_calls,
     }
 }
@@ -331,6 +340,8 @@ struct InferPass<'a, 'b> {
     effect_emits: bool,
     effect_tags: bool,
     effect_faults: bool,
+    /// NS-A4 / F29(a): the refined faults bit (see `BodyResult`'s field).
+    effect_faults_refined: bool,
     /// Resolvable annotation/ascription types by local name — params up
     /// front, temps added as their declarations are walked. Consulted only
     /// as a *fallback* at consumption sites where the body-derived type is
@@ -790,7 +801,9 @@ impl InferPass<'_, '_> {
                 // NS-A2 fault dimension (issue #1108, from #1097): indexing
                 // is a faulting construct — array OOB, map missing-key read,
                 // not-indexable/invalid-index (docs/value-model-spec.md §11c).
+                // F29: no discharge — OOB/missing-key are value-dependent.
                 self.effect_faults = true;
+                self.effect_faults_refined = true;
                 let base = self.infer_expr(&idx.base);
                 match base {
                     Ty::Array(elem) => {
@@ -861,8 +874,13 @@ impl InferPass<'_, '_> {
                 self.effect_faults = true;
                 self.observe(&r.start, &Ty::Int);
                 self.observe(&r.end, &Ty::Int);
-                self.infer_expr(&r.start);
-                self.infer_expr(&r.end);
+                let start_ty = self.infer_expr(&r.start);
+                let end_ty = self.infer_expr(&r.end);
+                // F29 discharge: int-typed bounds make construction total
+                // (the only fault path is a non-int bound).
+                if !(start_ty == Ty::Int && end_ty == Ty::Int) {
+                    self.effect_faults_refined = true;
+                }
                 let non_empty = match (
                     fold_literal_int_bound(&r.start),
                     fold_literal_int_bound(&r.end),
@@ -921,6 +939,11 @@ impl InferPass<'_, '_> {
         // cannot rule out the int case; float division is IEEE-total).
         if matches!(op, InfixOp::Div | InfixOp::Mod) {
             self.effect_faults = true;
+            // F29 discharge: float division/modulo is IEEE-total — the
+            // `DivisionByZero` fault is the *int* case only.
+            if !(l == Ty::Float && r == Ty::Float) {
+                self.effect_faults_refined = true;
+            }
         }
         match op {
             InfixOp::Add
@@ -1128,8 +1151,10 @@ impl InferPass<'_, '_> {
         // narrowing — `NotCallable`, `FunctionValueArity`, the cross-flow
         // `#@local` `ref`-binding fault, rehydration mismatch (gradual mode
         // reaches all of these) — so the call site conservatively faults
-        // even when #872's rung resolves the callee row.
+        // even when #872's rung resolves the callee row. F29: no discharge
+        // (dispatch faults are value-dependent).
         self.effect_faults = true;
+        self.effect_faults_refined = true;
         match callee_ty {
             Ty::Fn(params, ret) => {
                 if args.len() != params.len() {
@@ -1200,7 +1225,9 @@ impl InferPass<'_, '_> {
         // NS-A2 (issue #1108): `bind(f, …)` faults at bind time on a
         // non-function callee (`NotCallable` from `bind_fn_value`) —
         // conservatively marked like `check_value_call`'s dispatch faults.
+        // F29: no discharge.
         self.effect_faults = true;
+        self.effect_faults_refined = true;
         match callee_ty {
             Ty::Fn(params, ret) => {
                 if args.len() > params.len() {
@@ -1308,6 +1335,12 @@ impl InferPass<'_, '_> {
         let fx = super::intrinsics::intrinsic_effects(name, args.len());
         if fx.faults {
             self.effect_faults = true;
+            // F29 discharge (NS-A4): a wrong-type-only intrinsic over
+            // provably-right-typed arguments is total — see
+            // `intrinsic_fault_discharged`'s per-verb audit.
+            if !super::intrinsics::intrinsic_fault_discharged(name, arg_tys) {
+                self.effect_faults_refined = true;
+            }
         }
         if fx.rng_write {
             self.effect_writes.insert(DefinitionId::RNG_CELL);
@@ -1511,12 +1544,16 @@ impl InferPass<'_, '_> {
                 }
                 Ty::Bool
             }
-            // `clear(ref m)` (§5) and `shuffle(ref a)` (§7, NS-A6):
-            // statement-only in-place mutators — a receiver write, no
-            // value (the `push` shape, #880: the intrinsics' effect
-            // behavior is declared at introduction). Arms merged per
-            // clippy match_same_arms (the #694 `len | int` precedent).
-            "clear" | "shuffle" => {
+            // `clear(ref m)` (§5), `shuffle(ref a)` (§7, NS-A6), and
+            // `sort(ref a)` (§4b, NS-A4 — the F0 imperative twin of
+            // `sorted`): statement-only in-place mutators — a receiver
+            // write, no value (the `push` shape, #880: the intrinsics'
+            // effect behavior is declared at introduction). Arms merged
+            // per clippy match_same_arms (the #694 `len | int` precedent);
+            // `sort`'s mode-dependent NaN behavior is entirely the runtime
+            // op's (rows stay mode-independent — the conservative faults
+            // bit rides the intrinsic table).
+            "clear" | "shuffle" | "sort" => {
                 if let Some(container) = args.first() {
                     self.record_write(container);
                 }
@@ -1613,10 +1650,46 @@ impl InferPass<'_, '_> {
                 _ => Ty::Option(Box::new(Ty::Unknown)),
             },
             // `shuffled(a)` → a new array of the same element type.
-            "shuffled" => match arg_tys.first() {
+            // NS-A4: `sorted(a)` shares the exact shape (arms merged per
+            // clippy match_same_arms) — the §4b doctrine order needs no
+            // comparator, and the mode-dependent NaN behavior is entirely
+            // the runtime op's (rows stay mode-independent: the `faults`
+            // bit from the intrinsic table is the conservative union).
+            "shuffled" | "sorted" => match arg_tys.first() {
                 Some(Ty::Array(elem)) => Ty::Array(elem.clone()),
                 _ => Ty::Unknown,
             },
+            // NS-A4: the comparator pair. The comparator is a function
+            // value the *verb* will call — the one other place (besides
+            // `call(f)`/`f(args)`) a real callee's effects escape the
+            // static call graph, so its row composes through the same
+            // pending-value-call machinery (`⊕cmp`, F14): a provable
+            // single origin pulls that def's row in transitively;
+            // anything else degrades to the pessimal opaque floor.
+            // Dispatch faults (non-function comparator, non-int return,
+            // detected inconsistency) ride the intrinsic table's faults
+            // bit. The pure·silent contract itself is E119
+            // (`comparator_contract`), exceedance-only.
+            "sorted_by" => {
+                if let Some(cmp) = args.get(1) {
+                    let hint = self.value_call_origin(cmp);
+                    self.pending_value_calls.push(hint);
+                }
+                match arg_tys.first() {
+                    Some(Ty::Array(elem)) => Ty::Array(elem.clone()),
+                    _ => Ty::Unknown,
+                }
+            }
+            "sort_by" => {
+                if let Some(cmp) = args.get(1) {
+                    let hint = self.value_call_origin(cmp);
+                    self.pending_value_calls.push(hint);
+                }
+                if let Some(container) = args.first() {
+                    self.record_write(container);
+                }
+                Ty::Unknown
+            }
             // `seed(n)`: statement-only; `n` is an int by signature —
             // observed so a strict project gets the narrowing (the
             // gradual runtime stays lenient: the frozen `SeedRandom` op
@@ -1887,9 +1960,14 @@ impl InferPass<'_, '_> {
                 // NS-A2 (issue #1108): `for` compiles to `CollectionKeys`,
                 // which raises `NotIndexable` on a non-collection iterable —
                 // a tracked domain fault, so the construct conservatively
-                // faults (bool v1, type-free structural harvest).
+                // faults (bool v1).
                 self.effect_faults = true;
                 let iter_ty = self.infer_expr(&f.iterable);
+                // F29 discharge: a provably-iterable type (the closed
+                // builtin roster) makes the loop's own iteration total.
+                if crate::protocols::iterate_element_ty(&iter_ty).is_none() {
+                    self.effect_faults_refined = true;
+                }
                 // NS-A3 (issue #1109, docs/stdlib-spec.md §9.6): the closed
                 // builtin iterable set is the iterate protocol's v1 roster —
                 // one table (`protocols::iterate_element_ty`) serves `for`,

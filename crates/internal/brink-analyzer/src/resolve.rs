@@ -875,6 +875,15 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             // shadowable with E035, `strict-ink` rejection via the
             // dialect gate.
             | "non_empty"
+            // NS-A4 (issue #1110, `docs/stdlib-spec.md` §4b, F0): the
+            // ordering verbs — imperative in-place `sort`/`sort_by` +
+            // functional past-participle twins `sorted`/`sorted_by`.
+            // Same slice-1 machinery: shadowable with E035, `strict-ink`
+            // rejection via the dialect gate.
+            | "sort"
+            | "sort_by"
+            | "sorted"
+            | "sorted_by"
             // NS-A8 (issue #1114, `docs/tower-mini-spec.md`; ruled shape
             // `docs/stdlib-spec.md` §2b): the numeric tower — constructors
             // (`vec2(x, y)` … `mat4(c0, c1, c2, c3)`, matrices from

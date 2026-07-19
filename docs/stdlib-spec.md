@@ -214,6 +214,12 @@ Serves `sort`/`sort_by`/`min`/`max`/heap (§8) and `compare` (§9.6).
   agree exactly and cohere with `<`/`==` — zero
   compare-vs-equality divergence on clean data (deliberately NOT
   IEEE totalOrder, which would split `-0`/`+0` from `==`).
+  *(Amended 2026-07-19, NS-A4 as-built per F14: `sort_by` does NOT
+  belong in the dev NaN-fault list above — the comparator owns the
+  element semantics, NaN never reaches the ordering machinery as a
+  comparison result; its faults are `⊕cmp` ∪ dispatch ∪ detected
+  inconsistency. The list reads `sort`/`sorted`/`min`/`max`/
+  `heap_push`.)*
 - **The dev/prod split is FENCED**: available only where the prod
   behavior is defined, total, and **fabricates no data** —
   placement qualifies (every element preserved, order

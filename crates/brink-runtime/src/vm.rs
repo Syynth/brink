@@ -1312,6 +1312,15 @@ fn step_impl<R: crate::rng::StoryRng>(
         Opcode::RangeMakeIncl => range_ops::range_make(flow, true)?,
         Opcode::RangeNonEmpty => range_ops::range_non_empty(flow)?,
 
+        // ── NS-A4: the ordering verbs (#1110, `docs/stdlib-spec.md`
+        // §4b). `SeqSorted` is pure placement (dev NaN-fault / prod
+        // pinned order — `collection_ops`); `SeqSortedBy` re-enters the
+        // VM to run the user comparator (see `call_comparator`). ────────
+        Opcode::SeqSorted => collection_ops::seq_sorted(flow)?,
+        Opcode::SeqSortedBy => {
+            seq_sorted_by::<R>(flow, program, line_tables, context, stats, resolver)?;
+        }
+
         // ── NS-A8: the numeric tower (#1114) — constructors + verbs.
         // Pure: no reads, no writes, no draws; wrong-operand-type is the
         // only fault path (`tower_ops`' module doc).
@@ -1709,6 +1718,215 @@ fn enter_fn_value(
     });
     stats.frames_pushed += 1;
     Ok(())
+}
+
+/// Per-comparator-call step budget for `sort_by`/`sorted_by` (NS-A4). The
+/// whole sort runs inside ONE outer VM step, so the driver-level step
+/// limit can't interrupt a divergent comparator — this local cap does
+/// (the "VM tests must not hang" discipline). Nested comparator steps
+/// still bump `stats.steps`, so they also count against the outer
+/// driver's budget once the op returns.
+const COMPARATOR_STEP_LIMIT: u64 = 1_000_000;
+
+/// Maximum in-flight nested comparator evaluations (a comparator that
+/// itself sorts with a comparator recurses through `step` on the Rust
+/// stack — this bounds that recursion).
+const COMPARATOR_DEPTH_LIMIT: u16 = 8;
+
+/// `SeqSortedBy` (NS-A4, `docs/stdlib-spec.md` §4b, F0 ruled 2026-07-19):
+/// `[a, cmp]` → `[a']` — sort by a user comparator function value
+/// `fn(T, T): int` (negative = less, zero = tie, positive = greater).
+/// Stable; the §4b guarantee floor ("some permutation of the input, never
+/// worse") holds by construction. One op serves `sort_by` (statement-only,
+/// RMW write-back) and `sorted_by` (functional), so faults name `sort_by`.
+///
+/// No NaN pre-scan here (F14: `sort_by` does not inherit `F:float` — the
+/// comparator owns the element semantics); the comparator's own faults
+/// propagate as turn-terminating faults, and comparator misbehavior the VM
+/// can observe (choices, `-> DONE`/`-> END`, external calls, divergence)
+/// is [`RuntimeError::ComparatorEscaped`].
+fn seq_sorted_by<R: crate::rng::StoryRng>(
+    flow: &mut Flow,
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    context: &mut (impl ContextAccess + ?Sized),
+    stats: &mut Stats,
+    resolver: Option<&dyn PluralResolver>,
+) -> Result<(), RuntimeError> {
+    let cmp = flow.pop_value()?;
+    let container = flow.pop_value()?;
+    let Value::Array(items) = &container else {
+        return Err(RuntimeError::StdlibWrongType {
+            verb: "sort_by",
+            expected: "an array",
+            found: value_type_name(&container),
+        });
+    };
+    if !matches!(cmp, Value::FnRef(_) | Value::Closure(_)) {
+        return Err(RuntimeError::ComparatorNotAFunction {
+            verb: "sort_by",
+            found: value_type_name(&cmp),
+        });
+    }
+    if flow.comparator_depth >= COMPARATOR_DEPTH_LIMIT {
+        return Err(RuntimeError::ComparatorEscaped {
+            verb: "sort_by",
+            what: "recursed past the nesting depth limit",
+        });
+    }
+    let mut sorted: Vec<Value> = items.as_ref().clone();
+    flow.comparator_depth += 1;
+    let result = collection_ops::fallible_stable_sort(&mut sorted, &mut |a, b| {
+        call_comparator::<R>(
+            flow,
+            program,
+            line_tables,
+            context,
+            stats,
+            resolver,
+            &cmp,
+            a.clone(),
+            b.clone(),
+        )
+    });
+    flow.comparator_depth -= 1;
+    result?;
+    flow.value_stack.push(Value::array(sorted));
+    Ok(())
+}
+
+/// Evaluate a `sort_by`/`sorted_by` comparator function value against one
+/// pair of comparands, re-entrantly, inside the current opcode: push a
+/// boundary frame (`FunctionEvalFromGame`, `return_address: None` — the
+/// `begin_function_eval` shape), drive [`step`] until the frame pops, and
+/// read the return value off the value stack. Output is captured and
+/// discarded (comparators are silent by contract; the checker enforces it
+/// where the comparator's origin is provable — E119 — and this isolation
+/// is the gradual-mode residual, mirroring `begin_function_eval`).
+///
+/// In-story dispatch semantics apply (visit counting, exactly like
+/// `enter_fn_value`); comparator behavior the VM cannot honor mid-op —
+/// choices, `-> DONE`/`-> END`, external calls (there is no handler down
+/// here), divergence past [`COMPARATOR_STEP_LIMIT`] — is a
+/// turn-terminating [`RuntimeError::ComparatorEscaped`] fault. A non-int
+/// return is [`RuntimeError::ComparatorReturnType`].
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the VM environment (the step signature) plus the callee and comparands"
+)]
+fn call_comparator<R: crate::rng::StoryRng>(
+    flow: &mut Flow,
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    context: &mut (impl ContextAccess + ?Sized),
+    stats: &mut Stats,
+    resolver: Option<&dyn PluralResolver>,
+    cmp: &Value,
+    a: Value,
+    b: Value,
+) -> Result<core::cmp::Ordering, RuntimeError> {
+    const VERB: &str = "sort_by";
+    let (container_idx, target, full_args) = prepare_fn_value_call(program, cmp, vec![a, b])?;
+
+    let value_floor = flow.value_stack.len();
+    let choice_floor = flow.pending_choices.len();
+    let thread_floor = flow.threads.len();
+
+    // Isolate output: anything the comparator emits routes to the capture
+    // scratch space and never reaches the transcript.
+    flow.output.begin_capture();
+    let output_start = flow.output.target_len();
+
+    // In-story dispatch counts visits, exactly like `enter_fn_value`.
+    let counting_flags = program.container(container_idx).counting_flags;
+    if counting_flags.contains(CountingFlags::VISITS) {
+        context.increment_visit(target);
+        context.set_turn_count(target, context.turn_index());
+    }
+
+    let depth_floor = flow.current_thread().call_stack.len();
+    flow.current_thread_mut().call_stack.push(CallFrame {
+        return_address: None,
+        temps: Vec::new(),
+        container_stack: vec![ContainerPosition {
+            container_idx,
+            offset: 0,
+        }],
+        frame_type: CallFrameType::FunctionEvalFromGame,
+        external_fn_id: None,
+        function_output_start: Some(output_start),
+    });
+    stats.frames_pushed += 1;
+    for v in full_args {
+        flow.value_stack.push(v);
+    }
+
+    let mut steps = 0u64;
+    let outcome: Result<(), RuntimeError> = loop {
+        steps += 1;
+        stats.steps += 1;
+        if steps > COMPARATOR_STEP_LIMIT {
+            break Err(RuntimeError::ComparatorEscaped {
+                verb: VERB,
+                what: "exceeded the nested evaluation step budget",
+            });
+        }
+        let stepped = match step::<R>(flow, program, line_tables, context, stats, resolver) {
+            Ok(s) => s,
+            Err(e) => break Err(e),
+        };
+        match stepped {
+            Stepped::Done | Stepped::Ended => {
+                break Err(RuntimeError::ComparatorEscaped {
+                    verb: VERB,
+                    what: "reached `-> DONE`/`-> END`",
+                });
+            }
+            Stepped::ExternalCall => {
+                break Err(RuntimeError::ComparatorEscaped {
+                    verb: VERB,
+                    what: "called an external function",
+                });
+            }
+            Stepped::Continue | Stepped::ThreadCompleted => {}
+        }
+        if flow.pending_choices.len() > choice_floor {
+            break Err(RuntimeError::ComparatorEscaped {
+                verb: VERB,
+                what: "presented a choice",
+            });
+        }
+        // Boundary frame popped (and any forked threads unwound) — the
+        // comparator has returned.
+        if flow.threads.len() <= thread_floor
+            && flow.current_thread().call_stack.len() <= depth_floor
+        {
+            break Ok(());
+        }
+    };
+    // End the capture on every path — discard whatever the comparator
+    // emitted (silent by contract; see the fn docs).
+    let _captured = flow.output.end_capture(program, line_tables, resolver);
+    outcome?;
+
+    let mut ret: Option<Value> = None;
+    while flow.value_stack.len() > value_floor {
+        let v = flow.value_stack.pop();
+        if ret.is_none() {
+            ret = v;
+        }
+    }
+    match ret {
+        Some(Value::Int(i)) => Ok(i.cmp(&0)),
+        Some(other) => Err(RuntimeError::ComparatorReturnType {
+            verb: VERB,
+            found: value_type_name(&other),
+        }),
+        None => Err(RuntimeError::ComparatorReturnType {
+            verb: VERB,
+            found: "no return value",
+        }),
+    }
 }
 
 fn resolve_line(

@@ -241,6 +241,10 @@ fn check_one(
         emits: inferred.emits,
         tags: inferred.tags,
         faults: inferred.faults,
+        // Mirrored like the other output/fault dimensions — the refined
+        // bit (F29) is not part of `covers` semantics and never
+        // assertable.
+        faults_refined: inferred.faults_refined,
     };
     if !declared_row.covers(inferred) {
         out.push(Diagnostic {
