@@ -120,11 +120,34 @@ cross-referenced so views ≠ projections.
 ## 4. Domain 3 — sequences & iteration (one design)
 
 - One closed iterable set serves `for` and the verbs alike.
-- **Fn-value trio `map filter fold` — EAGER** (laziness explicitly
-  deferred; chains price an intermediate). Their rows COMPOSE the
-  callback's row (the #872 machinery): `a.map(f)` is
-  pure·silent·total exactly when `f` is. (Ledger note: the trio is
-  candidate (c) living inside the doctrine.)
+- **Fn-value trio `map filter fold` — PURE-REQUIRED (RULED
+  2026-07-18, superseding the earlier eager-vs-lazy framing).**
+  Callbacks must be **pure·silent** (reads legal — filtering on
+  story state is the bread-and-butter case; totality NOT required
+  — a faulting callback is legitimate). Consequence: stage
+  interleaving is unobservable BY CONSTRUCTION, so the spec says
+  "one logical pass, order unobservable; the implementation may
+  fuse freely" — **the eager/lazy question is dissolved, not
+  deferred**; laziness is an implementation detail forever. The
+  trio is algebra, not control flow; the #672-B property laws
+  hold unconditionally. The only fusion-visible artifact: WHICH
+  element's fault fires first when several would — unspecified.
+  Rows still compose for what remains (the #872 machinery):
+  `a.map(f)` faults iff `f` can, reads what `f` reads. This is
+  the established position-demands-row pattern (wake conditions,
+  display/compare impls). `filter_map(f)` where
+  `f: fn(T): Option[U]` is the Option-mapper (drops nones) — the
+  natural companion under the Option ruling.
+- **Effectful iteration is a different concept and gets different
+  spellings**: `each` (do something per element, no result), and
+  **`map_each`** — the effectful transform (produces the array,
+  callback may write/emit; sequential in iteration order, defined
+  element-by-element, never fused). **Naming principle (RULED
+  with it): the weird thing gets the ugly method** — convenience
+  is spent on the pure spelling (`map`), friction on the
+  effectful one (`map_each`); the name is the speed bump. The
+  trio's rejection error names both exits: "make it pure, or say
+  map_each." Further `_each` variants only on evidence.
 - **Push/pull without laziness (RULED)**: (1) internal iteration —
   `each`/`for_each` — free today; (2) fused verbs (`filter_map`)
   for hot 2-stage chains; (3) **row-gated fusion**: the compiler
@@ -395,9 +418,14 @@ precedent, oracle byte-identical):
   on lvalue receivers, rvalue-receiver compile error, explicit
   free-call form — and the imperative/past-participle naming
   convention (§4).
-- Still awaiting the nod: the eager trio (the last sitting-3 🔶,
-  §4) · §§5–9's remaining proposal content (updated to conform to
-  the Option ruling but not themselves ruled).
+- **Also RULED 2026-07-18**: the trio is pure·silent-required —
+  eager/lazy dissolved by construction; `each`/`map_each` are the
+  effectful spellings; "the weird thing gets the ugly method"
+  recorded as a naming principle (§4). **Sitting-3's 🔶s are now
+  all closed.**
+- Still awaiting the nod: §§5–9's remaining proposal content
+  (updated to conform to the Option ruling but not themselves
+  ruled).
 - In-section ⏳s: tower mini-spec (§2b) · view-materialization
   ratio (§3b) · intrinsic display notation lives in §9.4 now ·
   flags numeric-coupling ruling (§6) · rand::int empty-range
