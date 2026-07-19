@@ -396,6 +396,14 @@ enum TypedValueJs {
         root: Option<String>,
         segments: Vec<TypedProjSegmentJs>,
     },
+    /// A typed-absence value ([`Value::OptionVal`], NS-A1,
+    /// `docs/stdlib-spec.md` §1.4) as a lossless tree: `some` is `null` for
+    /// `none`, or the recursively-typed inner value for `some(x)` — nesting
+    /// (`some(none)`) is preserved, unlike the native-JS value-or-null
+    /// mapping in [`value_to_js`](crate::value_marshal::value_to_js).
+    Option {
+        some: Option<Box<TypedValueJs>>,
+    },
 }
 
 /// One [`Value::Projection`] path segment, typed (`docs/format-v4-rfc.md`
@@ -525,6 +533,11 @@ fn value_to_typed_js(v: &Value, program: &brink_runtime::Program) -> TypedValueJ
                     },
                 })
                 .collect(),
+        },
+        Value::OptionVal(inner) => TypedValueJs::Option {
+            some: inner
+                .as_deref()
+                .map(|v| Box::new(value_to_typed_js(v, program))),
         },
         Value::Null
         | Value::VariablePointer(_)

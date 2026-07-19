@@ -256,6 +256,81 @@ impl ContainerEmitter<'_> {
                 self.emit(Opcode::CharAt);
             }
 
+            // ── NS-A1: Option[T] + the ruled stdlib flips (#1107) ────
+            lir::Expr::OptionNone => self.emit(Opcode::PushNone),
+
+            lir::Expr::OptionSome(inner) => {
+                self.emit_expr(inner, false);
+                self.emit(Opcode::MakeSome);
+            }
+
+            lir::Expr::StrFind { s, sub } => {
+                self.emit_expr(s, false);
+                self.emit_expr(sub, false);
+                self.emit(Opcode::StrFind);
+            }
+
+            lir::Expr::SeqIndexOf { seq, needle } => {
+                self.emit_expr(seq, false);
+                self.emit_expr(needle, false);
+                self.emit(Opcode::SeqIndexOf);
+            }
+
+            lir::Expr::SeqMin(inner) => {
+                self.emit_expr(inner, false);
+                self.emit(Opcode::SeqMin);
+            }
+
+            lir::Expr::SeqMax(inner) => {
+                self.emit_expr(inner, false);
+                self.emit(Opcode::SeqMax);
+            }
+
+            lir::Expr::SeqFirst(inner) => {
+                self.emit_expr(inner, false);
+                self.emit(Opcode::SeqFirst);
+            }
+
+            lir::Expr::SeqLast(inner) => {
+                self.emit_expr(inner, false);
+                self.emit(Opcode::SeqLast);
+            }
+
+            // `pop(a)`: the take → `SeqPop` → store-back bracket against
+            // the receiver's root cell. `SeqPop` pushes the Option result
+            // *under* the shrunk array, so the trailing store (which pops
+            // the array) leaves the Option on top as the expression value.
+            // Take/Set auto-deref temp-held pointers, so a `ref`-bound
+            // param receiver writes through to its target cell for free.
+            lir::Expr::SeqPop { root } => {
+                match root {
+                    lir::AssignTarget::Global(id) => self.emit(Opcode::TakeGlobal(*id)),
+                    lir::AssignTarget::Temp(slot, _) => self.emit(Opcode::TakeTemp(*slot)),
+                }
+                self.emit(Opcode::SeqPop);
+                match root {
+                    lir::AssignTarget::Global(id) => self.emit(Opcode::SetGlobal(*id)),
+                    lir::AssignTarget::Temp(slot, _) => self.emit(Opcode::SetTemp(*slot)),
+                }
+            }
+
+            lir::Expr::MapGetOpt { map, key } => {
+                self.emit_expr(map, false);
+                self.emit_expr(key, false);
+                self.emit(Opcode::MapGetOpt);
+            }
+
+            lir::Expr::MapContainsValue { map, value } => {
+                self.emit_expr(map, false);
+                self.emit_expr(value, false);
+                self.emit(Opcode::MapContainsValue);
+            }
+
+            lir::Expr::MapClear(inner) => {
+                self.emit_expr(inner, false);
+                self.emit(Opcode::MapClear);
+            }
+
             // ── Records (TM-4c) ──────────────────────────────────────
             lir::Expr::RecordNew {
                 shape_id,

@@ -769,6 +769,69 @@ pub enum Expr {
         index: Box<Expr>,
     },
 
+    // ── NS-A1: Option[T] + the ruled stdlib flips (`docs/stdlib-spec.md`
+    // §1.4, §§3-5; issue #1107) ─────────────────────────────────────────
+    /// The bare `none` Option literal — `Opcode::PushNone`. Produced by an
+    /// unresolved single-segment `none` path in the brink dialect (an
+    /// author symbol of the same name always wins, E035-warned).
+    OptionNone,
+    /// `some(x)` — `Opcode::MakeSome`, total over every value.
+    OptionSome(Box<Expr>),
+    /// `[s, sub]` → `Option[int]`. The `find(s, sub)` stdlib pure function
+    /// (§3, martyr #1 redeemed): USV index of the first occurrence, `none`
+    /// when absent.
+    StrFind {
+        s: Box<Expr>,
+        sub: Box<Expr>,
+    },
+    /// `[a, x]` → `Option[int]`. The `index_of(a, x)` stdlib pure function
+    /// (§4, martyr #2 redeemed): structural-equality scan, `none` absent.
+    SeqIndexOf {
+        seq: Box<Expr>,
+        needle: Box<Expr>,
+    },
+    /// `[a]` → `Option[T]`. The `min(a)` stdlib pure function (§4/§4b —
+    /// empty → `none`; NaN placed per the pinned prod order until A4's
+    /// dev-fault plumbing lands).
+    SeqMin(Box<Expr>),
+    /// `[a]` → `Option[T]`. The `max(a)` stdlib pure function.
+    SeqMax(Box<Expr>),
+    /// `[a]` → `Option[T]`. The `first(a)` stdlib pure function (§4).
+    SeqFirst(Box<Expr>),
+    /// `[a]` → `Option[T]`. The `last(a)` stdlib pure function (§4).
+    SeqLast(Box<Expr>),
+    /// `pop(a)` (§4): mutates its bare-lvalue receiver in place AND
+    /// produces `Option[T]` (the removed last element; empty → `none`) —
+    /// the one A1 verb that is both mutator and expression. Codegen emits
+    /// the take → `SeqPop` → store-back bracket against `root` directly
+    /// (`TakeGlobal`/`TakeTemp` … `SetGlobal`/`SetTemp`), so the shrunk
+    /// array writes back to the root cell and the Option remains on the
+    /// stack as the expression's value. Restricted at lowering to a bare
+    /// variable/temp receiver (a chained lvalue like `pop(grid[0])` is the
+    /// E055-family error for now — scope fence, see the A1 PR notes).
+    SeqPop {
+        root: AssignTarget,
+    },
+    /// `[m, k]` → `Option[V]`. The `get(m, k)` stdlib pure function (§5,
+    /// martyr #3 redeemed): missing key → `none`; the faulting `m[k]`
+    /// (`Index`) stays the "I expect it there" read.
+    MapGetOpt {
+        map: Box<Expr>,
+        key: Box<Expr>,
+    },
+    /// `[m, v]` → `Bool`. The `contains_value(m, v)` stdlib pure function
+    /// (§5): content-equality scan over values, honest O(n).
+    MapContainsValue {
+        map: Box<Expr>,
+        value: Box<Expr>,
+    },
+    /// `CollectionRemove`'s sibling for the `clear` stdlib mutator (§5):
+    /// evaluates `base` (a map) and pushes the *emptied* container. Never
+    /// produced by ordinary expression lowering; only by the
+    /// mutator-statement desugaring (`lir::lower::blocks`), same RMW
+    /// write-back discipline as `CollectionInsert`/`CollectionRemove`.
+    MapClear(Box<Expr>),
+
     // ── Records (TM-4c, `docs/typed-mode-spec.md` §6) ───────────────
     /// `Name#{field: expr, …}` construction. `fields` is in the exact order
     /// `RecordNew`'s VM opcode expects the values pushed — the shape's

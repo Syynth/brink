@@ -329,7 +329,11 @@ fn insert_symbol(
         kind,
         SymbolKind::Knot | SymbolKind::Variable | SymbolKind::Constant | SymbolKind::External
     ) && (crate::resolve::is_builtin_function(&sym.name)
-        || crate::resolve::is_t1b_stdlib_name(&sym.name))
+        || crate::resolve::is_t1b_stdlib_name(&sym.name)
+        // NS-A1: `none` is the Option absence literal (variable-position,
+        // not a call name, so it lives outside `is_t1b_stdlib_name`) —
+        // shadowing it warns exactly like the call-form builtins.
+        || sym.name == "none")
     {
         diagnostics.push(Diagnostic {
             file,

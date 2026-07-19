@@ -195,7 +195,7 @@ impl<'p> NameResolver<'p> {
             // Projection values (T1e, `docs/t1e-spec.md` §4). Same display
             // form as the runtime's authoritative `string(p)`
             // (`value_ops::stringify`).
-            Value::Projection(_) => value_ops::stringify(value, self.program),
+            Value::Projection(_) | Value::OptionVal(_) => value_ops::stringify(value, self.program),
         }
     }
 }

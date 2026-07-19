@@ -272,6 +272,256 @@ pub(crate) fn map_contains(flow: &mut Flow) -> Result<(), RuntimeError> {
     Ok(())
 }
 
+// ── NS-A1: the ruled stdlib flips (`docs/stdlib-spec.md` §§4-5; issue
+// #1107). Absence returns `Option` (`none`, never a fault); a malformed
+// *question* — wrong container type, unorderable elements, a non-scalar map
+// key — stays a turn-terminating fault (the ruled fault-vs-absence
+// doctrine: "a fault says 'your program is wrong'; Option says 'the world
+// didn't have one'"). ──────────────────────────────────────────────────────
+
+/// `SeqIndexOf`: `[a, x]` → `Option[int]` — index of the first element
+/// structurally equal to `x` (`Value`'s `PartialEq`, the built-in content
+/// equality — F22: search verbs depend on `eq`, never `compare`), or
+/// `none` when absent (martyr #2 redeemed).
+pub(crate) fn seq_index_of(flow: &mut Flow) -> Result<(), RuntimeError> {
+    let needle = flow.pop_value()?;
+    let container = flow.pop_value()?;
+    let Value::Array(items) = &container else {
+        return Err(RuntimeError::StdlibWrongType {
+            verb: "index_of",
+            expected: "an array",
+            found: type_name(&container),
+        });
+    };
+    #[expect(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+    let result = items
+        .iter()
+        .position(|item| item == &needle)
+        .map_or_else(Value::none, |i| Value::some(Value::Int(i as i32)));
+    flow.value_stack.push(result);
+    Ok(())
+}
+
+/// `SeqFirst`: `[a]` → `Option[T]` — first element, `none` on empty.
+pub(crate) fn seq_first(flow: &mut Flow) -> Result<(), RuntimeError> {
+    seq_edge(flow, "first", <[Value]>::first)
+}
+
+/// `SeqLast`: `[a]` → `Option[T]` — last element, `none` on empty.
+pub(crate) fn seq_last(flow: &mut Flow) -> Result<(), RuntimeError> {
+    seq_edge(flow, "last", <[Value]>::last)
+}
+
+fn seq_edge(
+    flow: &mut Flow,
+    verb: &'static str,
+    pick: impl Fn(&[Value]) -> Option<&Value>,
+) -> Result<(), RuntimeError> {
+    let container = flow.pop_value()?;
+    let Value::Array(items) = &container else {
+        return Err(RuntimeError::StdlibWrongType {
+            verb,
+            expected: "an array",
+            found: type_name(&container),
+        });
+    };
+    let result = pick(items).map_or_else(Value::none, |v| Value::some(v.clone()));
+    flow.value_stack.push(result);
+    Ok(())
+}
+
+/// `SeqMin`: `[a]` → `Option[T]` — least element per [`total_order_cmp`],
+/// `none` on empty. Ties keep the first occurrence (deterministic).
+pub(crate) fn seq_min(flow: &mut Flow) -> Result<(), RuntimeError> {
+    seq_extremum(flow, "min", core::cmp::Ordering::Less)
+}
+
+/// `SeqMax`: `[a]` → `Option[T]` — greatest element, `none` on empty.
+pub(crate) fn seq_max(flow: &mut Flow) -> Result<(), RuntimeError> {
+    seq_extremum(flow, "max", core::cmp::Ordering::Greater)
+}
+
+fn seq_extremum(
+    flow: &mut Flow,
+    verb: &'static str,
+    keep_when: core::cmp::Ordering,
+) -> Result<(), RuntimeError> {
+    let container = flow.pop_value()?;
+    let Value::Array(items) = &container else {
+        return Err(RuntimeError::StdlibWrongType {
+            verb,
+            expected: "an array",
+            found: type_name(&container),
+        });
+    };
+    let mut best: Option<&Value> = None;
+    for item in items.iter() {
+        best = Some(match best {
+            None => item,
+            // Strict ordering comparison: only a strictly-better candidate
+            // replaces the incumbent, so ties keep the first occurrence.
+            Some(b) if total_order_cmp(verb, item, b)? == keep_when => item,
+            Some(b) => b,
+        });
+    }
+    let result = best.map_or_else(Value::none, |v| Value::some(v.clone()));
+    flow.value_stack.push(result);
+    Ok(())
+}
+
+/// The A1 slice of the ruled ordering doctrine (`docs/stdlib-spec.md` §4b)
+/// for `min`/`max`: int · float (numeric promotion between them) · bool
+/// (`false < true`) · string (lexicographic by Unicode scalar value — Rust's
+/// `str` ordering, which is USV order for valid UTF-8). Floats use the
+/// pinned non-fabricating total order — ordinary IEEE order with `-0 == +0`
+/// as a tie, NaN greater than everything, NaN-vs-NaN ties (deliberately NOT
+/// IEEE `totalOrder`). Wave A4 layers the dev-mode NaN fault and the fuller
+/// roster (arrays-lexicographic, `compare`-protocol structs) on top; the
+/// prod placement semantics implemented here are the mode the two agree on
+/// over clean data. Anything else — cross-type pairs included — is the
+/// [`RuntimeError::NotOrderable`] fault.
+fn total_order_cmp(
+    verb: &'static str,
+    a: &Value,
+    b: &Value,
+) -> Result<core::cmp::Ordering, RuntimeError> {
+    let not_orderable = |v: &Value| RuntimeError::NotOrderable {
+        verb,
+        found: type_name(v),
+    };
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => Ok(x.cmp(y)),
+        (Value::Float(_) | Value::Int(_), Value::Float(_) | Value::Int(_)) => {
+            // At least one side is a Float (the Int/Int arm matched above),
+            // so both promote — `as_float` covers both variants.
+            let (Some(x), Some(y)) = (a.as_float(), b.as_float()) else {
+                return Err(not_orderable(a));
+            };
+            Ok(pinned_float_cmp(x, y))
+        }
+        (Value::Bool(x), Value::Bool(y)) => Ok(x.cmp(y)),
+        (Value::String(x), Value::String(y)) => Ok(x.as_ref().cmp(y.as_ref())),
+        // Cross-type / unorderable. Name the most useful offender: an
+        // element outside the orderable set entirely (`a` first — the
+        // newly-visited element in the extremum walk — then `b`), or, for
+        // a cross-type pair of individually-orderable elements
+        // (`[1, "x"]`), the newly-visited `a` that diverged from the
+        // incumbent.
+        _ => {
+            let orderable = |v: &Value| {
+                matches!(
+                    v,
+                    Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::String(_)
+                )
+            };
+            if orderable(a) && !orderable(b) {
+                Err(not_orderable(b))
+            } else {
+                Err(not_orderable(a))
+            }
+        }
+    }
+}
+
+/// The §4b pinned prod float order: IEEE `partial_cmp` where it's defined
+/// (which already makes `-0 == +0` a tie), NaN greater than everything,
+/// NaN-vs-NaN a tie.
+fn pinned_float_cmp(x: f32, y: f32) -> core::cmp::Ordering {
+    use core::cmp::Ordering;
+
+    match x.partial_cmp(&y) {
+        Some(ord) => ord,
+        None => match (x.is_nan(), y.is_nan()) {
+            (true, true) => Ordering::Equal,
+            (true, false) => Ordering::Greater,
+            // partial_cmp only returns None when at least one side is NaN.
+            (false, _) => Ordering::Less,
+        },
+    }
+}
+
+/// `SeqPop`: `[a]` → pushes `Option[T]` (the removed last element, `none`
+/// on empty), then the shrunk array on top of it — stack-ordered so the
+/// codegen bracket (`Take*` … `SeqPop` … `Set*`) stores the array back to
+/// its root cell and leaves the Option as the expression value.
+pub(crate) fn seq_pop(flow: &mut Flow) -> Result<(), RuntimeError> {
+    let mut container = flow.pop_value()?;
+    if !matches!(container, Value::Array(_)) {
+        return Err(RuntimeError::StdlibWrongType {
+            verb: "pop",
+            expected: "an array",
+            found: type_name(&container),
+        });
+    }
+    note_array_mutation(&container);
+    let popped = container
+        .array_make_mut()
+        .and_then(Vec::pop)
+        .map_or_else(Value::none, Value::some);
+    flow.value_stack.push(popped);
+    flow.value_stack.push(container);
+    Ok(())
+}
+
+/// `MapGetOpt`: `[m, k]` → `Option[V]` — the non-faulting map read
+/// (`get(m, k)`, §5; martyr #3 redeemed). A missing key is absence
+/// (`none`); a key outside the ratified int/string/bool key domain is a
+/// malformed question and faults, matching `MapGet`/`IndexGet`'s key
+/// handling (unlike `contains`, whose ruled totality has no failure mode
+/// to escalate).
+pub(crate) fn map_get_opt(flow: &mut Flow) -> Result<(), RuntimeError> {
+    let key = flow.pop_value()?;
+    let container = flow.pop_value()?;
+    let Value::Map(map) = &container else {
+        return Err(RuntimeError::StdlibWrongType {
+            verb: "get",
+            expected: "a map",
+            found: type_name(&container),
+        });
+    };
+    let map_key = to_map_key(&key)?;
+    let result = map
+        .get(&map_key)
+        .map_or_else(Value::none, |v| Value::some(v.clone()));
+    flow.value_stack.push(result);
+    Ok(())
+}
+
+/// `MapContainsValue`: `[m, v]` → `Bool` — content-equality scan over the
+/// map's values (§5: "total, O(n) and honest about it"). The
+/// `contains_key`/`contains_value` pair kills the ambiguity bare
+/// `contains` would carry on maps.
+pub(crate) fn map_contains_value(flow: &mut Flow) -> Result<(), RuntimeError> {
+    let needle = flow.pop_value()?;
+    let container = flow.pop_value()?;
+    let Value::Map(map) = &container else {
+        return Err(RuntimeError::StdlibWrongType {
+            verb: "contains_value",
+            expected: "a map",
+            found: type_name(&container),
+        });
+    };
+    let found = map.values().any(|v| v == &needle);
+    flow.value_stack.push(Value::Bool(found));
+    Ok(())
+}
+
+/// `MapClear`: `[m]` → empty map. The `clear(m)` statement-only mutator's
+/// primitive (§5: in-place, total); in-place-ness comes from the RMW
+/// write-back bracket exactly like `MapInsert`/`MapRemove`.
+pub(crate) fn map_clear(flow: &mut Flow) -> Result<(), RuntimeError> {
+    let container = flow.pop_value()?;
+    if !matches!(container, Value::Map(_)) {
+        return Err(RuntimeError::StdlibWrongType {
+            verb: "clear",
+            expected: "a map",
+            found: type_name(&container),
+        });
+    }
+    flow.value_stack.push(Value::map(OrderedMap::new()));
+    Ok(())
+}
+
 /// `PushLiteral(idx)`: push a clone of `program.literal_pool[idx]` — an
 /// `Arc` bump for collections (zero-allocation load).
 pub(crate) fn push_literal(
@@ -340,6 +590,7 @@ fn type_name(v: &Value) -> &'static str {
         Value::FnRef(_) | Value::Closure(_) => "fn",
         Value::Handle { .. } => "handle",
         Value::Projection(_) => "projection",
+        Value::OptionVal(_) => "option",
     }
 }
 
@@ -898,5 +1149,310 @@ mod tests {
             "snapshot unmutated"
         );
         assert_eq!(mutated, arr(vec![Value::Int(2)]));
+    }
+
+    // ── NS-A1 Option verb flips (docs/stdlib-spec.md §§4-5, #1107) ───────
+
+    fn ints(ns: &[i32]) -> Value {
+        arr(ns.iter().map(|n| Value::Int(*n)).collect())
+    }
+
+    #[test]
+    fn seq_index_of_finds_first_occurrence_and_none_when_absent() {
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![ints(&[7, 8, 7]), Value::Int(7)]);
+        seq_index_of(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::some(Value::Int(0)));
+
+        push_args(&mut flow, vec![ints(&[7, 8]), Value::Int(9)]);
+        seq_index_of(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::none());
+    }
+
+    #[test]
+    fn seq_index_of_uses_structural_equality() {
+        // Element equality is content equality — a nested array needle
+        // matches structurally, never by identity.
+        let mut flow = test_flow();
+        push_args(
+            &mut flow,
+            vec![arr(vec![ints(&[1, 2]), ints(&[3])]), ints(&[3])],
+        );
+        seq_index_of(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::some(Value::Int(1)));
+    }
+
+    #[test]
+    fn seq_index_of_on_non_array_faults() {
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![Value::Int(1), Value::Int(1)]);
+        let err = seq_index_of(&mut flow).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::StdlibWrongType {
+                verb: "index_of",
+                expected: "an array",
+                found: "int",
+            }
+        );
+    }
+
+    #[test]
+    fn seq_first_last_on_empty_are_none() {
+        for op in [seq_first, seq_last] {
+            let mut flow = test_flow();
+            push_args(&mut flow, vec![ints(&[])]);
+            op(&mut flow).unwrap();
+            assert_eq!(flow.pop_value().unwrap(), Value::none());
+        }
+    }
+
+    #[test]
+    fn seq_first_last_pick_the_edges() {
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![ints(&[4, 5, 6])]);
+        seq_first(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::some(Value::Int(4)));
+        push_args(&mut flow, vec![ints(&[4, 5, 6])]);
+        seq_last(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::some(Value::Int(6)));
+    }
+
+    #[test]
+    fn seq_min_max_over_ints_and_empty() {
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![ints(&[3, 1, 2])]);
+        seq_min(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::some(Value::Int(1)));
+        push_args(&mut flow, vec![ints(&[3, 1, 2])]);
+        seq_max(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::some(Value::Int(3)));
+        push_args(&mut flow, vec![ints(&[])]);
+        seq_min(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::none());
+    }
+
+    #[test]
+    fn seq_min_max_promote_mixed_numerics_and_return_the_element() {
+        // [2, 1.5] — min is the float, max is the int; the *element* comes
+        // back unwidened (an Int stays an Int).
+        let mixed = || arr(vec![Value::Int(2), Value::Float(1.5)]);
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![mixed()]);
+        seq_min(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::some(Value::Float(1.5)));
+        push_args(&mut flow, vec![mixed()]);
+        seq_max(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::some(Value::Int(2)));
+    }
+
+    #[test]
+    fn seq_min_max_order_strings_and_bools() {
+        let strs = arr(vec![Value::from("pear"), Value::from("apple")]);
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![strs]);
+        seq_min(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::some(Value::from("apple")));
+
+        let bools = arr(vec![Value::Bool(true), Value::Bool(false)]);
+        push_args(&mut flow, vec![bools]);
+        seq_min(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::some(Value::Bool(false)));
+    }
+
+    #[test]
+    fn seq_min_ties_keep_the_first_occurrence() {
+        // -0.0 and +0.0 tie under the pinned order; the first stays.
+        let a = arr(vec![Value::Float(-0.0), Value::Float(0.0)]);
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![a]);
+        seq_min(&mut flow).unwrap();
+        let Value::OptionVal(Some(v)) = flow.pop_value().unwrap() else {
+            unreachable!("min of a non-empty float array is some");
+        };
+        let Value::Float(f) = *v else {
+            unreachable!("element is a float");
+        };
+        assert!(f.is_sign_negative(), "first (-0.0) kept on tie");
+    }
+
+    #[test]
+    fn seq_max_places_nan_greatest_per_the_pinned_prod_order() {
+        // §4b pinned order: NaN greater than everything (A1 baseline; A4
+        // layers the dev-mode fault on top).
+        let a = arr(vec![Value::Float(1.0), Value::Float(f32::NAN)]);
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![a.clone()]);
+        seq_max(&mut flow).unwrap();
+        let Value::OptionVal(Some(v)) = flow.pop_value().unwrap() else {
+            unreachable!("max of a non-empty float array is some");
+        };
+        let Value::Float(f) = *v else {
+            unreachable!("element is a float");
+        };
+        assert!(f.is_nan(), "NaN sorts greatest");
+
+        push_args(&mut flow, vec![a]);
+        seq_min(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::some(Value::Float(1.0)));
+    }
+
+    #[test]
+    fn seq_min_cross_type_elements_fault_not_orderable() {
+        let a = arr(vec![Value::Int(1), Value::from("x")]);
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![a]);
+        let err = seq_min(&mut flow).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::NotOrderable {
+                verb: "min",
+                found: "string",
+            }
+        );
+    }
+
+    #[test]
+    fn seq_min_unorderable_element_type_faults() {
+        let a = arr(vec![ints(&[1]), ints(&[2])]);
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![a]);
+        let err = seq_min(&mut flow).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::NotOrderable {
+                verb: "min",
+                found: "array",
+            }
+        );
+    }
+
+    #[test]
+    fn seq_pop_pushes_option_then_shrunk_array() {
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![ints(&[1, 2])]);
+        seq_pop(&mut flow).unwrap();
+        // Stack order: [popped-Option, shrunk-array] — array on top so the
+        // codegen bracket's store-back pops it, leaving the Option.
+        assert_eq!(flow.pop_value().unwrap(), ints(&[1]));
+        assert_eq!(flow.pop_value().unwrap(), Value::some(Value::Int(2)));
+    }
+
+    #[test]
+    fn seq_pop_on_empty_is_none_and_keeps_the_empty_array() {
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![ints(&[])]);
+        seq_pop(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), ints(&[]));
+        assert_eq!(flow.pop_value().unwrap(), Value::none());
+    }
+
+    #[test]
+    fn seq_pop_on_non_array_faults() {
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![Value::from("nope")]);
+        let err = seq_pop(&mut flow).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::StdlibWrongType {
+                verb: "pop",
+                expected: "an array",
+                found: "string",
+            }
+        );
+    }
+
+    #[test]
+    fn seq_pop_cows_when_shared() {
+        let original = ints(&[1, 2]);
+        let snapshot = original.clone();
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![original]);
+        seq_pop(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), ints(&[1]));
+        assert_eq!(snapshot, ints(&[1, 2]), "snapshot unmutated");
+    }
+
+    fn simple_map() -> Value {
+        let mut m = OrderedMap::new();
+        m.insert(MapKey::from("hp"), Value::Int(10));
+        m.insert(MapKey::from("name"), Value::from("gob"));
+        Value::map(m)
+    }
+
+    #[test]
+    fn map_get_opt_present_absent_and_wrong_container() {
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![simple_map(), Value::from("hp")]);
+        map_get_opt(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::some(Value::Int(10)));
+
+        push_args(&mut flow, vec![simple_map(), Value::from("mp")]);
+        map_get_opt(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::none());
+
+        push_args(&mut flow, vec![ints(&[1]), Value::Int(0)]);
+        let err = map_get_opt(&mut flow).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::StdlibWrongType {
+                verb: "get",
+                expected: "a map",
+                found: "array",
+            }
+        );
+    }
+
+    #[test]
+    fn map_get_opt_non_scalar_key_is_a_malformed_question_fault() {
+        // Unlike a *missing* key (absence -> none), a key outside the
+        // int/string/bool domain can never be a key at all — a bug, so it
+        // faults exactly like `m[k]`'s own key handling.
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![simple_map(), ints(&[1])]);
+        let err = map_get_opt(&mut flow).unwrap_err();
+        assert_eq!(err, RuntimeError::InvalidMapKeyType("array"));
+    }
+
+    #[test]
+    fn map_contains_value_scans_content_equality() {
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![simple_map(), Value::Int(10)]);
+        map_contains_value(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::Bool(true));
+
+        push_args(&mut flow, vec![simple_map(), Value::Int(11)]);
+        map_contains_value(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::Bool(false));
+
+        push_args(&mut flow, vec![ints(&[10]), Value::Int(10)]);
+        let err = map_contains_value(&mut flow).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::StdlibWrongType {
+                verb: "contains_value",
+                expected: "a map",
+                found: "array",
+            }
+        );
+    }
+
+    #[test]
+    fn map_clear_empties_and_faults_on_non_map() {
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![simple_map()]);
+        map_clear(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::map(OrderedMap::new()));
+
+        push_args(&mut flow, vec![ints(&[1])]);
+        let err = map_clear(&mut flow).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::StdlibWrongType {
+                verb: "clear",
+                expected: "a map",
+                found: "array",
+            }
+        );
     }
 }

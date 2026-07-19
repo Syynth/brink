@@ -88,6 +88,10 @@ const VAL_RECORD: u8 = 0x0F;
 // snapshots as an ordinary value (`docs/t1e-spec.md` §3: "Saves/journal/
 // speculation: ordinary values"), e.g. via `Opcode::EmitValue`.
 const VAL_PROJECTION: u8 = 0x0E;
+/// NS-A1 Option value tag (`docs/stdlib-spec.md` §1.4): flag byte (0 =
+/// `none`, 1 = `some`), then the inner value when `some` — mirrors the
+/// `.inkb` `VAL_OPTION` wire form exactly, like every tag above.
+const VAL_OPTION: u8 = 0x10;
 const PROJ_SEG_INDEX: u8 = 0x00;
 const PROJ_SEG_KEY: u8 = 0x01;
 
@@ -660,6 +664,19 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
                 }
             }
         }
+        // Option values (NS-A1, `docs/stdlib-spec.md` §1.4): an Option in a
+        // global/frame slot journals as an ordinary value, same as every
+        // variant above.
+        Value::OptionVal(inner) => {
+            write_u8(buf, VAL_OPTION);
+            match inner {
+                None => write_u8(buf, 0),
+                Some(v) => {
+                    write_u8(buf, 1);
+                    encode_value(v, buf);
+                }
+            }
+        }
     }
 }
 
@@ -803,6 +820,13 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Tran
             }
             Ok(Value::projection(cell, segments))
         }
+        // Option values (NS-A1): flag byte then inner-when-some; any other
+        // flag byte is corrupt input. Depth-counted like the collections.
+        VAL_OPTION => match read_u8(buf, off)? {
+            0 => Ok(Value::none()),
+            1 => Ok(Value::some(decode_value(buf, off, depth + 1)?)),
+            other => Err(TranscriptError::InvalidValueTag(other)),
+        },
         _ => Err(TranscriptError::InvalidValueTag(tag)),
     }
 }

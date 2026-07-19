@@ -288,6 +288,56 @@ const PROJ_WRITE: u8 = 0xDC;
 // (`RuntimeError::CharAtOutOfBounds`, `len` = char count).
 const CHAR_AT: u8 = 0xDD;
 
+// NS-A1 Option[T] + the ruled stdlib flips (`docs/stdlib-spec.md`
+// §1.1/§1.4, §§3-5; `docs/stdlib-sequencing.md` §2 Wave A1) — this PR's own
+// reservation, same "assigned here" precedent as the record/conversion/
+// function-value/projection/char_at blocks above. `PUSH_NONE`/`MAKE_SOME`
+// take the two bytes remaining before the string-eval block (0xE0/0xE1);
+// the verb flips continue contiguously after it at 0xE2.
+//
+// Option construction:
+//   0xDE PushNone   `[]` → `none`  (`Value::OptionVal(None)`)
+//   0xDF MakeSome   `[x]` → `some(x)` — total over every value
+//
+// The verb flips, all brink-dialect intrinsics returning `Option` (absence
+// = `none`, never a fault; malformed *questions* — wrong container type,
+// unorderable elements — stay turn-terminating faults, the ruled
+// fault-vs-absence doctrine):
+//   0xE2 StrFind         `[s, sub]` → `Option[int]` (USV index, not bytes)
+//   0xE3 SeqIndexOf      `[a, x]` → `Option[int]` (structural equality)
+//   0xE4 SeqMin          `[a]` → `Option[T]` (empty → none)
+//   0xE5 SeqMax          `[a]` → `Option[T]`
+//   0xE6 SeqFirst        `[a]` → `Option[T]`
+//   0xE7 SeqLast         `[a]` → `Option[T]`
+//   0xE8 SeqPop          `[a]` → pushes `Option[T]` (popped element or
+//                        none), then the shrunk array on top — codegen
+//                        brackets it Take*/SeqPop/Set* so the array writes
+//                        back to its root cell and the Option remains as
+//                        the expression value
+//   0xE9 MapGetOpt       `[m, k]` → `Option[V]` (missing key → none; a
+//                        non-scalar key is a fault — malformed question)
+//   0xEA MapContainsValue `[m, v]` → `Bool` (content-equality scan, O(n))
+//   0xEB MapClear        `[m]` → empty map (statement-only mutator;
+//                        in-place-ness comes from the RMW write-back)
+//
+// `SeqMin`/`SeqMax` order int/float (numeric promotion), bool, string for
+// now, with float NaN placed by the ruled PROD pinned order (§4b: NaN
+// greater than everything, NaN-vs-NaN ties, -0 == +0). The dev-mode
+// NaN-fault and the full orderable roster (arrays-lexicographic, compare
+// protocol) land with wave A4 — the rows are mode-independent either way.
+const PUSH_NONE: u8 = 0xDE;
+const MAKE_SOME: u8 = 0xDF;
+const STR_FIND: u8 = 0xE2;
+const SEQ_INDEX_OF: u8 = 0xE3;
+const SEQ_MIN: u8 = 0xE4;
+const SEQ_MAX: u8 = 0xE5;
+const SEQ_FIRST: u8 = 0xE6;
+const SEQ_LAST: u8 = 0xE7;
+const SEQ_POP: u8 = 0xE8;
+const MAP_GET_OPT: u8 = 0xE9;
+const MAP_CONTAINS_VALUE: u8 = 0xEA;
+const MAP_CLEAR: u8 = 0xEB;
+
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
 const LIST_NOT_CONTAINS: u8 = 0xB1;
@@ -849,6 +899,52 @@ pub enum Opcode {
     /// `i`, a non-`String` `s`, or `i` outside `[0, char_count)`.
     CharAt,
 
+    // ── NS-A1: Option[T] + the ruled stdlib flips (`docs/stdlib-spec.md`
+    // §1.1/§1.4, §§3-5) ──────────────────────────────────────────────────
+    /// `[]` → `none`. Push the `Option[T]` absence value.
+    PushNone,
+    /// `[x]` → `some(x)`. Wrap the top of stack — total over every value.
+    MakeSome,
+    /// `[s, sub]` → `Option[int]`: index of `sub`'s first occurrence in
+    /// `s`, counted in Unicode scalar values (chars, not bytes — the §3
+    /// indexing unit `char_at` already uses); absent → `none`.
+    /// Turn-terminating fault on non-string arguments.
+    StrFind,
+    /// `[a, x]` → `Option[int]`: index of the first element structurally
+    /// equal to `x`; absent → `none`. Fault on a non-array container.
+    SeqIndexOf,
+    /// `[a]` → `Option[T]`: least element (empty → `none`). Orders
+    /// int/float (numeric promotion, NaN per the §4b pinned prod order),
+    /// bool, string; anything else faults (unorderable — wave A4 grows the
+    /// roster). Ties keep the first occurrence.
+    SeqMin,
+    /// `[a]` → `Option[T]`: greatest element — see [`SeqMin`](Self::SeqMin).
+    SeqMax,
+    /// `[a]` → `Option[T]`: first element (empty → `none`).
+    SeqFirst,
+    /// `[a]` → `Option[T]`: last element (empty → `none`).
+    SeqLast,
+    /// `[a]` → pushes `Option[T]` (the removed last element, or `none` on
+    /// empty), then the shrunk array on top of it. Codegen brackets this
+    /// `TakeGlobal`/`TakeTemp` … `SetGlobal`/`SetTemp` so the array writes
+    /// back to its root cell and the Option remains as the expression's
+    /// value. Fault on a non-array.
+    SeqPop,
+    /// `[m, k]` → `Option[V]`: the non-faulting map read (`get(m, k)`,
+    /// §5 — martyr #3 redeemed). Missing key → `none`; a key outside the
+    /// int/string/bool key domain is a turn-terminating fault (malformed
+    /// question), as is a non-map container. The faulting `m[k]`
+    /// ([`MapGet`](Self::MapGet)) stays the "I expect it there" read.
+    MapGetOpt,
+    /// `[m, v]` → `Bool`: content-equality scan over the map's values
+    /// (§5 — honest O(n)). Fault on a non-map.
+    MapContainsValue,
+    /// `[m]` → empty map. The `clear(m)` statement-only mutator's
+    /// primitive; in-place-ness comes from the RMW write-back, exactly
+    /// like [`MapInsert`](Self::MapInsert)/[`MapRemove`](Self::MapRemove).
+    /// Fault on a non-map.
+    MapClear,
+
     // ── Lifecycle ───────────────────────────────────────────────────────
     Done,
     /// Pause for choice presentation. Like `Done` but does NOT set
@@ -1187,6 +1283,20 @@ impl Opcode {
             // Stdlib slice 1 completion (#857)
             Self::CharAt => write_u8(buf, CHAR_AT),
 
+            // NS-A1 Option + stdlib flips
+            Self::PushNone => write_u8(buf, PUSH_NONE),
+            Self::MakeSome => write_u8(buf, MAKE_SOME),
+            Self::StrFind => write_u8(buf, STR_FIND),
+            Self::SeqIndexOf => write_u8(buf, SEQ_INDEX_OF),
+            Self::SeqMin => write_u8(buf, SEQ_MIN),
+            Self::SeqMax => write_u8(buf, SEQ_MAX),
+            Self::SeqFirst => write_u8(buf, SEQ_FIRST),
+            Self::SeqLast => write_u8(buf, SEQ_LAST),
+            Self::SeqPop => write_u8(buf, SEQ_POP),
+            Self::MapGetOpt => write_u8(buf, MAP_GET_OPT),
+            Self::MapContainsValue => write_u8(buf, MAP_CONTAINS_VALUE),
+            Self::MapClear => write_u8(buf, MAP_CLEAR),
+
             // Lifecycle
             Self::Done => write_u8(buf, DONE),
             Self::Yield => write_u8(buf, YIELD),
@@ -1408,6 +1518,20 @@ impl Opcode {
 
             // Stdlib slice 1 completion (#857)
             CHAR_AT => Self::CharAt,
+
+            // NS-A1 Option + stdlib flips
+            PUSH_NONE => Self::PushNone,
+            MAKE_SOME => Self::MakeSome,
+            STR_FIND => Self::StrFind,
+            SEQ_INDEX_OF => Self::SeqIndexOf,
+            SEQ_MIN => Self::SeqMin,
+            SEQ_MAX => Self::SeqMax,
+            SEQ_FIRST => Self::SeqFirst,
+            SEQ_LAST => Self::SeqLast,
+            SEQ_POP => Self::SeqPop,
+            MAP_GET_OPT => Self::MapGetOpt,
+            MAP_CONTAINS_VALUE => Self::MapContainsValue,
+            MAP_CLEAR => Self::MapClear,
 
             // Lifecycle
             DONE => Self::Done,
@@ -1720,6 +1844,52 @@ mod tests {
             (0xC7, Opcode::CollectionKeys),
             (0xC8, Opcode::CollectionValues),
             (0xC9, Opcode::PushLiteral(0)),
+        ];
+        for (byte, op) in expected {
+            let mut buf = Vec::new();
+            op.encode(&mut buf);
+            assert_eq!(buf[0], byte, "{op:?} encoded to unexpected discriminant");
+        }
+    }
+
+    #[test]
+    fn roundtrip_ns_a1_option_and_stdlib_flips() {
+        for op in [
+            Opcode::PushNone,
+            Opcode::MakeSome,
+            Opcode::StrFind,
+            Opcode::SeqIndexOf,
+            Opcode::SeqMin,
+            Opcode::SeqMax,
+            Opcode::SeqFirst,
+            Opcode::SeqLast,
+            Opcode::SeqPop,
+            Opcode::MapGetOpt,
+            Opcode::MapContainsValue,
+            Opcode::MapClear,
+        ] {
+            roundtrip(&op);
+        }
+    }
+
+    /// The NS-A1 block layout: `PushNone`/`MakeSome` fill the two bytes
+    /// before the string-eval block (0xE0/0xE1), the verb flips continue
+    /// contiguously after it (0xE2-0xEB).
+    #[test]
+    fn ns_a1_opcode_block_layout() {
+        let expected: [(u8, Opcode); 12] = [
+            (0xDE, Opcode::PushNone),
+            (0xDF, Opcode::MakeSome),
+            (0xE2, Opcode::StrFind),
+            (0xE3, Opcode::SeqIndexOf),
+            (0xE4, Opcode::SeqMin),
+            (0xE5, Opcode::SeqMax),
+            (0xE6, Opcode::SeqFirst),
+            (0xE7, Opcode::SeqLast),
+            (0xE8, Opcode::SeqPop),
+            (0xE9, Opcode::MapGetOpt),
+            (0xEA, Opcode::MapContainsValue),
+            (0xEB, Opcode::MapClear),
         ];
         for (byte, op) in expected {
             let mut buf = Vec::new();

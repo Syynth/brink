@@ -180,6 +180,12 @@ impl<'a> Resolver<'a> {
             // Projection values (T1e, `docs/t1e-spec.md` §4): same display
             // form as the runtime's authoritative `string(p)` — `ref
             // <root><path>`.
+            // Option values (NS-A1): same display form as the runtime's
+            // authoritative `string(x)` — `none` / `some(<inner>)`.
+            Value::OptionVal(inner) => match inner {
+                None => "none".to_owned(),
+                Some(v) => format!("some({})", self.format_value(v)),
+            },
             Value::Projection(p) => {
                 let mut out = format!("ref {}", self.gname(p.cell));
                 for seg in &p.segments {
@@ -562,6 +568,20 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
 
         // Stdlib slice 1 completion (#857)
         Opcode::CharAt => "char_at".to_owned(),
+
+        // NS-A1 Option + stdlib flips (#1107)
+        Opcode::PushNone => "push_none".to_owned(),
+        Opcode::MakeSome => "make_some".to_owned(),
+        Opcode::StrFind => "str_find".to_owned(),
+        Opcode::SeqIndexOf => "seq_index_of".to_owned(),
+        Opcode::SeqMin => "seq_min".to_owned(),
+        Opcode::SeqMax => "seq_max".to_owned(),
+        Opcode::SeqFirst => "seq_first".to_owned(),
+        Opcode::SeqLast => "seq_last".to_owned(),
+        Opcode::SeqPop => "seq_pop".to_owned(),
+        Opcode::MapGetOpt => "map_get_opt".to_owned(),
+        Opcode::MapContainsValue => "map_contains_value".to_owned(),
+        Opcode::MapClear => "map_clear".to_owned(),
     }
 }
 

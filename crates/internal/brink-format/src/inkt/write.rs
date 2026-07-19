@@ -718,6 +718,20 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
 
         // Stdlib slice 1 completion (#857)
         Opcode::CharAt => write!(w, "char_at"),
+
+        // NS-A1 Option + stdlib flips
+        Opcode::PushNone => write!(w, "push_none"),
+        Opcode::MakeSome => write!(w, "make_some"),
+        Opcode::StrFind => write!(w, "str_find"),
+        Opcode::SeqIndexOf => write!(w, "seq_index_of"),
+        Opcode::SeqMin => write!(w, "seq_min"),
+        Opcode::SeqMax => write!(w, "seq_max"),
+        Opcode::SeqFirst => write!(w, "seq_first"),
+        Opcode::SeqLast => write!(w, "seq_last"),
+        Opcode::SeqPop => write!(w, "seq_pop"),
+        Opcode::MapGetOpt => write!(w, "map_get_opt"),
+        Opcode::MapContainsValue => write!(w, "map_contains_value"),
+        Opcode::MapClear => write!(w, "map_clear"),
     }
 }
 
@@ -775,6 +789,7 @@ fn value_type_name(vt: ValueType) -> &'static str {
         ValueType::Closure => "closure",
         ValueType::Handle => "handle",
         ValueType::Projection => "projection",
+        ValueType::Option => "option",
     }
 }
 
@@ -870,6 +885,19 @@ fn write_value(w: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
             }
             write!(w, "))")
         }
+        // Option values (NS-A1, `docs/stdlib-spec.md` §1.4): `(some
+        // <value>)` / `(option_none)` — reader lands with the writer in this
+        // same PR (the #742 dump/reader parity lesson). `option_none`, not
+        // bare `none`, because `none` is already a choice-flags token in the
+        // grammar.
+        Value::OptionVal(inner) => match inner {
+            None => write!(w, "(option_none)"),
+            Some(v) => {
+                write!(w, "(some ")?;
+                write_value(w, v)?;
+                write!(w, ")")
+            }
+        },
     }
 }
 

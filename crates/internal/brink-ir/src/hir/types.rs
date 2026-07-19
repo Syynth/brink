@@ -1712,6 +1712,20 @@ pub enum DiagnosticCode {
     /// expression) is not statically visible and is never flagged here —
     /// the runtime fault remains the sole backstop for those.
     E106,
+
+    // ── NS-A1 Option[T] (docs/stdlib-spec.md §1.4, issue #1107) ────────
+    /// A fresh, un-annotated declaration (`VAR x = none`, `CONST x = none`,
+    /// `~ temp x = none`) whose initializer is the bare `none` Option
+    /// literal. §1.4's ruled rule: "a bare `none` needs a type from
+    /// context (concrete sites fine; a fresh un-annotated `var x = none`
+    /// errors — the empty-collection posture)." A declaration site IS the
+    /// slot's type origin, so there is no context to take the element type
+    /// from — the fix is to initialize from a real Option-producing
+    /// expression (`some(x)`, or an Option-returning verb like
+    /// `find`/`get`/`pop`). Error in both dialects and both `types`
+    /// policies: the rule is part of the Option package itself, not a
+    /// strict-mode refinement.
+    E107,
 }
 
 impl DiagnosticCode {
@@ -1829,6 +1843,7 @@ impl DiagnosticCode {
             Self::E104 => "E104",
             Self::E105 => "E105",
             Self::E106 => "E106",
+            Self::E107 => "E107",
         }
     }
 
@@ -1967,6 +1982,7 @@ impl DiagnosticCode {
                 "`await` condition must be effect-free (read-only) — it writes a global or performs an effectful call"
             }
             Self::E106 => "map-literal key is outside the int/string/bool key domain",
+            Self::E107 => "bare `none` needs a type from context",
         }
     }
 
@@ -2108,6 +2124,7 @@ impl DiagnosticCode {
             "E104" => Some(Self::E104),
             "E105" => Some(Self::E105),
             "E106" => Some(Self::E106),
+            "E107" => Some(Self::E107),
             _ => None,
         }
     }

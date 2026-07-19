@@ -831,6 +831,9 @@ enum MutatorKind {
     Insert,
     /// `remove(x, k_or_i)` — 2 args.
     Remove,
+    /// `clear(m)` — 1 arg (NS-A1, `docs/stdlib-spec.md` §5): empty the map
+    /// in place, total.
+    Clear,
 }
 
 impl MutatorKind {
@@ -844,12 +847,14 @@ impl MutatorKind {
             "push" => Some(Self::Push),
             "insert" => Some(Self::Insert),
             "remove" => Some(Self::Remove),
+            "clear" => Some(Self::Clear),
             _ => None,
         }
     }
 
     fn expected_argc(self) -> usize {
         match self {
+            Self::Clear => 1,
             Self::Push | Self::Remove => 2,
             Self::Insert => 3,
         }
@@ -862,6 +867,7 @@ impl MutatorKind {
             Self::Push => "push(container, value)",
             Self::Insert => "insert(container, key_or_index, value)",
             Self::Remove => "remove(container, key_or_index)",
+            Self::Clear => "clear(map)",
         }
     }
 }
@@ -1002,6 +1008,7 @@ pub(super) fn try_lower_mutator_stmt(
                 key: Box::new(key),
             }
         }
+        MutatorKind::Clear => lir::Expr::MapClear(Box::new(container())),
     };
 
     out.push(lir::Stmt::Assign {
@@ -1102,6 +1109,7 @@ fn lower_bare_mutator(
             base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
             key: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
         },
+        MutatorKind::Clear => lir::Expr::MapClear(Box::new(lir::Expr::TakeTemp(c_slot, c_name))),
     };
 
     out.push(lir::Stmt::Assign {

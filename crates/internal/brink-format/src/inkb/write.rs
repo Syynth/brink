@@ -22,7 +22,7 @@ use super::{
     MAGIC, PART_LITERAL, PART_SELECT, PART_SLOT, PROJ_SEG_INDEX, PROJ_SEG_KEY, SECTION_COUNT,
     SECTION_ENTRY_SIZE, SectionKind, VAL_ARRAY, VAL_BOOL, VAL_CLOSURE, VAL_DIVERT_TARGET,
     VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT, VAL_LIST, VAL_MAP, VAL_NULL,
-    VAL_PROJECTION, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION,
+    VAL_OPTION, VAL_PROJECTION, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION,
 };
 
 // ── Tier 1: Full story write ────────────────────────────────────────────────
@@ -331,11 +331,17 @@ fn encode_value_type(vt: ValueType, buf: &mut Vec<u8>) {
         ValueType::Handle => VAL_HANDLE,
         // T1e projection value type (v4, reserved tag graduated this PR).
         ValueType::Projection => VAL_PROJECTION,
+        // NS-A1 Option value type.
+        ValueType::Option => VAL_OPTION,
     };
     write_u8(buf, tag);
 }
 
 #[expect(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per value variant — the NS-A1 Option arm pushed this past 100"
+)]
 fn encode_value(v: &Value, buf: &mut Vec<u8>) {
     match v {
         Value::Int(n) => {
@@ -449,6 +455,23 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
             write_u8(buf, p.segments.len() as u8);
             for seg in &p.segments {
                 encode_proj_segment(seg, buf);
+            }
+        }
+        // Option values (NS-A1, `docs/stdlib-spec.md` §1.4): flag byte
+        // (0 = none, 1 = some) then the inner value when some. No opcode
+        // literal ever produces one at compile time today (`none`/`some(x)`
+        // lower to `PushNone`/`MakeSome`, and a bare-`none` declaration
+        // default is the E107 compile error), so like `VAL_HANDLE` above
+        // this encoder leg exists for wire completeness — saves/transcripts
+        // are the live consumers.
+        Value::OptionVal(inner) => {
+            write_u8(buf, VAL_OPTION);
+            match inner {
+                None => write_u8(buf, 0),
+                Some(v) => {
+                    write_u8(buf, 1);
+                    encode_value(v, buf);
+                }
             }
         }
     }

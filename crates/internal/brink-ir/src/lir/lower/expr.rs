@@ -636,6 +636,17 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
             // only for match exhaustiveness). All three fall back to null.
             SymbolKind::External | SymbolKind::Param | SymbolKind::Struct => lir::Expr::Null,
         }
+    } else if path.segments.len() == 1 && path.segments[0].text == "none" {
+        // NS-A1 (`docs/stdlib-spec.md` §1.4): an *unresolved* bare `none`
+        // is the Option absence literal — the brink-dialect spelling the
+        // wire form's `none` variant mirrors. An author symbol of the same
+        // name always wins (the resolution branch above, with the E035
+        // shadow warning at its declaration site); `strict-ink` rejection
+        // is the dialect gate's E051, and a fresh un-annotated
+        // `VAR x = none` declaration is the analyzer's E107
+        // (bare-`none`-needs-context) — this lowering is the
+        // context-is-elsewhere case.
+        lir::Expr::OptionNone
     } else {
         lir::Expr::Null
     }
@@ -828,7 +839,10 @@ fn lower_t1b_stdlib_call(
                 index: Box::new(lower_expr(&args[1], ctx)),
             })
         }
-        "push" | "insert" | "remove" => {
+        // `clear` (NS-A1, `docs/stdlib-spec.md` §5) joins the statement-only
+        // mutators: in-place, returns nothing, so expression position is the
+        // same E056 misuse the original three get.
+        "push" | "insert" | "remove" | "clear" => {
             ctx.diagnostics.push(crate::Diagnostic {
                 file: ctx.file,
                 range: call_range,
@@ -838,6 +852,104 @@ fn lower_t1b_stdlib_call(
                     crate::DiagnosticCode::E056.title(),
                 ),
                 code: crate::DiagnosticCode::E056,
+            });
+            Some(lir::Expr::Null)
+        }
+        // ── NS-A1 Option verbs (issue #1107, `docs/stdlib-spec.md` §§3-5,
+        // §1.4). Pure query verbs lower like `contains`/`char_at` above;
+        // runtime fault semantics (wrong container type, unorderable
+        // elements) live entirely at the ops — these lowerings just
+        // recognize the call shapes. ─────────────────────────────────────
+        "some" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::OptionSome(Box::new(lower_expr(&args[0], ctx))))
+        }
+        "find" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::StrFind {
+                s: Box::new(lower_expr(&args[0], ctx)),
+                sub: Box::new(lower_expr(&args[1], ctx)),
+            })
+        }
+        "index_of" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::SeqIndexOf {
+                seq: Box::new(lower_expr(&args[0], ctx)),
+                needle: Box::new(lower_expr(&args[1], ctx)),
+            })
+        }
+        "min" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::SeqMin(Box::new(lower_expr(&args[0], ctx))))
+        }
+        "max" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::SeqMax(Box::new(lower_expr(&args[0], ctx))))
+        }
+        "first" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::SeqFirst(Box::new(lower_expr(&args[0], ctx))))
+        }
+        "last" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::SeqLast(Box::new(lower_expr(&args[0], ctx))))
+        }
+        "get" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::MapGetOpt {
+                map: Box::new(lower_expr(&args[0], ctx)),
+                key: Box::new(lower_expr(&args[1], ctx)),
+            })
+        }
+        "contains_value" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::MapContainsValue {
+                map: Box::new(lower_expr(&args[0], ctx)),
+                value: Box::new(lower_expr(&args[1], ctx)),
+            })
+        }
+        // `pop(a)` (§4): both mutator and expression — mutates its bare
+        // lvalue receiver in place and produces `Option[T]`. The receiver
+        // must be a bare variable/temp so codegen can bracket the runtime
+        // op with take/store against the root cell (the RMW discipline);
+        // anything else — an rvalue (`pop(#[1,2])`) or a chained lvalue
+        // (`pop(grid[0])`, an A1 scope fence) — is the E055-family
+        // "bind it to a variable first" compile error.
+        "pop" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            // `lower_assign_target` accepts exactly the bare-`Path` shape
+            // (temp slot or resolvable global) — `None` for everything else.
+            if let Some(root) = super::stmts::lower_assign_target(&args[0], ctx) {
+                return Some(lir::Expr::SeqPop { root });
+            }
+            ctx.diagnostics.push(crate::Diagnostic {
+                file: ctx.file,
+                range: call_range,
+                message: format!(
+                    "{}: `pop` mutates its first argument — bind it to a variable first",
+                    crate::DiagnosticCode::E055.title(),
+                ),
+                code: crate::DiagnosticCode::E055,
             });
             Some(lir::Expr::Null)
         }
@@ -962,6 +1074,21 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "call"
             | "bind"
             | "char_at"
+            // NS-A1 (issue #1107, `docs/stdlib-spec.md` §§3-5 + §1.4): the
+            // Option verb flips + the `some(x)` constructor. The bare
+            // `none` literal is variable-position (`lower_path`), not a
+            // call form, so it is deliberately absent from this list.
+            | "find"
+            | "index_of"
+            | "min"
+            | "max"
+            | "first"
+            | "last"
+            | "pop"
+            | "get"
+            | "contains_value"
+            | "clear"
+            | "some"
     )
 }
 

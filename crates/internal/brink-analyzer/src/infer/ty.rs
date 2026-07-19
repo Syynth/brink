@@ -65,6 +65,16 @@ pub enum Ty {
     /// binding declared `handle<AudioInstance>` and one declared
     /// `handle<Timer>` are as incompatible as `int` and `string`.
     Handle(String),
+    /// `Option[T]` — the third compiler-known parameterized builtin
+    /// (NS-A1, `docs/stdlib-spec.md` §1.4, ruled 2026-07-18), joining
+    /// `Array`/`Map` in the static type language. A compiler-owned enum
+    /// shape (`none` / `some(T)`), NOT user generics (#1090's door stays
+    /// shut). Unifies pointwise on the element like `Array`; against any
+    /// non-Option concrete type it is a genuine structural mismatch —
+    /// the ruled `Option[T] ≠ T` strictness IS the `Conflicted` join
+    /// (display-boundary forgiveness is Track B4 and deliberately absent
+    /// from this lattice).
+    Option(Box<Ty>),
     /// Not (yet) resolved to a concrete type — legal in this slice (spec
     /// §2: "unresolved -> Unknown, which is LEGAL"). Acts as the join
     /// identity: `unify(Unknown, x) == x`.
@@ -115,6 +125,7 @@ impl Ty {
                 format!("fn({row}): {}", ret.display())
             }
             Ty::Handle(kind) => format!("handle<{kind}>"),
+            Ty::Option(elem) => format!("Option[{}]", elem.display()),
             Ty::Unknown => "Unknown".to_string(),
             Ty::Conflicted => "Conflicted".to_string(),
         }
@@ -173,15 +184,16 @@ impl Ord for Ty {
                 Ty::Struct(_) => 8,
                 Ty::Fn(..) => 9,
                 Ty::Handle(_) => 10,
-                Ty::Unknown => 11,
-                Ty::Conflicted => 12,
+                Ty::Option(_) => 11,
+                Ty::Unknown => 12,
+                Ty::Conflicted => 13,
             }
         }
         match (self, other) {
             (Ty::List(a), Ty::List(b))
             | (Ty::Struct(a), Ty::Struct(b))
             | (Ty::Handle(a), Ty::Handle(b)) => a.cmp(b),
-            (Ty::Array(a), Ty::Array(b)) => a.cmp(b),
+            (Ty::Array(a), Ty::Array(b)) | (Ty::Option(a), Ty::Option(b)) => a.cmp(b),
             (Ty::Map(k1, v1), Ty::Map(k2, v2)) => k1.cmp(k2).then_with(|| v1.cmp(v2)),
             (Ty::Fn(p1, r1), Ty::Fn(p2, r2)) => p1.cmp(p2).then_with(|| r1.cmp(r2)),
             _ => rank(self).cmp(&rank(other)),
@@ -224,6 +236,11 @@ pub fn unify(a: &Ty, b: &Ty) -> Ty {
         (x, y) if x == y => x.clone(),
         (Ty::Int, Ty::Float) | (Ty::Float, Ty::Int) => Ty::Float,
         (Ty::Array(x), Ty::Array(y)) => Ty::Array(Box::new(unify(x, y))),
+        // Option unifies pointwise on the element, exactly like Array
+        // (NS-A1, docs/stdlib-spec.md §1.4). Option vs any non-Option
+        // concrete type falls through to `Conflicted` below — the ruled
+        // `Option[T] ≠ T` strictness lives in the lattice itself.
+        (Ty::Option(x), Ty::Option(y)) => Ty::Option(Box::new(unify(x, y))),
         (Ty::Map(k1, v1), Ty::Map(k2, v2)) => {
             Ty::Map(Box::new(unify(k1, k2)), Box::new(unify(v1, v2)))
         }
@@ -253,6 +270,65 @@ pub fn unify(a: &Ty, b: &Ty) -> Ty {
 #[must_use]
 pub fn unify_all(tys: impl IntoIterator<Item = Ty>) -> Ty {
     tys.into_iter().fold(Ty::Unknown, |acc, t| unify(&acc, &t))
+}
+
+/// Why an [`coalesce`] application is ill-typed (NS-A1, F19).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoalesceError {
+    /// The left operand is a concrete non-Option type — coalescing is only
+    /// defined over an optional left-hand side (`Option[T] or …`).
+    LeftNotOption(Ty),
+    /// The element/right types are structurally irreconcilable
+    /// (`Option[int] or "text"` — the join of `int` and `string` is
+    /// `Conflicted`).
+    Mismatch { element: Ty, fallback: Ty },
+}
+
+/// The `or`-coalescing TYPING rule (NS-A1; `docs/stdlib-phase-c-findings.md`
+/// F19's recommendation, implemented as ruled by wave A1's scope):
+///
+/// - `(Option[T], T') → join(T, T')` — the Option-then-value form collapses
+///   to the value type (the `x or default` 90% case; the `int -> float`
+///   directional coercion applies inside the join, so
+///   `Option[int] or 1.5` is `float`).
+/// - `(Option[T], Option[U]) → Option[join(T, U)]` — the two-Option form
+///   keeps optionality, which is what makes chaining work:
+///   `a.get(k) or a.get(k2) or default` associates left, staying
+///   `Option[V]` until the final non-Option fallback collapses it.
+/// - Left-associative by construction: a chain is just repeated
+///   application, so no explicit associativity machinery is needed.
+/// - Gradual escape hatches: an `Unknown` left operand yields `Unknown`
+///   (nothing is known to check — same posture as every other gradual
+///   position); `Conflicted` anywhere stays `Conflicted` via the join.
+///
+/// **Typing only — no surface spelling.** The brink dialect has no `or`
+/// coalescing operator to hang this on (`InfixOp::Or` is ink's boolean
+/// `||`, oracle-frozen); the surface spelling is Track B1
+/// (`docs/stdlib-sequencing.md` §3), which will consume exactly this rule.
+pub fn coalesce(lhs: &Ty, rhs: &Ty) -> Result<Ty, CoalesceError> {
+    match (lhs, rhs) {
+        // Two-Option form: keep optionality, join elements.
+        (Ty::Option(elem), Ty::Option(relem)) => Ok(Ty::Option(Box::new(unify(elem, relem)))),
+        // Option-then-value form: collapse to the value type when the
+        // element and fallback reconcile (join is not Conflicted).
+        (Ty::Option(elem), _) => {
+            let joined = unify(elem, rhs);
+            if joined.is_conflicted() && !elem.is_conflicted() && !rhs.is_conflicted() {
+                Err(CoalesceError::Mismatch {
+                    element: (**elem).clone(),
+                    fallback: rhs.clone(),
+                })
+            } else {
+                Ok(joined)
+            }
+        }
+        // Gradual: an unresolved left side types as itself (Unknown stays
+        // Unknown, Conflicted stays Conflicted) — strict-mode escape
+        // reporting owns surfacing those, same as every consumer.
+        (Ty::Unknown, _) => Ok(Ty::Unknown),
+        (Ty::Conflicted, _) => Ok(Ty::Conflicted),
+        (other, _) => Err(CoalesceError::LeftNotOption(other.clone())),
+    }
 }
 
 #[cfg(test)]
@@ -533,6 +609,113 @@ mod tests {
             Ty::Handle("AudioInstance".to_string()).display(),
             "handle<AudioInstance>"
         );
+    }
+
+    // ─── NS-A1 `Ty::Option` (docs/stdlib-spec.md §1.4) ─────────────────
+
+    fn opt(t: Ty) -> Ty {
+        Ty::Option(Box::new(t))
+    }
+
+    #[test]
+    fn option_unifies_pointwise_like_array() {
+        assert_eq!(opt(Ty::Int).display(), "Option[int]");
+        assert_eq!(unify(&opt(Ty::Int), &opt(Ty::Int)), opt(Ty::Int));
+        // The int -> float directional join applies inside the element.
+        assert_eq!(unify(&opt(Ty::Int), &opt(Ty::Float)), opt(Ty::Float));
+        // Unknown element absorbs a concrete one.
+        assert_eq!(unify(&opt(Ty::Unknown), &opt(Ty::String)), opt(Ty::String));
+        assert_eq!(unify(&Ty::Unknown, &opt(Ty::Int)), opt(Ty::Int));
+    }
+
+    #[test]
+    fn option_vs_bare_type_is_conflicted_the_ruled_strictness() {
+        // `Option[T] ≠ T` — everywhere, no display-boundary forgiveness in
+        // the lattice (that's Track B4, cut by position at a later layer).
+        assert_eq!(unify(&opt(Ty::Int), &Ty::Int), Ty::Conflicted);
+        assert_eq!(unify(&Ty::Int, &opt(Ty::Int)), Ty::Conflicted);
+        assert_eq!(unify(&opt(Ty::String), &Ty::String), Ty::Conflicted);
+        assert_eq!(
+            unify(&opt(Ty::Int), &Ty::Array(Box::new(Ty::Int))),
+            Ty::Conflicted
+        );
+    }
+
+    #[test]
+    fn option_nests_like_any_parameterized_builtin() {
+        // Option[Option[int]] is a real type; joining it with Option[int]
+        // conflicts pointwise in the element slot.
+        let nested = opt(opt(Ty::Int));
+        assert_eq!(nested.display(), "Option[Option[int]]");
+        assert_eq!(unify(&nested, &nested), nested);
+        assert_eq!(unify(&nested, &opt(Ty::Int)), opt(Ty::Conflicted));
+    }
+
+    #[test]
+    fn option_element_conflict_stays_inside_the_element() {
+        // Mirrors Array(Conflicted): the Option shape survives, the element
+        // slot carries the conflict for the strict classify walk to find.
+        assert_eq!(unify(&opt(Ty::Int), &opt(Ty::String)), opt(Ty::Conflicted));
+    }
+
+    // ─── NS-A1 `or`-coalescing typing (F19 — typing only, no spelling) ──
+
+    #[test]
+    fn coalesce_option_then_value_collapses_to_the_value_type() {
+        assert_eq!(coalesce(&opt(Ty::Int), &Ty::Int), Ok(Ty::Int));
+        // The directional numeric join applies.
+        assert_eq!(coalesce(&opt(Ty::Int), &Ty::Float), Ok(Ty::Float));
+        assert_eq!(coalesce(&opt(Ty::String), &Ty::String), Ok(Ty::String));
+    }
+
+    #[test]
+    fn coalesce_two_options_keeps_optionality_for_chaining() {
+        assert_eq!(coalesce(&opt(Ty::Int), &opt(Ty::Int)), Ok(opt(Ty::Int)));
+        assert_eq!(coalesce(&opt(Ty::Int), &opt(Ty::Float)), Ok(opt(Ty::Float)));
+    }
+
+    #[test]
+    fn coalesce_chains_left_associatively() {
+        // a.get(k) or a.get(k2) or 0  ⟶  ((Option[int] or Option[int]) or int)
+        let step1 = coalesce(&opt(Ty::Int), &opt(Ty::Int)).expect("chain step");
+        assert_eq!(step1, opt(Ty::Int));
+        assert_eq!(coalesce(&step1, &Ty::Int), Ok(Ty::Int));
+    }
+
+    #[test]
+    fn coalesce_mismatched_fallback_is_an_error() {
+        assert_eq!(
+            coalesce(&opt(Ty::Int), &Ty::String),
+            Err(CoalesceError::Mismatch {
+                element: Ty::Int,
+                fallback: Ty::String,
+            })
+        );
+    }
+
+    #[test]
+    fn coalesce_non_option_left_is_an_error() {
+        assert_eq!(
+            coalesce(&Ty::Int, &Ty::Int),
+            Err(CoalesceError::LeftNotOption(Ty::Int))
+        );
+        assert_eq!(
+            coalesce(&Ty::Array(Box::new(Ty::Int)), &Ty::Int),
+            Err(CoalesceError::LeftNotOption(Ty::Array(Box::new(Ty::Int))))
+        );
+    }
+
+    #[test]
+    fn coalesce_gradual_escapes() {
+        // Unknown left: nothing to check — gradual posture.
+        assert_eq!(coalesce(&Ty::Unknown, &Ty::Int), Ok(Ty::Unknown));
+        // Unknown element/fallback join without erroring.
+        assert_eq!(coalesce(&opt(Ty::Unknown), &Ty::Int), Ok(Ty::Int));
+        assert_eq!(coalesce(&opt(Ty::Int), &Ty::Unknown), Ok(Ty::Int));
+        // Conflicted stays absorbing, never "heals" into an error report
+        // here (strict-mode escape reporting owns it).
+        assert_eq!(coalesce(&Ty::Conflicted, &Ty::Int), Ok(Ty::Conflicted));
+        assert_eq!(coalesce(&opt(Ty::Conflicted), &Ty::Int), Ok(Ty::Conflicted));
     }
 
     #[test]

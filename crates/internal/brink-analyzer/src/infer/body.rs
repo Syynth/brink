@@ -789,6 +789,16 @@ impl InferPass<'_, '_> {
 
     fn infer_path(&mut self, p: &HirPath) -> Ty {
         let Some(def) = self.resolve(p.range) else {
+            // NS-A1 (`docs/stdlib-spec.md` §1.4): an unresolved bare `none`
+            // is the Option absence literal — `Option[Unknown]`, its element
+            // narrowed only by context (the join at its use site). A `none`
+            // that resolved to a real user symbol took the branch below
+            // instead, exactly like the stdlib call names in `infer_call`.
+            if let [seg] = p.segments.as_slice()
+                && seg.text == "none"
+            {
+                return Ty::Option(Box::new(Ty::Unknown));
+            }
             return Ty::Unknown;
         };
         self.ty_of_def(def)
@@ -1157,6 +1167,10 @@ impl InferPass<'_, '_> {
     /// forms' `ValueCallFact` diagnostic site, since their callee is an
     /// arbitrary expression (`args[0]`), not a resolvable `Path` the way a
     /// direct call's callee always is.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per stdlib intrinsic — the NS-A1 Option verbs grew the table past 100"
+    )]
     fn infer_intrinsic(
         &mut self,
         name: &str,
@@ -1263,6 +1277,84 @@ impl InferPass<'_, '_> {
             // facility's typing rule is only the return type, declared at
             // introduction per the doctrine.
             "string" | "char_at" => Ty::String,
+            // ── NS-A1 Option verbs (issue #1107, `docs/stdlib-spec.md`
+            // §§3-5 + §1.4). Absence-shaped returns are `Option[…]` — the
+            // element narrows from the container's known type where the
+            // checker has one, staying `Option[Unknown]` otherwise (the
+            // verb's Option-ness is unconditional; only the element is
+            // gradual). Runtime domain checks (non-array container,
+            // unorderable elements) stay at the ops, same split as
+            // `char_at` above. ─────────────────────────────────────────
+            //
+            // `find(s, sub)` → `Option[int]` (§3, martyr #1). Both
+            // arguments are strings by signature — observed so a strict
+            // project gets the narrowing.
+            "find" => {
+                if let Some(s) = args.first() {
+                    self.observe(s, &Ty::String);
+                }
+                if let Some(sub) = args.get(1) {
+                    self.observe(sub, &Ty::String);
+                }
+                Ty::Option(Box::new(Ty::Int))
+            }
+            // `index_of(a, x)` → `Option[int]` (§4, martyr #2); the needle
+            // narrows against the element type like `contains`.
+            "index_of" => {
+                if let (Some(Ty::Array(elem)), Some(needle)) = (arg_tys.first(), args.get(1)) {
+                    self.observe(needle, elem);
+                }
+                Ty::Option(Box::new(Ty::Int))
+            }
+            // `min`/`max`/`first`/`last` → `Option[T]` over `[T]` (§4).
+            "min" | "max" | "first" | "last" => match arg_tys.first() {
+                Some(Ty::Array(elem)) => Ty::Option(elem.clone()),
+                _ => Ty::Option(Box::new(Ty::Unknown)),
+            },
+            // `pop(ref a)` → `Option[T]` (§4): the one A1 verb that is both
+            // mutator and expression — records the receiver write exactly
+            // like `push`/`insert`/`remove` above (the #880 lesson: the
+            // intrinsics' effect behavior is declared at introduction).
+            "pop" => {
+                let ret = match arg_tys.first() {
+                    Some(Ty::Array(elem)) => Ty::Option(elem.clone()),
+                    _ => Ty::Option(Box::new(Ty::Unknown)),
+                };
+                if let Some(container) = args.first() {
+                    self.record_write(container);
+                }
+                ret
+            }
+            // `get(m, k)` → `Option[V]` (§5, martyr #3); the key narrows
+            // against the map's key type.
+            "get" => match arg_tys.first() {
+                Some(Ty::Map(k, v)) => {
+                    if let Some(key_arg) = args.get(1) {
+                        self.observe(key_arg, k);
+                    }
+                    Ty::Option(v.clone())
+                }
+                _ => Ty::Option(Box::new(Ty::Unknown)),
+            },
+            // `contains_value(m, v)` → bool (§5); the needle narrows
+            // against the map's value type.
+            "contains_value" => {
+                if let (Some(Ty::Map(_, v)), Some(needle)) = (arg_tys.first(), args.get(1)) {
+                    self.observe(needle, v);
+                }
+                Ty::Bool
+            }
+            // `clear(ref m)` (§5): statement-only mutator — a receiver
+            // write, no value.
+            "clear" => {
+                if let Some(container) = args.first() {
+                    self.record_write(container);
+                }
+                Ty::Unknown
+            }
+            // `some(x)` → `Option[typeof x]` (§1.4) — the constructor is
+            // where a bare element type becomes optional.
+            "some" => Ty::Option(Box::new(arg_tys.first().cloned().unwrap_or(Ty::Unknown))),
             // T1c (docs/t1c-spec.md §3/§4, issue #733): the explicit call
             // forms. `f` (args[0]) is the callee — a value, not a
             // statically-named target — so its type comes from the
