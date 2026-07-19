@@ -356,10 +356,13 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
         | Expr::RandPick(e)
         | Expr::RandShuffle(e)
         | Expr::SeqSorted(e)
-        | Expr::RangeNonEmpty(e) => remap_expr(e, map),
-        Expr::SeqSortedBy { seq, cmp } => {
+        | Expr::RangeNonEmpty(e)
+        | Expr::RandRoll(e)
+        | Expr::HeapPeek(e) => remap_expr(e, map),
+
+        Expr::SeqSortedBy { seq, cmp: second } | Expr::HeapPush { seq, value: second } => {
             remap_expr(seq, map);
-            remap_expr(cmp, map);
+            remap_expr(second, map);
         }
         Expr::RangeMake { start, end, .. } => {
             remap_expr(start, map);
@@ -400,7 +403,9 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
                 remap_expr(e, map);
             }
         }
-        Expr::MapNew(pairs) => {
+        // NS-A7 `weighted(…)` shares MapNew's pair walk (weights/keys
+        // then values).
+        Expr::MapNew(pairs) | Expr::WeightedNew { pairs } => {
             for (k, v) in pairs {
                 remap_expr(k, map);
                 remap_expr(v, map);
@@ -460,7 +465,8 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
         }
         // `pop`'s receiver is an `AssignTarget` — its `Temp` leg carries a
         // NameId, remapped exactly like a `Stmt::Assign` target.
-        Expr::SeqPop { root } => remap_assign_target(root, map),
+        // `heap_pop` shares `pop`'s AssignTarget-receiver shape.
+        Expr::SeqPop { root } | Expr::HeapPop { root } => remap_assign_target(root, map),
         Expr::RecordNew {
             shape_id: _,
             fields,
