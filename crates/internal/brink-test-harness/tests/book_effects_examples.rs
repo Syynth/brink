@@ -159,7 +159,12 @@ fn every_ink_example_in_the_effects_chapter_checks_out() {
                     );
                 }
             }
-            "ink,error" => {
+            // The exceedance example migrated from the legacy `ink,error`
+            // spelling to `ink,error(E103)` when the BW-5 fence walker
+            // (`book_fences.rs`) took over the whole book — the expected code
+            // now lives in the info string. Accept both so this chapter-local
+            // test stays green alongside the walker (which supersedes it).
+            "ink,error" | "ink,error(E103)" => {
                 error_examples += 1;
                 let codes = error_codes(&fences[i].body);
                 assert!(
