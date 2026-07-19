@@ -273,10 +273,11 @@ Serves `sort`/`sort_by`/`min`/`max`/heap (§8) and `compare` (§9.6).
   `keys`/`values` → eager array snapshots in insertion order
   (iteration order is already insertion order; equality alone
   ignores it, per the 2026-07-18 ruling).
-- **`entries` is gated on the anonymous-record closer** (§9.1): a
-  pair needs a shape; if anonymous records survive, `entries(m)` →
-  `[{ key, value }]` and struct patterns destructure it in `for`.
-  Not shipped before that ruling.
+- **No `entries` verb** (updated by the §9.1 closer ruling):
+  **`for k, v in m`** two-binding iteration is the pair story —
+  desugars to key-iteration + `let v = m[k]`, total by
+  construction, no pair shape ever materializes. A reified
+  `entries()` array is evidence-gated.
 - `for k in m` iterates keys (ruled); `m.keys()` is the same set
   reified. Prelude: `len` only (already ambient); the rest
   `std::map`.
@@ -414,29 +415,37 @@ precedent, oracle byte-identical):
 - Anything further (deque, set-as-type) is **evidence-gated** —
   `std::collections` is the landing zone, the dossier is the gate.
 
-## 9. Closers 🔶 (proposed dispositions)
+## 9. Closers (RULED 2026-07-18, except as marked)
 
-1. **Anonymous records — proposed: keep, narrowed and renamed to
-   their job: structural records.** With maps homogeneous and structs
-   declared, the anonymous record `#{ x: 1 }` (native spelling ⏳ —
-   likely bare `{ x: 1 }` where unambiguous, code-dialect sitting
-   owns the final call) survives as exactly two things: (a) the
-   **multi-return vehicle** (`fn stats(a): { min: int, max: int }`
-   — no tuples, by design), destructured by the ruled struct
-   patterns in `let`; (b) **`entries()`' element shape** (§5).
-   Structural typing, width-exact, no declaration. If (a)/(b) were
-   instead rejected, tuples would be back on the table — one or
-   the other, and records are already load-bearing in the value
-   model.
+1. **Anonymous records — RETIRED from the native surface.**
+   Homogeneous bags are maps; typed shapes are declared structs
+   (cheap — a two-line struct above a `fn` is honest
+   documentation); **multi-return = declare the struct** (no
+   tuples, no third structural-record concept; records-as-maps
+   was rejected on typing — heterogeneous fields die in `[K: V]`
+   homogeneity). If declaration ceremony ever genuinely bites,
+   lightweight inline record types are a code-dialect-sitting
+   question, ledger-gated. The `entries()` question DISSOLVES:
+   **`for k, v in m`** two-binding iteration desugars to
+   key-iteration + `let v = m[k]` (total — the key just came from
+   the map); no pair shape materializes; a reified `entries()`
+   array waits for evidence. **Construction syntax**: one
+   initializer grammar, `TypeName { … }`, per-type meaning —
+   already conformed to by every construction form in this spec.
+   Whether that's a per-type *protocol* (C#-lineage, the
+   maintainer's recalled earlier-thread direction) or grammar
+   dispatch is **#1103** — filed as a come-back-to for the
+   code-dialect sitting; this sitting commits only to the
+   grammar shape.
 2. **Assertion spellings — final form** `@[effects(…)]` with args
    from `{pure, silent, total}`, any subset, comma-joined;
    exceedance-only errors (asserting less than reality is legal).
    `@[effects(pure)]` ⊃ rng-freedom (§7). Doc-sync owed: the
    effects spec and #1087 still show the older `#@effects(…)`
-   spelling — supersession note there when this nods. Holes'
-   release policy ⏳ — **deliberately left for the maintainer**
-   (release-gating policy is an authorial-workflow value judgment,
-   not derivable from the charter).
+   spelling — supersession note there when this lands. Holes'
+   release policy — **PARKED past this sitting by the maintainer**
+   (2026-07-18); it survives the closers as the one deliberately
+   open authorial-workflow judgment.
 3. **Prelude — final list assembled from the per-domain marks:**
    entire math kit incl. trig (§2's generous ruling) · `len
    contains char_at` (text) · `len contains push` (seq) · `len`
@@ -529,15 +538,21 @@ precedent, oracle byte-identical):
   (§8 — `Weighted[T]` evidence-by-construction with the
   Option-constructor evolution recorded; humble heap over arrays
   with the sealed-`Heap[T]` upgrade path; further additions
-  evidence-gated).
+  evidence-gated) · the closers (§9 — anonymous records RETIRED,
+  `for k, v in m` replaces `entries`, multi-return = declared
+  struct, `@[effects]` final form, prelude final list, display
+  notation, `std::` tree; initializer protocol-vs-grammar filed
+  as #1103; holes' release policy parked by the maintainer).
+- **§§1–9 are now fully ruled.** The sitting's remaining work is
+  Phase C.
 - In-section ⏳s: tower mini-spec (§2b) · view-materialization
-  ratio (§3b) · intrinsic display notation lives in §9.4 now ·
-  weighted-table mutation surface (§8) · anonymous-record native
-  spelling (§9.1, owned by the code-dialect sitting) · holes'
-  release policy (§9.2) · protocol implementation spelling +
-  compare/equality coherence line (§9.6) · dev/prod knob home
-  (§4b, tooling sitting) · inhabited-range type/validator
-  spelling (§7, code-dialect sitting).
+  ratio (§3b) · weighted-table mutation surface (§8) · holes'
+  release policy (§9.2, maintainer-parked) · protocol
+  implementation spelling + compare/equality coherence line
+  (§9.6) · dev/prod knob home (§4b, tooling sitting) ·
+  inhabited-range type/validator spelling (§7, code-dialect
+  sitting) · initializer protocol-vs-grammar (#1103,
+  code-dialect sitting).
 - Maintainer-attention note: `remove` now names three verbs with
   divergent postures — seq remove-by-index (OOB ⇒ fault, the
   indexing contract), map remove-by-key (idempotent-total), flags
