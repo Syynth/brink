@@ -96,9 +96,10 @@ components** (glam-aligned; the bevy boundary marshals
 structurally). No user operator overloading — the closed tower IS
 the middle ground. Scalar kit = the tower's width-1 floor
 (lerp/clamp/min/max defined once across it — Mojo's lesson without
-its machinery). Mini-spec owed ⏳: value kinds, wire, codecs,
-marshal legs, NaN/equality composition, majorness/handedness per
-glam, save posture.
+its machinery). Mini-spec RULED 2026-07-19 — see
+docs/tower-mini-spec.md (glam-backed value kinds, all matrix
+sizes, lane-serialized wire, componentwise-IEEE equality,
+not-orderable).
 
 ## 3. Domain 2 — text (RULED)
 
@@ -219,8 +220,9 @@ Serves `sort`/`sort_by`/`min`/`max`/heap (§8) and `compare` (§9.6).
   deterministic, saves/replay-safe); fabrication never does
   (`int("potato")`, OOB indexing stay always-fault). Checked int
   overflow is a noted sibling candidate for the same knob — not
-  ruled. Knob home (project config + host override?) ⏳ tooling
-  sitting.
+  ruled. Knob home RULED 2026-07-19: project config
+  (brink.toml profile) with a host-API override; tooling
+  implements when A4 needs it.
 - **Rows are mode-independent**: ordering verbs over `[float]`
   carry `faults` unconditionally (the conservative union — prod
   never fires it; the checker doesn't know modes exist).
@@ -469,7 +471,13 @@ precedent, oracle byte-identical):
 2. **Assertion spellings — final form** `@[effects(…)]` with args
    from `{pure, silent, total}`, any subset, comma-joined;
    exceedance-only errors (asserting less than reality is legal).
-   `@[effects(pure)]` ⊃ rng-freedom (§7). Doc-sync owed: the
+   `@[effects(pure)]` ⊃ rng-freedom (§7). Clause grammar
+   AMENDED 2026-07-19 (the Rust meta-item shape): clause
+   arguments are PARENTHESIZED — `@[effects(reads(gold, hp),
+   writes(mood), silent)]`; bare idents at top level are always
+   flags, so a flag can never be swallowed into an open clause.
+   The deprecated `#@effects` alias keeps its legacy colon
+   grammar FROZEN (E110-warned surface does not evolve). Doc-sync owed: the
    effects spec and #1087 still show the older `#@effects(…)`
    spelling — supersession note there when this lands. Holes'
    release policy — **PARKED past this sitting by the maintainer**
@@ -518,11 +526,11 @@ precedent, oracle byte-identical):
      compile error, not an E035 warning; a shadowed `display`
      would make interpolation untrustworthy.
    - `compare` — `fn(T, T): int`, row ⊆ pure·silent·total; user
-     impls slot into the RULED ordering doctrine (§4b). Coherence
-     edge still owed: user `compare` vs ruled structural equality
-     (`compare == 0` need not imply `==`) — the builtins cohere
-     on clean data by construction; the user-impl line needs
-     stating.
+     impls slot into the RULED ordering doctrine (§4b). Coherence RULED
+     2026-07-19: `compare` is ORDERING ONLY — equality stays
+     structural always; `compare == 0` need not imply `==`,
+     divergence is legal and documented (sort never implies dedup
+     semantics); enforceable by construction.
    - `iterate` — **pull-shaped**: `next(ref Self): Option[T]`,
      row ⊆ writes-receiver·silent·total, laws attached ("every
      element once; `none` terminal and sticky" — property-harness
@@ -587,7 +595,7 @@ precedent, oracle byte-identical):
   ratio (§3b) · weighted-table mutation surface (§8) · holes'
   release policy (§9.2, maintainer-parked) · protocol
   implementation spelling + compare/equality coherence line
-  (§9.6) · dev/prod knob home (§4b, tooling sitting) ·
+  (§9.6) ·
   inhabited-range type/validator spelling (§7, code-dialect
   sitting) · initializer protocol-vs-grammar (#1103,
   code-dialect sitting).
