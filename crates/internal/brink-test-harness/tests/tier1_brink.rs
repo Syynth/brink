@@ -425,6 +425,7 @@ fn every_case_directory_has_a_test() {
         "rand-verbs",
         "range-values",
         "numeric-tower",
+        "sort-verbs",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink")
@@ -2174,8 +2175,8 @@ fn numeric_tower_end_to_end() {
 /// re-entrant fn-value comparator. NaN-free data, so the default (dev)
 /// mode and prod agree exactly — the modes-agree leg of the §4b gate; the
 /// dev-fault / prod-order split is pinned by `brink-runtime`'s
-/// `collection_ops` unit tests and `brink-compiler`'s `ns_a4_ordering`
-/// ExecMode test.
+/// `collection_ops` unit tests and this crate's `ns_a4_exec_mode`
+/// `ExecMode` test.
 #[test]
 fn sort_verbs_end_to_end() {
     assert_case("sort-verbs");
