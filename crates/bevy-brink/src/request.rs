@@ -30,7 +30,7 @@ use brink_runtime::{FlowInstance, FlowLocal, World};
 use crate::asset::{BrinkStory, BrinkStoryAsset, ProgramAsset};
 use crate::capability::{CapabilityManifest, CapabilityRegistry, check_load_capability_gate};
 use crate::flow::BrinkFlow;
-use crate::globals::{BrinkContext, BrinkGlobals, BrinkWorldPolicy};
+use crate::globals::{BrinkContext, BrinkExecMode, BrinkGlobals, BrinkWorldPolicy};
 
 /// Where a freshly-spawned flow should begin executing.
 #[derive(Default, Clone, Debug)]
@@ -129,6 +129,7 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
     capability_registry: Res<CapabilityRegistry<M>>,
     globals: Option<Res<BrinkGlobals<M>>>,
     policy: Res<BrinkWorldPolicy<M>>,
+    exec_mode: Res<BrinkExecMode<M>>,
     current_locale: Option<Res<crate::locale::BrinkCurrentLocale<M>>>,
     locales: Res<Assets<crate::locale::LocaleAsset>>,
     mut line_tables: ResMut<Assets<crate::asset::LineTablesAsset>>,
@@ -190,7 +191,7 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
         }
 
         // Resolve start position.
-        let flow = match &req.start {
+        let mut flow = match &req.start {
             FlowStart::Root => {
                 let (flow, _ctx) = FlowInstance::new_at_root(&program_asset.program);
                 flow
@@ -205,6 +206,11 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
                 flow
             }
         };
+        // F35 (ruled 2026-07-19): stamp the host-selected (or
+        // profile-defaulted) ExecMode. Core `FlowInstance` starts in `Dev`;
+        // bevy-brink's `BrinkExecMode` default keys off `debug_assertions`
+        // (see `BrinkPlugin::with_exec_mode`).
+        flow.set_exec_mode(exec_mode.mode);
 
         // Resolve the flow's starting locale: base unless a global locale is
         // active and its overlay is loaded (otherwise base now, caught up by
@@ -326,6 +332,78 @@ mod tests {
         assert!(
             world.contains_resource::<BrinkGlobals<()>>(),
             "globals should be inserted on first fulfillment"
+        );
+    }
+
+    /// F35 (ruled 2026-07-19): bevy-brink's `ExecMode` default keys off the
+    /// build profile — `Dev` under `debug_assertions`. `cargo test` is a
+    /// debug build (so `cfg!(debug_assertions)` holds here), so a flow
+    /// spawned with `BrinkPlugin::default()` (no `with_exec_mode`) starts in
+    /// `Dev`. (The core-runtime default is also `Dev`, but for the opposite
+    /// reason — it is profile-independent; this asserts the bevy default
+    /// resolves to `Dev` here regardless.)
+    #[test]
+    #[cfg(debug_assertions)]
+    fn default_exec_mode_is_dev_in_debug_build() {
+        let mut app = make_test_app();
+        assert_eq!(
+            app.world().resource::<BrinkExecMode<()>>().mode,
+            brink_runtime::ExecMode::Dev,
+            "BrinkPlugin default must resolve to Dev under debug_assertions"
+        );
+
+        let (program, tables, ctx) = compile_test_story("=== start ===\nhi\n* [Continue] -> END\n");
+        let story = add_story_assets(&mut app, program, tables, ctx);
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .entity(entity)
+                .get::<BrinkFlow<()>>()
+                .expect("flow materialized")
+                .inner
+                .exec_mode(),
+            brink_runtime::ExecMode::Dev,
+            "a flow spawned under the default plugin must start in Dev in a debug build"
+        );
+    }
+
+    /// F35: the host override. `with_exec_mode(Prod)` pins every spawned
+    /// flow to `Prod` regardless of build profile.
+    #[test]
+    fn with_exec_mode_override_stamps_spawned_flow() {
+        let mut app = App::new();
+        app.add_plugins(bevy_asset::AssetPlugin::default());
+        app.add_plugins(
+            crate::BrinkPlugin::<()>::default().with_exec_mode(brink_runtime::ExecMode::Prod),
+        );
+        assert_eq!(
+            app.world().resource::<BrinkExecMode<()>>().mode,
+            brink_runtime::ExecMode::Prod,
+            "with_exec_mode(Prod) must install a Prod resource"
+        );
+
+        let (program, tables, ctx) = compile_test_story("=== start ===\nhi\n* [Continue] -> END\n");
+        let story = add_story_assets(&mut app, program, tables, ctx);
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .entity(entity)
+                .get::<BrinkFlow<()>>()
+                .expect("flow materialized")
+                .inner
+                .exec_mode(),
+            brink_runtime::ExecMode::Prod,
+            "with_exec_mode(Prod) must stamp Prod onto the spawned flow"
         );
     }
 

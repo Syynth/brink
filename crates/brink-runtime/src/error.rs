@@ -368,6 +368,28 @@ pub enum RuntimeError {
         verb: &'static str,
         what: &'static str,
     },
+    /// DEV mode only (F34, ruled 2026-07-19): a `sort_by`/`sorted_by`
+    /// comparator performed a world-write mid-sort — assigned a global
+    /// (directly, or through a `ref`-parameter pointer / path projection)
+    /// or advanced the RNG cell (a draw IS a write: a random comparator is
+    /// exactly the non-determinism the pure·silent contract bans). PROD
+    /// mode skips the check entirely and the write executes — defined and
+    /// deterministic, because the stable merge-sort's comparison sequence
+    /// is fixed (the mode changes WHERE execution stops, never WHAT the
+    /// sort produces). Visit-count increments from the comparator's own
+    /// invocation are NOT world-writes — they are the ruled in-story
+    /// dispatch semantics and stay exempt. Reads are not guarded at
+    /// runtime (E119's static bound owns the read posture). Like
+    /// [`ComparatorEscaped`](Self::ComparatorEscaped), this is the
+    /// gradual-mode runtime residual of the E119 gate.
+    #[error(
+        "`{verb}` comparator {what} — comparators must be pure, silent functions (dev-mode \
+         fault; prod mode executes the write)"
+    )]
+    ComparatorWroteState {
+        verb: &'static str,
+        what: &'static str,
+    },
 
     // ── F27: Option has no truthiness (`docs/stdlib-spec.md` §1.6, ruled
     // 2026-07-19, issue #1120) ────────────────────────────────────────────
