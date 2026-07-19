@@ -1,6 +1,19 @@
 # NS-D: the book — proposed outline (issue #1132)
 
-Status: **PROPOSAL — nothing here is ratified.** First deliverable of
+Status: **RULED by delegation (2026-07-19) — not fully reviewed.** The
+maintainer adopted the coordinator's D1–D10 recommendations from summaries
+without a close read of this document (see the decision-log's "Delegated
+batch ruling" entry): all ten resolved to option (a) — native-only spine
+with a compat chapter + ink-authors appendix · bevy tutorial in the book,
+spec stays in docs/ · stdlib inline-with-concepts + signature tables ·
+class-split transitional-dialect handling · wave-0 truth-sync (landed,
+#1143) · one fence-walker CI test · intro reframe waits for `.brink` ·
+glyph table as reference appendix · iteration ships with fn-value
+spellings · concepts/contributing kept. Any downstream surprise must be
+flagged loudly — the settled-deliberation presumption does not apply at
+full strength.
+
+Originally: PROPOSAL — nothing here was ratified at drafting time. First deliverable of
 NS-D per #1132 ("outline = first deliverable"). Everything below —
 structure, titles, classifications, sequencing, conventions — awaits
 the maintainer's nod. Authorities cited throughout: the
