@@ -227,8 +227,14 @@ fn assert_ground_truth(
 fn check_corpus_case(dir: &Path) {
     let ink_path = dir.join("story.ink");
     let entry = ink_path.to_string_lossy().into_owned();
+    // NS-A9 (strict brink default): this harness ground-truths *effect rows*
+    // — a regime-independent subject — over fixtures and inline sources
+    // written in the gradual idiom (unannotated params, `VAR x = 0`
+    // placeholders). Explicit gradual, same as `algorithms_ground_truth`'s
+    // helper contract.
     let options = AnalysisOptions {
         dialect: Dialect::Brink,
+        types: Some(brink_compiler::TypePolicy::Gradual),
         ..AnalysisOptions::default()
     };
     let db = build_db(&entry, |p| std::fs::read_to_string(p), options);
@@ -239,8 +245,14 @@ fn check_corpus_case(dir: &Path) {
 /// Ground-truth one in-memory single-file `source` under the brink
 /// dialect, labeled `label` for failure messages.
 fn check_source(label: &str, source: &str) {
+    // NS-A9 (strict brink default): this harness ground-truths *effect rows*
+    // — a regime-independent subject — over fixtures and inline sources
+    // written in the gradual idiom (unannotated params, `VAR x = 0`
+    // placeholders). Explicit gradual, same as `algorithms_ground_truth`'s
+    // helper contract.
     let options = AnalysisOptions {
         dialect: Dialect::Brink,
+        types: Some(brink_compiler::TypePolicy::Gradual),
         ..AnalysisOptions::default()
     };
     let db = build_db("main.ink", |_| Ok(source.to_owned()), options);
@@ -303,8 +315,14 @@ fn formerly_known_mutator_write_gap_cases_now_ground_truth_cleanly() {
         let dir = corpus_dir().join("algorithms").join(name);
         let ink_path = dir.join("story.ink");
         let entry = ink_path.to_string_lossy().into_owned();
+        // NS-A9 (strict brink default): this harness ground-truths *effect rows*
+        // — a regime-independent subject — over fixtures and inline sources
+        // written in the gradual idiom (unannotated params, `VAR x = 0`
+        // placeholders). Explicit gradual, same as `algorithms_ground_truth`'s
+        // helper contract.
         let options = AnalysisOptions {
             dialect: Dialect::Brink,
+            types: Some(brink_compiler::TypePolicy::Gradual),
             ..AnalysisOptions::default()
         };
         let db = build_db(&entry, |p| std::fs::read_to_string(p), options);
@@ -438,8 +456,14 @@ fn division_by_zero_fault_ground_truth() {
 /// recording string-eval capture output as an emit).
 #[test]
 fn pure_silent_total_function_observes_nothing_new() {
+    // NS-A9 (strict brink default): this harness ground-truths *effect rows*
+    // — a regime-independent subject — over fixtures and inline sources
+    // written in the gradual idiom (unannotated params, `VAR x = 0`
+    // placeholders). Explicit gradual, same as `algorithms_ground_truth`'s
+    // helper contract.
     let options = AnalysisOptions {
         dialect: Dialect::Brink,
+        types: Some(brink_compiler::TypePolicy::Gradual),
         ..AnalysisOptions::default()
     };
     let db = build_db(
