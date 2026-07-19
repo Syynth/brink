@@ -604,8 +604,23 @@ precedent, oracle byte-identical):
   indexing contract), map remove-by-key (idempotent-total), flags
   subtract (idempotent-total). Legal under intrinsic overloading;
   flagged so the divergence is chosen, not accidental.
+- **Lambdas RULED early (2026-07-19, airport sitting — the
+  code-dialect opening item closed pre-sitting)**: **Rust pipes
+  with colon returns** — `|g| g.awake`, `|g: Guest|: bool { … }`,
+  `||` zero-arg — under the RustScript north star (charter §7
+  amended). Riders: single-expression or braced-block bodies,
+  `return` leaves the lambda, last expression is the value;
+  capture BY-VALUE always (= Rust `move` as the only mode, no
+  keyword; ratifying the pre-registered bet), no ref captures v1,
+  **assignment to a captured binding is a compile error** (a
+  snapshot write is always a lost write); lambdas are fn-colored
+  always (no `await` inside, per the axiom); params optionally
+  annotated, mono-HM infers at concrete sites, bare lambda
+  without context = the E107 posture; a named fn passed by bare
+  name is the same species of value. Rows compose per #872,
+  unchanged.
 - **Handed to the code-dialect sitting (recorded 2026-07-18)**:
-  (1) **Lambda/fn-value literal design is its OPENING item** —
+  (1) ~~Lambda/fn-value literal design~~ RULED above —
   the confession: the entire fn-value verb layer (trio, each,
   map_each, sort_by, iterate laws, #872 composition) presumes
   literals that have never been designed; Phase C must list it
