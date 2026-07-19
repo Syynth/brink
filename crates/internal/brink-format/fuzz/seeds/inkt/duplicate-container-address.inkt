@@ -1,0 +1,28 @@
+(story checksum=0x8bd73265
+
+  (name_table
+    0 ""
+  )
+
+  (addresses
+    (address $01_406ea523c53def -> $01_406ea523c53def +0)
+  )
+
+  (address_paths
+    (path 0 -> $01_406ea523c53def)
+  )
+
+  (container $01_406ea523c53def )
+
+  (container $01_406ea523c53def
+    (name 0)
+    (lines
+      0 "Hello, world!" @626e7681b4e2e7bc (source "tests/tier1/basics/I001-minimal-story/story.ink" 0..14)
+    )
+    (code
+      emit_line 0 0
+      emit_newline
+      done
+    )
+  )
+)
