@@ -19,7 +19,8 @@ config every mount reads.
 ```toml
 [project]
 dialect = "brink"      # "brink" | "strict-ink" (default: "strict-ink")
-types   = "gradual"    # "gradual" | "strict"   (default: "gradual")
+types   = "gradual"    # "gradual" | "strict"   (default: dialect-keyed —
+                       # strict for "brink", gradual for "strict-ink")
 ```
 
 Both keys are optional. An empty or absent `[project]` table — or no
@@ -61,7 +62,7 @@ one-off choice that the file must not silently overrule.
 | `--dialect brink` / `--types strict` (CLI flag actually passed) | `brink.toml`, defaults |
 | `setLanguageDialect(...)` / `setTypePolicy(...)` (explicit call) | `brink.toml`, defaults |
 | `brink.toml`'s `[project] dialect`/`types` | defaults only |
-| `AnalysisOptions::default()` (`strict-ink` / `gradual`) | — |
+| Dialect-keyed default (`brink` → `strict`, `strict-ink` → `gradual`) | — |
 
 ## Per mount
 

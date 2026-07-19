@@ -1,7 +1,7 @@
 # Types
 
 Every brink-dialect project has a checker running underneath it, whether or
-not it ever shows up. `types = gradual` (the default) and `types = strict`
+not it ever shows up. `types = gradual` and `types = strict`
 are two policies over the **same** checker — not two type systems — so
 turning strict mode on never changes what a program *means*, only whether
 the compiler insists on proving more about it before it's allowed to run.
@@ -14,15 +14,18 @@ but nothing you write is *required* to resolve to a concrete type. An
 unannotated parameter that the body never pins down stays `Unknown`, and
 `Unknown` unifies with anything — it defers to the runtime's usual
 coercion behavior, unchanged from how brink has always worked. This is the
-mode every existing project is already in; adding the dialect's type
-annotations doesn't opt you into anything stricter by itself.
+strict-ink dialect's default — the mode every plain-ink project is in —
+and adding type annotations doesn't opt you into anything stricter by
+itself.
 
-**Strict** is an opt-in, project-level policy (set alongside the dialect at
-mount time — authoring-time only, never embedded in `.inkb`):
+**Strict** is a project-level policy set alongside the dialect at mount
+time — authoring-time only, never embedded in `.inkb`. Since 2026-07-19 it
+is the **brink dialect's default**: a brink project with no `types` setting
+is strict, and writing `types = gradual` opts back out.
 
 ```text
 dialect = brink
-types = strict
+types = gradual   # explicit opt-out; omitting `types` means strict here
 ```
 
 Turning it on changes three things, and only these three:
@@ -41,8 +44,9 @@ extension syntax, same as blocks and collection literals); asking for
 `types = strict` under `strict-ink` is a targeted config error, not a
 silent no-op. The oracle-anchored strict-ink subset — the plain-ink corpus
 this whole compiler is validated against — is untouched by construction:
-turning on strict typing is something *you* do to *your* project, never
-something the compiler infers or defaults into.
+a strict-ink project always resolves to gradual, so strict typing only
+ever applies to a project that has already opted into the brink dialect
+(and even there, `types = gradual` opts back out).
 
 ## Annotations
 

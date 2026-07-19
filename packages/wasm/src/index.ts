@@ -291,8 +291,12 @@ export class EditorSessionHandle {
 
   /**
    * Set the TM-3 typed-mode policy (docs/typed-mode-spec.md §1, #660):
-   * `"strict"` or `"gradual"` (default — any other value, or never calling
-   * this at all, keeps `Gradual`). Mirrors `setLanguageDialect` exactly.
+   * `"strict"` or `"gradual"`. Never calling this keeps the dialect-keyed
+   * default (NS-A9, 2026-07-19): `"brink"` sessions resolve `strict`,
+   * `"strict-ink"` sessions resolve `gradual`; an explicit call — or a
+   * `types` field applied via `applyProjectConfig` — always wins over that
+   * default. An unrecognized value is ignored (the resolved policy is
+   * unchanged). Mirrors `setLanguageDialect` exactly.
    * `"strict"` requires `setLanguageDialect("brink")` to also be in effect,
    * or the compile/analysis surface a single project-level `E064`
    * config-error diagnostic instead of running the normal passes (the

@@ -211,7 +211,10 @@ impl EditorSession {
     }
 
     /// Set the TM-3 typed-mode policy (docs/typed-mode-spec.md §1, #660):
-    /// `"strict"` or `"gradual"` (any other value maps to `"gradual"`).
+    /// `"strict"` or `"gradual"`. An unrecognized value is ignored — it
+    /// behaves exactly like never calling this at all (the pre-NS-A9
+    /// contract "any other value keeps the default", carried forward), so
+    /// garbage input can never silently opt a brink session out of strict.
     /// Never calling this (and having no `brink.toml` `types` key) leaves
     /// the dialect-keyed default in effect (issue #1127, ruled 2026-07-19):
     /// `"brink"` → strict, `"strict-ink"` → gradual. An explicit call
@@ -234,7 +237,10 @@ impl EditorSession {
     pub fn set_type_policy(&mut self, value: &str) {
         let types = match value {
             "strict" => brink_analyzer::TypePolicy::Strict,
-            _ => brink_analyzer::TypePolicy::Gradual,
+            "gradual" => brink_analyzer::TypePolicy::Gradual,
+            // Unrecognized: behave like unset — keep the dialect-keyed
+            // default (and any earlier explicit choice) in effect.
+            _ => return,
         };
         self.types_explicit = true;
         self.session.set_type_policy(types);
@@ -4629,22 +4635,37 @@ mod tests {
 
     // ── TM-3 typed-mode policy (#660) ──────────────────────────────────
 
-    /// #660: `set_type_policy` defaults to `Gradual` (byte-identical to
-    /// pre-#619 behavior) until called — before this fix `EditorSession` had
-    /// no way to reach `types = strict` at all (only the compiler CLI's
-    /// `--types strict` could).
+    /// #660 / NS-A9: with `set_type_policy` never called, the dialect-keyed
+    /// default applies (issue #1127, ruled 2026-07-19) — a strict-ink
+    /// (default-dialect) session resolves gradual (no E064, no E065), and a
+    /// brink session resolves strict (E065 fires on an unannotatable param).
     #[test]
-    fn type_policy_defaults_to_gradual_no_e065() {
+    fn type_policy_defaults_are_dialect_keyed() {
+        // strict-ink cell: gradual — never any strict diagnostic.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== noop(x) ===\nHello.\n-> DONE\n");
+        let analysis = s.session.analysis().expect("analysis");
+        assert!(
+            !analysis.diagnostics.iter().any(|d| matches!(
+                d.code,
+                brink_ir::DiagnosticCode::E064 | brink_ir::DiagnosticCode::E065
+            )),
+            "strict-ink + unset types resolves gradual: {:?}",
+            analysis.diagnostics
+        );
+
+        // brink cell: strict — the Unknown-escape fires with no explicit
+        // `set_type_policy` call at all.
         let mut s = EditorSession::new();
         s.set_language_dialect("brink");
         s.update_file("main.ink", "=== noop(x) ===\nHello.\n-> DONE\n");
         let analysis = s.session.analysis().expect("analysis");
         assert!(
-            !analysis
+            analysis
                 .diagnostics
                 .iter()
                 .any(|d| d.code == brink_ir::DiagnosticCode::E065),
-            "default (gradual) must not flag E065: {:?}",
+            "brink + unset types resolves strict (E065 fires): {:?}",
             analysis.diagnostics
         );
     }
@@ -4707,8 +4728,8 @@ mod tests {
         );
     }
 
-    /// #660: any value other than the exact string "strict" (including an
-    /// explicit "gradual") keeps the `Gradual` default.
+    /// #660 / NS-A9: an explicit "gradual" opts a brink session out of the
+    /// dialect-keyed strict default.
     #[test]
     fn set_type_policy_gradual_value_keeps_default() {
         let mut s = EditorSession::new();
@@ -4722,6 +4743,27 @@ mod tests {
                 .iter()
                 .any(|d| d.code == brink_ir::DiagnosticCode::E065),
             "explicit gradual: no E065: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    /// NS-A9: an unrecognized `set_type_policy` value behaves like never
+    /// calling — the dialect-keyed default stays in effect (it must NOT be
+    /// treated as an explicit gradual opt-out, the pre-NS-A9 "any other
+    /// value keeps the default" contract carried forward).
+    #[test]
+    fn set_type_policy_unrecognized_value_keeps_dialect_keyed_default() {
+        let mut s = EditorSession::new();
+        s.set_language_dialect("brink");
+        s.set_type_policy("bogus");
+        s.update_file("main.ink", "=== noop(x) ===\nHello.\n-> DONE\n");
+        let analysis = s.session.analysis().expect("analysis");
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E065),
+            "unrecognized value must keep the brink dialect's strict default (E065 fires): {:?}",
             analysis.diagnostics
         );
     }
