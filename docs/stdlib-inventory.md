@@ -34,9 +34,11 @@ still open.
 > E108/E109 (`@[effects(silent)]`/`(total)` exceedance — A2) ·
 > E110/E111/E112 (annotation surface — A2) · E113/E114/E115 (reserved
 > protocol names / contract exceedance / ill-formed impl registration
-> — A3). **Allocated opcodes**: 0xDE/0xDF (`PushNone`/`MakeSome`),
+> — A3) · E120 (`weighted` construction refusal, the owed §8 NEW code
+> — A7). **Allocated opcodes**: 0xDE/0xDF (`PushNone`/`MakeSome`),
 > 0xE2–0xEB (NS-A1 verb flips), 0xEC–0xEF (NS-A6 rand draws; `seed`
-> reuses frozen `SeedRandom` 0x85).
+> reuses frozen `SeedRandom` 0x85), 0xFA (`Collect` — NS-A7 weighted +
+> heap family, one opcode + kind byte per the 0xF7 `Tower` economy).
 >
 > **As-built caveats**: (1) A1 shipped falsy-`none` truthiness; the
 > queue's **F27 ruling (2026-07-19) supersedes it** — Option has NO
@@ -344,7 +346,7 @@ with the story, seeded replay identical cross-platform.
 | `shuffle` | `fn shuffle(ref a: [T]): void` | rand | · | lval | `W:rng` | — | — | ✅ (0xEF) |
 | `shuffled` | `fn shuffled(a: [T]): [T]` | rand | · | val | `W:rng` | — | — | ✅ |
 | `seed` | `fn seed(n: int): void` | rand | · | — | `W:rng` | — | — | ✅ (reuses frozen `SeedRandom` 0x85) |
-| `roll` | `fn roll(w: Weighted[T]): T` | rand | · | val | `W:rng` | — (total by construction — §8) | — | 🔜A7 |
+| `roll` | `fn roll(w: Weighted[T]): T` | rand | · | val | `W:rng` | — (total by construction — §8) | — | ✅ (`Collect` 0xFA) |
 | `nonempty` | `fn nonempty(r: range): Option[<inhabited range>]` | rand? (F7 RULED 2026-07-19: ranges are a REAL Value kind — wire/equality/display/save; A5 specifies, incl. the NS home) | · | val | P | **produces the refinement** (validator) | — | 🔜A5 |
 
 **Frozen siblings**: ink `RANDOM(min, max)` / `SEED_RANDOM` are frozen
@@ -357,16 +359,18 @@ spellings of the same cell — one RNG, two surfaces, no drift.
 NS `std::collections`. Heap = verbs over ordinary `[T]` (min-heap; zero
 new value kinds). `Weighted[T]` is a parameterized builtin.
 
-**Built: none — the whole domain is wave A7** (`heap_push`'s NaN
-entry-check depends on A4; `roll` writes the A6 rng cell).
+**Built: the whole domain shipped in wave A7** (issue #1113): one
+`Collect` opcode (0xFA, kind byte — the `Tower` economy), VAL_WEIGHTED
+wire tag 0x19, `Ty::Weighted` in the checker. Brink-dialect spelling of
+the chartered literal until B5: `weighted(w1, v1, w2, v2, …)`.
 
-| Verb / type | Signature | NS | Pre | Recv | Row | Option/refine | Proto |
-|---|---|---|---|---|---|---|---|
-| `heap_push` | `fn heap_push(ref a: [T], x: T): void` | collections | · | lval | `F:float` (NaN entry-check §4b) | — | compare |
-| `heap_pop` | `fn heap_pop(ref a: [T]): Option[T]` | collections | · | lval | P | **Option[T]** (empty→none) | compare |
-| `heap_peek` | `fn heap_peek(a: [T]): Option[T]` | collections | · | val | P | **Option[T]** | compare |
-| `Weighted[T]` | type; literal `Weighted { weight: value }` | collections | — | — | — (construction refuses empty/zero/neg — evidence-by-construction; NEW diagnostic owed) | evidence refinement ⚠F17 | — |
-| `roll` | (in `std::rand`, §7) | rand | · | val | `W:rng` | total by construction | — |
+| Verb / type | Signature | NS | Pre | Recv | Row | Option/refine | Proto | Built |
+|---|---|---|---|---|---|---|---|---|
+| `heap_push` | `fn heap_push(ref a: [T], x: T): void` | collections | · | lval | `F:float` (NaN entry-check §4b) | — | compare | ✅ A7 |
+| `heap_pop` | `fn heap_pop(ref a: [T]): Option[T]` | collections | · | lval | P | **Option[T]** (empty→none) | compare | ✅ A7 |
+| `heap_peek` | `fn heap_peek(a: [T]): Option[T]` | collections | · | val | P | **Option[T]** | compare | ✅ A7 |
+| `Weighted[T]` | type; literal `Weighted { weight: value }` | collections | — | — | — (construction refuses empty/zero/neg — evidence-by-construction; **E120** where classifiable, construction fault for computed weights) | evidence refinement; F17 multiset equality (RULED, as built) | — | ✅ A7 |
+| `roll` | (in `std::rand`, §7) | rand | · | val | `W:rng` | total by construction | — | ✅ A7 |
 
 `while heap_pop(ref open) as node { … }` is the drain loop — depends on
 the `as`-binding construct ⚠F16. `len`/iteration/mutation for `Weighted`
@@ -470,7 +474,7 @@ Weighted-by-construction with A7.
 | Refinement | Introduced by | Construction | Consumers | Gradual mode |
 |---|---|---|---|---|
 | **inhabited range** | `1..=6` literal (const-folded bounds coerce free); `(a..b).nonempty()` for computed bounds | statically-empty literal (`0..0`) = compile error; computed → `Option[<inhabited range>]` | `rand::int` (total by type) | F8 RULED 2026-07-19: refinements are INERT in gradual with a runtime-fault residual — `rand::int` faults on an empty range under gradual (the `int()`/E078 precedent; recorded as the general rule for all future refinements) |
-| **Weighted-by-construction** | `Weighted { … }` literal | empty/zero/negative refused: compile error where classifiable, **construction fault** (NEW diagnostic owed) for computed weights | `rand::roll` (total by construction) | construction fault carries to gradual (E078-style split) |
+| **Weighted-by-construction** | `Weighted { … }` literal (`weighted(w, v, …)` in the brink dialect until B5) | empty/zero/negative refused: compile error **E120** where classifiable (literal weights, empty/odd pair rows), **construction fault** (`WeightedBadWeight`) for computed weights | `rand::roll` (total by construction) | construction fault carries to gradual (E078-style split); E120 fires in BOTH regimes (it lives at the lowering, not the checker) |
 
 Recorded evolution (not built): a validating `Option`-returning
 constructor verb for `Weighted` if dynamic table-building shows demand —
@@ -488,8 +492,8 @@ the way `nonempty()` killed the range construction-fault residual.
 | seq (§4) | 25 | 11 (`len contains index_of min max first last push pop insert remove`) | incl. trio + `each`/`map_each`/`filter_map` + `sorted_by` (F0 ruling); `reverse` per naming convention ⚠F26; `sort`/`sort_by`/`sorted`/`sorted_by` → A4 |
 | maps (§5) | 8 | 7 (`len keys values get contains_value remove clear`) | `contains_key` not dispatched; `insert` reserved (never ships); 2 operators built |
 | flags (§6) | 14 | 0 | unsequenced (frozen LIST ops remain the surface) |
-| rand (§7) | 8 + `nonempty` validator | 6 (`float chance pick shuffle shuffled seed`) | `int(range)`/`nonempty` → A5; `roll` → A7 |
-| collections (§8) | 3 heap verbs | 0 | + `Weighted[T]` type; all → A7 |
+| rand (§7) | 8 + `nonempty` validator | 8 (`float chance pick shuffle shuffled seed` + A5's `int(range)`/`non_empty` + A7's `roll`) | — |
+| collections (§8) | 3 heap verbs | 3 (`heap_push heap_pop heap_peek`) + `Weighted[T]`/`weighted` (A7) | v1 = construct-and-roll / push-pop-peek |
 | **protocols (§9.6)** | 3 (`display`,`compare`,`iterate/next`) | machinery only (A3: E113/E114/E115, structural defaults; no impl spelling) | not verbs — protocol methods |
 
 **Ruled verb total ≈ 94** (the old "≈93 shipped" mislabeled this — it
