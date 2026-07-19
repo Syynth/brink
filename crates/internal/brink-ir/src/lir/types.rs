@@ -866,6 +866,50 @@ pub enum Expr {
         args: Vec<Expr>,
     },
 
+    // ── NS-A7: `Weighted[T]` + the humble heap (`docs/stdlib-spec.md`
+    // §8, issue #1113) ──────────────────────────────────────────────────
+    /// `weighted(w1, v1, w2, v2, …)` → `Weighted[T]` —
+    /// `Opcode::Collect(WeightedNew)` after the flattened pair row is
+    /// pushed and gathered by an `ArrayNew(2n)` (a transient codegen
+    /// artifact, never observable). The compile-classifiable refusals
+    /// (empty/odd row, literal non-positive-int weight) are E120 at
+    /// lowering; computed weights carry the construction-fault residual at
+    /// the op (`WeightedBadWeight`) — the E078-style split, so a table
+    /// that exists is always rollable. Pairs are `(weight, value)` in
+    /// construction order (order is semantic for display and the roll
+    /// walk; equality alone is the F17 multiset).
+    WeightedNew {
+        pairs: Vec<(Expr, Expr)>,
+    },
+    /// `roll(w)` → `T` — `Opcode::Collect(RandRoll)`: one weighted draw
+    /// from a `Weighted[T]` table. Total over any table that exists
+    /// (construction is the validator); a draw, so its row writes the RNG
+    /// cell like the NS-A6 verbs below.
+    RandRoll(Box<Expr>),
+    /// `Opcode::Collect(HeapPush)`: evaluates an array and an element,
+    /// pushes the array with the element sifted into the §4b min-heap
+    /// position (dev-mode NaN entry fault / prod pinned placement at the
+    /// runtime knob). Statement-only mutator surface (`heap_push(a, x)`,
+    /// RMW write-back via `lir::lower::blocks`) — never produced by
+    /// ordinary expression lowering (E056 there).
+    HeapPush {
+        seq: Box<Expr>,
+        value: Box<Expr>,
+    },
+    /// `heap_pop(a)` (§8): mutates its bare-lvalue receiver in place AND
+    /// produces `Option[T]` (the extracted minimum; empty → `none`) — the
+    /// `SeqPop` shape exactly: codegen emits the take →
+    /// `Collect(HeapPop)` → store-back bracket against `root`, the op
+    /// pushes the Option under the re-heapified array, and the store
+    /// leaves the Option as the expression value. Same bare-receiver
+    /// restriction (E055 on anything else — the A1 scope fence).
+    HeapPop {
+        root: AssignTarget,
+    },
+    /// `heap_peek(a)` → `Option[T]` — `Opcode::Collect(HeapPeek)`: the
+    /// minimum without extraction (`none` on empty). Pure read.
+    HeapPeek(Box<Expr>),
+
     // ── NS-A6: the `std::rand` draw verbs (`docs/stdlib-spec.md` §7,
     // issue #1112). Every one is a write to the RNG cell in the effect
     // row; `seed(n)` has no variant here — it lowers to the frozen

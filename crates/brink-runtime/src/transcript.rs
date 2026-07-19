@@ -109,6 +109,12 @@ const VAL_QUAT: u8 = 0x15;
 const VAL_MAT2: u8 = 0x16;
 const VAL_MAT3: u8 = 0x17;
 const VAL_MAT4: u8 = 0x18;
+/// NS-A7 weighted tables (`docs/stdlib-spec.md` §8): mirrors the `.inkb`
+/// `VAL_WEIGHTED` wire form exactly — u32 entry count, then per entry an
+/// i32 weight and a recursively-encoded value. Depth-counted like the
+/// collection tags; the reader enforces the evidence-by-construction
+/// invariant (non-empty, weights ≥ 1).
+const VAL_WEIGHTED: u8 = 0x19;
 const PROJ_SEG_INDEX: u8 = 0x00;
 const PROJ_SEG_KEY: u8 = 0x01;
 
@@ -740,6 +746,14 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
             write_u8(buf, VAL_MAT4);
             write_f32_lanes(buf, &m.to_cols_array());
         }
+        Value::Weighted(w) => {
+            write_u8(buf, VAL_WEIGHTED);
+            write_u32(buf, w.entries.len() as u32);
+            for (weight, value) in &w.entries {
+                write_i32(buf, *weight);
+                encode_value(value, buf);
+            }
+        }
     }
 }
 
@@ -955,6 +969,24 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Tran
         >(
             buf, off
         )?))),
+        // Weighted tables (NS-A7): mirror of the `.inkb` reader, invariant
+        // checks included — a violating payload is corrupt input.
+        VAL_WEIGHTED => {
+            let count = read_u32(buf, off)? as usize;
+            if count == 0 {
+                return Err(TranscriptError::InvalidValueTag(VAL_WEIGHTED));
+            }
+            let mut entries = Vec::with_capacity(count.min(1024));
+            for _ in 0..count {
+                let weight = read_i32(buf, off)?;
+                if weight < 1 {
+                    return Err(TranscriptError::InvalidValueTag(VAL_WEIGHTED));
+                }
+                let value = decode_value(buf, off, depth + 1)?;
+                entries.push((weight, value));
+            }
+            Ok(Value::weighted(entries))
+        }
         _ => Err(TranscriptError::InvalidValueTag(tag)),
     }
 }

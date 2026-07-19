@@ -162,6 +162,16 @@ impl<'p> NameResolver<'p> {
                     .collect();
                 format!("{{{}}}", parts.join(", "))
             }
+            // Weighted tables (NS-A7): mirror the construction literal,
+            // entries in construction order.
+            Value::Weighted(w) => {
+                let parts: Vec<String> = w
+                    .entries
+                    .iter()
+                    .map(|(weight, v)| format!("{weight}: {}", self.format_value(v)))
+                    .collect();
+                format!("Weighted {{ {} }}", parts.join(", "))
+            }
             Value::Record { shape, fields } => {
                 let parts: Vec<String> = fields.iter().map(|v| self.format_value(v)).collect();
                 format!("Record#{}{{{}}}", shape.0, parts.join(", "))

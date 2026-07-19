@@ -23,7 +23,7 @@ use super::{
     SECTION_ENTRY_SIZE, SectionKind, VAL_ARRAY, VAL_BOOL, VAL_CLOSURE, VAL_DIVERT_TARGET,
     VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT, VAL_LIST, VAL_MAP, VAL_MAT2,
     VAL_MAT3, VAL_MAT4, VAL_NULL, VAL_OPTION, VAL_PROJECTION, VAL_QUAT, VAL_RANGE, VAL_RECORD,
-    VAL_STRING, VAL_VAR_POINTER, VAL_VEC2, VAL_VEC3, VAL_VEC4, VERSION,
+    VAL_STRING, VAL_VAR_POINTER, VAL_VEC2, VAL_VEC3, VAL_VEC4, VAL_WEIGHTED, VERSION,
 };
 
 // ── Tier 1: Full story write ────────────────────────────────────────────────
@@ -344,6 +344,8 @@ fn encode_value_type(vt: ValueType, buf: &mut Vec<u8>) {
         ValueType::Mat2 => VAL_MAT2,
         ValueType::Mat3 => VAL_MAT3,
         ValueType::Mat4 => VAL_MAT4,
+        // NS-A7 weighted table value type.
+        ValueType::Weighted => VAL_WEIGHTED,
     };
     write_u8(buf, tag);
 }
@@ -545,6 +547,21 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
         Value::Mat4(m) => {
             write_u8(buf, VAL_MAT4);
             write_f32_lanes(buf, &m.to_cols_array());
+        }
+        // Weighted tables (NS-A7, `docs/stdlib-spec.md` §8): u32 entry
+        // count, then per entry an i32 weight and the recursively-encoded
+        // value, in construction order (order is semantic for display and
+        // the roll walk). Like `VAL_HANDLE` above, no opcode literal
+        // produces one at compile time today (construction is the runtime
+        // `Collect(WeightedNew)` op) — saves and transcripts are the wire
+        // consumers.
+        Value::Weighted(w) => {
+            write_u8(buf, VAL_WEIGHTED);
+            write_u32(buf, w.entries.len() as u32);
+            for (weight, value) in &w.entries {
+                write_i32(buf, *weight);
+                encode_value(value, buf);
+            }
         }
     }
 }

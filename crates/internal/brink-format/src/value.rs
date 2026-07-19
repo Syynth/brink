@@ -76,6 +76,8 @@ pub enum ValueType {
     Mat3,
     /// A column-major 4×4 f32 matrix ([`Value::Mat4`]) — NS-A8.
     Mat4,
+    /// A weighted table ([`Value::Weighted`]) — NS-A7, `Weighted[T]`.
+    Weighted,
 }
 
 /// A runtime value in the ink VM.
@@ -298,6 +300,15 @@ pub enum Value {
     Mat3(#[serde(with = "tower_serde::mat3")] glam::Mat3),
     /// A column-major 4×4 f32 matrix (NS-A8). See [`Vec2`](Self::Vec2).
     Mat4(#[serde(with = "tower_serde::mat4")] glam::Mat4),
+    /// A weighted table (NS-A7, `docs/stdlib-spec.md` §8): `Weighted[T]` —
+    /// positive-int weights over values, in construction order.
+    /// **Evidence-by-construction**: the only producer (`weighted_new`)
+    /// refuses empty tables and non-positive/non-int weights, so a
+    /// `Weighted` that exists is always a valid `roll` target (total). The
+    /// entry row is a **multiset** (F17: duplicate weights legal and
+    /// meaningful — deliberately divergent from `Map`'s key-set). v1 is
+    /// construct-and-roll: no `len`, no iteration, no mutation.
+    Weighted(Arc<WeightedValue>),
 }
 
 /// Hand-written serde lane codecs for the tower variants (NS-A8,
@@ -448,6 +459,7 @@ impl Value {
             Self::Mat2(_) => ValueType::Mat2,
             Self::Mat3(_) => ValueType::Mat3,
             Self::Mat4(_) => ValueType::Mat4,
+            Self::Weighted(_) => ValueType::Weighted,
         }
     }
 
@@ -496,6 +508,15 @@ impl Value {
             }
             _ => None,
         }
+    }
+
+    /// Build a [`Weighted`](Self::Weighted) table from `(weight, value)`
+    /// entries. The caller owns the §8 evidence-by-construction invariant
+    /// (non-empty, positive weights) — the VM's `weighted_new` op and the
+    /// wire reader both validate before calling this.
+    #[must_use]
+    pub fn weighted(entries: Vec<(i32, Value)>) -> Self {
+        Self::Weighted(Arc::new(WeightedValue { entries }))
     }
 
     /// Build a `some(inner)` [`OptionVal`](Self::OptionVal).
@@ -847,6 +868,9 @@ impl PartialEq for Value {
             // heap-allocated variant. Cross-variant (`some(1) == 1`) falls
             // through to `false` below — the ruled `Option[T] ≠ T`
             // strictness at the value layer.
+            // Weighted equality (NS-A7): multiset content with the
+            // `Arc::ptr_eq` fast path — see `WeightedValue`'s `PartialEq`.
+            (Self::Weighted(a), Self::Weighted(b)) => Arc::ptr_eq(a, b) || a == b,
             (Self::OptionVal(a), Self::OptionVal(b)) => match (a, b) {
                 (None, None) => true,
                 (Some(x), Some(y)) => Arc::ptr_eq(x, y) || x == y,
@@ -1060,6 +1084,54 @@ impl From<Arc<str>> for MapKey {
 ///
 /// `insert`/`remove` preserve insertion order: re-inserting an existing key
 /// overwrites its value in place (keeping the key's original position), and
+/// The payload of a [`Value::Weighted`] (NS-A7, `docs/stdlib-spec.md` §8):
+/// positive-int weights over values, kept in construction order.
+///
+/// `PartialEq` is hand-written: equality is **multiset content** — the same
+/// `(weight, value)` entries with the same multiplicities, regardless of
+/// order (the #909 map content-over-form precedent applied to the F17
+/// multiset: `weighted(3, "a", 1, "b") == weighted(1, "b", 3, "a")`).
+/// Duplicate entries are legal and multiplicity-sensitive. Construction
+/// order still governs display and the `roll` draw walk (deterministic
+/// offset → entry mapping), exactly as map iteration order survives the
+/// order-insensitive map equality. O(n²) matching — the accepted trade for
+/// small, hand-written game-scale tables (same as `OrderedMap`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeightedValue {
+    /// `(weight, value)` entries in construction order. Invariant (held by
+    /// the only producer, `weighted_new`, and the wire reader): non-empty,
+    /// every weight ≥ 1.
+    pub entries: Vec<(i32, Value)>,
+}
+
+impl WeightedValue {
+    /// The total weight of the table as an `i64` (a sum of `i32` weights
+    /// can exceed `i32::MAX`; the draw walks in `i64`).
+    #[must_use]
+    pub fn total_weight(&self) -> i64 {
+        self.entries.iter().map(|(w, _)| i64::from(*w)).sum()
+    }
+}
+
+impl PartialEq for WeightedValue {
+    fn eq(&self, other: &Self) -> bool {
+        if self.entries.len() != other.entries.len() {
+            return false;
+        }
+        let mut used = vec![false; other.entries.len()];
+        'outer: for (w, v) in &self.entries {
+            for (i, (ow, ov)) in other.entries.iter().enumerate() {
+                if !used[i] && w == ow && v == ov {
+                    used[i] = true;
+                    continue 'outer;
+                }
+            }
+            return false;
+        }
+        true
+    }
+}
+
 /// `remove` shifts later entries down. Lookups are linear; that is the
 /// intended trade for small maps and stable ordering.
 ///

@@ -847,6 +847,13 @@ enum MutatorKind {
     /// array in place by a comparator function value `fn(T, T): int`.
     /// `sorted_by(a, cmp)` is the functional twin.
     SortBy,
+    /// `heap_push(a, x)` — 2 args (NS-A7, `docs/stdlib-spec.md` §8): sift
+    /// `x` into the min-heap maintained over the array, in place (§4b
+    /// entry check: dev NaN-fault / prod pinned placement at the runtime
+    /// knob). `heap_pop`/`heap_peek` are not mutator-statement shapes —
+    /// `heap_pop` is the `pop` expression/bracket shape, `heap_peek` a
+    /// pure expression.
+    HeapPush,
 }
 
 impl MutatorKind {
@@ -864,6 +871,7 @@ impl MutatorKind {
             "shuffle" => Some(Self::Shuffle),
             "sort" => Some(Self::Sort),
             "sort_by" => Some(Self::SortBy),
+            "heap_push" => Some(Self::HeapPush),
             _ => None,
         }
     }
@@ -871,7 +879,7 @@ impl MutatorKind {
     fn expected_argc(self) -> usize {
         match self {
             Self::Clear | Self::Shuffle | Self::Sort => 1,
-            Self::Push | Self::Remove | Self::SortBy => 2,
+            Self::Push | Self::Remove | Self::SortBy | Self::HeapPush => 2,
             Self::Insert => 3,
         }
     }
@@ -887,6 +895,7 @@ impl MutatorKind {
             Self::Shuffle => "shuffle(array)",
             Self::Sort => "sort(array)",
             Self::SortBy => "sort_by(array, comparator)",
+            Self::HeapPush => "heap_push(array, value)",
         }
     }
 }
@@ -954,6 +963,10 @@ fn try_lower_seed_stmt(
     true
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one desugar arm per mutator kind — the NS-A7 heap_push arm pushed this past 100"
+)]
 pub(super) fn try_lower_mutator_stmt(
     expr: &hir::Expr,
     ctx: &mut LowerCtx<'_>,
@@ -1080,6 +1093,10 @@ pub(super) fn try_lower_mutator_stmt(
             seq: Box::new(container()),
             cmp: Box::new(lower_expr(&args[1], ctx)),
         },
+        MutatorKind::HeapPush => lir::Expr::HeapPush {
+            seq: Box::new(container()),
+            value: Box::new(lower_expr(&args[1], ctx)),
+        },
     };
 
     out.push(lir::Stmt::Assign {
@@ -1188,6 +1205,10 @@ fn lower_bare_mutator(
         MutatorKind::SortBy => lir::Expr::SeqSortedBy {
             seq: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
             cmp: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
+        },
+        MutatorKind::HeapPush => lir::Expr::HeapPush {
+            seq: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
+            value: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
         },
     };
 

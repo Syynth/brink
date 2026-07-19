@@ -155,6 +155,16 @@ pub(crate) const VAL_QUAT: u8 = 0x15;
 pub(crate) const VAL_MAT2: u8 = 0x16;
 pub(crate) const VAL_MAT3: u8 = 0x17;
 pub(crate) const VAL_MAT4: u8 = 0x18;
+// NS-A7 (`docs/stdlib-spec.md` §8, issue #1113): the weighted table.
+// Wire form: u32 entry count, then per entry an i32 weight followed by a
+// recursively-encoded value. Values recurse, so decoding counts toward
+// `MAX_DECODE_DEPTH` exactly like the collection tags. The reader enforces
+// the §8 evidence-by-construction invariant (non-empty, weights ≥ 1) — a
+// violating payload is a decode error, so a `Weighted` never enters the
+// runtime invalid, even from a crafted file. Next free tag after
+// `VAL_MAT4` (0x18); this PR's own reservation, additive per the NS-A1
+// `VAL_OPTION` precedent (no `VERSION` bump).
+pub(crate) const VAL_WEIGHTED: u8 = 0x19;
 /// Wire kind for a [`crate::ProjSegment::Index`] segment.
 pub(crate) const PROJ_SEG_INDEX: u8 = 0x00;
 /// Wire kind for a [`crate::ProjSegment::Key`] segment.

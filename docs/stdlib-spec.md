@@ -464,6 +464,19 @@ precedent, oracle byte-identical):
 - Anything further (deque, set-as-type) is **evidence-gated** —
   `std::collections` is the landing zone, the dossier is the gate.
 
+  *(As-built, 2026-07-19, NS-A7 #1113: the owed NEW diagnostic is
+  **E120** — fired at the lowering for statically-classifiable refusals
+  (empty tables, dangling weights, literal non-positive/non-int weights,
+  negated literals included), in BOTH type regimes; computed weights
+  carry the `WeightedBadWeight` construction fault. Until B5's
+  construction grammar, the brink-dialect spelling is the ambient
+  intrinsic `weighted(w1, v1, w2, v2, …)` — the slice-1 pattern, exactly
+  as `vec2(…)` stands in for the tower literals. Equality shipped as
+  **multiset content** — order-insensitive, multiplicity-sensitive (the
+  F17 multiset read through the #909 content-over-form lens); display
+  and the roll walk keep construction order. Wire: one `Collect` opcode
+  (0xFA + kind byte, the Tower economy) and value tag 0x19.)*
+
 ## 9. Closers (RULED 2026-07-18, except as marked)
 
 1. **Anonymous records — RETIRED from the native surface.**

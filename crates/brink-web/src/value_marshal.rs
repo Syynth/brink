@@ -138,6 +138,27 @@ pub(crate) fn value_to_js(v: &Value) -> JsValue {
         // accessors). Lane values cross as numbers (f32 → f64 exactly).
         // The lossless kind+lanes form is `TypedValueJs::Tower` on the
         // JSON boundary.
+        // A weighted table (NS-A7, `docs/stdlib-spec.md` §8) is a real
+        // script value, so it must not fall through to the VM-internal
+        // `null` arm (#667 hazard class). The ergonomic native form is a
+        // JS array of `{weight, value}` objects in construction order —
+        // the same shape as the lossless `TypedValueJs::Weighted` on the
+        // JSON boundary.
+        Value::Weighted(w) => {
+            let arr = js_sys::Array::new();
+            for (weight, value) in &w.entries {
+                let obj = js_sys::Object::new();
+                let _ = js_sys::Reflect::set(
+                    &obj,
+                    &JsValue::from_str("weight"),
+                    &JsValue::from_f64(f64::from(*weight)),
+                );
+                let _ =
+                    js_sys::Reflect::set(&obj, &JsValue::from_str("value"), &value_to_js(value));
+                arr.push(&obj);
+            }
+            arr.into()
+        }
         Value::Vec2(v) => lanes_to_js(&[("x", v.x), ("y", v.y)]),
         Value::Vec3(v) => lanes_to_js(&[("x", v.x), ("y", v.y), ("z", v.z)]),
         Value::Vec4(v) => lanes_to_js(&[("x", v.x), ("y", v.y), ("z", v.z), ("w", v.w)]),

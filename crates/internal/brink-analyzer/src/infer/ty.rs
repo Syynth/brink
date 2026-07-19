@@ -92,6 +92,13 @@ pub enum Ty {
         non_empty: bool,
     },
     /// Not (yet) resolved to a concrete type — legal in this slice (spec
+    /// `Weighted[T]` — the weighted table builtin (NS-A7,
+    /// `docs/stdlib-spec.md` §8): compiler-known and parameterized like
+    /// `Option`/`Array`, NOT user generics. Unifies pointwise on the value
+    /// element; against any other concrete type it is a genuine structural
+    /// mismatch (`Conflicted`). v1 is construct-and-roll — the only
+    /// producer is the `weighted(…)` intrinsic, the only consumer `roll`.
+    Weighted(Box<Ty>),
     /// A numeric-tower value kind (NS-A8, `docs/tower-mini-spec.md`):
     /// `vec2`/`vec3`/`vec4`/`quat`/`mat2`/`mat3`/`mat4` — seven closed
     /// compiler-known kinds carried by one variant (they behave identically
@@ -194,6 +201,7 @@ impl Ty {
             Ty::Range { non_empty: false } => "range".to_string(),
             Ty::Range { non_empty: true } => "NonEmptyRange".to_string(),
             Ty::Tower(kind) => kind.name().to_string(),
+            Ty::Weighted(elem) => format!("Weighted[{}]", elem.display()),
             Ty::Unknown => "Unknown".to_string(),
             Ty::Conflicted => "Conflicted".to_string(),
         }
@@ -255,15 +263,18 @@ impl Ord for Ty {
                 Ty::Option(_) => 11,
                 Ty::Range { .. } => 12,
                 Ty::Tower(_) => 13,
-                Ty::Unknown => 14,
-                Ty::Conflicted => 15,
+                Ty::Weighted(_) => 14,
+                Ty::Unknown => 15,
+                Ty::Conflicted => 16,
             }
         }
         match (self, other) {
             (Ty::List(a), Ty::List(b))
             | (Ty::Struct(a), Ty::Struct(b))
             | (Ty::Handle(a), Ty::Handle(b)) => a.cmp(b),
-            (Ty::Array(a), Ty::Array(b)) | (Ty::Option(a), Ty::Option(b)) => a.cmp(b),
+            (Ty::Array(a), Ty::Array(b))
+            | (Ty::Option(a), Ty::Option(b))
+            | (Ty::Weighted(a), Ty::Weighted(b)) => a.cmp(b),
             (Ty::Range { non_empty: a }, Ty::Range { non_empty: b }) => a.cmp(b),
             (Ty::Tower(a), Ty::Tower(b)) => a.cmp(b),
             (Ty::Map(k1, v1), Ty::Map(k2, v2)) => k1.cmp(k2).then_with(|| v1.cmp(v2)),
@@ -313,6 +324,10 @@ pub fn unify(a: &Ty, b: &Ty) -> Ty {
         // concrete type falls through to `Conflicted` below — the ruled
         // `Option[T] ≠ T` strictness lives in the lattice itself.
         (Ty::Option(x), Ty::Option(y)) => Ty::Option(Box::new(unify(x, y))),
+        // Weighted unifies pointwise on the value element, exactly like
+        // Array/Option (NS-A7, docs/stdlib-spec.md §8); against any other
+        // concrete type it falls through to `Conflicted` below.
+        (Ty::Weighted(x), Ty::Weighted(y)) => Ty::Weighted(Box::new(unify(x, y))),
         // Ranges unify with ranges; the refinement evidence joins with
         // `&&` (NS-A5): a slot is `NonEmptyRange` only if EVERY observed
         // source carries the evidence — one possibly-empty assignment

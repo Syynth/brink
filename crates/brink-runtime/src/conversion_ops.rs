@@ -143,6 +143,7 @@ fn type_name(v: &Value) -> &'static str {
         Value::Mat2(_) => "mat2",
         Value::Mat3(_) => "mat3",
         Value::Mat4(_) => "mat4",
+        Value::Weighted(_) => "weighted",
     }
 }
 

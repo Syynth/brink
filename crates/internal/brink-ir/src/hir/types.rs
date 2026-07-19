@@ -1863,6 +1863,16 @@ pub enum DiagnosticCode {
     /// (the gradual posture; the VM's isolation and
     /// `ComparatorEscaped` fault are the runtime residual).
     E119,
+    /// NS-A7 `Weighted[T]` construction refusal (`docs/stdlib-spec.md` §8,
+    /// issue #1113): the compile-classifiable half of the E078-style
+    /// evidence-by-construction split. Fired by the `weighted(…)` lowering
+    /// for a statically-malformed table — an empty pair row, an odd
+    /// (dangling-weight) argument count, or a **literal** weight that is
+    /// not a positive int (zero, negative, float/string/bool). Computed
+    /// weights are not classifiable here; they carry the construction
+    /// *fault* residual instead (`RuntimeError::WeightedBadWeight`), so a
+    /// table that exists is always rollable.
+    E120,
 }
 
 impl DiagnosticCode {
@@ -1993,6 +2003,7 @@ impl DiagnosticCode {
             Self::E117 => "E117",
             Self::E118 => "E118",
             Self::E119 => "E119",
+            Self::E120 => "E120",
         }
     }
 
@@ -2158,6 +2169,7 @@ impl DiagnosticCode {
                 "numeric-tower kinds are compiler-known and cannot implement registry protocols"
             }
             Self::E119 => "sort comparator must be a pure, silent function",
+            Self::E120 => "`weighted` requires weight/value pairs with positive int weights",
         }
     }
 
@@ -2313,6 +2325,7 @@ impl DiagnosticCode {
             "E117" => Some(Self::E117),
             "E118" => Some(Self::E118),
             "E119" => Some(Self::E119),
+            "E120" => Some(Self::E120),
             _ => None,
         }
     }

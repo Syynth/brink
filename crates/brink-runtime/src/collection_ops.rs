@@ -753,6 +753,189 @@ pub(crate) fn map_clear(flow: &mut Flow) -> Result<(), RuntimeError> {
     Ok(())
 }
 
+// ── NS-A7: `Weighted[T]` + the humble heap (`docs/stdlib-spec.md` §8,
+// issue #1113). The heap verbs maintain a MIN-HEAP invariant over an
+// ordinary `[T]` (zero new value kinds — the Lua posture), ordered by the
+// same §4b comparison core the sort family uses (`total_order_cmp` — one
+// comparison path, mode-free). `Collect(WeightedNew)` is the one producer
+// of `Value::Weighted`; `rand::roll`'s op lives in `rand_ops` (it draws).
+
+/// `Collect(WeightedNew)`: `[pairs]` → `Weighted[T]`. Pops ONE array of
+/// flattened `weight, value, …` entries (a transient artifact of the
+/// codegen `ArrayNew` bracket — never observable) and validates the §8
+/// evidence-by-construction invariant: non-empty, even pair row, every
+/// weight a positive int. Weights the checker could classify are already
+/// E120 compile errors; what reaches this op is the computed-weight
+/// residual ([`RuntimeError::WeightedBadWeight`]).
+pub(crate) fn weighted_new(flow: &mut Flow) -> Result<(), RuntimeError> {
+    let row = flow.pop_value()?;
+    let Value::Array(items) = &row else {
+        return Err(RuntimeError::StdlibWrongType {
+            verb: "weighted",
+            expected: "a flattened weight/value pair row",
+            found: type_name(&row),
+        });
+    };
+    if items.is_empty() {
+        return Err(RuntimeError::WeightedMalformedTable {
+            detail: "an empty table",
+        });
+    }
+    if items.len() % 2 != 0 {
+        return Err(RuntimeError::WeightedMalformedTable {
+            detail: "an odd flattened pair row",
+        });
+    }
+    let mut entries = Vec::with_capacity(items.len() / 2);
+    for pair in items.chunks_exact(2) {
+        let weight = match &pair[0] {
+            Value::Int(w) if *w >= 1 => *w,
+            Value::Int(w) => {
+                return Err(RuntimeError::WeightedBadWeight {
+                    found: w.to_string(),
+                });
+            }
+            Value::Float(f) => {
+                return Err(RuntimeError::WeightedBadWeight {
+                    found: f.to_string(),
+                });
+            }
+            other => {
+                return Err(RuntimeError::WeightedBadWeight {
+                    found: type_name(other).to_string(),
+                });
+            }
+        };
+        entries.push((weight, pair[1].clone()));
+    }
+    flow.value_stack.push(Value::weighted(entries));
+    Ok(())
+}
+
+/// `Collect(HeapPush)`: `[a, x]` → `[a']` — append `x` and sift up,
+/// restoring the min-heap invariant (assuming, per the humble-heap
+/// posture, that `a` already satisfies it — the invariant "holds over
+/// clean data" because every entry arrived through this op). §4b entry
+/// check: DEV mode faults on a NaN anywhere in the entering element
+/// ([`nan_scan`], the `sort`/`min`/`max` discipline applied at the door);
+/// PROD mode places NaN by the pinned total order. The array itself is
+/// NOT re-scanned — the entry check is the ruled contract, and clean
+/// arrays stay clean by induction. In-place-ness comes from the RMW
+/// write-back (the `SeqSorted` precedent).
+pub(crate) fn heap_push(flow: &mut Flow) -> Result<(), RuntimeError> {
+    let mode = flow.exec_mode;
+    let element = flow.pop_value()?;
+    let mut container = flow.pop_value()?;
+    if !matches!(container, Value::Array(_)) {
+        return Err(RuntimeError::StdlibWrongType {
+            verb: "heap_push",
+            expected: "an array",
+            found: type_name(&container),
+        });
+    }
+    if mode == ExecMode::Dev {
+        nan_scan("heap_push", core::slice::from_ref(&element), 0)?;
+    }
+    note_array_mutation(&container);
+    if let Some(items) = container.array_make_mut() {
+        items.push(element);
+        // Sift up: swaps only, so the §4b guarantee floor (always some
+        // permutation of the input) holds even if a comparison faults
+        // mid-sift on an unorderable element.
+        let mut i = items.len() - 1;
+        while i > 0 {
+            let parent = (i - 1) / 2;
+            if total_order_cmp("heap_push", &items[i], &items[parent])? == core::cmp::Ordering::Less
+            {
+                items.swap(i, parent);
+                i = parent;
+            } else {
+                break;
+            }
+        }
+    }
+    flow.value_stack.push(container);
+    Ok(())
+}
+
+/// `Collect(HeapPop)`: `[a]` → pushes `Option[T]` (the extracted minimum,
+/// `none` on empty — absence, per the ruled doctrine), then the shrunk
+/// re-heapified array on top of it — the `SeqPop` stack contract, so the
+/// codegen take/store bracket writes the array back and leaves the Option
+/// as the expression value. Not in the §4b dev NaN-fault list: extraction
+/// compares with the mode-free pinned order and keeps moving (the fault
+/// belongs at `heap_push`, the door).
+pub(crate) fn heap_pop(flow: &mut Flow) -> Result<(), RuntimeError> {
+    let mut container = flow.pop_value()?;
+    if !matches!(container, Value::Array(_)) {
+        return Err(RuntimeError::StdlibWrongType {
+            verb: "heap_pop",
+            expected: "an array",
+            found: type_name(&container),
+        });
+    }
+    note_array_mutation(&container);
+    let mut popped = Value::none();
+    if let Some(items) = container.array_make_mut()
+        && !items.is_empty()
+    {
+        let last = items.len() - 1;
+        items.swap(0, last);
+        // `pop` cannot fail: `items` is non-empty by the guard above.
+        if let Some(min) = items.pop() {
+            popped = Value::some(min);
+        }
+        // Sift down from the root (swaps only — same permutation floor as
+        // `heap_push`).
+        let n = items.len();
+        let mut i = 0usize;
+        loop {
+            let (l, r) = (2 * i + 1, 2 * i + 2);
+            let mut smallest = i;
+            if l < n
+                && total_order_cmp("heap_pop", &items[l], &items[smallest])?
+                    == core::cmp::Ordering::Less
+            {
+                smallest = l;
+            }
+            if r < n
+                && total_order_cmp("heap_pop", &items[r], &items[smallest])?
+                    == core::cmp::Ordering::Less
+            {
+                smallest = r;
+            }
+            if smallest == i {
+                break;
+            }
+            items.swap(i, smallest);
+            i = smallest;
+        }
+    }
+    flow.value_stack.push(popped);
+    flow.value_stack.push(container);
+    Ok(())
+}
+
+/// `Collect(HeapPeek)`: `[a]` → `Option[T]` — the minimum without
+/// extraction (`none` on empty). Over a heap-maintained array the minimum
+/// IS the root element, so this is a pure O(1) read with no comparisons
+/// (and therefore no ordering faults — its only fault is a non-array).
+pub(crate) fn heap_peek(flow: &mut Flow) -> Result<(), RuntimeError> {
+    let container = flow.pop_value()?;
+    let Value::Array(items) = &container else {
+        return Err(RuntimeError::StdlibWrongType {
+            verb: "heap_peek",
+            expected: "an array",
+            found: type_name(&container),
+        });
+    };
+    let result = items
+        .first()
+        .map_or_else(Value::none, |v| Value::some(v.clone()));
+    flow.value_stack.push(result);
+    Ok(())
+}
+
 /// `PushLiteral(idx)`: push a clone of `program.literal_pool[idx]` — an
 /// `Arc` bump for collections (zero-allocation load).
 pub(crate) fn push_literal(
@@ -830,6 +1013,7 @@ pub(crate) fn type_name(v: &Value) -> &'static str {
         Value::Mat2(_) => "mat2",
         Value::Mat3(_) => "mat3",
         Value::Mat4(_) => "mat4",
+        Value::Weighted(_) => "weighted",
     }
 }
 
@@ -1920,5 +2104,282 @@ mod tests {
                 found: "array",
             }
         );
+    }
+
+    // ── NS-A7: Weighted[T] + the humble heap (docs/stdlib-spec.md §8,
+    // #1113) ─────────────────────────────────────────────────────────────
+
+    /// Run `weighted_new` over a flattened pair row.
+    fn weighted_from(flow: &mut Flow, row: Vec<Value>) -> Result<Value, RuntimeError> {
+        push_args(flow, vec![arr(row)]);
+        weighted_new(flow)?;
+        flow.pop_value()
+    }
+
+    #[test]
+    fn weighted_new_builds_multiset_in_construction_order() {
+        let mut flow = test_flow();
+        let w = weighted_from(
+            &mut flow,
+            vec![
+                Value::Int(3),
+                Value::String("sword".into()),
+                Value::Int(3),
+                Value::String("shield".into()),
+            ],
+        )
+        .unwrap();
+        // F17: duplicate weights are legal and meaningful (multiset).
+        let Value::Weighted(table) = &w else {
+            unreachable!("expected a Weighted, got {w:?}");
+        };
+        assert_eq!(table.entries.len(), 2);
+        assert_eq!(table.entries[0], (3, Value::String("sword".into())));
+        assert_eq!(table.entries[1], (3, Value::String("shield".into())));
+        assert_eq!(table.total_weight(), 6);
+    }
+
+    #[test]
+    fn weighted_equality_is_multiset_content_not_order() {
+        let a = Value::weighted(vec![
+            (3, Value::String("a".into())),
+            (1, Value::String("b".into())),
+        ]);
+        let b = Value::weighted(vec![
+            (1, Value::String("b".into())),
+            (3, Value::String("a".into())),
+        ]);
+        let c = Value::weighted(vec![
+            (3, Value::String("a".into())),
+            (3, Value::String("a".into())),
+        ]);
+        assert_eq!(a, b, "order-insensitive");
+        assert_ne!(a, c, "multiplicity-sensitive");
+    }
+
+    #[test]
+    fn weighted_new_refuses_bad_computed_weights() {
+        // The E078-style split's runtime half: zero, negative, and
+        // non-int computed weights are construction faults.
+        let mut flow = test_flow();
+        let err = weighted_from(&mut flow, vec![Value::Int(0), Value::Int(1)]).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::WeightedBadWeight {
+                found: "0".to_string()
+            }
+        );
+        let err = weighted_from(&mut flow, vec![Value::Int(-3), Value::Int(1)]).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::WeightedBadWeight {
+                found: "-3".to_string()
+            }
+        );
+        let err = weighted_from(&mut flow, vec![Value::Float(1.5), Value::Int(1)]).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::WeightedBadWeight {
+                found: "1.5".to_string()
+            }
+        );
+        let err =
+            weighted_from(&mut flow, vec![Value::String("w".into()), Value::Int(1)]).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::WeightedBadWeight {
+                found: "string".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn weighted_new_guards_malformed_pair_rows() {
+        // Unreachable through the compiler (E120 refuses these shapes
+        // statically) — the malformed-bytecode guards.
+        let mut flow = test_flow();
+        let err = weighted_from(&mut flow, vec![]).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::WeightedMalformedTable {
+                detail: "an empty table"
+            }
+        );
+        let err = weighted_from(&mut flow, vec![Value::Int(1)]).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::WeightedMalformedTable {
+                detail: "an odd flattened pair row"
+            }
+        );
+    }
+
+    /// Drive `heap_push` as the codegen bracket would: `[a, x]` → `[a']`.
+    fn push_heap(flow: &mut Flow, heap: Value, x: Value) -> Result<Value, RuntimeError> {
+        push_args(flow, vec![heap, x]);
+        heap_push(flow)?;
+        flow.pop_value()
+    }
+
+    /// Drive `heap_pop`: `[a]` → `(popped Option, shrunk array)`.
+    fn pop_heap(flow: &mut Flow, heap: Value) -> Result<(Value, Value), RuntimeError> {
+        push_args(flow, vec![heap]);
+        heap_pop(flow)?;
+        let shrunk = flow.pop_value()?;
+        let popped = flow.pop_value()?;
+        Ok((popped, shrunk))
+    }
+
+    #[test]
+    fn heap_property_push_n_pop_all_drains_ascending() {
+        // The heap-invariant property test (the §8 gate): push N values in
+        // a scrambled order, then pop until empty — the drain must come
+        // out in exactly the §4b doctrine order (ascending, min-heap).
+        let mut flow = test_flow();
+        let values = [7, 3, 11, 3, -2, 0, 42, 5, 5, -100, 19, 1];
+        let mut heap = arr(vec![]);
+        for v in values {
+            heap = push_heap(&mut flow, heap, Value::Int(v)).unwrap();
+        }
+        let mut drained = Vec::new();
+        loop {
+            let (popped, shrunk) = pop_heap(&mut flow, heap).unwrap();
+            heap = shrunk;
+            match popped {
+                Value::OptionVal(None) => break,
+                Value::OptionVal(Some(v)) => match v.as_ref() {
+                    Value::Int(n) => drained.push(*n),
+                    other => unreachable!("unexpected pop payload {other:?}"),
+                },
+                other => unreachable!("heap_pop must produce an Option, got {other:?}"),
+            }
+        }
+        let mut expected = values.to_vec();
+        expected.sort_unstable();
+        assert_eq!(drained, expected, "min-heap drains ascending");
+        assert_eq!(heap, arr(vec![]), "drained heap is empty");
+    }
+
+    #[test]
+    fn heap_peek_reads_min_without_extraction() {
+        let mut flow = test_flow();
+        let mut heap = arr(vec![]);
+        for v in [5, 2, 9] {
+            heap = push_heap(&mut flow, heap, Value::Int(v)).unwrap();
+        }
+        push_args(&mut flow, vec![heap.clone()]);
+        heap_peek(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::some(Value::Int(2)));
+        // Empty peek is absence.
+        push_args(&mut flow, vec![arr(vec![])]);
+        heap_peek(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::none());
+    }
+
+    #[test]
+    fn heap_pop_on_empty_is_none_not_fault() {
+        let mut flow = test_flow();
+        let (popped, shrunk) = pop_heap(&mut flow, arr(vec![])).unwrap();
+        assert_eq!(popped, Value::none());
+        assert_eq!(shrunk, arr(vec![]));
+    }
+
+    #[test]
+    fn heap_push_dev_mode_faults_on_nan_entry() {
+        // §4b: `heap_push` checks at entry — a NaN in the entering element
+        // (bare or nested) is the dev-mode fault; the invariant then holds
+        // over clean data.
+        let mut flow = test_flow();
+        assert_eq!(flow.exec_mode, ExecMode::Dev, "dev is the default");
+        let err = push_heap(&mut flow, arr(vec![]), Value::Float(f32::NAN)).unwrap_err();
+        assert_eq!(err, RuntimeError::UnorderedComparand { verb: "heap_push" });
+        // Nested: "same NaN rule inside".
+        let err = push_heap(&mut flow, arr(vec![]), arr(vec![Value::Float(f32::NAN)])).unwrap_err();
+        assert_eq!(err, RuntimeError::UnorderedComparand { verb: "heap_push" });
+        // NaN-free floats are fine in dev.
+        let heap = push_heap(&mut flow, arr(vec![]), Value::Float(1.5)).unwrap();
+        assert_eq!(heap, arr(vec![Value::Float(1.5)]));
+    }
+
+    #[test]
+    fn heap_push_prod_mode_places_nan_by_the_pinned_order() {
+        // PROD: NaN enters and places greatest (never fabricated, never
+        // lost) — the §4b pinned total order, mode-free comparison core.
+        let mut flow = test_flow();
+        flow.exec_mode = ExecMode::Prod;
+        let mut heap = arr(vec![]);
+        for v in [Value::Float(2.0), Value::Float(f32::NAN), Value::Float(1.0)] {
+            heap = push_heap(&mut flow, heap, v).unwrap();
+        }
+        let (popped, shrunk) = pop_heap(&mut flow, heap).unwrap();
+        assert_eq!(popped, Value::some(Value::Float(1.0)));
+        let (popped, shrunk) = pop_heap(&mut flow, shrunk).unwrap();
+        assert_eq!(popped, Value::some(Value::Float(2.0)));
+        let (popped, shrunk) = pop_heap(&mut flow, shrunk).unwrap();
+        let Value::OptionVal(Some(v)) = popped else {
+            unreachable!("expected some(NaN)");
+        };
+        let Value::Float(f) = v.as_ref() else {
+            unreachable!("expected a float");
+        };
+        assert!(f.is_nan(), "NaN pops last (greatest), never dropped");
+        assert_eq!(shrunk, arr(vec![]));
+    }
+
+    #[test]
+    fn heap_verbs_fault_on_unorderable_elements_and_non_arrays() {
+        let mut flow = test_flow();
+        // Unorderable element reached by a sift comparison.
+        let heap = arr(vec![Value::Int(1)]);
+        let err = push_heap(&mut flow, heap, simple_map()).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::NotOrderable {
+                verb: "heap_push",
+                found: "map",
+            }
+        );
+        // Non-array receivers are the malformed-question fault.
+        let err = push_heap(&mut flow, Value::Int(1), Value::Int(2)).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::StdlibWrongType {
+                verb: "heap_push",
+                expected: "an array",
+                found: "int",
+            }
+        );
+        push_args(&mut flow, vec![Value::Int(1)]);
+        let err = heap_pop(&mut flow).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::StdlibWrongType {
+                verb: "heap_pop",
+                expected: "an array",
+                found: "int",
+            }
+        );
+        push_args(&mut flow, vec![Value::Int(1)]);
+        let err = heap_peek(&mut flow).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::StdlibWrongType {
+                verb: "heap_peek",
+                expected: "an array",
+                found: "int",
+            }
+        );
+    }
+
+    #[test]
+    fn heap_push_cows_when_shared() {
+        // Take -> make_mut -> write-back (value-model-spec §5): mutating a
+        // shared heap array must not observably affect the other holder.
+        let original = ints(&[1, 3]);
+        let snapshot = original.clone();
+        let mut flow = test_flow();
+        let mutated = push_heap(&mut flow, original, Value::Int(0)).unwrap();
+        assert_eq!(snapshot, ints(&[1, 3]), "snapshot unmutated");
+        assert_eq!(mutated, ints(&[0, 3, 1]), "sifted to the root");
     }
 }

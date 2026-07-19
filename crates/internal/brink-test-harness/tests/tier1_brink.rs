@@ -426,6 +426,7 @@ fn every_case_directory_has_a_test() {
         "range-values",
         "numeric-tower",
         "sort-verbs",
+        "weighted-heap-verbs",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink")
@@ -2180,6 +2181,17 @@ fn numeric_tower_end_to_end() {
 #[test]
 fn sort_verbs_end_to_end() {
     assert_case("sort-verbs");
+}
+
+/// NS-A7 (`docs/stdlib-spec.md` §8, issue #1113): `Weighted[T]` + the
+/// humble heap end to end — construction + F17 multiset equality +
+/// construction-literal display, seeded `roll` goldens (the rand-verbs
+/// oracle-free discipline), and the heap verbs' push/peek/pop/drain over
+/// an ordinary array (§4b doctrine order; empty pops are `none`). Strict
+/// types (the brink-dialect default).
+#[test]
+fn weighted_heap_verbs_end_to_end() {
+    assert_case("weighted-heap-verbs");
 }
 
 #[test]

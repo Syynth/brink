@@ -51,9 +51,14 @@ pub(crate) fn is_truthy(v: &Value) -> Result<bool, RuntimeError> {
         | Value::Vec3(_)
         | Value::Vec4(_)
         | Value::Quat(_)
+        // A weighted table (NS-A7) is never empty — evidence-by-
+        // construction (§8) refuses empty tables at the only producer —
+        // so unlike the collections below there is no falsy case to
+        // express: always truthy, the record/handle/tower precedent.
         | Value::Mat2(_)
         | Value::Mat3(_)
-        | Value::Mat4(_) => true,
+        | Value::Mat4(_)
+        | Value::Weighted(_) => true,
         // F27 (ruled 2026-07-19, issue #1120): Option has **no** truthiness
         // — a condition-position `Option[T]` is a compile error under
         // `types = strict` (E116) and this turn-terminating fault under
@@ -74,6 +79,10 @@ pub(crate) fn is_truthy(v: &Value) -> Result<bool, RuntimeError> {
 }
 
 /// Stringify a value for output.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one display arm per Value variant — the NS-A7 Weighted arm pushed this past 100"
+)]
 pub(crate) fn stringify(v: &Value, program: &Program) -> String {
     match v {
         Value::Int(n) => n.to_string(),
@@ -211,6 +220,18 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
         // registered user `display` impl can never override this — tower
         // kinds are compiler-known, not user structs (the registry rejects
         // them, E118).
+        // Weighted tables (NS-A7, `docs/stdlib-spec.md` §8): mirror the
+        // chartered construction literal — `Weighted { 3: sword, 1:
+        // shield }`, entries in construction order (order is semantic for
+        // display; equality alone is order-insensitive). Values recurse.
+        Value::Weighted(w) => {
+            let parts: Vec<String> = w
+                .entries
+                .iter()
+                .map(|(weight, val)| format!("{weight}: {}", stringify(val, program)))
+                .collect();
+            format!("Weighted {{ {} }}", parts.join(", "))
+        }
         Value::Vec2(v) => format!("vec2 {{ x: {}, y: {} }}", v.x, v.y),
         Value::Vec3(v) => format!("vec3 {{ x: {}, y: {}, z: {} }}", v.x, v.y, v.z),
         Value::Vec4(v) => format!("vec4 {{ x: {}, y: {}, z: {}, w: {} }}", v.x, v.y, v.z, v.w),
@@ -602,6 +623,18 @@ pub(crate) fn binary_op(
             Ok(Value::Bool(left == right))
         }
         (Value::Range { .. }, Value::Range { .. }) if op == BinaryOp::NotEqual => {
+            Ok(Value::Bool(left != right))
+        }
+        // Weighted equality (NS-A7, `docs/stdlib-spec.md` §8): multiset
+        // content — delegated to `Value`'s `PartialEq` (order-insensitive,
+        // multiplicity-sensitive, the F17 policy; `Arc::ptr_eq` fast path
+        // included). Only `==`/`!=` are defined; ordering a table (or
+        // comparing one against a non-Weighted) falls through to the
+        // `TypeError` fault below — no ordering, no quiet coercion.
+        (Value::Weighted(_), Value::Weighted(_)) if op == BinaryOp::Equal => {
+            Ok(Value::Bool(left == right))
+        }
+        (Value::Weighted(_), Value::Weighted(_)) if op == BinaryOp::NotEqual => {
             Ok(Value::Bool(left != right))
         }
         // Equality for null
@@ -1112,7 +1145,8 @@ pub(crate) fn cast_to_int(v: &Value) -> Result<Value, RuntimeError> {
         | Value::Quat(_)
         | Value::Mat2(_)
         | Value::Mat3(_)
-        | Value::Mat4(_) => {
+        | Value::Mat4(_)
+        | Value::Weighted(_) => {
             return Err(RuntimeError::InvalidConversionDomain {
                 target: "INT",
                 got: cast_type_name(v),
@@ -1152,7 +1186,8 @@ pub(crate) fn cast_to_float(v: &Value) -> Result<Value, RuntimeError> {
         | Value::Quat(_)
         | Value::Mat2(_)
         | Value::Mat3(_)
-        | Value::Mat4(_) => {
+        | Value::Mat4(_)
+        | Value::Weighted(_) => {
             return Err(RuntimeError::InvalidConversionDomain {
                 target: "FLOAT",
                 got: cast_type_name(v),
@@ -1194,6 +1229,7 @@ fn cast_type_name(v: &Value) -> &'static str {
         Value::Mat2(_) => "mat2",
         Value::Mat3(_) => "mat3",
         Value::Mat4(_) => "mat4",
+        Value::Weighted(_) => "weighted",
     }
 }
 

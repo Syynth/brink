@@ -276,6 +276,46 @@ pub(crate) fn rand_shuffle<R: StoryRng>(
     Ok(())
 }
 
+/// `Collect(RandRoll)` (NS-A7, `docs/stdlib-spec.md` §8): `[w]` → `T` —
+/// one weighted draw from a `Weighted[T]` table. **Total over any table
+/// that exists**: construction is the validator (evidence-by-construction
+/// — non-empty, positive int weights), so the walk below always lands on
+/// an entry. Lives in `rand`'s namespace because its row writes the RNG
+/// cell: one draw, offset into the total weight by the same modulo shaping
+/// as `rand_int`, then an accumulating walk over the entries in
+/// construction order (deterministic offset → entry mapping).
+pub(crate) fn rand_roll<R: StoryRng>(
+    flow: &mut Flow,
+    context: &mut (impl ContextAccess + ?Sized),
+) -> Result<(), RuntimeError> {
+    let table = flow.pop_value()?;
+    let Value::Weighted(w) = &table else {
+        return Err(RuntimeError::StdlibWrongType {
+            verb: "roll",
+            expected: "a weighted table",
+            found: super::collection_ops::type_name(&table),
+        });
+    };
+    // Total weight is ≥ 1 by construction; sum in i64 (a sum of i32
+    // weights can exceed i32::MAX).
+    let total = w.total_weight();
+    let d = draw::<R>(context);
+    let mut offset = i64::from(d) % total;
+    for (weight, value) in &w.entries {
+        offset -= i64::from(*weight);
+        if offset < 0 {
+            flow.value_stack.push(value.clone());
+            return Ok(());
+        }
+    }
+    // Unreachable: `offset < total` and the weights sum to `total`.
+    // Guarded rather than asserted (panics are denied; malformed-bytecode
+    // robustness) — fault loudly instead of returning garbage.
+    Err(RuntimeError::WeightedMalformedTable {
+        detail: "a draw walk that exhausted the table (corrupt total weight)",
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -614,5 +654,91 @@ mod tests {
                 ..
             }
         ));
+    }
+    // ── NS-A7: rand::roll over Weighted[T] (docs/stdlib-spec.md §8,
+    // #1113) ─────────────────────────────────────────────────────────────
+
+    fn roll_table() -> Value {
+        Value::weighted(vec![
+            (3, Value::String("sword".into())),
+            (1, Value::String("shield".into())),
+        ])
+    }
+
+    #[test]
+    fn roll_is_total_deterministic_and_advances_the_cell() {
+        // Seeded replay: the same cell state draws the same entry, and
+        // every roll advances the cell (a roll IS a draw).
+        let mut a = test_context();
+        let mut b = test_context();
+        a.set_rng_seed(7);
+        b.set_rng_seed(7);
+        for _ in 0..200 {
+            let before = a.previous_random();
+            let mut fa = test_flow();
+            let mut fb = test_flow();
+            fa.value_stack.push(roll_table());
+            fb.value_stack.push(roll_table());
+            rand_roll::<DotNetRng>(&mut fa, &mut a).unwrap();
+            rand_roll::<DotNetRng>(&mut fb, &mut b).unwrap();
+            let va = fa.pop_value().unwrap();
+            assert_eq!(va, fb.pop_value().unwrap(), "seeded replay identical");
+            assert!(
+                matches!(&va, Value::String(s) if s.as_ref() == "sword" || s.as_ref() == "shield"),
+                "roll lands on an entry: {va:?}"
+            );
+            assert_ne!(a.previous_random(), before, "a roll must draw");
+        }
+    }
+
+    #[test]
+    fn roll_respects_weights_over_many_draws() {
+        // Statistical sanity, not a distribution proof: over 4000 draws
+        // from `{3: sword, 1: shield}` the 3-weight entry must clearly
+        // dominate (the modulo walk gives it exactly 3/4 of the residue
+        // classes). Deterministic under the pinned chain + fixed seed.
+        let mut ctx = test_context();
+        ctx.set_rng_seed(11);
+        let mut swords = 0u32;
+        for _ in 0..4000 {
+            let mut flow = test_flow();
+            flow.value_stack.push(roll_table());
+            rand_roll::<DotNetRng>(&mut flow, &mut ctx).unwrap();
+            if flow.pop_value().unwrap() == Value::String("sword".into()) {
+                swords += 1;
+            }
+        }
+        assert!(
+            (2700..=3300).contains(&swords),
+            "expected ~3000/4000 swords, got {swords}"
+        );
+    }
+
+    #[test]
+    fn roll_single_entry_table_is_the_identity_draw() {
+        // A one-entry table always lands on it — totality by construction.
+        let mut ctx = test_context();
+        ctx.set_rng_seed(3);
+        let mut flow = test_flow();
+        flow.value_stack
+            .push(Value::weighted(vec![(i32::MAX, Value::Int(9))]));
+        rand_roll::<DotNetRng>(&mut flow, &mut ctx).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::Int(9));
+    }
+
+    #[test]
+    fn roll_wrong_type_faults() {
+        let mut ctx = test_context();
+        let mut flow = test_flow();
+        flow.value_stack.push(Value::Int(3));
+        let err = rand_roll::<DotNetRng>(&mut flow, &mut ctx).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::StdlibWrongType {
+                verb: "roll",
+                expected: "a weighted table",
+                found: "int",
+            }
+        );
     }
 }

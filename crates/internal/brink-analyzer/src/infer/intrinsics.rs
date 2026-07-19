@@ -96,6 +96,20 @@ pub(crate) fn intrinsic_effects(name: &str, arg_count: usize) -> IntrinsicEffect
                 | "sorted"
                 | "sort_by"
                 | "sorted_by"
+                // NS-A7 collections+ (issue #1113, stdlib-spec §8):
+                // `weighted` faults on a computed non-positive/non-int
+                // weight (the construction-fault residual of the E120
+                // split); `roll` on a non-Weighted operand (total over any
+                // table that exists — discharged below when the operand
+                // type is provable); the heap verbs on wrong container
+                // types, unorderable elements, and (dev, `heap_push`
+                // only) the §4b NaN entry check — conservative-union
+                // bits, mode-independent rows.
+                | "weighted"
+                | "roll"
+                | "heap_push"
+                | "heap_pop"
+                | "heap_peek"
                 | "INT"
                 | "FLOAT"
                 // NS-A8 tower (issue #1114): constructors fault on
@@ -122,6 +136,10 @@ pub(crate) fn intrinsic_effects(name: &str, arg_count: usize) -> IntrinsicEffect
                 | "shuffle"
                 | "shuffled"
                 | "seed"
+                // NS-A7: `roll(w)` is a draw — one RNG-cell write, like
+                // every draw (it lives in `std::rand` for exactly this
+                // reason).
+                | "roll"
                 | "RANDOM"
                 | "SEED_RANDOM"
                 | "LIST_RANDOM"
@@ -179,10 +197,22 @@ pub(crate) fn intrinsic_fault_discharged(name: &str, arg_tys: &[super::Ty]) -> b
             arg_tys.first(),
             Some(Ty::Array(elem)) if scalar_orderable(elem)
         ),
-        "sort" | "sorted" => matches!(
+        // NS-A7 (stdlib-spec §8): `heap_push`/`heap_pop` follow the `sort`
+        // rule exactly (their sift comparisons need a provably NaN-free
+        // orderable element — int/string/bool, NOT float: `heap_push`'s
+        // dev NaN entry fault is real, and `heap_pop` conservatively keeps
+        // float's charge with the rest of the §4b "float orderings carry
+        // faults" roster) — arms merged per clippy match_same_arms.
+        "sort" | "sorted" | "heap_push" | "heap_pop" => matches!(
             arg_tys.first(),
             Some(Ty::Array(elem)) if scalar_orderable(elem)
         ),
+        // NS-A7: `roll` over a provable `Weighted[T]` is total BY
+        // CONSTRUCTION — the whole point of the evidence-by-construction
+        // shape (its only fault is a wrong-typed operand). `heap_peek`
+        // never compares — any provable array discharges it.
+        "roll" => matches!(arg_tys.first(), Some(Ty::Weighted(_))),
+        "heap_peek" => matches!(arg_tys.first(), Some(Ty::Array(_))),
         _ => false,
     }
 }
@@ -208,5 +238,8 @@ pub(crate) fn intrinsic_returns_option(name: &str) -> bool {
             | "pick"
             | "some"
             | "non_empty"
+            // NS-A7: the heap's absence-shaped verbs (empty → none).
+            | "heap_pop"
+            | "heap_peek"
     )
 }

@@ -205,6 +205,17 @@ impl<'a> Resolver<'a> {
                     format!("{start}..{end}")
                 }
             }
+            // Weighted tables (NS-A7): same construction-literal display
+            // form as the runtime's authoritative `string(v)`
+            // (`value_ops::stringify`) — entries in construction order.
+            Value::Weighted(w) => {
+                let parts: Vec<String> = w
+                    .entries
+                    .iter()
+                    .map(|(weight, val)| format!("{weight}: {}", self.format_value(val)))
+                    .collect();
+                format!("Weighted {{ {} }}", parts.join(", "))
+            }
             // Tower values (NS-A8): same structural display form as the
             // runtime's authoritative `string(v)` (`value_ops::stringify`)
             // — kind name + named components in glam's declared order.
@@ -642,6 +653,10 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         // NS-A8 numeric tower (#1114): one opcode, per-kind mnemonic —
         // same text as the `.inkt` disassembly.
         Opcode::Tower(op) => op.mnemonic().to_owned(),
+
+        // NS-A7 collections+ (#1113): one opcode, per-kind mnemonic —
+        // mirrors the `.inkt` disassembly (`CollectOp::mnemonic`).
+        Opcode::Collect(op) => op.mnemonic().to_owned(),
     }
 }
 

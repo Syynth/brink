@@ -273,6 +273,7 @@ fn parse_value_type(pair: P<'_>) -> Result<ValueType, InktParseError> {
         "mat2" => Ok(ValueType::Mat2),
         "mat3" => Ok(ValueType::Mat3),
         "mat4" => Ok(ValueType::Mat4),
+        "weighted" => Ok(ValueType::Weighted),
         _ => Err(err(&pair, format!("unknown value type: {s}"))),
     }
 }
@@ -400,6 +401,12 @@ fn parse_value(pair: P<'_>, type_hint: Option<ValueType>) -> Result<Value, InktP
         // tower atoms (the #742 dump/reader parity lesson). Lanes rebuild
         // through glam's explicit array constructors.
         Rule::tower_value => parse_tower_value(inner),
+        // NS-A7 weighted tables (docs/stdlib-spec.md §8): `(weighted
+        // (<weight> <value>)+)` — read-side leg paired with `write_value`'s
+        // Weighted atom (the #742 dump/reader parity lesson). The §8
+        // evidence-by-construction invariant is enforced here: an empty
+        // table or a non-positive weight is a parse error.
+        Rule::weighted_value => parse_weighted_value(inner),
         // NS-A5 range values (docs/stdlib-spec.md §7, F7): `(range <start>
         // <end> incl|excl)` — read-side leg paired with `write_value`'s
         // Range atom (the #742 dump/reader parity lesson).
@@ -2123,11 +2130,13 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         // NS-A8 numeric tower: the TowerOp mnemonic IS the instruction word
         // (`make_vec2` … `tower_lerp`) — one wire opcode, thirteen
         // spellings, `TowerOp::mnemonic`/`from_mnemonic` the single pairing.
-        _ => tower_mnemonic_opcode(mnemonic).ok_or_else(|| InktParseError {
-            message: format!("unknown opcode: {mnemonic}"),
-            line: mnemonic_pair.line_col().0,
-            col: mnemonic_pair.line_col().1,
-        }),
+        _ => tower_mnemonic_opcode(mnemonic)
+            .or_else(|| collect_mnemonic_opcode(mnemonic))
+            .ok_or_else(|| InktParseError {
+                message: format!("unknown opcode: {mnemonic}"),
+                line: mnemonic_pair.line_col().0,
+                col: mnemonic_pair.line_col().1,
+            }),
     }
 }
 
@@ -2135,6 +2144,53 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
 /// mnemonic to `Opcode::Tower(kind)` via [`crate::TowerOp::from_mnemonic`].
 fn tower_mnemonic_opcode(mnemonic: &str) -> Option<Opcode> {
     crate::TowerOp::from_mnemonic(mnemonic).map(Opcode::Tower)
+}
+
+/// The `.inkt` reader leg for the NS-A7 `Collect` opcode family: resolve a
+/// mnemonic to `Opcode::Collect(kind)` via [`crate::CollectOp::from_mnemonic`].
+fn collect_mnemonic_opcode(mnemonic: &str) -> Option<Opcode> {
+    crate::CollectOp::from_mnemonic(mnemonic).map(Opcode::Collect)
+}
+
+/// Parse a `weighted_value` node (NS-A7, `docs/stdlib-spec.md` §8): each
+/// child is a `weighted_entry` — an integer weight then a recursively-parsed
+/// value. Enforces the evidence-by-construction invariant (non-empty,
+/// weights ≥ 1) with targeted messages.
+fn parse_weighted_value(pair: P<'_>) -> Result<Value, InktParseError> {
+    let mut entries = Vec::new();
+    for entry_pair in pair.into_inner() {
+        let mut parts = entry_pair.clone().into_inner();
+        let weight_pair = parts.next().ok_or_else(|| InktParseError {
+            message: "weighted entry missing weight".into(),
+            line: 0,
+            col: 0,
+        })?;
+        let weight: i32 = weight_pair
+            .as_str()
+            .trim()
+            .parse()
+            .map_err(|_| err(&weight_pair, "invalid weighted entry weight"))?;
+        if weight < 1 {
+            return Err(err(
+                &weight_pair,
+                "weighted entry weight must be a positive int",
+            ));
+        }
+        let value_pair = parts.next().ok_or_else(|| InktParseError {
+            message: "weighted entry missing value".into(),
+            line: 0,
+            col: 0,
+        })?;
+        entries.push((weight, parse_value(value_pair, None)?));
+    }
+    if entries.is_empty() {
+        return Err(InktParseError {
+            message: "weighted table must have at least one entry".into(),
+            line: 0,
+            col: 0,
+        });
+    }
+    Ok(Value::weighted(entries))
 }
 
 fn parse_choice_flags_operand(

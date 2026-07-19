@@ -853,7 +853,7 @@ fn lower_t1b_stdlib_call(
         // same E056 misuse the original three get. NS-A4 adds `sort`/
         // `sort_by` (F0: imperative = in-place, `void` — `sorted`/
         // `sorted_by` are the expression twins below).
-        "push" | "insert" | "remove" | "clear" | "sort" | "sort_by" => {
+        "push" | "insert" | "remove" | "clear" | "sort" | "sort_by" | "heap_push" => {
             ctx.diagnostics.push(crate::Diagnostic {
                 file: ctx.file,
                 range: call_range,
@@ -1121,6 +1121,50 @@ fn lower_t1b_stdlib_call(
                 &args[0], ctx,
             ))))
         }
+        // ── NS-A7 collections+ (issue #1113, `docs/stdlib-spec.md` §8).
+        // `weighted(…)` carries the compile-classifiable half of the
+        // evidence-by-construction split HERE (E120 — the E055/E056/E058
+        // "recognition site owns the shape errors" precedent); `roll` and
+        // `heap_peek` are ordinary expression verbs; `heap_pop` is the
+        // `pop` shape (mutator AND expression); `heap_push` is
+        // statement-only (the E056 arm above + `blocks`'s mutator
+        // machinery). Runtime semantics (computed-weight construction
+        // fault, the min-heap sift, draw shaping) live at the ops. ───────
+        "weighted" => Some(lower_weighted_call(args, call_range, ctx)),
+        "roll" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::RandRoll(Box::new(lower_expr(&args[0], ctx))))
+        }
+        "heap_peek" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::HeapPeek(Box::new(lower_expr(&args[0], ctx))))
+        }
+        // `heap_pop(a)` (§8): both mutator and expression — the `pop`
+        // shape exactly, same bare-receiver restriction (the A1 scope
+        // fence) and the same E055 otherwise.
+        "heap_pop" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            if let Some(root) = super::stmts::lower_assign_target(&args[0], ctx) {
+                return Some(lir::Expr::HeapPop { root });
+            }
+            ctx.diagnostics.push(crate::Diagnostic {
+                file: ctx.file,
+                range: call_range,
+                message: format!(
+                    "{}: `heap_pop` mutates its first argument — bind it to a variable first",
+                    crate::DiagnosticCode::E055.title(),
+                ),
+                code: crate::DiagnosticCode::E055,
+            });
+            Some(lir::Expr::Null)
+        }
+
         // ── NS-A4 ordering verbs (issue #1110, `docs/stdlib-spec.md`
         // §4b). `sorted(a)`/`sorted_by(a, cmp)` are the functional
         // past-participle twins (F0); the imperative `sort`/`sort_by` are
@@ -1241,6 +1285,87 @@ fn lower_t1b_stdlib_call(
     }
 }
 
+/// NS-A7 (`docs/stdlib-spec.md` §8, issue #1113): lower a `weighted(…)`
+/// construction call, firing the **compile-classifiable** half of the
+/// evidence-by-construction split as E120 (Error severity — the program is
+/// refused, the E055/E056/E058 discipline): an empty pair row, an odd
+/// (dangling-weight) argument count, or a **literal** weight that is not a
+/// positive int (zero/negative int, float/string/bool literal). Everything
+/// else — computed weights, CONST refs, arbitrary expressions — lowers
+/// through and carries the construction-fault residual at the runtime op
+/// (`WeightedBadWeight`). Weights sit at the even argument positions:
+/// `weighted(w1, v1, w2, v2, …)`, the brink-dialect spelling of the
+/// chartered `Weighted { w: v, … }` literal (B5 later lowers the native
+/// grammar to this same node).
+fn lower_weighted_call(
+    args: &[hir::Expr],
+    call_range: rowan::TextRange,
+    ctx: &mut LowerCtx<'_>,
+) -> lir::Expr {
+    let refuse = |ctx: &mut LowerCtx<'_>, detail: &str| {
+        ctx.diagnostics.push(crate::Diagnostic {
+            file: ctx.file,
+            range: call_range,
+            message: format!("{}: {detail}", crate::DiagnosticCode::E120.title()),
+            code: crate::DiagnosticCode::E120,
+        });
+        lir::Expr::Null
+    };
+    if args.is_empty() {
+        return refuse(
+            ctx,
+            "a weighted table cannot be empty — construction is the validator \
+             (`weighted(weight, value, …)`)",
+        );
+    }
+    if !args.len().is_multiple_of(2) {
+        return refuse(
+            ctx,
+            "`weighted` takes weight/value pairs — got a dangling weight \
+             (`weighted(weight, value, …)`)",
+        );
+    }
+    // Classify literal weights (even positions). Non-literal weights are
+    // deliberately NOT classified here — they are the computed-weight
+    // residual the runtime construction fault owns.
+    for pair in args.chunks_exact(2) {
+        match &pair[0] {
+            hir::Expr::Int(w) if *w >= 1 => {}
+            hir::Expr::Int(w) => {
+                return refuse(
+                    ctx,
+                    &format!("weight {w} is not positive — weights are positive ints (v1)"),
+                );
+            }
+            // `-3` parses as `Prefix(Negate, Int(3))` — a negated numeric
+            // literal is exactly as classifiable as a bare one.
+            hir::Expr::Prefix(hir::PrefixOp::Negate, inner)
+                if matches!(inner.as_ref(), hir::Expr::Int(_) | hir::Expr::Float(_)) =>
+            {
+                return refuse(
+                    ctx,
+                    "a negated literal weight is not positive — weights are positive ints (v1)",
+                );
+            }
+            hir::Expr::Float(_) => {
+                return refuse(ctx, "weights are positive ints (v1), got a float literal");
+            }
+            hir::Expr::Bool(_) => {
+                return refuse(ctx, "weights are positive ints (v1), got a bool literal");
+            }
+            hir::Expr::String(_) => {
+                return refuse(ctx, "weights are positive ints (v1), got a string literal");
+            }
+            _ => {}
+        }
+    }
+    let pairs = args
+        .chunks_exact(2)
+        .map(|pair| (lower_expr(&pair[0], ctx), lower_expr(&pair[1], ctx)))
+        .collect();
+    lir::Expr::WeightedNew { pairs }
+}
+
 /// The T1b stdlib slice 1 function names (`docs/t1b-surface-spec.md` §5)
 /// plus the TM-3-completion pure conversion intrinsics (`docs/
 /// typed-mode-spec.md` §4, issue #659) — brink-dialect-gated free functions,
@@ -1295,6 +1420,13 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             // inhabited-range validator. `int(range)` needs no entry —
             // `int` is listed above; the VM dispatches on the operand.
             | "non_empty"
+            // NS-A7 (issue #1113, `docs/stdlib-spec.md` §8): `Weighted[T]`
+            // construction, the `roll` draw, and the humble heap.
+            | "weighted"
+            | "roll"
+            | "heap_push"
+            | "heap_pop"
+            | "heap_peek"
             // NS-A4 (issue #1110, `docs/stdlib-spec.md` §4b, F0): the
             // ordering verbs — imperative in-place pair + functional
             // past-participle twins.

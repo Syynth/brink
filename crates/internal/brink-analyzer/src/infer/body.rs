@@ -1402,7 +1402,10 @@ impl InferPass<'_, '_> {
             // itself, so a chained lvalue (`push(grid[y], v)`) still
             // attributes the write to `grid`, not to some cell named by the
             // index expression.
-            "push" => {
+            // NS-A7's `heap_push(ref a, x)` types exactly like `push`: a
+            // receiver write with the element observing the array's
+            // element type (the min-heap placement is the runtime op's).
+            "push" | "heap_push" => {
                 if let (Some(Ty::Array(elem)), Some(item)) = (arg_tys.first(), args.get(1)) {
                     self.observe(item, elem);
                 }
@@ -1491,7 +1494,9 @@ impl InferPass<'_, '_> {
                 Ty::Option(Box::new(Ty::Int))
             }
             // `first`/`last` → `Option[T]` over `[T]` (§4).
-            "first" | "last" => match arg_tys.first() {
+            // NS-A7's `heap_peek(a)` types exactly like `first`: a pure
+            // `Option[T]` read (empty → `none`).
+            "first" | "last" | "heap_peek" => match arg_tys.first() {
                 Some(Ty::Array(elem)) => Ty::Option(elem.clone()),
                 _ => Ty::Option(Box::new(Ty::Unknown)),
             },
@@ -1515,7 +1520,9 @@ impl InferPass<'_, '_> {
             // mutator and expression — records the receiver write exactly
             // like `push`/`insert`/`remove` above (the #880 lesson: the
             // intrinsics' effect behavior is declared at introduction).
-            "pop" => {
+            // NS-A7's `heap_pop(ref a)` shares the shape (mutator AND
+            // expression, receiver write + `Option[T]` return).
+            "pop" | "heap_pop" => {
                 let ret = match arg_tys.first() {
                     Some(Ty::Array(elem)) => Ty::Option(elem.clone()),
                     _ => Ty::Option(Box::new(Ty::Unknown)),
@@ -1620,6 +1627,38 @@ impl InferPass<'_, '_> {
                     _ => Ty::Unknown,
                 }
             }
+            // ── NS-A7 collections+ (issue #1113, `docs/stdlib-spec.md`
+            // §8). Effect harvest (the `roll` RNG write, the conservative
+            // faults bits, the F29 discharge rules) rides the intrinsic
+            // table above; these arms carry only the typing rules. The
+            // E120 construction gate lives at the LIR lowering (the
+            // recognition site owns the shape errors); runtime domain
+            // checks stay at the ops. ─────────────────────────────────────
+            //
+            // `weighted(w1, v1, …)` → `Weighted[T]`: weights observe
+            // `int`; the value element is the join of the odd-position
+            // argument types (the array-literal shape).
+            "weighted" => {
+                let mut vals = Vec::with_capacity(args.len() / 2);
+                for (i, arg) in args.iter().enumerate() {
+                    if i % 2 == 0 {
+                        self.observe(arg, &Ty::Int);
+                    } else {
+                        vals.push(arg_tys.get(i).cloned().unwrap_or(Ty::Unknown));
+                    }
+                }
+                Ty::Weighted(Box::new(unify_all(vals)))
+            }
+            // `roll(w)` → `T` — total over any existing table (§8).
+            "roll" => match arg_tys.first() {
+                Some(Ty::Weighted(elem)) => (**elem).clone(),
+                _ => Ty::Unknown,
+            },
+            // `heap_push`/`heap_pop`/`heap_peek` share the `push`/`pop`/
+            // `first` arms below (merged per clippy match_same_arms —
+            // identical typing shapes: element observation + receiver
+            // write / `Option[T]` absence returns).
+
             // ── NS-A6 rand verbs (issue #1112, `docs/stdlib-spec.md`
             // §7). Effect harvest (the RNG-cell write) is above, before
             // the match; these arms carry only the typing rules. Runtime

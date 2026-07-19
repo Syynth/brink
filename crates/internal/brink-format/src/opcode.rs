@@ -384,6 +384,21 @@ const TOWER: u8 = 0xF7;
 const SEQ_SORTED: u8 = 0xF8;
 const SEQ_SORTED_BY: u8 = 0xF9;
 
+// NS-A7 collections+ (`docs/stdlib-spec.md` §8, issue #1113; this PR's own
+// reservation, same "assigned here" precedent as the NS-A1/A4/A5/A6/A8
+// blocks above). ONE discriminant byte with a `u8` kind immediate — the
+// NS-A8 `Tower` economy applied again: after NS-A4 the free one-byte space
+// is down to 0xFA-0xFD + 0xFF, so the five `Weighted`/heap operations share
+// a single `Collect(CollectOp)` opcode instead of eating all of it. Wire:
+// `0xFA`, then the [`CollectOp`] kind byte (a `TowerOp`-style closed
+// sub-enum; unknown kinds are a decode error, the same reserved-tag
+// discipline as everywhere else). All five kinds are operand-free:
+// `weighted_new` takes its flattened pair row as ONE array value built by
+// the preceding `ArrayNew` (a transient codegen artifact), so disasm and
+// roundtrip stay table-driven — the NS-A5 "keep the family operand-free"
+// discipline.
+const COLLECT: u8 = 0xFA;
+
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
 const LIST_NOT_CONTAINS: u8 = 0xB1;
@@ -536,6 +551,93 @@ impl TowerOp {
     }
 }
 
+/// The collections+ operation selected by an [`Opcode::Collect`]
+/// instruction's kind byte (NS-A7, `docs/stdlib-spec.md` §8, issue #1113).
+///
+/// `Weighted[T]` construction plus `rand::roll`, and the humble heap —
+/// verbs over ordinary arrays, min-heap, ordering per the ruled §4b
+/// doctrine (`total_order_cmp`, the one comparison core). `RandRoll` is
+/// the only draw (one RNG-cell write); everything else is placement or
+/// pure reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CollectOp {
+    /// `[pairs]` → `Weighted[T]` — pops ONE array of flattened
+    /// `weight, value, weight, value, …` entries (built by the preceding
+    /// `ArrayNew`; a transient codegen artifact, never observable).
+    /// Evidence-by-construction (§8): faults on a malformed pair row, a
+    /// non-int weight, or a non-positive weight — so a `Weighted` that
+    /// exists is always rollable.
+    WeightedNew,
+    /// `[w]` → `T` — one weighted draw from a `Weighted[T]` table. Total
+    /// over any table that exists (construction is the validator); writes
+    /// the RNG cell like every draw.
+    RandRoll,
+    /// `[a, x]` → `[a']` — push `x` into the min-heap maintained over the
+    /// array (sift-up; in-place-ness comes from the RMW write-back, the
+    /// `SeqSorted` precedent). §4b entry-check: DEV faults on a NaN in
+    /// the entering element; PROD places it by the pinned total order.
+    HeapPush,
+    /// `[a]` → pushes `Option[T]` (the extracted minimum, `none` on
+    /// empty), then the shrunk re-heapified array on top of it — the
+    /// `SeqPop` stack contract, so the codegen take/store bracket writes
+    /// the array back and leaves the Option as the expression value.
+    HeapPop,
+    /// `[a]` → `Option[T]` — the minimum without extraction (`none` on
+    /// empty). Pure read.
+    HeapPeek,
+}
+
+impl CollectOp {
+    /// Every collections+ op, in kind-byte order (tests + tooling).
+    pub const ALL: [CollectOp; 5] = [
+        Self::WeightedNew,
+        Self::RandRoll,
+        Self::HeapPush,
+        Self::HeapPop,
+        Self::HeapPeek,
+    ];
+
+    fn to_byte(self) -> u8 {
+        match self {
+            Self::WeightedNew => 0,
+            Self::RandRoll => 1,
+            Self::HeapPush => 2,
+            Self::HeapPop => 3,
+            Self::HeapPeek => 4,
+        }
+    }
+
+    fn from_byte(b: u8) -> Result<Self, DecodeError> {
+        match b {
+            0 => Ok(Self::WeightedNew),
+            1 => Ok(Self::RandRoll),
+            2 => Ok(Self::HeapPush),
+            3 => Ok(Self::HeapPop),
+            4 => Ok(Self::HeapPeek),
+            _ => Err(DecodeError::InvalidCollectOp(b)),
+        }
+    }
+
+    /// The `.inkt` mnemonic for this kind (also the `program_model`
+    /// disassembly text). Stable, boring, `snake_case`.
+    #[must_use]
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            Self::WeightedNew => "weighted_new",
+            Self::RandRoll => "rand_roll",
+            Self::HeapPush => "heap_push",
+            Self::HeapPop => "heap_pop",
+            Self::HeapPeek => "heap_peek",
+        }
+    }
+
+    /// Inverse of [`mnemonic`](Self::mnemonic) for the `.inkt` reader.
+    #[must_use]
+    pub fn from_mnemonic(s: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|op| op.mnemonic() == s)
+    }
+}
+
 /// The kind of sequence/shuffle container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SequenceKind {
@@ -631,6 +733,8 @@ pub enum DecodeError {
     InvalidSequenceKind(u8),
     /// Invalid tower op kind byte (NS-A8 `Tower` opcode immediate).
     InvalidTowerOp(u8),
+    /// Invalid collections+ op kind byte (NS-A7 `Collect` opcode immediate).
+    InvalidCollectOp(u8),
     /// .inkb magic bytes are not `INKB`.
     BadMagic([u8; 4]),
     /// .inkb version is not supported.
@@ -714,6 +818,7 @@ impl fmt::Display for DecodeError {
             }
             Self::InvalidSequenceKind(b) => write!(f, "invalid sequence kind: {b}"),
             Self::InvalidTowerOp(b) => write!(f, "invalid tower op kind: {b:#04x}"),
+            Self::InvalidCollectOp(b) => write!(f, "invalid collections+ op kind: {b:#04x}"),
             Self::BadMagic(m) => write!(f, "bad magic: {m:02x?}"),
             Self::UnsupportedVersion(v) => write!(f, "unsupported .inkb version: {v}"),
             Self::InvalidUtf8 => write!(f, "invalid UTF-8 in string field"),
@@ -1213,6 +1318,14 @@ pub enum Opcode {
     /// `value_ops::binary_op`.
     Tower(TowerOp),
 
+    // ── NS-A7: collections+ (`docs/stdlib-spec.md` §8, issue #1113) ────
+    /// One opcode, five operations: the [`CollectOp`] immediate selects
+    /// `Weighted[T]` construction, the `rand::roll` draw, or one of the
+    /// heap verbs (see its per-kind docs for stack shapes). `RandRoll`
+    /// writes the RNG cell; `HeapPush` carries the §4b dev/prod NaN
+    /// entry-check; everything else is pure over its operands.
+    Collect(CollectOp),
+
     // ── Lifecycle ───────────────────────────────────────────────────────
     Done,
     /// Pause for choice presentation. Like `Done` but does NOT set
@@ -1576,6 +1689,12 @@ impl Opcode {
             Self::SeqSorted => write_u8(buf, SEQ_SORTED),
             Self::SeqSortedBy => write_u8(buf, SEQ_SORTED_BY),
 
+            // NS-A7 collections+: discriminant + CollectOp kind byte.
+            Self::Collect(op) => {
+                write_u8(buf, COLLECT);
+                write_u8(buf, op.to_byte());
+            }
+
             // NS-A8 numeric tower: discriminant + TowerOp kind byte.
             Self::Tower(op) => {
                 write_u8(buf, TOWER);
@@ -1832,6 +1951,10 @@ impl Opcode {
             // NS-A8 numeric tower: TowerOp kind byte follows; unknown
             // kinds are a decode error (reserved-tag discipline).
             TOWER => Self::Tower(TowerOp::from_byte(read_u8(buf, offset)?)?),
+
+            // NS-A7 collections+: CollectOp kind byte follows; unknown
+            // kinds are a decode error (reserved-tag discipline).
+            COLLECT => Self::Collect(CollectOp::from_byte(read_u8(buf, offset)?)?),
 
             // Lifecycle
             DONE => Self::Done,
@@ -2304,6 +2427,39 @@ mod tests {
         let mut offset = 0;
         let err = Opcode::decode(&buf, &mut offset).unwrap_err();
         assert_eq!(err, DecodeError::InvalidTowerOp(13));
+    }
+
+    #[test]
+    fn roundtrip_ns_a7_collect_ops() {
+        for kind in CollectOp::ALL {
+            roundtrip(&Opcode::Collect(kind));
+        }
+    }
+
+    /// The NS-A7 layout: ONE discriminant byte (0xFA — the first free byte
+    /// after the NS-A4 ordering verbs at 0xF8/0xF9) with the `CollectOp`
+    /// kind as a u8 immediate in kind-byte order 0..=4. The NS-A8 Tower
+    /// opcode-space economy applied again — see the `COLLECT` const's
+    /// comment.
+    #[test]
+    fn ns_a7_collect_opcode_layout() {
+        for (i, kind) in CollectOp::ALL.into_iter().enumerate() {
+            let mut buf = Vec::new();
+            Opcode::Collect(kind).encode(&mut buf);
+            #[expect(clippy::cast_possible_truncation, reason = "5 kinds")]
+            let expected_kind = i as u8;
+            assert_eq!(buf, [0xFA, expected_kind], "{kind:?} layout drifted");
+        }
+    }
+
+    /// An unknown collections+ kind byte is a decode error, not a silent
+    /// skip — same reserved-tag discipline as `TowerOp`.
+    #[test]
+    fn decode_unknown_collect_kind_rejected() {
+        let buf = [0xFA, 5];
+        let mut offset = 0;
+        let err = Opcode::decode(&buf, &mut offset).unwrap_err();
+        assert_eq!(err, DecodeError::InvalidCollectOp(5));
     }
 
     #[test]

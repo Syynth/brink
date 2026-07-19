@@ -56,7 +56,7 @@ pub use inkl::{read_inkl, write_inkl};
 pub use line::{
     LineContent, LineFlags, LinePart, LineTemplate, PluralCategory, PluralResolver, SelectKey,
 };
-pub use opcode::{ChoiceFlags, DecodeError, Opcode, SequenceKind, TowerOp};
+pub use opcode::{ChoiceFlags, CollectOp, DecodeError, Opcode, SequenceKind, TowerOp};
 pub use save::{
     LoadReport, SAVE_FORMAT_VERSION, SUSPENDED_FLOW_SECTION_VERSION, SaveState, SuspendedFlow,
     VisitEntry, WakePolicy, WakeSource,
@@ -64,7 +64,7 @@ pub use save::{
 pub use story::StoryData;
 pub use value::{
     ClosureEnvEntry, ClosureValue, ListValue, MAX_DECODE_DEPTH, MapKey, OrderedMap, ProjSegment,
-    ProjectionValue, ShapeId, Value, ValueType,
+    ProjectionValue, ShapeId, Value, ValueType, WeightedValue,
 };
 
 #[cfg(any(feature = "inkt", feature = "inkt-write"))]

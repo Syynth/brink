@@ -424,6 +424,20 @@ enum TypedValueJs {
         kind: String,
         lanes: Vec<f32>,
     },
+    /// A weighted table ([`Value::Weighted`], NS-A7, `docs/stdlib-spec.md`
+    /// §8) as its lossless entry form: `(weight, value)` pairs in
+    /// construction order, values recursively typed.
+    Weighted {
+        entries: Vec<WeightedEntryJs>,
+    },
+}
+
+/// One [`Value::Weighted`] entry, typed (NS-A7): a positive int weight and
+/// its recursively-typed value.
+#[derive(Serialize)]
+struct WeightedEntryJs {
+    weight: i32,
+    value: Box<TypedValueJs>,
 }
 
 /// One [`Value::Projection`] path segment, typed (`docs/format-v4-rfc.md`
@@ -477,6 +491,10 @@ fn map_key_to_typed_js(key: &brink_format::MapKey) -> TypedMapKeyJs {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one marshal arm per Value variant — the NS-A7 Weighted arm pushed this past 100"
+)]
 fn value_to_typed_js(v: &Value, program: &brink_runtime::Program) -> TypedValueJs {
     match v {
         Value::Int(i) => TypedValueJs::Int { value: *i },
@@ -585,6 +603,18 @@ fn value_to_typed_js(v: &Value, program: &brink_runtime::Program) -> TypedValueJ
         Value::Mat2(m) => tower_typed_js("mat2", &m.to_cols_array()),
         Value::Mat3(m) => tower_typed_js("mat3", &m.to_cols_array()),
         Value::Mat4(m) => tower_typed_js("mat4", &m.to_cols_array()),
+        // Weighted tables (NS-A7): lossless entry form, construction order
+        // preserved (order is semantic for display and the roll walk).
+        Value::Weighted(w) => TypedValueJs::Weighted {
+            entries: w
+                .entries
+                .iter()
+                .map(|(weight, value)| WeightedEntryJs {
+                    weight: *weight,
+                    value: Box::new(value_to_typed_js(value, program)),
+                })
+                .collect(),
+        },
         Value::Null
         | Value::VariablePointer(_)
         | Value::TempPointer { .. }

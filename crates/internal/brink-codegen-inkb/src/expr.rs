@@ -384,6 +384,54 @@ impl ContainerEmitter<'_> {
             // ── NS-A8: the numeric tower (#1114) — args pushed
             // left-to-right, then the one family opcode with its kind
             // immediate. ─────────────────────────────────────────────
+            // ── NS-A7 collections+ (issue #1113, `docs/stdlib-spec.md`
+            // §8) ────────────────────────────────────────────────────────
+            // `weighted(…)`: push the flattened pair row (weight then
+            // value, construction order), gather it with `ArrayNew(2n)` (a
+            // transient artifact the `WeightedNew` op immediately
+            // consumes), then build the table.
+            lir::Expr::WeightedNew { pairs } => {
+                for (w, v) in pairs {
+                    self.emit_expr(w, false);
+                    self.emit_expr(v, false);
+                }
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "pair count is bounded by source arity; 2n fits u32"
+                )]
+                self.emit(Opcode::ArrayNew(2 * pairs.len() as u32));
+                self.emit(Opcode::Collect(brink_format::CollectOp::WeightedNew));
+            }
+            lir::Expr::RandRoll(table) => {
+                self.emit_expr(table, false);
+                self.emit(Opcode::Collect(brink_format::CollectOp::RandRoll));
+            }
+            lir::Expr::HeapPush { seq, value } => {
+                self.emit_expr(seq, false);
+                self.emit_expr(value, false);
+                self.emit(Opcode::Collect(brink_format::CollectOp::HeapPush));
+            }
+            // `heap_pop(a)`: the take → `Collect(HeapPop)` → store-back
+            // bracket against the receiver's root cell — `SeqPop`'s shape
+            // exactly (the op pushes the Option *under* the re-heapified
+            // array, so the trailing store leaves the Option on top as the
+            // expression value).
+            lir::Expr::HeapPop { root } => {
+                match root {
+                    lir::AssignTarget::Global(id) => self.emit(Opcode::TakeGlobal(*id)),
+                    lir::AssignTarget::Temp(slot, _) => self.emit(Opcode::TakeTemp(*slot)),
+                }
+                self.emit(Opcode::Collect(brink_format::CollectOp::HeapPop));
+                match root {
+                    lir::AssignTarget::Global(id) => self.emit(Opcode::SetGlobal(*id)),
+                    lir::AssignTarget::Temp(slot, _) => self.emit(Opcode::SetTemp(*slot)),
+                }
+            }
+            lir::Expr::HeapPeek(seq) => {
+                self.emit_expr(seq, false);
+                self.emit(Opcode::Collect(brink_format::CollectOp::HeapPeek));
+            }
+
             lir::Expr::Tower { op, args } => {
                 for arg in args {
                     self.emit_expr(arg, false);
