@@ -46,10 +46,14 @@ fn compile_opts(
 }
 
 fn compile_brink(source: &str) -> brink_compiler::CompileOutput {
+    // NS-A9: explicit — the brink dialect's unset-`types` default is now
+    // strict; this helper's contract (see the expect message, and the
+    // header's "under gradual the checks are INERT") is the gradual regime.
     compile_opts(
         source,
         AnalysisOptions {
             dialect: Dialect::Brink,
+            types: Some(TypePolicy::Gradual),
             ..AnalysisOptions::default()
         },
     )
