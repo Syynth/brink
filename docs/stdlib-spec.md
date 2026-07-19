@@ -379,20 +379,25 @@ precedent, oracle byte-identical):
   ink-frozen spellings of the same cell — one RNG, two surfaces,
   no drift.
 
-## 8. Domain 7 — collections+ 🔶 (proposed)
+## 8. Domain 7 — collections+ (RULED 2026-07-18)
 
 - **Weighted tables — the dossier's evidenced structure.** A
   parameterized builtin `Weighted[T]`; construction reuses the map
   literal shape with weights as keys: `Weighted { 3: sword,
   1: shield }` (grammar `weight: value` as chartered; weights =
   positive ints v1). One draw verb: `rand::roll(w)` → T — lives in
-  domain 6's namespace because its row writes the rng cell; total
-  (construction refuses empty/zero/negative-weight tables — the
-  E078-style split: compile error where statically classifiable,
-  construction fault otherwise; the compile diagnostic is a NEW
-  code owed by Phase C, not an existing one). `len`, iteration,
-  and mutation ⏳ — v1 is construct-and-roll; the dossier shows no
-  mutation demand.
+  domain 6's namespace because its row writes the rng cell.
+  **Weighted is evidence-by-construction** (the §7 refinement
+  shape arrived at independently): construction refuses
+  empty/zero/negative-weight tables — compile error where
+  statically classifiable, construction fault for computed
+  weights (the E078-style split; the compile diagnostic is a NEW
+  code owed by Phase C) — so `roll` over any table that EXISTS is
+  total. Designated evolution, recorded not built: if dynamic
+  table-building shows dossier demand, a validating constructor
+  verb returning `Option` kills the construction-fault residual
+  the way `nonempty()` did for ranges. `len`, iteration, and
+  mutation ⏳ — v1 is construct-and-roll.
 - **Heap/priority queue — the humble form first.** Proposal: verbs
   over arrays, not a new type — `heap_push(ref a, x)`,
   `heap_pop(ref a)` → `Option`, `heap_peek(a)` → `Option` (empty
@@ -520,7 +525,11 @@ precedent, oracle byte-identical):
   `next`/`prev`, `index_of`, numeric coupling FROZEN) · random
   (§7 — rng-as-cell, `rand::int` total by type via the inhabited
   range: the first value refinement, closed-refinement doctrine
-  recorded; `pick` Option; determinism posture).
+  recorded; `pick` Option; determinism posture) · collections+
+  (§8 — `Weighted[T]` evidence-by-construction with the
+  Option-constructor evolution recorded; humble heap over arrays
+  with the sealed-`Heap[T]` upgrade path; further additions
+  evidence-gated).
 - In-section ⏳s: tower mini-spec (§2b) · view-materialization
   ratio (§3b) · intrinsic display notation lives in §9.4 now ·
   weighted-table mutation surface (§8) · anonymous-record native
