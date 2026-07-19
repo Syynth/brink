@@ -160,10 +160,7 @@ impl<'a> ConversionVisitor<'a> {
     /// `structs::ConstructionVisitor::knot_def_id` exactly (same #626
     /// top-level-stitch-promoted-to-knot rationale).
     fn knot_def_id(&self, knot: &Knot) -> Option<DefinitionId> {
-        let kind = match knot.ptr {
-            brink_ir::ContainerPtr::Knot(_) => SymbolKind::Knot,
-            brink_ir::ContainerPtr::Stitch(_) => SymbolKind::Stitch,
-        };
+        let kind = knot.symbol_kind();
         annotations::def_id_for(self.index, self.file, kind, &knot.name.text)
     }
 }

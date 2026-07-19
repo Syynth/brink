@@ -254,10 +254,7 @@ fn check_escapes(
     let mut out = Vec::new();
     for &(file, hir) in files {
         for knot in &hir.knots {
-            let kind = match knot.ptr {
-                brink_ir::ContainerPtr::Knot(_) => SymbolKind::Knot,
-                brink_ir::ContainerPtr::Stitch(_) => SymbolKind::Stitch,
-            };
+            let kind = knot.symbol_kind();
             if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
                 check_def(
                     id,
@@ -592,10 +589,7 @@ fn check_value_calls(
     for &(file, hir) in files {
         let mut def_ids: Vec<DefinitionId> = Vec::new();
         for knot in &hir.knots {
-            let kind = match knot.ptr {
-                brink_ir::ContainerPtr::Knot(_) => SymbolKind::Knot,
-                brink_ir::ContainerPtr::Stitch(_) => SymbolKind::Stitch,
-            };
+            let kind = knot.symbol_kind();
             if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
                 def_ids.push(id);
             }
@@ -743,10 +737,7 @@ fn collect_void_defs(files: &[(FileId, &HirFile)], index: &SymbolIndex) -> BTree
             if !is_void {
                 continue;
             }
-            let kind = match knot.ptr {
-                brink_ir::ContainerPtr::Knot(_) => SymbolKind::Knot,
-                brink_ir::ContainerPtr::Stitch(_) => SymbolKind::Stitch,
-            };
+            let kind = knot.symbol_kind();
             if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
                 out.insert(id);
             }

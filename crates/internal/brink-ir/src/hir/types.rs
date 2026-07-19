@@ -1,5 +1,6 @@
-use brink_syntax::ast::{self, AstPtr, SyntaxNodePtr};
 use rowan::TextRange;
+
+use crate::provenance::Provenance;
 
 // ─── File identity ──────────────────────────────────────────────────
 
@@ -31,7 +32,7 @@ pub struct Path {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tag {
     pub parts: Vec<ContentPart>,
-    pub ptr: AstPtr<ast::Tag>,
+    pub ptr: Provenance,
 }
 
 // ─── Root ───────────────────────────────────────────────────────────
@@ -184,32 +185,19 @@ pub struct EffectsAssertion {
 
 // ─── Containers ─────────────────────────────────────────────────────
 
-/// Pointer back to the AST node that defined a knot-level container.
+/// A knot definition (or a top-level stitch promoted to knot status).
 ///
 /// A `Knot` can originate from either a `== knot` definition or a
-/// top-level `= stitch` (which is promoted to knot status during HIR
-/// lowering). This enum preserves the original syntax kind so we can
-/// resolve the pointer back to the correct AST node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ContainerPtr {
-    Knot(AstPtr<ast::KnotDef>),
-    Stitch(AstPtr<ast::StitchDef>),
-}
-
-impl ContainerPtr {
-    /// The text range of the originating AST node.
-    pub fn text_range(&self) -> TextRange {
-        match self {
-            Self::Knot(p) => p.text_range(),
-            Self::Stitch(p) => p.text_range(),
-        }
-    }
-}
-
-/// A knot definition (or a top-level stitch promoted to knot status).
+/// top-level `= stitch` (promoted to knot status during HIR lowering).
+/// The origin is preserved in `ptr`'s node class — [`NodeClass::Knot`]
+/// vs [`NodeClass::Stitch`] — the former `ContainerPtr` discrimination
+/// (F-I#5); see [`Knot::symbol_kind`].
+///
+/// [`NodeClass::Knot`]: crate::provenance::NodeClass::Knot
+/// [`NodeClass::Stitch`]: crate::provenance::NodeClass::Stitch
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Knot {
-    pub ptr: ContainerPtr,
+    pub ptr: Provenance,
     pub name: Name,
     pub is_function: bool,
     pub params: Vec<Param>,
@@ -230,10 +218,26 @@ pub struct Knot {
     pub return_type: Option<TypeExpr>,
 }
 
+impl Knot {
+    /// The [`crate::SymbolKind`] this container was indexed under:
+    /// `Stitch` for a top-level stitch promoted to knot status
+    /// (provenance class [`crate::provenance::NodeClass::Stitch`]), `Knot`
+    /// otherwise — the former `ContainerPtr` variant discrimination
+    /// (F-I#5, the #626 floating-stitch trap).
+    #[must_use]
+    pub fn symbol_kind(&self) -> crate::SymbolKind {
+        if self.ptr.class() == crate::provenance::NodeClass::Stitch {
+            crate::SymbolKind::Stitch
+        } else {
+            crate::SymbolKind::Knot
+        }
+    }
+}
+
 /// A stitch definition within a knot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stitch {
-    pub ptr: AstPtr<ast::StitchDef>,
+    pub ptr: Provenance,
     pub name: Name,
     pub params: Vec<Param>,
     pub body: Block,
@@ -369,7 +373,7 @@ pub enum Stmt {
 /// A `~ { … }` multi-line logic block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogicBlock {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub stmts: Vec<BlockStmt>,
 }
 
@@ -382,8 +386,8 @@ pub enum BlockStmt {
     If(IfStmt),
     While(WhileStmt),
     For(ForStmt),
-    Break(SyntaxNodePtr),
-    Continue(SyntaxNodePtr),
+    Break(Provenance),
+    Continue(Provenance),
     /// A bare expression statement (function/external calls).
     ExprStmt(Expr),
     /// `await <cond>` — a `FlowFrame` suspension point inside a `~ { … }` block
@@ -394,7 +398,7 @@ pub enum BlockStmt {
 /// `if cond { … } (else …)?`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IfStmt {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub condition: Expr,
     pub body: Vec<BlockStmt>,
     pub else_branch: Option<ElseBranch>,
@@ -413,7 +417,7 @@ pub enum ElseBranch {
 /// (docs/flow-suspension-spec.md §3) when [`Self::is_await`] is set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WhileStmt {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub condition: Expr,
     pub body: Vec<BlockStmt>,
     /// `while await cond { … }`: yield-with-policy — waking IS condition-true
@@ -433,7 +437,7 @@ pub struct WhileStmt {
 /// ever appears at statement/logic position.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AwaitStmt {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     /// The condition expression. `None` only for a malformed bare `await`
     /// (the parser already diagnosed the missing expression).
     pub condition: Option<Expr>,
@@ -442,7 +446,7 @@ pub struct AwaitStmt {
 /// `for name in expr { … }`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForStmt {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub var_name: Name,
     pub iterable: Expr,
     pub body: Vec<BlockStmt>,
@@ -486,7 +490,7 @@ pub struct ChoiceSet {
 /// A single choice in a choice set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {
-    pub ptr: AstPtr<ast::Choice>,
+    pub ptr: Provenance,
     /// `+` (sticky) vs `*` (once-only).
     pub is_sticky: bool,
     /// Invisible default choice (fallback).
@@ -514,7 +518,7 @@ pub struct Choice {
 /// A line of text output with inline elements and associated tags.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Content {
-    pub ptr: Option<SyntaxNodePtr>,
+    pub ptr: Option<Provenance>,
     pub parts: Vec<ContentPart>,
     pub tags: Vec<Tag>,
 }
@@ -582,7 +586,7 @@ pub enum CondKind {
 /// A multiline conditional block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conditional {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub kind: CondKind,
     pub branches: Vec<CondBranch>,
 }
@@ -601,7 +605,7 @@ pub struct CondBranch {
 /// A sequence block (stopping, cycle, once, shuffle).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sequence {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub kind: SequenceType,
     pub branches: Vec<Block>,
     /// Pre-assigned container ID for the sequence wrapper container.
@@ -614,21 +618,21 @@ pub struct Sequence {
 /// `-> target` — simple divert.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Divert {
-    pub ptr: Option<SyntaxNodePtr>,
+    pub ptr: Option<Provenance>,
     pub target: DivertTarget,
 }
 
 /// `->-> target` or chained tunnel calls.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TunnelCall {
-    pub ptr: AstPtr<ast::DivertNode>,
+    pub ptr: Provenance,
     pub targets: Vec<DivertTarget>,
 }
 
 /// `<- target` — fork execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadStart {
-    pub ptr: AstPtr<ast::ThreadStart>,
+    pub ptr: Provenance,
     pub target: DivertTarget,
 }
 
@@ -653,7 +657,7 @@ pub enum DivertPath {
 /// `~ return expr` or bare `->->` (tunnel return).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Return {
-    pub ptr: Option<AstPtr<ast::ReturnStmt>>,
+    pub ptr: Option<Provenance>,
     pub value: Option<Expr>,
     /// Arguments for `->-> target(args)` tunnel onwards — pushed before the
     /// divert target on the value stack so the redirect target can pop them.
@@ -733,7 +737,7 @@ pub enum Expr {
 /// at the exact literal, matching the sibling sigil-literal shapes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnLiteral {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     /// The static target path — a name (possibly dotted), never an
     /// expression. Whether it resolves to a function definition is
     /// `brink-analyzer`'s creation-site check (E079), not this shape's.
@@ -749,7 +753,7 @@ pub struct FnLiteral {
 /// the exact `ref` expression, matching the sibling sigil-literal shapes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefArgExpr {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     /// The lvalue-shaped operand: a `Path` (plain or dotted), an `Index`, a
     /// `FieldAccess`, or a mix of the two nested arbitrarily deep. Any other
     /// expression kind is not an lvalue at all — `brink-analyzer`'s E080
@@ -762,7 +766,7 @@ pub struct RefArgExpr {
 /// diagnostic at the exact literal, matching `ArrayLiteral`/`MapLiteral`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructLiteral {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub shape: Name,
     /// Field initializers, in source order — construction validity
     /// (missing/extra/mistyped fields) is `brink-analyzer`'s job, not this
@@ -774,7 +778,7 @@ pub struct StructLiteral {
 /// `FieldAccessExpr`, same pattern as [`IndexExpr`]'s `grid[y][x]`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldAccessExpr {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub base: Box<Expr>,
     pub field: Name,
 }
@@ -784,21 +788,21 @@ pub struct FieldAccessExpr {
 /// not just the enclosing statement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArrayLiteral {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub elements: Vec<Expr>,
 }
 
 /// `#{key: expr, …}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapLiteral {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub entries: Vec<(Expr, Expr)>,
 }
 
 /// `base[index]`, chainable (`grid[y][x]` lowers as nested `IndexExpr`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexExpr {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub base: Box<Expr>,
     pub index: Box<Expr>,
 }
@@ -808,7 +812,7 @@ pub struct IndexExpr {
 /// diagnostic at the exact literal, matching the sibling extension shapes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RangeExpr {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     /// The start bound (always an element when the range is non-empty).
     pub start: Box<Expr>,
     /// The written end bound.
@@ -1016,7 +1020,7 @@ impl InfixOp {
 /// `VAR x = expr`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarDecl {
-    pub ptr: AstPtr<ast::VarDecl>,
+    pub ptr: Provenance,
     pub name: Name,
     pub value: Expr,
     /// Marked flow-private via a `#@local` directive line above the
@@ -1030,7 +1034,7 @@ pub struct VarDecl {
 /// `CONST x = expr`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConstDecl {
-    pub ptr: AstPtr<ast::ConstDecl>,
+    pub ptr: Provenance,
     pub name: Name,
     pub value: Expr,
     /// The declared type annotation (TM-2, docs/typed-mode-spec.md §3:
@@ -1041,7 +1045,7 @@ pub struct ConstDecl {
 /// `~ temp x = expr`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TempDecl {
-    pub ptr: AstPtr<ast::TempDecl>,
+    pub ptr: Provenance,
     pub name: Name,
     pub value: Option<Expr>,
     /// The ascription's type annotation (TM-2, docs/typed-mode-spec.md §3:
@@ -1054,7 +1058,7 @@ pub struct TempDecl {
 /// `~ x = expr` or `~ x += expr`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assignment {
-    pub ptr: AstPtr<ast::Assignment>,
+    pub ptr: Provenance,
     pub target: Expr,
     pub op: AssignOp,
     pub value: Expr,
@@ -1070,7 +1074,7 @@ pub enum AssignOp {
 /// `LIST name = (item1), item2, (item3 = 5)`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListDecl {
-    pub ptr: AstPtr<ast::ListDecl>,
+    pub ptr: Provenance,
     pub name: Name,
     pub members: Vec<ListMember>,
 }
@@ -1095,7 +1099,7 @@ pub struct ListMember {
 /// `STRUCT Name = #{ field: type, … }`. Top-level only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructDecl {
-    pub ptr: AstPtr<ast::StructDecl>,
+    pub ptr: Provenance,
     pub name: Name,
     /// Declared fields, in source order — the same order
     /// `brink_format`'s `Value::Record` flat field vector will follow once
@@ -1113,7 +1117,7 @@ pub struct StructFieldDecl {
 /// `EXTERNAL fn_name(param1, param2)`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalDecl {
-    pub ptr: AstPtr<ast::ExternalDecl>,
+    pub ptr: Provenance,
     pub name: Name,
     pub param_count: u8,
 }
@@ -1122,7 +1126,7 @@ pub struct ExternalDecl {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IncludeSite {
     pub file_path: String,
-    pub ptr: AstPtr<ast::IncludeStmt>,
+    pub ptr: Provenance,
 }
 
 // ─── Diagnostics ────────────────────────────────────────────────────

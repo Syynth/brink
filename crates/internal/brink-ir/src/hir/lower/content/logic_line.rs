@@ -1,6 +1,7 @@
-use brink_syntax::ast::{self, AstNode, SyntaxNodePtr};
+use brink_syntax::ast::{self, AstNode};
 
 use crate::hir::types::{AwaitStmt, LogicBlock};
+use crate::provenance::NodeClass;
 use crate::{AssignOp, Assignment, DiagnosticCode, Expr, Return, Stmt, TempDecl};
 
 use super::super::context::{LowerScope, LowerSink, Lowered};
@@ -68,7 +69,7 @@ impl LowerBody for ast::LogicLine {
         if let Some(block) = self.stmt_block() {
             let stmts = lower_stmt_block(&block, scope, sink);
             return Ok(LogicLineOutput::Block(LogicBlock {
-                ptr: SyntaxNodePtr::from_node(block.syntax()),
+                ptr: scope.prov(NodeClass::LogicBlock, block.syntax()),
                 stmts,
             }));
         }
@@ -84,7 +85,7 @@ impl LowerBody for ast::LogicLine {
         if let Some(ret) = self.return_stmt() {
             let value = ret.value().and_then(|e| e.lower_expr(scope, sink).ok());
             return Ok(LogicLineOutput::Return(Return {
-                ptr: Some(ast::AstPtr::new(&ret)),
+                ptr: Some(scope.prov(NodeClass::Return, ret.syntax())),
                 value,
                 onwards_args: Vec::new(),
             }));
@@ -108,7 +109,7 @@ impl LowerBody for ast::LogicLine {
                 param_detail: None,
             });
             return Ok(LogicLineOutput::TempDecl(TempDecl {
-                ptr: ast::AstPtr::new(&temp),
+                ptr: scope.prov(NodeClass::TempDecl, temp.syntax()),
                 name,
                 value,
                 annotation,
@@ -132,7 +133,7 @@ impl LowerBody for ast::LogicLine {
                     _ => AssignOp::Set,
                 });
             return Ok(LogicLineOutput::Assignment(Assignment {
-                ptr: ast::AstPtr::new(&assign),
+                ptr: scope.prov(NodeClass::Assignment, assign.syntax()),
                 target,
                 op,
                 value,

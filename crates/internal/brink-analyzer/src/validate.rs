@@ -253,19 +253,13 @@ impl HirVisitor for StructuralChecks {
 /// Extract a source range from a statement, if available.
 fn stmt_range(stmt: &Stmt) -> Option<rowan::TextRange> {
     match stmt {
-        Stmt::Content(c) => c
-            .ptr
-            .as_ref()
-            .map(brink_syntax::ast::SyntaxNodePtr::text_range),
-        Stmt::Divert(d) => d
-            .ptr
-            .as_ref()
-            .map(brink_syntax::ast::SyntaxNodePtr::text_range),
+        Stmt::Content(c) => c.ptr.as_ref().map(brink_ir::Provenance::text_range),
+        Stmt::Divert(d) => d.ptr.as_ref().map(brink_ir::Provenance::text_range),
         Stmt::TunnelCall(t) => Some(t.ptr.text_range()),
         Stmt::ThreadStart(t) => Some(t.ptr.text_range()),
         Stmt::TempDecl(t) => Some(t.ptr.text_range()),
         Stmt::Assignment(a) => Some(a.ptr.text_range()),
-        Stmt::Return(r) => r.ptr.as_ref().map(brink_syntax::ast::AstPtr::text_range),
+        Stmt::Return(r) => r.ptr.as_ref().map(brink_ir::Provenance::text_range),
         Stmt::ChoiceSet(cs) => cs.choices.first().map(|c| c.ptr.text_range()),
         Stmt::Conditional(c) => Some(c.ptr.text_range()),
         Stmt::Sequence(s) => Some(s.ptr.text_range()),
@@ -279,8 +273,8 @@ fn stmt_range(stmt: &Stmt) -> Option<rowan::TextRange> {
 #[cfg(test)]
 mod tests {
     use brink_ir::hir::*;
+    use brink_ir::provenance::{NodeClass, Provenance};
     use brink_ir::{DiagnosticCode, FileId, HirFile};
-    use brink_syntax::ast::{self, AstPtr, SyntaxNodePtr};
     use rowan::{TextRange, TextSize};
 
     use super::*;
@@ -344,16 +338,16 @@ mod tests {
         TextRange::new(TextSize::new(0), TextSize::new(1))
     }
 
-    fn dummy_knot_ptr() -> ContainerPtr {
-        ContainerPtr::Knot(AstPtr::from_range(dummy_range()))
+    fn dummy_knot_ptr() -> Provenance {
+        Provenance::synthetic(NodeClass::Knot, dummy_range())
     }
 
-    fn dummy_choice_ptr() -> AstPtr<ast::Choice> {
-        AstPtr::from_range(dummy_range())
+    fn dummy_choice_ptr() -> Provenance {
+        Provenance::synthetic(NodeClass::Choice, dummy_range())
     }
 
-    fn dummy_return_ptr() -> AstPtr<ast::ReturnStmt> {
-        AstPtr::from_range(dummy_range())
+    fn dummy_return_ptr() -> Provenance {
+        Provenance::synthetic(NodeClass::Return, dummy_range())
     }
 
     // ── E032: return outside function ────────────────────────────
@@ -482,7 +476,7 @@ mod tests {
                         },
                     }),
                     Stmt::Content(Content {
-                        ptr: Some(SyntaxNodePtr::from_range(dummy_range())),
+                        ptr: Some(Provenance::synthetic(NodeClass::Content, dummy_range())),
                         parts: vec![ContentPart::Text("unreachable".into())],
                         tags: Vec::new(),
                     }),
@@ -562,7 +556,7 @@ mod tests {
                 label: None,
                 stmts: vec![
                     Stmt::ThreadStart(ThreadStart {
-                        ptr: AstPtr::from_range(dummy_range()),
+                        ptr: Provenance::synthetic(NodeClass::ThreadStart, dummy_range()),
                         target: DivertTarget {
                             path: DivertPath::Path(Path {
                                 segments: vec![Name {
@@ -575,7 +569,7 @@ mod tests {
                         },
                     }),
                     Stmt::Content(Content {
-                        ptr: Some(SyntaxNodePtr::from_range(dummy_range())),
+                        ptr: Some(Provenance::synthetic(NodeClass::Content, dummy_range())),
                         parts: vec![ContentPart::Text("still reachable".into())],
                         tags: Vec::new(),
                     }),
@@ -617,7 +611,7 @@ mod tests {
                 label: None,
                 stmts: vec![
                     Stmt::TunnelCall(TunnelCall {
-                        ptr: AstPtr::from_range(dummy_range()),
+                        ptr: Provenance::synthetic(NodeClass::TunnelCall, dummy_range()),
                         targets: vec![DivertTarget {
                             path: DivertPath::Path(Path {
                                 segments: vec![Name {
@@ -630,7 +624,7 @@ mod tests {
                         }],
                     }),
                     Stmt::Content(Content {
-                        ptr: Some(SyntaxNodePtr::from_range(dummy_range())),
+                        ptr: Some(Provenance::synthetic(NodeClass::Content, dummy_range())),
                         parts: vec![ContentPart::Text("and we're off".into())],
                         tags: Vec::new(),
                     }),

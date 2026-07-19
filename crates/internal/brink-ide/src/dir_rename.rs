@@ -30,8 +30,9 @@
 use std::collections::BTreeMap;
 
 use brink_db::{compute_relative_path, resolve_include_path};
+use brink_ir::InkProvenanceResolver;
 use brink_syntax::SyntaxNode;
-use brink_syntax::ast::{AstNode as _, AstPtr, IncludeStmt};
+use brink_syntax::ast::{AstNode as _, IncludeStmt};
 use rowan::TextRange;
 
 use crate::rename::FileEdit;
@@ -180,7 +181,7 @@ pub fn rename_dir(
                 if new_rel == inc.file_path {
                     continue; // unchanged
                 }
-                if let Some(range) = include_path_range(&inc.ptr, &root) {
+                if let Some(range) = include_path_range(old_id, inc.ptr, &root) {
                     own_edits.push((
                         usize::from(range.start()),
                         usize::from(range.end()),
@@ -214,7 +215,7 @@ pub fn rename_dir(
             let Some(new_target) = moved.get(&target) else {
                 continue; // include does not point into the moved folder
             };
-            if let Some(range) = include_path_range(&inc.ptr, &root) {
+            if let Some(range) = include_path_range(fid, inc.ptr, &root) {
                 cross_file_edits.push(FileEdit {
                     file: fid,
                     range,
@@ -316,8 +317,13 @@ fn gate_dir_move(
 
 /// The exact byte range of an `INCLUDE`'s file-path token, resolved against the
 /// file's parse root.
-fn include_path_range(ptr: &AstPtr<IncludeStmt>, root: &SyntaxNode) -> Option<TextRange> {
-    let stmt = ptr.resolve(root)?;
+fn include_path_range(
+    file: brink_ir::FileId,
+    provenance: brink_ir::Provenance,
+    root: &SyntaxNode,
+) -> Option<TextRange> {
+    let resolver = InkProvenanceResolver::new(file, root);
+    let stmt: IncludeStmt = resolver.resolve_ast(provenance)?;
     Some(stmt.file_path()?.syntax().text_range())
 }
 

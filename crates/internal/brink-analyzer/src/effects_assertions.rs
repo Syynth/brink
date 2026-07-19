@@ -24,8 +24,7 @@ use std::collections::BTreeSet;
 
 use brink_format::DefinitionId;
 use brink_ir::{
-    ContainerPtr, Diagnostic, DiagnosticCode, EffectsAssertion, FileId, HirFile, SymbolIndex,
-    SymbolKind,
+    Diagnostic, DiagnosticCode, EffectsAssertion, FileId, HirFile, SymbolIndex, SymbolKind,
 };
 use rowan::TextRange;
 
@@ -72,10 +71,7 @@ pub fn check(
     let ctx = Ctx { index, scope };
     let mut out = Vec::new();
     for knot in &hir.knots {
-        let kind = match knot.ptr {
-            ContainerPtr::Knot(_) => SymbolKind::Knot,
-            ContainerPtr::Stitch(_) => SymbolKind::Stitch,
-        };
+        let kind = knot.symbol_kind();
         check_one(
             file,
             knot.effects_assertion.as_ref(),
@@ -109,10 +105,7 @@ pub fn check(
 pub fn assertion_defs(hir: &HirFile, index: &SymbolIndex, file: FileId) -> Vec<DefinitionId> {
     let mut out = Vec::new();
     for knot in &hir.knots {
-        let kind = match knot.ptr {
-            ContainerPtr::Knot(_) => SymbolKind::Knot,
-            ContainerPtr::Stitch(_) => SymbolKind::Stitch,
-        };
+        let kind = knot.symbol_kind();
         if knot.effects_assertion.is_some()
             && let Some(id) = find_def_id(index, file, kind, &knot.name.text)
         {

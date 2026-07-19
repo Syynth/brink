@@ -7,8 +7,8 @@
 //! lives only inside [`KindToken::raw`] here — nothing outside this module
 //! and the ink lowering may interpret it (D1).
 
-use brink_syntax::ast::AstNode;
 use brink_syntax::SyntaxNode;
+use brink_syntax::ast::AstNode;
 use rowan::TextRange;
 
 use crate::provenance::{KindToken, NodeClass, Provenance, ProvenanceResolver};

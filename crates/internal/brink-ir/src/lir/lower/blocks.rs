@@ -134,7 +134,7 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
 /// a `Program` at all, independent of and non-suppressible relative to any
 /// analysis-phase diagnostic covering the same construct.
 fn lower_loop_control(
-    ptr: &brink_syntax::ast::SyntaxNodePtr,
+    ptr: &crate::Provenance,
     keyword: &str,
     stmt: lir::Stmt,
     ctx: &mut LowerCtx<'_>,

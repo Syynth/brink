@@ -7,7 +7,9 @@
 //! fields are complete/well-typed is `brink-analyzer`'s strict-mode
 //! construction check, not this module's.
 
-use brink_syntax::ast::{self, AstNode, SyntaxNodePtr};
+use brink_syntax::ast::{self, AstNode};
+
+use crate::provenance::NodeClass;
 
 use crate::hir::types::{FieldAccessExpr, StructLiteral};
 use crate::{DiagnosticCode, Expr, RefKind};
@@ -52,7 +54,7 @@ impl LowerExpr for ast::StructLiteral {
         }
 
         Ok(Expr::StructLiteral(StructLiteral {
-            ptr: SyntaxNodePtr::from_node(self.syntax()),
+            ptr: scope.prov(NodeClass::StructLiteral, self.syntax()),
             shape,
             fields,
         }))
@@ -72,7 +74,7 @@ impl LowerExpr for ast::FieldAccessExpr {
         let field = name_from_ident(&field_ident)
             .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E017))?;
         Ok(Expr::FieldAccess(FieldAccessExpr {
-            ptr: SyntaxNodePtr::from_node(self.syntax()),
+            ptr: scope.prov(NodeClass::FieldAccess, self.syntax()),
             base: Box::new(base),
             field,
         }))

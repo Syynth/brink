@@ -144,7 +144,7 @@ fn lower_source_file(
         .collect();
     let includes: Vec<IncludeSite> = file
         .includes()
-        .filter_map(|i| lower_include(&i, sink).ok())
+        .filter_map(|i| lower_include(scope, &i, sink).ok())
         .collect();
     let mut knots: Vec<Knot> = file
         .knots()

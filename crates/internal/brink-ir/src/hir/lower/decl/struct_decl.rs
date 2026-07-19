@@ -13,6 +13,7 @@ use super::super::doc_comment::{DocPolicy, parse_doc_comment};
 use super::super::helpers::name_from_ident;
 use super::super::types::lower_type_expr;
 use super::DeclareSymbols;
+use crate::provenance::NodeClass;
 use crate::{DiagnosticCode, StructDecl, StructFieldDecl, SymbolKind};
 
 impl DeclareSymbols for ast::StructDecl {
@@ -20,7 +21,7 @@ impl DeclareSymbols for ast::StructDecl {
 
     fn declare_and_lower(
         &self,
-        _scope: &LowerScope,
+        scope: &LowerScope,
         sink: &mut impl LowerSink,
     ) -> Lowered<StructDecl> {
         let range = self.syntax().text_range();
@@ -52,7 +53,7 @@ impl DeclareSymbols for ast::StructDecl {
             .collect();
 
         Ok(StructDecl {
-            ptr: ast::AstPtr::new(self),
+            ptr: scope.prov(NodeClass::StructDecl, self.syntax()),
             name,
             fields,
         })
