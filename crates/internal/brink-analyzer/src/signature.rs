@@ -105,12 +105,15 @@ fn ty_to_inferred_type(ty: &Ty) -> Option<InferredType> {
         // `resolve_annotation`, not silently dropped.
         // `Option` (NS-A1): same gap as `Array`/`Map` — no `InferredType`
         // variant represents a parameterized builtin; not a silent drop.
+        // `Range` (NS-A5): same gap — no `InferredType` variant; not a
+        // silent drop.
         Ty::Array(_)
         | Ty::Map(_, _)
         | Ty::Struct(_)
         | Ty::Fn(..)
         | Ty::Handle(_)
         | Ty::Option(_)
+        | Ty::Range { .. }
         | Ty::Unknown
         | Ty::Conflicted => None,
     }

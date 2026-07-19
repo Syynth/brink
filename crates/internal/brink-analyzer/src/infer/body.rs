@@ -290,6 +290,23 @@ fn ref_arg_root(expr: &Expr) -> &Expr {
     }
 }
 
+/// Fold a range-literal bound to its compile-time int value, LITERALS ONLY
+/// (NS-A5): an integer literal or a unary-negated integer literal. This is
+/// deliberately narrower than the strict checker's own fold (which also
+/// resolves CONST refs — see `crate::range_refinement`): inference is
+/// firewalled from other definitions' HIR, so CONST-bounded literals mint
+/// their evidence at the strict checker instead. `i64` so `-2147483648`
+/// folds without edge cases.
+fn fold_literal_int_bound(expr: &Expr) -> Option<i64> {
+    match expr {
+        Expr::Int(n) => Some(i64::from(*n)),
+        Expr::Prefix(brink_ir::PrefixOp::Negate, inner) => {
+            fold_literal_int_bound(inner).map(|n| -n)
+        }
+        _ => None,
+    }
+}
+
 #[expect(
     clippy::struct_excessive_bools,
     reason = "accumulator for the same independent facts BodyResult carries"
@@ -828,6 +845,39 @@ impl InferPass<'_, '_> {
                 self.infer_expr(&ra.operand);
                 Ty::Unknown
             }
+            // NS-A5 range literals (docs/stdlib-spec.md §7, F7): both
+            // bounds are ints (`observe` narrows int-typed slots used as
+            // bounds; the runtime op faults on anything else — harvested
+            // in the faults dimension). The `non_empty` refinement bit is
+            // minted RIGHT HERE when the literal's bounds fold statically
+            // and denote at least one element (`1..=6`, `5..=5`, `-2..0`):
+            // the "provably-inhabited literals coerce in free" leg of the
+            // F7 evidence rule. Bounds referencing CONSTs don't fold at
+            // this layer (inference is firewalled from other defs' HIR) —
+            // the strict-mode E117 checker (`range_refinement`) folds
+            // CONST refs itself for literal-in-argument-position, so
+            // `int(1..=SIDES)` still coerces free under strict.
+            Expr::Range(r) => {
+                self.effect_faults = true;
+                self.observe(&r.start, &Ty::Int);
+                self.observe(&r.end, &Ty::Int);
+                self.infer_expr(&r.start);
+                self.infer_expr(&r.end);
+                let non_empty = match (
+                    fold_literal_int_bound(&r.start),
+                    fold_literal_int_bound(&r.end),
+                ) {
+                    (Some(start), Some(end)) => {
+                        if r.inclusive {
+                            start <= end
+                        } else {
+                            start < end
+                        }
+                    }
+                    _ => false,
+                };
+                Ty::Range { non_empty }
+            }
         }
     }
 
@@ -1263,11 +1313,25 @@ impl InferPass<'_, '_> {
             self.effect_writes.insert(DefinitionId::RNG_CELL);
         }
         match name {
-            // `len` (stdlib slice 1) and `int` (TM-3-completion conversion
-            // intrinsic, #659) both return a fixed `Ty::Int` independent of
-            // the argument — merged into one arm per clippy's
-            // `match_same_arms` (identical bodies, distinct call sites).
-            "len" | "int" => Ty::Int,
+            "len" => Ty::Int,
+            // `int(x)` is ONE value-directed verb (NS-A5,
+            // `docs/stdlib-spec.md` §7): over a range it is `rand::int` —
+            // one uniform draw, a write to the RNG cell — and over
+            // everything else the TM-3 conversion intrinsic (#659). Both
+            // legs return `Ty::Int`, so only the *effect row* is
+            // type-directed: the draw leg's RNG write is recorded exactly
+            // when the argument's inferred type is a range. (A gradual
+            // `Unknown`-typed argument that turns out to hold a range at
+            // runtime escapes this static harvest — the standard gradual
+            // posture, F8: refinement machinery is strict-mode's; under
+            // `types = strict` the argument must be `NonEmptyRange`
+            // [E117, `range_refinement`], so the harvest is sound there.)
+            "int" => {
+                if matches!(arg_tys.first(), Some(Ty::Range { .. })) {
+                    self.effect_writes.insert(DefinitionId::RNG_CELL);
+                }
+                Ty::Int
+            }
             "keys" => match arg_tys.first() {
                 Some(Ty::Map(k, _)) => Ty::Array(k.clone()),
                 _ => Ty::Unknown,
@@ -1453,11 +1517,22 @@ impl InferPass<'_, '_> {
             // multi-type domain is a runtime concern, exactly like the
             // conversion intrinsics' arms above.
             "chance" => Ty::Bool,
+            // NS-A5: `non_empty(r)` → `Option[NonEmptyRange]` — the
+            // inhabited-range validator (S2 ruled 2026-07-19,
+            // parse-don't-validate): the `some` payload carries the
+            // checker-minted refinement evidence; the runtime value is the
+            // SAME range (the refinement is a view, F7). Pure — no draw,
+            // no RNG write; faults only on a wrong-typed argument.
+            "non_empty" => Ty::Option(Box::new(Ty::Range { non_empty: true })),
             // `pick(coll)` → `Option[T]`: element from a known array,
             // subset-of-the-same-list from a flags subset.
             "pick" => match arg_tys.first() {
                 Some(Ty::Array(elem)) => Ty::Option(elem.clone()),
                 Some(Ty::List(origin)) => Ty::Option(Box::new(Ty::List(origin.clone()))),
+                // NS-A5: `pick(range)` → `Option[int]` — empty → `none`
+                // (dynamic-content absence; contrast `int(range)`, whose
+                // emptiness is the E117/fault refinement).
+                Some(Ty::Range { .. }) => Ty::Option(Box::new(Ty::Int)),
                 _ => Ty::Option(Box::new(Ty::Unknown)),
             },
             // `shuffled(a)` → a new array of the same element type.

@@ -124,6 +124,7 @@ ast_node!(ArrayLiteral, ARRAY_LITERAL);
 ast_node!(MapLiteral, MAP_LITERAL);
 ast_node!(MapEntry, MAP_ENTRY);
 ast_node!(IndexExpr, INDEX_EXPR);
+ast_node!(RangeExpr, RANGE_EXPR);
 
 // ── T1b superset: multi-line `~ { … }` blocks (docs/t1b-surface-spec.md §2) ──
 
@@ -332,6 +333,9 @@ pub enum Expr {
     /// docs/t1c-spec.md §3/§10, issue #869) since Direct-call syntax is
     /// RULED to a bare variable/temp/param callee only.
     ComputedCall(CallExpr),
+    /// `a..b` / `a..=b` — range literal (NS-A5, docs/stdlib-spec.md §7,
+    /// brink extension).
+    Range(RangeExpr),
 }
 
 impl std::fmt::Debug for Expr {
@@ -370,6 +374,7 @@ impl crate::ast::AstNode for Expr {
                 | SyntaxKind::FN_LITERAL
                 | SyntaxKind::REF_EXPR
                 | SyntaxKind::CALL_EXPR
+                | SyntaxKind::RANGE_EXPR
         )
     }
 
@@ -395,6 +400,7 @@ impl crate::ast::AstNode for Expr {
             SyntaxKind::FN_LITERAL => FnLiteral::cast(node).map(Expr::FnLiteral),
             SyntaxKind::REF_EXPR => RefExpr::cast(node).map(Expr::RefExpr),
             SyntaxKind::CALL_EXPR => CallExpr::cast(node).map(Expr::ComputedCall),
+            SyntaxKind::RANGE_EXPR => RangeExpr::cast(node).map(Expr::Range),
             _ => None,
         }
     }
@@ -421,6 +427,7 @@ impl crate::ast::AstNode for Expr {
             Expr::FnLiteral(n) => n.syntax(),
             Expr::RefExpr(n) => n.syntax(),
             Expr::ComputedCall(n) => n.syntax(),
+            Expr::Range(n) => n.syntax(),
         }
     }
 }
@@ -1156,6 +1163,29 @@ impl IndexExpr {
     /// The index expression (the second `Expr` child) — `i` in `a[i]`.
     pub fn index(&self) -> Option<Expr> {
         self.syntax.children().filter_map(Expr::cast).nth(1)
+    }
+}
+
+// ── RangeExpr (NS-A5, docs/stdlib-spec.md §7) ────────────────────────
+
+impl RangeExpr {
+    /// The start bound (the first `Expr` child) — `a` in `a..b`.
+    pub fn start(&self) -> Option<Expr> {
+        self.syntax.children().find_map(Expr::cast)
+    }
+
+    /// The end bound (the second `Expr` child) — `b` in `a..b`.
+    pub fn end(&self) -> Option<Expr> {
+        self.syntax.children().filter_map(Expr::cast).nth(1)
+    }
+
+    /// `true` for the inclusive `..=` form — detected by the `EQ` token the
+    /// parser bumped between the dots and the end bound.
+    pub fn is_inclusive(&self) -> bool {
+        self.syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .any(|t| t.kind() == SyntaxKind::EQ)
     }
 }
 

@@ -75,7 +75,8 @@ fn contains_nan(v: &Value) -> bool {
             ProjSegment::Key(k) => contains_nan(k),
         }),
         Value::OptionVal(inner) => inner.as_deref().is_some_and(contains_nan),
-        Value::Int(_)
+        Value::Range { .. }
+        | Value::Int(_)
         | Value::Bool(_)
         | Value::String(_)
         | Value::List(_)

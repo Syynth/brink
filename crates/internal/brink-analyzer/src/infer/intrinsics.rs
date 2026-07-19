@@ -23,10 +23,18 @@
 //!   `SeedRandom` op coerces, ink-heritage leniency), the nullary `float()`
 //!   rand draw (no argument, no fault path), and `call`/`bind` (their
 //!   dispatch-fault marking lives at `check_value_call`/`check_bind_value`).
+//!   NS-A5 adds `non_empty` (wrong-typed argument faults, the
+//!   malformed-question doctrine).
 //! - **RNG writes** (draws): the brink draw verbs (`chance`/`pick`/
 //!   `shuffle`/`shuffled`, nullary `float()`) plus `seed` and the frozen ink
 //!   spellings (`RANDOM`/`SEED_RANDOM`/`LIST_RANDOM`) — one cell
 //!   ([`brink_format::DefinitionId::RNG_CELL`]), two surfaces, one entry.
+//!   NS-A5's `int(range)` draw leg is deliberately NOT here: it is
+//!   type-directed (range argument → draw, else pure conversion), which a
+//!   name+arity table cannot express — `infer_intrinsic`'s `"int"` arm
+//!   records that write inline. `await_purity` still rejects
+//!   `await int(…)` through this table's fault bit (`int` faults in every
+//!   shape), so the wake gate has no gap.
 
 /// Effect facts for one intrinsic call shape. `arg_count` participates
 /// because `float` is two different call shapes: the nullary rand draw
@@ -74,6 +82,7 @@ pub(crate) fn intrinsic_effects(name: &str, arg_count: usize) -> IntrinsicEffect
                 | "pick"
                 | "shuffle"
                 | "shuffled"
+                | "non_empty"
                 | "INT"
                 | "FLOAT"
         );
@@ -102,6 +111,16 @@ pub(crate) fn intrinsic_effects(name: &str, arg_count: usize) -> IntrinsicEffect
 pub(crate) fn intrinsic_returns_option(name: &str) -> bool {
     matches!(
         name,
-        "find" | "index_of" | "min" | "max" | "first" | "last" | "pop" | "get" | "pick" | "some"
+        "find"
+            | "index_of"
+            | "min"
+            | "max"
+            | "first"
+            | "last"
+            | "pop"
+            | "get"
+            | "pick"
+            | "some"
+            | "non_empty"
     )
 }

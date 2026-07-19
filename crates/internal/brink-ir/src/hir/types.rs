@@ -699,6 +699,9 @@ pub enum Expr {
     MapLiteral(MapLiteral),
     /// `base[index]` — postfix indexing (brink extension, T1b §4).
     Index(IndexExpr),
+    /// `start..end` / `start..=end` — range literal (brink extension,
+    /// NS-A5, docs/stdlib-spec.md §7, F7).
+    Range(RangeExpr),
     /// `Name#{field: expr, …}` — struct construction literal (brink
     /// extension, TM-4b, docs/typed-mode-spec.md §6).
     StructLiteral(StructLiteral),
@@ -798,6 +801,20 @@ pub struct IndexExpr {
     pub ptr: SyntaxNodePtr,
     pub base: Box<Expr>,
     pub index: Box<Expr>,
+}
+
+/// `start..end` / `start..=end` — range literal (brink extension, NS-A5,
+/// docs/stdlib-spec.md §7, F7). `ptr` lets the dialect gate point its
+/// diagnostic at the exact literal, matching the sibling extension shapes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RangeExpr {
+    pub ptr: SyntaxNodePtr,
+    /// The start bound (always an element when the range is non-empty).
+    pub start: Box<Expr>,
+    /// The written end bound.
+    pub end: Box<Expr>,
+    /// `true` for the `..=` form.
+    pub inclusive: bool,
 }
 
 /// Float stored as raw bits so it can derive Eq.
@@ -940,6 +957,10 @@ pub fn display_expr(expr: &Expr) -> String {
             }
         }
         Expr::RefArg(ra) => format!("ref {}", display_expr(&ra.operand)),
+        Expr::Range(r) => {
+            let op = if r.inclusive { "..=" } else { ".." };
+            format!("{}{op}{}", display_expr(&r.start), display_expr(&r.end))
+        }
     }
 }
 
@@ -1801,6 +1822,17 @@ pub enum DiagnosticCode {
     /// runtime backstop that catches every case either way. Supersedes
     /// NS-A1's shipped falsy-none truthiness.
     E116,
+    // ── NS-A5 the inhabited-range refinement (issue #1111;
+    // docs/stdlib-spec.md §7, F7/F8 ruled 2026-07-19) ──────────────────
+    /// A range-refinement violation under `types = strict` (the E078
+    /// precedent — strict-only; gradual mode is inert and leaves the
+    /// runtime fault residual, F8's general rule): `int(r)` demands
+    /// `NonEmptyRange` evidence, and either (a) the range literal in
+    /// argument position is **provably empty** (`0..0`, `5..=2` — bounds
+    /// fold statically, CONST refs included), or (b) the argument's type
+    /// carries no inhabitedness evidence (a possibly-empty range — route
+    /// computed bounds through `non_empty(r)`, parse-don't-validate).
+    E117,
 }
 
 impl DiagnosticCode {
@@ -1928,6 +1960,7 @@ impl DiagnosticCode {
             Self::E114 => "E114",
             Self::E115 => "E115",
             Self::E116 => "E116",
+            Self::E117 => "E117",
         }
     }
 
@@ -2088,6 +2121,7 @@ impl DiagnosticCode {
             Self::E116 => {
                 "an `Option[T]` has no truthiness — test `== none` / `== some(x)` in the condition"
             }
+            Self::E117 => "`int(r)` requires an inhabited range (NonEmptyRange)",
         }
     }
 
@@ -2240,6 +2274,7 @@ impl DiagnosticCode {
             "E114" => Some(Self::E114),
             "E115" => Some(Self::E115),
             "E116" => Some(Self::E116),
+            "E117" => Some(Self::E117),
             _ => None,
         }
     }

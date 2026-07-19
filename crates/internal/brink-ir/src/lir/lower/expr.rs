@@ -101,6 +101,15 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
             index: Box::new(lower_expr(&idx.index, ctx)),
         },
 
+        // NS-A5 range literals (docs/stdlib-spec.md §7, F7): both bounds
+        // evaluate left-to-right, then `RangeMake{Excl,Incl}` builds the
+        // value. Bound-type faults live at the runtime op.
+        hir::Expr::Range(r) => lir::Expr::RangeMake {
+            start: Box::new(lower_expr(&r.start, ctx)),
+            end: Box::new(lower_expr(&r.end, ctx)),
+            inclusive: r.inclusive,
+        },
+
         // TM-4c structs (docs/typed-mode-spec.md §6): construction, field
         // reads, and (through the RMW helpers in `blocks`/`stmts`) field
         // writes all lower for real — see `lower_struct_literal`/
@@ -1012,6 +1021,20 @@ fn lower_t1b_stdlib_call(
             }
             Some(lir::Expr::RandPick(Box::new(lower_expr(&args[0], ctx))))
         }
+        // ── NS-A5: `non_empty(r)` — the inhabited-range validator
+        // (`docs/stdlib-spec.md` §7, S2). Pure; `Option[NonEmptyRange]`
+        // typing is the analyzer's; this lowering just recognizes the
+        // call shape. (`int(range)` needs no arm — the unary `int`
+        // conversion arm above already lowers it to `ConvertInt`, whose
+        // VM op dispatches on the operand.) ─────────────────────────────
+        "non_empty" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::RangeNonEmpty(Box::new(lower_expr(
+                &args[0], ctx,
+            ))))
+        }
         // `shuffled(a)` — the functional twin (§4's ruled naming
         // convention): evaluates its argument, returns a new shuffled
         // array; the argument itself is never written back.
@@ -1160,6 +1183,10 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "shuffle"
             | "shuffled"
             | "seed"
+            // NS-A5 (issue #1111, `docs/stdlib-spec.md` §7): the
+            // inhabited-range validator. `int(range)` needs no entry —
+            // `int` is listed above; the VM dispatches on the operand.
+            | "non_empty"
     )
 }
 

@@ -60,6 +60,8 @@ pub enum ValueType {
     Projection,
     /// A typed-absence value ([`Value::OptionVal`]) — NS-A1, `Option[T]`.
     Option,
+    /// An integer range value ([`Value::Range`]) — NS-A5, F7.
+    Range,
 }
 
 /// A runtime value in the ink VM.
@@ -218,6 +220,35 @@ pub enum Value {
     /// stable form; the §1.6 display-boundary forgiveness is Track B4 and
     /// deliberately NOT implemented here.
     OptionVal(Option<Arc<Value>>),
+    /// An integer range value (NS-A5, `docs/stdlib-spec.md` §7 — F7, ruled
+    /// 2026-07-19: "ranges are a REAL Value kind"). `start..end` (exclusive)
+    /// or `start..=end` (inclusive) over `int` bounds — v1 is int-only.
+    ///
+    /// Ranges join the closed iterable set (`for i in 0..n`), index like a
+    /// virtual array of their elements, and are the substrate of the
+    /// language's first value refinement (the inhabited range consumed by
+    /// `rand::int`). A durable wire form exists (`VAL_RANGE`) because
+    /// `FlowFrame` spills for-loop iterators across `await` — a range held
+    /// in a loop snapshot must survive save/load.
+    ///
+    /// A no-payload scalar (two `i32`s + a flag); no `Arc` needed. The
+    /// **written form is preserved** — `1..7` and `1..=6` keep their
+    /// `inclusive` flag through saves, the transcript, and display — but
+    /// **equality is content equality** (F7's ruling word): two ranges are
+    /// equal iff they denote the same integer sequence, so `1..=6 == 1..7`
+    /// and every empty range equals every other empty range. This is the
+    /// same content-over-form posture as the #909 map-equality ruling
+    /// (insertion order iterates, content compares).
+    Range {
+        /// The first element of the range (always inclusive).
+        start: i32,
+        /// The written end bound; whether it is an element depends on
+        /// `inclusive`.
+        end: i32,
+        /// `true` for the `..=` form (`end` is the last element), `false`
+        /// for the `..` form (`end` is one past the last element).
+        inclusive: bool,
+    },
 }
 
 /// The payload of a [`Value::Projection`] — the root cell plus its ordered
@@ -318,6 +349,54 @@ impl Value {
             Self::Handle { .. } => ValueType::Handle,
             Self::Projection(_) => ValueType::Projection,
             Self::OptionVal(_) => ValueType::Option,
+            Self::Range { .. } => ValueType::Range,
+        }
+    }
+
+    /// Build a [`Range`](Self::Range) from its written bounds.
+    pub fn range(start: i32, end: i32, inclusive: bool) -> Self {
+        Self::Range {
+            start,
+            end,
+            inclusive,
+        }
+    }
+
+    /// Borrow the `(start, end, inclusive)` triple if this value is a
+    /// [`Range`](Self::Range).
+    pub fn as_range(&self) -> Option<(i32, i32, bool)> {
+        match self {
+            Self::Range {
+                start,
+                end,
+                inclusive,
+            } => Some((*start, *end, *inclusive)),
+            _ => None,
+        }
+    }
+
+    /// The one-past-the-last element bound of a [`Range`](Self::Range),
+    /// normalized over the written form (`i64` so `1..=i32::MAX` cannot
+    /// overflow). `None` for any non-range value.
+    pub fn range_end_exclusive(&self) -> Option<i64> {
+        match self {
+            Self::Range { end, inclusive, .. } => {
+                Some(i64::from(*end) + i64::from(u8::from(*inclusive)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Number of elements a [`Range`](Self::Range) denotes (`0` for an empty
+    /// range — a range never has negative length). `None` for any non-range
+    /// value. `i64` because `i32::MIN..=i32::MAX` has 2³² elements.
+    pub fn range_len(&self) -> Option<i64> {
+        match self {
+            Self::Range { start, .. } => {
+                let end_ex = self.range_end_exclusive()?;
+                Some((end_ex - i64::from(*start)).max(0))
+            }
+            _ => None,
         }
     }
 
@@ -616,6 +695,22 @@ impl PartialEq for Value {
                 (Some(x), Some(y)) => Arc::ptr_eq(x, y) || x == y,
                 _ => false,
             },
+            // Range equality (NS-A5, F7 "content equality"): two ranges are
+            // equal iff they denote the same integer sequence — the written
+            // form (`..` vs `..=`) is display fidelity, not content, so
+            // `1..=6 == 1..7`, and every empty range equals every other
+            // empty range (both denote the zero-length sequence, exactly as
+            // two empty arrays are equal). The #909 map ruling is the
+            // precedent: content compares, form displays.
+            (a @ Self::Range { start: sa, .. }, b @ Self::Range { start: sb, .. }) => {
+                let (la, lb) = (a.range_len(), b.range_len());
+                match (la, lb) {
+                    (Some(0), Some(0)) => true,
+                    (Some(x), Some(y)) => x == y && sa == sb,
+                    // Unreachable: both sides are `Range`.
+                    _ => false,
+                }
+            }
             _ => false,
         }
     }
@@ -1557,6 +1652,72 @@ mod tests {
             Value::array(vec![Value::none(), Value::some(Value::from("x"))]),
         ] {
             assert_eq!(json_round_trip(&v), v);
+        }
+    }
+
+    // ── NS-A5 `Value::Range` (F7, docs/stdlib-spec.md §7) ──────────────────
+
+    #[test]
+    fn range_value_type_and_accessors() {
+        let r = Value::range(1, 6, true);
+        assert_eq!(r.value_type(), ValueType::Range);
+        assert_eq!(r.as_range(), Some((1, 6, true)));
+        assert_eq!(Value::Int(1).as_range(), None);
+        assert_eq!(r.range_end_exclusive(), Some(7));
+        assert_eq!(Value::range(1, 7, false).range_end_exclusive(), Some(7));
+        assert_eq!(r.range_len(), Some(6));
+        assert_eq!(Value::range(0, 0, false).range_len(), Some(0));
+        // Backwards ranges are empty, never negative-length.
+        assert_eq!(Value::range(5, 2, false).range_len(), Some(0));
+        // i64 normalization: 1..=i32::MAX does not overflow.
+        assert_eq!(
+            Value::range(1, i32::MAX, true).range_end_exclusive(),
+            Some(i64::from(i32::MAX) + 1)
+        );
+        assert_eq!(
+            Value::range(i32::MIN, i32::MAX, true).range_len(),
+            Some(1i64 << 32)
+        );
+    }
+
+    #[test]
+    fn range_equality_is_content_equality() {
+        // Same sequence, different written form: equal (F7 "content
+        // equality" — the form is display fidelity, not content).
+        assert_eq!(Value::range(1, 6, true), Value::range(1, 7, false));
+        assert_eq!(Value::range(1, 7, false), Value::range(1, 6, true));
+        // Same form, same bounds: equal.
+        assert_eq!(Value::range(0, 3, false), Value::range(0, 3, false));
+        // Different sequences: unequal.
+        assert_ne!(Value::range(0, 3, false), Value::range(1, 3, false));
+        assert_ne!(Value::range(0, 3, false), Value::range(0, 4, false));
+        // Every empty range equals every other empty range (both denote
+        // the zero-length sequence, like two empty arrays).
+        assert_eq!(Value::range(0, 0, false), Value::range(5, 5, false));
+        assert_eq!(Value::range(9, 2, false), Value::range(0, 0, false));
+        // An empty range is never equal to a non-empty one.
+        assert_ne!(Value::range(0, 0, false), Value::range(0, 1, false));
+        // Cross-variant: a range is not an array, int, or anything else.
+        assert_ne!(Value::range(0, 2, false), Value::array(vec![]));
+        assert_ne!(Value::range(0, 2, false), Value::Int(0));
+    }
+
+    #[test]
+    fn range_serde_round_trip_preserves_the_written_form() {
+        for v in [
+            Value::range(1, 6, true),
+            Value::range(0, 10, false),
+            Value::range(-3, 3, false),
+            Value::range(0, 0, false),
+            Value::array(vec![Value::range(1, 2, true), Value::Int(9)]),
+        ] {
+            let back = json_round_trip(&v);
+            assert_eq!(back, v);
+            // The written form survives (not just content equality): the
+            // triple round-trips bit-for-bit.
+            if let Value::Range { .. } = &v {
+                assert_eq!(back.as_range(), v.as_range());
+            }
         }
     }
 }

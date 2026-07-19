@@ -50,6 +50,11 @@ pub(crate) fn is_truthy(v: &Value) -> Result<bool, RuntimeError> {
         // quiet coercion of exactly the kind `Option[T] ≠ T` exists to ban;
         // authors write `== none` / `== some(x)` instead.
         Value::OptionVal(_) => return Err(RuntimeError::OptionTruthiness),
+        // Range truthiness (NS-A5, F7): emptiness is load-bearing for
+        // ranges (`for i in 0..n` with n = 0 runs zero times), so a range
+        // reads like the collections below — truthy iff it denotes at
+        // least one element.
+        Value::Range { .. } => v.range_len().unwrap_or(0) > 0,
         Value::List(lv) => !lv.items.is_empty(),
         Value::Array(items) => !items.is_empty(),
         Value::Map(map) => !map.is_empty(),
@@ -169,6 +174,21 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
             None => "none".to_owned(),
             Some(v) => format!("some({})", stringify(v, program)),
         },
+        // Range values (NS-A5, `docs/stdlib-spec.md` §7, F7): the written
+        // form, preserved — `0..10` / `1..=6` — matching the source-level
+        // literal vocabulary exactly (content equality may say two forms
+        // are the same sequence; display stays faithful to the spelling).
+        Value::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            if *inclusive {
+                format!("{start}..={end}")
+            } else {
+                format!("{start}..{end}")
+            }
+        }
     }
 }
 
@@ -525,6 +545,19 @@ pub(crate) fn binary_op(
             Ok(Value::Bool(left == right))
         }
         (Value::OptionVal(_), Value::OptionVal(_)) if op == BinaryOp::NotEqual => {
+            Ok(Value::Bool(left != right))
+        }
+        // Range equality (NS-A5, F7 "content equality"): delegated to
+        // `Value`'s `PartialEq` — two ranges are equal iff they denote the
+        // same integer sequence (`1..=6 == 1..7`; every empty range equals
+        // every other empty range). Only `==`/`!=` are defined; ordering a
+        // range (or comparing one against a non-range) falls through to the
+        // `TypeError` fault below — ranges are not orderable and never
+        // coerce.
+        (Value::Range { .. }, Value::Range { .. }) if op == BinaryOp::Equal => {
+            Ok(Value::Bool(left == right))
+        }
+        (Value::Range { .. }, Value::Range { .. }) if op == BinaryOp::NotEqual => {
             Ok(Value::Bool(left != right))
         }
         // Equality for null
@@ -908,7 +941,8 @@ pub(crate) fn cast_to_int(v: &Value) -> Result<Value, RuntimeError> {
         | Value::Closure(_)
         | Value::Handle { .. }
         | Value::Projection(_)
-        | Value::OptionVal(_) => {
+        | Value::OptionVal(_)
+        | Value::Range { .. } => {
             return Err(RuntimeError::InvalidConversionDomain {
                 target: "INT",
                 got: cast_type_name(v),
@@ -940,7 +974,8 @@ pub(crate) fn cast_to_float(v: &Value) -> Result<Value, RuntimeError> {
         | Value::Closure(_)
         | Value::Handle { .. }
         | Value::Projection(_)
-        | Value::OptionVal(_) => {
+        | Value::OptionVal(_)
+        | Value::Range { .. } => {
             return Err(RuntimeError::InvalidConversionDomain {
                 target: "FLOAT",
                 got: cast_type_name(v),
@@ -974,6 +1009,7 @@ fn cast_type_name(v: &Value) -> &'static str {
         Value::Handle { .. } => "handle",
         Value::Projection(_) => "projection",
         Value::OptionVal(_) => "option",
+        Value::Range { .. } => "range",
     }
 }
 

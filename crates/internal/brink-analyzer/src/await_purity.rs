@@ -173,6 +173,10 @@ fn collect_call_callees(
             collect_call_callees(&idx.index, by_range, out);
         }
         Expr::FieldAccess(fa) => collect_call_callees(&fa.base, by_range, out),
+        Expr::Range(r) => {
+            collect_call_callees(&r.start, by_range, out);
+            collect_call_callees(&r.end, by_range, out);
+        }
         Expr::ArrayLiteral(a) => {
             for e in &a.elements {
                 collect_call_callees(e, by_range, out);
@@ -254,6 +258,12 @@ impl Ctx<'_> {
                 self.walk_expr(&idx.index, effectful);
             }
             Expr::FieldAccess(fa) => self.walk_expr(&fa.base, effectful),
+            // Range bounds evaluate on every condition re-check, so a call
+            // nested in one is a real atom of the condition.
+            Expr::Range(r) => {
+                self.walk_expr(&r.start, effectful);
+                self.walk_expr(&r.end, effectful);
+            }
             Expr::ArrayLiteral(a) => {
                 for e in &a.elements {
                     self.walk_expr(e, effectful);

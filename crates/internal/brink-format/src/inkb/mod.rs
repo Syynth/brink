@@ -127,6 +127,14 @@ pub(crate) const VAL_PROJECTION: u8 = 0x0E;
 // exactly like the collection tags (a crafted chain of nested `some`s is
 // the same stack-overflow shape as nested single-element arrays).
 pub(crate) const VAL_OPTION: u8 = 0x10;
+// NS-A5 (`docs/stdlib-spec.md` §7, F7 ruled 2026-07-19): the integer range
+// value kind. Wire form: start i32, end i32, one flag byte (0 = `..`
+// exclusive, 1 = `..=` inclusive) — flat, no recursion, so it does NOT
+// count toward `MAX_DECODE_DEPTH` (a range holds two ints, never another
+// value). Next free tag after `VAL_OPTION` (0x10); same "assigned here"
+// reservation precedent as its neighbors. Distinct from the RESERVED
+// projection-*segment* kind 0x02 below — that is a different namespace.
+pub(crate) const VAL_RANGE: u8 = 0x11;
 /// Wire kind for a [`crate::ProjSegment::Index`] segment.
 pub(crate) const PROJ_SEG_INDEX: u8 = 0x00;
 /// Wire kind for a [`crate::ProjSegment::Key`] segment.

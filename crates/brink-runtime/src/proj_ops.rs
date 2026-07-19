@@ -338,6 +338,7 @@ fn value_kind(v: &Value) -> &'static str {
         Value::Handle { .. } => "handle",
         Value::Projection(_) => "projection",
         Value::OptionVal(_) => "option",
+        Value::Range { .. } => "range",
     }
 }
 

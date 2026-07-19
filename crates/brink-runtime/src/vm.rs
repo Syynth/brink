@@ -20,6 +20,7 @@ use crate::list_ops;
 use crate::program::Program;
 use crate::proj_ops;
 use crate::rand_ops;
+use crate::range_ops;
 use crate::record_ops;
 use crate::state::ContextAccess;
 use crate::story::{CallFrame, CallFrameType, ContainerPosition, Flow, PendingChoice, Stats};
@@ -1229,7 +1230,23 @@ fn step_impl<R: crate::rng::StoryRng>(
         Opcode::RecordSet(offset) => record_ops::record_set(flow, offset)?,
 
         // ── Conversion intrinsics (TM-3 completion, #659) ────────────
-        Opcode::ConvertInt => conversion_ops::convert_to_int(flow)?,
+        // `int(x)` is ONE value-directed verb (NS-A5, `docs/stdlib-spec.md`
+        // §7): over a range operand it is `rand::int` — one uniform draw
+        // from the inhabited range, a write to the RNG cell — and over
+        // everything else it keeps its TM-3 conversion semantics. The
+        // dispatch happens here on the *runtime* operand because gradual
+        // mode cannot classify the call site statically (an unannotated
+        // temp holding a range must still draw); under `types = strict`
+        // the checker has already proven which leg runs (and demanded the
+        // NonEmptyRange evidence for the draw leg, E117).
+        Opcode::ConvertInt => {
+            if matches!(flow.value_stack.last(), Some(Value::Range { .. })) {
+                note_effect_write(flow, program, DefinitionId::RNG_CELL);
+                rand_ops::rand_int::<R>(flow, context)?;
+            } else {
+                conversion_ops::convert_to_int(flow)?;
+            }
+        }
         Opcode::ConvertFloat => conversion_ops::convert_to_float(flow)?,
         Opcode::ConvertString => conversion_ops::convert_to_string(flow, program)?,
 
@@ -1276,6 +1293,14 @@ fn step_impl<R: crate::rng::StoryRng>(
             note_effect_write(flow, program, DefinitionId::RNG_CELL);
             rand_ops::rand_shuffle::<R>(flow, context)?;
         }
+
+        // ── NS-A5: range values + the inhabited-range refinement
+        // (#1111, `docs/stdlib-spec.md` §7, F7/F8). Construction and the
+        // `non_empty` validator are pure — no draw, no RNG-cell write;
+        // the draw leg of `int(range)` rides `ConvertInt` above. ────────
+        Opcode::RangeMakeExcl => range_ops::range_make(flow, false)?,
+        Opcode::RangeMakeIncl => range_ops::range_make(flow, true)?,
+        Opcode::RangeNonEmpty => range_ops::range_non_empty(flow)?,
 
         // ── External functions ──────────────────────────────────────
         Opcode::CallExternal(fn_id, arg_count) => {
@@ -1445,6 +1470,7 @@ fn value_type_name(v: &Value) -> &'static str {
         Value::Handle { .. } => "handle",
         Value::Projection(_) => "projection",
         Value::OptionVal(_) => "option",
+        Value::Range { .. } => "range",
     }
 }
 

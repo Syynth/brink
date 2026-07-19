@@ -485,6 +485,10 @@ fn collect_reads(expr: &Expr, sink: &mut impl FnMut(&String)) {
             }
         }
         Expr::RefArg(ra) => collect_reads(&ra.operand, sink),
+        Expr::Range(r) => {
+            collect_reads(&r.start, sink);
+            collect_reads(&r.end, sink);
+        }
         // Leaves with no local reads: literals, and static references (a
         // divert-target value / list literal names targets/items, not locals).
         Expr::Int(_)

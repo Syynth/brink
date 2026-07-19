@@ -162,6 +162,10 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
             .prop_map(|(items, origins)| Value::List(ListValue { items, origins }.into())),
         (arb_name_id(), any::<u64>()).prop_map(|(kind, id)| Value::handle(kind, id)),
         arb_def_id().prop_map(Value::FnRef),
+        // NS-A5 range values (F7): flat scalar leaf; the incl/excl written
+        // form must survive the textual round-trip bit-for-bit.
+        (any::<i32>(), any::<i32>(), any::<bool>())
+            .prop_map(|(start, end, inclusive)| Value::range(start, end, inclusive)),
     ]
 }
 
@@ -263,7 +267,8 @@ fn assert_value_variants_exhaustive(value: &Value) {
         | Value::Closure(_)
         | Value::Handle { .. }
         | Value::Projection(_)
-        | Value::OptionVal(_) => {}
+        | Value::OptionVal(_)
+        | Value::Range { .. } => {}
     }
 }
 
@@ -356,6 +361,9 @@ fn arb_opcode() -> impl Strategy<Value = Opcode> {
         Just(Opcode::RandChance),
         Just(Opcode::RandPick),
         Just(Opcode::RandShuffle),
+        Just(Opcode::RangeMakeExcl),
+        Just(Opcode::RangeMakeIncl),
+        Just(Opcode::RangeNonEmpty),
     ]
 }
 
@@ -510,6 +518,9 @@ fn assert_opcode_variants_exhaustive(op: &Opcode) {
         | Opcode::RandChance
         | Opcode::RandPick
         | Opcode::RandShuffle
+        | Opcode::RangeMakeExcl
+        | Opcode::RangeMakeIncl
+        | Opcode::RangeNonEmpty
         | Opcode::Done
         | Opcode::Yield
         | Opcode::End

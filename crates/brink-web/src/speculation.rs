@@ -404,6 +404,16 @@ enum TypedValueJs {
     Option {
         some: Option<Box<TypedValueJs>>,
     },
+    /// An integer range value ([`Value::Range`], NS-A5,
+    /// `docs/stdlib-spec.md` §7, F7) — the written form crosses losslessly:
+    /// `start`/`end` are the authored bounds, `inclusive` distinguishes
+    /// `..=` from `..` (content equality may identify `1..=6` and `1..7`;
+    /// the boundary preserves the spelling).
+    Range {
+        start: i32,
+        end: i32,
+        inclusive: bool,
+    },
 }
 
 /// One [`Value::Projection`] path segment, typed (`docs/format-v4-rfc.md`
@@ -538,6 +548,15 @@ fn value_to_typed_js(v: &Value, program: &brink_runtime::Program) -> TypedValueJ
             some: inner
                 .as_deref()
                 .map(|v| Box::new(value_to_typed_js(v, program))),
+        },
+        Value::Range {
+            start,
+            end,
+            inclusive,
+        } => TypedValueJs::Range {
+            start: *start,
+            end: *end,
+            inclusive: *inclusive,
         },
         Value::Null
         | Value::VariablePointer(_)

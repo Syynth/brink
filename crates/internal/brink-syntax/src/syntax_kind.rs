@@ -366,6 +366,17 @@ pub enum SyntaxKind {
     /// rejected at HIR lowering (E104).
     CALL_EXPR,
 
+    // ── NS-A5 range literals (docs/stdlib-spec.md §7, F7) ───────────
+    // `a..b` (exclusive) / `a..=b` (inclusive) — integer range values,
+    // joining the closed iterable set (`for i in 0..n`) and feeding the
+    // inhabited-range refinement (`int(1..=6)`, `non_empty(a..b)`).
+    // Superset grammar — always parses; dialect-gated (E051 under
+    // strict-ink) at analysis, same pattern as T1b/T1c. The operator is
+    // two adjacent `DOT` tokens (plus an adjacent `EQ` for `..=`) —
+    // detected in the Pratt loop like `||`/`++`, no new lexer token.
+    /// `start .. end` / `start ..= end` — a range literal expression.
+    RANGE_EXPR,
+
     // Not a real kind — used only for `rowan::Language::kind_to_raw` bounds.
     #[doc(hidden)]
     __LAST,

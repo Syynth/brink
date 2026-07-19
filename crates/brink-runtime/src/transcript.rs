@@ -92,6 +92,11 @@ const VAL_PROJECTION: u8 = 0x0E;
 /// `none`, 1 = `some`), then the inner value when `some` — mirrors the
 /// `.inkb` `VAL_OPTION` wire form exactly, like every tag above.
 const VAL_OPTION: u8 = 0x10;
+/// NS-A5 range value tag (`docs/stdlib-spec.md` §7, F7): start i32, end
+/// i32, one flag byte (0 = `..` exclusive, 1 = `..=` inclusive) — mirrors
+/// the `.inkb` `VAL_RANGE` wire form exactly. Flat: never recurses, no
+/// depth accounting (a range holds two ints, never another value).
+const VAL_RANGE: u8 = 0x11;
 const PROJ_SEG_INDEX: u8 = 0x00;
 const PROJ_SEG_KEY: u8 = 0x01;
 
@@ -677,6 +682,21 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
                 }
             }
         }
+        // Range values (NS-A5, F7): a range in a global/frame slot journals
+        // as an ordinary value — this is exactly the FlowFrame iterator-
+        // spill durability the F7 ruling demanded (`for i in 0..n` across
+        // an `await` parks its snapshot range in the frame record). The
+        // written form is preserved.
+        Value::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            write_u8(buf, VAL_RANGE);
+            write_i32(buf, *start);
+            write_i32(buf, *end);
+            write_u8(buf, u8::from(*inclusive));
+        }
     }
 }
 
@@ -827,6 +847,18 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Tran
             1 => Ok(Value::some(decode_value(buf, off, depth + 1)?)),
             other => Err(TranscriptError::InvalidValueTag(other)),
         },
+        // Range values (NS-A5, F7): flat — start, end, incl/excl flag; any
+        // other flag byte is corrupt input. No recursion, no depth.
+        VAL_RANGE => {
+            let start = read_i32(buf, off)?;
+            let end = read_i32(buf, off)?;
+            let inclusive = match read_u8(buf, off)? {
+                0 => false,
+                1 => true,
+                other => return Err(TranscriptError::InvalidValueTag(other)),
+            };
+            Ok(Value::range(start, end, inclusive))
+        }
         _ => Err(TranscriptError::InvalidValueTag(tag)),
     }
 }

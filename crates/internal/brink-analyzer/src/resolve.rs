@@ -867,6 +867,14 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "shuffle"
             | "shuffled"
             | "seed"
+            // NS-A5 (issue #1111, `docs/stdlib-spec.md` §7): the
+            // inhabited-range validator `non_empty(r)` →
+            // `Option[NonEmptyRange]`. Pure — no draw. `int(range)` (the
+            // draw leg) needs no entry: `int` is already listed above and
+            // the VM dispatches on the operand. Same slice-1 machinery:
+            // shadowable with E035, `strict-ink` rejection via the
+            // dialect gate.
+            | "non_empty"
     )
 }
 

@@ -143,6 +143,10 @@ pub fn iterate_element_ty(iterable: &Ty) -> Option<Ty> {
     match iterable {
         Ty::Array(elem) => Some((**elem).clone()),
         Ty::Map(key, _) => Some((**key).clone()),
+        // Ranges iterate their int elements (NS-A5, F7 — `for i in 0..n`;
+        // the refinement bit is irrelevant to iteration: an empty range
+        // runs zero times, emptiness is load-bearing).
+        Ty::Range { .. } => Some(Ty::Int),
         _ => None,
     }
 }

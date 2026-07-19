@@ -20,6 +20,7 @@ mod modules;
 mod option_conditions;
 mod option_rules;
 mod protocols;
+mod range_refinement;
 mod ref_projection;
 mod resolve;
 mod signature;
