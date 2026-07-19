@@ -126,6 +126,18 @@ pub fn record_fault(def: DefinitionId) {
 /// intrinsics, conversions, `ref` projections, value calls), or the
 /// ground-truth harness would report a false under-report.
 ///
+/// F34 note: `ComparatorWroteState` (dev-mode-only, like
+/// `UnorderedComparand`) is raisable only inside a comparator frame — a
+/// frame reachable only through `sort_by`/`sorted_by`'s value-call
+/// dispatch, whose call sites the static harvest conservatively marks as
+/// faulting (`check_value_call`'s dispatch-faults rule). The observation
+/// attributes the fault to the *comparator's* def (the scope executing at
+/// the write opcode), whose own static row need not carry a fault
+/// construct — acceptable because the write construct that triggers it is
+/// exactly what E119 rejects wherever the comparator's origin is provable,
+/// and no ground-truth corpus case runs an opaque writing comparator in
+/// dev mode.
+///
 /// Deliberately NOT tracked (not part of the dimension v1):
 /// - gradual-mode type errors (`TypeError`, `NotARecord`,
 ///   `RecordFieldNotFound`, …) — the strict-mode-eliminated species;
@@ -160,6 +172,7 @@ pub fn is_tracked_fault(e: &crate::RuntimeError) -> bool {
             | E::ComparatorNotAFunction { .. }
             | E::ComparatorReturnType { .. }
             | E::ComparatorEscaped { .. }
+            | E::ComparatorWroteState { .. }
     )
 }
 
