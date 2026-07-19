@@ -107,7 +107,11 @@ fn ty_to_inferred_type(ty: &Ty) -> Option<InferredType> {
         // variant represents a parameterized builtin; not a silent drop.
         // `Range` (NS-A5): same gap — no `InferredType` variant; not a
         // silent drop.
-        Ty::Array(_)
+        // `Tower` (NS-A8): same gap again — no `InferredType` variant
+        // represents a tower kind; the full `Ty::Tower` stays available
+        // via the annotation surfaces, not silently dropped.
+        Ty::Tower(_)
+        | Ty::Array(_)
         | Ty::Map(_, _)
         | Ty::Struct(_)
         | Ty::Fn(..)

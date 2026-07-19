@@ -530,6 +530,7 @@ fn classify(ty: &Ty) -> Escape {
         // `non_empty` refinement bit is evidence, not openness; a missing
         // refinement is E117's business (range_refinement), never an
         // Unknown-escape.
+        // (NS-A8 tower kinds are concrete leaves — clean, like scalars.)
         Ty::Int
         | Ty::Float
         | Ty::Bool
@@ -538,7 +539,8 @@ fn classify(ty: &Ty) -> Escape {
         | Ty::List(_)
         | Ty::Struct(_)
         | Ty::Handle(_)
-        | Ty::Range { .. } => Escape::Clean,
+        | Ty::Range { .. }
+        | Ty::Tower(_) => Escape::Clean,
     }
 }
 

@@ -30,7 +30,7 @@ use brink_ir::{
 };
 use rowan::TextRange;
 
-use super::ty::{Ty, unify, unify_all};
+use super::ty::{TowerTy, Ty, unify, unify_all};
 use super::{InferredSig, ValueCallFact, ValueCallKind, range_key};
 
 /// Read-only context shared by every body inferred in the same SCC round.
@@ -1414,7 +1414,10 @@ impl InferPass<'_, '_> {
             // (unlike `push`/`insert`/`remove` above, which do narrow their
             // container's element type). `int`'s arm lives above, merged
             // with `len` (both fixed `Ty::Int`, per clippy).
-            "float" => Ty::Float,
+            // (`dot` — NS-A8 — shares this fixed-`Ty::Float` return: the
+            // multi-kind vec2/3/4 domain is a runtime concern, so no
+            // `observe` narrowing, exactly like the conversions here.)
+            "float" | "dot" => Ty::Float,
             // `string` and `char_at(s, i)` (T1b stdlib slice 1 completion,
             // issue #857) both return a fixed `Ty::String` independent of
             // the argument — merged into one arm per clippy's
@@ -1454,11 +1457,27 @@ impl InferPass<'_, '_> {
                 }
                 Ty::Option(Box::new(Ty::Int))
             }
-            // `min`/`max`/`first`/`last` → `Option[T]` over `[T]` (§4).
-            "min" | "max" | "first" | "last" => match arg_tys.first() {
+            // `first`/`last` → `Option[T]` over `[T]` (§4).
+            "first" | "last" => match arg_tys.first() {
                 Some(Ty::Array(elem)) => Ty::Option(elem.clone()),
                 _ => Ty::Option(Box::new(Ty::Unknown)),
             },
+            // `min`/`max`: two call shapes since NS-A8 — the one-arg NS-A1
+            // array extremum (`Option[T]`) and the two-arg tower
+            // componentwise form (same-kind vectors → that kind).
+            "min" | "max" => {
+                if args.len() == 2 {
+                    match (arg_tys.first(), arg_tys.get(1)) {
+                        (Some(Ty::Tower(a)), Some(Ty::Tower(b))) if a == b => Ty::Tower(*a),
+                        _ => Ty::Unknown,
+                    }
+                } else {
+                    match arg_tys.first() {
+                        Some(Ty::Array(elem)) => Ty::Option(elem.clone()),
+                        _ => Ty::Option(Box::new(Ty::Unknown)),
+                    }
+                }
+            }
             // `pop(ref a)` → `Option[T]` (§4): the one A1 verb that is both
             // mutator and expression — records the receiver write exactly
             // like `push`/`insert`/`remove` above (the #880 lesson: the
@@ -1506,6 +1525,64 @@ impl InferPass<'_, '_> {
             // `some(x)` → `Option[typeof x]` (§1.4) — the constructor is
             // where a bare element type becomes optional.
             "some" => Ty::Option(Box::new(arg_tys.first().cloned().unwrap_or(Ty::Unknown))),
+            // ── NS-A8 numeric tower (issue #1114,
+            // `docs/tower-mini-spec.md`). Constructors return their kind;
+            // numeric lanes observe `float` (int lanes coerce through the
+            // one directional numeric join); matrix columns observe their
+            // column vector kind. Verbs type per the ruled §2b table;
+            // runtime domain checks (wrong operand kind) stay at
+            // `tower_ops`, the same split as every intrinsic above.
+            // (`dot` — fixed `Ty::Float`, multi-kind vec domain, so no
+            // `observe` narrowing — is merged into the `float` arm above
+            // per clippy match_same_arms.) ─────────────────────────────
+            "vec2" | "vec3" | "vec4" | "quat" => {
+                for lane in args {
+                    self.observe(lane, &Ty::Float);
+                }
+                match name {
+                    "vec2" => Ty::Tower(TowerTy::Vec2),
+                    "vec3" => Ty::Tower(TowerTy::Vec3),
+                    "vec4" => Ty::Tower(TowerTy::Vec4),
+                    _ => Ty::Tower(TowerTy::Quat),
+                }
+            }
+            "mat2" | "mat3" | "mat4" => {
+                let (col, ret) = match name {
+                    "mat2" => (TowerTy::Vec2, TowerTy::Mat2),
+                    "mat3" => (TowerTy::Vec3, TowerTy::Mat3),
+                    _ => (TowerTy::Vec4, TowerTy::Mat4),
+                };
+                for c in args {
+                    self.observe(c, &Ty::Tower(col));
+                }
+                Ty::Tower(ret)
+            }
+            // `cross(a, b)` → vec3 (vec3-only by signature — observed).
+            "cross" => {
+                for v in args {
+                    self.observe(v, &Ty::Tower(TowerTy::Vec3));
+                }
+                Ty::Tower(TowerTy::Vec3)
+            }
+            // `clamp(x, lo, hi)` — three same-kind vectors, componentwise.
+            "clamp" => match (arg_tys.first(), arg_tys.get(1), arg_tys.get(2)) {
+                (Some(Ty::Tower(x)), Some(Ty::Tower(lo)), Some(Ty::Tower(hi)))
+                    if x == lo && x == hi =>
+                {
+                    Ty::Tower(*x)
+                }
+                _ => Ty::Unknown,
+            },
+            // `lerp(a, b, t)` — same-kind vectors/quats with scalar `t`.
+            "lerp" => {
+                if let Some(t) = args.get(2) {
+                    self.observe(t, &Ty::Float);
+                }
+                match (arg_tys.first(), arg_tys.get(1)) {
+                    (Some(Ty::Tower(a)), Some(Ty::Tower(b))) if a == b => Ty::Tower(*a),
+                    _ => Ty::Unknown,
+                }
+            }
             // ── NS-A6 rand verbs (issue #1112, `docs/stdlib-spec.md`
             // §7). Effect harvest (the RNG-cell write) is above, before
             // the match; these arms carry only the typing rules. Runtime

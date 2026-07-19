@@ -377,7 +377,8 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
             relocate(name, map);
             remap_call_args(args, map);
         }
-        Expr::CallBuiltin { builtin: _, args } => {
+        // The NS-A8 tower family shares CallBuiltin's plain arg-list walk.
+        Expr::CallBuiltin { builtin: _, args } | Expr::Tower { op: _, args } => {
             for e in args {
                 remap_expr(e, map);
             }

@@ -62,6 +62,20 @@ pub enum ValueType {
     Option,
     /// An integer range value ([`Value::Range`]) — NS-A5, F7.
     Range,
+    /// A 2-lane f32 vector ([`Value::Vec2`]) — NS-A8, the numeric tower.
+    Vec2,
+    /// A 3-lane f32 vector ([`Value::Vec3`]) — NS-A8.
+    Vec3,
+    /// A 4-lane f32 vector ([`Value::Vec4`]) — NS-A8.
+    Vec4,
+    /// A rotation quaternion, `(x, y, z, w)` ([`Value::Quat`]) — NS-A8.
+    Quat,
+    /// A column-major 2×2 f32 matrix ([`Value::Mat2`]) — NS-A8.
+    Mat2,
+    /// A column-major 3×3 f32 matrix ([`Value::Mat3`]) — NS-A8.
+    Mat3,
+    /// A column-major 4×4 f32 matrix ([`Value::Mat4`]) — NS-A8.
+    Mat4,
 }
 
 /// A runtime value in the ink VM.
@@ -249,6 +263,83 @@ pub enum Value {
         /// for the `..` form (`end` is one past the last element).
         inclusive: bool,
     },
+    /// A 2-lane f32 vector (NS-A8, `docs/tower-mini-spec.md` T1: the tower
+    /// value kinds are **glam-backed** — glam is the in-memory compute type,
+    /// so vector/quaternion/matrix ops arrive correct-by-construction).
+    ///
+    /// Serde discipline (T5): the derive on `Value` routes every tower
+    /// variant through the hand-written lane modules in [`tower_serde`] —
+    /// explicit `x, y(, z, w)` lane order for vectors and the quat,
+    /// column-major column-by-column for matrices — NEVER glam's memory
+    /// representation (which varies with SIMD features and versions) and
+    /// never glam's own `serde` feature (kept off in `Cargo.toml`).
+    ///
+    /// Equality (T4): componentwise IEEE via glam's derived `PartialEq` — a
+    /// NaN-bearing vector never equals itself, `-0.0 == +0.0` per lane,
+    /// exactly like bare `Float`. Tower values are NOT orderable (§4b: a
+    /// vector in an ordering context is a `NotOrderable` fault) and are
+    /// never legal map keys (`MapKey::from_value` has no tower arms).
+    Vec2(#[serde(with = "tower_serde::vec2")] glam::Vec2),
+    /// A 3-lane f32 vector (NS-A8). The **unaligned** `glam::Vec3` (not
+    /// `Vec3A`) per the mini-spec — aligned variants would bloat every
+    /// `Value`. See [`Vec2`](Self::Vec2) for the shared tower discipline.
+    Vec3(#[serde(with = "tower_serde::vec3")] glam::Vec3),
+    /// A 4-lane f32 vector (NS-A8). See [`Vec2`](Self::Vec2).
+    Vec4(#[serde(with = "tower_serde::vec4")] glam::Vec4),
+    /// A rotation quaternion (NS-A8), lane order `(x, y, z, w)` per glam
+    /// (T3: conventions per glam, wholesale — right-handed, `quat * quat`
+    /// composes, `quat * vec` rotates). See [`Vec2`](Self::Vec2).
+    Quat(#[serde(with = "tower_serde::quat")] glam::Quat),
+    /// A column-major 2×2 f32 matrix (NS-A8, T2: all matrix sizes ship).
+    /// See [`Vec2`](Self::Vec2).
+    Mat2(#[serde(with = "tower_serde::mat2")] glam::Mat2),
+    /// A column-major 3×3 f32 matrix (NS-A8). The **unaligned** `glam::Mat3`
+    /// (not `Mat3A`). See [`Vec2`](Self::Vec2).
+    Mat3(#[serde(with = "tower_serde::mat3")] glam::Mat3),
+    /// A column-major 4×4 f32 matrix (NS-A8). See [`Vec2`](Self::Vec2).
+    Mat4(#[serde(with = "tower_serde::mat4")] glam::Mat4),
+}
+
+/// Hand-written serde lane codecs for the tower variants (NS-A8,
+/// `docs/tower-mini-spec.md` T5): each type serializes as its flat lane
+/// array — vectors and the quat as `[x, y(, z, w)]`, matrices as their
+/// column-major `to_cols_array()` — and deserializes back through glam's
+/// explicit `from_array`/`from_cols_array` constructors. Glam computes; the
+/// serialized form is ours: no glam memory layout, no serde-through-glam.
+pub mod tower_serde {
+    /// Expand one lane codec module: `to`/`from` are the explicit
+    /// lane-array conversions (never a memory-layout cast). Matrix `from`
+    /// constructors (`from_cols_array`) take the array by reference, hence
+    /// the closure rather than a bare path.
+    macro_rules! lane_codec {
+        ($name:ident, $ty:ty, $lanes:literal, $to:ident, |$a:ident| $from:expr) => {
+            pub mod $name {
+                use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+                pub fn serialize<S: Serializer>(v: &$ty, s: S) -> Result<S::Ok, S::Error> {
+                    v.$to().serialize(s)
+                }
+
+                pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<$ty, D::Error> {
+                    <[f32; $lanes]>::deserialize(d).map(|$a| $from)
+                }
+            }
+        };
+    }
+
+    lane_codec!(vec2, glam::Vec2, 2, to_array, |a| glam::Vec2::from_array(a));
+    lane_codec!(vec3, glam::Vec3, 3, to_array, |a| glam::Vec3::from_array(a));
+    lane_codec!(vec4, glam::Vec4, 4, to_array, |a| glam::Vec4::from_array(a));
+    lane_codec!(quat, glam::Quat, 4, to_array, |a| glam::Quat::from_array(a));
+    lane_codec!(mat2, glam::Mat2, 4, to_cols_array, |a| {
+        glam::Mat2::from_cols_array(&a)
+    });
+    lane_codec!(mat3, glam::Mat3, 9, to_cols_array, |a| {
+        glam::Mat3::from_cols_array(&a)
+    });
+    lane_codec!(mat4, glam::Mat4, 16, to_cols_array, |a| {
+        glam::Mat4::from_cols_array(&a)
+    });
 }
 
 /// The payload of a [`Value::Projection`] — the root cell plus its ordered
@@ -350,6 +441,13 @@ impl Value {
             Self::Projection(_) => ValueType::Projection,
             Self::OptionVal(_) => ValueType::Option,
             Self::Range { .. } => ValueType::Range,
+            Self::Vec2(_) => ValueType::Vec2,
+            Self::Vec3(_) => ValueType::Vec3,
+            Self::Vec4(_) => ValueType::Vec4,
+            Self::Quat(_) => ValueType::Quat,
+            Self::Mat2(_) => ValueType::Mat2,
+            Self::Mat3(_) => ValueType::Mat3,
+            Self::Mat4(_) => ValueType::Mat4,
         }
     }
 
@@ -552,6 +650,65 @@ impl Value {
         }
     }
 
+    /// Extract the glam payload if this value is a [`Vec2`](Self::Vec2) —
+    /// the NS-A8 identity-marshal read for binding authors (T1: glam is the
+    /// compute type on both sides of the boundary). Strict like
+    /// [`as_int`](Self::as_int): no cross-kind coercion.
+    pub fn as_vec2(&self) -> Option<glam::Vec2> {
+        match self {
+            Self::Vec2(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Extract the glam payload if this value is a [`Vec3`](Self::Vec3).
+    pub fn as_vec3(&self) -> Option<glam::Vec3> {
+        match self {
+            Self::Vec3(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Extract the glam payload if this value is a [`Vec4`](Self::Vec4).
+    pub fn as_vec4(&self) -> Option<glam::Vec4> {
+        match self {
+            Self::Vec4(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Extract the glam payload if this value is a [`Quat`](Self::Quat).
+    pub fn as_quat(&self) -> Option<glam::Quat> {
+        match self {
+            Self::Quat(q) => Some(*q),
+            _ => None,
+        }
+    }
+
+    /// Extract the glam payload if this value is a [`Mat2`](Self::Mat2).
+    pub fn as_mat2(&self) -> Option<glam::Mat2> {
+        match self {
+            Self::Mat2(m) => Some(*m),
+            _ => None,
+        }
+    }
+
+    /// Extract the glam payload if this value is a [`Mat3`](Self::Mat3).
+    pub fn as_mat3(&self) -> Option<glam::Mat3> {
+        match self {
+            Self::Mat3(m) => Some(*m),
+            _ => None,
+        }
+    }
+
+    /// Extract the glam payload if this value is a [`Mat4`](Self::Mat4).
+    pub fn as_mat4(&self) -> Option<glam::Mat4> {
+        match self {
+            Self::Mat4(m) => Some(*m),
+            _ => None,
+        }
+    }
+
     /// Borrow the array payload if this value is an [`Array`](Self::Array).
     ///
     /// Read-only: the returned slice never triggers a copy. Mutation uses
@@ -711,6 +868,19 @@ impl PartialEq for Value {
                     _ => false,
                 }
             }
+            // Tower equality (NS-A8, `docs/tower-mini-spec.md` T4):
+            // componentwise IEEE via glam's own `PartialEq` — a NaN lane
+            // makes a value unequal to *itself*, `-0.0 == +0.0` per lane,
+            // exactly like the bare `Float` arm above. Cross-kind pairs
+            // (`Vec2` vs `Vec3`) fall through to `false` below, like every
+            // other cross-variant pair.
+            (Self::Vec2(a), Self::Vec2(b)) => a == b,
+            (Self::Vec3(a), Self::Vec3(b)) => a == b,
+            (Self::Vec4(a), Self::Vec4(b)) => a == b,
+            (Self::Quat(a), Self::Quat(b)) => a == b,
+            (Self::Mat2(a), Self::Mat2(b)) => a == b,
+            (Self::Mat3(a), Self::Mat3(b)) => a == b,
+            (Self::Mat4(a), Self::Mat4(b)) => a == b,
             _ => false,
         }
     }
@@ -757,6 +927,53 @@ impl From<()> for Value {
     /// fire-and-forget external that produces no value.
     fn from((): ()) -> Self {
         Self::Null
+    }
+}
+
+// NS-A8: identity conversions from the glam compute types (T1 — "one
+// workspace-pinned glam version shared with bevy-brink → the bevy marshal is
+// identity on the same types"). A host binding returning `impl Into<Value>`
+// can hand back a `glam::Vec3` directly.
+
+impl From<glam::Vec2> for Value {
+    fn from(v: glam::Vec2) -> Self {
+        Self::Vec2(v)
+    }
+}
+
+impl From<glam::Vec3> for Value {
+    fn from(v: glam::Vec3) -> Self {
+        Self::Vec3(v)
+    }
+}
+
+impl From<glam::Vec4> for Value {
+    fn from(v: glam::Vec4) -> Self {
+        Self::Vec4(v)
+    }
+}
+
+impl From<glam::Quat> for Value {
+    fn from(v: glam::Quat) -> Self {
+        Self::Quat(v)
+    }
+}
+
+impl From<glam::Mat2> for Value {
+    fn from(v: glam::Mat2) -> Self {
+        Self::Mat2(v)
+    }
+}
+
+impl From<glam::Mat3> for Value {
+    fn from(v: glam::Mat3) -> Self {
+        Self::Mat3(v)
+    }
+}
+
+impl From<glam::Mat4> for Value {
+    fn from(v: glam::Mat4) -> Self {
+        Self::Mat4(v)
     }
 }
 
@@ -1224,6 +1441,55 @@ mod tests {
     // actually walks) must reject the same way as the bare `OrderedMap` case
     // above — the duplicate-key check has to fire through `Value`'s derived
     // `Deserialize` too, not just when `OrderedMap` is deserialized directly.
+    // ── NS-A8 tower: equality + serde lane discipline ──────────────────
+
+    #[test]
+    fn tower_equality_is_componentwise_ieee() {
+        let a = Value::Vec2(glam::Vec2::new(1.0, 2.0));
+        assert_eq!(a, Value::Vec2(glam::Vec2::new(1.0, 2.0)));
+        // -0 == +0 per lane; a NaN lane never equals itself (T4).
+        assert_eq!(
+            Value::Vec2(glam::Vec2::new(-0.0, 1.0)),
+            Value::Vec2(glam::Vec2::new(0.0, 1.0))
+        );
+        let nan = Value::Vec3(glam::Vec3::new(f32::NAN, 0.0, 0.0));
+        assert_ne!(nan.clone(), nan);
+        // Cross-kind is plain inequality at the value layer.
+        assert_ne!(a, Value::Vec3(glam::Vec3::new(1.0, 2.0, 0.0)));
+    }
+
+    /// T5: the serde form is the flat lane array — explicit lanes
+    /// (column-major for matrices), never glam's memory representation.
+    #[test]
+    fn tower_serde_is_flat_lane_arrays() {
+        let v = Value::Vec3(glam::Vec3::new(1.0, 2.5, -3.0));
+        let json = serde_json::to_string(&v).expect("serialize");
+        assert_eq!(json, r#"{"Vec3":[1.0,2.5,-3.0]}"#);
+        let back: Value = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, v);
+
+        let m = Value::Mat2(glam::Mat2::from_cols_array(&[1.0, 2.0, 3.0, 4.0]));
+        let json = serde_json::to_string(&m).expect("serialize");
+        assert_eq!(json, r#"{"Mat2":[1.0,2.0,3.0,4.0]}"#);
+        let back: Value = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, m);
+
+        let q = Value::Quat(glam::Quat::from_xyzw(0.1, 0.2, 0.3, 0.4));
+        let back: Value = serde_json::from_str(&serde_json::to_string(&q).expect("serialize"))
+            .expect("deserialize");
+        assert_eq!(back, q);
+    }
+
+    #[test]
+    fn tower_accessors_and_from_impls_are_identity() {
+        let v = glam::Vec3::new(1.0, 2.0, 3.0);
+        assert_eq!(Value::from(v).as_vec3(), Some(v));
+        assert_eq!(Value::from(v).as_vec2(), None);
+        let m = glam::Mat4::IDENTITY;
+        assert_eq!(Value::from(m).as_mat4(), Some(m));
+        assert_eq!(Value::Int(1).as_quat(), None);
+    }
+
     #[test]
     fn value_map_deserialize_rejects_duplicate_key() {
         let json = r#"{"Map":{"entries":[[{"Str":"a"},{"Int":1}],[{"Str":"a"},{"Int":2}]]}}"#;

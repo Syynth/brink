@@ -21,8 +21,9 @@ use super::{
     HEADER_PREAMBLE, KEY_CARDINAL, KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN, LINE_TEMPLATE,
     MAGIC, PART_LITERAL, PART_SELECT, PART_SLOT, PROJ_SEG_INDEX, PROJ_SEG_KEY, SECTION_COUNT,
     SECTION_ENTRY_SIZE, SectionKind, VAL_ARRAY, VAL_BOOL, VAL_CLOSURE, VAL_DIVERT_TARGET,
-    VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT, VAL_LIST, VAL_MAP, VAL_NULL,
-    VAL_OPTION, VAL_PROJECTION, VAL_RANGE, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION,
+    VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT, VAL_LIST, VAL_MAP, VAL_MAT2,
+    VAL_MAT3, VAL_MAT4, VAL_NULL, VAL_OPTION, VAL_PROJECTION, VAL_QUAT, VAL_RANGE, VAL_RECORD,
+    VAL_STRING, VAL_VAR_POINTER, VAL_VEC2, VAL_VEC3, VAL_VEC4, VERSION,
 };
 
 // ── Tier 1: Full story write ────────────────────────────────────────────────
@@ -335,8 +336,27 @@ fn encode_value_type(vt: ValueType, buf: &mut Vec<u8>) {
         ValueType::Option => VAL_OPTION,
         // NS-A5 range value type (F7).
         ValueType::Range => VAL_RANGE,
+        // NS-A8 numeric tower value types.
+        ValueType::Vec2 => VAL_VEC2,
+        ValueType::Vec3 => VAL_VEC3,
+        ValueType::Vec4 => VAL_VEC4,
+        ValueType::Quat => VAL_QUAT,
+        ValueType::Mat2 => VAL_MAT2,
+        ValueType::Mat3 => VAL_MAT3,
+        ValueType::Mat4 => VAL_MAT4,
     };
     write_u8(buf, tag);
+}
+
+/// NS-A8 (`docs/tower-mini-spec.md` T5): write tower lanes as explicit
+/// little-endian f32s, one by one — the hand-serialized wire form. The
+/// caller supplies the lanes in the pinned order (vec/quat `x, y(, z, w)`;
+/// matrices column-major via `to_cols_array`), always from glam's explicit
+/// array conversions — never from glam's memory representation.
+fn write_f32_lanes(buf: &mut Vec<u8>, lanes: &[f32]) {
+    for lane in lanes {
+        buf.extend_from_slice(&lane.to_le_bytes());
+    }
 }
 
 #[expect(clippy::cast_possible_truncation)]
@@ -489,6 +509,42 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
             write_i32(buf, *start);
             write_i32(buf, *end);
             write_u8(buf, u8::from(*inclusive));
+        }
+        // Tower values (NS-A8, `docs/tower-mini-spec.md` T5): explicit
+        // little-endian f32 lanes in the pinned order — vectors and the
+        // quat `x, y(, z, w)`, matrices column-major column-by-column via
+        // glam's `to_cols_array` (an explicit conversion, never a memory
+        // cast). Fixed sizes, no counts, no recursion. Like `VAL_HANDLE`
+        // above, no opcode literal produces one at compile time today
+        // (construction is the runtime `Tower` opcode) — saves, transcripts
+        // and future const-folding are the wire consumers.
+        Value::Vec2(v) => {
+            write_u8(buf, VAL_VEC2);
+            write_f32_lanes(buf, &v.to_array());
+        }
+        Value::Vec3(v) => {
+            write_u8(buf, VAL_VEC3);
+            write_f32_lanes(buf, &v.to_array());
+        }
+        Value::Vec4(v) => {
+            write_u8(buf, VAL_VEC4);
+            write_f32_lanes(buf, &v.to_array());
+        }
+        Value::Quat(q) => {
+            write_u8(buf, VAL_QUAT);
+            write_f32_lanes(buf, &q.to_array());
+        }
+        Value::Mat2(m) => {
+            write_u8(buf, VAL_MAT2);
+            write_f32_lanes(buf, &m.to_cols_array());
+        }
+        Value::Mat3(m) => {
+            write_u8(buf, VAL_MAT3);
+            write_f32_lanes(buf, &m.to_cols_array());
+        }
+        Value::Mat4(m) => {
+            write_u8(buf, VAL_MAT4);
+            write_f32_lanes(buf, &m.to_cols_array());
         }
     }
 }

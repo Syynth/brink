@@ -1423,3 +1423,121 @@ fn roundtrip_invisible_container_flag() {
     );
     assert_eq!(data, recovered);
 }
+
+/// NS-A8 (`docs/tower-mini-spec.md` T5): first emission of the
+/// `VAL_VEC2`..`VAL_MAT4` wire tags — write→read identity for tower-valued
+/// globals, bare and nested inside a collection. The wire is explicit
+/// little-endian f32 lanes (vec/quat `x, y(, z, w)`; matrices column-major
+/// column-by-column), never glam's memory layout.
+#[test]
+fn roundtrip_tower_valued_globals() {
+    use brink_format::{DefinitionId, DefinitionTag, GlobalVarDef, NameId, Value, ValueType};
+
+    let mut data = i001_data();
+    let next_id = data.variables.len() as u64;
+
+    let towers = [
+        (ValueType::Vec2, Value::Vec2(glam::Vec2::new(1.5, -2.25))),
+        (
+            ValueType::Vec3,
+            Value::Vec3(glam::Vec3::new(0.0, -0.0, f32::MAX)),
+        ),
+        (
+            ValueType::Vec4,
+            Value::Vec4(glam::Vec4::new(1.0, 2.0, 3.0, 4.0)),
+        ),
+        (
+            ValueType::Quat,
+            Value::Quat(glam::Quat::from_xyzw(0.5, -0.5, 0.5, 0.5)),
+        ),
+        (
+            ValueType::Mat2,
+            Value::Mat2(glam::Mat2::from_cols_array(&[1.0, 2.0, 3.0, 4.0])),
+        ),
+        (
+            ValueType::Mat3,
+            Value::Mat3(glam::Mat3::from_cols_array(&[
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0,
+            ])),
+        ),
+        (
+            ValueType::Mat4,
+            Value::Mat4(glam::Mat4::from_cols_array(&[
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
+                16.0,
+            ])),
+        ),
+    ];
+    for (i, (vt, v)) in towers.iter().enumerate() {
+        data.variables.push(GlobalVarDef {
+            id: DefinitionId::new(DefinitionTag::GlobalVar, next_id + i as u64),
+            name: NameId(0),
+            value_type: *vt,
+            default_value: v.clone(),
+            mutable: true,
+            local: false,
+        });
+    }
+    // Nested inside a collection, like the handle/projection tests above.
+    data.variables.push(GlobalVarDef {
+        id: DefinitionId::new(DefinitionTag::GlobalVar, next_id + 7),
+        name: NameId(0),
+        value_type: ValueType::Array,
+        default_value: Value::array(vec![
+            Value::Vec2(glam::Vec2::ONE),
+            Value::some(Value::Vec3(glam::Vec3::Z)),
+        ]),
+        mutable: true,
+        local: false,
+    });
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
+    assert_eq!(data, recovered);
+}
+
+/// NS-A8 (`docs/tower-mini-spec.md` T4/T5): a NaN lane must cross the wire
+/// bit-for-bit even though the value no longer compares equal to itself —
+/// compared here by lane *bits*, not `PartialEq` (which correctly reads
+/// `false` for a NaN-bearing vector).
+#[test]
+fn tower_nan_lane_crosses_the_wire_bit_exact() {
+    use brink_format::{DefinitionId, DefinitionTag, GlobalVarDef, NameId, Value, ValueType};
+
+    let mut data = i001_data();
+    let next_id = data.variables.len() as u64;
+    let lanes = [f32::NAN, f32::NEG_INFINITY, -0.0];
+    data.variables.push(GlobalVarDef {
+        id: DefinitionId::new(DefinitionTag::GlobalVar, next_id),
+        name: NameId(0),
+        value_type: ValueType::Vec3,
+        default_value: Value::Vec3(glam::Vec3::from_array(lanes)),
+        mutable: true,
+        local: false,
+    });
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+    let recovered = read_inkb(&buf).unwrap();
+
+    let recovered_value = &recovered
+        .variables
+        .last()
+        .expect("tower global present")
+        .default_value;
+    let Value::Vec3(v) = recovered_value else {
+        unreachable!("expected Vec3, got {recovered_value:?}");
+    };
+    let got = v.to_array();
+    for (i, lane) in lanes.iter().enumerate() {
+        assert_eq!(
+            lane.to_bits(),
+            got[i].to_bits(),
+            "lane {i} drifted: {lane} -> {}",
+            got[i]
+        );
+    }
+}

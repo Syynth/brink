@@ -250,3 +250,49 @@ fn all_four_families_together_roundtrip() {
     ));
     assert_roundtrips(&story);
 }
+
+/// NS-A8 (`docs/tower-mini-spec.md`): the tower opcode family (one opcode,
+/// thirteen kinds, mnemonic-per-kind in `.inkt`) plus the seven tower value
+/// atoms (`(vec2 …)` … `(mat4 …)`) — reader landing with the writer in the
+/// same PR, per the #742 dump/reader-parity discipline every family above
+/// follows. Lane order is pinned: vec/quat `x y (z w)`; matrices
+/// column-major, column-by-column.
+#[test]
+fn tower_family_roundtrips() {
+    let mut story = empty_story();
+    let ops: Vec<Opcode> = brink_format::TowerOp::ALL
+        .into_iter()
+        .map(Opcode::Tower)
+        .collect();
+    push_container_with_bytecode(&mut story, 6, &ops);
+    story
+        .variables
+        .push(global(1, Value::Vec2(glam::Vec2::new(1.0, -2.5))));
+    story
+        .variables
+        .push(global(2, Value::Vec3(glam::Vec3::new(0.5, 1.5, -3.0))));
+    story
+        .variables
+        .push(global(3, Value::Vec4(glam::Vec4::new(1.0, 2.0, 3.0, 4.0))));
+    story.variables.push(global(
+        4,
+        Value::Quat(glam::Quat::from_xyzw(0.0, 0.0, 0.0, 1.0)),
+    ));
+    story.variables.push(global(
+        5,
+        Value::Mat2(glam::Mat2::from_cols_array(&[1.0, 2.0, 3.0, 4.0])),
+    ));
+    story.variables.push(global(
+        6,
+        Value::Mat3(glam::Mat3::from_cols_array(&[
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0,
+        ])),
+    ));
+    story.variables.push(global(
+        7,
+        Value::Mat4(glam::Mat4::from_cols_array(&[
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+        ])),
+    ));
+    assert_roundtrips(&story);
+}

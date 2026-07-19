@@ -18,6 +18,10 @@ all-features = true
 # Cargo won't let a member override when the workspace table leaves
 # `default-features` implicit. Versions match `workspace.dependencies`.
 brink-format = { path = "../internal/brink-format", version = "0.0.11", default-features = false }
+# NS-A8 numeric tower (T1): glam is the in-memory compute type. The
+# workspace table pins `default-features = false` + `libm` — no_std-clean,
+# and glam's `serde` feature stays OFF (T5: the wire is hand-written lanes).
+glam = { workspace = true }
 serde = { version = "1", default-features = false, features = ["alloc", "derive", "rc"] }
 thiserror = { version = "2", default-features = false }
 

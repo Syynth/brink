@@ -424,6 +424,7 @@ fn every_case_directory_has_a_test() {
         "option-verbs",
         "rand-verbs",
         "range-values",
+        "numeric-tower",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink")
@@ -2075,6 +2076,18 @@ fn fn_value_inside_a_map_save_load_invoke_equals_direct_invoke() {
 #[test]
 fn option_verbs_end_to_end() {
     assert_case("option-verbs");
+}
+
+/// NS-A8 (`docs/tower-mini-spec.md`, issue #1114): the numeric tower end to
+/// end in the brink dialect — constructors (int lanes promote), the ruled
+/// operator table (componentwise `+`/`-`/`*`, scalar scale both orders,
+/// negation, `quat * vec` rotation, `mat * vec` transform), `dot`/`cross`,
+/// the tower-wide two-arg `min`/`max` plus `clamp`/`lerp`, glam-named
+/// component access (`a.x`, `m.y_axis`), componentwise-IEEE equality, and
+/// the structural display default (`vec3 { x: …, … }`).
+#[test]
+fn numeric_tower_end_to_end() {
+    assert_case("numeric-tower");
 }
 
 #[test]

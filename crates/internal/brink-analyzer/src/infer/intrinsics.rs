@@ -85,6 +85,21 @@ pub(crate) fn intrinsic_effects(name: &str, arg_count: usize) -> IntrinsicEffect
                 | "non_empty"
                 | "INT"
                 | "FLOAT"
+                // NS-A8 tower (issue #1114): constructors fault on
+                // non-numeric lanes / wrong-kind columns, verbs on wrong
+                // operand kinds (`StdlibWrongType`) — all otherwise pure
+                // (no draws, no writes, no emits).
+                | "vec2"
+                | "vec3"
+                | "vec4"
+                | "quat"
+                | "mat2"
+                | "mat3"
+                | "mat4"
+                | "dot"
+                | "cross"
+                | "clamp"
+                | "lerp"
         );
     let rng_write = is_rand_float_draw
         || matches!(

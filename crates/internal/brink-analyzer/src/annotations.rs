@@ -38,7 +38,21 @@ use crate::infer::{InferenceResult, Ty};
 fn is_known_leaf(name: &str) -> bool {
     matches!(
         name,
-        "int" | "float" | "bool" | "string" | "divert" | "void"
+        "int"
+            | "float"
+            | "bool"
+            | "string"
+            | "divert"
+            | "void"
+            // NS-A8 (`docs/tower-mini-spec.md`): the tower kinds are
+            // global type names like `int` (stdlib-spec §2b).
+            | "vec2"
+            | "vec3"
+            | "vec4"
+            | "quat"
+            | "mat2"
+            | "mat3"
+            | "mat4"
     )
 }
 
@@ -126,6 +140,12 @@ pub fn resolve(te: &brink_ir::TypeExpr, names: &TypeNames) -> Option<Ty> {
             "bool" => Some(Ty::Bool),
             "string" => Some(Ty::String),
             "divert" => Some(Ty::Divert),
+            // NS-A8 tower kinds — checked before the struct lookup, so a
+            // STRUCT can never shadow a tower type name (the same ordering
+            // that keeps `int`/`float` unshadowable).
+            _ if crate::infer::TowerTy::from_name(name).is_some() => {
+                crate::infer::TowerTy::from_name(name).map(Ty::Tower)
+            }
             _ if names.structs.contains(name) => Some(Ty::Struct(name.clone())),
             _ => None, // "void", or an unrecognized/unknown name
         },
@@ -250,8 +270,8 @@ fn check_one(te: &brink_ir::TypeExpr, names: &TypeNames, file: FileId, out: &mut
                     range: *range,
                     message: format!(
                         "`{name}` is not a recognized type — expected int, float, bool, \
-                         string, divert, void, list<L>, array<T>, map<K, V>, handle<K>, or a \
-                         declared STRUCT name"
+                         string, divert, void, a tower kind (vec2/vec3/vec4/quat/mat2/mat3/mat4), \
+                         list<L>, array<T>, map<K, V>, handle<K>, or a declared STRUCT name"
                     ),
                     code: DiagnosticCode::E061,
                 });

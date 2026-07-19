@@ -111,6 +111,16 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
             .prop_map(|(target, env)| Value::closure(target, env)),
         // Handle values (T1d, docs/t1d-spec.md §2).
         (arb_name_id(), any::<u64>()).prop_map(|(kind, id)| Value::handle(kind, id)),
+        // NS-A8 tower values (docs/tower-mini-spec.md T5): lane families
+        // rebuilt through glam's explicit array constructors, so every
+        // save/suspend round-trip law reaches the hand-written lane codecs.
+        any::<[f32; 2]>().prop_map(|l| Value::Vec2(glam::Vec2::from_array(l))),
+        any::<[f32; 3]>().prop_map(|l| Value::Vec3(glam::Vec3::from_array(l))),
+        any::<[f32; 4]>().prop_map(|l| Value::Vec4(glam::Vec4::from_array(l))),
+        any::<[f32; 4]>().prop_map(|l| Value::Quat(glam::Quat::from_array(l))),
+        any::<[f32; 4]>().prop_map(|l| Value::Mat2(glam::Mat2::from_cols_array(&l))),
+        any::<[f32; 9]>().prop_map(|l| Value::Mat3(glam::Mat3::from_cols_array(&l))),
+        any::<[f32; 16]>().prop_map(|l| Value::Mat4(glam::Mat4::from_cols_array(&l))),
     ]
 }
 
@@ -221,6 +231,13 @@ fn assert_value_variants_exhaustive(value: &Value) {
         | Value::Handle { .. }
         | Value::Projection(_)
         | Value::OptionVal(_)
-        | Value::Range { .. } => {}
+        | Value::Range { .. }
+        | Value::Vec2(_)
+        | Value::Vec3(_)
+        | Value::Vec4(_)
+        | Value::Quat(_)
+        | Value::Mat2(_)
+        | Value::Mat3(_)
+        | Value::Mat4(_) => {}
     }
 }

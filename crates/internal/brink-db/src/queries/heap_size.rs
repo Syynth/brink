@@ -92,6 +92,7 @@ fn ty_heap(ty: &Ty) -> usize {
         | Ty::String
         | Ty::Divert
         | Ty::Range { .. }
+        | Ty::Tower(_)
         | Ty::Unknown
         | Ty::Conflicted => 0,
         Ty::List(name) | Ty::Struct(name) | Ty::Handle(name) => string_heap(name),

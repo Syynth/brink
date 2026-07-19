@@ -58,6 +58,24 @@ pub(crate) fn record_get_dyn(
     name_id: u16,
 ) -> Result<(), RuntimeError> {
     let record = flow.pop_value()?;
+    // Tower component access (NS-A8): `v.x` / `m.x_axis` parses as the same
+    // dynamic field read a struct uses, so the tower's pure accessors hang
+    // off this op — glam's component vocabulary, resolved by name. An
+    // unknown component on a tower value is a turn-terminating fault, same
+    // shape as a missing struct field.
+    if crate::value_ops::is_tower(&record) {
+        let name = program
+            .name_checked(NameId(name_id))
+            .ok_or(RuntimeError::InvalidNameId(name_id))?;
+        let Some(component) = crate::tower_ops::tower_component(&record, name) else {
+            return Err(RuntimeError::TypeError(alloc::format!(
+                "`{}` has no component `{name}`",
+                type_name(&record)
+            )));
+        };
+        flow.value_stack.push(component);
+        return Ok(());
+    }
     let value = read_field(program, &record, NameId(name_id))?.clone();
     flow.value_stack.push(value);
     Ok(())
@@ -74,6 +92,15 @@ pub(crate) fn record_set_dyn(
 ) -> Result<(), RuntimeError> {
     let value = flow.pop_value()?;
     let mut record = flow.pop_value()?;
+    // Tower values (NS-A8) are immutable compounds — components are
+    // read-only accessors; writes construct a new value. Explicit fault
+    // rather than the generic not-a-record wording.
+    if crate::value_ops::is_tower(&record) {
+        return Err(RuntimeError::TypeError(alloc::format!(
+            "`{}` components are read-only — construct a new value instead",
+            type_name(&record)
+        )));
+    }
     let idx = field_index(program, &record, NameId(name_id))?;
     note_record_mutation(&record);
     let Some(fields) = record.record_make_mut() else {
@@ -183,6 +210,13 @@ fn type_name(v: &Value) -> &'static str {
         Value::Projection(_) => "projection",
         Value::OptionVal(_) => "option",
         Value::Range { .. } => "range",
+        Value::Vec2(_) => "vec2",
+        Value::Vec3(_) => "vec3",
+        Value::Vec4(_) => "vec4",
+        Value::Quat(_) => "quat",
+        Value::Mat2(_) => "mat2",
+        Value::Mat3(_) => "mat3",
+        Value::Mat4(_) => "mat4",
     }
 }
 
