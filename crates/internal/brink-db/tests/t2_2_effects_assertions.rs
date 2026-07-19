@@ -383,7 +383,11 @@ fn pure_assertion_exceeded_by_the_frozen_ink_spelling_too() {
     // because `infer_intrinsic` has no typing arm for the frozen ink
     // spellings (they fall through to `Unknown`) — a pre-existing strict-
     // inference gap, visible under the Brink dialect's strict default.
-    let diags = analyze("=== function roll(): int ===\n@[effects(pure)]\n~ return RANDOM(1, 6)\n");
+    // (The fixture was named `roll` until NS-A7 claimed that name for the
+    // `Weighted` draw verb — the E035 shadow warning this fixture would
+    // now also carry is the shadowing machinery working as designed, but
+    // it is not what this test is about, so the def is `d6` now.)
+    let diags = analyze("=== function d6(): int ===\n@[effects(pure)]\n~ return RANDOM(1, 6)\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E103], "{diags:?}");
     assert!(diags[0].message.contains("rng"), "{diags:?}");
 }
