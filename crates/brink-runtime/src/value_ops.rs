@@ -12,8 +12,12 @@ use crate::error::RuntimeError;
 use crate::program::Program;
 
 /// Returns whether a value is truthy in ink semantics.
-pub(crate) fn is_truthy(v: &Value) -> bool {
-    match v {
+///
+/// Fallible since F27 (`docs/stdlib-spec.md` §1.6, ruled 2026-07-19, issue
+/// #1120): a `Value::OptionVal` in truthiness position is the one input with
+/// no truthiness at all — see the arm's own comment.
+pub(crate) fn is_truthy(v: &Value) -> Result<bool, RuntimeError> {
+    Ok(match v {
         Value::Bool(b) => *b,
         Value::Int(n) => *n != 0,
         Value::Float(n) => *n != 0.0,
@@ -38,16 +42,18 @@ pub(crate) fn is_truthy(v: &Value) -> bool {
         | Value::Closure(_)
         | Value::Handle { .. }
         | Value::Projection(_) => true,
-        // Option truthiness (NS-A1): absence is falsy, presence truthy —
-        // `none` reads like the empty collection / `Null` above (`{r: …}`
-        // is the natural "did we find one?" guard); `some(x)` is truthy
-        // regardless of `x` (the *presence* answers the question — a
-        // found `some(0)` is still found).
-        Value::OptionVal(inner) => inner.is_some(),
+        // F27 (ruled 2026-07-19, issue #1120): Option has **no** truthiness
+        // — a condition-position `Option[T]` is a compile error under
+        // `types = strict` (E116) and this turn-terminating fault under
+        // gradual. The falsy-none arm NS-A1 shipped here (`none` falsy,
+        // `some(x)` truthy — the `{r: …}` "did we find one?" guard) was a
+        // quiet coercion of exactly the kind `Option[T] ≠ T` exists to ban;
+        // authors write `== none` / `== some(x)` instead.
+        Value::OptionVal(_) => return Err(RuntimeError::OptionTruthiness),
         Value::List(lv) => !lv.items.is_empty(),
         Value::Array(items) => !items.is_empty(),
         Value::Map(map) => !map.is_empty(),
-    }
+    })
 }
 
 /// Stringify a value for output.
@@ -1069,15 +1075,35 @@ mod tests {
 
     #[test]
     fn truthiness() {
-        assert!(is_truthy(&Value::Bool(true)));
-        assert!(!is_truthy(&Value::Bool(false)));
-        assert!(is_truthy(&Value::Int(1)));
-        assert!(!is_truthy(&Value::Int(0)));
-        assert!(is_truthy(&Value::Float(0.1)));
-        assert!(!is_truthy(&Value::Float(0.0)));
-        assert!(is_truthy(&Value::String("hi".into())));
-        assert!(!is_truthy(&Value::String("".into())));
-        assert!(!is_truthy(&Value::Null));
+        assert!(is_truthy(&Value::Bool(true)).unwrap());
+        assert!(!is_truthy(&Value::Bool(false)).unwrap());
+        assert!(is_truthy(&Value::Int(1)).unwrap());
+        assert!(!is_truthy(&Value::Int(0)).unwrap());
+        assert!(is_truthy(&Value::Float(0.1)).unwrap());
+        assert!(!is_truthy(&Value::Float(0.0)).unwrap());
+        assert!(is_truthy(&Value::String("hi".into())).unwrap());
+        assert!(!is_truthy(&Value::String("".into())).unwrap());
+        assert!(!is_truthy(&Value::Null).unwrap());
+    }
+
+    /// F27 (ruled 2026-07-19, issue #1120): Option has no truthiness —
+    /// both `none` and `some(x)` fault in truthiness position (flipping
+    /// NS-A1's falsy-none / truthy-some behavior). `some(0)` faults too:
+    /// there is no "presence is truthy" carve-out.
+    #[test]
+    fn option_has_no_truthiness() {
+        assert_eq!(
+            is_truthy(&Value::none()),
+            Err(RuntimeError::OptionTruthiness)
+        );
+        assert_eq!(
+            is_truthy(&Value::some(Value::Int(0))),
+            Err(RuntimeError::OptionTruthiness)
+        );
+        assert_eq!(
+            is_truthy(&Value::some(Value::Bool(true))),
+            Err(RuntimeError::OptionTruthiness)
+        );
     }
 
     #[test]

@@ -171,19 +171,22 @@ scheduling sound as content loads.
   is rejected as compiler output cosplaying as input.
 - **The only contract is the optional inline assertion.**
   **SUPERSEDED SPELLING (NS-A2, #1108; stdlib-spec §9.2, ruled
-  2026-07-18):** the assertion's final form is the **annotation line**
-  `@[effects(…)]`, with args from `{pure, silent, total}` (any subset,
-  comma-joined) plus the original `reads:`/`writes:`/`calls:` clause
-  vocabulary. `@[effects(reads: gold, calls: audio)]` declares an upper
-  bound on the state row; `@[effects(pure)]` asserts the empty state row
-  (the tooling-trust case); `@[effects(silent)]` asserts no `emits`
-  (tags are NOT bounded by `silent` — the no-tags arg has no ruled
-  spelling v1); `@[effects(total)]` asserts no `faults`. All
-  exceedance-only (`E103` state, `E108` silent, `E109` total) —
-  asserting less than reality is legal. The old tag-channel spelling
-  `#@effects(…)` shipped in released surface (`@brink-lang/web@0.11.1`)
-  and stays a **deprecation alias**: same grammar, same checks, plus an
-  `E110` warning. Nothing else errors or warns — there is no drift
+  2026-07-18; clause grammar AMENDED 2026-07-19 to the Rust-meta-item
+  paren shape, issue #1120):** the assertion's final form is the
+  **annotation line** `@[effects(…)]`, with args from `{pure, silent,
+  total}` (any subset, comma-joined) plus **parenthesized**
+  `reads(…)`/`writes(…)`/`calls(…)` clauses — bare top-level idents are
+  always flags, so a flag can never be swallowed into an open clause.
+  `@[effects(reads(gold), calls(audio))]` declares an upper bound on
+  the state row; `@[effects(pure)]` asserts the empty state row (the
+  tooling-trust case); `@[effects(silent)]` asserts no `emits` (tags
+  are NOT bounded by `silent` — the no-tags arg has no ruled spelling
+  v1); `@[effects(total)]` asserts no `faults`. All exceedance-only
+  (`E103` state, `E108` silent, `E109` total) — asserting less than
+  reality is legal. The old tag-channel spelling `#@effects(…)` shipped
+  in released surface (`@brink-lang/web@0.11.1`) and stays a
+  **deprecation alias**: its legacy `reads:`-colon clause grammar is
+  FROZEN as-is, same checks, plus an `E110` warning. Nothing else errors or warns — there is no drift
   policy because there is nothing to drift against. Drift *visibility*
   is tooling: a `brink ide` effects-diff subcommand (CI-surfaceable as a
   PR comment) and IDE hover (both show the emits/tags/faults dimensions
@@ -194,8 +197,8 @@ scheduling sound as content loads.
   stories have always saved); every draw is an ordinary **write** to it
   in the row, on both surfaces (the frozen ink
   `RANDOM`/`SEED_RANDOM`/`LIST_RANDOM` and the brink draw verbs). No new
-  row dimension. In `reads:`/`writes:` clauses the cell is spelled
-  **`rng`** (`@[effects(writes: rng)]` covers a draw-bearing def); a
+  row dimension. In `reads(…)`/`writes(…)` clauses the cell is spelled
+  **`rng`** (`@[effects(writes(rng))]` covers a draw-bearing def); a
   user-declared `VAR`/`CONST` named `rng` shadows the spelling, per the
   general stdlib shadowing rule. Consequences fall out of existing
   machinery: `@[effects(pure)]` asserts rng-freedom (E103 names `rng`),

@@ -659,7 +659,7 @@ fn plain_tag_lines_are_unaffected() {
 #[test]
 fn effects_directive_parses_reads_writes_calls_on_a_knot() {
     let (hir, diags) =
-        lower_hir("== guard ==\n@[effects(reads: gold, writes: alarm, calls: audio)]\nHalt!\n");
+        lower_hir("== guard ==\n@[effects(reads(gold), writes(alarm), calls(audio))]\nHalt!\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let assertion = hir.knots[0]
         .effects_assertion
@@ -673,13 +673,27 @@ fn effects_directive_parses_reads_writes_calls_on_a_knot() {
 }
 
 #[test]
-fn effects_directive_reads_clause_continues_across_bare_values() {
-    // "reads: a, b" is ONE clause naming two cells, not two clauses — a
-    // bare value with no `key:` prefix continues the most recently opened
-    // clause (docs/effects-spec.md §10 grammar).
+fn effects_paren_clause_names_multiple_cells() {
+    // `reads(a, b)` is ONE clause naming two cells — the paren respell
+    // (2026-07-19, stdlib-spec §9.2 / issue #1120's second item): clause
+    // membership is delimited by the parens, never by "continuation".
     let (hir, diags) =
-        lower_hir("== guard ==\n@[effects(reads: a, b, writes: c, calls: d)]\nHalt!\n");
+        lower_hir("== guard ==\n@[effects(reads(a, b), writes(c), calls(d))]\nHalt!\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let assertion = hir.knots[0].effects_assertion.as_ref().expect("present");
+    assert_eq!(assertion.reads, vec!["a".to_string(), "b".to_string()]);
+    assert_eq!(assertion.writes, vec!["c".to_string()]);
+    assert_eq!(assertion.calls, vec!["d".to_string()]);
+}
+
+#[test]
+fn hash_effects_colon_clause_continuation_stays_frozen() {
+    // The deprecated tag spelling keeps its legacy colon grammar FROZEN
+    // (E110 surface does not evolve): "reads: a, b" continues the open
+    // clause exactly as it always did.
+    let (hir, diags) =
+        lower_hir("== guard ==\n#@effects(reads: a, b, writes: c, calls: d)\nHalt!\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E110]);
     let assertion = hir.knots[0].effects_assertion.as_ref().expect("present");
     assert_eq!(assertion.reads, vec!["a".to_string(), "b".to_string()]);
     assert_eq!(assertion.writes, vec!["c".to_string()]);
@@ -699,7 +713,7 @@ fn effects_pure_sugar_sets_pure_with_empty_lists() {
 
 #[test]
 fn effects_directive_marks_stitch() {
-    let (hir, diags) = lower_hir("== guard ==\nHalt!\n= mood\n@[effects(reads: gold)]\ngrumpy\n");
+    let (hir, diags) = lower_hir("== guard ==\nHalt!\n= mood\n@[effects(reads(gold))]\ngrumpy\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert!(hir.knots[0].effects_assertion.is_none());
     assert!(hir.knots[0].stitches[0].effects_assertion.is_some());
@@ -736,19 +750,31 @@ fn empty_effects_args_is_e100() {
 
 #[test]
 fn effects_unknown_clause_keyword_is_e101() {
-    let (_hir, diags) = lower_hir("== guard ==\n@[effects(frobs: gold)]\nHalt!\n");
+    let (_hir, diags) = lower_hir("== guard ==\n@[effects(frobs(gold))]\nHalt!\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E101]);
 }
 
 #[test]
-fn effects_bare_value_with_no_open_clause_is_e101() {
+fn effects_bare_non_flag_ident_is_e101() {
+    // Bare top-level idents are always FLAGS in the paren grammar — a bare
+    // ident outside {pure, silent, total} is malformed, never a clause
+    // value.
     let (_hir, diags) = lower_hir("== guard ==\n@[effects(gold)]\nHalt!\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E101]);
 }
 
 #[test]
 fn effects_non_identifier_value_is_e101() {
-    let (_hir, diags) = lower_hir("== guard ==\n@[effects(reads: 1gold)]\nHalt!\n");
+    let (_hir, diags) = lower_hir("== guard ==\n@[effects(reads(1gold))]\nHalt!\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E101]);
+}
+
+#[test]
+fn effects_colon_clause_in_annotation_spelling_is_e101() {
+    // The paren respell (issue #1120's second item): the colon grammar
+    // belongs to the frozen `#@effects` alias only — inside `@[effects(…)]`
+    // it is malformed.
+    let (_hir, diags) = lower_hir("== guard ==\n@[effects(reads: gold)]\nHalt!\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E101]);
 }
 
@@ -778,7 +804,7 @@ fn was_dynamic_content_is_e046() {
 #[test]
 fn duplicate_effects_directive_is_e048_first_wins() {
     let (hir, diags) =
-        lower_hir("== guard ==\n@[effects(reads: a)]\n@[effects(reads: b)]\nHalt!\n");
+        lower_hir("== guard ==\n@[effects(reads(a))]\n@[effects(reads(b))]\nHalt!\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E048]);
     let assertion = hir.knots[0].effects_assertion.as_ref().expect("present");
     assert_eq!(assertion.reads, vec!["a".to_string()]);
@@ -822,7 +848,7 @@ fn effects_annotation_silent_alone_parses() {
 #[test]
 fn effects_annotation_flags_combine_with_clauses() {
     let (hir, diags) =
-        lower_hir("VAR gold = 0\n== guard ==\n@[effects(silent, reads: gold)]\nHalt!\n");
+        lower_hir("VAR gold = 0\n== guard ==\n@[effects(silent, reads(gold))]\nHalt!\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let a = hir.knots[0].effects_assertion.as_ref().expect("present");
     assert!(a.silent && !a.pure && !a.total);
@@ -830,22 +856,41 @@ fn effects_annotation_flags_combine_with_clauses() {
 }
 
 #[test]
-fn effects_flag_name_after_clause_opener_is_a_clause_value() {
-    // A cell genuinely named `silent` stays assertable — a bare flag name
-    // is a FLAG only while no clause is open.
-    let (hir, diags) = lower_hir("VAR silent = 0\n== guard ==\n@[effects(reads: silent)]\nHalt!\n");
+fn effects_flag_after_a_clause_is_a_flag_not_a_clause_value() {
+    // THE footgun the paren respell kills structurally (issue #1120's
+    // second item): under the old colon grammar, `reads: gold, silent`
+    // swallowed `silent` into the open `reads` clause as a cell name. With
+    // delimited clauses, `reads(gold), silent` parses `silent` as the FLAG
+    // — a flag can never be swallowed into an open clause.
+    let (hir, diags) =
+        lower_hir("VAR gold = 0\n== guard ==\n@[effects(reads(gold), silent)]\nHalt!\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let a = hir.knots[0].effects_assertion.as_ref().expect("present");
+    assert!(a.silent, "`silent` after `reads(gold)` is the flag");
+    assert_eq!(
+        a.reads,
+        vec!["gold".to_string()],
+        "`silent` must not be swallowed into the reads clause"
+    );
+}
+
+#[test]
+fn effects_flag_name_inside_a_clause_is_a_clause_value() {
+    // A cell genuinely named `silent` stays assertable — inside the parens
+    // it is a clause value; only bare top-level idents are flags.
+    let (hir, diags) = lower_hir("VAR silent = 0\n== guard ==\n@[effects(reads(silent))]\nHalt!\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let a = hir.knots[0].effects_assertion.as_ref().expect("present");
     assert!(
         !a.silent,
-        "`silent` after `reads:` is a cell name, not a flag"
+        "`silent` inside `reads(…)` is a cell name, not a flag"
     );
     assert_eq!(a.reads, vec!["silent".to_string()]);
 }
 
 #[test]
 fn effects_pure_with_a_state_clause_is_contradictory_e101() {
-    let (_hir, diags) = lower_hir("== guard ==\n@[effects(pure, reads: gold)]\nHalt!\n");
+    let (_hir, diags) = lower_hir("== guard ==\n@[effects(pure, reads(gold))]\nHalt!\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E101]);
 }
 
@@ -862,8 +907,10 @@ fn deprecated_hash_effects_spelling_warns_e110_and_still_parses() {
 
 #[test]
 fn hash_effects_spelling_accepts_the_new_flags_too() {
-    // One shared argument grammar for both spellings — the alias is not a
-    // frozen dialect of its own.
+    // The frozen colon grammar had already grown the NS-A2 flags before it
+    // froze — they stay. (Since the paren respell the two spellings share
+    // only the flag vocabulary: clause shape is colon-style here,
+    // paren-style in the annotation channel.)
     let (hir, diags) = lower_hir("== guard ==\n#@effects(silent, total)\nHalt!\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E110]);
     let a = hir.knots[0].effects_assertion.as_ref().expect("present");

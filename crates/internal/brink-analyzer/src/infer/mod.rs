@@ -52,7 +52,10 @@
 mod body;
 mod effects;
 mod graph;
+mod intrinsics;
 mod ty;
+
+pub(crate) use intrinsics::{intrinsic_effects, intrinsic_returns_option};
 
 use std::collections::{BTreeMap, BTreeSet};
 

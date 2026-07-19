@@ -206,7 +206,7 @@ fn satisfied_effects_assertion_compiles_and_runs_inert() {
     // faults at runtime independently of effects; the `calls` clause is
     // covered by the compile-only exceedance cases below.)
     let annotated = "VAR gold = 10\n-> go\n\
-         === go ===\n@[effects(reads: gold, writes: gold)]\n\
+         === go ===\n@[effects(reads(gold), writes(gold))]\n\
          ~ gold = gold - 3\nGold is {gold}.\n-> END\n";
     let plain = "VAR gold = 10\n-> go\n\
          === go ===\n\
@@ -237,7 +237,7 @@ fn over_declaring_a_wider_bound_never_warns() {
     // call the body never performs). Per the sitting-2 ruling there is no
     // drift policy — over-declaring is silent, no `E103`, no warning.
     let source = "VAR gold = 0\nVAR silver = 0\nEXTERNAL play_sfx(x)\n-> go\n\
-         === go ===\n@[effects(reads: gold, writes: silver, calls: play_sfx)]\n\
+         === go ===\n@[effects(reads(gold), writes(silver), calls(play_sfx))]\n\
          Value {gold}.\n-> END\n";
     assert!(
         error_codes(source).is_empty(),
@@ -265,7 +265,7 @@ fn exceedance_is_a_real_compile_error_end_to_end() {
 #[test]
 fn exceedance_on_an_undeclared_call_is_e103() {
     let source = "VAR gold = 0\nEXTERNAL play_sfx(x)\n-> go\n\
-         === go ===\n@[effects(reads: gold)]\n~ play_sfx(1)\nHi {gold}.\n-> END\n";
+         === go ===\n@[effects(reads(gold))]\n~ play_sfx(1)\nHi {gold}.\n-> END\n";
     assert!(
         error_codes(source).contains(&brink_compiler::DiagnosticCode::E103),
         "expected E103, got {:?}",
@@ -280,7 +280,7 @@ fn a_bound_cannot_cover_an_opaque_row_e103() {
     // opaque branch (spec §3).
     let source = "VAR total = 0\n\
          === function bump() ===\n~ total = total + 1\n~ return total\n\
-         === go ===\n@[effects(reads: total)]\n\
+         === go ===\n@[effects(reads(total))]\n\
          ~ temp f = #fn(bump)\n~ temp x = f()\n{total}\n-> END\n";
     assert!(
         error_codes(source).contains(&brink_compiler::DiagnosticCode::E103),

@@ -17,6 +17,7 @@ mod infer;
 mod manifest;
 mod map_keys;
 mod modules;
+mod option_conditions;
 mod option_rules;
 mod protocols;
 mod ref_projection;
