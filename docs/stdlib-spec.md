@@ -65,7 +65,16 @@ dangles; charter fix owed.)
    shrugs). Riders: the forgiveness is TRACEABLE (transcript/debug
    records None-renders; an always-None-interpolation lint ⏳);
    choice-text and tag surfaces are named edges (accidental empty
-   choice text vs the deliberate `* []`) ⏳.
+   choice text vs the deliberate `* []`) ⏳. **F27 RULED
+   (2026-07-19): Option has NO truthiness** — a condition-position
+   `Option[T]` is a compile error under strict and a runtime fault
+   under gradual; the author writes `== none`, `== some(x)`, or
+   (post-B1) the `as`-binding. Truthiness is a quiet coercion of
+   exactly the kind `Option[T] ≠ T` exists to ban. (Supersedes
+   A1's shipped falsy-none — implementation fix owed.) **F28 RULED
+   (2026-07-19)**: `none`/`some(…)` render totally in display
+   until B4's boundary-forgiveness arrives; `string()`'s ruled
+   totality is preserved.
 
 ## 2. Domain 1 — math (RULED)
 
