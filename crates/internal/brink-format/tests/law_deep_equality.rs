@@ -75,6 +75,9 @@ fn contains_nan(v: &Value) -> bool {
             ProjSegment::Key(k) => contains_nan(k),
         }),
         Value::OptionVal(inner) => inner.as_deref().is_some_and(contains_nan),
+        // NS-A7 weighted tables: a NaN anywhere in an entry value counts
+        // (weights are ints, never NaN-able).
+        Value::Weighted(w) => w.entries.iter().any(|(_, val)| contains_nan(val)),
         // NS-A8 tower values: a NaN lane anywhere counts (T4 — a
         // NaN-bearing vector is never equal to itself, like bare float).
         Value::Vec2(v) => v.is_nan(),

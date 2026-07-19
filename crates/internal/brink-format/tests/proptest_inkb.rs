@@ -149,6 +149,9 @@ fn arb_value_type() -> impl Strategy<Value = ValueType> {
         Just(ValueType::Mat2),
         Just(ValueType::Mat3),
         Just(ValueType::Mat4),
+        // NS-A7 weighted table value type (docs/stdlib-spec.md §8), same
+        // rationale.
+        Just(ValueType::Weighted),
     ]
 }
 
@@ -250,6 +253,11 @@ fn arb_value() -> impl Strategy<Value = Value> {
             }),
             (any::<u32>(), prop::collection::vec(inner.clone(), 0..4))
                 .prop_map(|(shape, fields)| Value::record(ShapeId(shape), fields)),
+            // Weighted tables (NS-A7, docs/stdlib-spec.md §8): 1-3
+            // positive-weight entries (the evidence-by-construction
+            // invariant the reader enforces), values from the full
+            // recursive universe.
+            prop::collection::vec((1i32..=i32::MAX, inner.clone()), 1..4).prop_map(Value::weighted),
             // Option values (NS-A1, docs/stdlib-spec.md §1.4): both
             // variants, payload from the full recursive universe so
             // `some(none)`/`some(#[..])` nesting rides the writer/reader
@@ -318,7 +326,8 @@ fn assert_value_variants_exhaustive(value: &Value) {
         | Value::Quat(_)
         | Value::Mat2(_)
         | Value::Mat3(_)
-        | Value::Mat4(_) => {}
+        | Value::Mat4(_)
+        | Value::Weighted(_) => {}
     }
 }
 

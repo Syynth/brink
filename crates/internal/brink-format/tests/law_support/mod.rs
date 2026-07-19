@@ -189,6 +189,10 @@ pub fn arb_value_full() -> impl Strategy<Value = Value> {
                 prop::collection::vec(arb_proj_segment(inner.clone()), 0..3),
             )
                 .prop_map(|(cell, segments)| Value::projection(cell, segments)),
+            // Weighted tables (NS-A7, docs/stdlib-spec.md §8): 1-3
+            // positive-weight entries (the evidence-by-construction
+            // invariant), values from the full recursive universe.
+            prop::collection::vec((1i32..=i32::MAX, inner.clone()), 1..4).prop_map(Value::weighted),
             // Option values (NS-A1, docs/stdlib-spec.md §1.4): both
             // variants, with the `some` payload drawn from the full
             // recursive universe so nesting (`some(none)`, `some([..])`)
@@ -238,6 +242,7 @@ fn assert_value_variants_exhaustive(value: &Value) {
         | Value::Quat(_)
         | Value::Mat2(_)
         | Value::Mat3(_)
-        | Value::Mat4(_) => {}
+        | Value::Mat4(_)
+        | Value::Weighted(_) => {}
     }
 }

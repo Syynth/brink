@@ -251,6 +251,12 @@ fn arb_value() -> impl Strategy<Value = Value> {
                         .collect();
                     Value::closure(target, env)
                 }),
+            // Weighted tables (NS-A7, docs/stdlib-spec.md §8): 1-3
+            // entries with positive weights (the evidence-by-construction
+            // invariant the reader enforces), values from the full
+            // recursive universe — exercises the `(weighted (<w> <v>)+)`
+            // atom through the pest reader round-trip.
+            prop::collection::vec((1i32..=i32::MAX, inner.clone()), 1..4).prop_map(Value::weighted),
             // Option values (NS-A1, docs/stdlib-spec.md §1.4): both
             // variants, payload from the full recursive universe —
             // exercises the `(some <value>)`/`(option_none)` atoms through
@@ -302,7 +308,8 @@ fn assert_value_variants_exhaustive(value: &Value) {
         | Value::Quat(_)
         | Value::Mat2(_)
         | Value::Mat3(_)
-        | Value::Mat4(_) => {}
+        | Value::Mat4(_)
+        | Value::Weighted(_) => {}
     }
 }
 
@@ -398,6 +405,8 @@ fn arb_opcode() -> impl Strategy<Value = Opcode> {
         Just(Opcode::RangeMakeExcl),
         Just(Opcode::RangeMakeIncl),
         Just(Opcode::RangeNonEmpty),
+        // NS-A7 collections+ (#1113): one opcode, five kinds.
+        prop::sample::select(&brink_format::CollectOp::ALL[..]).prop_map(Opcode::Collect),
         // NS-A4 ordering verbs (#1110).
         Just(Opcode::SeqSorted),
         Just(Opcode::SeqSortedBy),
@@ -563,6 +572,7 @@ fn assert_opcode_variants_exhaustive(op: &Opcode) {
         | Opcode::SeqSorted
         | Opcode::SeqSortedBy
         | Opcode::Tower(_)
+        | Opcode::Collect(_)
         | Opcode::Done
         | Opcode::Yield
         | Opcode::End

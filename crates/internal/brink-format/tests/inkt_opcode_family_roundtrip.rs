@@ -296,3 +296,32 @@ fn tower_family_roundtrips() {
     ));
     assert_roundtrips(&story);
 }
+
+/// NS-A7 (`docs/stdlib-spec.md` §8): the collections+ opcode family (one
+/// opcode, five kinds, mnemonic-per-kind in `.inkt` — the tower economy
+/// again) plus the `(weighted (<w> <v>)+)` value atom — reader landing with
+/// the writer in the same PR, per the #742 dump/reader-parity discipline.
+/// Entries stay in construction order (semantic for display and the roll
+/// walk), including a duplicate weight (F17: the multiset policy).
+#[test]
+fn collect_family_roundtrips() {
+    let mut story = empty_story();
+    let ops: Vec<Opcode> = brink_format::CollectOp::ALL
+        .into_iter()
+        .map(Opcode::Collect)
+        .collect();
+    push_container_with_bytecode(&mut story, 7, &ops);
+    story.variables.push(global(
+        1,
+        Value::weighted(vec![
+            (3, Value::String("sword".into())),
+            (1, Value::String("shield".into())),
+            (3, Value::String("potion".into())),
+        ]),
+    ));
+    story.variables.push(global(
+        2,
+        Value::weighted(vec![(i32::MAX, Value::Int(-7)), (1, Value::none())]),
+    ));
+    assert_roundtrips(&story);
+}

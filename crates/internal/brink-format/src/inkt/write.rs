@@ -759,6 +759,11 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         // word (`make_vec2` … `tower_lerp`) — one wire opcode, thirteen
         // spellings, `TowerOp::mnemonic`/`from_mnemonic` the single pairing.
         Opcode::Tower(op) => write!(w, "{}", op.mnemonic()),
+
+        // NS-A7 collections+: same one-opcode-per-kind-mnemonic pattern as
+        // the tower — `CollectOp::mnemonic`/`from_mnemonic` the single
+        // pairing (`weighted_new` … `heap_peek`).
+        Opcode::Collect(op) => write!(w, "{}", op.mnemonic()),
     }
 }
 
@@ -825,9 +830,14 @@ fn value_type_name(vt: ValueType) -> &'static str {
         ValueType::Mat2 => "mat2",
         ValueType::Mat3 => "mat3",
         ValueType::Mat4 => "mat4",
+        ValueType::Weighted => "weighted",
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one atom arm per Value variant — the NS-A7 Weighted arm pushed this past 100"
+)]
 fn write_value(w: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
     match v {
         Value::Int(n) => write!(w, "{n}"),
@@ -949,6 +959,17 @@ fn write_value(w: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
         Value::Mat2(m) => write_tower_lanes(w, "mat2", &m.to_cols_array()),
         Value::Mat3(m) => write_tower_lanes(w, "mat3", &m.to_cols_array()),
         Value::Mat4(m) => write_tower_lanes(w, "mat4", &m.to_cols_array()),
+        // Weighted tables (NS-A7, `docs/stdlib-spec.md` §8): `(weighted
+        // (<weight> <value>)+)`, entries in construction order.
+        Value::Weighted(wt) => {
+            write!(w, "(weighted")?;
+            for (weight, value) in &wt.entries {
+                write!(w, " ({weight} ")?;
+                write_value(w, value)?;
+                write!(w, ")")?;
+            }
+            write!(w, ")")
+        }
     }
 }
 

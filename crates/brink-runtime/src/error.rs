@@ -398,4 +398,29 @@ pub enum RuntimeError {
         /// The written form of the offending range (`0..0`, `5..=2`, …).
         range: String,
     },
+
+    // ── NS-A7: Weighted[T] evidence-by-construction (`docs/stdlib-spec.md`
+    // §8, issue #1113) ────────────────────────────────────────────────────
+    /// `weighted(…)` reached a **computed** weight that is not a positive
+    /// int at construction time — the E078-style split's runtime half: a
+    /// weight the checker could classify statically is the E120 compile
+    /// error; a computed weight that turns out zero/negative/non-int is
+    /// this turn-terminating construction fault. Construction is the
+    /// validator (the §7 parse-don't-validate shape), so `roll` over any
+    /// table that exists is total.
+    #[error(
+        "`weighted` requires positive int weights, got {found} — construction refuses          empty/zero/negative-weight tables"
+    )]
+    WeightedBadWeight {
+        /// Display form of the offending weight value (`0`, `-3`, `1.5`, a
+        /// type name for non-numerics).
+        found: String,
+    },
+    /// The `weighted_new` op received a malformed pair row (empty, or an
+    /// odd flattened length). Unreachable through the compiler — the E120
+    /// gate refuses empty/odd construction shapes statically — so this
+    /// guards hand-crafted or corrupt bytecode only (the malformed-bytecode
+    /// robustness discipline, never a panic).
+    #[error("`weighted` construction received {detail}")]
+    WeightedMalformedTable { detail: &'static str },
 }

@@ -28,8 +28,8 @@ use super::{
     SECTION_ENTRY_SIZE, SectionEntry, SectionKind, VAL_ARRAY, VAL_BOOL, VAL_CLOSURE,
     VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT, VAL_LIST,
     VAL_MAP, VAL_MAT2, VAL_MAT3, VAL_MAT4, VAL_NULL, VAL_OPTION, VAL_PROJECTION, VAL_QUAT,
-    VAL_RANGE, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VAL_VEC2, VAL_VEC3, VAL_VEC4, VERSION,
-    safe_capacity,
+    VAL_RANGE, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VAL_VEC2, VAL_VEC3, VAL_VEC4, VAL_WEIGHTED,
+    VERSION, safe_capacity,
 };
 
 // ── Tier 1: Full story read ─────────────────────────────────────────────────
@@ -368,6 +368,7 @@ fn decode_value_type(buf: &[u8], off: &mut usize) -> Result<ValueType, DecodeErr
         VAL_MAT2 => Ok(ValueType::Mat2),
         VAL_MAT3 => Ok(ValueType::Mat3),
         VAL_MAT4 => Ok(ValueType::Mat4),
+        VAL_WEIGHTED => Ok(ValueType::Weighted),
         _ => Err(DecodeError::InvalidValueType(tag)),
     }
 }
@@ -554,6 +555,29 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Deco
         >(
             buf, off
         )?))),
+        // Weighted tables (NS-A7, `docs/stdlib-spec.md` §8): u32 entry
+        // count, then per entry an i32 weight and a recursively-decoded
+        // value. Depth-counted like the collection tags. The §8
+        // evidence-by-construction invariant is enforced HERE too: an
+        // empty table or a non-positive weight is corrupt input (a
+        // `Weighted` never enters the runtime invalid, even from a
+        // crafted file).
+        VAL_WEIGHTED => {
+            let count = read_u32(buf, off)?;
+            if count == 0 {
+                return Err(DecodeError::InvalidValueType(VAL_WEIGHTED));
+            }
+            let mut entries = Vec::with_capacity(safe_capacity(count as usize, buf.len(), *off, 5));
+            for _ in 0..count {
+                let weight = read_i32(buf, off)?;
+                if weight < 1 {
+                    return Err(DecodeError::InvalidValueType(VAL_WEIGHTED));
+                }
+                let value = decode_value(buf, off, depth + 1)?;
+                entries.push((weight, value));
+            }
+            Ok(Value::weighted(entries))
+        }
         _ => Err(DecodeError::InvalidValueType(tag)),
     }
 }

@@ -1326,6 +1326,22 @@ fn step_impl<R: crate::rng::StoryRng>(
         // only fault path (`tower_ops`' module doc).
         Opcode::Tower(op) => tower_ops::tower_op(flow, op)?,
 
+        // ── NS-A7: collections+ (#1113, `docs/stdlib-spec.md` §8) —
+        // `Weighted[T]` construction, the `roll` draw (an RNG-cell write
+        // like every draw), and the humble heap (ordering per the §4b
+        // comparison core; `heap_push` carries the dev/prod NaN entry
+        // check). ───────────────────────────────────────────────────────
+        Opcode::Collect(op) => match op {
+            brink_format::CollectOp::WeightedNew => collection_ops::weighted_new(flow)?,
+            brink_format::CollectOp::RandRoll => {
+                note_effect_write(flow, program, DefinitionId::RNG_CELL);
+                rand_ops::rand_roll::<R>(flow, context)?;
+            }
+            brink_format::CollectOp::HeapPush => collection_ops::heap_push(flow)?,
+            brink_format::CollectOp::HeapPop => collection_ops::heap_pop(flow)?,
+            brink_format::CollectOp::HeapPeek => collection_ops::heap_peek(flow)?,
+        },
+
         // ── External functions ──────────────────────────────────────
         Opcode::CallExternal(fn_id, arg_count) => {
             // Pop arguments from the value stack.
@@ -1502,6 +1518,7 @@ fn value_type_name(v: &Value) -> &'static str {
         Value::Mat2(_) => "mat2",
         Value::Mat3(_) => "mat3",
         Value::Mat4(_) => "mat4",
+        Value::Weighted(_) => "weighted",
     }
 }
 
