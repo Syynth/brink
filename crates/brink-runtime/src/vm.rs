@@ -23,7 +23,9 @@ use crate::rand_ops;
 use crate::range_ops;
 use crate::record_ops;
 use crate::state::ContextAccess;
-use crate::story::{CallFrame, CallFrameType, ContainerPosition, Flow, PendingChoice, Stats};
+use crate::story::{
+    CallFrame, CallFrameType, ContainerPosition, ExecMode, Flow, PendingChoice, Stats,
+};
 use crate::string_ops;
 use crate::tower_ops;
 use crate::value_ops::{self, BinaryOp};
@@ -379,6 +381,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             flow.value_stack.push(val);
         }
         Opcode::SetGlobal(id) => {
+            guard_comparator_write(flow, "assigned a global variable")?;
             let idx = program
                 .resolve_global(id)
                 .ok_or(RuntimeError::UnresolvedGlobal(id))?;
@@ -425,6 +428,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             let current = frame.temps.get(idx).cloned().unwrap_or(Value::Null);
             match current {
                 Value::VariablePointer(target_id) => {
+                    guard_comparator_write(flow, "assigned a global through a `ref` parameter")?;
                     let global_idx = program
                         .resolve_global(target_id)
                         .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
@@ -453,6 +457,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                 // constructed only by `Opcode::MakeProjection`, itself
                 // emitted only for a real path-projection ref-argument).
                 Value::Projection(p) => {
+                    guard_comparator_write(flow, "wrote through a path projection")?;
                     proj_ops::write(program, context, p.cell, &p.segments, val)?;
                 }
                 _ => {
@@ -999,6 +1004,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             flow.value_stack.push(result);
         }
         Opcode::ProjWrite => {
+            guard_comparator_write(flow, "wrote through a path projection")?;
             let value = flow.pop_value()?;
             let proj = flow.pop_value()?;
             let Some(p) = proj.as_projection() else {
@@ -1119,6 +1125,7 @@ fn step_impl<R: crate::rng::StoryRng>(
         Opcode::Random => {
             // NS-A6: the frozen ink surface over the one RNG cell — same
             // write the brink draw verbs record.
+            guard_comparator_write(flow, "advanced the RNG state (a draw is a write)")?;
             note_effect_write(flow, program, DefinitionId::RNG_CELL);
             // Reference pops max first, then min.
             let max_val = flow.pop_value()?;
@@ -1156,6 +1163,7 @@ fn step_impl<R: crate::rng::StoryRng>(
             flow.value_stack.push(Value::Int(result));
         }
         Opcode::SeedRandom => {
+            guard_comparator_write(flow, "reseeded the RNG (the RNG cell is world state)")?;
             note_effect_write(flow, program, DefinitionId::RNG_CELL);
             let seed_val = flow.pop_value()?;
             let seed = match seed_val {
@@ -1214,6 +1222,7 @@ fn step_impl<R: crate::rng::StoryRng>(
         Opcode::ListRange => list_ops::list_range(flow, program)?,
         Opcode::ListFromInt => list_ops::list_from_int(flow, program)?,
         Opcode::ListRandom => {
+            guard_comparator_write(flow, "advanced the RNG state (a draw is a write)")?;
             note_effect_write(flow, program, DefinitionId::RNG_CELL);
             list_ops::list_random::<R>(flow, context)?;
         }
@@ -1251,6 +1260,7 @@ fn step_impl<R: crate::rng::StoryRng>(
         // NonEmptyRange evidence for the draw leg, E117).
         Opcode::ConvertInt => {
             if matches!(flow.value_stack.last(), Some(Value::Range { .. })) {
+                guard_comparator_write(flow, "advanced the RNG state (a draw is a write)")?;
                 note_effect_write(flow, program, DefinitionId::RNG_CELL);
                 rand_ops::rand_int::<R>(flow, context)?;
             } else {
@@ -1288,18 +1298,22 @@ fn step_impl<R: crate::rng::StoryRng>(
         // same cell and carry the same instrumentation at their own
         // arms. ─────────────────────────────────────────────────────────
         Opcode::RandFloat => {
+            guard_comparator_write(flow, "advanced the RNG state (a draw is a write)")?;
             note_effect_write(flow, program, DefinitionId::RNG_CELL);
             rand_ops::rand_float::<R>(flow, context);
         }
         Opcode::RandChance => {
+            guard_comparator_write(flow, "advanced the RNG state (a draw is a write)")?;
             note_effect_write(flow, program, DefinitionId::RNG_CELL);
             rand_ops::rand_chance::<R>(flow, context)?;
         }
         Opcode::RandPick => {
+            guard_comparator_write(flow, "advanced the RNG state (a draw is a write)")?;
             note_effect_write(flow, program, DefinitionId::RNG_CELL);
             rand_ops::rand_pick::<R>(flow, context)?;
         }
         Opcode::RandShuffle => {
+            guard_comparator_write(flow, "advanced the RNG state (a draw is a write)")?;
             note_effect_write(flow, program, DefinitionId::RNG_CELL);
             rand_ops::rand_shuffle::<R>(flow, context)?;
         }
@@ -1334,6 +1348,7 @@ fn step_impl<R: crate::rng::StoryRng>(
         Opcode::Collect(op) => match op {
             brink_format::CollectOp::WeightedNew => collection_ops::weighted_new(flow)?,
             brink_format::CollectOp::RandRoll => {
+                guard_comparator_write(flow, "advanced the RNG state (a draw is a write)")?;
                 note_effect_write(flow, program, DefinitionId::RNG_CELL);
                 rand_ops::rand_roll::<R>(flow, context)?;
             }
@@ -1734,6 +1749,40 @@ fn enter_fn_value(
         function_output_start: Some(output_start),
     });
     stats.frames_pushed += 1;
+    Ok(())
+}
+
+/// F34 (ruled 2026-07-19): the dev-mode world-write guard for comparator
+/// frames. Called at each VM write seam — global assignment (direct, or
+/// write-through via a `ref`-parameter pointer / path projection) and every
+/// RNG-cell advance — *before* the write lands. Inside a comparator
+/// (`flow.comparator_depth > 0`) under [`ExecMode::Dev`] the write is the
+/// turn-terminating [`RuntimeError::ComparatorWroteState`] fault; under
+/// [`ExecMode::Prod`] the check is skipped entirely and the write executes
+/// (defined + deterministic — the stable merge-sort's comparison sequence
+/// is fixed). Outside a comparator this is a single predictable
+/// depth-is-zero branch on data already in `Flow` — no instrumentation
+/// threads through the production write path.
+///
+/// Deliberately NOT guarded:
+/// - visit/turn-count increments — the comparator's own in-story dispatch
+///   counts visits by rule (NS-A4), so a comparator calling knot functions
+///   stays legal in both modes;
+/// - reads (`GetGlobal`) — E119's static bound owns the read posture; and
+///   the read half of an RMW (`TakeGlobal`/`TakeTemp`-via-pointer, which
+///   transiently nulls the cell): codegen pairs every take with a
+///   write-back, so the guard fires at the write-back before the cell is
+///   overwritten, and the fault is turn-terminating anyway;
+/// - shuffle sequences — they derive a fresh RNG from `path_hash` + visit
+///   count + story seed and never advance the RNG cell.
+#[inline]
+fn guard_comparator_write(flow: &Flow, what: &'static str) -> Result<(), RuntimeError> {
+    if flow.comparator_depth > 0 && flow.exec_mode == ExecMode::Dev {
+        return Err(RuntimeError::ComparatorWroteState {
+            verb: "sort_by",
+            what,
+        });
+    }
     Ok(())
 }
 
@@ -2492,4 +2541,64 @@ fn handle_shuffle_sequence<R: crate::rng::StoryRng>(
     // Should not reach here.
     flow.value_stack.push(Value::Int(0));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::output::OutputBuffer;
+
+    /// A bare `Flow` for exercising [`guard_comparator_write`] — only
+    /// `comparator_depth` and `exec_mode` matter to the guard.
+    fn test_flow() -> Flow {
+        Flow {
+            threads: Vec::new(),
+            value_stack: Vec::new(),
+            output: OutputBuffer::new(),
+            pending_choices: Vec::new(),
+            current_tags: Vec::new(),
+            in_tag: false,
+            skipping_choice: false,
+            did_safe_exit: false,
+            did_unsafe_yield: false,
+            exec_mode: ExecMode::default(),
+            comparator_depth: 0,
+        }
+    }
+
+    // ── F34: the comparator write-guard seam ─────────────────────────────
+
+    #[test]
+    fn guard_is_inert_outside_a_comparator_in_both_modes() {
+        let mut flow = test_flow();
+        assert_eq!(flow.exec_mode, ExecMode::Dev, "dev is the default");
+        assert!(guard_comparator_write(&flow, "assigned a global variable").is_ok());
+        flow.exec_mode = ExecMode::Prod;
+        assert!(guard_comparator_write(&flow, "assigned a global variable").is_ok());
+    }
+
+    #[test]
+    fn guard_faults_inside_a_comparator_under_dev() {
+        let mut flow = test_flow();
+        flow.comparator_depth = 1;
+        let err = guard_comparator_write(&flow, "assigned a global variable").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                RuntimeError::ComparatorWroteState {
+                    verb: "sort_by",
+                    what: "assigned a global variable",
+                }
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn guard_is_skipped_inside_a_comparator_under_prod() {
+        let mut flow = test_flow();
+        flow.comparator_depth = 1;
+        flow.exec_mode = ExecMode::Prod;
+        assert!(guard_comparator_write(&flow, "assigned a global variable").is_ok());
+    }
 }
