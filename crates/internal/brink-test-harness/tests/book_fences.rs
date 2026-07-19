@@ -13,7 +13,7 @@
 //! | ```` ```ink,error(Exxx) ```` | must FAIL to compile, and the diagnostics must contain code `Exxx` (BW-2 ruling: the expected code lives in the info string) |
 //! | ```` ```ink,error ```` | legacy spelling — always a test failure: migrate to `ink,error(Exxx)` |
 //! | ```` ```ink,ignore ```` | skipped — a fragment/pseudocode illustration that is not a standalone program (mirrors this book's `rust,ignore` convention) |
-//! | ```` ```ink,proposed ```` / ```` ```brink,proposed ```` | skipped — unruled future syntax, never compiled |
+//! | ```` ```ink,proposed ```` / ```` ```brink ```` / ```` ```brink,proposed ```` | skipped — unruled future syntax, never compiled |
 //!
 //! Any other `ink…`-flavored info string is a test failure — the taxonomy is
 //! closed on purpose, so a typo can never silently skip verification.
@@ -138,9 +138,9 @@ fn parse_markers(comment: &str, errors: &mut Vec<String>, at: &str) -> Markers {
 
 /// Extract every fenced code block in document order. Handles fences opened
 /// at an indent (list-item fences): the opening line's leading whitespace is
-/// stripped from each body line, and the closing fence is `\`\`\`` at any
-/// indent. A `<!-- fence: … -->` comment directly above the opening fence
-/// (one blank line allowed) attaches markers.
+/// stripped from each body line, and the closing fence is a bare
+/// triple-backtick at any indent. A `<!-- fence: … -->` comment directly
+/// above the opening fence (one blank line allowed) attaches markers.
 fn extract_fences(markdown: &str, errors: &mut Vec<String>, file: &str) -> Vec<Fence> {
     let lines: Vec<&str> = markdown.lines().collect();
     let mut fences = Vec::new();
@@ -240,11 +240,9 @@ fn run_story(src: &str, markers: &Markers) -> Result<String, String> {
             Ok(Line::Choices { text, choices, .. }) => {
                 out.push_str(&text);
                 let Some(pick) = picks.next() else {
-                    return Err(
-                        "story presented choices — linear fences must not; add a \
+                    return Err("story presented choices — linear fences must not; add a \
                          `<!-- fence: choices=… -->` marker with 1-based picks"
-                            .to_owned(),
-                    );
+                        .to_owned());
                 };
                 if pick > choices.len() {
                     return Err(format!(
@@ -292,18 +290,21 @@ enum Kind {
 fn classify(info: &str) -> Kind {
     match info {
         "ink" => Kind::Run,
-        "ink,ignore" | "ink,proposed" | "brink,proposed" => Kind::Skip,
+        "ink,ignore" | "ink,proposed" | "brink" | "brink,proposed" => Kind::Skip,
         "ink,error" => Kind::Malformed(
             "legacy `ink,error` fence — migrate to `ink,error(Exxx)` (BW-2 ruling: \
              the expected diagnostic code lives in the info string)"
-            .to_owned(),
+                .to_owned(),
         ),
         _ => {
             if let Some(code) = info
                 .strip_prefix("ink,error(")
                 .and_then(|s| s.strip_suffix(')'))
             {
-                if code.len() == 4 && code.starts_with('E') && code[1..].chars().all(|c| c.is_ascii_digit()) {
+                if code.len() == 4
+                    && code.starts_with('E')
+                    && code[1..].chars().all(|c| c.is_ascii_digit())
+                {
                     Kind::Error(code.to_owned())
                 } else {
                     Kind::Malformed(format!("malformed diagnostic code `{code}` in info string"))
@@ -369,10 +370,7 @@ fn every_ink_fence_in_the_book_checks_out() {
                                 }
                             }
                         }
-                        Err(e) => errors.push(format!(
-                            "{at}: {e}\n--- source ---\n{}",
-                            fence.body
-                        )),
+                        Err(e) => errors.push(format!("{at}: {e}\n--- source ---\n{}", fence.body)),
                     }
                 }
                 Kind::Error(code) => {
@@ -402,10 +400,13 @@ fn every_ink_fence_in_the_book_checks_out() {
         errors.is_empty(),
         "{} book fence failure(s):\n\n{}",
         errors.len(),
-        errors.iter().enumerate().fold(String::new(), |mut s, (n, e)| {
-            let _ = write!(s, "[{}] {e}\n\n", n + 1);
-            s
-        })
+        errors
+            .iter()
+            .enumerate()
+            .fold(String::new(), |mut s, (n, e)| {
+                let _ = write!(s, "[{}] {e}\n\n", n + 1);
+                s
+            })
     );
 
     // Census guard: the six dialect chapters alone carry ~60 ink fences. If
@@ -437,6 +438,7 @@ fn classify_closes_the_taxonomy() {
     assert!(matches!(classify("ink"), Kind::Run));
     assert!(matches!(classify("ink,ignore"), Kind::Skip));
     assert!(matches!(classify("ink,proposed"), Kind::Skip));
+    assert!(matches!(classify("brink"), Kind::Skip));
     assert!(matches!(classify("brink,proposed"), Kind::Skip));
     assert!(matches!(classify("text"), Kind::Other));
     assert!(matches!(classify("rust,ignore"), Kind::Other));
