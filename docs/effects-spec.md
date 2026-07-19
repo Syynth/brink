@@ -29,8 +29,18 @@ Three layers, never conflated:
   effects; code emits them.
 - **Rows** are static summaries of possible atoms:
   `{reads: CellSet, writes: CellSet, calls: KindSet}` — **unordered
-  sets** (ordering is the journal's contract, not the row's). Every
-  atom is absorbed into the *enclosing definition's* row.
+  sets** (ordering is the journal's contract, not the row's) — plus,
+  since NS-A2 (#1108, from #1087/#1097), three boolean **dimensions**:
+  `emits` (may produce content — narration/dialogue fragments; glue-only
+  output counts; tag-only lines do NOT), `tags` (may touch the tag
+  channel — the independent metadata sibling, per the 2026-07-18 ruling
+  refinement), and `faults` (may raise a turn-terminating domain fault —
+  E078-lineage conversions, OOB indexing, missing-key reads, division by
+  zero, the NS-A1 stdlib faults, projection invalidation, value-call
+  dispatch faults; per-fault-kind granularity is the reserved
+  refinement). All three are conservative-total and inferred by the same
+  per-SCC fixpoint as the sets. Every atom is absorbed into the
+  *enclosing definition's* row.
 - **Types**: `Ty::Fn` is the **only** row-carrying type constructor —
   a function value is the only data that encapsulates pending
   computation. `fn(int): int ⟨reads: gold⟩` means *calling it* reads
@@ -159,14 +169,25 @@ scheduling sound as content loads.
   no reproducibility problem for a pin artifact to solve. The shipped
   `.inkb` rows are the frozen record; a checked-in generated row file
   is rejected as compiler output cosplaying as input.
-- **The only contract is the optional inline assertion**:
-  `#@effects(reads: gold, calls: audio)` declares an upper bound;
-  inference exceeding it is a compile error. `#@effects(pure)` is
-  sugar for the empty row (the tooling-trust case). Nothing else
-  errors or warns — there is no drift policy because there is nothing
-  to drift against. Drift *visibility* is tooling: a `brink ide`
-  effects-diff subcommand (CI-surfaceable as a PR comment) and IDE
-  hover.
+- **The only contract is the optional inline assertion.**
+  **SUPERSEDED SPELLING (NS-A2, #1108; stdlib-spec §9.2, ruled
+  2026-07-18):** the assertion's final form is the **annotation line**
+  `@[effects(…)]`, with args from `{pure, silent, total}` (any subset,
+  comma-joined) plus the original `reads:`/`writes:`/`calls:` clause
+  vocabulary. `@[effects(reads: gold, calls: audio)]` declares an upper
+  bound on the state row; `@[effects(pure)]` asserts the empty state row
+  (the tooling-trust case); `@[effects(silent)]` asserts no `emits`
+  (tags are NOT bounded by `silent` — the no-tags arg has no ruled
+  spelling v1); `@[effects(total)]` asserts no `faults`. All
+  exceedance-only (`E103` state, `E108` silent, `E109` total) —
+  asserting less than reality is legal. The old tag-channel spelling
+  `#@effects(…)` shipped in released surface (`@brink-lang/web@0.11.1`)
+  and stays a **deprecation alias**: same grammar, same checks, plus an
+  `E110` warning. Nothing else errors or warns — there is no drift
+  policy because there is nothing to drift against. Drift *visibility*
+  is tooling: a `brink ide` effects-diff subcommand (CI-surfaceable as a
+  PR comment) and IDE hover (both show the emits/tags/faults dimensions
+  alongside the sets since NS-A2).
 - **Default-public entry set.** Every knot/stitch ships its row — no
   `#@entry` marker exists (play-from-here already makes any knot a
   host entry). `#@private` opts out: not an entry point, row stays
@@ -192,7 +213,13 @@ design round is CLOSED; everything remaining is implementation.
 - **Format**: `EffectRows` (VERSION 4 reserved, section-locally
   versioned) ships **factored rows** — direct part + per-dispatch
   entries `{cell, narrowable, static fallback}` — plus the
-  `DefinitionId → row` table. Flat rows are rejected: they
+  `DefinitionId → row` table. NS-A2 (#1108) bumped the section-local
+  version 2 → 3: every `DirectEffects` block carries a trailing
+  extension-flags byte (bit 0 `emits`, bit 1 `tags`, bit 2 `faults`;
+  bits 3–7 reserved and strict-rejected — per-fault-kind granularity is
+  the named future occupant, graduating via the next section-version
+  bump, the same reservation discipline as the capability/handle
+  slots). Flat rows are rejected: they
   structurally foreclose §7. **Capability atoms carry a reserved
   parameter slot** (ruled 2026-07-14, t1d-spec §7): an atom may be
   handle-parameterized (`Transform(@argN)`); v1 populates every atom

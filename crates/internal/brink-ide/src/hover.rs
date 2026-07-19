@@ -553,7 +553,10 @@ Spent.
     fn hover_shows_pure_for_an_effectless_knot() {
         let src = "=== function double(n) ===\n~ return n + n\n";
         let content = hover_at(src, "double(n)");
-        assert!(content.contains("**effects** `pure`"), "{content}");
+        assert!(
+            content.contains("**effects** `pure, silent, total`"),
+            "{content}"
+        );
     }
 
     #[test]

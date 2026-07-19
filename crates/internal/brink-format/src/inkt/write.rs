@@ -349,6 +349,17 @@ fn write_direct_effects(
     if direct.opaque {
         writeln!(w, "{pad}opaque")?;
     }
+    // NS-A2 (issue #1108): the emits/tags/faults dimension flags, printed
+    // as bare optional tokens like `opaque`.
+    if direct.emits {
+        writeln!(w, "{pad}emits")?;
+    }
+    if direct.tags {
+        writeln!(w, "{pad}tags")?;
+    }
+    if direct.faults {
+        writeln!(w, "{pad}faults")?;
+    }
     Ok(())
 }
 

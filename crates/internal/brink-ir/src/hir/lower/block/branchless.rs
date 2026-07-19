@@ -29,6 +29,10 @@ impl LowerBlock for ast::BranchlessCondBody {
                 BranchChild::TagLine(tl) => {
                     acc.handle(&tl, scope, sink);
                 }
+                BranchChild::AnnotationLine(al) => {
+                    // NS-A2: never a recognized placement in branch context.
+                    super::super::directive::handle_annotation_line(&al, sink);
+                }
                 BranchChild::DivertNode(dn) => {
                     acc.handle(&dn, scope, sink);
                 }

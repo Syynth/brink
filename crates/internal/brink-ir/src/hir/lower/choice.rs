@@ -203,6 +203,10 @@ fn lower_choice_body(
             BodyChild::TagLine(tl) => {
                 acc.handle(&tl, scope, sink);
             }
+            BodyChild::AnnotationLine(al) => {
+                // NS-A2: never a recognized placement inside a choice body.
+                super::directive::handle_annotation_line(&al, sink);
+            }
             // Choice structural parts + weave items are skipped.
             BodyChild::Choice(_)
             | BodyChild::Gather(_)

@@ -8,10 +8,10 @@ use crate::SyntaxKind;
 )]
 pub fn lex_punctuation(bytes: &[u8], pos: usize) -> Option<(SyntaxKind, usize)> {
     use SyntaxKind::{
-        AMP, AMP_AMP, BACKSLASH, BANG, BANG_EQ, BANG_QUESTION, CARET, COLON, COMMA, DIVERT, DOLLAR,
-        DOT, EQ, EQ_EQ, GLUE, GT, GT_EQ, HASH, L_BRACE, L_BRACKET, L_PAREN, LT, LT_EQ, MINUS,
-        MINUS_EQ, PERCENT, PIPE, PLUS, PLUS_EQ, QUESTION, QUOTE, R_BRACE, R_BRACKET, R_PAREN,
-        SLASH, STAR, THREAD, TILDE, TUNNEL_ONWARDS,
+        AMP, AMP_AMP, AT_L_BRACKET, BACKSLASH, BANG, BANG_EQ, BANG_QUESTION, CARET, COLON, COMMA,
+        DIVERT, DOLLAR, DOT, EQ, EQ_EQ, GLUE, GT, GT_EQ, HASH, L_BRACE, L_BRACKET, L_PAREN, LT,
+        LT_EQ, MINUS, MINUS_EQ, PERCENT, PIPE, PLUS, PLUS_EQ, QUESTION, QUOTE, R_BRACE, R_BRACKET,
+        R_PAREN, SLASH, STAR, THREAD, TILDE, TUNNEL_ONWARDS,
     };
 
     let b = bytes[pos];
@@ -33,6 +33,12 @@ pub fn lex_punctuation(bytes: &[u8], pos: usize) -> Option<(SyntaxKind, usize)> 
     };
 
     Some(match b {
+        // `@[` — the annotation-line opener (NS-A2). Only the adjacent
+        // pair lexes; a lone `@` is not punctuation (stays ERROR_TOKEN →
+        // plain text in content position, the pre-existing behavior).
+        // A lone `@` is not punctuation (stays ERROR_TOKEN → plain text in
+        // content position) — falls through to the wildcard `None`.
+        b'@' if b1 == Some(b'[') => (AT_L_BRACKET, 2),
         // `->->` before `->` before `-=` before `-`
         // NOTE: `--` is NOT lexed as a single token. Two consecutive MINUS
         // tokens let the parser decide: gather dash vs postfix decrement.

@@ -118,6 +118,12 @@ pub enum SyntaxKind {
     BACKSLASH,
 
     // ── Compound tokens ──────────────────────────────────────────
+    /// `@[` — annotation-line opener (brink extension, NS-A2: the
+    /// `@[effects(…)]` assertion final form, `docs/stdlib-spec.md` §9.2).
+    /// Lexed as one compound token so only the *adjacent* pair opens an
+    /// annotation line; a lone `@` in prose stays an `ERROR_TOKEN`
+    /// swallowed into text, exactly as before.
+    AT_L_BRACKET,
     /// `<>`
     GLUE,
     /// `->`
@@ -171,6 +177,11 @@ pub enum SyntaxKind {
     LOGIC_LINE,
     CONTENT_LINE,
     TAG_LINE,
+    /// `@[name(args)]` — a brink annotation line (NS-A2, the
+    /// `@[effects(…)]` assertion surface). Superset-parsed under every
+    /// dialect; `strict-ink` rejects it in `brink-analyzer::dialect_gate`
+    /// (E051), the standard extension posture.
+    ANNOTATION_LINE,
     STRAY_CLOSING_BRACE,
     RETURN_STMT,
     TEMP_DECL,
@@ -430,6 +441,7 @@ impl SyntaxKind {
                 | Self::HASH
                 | Self::TILDE
                 | Self::BACKSLASH
+                | Self::AT_L_BRACKET
                 | Self::GLUE
                 | Self::DIVERT
                 | Self::THREAD

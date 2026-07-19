@@ -1933,6 +1933,11 @@ fn populate_effect_rows(db: &dyn salsa::Database, project: ProjectInput, story: 
                 writes: row.writes.iter().copied().collect(),
                 calls,
                 opaque: row.opaque,
+                // NS-A2 (issue #1108): the three new row dimensions ship
+                // straight from the analyzer's inferred row.
+                emits: row.emits,
+                tags: row.tags,
+                faults: row.faults,
             },
             dispatches: Vec::new(),
         });

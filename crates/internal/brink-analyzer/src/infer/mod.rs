@@ -891,6 +891,9 @@ pub fn def_effect_atoms(
         calls: result.external_calls,
         direct_calls: result.calls,
         opaque: result.effect_opaque,
+        emits: result.effect_emits,
+        tags: result.effect_tags,
+        faults: result.effect_faults,
     }
 }
 

@@ -44,6 +44,13 @@ pub(super) struct ParsedDirective {
     pub arg: Option<String>,
     /// Range of the whole tag, for diagnostics.
     pub range: TextRange,
+    /// `true` when this directive was spelled as an `@[name(args)]`
+    /// annotation line (NS-A2) rather than a `#@name(args)` tag-channel
+    /// directive. The `#@effects` spelling is a deprecation alias (it
+    /// shipped in released surface — `@brink-lang/web@0.11.1`), so the
+    /// effects recognizer warns (`E110`) on the tag spelling and the
+    /// annotation channel restricts its name set (`E111`).
+    pub from_annotation: bool,
 }
 
 /// Classification of one `TAG_LINE`.
@@ -102,6 +109,25 @@ pub(super) fn parse_directive_tag(tag: &ast::Tag) -> Option<ParsedDirective> {
         dynamic,
         arg,
         range: tag.syntax().text_range(),
+        from_annotation: false,
+    })
+}
+
+/// Parse an `@[name(args)]` annotation line (NS-A2, the `@[effects(…)]`
+/// assertion final form) into the same [`ParsedDirective`] shape the tag
+/// channel produces, so both spellings share one recognizer downstream.
+/// `None` when the parser recovered so hard no name token exists (the parse
+/// error is already reported).
+pub(super) fn parse_annotation_line(al: &ast::AnnotationLine) -> Option<ParsedDirective> {
+    let name = al.name_token()?.text().to_string();
+    let arg = al.arg_text();
+    Some(ParsedDirective {
+        bare: arg.is_none(),
+        dynamic: false,
+        arg,
+        name,
+        range: al.syntax().text_range(),
+        from_annotation: true,
     })
 }
 
@@ -195,7 +221,10 @@ pub(super) fn in_leading_body_run(tl: &ast::TagLine) -> bool {
                 cursor = tok.prev_sibling_or_token();
             }
             rowan::NodeOrToken::Node(node) => {
-                if !matches!(node.kind(), SyntaxKind::TAG_LINE | SyntaxKind::EMPTY_LINE) {
+                if !matches!(
+                    node.kind(),
+                    SyntaxKind::TAG_LINE | SyntaxKind::EMPTY_LINE | SyntaxKind::ANNOTATION_LINE
+                ) {
                     return false;
                 }
                 cursor = node.prev_sibling_or_token();
@@ -203,6 +232,56 @@ pub(super) fn in_leading_body_run(tl: &ast::TagLine) -> bool {
         }
     }
     true
+}
+
+/// Is this `@[name(args)]` annotation line inside the leading run of a
+/// knot/stitch body (NS-A2)? Mirrors [`in_leading_body_run`]'s rule for tag
+/// lines: everything before it in a `KNOT_BODY`/`STITCH_BODY` is trivia,
+/// empty lines, tag lines, or further annotation lines. This is the only
+/// consumed placement v1 — anywhere else the annotation chokepoint
+/// diagnoses `E112` ([`handle_annotation_line`]).
+pub(super) fn in_leading_annotation_run(al: &ast::AnnotationLine) -> bool {
+    let Some(parent) = al.syntax().parent() else {
+        return false;
+    };
+    if !matches!(
+        parent.kind(),
+        SyntaxKind::KNOT_BODY | SyntaxKind::STITCH_BODY
+    ) {
+        return false;
+    }
+    let mut cursor = al.syntax().prev_sibling_or_token();
+    while let Some(el) = cursor {
+        match el {
+            rowan::NodeOrToken::Token(tok) => {
+                if !is_trivia(tok.kind()) {
+                    return false;
+                }
+                cursor = tok.prev_sibling_or_token();
+            }
+            rowan::NodeOrToken::Node(node) => {
+                if !matches!(
+                    node.kind(),
+                    SyntaxKind::TAG_LINE | SyntaxKind::EMPTY_LINE | SyntaxKind::ANNOTATION_LINE
+                ) {
+                    return false;
+                }
+                cursor = node.prev_sibling_or_token();
+            }
+        }
+    }
+    true
+}
+
+/// The annotation-line chokepoint (NS-A2) — the `@[…]` analogue of the
+/// tag-line chokepoint's `is_consumed_position` rule: an annotation line in
+/// the leading run of a knot/stitch body is consumed by that owner
+/// ([`leading_body_directives`]) and erased here; anywhere else is a
+/// misplacement (`E112`), never a silent drop and never content.
+pub(super) fn handle_annotation_line(al: &ast::AnnotationLine, sink: &mut impl LowerSink) {
+    if !in_leading_annotation_run(al) {
+        sink.diagnose(al.syntax().text_range(), DiagnosticCode::E112);
+    }
 }
 
 /// Is this directive line in a position that an owner consumes (a
@@ -512,6 +591,12 @@ pub(super) fn leading_body_directives(body: &SyntaxNode) -> Vec<ParsedDirective>
                 if node.kind() == SyntaxKind::EMPTY_LINE {
                     continue;
                 }
+                // NS-A2: `@[name(args)]` annotation lines join the leading
+                // run and collect alongside tag-channel directives.
+                if let Some(al) = ast::AnnotationLine::cast(node.clone()) {
+                    collected.extend(parse_annotation_line(&al));
+                    continue;
+                }
                 let Some(tl) = ast::TagLine::cast(node) else {
                     break;
                 };
@@ -554,7 +639,12 @@ pub(super) fn apply_scope_directives(
 ) -> bool {
     let mut is_local = false;
     for d in dirs {
-        if d.name == "private" || d.name == "public" {
+        if d.from_annotation && d.name != "effects" {
+            // NS-A2: the `@[…]` annotation channel recognizes only
+            // `effects` v1 — the tag-channel directive names (`local`,
+            // `private`, `was`, `module`, …) do not alias into it.
+            sink.diagnose(d.range, DiagnosticCode::E111);
+        } else if d.name == "private" || d.name == "public" {
             // Visibility directives (M-2, modules-spec §4) — handled by
             // [`visibility_from_directives`]; not an unknown-directive error
             // here.
@@ -668,6 +758,13 @@ pub(super) fn effects_assertion_from_directives(
         if d.name != "effects" {
             continue;
         }
+        if !d.from_annotation {
+            // NS-A2 (docs/stdlib-spec.md §9.2): `@[effects(…)]` is the
+            // assertion final form; the `#@effects(…)` tag spelling stays a
+            // deprecation alias (it shipped in `@brink-lang/web@0.11.1`)
+            // and warns. Parsing continues unchanged either way.
+            sink.diagnose(d.range, DiagnosticCode::E110);
+        }
         if d.dynamic {
             sink.diagnose(d.range, DiagnosticCode::E046);
             continue;
@@ -681,14 +778,6 @@ pub(super) fn effects_assertion_from_directives(
         let parsed = if trimmed.is_empty() {
             sink.diagnose(d.range, DiagnosticCode::E100);
             None
-        } else if trimmed == "pure" {
-            Some(crate::EffectsAssertion {
-                pure: true,
-                reads: Vec::new(),
-                writes: Vec::new(),
-                calls: Vec::new(),
-                range: d.range,
-            })
         } else {
             parse_effects_clauses(trimmed, d.range, sink)
         };
@@ -723,6 +812,9 @@ fn parse_effects_clauses(
     range: TextRange,
     sink: &mut impl LowerSink,
 ) -> Option<crate::EffectsAssertion> {
+    let mut pure = false;
+    let mut silent = false;
+    let mut total = false;
     let mut reads = Vec::new();
     let mut writes = Vec::new();
     let mut calls = Vec::new();
@@ -764,6 +856,29 @@ fn parse_effects_clauses(
                 ok = false;
             }
         } else {
+            // NS-A2 (docs/stdlib-spec.md §9.2): the assertion-flag args —
+            // any subset of {pure, silent, total}, comma-joined. A bare
+            // piece is a FLAG only while no clause is open; after a
+            // `reads:`/`writes:`/`calls:` opener, bare pieces continue that
+            // clause (so a cell genuinely named `silent` stays assertable
+            // as `reads: silent`).
+            if current.is_none() {
+                match piece {
+                    "pure" => {
+                        pure = true;
+                        continue;
+                    }
+                    "silent" => {
+                        silent = true;
+                        continue;
+                    }
+                    "total" => {
+                        total = true;
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
             let Some(kind) = current else {
                 ok = false;
                 continue;
@@ -774,16 +889,23 @@ fn parse_effects_clauses(
         }
     }
 
+    // `pure` asserts the EMPTY state row — combining it with a clause that
+    // grants state atoms is contradictory, not a union (`E101`).
+    if pure && !(reads.is_empty() && writes.is_empty() && calls.is_empty()) {
+        ok = false;
+    }
     if !ok {
         sink.diagnose(range, DiagnosticCode::E101);
         return None;
     }
-    if reads.is_empty() && writes.is_empty() && calls.is_empty() {
+    if !pure && !silent && !total && reads.is_empty() && writes.is_empty() && calls.is_empty() {
         sink.diagnose(range, DiagnosticCode::E100);
         return None;
     }
     Some(crate::EffectsAssertion {
-        pure: false,
+        pure,
+        silent,
+        total,
         reads,
         writes,
         calls,

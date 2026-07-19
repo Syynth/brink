@@ -88,6 +88,11 @@ impl BodyCtx<'_> {
 
 /// The result of walking one definition's body.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the NS-A2 effect-dimension flags plus the pre-existing walk \
+              facts are independent harvested facts, not a state machine"
+)]
 pub(super) struct BodyResult {
     /// Declared params, in declaration order, with their observed type.
     pub params: Vec<(String, Ty)>,
@@ -141,6 +146,15 @@ pub(super) struct BodyResult {
     /// `true` when no such origin could be proven; the heap (VAR/CONST
     /// cells) case remains coarse/pessimal, still unaddressed.
     pub effect_opaque: bool,
+    /// NS-A2 (issue #1108): the body directly contains a content-producing
+    /// construct — see `EffectAtoms::emits`.
+    pub effect_emits: bool,
+    /// NS-A2: the body directly touches the tag channel — see
+    /// `EffectAtoms::tags`.
+    pub effect_tags: bool,
+    /// NS-A2: the body directly contains a construct that can raise a
+    /// turn-terminating fault — see `EffectAtoms::faults`.
+    pub effect_faults: bool,
     /// T1c: statically-checkable call-through-value facts (see
     /// [`super::ValueCallFact`]) — recorded here because this walk is the
     /// only place argument expressions have types; reported by strict mode
@@ -186,12 +200,23 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         effect_writes: BTreeSet::new(),
         external_calls: BTreeSet::new(),
         effect_opaque: false,
+        effect_emits: false,
+        effect_tags: false,
+        effect_faults: false,
         annotated,
         value_calls: Vec::new(),
         local_write_counts: BTreeMap::new(),
         local_fn_origin: BTreeMap::new(),
         pending_value_calls: Vec::new(),
     };
+    // NS-A2 fault dimension (issue #1108, from #1097): a `ref` parameter's
+    // dereference inside this body goes through a pointer/projection whose
+    // resolution can raise `ProjectionInvalidated` (docs/t1e-spec.md §1(2))
+    // — a designed turn-terminating fault charged to the *callee* (the deref
+    // site), so a def declaring any `ref` param conservatively faults.
+    if def.params.iter().any(|p| p.is_ref) {
+        pass.effect_faults = true;
+    }
     pass.infer_block(def.body);
     // T2 §8 precision rung (issue #872): resolve every value-call site now
     // that the whole body's write counts are final — see
@@ -237,6 +262,9 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         effect_writes: pass.effect_writes,
         external_calls: pass.external_calls,
         effect_opaque: pass.effect_opaque,
+        effect_emits: pass.effect_emits,
+        effect_tags: pass.effect_tags,
+        effect_faults: pass.effect_faults,
         value_calls: pass.value_calls,
     }
 }
@@ -262,6 +290,10 @@ fn ref_arg_root(expr: &Expr) -> &Expr {
     }
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "accumulator for the same independent facts BodyResult carries"
+)]
 struct InferPass<'a, 'b> {
     ctx: &'a BodyCtx<'b>,
     locals: BTreeMap<String, Ty>,
@@ -274,6 +306,14 @@ struct InferPass<'a, 'b> {
     effect_writes: BTreeSet<DefinitionId>,
     external_calls: BTreeSet<String>,
     effect_opaque: bool,
+    /// NS-A2 output dimensions (issue #1108): direct content emission /
+    /// tag-channel touch harvested from this body's weave statements
+    /// (`infer_content`/`infer_choice`), and the direct fault sources
+    /// (indexing, `/`‐`mod`, faulting intrinsics, value calls, `ref`
+    /// params, `for` iteration) — see `EffectAtoms`'s field docs.
+    effect_emits: bool,
+    effect_tags: bool,
+    effect_faults: bool,
     /// Resolvable annotation/ascription types by local name — params up
     /// front, temps added as their declarations are walked. Consulted only
     /// as a *fallback* at consumption sites where the body-derived type is
@@ -730,6 +770,10 @@ impl InferPass<'_, '_> {
                 Ty::Map(Box::new(unify_all(keys)), Box::new(unify_all(vals)))
             }
             Expr::Index(idx) => {
+                // NS-A2 fault dimension (issue #1108, from #1097): indexing
+                // is a faulting construct — array OOB, map missing-key read,
+                // not-indexable/invalid-index (docs/value-model-spec.md §11c).
+                self.effect_faults = true;
                 let base = self.infer_expr(&idx.base);
                 match base {
                     Ty::Array(elem) => {
@@ -820,6 +864,14 @@ impl InferPass<'_, '_> {
     fn infer_infix(&mut self, lhs: &Expr, op: InfixOp, rhs: &Expr) -> Ty {
         let l = self.infer_expr(lhs);
         let r = self.infer_expr(rhs);
+        // NS-A2 fault dimension (issue #1108): integer `/` and `mod` raise
+        // the turn-terminating `DivisionByZero` fault on a zero divisor —
+        // a value-dependent domain fault on a well-typed program, so the
+        // construct conservatively faults (the type-free structural harvest
+        // cannot rule out the int case; float division is IEEE-total).
+        if matches!(op, InfixOp::Div | InfixOp::Mod) {
+            self.effect_faults = true;
+        }
         match op {
             InfixOp::Add
             | InfixOp::Sub
@@ -1021,6 +1073,13 @@ impl InferPass<'_, '_> {
         // this fn's old unconditional behavior. `bind` creates a value rather
         // than calling one, so it routes through `check_bind_value`, not here.
         self.pending_value_calls.push(narrow_hint);
+        // NS-A2 fault dimension (issue #1108): a call through a function
+        // value can raise the T1c dispatch faults at runtime regardless of
+        // narrowing — `NotCallable`, `FunctionValueArity`, the cross-flow
+        // `#@local` `ref`-binding fault, rehydration mismatch (gradual mode
+        // reaches all of these) — so the call site conservatively faults
+        // even when #872's rung resolves the callee row.
+        self.effect_faults = true;
         match callee_ty {
             Ty::Fn(params, ret) => {
                 if args.len() != params.len() {
@@ -1088,6 +1147,10 @@ impl InferPass<'_, '_> {
         args: &[Expr],
         arg_tys: &[Ty],
     ) -> Ty {
+        // NS-A2 (issue #1108): `bind(f, …)` faults at bind time on a
+        // non-function callee (`NotCallable` from `bind_fn_value`) —
+        // conservatively marked like `check_value_call`'s dispatch faults.
+        self.effect_faults = true;
         match callee_ty {
             Ty::Fn(params, ret) => {
                 if args.len() > params.len() {
@@ -1178,6 +1241,58 @@ impl InferPass<'_, '_> {
         args: &[Expr],
         arg_tys: &[Ty],
     ) -> Ty {
+        // NS-A2 fault dimension (issue #1108, from #1097): every stdlib
+        // intrinsic whose VM op has at least one turn-terminating fault path
+        // conservatively faults (bool v1; the type-free structural harvest
+        // cannot rule the wrong-type/unorderable/parse-failure paths out).
+        // Inventory audited against `brink-runtime`'s ops:
+        // - `int`/`float`: `ConversionParseFailure`/`InvalidConversionDomain`
+        //   (the E078 lineage, typed-mode-spec §4);
+        // - `char_at`: `CharAtOutOfBounds`/`CharAtIndexNotInt`/`NotIndexable`;
+        // - `min`/`max`: `NotOrderable` + `StdlibWrongType` (NS-A1; §4b's
+        //   "[float] orderings carry faults unconditionally" falls out);
+        // - `first`/`last`/`pop`/`find`/`index_of`/`get`/`contains_value`/
+        //   `clear`: `StdlibWrongType` (NS-A1 — absence is Option, a
+        //   malformed *question* faults);
+        // - `len`/`keys`/`values`/`contains`/`push`/`insert`/`remove`:
+        //   `NotIndexable` (and the map-key domain faults) on a wrong-typed
+        //   container.
+        // NOT in the set: `string` and `some` (total over every value), and
+        // `call`/`bind` (their dispatch-fault marking lives at
+        // `check_value_call`/`check_bind_value`, shared with direct value
+        // calls).
+        if matches!(
+            name,
+            "len"
+                | "keys"
+                | "values"
+                | "contains"
+                | "push"
+                | "insert"
+                | "remove"
+                | "int"
+                | "float"
+                | "char_at"
+                | "find"
+                | "index_of"
+                | "min"
+                | "max"
+                | "first"
+                | "last"
+                | "pop"
+                | "get"
+                | "contains_value"
+                | "clear"
+        ) {
+            self.effect_faults = true;
+        }
+        // The classic uppercase conversion builtins fault outside the
+        // numeric+bool+string domain since issue #955
+        // (`InvalidConversionDomain` from `value_ops::cast_to_int/float`) —
+        // they reach this arm as unresolved single-segment call names.
+        if matches!(name, "INT" | "FLOAT") {
+            self.effect_faults = true;
+        }
         match name {
             // `len` (stdlib slice 1) and `int` (TM-3-completion conversion
             // intrinsic, #659) both return a fixed `Ty::Int` independent of
@@ -1502,6 +1617,19 @@ impl InferPass<'_, '_> {
     }
 
     fn infer_content(&mut self, content: &Content) {
+        // NS-A2 emits/tags harvest (issue #1108, from #1087 + its 2026-07-18
+        // ruling refinements): any content *part* — text, glue (glue-only
+        // output counts), spring, an interpolation, an inline
+        // conditional/sequence — is a content fragment the host renders, so
+        // the line emits. Tags ride the separate tag channel: a tag-only
+        // line (empty `parts`, non-empty `tags`) sets `tags` WITHOUT setting
+        // `emits` ("a flow that only annotates isn't speaking").
+        if !content.parts.is_empty() {
+            self.effect_emits = true;
+        }
+        if !content.tags.is_empty() {
+            self.effect_tags = true;
+        }
         for part in &content.parts {
             match part {
                 ContentPart::Interpolation(e) => {
@@ -1526,6 +1654,13 @@ impl InferPass<'_, '_> {
     }
 
     fn infer_choice(&mut self, choice: &Choice) {
+        // NS-A2 (issue #1108): choice text is host-rendered content (the
+        // choice list / the selected-line output) — the start/bracket/inner
+        // `Content`s below set `emits` via `infer_content`'s own harvest.
+        // Choice-level tags touch the tag channel.
+        if !choice.tags.is_empty() {
+            self.effect_tags = true;
+        }
         if let Some(cond) = &choice.condition {
             self.infer_expr(cond); // condition position — no forcing.
         }
@@ -1592,6 +1727,11 @@ impl InferPass<'_, '_> {
                 }
             }
             BlockStmt::For(f) => {
+                // NS-A2 (issue #1108): `for` compiles to `CollectionKeys`,
+                // which raises `NotIndexable` on a non-collection iterable —
+                // a tracked domain fault, so the construct conservatively
+                // faults (bool v1, type-free structural harvest).
+                self.effect_faults = true;
                 let iter_ty = self.infer_expr(&f.iterable);
                 let elem_ty = match iter_ty {
                     Ty::Array(elem) => *elem,

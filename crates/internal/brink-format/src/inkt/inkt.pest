@@ -57,8 +57,8 @@ alias_entry = { "(" ~ "alias" ~ def_id ~ "->" ~ def_id ~ ")" }
 // ── Effect rows (T2-3, docs/effects-spec.md §11) ─────────────────────────────
 
 effect_rows = { "(" ~ "effect_rows" ~ effect_row* ~ ")" }
-effect_row = { "(" ~ "row" ~ def_id ~ internal_flag? ~ effects_reads ~ effects_writes ~ effects_calls ~ opaque_flag? ~ dispatch_entry* ~ ")" }
-dispatch_entry = { "(" ~ "dispatch" ~ def_id ~ narrowable_flag? ~ effects_reads ~ effects_writes ~ effects_calls ~ opaque_flag? ~ ")" }
+effect_row = { "(" ~ "row" ~ def_id ~ internal_flag? ~ effects_reads ~ effects_writes ~ effects_calls ~ opaque_flag? ~ emits_flag? ~ tags_flag? ~ faults_flag? ~ dispatch_entry* ~ ")" }
+dispatch_entry = { "(" ~ "dispatch" ~ def_id ~ narrowable_flag? ~ effects_reads ~ effects_writes ~ effects_calls ~ opaque_flag? ~ emits_flag? ~ tags_flag? ~ faults_flag? ~ ")" }
 // ── Frame shapes (FS-3, docs/flow-suspension-spec.md §4/§11) ──────────────────
 // One entry per `await` site: the site's stable def_id (the synthesized
 // continuation container id) followed by its name-keyed crossing-local slots.
@@ -72,6 +72,9 @@ effects_calls = { "(" ~ "calls" ~ call_atom* ~ ")" }
 call_atom = { "(" ~ "call" ~ integer ~ cap_param ~ ")" }
 cap_param = { "any" }
 opaque_flag = { "opaque" }
+emits_flag = { "emits" }
+tags_flag = { "tags" }
+faults_flag = { "faults" }
 narrowable_flag = { "narrowable" }
 // #882 freeze bit: present only when the row is NOT a host entry point
 // (a `#@private` def — see `EffectRowEntry::is_entry`'s doc). Absent means

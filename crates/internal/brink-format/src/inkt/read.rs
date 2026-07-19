@@ -993,6 +993,9 @@ fn parse_effect_row(pair: &P<'_>) -> Result<EffectRowEntry, InktParseError> {
     let mut writes = None;
     let mut calls = None;
     let mut opaque = false;
+    let mut emits = false;
+    let mut tags = false;
+    let mut faults = false;
     let mut dispatches = Vec::new();
     for rest in inner {
         match rest.as_rule() {
@@ -1001,6 +1004,9 @@ fn parse_effect_row(pair: &P<'_>) -> Result<EffectRowEntry, InktParseError> {
             Rule::effects_writes => writes = Some(parse_effect_cells(rest)?),
             Rule::effects_calls => calls = Some(parse_effect_calls(rest)?),
             Rule::opaque_flag => opaque = true,
+            Rule::emits_flag => emits = true,
+            Rule::tags_flag => tags = true,
+            Rule::faults_flag => faults = true,
             Rule::dispatch_entry => dispatches.push(parse_dispatch_entry(&rest)?),
             _ => {}
         }
@@ -1016,6 +1022,9 @@ fn parse_effect_row(pair: &P<'_>) -> Result<EffectRowEntry, InktParseError> {
             writes,
             calls,
             opaque,
+            emits,
+            tags,
+            faults,
         },
         dispatches,
     })
@@ -1028,6 +1037,9 @@ fn parse_dispatch_entry(pair: &P<'_>) -> Result<DispatchEntry, InktParseError> {
     let mut writes = Vec::new();
     let mut calls = Vec::new();
     let mut opaque = false;
+    let mut emits = false;
+    let mut tags = false;
+    let mut faults = false;
     for part in pair.clone().into_inner() {
         match part.as_rule() {
             Rule::def_id => cell = Some(parse_def_id(part)?),
@@ -1036,6 +1048,9 @@ fn parse_dispatch_entry(pair: &P<'_>) -> Result<DispatchEntry, InktParseError> {
             Rule::effects_writes => writes = parse_effect_cells(part)?,
             Rule::effects_calls => calls = parse_effect_calls(part)?,
             Rule::opaque_flag => opaque = true,
+            Rule::emits_flag => emits = true,
+            Rule::tags_flag => tags = true,
+            Rule::faults_flag => faults = true,
             _ => {}
         }
     }
@@ -1048,6 +1063,9 @@ fn parse_dispatch_entry(pair: &P<'_>) -> Result<DispatchEntry, InktParseError> {
             writes,
             calls,
             opaque,
+            emits,
+            tags,
+            faults,
         },
     })
 }

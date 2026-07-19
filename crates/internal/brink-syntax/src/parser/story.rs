@@ -1,6 +1,7 @@
 use crate::SyntaxKind::{
-    AUTHOR_WARNING, EMPTY_LINE, HASH, KW_TODO, L_BRACE, MINUS, NEWLINE, PLUS, R_BRACE, SOURCE_FILE,
-    STAR, STRAY_CLOSING_BRACE, TILDE, WHITESPACE,
+    ANNOTATION_LINE, AT_L_BRACKET, AUTHOR_WARNING, EMPTY_LINE, HASH, IDENT, KW_TODO, L_BRACE,
+    L_PAREN, MINUS, NEWLINE, PLUS, R_BRACE, R_BRACKET, R_PAREN, SOURCE_FILE, STAR,
+    STRAY_CLOSING_BRACE, TILDE, WHITESPACE,
 };
 
 use super::Parser;
@@ -84,6 +85,9 @@ pub(crate) fn line(p: &mut Parser<'_, '_>) {
         MINUS => {
             super::gather::gather_line(p);
         }
+        AT_L_BRACKET => {
+            annotation_line(p);
+        }
         L_BRACE if is_multiline_block(p) => {
             super::inline::multiline_block(p);
             // Consume trailing newline after `}`
@@ -108,6 +112,67 @@ fn is_multiline_block(p: &Parser<'_, '_>) -> bool {
             _ => return false,
         }
     }
+}
+
+/// Parse an annotation line (NS-A2, the `@[effects(…)]` assertion final
+/// form — `docs/stdlib-spec.md` §9.2):
+///
+/// ```text
+/// annotation_line = { "@[" ~ IDENT ~ ("(" ~ arg_tokens ~ ")")? ~ "]" ~ NEWLINE }
+/// ```
+///
+/// The argument tokens are kept flat inside the node (the raw text between
+/// the balanced parens is re-read by `brink-ir`'s directive recognizer, the
+/// same string-level contract the `#@…` tag channel uses). Superset-parsed
+/// under every dialect; `strict-ink` rejection (E051) and argument-grammar
+/// validation live in `brink-ir`/`brink-analyzer`.
+fn annotation_line(p: &mut Parser<'_, '_>) {
+    p.start_node(ANNOTATION_LINE);
+    p.bump(); // AT_L_BRACKET
+    p.skip_ws();
+    if p.at(IDENT) {
+        p.bump();
+    } else {
+        p.error("expected an annotation name after `@[`".into());
+    }
+    p.skip_ws();
+    if p.at(L_PAREN) {
+        p.bump();
+        let mut depth = 1usize;
+        while depth > 0 && !p.at_eof() && p.nth_raw(0) != NEWLINE {
+            match p.nth_raw(0) {
+                L_PAREN => depth += 1,
+                R_PAREN => depth -= 1,
+                _ => {}
+            }
+            p.bump();
+        }
+        if depth > 0 {
+            p.error("unclosed `(` in annotation arguments".into());
+        }
+    }
+    p.skip_ws();
+    if p.at(R_BRACKET) {
+        p.bump();
+    } else {
+        p.error("expected `]` to close the annotation".into());
+    }
+    // Anything else on the line is unexpected — consume to newline so the
+    // parser stays line-synchronized (matches `author_warning`'s recovery).
+    let mut trailing = false;
+    while !p.at_eof() && p.nth_raw(0) != NEWLINE {
+        if !matches!(p.nth_raw(0), WHITESPACE) {
+            trailing = true;
+        }
+        p.bump();
+    }
+    if trailing {
+        p.error("unexpected text after `]` on an annotation line".into());
+    }
+    if p.at(NEWLINE) {
+        p.bump();
+    }
+    p.finish_node();
 }
 
 /// Parse `TODO: text\n`.
