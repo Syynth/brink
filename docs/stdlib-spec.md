@@ -132,11 +132,21 @@ cross-referenced so views ≠ projections.
   only changes effect interleaving ⇒ purity makes it invisible) —
   the effect system licenses deforestation. True pull-iterators =
   future protocol; flows already serve coroutine-shaped needs.
-- 🔶 **Mutation posture (proposed, awaiting nod)**: mutating verbs
-  take `ref` first params; **UFCS auto-refs an lvalue receiver**
-  (`inventory.push(sword);`; rvalue receiver = compile error).
-  Naming: imperative = in-place (`sort push insert remove
-  reverse`), past-participle = functional (`sorted reversed`).
+- **Mutation posture (RULED 2026-07-18)**: mutating verbs take
+  `ref` first params; **UFCS auto-refs an lvalue receiver**
+  (`inventory.push(sword)`; field paths write through RMW). An
+  **rvalue receiver is a compile error** (`[1,2].push(3)`,
+  `a.sorted().push(x)` — mutating a temporary loses the
+  mutation). The free-call form stays explicit
+  (`push(ref inventory, sword)`) — the sugar is earned in method
+  position, the spelled form teaches what it means. Safe
+  sigil-free because values are COW (no aliasing/escape to warn
+  about) and the mutation lives in the effect row regardless.
+  **Naming (RULED with it)**: imperative = in-place (`sort push
+  insert remove reverse`), past-participle = functional (`sorted
+  reversed`) — the verb carries the mutation signal; the
+  confusion lattice closes from both sides (`let b = a.sort()` =
+  unit type error; `a.sorted().push(x)` = rvalue error).
 - Verbs: `len first last index_of contains slice(view) concat
   sort sort_by sorted reversed min max push pop insert remove
   each map filter fold filter_map`. **Absence returns (RULED
@@ -251,7 +261,7 @@ precedent, oracle byte-identical):
   `Option` (any closed-set iterable incl. flags subsets; empty →
   `none` — dynamic-content absence, matching the flipped
   `min`/`max`), `shuffle(ref a)` in-place + `shuffled(a)`
-  functional (the §4 naming-convention 🔶 exercised again),
+  functional (the ruled §4 naming convention exercised again),
   `seed(n)`. `int` on an empty range (`0..0`, `5..5`) ⇒ **fault**
   🔶 — proposed cut: a range is a shape you wrote, so an empty one
   is a logic bug (and Option-wrapping every `rand::int(0..10)`
@@ -381,10 +391,13 @@ precedent, oracle byte-identical):
   per-protocol effect contracts, two-tier discipline. Its
   interior ⏳s (impl spelling, ordering doctrine content, the
   compare/equality coherence line) remain open.
-- Still awaiting the nod: the three sitting-3 🔶s (UFCS auto-ref ·
-  naming convention · eager trio) · §§5–9's remaining proposal
-  content (updated to conform to the Option ruling but not
-  themselves ruled).
+- **Also RULED 2026-07-18**: the mutation posture — UFCS auto-ref
+  on lvalue receivers, rvalue-receiver compile error, explicit
+  free-call form — and the imperative/past-participle naming
+  convention (§4).
+- Still awaiting the nod: the eager trio (the last sitting-3 🔶,
+  §4) · §§5–9's remaining proposal content (updated to conform to
+  the Option ruling but not themselves ruled).
 - In-section ⏳s: tower mini-spec (§2b) · view-materialization
   ratio (§3b) · intrinsic display notation lives in §9.4 now ·
   flags numeric-coupling ruling (§6) · rand::int empty-range
