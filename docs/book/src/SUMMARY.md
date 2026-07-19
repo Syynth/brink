@@ -24,7 +24,7 @@
 - [The Brink Dialect](./toolchain/dialect/index.md)
   - [Enabling the Dialect](./toolchain/dialect/enabling.md)
   - [Logic Blocks](./toolchain/dialect/blocks.md)
-  - [Collections](./toolchain/dialect/literals.md)
+  - [Collections: Arrays, Maps, and Ranges](./toolchain/dialect/literals.md)
   - [Indexing & Mutation](./toolchain/dialect/indexing.md)
   - [Standard Library](./toolchain/dialect/stdlib.md)
   - [Values & Types](./toolchain/dialect/types.md)
