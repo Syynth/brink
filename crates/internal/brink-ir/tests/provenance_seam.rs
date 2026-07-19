@@ -17,7 +17,13 @@
 //!    assumed — and it is exactly the property that lets a native frontend
 //!    ship codegen before native IDE support.
 
-#![allow(clippy::unwrap_used, clippy::panic, clippy::items_after_statements)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::items_after_statements,
+    clippy::match_same_arms
+)]
 #![allow(
     clippy::disallowed_types,
     reason = "always-empty file_paths map handed to lower_to_program, no order to leak"
