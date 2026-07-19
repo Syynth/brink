@@ -409,7 +409,7 @@ pub enum RuntimeError {
     /// validator (the §7 parse-don't-validate shape), so `roll` over any
     /// table that exists is total.
     #[error(
-        "`weighted` requires positive int weights, got {found} — construction refuses          empty/zero/negative-weight tables"
+        "`weighted` requires positive int weights, got {found} — construction refuses empty/zero/negative-weight tables"
     )]
     WeightedBadWeight {
         /// Display form of the offending weight value (`0`, `-3`, `1.5`, a
