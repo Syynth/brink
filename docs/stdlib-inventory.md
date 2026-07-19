@@ -161,14 +161,14 @@ mini-spec; no tower dispatch entries on main).
 | `cross` | `fn cross(a: vec3, b: vec3): vec3` | math | ✓* | P | vec3 only |
 | `+` `-` | componentwise | (op) | — | P | vecN, quat |
 | `*` scalar | `vecN * float`, `float * vecN` scale | (op) | — | P | |
-| `mat * vec` | transform | (op) | — | P | matrices ⏳ |
+| `mat * vec` | transform | (op) | — | P | mat2/3/4 (all sizes v1 — mini-spec) |
 | `quat * quat` | compose | (op) | — | P | |
 | `quat * vec` | rotate | (op) | — | P | |
 | `min`/`max`/`clamp`/`lerp` | componentwise across the tower (width-1 scalar floor is §1) | math | ✓ | P | "defined once across it" (§2b) |
 
 \* prelude flag for tower verbs inherits the "entire math kit" prelude
 ruling; confirm `dot`/`cross` are intended prelude entries with the
-mini-spec.
+A8 build.
 
 Construction: `vec3 { x: 1.0, y: 2.0, z: 3.0 }` (grammar §K); equality
 componentwise-IEEE, display/save per the mini-spec (F24 ruled).
