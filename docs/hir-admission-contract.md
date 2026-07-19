@@ -1,6 +1,20 @@
 # The HIR admission contract — draft
 
-Status: **DRAFT — design note for maintainer ruling.** Companion to
+Status: **RULED by delegation (2026-07-19) — not fully reviewed.** The
+maintainer adopted the coordinator's Q1–Q7 recommendations from summaries
+without a close read of this document (see the decision-log's "Delegated
+batch ruling" entry): **Q1(b)** opaque `Provenance` + resolver trait,
+sequenced first · **Q2(a)** ratify the byte-range-equality join for v1
+with a loud admission check (NodeIds tracked as endgame) · **Q3(b)** the
+`SymbolManifest` becomes a pipeline projection of HIR · **Q4(b)** two
+container levels for v1, addressing model written to generalize ·
+**Q5(a)** chart #905 is a body-dialect inside the native frontend ·
+**Q6(b)** native accept-list admission gate · **Q7(a)** explicit
+`Return.kind: ReturnKind`. These drive B0's slice decomposition. Any
+downstream surprise must be flagged loudly — the settled-deliberation
+presumption does not apply at full strength.
+
+Originally: DRAFT — design note for maintainer ruling. Companion to
 `docs/native-surface-charter.md` (driver #2: "a second frontend forces a
 defined HIR admission contract, after which per-domain frontends become
 ordinary clients"). This document proposes the contract; nothing is ratified
