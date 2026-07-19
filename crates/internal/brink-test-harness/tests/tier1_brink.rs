@@ -176,6 +176,17 @@ fn index_then_field_assignment_target_is_e074_not_a_parse_error() {
 // struct is an independent copy — `p` must read back unchanged after
 // `translate(p, ...)` returns a *new* point (value semantics, not aliasing).
 
+/// NS-A3 (issue #1109, docs/stdlib-spec.md §9.6): the display protocol's
+/// structural default for structs (`Point { x: 1, y: 2 }` — shape name +
+/// fields in declared order), pinned on both consumers of the one display
+/// path (F1): interpolation and `string()` render identically; nested
+/// structs, structs-in-collections, and Option forms recurse through the
+/// same path (F28's total `none`/`some(…)` render included).
+#[test]
+fn struct_display_structural_default_serves_both_display_consumers() {
+    assert_case("struct-display-default");
+}
+
 #[test]
 fn struct_through_function_call_marshals_and_stays_a_value_copy() {
     assert_case("struct-through-function-call");
@@ -393,6 +404,7 @@ fn every_case_directory_has_a_test() {
         "rmw-shared-map-cow",
         "rmw-mutator-shared-nested-lvalue",
         "struct-construct-read-write",
+        "struct-display-default",
         "struct-through-function-call",
         "annotations-mixed",
         "fn-value-call-forms",
@@ -2311,6 +2323,30 @@ fn min_over_mixed_type_elements_is_a_not_orderable_fault() {
             brink_runtime::RuntimeError::NotOrderable { verb: "min", .. }
         ),
         "expected NotOrderable for min, got {err:?}"
+    );
+}
+
+/// NS-A3 boundary pin (issue #1109, docs/stdlib-spec.md §4b/§9.6): structs
+/// have NO structural auto-order — ordering them requires an explicit
+/// registered `compare` impl, and no impl spelling exists yet (⏳
+/// code-dialect sitting), so `min`/`max` over an array of structs stays a
+/// `NotOrderable` turn-terminating fault. Wave A4 wires registered
+/// compares into the ordering verbs; this test is the line it moves.
+#[test]
+fn min_over_structs_without_compare_impl_is_not_orderable() {
+    let src = "STRUCT Point = #{\n    x: float,\n    y: float,\n}\n\
+               ~ temp a = #[Point#{x: 1.0, y: 1.0}, Point#{x: 2.0, y: 2.0}]\n\
+               ~ temp x = min(a)\nUnreachable {x}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("min over structs must fault");
+    assert!(
+        matches!(
+            err,
+            brink_runtime::RuntimeError::NotOrderable {
+                verb: "min",
+                found: "record",
+            }
+        ),
+        "expected NotOrderable(record) for min, got {err:?}"
     );
 }
 

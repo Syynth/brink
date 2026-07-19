@@ -73,10 +73,8 @@ pub struct Program {
 
 /// Runtime metadata for one declared struct shape.
 pub(crate) struct StructShapeEntry {
-    #[expect(
-        dead_code,
-        reason = "carried for debugging/inspection parity with other entries"
-    )]
+    /// The declared `STRUCT` name — the head of the structural display
+    /// default (`Point { x: 1, y: 2 }`, NS-A3 / stdlib-spec §9.6).
     pub name: NameId,
     /// Declared field names, in shape order — the same order
     /// [`brink_format::Value::Record`]'s flat field vector follows.

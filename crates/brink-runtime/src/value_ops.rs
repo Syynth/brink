@@ -81,13 +81,50 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
                 .collect();
             format!("{{{}}}", parts.join(", "))
         }
-        // Same provisional-rendering rationale as the collection arms above:
-        // no compiler surface constructs a `Record` yet, so this format is
-        // not user-facing-authoritative — it exists only so `stringify`
-        // stays total.
-        Value::Record { fields, .. } => {
-            let parts: Vec<String> = fields.iter().map(|v| stringify(v, program)).collect();
-            format!("{{{}}}", parts.join(", "))
+        // Structs (TM-4 `Value::Record`): the **structural display
+        // default** of the protocol registry (NS-A3, issue #1109,
+        // docs/stdlib-spec.md §9.6) — shape name + fields in declared
+        // order, mirroring the construction literal: `Point { x: 1, y: 2 }`.
+        // Field values recurse through this same function, so nested
+        // structs/options render consistently. This IS the display
+        // protocol's default path: both interpolation (`{p}`, via
+        // `EmitValue` → `resolve_part`) and the `string()` conversion
+        // intrinsic (`ConvertString` → `convert_to_string`) dispatch
+        // through `stringify` — F1's one-display-path ruling (2026-07-19);
+        // a registered user `display` impl would override this default
+        // once the impl spelling lands (⏳ code-dialect sitting). Total by
+        // construction: a stale/mismatched `ShapeId` (a record loaded from
+        // a save against a different compile) falls back to the positional
+        // brace form rather than faulting — `string()`'s ruled totality
+        // survives the dispatch (F1's rider).
+        Value::Record { shape, fields } => {
+            let entry = program.struct_shapes.get(shape.0 as usize);
+            match entry {
+                Some(entry) if entry.fields.len() == fields.len() => {
+                    let name = program.name_checked(entry.name).unwrap_or("?");
+                    if fields.is_empty() {
+                        format!("{name} {{}}")
+                    } else {
+                        let parts: Vec<String> = entry
+                            .fields
+                            .iter()
+                            .zip(fields.iter())
+                            .map(|(field_name, v)| {
+                                format!(
+                                    "{}: {}",
+                                    program.name_checked(*field_name).unwrap_or("?"),
+                                    stringify(v, program)
+                                )
+                            })
+                            .collect();
+                        format!("{name} {{ {} }}", parts.join(", "))
+                    }
+                }
+                _ => {
+                    let parts: Vec<String> = fields.iter().map(|v| stringify(v, program)).collect();
+                    format!("{{{}}}", parts.join(", "))
+                }
+            }
         }
         // Function values (T1c-3, spec §5). The **authoritative** author-facing
         // display form — signature-like, with bound args rendered as defaults:
@@ -975,6 +1012,59 @@ mod tests {
             private_defs: Vec::new(),
             alias_table: Vec::new(),
         }
+    }
+
+    /// A program with one declared shape `Point { x, y }` — the structural
+    /// display default's lookup input (NS-A3, stdlib-spec §9.6).
+    fn program_with_point_shape() -> Program {
+        let mut program = dummy_program();
+        program.name_table = vec!["Point".to_string(), "x".to_string(), "y".to_string()];
+        program.struct_shapes = vec![crate::program::StructShapeEntry {
+            name: NameId(0),
+            fields: vec![NameId(1), NameId(2)],
+        }];
+        program
+    }
+
+    #[test]
+    fn record_display_is_structural_by_field_order() {
+        let program = program_with_point_shape();
+        let p = Value::record(brink_format::ShapeId(0), vec![Value::Int(1), Value::Int(2)]);
+        assert_eq!(stringify(&p, &program), "Point { x: 1, y: 2 }");
+    }
+
+    #[test]
+    fn record_display_nests_recursively() {
+        let program = program_with_point_shape();
+        let inner = Value::record(brink_format::ShapeId(0), vec![Value::Int(1), Value::Int(2)]);
+        let opt = Value::some(inner);
+        assert_eq!(stringify(&opt, &program), "some(Point { x: 1, y: 2 })");
+    }
+
+    #[test]
+    fn record_display_with_stale_shape_falls_back_totally() {
+        // F1 rider: `string()`'s totality survives — a record whose
+        // `ShapeId` doesn't resolve in this program (e.g. loaded from a
+        // save against a different compile) renders positionally instead
+        // of faulting.
+        let program = program_with_point_shape();
+        let stale = Value::record(brink_format::ShapeId(7), vec![Value::Int(1)]);
+        assert_eq!(stringify(&stale, &program), "{1}");
+        let mismatched = Value::record(
+            brink_format::ShapeId(0),
+            vec![Value::Int(1), Value::Int(2), Value::Int(3)],
+        );
+        assert_eq!(stringify(&mismatched, &program), "{1, 2, 3}");
+    }
+
+    #[test]
+    fn option_display_forms_are_pinned() {
+        // F28 (ruled 2026-07-19): `none`/`some(…)` render *totally* in
+        // display until B4's boundary forgiveness arrives with the native
+        // surface.
+        let program = dummy_program();
+        assert_eq!(stringify(&Value::none(), &program), "none");
+        assert_eq!(stringify(&Value::some(Value::Int(3)), &program), "some(3)");
     }
 
     #[test]

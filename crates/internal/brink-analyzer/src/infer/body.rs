@@ -1807,11 +1807,12 @@ impl InferPass<'_, '_> {
                 // faults (bool v1, type-free structural harvest).
                 self.effect_faults = true;
                 let iter_ty = self.infer_expr(&f.iterable);
-                let elem_ty = match iter_ty {
-                    Ty::Array(elem) => *elem,
-                    Ty::Map(k, _) => *k,
-                    _ => Ty::Unknown,
-                };
+                // NS-A3 (issue #1109, docs/stdlib-spec.md §9.6): the closed
+                // builtin iterable set is the iterate protocol's v1 roster —
+                // one table (`protocols::iterate_element_ty`) serves `for`,
+                // its only v1 consumer (arrays iterate values, maps iterate
+                // keys; anything else is not iterable and stays `Unknown`).
+                let elem_ty = crate::protocols::iterate_element_ty(&iter_ty).unwrap_or(Ty::Unknown);
                 self.bind_local(&f.var_name.text, &elem_ty);
                 for s in &f.body {
                     self.infer_block_stmt(s);

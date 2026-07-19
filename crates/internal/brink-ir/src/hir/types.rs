@@ -1762,6 +1762,29 @@ pub enum DiagnosticCode {
     /// leading run at the top of a knot/stitch body). Never a silent drop,
     /// never content — the `E045` posture, on the annotation channel.
     E112,
+
+    // ── NS-A3 protocol registry (issue #1109; docs/stdlib-spec.md §9.6)
+    /// A declaration named after a registry protocol method — `display`,
+    /// `compare`, or `next` (F6, ruled 2026-07-19): the names are RESERVED
+    /// under the brink dialect, and an author declaration of any callable
+    /// or value-bindable kind (knot/stitch/function, param, temp, VAR,
+    /// CONST, EXTERNAL, for-loop variable) is a **hard error**, not an
+    /// E035-lineage shadowing warning — a shadowed `display` would make
+    /// interpolation untrustworthy.
+    E113,
+    /// A registered protocol impl's inferred effect row exceeds its
+    /// protocol's effect contract (`display`/`compare`: pure·silent·total;
+    /// `iterate`'s `next`: writes-receiver·silent·total — the receiver is
+    /// a `ref` param, invisible to the global row, so every v1 contract
+    /// bounds the *global* row at empty). Exceedance-only, the
+    /// `E103`/`E108`/`E109` posture; an opaque row exceeds every contract.
+    E114,
+    /// An ill-formed protocol impl registration: the named type isn't a
+    /// declared `STRUCT`, the impl target isn't a declared function, the
+    /// signature shape is wrong (arity, `ref`-ness, or a contradicting
+    /// type annotation), or the (protocol, type) pair is already
+    /// registered.
+    E115,
 }
 
 impl DiagnosticCode {
@@ -1885,6 +1908,9 @@ impl DiagnosticCode {
             Self::E110 => "E110",
             Self::E111 => "E111",
             Self::E112 => "E112",
+            Self::E113 => "E113",
+            Self::E114 => "E114",
+            Self::E115 => "E115",
         }
     }
 
@@ -2037,6 +2063,11 @@ impl DiagnosticCode {
             Self::E112 => {
                 "annotation line outside a recognized placement (top of a knot/stitch body)"
             }
+            Self::E113 => {
+                "reserved protocol method name (`display`/`compare`/`next` belong to the protocol registry)"
+            }
+            Self::E114 => "protocol impl exceeds its protocol's effect contract",
+            Self::E115 => "ill-formed protocol impl registration",
         }
     }
 
@@ -2185,6 +2216,9 @@ impl DiagnosticCode {
             "E110" => Some(Self::E110),
             "E111" => Some(Self::E111),
             "E112" => Some(Self::E112),
+            "E113" => Some(Self::E113),
+            "E114" => Some(Self::E114),
+            "E115" => Some(Self::E115),
             _ => None,
         }
     }

@@ -966,3 +966,65 @@ fn explicit_call_form_unaffected_by_e104() {
         .unwrap_or_else(|e| panic!("call(f, args…) must compile clean: {e:?}"));
     assert!(out.warnings.is_empty(), "{:?}", out.warnings);
 }
+
+// ─── E113: reserved protocol method names (NS-A3, issue #1109; F6 ruled
+// 2026-07-19, docs/stdlib-spec.md §9.6). Hard error under the brink
+// dialect only — under strict-ink there is no protocol registry and
+// vanilla ink identifiers stay untouched. E114/E115 (protocol impl
+// contract/shape validation) are pipeline-covered in
+// `brink-analyzer::protocols`' own tests: impl registration is a
+// programmatic surface (no source spelling until the code-dialect
+// sitting), so no `.ink` fixture can reach them. ─────────────────────
+
+#[test]
+fn e113_knot_named_display_is_reserved_in_brink() {
+    let source = "== display ==\nHello.\n-> DONE\n";
+    assert_error_at(source, brink_options(), DiagnosticCode::E113, "display");
+}
+
+#[test]
+fn e113_function_named_next_is_reserved_in_brink() {
+    let source = "=== function next(x) ===\n~ return x\n=== main ===\nHi.\n-> DONE\n";
+    assert_error_at(source, brink_options(), DiagnosticCode::E113, "next");
+}
+
+#[test]
+fn e113_var_named_compare_is_reserved_in_brink() {
+    let source = "VAR compare = 1\n== k ==\n{compare}\n-> DONE\n";
+    assert_error_at(source, brink_options(), DiagnosticCode::E113, "compare");
+}
+
+#[test]
+fn e113_temp_named_display_in_logic_block_is_reserved() {
+    let source = "== k ==\n~ {\n    temp display = 1\n}\n-> DONE\n";
+    assert_error_at(source, brink_options(), DiagnosticCode::E113, "display");
+}
+
+#[test]
+fn e113_does_not_fire_under_strict_ink() {
+    // Vanilla ink may freely name a VAR `display` — the reservation is a
+    // brink-dialect protocol concern (the oracle corpus stays out of
+    // reach by construction).
+    let source = "VAR display = 1\n== k ==\n{display}\n-> DONE\n";
+    let out = compile(source, default_options())
+        .unwrap_or_else(|e| panic!("strict-ink must not reserve protocol names: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E113),
+        "{:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn e113_list_member_named_next_stays_legal_in_brink() {
+    // Deliberate carve-out: LIST members are value-position narrative
+    // vocabulary (`next` is plausible domain language), not callables.
+    let source = "LIST steps = intro, next, outro\n== k ==\nHi.\n-> DONE\n";
+    let out = compile(source, brink_options())
+        .unwrap_or_else(|e| panic!("LIST members are not reserved: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E113),
+        "{:?}",
+        out.warnings
+    );
+}

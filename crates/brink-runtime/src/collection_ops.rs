@@ -118,16 +118,34 @@ pub(crate) fn collection_len(flow: &mut Flow) -> Result<(), RuntimeError> {
 /// (`docs/format-v4-rfc.md` §3 note).
 pub(crate) fn collection_keys(flow: &mut Flow) -> Result<(), RuntimeError> {
     let container = flow.pop_value()?;
-    let result = match &container {
-        Value::Array(_) => container,
-        Value::Map(map) => {
-            let keys: Vec<Value> = map.keys().map(map_key_to_value).collect();
-            Value::array(keys)
-        }
-        other => return Err(RuntimeError::NotIndexable(type_name(other))),
-    };
+    let result = Value::Array(iteration_sequence(container)?);
     flow.value_stack.push(result);
     Ok(())
+}
+
+/// The canonical iteration sequence of a builtin iterable — the iterate
+/// protocol's closed v1 roster reified as ONE function (NS-A3, issue
+/// #1109, docs/stdlib-spec.md §9.6): arrays iterate their values (identity
+/// — the array's own storage, no copy), maps iterate their **keys** in
+/// insertion order, snapshotted eagerly (F10, ruled 2026-07-19: maps' `for`
+/// is a deliberate exception to live pull iteration). Everything else is
+/// not iterable and faults `NotIndexable`.
+///
+/// Both consumers of the contract go through here so they can never drift:
+/// the `for` desugar's [`collection_keys`] opcode (index walk, LIR-lowered)
+/// and the pull-shaped [`crate::iter::ValueIter`] machine form (the law
+/// harness's subject).
+pub(crate) fn iteration_sequence(
+    container: Value,
+) -> Result<alloc::sync::Arc<Vec<Value>>, RuntimeError> {
+    match container {
+        Value::Array(items) => Ok(items),
+        Value::Map(map) => {
+            let keys: Vec<Value> = map.keys().map(map_key_to_value).collect();
+            Ok(alloc::sync::Arc::new(keys))
+        }
+        other => Err(RuntimeError::NotIndexable(type_name(&other))),
+    }
 }
 
 /// `CollectionValues`: `[map]` → `Array` of values in insertion order.
@@ -1295,6 +1313,27 @@ mod tests {
         push_args(&mut flow, vec![a]);
         seq_min(&mut flow).unwrap();
         assert_eq!(flow.pop_value().unwrap(), Value::some(Value::Float(1.0)));
+    }
+
+    /// NS-A3 (issue #1109, stdlib-spec §4b): structs have no structural
+    /// auto-order — without a registered `compare` impl (none registrable
+    /// v1) a record element stays `NotOrderable`. Wave A4 wires registered
+    /// compares into `total_order_cmp`; this pins the pre-A4 line.
+    #[test]
+    fn seq_min_over_records_faults_not_orderable() {
+        let p = Value::record(brink_format::ShapeId(0), vec![Value::Int(1)]);
+        let q = Value::record(brink_format::ShapeId(0), vec![Value::Int(2)]);
+        let a = arr(vec![p, q]);
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![a]);
+        let err = seq_min(&mut flow).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::NotOrderable {
+                verb: "min",
+                found: "record",
+            }
+        );
     }
 
     #[test]
