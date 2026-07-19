@@ -1198,6 +1198,23 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         // ── Stdlib slice 1 completion (#857) ─────────────────────────
         Opcode::CharAt => string_ops::char_at(flow)?,
 
+        // ── NS-A1: Option[T] + the ruled stdlib flips (#1107) ────────
+        Opcode::PushNone => flow.value_stack.push(Value::none()),
+        Opcode::MakeSome => {
+            let inner = flow.pop_value()?;
+            flow.value_stack.push(Value::some(inner));
+        }
+        Opcode::StrFind => string_ops::str_find(flow)?,
+        Opcode::SeqIndexOf => collection_ops::seq_index_of(flow)?,
+        Opcode::SeqMin => collection_ops::seq_min(flow)?,
+        Opcode::SeqMax => collection_ops::seq_max(flow)?,
+        Opcode::SeqFirst => collection_ops::seq_first(flow)?,
+        Opcode::SeqLast => collection_ops::seq_last(flow)?,
+        Opcode::SeqPop => collection_ops::seq_pop(flow)?,
+        Opcode::MapGetOpt => collection_ops::map_get_opt(flow)?,
+        Opcode::MapContainsValue => collection_ops::map_contains_value(flow)?,
+        Opcode::MapClear => collection_ops::map_clear(flow)?,
+
         // ── External functions ──────────────────────────────────────
         Opcode::CallExternal(fn_id, arg_count) => {
             // Pop arguments from the value stack.
@@ -1329,6 +1346,7 @@ fn value_type_name(v: &Value) -> &'static str {
         Value::FnRef(_) | Value::Closure(_) => "fn",
         Value::Handle { .. } => "handle",
         Value::Projection(_) => "projection",
+        Value::OptionVal(_) => "option",
     }
 }
 

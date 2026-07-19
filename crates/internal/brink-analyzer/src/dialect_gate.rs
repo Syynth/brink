@@ -286,6 +286,22 @@ impl HirVisitor for GateVisitor<'_> {
                     self.flag(path.range, &format!("`{name}` stdlib function"));
                 }
             }
+            // NS-A1 (`docs/stdlib-spec.md` §1.4): a bare `none` in
+            // expression position is the brink-dialect Option absence
+            // literal — like the stdlib *call* names below it parses
+            // identically to an ordinary reference, so the gate needs the
+            // resolution result: a `none` that resolved to a real symbol
+            // (a LIST item, VAR, temp…) is an ordinary reference, never
+            // flagged; only the unresolved-therefore-the-literal case is
+            // brink extension surface.
+            Expr::Path(p) => {
+                if let [seg] = p.segments.as_slice()
+                    && seg.text == "none"
+                    && !self.resolved.contains(&(self.file, p.range))
+                {
+                    self.flag(p.range, "`none` Option literal");
+                }
+            }
             Expr::Index(i) => self.flag(i.ptr.text_range(), "postfix indexing `[…]`"),
             Expr::StructLiteral(sl) => {
                 self.flag(sl.ptr.text_range(), "struct construction literal");
@@ -475,6 +491,61 @@ mod tests {
         let resolutions = vec![brink_ir::ResolvedRef {
             file: FileId(0),
             range: call_range,
+            target: brink_format::DefinitionId::new(brink_format::DefinitionTag::Address, 1),
+        }];
+        let diags = check(&[(FileId(0), &hir)], &resolutions, Dialect::StrictInk);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    // ── NS-A1 Option surface (docs/stdlib-spec.md §1.4, issue #1107) ───
+
+    #[test]
+    fn strict_ink_flags_unresolved_option_verb_calls() {
+        for src in [
+            "~ x = find(s, \"a\")\n",
+            "~ x = get(m, \"k\")\n",
+            "~ x = min(a)\n",
+            "~ x = some(1)\n",
+        ] {
+            let hir = lower_src(src);
+            let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+            assert!(
+                diags.iter().any(|d| d.code == DiagnosticCode::E051),
+                "expected E051 for {src:?}, got {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_ink_flags_a_bare_unresolved_none() {
+        let hir = lower_src("~ x = none\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E051);
+        assert!(diags[0].message.contains("none"), "{diags:?}");
+    }
+
+    #[test]
+    fn brink_dialect_does_not_flag_the_option_surface() {
+        let hir = lower_src("~ x = find(s, \"a\")\n~ y = none\n~ z = some(1)\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::Brink);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn resolved_none_reference_is_never_flagged() {
+        // A `none` that resolved to a real symbol (e.g. a LIST item) is an
+        // ordinary reference in either dialect.
+        let hir = lower_src("~ x = none\n");
+        let Some(Stmt::Assignment(assign)) = hir.root_content.stmts.first() else {
+            unreachable!("~ x = none lowers to an Assignment")
+        };
+        let Expr::Path(p) = &assign.value else {
+            unreachable!("assignment value is the bare none path")
+        };
+        let resolutions = vec![brink_ir::ResolvedRef {
+            file: FileId(0),
+            range: p.range,
             target: brink_format::DefinitionId::new(brink_format::DefinitionTag::Address, 1),
         }];
         let diags = check(&[(FileId(0), &hir)], &resolutions, Dialect::StrictInk);

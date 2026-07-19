@@ -343,7 +343,15 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
     match expr {
         Expr::GetTemp(_, name) | Expr::TakeTemp(_, name) => relocate(name, map),
         Expr::String(s) => remap_string(s, map),
-        Expr::Prefix(_, e) | Expr::Postfix(e, _) => remap_expr(e, map),
+        // Single-subexpression walks (incl. the NS-A1 one-arg Option verbs).
+        Expr::Prefix(_, e)
+        | Expr::Postfix(e, _)
+        | Expr::OptionSome(e)
+        | Expr::SeqMin(e)
+        | Expr::SeqMax(e)
+        | Expr::SeqFirst(e)
+        | Expr::SeqLast(e)
+        | Expr::MapClear(e) => remap_expr(e, map),
         Expr::Infix(l, _, r) => {
             remap_expr(l, map);
             remap_expr(r, map);
@@ -418,6 +426,27 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
             remap_expr(s, map);
             remap_expr(index, map);
         }
+        // NS-A1 Option verbs (issue #1107); the one-arg forms are merged
+        // into the single-subexpression arm above.
+        Expr::StrFind { s, sub } => {
+            remap_expr(s, map);
+            remap_expr(sub, map);
+        }
+        Expr::SeqIndexOf { seq, needle } => {
+            remap_expr(seq, map);
+            remap_expr(needle, map);
+        }
+        Expr::MapGetOpt { map: m, key } => {
+            remap_expr(m, map);
+            remap_expr(key, map);
+        }
+        Expr::MapContainsValue { map: m, value } => {
+            remap_expr(m, map);
+            remap_expr(value, map);
+        }
+        // `pop`'s receiver is an `AssignTarget` — its `Temp` leg carries a
+        // NameId, remapped exactly like a `Stmt::Assign` target.
+        Expr::SeqPop { root } => remap_assign_target(root, map),
         Expr::RecordNew {
             shape_id: _,
             fields,
@@ -459,7 +488,8 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
         | Expr::VisitCount(_)
         | Expr::DivertTarget(_)
         | Expr::ListLiteral { .. }
-        | Expr::ConstLiteral(_) => {}
+        | Expr::ConstLiteral(_)
+        | Expr::OptionNone => {}
     }
 }
 

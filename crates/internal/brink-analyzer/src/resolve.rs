@@ -353,6 +353,18 @@ fn resolve_variable(
             diagnostics.push(ambiguous_diag(file_id, uref.range, path));
         }
         VarResult::NotFound => {
+            // NS-A1 (`docs/stdlib-spec.md` §1.4): an otherwise-unresolved
+            // bare `none` is the brink-dialect Option absence literal —
+            // same "skip resolution, no diagnostic here" treatment as the
+            // T1b stdlib call names in `resolve_function`. Every user
+            // symbol interpretation above wins first (a LIST item, VAR,
+            // temp, … named `none` shadows the literal, E035-warned at its
+            // declaration); `strict-ink` rejection is the dialect gate's
+            // job, and the bare-`none`-needs-context declaration rule is
+            // E107 (`option_rules`).
+            if path == "none" {
+                return;
+            }
             diagnostics.push(unresolved_diag(
                 file_id,
                 uref.range,
@@ -823,6 +835,24 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             // character-`String` read into `s`. VM-native, same
             // shadowing/dialect-gate machinery as the rest of this list.
             | "char_at"
+            // NS-A1 (issue #1107, `docs/stdlib-spec.md` §§3-5 + §1.4): the
+            // Option verb flips — text `find`, seq `index_of`/`min`/`max`/
+            // `first`/`last`/`pop`, map `get`/`contains_value`/`clear` —
+            // plus the `some(x)` Option constructor. Same slice-1 machinery
+            // end to end (shadowable with E035, `strict-ink` rejection via
+            // the dialect gate). The bare `none` literal resolves in
+            // *variable* position (see `resolve_variable`), not here.
+            | "find"
+            | "index_of"
+            | "min"
+            | "max"
+            | "first"
+            | "last"
+            | "pop"
+            | "get"
+            | "contains_value"
+            | "clear"
+            | "some"
     )
 }
 

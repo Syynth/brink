@@ -38,6 +38,12 @@ pub(crate) fn is_truthy(v: &Value) -> bool {
         | Value::Closure(_)
         | Value::Handle { .. }
         | Value::Projection(_) => true,
+        // Option truthiness (NS-A1): absence is falsy, presence truthy —
+        // `none` reads like the empty collection / `Null` above (`{r: …}`
+        // is the natural "did we find one?" guard); `some(x)` is truthy
+        // regardless of `x` (the *presence* answers the question — a
+        // found `some(0)` is still found).
+        Value::OptionVal(inner) => inner.is_some(),
         Value::List(lv) => !lv.items.is_empty(),
         Value::Array(items) => !items.is_empty(),
         Value::Map(map) => !map.is_empty(),
@@ -110,6 +116,16 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
         // `DefinitionId` from a different compile) renders `?`, matching
         // `display_fn_value`'s convention for its own unresolvable names.
         Value::Projection(p) => format!("ref {}", display_projection_path(p, program)),
+        // Option values (NS-A1, `docs/stdlib-spec.md` §1.4): the boring,
+        // stable form — `none` / `some(<inner display form>)`, matching the
+        // source-level construction vocabulary. NOTE: the §1.6
+        // display-boundary forgiveness (a final-None interpolation renders
+        // as *nothing*) is Track B4 and deliberately NOT implemented here —
+        // this is the strict-era rendering, total like every other arm.
+        Value::OptionVal(inner) => match inner {
+            None => "none".to_owned(),
+            Some(v) => format!("some({})", stringify(v, program)),
+        },
     }
 }
 
@@ -451,6 +467,21 @@ pub(crate) fn binary_op(
             Ok(Value::Bool(left == right))
         }
         (Value::Record { .. }, Value::Record { .. }) if op == BinaryOp::NotEqual => {
+            Ok(Value::Bool(left != right))
+        }
+        // Option equality (NS-A1, `docs/stdlib-spec.md` §1.4): structural —
+        // `none == none`, `some(x) == some(y)` iff `x == y` — delegated to
+        // `Value`'s `PartialEq` (which carries the `Arc::ptr_eq` fast path
+        // on the `some` payload). Only `==`/`!=` are defined; any ordering
+        // op falls through to the `TypeError` fault below. An Option
+        // compared against a bare value (`some(1) == 1`) also falls through
+        // to the fault — the ruled `Option[T] ≠ T` strictness; the checker
+        // reports it statically under `types = strict`, and the runtime
+        // fault is the gradual-mode backstop.
+        (Value::OptionVal(_), Value::OptionVal(_)) if op == BinaryOp::Equal => {
+            Ok(Value::Bool(left == right))
+        }
+        (Value::OptionVal(_), Value::OptionVal(_)) if op == BinaryOp::NotEqual => {
             Ok(Value::Bool(left != right))
         }
         // Equality for null
@@ -833,7 +864,8 @@ pub(crate) fn cast_to_int(v: &Value) -> Result<Value, RuntimeError> {
         | Value::FnRef(_)
         | Value::Closure(_)
         | Value::Handle { .. }
-        | Value::Projection(_) => {
+        | Value::Projection(_)
+        | Value::OptionVal(_) => {
             return Err(RuntimeError::InvalidConversionDomain {
                 target: "INT",
                 got: cast_type_name(v),
@@ -864,7 +896,8 @@ pub(crate) fn cast_to_float(v: &Value) -> Result<Value, RuntimeError> {
         | Value::FnRef(_)
         | Value::Closure(_)
         | Value::Handle { .. }
-        | Value::Projection(_) => {
+        | Value::Projection(_)
+        | Value::OptionVal(_) => {
             return Err(RuntimeError::InvalidConversionDomain {
                 target: "FLOAT",
                 got: cast_type_name(v),
@@ -897,6 +930,7 @@ fn cast_type_name(v: &Value) -> &'static str {
         Value::FnRef(_) | Value::Closure(_) => "fn",
         Value::Handle { .. } => "handle",
         Value::Projection(_) => "projection",
+        Value::OptionVal(_) => "option",
     }
 }
 

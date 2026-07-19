@@ -27,8 +27,8 @@ use super::{
     LINE_TEMPLATE, MAGIC, PART_LITERAL, PART_SELECT, PART_SLOT, PROJ_SEG_INDEX, PROJ_SEG_KEY,
     SECTION_ENTRY_SIZE, SectionEntry, SectionKind, VAL_ARRAY, VAL_BOOL, VAL_CLOSURE,
     VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT, VAL_LIST,
-    VAL_MAP, VAL_NULL, VAL_PROJECTION, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION,
-    safe_capacity,
+    VAL_MAP, VAL_NULL, VAL_OPTION, VAL_PROJECTION, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER,
+    VERSION, safe_capacity,
 };
 
 // ── Tier 1: Full story read ─────────────────────────────────────────────────
@@ -358,10 +358,15 @@ fn decode_value_type(buf: &[u8], off: &mut usize) -> Result<ValueType, DecodeErr
         VAL_CLOSURE => Ok(ValueType::Closure),
         VAL_HANDLE => Ok(ValueType::Handle),
         VAL_PROJECTION => Ok(ValueType::Projection),
+        VAL_OPTION => Ok(ValueType::Option),
         _ => Err(DecodeError::InvalidValueType(tag)),
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per value tag — the NS-A1 VAL_OPTION arm pushed this past 100"
+)]
 fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, DecodeError> {
     if depth > MAX_DECODE_DEPTH {
         return Err(DecodeError::MaxDepthExceeded(MAX_DECODE_DEPTH));
@@ -467,6 +472,16 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Deco
             }
             Ok(Value::projection(cell, segments))
         }
+        // Option values (NS-A1, `docs/stdlib-spec.md` §1.4): flag byte
+        // (0 = none, 1 = some) then the inner value when some. Any other
+        // flag byte is corrupt input. Depth-counted like the collection
+        // tags — a crafted chain of nested `some`s is the same recursion
+        // shape as nested single-element arrays.
+        VAL_OPTION => match read_u8(buf, off)? {
+            0 => Ok(Value::none()),
+            1 => Ok(Value::some(decode_value(buf, off, depth + 1)?)),
+            other => Err(DecodeError::InvalidValueType(other)),
+        },
         _ => Err(DecodeError::InvalidValueType(tag)),
     }
 }

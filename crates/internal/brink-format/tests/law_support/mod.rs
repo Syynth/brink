@@ -176,9 +176,17 @@ pub fn arb_value_full() -> impl Strategy<Value = Value> {
             // `Value` variant" but `Projection` was absent until now.
             (
                 arb_def_id(),
-                prop::collection::vec(arb_proj_segment(inner), 0..3),
+                prop::collection::vec(arb_proj_segment(inner.clone()), 0..3),
             )
                 .prop_map(|(cell, segments)| Value::projection(cell, segments)),
+            // Option values (NS-A1, docs/stdlib-spec.md §1.4): both
+            // variants, with the `some` payload drawn from the full
+            // recursive universe so nesting (`some(none)`, `some([..])`)
+            // is exercised by every round-trip law.
+            prop::option::of(inner).prop_map(|payload| match payload {
+                None => Value::none(),
+                Some(v) => Value::some(v),
+            }),
         ]
     })
 }
@@ -211,6 +219,7 @@ fn assert_value_variants_exhaustive(value: &Value) {
         | Value::FnRef(_)
         | Value::Closure(_)
         | Value::Handle { .. }
-        | Value::Projection(_) => {}
+        | Value::Projection(_)
+        | Value::OptionVal(_) => {}
     }
 }

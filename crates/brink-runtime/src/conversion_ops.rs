@@ -131,6 +131,10 @@ fn type_name(v: &Value) -> &'static str {
         Value::FnRef(_) | Value::Closure(_) => "fn",
         Value::Handle { .. } => "handle",
         Value::Projection(_) => "projection",
+        // NS-A1: an Option is outside `int`/`float`'s numeric+bool domain —
+        // the ruled `Option[T] ≠ T` strictness means no implicit unwrap,
+        // even of a `some(3)`. (`string(x)` stays total via `stringify`.)
+        Value::OptionVal(_) => "option",
     }
 }
 

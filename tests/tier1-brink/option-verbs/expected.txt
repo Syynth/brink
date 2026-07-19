@@ -1,0 +1,12 @@
+f1 is some(6).
+f2 is none.
+f1 matched at six.
+f2 is absent.
+index of 1 is some(1), of 9 is none.
+min some(1), max some(3).
+first some(3), last some(2).
+popped some(2), leaving 2.
+hp some(10), armor none.
+has ten: true, has seven: false.
+cleared to 0 entries.
+f2 holds zero now.

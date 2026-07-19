@@ -118,6 +118,15 @@ pub(crate) const VAL_HANDLE: u8 = 0x0D;
 // `2=range` is RESERVED — never emitted (icebox #829). First emission of
 // this reserved tag.
 pub(crate) const VAL_PROJECTION: u8 = 0x0E;
+// NS-A1 (`docs/stdlib-spec.md` §1.1/§1.4, ruled 2026-07-18): the compiler-
+// owned `Option[T]` enum. Wire form: one flag byte (0 = `none`, 1 =
+// `some`), then the inner value when `some` — the enum's two variants,
+// nothing more. Next free tag after `VAL_RECORD` (0x0F); this PR's own
+// reservation, same "assigned here" precedent as the record/handle/
+// projection tags above. Recursion counts toward `MAX_DECODE_DEPTH`
+// exactly like the collection tags (a crafted chain of nested `some`s is
+// the same stack-overflow shape as nested single-element arrays).
+pub(crate) const VAL_OPTION: u8 = 0x10;
 /// Wire kind for a [`crate::ProjSegment::Index`] segment.
 pub(crate) const PROJ_SEG_INDEX: u8 = 0x00;
 /// Wire kind for a [`crate::ProjSegment::Key`] segment.

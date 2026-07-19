@@ -223,8 +223,16 @@ fn arb_value() -> impl Strategy<Value = Value> {
                 }
                 Value::map(map)
             }),
-            (any::<u32>(), prop::collection::vec(inner, 0..4))
+            (any::<u32>(), prop::collection::vec(inner.clone(), 0..4))
                 .prop_map(|(shape, fields)| Value::record(ShapeId(shape), fields)),
+            // Option values (NS-A1, docs/stdlib-spec.md §1.4): both
+            // variants, payload from the full recursive universe so
+            // `some(none)`/`some(#[..])` nesting rides the writer/reader
+            // fuzz too.
+            prop::option::of(inner).prop_map(|payload| match payload {
+                None => Value::none(),
+                Some(v) => Value::some(v),
+            }),
         ]
     })
 }
@@ -276,7 +284,8 @@ fn assert_value_variants_exhaustive(value: &Value) {
         | Value::FnRef(_)
         | Value::Closure(_)
         | Value::Handle { .. }
-        | Value::Projection(_) => {}
+        | Value::Projection(_)
+        | Value::OptionVal(_) => {}
     }
 }
 

@@ -17,6 +17,7 @@ mod infer;
 mod manifest;
 mod map_keys;
 mod modules;
+mod option_rules;
 mod ref_projection;
 mod resolve;
 mod signature;
@@ -45,10 +46,11 @@ pub use external_check::{
     SemanticTypeDiagnosticSeverity, SymbolMeta, ValueMeta,
 };
 pub use infer::{
-    BodyTypes, CallGraph, Def, EffectAtoms, EffectRow, InferenceResult, InferredSig, SccGraph, Ty,
-    ValueCallFact, ValueCallKind, call_edges, collect_external_sigs, def_body, def_effect_atoms,
-    effects_project, infer_project, inferable_defs, inferable_defs_from_index, referenced_globals,
-    scc_graph, solve_scc, solve_scc_effects, unify, unify_all,
+    BodyTypes, CallGraph, CoalesceError, Def, EffectAtoms, EffectRow, InferenceResult, InferredSig,
+    SccGraph, Ty, ValueCallFact, ValueCallKind, call_edges, coalesce, collect_external_sigs,
+    def_body, def_effect_atoms, effects_project, infer_project, inferable_defs,
+    inferable_defs_from_index, referenced_globals, scc_graph, solve_scc, solve_scc_effects, unify,
+    unify_all,
 };
 pub use manifest::{ModuleMap, ResolvedModule};
 pub use resolve::ImportScope;
@@ -234,6 +236,14 @@ pub fn per_file_diagnostics(
     let files = [(file, hir)];
     let mut out = validate::validate(&files);
     out.extend(dialect_gate::check(&files, file_resolutions, dialect));
+    // NS-A1 E107 (bare-`none`-needs-context, docs/stdlib-spec.md §1.4) —
+    // dialect-INDEPENDENT, unlike the brink-only block below: the rule is
+    // part of the Option package itself, and under `strict-ink` (where
+    // `VAR`/`CONST` initializers aren't in the gate's block-tree walk) it
+    // is also what keeps `VAR x = none` an error at all. Same per-file
+    // argument as `dialect_gate`: the resolution records consulted always
+    // carry this file's own id.
+    out.extend(option_rules::check(&files, file_resolutions));
     // Annotation *content* checks (E061) run only under the brink
     // dialect: under `strict-ink` the annotation is already rejected whole
     // by `dialect_gate` (E051), and critiquing the inside of rejected

@@ -249,10 +249,15 @@ fn parse_value_type(pair: P<'_>) -> Result<ValueType, InktParseError> {
         "fn_ref" => Ok(ValueType::FnRef),
         "closure" => Ok(ValueType::Closure),
         "projection" => Ok(ValueType::Projection),
+        "option" => Ok(ValueType::Option),
         _ => Err(err(&pair, format!("unknown value type: {s}"))),
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per value rule — the NS-A1 option_value arm pushed this past 100"
+)]
 fn parse_value(pair: P<'_>, type_hint: Option<ValueType>) -> Result<Value, InktParseError> {
     let inner = pair.into_inner().next().ok_or_else(|| InktParseError {
         message: "empty value".into(),
@@ -340,6 +345,33 @@ fn parse_value(pair: P<'_>, type_hint: Option<ValueType>) -> Result<Value, InktP
         // paired with `write_value`'s `record`/`fn_ref`/`closure` atoms
         // (issue #742: writer/reader must stay in sync, dump-parity rule).
         Rule::record_value => parse_record_value(inner),
+        // NS-A1 Option values (docs/stdlib-spec.md §1.4): `(some <value>)` /
+        // `(option_none)` — read-side leg paired with `write_value`'s Option
+        // atom (the #742 dump/reader parity lesson).
+        Rule::option_value => {
+            let variant = inner.into_inner().next().ok_or_else(|| InktParseError {
+                message: "empty option value".into(),
+                line: 0,
+                col: 0,
+            })?;
+            match variant.as_rule() {
+                Rule::some_value => {
+                    let inner_value =
+                        variant.into_inner().next().ok_or_else(|| InktParseError {
+                            message: "expected value in some".into(),
+                            line: 0,
+                            col: 0,
+                        })?;
+                    Ok(Value::some(parse_value(inner_value, None)?))
+                }
+                Rule::none_value => Ok(Value::none()),
+                other => Err(InktParseError {
+                    message: format!("unexpected option variant: {other:?}"),
+                    line: 0,
+                    col: 0,
+                }),
+            }
+        }
         Rule::fn_ref_value => {
             let id_pair = inner.into_inner().next().ok_or_else(|| InktParseError {
                 message: "expected def_id in fn_ref".into(),
@@ -1872,6 +1904,20 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
 
         // Stdlib slice 1 completion (#857)
         "char_at" => Ok(Opcode::CharAt),
+
+        // NS-A1 Option + stdlib flips
+        "push_none" => Ok(Opcode::PushNone),
+        "make_some" => Ok(Opcode::MakeSome),
+        "str_find" => Ok(Opcode::StrFind),
+        "seq_index_of" => Ok(Opcode::SeqIndexOf),
+        "seq_min" => Ok(Opcode::SeqMin),
+        "seq_max" => Ok(Opcode::SeqMax),
+        "seq_first" => Ok(Opcode::SeqFirst),
+        "seq_last" => Ok(Opcode::SeqLast),
+        "seq_pop" => Ok(Opcode::SeqPop),
+        "map_get_opt" => Ok(Opcode::MapGetOpt),
+        "map_contains_value" => Ok(Opcode::MapContainsValue),
+        "map_clear" => Ok(Opcode::MapClear),
 
         // Debug
         "source_location" => {

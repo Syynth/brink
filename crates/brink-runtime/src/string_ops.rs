@@ -53,6 +53,40 @@ pub(crate) fn char_at(flow: &mut Flow) -> Result<(), RuntimeError> {
     }
 }
 
+/// `StrFind`: `[s, sub]` → `Option[int]` — the `find(s, sub)` stdlib verb
+/// (NS-A1, `docs/stdlib-spec.md` §3: martyr #1 redeemed — "the -1 sentinel
+/// dies unshipped"). The returned index counts **Unicode scalar values**
+/// (chars), the same §3 indexing unit `char_at`/`slice` use, so
+/// `char_at(s, find(s, sub) payload)` lands on `sub`'s first char even in
+/// non-ASCII text. Absence (`sub` not in `s`) is `none`; wrong-typed
+/// arguments are turn-terminating faults (a malformed question is a bug).
+/// The empty substring is found at index 0, matching `str::find`.
+pub(crate) fn str_find(flow: &mut Flow) -> Result<(), RuntimeError> {
+    let sub = flow.pop_value()?;
+    let s = flow.pop_value()?;
+    let Value::String(text) = &s else {
+        return Err(RuntimeError::StdlibWrongType {
+            verb: "find",
+            expected: "a string",
+            found: type_name(&s),
+        });
+    };
+    let Value::String(needle) = &sub else {
+        return Err(RuntimeError::StdlibWrongType {
+            verb: "find",
+            expected: "a string",
+            found: type_name(&sub),
+        });
+    };
+    #[expect(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+    let result = text.find(needle.as_ref()).map_or_else(Value::none, |byte| {
+        // Convert the byte offset to a char (USV) index.
+        Value::some(Value::Int(text[..byte].chars().count() as i32))
+    });
+    flow.value_stack.push(result);
+    Ok(())
+}
+
 /// Type-name label for the fault variants above — mirrors
 /// `collection_ops`'/`conversion_ops`'/`record_ops`' own small hand-
 /// duplicated `type_name` helpers (no shared export exists for this purpose
@@ -75,6 +109,7 @@ fn type_name(v: &Value) -> &'static str {
         Value::FnRef(_) | Value::Closure(_) => "fn",
         Value::Handle { .. } => "handle",
         Value::Projection(_) => "projection",
+        Value::OptionVal(_) => "option",
     }
 }
 
@@ -179,5 +214,66 @@ mod tests {
         push_args(&mut flow, [Value::from(""), Value::Int(0)]);
         let err = char_at(&mut flow).unwrap_err();
         assert_eq!(err, RuntimeError::CharAtOutOfBounds { index: 0, len: 0 });
+    }
+
+    // ── NS-A1 `find(s, sub)` (docs/stdlib-spec.md §3, #1107) ────────────
+
+    #[test]
+    fn find_present_returns_some_index_absent_returns_none() {
+        let mut flow = test_flow();
+        push_args(&mut flow, [Value::from("hello"), Value::from("ll")]);
+        str_find(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::some(Value::Int(2)));
+
+        let mut flow = test_flow();
+        push_args(&mut flow, [Value::from("hello"), Value::from("xyz")]);
+        str_find(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::none());
+    }
+
+    #[test]
+    fn find_counts_unicode_scalar_values_not_bytes() {
+        // "café au lait": "au" starts at char 5 but byte 6 ('é' is 2 bytes)
+        // — the §3 indexing unit is USVs, so `char_at(s, find payload)`
+        // composes correctly.
+        let mut flow = test_flow();
+        push_args(&mut flow, [Value::from("café au lait"), Value::from("au")]);
+        str_find(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::some(Value::Int(5)));
+    }
+
+    #[test]
+    fn find_empty_substring_is_index_zero() {
+        let mut flow = test_flow();
+        push_args(&mut flow, [Value::from("hi"), Value::from("")]);
+        str_find(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::some(Value::Int(0)));
+    }
+
+    #[test]
+    fn find_non_string_arguments_fault() {
+        let mut flow = test_flow();
+        push_args(&mut flow, [Value::Int(3), Value::from("x")]);
+        let err = str_find(&mut flow).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::StdlibWrongType {
+                verb: "find",
+                expected: "a string",
+                found: "int",
+            }
+        );
+
+        let mut flow = test_flow();
+        push_args(&mut flow, [Value::from("x"), Value::Int(3)]);
+        let err = str_find(&mut flow).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::StdlibWrongType {
+                verb: "find",
+                expected: "a string",
+                found: "int",
+            }
+        );
     }
 }

@@ -470,7 +470,10 @@ fn classify(ty: &Ty) -> Escape {
     match ty {
         Ty::Conflicted => Escape::Conflicted,
         Ty::Unknown => Escape::Unknown,
-        Ty::Array(elem) => classify(elem),
+        // Array and (NS-A1) `Option[T]` recurse on their single element —
+        // an Option whose element is Unknown/Conflicted escapes like any
+        // other nesting.
+        Ty::Array(elem) | Ty::Option(elem) => classify(elem),
         Ty::Map(k, v) => match (classify(k), classify(v)) {
             (Escape::Conflicted, _) | (_, Escape::Conflicted) => Escape::Conflicted,
             (Escape::Unknown, _) | (_, Escape::Unknown) => Escape::Unknown,

@@ -390,6 +390,7 @@ fn every_case_directory_has_a_test() {
         "fn-value-bind-chain",
         "fn-value-bind-triple-chain",
         "ref-call-with-block-temp",
+        "option-verbs",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink")
@@ -2028,4 +2029,310 @@ fn fn_value_inside_a_map_save_load_invoke_equals_direct_invoke() {
         "save→load→invoke must equal direct invoke for a fn value inside a map",
     );
     assert_eq!(loaded_out, "Result 42.\n");
+}
+
+// ── NS-A1: Option[T] + the ruled stdlib flips (issue #1107,
+// docs/stdlib-spec.md §1.4 + §§3-5, docs/stdlib-sequencing.md §2 Wave A1) ──
+
+/// End-to-end reachability for the whole A1 verb set: `find`/`index_of`/
+/// `min`/`max`/`first`/`last`/`pop`/`get`/`contains_value`/`clear`, plus
+/// `some(x)` construction, bare-`none` equality, and Option interpolation
+/// (the strict-era `none`/`some(…)` display form — §1.6 forgiveness is
+/// Track B4, deliberately absent).
+#[test]
+fn option_verbs_end_to_end() {
+    assert_case("option-verbs");
+}
+
+#[test]
+fn author_defined_find_shadows_builtin_with_e035_warning() {
+    // The A1 names ride the same shadowing machinery as `len` (§9.3's
+    // E035-lineage posture).
+    let source = "=== function find(s, x)\n~ return 999\n\nHi {find(\"a\", \"b\")}.\n-> END\n";
+    let out = compile_brink(source).expect("shadowing is a warning, not a compile error");
+    assert!(
+        out.warnings
+            .iter()
+            .any(|w| w.code == brink_compiler::DiagnosticCode::E035),
+        "expected E035 shadow warning, got {:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn author_defined_none_variable_shadows_the_literal_with_e035_warning() {
+    let source = "VAR none = 5\nValue {none}.\n-> END\n";
+    let out = compile_brink(source).expect("shadowing is a warning, not a compile error");
+    assert!(
+        out.warnings
+            .iter()
+            .any(|w| w.code == brink_compiler::DiagnosticCode::E035),
+        "expected E035 shadow warning, got {:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn clear_in_expression_position_is_a_compile_error() {
+    // `clear` is a statement-only mutator (§5) — expression position is the
+    // same E056 misuse as `push`/`insert`/`remove`.
+    let source = "~ temp m = #{\"a\": 1}\n~ temp x = clear(m)\nNope {x}.\n-> END\n";
+    let err = compile_brink(source).expect_err("clear as an expression must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E056),
+        "expected E056, got {diags:?}"
+    );
+}
+
+#[test]
+fn clear_arity_mismatch_is_e058_with_the_signature() {
+    let source = "~ {\n    clear()\n}\nDone.\n-> END\n";
+    let err = compile_brink(source).expect_err("clear() with no args must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E058
+                && d.message.contains("clear(map)")),
+        "expected E058 naming clear(map), got {diags:?}"
+    );
+}
+
+#[test]
+fn clear_with_an_rvalue_argument_is_a_compile_error() {
+    let source = "~ {\n    clear(#{\"a\": 1})\n}\nDone.\n-> END\n";
+    let err = compile_brink(source).expect_err("rvalue clear argument must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E055),
+        "expected E055, got {diags:?}"
+    );
+}
+
+#[test]
+fn pop_of_an_rvalue_is_a_compile_error() {
+    // `pop(#[1, 2])` — mutating a temporary loses the mutation (the
+    // mutation-posture ruling's rvalue-receiver error, free-call form).
+    let source = "~ temp x = pop(#[1, 2])\nNope {x}.\n-> END\n";
+    let err = compile_brink(source).expect_err("rvalue pop receiver must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E055),
+        "expected E055, got {diags:?}"
+    );
+}
+
+#[test]
+fn pop_of_a_chained_lvalue_is_fenced_as_a_compile_error_for_a1() {
+    // A1 scope fence: `pop(grid[0])` (a chained lvalue receiver) is not yet
+    // lowerable through the expression-position RMW bracket — E055 with the
+    // "bind it to a variable first" guidance rather than silent misbehavior.
+    let source = "~ temp grid = #[#[1, 2]]\n~ temp x = pop(grid[0])\nNope {x}.\n-> END\n";
+    let err = compile_brink(source).expect_err("chained pop receiver must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E055),
+        "expected E055, got {diags:?}"
+    );
+}
+
+// ── E107: bare `none` needs a type from context (§1.4) ───────────────────
+
+#[test]
+fn bare_none_var_declaration_is_e107() {
+    let source = "VAR x = none\nHi.\n-> END\n";
+    let err = compile_brink(source).expect_err("VAR x = none must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E107),
+        "expected E107, got {diags:?}"
+    );
+}
+
+#[test]
+fn bare_none_const_declaration_is_e107() {
+    let source = "CONST x = none\nHi.\n-> END\n";
+    let err = compile_brink(source).expect_err("CONST x = none must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E107),
+        "expected E107, got {diags:?}"
+    );
+}
+
+#[test]
+fn bare_none_temp_declaration_is_e107() {
+    let source = "~ temp x = none\nHi.\n-> END\n";
+    let err = compile_brink(source).expect_err("~ temp x = none must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E107),
+        "expected E107, got {diags:?}"
+    );
+}
+
+#[test]
+fn bare_none_block_temp_declaration_is_e107() {
+    let source = "~ {\n    temp x = none\n}\nHi.\n-> END\n";
+    let err = compile_brink(source).expect_err("block temp x = none must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E107),
+        "expected E107, got {diags:?}"
+    );
+}
+
+#[test]
+fn none_assignment_to_an_existing_slot_is_a_concrete_site_not_e107() {
+    // §1.4: "concrete sites fine" — an assignment to an already-declared
+    // slot has its type origin at the declaration; re-absencing it later is
+    // exactly the intended use.
+    let source = "~ temp r = some(1)\n~ r = none\n{r == none: absent now.}\n-> END\n";
+    let out = compile_brink(source).expect("assignment-position none must compile");
+    assert!(
+        out.warnings
+            .iter()
+            .all(|w| w.code != brink_compiler::DiagnosticCode::E107),
+        "no E107 expected, got {:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn shadowed_none_declaration_is_not_e107() {
+    // `none` resolving to a real user symbol (a LIST item here) is an
+    // ordinary reference — E107 only fires for the *literal*.
+    let source = "LIST mood = none, happy\nVAR m = none\nMood {m}.\n-> END\n";
+    let out = compile_brink(source).expect("a resolvable `none` reference must compile");
+    assert!(
+        out.warnings
+            .iter()
+            .all(|w| w.code != brink_compiler::DiagnosticCode::E107),
+        "no E107 expected for a shadowed none, got {:?}",
+        out.warnings
+    );
+}
+
+// ── Strict-ink rejection: the A1 surface is brink-dialect-gated ──────────
+
+fn compile_strict_ink(
+    source: &str,
+) -> Result<brink_compiler::CompileOutput, brink_compiler::CompileError> {
+    let files: std::collections::HashMap<&str, &str> =
+        std::collections::HashMap::from([("main.ink", source)]);
+    brink_compiler::compile_with_options(
+        "main.ink",
+        |path| {
+            files
+                .get(path)
+                .map(|s| (*s).to_string())
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, path))
+        },
+        AnalysisOptions::default(), // dialect defaults to StrictInk
+    )
+}
+
+#[test]
+fn strict_ink_rejects_an_unresolved_option_verb_call() {
+    let source = "~ temp x = find(\"a\", \"b\")\nNope {x}.\n-> END\n";
+    let err = compile_strict_ink(source).expect_err("find under strict-ink must be E051");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E051),
+        "expected E051, got {diags:?}"
+    );
+}
+
+#[test]
+fn strict_ink_rejects_a_bare_none_expression() {
+    let source = "~ temp x = 1\n~ x = none\nNope {x}.\n-> END\n";
+    let err = compile_strict_ink(source).expect_err("bare none under strict-ink must be E051");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E051),
+        "expected E051, got {diags:?}"
+    );
+}
+
+// ── Runtime fault posture: malformed questions stay faults (§§3-5) ───────
+
+#[test]
+fn min_on_a_non_array_is_a_turn_terminating_fault() {
+    let src = "~ temp x = min(5)\nUnreachable {x}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("min on an int must fault");
+    assert!(
+        matches!(
+            err,
+            brink_runtime::RuntimeError::StdlibWrongType { verb: "min", .. }
+        ),
+        "expected StdlibWrongType for min, got {err:?}"
+    );
+}
+
+#[test]
+fn min_over_mixed_type_elements_is_a_not_orderable_fault() {
+    let src = "~ temp a = #[1, \"x\"]\n~ temp x = min(a)\nUnreachable {x}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("mixed-type min must fault");
+    assert!(
+        matches!(
+            err,
+            brink_runtime::RuntimeError::NotOrderable { verb: "min", .. }
+        ),
+        "expected NotOrderable for min, got {err:?}"
+    );
+}
+
+#[test]
+fn get_on_a_non_map_is_a_turn_terminating_fault() {
+    let src = "~ temp a = #[1]\n~ temp x = get(a, 0)\nUnreachable {x}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("get on an array must fault");
+    assert!(
+        matches!(
+            err,
+            brink_runtime::RuntimeError::StdlibWrongType { verb: "get", .. }
+        ),
+        "expected StdlibWrongType for get, got {err:?}"
+    );
+}
+
+#[test]
+fn option_never_implicitly_unwraps_in_arithmetic() {
+    // `some(1) + 1` — the ruled `Option[T] ≠ T` strictness at the runtime
+    // (gradual-mode) backstop: a type fault, never a silent unwrap.
+    let src = "~ temp x = some(1) + 1\nUnreachable {x}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("some(1) + 1 must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::TypeError(_)),
+        "expected TypeError, got {err:?}"
+    );
+}
+
+#[test]
+fn pop_through_a_global_mutates_the_cell_and_yields_the_element() {
+    let src = "VAR stack = 0\n~ stack = #[7, 8]\n~ temp x = pop(stack)\nPopped {x}, left {len(stack)}.\n-> END\n";
+    let (program, tables) = compile_and_link(src);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    let out = run_to_end(&mut story);
+    assert_eq!(out, "Popped some(8), left 1.\n");
 }

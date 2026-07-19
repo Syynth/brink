@@ -297,4 +297,27 @@ pub enum RuntimeError {
     /// arrays.
     #[error("char_at index {index} out of bounds ({len} chars)")]
     CharAtOutOfBounds { index: i32, len: usize },
+
+    // ── NS-A1 Option[T] + the ruled stdlib flips (`docs/stdlib-spec.md`
+    // §§3-5) ──────────────────────────────────────────────────────────────
+    /// A stdlib verb was handed a container/argument of the wrong runtime
+    /// type — `find` on a non-string, `min`/`first`/`pop` on a non-array,
+    /// `get`/`contains_value`/`clear` on a non-map. A malformed *question*
+    /// is a bug (the ruled fault-vs-absence doctrine), so this is a
+    /// turn-terminating fault, never a `none`.
+    #[error("`{verb}` expects {expected}, got {found}")]
+    StdlibWrongType {
+        verb: &'static str,
+        expected: &'static str,
+        found: &'static str,
+    },
+    /// `min`/`max` reached an element outside the currently-orderable set
+    /// (int/float/bool/string, homogeneous per the §4b roster), or a
+    /// cross-type pair (int vs string). Turn-terminating fault — an
+    /// unorderable extremum question is malformed, not absent.
+    #[error("`{verb}` cannot order element of type {found}")]
+    NotOrderable {
+        verb: &'static str,
+        found: &'static str,
+    },
 }

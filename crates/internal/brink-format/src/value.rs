@@ -58,6 +58,8 @@ pub enum ValueType {
     Handle,
     /// A symbolic path projection ([`Value::Projection`]) — T1e.
     Projection,
+    /// A typed-absence value ([`Value::OptionVal`]) — NS-A1, `Option[T]`.
+    Option,
 }
 
 /// A runtime value in the ink VM.
@@ -192,6 +194,30 @@ pub enum Value {
     /// [`Closure`](Self::Closure). Structural equality (spec §4 PROPOSED,
     /// implemented here): same root cell and equal segments.
     Projection(Arc<ProjectionValue>),
+    /// A typed-absence value — the compiler-owned `Option[T]` enum (NS-A1,
+    /// `docs/stdlib-spec.md` §1.1/§1.4, ruled 2026-07-18: "a fault says
+    /// 'your program is wrong'; Option says 'the world didn't have one'").
+    ///
+    /// `Option[T]` is the third compiler-known parameterized builtin
+    /// (joining `[T]`/`[K: V]`) — a compiler-owned enum shape, NOT user
+    /// generics. Runtime representation: `None` is payload-free (no
+    /// allocation); `Some` wraps its inner value behind an `Arc` so clone
+    /// stays O(1) like every other heap-bearing variant. Nesting is legal
+    /// and meaningful (`some(none) != none` — the wire and equality both
+    /// preserve it).
+    ///
+    /// Named `OptionVal` (not `Option`) purely to avoid the eternal
+    /// `core::option::Option` shadowing hazard inside `match` arms; the
+    /// [`ValueType`] discriminant and every author-facing surface still
+    /// say "option".
+    ///
+    /// Structural equality: `none == none`; `some(x) == some(y)` iff
+    /// `x == y`; an Option is never equal to a bare `T` (the ruled
+    /// `Option[T] ≠ T` strictness holds at the value layer too). Display
+    /// (`stringify`/`string(x)`): `none` / `some(<inner>)` — the boring,
+    /// stable form; the §1.6 display-boundary forgiveness is Track B4 and
+    /// deliberately NOT implemented here.
+    OptionVal(Option<Arc<Value>>),
 }
 
 /// The payload of a [`Value::Projection`] — the root cell plus its ordered
@@ -291,6 +317,27 @@ impl Value {
             Self::Closure(_) => ValueType::Closure,
             Self::Handle { .. } => ValueType::Handle,
             Self::Projection(_) => ValueType::Projection,
+            Self::OptionVal(_) => ValueType::Option,
+        }
+    }
+
+    /// Build a `some(inner)` [`OptionVal`](Self::OptionVal).
+    pub fn some(inner: Value) -> Self {
+        Self::OptionVal(Some(Arc::new(inner)))
+    }
+
+    /// Build a `none` [`OptionVal`](Self::OptionVal).
+    pub fn none() -> Self {
+        Self::OptionVal(None)
+    }
+
+    /// Borrow the Option payload if this value is an
+    /// [`OptionVal`](Self::OptionVal): `Some(Some(&inner))` for `some(x)`,
+    /// `Some(None)` for `none`, `None` for any non-Option value.
+    pub fn as_option(&self) -> Option<Option<&Value>> {
+        match self {
+            Self::OptionVal(inner) => Some(inner.as_deref()),
+            _ => None,
         }
     }
 
@@ -558,6 +605,17 @@ impl PartialEq for Value {
             // root cell + equal segments, with the `Arc::ptr_eq` fast path
             // mirroring every other heap-allocated variant.
             (Self::Projection(a), Self::Projection(b)) => Arc::ptr_eq(a, b) || a == b,
+            // Option equality (NS-A1): structural — `none == none`,
+            // `some(x) == some(y)` iff `x == y`, with the `Arc::ptr_eq`
+            // fast path on the `some` payload mirroring every other
+            // heap-allocated variant. Cross-variant (`some(1) == 1`) falls
+            // through to `false` below — the ruled `Option[T] ≠ T`
+            // strictness at the value layer.
+            (Self::OptionVal(a), Self::OptionVal(b)) => match (a, b) {
+                (None, None) => true,
+                (Some(x), Some(y)) => Arc::ptr_eq(x, y) || x == y,
+                _ => false,
+            },
             _ => false,
         }
     }
@@ -1443,5 +1501,62 @@ mod tests {
             Value::Null,
         ]);
         assert_eq!(json_round_trip(&v), v);
+    }
+
+    // ── Option (NS-A1, docs/stdlib-spec.md §1.1/§1.4) ───────────────────
+
+    #[test]
+    fn option_value_type_and_constructors() {
+        assert_eq!(Value::none().value_type(), ValueType::Option);
+        assert_eq!(Value::some(Value::Int(3)).value_type(), ValueType::Option);
+        assert_eq!(Value::none().as_option(), Some(None));
+        assert_eq!(
+            Value::some(Value::Int(3)).as_option(),
+            Some(Some(&Value::Int(3)))
+        );
+        assert_eq!(Value::Int(3).as_option(), None);
+    }
+
+    #[test]
+    fn option_equality_is_structural() {
+        assert_eq!(Value::none(), Value::none());
+        assert_eq!(Value::some(Value::Int(1)), Value::some(Value::Int(1)));
+        assert_ne!(Value::some(Value::Int(1)), Value::some(Value::Int(2)));
+        assert_ne!(Value::some(Value::Int(1)), Value::none());
+        // The ruled `Option[T] ≠ T` strictness at the value layer: a
+        // wrapped value is never equal to its bare form.
+        assert_ne!(Value::some(Value::Int(1)), Value::Int(1));
+        assert_ne!(Value::none(), Value::Null);
+    }
+
+    #[test]
+    fn option_nesting_is_preserved() {
+        // some(none) is a real value, distinct from none — the enum shape
+        // nests like any parameterized builtin.
+        let some_none = Value::some(Value::none());
+        assert_ne!(some_none, Value::none());
+        assert_eq!(some_none, Value::some(Value::none()));
+    }
+
+    #[test]
+    fn option_clone_is_arc_bump() {
+        let v = Value::some(Value::array(vec![Value::Int(1)]));
+        let v2 = v.clone();
+        let (Value::OptionVal(Some(a)), Value::OptionVal(Some(b))) = (&v, &v2) else {
+            unreachable!("both are freshly built some values");
+        };
+        assert!(Arc::ptr_eq(a, b), "clone shares the payload Arc");
+    }
+
+    #[test]
+    fn option_serde_round_trip_is_structural() {
+        for v in [
+            Value::none(),
+            Value::some(Value::Int(7)),
+            Value::some(Value::none()),
+            Value::array(vec![Value::none(), Value::some(Value::from("x"))]),
+        ] {
+            assert_eq!(json_round_trip(&v), v);
+        }
     }
 }

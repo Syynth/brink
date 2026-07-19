@@ -88,6 +88,16 @@ pub(crate) fn value_to_js(v: &Value) -> JsValue {
             );
             obj.into()
         }
+        // An Option (NS-A1, `docs/stdlib-spec.md` §1.4) marshals to the
+        // ergonomic native JS form: value-or-null (`none` -> null,
+        // `some(x)` -> x's own native form). Like the `Map` key-type
+        // mapping above this is deliberately lossy — `some(none)` flattens
+        // to null, and a `some(x)` is indistinguishable from a bare `x` —
+        // the lossless form is `TypedValueJs::Option` on the JSON boundary.
+        Value::OptionVal(inner) => match inner {
+            None => JsValue::NULL,
+            Some(v) => value_to_js(v),
+        },
         // Every remaining variant is VM-internal (a pointer, a divert target,
         // a fragment ref, a raw list, or an unmaterialized fn/projection
         // value) and has no useful native-JS shape at this scalar-only

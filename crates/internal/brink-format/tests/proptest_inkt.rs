@@ -207,7 +207,7 @@ fn arb_value() -> impl Strategy<Value = Value> {
                 .prop_map(|(cell, segments)| Value::projection(cell, segments)),
             (
                 arb_def_id(),
-                prop::collection::vec((arb_name_id(), any::<bool>(), inner), 0..3),
+                prop::collection::vec((arb_name_id(), any::<bool>(), inner.clone()), 0..3),
             )
                 .prop_map(|(target, raw_env)| {
                     let env = raw_env
@@ -220,6 +220,14 @@ fn arb_value() -> impl Strategy<Value = Value> {
                         .collect();
                     Value::closure(target, env)
                 }),
+            // Option values (NS-A1, docs/stdlib-spec.md §1.4): both
+            // variants, payload from the full recursive universe —
+            // exercises the `(some <value>)`/`(option_none)` atoms through
+            // the pest reader round-trip.
+            prop::option::of(inner).prop_map(|payload| match payload {
+                None => Value::none(),
+                Some(v) => Value::some(v),
+            }),
         ]
     })
 }
@@ -254,7 +262,8 @@ fn assert_value_variants_exhaustive(value: &Value) {
         | Value::FnRef(_)
         | Value::Closure(_)
         | Value::Handle { .. }
-        | Value::Projection(_) => {}
+        | Value::Projection(_)
+        | Value::OptionVal(_) => {}
     }
 }
 
@@ -329,6 +338,19 @@ fn arb_opcode() -> impl Strategy<Value = Opcode> {
         }),
         Just(Opcode::ProjRead),
         Just(Opcode::ProjWrite),
+        // NS-A1 Option + stdlib flips (#1107).
+        Just(Opcode::PushNone),
+        Just(Opcode::MakeSome),
+        Just(Opcode::StrFind),
+        Just(Opcode::SeqIndexOf),
+        Just(Opcode::SeqMin),
+        Just(Opcode::SeqMax),
+        Just(Opcode::SeqFirst),
+        Just(Opcode::SeqLast),
+        Just(Opcode::SeqPop),
+        Just(Opcode::MapGetOpt),
+        Just(Opcode::MapContainsValue),
+        Just(Opcode::MapClear),
     ]
 }
 
@@ -467,6 +489,18 @@ fn assert_opcode_variants_exhaustive(op: &Opcode) {
         | Opcode::ProjRead
         | Opcode::ProjWrite
         | Opcode::CharAt
+        | Opcode::PushNone
+        | Opcode::MakeSome
+        | Opcode::StrFind
+        | Opcode::SeqIndexOf
+        | Opcode::SeqMin
+        | Opcode::SeqMax
+        | Opcode::SeqFirst
+        | Opcode::SeqLast
+        | Opcode::SeqPop
+        | Opcode::MapGetOpt
+        | Opcode::MapContainsValue
+        | Opcode::MapClear
         | Opcode::Done
         | Opcode::Yield
         | Opcode::End
