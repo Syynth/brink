@@ -325,9 +325,9 @@ precedent, oracle byte-identical):
   the LIST abuse machines and enums now serve properly.
 - Prelude: `contains count`; rest `std::flags`.
 
-## 7. Domain 6 — random 🔶 (proposed)
+## 7. Domain 6 — random (RULED 2026-07-18)
 
-- **Proposed effect answer — no new row dimension.** RNG state is a
+- **The effect answer — no new row dimension.** RNG state is a
   named runtime state cell (`std::rand` owns it); every draw is an
   ordinary **write** to that cell in the def's row. Consequences,
   all free: wake conditions (pure-gated) statically exclude rng —
@@ -345,18 +345,36 @@ precedent, oracle byte-identical):
   the cell; unseeded stories seed from the host at story start
   (host concern, manifest-visible).
 - Verbs (`std::rand`, **no prelude entries** — draws are
-  deliberate acts, namespaced): `int(range)` (range value —
-  `0..10` / `0..=9` join as first-class arguments), `float()` →
-  [0,1), `chance(p)` → bool, `pick(iterable)` →
-  `Option` (any closed-set iterable incl. flags subsets; empty →
-  `none` — dynamic-content absence, matching the flipped
-  `min`/`max`), `shuffle(ref a)` in-place + `shuffled(a)`
-  functional (the ruled §4 naming convention exercised again),
-  `seed(n)`. `int` on an empty range (`0..0`, `5..5`) ⇒ **fault**
-  🔶 — proposed cut: a range is a shape you wrote, so an empty one
-  is a logic bug (and Option-wrapping every `rand::int(0..10)`
-  would be purgatory); `pick`'s iterable is dynamic content, so
-  its emptiness is absence. Confirm or flatten.
+  deliberate acts, namespaced): `int` · `float()` → [0,1) ·
+  `chance(p)` → bool · `pick` · `shuffle(ref a)` in-place +
+  `shuffled(a)` functional (the ruled §4 naming convention
+  exercised again) · `seed(n)`.
+- **`rand::int` is total BY TYPE — the invalid case is
+  unrepresentable (RULED, reshaped in-sitting).** Its parameter
+  is the language's **first value refinement: the inhabited
+  range**. A range literal with checker-provable bounds
+  (`1..=6`, `5..=5`, CONST refs fold) coerces in free — dice
+  cost nothing; a statically-empty literal (`0..0`) is a
+  **compile error**; computed bounds must arrive through the
+  validator **`(a..b).nonempty()` → `Option[<inhabited range>]`**
+  — parse-don't-validate: the Option tax sits once, at the
+  boundary where dynamic data enters, then N draws cost nothing
+  (amortized; contrast per-draw `pick` coalescing). Plain
+  `range` stays possibly-empty everywhere else — `for i in 0..n`
+  with n = 0 runs zero times, `pick(0..n)` returns `none` —
+  emptiness is load-bearing for iteration and untouched.
+- **`pick(iterable)`** → `Option` (any closed-set iterable incl.
+  ranges and flags subsets; empty → `none` — dynamic-content
+  absence). UFCS makes `enemies.pick()` the direct-collection
+  spelling — the case that used to masquerade as
+  `rand::int(0..enemies.len())`, now spelled as what it means.
+- **Refinement doctrine (recorded with the ruling)**: effect rows
+  are refinements on functions; this is the same species applied
+  to a value. CLOSED, compiler-known refinements only — the
+  checker mints the evidence; no user-written predicates
+  (liquid-types territory = its own evidence ledger if demand
+  materializes; population today: one). Exact type/validator
+  spelling ⏳ code-dialect sitting.
 - Heritage: ink's `RANDOM(min, max)` / `SEED_RANDOM` stay
   ink-frozen spellings of the same cell — one RNG, two surfaces,
   no drift.
@@ -499,15 +517,18 @@ precedent, oracle byte-identical):
   the orderable-types roster; frozen IEEE operators.
 - **Also RULED 2026-07-18**: maps (§5 — `contains_value` added,
   `insert` reserved) · flags (§6 — renames, `first`/`last`,
-  `next`/`prev`, `index_of`, numeric coupling FROZEN).
+  `next`/`prev`, `index_of`, numeric coupling FROZEN) · random
+  (§7 — rng-as-cell, `rand::int` total by type via the inhabited
+  range: the first value refinement, closed-refinement doctrine
+  recorded; `pick` Option; determinism posture).
 - In-section ⏳s: tower mini-spec (§2b) · view-materialization
   ratio (§3b) · intrinsic display notation lives in §9.4 now ·
-  rand::int empty-range fault-vs-Option confirmation (§7) ·
   weighted-table mutation surface (§8) · anonymous-record native
   spelling (§9.1, owned by the code-dialect sitting) · holes'
   release policy (§9.2) · protocol implementation spelling +
   compare/equality coherence line (§9.6) · dev/prod knob home
-  (§4b, tooling sitting).
+  (§4b, tooling sitting) · inhabited-range type/validator
+  spelling (§7, code-dialect sitting).
 - Maintainer-attention note: `remove` now names three verbs with
   divergent postures — seq remove-by-index (OOB ⇒ fault, the
   indexing contract), map remove-by-key (idempotent-total), flags
