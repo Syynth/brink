@@ -2,7 +2,7 @@ use brink_syntax::ast::{self, AstNode};
 
 use crate::hir::types::{AwaitStmt, LogicBlock};
 use crate::provenance::NodeClass;
-use crate::{AssignOp, Assignment, DiagnosticCode, Expr, Return, Stmt, TempDecl};
+use crate::{AssignOp, Assignment, DiagnosticCode, Expr, Return, ReturnKind, Stmt, TempDecl};
 
 use super::super::context::{LowerScope, LowerSink, Lowered};
 use super::super::expr::LowerExpr;
@@ -86,6 +86,7 @@ impl LowerBody for ast::LogicLine {
             let value = ret.value().and_then(|e| e.lower_expr(scope, sink).ok());
             return Ok(LogicLineOutput::Return(Return {
                 ptr: Some(scope.prov(NodeClass::Return, ret.syntax())),
+                kind: ReturnKind::Explicit,
                 value,
                 onwards_args: Vec::new(),
             }));

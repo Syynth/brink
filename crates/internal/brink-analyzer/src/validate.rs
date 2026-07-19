@@ -4,7 +4,7 @@
 //! structurally invalid patterns that the parser accepts but the language
 //! semantics forbid.
 
-use brink_ir::hir::{Block, Choice, ChoiceSet, HirVisitor, Knot, Stmt};
+use brink_ir::hir::{Block, Choice, ChoiceSet, HirVisitor, Knot, ReturnKind, Stmt};
 use brink_ir::{Diagnostic, DiagnosticCode, FileId, HirFile};
 
 /// Run all structural validation passes on the given files.
@@ -218,10 +218,12 @@ impl HirVisitor for StructuralChecks {
             s.saw_terminal = true;
         }
 
-        // E032: explicit return (has a syntax ptr — tunnel returns are None)
-        // outside a function.
+        // E032: explicit `~ return` outside a function. Keys off
+        // `ReturnKind`, never `ptr` presence — provenance on a `Return` is
+        // uniform carrying-or-not metadata with no semantic load (a
+        // provenance-carrying tunnel return is legal and clean).
         if let Stmt::Return(ret) = stmt
-            && ret.ptr.is_some()
+            && ret.kind == ReturnKind::Explicit
             && !self.in_function
         {
             let range = ret
@@ -367,6 +369,7 @@ mod tests {
                 label: None,
                 stmts: vec![Stmt::Return(Return {
                     ptr: Some(dummy_return_ptr()),
+                    kind: ReturnKind::Explicit,
                     value: None,
                     onwards_args: Vec::new(),
                 })],
@@ -399,6 +402,7 @@ mod tests {
                 label: None,
                 stmts: vec![Stmt::Return(Return {
                     ptr: Some(dummy_return_ptr()),
+                    kind: ReturnKind::Explicit,
                     value: Some(Expr::Int(42)),
                     onwards_args: Vec::new(),
                 })],
@@ -432,7 +436,8 @@ mod tests {
             body: Block {
                 label: None,
                 stmts: vec![Stmt::Return(Return {
-                    ptr: None, // tunnel return
+                    ptr: None,
+                    kind: ReturnKind::TunnelRedirect,
                     value: None,
                     onwards_args: Vec::new(),
                 })],
@@ -448,8 +453,82 @@ mod tests {
         let diags = validate(&files);
         assert!(
             diags.is_empty(),
-            "tunnel return (ptr=None) should not trigger E032: {diags:?}"
+            "tunnel return should not trigger E032: {diags:?}"
         );
+    }
+
+    /// The D5/F-I#6 trap this slice kills: a tunnel return that *carries*
+    /// provenance must still classify as a tunnel return — E032 keys off
+    /// `ReturnKind`, never `ptr` presence. No ink surface syntax produces
+    /// this shape today; a provenance-stamping frontend (native) will.
+    #[test]
+    fn provenance_carrying_tunnel_return_no_e032() {
+        let mut hir = empty_hir();
+        hir.knots.push(Knot {
+            ptr: dummy_knot_ptr(),
+            name: Name {
+                text: "my_knot".into(),
+                range: dummy_range(),
+            },
+            is_function: false,
+            params: Vec::new(),
+            body: Block {
+                label: None,
+                stmts: vec![Stmt::Return(Return {
+                    ptr: Some(dummy_return_ptr()),
+                    kind: ReturnKind::TunnelRedirect,
+                    value: None,
+                    onwards_args: Vec::new(),
+                })],
+                container_id: None,
+            },
+            stitches: Vec::new(),
+            is_local: false,
+            effects_assertion: None,
+            return_type: None,
+        });
+
+        let files = vec![(FileId(0), &hir)];
+        let diags = validate(&files);
+        assert!(
+            diags.is_empty(),
+            "provenance-carrying tunnel return must not trigger E032: {diags:?}"
+        );
+    }
+
+    /// The converse direction: an explicit return synthesized *without*
+    /// provenance still errors outside a function — the kind alone decides.
+    #[test]
+    fn pointerless_explicit_return_still_emits_e032() {
+        let mut hir = empty_hir();
+        hir.knots.push(Knot {
+            ptr: dummy_knot_ptr(),
+            name: Name {
+                text: "my_knot".into(),
+                range: dummy_range(),
+            },
+            is_function: false,
+            params: Vec::new(),
+            body: Block {
+                label: None,
+                stmts: vec![Stmt::Return(Return {
+                    ptr: None,
+                    kind: ReturnKind::Explicit,
+                    value: None,
+                    onwards_args: Vec::new(),
+                })],
+                container_id: None,
+            },
+            stitches: Vec::new(),
+            is_local: false,
+            effects_assertion: None,
+            return_type: None,
+        });
+
+        let files = vec![(FileId(0), &hir)];
+        let diags = validate(&files);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::E032);
     }
 
     // ── E033: unreachable code after divert ──────────────────────
