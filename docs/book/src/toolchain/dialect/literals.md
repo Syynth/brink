@@ -158,7 +158,7 @@ under strict types (the brink dialect's default) the binding holding it
 fails with `E066` — "`pantry`'s temp `tray` is Conflicted under strict
 types — its uses disagree on its type":
 
-```ink,error
+```ink,error(E066)
 -> pantry
 
 === pantry ===
@@ -182,7 +182,7 @@ out of evidence and strict mode reports the escape as `E065` —
 "`stock`'s temp `crates` escapes strict inference as Unknown — annotate
 or restructure":
 
-```ink,error
+```ink,error(E065)
 -> stock
 
 === stock ===
@@ -355,7 +355,7 @@ a variable, temp, or indexed path — because the mutated collection has to
 be written back somewhere. Handing one a temporary is `E055` — "`push`
 mutates its first argument — bind it to a variable first":
 
-```ink,error
+```ink,error(E055)
 ~ push(#["ale"], "cider")
 -> DONE
 ```
@@ -455,7 +455,7 @@ a compile error under strict (`E116`: "an `Option[T]` has no truthiness —
 test `== none` / `== some(x)` explicitly") and a runtime fault under
 gradual:
 
-```ink,error
+```ink,error(E116)
 -> ledger
 
 === ledger ===
@@ -545,7 +545,7 @@ comparator `counting` reads tally; writes tally — a comparator must be a
 pure, silent `fn(T, T): int` (stdlib-spec §4b: the order must depend only
 on the two comparands)":
 
-```ink,error
+```ink,error(E119)
 VAR tally = 0
 
 ~ temp order = #[3, 1, 2]

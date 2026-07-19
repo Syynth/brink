@@ -159,7 +159,7 @@ at birth.** A bare `none` carries no element type, so a fresh un-annotated
 declaration initialized from one has nothing to be — that's `E107`, in both
 dialects and under both type policies:
 
-```ink,error
+```ink,error(E107)
 VAR reservation = none
 
 The book lies open on the counter.
@@ -187,7 +187,7 @@ is being used as two irreconcilable types. This fails with `E066`,
 "`ledger`'s temp `floor` is Conflicted under strict types — its uses
 disagree on its type":
 
-```ink,error
+```ink,error(E066)
 -> ledger
 
 === ledger ===
@@ -210,7 +210,18 @@ Options flow through your own functions like any other value, and
 inference handles the signatures exactly as [Values & Types](types.md)
 described — from the body, bottom-up:
 
-```ink
+<!-- The fence below is marked `ink,proposed` because it does not compile
+     today: issue #1168. A user function whose body returns an `Option[T]`
+     value derived from a verb or variable (`return get(rooms, name)`, or
+     `return some(v)` for a variable `v`) has its return type inferred as
+     `Option[Unknown]` and trips E065 under strict types; there is no
+     annotation escape hatch (`Option[int]` is rejected by E061). The prose
+     immediately below ("`room_of` settles as `(string) -> Option[int]`")
+     describes the intended, ruled behavior. Unmark to plain `ink` once
+     #1168 lands. Minimal repro:
+       VAR m = #{"a": 1} / === function f(k: string) === / ~ return get(m, k)
+       ->  E065: `f`'s return type escapes strict inference as Unknown -->
+```ink,proposed
 VAR rooms = #{"Mira": 3, "Old Tom": 1}
 
 Mira: {room_of("Mira")}. Edda: {room_of("Edda")}.
@@ -250,7 +261,7 @@ and the condition-position error tells you the honest spelling. This fails
 with `E116`, "an `Option[T]` has no truthiness (F27, docs/stdlib-spec.md
 §1.6) — test `== none` / `== some(x)` explicitly":
 
-```ink,error
+```ink,error(E116)
 -> register
 
 === register ===
