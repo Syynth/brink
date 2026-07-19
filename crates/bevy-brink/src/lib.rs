@@ -113,8 +113,8 @@ pub use brink_runtime::transcript::{TranscriptData, TranscriptError};
 /// `World` is deliberately absent here — it collides with `bevy::prelude::World`
 /// under a glob import, so it is re-exported under the alias [`BrinkWorld`].
 pub use brink_runtime::{
-    Choice, ContextView, FallbackHandler, FlowInstance, FlowLocal, Line, LoadReport, PolicyError,
-    Program, RuntimeError, SaveState, Scope, WorldPolicy,
+    Choice, ContextView, ExecMode, FallbackHandler, FlowInstance, FlowLocal, Line, LoadReport,
+    PolicyError, Program, RuntimeError, SaveState, Scope, WorldPolicy,
 };
 pub use brkt::{
     BrktLoader, BrktLoaderError, TranscriptAsset, capture_transcript, render_transcript_asset,
@@ -134,8 +134,8 @@ pub use event::BrinkFlowReset;
 pub use event::{BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone};
 pub use flow::{Advance, BrinkFlow};
 pub use globals::{
-    BrinkContext, BrinkGlobals, BrinkWorldPolicy, flow_context_view, load_flow_state,
-    save_flow_state,
+    BrinkContext, BrinkExecMode, BrinkGlobals, BrinkWorldPolicy, flow_context_view,
+    load_flow_state, save_flow_state,
 };
 #[cfg(feature = "effect-trace")]
 pub use ground_truth::{AccessKind, GroundTruthLog, ObservedAccess, Violation, check};
