@@ -319,6 +319,24 @@ pushback mandate. Ordered by how badly a second frontend gets hurt.
 
 ### D1. Provenance is welded to the ink CST (the structural dragon)
 
+> **Status: DISCHARGED by B0.1 (issue #1148, branch `auto/b0-provenance`).**
+> The seam is `brink_ir::provenance`: every HIR node now carries an opaque
+> `Provenance { file: FileId, range: TextRange, kind: KindToken }` — plain,
+> publicly constructible data (reconstructible from serialized parts). The
+> token is `KindToken { class: NodeClass, raw: u16 }`: `class` is a
+> frontend-agnostic, stable-`u16`-repr node-class vocabulary (the only half
+> the pipeline may interpret; it carries the former `ContainerPtr`
+> Knot/Stitch discrimination, consumed via `Knot::symbol_kind()`), `raw` is
+> the producing frontend's private syntax kind. Node-resolution is behind
+> the frontend-supplied `ProvenanceResolver` trait (keyed by provenance
+> *value*; `None` is a normal answer); the ink frontend's implementation is
+> `brink_ir::hir::InkProvenanceResolver`, which keeps `SyntaxKind + range`
+> resolution behind its own seam. §4.3's "a headless compile never resolves
+> ptrs" is now *tested* (`brink-ir/tests/provenance_seam.rs` garbles every
+> frontend-private half and asserts byte-identical StoryData). The
+> `Return.ptr`-presence bit (D5) is temporarily preserved as
+> `Option<Provenance>` — retired by B0.2's `ReturnKind`.
+
 Every node carries `ptr: AstPtr<ast::X>` / `SyntaxNodePtr` = `SyntaxKind +
 TextRange` over the **ink grammar's** ~230-variant kind enum (F-C). `ContainerPtr`
 is an enum *literally over ink AST node types*. The purpose is real (LSP resolves
