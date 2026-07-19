@@ -26,6 +26,7 @@
   - [Logic Blocks](./toolchain/dialect/blocks.md)
   - [Collections: Arrays, Maps, and Ranges](./toolchain/dialect/literals.md)
   - [Indexing & Mutation](./toolchain/dialect/indexing.md)
+  - [Option and Absence](./toolchain/dialect/option.md)
   - [Standard Library](./toolchain/dialect/stdlib.md)
   - [Values & Types](./toolchain/dialect/types.md)
   - [Function Values](./toolchain/dialect/function-values.md)
