@@ -320,4 +320,16 @@ pub enum RuntimeError {
         verb: &'static str,
         found: &'static str,
     },
+
+    // ── F27: Option has no truthiness (`docs/stdlib-spec.md` §1.6, ruled
+    // 2026-07-19, issue #1120) ────────────────────────────────────────────
+    /// A `Value::OptionVal` reached the VM's truthiness evaluation (`GotoIf`,
+    /// `JumpIfFalse`, `Not`, a choice condition). Option has **no**
+    /// truthiness — truthiness is a quiet coercion of exactly the kind
+    /// `Option[T] ≠ T` exists to ban — so this is the gradual-mode
+    /// turn-terminating fault; `types = strict` reports the same condition
+    /// statically (E116). Authors write `== none` / `== some(x)` (or, post-B1,
+    /// the `as`-binding). Supersedes NS-A1's shipped falsy-none behavior.
+    #[error("an Option has no truthiness — test `== none` / `== some(x)` explicitly")]
+    OptionTruthiness,
 }

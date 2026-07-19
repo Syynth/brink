@@ -387,3 +387,70 @@ fn strict_int_to_float_coercion_runs_correctly_end_to_end() {
         "int 1 + int 3 promoted through a float binding"
     );
 }
+
+// ── F27 (issue #1120): condition-position Option[T] is E116 under strict ──
+
+#[test]
+fn strict_rejects_an_option_typed_condition_with_e116() {
+    // F27 (docs/stdlib-spec.md §1.6, ruled 2026-07-19): Option has no
+    // truthiness — the `{r: …}` guard NS-A1 blessed is now a compile error
+    // under `types = strict` (and a runtime fault under gradual — see
+    // `tier1_brink.rs`'s corpus twin).
+    let err = compile_mem(
+        "=== main ===\n~ temp r = find(\"ab\", \"b\")\n{r: found.}\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .unwrap_err();
+    let diags = diagnostics_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E116),
+        "expected E116 for an Option-typed condition, got {diags:?}"
+    );
+}
+
+#[test]
+fn strict_rejects_a_direct_option_intrinsic_call_condition_with_e116() {
+    // The direct-intrinsic shape — no temp in between.
+    let err = compile_mem(
+        "=== main ===\n{find(\"ab\", \"b\"): found.}\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .unwrap_err();
+    let diags = diagnostics_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E116),
+        "expected E116 for a direct Option-returning call condition, got {diags:?}"
+    );
+}
+
+#[test]
+fn strict_accepts_explicit_option_comparisons_in_conditions() {
+    // The blessed spellings compile clean AND run: `== some(x)` / `== none`.
+    let data = compile_mem(
+        "-> main\n=== main ===\n~ temp r = find(\"ab\", \"b\")\n{r == some(1): at one.}\n\
+         {r == none: absent.}\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect("explicit Option comparisons must compile clean under strict")
+    .data;
+    let (program, line_tables) = brink_runtime::link(&data).expect("link");
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
+    let lines = story.continue_maximally().expect("run to completion");
+    let text: String = lines
+        .iter()
+        .map(|l| match l {
+            brink_runtime::Line::Text { text, .. }
+            | brink_runtime::Line::Done { text, .. }
+            | brink_runtime::Line::Choices { text, .. }
+            | brink_runtime::Line::End { text, .. }
+            | brink_runtime::Line::Suspended { text, .. } => text.as_str(),
+        })
+        .collect();
+    assert_eq!(text, "at one.\n");
+}

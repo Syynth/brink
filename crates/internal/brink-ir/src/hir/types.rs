@@ -1785,6 +1785,22 @@ pub enum DiagnosticCode {
     /// type annotation), or the (protocol, type) pair is already
     /// registered.
     E115,
+
+    // ── F27: Option has no truthiness (docs/stdlib-spec.md §1.6, ruled
+    // 2026-07-19, issue #1120) ─────────────────────────────────────────
+    /// A condition-position expression (an `if`/`while` condition, a
+    /// `{cond: …}` conditional branch, a choice guard, an `await`
+    /// condition) whose statically-known type is `Option[T]`. Option has
+    /// **no** truthiness — truthiness is a quiet coercion of exactly the
+    /// kind `Option[T] ≠ T` exists to ban — so a strict-mode author writes
+    /// `== none` / `== some(x)` (or, post-B1, the `as`-binding).
+    /// Strict-mode-only, best-effort static (the "Unknown never disagrees"
+    /// posture: an unclassifiable condition stays silently unchecked);
+    /// under `types = gradual` the same condition is the
+    /// `RuntimeError::OptionTruthiness` turn-terminating fault — the
+    /// runtime backstop that catches every case either way. Supersedes
+    /// NS-A1's shipped falsy-none truthiness.
+    E116,
 }
 
 impl DiagnosticCode {
@@ -1911,6 +1927,7 @@ impl DiagnosticCode {
             Self::E113 => "E113",
             Self::E114 => "E114",
             Self::E115 => "E115",
+            Self::E116 => "E116",
         }
     }
 
@@ -2068,6 +2085,9 @@ impl DiagnosticCode {
             }
             Self::E114 => "protocol impl exceeds its protocol's effect contract",
             Self::E115 => "ill-formed protocol impl registration",
+            Self::E116 => {
+                "an `Option[T]` has no truthiness — test `== none` / `== some(x)` in the condition"
+            }
         }
     }
 
@@ -2219,6 +2239,7 @@ impl DiagnosticCode {
             "E113" => Some(Self::E113),
             "E114" => Some(Self::E114),
             "E115" => Some(Self::E115),
+            "E116" => Some(Self::E116),
             _ => None,
         }
     }

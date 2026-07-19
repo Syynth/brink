@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn strict_ink_flags_effects_directive_on_stitch() {
-        let hir = lower_src("== guard ==\nHalt!\n= mood\n@[effects(reads: gold)]\ngrumpy\n");
+        let hir = lower_src("== guard ==\nHalt!\n= mood\n@[effects(reads(gold))]\ngrumpy\n");
         let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E051);

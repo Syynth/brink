@@ -190,6 +190,17 @@ pub fn check(
         inference,
         resolutions,
     ));
+    // F27 (docs/stdlib-spec.md §1.6, ruled 2026-07-19, issue #1120):
+    // condition-position `Option[T]` has no truthiness — strict-mode-only,
+    // the compile-time half of the ruling (E116); the gradual-mode half is
+    // the runtime `OptionTruthiness` fault, which also backstops every
+    // statically-unclassifiable condition under strict.
+    out.extend(crate::option_conditions::check(
+        files,
+        index,
+        inference,
+        resolutions,
+    ));
     out
 }
 

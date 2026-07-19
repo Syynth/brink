@@ -197,7 +197,8 @@ NS-A2 (#1108; stdlib-spec §9.2, ruled 2026-07-18) added a **second,
 line-level spelling** for compiler annotations: the annotation line
 `@[name(args)]` on a line of its own. It is the assertion final form's
 carrier — v1 recognizes exactly one name, `effects`
-(`@[effects(pure, silent, total, reads: gold, …)]`), in exactly one
+(`@[effects(pure, silent, total, reads(gold), …)]` — paren clause
+grammar since the 2026-07-19 amendment, issue #1120), in exactly one
 placement (the leading run at the top of a knot/stitch body, shared
 with directive tag lines in either order). Rules mirror the tag
 channel's:
