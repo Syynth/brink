@@ -408,6 +408,35 @@ mod tests {
     }
 
     #[test]
+    fn string_of_record_and_option_use_the_one_display_path() {
+        // F1 (ruled 2026-07-19): `string()` and interpolation dispatch
+        // through ONE display path (`value_ops::stringify`) — this pins the
+        // structural struct default and the Option forms on the `string()`
+        // leg specifically (the interpolation leg is pinned in
+        // `value_ops`' own tests and the `struct-display-default`
+        // tier1-brink case).
+        let mut program = empty_program();
+        program.name_table = vec!["Point".to_string(), "x".to_string(), "y".to_string()];
+        program.struct_shapes = vec![crate::program::StructShapeEntry {
+            name: brink_format::NameId(0),
+            fields: vec![brink_format::NameId(1), brink_format::NameId(2)],
+        }];
+        let mut flow = test_flow();
+        push(
+            &mut flow,
+            Value::record(brink_format::ShapeId(0), vec![Value::Int(1), Value::Int(2)]),
+        );
+        convert_to_string(&mut flow, &program).unwrap();
+        assert_eq!(
+            flow.pop_value().unwrap(),
+            Value::String("Point { x: 1, y: 2 }".into())
+        );
+        push(&mut flow, Value::none());
+        convert_to_string(&mut flow, &program).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::String("none".into()));
+    }
+
+    #[test]
     fn string_of_float() {
         let program = empty_program();
         let mut flow = test_flow();

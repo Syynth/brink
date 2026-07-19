@@ -18,6 +18,7 @@ mod manifest;
 mod map_keys;
 mod modules;
 mod option_rules;
+mod protocols;
 mod ref_projection;
 mod resolve;
 mod signature;
@@ -53,6 +54,10 @@ pub use infer::{
     unify_all,
 };
 pub use manifest::{ModuleMap, ResolvedModule};
+pub use protocols::{
+    Protocol, ProtocolImplDecl, check_protocol_impls, check_reserved_names,
+    is_reserved_protocol_name, iterate_element_ty,
+};
 pub use resolve::ImportScope;
 pub use signature::{Sig, signature};
 pub use strict::{TypePolicy, effective_severity};
@@ -276,6 +281,14 @@ pub fn per_file_diagnostics(
         // authoring mistake detectable from the literal alone, no shape
         // resolution or whole-project inference needed.
         out.extend(map_keys::check(&files));
+        // NS-A3 protocol-registry name reservation (E113, F6 ruled
+        // 2026-07-19, docs/stdlib-spec.md §9.6): `display`/`compare`/`next`
+        // are reserved method names under the brink dialect — an author
+        // declaration is a hard error, not an E035 warning. Brink-only:
+        // under strict-ink there is no protocol registry and vanilla ink
+        // identifiers stay untouched (the oracle corpus is out of reach by
+        // construction).
+        out.extend(protocols::check_reserved_names(&files));
     }
     out
 }
