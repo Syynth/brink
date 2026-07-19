@@ -1279,9 +1279,7 @@ pub fn resolve_pending_externals<M: Send + Sync + 'static>(world: &mut World) {
 #[expect(clippy::panic, reason = "tests assert via panic on the error arm")]
 mod tests {
     use super::*;
-    use crate::test_support::{
-        compile_test_story, compile_test_story_brink, compile_test_story_brink_gradual,
-    };
+    use crate::test_support::{compile_test_story, compile_test_story_brink_gradual};
     use bevy_ecs::prelude::*;
     use brink_runtime::{FastRng, FlowInstance};
 
