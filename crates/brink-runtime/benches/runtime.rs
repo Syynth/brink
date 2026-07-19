@@ -153,8 +153,13 @@ fn compile_story(ink_rel: &str) -> StoryData {
 #[expect(clippy::unwrap_used)]
 fn compile_story_brink(ink_rel: &str) -> StoryData {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(ink_rel);
+    // NS-A9: explicit gradual — the bench fixture uses the `VAR x = 0` →
+    // collection-reassign placeholder idiom the strict default rejects
+    // (E075-locked, same as the t1e corpus); the bench measures runtime
+    // throughput, not typing regime.
     let options = AnalysisOptions {
         dialect: Dialect::Brink,
+        types: Some(brink_compiler::TypePolicy::Gradual),
         ..AnalysisOptions::default()
     };
     brink_compiler::compile_path_with_options(&path, options)
@@ -172,7 +177,7 @@ fn compile_story_brink_typed(ink_rel: &str, types: TypePolicy) -> StoryData {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(ink_rel);
     let options = AnalysisOptions {
         dialect: Dialect::Brink,
-        types,
+        types: Some(types),
         ..AnalysisOptions::default()
     };
     brink_compiler::compile_path_with_options(&path, options)

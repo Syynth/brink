@@ -75,7 +75,29 @@ pub enum Ty {
     /// (display-boundary forgiveness is Track B4 and deliberately absent
     /// from this lattice).
     Option(Box<Ty>),
+    /// An integer range value (NS-A5, `docs/stdlib-spec.md` §7 — F7 ruled
+    /// 2026-07-19: ranges are a real Value kind). The `non_empty` flag is
+    /// the language's **first value refinement**: `true` is checker-minted
+    /// EVIDENCE that the range denotes at least one element — a refined
+    /// *view* over the same runtime value, never a second value kind. The
+    /// checker mints it in exactly two places (the closed-refinement
+    /// doctrine): a range literal with provably-inhabited bounds, and the
+    /// `some` payload of `non_empty(r)`. Under gradual typing the flag is
+    /// inert (F8 — the runtime fault is the residual); under `types =
+    /// strict` `rand::int` demands it (E117).
+    Range {
+        /// Checker-minted inhabitedness evidence (`NonEmptyRange`, the S2
+        /// spelling). Joins with `&&` in `unify`: evidence survives only
+        /// if EVERY observed source carries it.
+        non_empty: bool,
+    },
     /// Not (yet) resolved to a concrete type — legal in this slice (spec
+    /// A numeric-tower value kind (NS-A8, `docs/tower-mini-spec.md`):
+    /// `vec2`/`vec3`/`vec4`/`quat`/`mat2`/`mat3`/`mat4` — seven closed
+    /// compiler-known kinds carried by one variant (they behave identically
+    /// in the lattice: nominal scalar-like leaves; no coercion into or out
+    /// of them, so a tower-vs-anything-else join is `Conflicted`).
+    Tower(TowerTy),
     /// §2: "unresolved -> Unknown, which is LEGAL"). Acts as the join
     /// identity: `unify(Unknown, x) == x`.
     Unknown,
@@ -90,6 +112,49 @@ pub enum Ty {
     /// diagnostic; this lattice point only exists so that reporting can be
     /// order-independent when it lands.
     Conflicted,
+}
+
+/// The seven numeric-tower kinds (NS-A8) carried by [`Ty::Tower`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TowerTy {
+    Vec2,
+    Vec3,
+    Vec4,
+    Quat,
+    Mat2,
+    Mat3,
+    Mat4,
+}
+
+impl TowerTy {
+    /// The global type name (`vec2` … `mat4`) — also the constructor verb.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            TowerTy::Vec2 => "vec2",
+            TowerTy::Vec3 => "vec3",
+            TowerTy::Vec4 => "vec4",
+            TowerTy::Quat => "quat",
+            TowerTy::Mat2 => "mat2",
+            TowerTy::Mat3 => "mat3",
+            TowerTy::Mat4 => "mat4",
+        }
+    }
+
+    /// Resolve a tower type name (`vec2` … `mat4`) to its kind.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "vec2" => Some(TowerTy::Vec2),
+            "vec3" => Some(TowerTy::Vec3),
+            "vec4" => Some(TowerTy::Vec4),
+            "quat" => Some(TowerTy::Quat),
+            "mat2" => Some(TowerTy::Mat2),
+            "mat3" => Some(TowerTy::Mat3),
+            "mat4" => Some(TowerTy::Mat4),
+            _ => None,
+        }
+    }
 }
 
 /// `Unknown` is the natural default: every local/return slot starts here
@@ -126,6 +191,9 @@ impl Ty {
             }
             Ty::Handle(kind) => format!("handle<{kind}>"),
             Ty::Option(elem) => format!("Option[{}]", elem.display()),
+            Ty::Range { non_empty: false } => "range".to_string(),
+            Ty::Range { non_empty: true } => "NonEmptyRange".to_string(),
+            Ty::Tower(kind) => kind.name().to_string(),
             Ty::Unknown => "Unknown".to_string(),
             Ty::Conflicted => "Conflicted".to_string(),
         }
@@ -185,8 +253,10 @@ impl Ord for Ty {
                 Ty::Fn(..) => 9,
                 Ty::Handle(_) => 10,
                 Ty::Option(_) => 11,
-                Ty::Unknown => 12,
-                Ty::Conflicted => 13,
+                Ty::Range { .. } => 12,
+                Ty::Tower(_) => 13,
+                Ty::Unknown => 14,
+                Ty::Conflicted => 15,
             }
         }
         match (self, other) {
@@ -194,6 +264,8 @@ impl Ord for Ty {
             | (Ty::Struct(a), Ty::Struct(b))
             | (Ty::Handle(a), Ty::Handle(b)) => a.cmp(b),
             (Ty::Array(a), Ty::Array(b)) | (Ty::Option(a), Ty::Option(b)) => a.cmp(b),
+            (Ty::Range { non_empty: a }, Ty::Range { non_empty: b }) => a.cmp(b),
+            (Ty::Tower(a), Ty::Tower(b)) => a.cmp(b),
             (Ty::Map(k1, v1), Ty::Map(k2, v2)) => k1.cmp(k2).then_with(|| v1.cmp(v2)),
             (Ty::Fn(p1, r1), Ty::Fn(p2, r2)) => p1.cmp(p2).then_with(|| r1.cmp(r2)),
             _ => rank(self).cmp(&rank(other)),
@@ -241,6 +313,15 @@ pub fn unify(a: &Ty, b: &Ty) -> Ty {
         // concrete type falls through to `Conflicted` below — the ruled
         // `Option[T] ≠ T` strictness lives in the lattice itself.
         (Ty::Option(x), Ty::Option(y)) => Ty::Option(Box::new(unify(x, y))),
+        // Ranges unify with ranges; the refinement evidence joins with
+        // `&&` (NS-A5): a slot is `NonEmptyRange` only if EVERY observed
+        // source carries the evidence — one possibly-empty assignment
+        // demotes the join to plain `range`, exactly the sound direction
+        // (evidence can be lost at a join, never fabricated). The `x == y`
+        // arm above already handles the equal-flag cases.
+        (Ty::Range { non_empty: a }, Ty::Range { non_empty: b }) => Ty::Range {
+            non_empty: *a && *b,
+        },
         (Ty::Map(k1, v1), Ty::Map(k2, v2)) => {
             Ty::Map(Box::new(unify(k1, k2)), Box::new(unify(v1, v2)))
         }
@@ -656,6 +737,69 @@ mod tests {
         // Mirrors Array(Conflicted): the Option shape survives, the element
         // slot carries the conflict for the strict classify walk to find.
         assert_eq!(unify(&opt(Ty::Int), &opt(Ty::String)), opt(Ty::Conflicted));
+    }
+
+    // ─── NS-A5 `Ty::Range` + the NonEmptyRange refinement (F7/F8) ──────
+
+    fn range(non_empty: bool) -> Ty {
+        Ty::Range { non_empty }
+    }
+
+    #[test]
+    fn range_display_names_the_refinement() {
+        assert_eq!(range(false).display(), "range");
+        assert_eq!(range(true).display(), "NonEmptyRange");
+        assert_eq!(opt(range(true)).display(), "Option[NonEmptyRange]");
+    }
+
+    #[test]
+    fn range_evidence_joins_with_and() {
+        // Evidence survives only if EVERY observed source carries it — the
+        // sound direction (a join can lose evidence, never fabricate it).
+        assert_eq!(unify(&range(true), &range(true)), range(true));
+        assert_eq!(unify(&range(true), &range(false)), range(false));
+        assert_eq!(unify(&range(false), &range(true)), range(false));
+        assert_eq!(unify(&range(false), &range(false)), range(false));
+        // Unknown is the identity, refinement bit included.
+        assert_eq!(unify(&Ty::Unknown, &range(true)), range(true));
+    }
+
+    #[test]
+    fn range_vs_other_concrete_is_conflicted() {
+        // A range never coerces — not to int, not to array<int>, and the
+        // refinement is a view over Range, never a separate kind.
+        assert_eq!(unify(&range(false), &Ty::Int), Ty::Conflicted);
+        assert_eq!(
+            unify(&range(true), &Ty::Array(Box::new(Ty::Int))),
+            Ty::Conflicted
+        );
+        assert_eq!(unify(&opt(range(true)), &range(true)), Ty::Conflicted);
+    }
+
+    #[test]
+    fn range_evidence_join_is_order_independent() {
+        let orderings: [&[Ty]; 3] = [
+            &[
+                Ty::Range { non_empty: true },
+                Ty::Range { non_empty: false },
+            ],
+            &[
+                Ty::Range { non_empty: false },
+                Ty::Range { non_empty: true },
+            ],
+            &[
+                Ty::Unknown,
+                Ty::Range { non_empty: true },
+                Ty::Range { non_empty: false },
+            ],
+        ];
+        for ordering in orderings {
+            assert_eq!(
+                unify_all(ordering.iter().cloned()),
+                Ty::Range { non_empty: false },
+                "order {ordering:?} must lose the evidence at the join"
+            );
+        }
     }
 
     // ─── NS-A1 `or`-coalescing typing (F19 — typing only, no spelling) ──

@@ -143,6 +143,10 @@ pub fn iterate_element_ty(iterable: &Ty) -> Option<Ty> {
     match iterable {
         Ty::Array(elem) => Some((**elem).clone()),
         Ty::Map(key, _) => Some((**key).clone()),
+        // Ranges iterate their int elements (NS-A5, F7 — `for i in 0..n`;
+        // the refinement bit is irrelevant to iteration: an empty range
+        // runs zero times, emptiness is load-bearing).
+        Ty::Range { .. } => Some(Ty::Int),
         _ => None,
     }
 }
@@ -372,6 +376,32 @@ pub fn check_protocol_impls(
             code: DiagnosticCode::E115,
             message,
         };
+
+        // NS-A8 (docs/tower-mini-spec.md T4, issue #1114): tower kinds can
+        // NEVER implement registry protocols — `compare` would contradict
+        // the ruled not-orderable posture, and `display`/`iterate` would
+        // shadow compiler-owned behavior. Checked before (and regardless
+        // of) the STRUCT lookup, so a user STRUCT named `vec3` cannot
+        // smuggle an impl in under a tower name — tower type names are
+        // global, like `int`.
+        if crate::infer::TowerTy::from_name(&decl.type_name).is_some() {
+            out.push(Diagnostic {
+                file,
+                range: knot.name.range,
+                code: DiagnosticCode::E118,
+                message: format!(
+                    "protocol impl `{}` for `{}`: numeric-tower kinds are compiler-known and cannot implement registry protocols{}",
+                    decl.protocol.protocol_name(),
+                    decl.type_name,
+                    if decl.protocol == Protocol::Compare {
+                        " (tower values are not orderable — tower-mini-spec T4)"
+                    } else {
+                        ""
+                    }
+                ),
+            });
+            continue;
+        }
 
         if !struct_names.contains(decl.type_name.as_str()) {
             out.push(at(format!(
@@ -791,6 +821,41 @@ mod tests {
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E115);
         assert!(diags[0].message.contains("duplicate"));
+    }
+
+    // ─── E118: tower kinds can never implement protocols (NS-A8) ────
+
+    #[test]
+    fn compare_for_tower_kind_is_e118() {
+        // T4 (docs/tower-mini-spec.md): the tower is NOT orderable —
+        // registering `compare` for a tower kind must be impossible.
+        let src = "=== function cmp(a, b) ===\n~ return 0\n";
+        for kind in ["vec2", "vec3", "vec4", "quat", "mat2", "mat3", "mat4"] {
+            let diags = impl_diags(src, &[decl(Protocol::Compare, kind, "cmp")]);
+            assert_eq!(diags.len(), 1, "{kind}: {diags:?}");
+            assert_eq!(diags[0].code, DiagnosticCode::E118, "{kind}");
+            assert!(diags[0].message.contains("not orderable"), "{kind}");
+        }
+    }
+
+    #[test]
+    fn display_and_iterate_for_tower_kind_are_e118() {
+        let src = "=== function render(p) ===\n~ return \"x\"\n";
+        for proto in [Protocol::Display, Protocol::Iterate] {
+            let diags = impl_diags(src, &[decl(proto, "vec3", "render")]);
+            assert_eq!(diags.len(), 1, "{proto:?}: {diags:?}");
+            assert_eq!(diags[0].code, DiagnosticCode::E118, "{proto:?}");
+        }
+    }
+
+    #[test]
+    fn tower_rejection_wins_over_a_shadowing_struct() {
+        // A user STRUCT named `vec3` cannot smuggle a compare impl in
+        // under the tower name — tower type names are global, like `int`.
+        let src = "STRUCT vec3 = #{\n    v: float,\n}\n=== function cmp(a, b) ===\n~ return 0\n";
+        let diags = impl_diags(src, &[decl(Protocol::Compare, "vec3", "cmp")]);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E118);
     }
 
     // ─── E114: effect-contract enforcement (needs NS-A2's rows) ─────

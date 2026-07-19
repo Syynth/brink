@@ -425,8 +425,12 @@ fn compile_scenario_story(
     config: &ScenarioConfig,
 ) -> Result<CompiledStory, Box<dyn std::error::Error>> {
     let source = generate_story(config.turn_weight, config.seed, config.collection_global);
+    // NS-A9: explicit gradual — `collection_global` generated stories use
+    // the placeholder-then-reassign idiom the strict default rejects; the
+    // scenario harness measures runtime behavior, not typing regime.
     let options = brink_compiler::AnalysisOptions {
         dialect: brink_compiler::Dialect::Brink,
+        types: Some(brink_compiler::TypePolicy::Gradual),
         ..Default::default()
     };
     let output = brink_compiler::compile_with_options(

@@ -44,26 +44,47 @@ use crate::error::RuntimeError;
 /// iterator.
 #[derive(Debug, Clone)]
 pub struct ValueIter {
-    seq: Arc<Vec<Value>>,
-    idx: usize,
+    seq: IterSeq,
+    idx: u64,
+}
+
+/// The snapshot behind a [`ValueIter`]: a materialized sequence for
+/// arrays/maps, or the range bounds themselves (NS-A5, F7) — a range IS
+/// its own canonical sequence, so iterating `0..1_000_000` never
+/// materializes a million-element vector, mirroring the `for` desugar's
+/// `CollectionKeys` identity pass-through for ranges.
+#[derive(Debug, Clone)]
+enum IterSeq {
+    Seq(Arc<Vec<Value>>),
+    Range { start: i64, len: u64 },
 }
 
 impl ValueIter {
     /// Snapshot `iterable`'s canonical sequence (arrays: values; maps:
-    /// keys in insertion order). Faults `NotIndexable` for anything
-    /// outside the closed builtin iterable set — the same fault the `for`
-    /// desugar's `CollectionKeys` raises.
+    /// keys in insertion order; ranges: their own bounds — O(1)). Faults
+    /// `NotIndexable` for anything outside the closed builtin iterable
+    /// set — the same fault the `for` desugar's `CollectionKeys` raises.
     pub fn new(iterable: &Value) -> Result<Self, RuntimeError> {
-        Ok(Self {
-            seq: iteration_sequence(iterable.clone())?,
-            idx: 0,
-        })
+        let seq = match (iterable.as_range(), iterable.range_len()) {
+            (Some((start, _, _)), Some(len)) => IterSeq::Range {
+                start: i64::from(start),
+                #[expect(clippy::cast_sign_loss, reason = "range_len is never negative")]
+                len: len as u64,
+            },
+            _ => IterSeq::Seq(iteration_sequence(iterable.clone())?),
+        };
+        Ok(Self { seq, idx: 0 })
     }
 
-    /// How many elements remain to be pulled.
+    /// How many elements remain to be pulled (saturated at `usize::MAX`
+    /// for the degenerate 2³¹+-element ranges on 32-bit targets).
     #[must_use]
     pub fn remaining(&self) -> usize {
-        self.seq.len().saturating_sub(self.idx)
+        let total = match &self.seq {
+            IterSeq::Seq(seq) => seq.len() as u64,
+            IterSeq::Range { len, .. } => *len,
+        };
+        usize::try_from(total.saturating_sub(self.idx)).unwrap_or(usize::MAX)
     }
 }
 
@@ -76,7 +97,20 @@ impl Iterator for ValueIter {
     type Item = Value;
 
     fn next(&mut self) -> Option<Value> {
-        let item = self.seq.get(self.idx).cloned()?;
+        let item = match &self.seq {
+            IterSeq::Seq(seq) => seq.get(usize::try_from(self.idx).ok()?).cloned()?,
+            IterSeq::Range { start, len } => {
+                if self.idx >= *len {
+                    return None;
+                }
+                #[expect(
+                    clippy::cast_possible_wrap,
+                    clippy::cast_possible_truncation,
+                    reason = "start + idx is an element of the range by construction, so it fits i32"
+                )]
+                Value::Int((start + self.idx as i64) as i32)
+            }
+        };
         self.idx += 1;
         Some(item)
     }
@@ -92,6 +126,29 @@ mod tests {
     use brink_format::OrderedMap;
 
     use super::*;
+
+    #[test]
+    fn range_iterates_elements_in_order_without_materializing() {
+        // NS-A5 (F7): ranges join the closed iterable set. Exclusive form.
+        let r = Value::range(2, 5, false);
+        let it = ValueIter::new(&r).unwrap();
+        assert_eq!(it.remaining(), 3);
+        let got: Vec<Value> = it.collect();
+        assert_eq!(got, vec![Value::Int(2), Value::Int(3), Value::Int(4)]);
+        // Inclusive form.
+        let got: Vec<Value> = ValueIter::new(&Value::range(-1, 1, true))
+            .unwrap()
+            .collect();
+        assert_eq!(got, vec![Value::Int(-1), Value::Int(0), Value::Int(1)]);
+        // Empty ranges iterate zero times — emptiness is load-bearing.
+        for r in [Value::range(0, 0, false), Value::range(5, 2, true)] {
+            let mut it = ValueIter::new(&r).unwrap();
+            assert_eq!(it.remaining(), 0);
+            assert_eq!(it.next(), None);
+            // Terminal and sticky.
+            assert_eq!(it.next(), None);
+        }
+    }
 
     #[test]
     fn array_iterates_values_in_order() {

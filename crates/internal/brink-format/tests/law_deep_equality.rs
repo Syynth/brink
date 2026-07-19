@@ -75,7 +75,17 @@ fn contains_nan(v: &Value) -> bool {
             ProjSegment::Key(k) => contains_nan(k),
         }),
         Value::OptionVal(inner) => inner.as_deref().is_some_and(contains_nan),
-        Value::Int(_)
+        // NS-A8 tower values: a NaN lane anywhere counts (T4 — a
+        // NaN-bearing vector is never equal to itself, like bare float).
+        Value::Vec2(v) => v.is_nan(),
+        Value::Vec3(v) => v.is_nan(),
+        Value::Vec4(v) => v.is_nan(),
+        Value::Quat(q) => q.is_nan(),
+        Value::Mat2(m) => m.is_nan(),
+        Value::Mat3(m) => m.is_nan(),
+        Value::Mat4(m) => m.is_nan(),
+        Value::Range { .. }
+        | Value::Int(_)
         | Value::Bool(_)
         | Value::String(_)
         | Value::List(_)

@@ -748,6 +748,14 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::RandChance => write!(w, "rand_chance"),
         Opcode::RandPick => write!(w, "rand_pick"),
         Opcode::RandShuffle => write!(w, "rand_shuffle"),
+        Opcode::RangeMakeExcl => write!(w, "range_make_excl"),
+        Opcode::RangeMakeIncl => write!(w, "range_make_incl"),
+        Opcode::RangeNonEmpty => write!(w, "range_non_empty"),
+
+        // NS-A8 numeric tower: the kind's own mnemonic IS the instruction
+        // word (`make_vec2` … `tower_lerp`) — one wire opcode, thirteen
+        // spellings, `TowerOp::mnemonic`/`from_mnemonic` the single pairing.
+        Opcode::Tower(op) => write!(w, "{}", op.mnemonic()),
     }
 }
 
@@ -806,21 +814,21 @@ fn value_type_name(vt: ValueType) -> &'static str {
         ValueType::Handle => "handle",
         ValueType::Projection => "projection",
         ValueType::Option => "option",
+        ValueType::Range => "range",
+        ValueType::Vec2 => "vec2",
+        ValueType::Vec3 => "vec3",
+        ValueType::Vec4 => "vec4",
+        ValueType::Quat => "quat",
+        ValueType::Mat2 => "mat2",
+        ValueType::Mat3 => "mat3",
+        ValueType::Mat4 => "mat4",
     }
 }
 
 fn write_value(w: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
     match v {
         Value::Int(n) => write!(w, "{n}"),
-        Value::Float(n) => {
-            // Ensure float always has a decimal point for unambiguous parsing.
-            let s = format!("{n}");
-            if s.contains('.') || s.contains("inf") || s.contains("NaN") {
-                write!(w, "{s}")
-            } else {
-                write!(w, "{s}.0")
-            }
-        }
+        Value::Float(n) => write_float_atom(w, *n),
         Value::Bool(b) => write!(w, "{b}"),
         Value::String(s) => write!(w, "\"{}\"", escape_string(s)),
         Value::List(lv) => {
@@ -914,7 +922,55 @@ fn write_value(w: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
                 write!(w, ")")
             }
         },
+        // Range values (NS-A5, `docs/stdlib-spec.md` §7, F7): `(range
+        // <start> <end> incl|excl)` — the written form is preserved via the
+        // incl/excl token; reader lands with the writer in this same PR
+        // (the #742 dump/reader parity lesson).
+        Value::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            let form = if *inclusive { "incl" } else { "excl" };
+            write!(w, "(range {start} {end} {form})")
+        }
+        // Tower values (NS-A8, `docs/tower-mini-spec.md` T5): `(vec2 <x>
+        // <y>)` … `(mat4 <16 column-major lanes>)` — the textual mirror of
+        // the VAL_VEC2..VAL_MAT4 wire tags, reader landing with the writer
+        // in this same PR (the #742 dump/reader parity lesson). Lanes come
+        // from glam's explicit array conversions, never its memory layout.
+        Value::Vec2(v) => write_tower_lanes(w, "vec2", &v.to_array()),
+        Value::Vec3(v) => write_tower_lanes(w, "vec3", &v.to_array()),
+        Value::Vec4(v) => write_tower_lanes(w, "vec4", &v.to_array()),
+        Value::Quat(q) => write_tower_lanes(w, "quat", &q.to_array()),
+        Value::Mat2(m) => write_tower_lanes(w, "mat2", &m.to_cols_array()),
+        Value::Mat3(m) => write_tower_lanes(w, "mat3", &m.to_cols_array()),
+        Value::Mat4(m) => write_tower_lanes(w, "mat4", &m.to_cols_array()),
     }
+}
+
+/// Write one f32 with a guaranteed decimal point (unambiguous float atom) —
+/// the exact convention `write_value`'s `Float` arm has always used, shared
+/// with the NS-A8 tower lanes.
+fn write_float_atom(w: &mut dyn fmt::Write, n: f32) -> fmt::Result {
+    let s = format!("{n}");
+    if s.contains('.') || s.contains("inf") || s.contains("NaN") {
+        write!(w, "{s}")
+    } else {
+        write!(w, "{s}.0")
+    }
+}
+
+/// NS-A8 tower atom body: the tag word then the flat lanes in the pinned
+/// order (`docs/tower-mini-spec.md` T5 — vec/quat `x y (z w)`, matrices
+/// column-major), each lane through [`write_float_atom`].
+fn write_tower_lanes(w: &mut dyn fmt::Write, tag: &str, lanes: &[f32]) -> fmt::Result {
+    write!(w, "({tag}")?;
+    for lane in lanes {
+        write!(w, " ")?;
+        write_float_atom(w, *lane)?;
+    }
+    write!(w, ")")
 }
 
 fn write_proj_segment(w: &mut dyn fmt::Write, seg: &ProjSegment) -> fmt::Result {

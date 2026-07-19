@@ -93,7 +93,7 @@ proptest! {
              D:{{direct}}\n\
              C:{{chained}}\n\
              -> END\n\n\
-             === function add4(a, b, c, d) ===\n\
+             === function add4(a: int, b: int, c: int, d: int): int ===\n\
              ~ return a + b + c + d\n"
         );
         let out = run_brink(&source);

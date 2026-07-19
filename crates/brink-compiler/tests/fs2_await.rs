@@ -254,3 +254,58 @@ fn brink_draw_bearing_condition_is_rejected_by_the_purity_gate() {
         "a draw-bearing condition must trip the purity gate: {diags:?}"
     );
 }
+
+/// Issue #1128 (the wake-gate gap NS-A6's build disclosed): a draw via an
+/// *unresolved intrinsic directly in* the condition expression —
+/// `await chance(0.5)`, no intermediate def — must be E105-flagged too.
+/// Before the fix, `await_purity`'s walk only consulted resolved callees'
+/// effect rows, so the direct-intrinsic shape slipped through even though
+/// the equivalent call through a def (the test above) was rejected. Now the
+/// walk consults the same shared intrinsic effect table `infer_intrinsic`
+/// harvests from (`brink-analyzer`'s `infer::intrinsics` — one table, no
+/// second list to drift): a draw is an RNG-cell write.
+#[test]
+fn regression_1128_await_chance_draw() {
+    let source = "=== start ===\n~ await chance(0.5)\n-> END\n";
+    let err = compile_mem_with_dialect(source, Dialect::Brink).unwrap_err();
+    let diags = diagnostics_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E105),
+        "a direct draw-bearing intrinsic in the condition must trip the \
+         purity gate: {diags:?}"
+    );
+}
+
+/// Issue #1128, the sibling shape (present since NS-A1): a fault-bearing —
+/// and here also receiver-mutating — intrinsic directly in the condition
+/// (`await pop(a)`). Same gap, same fix: the shared intrinsic effect table
+/// marks `pop` fault-bearing (and its receiver write), so re-evaluating the
+/// condition is observable and E105 fires.
+#[test]
+fn regression_1128_await_pop_fault() {
+    let source = "VAR a = #[1, 2]\n=== start ===\n~ await pop(a)\n-> END\n";
+    let err = compile_mem_with_dialect(source, Dialect::Brink).unwrap_err();
+    let diags = diagnostics_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E105),
+        "a direct fault-bearing intrinsic in the condition must trip the \
+         purity gate: {diags:?}"
+    );
+}
+
+/// The other side of the #1128 coin: a **total, read-only** unresolved
+/// intrinsic in the condition (`string(…)` — no fault path, no draw, no
+/// write) stays outside every set in the shared table and must NOT trip the
+/// gate — the table consult is a targeted fix, not a blanket
+/// unresolved-call rejection.
+#[test]
+fn regression_1128_total_intrinsic_condition_still_passes() {
+    let source = "VAR mood = 1\n=== start ===\n~ await string(mood) == \"2\"\n-> END\n";
+    let err = compile_mem_with_dialect(source, Dialect::Brink).unwrap_err();
+    let diags = diagnostics_of(err);
+    assert!(
+        !has_code(&diags, DiagnosticCode::E105),
+        "a total read-only intrinsic condition must not trip the purity \
+         gate: {diags:?}"
+    );
+}

@@ -590,7 +590,15 @@ fn is_const_foldable_kind(
         // ref-argument position at all here (`brink-analyzer`'s own E097
         // already covers it), and even where legal it has no compile-time
         // value.
-        | hir::Expr::RefArg(_) => false,
+        | hir::Expr::RefArg(_)
+        // NS-A5 v1: range literals don't constant-fold into declaration
+        // defaults — ranges are runtime values built by `RangeMake*`
+        // (`~ temp r = 1..=6` / assignment into a VAR both work); the
+        // "CONST refs fold" leg of the F7 evidence rule is about a range's
+        // *bounds* referencing CONSTs, not about range-valued CONSTs.
+        // Wiring `ConstValue::Range` through the decl-default pipeline is
+        // a follow-up if authoring demand appears.
+        | hir::Expr::Range(_) => false,
     }
 }
 
@@ -661,7 +669,9 @@ fn is_const_foldable_decl_default(
         // default (it's a ref-argument-only construct — `brink-analyzer`'s
         // own E097 covers the standalone-position case) and has no
         // compile-time value even where legal.
-        | hir::Expr::RefArg(_) => false,
+        | hir::Expr::RefArg(_)
+        // NS-A5 v1: see `is_const_foldable_kind`'s Range arm.
+        | hir::Expr::Range(_) => false,
     }
 }
 

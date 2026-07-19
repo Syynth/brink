@@ -98,6 +98,29 @@ impl LowerExpr for ast::RefExpr {
     }
 }
 
+/// `start..end` / `start..=end` — range literal (NS-A5,
+/// docs/stdlib-spec.md §7, F7). Both bounds are ordinary expressions;
+/// a missing bound is E015 (same shape as the sibling extension exprs).
+impl LowerExpr for ast::RangeExpr {
+    fn lower_expr(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Expr> {
+        let range = self.syntax().text_range();
+        let start = self
+            .start()
+            .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E015))
+            .and_then(|e| e.lower_expr(scope, sink))?;
+        let end = self
+            .end()
+            .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E015))
+            .and_then(|e| e.lower_expr(scope, sink))?;
+        Ok(Expr::Range(crate::RangeExpr {
+            ptr: SyntaxNodePtr::from_node(self.syntax()),
+            start: Box::new(start),
+            end: Box::new(end),
+            inclusive: self.is_inclusive(),
+        }))
+    }
+}
+
 impl LowerExpr for ast::IndexExpr {
     fn lower_expr(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Expr> {
         let range = self.syntax().text_range();

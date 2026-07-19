@@ -162,6 +162,37 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
             .prop_map(|(items, origins)| Value::List(ListValue { items, origins }.into())),
         (arb_name_id(), any::<u64>()).prop_map(|(kind, id)| Value::handle(kind, id)),
         arb_def_id().prop_map(Value::FnRef),
+        // NS-A5 range values (F7): flat scalar leaf; the incl/excl written
+        // form must survive the textual round-trip bit-for-bit.
+        (any::<i32>(), any::<i32>(), any::<bool>())
+            .prop_map(|(start, end, inclusive)| Value::range(start, end, inclusive)),
+        // NS-A8 tower values (docs/tower-mini-spec.md T5): lanes from the
+        // Display/parse-roundtrippable float domain (the `.inkt` float atom
+        // cannot carry NaN/inf — the same pre-existing textual limitation
+        // as a bare float value).
+        prop::collection::vec(arb_inkt_float(), 2)
+            .prop_map(|l| Value::Vec2(glam::Vec2::new(l[0], l[1]))),
+        prop::collection::vec(arb_inkt_float(), 3)
+            .prop_map(|l| Value::Vec3(glam::Vec3::new(l[0], l[1], l[2]))),
+        prop::collection::vec(arb_inkt_float(), 4)
+            .prop_map(|l| Value::Vec4(glam::Vec4::new(l[0], l[1], l[2], l[3]))),
+        prop::collection::vec(arb_inkt_float(), 4)
+            .prop_map(|l| Value::Quat(glam::Quat::from_xyzw(l[0], l[1], l[2], l[3]))),
+        prop::collection::vec(arb_inkt_float(), 4).prop_map(|l| {
+            let mut a = [0.0f32; 4];
+            a.copy_from_slice(&l);
+            Value::Mat2(glam::Mat2::from_cols_array(&a))
+        }),
+        prop::collection::vec(arb_inkt_float(), 9).prop_map(|l| {
+            let mut a = [0.0f32; 9];
+            a.copy_from_slice(&l);
+            Value::Mat3(glam::Mat3::from_cols_array(&a))
+        }),
+        prop::collection::vec(arb_inkt_float(), 16).prop_map(|l| {
+            let mut a = [0.0f32; 16];
+            a.copy_from_slice(&l);
+            Value::Mat4(glam::Mat4::from_cols_array(&a))
+        }),
     ]
 }
 
@@ -263,7 +294,15 @@ fn assert_value_variants_exhaustive(value: &Value) {
         | Value::Closure(_)
         | Value::Handle { .. }
         | Value::Projection(_)
-        | Value::OptionVal(_) => {}
+        | Value::OptionVal(_)
+        | Value::Range { .. }
+        | Value::Vec2(_)
+        | Value::Vec3(_)
+        | Value::Vec4(_)
+        | Value::Quat(_)
+        | Value::Mat2(_)
+        | Value::Mat3(_)
+        | Value::Mat4(_) => {}
     }
 }
 
@@ -356,6 +395,11 @@ fn arb_opcode() -> impl Strategy<Value = Opcode> {
         Just(Opcode::RandChance),
         Just(Opcode::RandPick),
         Just(Opcode::RandShuffle),
+        Just(Opcode::RangeMakeExcl),
+        Just(Opcode::RangeMakeIncl),
+        Just(Opcode::RangeNonEmpty),
+        // NS-A8 numeric tower (#1114): one opcode, thirteen kinds.
+        prop::sample::select(brink_format::TowerOp::ALL.as_slice()).prop_map(Opcode::Tower),
     ]
 }
 
@@ -510,6 +554,10 @@ fn assert_opcode_variants_exhaustive(op: &Opcode) {
         | Opcode::RandChance
         | Opcode::RandPick
         | Opcode::RandShuffle
+        | Opcode::RangeMakeExcl
+        | Opcode::RangeMakeIncl
+        | Opcode::RangeNonEmpty
+        | Opcode::Tower(_)
         | Opcode::Done
         | Opcode::Yield
         | Opcode::End

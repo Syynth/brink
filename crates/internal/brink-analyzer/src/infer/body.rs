@@ -30,7 +30,7 @@ use brink_ir::{
 };
 use rowan::TextRange;
 
-use super::ty::{Ty, unify, unify_all};
+use super::ty::{TowerTy, Ty, unify, unify_all};
 use super::{InferredSig, ValueCallFact, ValueCallKind, range_key};
 
 /// Read-only context shared by every body inferred in the same SCC round.
@@ -287,6 +287,23 @@ fn ref_arg_root(expr: &Expr) -> &Expr {
         Expr::FieldAccess(fa) => ref_arg_root(&fa.base),
         Expr::Index(idx) => ref_arg_root(&idx.base),
         other => other,
+    }
+}
+
+/// Fold a range-literal bound to its compile-time int value, LITERALS ONLY
+/// (NS-A5): an integer literal or a unary-negated integer literal. This is
+/// deliberately narrower than the strict checker's own fold (which also
+/// resolves CONST refs — see `crate::range_refinement`): inference is
+/// firewalled from other definitions' HIR, so CONST-bounded literals mint
+/// their evidence at the strict checker instead. `i64` so `-2147483648`
+/// folds without edge cases.
+fn fold_literal_int_bound(expr: &Expr) -> Option<i64> {
+    match expr {
+        Expr::Int(n) => Some(i64::from(*n)),
+        Expr::Prefix(brink_ir::PrefixOp::Negate, inner) => {
+            fold_literal_int_bound(inner).map(|n| -n)
+        }
+        _ => None,
     }
 }
 
@@ -828,6 +845,39 @@ impl InferPass<'_, '_> {
                 self.infer_expr(&ra.operand);
                 Ty::Unknown
             }
+            // NS-A5 range literals (docs/stdlib-spec.md §7, F7): both
+            // bounds are ints (`observe` narrows int-typed slots used as
+            // bounds; the runtime op faults on anything else — harvested
+            // in the faults dimension). The `non_empty` refinement bit is
+            // minted RIGHT HERE when the literal's bounds fold statically
+            // and denote at least one element (`1..=6`, `5..=5`, `-2..0`):
+            // the "provably-inhabited literals coerce in free" leg of the
+            // F7 evidence rule. Bounds referencing CONSTs don't fold at
+            // this layer (inference is firewalled from other defs' HIR) —
+            // the strict-mode E117 checker (`range_refinement`) folds
+            // CONST refs itself for literal-in-argument-position, so
+            // `int(1..=SIDES)` still coerces free under strict.
+            Expr::Range(r) => {
+                self.effect_faults = true;
+                self.observe(&r.start, &Ty::Int);
+                self.observe(&r.end, &Ty::Int);
+                self.infer_expr(&r.start);
+                self.infer_expr(&r.end);
+                let non_empty = match (
+                    fold_literal_int_bound(&r.start),
+                    fold_literal_int_bound(&r.end),
+                ) {
+                    (Some(start), Some(end)) => {
+                        if r.inclusive {
+                            start <= end
+                        } else {
+                            start < end
+                        }
+                    }
+                    _ => false,
+                };
+                Ty::Range { non_empty }
+            }
         }
     }
 
@@ -1241,102 +1291,47 @@ impl InferPass<'_, '_> {
         args: &[Expr],
         arg_tys: &[Ty],
     ) -> Ty {
-        // NS-A2 fault dimension (issue #1108, from #1097): every stdlib
-        // intrinsic whose VM op has at least one turn-terminating fault path
-        // conservatively faults (bool v1; the type-free structural harvest
-        // cannot rule the wrong-type/unorderable/parse-failure paths out).
-        // Inventory audited against `brink-runtime`'s ops:
-        // - `int`/`float`: `ConversionParseFailure`/`InvalidConversionDomain`
-        //   (the E078 lineage, typed-mode-spec §4);
-        // - `char_at`: `CharAtOutOfBounds`/`CharAtIndexNotInt`/`NotIndexable`;
-        // - `min`/`max`: `NotOrderable` + `StdlibWrongType` (NS-A1; §4b's
-        //   "[float] orderings carry faults unconditionally" falls out);
-        // - `first`/`last`/`pop`/`find`/`index_of`/`get`/`contains_value`/
-        //   `clear`: `StdlibWrongType` (NS-A1 — absence is Option, a
-        //   malformed *question* faults);
-        // - `len`/`keys`/`values`/`contains`/`push`/`insert`/`remove`:
-        //   `NotIndexable` (and the map-key domain faults) on a wrong-typed
-        //   container.
-        // NOT in the set: `string` and `some` (total over every value), and
-        // `call`/`bind` (their dispatch-fault marking lives at
-        // `check_value_call`/`check_bind_value`, shared with direct value
-        // calls).
-        // NS-A6 additions to the faulting set: `chance`/`pick`/`shuffle`/
-        // `shuffled` fault on a wrong-typed argument (`StdlibWrongType` —
-        // the malformed-question doctrine), like the NS-A1 verbs. NOT in
-        // the set: nullary `float()` (the rand draw — no argument, no
-        // fault path; the *unary* conversion keeps its E078-lineage fault)
-        // and `seed` (the frozen `SeedRandom` op coerces a non-int seed to
-        // 0, ink-heritage leniency — total).
-        let is_rand_float_draw = name == "float" && args.is_empty();
-        if matches!(
-            name,
-            "len"
-                | "keys"
-                | "values"
-                | "contains"
-                | "push"
-                | "insert"
-                | "remove"
-                | "int"
-                | "float"
-                | "char_at"
-                | "find"
-                | "index_of"
-                | "min"
-                | "max"
-                | "first"
-                | "last"
-                | "pop"
-                | "get"
-                | "contains_value"
-                | "clear"
-                | "chance"
-                | "pick"
-                | "shuffle"
-                | "shuffled"
-        ) && !is_rand_float_draw
-        {
-            self.effect_faults = true;
-        }
-        // The classic uppercase conversion builtins fault outside the
-        // numeric+bool+string domain since issue #955
-        // (`InvalidConversionDomain` from `value_ops::cast_to_int/float`) —
-        // they reach this arm as unresolved single-segment call names.
-        if matches!(name, "INT" | "FLOAT") {
-            self.effect_faults = true;
-        }
-        // NS-A6 (issue #1112, `docs/stdlib-spec.md` §7 — "every draw is an
-        // ordinary write"): a draw-bearing body writes the RNG state cell.
-        // Both surfaces harvest identically — the brink draw verbs AND the
-        // frozen ink spellings (`RANDOM`/`SEED_RANDOM`/`LIST_RANDOM`,
-        // which reach this arm as unresolved uppercase call names): one
-        // cell, two surfaces, one row entry. This is what makes the ruled
-        // free consequences fall out of existing machinery: pure-gated
-        // wake conditions exclude draw-bearing callees (E105), and
-        // `@[effects(pure)]` asserts rng-freedom (E103 exceedance names
+        // NS-A2 fault dimension (issue #1108, from #1097) + NS-A6 RNG-cell
+        // writes (issue #1112, "every draw is an ordinary write"): both
+        // harvested from the ONE shared intrinsic effect table
+        // (`super::intrinsics`, issue #1128) — `await_purity` consults the
+        // same table for an unresolved call directly in an `await`
+        // condition, so there is no second membership list to drift. See
+        // that module's doc for the full per-verb audit (which ops fault,
+        // which draw, and the deliberate exclusions: `string`/`some`/`seed`
+        // total, nullary `float()` draw-only, `call`/`bind` marked at
+        // `check_value_call`/`check_bind_value`). The RNG entry is what
+        // makes the ruled free consequences fall out of existing machinery:
+        // pure-gated wake conditions exclude draw-bearing callees (E105),
+        // and `@[effects(pure)]` asserts rng-freedom (E103 exceedance names
         // the cell as `rng`).
-        if is_rand_float_draw
-            || matches!(
-                name,
-                "chance"
-                    | "pick"
-                    | "shuffle"
-                    | "shuffled"
-                    | "seed"
-                    | "RANDOM"
-                    | "SEED_RANDOM"
-                    | "LIST_RANDOM"
-            )
-        {
+        let fx = super::intrinsics::intrinsic_effects(name, args.len());
+        if fx.faults {
+            self.effect_faults = true;
+        }
+        if fx.rng_write {
             self.effect_writes.insert(DefinitionId::RNG_CELL);
         }
         match name {
-            // `len` (stdlib slice 1) and `int` (TM-3-completion conversion
-            // intrinsic, #659) both return a fixed `Ty::Int` independent of
-            // the argument — merged into one arm per clippy's
-            // `match_same_arms` (identical bodies, distinct call sites).
-            "len" | "int" => Ty::Int,
+            "len" => Ty::Int,
+            // `int(x)` is ONE value-directed verb (NS-A5,
+            // `docs/stdlib-spec.md` §7): over a range it is `rand::int` —
+            // one uniform draw, a write to the RNG cell — and over
+            // everything else the TM-3 conversion intrinsic (#659). Both
+            // legs return `Ty::Int`, so only the *effect row* is
+            // type-directed: the draw leg's RNG write is recorded exactly
+            // when the argument's inferred type is a range. (A gradual
+            // `Unknown`-typed argument that turns out to hold a range at
+            // runtime escapes this static harvest — the standard gradual
+            // posture, F8: refinement machinery is strict-mode's; under
+            // `types = strict` the argument must be `NonEmptyRange`
+            // [E117, `range_refinement`], so the harvest is sound there.)
+            "int" => {
+                if matches!(arg_tys.first(), Some(Ty::Range { .. })) {
+                    self.effect_writes.insert(DefinitionId::RNG_CELL);
+                }
+                Ty::Int
+            }
             "keys" => match arg_tys.first() {
                 Some(Ty::Map(k, _)) => Ty::Array(k.clone()),
                 _ => Ty::Unknown,
@@ -1419,7 +1414,10 @@ impl InferPass<'_, '_> {
             // (unlike `push`/`insert`/`remove` above, which do narrow their
             // container's element type). `int`'s arm lives above, merged
             // with `len` (both fixed `Ty::Int`, per clippy).
-            "float" => Ty::Float,
+            // (`dot` — NS-A8 — shares this fixed-`Ty::Float` return: the
+            // multi-kind vec2/3/4 domain is a runtime concern, so no
+            // `observe` narrowing, exactly like the conversions here.)
+            "float" | "dot" => Ty::Float,
             // `string` and `char_at(s, i)` (T1b stdlib slice 1 completion,
             // issue #857) both return a fixed `Ty::String` independent of
             // the argument — merged into one arm per clippy's
@@ -1459,11 +1457,27 @@ impl InferPass<'_, '_> {
                 }
                 Ty::Option(Box::new(Ty::Int))
             }
-            // `min`/`max`/`first`/`last` → `Option[T]` over `[T]` (§4).
-            "min" | "max" | "first" | "last" => match arg_tys.first() {
+            // `first`/`last` → `Option[T]` over `[T]` (§4).
+            "first" | "last" => match arg_tys.first() {
                 Some(Ty::Array(elem)) => Ty::Option(elem.clone()),
                 _ => Ty::Option(Box::new(Ty::Unknown)),
             },
+            // `min`/`max`: two call shapes since NS-A8 — the one-arg NS-A1
+            // array extremum (`Option[T]`) and the two-arg tower
+            // componentwise form (same-kind vectors → that kind).
+            "min" | "max" => {
+                if args.len() == 2 {
+                    match (arg_tys.first(), arg_tys.get(1)) {
+                        (Some(Ty::Tower(a)), Some(Ty::Tower(b))) if a == b => Ty::Tower(*a),
+                        _ => Ty::Unknown,
+                    }
+                } else {
+                    match arg_tys.first() {
+                        Some(Ty::Array(elem)) => Ty::Option(elem.clone()),
+                        _ => Ty::Option(Box::new(Ty::Unknown)),
+                    }
+                }
+            }
             // `pop(ref a)` → `Option[T]` (§4): the one A1 verb that is both
             // mutator and expression — records the receiver write exactly
             // like `push`/`insert`/`remove` above (the #880 lesson: the
@@ -1511,6 +1525,64 @@ impl InferPass<'_, '_> {
             // `some(x)` → `Option[typeof x]` (§1.4) — the constructor is
             // where a bare element type becomes optional.
             "some" => Ty::Option(Box::new(arg_tys.first().cloned().unwrap_or(Ty::Unknown))),
+            // ── NS-A8 numeric tower (issue #1114,
+            // `docs/tower-mini-spec.md`). Constructors return their kind;
+            // numeric lanes observe `float` (int lanes coerce through the
+            // one directional numeric join); matrix columns observe their
+            // column vector kind. Verbs type per the ruled §2b table;
+            // runtime domain checks (wrong operand kind) stay at
+            // `tower_ops`, the same split as every intrinsic above.
+            // (`dot` — fixed `Ty::Float`, multi-kind vec domain, so no
+            // `observe` narrowing — is merged into the `float` arm above
+            // per clippy match_same_arms.) ─────────────────────────────
+            "vec2" | "vec3" | "vec4" | "quat" => {
+                for lane in args {
+                    self.observe(lane, &Ty::Float);
+                }
+                match name {
+                    "vec2" => Ty::Tower(TowerTy::Vec2),
+                    "vec3" => Ty::Tower(TowerTy::Vec3),
+                    "vec4" => Ty::Tower(TowerTy::Vec4),
+                    _ => Ty::Tower(TowerTy::Quat),
+                }
+            }
+            "mat2" | "mat3" | "mat4" => {
+                let (col, ret) = match name {
+                    "mat2" => (TowerTy::Vec2, TowerTy::Mat2),
+                    "mat3" => (TowerTy::Vec3, TowerTy::Mat3),
+                    _ => (TowerTy::Vec4, TowerTy::Mat4),
+                };
+                for c in args {
+                    self.observe(c, &Ty::Tower(col));
+                }
+                Ty::Tower(ret)
+            }
+            // `cross(a, b)` → vec3 (vec3-only by signature — observed).
+            "cross" => {
+                for v in args {
+                    self.observe(v, &Ty::Tower(TowerTy::Vec3));
+                }
+                Ty::Tower(TowerTy::Vec3)
+            }
+            // `clamp(x, lo, hi)` — three same-kind vectors, componentwise.
+            "clamp" => match (arg_tys.first(), arg_tys.get(1), arg_tys.get(2)) {
+                (Some(Ty::Tower(x)), Some(Ty::Tower(lo)), Some(Ty::Tower(hi)))
+                    if x == lo && x == hi =>
+                {
+                    Ty::Tower(*x)
+                }
+                _ => Ty::Unknown,
+            },
+            // `lerp(a, b, t)` — same-kind vectors/quats with scalar `t`.
+            "lerp" => {
+                if let Some(t) = args.get(2) {
+                    self.observe(t, &Ty::Float);
+                }
+                match (arg_tys.first(), arg_tys.get(1)) {
+                    (Some(Ty::Tower(a)), Some(Ty::Tower(b))) if a == b => Ty::Tower(*a),
+                    _ => Ty::Unknown,
+                }
+            }
             // ── NS-A6 rand verbs (issue #1112, `docs/stdlib-spec.md`
             // §7). Effect harvest (the RNG-cell write) is above, before
             // the match; these arms carry only the typing rules. Runtime
@@ -1522,11 +1594,22 @@ impl InferPass<'_, '_> {
             // multi-type domain is a runtime concern, exactly like the
             // conversion intrinsics' arms above.
             "chance" => Ty::Bool,
+            // NS-A5: `non_empty(r)` → `Option[NonEmptyRange]` — the
+            // inhabited-range validator (S2 ruled 2026-07-19,
+            // parse-don't-validate): the `some` payload carries the
+            // checker-minted refinement evidence; the runtime value is the
+            // SAME range (the refinement is a view, F7). Pure — no draw,
+            // no RNG write; faults only on a wrong-typed argument.
+            "non_empty" => Ty::Option(Box::new(Ty::Range { non_empty: true })),
             // `pick(coll)` → `Option[T]`: element from a known array,
             // subset-of-the-same-list from a flags subset.
             "pick" => match arg_tys.first() {
                 Some(Ty::Array(elem)) => Ty::Option(elem.clone()),
                 Some(Ty::List(origin)) => Ty::Option(Box::new(Ty::List(origin.clone()))),
+                // NS-A5: `pick(range)` → `Option[int]` — empty → `none`
+                // (dynamic-content absence; contrast `int(range)`, whose
+                // emptiness is the E117/fault refinement).
+                Some(Ty::Range { .. }) => Ty::Option(Box::new(Ty::Int)),
                 _ => Ty::Option(Box::new(Ty::Unknown)),
             },
             // `shuffled(a)` → a new array of the same element type.

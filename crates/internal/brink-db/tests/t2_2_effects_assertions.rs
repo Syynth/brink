@@ -51,7 +51,7 @@ fn exceedance_on_an_extra_write() {
     // Declares only `reads: gold`; the body also writes it.
     let diags = analyze(
         "VAR gold = 0\n\
-         === function spend(cost) ===\n@[effects(reads: gold)]\n~ gold = gold - cost\n~ return gold\n",
+         === function spend(cost) ===\n@[effects(reads(gold))]\n~ gold = gold - cost\n~ return gold\n",
     );
     assert_eq!(codes(&diags), vec![DiagnosticCode::E103], "{diags:?}");
     assert!(diags[0].message.contains("writes gold"), "{diags:?}");
@@ -62,7 +62,7 @@ fn exceedance_on_an_extra_call() {
     // Declares `reads: gold` only; the body also calls the external.
     let diags = analyze(
         "VAR gold = 0\nEXTERNAL play_sfx(x)\n\
-         === function spend(cost) ===\n@[effects(reads: gold)]\n\
+         === function spend(cost: int) ===\n@[effects(reads(gold))]\n\
          ~ temp before = gold\n~ play_sfx(cost)\n~ return before\n",
     );
     assert_eq!(codes(&diags), vec![DiagnosticCode::E103], "{diags:?}");
@@ -79,7 +79,7 @@ fn exceedance_via_ref_param_indirect_write() {
     // declares only `reads: val` — the indirect write must still exceed it.
     let diags = analyze(
         "VAR val = 5\n\
-         === knot ===\n@[effects(reads: val)]\n~ inc(val)\n{val}\n->->\n\
+         === knot ===\n@[effects(reads(val))]\n~ inc(val)\n{val}\n->->\n\
          === function inc(ref x) ===\n~ x = x + 1\n",
     );
     assert_eq!(codes(&diags), vec![DiagnosticCode::E103], "{diags:?}");
@@ -98,7 +98,7 @@ fn assertion_satisfied_is_silent_even_when_strictly_wider_than_inferred() {
     // touches) is explicitly NOT diagnosed — "no drift policy" (sitting 2).
     let diags = analyze(
         "VAR gold = 0\nVAR hp = 10\n\
-         === function spend(cost) ===\n@[effects(reads: gold, writes: gold, writes: hp)]\n\
+         === function spend(cost) ===\n@[effects(reads(gold), writes(gold), writes(hp))]\n\
          ~ gold = gold - cost\n~ return gold\n",
     );
     assert!(
@@ -110,7 +110,7 @@ fn assertion_satisfied_is_silent_even_when_strictly_wider_than_inferred() {
 #[test]
 fn unknown_cell_name_in_assertion_is_e102() {
     let diags = analyze(
-        "VAR gold = 0\n=== function spend() ===\n@[effects(reads: nonexistent)]\n~ return gold\n",
+        "VAR gold = 0\n=== function spend() ===\n@[effects(reads(nonexistent))]\n~ return gold\n",
     );
     assert_eq!(codes(&diags), vec![DiagnosticCode::E102], "{diags:?}");
 }
@@ -118,7 +118,7 @@ fn unknown_cell_name_in_assertion_is_e102() {
 #[test]
 fn unknown_external_name_in_assertion_is_e102() {
     let diags = analyze(
-        "VAR gold = 0\n=== function spend() ===\n@[effects(calls: nonexistent)]\n~ return gold\n",
+        "VAR gold = 0\n=== function spend() ===\n@[effects(calls(nonexistent))]\n~ return gold\n",
     );
     assert_eq!(codes(&diags), vec![DiagnosticCode::E102], "{diags:?}");
 }
@@ -180,7 +180,7 @@ fn effects_row_attributes_the_assertion_to_the_actually_imported_modules_cell() 
         (
             "main.ink",
             "IMPORT { gold } FROM quest_a\n\
-             === function spend() ===\n@[effects(reads: gold)]\n~ return gold\n",
+             === function spend() ===\n@[effects(reads(gold))]\n~ return gold\n",
         ),
     ]);
     assert!(
@@ -204,7 +204,7 @@ fn effects_row_attributes_the_assertion_to_the_other_importers_cell() {
         (
             "main.ink",
             "IMPORT { gold } FROM quest_b\n\
-             === function spend() ===\n@[effects(reads: gold)]\n~ return gold\n",
+             === function spend() ===\n@[effects(reads(gold))]\n~ return gold\n",
         ),
     ]);
     assert!(
@@ -232,7 +232,7 @@ fn unimported_cross_module_reference_attributes_consistently_with_resolution() {
         ("quest_b.ink", QUEST_B),
         (
             "main.ink",
-            "=== function spend() ===\n@[effects(reads: gold)]\n~ return gold\n",
+            "=== function spend() ===\n@[effects(reads(gold))]\n~ return gold\n",
         ),
     ]);
     assert!(
@@ -278,13 +278,16 @@ fn tag_only_line_does_not_exceed_silent() {
 
 #[test]
 fn total_exceedance_on_an_indexing_construct_is_e109() {
-    let diags = analyze("=== function pick_first(a) ===\n@[effects(total)]\n~ return a[0]\n");
+    let diags = analyze(
+        "=== function pick_first(a: array<int>): int ===\n@[effects(total)]\n~ return a[0]\n",
+    );
     assert_eq!(codes(&diags), vec![DiagnosticCode::E109], "{diags:?}");
 }
 
 #[test]
 fn total_exceedance_on_division_is_e109() {
-    let diags = analyze("=== function ratio(a, b) ===\n@[effects(total)]\n~ return a / b\n");
+    let diags =
+        analyze("=== function ratio(a: int, b: int): int ===\n@[effects(total)]\n~ return a / b\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E109], "{diags:?}");
 }
 
@@ -292,14 +295,17 @@ fn total_exceedance_on_division_is_e109() {
 fn total_exceedance_on_a_faulting_stdlib_verb_is_e109() {
     // `min` carries `NotOrderable`/`StdlibWrongType` fault paths — §4b's
     // "orderings carry faults unconditionally" (mode-independent rows).
-    let diags = analyze("=== function lowest(a) ===\n@[effects(total)]\n~ return min(a) or 0\n");
+    let diags = analyze(
+        "=== function lowest(a: array<int>) ===\n@[effects(total)]\n~ return min(a) or 0\n",
+    );
     assert_eq!(codes(&diags), vec![DiagnosticCode::E109], "{diags:?}");
 }
 
 #[test]
 fn satisfied_silent_and_total_are_silent() {
-    let diags =
-        analyze("=== function add(a, b) ===\n@[effects(pure, silent, total)]\n~ return a + b\n");
+    let diags = analyze(
+        "=== function add(a: int, b: int): int ===\n@[effects(pure, silent, total)]\n~ return a + b\n",
+    );
     assert_eq!(codes(&diags), Vec::<DiagnosticCode>::new(), "{diags:?}");
 }
 
@@ -314,7 +320,13 @@ fn emitting_def_without_silent_assertion_is_legal() {
 #[test]
 fn opaque_row_exceeds_both_silent_and_total() {
     // A call through a function value is unbounded on every dimension.
-    let diags = analyze("=== function apply(cb) ===\n@[effects(silent, total)]\n~ return cb()\n");
+    // `cb` is annotated `fn(): int` — the value's *type* is known under the
+    // Brink strict default, but a call through a function value stays
+    // unbounded on the effects dimensions regardless (the row depends on
+    // which function flows in), which is exactly the subject here.
+    let diags = analyze(
+        "=== function apply(cb: fn(): int) ===\n@[effects(silent, total)]\n~ return cb()\n",
+    );
     assert_eq!(
         codes(&diags),
         vec![DiagnosticCode::E108, DiagnosticCode::E109],
@@ -330,7 +342,7 @@ fn deprecated_hash_spelling_reaches_per_file_diagnostics_as_e110_warning() {
     db.set_analysis_options(brink_opts());
     let id = db.set_file(
         "main.ink",
-        "=== function add(a, b) ===\n#@effects(pure)\n~ return a + b\n".to_owned(),
+        "=== function add(a: int, b: int): int ===\n#@effects(pure)\n~ return a + b\n".to_owned(),
     );
     let diags = db.diagnostics(id).expect("file known").to_vec();
     assert_eq!(codes(&diags), vec![DiagnosticCode::E110], "{diags:?}");
@@ -360,15 +372,18 @@ fn pure_assertion_exceeded_by_a_draw() {
 fn writes_rng_clause_covers_a_draw_bearing_def() {
     // The compiler-owned cell is nameable in a `writes` clause as `rng`,
     // so a draw-bearing def can carry a covering bound.
-    let diags = analyze("=== function coin() ===\n@[effects(writes: rng)]\n~ return chance(0.5)\n");
+    let diags = analyze("=== function coin() ===\n@[effects(writes(rng))]\n~ return chance(0.5)\n");
     assert_eq!(codes(&diags), Vec::<DiagnosticCode>::new(), "{diags:?}");
 }
 
 #[test]
 fn pure_assertion_exceeded_by_the_frozen_ink_spelling_too() {
     // One cell, two surfaces: ink's RANDOM writes the same cell and
-    // exceeds `pure` identically.
-    let diags = analyze("=== function roll() ===\n@[effects(pure)]\n~ return RANDOM(1, 6)\n");
+    // exceeds `pure` identically. The `: int` return annotation is needed
+    // because `infer_intrinsic` has no typing arm for the frozen ink
+    // spellings (they fall through to `Unknown`) — a pre-existing strict-
+    // inference gap, visible under the Brink dialect's strict default.
+    let diags = analyze("=== function roll(): int ===\n@[effects(pure)]\n~ return RANDOM(1, 6)\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E103], "{diags:?}");
     assert!(diags[0].message.contains("rng"), "{diags:?}");
 }
@@ -380,7 +395,7 @@ fn user_var_named_rng_shadows_the_cell_name_in_clauses() {
     // draw-free body never touches the compiler cell, so no exceedance.
     let diags = analyze(
         "VAR rng = 0\n\
-         === function bump() ===\n@[effects(reads: rng, writes: rng)]\n~ rng = rng + 1\n~ return rng\n",
+         === function bump() ===\n@[effects(reads(rng), writes(rng))]\n~ rng = rng + 1\n~ return rng\n",
     );
     assert_eq!(codes(&diags), Vec::<DiagnosticCode>::new(), "{diags:?}");
 }

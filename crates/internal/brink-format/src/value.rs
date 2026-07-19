@@ -60,6 +60,22 @@ pub enum ValueType {
     Projection,
     /// A typed-absence value ([`Value::OptionVal`]) — NS-A1, `Option[T]`.
     Option,
+    /// An integer range value ([`Value::Range`]) — NS-A5, F7.
+    Range,
+    /// A 2-lane f32 vector ([`Value::Vec2`]) — NS-A8, the numeric tower.
+    Vec2,
+    /// A 3-lane f32 vector ([`Value::Vec3`]) — NS-A8.
+    Vec3,
+    /// A 4-lane f32 vector ([`Value::Vec4`]) — NS-A8.
+    Vec4,
+    /// A rotation quaternion, `(x, y, z, w)` ([`Value::Quat`]) — NS-A8.
+    Quat,
+    /// A column-major 2×2 f32 matrix ([`Value::Mat2`]) — NS-A8.
+    Mat2,
+    /// A column-major 3×3 f32 matrix ([`Value::Mat3`]) — NS-A8.
+    Mat3,
+    /// A column-major 4×4 f32 matrix ([`Value::Mat4`]) — NS-A8.
+    Mat4,
 }
 
 /// A runtime value in the ink VM.
@@ -218,6 +234,112 @@ pub enum Value {
     /// stable form; the §1.6 display-boundary forgiveness is Track B4 and
     /// deliberately NOT implemented here.
     OptionVal(Option<Arc<Value>>),
+    /// An integer range value (NS-A5, `docs/stdlib-spec.md` §7 — F7, ruled
+    /// 2026-07-19: "ranges are a REAL Value kind"). `start..end` (exclusive)
+    /// or `start..=end` (inclusive) over `int` bounds — v1 is int-only.
+    ///
+    /// Ranges join the closed iterable set (`for i in 0..n`), index like a
+    /// virtual array of their elements, and are the substrate of the
+    /// language's first value refinement (the inhabited range consumed by
+    /// `rand::int`). A durable wire form exists (`VAL_RANGE`) because
+    /// `FlowFrame` spills for-loop iterators across `await` — a range held
+    /// in a loop snapshot must survive save/load.
+    ///
+    /// A no-payload scalar (two `i32`s + a flag); no `Arc` needed. The
+    /// **written form is preserved** — `1..7` and `1..=6` keep their
+    /// `inclusive` flag through saves, the transcript, and display — but
+    /// **equality is content equality** (F7's ruling word): two ranges are
+    /// equal iff they denote the same integer sequence, so `1..=6 == 1..7`
+    /// and every empty range equals every other empty range. This is the
+    /// same content-over-form posture as the #909 map-equality ruling
+    /// (insertion order iterates, content compares).
+    Range {
+        /// The first element of the range (always inclusive).
+        start: i32,
+        /// The written end bound; whether it is an element depends on
+        /// `inclusive`.
+        end: i32,
+        /// `true` for the `..=` form (`end` is the last element), `false`
+        /// for the `..` form (`end` is one past the last element).
+        inclusive: bool,
+    },
+    /// A 2-lane f32 vector (NS-A8, `docs/tower-mini-spec.md` T1: the tower
+    /// value kinds are **glam-backed** — glam is the in-memory compute type,
+    /// so vector/quaternion/matrix ops arrive correct-by-construction).
+    ///
+    /// Serde discipline (T5): the derive on `Value` routes every tower
+    /// variant through the hand-written lane modules in [`tower_serde`] —
+    /// explicit `x, y(, z, w)` lane order for vectors and the quat,
+    /// column-major column-by-column for matrices — NEVER glam's memory
+    /// representation (which varies with SIMD features and versions) and
+    /// never glam's own `serde` feature (kept off in `Cargo.toml`).
+    ///
+    /// Equality (T4): componentwise IEEE via glam's derived `PartialEq` — a
+    /// NaN-bearing vector never equals itself, `-0.0 == +0.0` per lane,
+    /// exactly like bare `Float`. Tower values are NOT orderable (§4b: a
+    /// vector in an ordering context is a `NotOrderable` fault) and are
+    /// never legal map keys (`MapKey::from_value` has no tower arms).
+    Vec2(#[serde(with = "tower_serde::vec2")] glam::Vec2),
+    /// A 3-lane f32 vector (NS-A8). The **unaligned** `glam::Vec3` (not
+    /// `Vec3A`) per the mini-spec — aligned variants would bloat every
+    /// `Value`. See [`Vec2`](Self::Vec2) for the shared tower discipline.
+    Vec3(#[serde(with = "tower_serde::vec3")] glam::Vec3),
+    /// A 4-lane f32 vector (NS-A8). See [`Vec2`](Self::Vec2).
+    Vec4(#[serde(with = "tower_serde::vec4")] glam::Vec4),
+    /// A rotation quaternion (NS-A8), lane order `(x, y, z, w)` per glam
+    /// (T3: conventions per glam, wholesale — right-handed, `quat * quat`
+    /// composes, `quat * vec` rotates). See [`Vec2`](Self::Vec2).
+    Quat(#[serde(with = "tower_serde::quat")] glam::Quat),
+    /// A column-major 2×2 f32 matrix (NS-A8, T2: all matrix sizes ship).
+    /// See [`Vec2`](Self::Vec2).
+    Mat2(#[serde(with = "tower_serde::mat2")] glam::Mat2),
+    /// A column-major 3×3 f32 matrix (NS-A8). The **unaligned** `glam::Mat3`
+    /// (not `Mat3A`). See [`Vec2`](Self::Vec2).
+    Mat3(#[serde(with = "tower_serde::mat3")] glam::Mat3),
+    /// A column-major 4×4 f32 matrix (NS-A8). See [`Vec2`](Self::Vec2).
+    Mat4(#[serde(with = "tower_serde::mat4")] glam::Mat4),
+}
+
+/// Hand-written serde lane codecs for the tower variants (NS-A8,
+/// `docs/tower-mini-spec.md` T5): each type serializes as its flat lane
+/// array — vectors and the quat as `[x, y(, z, w)]`, matrices as their
+/// column-major `to_cols_array()` — and deserializes back through glam's
+/// explicit `from_array`/`from_cols_array` constructors. Glam computes; the
+/// serialized form is ours: no glam memory layout, no serde-through-glam.
+pub mod tower_serde {
+    /// Expand one lane codec module: `to`/`from` are the explicit
+    /// lane-array conversions (never a memory-layout cast). Matrix `from`
+    /// constructors (`from_cols_array`) take the array by reference, hence
+    /// the closure rather than a bare path.
+    macro_rules! lane_codec {
+        ($name:ident, $ty:ty, $lanes:literal, $to:ident, |$a:ident| $from:expr) => {
+            pub mod $name {
+                use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+                pub fn serialize<S: Serializer>(v: &$ty, s: S) -> Result<S::Ok, S::Error> {
+                    v.$to().serialize(s)
+                }
+
+                pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<$ty, D::Error> {
+                    <[f32; $lanes]>::deserialize(d).map(|$a| $from)
+                }
+            }
+        };
+    }
+
+    lane_codec!(vec2, glam::Vec2, 2, to_array, |a| glam::Vec2::from_array(a));
+    lane_codec!(vec3, glam::Vec3, 3, to_array, |a| glam::Vec3::from_array(a));
+    lane_codec!(vec4, glam::Vec4, 4, to_array, |a| glam::Vec4::from_array(a));
+    lane_codec!(quat, glam::Quat, 4, to_array, |a| glam::Quat::from_array(a));
+    lane_codec!(mat2, glam::Mat2, 4, to_cols_array, |a| {
+        glam::Mat2::from_cols_array(&a)
+    });
+    lane_codec!(mat3, glam::Mat3, 9, to_cols_array, |a| {
+        glam::Mat3::from_cols_array(&a)
+    });
+    lane_codec!(mat4, glam::Mat4, 16, to_cols_array, |a| {
+        glam::Mat4::from_cols_array(&a)
+    });
 }
 
 /// The payload of a [`Value::Projection`] — the root cell plus its ordered
@@ -318,6 +440,61 @@ impl Value {
             Self::Handle { .. } => ValueType::Handle,
             Self::Projection(_) => ValueType::Projection,
             Self::OptionVal(_) => ValueType::Option,
+            Self::Range { .. } => ValueType::Range,
+            Self::Vec2(_) => ValueType::Vec2,
+            Self::Vec3(_) => ValueType::Vec3,
+            Self::Vec4(_) => ValueType::Vec4,
+            Self::Quat(_) => ValueType::Quat,
+            Self::Mat2(_) => ValueType::Mat2,
+            Self::Mat3(_) => ValueType::Mat3,
+            Self::Mat4(_) => ValueType::Mat4,
+        }
+    }
+
+    /// Build a [`Range`](Self::Range) from its written bounds.
+    pub fn range(start: i32, end: i32, inclusive: bool) -> Self {
+        Self::Range {
+            start,
+            end,
+            inclusive,
+        }
+    }
+
+    /// Borrow the `(start, end, inclusive)` triple if this value is a
+    /// [`Range`](Self::Range).
+    pub fn as_range(&self) -> Option<(i32, i32, bool)> {
+        match self {
+            Self::Range {
+                start,
+                end,
+                inclusive,
+            } => Some((*start, *end, *inclusive)),
+            _ => None,
+        }
+    }
+
+    /// The one-past-the-last element bound of a [`Range`](Self::Range),
+    /// normalized over the written form (`i64` so `1..=i32::MAX` cannot
+    /// overflow). `None` for any non-range value.
+    pub fn range_end_exclusive(&self) -> Option<i64> {
+        match self {
+            Self::Range { end, inclusive, .. } => {
+                Some(i64::from(*end) + i64::from(u8::from(*inclusive)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Number of elements a [`Range`](Self::Range) denotes (`0` for an empty
+    /// range — a range never has negative length). `None` for any non-range
+    /// value. `i64` because `i32::MIN..=i32::MAX` has 2³² elements.
+    pub fn range_len(&self) -> Option<i64> {
+        match self {
+            Self::Range { start, .. } => {
+                let end_ex = self.range_end_exclusive()?;
+                Some((end_ex - i64::from(*start)).max(0))
+            }
+            _ => None,
         }
     }
 
@@ -473,6 +650,65 @@ impl Value {
         }
     }
 
+    /// Extract the glam payload if this value is a [`Vec2`](Self::Vec2) —
+    /// the NS-A8 identity-marshal read for binding authors (T1: glam is the
+    /// compute type on both sides of the boundary). Strict like
+    /// [`as_int`](Self::as_int): no cross-kind coercion.
+    pub fn as_vec2(&self) -> Option<glam::Vec2> {
+        match self {
+            Self::Vec2(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Extract the glam payload if this value is a [`Vec3`](Self::Vec3).
+    pub fn as_vec3(&self) -> Option<glam::Vec3> {
+        match self {
+            Self::Vec3(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Extract the glam payload if this value is a [`Vec4`](Self::Vec4).
+    pub fn as_vec4(&self) -> Option<glam::Vec4> {
+        match self {
+            Self::Vec4(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Extract the glam payload if this value is a [`Quat`](Self::Quat).
+    pub fn as_quat(&self) -> Option<glam::Quat> {
+        match self {
+            Self::Quat(q) => Some(*q),
+            _ => None,
+        }
+    }
+
+    /// Extract the glam payload if this value is a [`Mat2`](Self::Mat2).
+    pub fn as_mat2(&self) -> Option<glam::Mat2> {
+        match self {
+            Self::Mat2(m) => Some(*m),
+            _ => None,
+        }
+    }
+
+    /// Extract the glam payload if this value is a [`Mat3`](Self::Mat3).
+    pub fn as_mat3(&self) -> Option<glam::Mat3> {
+        match self {
+            Self::Mat3(m) => Some(*m),
+            _ => None,
+        }
+    }
+
+    /// Extract the glam payload if this value is a [`Mat4`](Self::Mat4).
+    pub fn as_mat4(&self) -> Option<glam::Mat4> {
+        match self {
+            Self::Mat4(m) => Some(*m),
+            _ => None,
+        }
+    }
+
     /// Borrow the array payload if this value is an [`Array`](Self::Array).
     ///
     /// Read-only: the returned slice never triggers a copy. Mutation uses
@@ -616,6 +852,35 @@ impl PartialEq for Value {
                 (Some(x), Some(y)) => Arc::ptr_eq(x, y) || x == y,
                 _ => false,
             },
+            // Range equality (NS-A5, F7 "content equality"): two ranges are
+            // equal iff they denote the same integer sequence — the written
+            // form (`..` vs `..=`) is display fidelity, not content, so
+            // `1..=6 == 1..7`, and every empty range equals every other
+            // empty range (both denote the zero-length sequence, exactly as
+            // two empty arrays are equal). The #909 map ruling is the
+            // precedent: content compares, form displays.
+            (a @ Self::Range { start: sa, .. }, b @ Self::Range { start: sb, .. }) => {
+                let (la, lb) = (a.range_len(), b.range_len());
+                match (la, lb) {
+                    (Some(0), Some(0)) => true,
+                    (Some(x), Some(y)) => x == y && sa == sb,
+                    // Unreachable: both sides are `Range`.
+                    _ => false,
+                }
+            }
+            // Tower equality (NS-A8, `docs/tower-mini-spec.md` T4):
+            // componentwise IEEE via glam's own `PartialEq` — a NaN lane
+            // makes a value unequal to *itself*, `-0.0 == +0.0` per lane,
+            // exactly like the bare `Float` arm above. Cross-kind pairs
+            // (`Vec2` vs `Vec3`) fall through to `false` below, like every
+            // other cross-variant pair.
+            (Self::Vec2(a), Self::Vec2(b)) => a == b,
+            (Self::Vec3(a), Self::Vec3(b)) => a == b,
+            (Self::Vec4(a), Self::Vec4(b)) => a == b,
+            (Self::Quat(a), Self::Quat(b)) => a == b,
+            (Self::Mat2(a), Self::Mat2(b)) => a == b,
+            (Self::Mat3(a), Self::Mat3(b)) => a == b,
+            (Self::Mat4(a), Self::Mat4(b)) => a == b,
             _ => false,
         }
     }
@@ -662,6 +927,53 @@ impl From<()> for Value {
     /// fire-and-forget external that produces no value.
     fn from((): ()) -> Self {
         Self::Null
+    }
+}
+
+// NS-A8: identity conversions from the glam compute types (T1 — "one
+// workspace-pinned glam version shared with bevy-brink → the bevy marshal is
+// identity on the same types"). A host binding returning `impl Into<Value>`
+// can hand back a `glam::Vec3` directly.
+
+impl From<glam::Vec2> for Value {
+    fn from(v: glam::Vec2) -> Self {
+        Self::Vec2(v)
+    }
+}
+
+impl From<glam::Vec3> for Value {
+    fn from(v: glam::Vec3) -> Self {
+        Self::Vec3(v)
+    }
+}
+
+impl From<glam::Vec4> for Value {
+    fn from(v: glam::Vec4) -> Self {
+        Self::Vec4(v)
+    }
+}
+
+impl From<glam::Quat> for Value {
+    fn from(v: glam::Quat) -> Self {
+        Self::Quat(v)
+    }
+}
+
+impl From<glam::Mat2> for Value {
+    fn from(v: glam::Mat2) -> Self {
+        Self::Mat2(v)
+    }
+}
+
+impl From<glam::Mat3> for Value {
+    fn from(v: glam::Mat3) -> Self {
+        Self::Mat3(v)
+    }
+}
+
+impl From<glam::Mat4> for Value {
+    fn from(v: glam::Mat4) -> Self {
+        Self::Mat4(v)
     }
 }
 
@@ -1129,6 +1441,55 @@ mod tests {
     // actually walks) must reject the same way as the bare `OrderedMap` case
     // above — the duplicate-key check has to fire through `Value`'s derived
     // `Deserialize` too, not just when `OrderedMap` is deserialized directly.
+    // ── NS-A8 tower: equality + serde lane discipline ──────────────────
+
+    #[test]
+    fn tower_equality_is_componentwise_ieee() {
+        let a = Value::Vec2(glam::Vec2::new(1.0, 2.0));
+        assert_eq!(a, Value::Vec2(glam::Vec2::new(1.0, 2.0)));
+        // -0 == +0 per lane; a NaN lane never equals itself (T4).
+        assert_eq!(
+            Value::Vec2(glam::Vec2::new(-0.0, 1.0)),
+            Value::Vec2(glam::Vec2::new(0.0, 1.0))
+        );
+        let nan = Value::Vec3(glam::Vec3::new(f32::NAN, 0.0, 0.0));
+        assert_ne!(nan.clone(), nan);
+        // Cross-kind is plain inequality at the value layer.
+        assert_ne!(a, Value::Vec3(glam::Vec3::new(1.0, 2.0, 0.0)));
+    }
+
+    /// T5: the serde form is the flat lane array — explicit lanes
+    /// (column-major for matrices), never glam's memory representation.
+    #[test]
+    fn tower_serde_is_flat_lane_arrays() {
+        let v = Value::Vec3(glam::Vec3::new(1.0, 2.5, -3.0));
+        let json = serde_json::to_string(&v).expect("serialize");
+        assert_eq!(json, r#"{"Vec3":[1.0,2.5,-3.0]}"#);
+        let back: Value = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, v);
+
+        let m = Value::Mat2(glam::Mat2::from_cols_array(&[1.0, 2.0, 3.0, 4.0]));
+        let json = serde_json::to_string(&m).expect("serialize");
+        assert_eq!(json, r#"{"Mat2":[1.0,2.0,3.0,4.0]}"#);
+        let back: Value = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, m);
+
+        let q = Value::Quat(glam::Quat::from_xyzw(0.1, 0.2, 0.3, 0.4));
+        let back: Value = serde_json::from_str(&serde_json::to_string(&q).expect("serialize"))
+            .expect("deserialize");
+        assert_eq!(back, q);
+    }
+
+    #[test]
+    fn tower_accessors_and_from_impls_are_identity() {
+        let v = glam::Vec3::new(1.0, 2.0, 3.0);
+        assert_eq!(Value::from(v).as_vec3(), Some(v));
+        assert_eq!(Value::from(v).as_vec2(), None);
+        let m = glam::Mat4::IDENTITY;
+        assert_eq!(Value::from(m).as_mat4(), Some(m));
+        assert_eq!(Value::Int(1).as_quat(), None);
+    }
+
     #[test]
     fn value_map_deserialize_rejects_duplicate_key() {
         let json = r#"{"Map":{"entries":[[{"Str":"a"},{"Int":1}],[{"Str":"a"},{"Int":2}]]}}"#;
@@ -1557,6 +1918,72 @@ mod tests {
             Value::array(vec![Value::none(), Value::some(Value::from("x"))]),
         ] {
             assert_eq!(json_round_trip(&v), v);
+        }
+    }
+
+    // ── NS-A5 `Value::Range` (F7, docs/stdlib-spec.md §7) ──────────────────
+
+    #[test]
+    fn range_value_type_and_accessors() {
+        let r = Value::range(1, 6, true);
+        assert_eq!(r.value_type(), ValueType::Range);
+        assert_eq!(r.as_range(), Some((1, 6, true)));
+        assert_eq!(Value::Int(1).as_range(), None);
+        assert_eq!(r.range_end_exclusive(), Some(7));
+        assert_eq!(Value::range(1, 7, false).range_end_exclusive(), Some(7));
+        assert_eq!(r.range_len(), Some(6));
+        assert_eq!(Value::range(0, 0, false).range_len(), Some(0));
+        // Backwards ranges are empty, never negative-length.
+        assert_eq!(Value::range(5, 2, false).range_len(), Some(0));
+        // i64 normalization: 1..=i32::MAX does not overflow.
+        assert_eq!(
+            Value::range(1, i32::MAX, true).range_end_exclusive(),
+            Some(i64::from(i32::MAX) + 1)
+        );
+        assert_eq!(
+            Value::range(i32::MIN, i32::MAX, true).range_len(),
+            Some(1i64 << 32)
+        );
+    }
+
+    #[test]
+    fn range_equality_is_content_equality() {
+        // Same sequence, different written form: equal (F7 "content
+        // equality" — the form is display fidelity, not content).
+        assert_eq!(Value::range(1, 6, true), Value::range(1, 7, false));
+        assert_eq!(Value::range(1, 7, false), Value::range(1, 6, true));
+        // Same form, same bounds: equal.
+        assert_eq!(Value::range(0, 3, false), Value::range(0, 3, false));
+        // Different sequences: unequal.
+        assert_ne!(Value::range(0, 3, false), Value::range(1, 3, false));
+        assert_ne!(Value::range(0, 3, false), Value::range(0, 4, false));
+        // Every empty range equals every other empty range (both denote
+        // the zero-length sequence, like two empty arrays).
+        assert_eq!(Value::range(0, 0, false), Value::range(5, 5, false));
+        assert_eq!(Value::range(9, 2, false), Value::range(0, 0, false));
+        // An empty range is never equal to a non-empty one.
+        assert_ne!(Value::range(0, 0, false), Value::range(0, 1, false));
+        // Cross-variant: a range is not an array, int, or anything else.
+        assert_ne!(Value::range(0, 2, false), Value::array(vec![]));
+        assert_ne!(Value::range(0, 2, false), Value::Int(0));
+    }
+
+    #[test]
+    fn range_serde_round_trip_preserves_the_written_form() {
+        for v in [
+            Value::range(1, 6, true),
+            Value::range(0, 10, false),
+            Value::range(-3, 3, false),
+            Value::range(0, 0, false),
+            Value::array(vec![Value::range(1, 2, true), Value::Int(9)]),
+        ] {
+            let back = json_round_trip(&v);
+            assert_eq!(back, v);
+            // The written form survives (not just content equality): the
+            // triple round-trips bit-for-bit.
+            if let Value::Range { .. } = &v {
+                assert_eq!(back.as_range(), v.as_range());
+            }
         }
     }
 }

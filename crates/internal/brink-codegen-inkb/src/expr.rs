@@ -344,9 +344,39 @@ impl ContainerEmitter<'_> {
                 self.emit(Opcode::RandShuffle);
             }
 
+            // ── NS-A5: range values (#1111) ──────────────────────────
+            lir::Expr::RangeMake {
+                start,
+                end,
+                inclusive,
+            } => {
+                self.emit_expr(start, false);
+                self.emit_expr(end, false);
+                self.emit(if *inclusive {
+                    Opcode::RangeMakeIncl
+                } else {
+                    Opcode::RangeMakeExcl
+                });
+            }
+
+            lir::Expr::RangeNonEmpty(r) => {
+                self.emit_expr(r, false);
+                self.emit(Opcode::RangeNonEmpty);
+            }
+
             lir::Expr::MapClear(inner) => {
                 self.emit_expr(inner, false);
                 self.emit(Opcode::MapClear);
+            }
+
+            // ── NS-A8: the numeric tower (#1114) — args pushed
+            // left-to-right, then the one family opcode with its kind
+            // immediate. ─────────────────────────────────────────────
+            lir::Expr::Tower { op, args } => {
+                for arg in args {
+                    self.emit_expr(arg, false);
+                }
+                self.emit(Opcode::Tower(*op));
             }
 
             // ── Records (TM-4c) ──────────────────────────────────────

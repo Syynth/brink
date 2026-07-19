@@ -15,6 +15,6 @@ VAR moved = 0
 {moved.x} {moved.y}
 -> DONE
 
-=== function translate(pt, dx, dy) ===
+=== function translate(pt: Point, dx: float, dy: float): Point ===
 ~ temp out = Point#{x: pt.x + dx, y: pt.y + dy}
 ~ return out

@@ -60,7 +60,7 @@ fn two_kind_manifest() -> HostManifest {
 fn strict_opts(manifest: HostManifest) -> AnalysisOptions {
     AnalysisOptions {
         dialect: Dialect::Brink,
-        types: TypePolicy::Strict,
+        types: Some(TypePolicy::Strict),
         host_manifest: Some(manifest),
         ..AnalysisOptions::default()
     }
@@ -125,7 +125,7 @@ fn cross_kind_handle_mismatch_stays_advisory_only_under_gradual() {
     db.set_entry("main.ink");
     db.set_analysis_options(AnalysisOptions {
         dialect: Dialect::Brink,
-        types: TypePolicy::Gradual,
+        types: Some(TypePolicy::Gradual),
         host_manifest: Some(two_kind_manifest()),
         ..AnalysisOptions::default()
     });

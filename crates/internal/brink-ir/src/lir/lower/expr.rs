@@ -101,6 +101,15 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
             index: Box::new(lower_expr(&idx.index, ctx)),
         },
 
+        // NS-A5 range literals (docs/stdlib-spec.md §7, F7): both bounds
+        // evaluate left-to-right, then `RangeMake{Excl,Incl}` builds the
+        // value. Bound-type faults live at the runtime op.
+        hir::Expr::Range(r) => lir::Expr::RangeMake {
+            start: Box::new(lower_expr(&r.start, ctx)),
+            end: Box::new(lower_expr(&r.end, ctx)),
+            inclusive: r.inclusive,
+        },
+
         // TM-4c structs (docs/typed-mode-spec.md §6): construction, field
         // reads, and (through the RMW helpers in `blocks`/`stmts`) field
         // writes all lower for real — see `lower_struct_literal`/
@@ -884,17 +893,101 @@ fn lower_t1b_stdlib_call(
                 needle: Box::new(lower_expr(&args[1], ctx)),
             })
         }
+        // `min`/`max` carry two call shapes since NS-A8: the one-arg NS-A1
+        // array extremum (`min(a) → Option[T]`) and the two-arg tower
+        // componentwise form (`min(a, b)` over same-kind vectors — the
+        // mini-spec's "defined once across the tower"; the scalar width-1
+        // floor is Domain 1, unsequenced, deliberately NOT shipped here).
+        // Any other arity is the E031 arity diagnostic against the one-arg
+        // shape (the pre-A8 message, unchanged).
         "min" => {
+            if args.len() == 2 {
+                return Some(lower_tower_call(brink_format::TowerOp::Min, args, ctx));
+            }
             if !arity_ok(ctx, 1) {
                 return Some(lir::Expr::Null);
             }
             Some(lir::Expr::SeqMin(Box::new(lower_expr(&args[0], ctx))))
         }
         "max" => {
+            if args.len() == 2 {
+                return Some(lower_tower_call(brink_format::TowerOp::Max, args, ctx));
+            }
             if !arity_ok(ctx, 1) {
                 return Some(lir::Expr::Null);
             }
             Some(lir::Expr::SeqMax(Box::new(lower_expr(&args[0], ctx))))
+        }
+        // ── NS-A8 numeric tower (issue #1114, `docs/tower-mini-spec.md`).
+        // Constructors take numeric lanes (matrices: column vectors, T3's
+        // column-major pin); verbs are pure. Runtime fault semantics
+        // (wrong operand kind) live entirely at `tower_ops` — these
+        // lowerings just recognize the call shapes. ─────────────────────
+        "vec2" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lower_tower_call(brink_format::TowerOp::MakeVec2, args, ctx))
+        }
+        "vec3" => {
+            if !arity_ok(ctx, 3) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lower_tower_call(brink_format::TowerOp::MakeVec3, args, ctx))
+        }
+        "vec4" => {
+            if !arity_ok(ctx, 4) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lower_tower_call(brink_format::TowerOp::MakeVec4, args, ctx))
+        }
+        "quat" => {
+            if !arity_ok(ctx, 4) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lower_tower_call(brink_format::TowerOp::MakeQuat, args, ctx))
+        }
+        "mat2" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lower_tower_call(brink_format::TowerOp::MakeMat2, args, ctx))
+        }
+        "mat3" => {
+            if !arity_ok(ctx, 3) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lower_tower_call(brink_format::TowerOp::MakeMat3, args, ctx))
+        }
+        "mat4" => {
+            if !arity_ok(ctx, 4) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lower_tower_call(brink_format::TowerOp::MakeMat4, args, ctx))
+        }
+        "dot" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lower_tower_call(brink_format::TowerOp::Dot, args, ctx))
+        }
+        "cross" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lower_tower_call(brink_format::TowerOp::Cross, args, ctx))
+        }
+        "clamp" => {
+            if !arity_ok(ctx, 3) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lower_tower_call(brink_format::TowerOp::Clamp, args, ctx))
+        }
+        "lerp" => {
+            if !arity_ok(ctx, 3) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lower_tower_call(brink_format::TowerOp::Lerp, args, ctx))
         }
         "first" => {
             if !arity_ok(ctx, 1) {
@@ -1011,6 +1104,20 @@ fn lower_t1b_stdlib_call(
                 return Some(lir::Expr::Null);
             }
             Some(lir::Expr::RandPick(Box::new(lower_expr(&args[0], ctx))))
+        }
+        // ── NS-A5: `non_empty(r)` — the inhabited-range validator
+        // (`docs/stdlib-spec.md` §7, S2). Pure; `Option[NonEmptyRange]`
+        // typing is the analyzer's; this lowering just recognizes the
+        // call shape. (`int(range)` needs no arm — the unary `int`
+        // conversion arm above already lowers it to `ConvertInt`, whose
+        // VM op dispatches on the operand.) ─────────────────────────────
+        "non_empty" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::RangeNonEmpty(Box::new(lower_expr(
+                &args[0], ctx,
+            ))))
         }
         // `shuffled(a)` — the functional twin (§4's ruled naming
         // convention): evaluates its argument, returns a new shuffled
@@ -1160,7 +1267,45 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "shuffle"
             | "shuffled"
             | "seed"
+            // NS-A5 (issue #1111, `docs/stdlib-spec.md` §7): the
+            // inhabited-range validator. `int(range)` needs no entry —
+            // `int` is listed above; the VM dispatches on the operand.
+            | "non_empty"
+            // NS-A8 (issue #1114, `docs/tower-mini-spec.md`; ruled shape
+            // `docs/stdlib-spec.md` §2b): the numeric tower — constructors
+            // (`vec2(x, y)` … `mat4(c0, c1, c2, c3)`, matrices from
+            // column vectors per T3's column-major pin), `dot`/`cross`,
+            // and the tower-wide `clamp`/`lerp` (`min`/`max` are already
+            // listed above — their two-arg call shape lowers to the tower
+            // componentwise forms, the one-arg shape stays the NS-A1
+            // array extremum). Same slice-1 machinery end to end:
+            // shadowable with E035, `strict-ink` rejection via the
+            // dialect gate. All pure.
+            | "vec2"
+            | "vec3"
+            | "vec4"
+            | "quat"
+            | "mat2"
+            | "mat3"
+            | "mat4"
+            | "dot"
+            | "cross"
+            | "clamp"
+            | "lerp"
     )
+}
+
+/// Lower a tower call's args in order into a `lir::Expr::Tower` (NS-A8 —
+/// the caller has already checked arity).
+fn lower_tower_call(
+    op: brink_format::TowerOp,
+    args: &[hir::Expr],
+    ctx: &mut LowerCtx<'_>,
+) -> lir::Expr {
+    lir::Expr::Tower {
+        op,
+        args: args.iter().map(|a| lower_expr(a, ctx)).collect(),
+    }
 }
 
 /// The pre-T1e ref-argument binding for a bare (single-segment) path —

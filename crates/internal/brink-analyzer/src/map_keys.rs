@@ -108,6 +108,7 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
         Expr::FnLiteral(fl) => fl.args.iter().collect(),
         // T1e `ref lvalue-path`: only the operand is a child expression.
         Expr::RefArg(ra) => vec![&ra.operand],
+        Expr::Range(r) => vec![&r.start, &r.end],
         Expr::String(s) => s
             .parts
             .iter()
@@ -331,7 +332,7 @@ mod tests {
         for types in [TypePolicy::Gradual, TypePolicy::Strict] {
             let opts = AnalysisOptions {
                 dialect: Dialect::Brink,
-                types,
+                types: Some(types),
                 ..Default::default()
             };
             let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);

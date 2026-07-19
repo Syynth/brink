@@ -320,4 +320,34 @@ pub enum RuntimeError {
         verb: &'static str,
         found: &'static str,
     },
+
+    // ── F27: Option has no truthiness (`docs/stdlib-spec.md` §1.6, ruled
+    // 2026-07-19, issue #1120) ────────────────────────────────────────────
+    /// A `Value::OptionVal` reached the VM's truthiness evaluation (`GotoIf`,
+    /// `JumpIfFalse`, `Not`, a choice condition). Option has **no**
+    /// truthiness — truthiness is a quiet coercion of exactly the kind
+    /// `Option[T] ≠ T` exists to ban — so this is the gradual-mode
+    /// turn-terminating fault; `types = strict` reports the same condition
+    /// statically (E116). Authors write `== none` / `== some(x)` (or, post-B1,
+    /// the `as`-binding). Supersedes NS-A1's shipped falsy-none behavior.
+    #[error("an Option has no truthiness — test `== none` / `== some(x)` explicitly")]
+    OptionTruthiness,
+
+    // ── NS-A5: the inhabited-range refinement (`docs/stdlib-spec.md` §7,
+    // F8 ruled 2026-07-19) ────────────────────────────────────────────────
+    /// `int(range)` reached an **empty** range at runtime — the F8 gradual-
+    /// mode residual, and THE template for every future value refinement:
+    /// under gradual typing the refinement check is inert at compile time
+    /// and this turn-terminating fault is what remains; under `types =
+    /// strict` the same condition is unrepresentable (the checker demands
+    /// `NonEmptyRange` evidence — a provably-inhabited literal or a
+    /// `non_empty(r)` unwrap — and reports E117 statically). A draw from
+    /// nothing is a malformed question, never an absence, so this is a
+    /// fault and not a `none` (the ruled fault-vs-absence doctrine;
+    /// contrast `pick(0..0)`, which IS absence and returns `none`).
+    #[error("`int` cannot draw from the empty range {range} — validate with `non_empty(r)` first")]
+    EmptyRangeDraw {
+        /// The written form of the offending range (`0..0`, `5..=2`, …).
+        range: String,
+    },
 }

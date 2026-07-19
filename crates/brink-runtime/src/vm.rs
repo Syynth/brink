@@ -20,10 +20,12 @@ use crate::list_ops;
 use crate::program::Program;
 use crate::proj_ops;
 use crate::rand_ops;
+use crate::range_ops;
 use crate::record_ops;
 use crate::state::ContextAccess;
 use crate::story::{CallFrame, CallFrameType, ContainerPosition, Flow, PendingChoice, Stats};
 use crate::string_ops;
+use crate::tower_ops;
 use crate::value_ops::{self, BinaryOp};
 
 /// Result of a single VM instruction step.
@@ -261,7 +263,7 @@ fn step_impl<R: crate::rng::StoryRng>(
         }
         Opcode::GotoIf(id) => {
             let val = flow.pop_value()?;
-            if value_ops::is_truthy(&val) {
+            if value_ops::is_truthy(&val)? {
                 goto_target(flow, program, context, id)?;
             }
         }
@@ -280,7 +282,7 @@ fn step_impl<R: crate::rng::StoryRng>(
         }
         Opcode::JumpIfFalse(rel) => {
             let val = flow.pop_value()?;
-            if !value_ops::is_truthy(&val) {
+            if !value_ops::is_truthy(&val)? {
                 apply_jump(flow, rel)?;
             }
         }
@@ -333,6 +335,15 @@ fn step_impl<R: crate::rng::StoryRng>(
             let result = match val {
                 Value::Int(n) => Value::Int(-n),
                 Value::Float(n) => Value::Float(-n),
+                // Tower values negate componentwise (NS-A8, T3: glam's own
+                // `Neg` impls, wholesale — a vector is numeric).
+                Value::Vec2(v) => Value::Vec2(-v),
+                Value::Vec3(v) => Value::Vec3(-v),
+                Value::Vec4(v) => Value::Vec4(-v),
+                Value::Quat(q) => Value::Quat(-q),
+                Value::Mat2(m) => Value::Mat2(-m),
+                Value::Mat3(m) => Value::Mat3(-m),
+                Value::Mat4(m) => Value::Mat4(-m),
                 _ => {
                     return Err(RuntimeError::TypeError("cannot negate non-numeric".into()));
                 }
@@ -352,7 +363,7 @@ fn step_impl<R: crate::rng::StoryRng>(
         Opcode::Not => {
             let val = flow.pop_value()?;
             flow.value_stack
-                .push(Value::Bool(!value_ops::is_truthy(&val)));
+                .push(Value::Bool(!value_ops::is_truthy(&val)?));
         }
         Opcode::And => binary(flow, program, BinaryOp::And)?,
         Opcode::Or => binary(flow, program, BinaryOp::Or)?,
@@ -1229,7 +1240,23 @@ fn step_impl<R: crate::rng::StoryRng>(
         Opcode::RecordSet(offset) => record_ops::record_set(flow, offset)?,
 
         // ── Conversion intrinsics (TM-3 completion, #659) ────────────
-        Opcode::ConvertInt => conversion_ops::convert_to_int(flow)?,
+        // `int(x)` is ONE value-directed verb (NS-A5, `docs/stdlib-spec.md`
+        // §7): over a range operand it is `rand::int` — one uniform draw
+        // from the inhabited range, a write to the RNG cell — and over
+        // everything else it keeps its TM-3 conversion semantics. The
+        // dispatch happens here on the *runtime* operand because gradual
+        // mode cannot classify the call site statically (an unannotated
+        // temp holding a range must still draw); under `types = strict`
+        // the checker has already proven which leg runs (and demanded the
+        // NonEmptyRange evidence for the draw leg, E117).
+        Opcode::ConvertInt => {
+            if matches!(flow.value_stack.last(), Some(Value::Range { .. })) {
+                note_effect_write(flow, program, DefinitionId::RNG_CELL);
+                rand_ops::rand_int::<R>(flow, context)?;
+            } else {
+                conversion_ops::convert_to_int(flow)?;
+            }
+        }
         Opcode::ConvertFloat => conversion_ops::convert_to_float(flow)?,
         Opcode::ConvertString => conversion_ops::convert_to_string(flow, program)?,
 
@@ -1276,6 +1303,19 @@ fn step_impl<R: crate::rng::StoryRng>(
             note_effect_write(flow, program, DefinitionId::RNG_CELL);
             rand_ops::rand_shuffle::<R>(flow, context)?;
         }
+
+        // ── NS-A5: range values + the inhabited-range refinement
+        // (#1111, `docs/stdlib-spec.md` §7, F7/F8). Construction and the
+        // `non_empty` validator are pure — no draw, no RNG-cell write;
+        // the draw leg of `int(range)` rides `ConvertInt` above. ────────
+        Opcode::RangeMakeExcl => range_ops::range_make(flow, false)?,
+        Opcode::RangeMakeIncl => range_ops::range_make(flow, true)?,
+        Opcode::RangeNonEmpty => range_ops::range_non_empty(flow)?,
+
+        // ── NS-A8: the numeric tower (#1114) — constructors + verbs.
+        // Pure: no reads, no writes, no draws; wrong-operand-type is the
+        // only fault path (`tower_ops`' module doc).
+        Opcode::Tower(op) => tower_ops::tower_op(flow, op)?,
 
         // ── External functions ──────────────────────────────────────
         Opcode::CallExternal(fn_id, arg_count) => {
@@ -1445,6 +1485,14 @@ fn value_type_name(v: &Value) -> &'static str {
         Value::Handle { .. } => "handle",
         Value::Projection(_) => "projection",
         Value::OptionVal(_) => "option",
+        Value::Range { .. } => "range",
+        Value::Vec2(_) => "vec2",
+        Value::Vec3(_) => "vec3",
+        Value::Vec4(_) => "vec4",
+        Value::Quat(_) => "quat",
+        Value::Mat2(_) => "mat2",
+        Value::Mat3(_) => "mat3",
+        Value::Mat4(_) => "mat4",
     }
 }
 
@@ -2036,7 +2084,7 @@ fn handle_begin_choice(
     // 1. Pop condition first (it was evaluated last, so it's on top).
     if flags.has_condition {
         let condition = flow.pop_value()?;
-        if !value_ops::is_truthy(&condition) {
+        if !value_ops::is_truthy(&condition)? {
             if has_display {
                 let _ = flow.value_stack.pop();
             }

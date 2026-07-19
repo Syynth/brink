@@ -24,7 +24,7 @@ use brink_ir::{
 fn strict_opts(manifest: HostManifest) -> AnalysisOptions {
     AnalysisOptions {
         dialect: Dialect::Brink,
-        types: TypePolicy::Strict,
+        types: Some(TypePolicy::Strict),
         host_manifest: Some(manifest),
         ..AnalysisOptions::default()
     }
@@ -275,7 +275,7 @@ fn external_call_checking_widenings_stay_advisory_only_under_gradual() {
     db.set_entry("main.ink");
     db.set_analysis_options(AnalysisOptions {
         dialect: Dialect::Brink,
-        types: TypePolicy::Gradual,
+        types: Some(TypePolicy::Gradual),
         host_manifest: Some(manifest_with_play_sound_and_spawn_timer()),
         ..AnalysisOptions::default()
     });

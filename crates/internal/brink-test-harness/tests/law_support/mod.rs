@@ -24,7 +24,7 @@ use brink_runtime::{DotNetRng, Line, RuntimeError, Story};
 pub fn try_compile(source: &str, types: TypePolicy) -> Result<Story<DotNetRng>, String> {
     let options = AnalysisOptions {
         dialect: Dialect::Brink,
-        types,
+        types: Some(types),
         ..AnalysisOptions::default()
     };
     let output =

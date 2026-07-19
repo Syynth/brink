@@ -30,7 +30,7 @@ fn compile_mem(
     let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
     let options = AnalysisOptions {
         dialect,
-        types,
+        types: Some(types),
         ..AnalysisOptions::default()
     };
     brink_compiler::compile_with_options(

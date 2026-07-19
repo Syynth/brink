@@ -59,11 +59,30 @@ Fill pump.js's CONFIG from these when running the pump on this repo.
 - Boundary sweeps audit ANY /tmp dir over 500M (pattern-blind — glob-matching missed 4G of orphans for days) AND hunt ~/code for stray clones/target dirs (`find ~/code -maxdepth 4 -type d -name target`) — a measurement agent once left a 26G target in a stray clone at ~/code/rs/.
 - The shared cache regrows ~20-45G per wave era: wipe it at EVERY boundary where no wave is imminent, not just when tight.
 
-## Cloud sessions (Claude Code on the web) — deltas from local (2026-07-19, earned across three ENOSPC incidents, one token expiry, and a merged-PR train)
+## Cloud sessions (Claude Code on the web) — deltas from local (2026-07-19, earned across three ENOSPC incidents, one token expiry, a merged-PR train, and a container snapshot revert that destroyed a finished unpushed wave)
 
 Local runs use bypass-permissions; **cloud runs are approval-gated** and several
 local assumptions silently fail. When the pump runs in a cloud session, override
 the config above as follows:
+
+### Durability: push after every commit — the container is not storage
+- **The container can be reverted to an older snapshot without warning**,
+  taking `/home/user/<repo>/.git`, every worktree, and the object store with
+  it. We lost a complete, READY-FOR-GATE three-commit wave this way — its
+  worktree and objects were simply gone; only its report survived (in the
+  agent transcript, which lives outside the repo filesystem).
+- Therefore: **every agent pushes its branch immediately after its FIRST
+  commit and after every subsequent commit** (`git push -u origin
+  HEAD:refs/heads/<branch>`). "Commit granularly" already applied; the push
+  now rides along. Remote refs on GitHub are the only durable store.
+- The coordinator pushes the moment an agent reports done if the agent
+  couldn't (permission-parked pushes get landed by the coordinator, same as
+  merges). A READY FOR GATE report with an unpushed branch is an
+  **emergency**, not a normal state.
+- Recovery when a revert does hit: remote branches + agent transcripts are
+  the recovery sources. Resume the building agent with a message — it can
+  re-apply its own wave from transcript knowledge far faster than a fresh
+  agent; recreate its worktree from current `origin/main` first.
 
 ### Permissions & privileged operations
 - Merge/push-adjacent actions inside subagents can be **parked by the

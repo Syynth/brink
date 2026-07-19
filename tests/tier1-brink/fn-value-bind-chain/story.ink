@@ -16,9 +16,9 @@ Curried ref call: {healed}.
 HP after: {world_hp}.
 -> END
 
-=== function add3(a, b, c) ===
+=== function add3(a: int, b: int, c: int): int ===
 ~ return a + b + c
 
-=== function heal(ref hp, amount) ===
+=== function heal(ref hp: int, amount: int): int ===
 ~ hp = hp + amount
 ~ return hp

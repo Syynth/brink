@@ -832,6 +832,21 @@ pub enum Expr {
     /// write-back discipline as `CollectionInsert`/`CollectionRemove`.
     MapClear(Box<Expr>),
 
+    // ── NS-A8: the numeric tower (`docs/tower-mini-spec.md`, issue
+    // #1114) ────────────────────────────────────────────────────────────
+    /// One node for the whole tower family — `Opcode::Tower(op)` after the
+    /// args are pushed left-to-right. Constructors (`vec2(x, y)` …
+    /// `mat4(c0, c1, c2, c3)`), `dot`/`cross`, and the tower-wide
+    /// two-arg `min`/`max` plus `clamp(x, lo, hi)`/`lerp(a, b, t)`. All
+    /// pure; arity is checked at lowering (E031), operand *kinds* at
+    /// runtime (`StdlibWrongType` — a malformed question faults, per the
+    /// ruled doctrine). The `+`/`-`/`*` operator family lowers through the
+    /// ordinary binary ops, not this node.
+    Tower {
+        op: brink_format::TowerOp,
+        args: Vec<Expr>,
+    },
+
     // ── NS-A6: the `std::rand` draw verbs (`docs/stdlib-spec.md` §7,
     // issue #1112). Every one is a write to the RNG cell in the effect
     // row; `seed(n)` has no variant here — it lowers to the frozen
@@ -844,8 +859,7 @@ pub enum Expr {
     /// `[0,1]`, NaN → `false` (F3, ruled 2026-07-19); one draw always.
     RandChance(Box<Expr>),
     /// `pick(coll)` → `Option[T]` — `Opcode::RandPick`. Uniform draw from
-    /// an array or flags subset; empty → `none`. The range leg is deferred
-    /// to A5 (ranges as first-class values, F7).
+    /// an array, flags subset, or range (NS-A5); empty → `none`.
     RandPick(Box<Expr>),
     /// The Fisher–Yates primitive — `Opcode::RandShuffle`: evaluates an
     /// array, pushes the shuffled array. Two surfaces share it:
@@ -853,6 +867,24 @@ pub enum Expr {
     /// `shuffle(a)` (statement-only mutator, RMW write-back via
     /// `lir::lower::blocks` exactly like `MapClear`).
     RandShuffle(Box<Expr>),
+
+    // ── NS-A5: range values + the inhabited-range refinement
+    // (`docs/stdlib-spec.md` §7, F7/F8, issue #1111). ────────────────
+    /// `start..end` / `start..=end` — `Opcode::RangeMakeExcl`/
+    /// `RangeMakeIncl`: evaluates both bounds (ints — the op faults on
+    /// anything else), pushes the range value. `int(range)` has no
+    /// variant of its own — the unary `int(x)` spelling stays
+    /// `ConvertInt`, whose VM op dispatches on the operand (range →
+    /// draw, else conversion).
+    RangeMake {
+        start: Box<Expr>,
+        end: Box<Expr>,
+        inclusive: bool,
+    },
+    /// `non_empty(r)` → `Option[Range]` — `Opcode::RangeNonEmpty`: the
+    /// inhabited-range validator (S2), `some(r)` iff `r` denotes at least
+    /// one element. Pure — no draw.
+    RangeNonEmpty(Box<Expr>),
 
     // ── Records (TM-4c, `docs/typed-mode-spec.md` §6) ───────────────
     /// `Name#{field: expr, …}` construction. `fields` is in the exact order

@@ -348,6 +348,30 @@ const RAND_CHANCE: u8 = 0xED;
 const RAND_PICK: u8 = 0xEE;
 const RAND_SHUFFLE: u8 = 0xEF;
 
+// NS-A5 range ops (`docs/stdlib-spec.md` §7, F7 ruled 2026-07-19; this
+// PR's own reservation). The 0xEC-0xEF block is full and 0xF0-0xF3 are
+// lifecycle, so these take the next free bytes after the lifecycle block's
+// tail. Two construction ops rather than one flag-operand op keeps the
+// whole rand/range family operand-free (disasm and roundtrip stay
+// table-driven). `rand::int` deliberately has NO byte here — it rides the
+// existing `CONVERT_INT` (0xE2): `int(x)` is ONE value-directed verb whose
+// range leg is the draw (see `brink-runtime::vm`'s `ConvertInt` dispatch).
+const RANGE_MAKE_EXCL: u8 = 0xF4;
+const RANGE_MAKE_INCL: u8 = 0xF5;
+const RANGE_NON_EMPTY: u8 = 0xF6;
+
+// NS-A8 numeric tower (`docs/tower-mini-spec.md`, issue #1114; this PR's own
+// reservation, same "assigned here" precedent as the NS-A1/NS-A6/NS-A5
+// blocks above). ONE discriminant byte with a `u8` kind immediate —
+// deliberate opcode-space economy: after NS-A5 the free one-byte space is
+// down to 0xF7-0xFD + 0xFF (0xF0-0xF3 are lifecycle, 0xF4-0xF6 the range
+// ops, 0xFE debug), so the tower's thirteen operations share a single
+// `Tower(TowerOp)` opcode instead of eating most of what remains. Wire:
+// `0xF7`, then the [`TowerOp`] kind byte (a `SequenceKind`-style closed
+// sub-enum; unknown kinds are a decode error, the same reserved-tag
+// discipline as everywhere else).
+const TOWER: u8 = 0xF7;
+
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
 const LIST_NOT_CONTAINS: u8 = 0xB1;
@@ -376,6 +400,129 @@ const END_STRING_EVAL: u8 = 0xE1;
 const SOURCE_LOCATION: u8 = 0xFE;
 
 // ── Types ───────────────────────────────────────────────────────────────────
+
+/// The tower operation selected by an [`Opcode::Tower`] instruction's kind
+/// byte (NS-A8, `docs/tower-mini-spec.md`; `docs/stdlib-spec.md` §2b).
+///
+/// Constructors pop their lanes/columns and push the built value; verbs pop
+/// their operands and push the result. All semantics are glam's (T3:
+/// conventions per glam, wholesale); all operations are pure. The
+/// `+`/`-`/`*` operator family does NOT live here — it rides the existing
+/// `Add`/`Subtract`/`Multiply`/`Negate` opcodes via `value_ops::binary_op`'s
+/// tower arms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TowerOp {
+    /// `[x, y]` → `vec2`. Numeric lanes (ints promote to f32).
+    MakeVec2,
+    /// `[x, y, z]` → `vec3`.
+    MakeVec3,
+    /// `[x, y, z, w]` → `vec4`.
+    MakeVec4,
+    /// `[x, y, z, w]` → `quat` — raw lanes, glam `Quat::from_xyzw`.
+    MakeQuat,
+    /// `[col0, col1]` → `mat2` from `vec2` columns (column-major, T3).
+    MakeMat2,
+    /// `[col0, col1, col2]` → `mat3` from `vec3` columns.
+    MakeMat3,
+    /// `[col0, col1, col2, col3]` → `mat4` from `vec4` columns.
+    MakeMat4,
+    /// `[a, b]` → `float` — dot product of two same-size vectors.
+    Dot,
+    /// `[a, b]` → `vec3` — cross product, `vec3` only.
+    Cross,
+    /// `[a, b]` → componentwise minimum of two same-kind vectors.
+    Min,
+    /// `[a, b]` → componentwise maximum of two same-kind vectors.
+    Max,
+    /// `[x, lo, hi]` → componentwise clamp of three same-kind vectors.
+    Clamp,
+    /// `[a, b, t]` → linear interpolation with scalar `t`: vectors
+    /// componentwise, quats via glam's normalizing `Quat::lerp`.
+    Lerp,
+}
+
+impl TowerOp {
+    /// Every tower op, in kind-byte order (tests + tooling).
+    pub const ALL: [TowerOp; 13] = [
+        Self::MakeVec2,
+        Self::MakeVec3,
+        Self::MakeVec4,
+        Self::MakeQuat,
+        Self::MakeMat2,
+        Self::MakeMat3,
+        Self::MakeMat4,
+        Self::Dot,
+        Self::Cross,
+        Self::Min,
+        Self::Max,
+        Self::Clamp,
+        Self::Lerp,
+    ];
+
+    fn to_byte(self) -> u8 {
+        match self {
+            Self::MakeVec2 => 0,
+            Self::MakeVec3 => 1,
+            Self::MakeVec4 => 2,
+            Self::MakeQuat => 3,
+            Self::MakeMat2 => 4,
+            Self::MakeMat3 => 5,
+            Self::MakeMat4 => 6,
+            Self::Dot => 7,
+            Self::Cross => 8,
+            Self::Min => 9,
+            Self::Max => 10,
+            Self::Clamp => 11,
+            Self::Lerp => 12,
+        }
+    }
+
+    fn from_byte(b: u8) -> Result<Self, DecodeError> {
+        match b {
+            0 => Ok(Self::MakeVec2),
+            1 => Ok(Self::MakeVec3),
+            2 => Ok(Self::MakeVec4),
+            3 => Ok(Self::MakeQuat),
+            4 => Ok(Self::MakeMat2),
+            5 => Ok(Self::MakeMat3),
+            6 => Ok(Self::MakeMat4),
+            7 => Ok(Self::Dot),
+            8 => Ok(Self::Cross),
+            9 => Ok(Self::Min),
+            10 => Ok(Self::Max),
+            11 => Ok(Self::Clamp),
+            12 => Ok(Self::Lerp),
+            _ => Err(DecodeError::InvalidTowerOp(b)),
+        }
+    }
+
+    /// The `.inkt` mnemonic for this kind (also the `program_model`
+    /// disassembly text). Stable, boring, `snake_case`.
+    #[must_use]
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            Self::MakeVec2 => "make_vec2",
+            Self::MakeVec3 => "make_vec3",
+            Self::MakeVec4 => "make_vec4",
+            Self::MakeQuat => "make_quat",
+            Self::MakeMat2 => "make_mat2",
+            Self::MakeMat3 => "make_mat3",
+            Self::MakeMat4 => "make_mat4",
+            Self::Dot => "dot",
+            Self::Cross => "cross",
+            Self::Min => "tower_min",
+            Self::Max => "tower_max",
+            Self::Clamp => "tower_clamp",
+            Self::Lerp => "tower_lerp",
+        }
+    }
+
+    /// Inverse of [`mnemonic`](Self::mnemonic) for the `.inkt` reader.
+    #[must_use]
+    pub fn from_mnemonic(s: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|op| op.mnemonic() == s)
+    }
+}
 
 /// The kind of sequence/shuffle container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -470,6 +617,8 @@ pub enum DecodeError {
     InvalidDefinitionId(u64),
     /// Invalid sequence kind byte.
     InvalidSequenceKind(u8),
+    /// Invalid tower op kind byte (NS-A8 `Tower` opcode immediate).
+    InvalidTowerOp(u8),
     /// .inkb magic bytes are not `INKB`.
     BadMagic([u8; 4]),
     /// .inkb version is not supported.
@@ -552,6 +701,7 @@ impl fmt::Display for DecodeError {
                 write!(f, "invalid definition id: {raw:#018x}")
             }
             Self::InvalidSequenceKind(b) => write!(f, "invalid sequence kind: {b}"),
+            Self::InvalidTowerOp(b) => write!(f, "invalid tower op kind: {b:#04x}"),
             Self::BadMagic(m) => write!(f, "bad magic: {m:02x?}"),
             Self::UnsupportedVersion(v) => write!(f, "unsupported .inkb version: {v}"),
             Self::InvalidUtf8 => write!(f, "invalid UTF-8 in string field"),
@@ -993,6 +1143,33 @@ pub enum Opcode {
     /// both surfaces: `shuffle(a)` (statement-only, RMW write-back) and
     /// `shuffled(a)` (functional). Fault on a non-array.
     RandShuffle,
+    /// `[start, end]` → `Range` (NS-A5, F7): construct an exclusive
+    /// (`start..end`) range value from two int bounds. Fault on non-int
+    /// bounds (malformed question — the T1b stdlib doctrine; no numeric
+    /// coercion, range bounds are ints by ruling).
+    RangeMakeExcl,
+    /// `[start, end]` → `Range` (NS-A5, F7): construct an inclusive
+    /// (`start..=end`) range value from two int bounds. Same fault
+    /// contract as [`RangeMakeExcl`](Self::RangeMakeExcl).
+    RangeMakeIncl,
+    /// `[r]` → `Option[Range]` (NS-A5, the `non_empty(r)` validator —
+    /// S2 ruled 2026-07-19): `some(r)` when the range denotes at least one
+    /// element, `none` when it is empty. The Option tax sits once at the
+    /// boundary where dynamic bounds enter; the checker types the `some`
+    /// payload as the inhabited-range refinement. Pure — no draw, no
+    /// write. Fault on a non-range operand.
+    RangeNonEmpty,
+
+    // ── NS-A8: the numeric tower (`docs/tower-mini-spec.md`, issue
+    // #1114) ────────────────────────────────────────────────────────────
+    /// One opcode, thirteen operations: the [`TowerOp`] immediate selects
+    /// the constructor or verb (see its per-kind docs for stack shapes).
+    /// All pure; wrong-operand-type is a turn-terminating fault (a
+    /// malformed question, per the ruled fault-vs-absence doctrine). The
+    /// tower's operator family (`+`/`-`/`*`, `mat*vec`, `quat*quat`,
+    /// `quat*vec`) rides the frozen arithmetic opcodes instead — see
+    /// `value_ops::binary_op`.
+    Tower(TowerOp),
 
     // ── Lifecycle ───────────────────────────────────────────────────────
     Done,
@@ -1349,6 +1526,15 @@ impl Opcode {
             Self::RandChance => write_u8(buf, RAND_CHANCE),
             Self::RandPick => write_u8(buf, RAND_PICK),
             Self::RandShuffle => write_u8(buf, RAND_SHUFFLE),
+            Self::RangeMakeExcl => write_u8(buf, RANGE_MAKE_EXCL),
+            Self::RangeMakeIncl => write_u8(buf, RANGE_MAKE_INCL),
+            Self::RangeNonEmpty => write_u8(buf, RANGE_NON_EMPTY),
+
+            // NS-A8 numeric tower: discriminant + TowerOp kind byte.
+            Self::Tower(op) => {
+                write_u8(buf, TOWER);
+                write_u8(buf, op.to_byte());
+            }
 
             // Lifecycle
             Self::Done => write_u8(buf, DONE),
@@ -1589,6 +1775,13 @@ impl Opcode {
             RAND_CHANCE => Self::RandChance,
             RAND_PICK => Self::RandPick,
             RAND_SHUFFLE => Self::RandShuffle,
+            RANGE_MAKE_EXCL => Self::RangeMakeExcl,
+            RANGE_MAKE_INCL => Self::RangeMakeIncl,
+            RANGE_NON_EMPTY => Self::RangeNonEmpty,
+
+            // NS-A8 numeric tower: TowerOp kind byte follows; unknown
+            // kinds are a decode error (reserved-tag discipline).
+            TOWER => Self::Tower(TowerOp::from_byte(read_u8(buf, offset)?)?),
 
             // Lifecycle
             DONE => Self::Done,
@@ -1967,6 +2160,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn roundtrip_ns_a5_range_ops() {
+        for op in [
+            Opcode::RangeMakeExcl,
+            Opcode::RangeMakeIncl,
+            Opcode::RangeNonEmpty,
+        ] {
+            roundtrip(&op);
+        }
+    }
+
+    /// The NS-A5 block layout: the three range ops take the first free
+    /// bytes after the lifecycle block (0xF0-0xF3). `rand::int` has NO
+    /// byte — it rides the existing `ConvertInt` (0xE2), a value-directed
+    /// dispatch in the VM.
+    #[test]
+    fn ns_a5_opcode_block_layout() {
+        let expected: [(u8, Opcode); 3] = [
+            (0xF4, Opcode::RangeMakeExcl),
+            (0xF5, Opcode::RangeMakeIncl),
+            (0xF6, Opcode::RangeNonEmpty),
+        ];
+        for (byte, op) in expected {
+            let mut buf = Vec::new();
+            op.encode(&mut buf);
+            assert_eq!(buf[0], byte, "{op:?} encoded to unexpected discriminant");
+        }
+    }
+
     /// The NS-A6 block layout: the four rand draw ops fill 0xEC-0xEF,
     /// contiguously after NS-A1's 0xEB, up against the lifecycle block
     /// (0xF0+). `seed(n)` deliberately has no byte here — it reuses the
@@ -1984,6 +2206,38 @@ mod tests {
             op.encode(&mut buf);
             assert_eq!(buf[0], byte, "{op:?} encoded to unexpected discriminant");
         }
+    }
+
+    #[test]
+    fn roundtrip_ns_a8_tower_ops() {
+        for kind in TowerOp::ALL {
+            roundtrip(&Opcode::Tower(kind));
+        }
+    }
+
+    /// The NS-A8 layout: ONE discriminant byte (0xF7 — the first free byte
+    /// after the NS-A5 range ops at 0xF4-0xF6) with the `TowerOp` kind as a
+    /// u8 immediate in kind-byte order 0..=12. Deliberate opcode-space
+    /// economy — see the `TOWER` const's comment.
+    #[test]
+    fn ns_a8_tower_opcode_layout() {
+        for (i, kind) in TowerOp::ALL.into_iter().enumerate() {
+            let mut buf = Vec::new();
+            Opcode::Tower(kind).encode(&mut buf);
+            #[expect(clippy::cast_possible_truncation, reason = "13 kinds")]
+            let expected_kind = i as u8;
+            assert_eq!(buf, [0xF7, expected_kind], "{kind:?} layout drifted");
+        }
+    }
+
+    /// An unknown tower kind byte is a decode error, not a silent skip —
+    /// the same reserved-tag discipline as every other closed sub-enum.
+    #[test]
+    fn decode_unknown_tower_kind_rejected() {
+        let buf = [0xF7, 13];
+        let mut offset = 0;
+        let err = Opcode::decode(&buf, &mut offset).unwrap_err();
+        assert_eq!(err, DecodeError::InvalidTowerOp(13));
     }
 
     #[test]

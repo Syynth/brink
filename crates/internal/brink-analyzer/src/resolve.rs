@@ -867,6 +867,35 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "shuffle"
             | "shuffled"
             | "seed"
+            // NS-A5 (issue #1111, `docs/stdlib-spec.md` §7): the
+            // inhabited-range validator `non_empty(r)` →
+            // `Option[NonEmptyRange]`. Pure — no draw. `int(range)` (the
+            // draw leg) needs no entry: `int` is already listed above and
+            // the VM dispatches on the operand. Same slice-1 machinery:
+            // shadowable with E035, `strict-ink` rejection via the
+            // dialect gate.
+            | "non_empty"
+            // NS-A8 (issue #1114, `docs/tower-mini-spec.md`; ruled shape
+            // `docs/stdlib-spec.md` §2b): the numeric tower — constructors
+            // (`vec2(x, y)` … `mat4(c0, c1, c2, c3)`, matrices from
+            // column vectors per T3's column-major pin), `dot`/`cross`,
+            // and the tower-wide `clamp`/`lerp` (`min`/`max` are already
+            // listed above — their two-arg call shape lowers to the tower
+            // componentwise forms, the one-arg shape stays the NS-A1
+            // array extremum). Same slice-1 machinery end to end:
+            // shadowable with E035, `strict-ink` rejection via the
+            // dialect gate. All pure.
+            | "vec2"
+            | "vec3"
+            | "vec4"
+            | "quat"
+            | "mat2"
+            | "mat3"
+            | "mat4"
+            | "dot"
+            | "cross"
+            | "clamp"
+            | "lerp"
     )
 }
 

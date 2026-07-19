@@ -354,7 +354,12 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
         | Expr::MapClear(e)
         | Expr::RandChance(e)
         | Expr::RandPick(e)
-        | Expr::RandShuffle(e) => remap_expr(e, map),
+        | Expr::RandShuffle(e)
+        | Expr::RangeNonEmpty(e) => remap_expr(e, map),
+        Expr::RangeMake { start, end, .. } => {
+            remap_expr(start, map);
+            remap_expr(end, map);
+        }
         Expr::Infix(l, _, r) => {
             remap_expr(l, map);
             remap_expr(r, map);
@@ -372,7 +377,8 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
             relocate(name, map);
             remap_call_args(args, map);
         }
-        Expr::CallBuiltin { builtin: _, args } => {
+        // The NS-A8 tower family shares CallBuiltin's plain arg-list walk.
+        Expr::CallBuiltin { builtin: _, args } | Expr::Tower { op: _, args } => {
             for e in args {
                 remap_expr(e, map);
             }

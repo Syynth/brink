@@ -778,6 +778,12 @@ pub(super) fn effects_assertion_from_directives(
         let parsed = if trimmed.is_empty() {
             sink.diagnose(d.range, DiagnosticCode::E100);
             None
+        } else if d.from_annotation {
+            // NS-A2 clause-grammar amendment (2026-07-19, stdlib-spec §9.2,
+            // issue #1120): the annotation spelling uses the Rust-meta-item
+            // paren clause grammar; the deprecated tag spelling below keeps
+            // the legacy colon grammar FROZEN.
+            parse_effects_paren_clauses(trimmed, d.range, sink)
         } else {
             parse_effects_clauses(trimmed, d.range, sink)
         };
@@ -801,7 +807,133 @@ enum EffectsClauseKind {
     Calls,
 }
 
-/// Parse the non-`pure` `#@effects(…)` argument mini-grammar: a
+/// Parse the `@[effects(…)]` annotation argument mini-grammar — the
+/// **Rust-meta-item paren shape** (clause grammar AMENDED 2026-07-19,
+/// stdlib-spec §9.2 / decision-log "A2 judgment calls confirmed", issue
+/// #1120's second item): a top-level comma-joined sequence where
+///
+/// - every **bare identifier** at top level is a FLAG — exactly
+///   `pure`/`silent`/`total`; any other bare ident is malformed (`E101`);
+/// - every **clause** is a parenthesized meta item — `reads(gold, hp)`,
+///   `writes(mood)`, `calls(sfx)` — naming zero or more identifiers.
+///
+/// Because clauses are delimited, a flag can never be swallowed into an
+/// open clause — the footgun the respell kills structurally: under the old
+/// colon grammar `reads: gold, silent` read `silent` as a *cell named
+/// silent* continuing the `reads` clause; under this grammar
+/// `reads(gold), silent` parses `silent` as the flag, unambiguously. The
+/// colon spelling inside an annotation is malformed (`E101`); the
+/// deprecated `#@effects(…)` tag spelling keeps the legacy colon grammar
+/// FROZEN ([`parse_effects_clauses`] — the E110-warned surface does not
+/// evolve). Same `pure`-contradiction and empty-assertion (`E100`) rules
+/// as the legacy parser.
+fn parse_effects_paren_clauses(
+    text: &str,
+    range: TextRange,
+    sink: &mut impl LowerSink,
+) -> Option<crate::EffectsAssertion> {
+    let mut pure = false;
+    let mut silent = false;
+    let mut total = false;
+    let mut reads = Vec::new();
+    let mut writes = Vec::new();
+    let mut calls = Vec::new();
+    let mut ok = true;
+
+    for piece in split_top_level_commas(text) {
+        let piece = piece.trim();
+        if piece.is_empty() {
+            // Tolerate a stray/trailing comma — matches the legacy parser.
+            continue;
+        }
+        if let Some(open) = piece.find('(') {
+            let Some(inner) = piece[open + 1..].strip_suffix(')') else {
+                ok = false; // unbalanced/trailing junk after the clause
+                continue;
+            };
+            let target = match piece[..open].trim() {
+                "reads" => &mut reads,
+                "writes" => &mut writes,
+                "calls" => &mut calls,
+                _ => {
+                    ok = false; // unknown clause name (flags take no parens)
+                    continue;
+                }
+            };
+            for value in inner.split(',') {
+                let value = value.trim();
+                if value.is_empty() {
+                    continue; // `reads()` / a trailing comma inside a clause
+                }
+                if is_effects_ident(value) {
+                    target.push(value.to_string());
+                } else {
+                    ok = false;
+                }
+            }
+        } else {
+            // Bare top-level ident: ALWAYS a flag — the structural rule.
+            match piece {
+                "pure" => pure = true,
+                "silent" => silent = true,
+                "total" => total = true,
+                _ => ok = false,
+            }
+        }
+    }
+
+    // `pure` asserts the EMPTY state row — combining it with a clause that
+    // grants state atoms is contradictory, not a union (`E101`).
+    if pure && !(reads.is_empty() && writes.is_empty() && calls.is_empty()) {
+        ok = false;
+    }
+    if !ok {
+        sink.diagnose(range, DiagnosticCode::E101);
+        return None;
+    }
+    if !pure && !silent && !total && reads.is_empty() && writes.is_empty() && calls.is_empty() {
+        sink.diagnose(range, DiagnosticCode::E100);
+        return None;
+    }
+    Some(crate::EffectsAssertion {
+        pure,
+        silent,
+        total,
+        reads,
+        writes,
+        calls,
+        range,
+    })
+}
+
+/// Split `text` at commas that sit outside every `(…)` pair — the
+/// top-level piece boundaries of the paren clause grammar. Parens are the
+/// only nesting delimiter the grammar has; an unbalanced `)` simply stops
+/// suppressing splits (the malformed piece then fails
+/// [`parse_effects_paren_clauses`]'s own shape checks).
+fn split_top_level_commas(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, c) in text.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                out.push(&text[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&text[start..]);
+    out
+}
+
+/// Parse the non-`pure` `#@effects(…)` argument mini-grammar — the **legacy
+/// colon shape**, FROZEN as-is for the deprecated tag-channel spelling only
+/// (the E110-warned surface does not evolve; the `@[effects(…)]` annotation
+/// spelling uses [`parse_effects_paren_clauses`] instead): a
 /// comma-separated sequence of `reads:`/`writes:`/`calls:` clause openers,
 /// each optionally followed by identifier values (more values continue as
 /// bare, comma-separated tokens until the next `key:` opener). Diagnoses

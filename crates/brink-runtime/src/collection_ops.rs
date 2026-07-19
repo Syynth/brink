@@ -70,9 +70,43 @@ pub(crate) fn map_new(flow: &mut Flow, n: u32) -> Result<(), RuntimeError> {
 pub(crate) fn index_get(flow: &mut Flow) -> Result<(), RuntimeError> {
     let index = flow.pop_value()?;
     let container = flow.pop_value()?;
+    // Ranges (NS-A5, F7) index like a virtual array of their elements —
+    // `(2..5)[0] == 2`, OOB faults exactly like arrays. Handled here (not
+    // in `read_index`) because a range element is *computed*, never
+    // borrowed: `read_index`'s `&Value` return can't hand one out.
+    if let Value::Range { .. } = &container {
+        let result = range_element(&container, &index)?;
+        flow.value_stack.push(result);
+        return Ok(());
+    }
     let result = read_index(&container, &index)?.clone();
     flow.value_stack.push(result);
     Ok(())
+}
+
+/// The `i`-th element of a range value: `start + i`, faulting OOB exactly
+/// like an array read (`docs/value-model-spec.md` §11c — no silent clamp).
+/// Non-range containers are the caller's job; a non-int index is the same
+/// `InvalidArrayIndex` fault arrays raise.
+fn range_element(range: &Value, index: &Value) -> Result<Value, RuntimeError> {
+    let Value::Int(i) = index else {
+        return Err(RuntimeError::InvalidArrayIndex(type_name(index)));
+    };
+    let (Some((start, _, _)), Some(len)) = (range.as_range(), range.range_len()) else {
+        return Err(RuntimeError::NotIndexable(type_name(range)));
+    };
+    if i64::from(*i) < 0 || i64::from(*i) >= len {
+        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        return Err(RuntimeError::IndexOutOfBounds {
+            index: *i,
+            len: len.min(i64::from(u32::MAX)) as usize,
+        });
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "start + i is an element of the range by construction, so it fits i32"
+    )]
+    Ok(Value::Int((i64::from(start) + i64::from(*i)) as i32))
 }
 
 /// `IndexSet`: `[container, index, value]` → updated container. Take →
@@ -99,6 +133,11 @@ pub(crate) fn collection_len(flow: &mut Flow) -> Result<(), RuntimeError> {
     let len = match &container {
         Value::Array(items) => items.len() as i32,
         Value::Map(map) => map.len() as i32,
+        // Ranges (NS-A5, F7): the denoted element count, saturated at
+        // i32::MAX for the degenerate 2³¹+-element ranges (a loop that
+        // long exceeds the VM step limit regardless; `rand::int` uses the
+        // exact i64 length internally, never this op).
+        Value::Range { .. } => container.range_len().unwrap_or(0).min(i64::from(i32::MAX)) as i32,
         other => return Err(RuntimeError::NotIndexable(type_name(other))),
     };
     flow.value_stack.push(Value::Int(len));
@@ -118,6 +157,16 @@ pub(crate) fn collection_len(flow: &mut Flow) -> Result<(), RuntimeError> {
 /// (`docs/format-v4-rfc.md` §3 note).
 pub(crate) fn collection_keys(flow: &mut Flow) -> Result<(), RuntimeError> {
     let container = flow.pop_value()?;
+    // Ranges (NS-A5, F7) pass through unchanged — the identity, exactly
+    // like arrays: a range IS its own canonical sequence (`len`/`IndexGet`
+    // read elements straight off the bounds), so the `for` desugar's
+    // snapshot is O(1) and `for i in 0..1_000_000` never materializes a
+    // million-element array. This is also what parks in a FlowFrame spill
+    // across `await` — the durable wire form F7 exists for.
+    if matches!(container, Value::Range { .. }) {
+        flow.value_stack.push(container);
+        return Ok(());
+    }
     let result = Value::Array(iteration_sequence(container)?);
     flow.value_stack.push(result);
     Ok(())
@@ -609,6 +658,14 @@ pub(crate) fn type_name(v: &Value) -> &'static str {
         Value::Handle { .. } => "handle",
         Value::Projection(_) => "projection",
         Value::OptionVal(_) => "option",
+        Value::Range { .. } => "range",
+        Value::Vec2(_) => "vec2",
+        Value::Vec3(_) => "vec3",
+        Value::Vec4(_) => "vec4",
+        Value::Quat(_) => "quat",
+        Value::Mat2(_) => "mat2",
+        Value::Mat3(_) => "mat3",
+        Value::Mat4(_) => "mat4",
     }
 }
 

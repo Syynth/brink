@@ -17,8 +17,10 @@ mod infer;
 mod manifest;
 mod map_keys;
 mod modules;
+mod option_conditions;
 mod option_rules;
 mod protocols;
+mod range_refinement;
 mod ref_projection;
 mod resolve;
 mod signature;
@@ -60,7 +62,7 @@ pub use protocols::{
 };
 pub use resolve::ImportScope;
 pub use signature::{Sig, signature};
-pub use strict::{TypePolicy, effective_severity};
+pub use strict::{TypePolicy, effective_severity, resolve_type_policy};
 pub use structs::{ShapeInfo, declared_shapes};
 
 use brink_format::DefinitionId;
@@ -87,14 +89,30 @@ pub struct AnalysisOptions {
     /// tooling input only, mount-time (CLI flag) in T1b-1; project-file
     /// config is out of scope (docs/t1b-surface-spec.md §1, #368 precedent).
     pub dialect: Dialect,
-    /// TM-3 typed-mode policy (docs/typed-mode-spec.md §1): `Gradual` (the
-    /// default) is today's behavior, byte-identical forever. `Strict`
-    /// requires `dialect = Brink` (a config error otherwise, `E064`) and
-    /// turns on `Unknown`/`Conflicted`-escape errors, the boundary
-    /// annotation-firewall exemption, and auto-wires `E063`
+    /// TM-3 typed-mode policy (docs/typed-mode-spec.md §1). `None` means
+    /// "the project never said" — the effective policy is then keyed on the
+    /// dialect via [`resolve_type_policy`] (issue #1127, ruled 2026-07-19):
+    /// `Brink` → `Strict`, `StrictInk` → `Gradual` (forever — the oracle
+    /// corpus is anchored to it). `Some(_)` is an explicit choice (CLI flag,
+    /// `brink.toml`, editor API) and always wins. Read the effective policy
+    /// via [`AnalysisOptions::type_policy`], never this field directly.
+    ///
+    /// `Strict` requires `dialect = Brink` (a config error otherwise,
+    /// `E064`) and turns on `Unknown`/`Conflicted`-escape errors, the
+    /// boundary annotation-firewall exemption, and auto-wires `E063`
     /// (annotation-vs-inference mismatch) into production. Authoring-time/
     /// tooling input only — never embedded in `.inkb`, mirroring `dialect`.
-    pub types: TypePolicy,
+    pub types: Option<TypePolicy>,
+}
+
+impl AnalysisOptions {
+    /// The effective `types` policy for this options set — the one
+    /// resolution seam (issue #1127): an explicit [`Self::types`] wins;
+    /// otherwise the dialect-keyed default from [`resolve_type_policy`].
+    #[must_use]
+    pub fn type_policy(&self) -> TypePolicy {
+        resolve_type_policy(self.dialect, self.types)
+    }
 }
 
 /// The output of cross-file semantic analysis.
@@ -478,7 +496,7 @@ pub fn strict_diagnostics(
     inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    if opts.types == TypePolicy::Strict {
+    if opts.type_policy() == TypePolicy::Strict {
         if let Some(diag) = strict::config_error(opts.dialect, files.first().map(|&(f, _)| f)) {
             diagnostics.push(diag);
         } else {
@@ -908,27 +926,58 @@ EXTERNAL add_state(who)
         (hir, manifest)
     }
 
-    /// Gradual is byte-identical forever: the same source, `types` left at
-    /// its default (`Gradual`), under either dialect, must produce results
-    /// identical to a build that predates TM-3 entirely — no `E064`/`E065`/
-    /// `E066`, and `E063` stays un-auto-invoked (matching the #618/PR#640
-    /// ruling this issue explicitly does not touch).
+    /// The dialect-keyed default (issue #1127, ruled 2026-07-19). Under
+    /// `strict-ink`, an unset `types` resolves gradual FOREVER — the same
+    /// source, `types` never set, must produce results identical to a build
+    /// that predates TM-3 entirely: no `E064`/`E065`/`E066`, and `E063`
+    /// stays un-auto-invoked (the #618/PR#640 ruling, untouched — the
+    /// oracle corpus is anchored to this). Under `brink`, the same unset
+    /// `types` now resolves strict, so the Unknown-escape check fires;
+    /// explicit `Gradual` remains the opt-out knob and restores silence.
     #[test]
-    fn gradual_is_byte_identical_regardless_of_dialect() {
+    fn types_default_is_dialect_keyed() {
         let src = "=== noop(x) ===\nHello.\n-> DONE\n";
         let (hir, manifest) = lower_one(src);
-        for dialect in [Dialect::StrictInk, Dialect::Brink] {
-            let opts = AnalysisOptions {
-                dialect,
-                ..AnalysisOptions::default()
-            };
-            let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
-            assert!(
-                result.diagnostics.is_empty(),
-                "gradual (default types) must stay silent under dialect {dialect:?}: {:?}",
-                result.diagnostics
-            );
-        }
+
+        // strict-ink + unset types: gradual, byte-identical forever.
+        let opts = AnalysisOptions {
+            dialect: Dialect::StrictInk,
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result.diagnostics.is_empty(),
+            "strict-ink (default types = gradual) must stay silent: {:?}",
+            result.diagnostics
+        );
+
+        // brink + unset types: strict — the Unknown-escape check fires.
+        let opts = AnalysisOptions {
+            dialect: Dialect::Brink,
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E065),
+            "brink (default types = strict) must flag the Unknown escape: {:?}",
+            result.diagnostics
+        );
+
+        // brink + explicit gradual: the opt-out knob restores silence.
+        let opts = AnalysisOptions {
+            dialect: Dialect::Brink,
+            types: Some(TypePolicy::Gradual),
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result.diagnostics.is_empty(),
+            "brink + explicit gradual opt-out must stay silent: {:?}",
+            result.diagnostics
+        );
     }
 
     #[test]
@@ -937,7 +986,7 @@ EXTERNAL add_state(who)
         let (hir, manifest) = lower_one(src);
         let opts = AnalysisOptions {
             dialect: Dialect::StrictInk,
-            types: TypePolicy::Strict,
+            types: Some(TypePolicy::Strict),
             ..AnalysisOptions::default()
         };
         let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -968,7 +1017,7 @@ EXTERNAL add_state(who)
         let (hir, manifest) = lower_one(src);
         let opts = AnalysisOptions {
             dialect: Dialect::Brink,
-            types: TypePolicy::Strict,
+            types: Some(TypePolicy::Strict),
             ..AnalysisOptions::default()
         };
         let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -1000,7 +1049,7 @@ EXTERNAL add_state(who)
         let (hir, manifest) = lower_one(src);
         let opts = AnalysisOptions {
             dialect: Dialect::Brink,
-            types: TypePolicy::Strict,
+            types: Some(TypePolicy::Strict),
             ..AnalysisOptions::default()
         };
         let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
