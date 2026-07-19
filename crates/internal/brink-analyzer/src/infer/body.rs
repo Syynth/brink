@@ -1291,95 +1291,25 @@ impl InferPass<'_, '_> {
         args: &[Expr],
         arg_tys: &[Ty],
     ) -> Ty {
-        // NS-A2 fault dimension (issue #1108, from #1097): every stdlib
-        // intrinsic whose VM op has at least one turn-terminating fault path
-        // conservatively faults (bool v1; the type-free structural harvest
-        // cannot rule the wrong-type/unorderable/parse-failure paths out).
-        // Inventory audited against `brink-runtime`'s ops:
-        // - `int`/`float`: `ConversionParseFailure`/`InvalidConversionDomain`
-        //   (the E078 lineage, typed-mode-spec §4);
-        // - `char_at`: `CharAtOutOfBounds`/`CharAtIndexNotInt`/`NotIndexable`;
-        // - `min`/`max`: `NotOrderable` + `StdlibWrongType` (NS-A1; §4b's
-        //   "[float] orderings carry faults unconditionally" falls out);
-        // - `first`/`last`/`pop`/`find`/`index_of`/`get`/`contains_value`/
-        //   `clear`: `StdlibWrongType` (NS-A1 — absence is Option, a
-        //   malformed *question* faults);
-        // - `len`/`keys`/`values`/`contains`/`push`/`insert`/`remove`:
-        //   `NotIndexable` (and the map-key domain faults) on a wrong-typed
-        //   container.
-        // NOT in the set: `string` and `some` (total over every value), and
-        // `call`/`bind` (their dispatch-fault marking lives at
-        // `check_value_call`/`check_bind_value`, shared with direct value
-        // calls).
-        // NS-A6 additions to the faulting set: `chance`/`pick`/`shuffle`/
-        // `shuffled` fault on a wrong-typed argument (`StdlibWrongType` —
-        // the malformed-question doctrine), like the NS-A1 verbs. NOT in
-        // the set: nullary `float()` (the rand draw — no argument, no
-        // fault path; the *unary* conversion keeps its E078-lineage fault)
-        // and `seed` (the frozen `SeedRandom` op coerces a non-int seed to
-        // 0, ink-heritage leniency — total).
-        let is_rand_float_draw = name == "float" && args.is_empty();
-        if matches!(
-            name,
-            "len"
-                | "keys"
-                | "values"
-                | "contains"
-                | "push"
-                | "insert"
-                | "remove"
-                | "int"
-                | "float"
-                | "char_at"
-                | "find"
-                | "index_of"
-                | "min"
-                | "max"
-                | "first"
-                | "last"
-                | "pop"
-                | "get"
-                | "contains_value"
-                | "clear"
-                | "chance"
-                | "pick"
-                | "shuffle"
-                | "shuffled"
-                | "non_empty"
-        ) && !is_rand_float_draw
-        {
-            self.effect_faults = true;
-        }
-        // The classic uppercase conversion builtins fault outside the
-        // numeric+bool+string domain since issue #955
-        // (`InvalidConversionDomain` from `value_ops::cast_to_int/float`) —
-        // they reach this arm as unresolved single-segment call names.
-        if matches!(name, "INT" | "FLOAT") {
-            self.effect_faults = true;
-        }
-        // NS-A6 (issue #1112, `docs/stdlib-spec.md` §7 — "every draw is an
-        // ordinary write"): a draw-bearing body writes the RNG state cell.
-        // Both surfaces harvest identically — the brink draw verbs AND the
-        // frozen ink spellings (`RANDOM`/`SEED_RANDOM`/`LIST_RANDOM`,
-        // which reach this arm as unresolved uppercase call names): one
-        // cell, two surfaces, one row entry. This is what makes the ruled
-        // free consequences fall out of existing machinery: pure-gated
-        // wake conditions exclude draw-bearing callees (E105), and
-        // `@[effects(pure)]` asserts rng-freedom (E103 exceedance names
+        // NS-A2 fault dimension (issue #1108, from #1097) + NS-A6 RNG-cell
+        // writes (issue #1112, "every draw is an ordinary write"): both
+        // harvested from the ONE shared intrinsic effect table
+        // (`super::intrinsics`, issue #1128) — `await_purity` consults the
+        // same table for an unresolved call directly in an `await`
+        // condition, so there is no second membership list to drift. See
+        // that module's doc for the full per-verb audit (which ops fault,
+        // which draw, and the deliberate exclusions: `string`/`some`/`seed`
+        // total, nullary `float()` draw-only, `call`/`bind` marked at
+        // `check_value_call`/`check_bind_value`). The RNG entry is what
+        // makes the ruled free consequences fall out of existing machinery:
+        // pure-gated wake conditions exclude draw-bearing callees (E105),
+        // and `@[effects(pure)]` asserts rng-freedom (E103 exceedance names
         // the cell as `rng`).
-        if is_rand_float_draw
-            || matches!(
-                name,
-                "chance"
-                    | "pick"
-                    | "shuffle"
-                    | "shuffled"
-                    | "seed"
-                    | "RANDOM"
-                    | "SEED_RANDOM"
-                    | "LIST_RANDOM"
-            )
-        {
+        let fx = super::intrinsics::intrinsic_effects(name, args.len());
+        if fx.faults {
+            self.effect_faults = true;
+        }
+        if fx.rng_write {
             self.effect_writes.insert(DefinitionId::RNG_CELL);
         }
         match name {

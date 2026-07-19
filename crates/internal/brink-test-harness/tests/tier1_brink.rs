@@ -2393,3 +2393,45 @@ fn pop_through_a_global_mutates_the_cell_and_yields_the_element() {
     let out = run_to_end(&mut story);
     assert_eq!(out, "Popped some(8), left 1.\n");
 }
+
+// ── F27 (issue #1120): Option has no truthiness — the gradual-mode fault ──
+//
+// Ruled 2026-07-19 (docs/stdlib-spec.md §1.6), superseding NS-A1's shipped
+// falsy-none: a condition-position `Option[T]` is `RuntimeError::
+// OptionTruthiness` under gradual types (`types = strict` reports the same
+// condition statically as E116 — see `tm3_strict_policy.rs`).
+
+#[test]
+fn option_in_conditional_guard_is_a_truthiness_fault() {
+    // The exact `{r: …}` "did we find one?" guard A1 blessed — now a fault.
+    let src = "~ temp r = find(\"ab\", \"b\")\n{r: found.}\n-> END\n";
+    let err = run_expecting_fault(src).expect("option in condition must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::OptionTruthiness),
+        "expected OptionTruthiness, got {err:?}"
+    );
+}
+
+#[test]
+fn none_in_conditional_guard_is_a_truthiness_fault_too() {
+    // `none` is NOT falsy — absence has no truthiness either; the fault is
+    // symmetric (no "presence is truthy / absence is falsy" halves).
+    let src = "~ temp r = find(\"ab\", \"zz\")\n{r: found.|absent.}\n-> END\n";
+    let err = run_expecting_fault(src).expect("none in condition must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::OptionTruthiness),
+        "expected OptionTruthiness, got {err:?}"
+    );
+}
+
+#[test]
+fn option_equality_guards_still_run_clean() {
+    // The blessed spellings — `== none` / `== some(x)` — keep working; the
+    // fault is scoped to truthiness coercion only.
+    let src =
+        "~ temp r = find(\"ab\", \"b\")\n{r == some(1): at one.}\n{r == none: absent.}\n-> END\n";
+    let (program, tables) = compile_and_link(src);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    let out = run_to_end(&mut story);
+    assert_eq!(out, "at one.\n");
+}

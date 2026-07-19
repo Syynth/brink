@@ -262,7 +262,7 @@ fn step_impl<R: crate::rng::StoryRng>(
         }
         Opcode::GotoIf(id) => {
             let val = flow.pop_value()?;
-            if value_ops::is_truthy(&val) {
+            if value_ops::is_truthy(&val)? {
                 goto_target(flow, program, context, id)?;
             }
         }
@@ -281,7 +281,7 @@ fn step_impl<R: crate::rng::StoryRng>(
         }
         Opcode::JumpIfFalse(rel) => {
             let val = flow.pop_value()?;
-            if !value_ops::is_truthy(&val) {
+            if !value_ops::is_truthy(&val)? {
                 apply_jump(flow, rel)?;
             }
         }
@@ -353,7 +353,7 @@ fn step_impl<R: crate::rng::StoryRng>(
         Opcode::Not => {
             let val = flow.pop_value()?;
             flow.value_stack
-                .push(Value::Bool(!value_ops::is_truthy(&val)));
+                .push(Value::Bool(!value_ops::is_truthy(&val)?));
         }
         Opcode::And => binary(flow, program, BinaryOp::And)?,
         Opcode::Or => binary(flow, program, BinaryOp::Or)?,
@@ -2062,7 +2062,7 @@ fn handle_begin_choice(
     // 1. Pop condition first (it was evaluated last, so it's on top).
     if flags.has_condition {
         let condition = flow.pop_value()?;
-        if !value_ops::is_truthy(&condition) {
+        if !value_ops::is_truthy(&condition)? {
             if has_display {
                 let _ = flow.value_stack.pop();
             }

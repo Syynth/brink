@@ -1807,9 +1807,21 @@ pub enum DiagnosticCode {
     /// registered.
     E115,
 
-    // E116 is allocated by the NS-light branch (F27: condition-position
-    // `Option[T]` under `types = strict`) — reserved here, landed by that
-    // branch's merge-up. Do not reuse.
+    // ── F27: Option has no truthiness (docs/stdlib-spec.md §1.6, ruled
+    // 2026-07-19, issue #1120) ─────────────────────────────────────────
+    /// A condition-position expression (an `if`/`while` condition, a
+    /// `{cond: …}` conditional branch, a choice guard, an `await`
+    /// condition) whose statically-known type is `Option[T]`. Option has
+    /// **no** truthiness — truthiness is a quiet coercion of exactly the
+    /// kind `Option[T] ≠ T` exists to ban — so a strict-mode author writes
+    /// `== none` / `== some(x)` (or, post-B1, the `as`-binding).
+    /// Strict-mode-only, best-effort static (the "Unknown never disagrees"
+    /// posture: an unclassifiable condition stays silently unchecked);
+    /// under `types = gradual` the same condition is the
+    /// `RuntimeError::OptionTruthiness` turn-terminating fault — the
+    /// runtime backstop that catches every case either way. Supersedes
+    /// NS-A1's shipped falsy-none truthiness.
+    E116,
     // ── NS-A5 the inhabited-range refinement (issue #1111;
     // docs/stdlib-spec.md §7, F7/F8 ruled 2026-07-19) ──────────────────
     /// A range-refinement violation under `types = strict` (the E078
@@ -1947,6 +1959,7 @@ impl DiagnosticCode {
             Self::E113 => "E113",
             Self::E114 => "E114",
             Self::E115 => "E115",
+            Self::E116 => "E116",
             Self::E117 => "E117",
         }
     }
@@ -2105,6 +2118,9 @@ impl DiagnosticCode {
             }
             Self::E114 => "protocol impl exceeds its protocol's effect contract",
             Self::E115 => "ill-formed protocol impl registration",
+            Self::E116 => {
+                "an `Option[T]` has no truthiness — test `== none` / `== some(x)` in the condition"
+            }
             Self::E117 => "`int(r)` requires an inhabited range (NonEmptyRange)",
         }
     }
@@ -2257,6 +2273,7 @@ impl DiagnosticCode {
             "E113" => Some(Self::E113),
             "E114" => Some(Self::E114),
             "E115" => Some(Self::E115),
+            "E116" => Some(Self::E116),
             "E117" => Some(Self::E117),
             _ => None,
         }
