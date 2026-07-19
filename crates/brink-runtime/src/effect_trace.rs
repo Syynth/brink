@@ -156,6 +156,10 @@ pub fn is_tracked_fault(e: &crate::RuntimeError) -> bool {
             | E::FunctionValueArity { .. }
             | E::FunctionValueCrossFlowLocal(_)
             | E::FunctionValueRehydrationMismatch(_)
+            | E::UnorderedComparand { .. }
+            | E::ComparatorNotAFunction { .. }
+            | E::ComparatorReturnType { .. }
+            | E::ComparatorEscaped { .. }
     )
 }
 

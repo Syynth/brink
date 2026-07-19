@@ -28,7 +28,7 @@ use brink_format::{MapKey, OrderedMap, Value, ValueType};
 
 use crate::error::RuntimeError;
 use crate::program::Program;
-use crate::story::Flow;
+use crate::story::{ExecMode, Flow};
 
 /// `ArrayNew(n)`: pop `n` values (in reverse push order), push
 /// `Array([v0, …, vn-1])`.
@@ -413,6 +413,7 @@ fn seq_extremum(
     verb: &'static str,
     keep_when: core::cmp::Ordering,
 ) -> Result<(), RuntimeError> {
+    let mode = flow.exec_mode;
     let container = flow.pop_value()?;
     let Value::Array(items) = &container else {
         return Err(RuntimeError::StdlibWrongType {
@@ -421,6 +422,14 @@ fn seq_extremum(
             found: type_name(&container),
         });
     };
+    // NS-A4 (§4b): in DEV mode a NaN comparand in an ordering context is a
+    // turn-terminating fault, comparison or no comparison (`min([nan])`
+    // never compares, but the NaN operand is the upstream bug all the
+    // same). PROD mode skips the scan and places NaN by the pinned order
+    // in `total_order_cmp`.
+    if mode == ExecMode::Dev {
+        nan_scan(verb, items, 0)?;
+    }
     let mut best: Option<&Value> = None;
     for item in items.iter() {
         best = Some(match best {
@@ -436,21 +445,44 @@ fn seq_extremum(
     Ok(())
 }
 
-/// The A1 slice of the ruled ordering doctrine (`docs/stdlib-spec.md` §4b)
-/// for `min`/`max`: int · float (numeric promotion between them) · bool
-/// (`false < true`) · string (lexicographic by Unicode scalar value — Rust's
-/// `str` ordering, which is USV order for valid UTF-8). Floats use the
-/// pinned non-fabricating total order — ordinary IEEE order with `-0 == +0`
-/// as a tie, NaN greater than everything, NaN-vs-NaN ties (deliberately NOT
-/// IEEE `totalOrder`). Wave A4 layers the dev-mode NaN fault and the fuller
-/// roster (arrays-lexicographic, `compare`-protocol structs) on top; the
-/// prod placement semantics implemented here are the mode the two agree on
-/// over clean data. Anything else — cross-type pairs included — is the
-/// [`RuntimeError::NotOrderable`] fault.
+/// The maximum array-nesting depth the recursive ordering walk
+/// ([`total_order_cmp`]'s lexicographic arm, [`nan_scan`]) will follow
+/// before faulting — a Rust-stack guard against pathological
+/// self-referential nesting built up at runtime (`a = [a]` in a loop).
+const ORDERING_NEST_LIMIT: u32 = 64;
+
+/// The §4b orderable roster (`docs/stdlib-spec.md` §4b, RULED 2026-07-18;
+/// NS-A4 completes it): int · float (numeric promotion between them) ·
+/// bool (`false < true`) · string (lexicographic by Unicode scalar value —
+/// Rust's `str` ordering, which is USV order for valid UTF-8) · arrays
+/// lexicographic element-wise (elements recursively orderable, shorter
+/// prefix first). Floats use the pinned non-fabricating total order —
+/// ordinary IEEE order with `-0 == +0` as a tie, NaN greater than
+/// everything, NaN-vs-NaN ties (deliberately NOT IEEE `totalOrder`). The
+/// dev-mode NaN fault is NOT here: it is the [`nan_scan`] pre-scan the
+/// ordering verbs run before any comparison — the comparison itself is
+/// mode-free (the mode changes where execution stops, never how elements
+/// place), so on the data that reaches it the two modes agree by
+/// construction.
+///
+/// Structs/enums order ONLY via an explicit registry `compare` impl (§9.6,
+/// no structural auto-order); no impl registration surface reaches the
+/// runtime yet (the impl spelling is ⏳ code-dialect sitting), so records
+/// stay [`RuntimeError::NotOrderable`] here — as do maps, flags subsets,
+/// divert targets, and every cross-type pair.
 fn total_order_cmp(
     verb: &'static str,
     a: &Value,
     b: &Value,
+) -> Result<core::cmp::Ordering, RuntimeError> {
+    total_order_cmp_at(verb, a, b, 0)
+}
+
+fn total_order_cmp_at(
+    verb: &'static str,
+    a: &Value,
+    b: &Value,
+    depth: u32,
 ) -> Result<core::cmp::Ordering, RuntimeError> {
     let not_orderable = |v: &Value| RuntimeError::NotOrderable {
         verb,
@@ -468,6 +500,24 @@ fn total_order_cmp(
         }
         (Value::Bool(x), Value::Bool(y)) => Ok(x.cmp(y)),
         (Value::String(x), Value::String(y)) => Ok(x.as_ref().cmp(y.as_ref())),
+        // NS-A4: arrays lexicographic element-wise, recursively (§4b's
+        // roster). First divergent element decides; a full prefix ties to
+        // the shorter array ("shorter is less").
+        (Value::Array(xs), Value::Array(ys)) => {
+            if depth >= ORDERING_NEST_LIMIT {
+                return Err(RuntimeError::NotOrderable {
+                    verb,
+                    found: "an array nested past the ordering depth limit",
+                });
+            }
+            for (x, y) in xs.iter().zip(ys.iter()) {
+                let ord = total_order_cmp_at(verb, x, y, depth + 1)?;
+                if ord != core::cmp::Ordering::Equal {
+                    return Ok(ord);
+                }
+            }
+            Ok(xs.len().cmp(&ys.len()))
+        }
         // Cross-type / unorderable. Name the most useful offender: an
         // element outside the orderable set entirely (`a` first — the
         // newly-visited element in the extremum walk — then `b`), or, for
@@ -478,7 +528,11 @@ fn total_order_cmp(
             let orderable = |v: &Value| {
                 matches!(
                     v,
-                    Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::String(_)
+                    Value::Int(_)
+                        | Value::Float(_)
+                        | Value::Bool(_)
+                        | Value::String(_)
+                        | Value::Array(_)
                 )
             };
             if orderable(a) && !orderable(b) {
@@ -488,6 +542,116 @@ fn total_order_cmp(
             }
         }
     }
+}
+
+/// NS-A4 (§4b): the DEV-mode pre-scan — fault on any float NaN comparand
+/// in an ordering context, recursively through nested arrays ("same NaN
+/// rule inside"). Run by `sort`/`sorted`/`min`/`max` before any
+/// comparison; `sort_by`/`sorted_by` deliberately do NOT run it (F14: the
+/// comparator owns the element semantics). PROD mode never calls this.
+fn nan_scan(verb: &'static str, items: &[Value], depth: u32) -> Result<(), RuntimeError> {
+    if depth >= ORDERING_NEST_LIMIT {
+        return Err(RuntimeError::NotOrderable {
+            verb,
+            found: "an array nested past the ordering depth limit",
+        });
+    }
+    for item in items {
+        match item {
+            Value::Float(f) if f.is_nan() => {
+                return Err(RuntimeError::UnorderedComparand { verb });
+            }
+            Value::Array(inner) => nan_scan(verb, inner, depth + 1)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// A fallible, stable, bottom-up merge sort over [`Value`]s. Exists
+/// because both ordering comparators can fault mid-sort (`total_order_cmp`
+/// on an unorderable element; a `sort_by` user comparator on anything its
+/// body faults on), which rules out `slice::sort_by` (whose comparator is
+/// infallible and which may panic on a detected non-total order — panics
+/// are denied here). The §4b guarantee floor holds by construction: the
+/// output is always some permutation of the input, and on success it is
+/// the stable ascending order (equal elements keep their input order —
+/// the left run wins ties).
+///
+/// `cmp(a, b)` is called with `a` from the earlier (left) run and `b`
+/// from the later (right) run, in the source argument order a user
+/// comparator expects.
+pub(crate) fn fallible_stable_sort<F>(items: &mut [Value], cmp: &mut F) -> Result<(), RuntimeError>
+where
+    F: FnMut(&Value, &Value) -> Result<core::cmp::Ordering, RuntimeError>,
+{
+    let n = items.len();
+    if n <= 1 {
+        return Ok(());
+    }
+    let mut src: Vec<Value> = items.to_vec();
+    let mut dst: Vec<Value> = items.to_vec();
+    let mut width = 1usize;
+    while width < n {
+        let mut start = 0usize;
+        while start < n {
+            let mid = usize::min(start + width, n);
+            let end = usize::min(start + 2 * width, n);
+            let (mut l, mut r, mut o) = (start, mid, start);
+            while l < mid && r < end {
+                // Stable: the left element wins ties.
+                if cmp(&src[l], &src[r])? == core::cmp::Ordering::Greater {
+                    dst[o] = src[r].clone();
+                    r += 1;
+                } else {
+                    dst[o] = src[l].clone();
+                    l += 1;
+                }
+                o += 1;
+            }
+            while l < mid {
+                dst[o] = src[l].clone();
+                l += 1;
+                o += 1;
+            }
+            while r < end {
+                dst[o] = src[r].clone();
+                r += 1;
+                o += 1;
+            }
+            start = end;
+        }
+        core::mem::swap(&mut src, &mut dst);
+        width *= 2;
+    }
+    items.clone_from_slice(&src);
+    Ok(())
+}
+
+/// `SeqSorted`: `[a]` → `[a']` — the array sorted ascending by the §4b
+/// doctrine order ([`total_order_cmp`]), stable. One op serves `sort(a)`
+/// (statement-only; in-place-ness comes from the codegen RMW write-back)
+/// and `sorted(a)` (functional) — the `RandShuffle` precedent, so faults
+/// name the doctrine verb `sort`. DEV mode runs the [`nan_scan`] pre-scan
+/// (NaN comparand → [`RuntimeError::UnorderedComparand`]); PROD mode
+/// places NaN by the pinned total order and keeps moving.
+pub(crate) fn seq_sorted(flow: &mut Flow) -> Result<(), RuntimeError> {
+    let mode = flow.exec_mode;
+    let container = flow.pop_value()?;
+    let Value::Array(items) = &container else {
+        return Err(RuntimeError::StdlibWrongType {
+            verb: "sort",
+            expected: "an array",
+            found: type_name(&container),
+        });
+    };
+    if mode == ExecMode::Dev {
+        nan_scan("sort", items, 0)?;
+    }
+    let mut sorted: Vec<Value> = items.as_ref().clone();
+    fallible_stable_sort(&mut sorted, &mut |a, b| total_order_cmp("sort", a, b))?;
+    flow.value_stack.push(Value::array(sorted));
+    Ok(())
 }
 
 /// The §4b pinned prod float order: IEEE `partial_cmp` where it's defined
@@ -866,6 +1030,8 @@ mod tests {
             skipping_choice: false,
             did_safe_exit: false,
             did_unsafe_yield: false,
+            exec_mode: crate::story::ExecMode::default(),
+            comparator_depth: 0,
         }
     }
 
@@ -1353,10 +1519,11 @@ mod tests {
 
     #[test]
     fn seq_max_places_nan_greatest_per_the_pinned_prod_order() {
-        // §4b pinned order: NaN greater than everything (A1 baseline; A4
-        // layers the dev-mode fault on top).
+        // §4b PROD mode: NaN greater than everything, execution keeps
+        // moving. (NS-A4: dev mode faults instead — the test below.)
         let a = arr(vec![Value::Float(1.0), Value::Float(f32::NAN)]);
         let mut flow = test_flow();
+        flow.exec_mode = ExecMode::Prod;
         push_args(&mut flow, vec![a.clone()]);
         seq_max(&mut flow).unwrap();
         let Value::OptionVal(Some(v)) = flow.pop_value().unwrap() else {
@@ -1370,6 +1537,193 @@ mod tests {
         push_args(&mut flow, vec![a]);
         seq_min(&mut flow).unwrap();
         assert_eq!(flow.pop_value().unwrap(), Value::some(Value::Float(1.0)));
+    }
+
+    /// NS-A4 (§4b): DEV mode (the default) faults on a NaN comparand in an
+    /// ordering context — comparison or no comparison (`min([nan])` never
+    /// compares, and NaN nested inside an array element is the same
+    /// upstream bug).
+    #[test]
+    fn seq_extremum_dev_mode_faults_on_nan_comparand() {
+        let mut flow = test_flow();
+        assert_eq!(flow.exec_mode, ExecMode::Dev, "dev is the default");
+
+        push_args(&mut flow, vec![arr(vec![Value::Float(f32::NAN)])]);
+        let err = seq_min(&mut flow).unwrap_err();
+        assert_eq!(err, RuntimeError::UnorderedComparand { verb: "min" });
+
+        // Nested: "same NaN rule inside" (§4b).
+        push_args(
+            &mut flow,
+            vec![arr(vec![arr(vec![Value::Float(f32::NAN)]), ints(&[1])])],
+        );
+        let err = seq_max(&mut flow).unwrap_err();
+        assert_eq!(err, RuntimeError::UnorderedComparand { verb: "max" });
+
+        // NaN-free floats are fine in dev — the modes agree on clean data.
+        push_args(
+            &mut flow,
+            vec![arr(vec![Value::Float(2.0), Value::Float(-1.0)])],
+        );
+        seq_min(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::some(Value::Float(-1.0)));
+    }
+
+    // ── NS-A4: `SeqSorted` (`sort`/`sorted`) ──────────────────────────
+
+    #[test]
+    fn seq_sorted_orders_ints_stably_ascending() {
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![ints(&[3, 1, 2, 1])]);
+        seq_sorted(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), ints(&[1, 1, 2, 3]));
+    }
+
+    #[test]
+    fn seq_sorted_orders_strings_and_mixed_numerics() {
+        let mut flow = test_flow();
+        push_args(
+            &mut flow,
+            vec![arr(vec![
+                Value::from("pear"),
+                Value::from("apple"),
+                Value::from("fig"),
+            ])],
+        );
+        seq_sorted(&mut flow).unwrap();
+        assert_eq!(
+            flow.pop_value().unwrap(),
+            arr(vec![
+                Value::from("apple"),
+                Value::from("fig"),
+                Value::from("pear"),
+            ])
+        );
+
+        // Mixed int/float promote for comparison; elements come back
+        // unwidened.
+        push_args(
+            &mut flow,
+            vec![arr(vec![Value::Int(2), Value::Float(1.5), Value::Int(1)])],
+        );
+        seq_sorted(&mut flow).unwrap();
+        assert_eq!(
+            flow.pop_value().unwrap(),
+            arr(vec![Value::Int(1), Value::Float(1.5), Value::Int(2)])
+        );
+    }
+
+    /// Stability: `-0.0` and `+0.0` tie under the pinned order (`-0 ==
+    /// +0`), so their input order survives the sort.
+    #[test]
+    fn seq_sorted_is_stable_across_pinned_ties() {
+        let mut flow = test_flow();
+        push_args(
+            &mut flow,
+            vec![arr(vec![
+                Value::Float(0.0),
+                Value::Float(-0.0),
+                Value::Float(-1.0),
+            ])],
+        );
+        seq_sorted(&mut flow).unwrap();
+        let Value::Array(items) = flow.pop_value().unwrap() else {
+            unreachable!("sorted returns an array");
+        };
+        let signs: Vec<bool> = items
+            .iter()
+            .map(|v| {
+                let Value::Float(f) = v else {
+                    unreachable!("floats in, floats out")
+                };
+                f.is_sign_negative()
+            })
+            .collect();
+        // -1.0 first, then +0.0 before -0.0 (input order preserved on tie).
+        assert_eq!(signs, vec![true, false, true]);
+    }
+
+    #[test]
+    fn seq_sorted_orders_arrays_lexicographically() {
+        let mut flow = test_flow();
+        push_args(
+            &mut flow,
+            vec![arr(vec![ints(&[2]), ints(&[1, 5]), ints(&[1])])],
+        );
+        seq_sorted(&mut flow).unwrap();
+        assert_eq!(
+            flow.pop_value().unwrap(),
+            arr(vec![ints(&[1]), ints(&[1, 5]), ints(&[2])])
+        );
+    }
+
+    /// NS-A4 (§4b): the dev/prod split on `sort` — dev faults on a NaN
+    /// comparand, prod places it by the pinned total order (NaN greatest)
+    /// and keeps moving. Same array, same op, mode decides WHERE execution
+    /// stops — never the placement of the clean elements.
+    #[test]
+    fn seq_sorted_dev_faults_prod_places_nan() {
+        let a = || {
+            arr(vec![
+                Value::Float(f32::NAN),
+                Value::Float(1.0),
+                Value::Float(-1.0),
+            ])
+        };
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![a()]);
+        let err = seq_sorted(&mut flow).unwrap_err();
+        assert_eq!(err, RuntimeError::UnorderedComparand { verb: "sort" });
+
+        flow.exec_mode = ExecMode::Prod;
+        push_args(&mut flow, vec![a()]);
+        seq_sorted(&mut flow).unwrap();
+        let Value::Array(items) = flow.pop_value().unwrap() else {
+            unreachable!("sorted returns an array");
+        };
+        assert_eq!(items[0], Value::Float(-1.0));
+        assert_eq!(items[1], Value::Float(1.0));
+        let Value::Float(last) = items[2] else {
+            unreachable!("floats in, floats out")
+        };
+        assert!(last.is_nan(), "prod places NaN greatest");
+    }
+
+    #[test]
+    fn seq_sorted_faults_on_non_array_and_unorderable_elements() {
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![Value::Int(3)]);
+        let err = seq_sorted(&mut flow).unwrap_err();
+        assert_eq!(
+            err,
+            RuntimeError::StdlibWrongType {
+                verb: "sort",
+                expected: "an array",
+                found: "int",
+            }
+        );
+
+        // Cross-type pair: individually orderable, jointly malformed.
+        push_args(&mut flow, vec![arr(vec![Value::Int(1), Value::from("x")])]);
+        let err = seq_sorted(&mut flow).unwrap_err();
+        assert!(matches!(
+            err,
+            RuntimeError::NotOrderable { verb: "sort", .. }
+        ));
+    }
+
+    /// The empty and singleton arrays sort to themselves in both modes —
+    /// and a singleton NaN still faults in dev (the operand IS the bug).
+    #[test]
+    fn seq_sorted_edge_shapes() {
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![ints(&[])]);
+        seq_sorted(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), ints(&[]));
+
+        push_args(&mut flow, vec![arr(vec![Value::Float(f32::NAN)])]);
+        let err = seq_sorted(&mut flow).unwrap_err();
+        assert_eq!(err, RuntimeError::UnorderedComparand { verb: "sort" });
     }
 
     /// NS-A3 (issue #1109, stdlib-spec §4b): structs have no structural
@@ -1410,7 +1764,11 @@ mod tests {
 
     #[test]
     fn seq_min_unorderable_element_type_faults() {
-        let a = arr(vec![ints(&[1]), ints(&[2])]);
+        // Maps are outside the §4b roster in every wave.
+        let a = arr(vec![
+            Value::Map(Arc::new(OrderedMap::new())),
+            Value::Map(Arc::new(OrderedMap::new())),
+        ]);
         let mut flow = test_flow();
         push_args(&mut flow, vec![a]);
         let err = seq_min(&mut flow).unwrap_err();
@@ -1418,9 +1776,21 @@ mod tests {
             err,
             RuntimeError::NotOrderable {
                 verb: "min",
-                found: "array",
+                found: "map",
             }
         );
+    }
+
+    /// NS-A4 (§4b roster completion): arrays order lexicographically,
+    /// element-wise, recursively — `min` over `[[1, 2], [1]]` is `[1]`
+    /// (a full prefix ties to the shorter array).
+    #[test]
+    fn seq_min_orders_arrays_lexicographically() {
+        let a = arr(vec![ints(&[1, 2]), ints(&[1])]);
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![a]);
+        seq_min(&mut flow).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::some(ints(&[1])));
     }
 
     #[test]

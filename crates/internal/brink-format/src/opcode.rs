@@ -2265,10 +2265,7 @@ mod tests {
     /// from the RMW write-back, the `shuffle`/`shuffled` precedent).
     #[test]
     fn ns_a4_opcode_block_layout() {
-        let expected: [(u8, Opcode); 2] = [
-            (0xF8, Opcode::SeqSorted),
-            (0xF9, Opcode::SeqSortedBy),
-        ];
+        let expected: [(u8, Opcode); 2] = [(0xF8, Opcode::SeqSorted), (0xF9, Opcode::SeqSortedBy)];
         for (byte, op) in expected {
             let mut buf = Vec::new();
             op.encode(&mut buf);

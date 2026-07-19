@@ -321,6 +321,54 @@ pub enum RuntimeError {
         found: &'static str,
     },
 
+    // ── NS-A4: the ordering doctrine (`docs/stdlib-spec.md` §4b, issue
+    // #1110) ──────────────────────────────────────────────────────────────
+    /// DEV mode only: an ordering verb (`sort`/`sorted`/`min`/`max`; A7
+    /// adds `heap_push`) reached a float NaN comparand. NaN flows freely
+    /// through arithmetic — ordering contexts are where it stops: in dev
+    /// mode the upstream bug surfaces at its first ordering consumption as
+    /// this turn-terminating fault. PROD mode instead places NaN by the
+    /// pinned non-fabricating total order (`-0 == +0` ties, NaN greatest,
+    /// NaN-vs-NaN ties) and keeps moving — the mode changes WHERE execution
+    /// stops, never WHAT values are fabricated. `sort_by`/`sorted_by`
+    /// deliberately do NOT raise this (F14: the comparator owns the order).
+    #[error(
+        "`{verb}` reached a NaN comparand — NaN cannot be ordered (dev-mode fault; prod mode \
+         places NaN by the pinned total order)"
+    )]
+    UnorderedComparand { verb: &'static str },
+    /// `sort_by`/`sorted_by` was handed a comparator that is not a function
+    /// value (`FnRef`/`Closure`). Malformed question — turn-terminating.
+    #[error("`{verb}` comparator must be a function value `fn(T, T): int`, got {found}")]
+    ComparatorNotAFunction {
+        verb: &'static str,
+        found: &'static str,
+    },
+    /// A `sort_by`/`sorted_by` comparator returned something other than an
+    /// int (F0's ruled shape: negative = less, zero = tie, positive =
+    /// greater). Turn-terminating — a silent coercion here would scramble
+    /// the order.
+    #[error(
+        "`{verb}` comparator must return an int (negative = less, zero = tie, positive = \
+         greater), got {found}"
+    )]
+    ComparatorReturnType {
+        verb: &'static str,
+        found: &'static str,
+    },
+    /// A `sort_by`/`sorted_by` comparator broke the pure·silent contract in
+    /// a way the VM can observe: it presented a choice, reached
+    /// `-> DONE`/`-> END`, called an external function, exceeded the
+    /// nested-evaluation step budget, or recursed past the nesting depth
+    /// limit. The checker enforces the contract statically where the
+    /// comparator's origin is provable (E119); this is the gradual-mode
+    /// runtime residual.
+    #[error("`{verb}` comparator {what} — comparators must be pure, silent functions")]
+    ComparatorEscaped {
+        verb: &'static str,
+        what: &'static str,
+    },
+
     // ── F27: Option has no truthiness (`docs/stdlib-spec.md` §1.6, ruled
     // 2026-07-19, issue #1120) ────────────────────────────────────────────
     /// A `Value::OptionVal` reached the VM's truthiness evaluation (`GotoIf`,
