@@ -10,6 +10,11 @@ use wasm_bindgen::prelude::*;
 /// Map an ink [`Value`] to a native JS value for a binding argument. Scalars,
 /// collections, and records cross the boundary; VM-internal variants
 /// (pointers, divert targets, fragment refs, lists) map to `null` for now.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one marshal arm per Value variant (the #667 no-wildcard \
+              discipline) — the NS-A8 tower arms pushed this past 100"
+)]
 pub(crate) fn value_to_js(v: &Value) -> JsValue {
     match v {
         Value::Int(i) => JsValue::from_f64(f64::from(*i)),

@@ -369,6 +369,16 @@ impl ContainerEmitter<'_> {
                 self.emit(Opcode::MapClear);
             }
 
+            // ── NS-A8: the numeric tower (#1114) — args pushed
+            // left-to-right, then the one family opcode with its kind
+            // immediate. ─────────────────────────────────────────────
+            lir::Expr::Tower { op, args } => {
+                for arg in args {
+                    self.emit_expr(arg, false);
+                }
+                self.emit(Opcode::Tower(*op));
+            }
+
             // ── Records (TM-4c) ──────────────────────────────────────
             lir::Expr::RecordNew {
                 shape_id,

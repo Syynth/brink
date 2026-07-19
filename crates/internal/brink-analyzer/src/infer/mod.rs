@@ -68,7 +68,7 @@ use rowan::TextRange;
 
 pub use effects::{EffectAtoms, EffectRow, solve_scc_effects};
 pub use graph::{CallGraph, SccGraph, scc_graph};
-pub use ty::{CoalesceError, Ty, coalesce, unify, unify_all};
+pub use ty::{CoalesceError, TowerTy, Ty, coalesce, unify, unify_all};
 
 use body::{BodyCtx, infer_def_body};
 use graph::topo_order;

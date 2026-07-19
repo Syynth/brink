@@ -117,6 +117,12 @@ impl<'a> Resolver<'a> {
         self.external_name.get(&id).copied().unwrap_or("?")
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one display arm per Value variant — the NS-A8 tower arms \
+                  pushed this past 100; splitting would scatter the single \
+                  source of truth for the JS-facing display forms"
+    )]
     fn format_value(&self, v: &Value) -> String {
         match v {
             Value::Int(i) => i.to_string(),

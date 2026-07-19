@@ -1833,6 +1833,19 @@ pub enum DiagnosticCode {
     /// carries no inhabitedness evidence (a possibly-empty range — route
     /// computed bounds through `non_empty(r)`, parse-don't-validate).
     E117,
+
+    // ── NS-A8: the numeric tower (docs/tower-mini-spec.md, issue #1114) ──
+    /// A protocol impl registration named a numeric-tower kind
+    /// (`vec2`/`vec3`/`vec4`/`quat`/`mat2`/`mat3`/`mat4`) as its type.
+    /// Tower kinds are compiler-known value kinds, not user structs: their
+    /// `display` is the fixed structural form, their equality is
+    /// componentwise IEEE (T4), and they are NOT orderable — a `compare`
+    /// impl for a tower kind would contradict the ruled §4b doctrine, and
+    /// `display`/`iterate` impls would shadow compiler-owned behavior. The
+    /// rejection is unconditional — it wins even over a user STRUCT
+    /// declared with the same name (tower type names are global like
+    /// `int`).
+    E118,
 }
 
 impl DiagnosticCode {
@@ -1961,6 +1974,7 @@ impl DiagnosticCode {
             Self::E115 => "E115",
             Self::E116 => "E116",
             Self::E117 => "E117",
+            Self::E118 => "E118",
         }
     }
 
@@ -2122,6 +2136,9 @@ impl DiagnosticCode {
                 "an `Option[T]` has no truthiness — test `== none` / `== some(x)` in the condition"
             }
             Self::E117 => "`int(r)` requires an inhabited range (NonEmptyRange)",
+            Self::E118 => {
+                "numeric-tower kinds are compiler-known and cannot implement registry protocols"
+            }
         }
     }
 
@@ -2275,6 +2292,7 @@ impl DiagnosticCode {
             "E115" => Some(Self::E115),
             "E116" => Some(Self::E116),
             "E117" => Some(Self::E117),
+            "E118" => Some(Self::E118),
             _ => None,
         }
     }

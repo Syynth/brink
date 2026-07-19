@@ -92,6 +92,12 @@ pub enum Ty {
         non_empty: bool,
     },
     /// Not (yet) resolved to a concrete type — legal in this slice (spec
+    /// A numeric-tower value kind (NS-A8, `docs/tower-mini-spec.md`):
+    /// `vec2`/`vec3`/`vec4`/`quat`/`mat2`/`mat3`/`mat4` — seven closed
+    /// compiler-known kinds carried by one variant (they behave identically
+    /// in the lattice: nominal scalar-like leaves; no coercion into or out
+    /// of them, so a tower-vs-anything-else join is `Conflicted`).
+    Tower(TowerTy),
     /// §2: "unresolved -> Unknown, which is LEGAL"). Acts as the join
     /// identity: `unify(Unknown, x) == x`.
     Unknown,
@@ -106,6 +112,49 @@ pub enum Ty {
     /// diagnostic; this lattice point only exists so that reporting can be
     /// order-independent when it lands.
     Conflicted,
+}
+
+/// The seven numeric-tower kinds (NS-A8) carried by [`Ty::Tower`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TowerTy {
+    Vec2,
+    Vec3,
+    Vec4,
+    Quat,
+    Mat2,
+    Mat3,
+    Mat4,
+}
+
+impl TowerTy {
+    /// The global type name (`vec2` … `mat4`) — also the constructor verb.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            TowerTy::Vec2 => "vec2",
+            TowerTy::Vec3 => "vec3",
+            TowerTy::Vec4 => "vec4",
+            TowerTy::Quat => "quat",
+            TowerTy::Mat2 => "mat2",
+            TowerTy::Mat3 => "mat3",
+            TowerTy::Mat4 => "mat4",
+        }
+    }
+
+    /// Resolve a tower type name (`vec2` … `mat4`) to its kind.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "vec2" => Some(TowerTy::Vec2),
+            "vec3" => Some(TowerTy::Vec3),
+            "vec4" => Some(TowerTy::Vec4),
+            "quat" => Some(TowerTy::Quat),
+            "mat2" => Some(TowerTy::Mat2),
+            "mat3" => Some(TowerTy::Mat3),
+            "mat4" => Some(TowerTy::Mat4),
+            _ => None,
+        }
+    }
 }
 
 /// `Unknown` is the natural default: every local/return slot starts here
@@ -144,6 +193,7 @@ impl Ty {
             Ty::Option(elem) => format!("Option[{}]", elem.display()),
             Ty::Range { non_empty: false } => "range".to_string(),
             Ty::Range { non_empty: true } => "NonEmptyRange".to_string(),
+            Ty::Tower(kind) => kind.name().to_string(),
             Ty::Unknown => "Unknown".to_string(),
             Ty::Conflicted => "Conflicted".to_string(),
         }
@@ -204,8 +254,9 @@ impl Ord for Ty {
                 Ty::Handle(_) => 10,
                 Ty::Option(_) => 11,
                 Ty::Range { .. } => 12,
-                Ty::Unknown => 13,
-                Ty::Conflicted => 14,
+                Ty::Tower(_) => 13,
+                Ty::Unknown => 14,
+                Ty::Conflicted => 15,
             }
         }
         match (self, other) {
@@ -214,6 +265,7 @@ impl Ord for Ty {
             | (Ty::Handle(a), Ty::Handle(b)) => a.cmp(b),
             (Ty::Array(a), Ty::Array(b)) | (Ty::Option(a), Ty::Option(b)) => a.cmp(b),
             (Ty::Range { non_empty: a }, Ty::Range { non_empty: b }) => a.cmp(b),
+            (Ty::Tower(a), Ty::Tower(b)) => a.cmp(b),
             (Ty::Map(k1, v1), Ty::Map(k2, v2)) => k1.cmp(k2).then_with(|| v1.cmp(v2)),
             (Ty::Fn(p1, r1), Ty::Fn(p2, r2)) => p1.cmp(p2).then_with(|| r1.cmp(r2)),
             _ => rank(self).cmp(&rank(other)),
