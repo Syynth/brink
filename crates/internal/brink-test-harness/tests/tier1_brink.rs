@@ -1513,8 +1513,7 @@ fn fn_over_binding_is_e081() {
 fn well_formed_fn_creation_compiles_clean() {
     // A fully legal creation site under gradual types compiles clean in T1c-2
     // — no E079/E080/E081 creation noise and no E052 fence.
-    let source =
-        "=== function heal(ref hp: int, amount: int): int ===\n~ hp = hp + amount\n~ return hp\n\n\
+    let source = "=== function heal(ref hp: int, amount: int): int ===\n~ hp = hp + amount\n~ return hp\n\n\
                   VAR player_hp = 10\n=== main ===\n~ temp f = #fn(heal, player_hp)\nDone.\n-> END\n";
     compile_brink(source).expect("a well-formed #fn creation compiles clean in T1c-2");
 }
@@ -2172,8 +2171,7 @@ fn numeric_tower_end_to_end() {
 fn author_defined_find_shadows_builtin_with_e035_warning() {
     // The A1 names ride the same shadowing machinery as `len` (§9.3's
     // E035-lineage posture).
-    let source =
-        "=== function find(s: string, x: string): int\n~ return 999\n\nHi {find(\"a\", \"b\")}.\n-> END\n";
+    let source = "=== function find(s: string, x: string): int\n~ return 999\n\nHi {find(\"a\", \"b\")}.\n-> END\n";
     let out = compile_brink(source).expect("shadowing is a warning, not a compile error");
     assert!(
         out.warnings
