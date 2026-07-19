@@ -191,6 +191,28 @@ change.
     bit;
   - `inkt` dump equality converter-vs-compiler on plain ink.
 
+## 5b. The annotation-line channel (`@[…]`) — NS-A2 addendum
+
+NS-A2 (#1108; stdlib-spec §9.2, ruled 2026-07-18) added a **second,
+line-level spelling** for compiler annotations: the annotation line
+`@[name(args)]` on a line of its own. It is the assertion final form's
+carrier — v1 recognizes exactly one name, `effects`
+(`@[effects(pure, silent, total, reads: gold, …)]`), in exactly one
+placement (the leading run at the top of a knot/stitch body, shared
+with directive tag lines in either order). Rules mirror the tag
+channel's:
+
+- superset-parsed under every dialect (`AT_L_BRACKET` token +
+  `ANNOTATION_LINE` node — only the *adjacent* `@[` pair opens one; a
+  lone `@` in prose stays plain text); `strict-ink` rejects the
+  attached assertion via the dialect gate (`E051`);
+- consumed placements erase (an annotation line never lowers to
+  content); anywhere else is `E112` — never a silent drop;
+- an unrecognized annotation name is `E111` (the tag-channel directive
+  names do **not** alias into this channel);
+- the old `#@effects(…)` tag-directive spelling remains a deprecation
+  alias (shipped surface) and warns `E110`.
+
 ## 6. Future tenants (non-normative)
 
 The channel is designed for (not implemented): `@world` (stitch-level

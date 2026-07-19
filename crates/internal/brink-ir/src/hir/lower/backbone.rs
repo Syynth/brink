@@ -18,6 +18,10 @@ pub enum BodyChild {
     ContentLine(ast::ContentLine),
     LogicLine(ast::LogicLine),
     TagLine(ast::TagLine),
+    /// `@[name(args)]` annotation line (NS-A2) — consumed by the knot/stitch
+    /// leading-run owner, misplacement diagnosed at the annotation
+    /// chokepoint (`directive::handle_annotation_line`).
+    AnnotationLine(ast::AnnotationLine),
     DivertNode(ast::DivertNode),
     InlineLogic(ast::InlineLogic),
     MultilineBlock(ast::MultilineBlock),
@@ -39,6 +43,8 @@ pub fn classify_body_child(node: &brink_syntax::SyntaxNode) -> BodyChild {
         SyntaxKind::TAG_LINE => {
             ast::TagLine::cast(node.clone()).map_or(BodyChild::Trivia, BodyChild::TagLine)
         }
+        SyntaxKind::ANNOTATION_LINE => ast::AnnotationLine::cast(node.clone())
+            .map_or(BodyChild::Trivia, BodyChild::AnnotationLine),
         SyntaxKind::DIVERT_NODE => {
             ast::DivertNode::cast(node.clone()).map_or(BodyChild::Trivia, BodyChild::DivertNode)
         }
@@ -99,6 +105,10 @@ pub enum BranchChild {
     ContentLine(ast::ContentLine),
     LogicLine(ast::LogicLine),
     TagLine(ast::TagLine),
+    /// `@[name(args)]` annotation line (NS-A2) — always a misplacement in
+    /// branch context (the only recognized placement is the top of a
+    /// knot/stitch body).
+    AnnotationLine(ast::AnnotationLine),
     DivertNode(ast::DivertNode),
     InlineLogic(ast::InlineLogic),
     Choice(ast::Choice),
@@ -130,6 +140,8 @@ pub fn classify_branch_child(
             SyntaxKind::TAG_LINE => {
                 ast::TagLine::cast(node.clone()).map_or(BranchChild::Trivia, BranchChild::TagLine)
             }
+            SyntaxKind::ANNOTATION_LINE => ast::AnnotationLine::cast(node.clone())
+                .map_or(BranchChild::Trivia, BranchChild::AnnotationLine),
             SyntaxKind::DIVERT_NODE => ast::DivertNode::cast(node.clone())
                 .map_or(BranchChild::Trivia, BranchChild::DivertNode),
             SyntaxKind::INLINE_LOGIC => ast::InlineLogic::cast(node.clone())
@@ -190,6 +202,9 @@ pub fn lower_simple_body(
             }
             BodyChild::TagLine(tl) => {
                 acc.handle(&tl, scope, sink);
+            }
+            BodyChild::AnnotationLine(al) => {
+                super::directive::handle_annotation_line(&al, sink);
             }
             BodyChild::DivertNode(dn) => {
                 acc.handle(&dn, scope, sink);

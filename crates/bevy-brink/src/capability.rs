@@ -935,6 +935,9 @@ mod tests {
                 writes: vec![],
                 calls: vec![atom(name_id)],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         };
@@ -987,6 +990,9 @@ mod tests {
                 writes: vec![],
                 calls: vec![atom(get_position), atom(play_sfx)],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         };
@@ -1051,6 +1057,9 @@ mod tests {
                 writes: vec![],
                 calls: vec![atom(watch), atom(poke)],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         };
@@ -1073,6 +1082,9 @@ mod tests {
                 writes: vec![],
                 calls: vec![atom(poke), atom(watch)],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         };
@@ -1118,6 +1130,9 @@ mod tests {
                 writes: vec![],
                 calls: vec![atom(a), atom(b)],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         };
@@ -1142,6 +1157,9 @@ mod tests {
                 writes: vec![],
                 calls: vec![],
                 opaque: true,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         };
@@ -1192,6 +1210,9 @@ mod tests {
                     writes: vec![],
                     calls: vec![atom(get_position)],
                     opaque: false,
+                    emits: false,
+                    tags: false,
+                    faults: false,
                 },
             }],
         };
@@ -1415,6 +1436,9 @@ mod tests {
                 writes: vec![],
                 calls: vec![atom(get_position), atom(play_sfx)],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         };
@@ -1466,6 +1490,9 @@ mod tests {
                 writes: vec![],
                 calls: vec![atom(get_position)],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         };

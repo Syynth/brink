@@ -84,6 +84,11 @@ pub fn lower_weave_body(
             BodyChild::TagLine(tl) => {
                 acc.handle(&tl, scope, sink);
             }
+            BodyChild::AnnotationLine(al) => {
+                // NS-A2: consumed by the knot/stitch leading-run owner;
+                // misplaced lines diagnose E112 at the chokepoint.
+                super::super::directive::handle_annotation_line(&al, sink);
+            }
             BodyChild::DivertNode(dn) => {
                 acc.handle(&dn, scope, sink);
             }

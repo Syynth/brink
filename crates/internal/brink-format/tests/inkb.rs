@@ -313,6 +313,9 @@ fn roundtrip_effect_rows() {
                     },
                 ],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![DispatchEntry {
                 cell: cell(9),
@@ -326,6 +329,9 @@ fn roundtrip_effect_rows() {
                         handle_param: None,
                     }],
                     opaque: true,
+                    emits: false,
+                    tags: false,
+                    faults: false,
                 },
             }],
         },
@@ -337,6 +343,9 @@ fn roundtrip_effect_rows() {
                 writes: vec![],
                 calls: vec![],
                 opaque: true,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         },
@@ -378,6 +387,9 @@ fn roundtrip_effect_rows_freeze_bit() {
                     handle_param: None,
                 }],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         },
@@ -389,6 +401,9 @@ fn roundtrip_effect_rows_freeze_bit() {
                 writes: vec![],
                 calls: vec![],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         },
@@ -449,7 +464,7 @@ fn effect_rows_index_with_call_tags(
     use brink_format::{DefinitionId, DefinitionTag, InkbIndex, SectionEntry, SectionKind};
 
     let mut buf = Vec::new();
-    buf.push(2u8); // section-local version (#882: bumped 1 -> 2 for is_entry)
+    buf.push(3u8); // section-local version (NS-A2: bumped 2 -> 3 for dims)
     buf.extend_from_slice(&1u32.to_le_bytes()); // entry count
     buf.extend_from_slice(
         &DefinitionId::new(DefinitionTag::Address, 1)
@@ -464,6 +479,7 @@ fn effect_rows_index_with_call_tags(
     buf.push(cap_tag);
     buf.push(handle_tag);
     buf.push(0u8); // opaque
+    buf.push(0u8); // NS-A2 dims flags (none set)
     buf.extend_from_slice(&0u32.to_le_bytes()); // dispatch count
 
     let file_size = u32::try_from(buf.len()).unwrap();
@@ -496,6 +512,85 @@ fn effect_rows_reader_rejects_reserved_cap_param() {
     let (buf, index) = effect_rows_index_with_call_tags(0x01, 0x00);
     let err = brink_format::read_section_effect_rows(&buf, &index).unwrap_err();
     assert_eq!(err, DecodeError::InvalidEffectCapParam(0x01));
+}
+
+/// NS-A2 (issue #1108): the emits/tags/faults dimension flags round-trip
+/// through the section-version-3 extension byte.
+#[test]
+fn effect_rows_dimension_flags_roundtrip() {
+    use brink_format::{DefinitionId, DefinitionTag, DirectEffects, EffectRowEntry};
+
+    let mut data = i001_data();
+    data.effect_rows = vec![
+        EffectRowEntry {
+            def: DefinitionId::new(DefinitionTag::Address, 1),
+            is_entry: true,
+            direct: DirectEffects {
+                reads: vec![],
+                writes: vec![],
+                calls: vec![],
+                opaque: false,
+                emits: true,
+                tags: false,
+                faults: true,
+            },
+            dispatches: vec![],
+        },
+        EffectRowEntry {
+            def: DefinitionId::new(DefinitionTag::Address, 2),
+            is_entry: true,
+            direct: DirectEffects {
+                reads: vec![],
+                writes: vec![],
+                calls: vec![],
+                opaque: false,
+                emits: false,
+                tags: true,
+                faults: false,
+            },
+            dispatches: vec![],
+        },
+    ];
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+    let decoded = read_inkb(&buf).expect("decode");
+    assert_eq!(decoded.effect_rows, data.effect_rows);
+}
+
+/// NS-A2: reserved bits (3-7) in the dimension-flags byte are rejected by
+/// the strict reader until a section version graduates them — the same
+/// discipline as the capability/handle slots.
+#[test]
+fn effect_rows_reader_rejects_reserved_dimension_bits() {
+    use brink_format::{DefinitionId, DefinitionTag, InkbIndex, SectionEntry, SectionKind};
+
+    let mut buf = Vec::new();
+    buf.push(3u8); // section-local version
+    buf.extend_from_slice(&1u32.to_le_bytes()); // entry count
+    buf.extend_from_slice(
+        &DefinitionId::new(DefinitionTag::Address, 1)
+            .to_raw()
+            .to_le_bytes(),
+    );
+    buf.push(1u8); // is_entry
+    buf.extend_from_slice(&0u32.to_le_bytes()); // reads
+    buf.extend_from_slice(&0u32.to_le_bytes()); // writes
+    buf.extend_from_slice(&0u32.to_le_bytes()); // calls
+    buf.push(0u8); // opaque
+    buf.push(0b0000_1000u8); // reserved bit 3 set
+    buf.extend_from_slice(&0u32.to_le_bytes()); // dispatch count
+    let index = InkbIndex {
+        version: 5,
+        file_size: u32::try_from(buf.len()).unwrap(),
+        checksum: 0,
+        sections: vec![SectionEntry {
+            kind: SectionKind::EffectRows,
+            offset: 0,
+        }],
+    };
+    let err = brink_format::read_section_effect_rows(&buf, &index).unwrap_err();
+    assert_eq!(err, DecodeError::InvalidEffectDimensions(0b0000_1000));
 }
 
 /// An `EffectRows` section carrying an unknown section-local version byte is

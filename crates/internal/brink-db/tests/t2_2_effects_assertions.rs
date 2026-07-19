@@ -1,11 +1,11 @@
-//! T2-2 `#@effects(…)` assertion surface + exceedance error, exercised
+//! T2-2 `@[effects(…)]` assertion surface + exceedance error, exercised
 //! end-to-end through `ProjectDb`'s salsa query layer (docs/effects-spec.md
 //! §10, sitting 2 — 2026-07-14; issue #861 — tracked from #859). Builds on
 //! T2-1's `effects(def)` substrate (`t2_1_effect_rows.rs`).
 //!
 //! Per the sitting-2 ruling, EXCEEDANCE (`E103`) is the *only* diagnostic
 //! this surface produces — an inferred row narrower than its declared
-//! `#@effects(…)` bound is silent; there is no drift policy. These tests
+//! `@[effects(…)]` bound is silent; there is no drift policy. These tests
 //! cover one exceedance fixture per atom class (reads, writes, calls, and
 //! the ref-param-indirect write class PR #866 fixed), the `pure` sugar, and
 //! assertion-satisfied silence.
@@ -36,11 +36,11 @@ fn codes(diags: &[brink_ir::Diagnostic]) -> Vec<DiagnosticCode> {
 
 #[test]
 fn exceedance_on_an_extra_read() {
-    // `#@effects(pure)` declares the empty row; `spend` actually reads
+    // `@[effects(pure)]` declares the empty row; `spend` actually reads
     // `gold` — exceedance.
     let diags = analyze(
         "VAR gold = 0\n\
-         === function spend() ===\n#@effects(pure)\n~ return gold\n",
+         === function spend() ===\n@[effects(pure)]\n~ return gold\n",
     );
     assert_eq!(codes(&diags), vec![DiagnosticCode::E103], "{diags:?}");
     assert!(diags[0].message.contains("reads gold"), "{diags:?}");
@@ -51,7 +51,7 @@ fn exceedance_on_an_extra_write() {
     // Declares only `reads: gold`; the body also writes it.
     let diags = analyze(
         "VAR gold = 0\n\
-         === function spend(cost) ===\n#@effects(reads: gold)\n~ gold = gold - cost\n~ return gold\n",
+         === function spend(cost) ===\n@[effects(reads: gold)]\n~ gold = gold - cost\n~ return gold\n",
     );
     assert_eq!(codes(&diags), vec![DiagnosticCode::E103], "{diags:?}");
     assert!(diags[0].message.contains("writes gold"), "{diags:?}");
@@ -62,7 +62,7 @@ fn exceedance_on_an_extra_call() {
     // Declares `reads: gold` only; the body also calls the external.
     let diags = analyze(
         "VAR gold = 0\nEXTERNAL play_sfx(x)\n\
-         === function spend(cost) ===\n#@effects(reads: gold)\n\
+         === function spend(cost) ===\n@[effects(reads: gold)]\n\
          ~ temp before = gold\n~ play_sfx(cost)\n~ return before\n",
     );
     assert_eq!(codes(&diags), vec![DiagnosticCode::E103], "{diags:?}");
@@ -79,7 +79,7 @@ fn exceedance_via_ref_param_indirect_write() {
     // declares only `reads: val` — the indirect write must still exceed it.
     let diags = analyze(
         "VAR val = 5\n\
-         === knot ===\n#@effects(reads: val)\n~ inc(val)\n{val}\n->->\n\
+         === knot ===\n@[effects(reads: val)]\n~ inc(val)\n{val}\n->->\n\
          === function inc(ref x) ===\n~ x = x + 1\n",
     );
     assert_eq!(codes(&diags), vec![DiagnosticCode::E103], "{diags:?}");
@@ -88,7 +88,7 @@ fn exceedance_via_ref_param_indirect_write() {
 
 #[test]
 fn pure_sugar_is_satisfied_by_a_genuinely_pure_body() {
-    let diags = analyze("=== function double(x) ===\n#@effects(pure)\n~ return x * 2\n");
+    let diags = analyze("=== function double(x) ===\n@[effects(pure)]\n~ return x * 2\n");
     assert!(diags.is_empty(), "{diags:?}");
 }
 
@@ -98,7 +98,7 @@ fn assertion_satisfied_is_silent_even_when_strictly_wider_than_inferred() {
     // touches) is explicitly NOT diagnosed — "no drift policy" (sitting 2).
     let diags = analyze(
         "VAR gold = 0\nVAR hp = 10\n\
-         === function spend(cost) ===\n#@effects(reads: gold, writes: gold, writes: hp)\n\
+         === function spend(cost) ===\n@[effects(reads: gold, writes: gold, writes: hp)]\n\
          ~ gold = gold - cost\n~ return gold\n",
     );
     assert!(
@@ -110,7 +110,7 @@ fn assertion_satisfied_is_silent_even_when_strictly_wider_than_inferred() {
 #[test]
 fn unknown_cell_name_in_assertion_is_e102() {
     let diags = analyze(
-        "VAR gold = 0\n=== function spend() ===\n#@effects(reads: nonexistent)\n~ return gold\n",
+        "VAR gold = 0\n=== function spend() ===\n@[effects(reads: nonexistent)]\n~ return gold\n",
     );
     assert_eq!(codes(&diags), vec![DiagnosticCode::E102], "{diags:?}");
 }
@@ -118,7 +118,7 @@ fn unknown_cell_name_in_assertion_is_e102() {
 #[test]
 fn unknown_external_name_in_assertion_is_e102() {
     let diags = analyze(
-        "VAR gold = 0\n=== function spend() ===\n#@effects(calls: nonexistent)\n~ return gold\n",
+        "VAR gold = 0\n=== function spend() ===\n@[effects(calls: nonexistent)]\n~ return gold\n",
     );
     assert_eq!(codes(&diags), vec![DiagnosticCode::E102], "{diags:?}");
 }
@@ -130,7 +130,7 @@ fn strict_ink_never_runs_the_exceedance_check() {
     let mut db = ProjectDb::new();
     db.set_file(
         "main.ink",
-        "VAR gold = 0\n=== function spend() ===\n#@effects(pure)\n~ return gold\n".to_owned(),
+        "VAR gold = 0\n=== function spend() ===\n@[effects(pure)]\n~ return gold\n".to_owned(),
     );
     let diags = db.analysis().diagnostics.clone();
     assert_eq!(codes(&diags), vec![DiagnosticCode::E051], "{diags:?}");
@@ -180,7 +180,7 @@ fn effects_row_attributes_the_assertion_to_the_actually_imported_modules_cell() 
         (
             "main.ink",
             "IMPORT { gold } FROM quest_a\n\
-             === function spend() ===\n#@effects(reads: gold)\n~ return gold\n",
+             === function spend() ===\n@[effects(reads: gold)]\n~ return gold\n",
         ),
     ]);
     assert!(
@@ -204,7 +204,7 @@ fn effects_row_attributes_the_assertion_to_the_other_importers_cell() {
         (
             "main.ink",
             "IMPORT { gold } FROM quest_b\n\
-             === function spend() ===\n#@effects(reads: gold)\n~ return gold\n",
+             === function spend() ===\n@[effects(reads: gold)]\n~ return gold\n",
         ),
     ]);
     assert!(
@@ -232,7 +232,7 @@ fn unimported_cross_module_reference_attributes_consistently_with_resolution() {
         ("quest_b.ink", QUEST_B),
         (
             "main.ink",
-            "=== function spend() ===\n#@effects(reads: gold)\n~ return gold\n",
+            "=== function spend() ===\n@[effects(reads: gold)]\n~ return gold\n",
         ),
     ]);
     assert!(
@@ -246,5 +246,97 @@ fn unimported_cross_module_reference_attributes_consistently_with_resolution() {
         "the assertion and the body reference must resolve to the same cell \
          (both via the same import-blind fallback), so no exceedance or \
          unknown-name diagnostic can fire: {diags:?}"
+    );
+}
+
+// ── NS-A2 (issue #1108): the `silent`/`total` assertion args ────────────
+
+#[test]
+fn silent_exceedance_on_a_content_line_is_e108() {
+    let diags = analyze("-> talker\n\n=== talker ===\n@[effects(silent)]\nHello there.\n-> END\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E108], "{diags:?}");
+}
+
+#[test]
+fn silent_exceedance_through_a_transitive_callee_is_e108() {
+    // The #1087 motivating shape: the asserted def never contains a content
+    // line itself — it calls a function that narrates.
+    let diags = analyze(
+        "=== function outer() ===\n@[effects(silent)]\n~ return speak()\n\n\
+         === function speak() ===\nDialogue!\n~ return 1\n",
+    );
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E108], "{diags:?}");
+}
+
+#[test]
+fn tag_only_line_does_not_exceed_silent() {
+    // The 2026-07-18 ruling: tags are the metadata channel, not narration —
+    // a flow that only annotates isn't speaking, so `silent` holds.
+    let diags = analyze("-> marker\n\n=== marker ===\n@[effects(silent)]\n# checkpoint\n-> END\n");
+    assert_eq!(codes(&diags), Vec::<DiagnosticCode>::new(), "{diags:?}");
+}
+
+#[test]
+fn total_exceedance_on_an_indexing_construct_is_e109() {
+    let diags = analyze("=== function pick_first(a) ===\n@[effects(total)]\n~ return a[0]\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E109], "{diags:?}");
+}
+
+#[test]
+fn total_exceedance_on_division_is_e109() {
+    let diags = analyze("=== function ratio(a, b) ===\n@[effects(total)]\n~ return a / b\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E109], "{diags:?}");
+}
+
+#[test]
+fn total_exceedance_on_a_faulting_stdlib_verb_is_e109() {
+    // `min` carries `NotOrderable`/`StdlibWrongType` fault paths — §4b's
+    // "orderings carry faults unconditionally" (mode-independent rows).
+    let diags = analyze("=== function lowest(a) ===\n@[effects(total)]\n~ return min(a) or 0\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E109], "{diags:?}");
+}
+
+#[test]
+fn satisfied_silent_and_total_are_silent() {
+    let diags =
+        analyze("=== function add(a, b) ===\n@[effects(pure, silent, total)]\n~ return a + b\n");
+    assert_eq!(codes(&diags), Vec::<DiagnosticCode>::new(), "{diags:?}");
+}
+
+#[test]
+fn emitting_def_without_silent_assertion_is_legal() {
+    // Exceedance-only posture: the dimensions are inferred metadata; only
+    // an explicit assertion can be exceeded.
+    let diags = analyze("-> talker\n\n=== talker ===\n@[effects(total)]\nHello.\n-> END\n");
+    assert_eq!(codes(&diags), Vec::<DiagnosticCode>::new(), "{diags:?}");
+}
+
+#[test]
+fn opaque_row_exceeds_both_silent_and_total() {
+    // A call through a function value is unbounded on every dimension.
+    let diags = analyze("=== function apply(cb) ===\n@[effects(silent, total)]\n~ return cb()\n");
+    assert_eq!(
+        codes(&diags),
+        vec![DiagnosticCode::E108, DiagnosticCode::E109],
+        "{diags:?}"
+    );
+}
+
+#[test]
+fn deprecated_hash_spelling_reaches_per_file_diagnostics_as_e110_warning() {
+    // E110 is a *lowering* diagnostic (the directive recognizer), so it
+    // surfaces on the per-file layer, not the cross-file analysis layer.
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(brink_opts());
+    let id = db.set_file(
+        "main.ink",
+        "=== function add(a, b) ===\n#@effects(pure)\n~ return a + b\n".to_owned(),
+    );
+    let diags = db.diagnostics(id).expect("file known").to_vec();
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E110], "{diags:?}");
+    assert_eq!(
+        diags[0].code.severity(),
+        brink_ir::Severity::Warning,
+        "the alias is a warning, not an error"
     );
 }

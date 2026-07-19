@@ -145,6 +145,54 @@ fn check_one(
     let Some(def_id) = find_def_id(ctx.index, file, kind, name) else {
         return;
     };
+    let Some(inferred) = rows.get(&def_id) else {
+        return;
+    };
+
+    // ── NS-A2 (issue #1108): the output/fault dimension assertions —
+    // `silent` (no emits) and `total` (no faults), each exceedance-only
+    // with its own code. Opaque rows are unbounded on every dimension
+    // (spec §3), so they exceed any concrete assertion.
+    if assertion.silent && (inferred.emits || inferred.opaque) {
+        out.push(Diagnostic {
+            file,
+            range: assertion.range,
+            code: DiagnosticCode::E108,
+            message: if inferred.opaque {
+                "inferred effects are unbounded (a call through a function value, or an                  unresolved callee) — the `silent` assertion cannot cover this definition"
+                    .to_string()
+            } else {
+                "inferred effects exceed the `silent` assertion: the definition can produce                  content (a content line, or a transitive call to an emitter)"
+                    .to_string()
+            },
+        });
+    }
+    if assertion.total && (inferred.faults || inferred.opaque) {
+        out.push(Diagnostic {
+            file,
+            range: assertion.range,
+            code: DiagnosticCode::E109,
+            message: if inferred.opaque {
+                "inferred effects are unbounded (a call through a function value, or an                  unresolved callee) — the `total` assertion cannot cover this definition"
+                    .to_string()
+            } else {
+                "inferred effects exceed the `total` assertion: the definition can raise a                  turn-terminating fault"
+                    .to_string()
+            },
+        });
+    }
+
+    // ── The state-row bound (`pure`, or one or more reads/writes/calls
+    // clauses) — the pre-NS-A2 `E102`/`E103` surface, unchanged. An
+    // assertion carrying only `silent`/`total` leaves the state row
+    // unbounded, so there is nothing further to check.
+    if !assertion.pure
+        && assertion.reads.is_empty()
+        && assertion.writes.is_empty()
+        && assertion.calls.is_empty()
+    {
+        return;
+    }
 
     let mut well_formed = true;
     let mut declared_reads = BTreeSet::new();
@@ -181,14 +229,18 @@ fn check_one(
         return;
     }
 
+    // The state bound never constrains the output/fault dimensions (those
+    // have their own assertion args above), so the declared row mirrors the
+    // inferred row on emits/tags/faults — `covers` then compares exactly
+    // the reads/writes/calls sets plus the opaque top.
     let declared_row = EffectRow {
         reads: declared_reads,
         writes: declared_writes,
         calls: declared_calls,
         opaque: false,
-    };
-    let Some(inferred) = rows.get(&def_id) else {
-        return;
+        emits: inferred.emits,
+        tags: inferred.tags,
+        faults: inferred.faults,
     };
     if !declared_row.covers(inferred) {
         out.push(Diagnostic {
@@ -254,7 +306,7 @@ fn unknown_name_diagnostic(file: FileId, range: TextRange, name: &str) -> Diagno
         range,
         code: DiagnosticCode::E102,
         message: format!(
-            "`#@effects` names `{name}`, which isn't a declared global VAR/CONST or EXTERNAL anywhere in the project"
+            "the effects assertion names `{name}`, which isn't a declared global VAR/CONST or EXTERNAL anywhere in the project"
         ),
     }
 }
@@ -267,7 +319,7 @@ fn unknown_name_diagnostic(file: FileId, range: TextRange, name: &str) -> Diagno
 fn exceedance_message(declared: &EffectRow, inferred: &EffectRow, index: &SymbolIndex) -> String {
     if inferred.opaque {
         return "inferred effects are unbounded (a call through a function value, or an \
-                 unresolved callee) — no `#@effects` assertion can cover this definition"
+                 unresolved callee) — no effects assertion can cover this definition"
             .to_string();
     }
     let name_of = |id: &DefinitionId| {
@@ -302,7 +354,7 @@ fn exceedance_message(declared: &EffectRow, inferred: &EffectRow, index: &Symbol
         parts.push(format!("calls {}", extra_calls.join(", ")));
     }
     format!(
-        "inferred effects exceed the `#@effects` assertion's declared bound: {}",
+        "inferred effects exceed the effects assertion's declared bound: {}",
         parts.join("; ")
     )
 }

@@ -222,6 +222,12 @@ pub struct CallAtom {
 /// Sets are stored as vectors already sorted/deduplicated by the producer so
 /// the encoding is deterministic (the analyzer sources them from `BTreeSet`s).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the four bools are independent wire dimensions of one factored \
+              effect row (opaque + the NS-A2 emits/tags/faults flags), not a \
+              state machine in disguise — mirrors the analyzer's EffectRow"
+)]
 pub struct DirectEffects {
     /// Global cells this row may read.
     pub reads: Vec<DefinitionId>,
@@ -232,6 +238,18 @@ pub struct DirectEffects {
     /// The pessimal top element (`docs/effects-spec.md` §3): this row performs
     /// a call whose effects inference cannot summarize.
     pub opaque: bool,
+    /// NS-A2 (issue #1108, from #1087): the definition may produce content —
+    /// narration/dialogue fragments a host renders (glue-only output counts;
+    /// tag-only lines do NOT — those set [`Self::tags`]). Bool v1.
+    pub emits: bool,
+    /// NS-A2 (issue #1108, from #1087's second ruling): the definition may
+    /// touch the tag channel. Independent of [`Self::emits`]. Bool v1.
+    pub tags: bool,
+    /// NS-A2 (issue #1108, from #1097): the definition may raise a
+    /// turn-terminating fault. Bool v1 — per-fault-kind granularity is the
+    /// reserved refinement and graduates via a section-version bump, the
+    /// same reservation discipline the capability/handle slots follow.
+    pub faults: bool,
 }
 
 /// A per-dispatch entry in a factored effect row (`docs/effects-spec.md` §7):

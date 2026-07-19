@@ -627,7 +627,12 @@ pub fn write_section_frame_shapes(shapes: &[FrameShapeDef], buf: &mut Vec<u8>) {
 ///
 /// Bumped 1 → 2 for #882: each row gains a leading `is_entry` byte (the
 /// freeze bit — see [`EffectRowEntry::is_entry`]).
-pub(crate) const EFFECT_ROWS_SECTION_VERSION: u8 = 2;
+///
+/// Bumped 2 → 3 for NS-A2 (issue #1108): each `DirectEffects` block gains a
+/// trailing extension-flags byte carrying the emits/tags/faults dimensions
+/// (bits 0–2; bits 3–7 reserved, strict-rejected — per-fault-kind
+/// granularity is the named future occupant, graduating via the next bump).
+pub(crate) const EFFECT_ROWS_SECTION_VERSION: u8 = 3;
 
 /// Write the T2-3 `EffectRows` section (no header framing): a one-byte
 /// section-local version, then the `DefinitionId → row` table of factored
@@ -672,6 +677,18 @@ fn encode_direct_effects(direct: &DirectEffects, buf: &mut Vec<u8>) {
         encode_call_atom(atom, buf);
     }
     write_u8(buf, u8::from(direct.opaque));
+    // NS-A2 extension-flags byte (section version 3): emits/tags/faults.
+    let mut dims = 0u8;
+    if direct.emits {
+        dims |= super::EFFECT_DIM_EMITS;
+    }
+    if direct.tags {
+        dims |= super::EFFECT_DIM_TAGS;
+    }
+    if direct.faults {
+        dims |= super::EFFECT_DIM_FAULTS;
+    }
+    write_u8(buf, dims);
 }
 
 /// Encode a single [`CallAtom`]: interned name, the capability-parameter slot

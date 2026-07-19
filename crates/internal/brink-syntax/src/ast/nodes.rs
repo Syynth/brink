@@ -8,8 +8,8 @@ use crate::SyntaxKind::{
     self, AMP, AMP_AMP, BANG, BANG_EQ, BANG_QUESTION, CARET, COLON, DIVERT, DOLLAR, EQ, EQ_EQ,
     FLOAT, GT, GT_EQ, HASH, IDENT, INTEGER, KW_AND, KW_CYCLE, KW_DONE, KW_ELSE, KW_END, KW_FALSE,
     KW_FUNCTION, KW_HAS, KW_HASNT, KW_MOD, KW_NOT, KW_ONCE, KW_OR, KW_REF, KW_SHUFFLE, KW_STOPPING,
-    KW_TODO, KW_TRUE, LT, LT_EQ, MINUS, MINUS_EQ, NEWLINE, PERCENT, PIPE, PLUS, PLUS_EQ, QUESTION,
-    SLASH, STAR, TILDE,
+    KW_TODO, KW_TRUE, L_PAREN, LT, LT_EQ, MINUS, MINUS_EQ, NEWLINE, PERCENT, PIPE, PLUS, PLUS_EQ,
+    QUESTION, R_PAREN, SLASH, STAR, TILDE,
 };
 use crate::ast::AstNode as _;
 use crate::ast::ast_node;
@@ -45,6 +45,7 @@ ast_node!(AuthorWarning, AUTHOR_WARNING);
 ast_node!(LogicLine, LOGIC_LINE);
 ast_node!(ContentLine, CONTENT_LINE);
 ast_node!(TagLine, TAG_LINE);
+ast_node!(AnnotationLine, ANNOTATION_LINE);
 ast_node!(StrayClosingBrace, STRAY_CLOSING_BRACE);
 
 // ── Logic ────────────────────────────────────────────────────────────
@@ -805,6 +806,54 @@ impl LogicLine {
 impl TagLine {
     pub fn tags(&self) -> Option<Tags> {
         support::child(&self.syntax)
+    }
+}
+
+// ── AnnotationLine ───────────────────────────────────────────────────
+
+impl AnnotationLine {
+    /// The annotation's name token — the `IDENT` after `@[` (e.g. `effects`
+    /// in `@[effects(pure)]`).
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        self.syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .find(|t| t.kind() == IDENT)
+    }
+
+    /// The raw text between the annotation's balanced `( … )` argument
+    /// parens, if present — `None` for a bare `@[name]`. Mirrors the
+    /// directive channel's raw-string argument contract
+    /// (`brink-ir`'s `ParsedDirective::arg`): the argument mini-grammar is
+    /// parsed downstream, not here.
+    pub fn arg_text(&self) -> Option<String> {
+        let mut depth = 0usize;
+        let mut collecting = false;
+        let mut out = String::new();
+        for el in self.syntax.children_with_tokens() {
+            let rowan::NodeOrToken::Token(tok) = el else {
+                continue;
+            };
+            match tok.kind() {
+                L_PAREN => {
+                    if collecting {
+                        out.push_str(tok.text());
+                    }
+                    depth += 1;
+                    collecting = true;
+                }
+                R_PAREN => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return Some(out);
+                    }
+                    out.push_str(tok.text());
+                }
+                _ if collecting => out.push_str(tok.text()),
+                _ => {}
+            }
+        }
+        collecting.then_some(out)
     }
 }
 

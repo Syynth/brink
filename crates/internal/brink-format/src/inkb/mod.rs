@@ -146,6 +146,15 @@ pub(crate) const CAP_PARAM_ANY: u8 = 0x00;
 /// a non-zero slot is the reserved handle-parameterized form (reader rejects).
 pub(crate) const HANDLE_PARAM_NONE: u8 = 0x00;
 
+/// NS-A2 (issue #1108): bit assignments for the `DirectEffects` extension
+/// flags byte (`EffectRows` section version 3). Bits 3–7 are RESERVED —
+/// the strict reader rejects a nonzero reserved bit until a section version
+/// graduates it (the same discipline as the capability/handle slots).
+pub(crate) const EFFECT_DIM_EMITS: u8 = 0b0000_0001;
+pub(crate) const EFFECT_DIM_TAGS: u8 = 0b0000_0010;
+pub(crate) const EFFECT_DIM_FAULTS: u8 = 0b0000_0100;
+pub(crate) const EFFECT_DIM_KNOWN_MASK: u8 = EFFECT_DIM_EMITS | EFFECT_DIM_TAGS | EFFECT_DIM_FAULTS;
+
 // LineContent tags
 pub(crate) const LINE_PLAIN: u8 = 0x00;
 pub(crate) const LINE_TEMPLATE: u8 = 0x01;

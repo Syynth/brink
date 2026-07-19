@@ -159,8 +159,19 @@ pub struct VisibilityDirective {
 /// `dialect_gate`), same superset-parse-then-reject shape as `#@module`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectsAssertion {
-    /// `#@effects(pure)` — sugar for the empty row.
+    /// `@[effects(pure)]` — asserts the empty state row (no reads, writes,
+    /// or calls). NS-A2 note: `pure` deliberately does NOT bound the output
+    /// dimensions — purity ≠ silence (issue #1087's motivating case).
     pub pure: bool,
+    /// `@[effects(silent)]` (NS-A2, issue #1108): asserts the definition
+    /// produces no content — the `emits` row dimension stays false. Tags
+    /// are NOT bounded by `silent` (they are the separate metadata channel;
+    /// a no-tags assertion arg has no ruled spelling v1).
+    pub silent: bool,
+    /// `@[effects(total)]` (NS-A2, issue #1108): asserts the definition
+    /// raises no turn-terminating fault — the `faults` row dimension stays
+    /// false.
+    pub total: bool,
     /// Declared `reads:` clause names, in source order.
     pub reads: Vec<String>,
     /// Declared `writes:` clause names, in source order.
@@ -1726,6 +1737,31 @@ pub enum DiagnosticCode {
     /// policies: the rule is part of the Option package itself, not a
     /// strict-mode refinement.
     E107,
+
+    // ── NS-A2 effect-row extension (issue #1108; docs/stdlib-spec.md
+    // §1.2/§9.2, issues #1087/#1097) ───────────────────────────────────
+    /// `@[effects(silent)]` exceedance: the definition's inferred row can
+    /// produce content (`emits`, incl. transitively through callees, or an
+    /// opaque/unbounded row). Exceedance-only, like `E103` — asserting less
+    /// than reality is legal, asserting more is not.
+    E108,
+    /// `@[effects(total)]` exceedance: the definition's inferred row can
+    /// raise a turn-terminating fault (`faults`, incl. transitively, or an
+    /// opaque/unbounded row). Exceedance-only, like `E103`.
+    E109,
+    /// The deprecated `#@effects(…)` tag-channel spelling — superseded by
+    /// the `@[effects(…)]` annotation final form (stdlib-spec §9.2, ruled
+    /// 2026-07-18). Warning: the alias keeps parsing (it shipped in
+    /// released surface, `@brink-lang/web@0.11.1`).
+    E110,
+    /// An `@[…]` annotation line naming anything other than `effects` —
+    /// the annotation channel's recognized name set is closed (v1: exactly
+    /// one member). Tag-channel directive names do not alias into it.
+    E111,
+    /// An `@[…]` annotation line outside its one recognized placement (the
+    /// leading run at the top of a knot/stitch body). Never a silent drop,
+    /// never content — the `E045` posture, on the annotation channel.
+    E112,
 }
 
 impl DiagnosticCode {
@@ -1844,6 +1880,11 @@ impl DiagnosticCode {
             Self::E105 => "E105",
             Self::E106 => "E106",
             Self::E107 => "E107",
+            Self::E108 => "E108",
+            Self::E109 => "E109",
+            Self::E110 => "E110",
+            Self::E111 => "E111",
+            Self::E112 => "E112",
         }
     }
 
@@ -1983,6 +2024,19 @@ impl DiagnosticCode {
             }
             Self::E106 => "map-literal key is outside the int/string/bool key domain",
             Self::E107 => "bare `none` needs a type from context",
+            Self::E108 => {
+                "inferred effects exceed the `@[effects(silent)]` assertion (the definition can produce content)"
+            }
+            Self::E109 => {
+                "inferred effects exceed the `@[effects(total)]` assertion (the definition can raise a turn-terminating fault)"
+            }
+            Self::E110 => {
+                "`#@effects(…)` is deprecated; use the `@[effects(…)]` annotation spelling"
+            }
+            Self::E111 => "unknown annotation name (the `@[…]` channel recognizes only `effects`)",
+            Self::E112 => {
+                "annotation line outside a recognized placement (top of a knot/stitch body)"
+            }
         }
     }
 
@@ -2005,7 +2059,8 @@ impl DiagnosticCode {
             | Self::E063
             | Self::E092
             | Self::E095
-            | Self::E106 => Severity::Warning,
+            | Self::E106
+            | Self::E110 => Severity::Warning,
             _ => Severity::Error,
         }
     }
@@ -2125,6 +2180,11 @@ impl DiagnosticCode {
             "E105" => Some(Self::E105),
             "E106" => Some(Self::E106),
             "E107" => Some(Self::E107),
+            "E108" => Some(Self::E108),
+            "E109" => Some(Self::E109),
+            "E110" => Some(Self::E110),
+            "E111" => Some(Self::E111),
+            "E112" => Some(Self::E112),
             _ => None,
         }
     }

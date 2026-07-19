@@ -511,6 +511,11 @@ pub enum DecodeError {
     /// (T2-3, `docs/effects-spec.md` §11, `docs/t1d-spec.md` §7). The slot is
     /// reserved — nothing emits a bound handle in this section version.
     InvalidEffectHandleParam(u8),
+    /// A `DirectEffects` extension-flags byte (NS-A2, `EffectRows` section
+    /// version 3) carried a set bit outside the known
+    /// emits/tags/faults mask — the reserved bits (3–7) are rejected until
+    /// a section version graduates them.
+    InvalidEffectDimensions(u8),
     /// A `ContainerDef`'s declared `param_count` disagreed with the number
     /// of per-param name/mode metadata entries that followed it (#954,
     /// sibling of the `.inkt` reader's same guard, #745). `ContainerDef`'s
@@ -584,6 +589,9 @@ impl fmt::Display for DecodeError {
             }
             Self::InvalidEffectHandleParam(b) => {
                 write!(f, "reserved effect handle-parameter slot set: {b:#04x}")
+            }
+            Self::InvalidEffectDimensions(b) => {
+                write!(f, "reserved effect-dimension flag bits set: {b:#04x}")
             }
             Self::ParamCountMismatch { declared, actual } => {
                 write!(

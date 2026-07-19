@@ -653,13 +653,13 @@ fn plain_tag_lines_are_unaffected() {
     assert_eq!(tags.len(), 2, "both plain tags survive: {tags:?}");
 }
 
-// ─── T2-2 `#@effects(…)` assertion directive (docs/effects-spec.md §10,
+// ─── T2-2 `@[effects(…)]` assertion directive (docs/effects-spec.md §10,
 // issue #861) ──────────────────────────────────────────────────────
 
 #[test]
 fn effects_directive_parses_reads_writes_calls_on_a_knot() {
     let (hir, diags) =
-        lower_hir("== guard ==\n#@effects(reads: gold, writes: alarm, calls: audio)\nHalt!\n");
+        lower_hir("== guard ==\n@[effects(reads: gold, writes: alarm, calls: audio)]\nHalt!\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let assertion = hir.knots[0]
         .effects_assertion
@@ -678,7 +678,7 @@ fn effects_directive_reads_clause_continues_across_bare_values() {
     // bare value with no `key:` prefix continues the most recently opened
     // clause (docs/effects-spec.md §10 grammar).
     let (hir, diags) =
-        lower_hir("== guard ==\n#@effects(reads: a, b, writes: c, calls: d)\nHalt!\n");
+        lower_hir("== guard ==\n@[effects(reads: a, b, writes: c, calls: d)]\nHalt!\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let assertion = hir.knots[0].effects_assertion.as_ref().expect("present");
     assert_eq!(assertion.reads, vec!["a".to_string(), "b".to_string()]);
@@ -688,7 +688,7 @@ fn effects_directive_reads_clause_continues_across_bare_values() {
 
 #[test]
 fn effects_pure_sugar_sets_pure_with_empty_lists() {
-    let (hir, diags) = lower_hir("== guard ==\n#@effects(pure)\nHalt!\n");
+    let (hir, diags) = lower_hir("== guard ==\n@[effects(pure)]\nHalt!\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let assertion = hir.knots[0].effects_assertion.as_ref().expect("present");
     assert!(assertion.pure);
@@ -699,7 +699,7 @@ fn effects_pure_sugar_sets_pure_with_empty_lists() {
 
 #[test]
 fn effects_directive_marks_stitch() {
-    let (hir, diags) = lower_hir("== guard ==\nHalt!\n= mood\n#@effects(reads: gold)\ngrumpy\n");
+    let (hir, diags) = lower_hir("== guard ==\nHalt!\n= mood\n@[effects(reads: gold)]\ngrumpy\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert!(hir.knots[0].effects_assertion.is_none());
     assert!(hir.knots[0].stitches[0].effects_assertion.is_some());
@@ -714,41 +714,55 @@ fn unmarked_knot_has_no_effects_assertion() {
 
 #[test]
 fn bare_effects_directive_is_e100() {
+    // Tag-channel spelling: the deprecation warning (E110) rides along.
     let (_hir, diags) = lower_hir("== guard ==\n#@effects\nHalt!\n");
+    assert_eq!(
+        codes(&diags),
+        vec![DiagnosticCode::E110, DiagnosticCode::E100]
+    );
+}
+
+#[test]
+fn bare_effects_annotation_is_e100() {
+    let (_hir, diags) = lower_hir("== guard ==\n@[effects]\nHalt!\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E100]);
 }
 
 #[test]
 fn empty_effects_args_is_e100() {
-    let (_hir, diags) = lower_hir("== guard ==\n#@effects()\nHalt!\n");
+    let (_hir, diags) = lower_hir("== guard ==\n@[effects()]\nHalt!\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E100]);
 }
 
 #[test]
 fn effects_unknown_clause_keyword_is_e101() {
-    let (_hir, diags) = lower_hir("== guard ==\n#@effects(frobs: gold)\nHalt!\n");
+    let (_hir, diags) = lower_hir("== guard ==\n@[effects(frobs: gold)]\nHalt!\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E101]);
 }
 
 #[test]
 fn effects_bare_value_with_no_open_clause_is_e101() {
-    let (_hir, diags) = lower_hir("== guard ==\n#@effects(gold)\nHalt!\n");
+    let (_hir, diags) = lower_hir("== guard ==\n@[effects(gold)]\nHalt!\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E101]);
 }
 
 #[test]
 fn effects_non_identifier_value_is_e101() {
-    let (_hir, diags) = lower_hir("== guard ==\n#@effects(reads: 1gold)\nHalt!\n");
+    let (_hir, diags) = lower_hir("== guard ==\n@[effects(reads: 1gold)]\nHalt!\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E101]);
 }
 
 #[test]
 fn effects_dynamic_content_is_e046() {
-    // Single E046 for dynamic `#@effects` directive. The dynamic check
+    // Single E046 for dynamic `#@effects` directive (plus the NS-A2
+    // deprecation warning for the tag spelling). The dynamic check
     // is deferred to `effects_assertion_from_directives`, not handled by
     // the generic check in `apply_scope_directives`, to avoid double-emitting.
     let (_hir, diags) = lower_hir("== guard ==\n#@effects({x})\nHalt!\n");
-    assert_eq!(codes(&diags), vec![DiagnosticCode::E046]);
+    assert_eq!(
+        codes(&diags),
+        vec![DiagnosticCode::E110, DiagnosticCode::E046]
+    );
 }
 
 #[test]
@@ -763,7 +777,8 @@ fn was_dynamic_content_is_e046() {
 
 #[test]
 fn duplicate_effects_directive_is_e048_first_wins() {
-    let (hir, diags) = lower_hir("== guard ==\n#@effects(reads: a)\n#@effects(reads: b)\nHalt!\n");
+    let (hir, diags) =
+        lower_hir("== guard ==\n@[effects(reads: a)]\n@[effects(reads: b)]\nHalt!\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E048]);
     let assertion = hir.knots[0].effects_assertion.as_ref().expect("present");
     assert_eq!(assertion.reads, vec!["a".to_string()]);
@@ -771,6 +786,9 @@ fn duplicate_effects_directive_is_e048_first_wins() {
 
 #[test]
 fn effects_on_var_is_e049() {
+    // Tag-channel spelling attached to a declaration: invalid target
+    // (E049), plus the NS-A2 deprecation warning is NOT emitted — the
+    // effects recognizer only runs for knot/stitch owners.
     let (_hir, diags) = lower_hir("#@effects(reads: gold)\nVAR gold = 0\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E049]);
 }
@@ -779,6 +797,132 @@ fn effects_on_var_is_e049() {
 fn effects_on_const_is_e049() {
     let (_hir, diags) = lower_hir("#@effects(pure)\nCONST max = 3\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E049]);
+}
+
+// ─── NS-A2 `@[effects(…)]` annotation surface (issue #1108;
+// docs/stdlib-spec.md §9.2) ─────────────────────────────────────────
+
+#[test]
+fn effects_annotation_flags_parse_any_subset() {
+    let (hir, diags) = lower_hir("== guard ==\n@[effects(pure, silent, total)]\nHalt!\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let a = hir.knots[0].effects_assertion.as_ref().expect("present");
+    assert!(a.pure && a.silent && a.total);
+    assert!(a.reads.is_empty() && a.writes.is_empty() && a.calls.is_empty());
+}
+
+#[test]
+fn effects_annotation_silent_alone_parses() {
+    let (hir, diags) = lower_hir("== guard ==\n@[effects(silent)]\nHalt!\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let a = hir.knots[0].effects_assertion.as_ref().expect("present");
+    assert!(!a.pure && a.silent && !a.total);
+}
+
+#[test]
+fn effects_annotation_flags_combine_with_clauses() {
+    let (hir, diags) =
+        lower_hir("VAR gold = 0\n== guard ==\n@[effects(silent, reads: gold)]\nHalt!\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let a = hir.knots[0].effects_assertion.as_ref().expect("present");
+    assert!(a.silent && !a.pure && !a.total);
+    assert_eq!(a.reads, vec!["gold".to_string()]);
+}
+
+#[test]
+fn effects_flag_name_after_clause_opener_is_a_clause_value() {
+    // A cell genuinely named `silent` stays assertable — a bare flag name
+    // is a FLAG only while no clause is open.
+    let (hir, diags) = lower_hir("VAR silent = 0\n== guard ==\n@[effects(reads: silent)]\nHalt!\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let a = hir.knots[0].effects_assertion.as_ref().expect("present");
+    assert!(
+        !a.silent,
+        "`silent` after `reads:` is a cell name, not a flag"
+    );
+    assert_eq!(a.reads, vec!["silent".to_string()]);
+}
+
+#[test]
+fn effects_pure_with_a_state_clause_is_contradictory_e101() {
+    let (_hir, diags) = lower_hir("== guard ==\n@[effects(pure, reads: gold)]\nHalt!\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E101]);
+}
+
+#[test]
+fn deprecated_hash_effects_spelling_warns_e110_and_still_parses() {
+    let (hir, diags) = lower_hir("== guard ==\n#@effects(pure)\nHalt!\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E110]);
+    let a = hir.knots[0]
+        .effects_assertion
+        .as_ref()
+        .expect("alias still parses");
+    assert!(a.pure);
+}
+
+#[test]
+fn hash_effects_spelling_accepts_the_new_flags_too() {
+    // One shared argument grammar for both spellings — the alias is not a
+    // frozen dialect of its own.
+    let (hir, diags) = lower_hir("== guard ==\n#@effects(silent, total)\nHalt!\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E110]);
+    let a = hir.knots[0].effects_assertion.as_ref().expect("present");
+    assert!(a.silent && a.total);
+}
+
+#[test]
+fn unknown_annotation_name_is_e111() {
+    let (_hir, diags) = lower_hir("== guard ==\n@[frobnicate(now)]\nHalt!\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E111]);
+}
+
+#[test]
+fn tag_directive_names_do_not_alias_into_the_annotation_channel() {
+    let (hir, diags) = lower_hir("== guard ==\n@[local]\nHalt!\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E111]);
+    assert!(
+        !hir.knots[0].is_local,
+        "`@[local]` must not act as `#@local`"
+    );
+}
+
+#[test]
+fn misplaced_annotation_line_is_e112_not_content() {
+    // Mid-body (below content) is not the leading run.
+    let (hir, diags) = lower_hir("== guard ==\nHalt!\n@[effects(pure)]\nMore.\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E112]);
+    assert!(
+        hir.knots[0].effects_assertion.is_none(),
+        "a misplaced annotation must not attach"
+    );
+}
+
+#[test]
+fn file_level_annotation_line_is_e112() {
+    let (_hir, diags) = lower_hir("@[effects(pure)]\nHello.\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E112]);
+}
+
+#[test]
+fn annotation_line_never_lowers_to_content() {
+    // The consumed placement is erased entirely — no content stmt carries
+    // the annotation text (the silent-drop rule's flip side: consumed, not
+    // dropped).
+    let (hir, diags) = lower_hir("== guard ==\n@[effects(pure)]\nHalt!\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body_text = format!("{:?}", hir.knots[0].body);
+    assert!(
+        !body_text.contains("effects"),
+        "annotation text leaked into the lowered body: {body_text}"
+    );
+}
+
+#[test]
+fn annotation_below_plain_tag_line_still_attaches() {
+    // Tag lines and annotation lines share the leading run (both orders).
+    let (hir, diags) = lower_hir("== guard ==\n# mood: grim\n@[effects(pure)]\nHalt!\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(hir.knots[0].effects_assertion.is_some());
 }
 
 // ─── TM-2 inline type annotations (docs/typed-mode-spec.md §3) ──────

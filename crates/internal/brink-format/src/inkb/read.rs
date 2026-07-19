@@ -680,9 +680,9 @@ pub fn read_section_effect_rows(
     }
     let count = read_u32(buf, &mut off)? as usize;
     // Minimum per-entry footprint: def_id(8) + is_entry(1) +
-    // direct(3×u32 counts + opaque) + dispatch count(4) = 8 + 1 + 12 + 1 + 4
-    // = 26 bytes.
-    let mut rows = Vec::with_capacity(safe_capacity(count, buf.len(), off, 26));
+    // direct(3×u32 counts + opaque + dims) + dispatch count(4) =
+    // 8 + 1 + 13 + 1 + 4 = 27 bytes.
+    let mut rows = Vec::with_capacity(safe_capacity(count, buf.len(), off, 27));
     for _ in 0..count {
         let def = read_def_id(buf, &mut off)?;
         // #882 freeze bit — see `EffectRowEntry::is_entry`'s doc.
@@ -764,11 +764,21 @@ fn decode_direct_effects(buf: &[u8], off: &mut usize) -> Result<DirectEffects, D
         calls.push(decode_call_atom(buf, off)?);
     }
     let opaque = read_u8(buf, off)? != 0;
+    // NS-A2 extension-flags byte (section version 3): the strict reader
+    // rejects reserved bits (3–7) until a section version graduates them —
+    // the same reservation discipline the capability/handle slots follow.
+    let dims = read_u8(buf, off)?;
+    if dims & !super::EFFECT_DIM_KNOWN_MASK != 0 {
+        return Err(DecodeError::InvalidEffectDimensions(dims));
+    }
     Ok(DirectEffects {
         reads,
         writes,
         calls,
         opaque,
+        emits: dims & super::EFFECT_DIM_EMITS != 0,
+        tags: dims & super::EFFECT_DIM_TAGS != 0,
+        faults: dims & super::EFFECT_DIM_FAULTS != 0,
     })
 }
 

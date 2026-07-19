@@ -42,8 +42,33 @@ pub(crate) enum Stepped {
 /// Execute a single instruction (or bookkeeping operation).
 ///
 /// The caller is responsible for looping and for enforcing safety limits.
-#[expect(clippy::too_many_lines)]
+///
+/// Thin wrapper over [`step_impl`]: under the `effect-trace` feature it also
+/// records a tracked turn-terminating fault (NS-A2, issue #1108 — the
+/// `faults` row dimension's ground truth) against the definition scope that
+/// was executing when the fault fired, before propagating the error
+/// unchanged. A zero-cost passthrough in ordinary builds.
 pub(crate) fn step<R: crate::rng::StoryRng>(
+    flow: &mut Flow,
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    context: &mut (impl ContextAccess + ?Sized),
+    stats: &mut Stats,
+    resolver: Option<&dyn PluralResolver>,
+) -> Result<Stepped, RuntimeError> {
+    let result = step_impl::<R>(flow, program, line_tables, context, stats, resolver);
+    #[cfg(feature = "effect-trace")]
+    if let Err(e) = &result
+        && crate::effect_trace::is_tracked_fault(e)
+        && let Some(def) = effect_trace_current_def(flow, program)
+    {
+        crate::effect_trace::record_fault(def);
+    }
+    result
+}
+
+#[expect(clippy::too_many_lines)]
+fn step_impl<R: crate::rng::StoryRng>(
     flow: &mut Flow,
     program: &Program,
     line_tables: &[Vec<LineEntry>],
@@ -136,6 +161,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 .get(scope_idx)
                 .and_then(|lines| lines.get(idx as usize))
                 .map_or(brink_format::LineFlags::EMPTY, |entry| entry.flags);
+            note_effect_emit(flow, program);
             flow.output
                 .push_line_ref(pos.container_idx, idx, slots, flags);
         }
@@ -146,15 +172,18 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         }
         Opcode::EmitValue => {
             let val = flow.pop_value()?;
+            note_effect_emit(flow, program);
             flow.output.push_value_ref(val);
         }
         Opcode::EmitNewline => {
             flow.output.push_newline();
         }
         Opcode::Spring => {
+            note_effect_emit(flow, program);
             flow.output.push_spring();
         }
         Opcode::Glue => {
+            note_effect_emit(flow, program);
             flow.output.push_glue();
         }
         Opcode::EndChoice => {
@@ -1140,6 +1169,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
             if let Some(tag_text) = flow.output.end_capture(program, line_tables, resolver) {
                 let tag = tag_text.trim().to_string();
                 flow.in_tag = false;
+                note_effect_tag(flow, program);
                 if flow.output.has_checkpoint() {
                     // Inside a capture (choice text, function call) — store
                     // for the choice/function to consume.
@@ -1311,6 +1341,40 @@ fn note_effect_write(flow: &Flow, program: &Program, cell: DefinitionId) {
 #[cfg(not(feature = "effect-trace"))]
 #[inline(always)]
 fn note_effect_write(_flow: &Flow, _program: &Program, _cell: DefinitionId) {}
+
+/// NS-A2 (issue #1108): record a content emission — but only on the
+/// *visible* output channel. Pushes routed into a string-eval capture
+/// (`BeginStringEval`, tag collection, function-return capture) build
+/// transient values, not player-visible content, and the static `emits`
+/// dimension deliberately does not model them — the observation side
+/// under-approximates there, which is the sound direction for the
+/// observed ⊆ declared assertion. Fragment captures (choice text, line
+/// slots) ARE visible content and do record.
+#[cfg(feature = "effect-trace")]
+fn note_effect_emit(flow: &Flow, program: &Program) {
+    if flow.output.in_capture() {
+        return;
+    }
+    if let Some(def) = effect_trace_current_def(flow, program) {
+        crate::effect_trace::record_emit(def);
+    }
+}
+#[cfg(not(feature = "effect-trace"))]
+#[inline(always)]
+fn note_effect_emit(_flow: &Flow, _program: &Program) {}
+
+/// NS-A2 (issue #1108): record a tag-channel touch — every `EndTag`
+/// destination (line tag, fragment tag, captured choice/function tag) is a
+/// tag the host can observe.
+#[cfg(feature = "effect-trace")]
+fn note_effect_tag(flow: &Flow, program: &Program) {
+    if let Some(def) = effect_trace_current_def(flow, program) {
+        crate::effect_trace::record_tag(def);
+    }
+}
+#[cfg(not(feature = "effect-trace"))]
+#[inline(always)]
+fn note_effect_tag(_flow: &Flow, _program: &Program) {}
 
 #[cfg(feature = "effect-trace")]
 fn note_effect_call(flow: &Flow, program: &Program, fn_id: DefinitionId) {

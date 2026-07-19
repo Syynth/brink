@@ -38,11 +38,22 @@ use brink_ir::SymbolIndex;
 /// whatever concrete atoms were also seen, but the display leads with the
 /// opaque note since it dominates.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the analyzer EffectRow's independent dimension flags"
+)]
 pub struct EffectRowView {
     pub reads: Vec<String>,
     pub writes: Vec<String>,
     pub calls: Vec<String>,
     pub opaque: bool,
+    /// NS-A2 (issue #1108): the definition may produce content (see
+    /// `EffectRow::emits`).
+    pub emits: bool,
+    /// NS-A2: the definition may touch the tag channel.
+    pub tags: bool,
+    /// NS-A2: the definition may raise a turn-terminating fault.
+    pub faults: bool,
 }
 
 impl EffectRowView {
@@ -71,6 +82,9 @@ impl EffectRowView {
             writes,
             calls,
             opaque: row.opaque,
+            emits: row.emits,
+            tags: row.tags,
+            faults: row.faults,
         }
     }
 
@@ -81,6 +95,13 @@ impl EffectRowView {
         !self.opaque && self.reads.is_empty() && self.writes.is_empty() && self.calls.is_empty()
     }
 
+    /// NS-A2: the empty row across every dimension — pure AND silent AND
+    /// untagged AND total.
+    #[must_use]
+    pub fn is_empty_row(&self) -> bool {
+        self.is_pure() && !self.emits && !self.tags && !self.faults
+    }
+
     /// The boring, stable one-line rendering (spec §10's "boring stable
     /// display: reads/writes/calls sets"):
     ///
@@ -89,10 +110,14 @@ impl EffectRowView {
     ///   every cell)`, with any concrete atoms appended after a `—`;
     /// - otherwise → the non-empty clauses joined by `; `, e.g.
     ///   `reads: gold, health; writes: alarm; calls: PlaySound`.
+    ///
+    /// NS-A2 (issue #1108): the emits/tags/faults dimensions join the line
+    /// as bare markers after the state clauses; a fully-empty row renders
+    /// `pure, silent, total` (the strongest statement the row makes).
     #[must_use]
     pub fn display_line(&self) -> String {
-        if self.is_pure() {
-            return "pure".to_string();
+        if self.is_empty_row() {
+            return "pure, silent, total".to_string();
         }
         let mut clauses = Vec::new();
         if !self.reads.is_empty() {
@@ -104,6 +129,15 @@ impl EffectRowView {
         if !self.calls.is_empty() {
             clauses.push(format!("calls: {}", self.calls.join(", ")));
         }
+        if self.emits {
+            clauses.push("emits".to_string());
+        }
+        if self.tags {
+            clauses.push("tags".to_string());
+        }
+        if self.faults {
+            clauses.push("faults".to_string());
+        }
         if self.opaque {
             let mut s = "opaque (calls through a function value; touches every cell)".to_string();
             if !clauses.is_empty() {
@@ -111,6 +145,12 @@ impl EffectRowView {
                 s.push_str(&clauses.join("; "));
             }
             return s;
+        }
+        if clauses.is_empty() {
+            // Pure state row that still emits/tags/faults was handled above;
+            // reaching here means state-pure with no dimension set — covered
+            // by is_empty_row, but keep the defensive arm total.
+            return "pure, silent, total".to_string();
         }
         clauses.join("; ")
     }
@@ -148,7 +188,25 @@ mod tests {
         let index = SymbolIndex::default();
         let view = EffectRowView::from_row(&EffectRow::default(), &index);
         assert!(view.is_pure());
-        assert_eq!(view.display_line(), "pure");
+        assert!(view.is_empty_row());
+        // NS-A2: the empty row is the strongest statement across every
+        // dimension — state purity, silence, totality.
+        assert_eq!(view.display_line(), "pure, silent, total");
+    }
+
+    #[test]
+    fn dimension_flags_render_as_bare_markers() {
+        let index = SymbolIndex::default();
+        let row = EffectRow {
+            emits: true,
+            tags: true,
+            faults: true,
+            ..Default::default()
+        };
+        let view = EffectRowView::from_row(&row, &index);
+        assert!(view.is_pure(), "state-pure despite output/fault dimensions");
+        assert!(!view.is_empty_row());
+        assert_eq!(view.display_line(), "emits; tags; faults");
     }
 
     #[test]
