@@ -19,6 +19,7 @@ mod map_keys;
 mod modules;
 mod option_rules;
 mod protocols;
+mod range_refinement;
 mod ref_projection;
 mod resolve;
 mod signature;

@@ -195,7 +195,11 @@ impl<'p> NameResolver<'p> {
             // Projection values (T1e, `docs/t1e-spec.md` §4). Same display
             // form as the runtime's authoritative `string(p)`
             // (`value_ops::stringify`).
-            Value::Projection(_) | Value::OptionVal(_) => value_ops::stringify(value, self.program),
+            // Range values (NS-A5, F7) share the authoritative display too:
+            // the written `0..10` / `1..=6` form.
+            Value::Projection(_) | Value::OptionVal(_) | Value::Range { .. } => {
+                value_ops::stringify(value, self.program)
+            }
         }
     }
 }

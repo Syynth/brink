@@ -22,7 +22,7 @@ use super::{
     MAGIC, PART_LITERAL, PART_SELECT, PART_SLOT, PROJ_SEG_INDEX, PROJ_SEG_KEY, SECTION_COUNT,
     SECTION_ENTRY_SIZE, SectionKind, VAL_ARRAY, VAL_BOOL, VAL_CLOSURE, VAL_DIVERT_TARGET,
     VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT, VAL_LIST, VAL_MAP, VAL_NULL,
-    VAL_OPTION, VAL_PROJECTION, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION,
+    VAL_OPTION, VAL_PROJECTION, VAL_RANGE, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION,
 };
 
 // ── Tier 1: Full story write ────────────────────────────────────────────────
@@ -333,6 +333,8 @@ fn encode_value_type(vt: ValueType, buf: &mut Vec<u8>) {
         ValueType::Projection => VAL_PROJECTION,
         // NS-A1 Option value type.
         ValueType::Option => VAL_OPTION,
+        // NS-A5 range value type (F7).
+        ValueType::Range => VAL_RANGE,
     };
     write_u8(buf, tag);
 }
@@ -473,6 +475,20 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
                     encode_value(v, buf);
                 }
             }
+        }
+        // Range values (NS-A5, F7): start i32, end i32, inclusive flag —
+        // the *written* form is preserved on the wire (1..=6 and 1..7 are
+        // content-equal but round-trip their own spelling). Flat: no
+        // recursion, no depth accounting.
+        Value::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            write_u8(buf, VAL_RANGE);
+            write_i32(buf, *start);
+            write_i32(buf, *end);
+            write_u8(buf, u8::from(*inclusive));
         }
     }
 }

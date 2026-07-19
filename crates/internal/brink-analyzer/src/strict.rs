@@ -190,6 +190,16 @@ pub fn check(
         inference,
         resolutions,
     ));
+    // NS-A5 (docs/stdlib-spec.md §7, F7/F8, issue #1111): the inhabited-
+    // range refinement — `int(r)` demands `NonEmptyRange` evidence under
+    // strict (E117); gradual is inert with the runtime-fault residual.
+    // The template for every future value refinement.
+    out.extend(crate::range_refinement::check(
+        files,
+        index,
+        inference,
+        resolutions,
+    ));
     out
 }
 
@@ -505,6 +515,10 @@ fn classify(ty: &Ty) -> Escape {
         // function as `Ty::Handle` at all — `unify` already folds it to
         // `Ty::Conflicted` at the point the two kinds meet, so it's caught
         // by the `Ty::Conflicted` arm above, not here.
+        // NS-A5: a resolved `Ty::Range` is concrete either way — the
+        // `non_empty` refinement bit is evidence, not openness; a missing
+        // refinement is E117's business (range_refinement), never an
+        // Unknown-escape.
         Ty::Int
         | Ty::Float
         | Ty::Bool
@@ -512,7 +526,8 @@ fn classify(ty: &Ty) -> Escape {
         | Ty::Divert
         | Ty::List(_)
         | Ty::Struct(_)
-        | Ty::Handle(_) => Escape::Clean,
+        | Ty::Handle(_)
+        | Ty::Range { .. } => Escape::Clean,
     }
 }
 

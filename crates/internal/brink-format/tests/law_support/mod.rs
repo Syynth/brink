@@ -220,6 +220,7 @@ fn assert_value_variants_exhaustive(value: &Value) {
         | Value::Closure(_)
         | Value::Handle { .. }
         | Value::Projection(_)
-        | Value::OptionVal(_) => {}
+        | Value::OptionVal(_)
+        | Value::Range { .. } => {}
     }
 }

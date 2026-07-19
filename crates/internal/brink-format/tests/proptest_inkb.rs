@@ -183,6 +183,11 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
         // default reaches the wire as a global's `default_value`.
         arb_def_id().prop_map(Value::FnRef),
         arb_closure(),
+        // NS-A5 range values (F7, `VAL_RANGE` on the wire): a flat scalar
+        // leaf — start/end/inclusive round-trip bit-for-bit (the written
+        // form is preserved; only *equality* is content-based).
+        (any::<i32>(), any::<i32>(), any::<bool>())
+            .prop_map(|(start, end, inclusive)| Value::range(start, end, inclusive)),
         // T1d handle values (docs/t1d-spec.md §2): the reserved `VAL_HANDLE`
         // tag's first emission — round-tripped here like every other value
         // tag.
@@ -285,7 +290,8 @@ fn assert_value_variants_exhaustive(value: &Value) {
         | Value::Closure(_)
         | Value::Handle { .. }
         | Value::Projection(_)
-        | Value::OptionVal(_) => {}
+        | Value::OptionVal(_)
+        | Value::Range { .. } => {}
     }
 }
 

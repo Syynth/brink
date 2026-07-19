@@ -98,6 +98,34 @@ pub(crate) fn value_to_js(v: &Value) -> JsValue {
             None => JsValue::NULL,
             Some(v) => value_to_js(v),
         },
+        // A range (NS-A5, F7) is a real script value, so it must not fall
+        // through to the VM-internal `null` arm (#667 hazard class). The
+        // ergonomic native form is a plain `{start, end, inclusive}` object
+        // — same shape as the lossless `TypedValueJs::Range` on the JSON
+        // boundary.
+        Value::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            let obj = js_sys::Object::new();
+            let _ = js_sys::Reflect::set(
+                &obj,
+                &JsValue::from_str("start"),
+                &JsValue::from_f64(f64::from(*start)),
+            );
+            let _ = js_sys::Reflect::set(
+                &obj,
+                &JsValue::from_str("end"),
+                &JsValue::from_f64(f64::from(*end)),
+            );
+            let _ = js_sys::Reflect::set(
+                &obj,
+                &JsValue::from_str("inclusive"),
+                &JsValue::from_bool(*inclusive),
+            );
+            obj.into()
+        }
         // Every remaining variant is VM-internal (a pointer, a divert target,
         // a fragment ref, a raw list, or an unmaterialized fn/projection
         // value) and has no useful native-JS shape at this scalar-only

@@ -322,6 +322,12 @@ impl HirVisitor for GateVisitor<'_> {
             Expr::RefArg(ra) => {
                 self.flag(ra.ptr.text_range(), "`ref` path-projection expression");
             }
+            // NS-A5 (docs/stdlib-spec.md §7, F7): `a..b` / `a..=b` range
+            // literals are brink-dialect-gated the same way — self-evident
+            // extension syntax, no resolution consult needed.
+            Expr::Range(r) => {
+                self.flag(r.ptr.text_range(), "`..`/`..=` range literal");
+            }
             _ => {}
         }
     }
@@ -708,6 +714,24 @@ mod tests {
     }
 
     // ── T1e path projections (docs/t1e-spec.md §2, issue #831) ────────
+
+    #[test]
+    fn strict_ink_flags_range_literal() {
+        // NS-A5 (docs/stdlib-spec.md §7, F7): `a..b` / `a..=b` are brink
+        // extension syntax — E051 under strict-ink, at the literal's span.
+        let hir = lower_src("~ x = 1..=6\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E051);
+        assert!(diags[0].message.contains("range"), "{diags:?}");
+    }
+
+    #[test]
+    fn brink_dialect_does_not_flag_range_literal() {
+        let hir = lower_src("~ x = 0..10\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::Brink);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
 
     #[test]
     fn strict_ink_flags_ref_expr() {

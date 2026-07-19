@@ -133,8 +133,59 @@ pub(crate) fn rand_chance<R: StoryRng>(
     Ok(())
 }
 
-/// `RandPick`: `[coll]` → `Option[T]`. Uniform draw from an array or a
-/// flags subset; empty → `none` (no draw). Fault on anything else.
+/// `rand::int` over a range (NS-A5, `docs/stdlib-spec.md` §7): `[r]` →
+/// `Int`. One uniform draw from the range's element sequence — inclusive/
+/// exclusive per the range's own written form. Dispatched from `vm.rs`'s
+/// `ConvertInt` arm when the operand is a `Range` (one value-directed
+/// `int(x)` verb, two legs).
+///
+/// An **empty** range faults ([`RuntimeError::EmptyRangeDraw`]) without
+/// consuming a draw — the F8 gradual-mode residual ("refinements are inert
+/// in gradual, the fault is what remains"); under `types = strict` this
+/// state is unrepresentable (the checker demanded `NonEmptyRange`
+/// evidence, E117). Contrast `pick(range)` below: pick's empty answer is
+/// absence (`none`), int's is a malformed question (fault) — the
+/// refinement is exactly what separates the two.
+///
+/// Draw shaping: `value = start + (draw % len)` with `i64` arithmetic —
+/// `len` can be up to 2³² (`i32::MIN..=i32::MAX`) while a draw carries 31
+/// bits, so ranges longer than 2³¹ cannot reach every element (documented
+/// pinned-algorithm trade, matching the frozen ink `RANDOM`'s modulo
+/// shaping; game-scale dice never notice).
+pub(crate) fn rand_int<R: StoryRng>(
+    flow: &mut Flow,
+    context: &mut (impl ContextAccess + ?Sized),
+) -> Result<(), RuntimeError> {
+    let v = flow.pop_value()?;
+    let (Some((start, end, inclusive)), Some(len)) = (v.as_range(), v.range_len()) else {
+        return Err(RuntimeError::StdlibWrongType {
+            verb: "int",
+            expected: "a range",
+            found: super::collection_ops::type_name(&v),
+        });
+    };
+    if len == 0 {
+        let range = if inclusive {
+            alloc::format!("{start}..={end}")
+        } else {
+            alloc::format!("{start}..{end}")
+        };
+        return Err(RuntimeError::EmptyRangeDraw { range });
+    }
+    let d = draw::<R>(context);
+    let offset = i64::from(d) % len;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "start + offset is an element of the range by construction, so it fits i32"
+    )]
+    let value = (i64::from(start) + offset) as i32;
+    flow.value_stack.push(Value::Int(value));
+    Ok(())
+}
+
+/// `RandPick`: `[coll]` → `Option[T]`. Uniform draw from an array, a
+/// flags subset, or a range; empty → `none` (no draw). Fault on anything
+/// else.
 pub(crate) fn rand_pick<R: StoryRng>(
     flow: &mut Flow,
     context: &mut (impl ContextAccess + ?Sized),
@@ -167,10 +218,29 @@ pub(crate) fn rand_pick<R: StoryRng>(
                 })))
             }
         }
+        // Ranges (NS-A5, `docs/stdlib-spec.md` §7): a range is a closed-set
+        // iterable, so pick draws one of its elements uniformly. Empty →
+        // `none` without a draw — pick's emptiness is dynamic-content
+        // *absence* (contrast `int(range)`, whose emptiness is a fault:
+        // the refinement is exactly what separates the two verbs).
+        Value::Range { start, .. } => {
+            let len = coll.range_len().unwrap_or(0);
+            if len == 0 {
+                Value::none()
+            } else {
+                let d = draw::<R>(context);
+                let offset = i64::from(d) % len;
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "start + offset is an element of the range, so it fits i32"
+                )]
+                Value::some(Value::Int((i64::from(*start) + offset) as i32))
+            }
+        }
         other => {
             return Err(RuntimeError::StdlibWrongType {
                 verb: "pick",
-                expected: "an array or flags subset",
+                expected: "an array, flags subset, or range",
                 found: super::collection_ops::type_name(other),
             });
         }
@@ -409,6 +479,124 @@ mod tests {
             rand_shuffle::<DotNetRng>(&mut flow, &mut ctx).unwrap();
             assert_eq!(ctx.previous_random(), before);
         }
+    }
+
+    // ── NS-A5: `rand::int` over the inhabited range + pick's range leg ──
+
+    #[test]
+    fn rand_int_draws_within_bounds_both_forms() {
+        let mut ctx = test_context();
+        ctx.set_rng_seed(21);
+        // Inclusive: every draw lands in [1, 6].
+        for _ in 0..200 {
+            let mut flow = test_flow();
+            flow.value_stack.push(Value::range(1, 6, true));
+            rand_int::<DotNetRng>(&mut flow, &mut ctx).unwrap();
+            let Value::Int(n) = flow.pop_value().unwrap() else {
+                unreachable!("rand_int returns Int");
+            };
+            assert!((1..=6).contains(&n), "inclusive draw out of range: {n}");
+        }
+        // Exclusive: every draw lands in [0, 3).
+        for _ in 0..200 {
+            let mut flow = test_flow();
+            flow.value_stack.push(Value::range(0, 3, false));
+            rand_int::<DotNetRng>(&mut flow, &mut ctx).unwrap();
+            let Value::Int(n) = flow.pop_value().unwrap() else {
+                unreachable!("rand_int returns Int");
+            };
+            assert!((0..3).contains(&n), "exclusive draw out of range: {n}");
+        }
+        // Single-element range: total, always that element, still draws.
+        let before = ctx.previous_random();
+        let mut flow = test_flow();
+        flow.value_stack.push(Value::range(5, 5, true));
+        rand_int::<DotNetRng>(&mut flow, &mut ctx).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::Int(5));
+        assert_ne!(ctx.previous_random(), before, "5..=5 still consumes a draw");
+    }
+
+    #[test]
+    fn rand_int_consumes_exactly_one_draw() {
+        let mut a = test_context();
+        let mut b = test_context();
+        a.set_rng_seed(9);
+        b.set_rng_seed(9);
+        let mut flow = test_flow();
+        flow.value_stack.push(Value::range(1, 100, true));
+        rand_int::<DotNetRng>(&mut flow, &mut a).unwrap();
+        // One raw draw on the twin cell reaches the same state.
+        draw::<DotNetRng>(&mut b);
+        assert_eq!(a.previous_random(), b.previous_random());
+    }
+
+    #[test]
+    fn rand_int_empty_range_faults_without_drawing() {
+        // The F8 gradual-mode residual: `int(0..0)` is a turn-terminating
+        // fault (a draw from nothing is a malformed question), and the
+        // cell is untouched — a faulted draw must not advance the RNG.
+        for r in [
+            Value::range(0, 0, false),
+            Value::range(5, 5, false),
+            Value::range(7, 2, true),
+        ] {
+            let mut ctx = test_context();
+            ctx.set_rng_seed(3);
+            let before = ctx.previous_random();
+            let mut flow = test_flow();
+            flow.value_stack.push(r);
+            let err = rand_int::<DotNetRng>(&mut flow, &mut ctx).unwrap_err();
+            assert!(matches!(err, RuntimeError::EmptyRangeDraw { .. }));
+            assert_eq!(ctx.previous_random(), before);
+        }
+        // The fault message carries the written form.
+        let mut ctx = test_context();
+        let mut flow = test_flow();
+        flow.value_stack.push(Value::range(5, 2, true));
+        let RuntimeError::EmptyRangeDraw { range } =
+            rand_int::<DotNetRng>(&mut flow, &mut ctx).unwrap_err()
+        else {
+            unreachable!("empty range must fault EmptyRangeDraw");
+        };
+        assert_eq!(range, "5..=2");
+    }
+
+    #[test]
+    fn rand_int_wrong_type_faults() {
+        let mut ctx = test_context();
+        let mut flow = test_flow();
+        flow.value_stack.push(Value::Int(6));
+        let err = rand_int::<DotNetRng>(&mut flow, &mut ctx).unwrap_err();
+        assert!(matches!(
+            err,
+            RuntimeError::StdlibWrongType { verb: "int", .. }
+        ));
+    }
+
+    #[test]
+    fn pick_range_draws_an_element_and_empty_is_none() {
+        let mut ctx = test_context();
+        ctx.set_rng_seed(13);
+        for _ in 0..100 {
+            let mut flow = test_flow();
+            flow.value_stack.push(Value::range(10, 13, false));
+            rand_pick::<DotNetRng>(&mut flow, &mut ctx).unwrap();
+            let Value::OptionVal(Some(inner)) = flow.pop_value().unwrap() else {
+                unreachable!("pick over non-empty range must be some(_)");
+            };
+            let Value::Int(n) = *inner else {
+                unreachable!("pick over a range yields ints");
+            };
+            assert!((10..13).contains(&n), "picked non-member: {n}");
+        }
+        // Empty range: absence (`none`), no draw — pick's emptiness is
+        // dynamic-content absence, NOT the int() fault.
+        let before = ctx.previous_random();
+        let mut flow = test_flow();
+        flow.value_stack.push(Value::range(4, 4, false));
+        rand_pick::<DotNetRng>(&mut flow, &mut ctx).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::none());
+        assert_eq!(ctx.previous_random(), before, "empty pick must not draw");
     }
 
     #[test]

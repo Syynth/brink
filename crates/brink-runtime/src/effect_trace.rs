@@ -150,6 +150,7 @@ pub fn is_tracked_fault(e: &crate::RuntimeError) -> bool {
             | E::CharAtOutOfBounds { .. }
             | E::StdlibWrongType { .. }
             | E::NotOrderable { .. }
+            | E::EmptyRangeDraw { .. }
             | E::ProjectionInvalidated(_)
             | E::NotCallable(_)
             | E::FunctionValueArity { .. }

@@ -265,6 +265,7 @@ fn parse_value_type(pair: P<'_>) -> Result<ValueType, InktParseError> {
         "closure" => Ok(ValueType::Closure),
         "projection" => Ok(ValueType::Projection),
         "option" => Ok(ValueType::Option),
+        "range" => Ok(ValueType::Range),
         _ => Err(err(&pair, format!("unknown value type: {s}"))),
     }
 }
@@ -386,6 +387,52 @@ fn parse_value(pair: P<'_>, type_hint: Option<ValueType>) -> Result<Value, InktP
                     col: 0,
                 }),
             }
+        }
+        // NS-A5 range values (docs/stdlib-spec.md §7, F7): `(range <start>
+        // <end> incl|excl)` — read-side leg paired with `write_value`'s
+        // Range atom (the #742 dump/reader parity lesson).
+        Rule::range_value => {
+            let mut parts = inner.into_inner();
+            let mut next_part = |what: &str| {
+                parts.next().ok_or_else(|| InktParseError {
+                    message: format!("expected {what} in range"),
+                    line: 0,
+                    col: 0,
+                })
+            };
+            let start_pair = next_part("start bound")?;
+            let end_pair = next_part("end bound")?;
+            let form_pair = next_part("incl/excl form")?;
+            let start: i32 = start_pair
+                .as_str()
+                .trim()
+                .parse()
+                .map_err(|_| InktParseError {
+                    message: format!("invalid range start: {}", start_pair.as_str()),
+                    line: 0,
+                    col: 0,
+                })?;
+            let end: i32 = end_pair
+                .as_str()
+                .trim()
+                .parse()
+                .map_err(|_| InktParseError {
+                    message: format!("invalid range end: {}", end_pair.as_str()),
+                    line: 0,
+                    col: 0,
+                })?;
+            let inclusive = match form_pair.as_str().trim() {
+                "incl" => true,
+                "excl" => false,
+                other => {
+                    return Err(InktParseError {
+                        message: format!("unexpected range form: {other}"),
+                        line: 0,
+                        col: 0,
+                    });
+                }
+            };
+            Ok(Value::range(start, end, inclusive))
         }
         Rule::fn_ref_value => {
             let id_pair = inner.into_inner().next().ok_or_else(|| InktParseError {
@@ -1957,6 +2004,9 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         "rand_chance" => Ok(Opcode::RandChance),
         "rand_pick" => Ok(Opcode::RandPick),
         "rand_shuffle" => Ok(Opcode::RandShuffle),
+        "range_make_excl" => Ok(Opcode::RangeMakeExcl),
+        "range_make_incl" => Ok(Opcode::RangeMakeIncl),
+        "range_non_empty" => Ok(Opcode::RangeNonEmpty),
 
         // Debug
         "source_location" => {

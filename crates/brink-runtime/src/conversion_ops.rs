@@ -135,6 +135,7 @@ fn type_name(v: &Value) -> &'static str {
         // the ruled `Option[T] ≠ T` strictness means no implicit unwrap,
         // even of a `some(3)`. (`string(x)` stays total via `stringify`.)
         Value::OptionVal(_) => "option",
+        Value::Range { .. } => "range",
     }
 }
 

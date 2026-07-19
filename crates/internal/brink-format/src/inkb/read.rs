@@ -27,8 +27,8 @@ use super::{
     LINE_TEMPLATE, MAGIC, PART_LITERAL, PART_SELECT, PART_SLOT, PROJ_SEG_INDEX, PROJ_SEG_KEY,
     SECTION_ENTRY_SIZE, SectionEntry, SectionKind, VAL_ARRAY, VAL_BOOL, VAL_CLOSURE,
     VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT, VAL_LIST,
-    VAL_MAP, VAL_NULL, VAL_OPTION, VAL_PROJECTION, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER,
-    VERSION, safe_capacity,
+    VAL_MAP, VAL_NULL, VAL_OPTION, VAL_PROJECTION, VAL_RANGE, VAL_RECORD, VAL_STRING,
+    VAL_VAR_POINTER, VERSION, safe_capacity,
 };
 
 // ── Tier 1: Full story read ─────────────────────────────────────────────────
@@ -359,6 +359,7 @@ fn decode_value_type(buf: &[u8], off: &mut usize) -> Result<ValueType, DecodeErr
         VAL_HANDLE => Ok(ValueType::Handle),
         VAL_PROJECTION => Ok(ValueType::Projection),
         VAL_OPTION => Ok(ValueType::Option),
+        VAL_RANGE => Ok(ValueType::Range),
         _ => Err(DecodeError::InvalidValueType(tag)),
     }
 }
@@ -482,6 +483,20 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Deco
             1 => Ok(Value::some(decode_value(buf, off, depth + 1)?)),
             other => Err(DecodeError::InvalidValueType(other)),
         },
+        // Range values (NS-A5, F7): start i32, end i32, inclusive flag.
+        // Flat — a range holds two ints, never another value, so there is
+        // no recursion and no depth accounting. Any flag byte other than
+        // 0/1 is corrupt input.
+        VAL_RANGE => {
+            let start = read_i32(buf, off)?;
+            let end = read_i32(buf, off)?;
+            let inclusive = match read_u8(buf, off)? {
+                0 => false,
+                1 => true,
+                other => return Err(DecodeError::InvalidValueType(other)),
+            };
+            Ok(Value::range(start, end, inclusive))
+        }
         _ => Err(DecodeError::InvalidValueType(tag)),
     }
 }

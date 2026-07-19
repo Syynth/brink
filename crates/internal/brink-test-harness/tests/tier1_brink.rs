@@ -273,6 +273,15 @@ fn rand_verbs_draw_deterministically_under_seed() {
     assert_case("rand-verbs");
 }
 
+// ── NS-A5: range values + the inhabited-range refinement
+// (docs/stdlib-spec.md §7, F7/F8, issue #1111). Same pinned-algorithm
+// golden discipline as rand-verbs: seed(11) + DotNetRng fix every draw. ──
+
+#[test]
+fn range_values_and_refinement_verbs() {
+    assert_case("range-values");
+}
+
 // ── Stdlib slice 1 completion: char_at (docs/t1b-surface-spec.md §5,
 // issue #857) ──────────────────────────────────────────────────────────────
 
@@ -414,6 +423,7 @@ fn every_case_directory_has_a_test() {
         "ref-call-with-block-temp",
         "option-verbs",
         "rand-verbs",
+        "range-values",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink")

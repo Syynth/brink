@@ -320,4 +320,22 @@ pub enum RuntimeError {
         verb: &'static str,
         found: &'static str,
     },
+
+    // ── NS-A5: the inhabited-range refinement (`docs/stdlib-spec.md` §7,
+    // F8 ruled 2026-07-19) ────────────────────────────────────────────────
+    /// `int(range)` reached an **empty** range at runtime — the F8 gradual-
+    /// mode residual, and THE template for every future value refinement:
+    /// under gradual typing the refinement check is inert at compile time
+    /// and this turn-terminating fault is what remains; under `types =
+    /// strict` the same condition is unrepresentable (the checker demands
+    /// `NonEmptyRange` evidence — a provably-inhabited literal or a
+    /// `non_empty(r)` unwrap — and reports E117 statically). A draw from
+    /// nothing is a malformed question, never an absence, so this is a
+    /// fault and not a `none` (the ruled fault-vs-absence doctrine;
+    /// contrast `pick(0..0)`, which IS absence and returns `none`).
+    #[error("`int` cannot draw from the empty range {range} — validate with `non_empty(r)` first")]
+    EmptyRangeDraw {
+        /// The written form of the offending range (`0..0`, `5..=2`, …).
+        range: String,
+    },
 }

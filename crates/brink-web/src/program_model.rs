@@ -186,6 +186,19 @@ impl<'a> Resolver<'a> {
                 None => "none".to_owned(),
                 Some(v) => format!("some({})", self.format_value(v)),
             },
+            // Range values (NS-A5, F7): same display form as the runtime's
+            // authoritative `string(r)` — the written `0..10` / `1..=6`.
+            Value::Range {
+                start,
+                end,
+                inclusive,
+            } => {
+                if *inclusive {
+                    format!("{start}..={end}")
+                } else {
+                    format!("{start}..{end}")
+                }
+            }
             Value::Projection(p) => {
                 let mut out = format!("ref {}", self.gname(p.cell));
                 for seg in &p.segments {
@@ -587,6 +600,10 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         Opcode::RandChance => "rand_chance".to_owned(),
         Opcode::RandPick => "rand_pick".to_owned(),
         Opcode::RandShuffle => "rand_shuffle".to_owned(),
+        // NS-A5 range ops (#1111).
+        Opcode::RangeMakeExcl => "range_make_excl".to_owned(),
+        Opcode::RangeMakeIncl => "range_make_incl".to_owned(),
+        Opcode::RangeNonEmpty => "range_non_empty".to_owned(),
     }
 }
 

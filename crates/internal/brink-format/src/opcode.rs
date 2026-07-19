@@ -348,6 +348,18 @@ const RAND_CHANCE: u8 = 0xED;
 const RAND_PICK: u8 = 0xEE;
 const RAND_SHUFFLE: u8 = 0xEF;
 
+// NS-A5 range ops (`docs/stdlib-spec.md` §7, F7 ruled 2026-07-19; this
+// PR's own reservation). The 0xEC-0xEF block is full and 0xF0-0xF3 are
+// lifecycle, so these take the next free bytes after the lifecycle block's
+// tail. Two construction ops rather than one flag-operand op keeps the
+// whole rand/range family operand-free (disasm and roundtrip stay
+// table-driven). `rand::int` deliberately has NO byte here — it rides the
+// existing `CONVERT_INT` (0xE2): `int(x)` is ONE value-directed verb whose
+// range leg is the draw (see `brink-runtime::vm`'s `ConvertInt` dispatch).
+const RANGE_MAKE_EXCL: u8 = 0xF4;
+const RANGE_MAKE_INCL: u8 = 0xF5;
+const RANGE_NON_EMPTY: u8 = 0xF6;
+
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
 const LIST_NOT_CONTAINS: u8 = 0xB1;
@@ -993,6 +1005,22 @@ pub enum Opcode {
     /// both surfaces: `shuffle(a)` (statement-only, RMW write-back) and
     /// `shuffled(a)` (functional). Fault on a non-array.
     RandShuffle,
+    /// `[start, end]` → `Range` (NS-A5, F7): construct an exclusive
+    /// (`start..end`) range value from two int bounds. Fault on non-int
+    /// bounds (malformed question — the T1b stdlib doctrine; no numeric
+    /// coercion, range bounds are ints by ruling).
+    RangeMakeExcl,
+    /// `[start, end]` → `Range` (NS-A5, F7): construct an inclusive
+    /// (`start..=end`) range value from two int bounds. Same fault
+    /// contract as [`RangeMakeExcl`](Self::RangeMakeExcl).
+    RangeMakeIncl,
+    /// `[r]` → `Option[Range]` (NS-A5, the `non_empty(r)` validator —
+    /// S2 ruled 2026-07-19): `some(r)` when the range denotes at least one
+    /// element, `none` when it is empty. The Option tax sits once at the
+    /// boundary where dynamic bounds enter; the checker types the `some`
+    /// payload as the inhabited-range refinement. Pure — no draw, no
+    /// write. Fault on a non-range operand.
+    RangeNonEmpty,
 
     // ── Lifecycle ───────────────────────────────────────────────────────
     Done,
@@ -1349,6 +1377,9 @@ impl Opcode {
             Self::RandChance => write_u8(buf, RAND_CHANCE),
             Self::RandPick => write_u8(buf, RAND_PICK),
             Self::RandShuffle => write_u8(buf, RAND_SHUFFLE),
+            Self::RangeMakeExcl => write_u8(buf, RANGE_MAKE_EXCL),
+            Self::RangeMakeIncl => write_u8(buf, RANGE_MAKE_INCL),
+            Self::RangeNonEmpty => write_u8(buf, RANGE_NON_EMPTY),
 
             // Lifecycle
             Self::Done => write_u8(buf, DONE),
@@ -1589,6 +1620,9 @@ impl Opcode {
             RAND_CHANCE => Self::RandChance,
             RAND_PICK => Self::RandPick,
             RAND_SHUFFLE => Self::RandShuffle,
+            RANGE_MAKE_EXCL => Self::RangeMakeExcl,
+            RANGE_MAKE_INCL => Self::RangeMakeIncl,
+            RANGE_NON_EMPTY => Self::RangeNonEmpty,
 
             // Lifecycle
             DONE => Self::Done,
@@ -1964,6 +1998,35 @@ mod tests {
             Opcode::RandShuffle,
         ] {
             roundtrip(&op);
+        }
+    }
+
+    #[test]
+    fn roundtrip_ns_a5_range_ops() {
+        for op in [
+            Opcode::RangeMakeExcl,
+            Opcode::RangeMakeIncl,
+            Opcode::RangeNonEmpty,
+        ] {
+            roundtrip(&op);
+        }
+    }
+
+    /// The NS-A5 block layout: the three range ops take the first free
+    /// bytes after the lifecycle block (0xF0-0xF3). `rand::int` has NO
+    /// byte — it rides the existing `ConvertInt` (0xE2), a value-directed
+    /// dispatch in the VM.
+    #[test]
+    fn ns_a5_opcode_block_layout() {
+        let expected: [(u8, Opcode); 3] = [
+            (0xF4, Opcode::RangeMakeExcl),
+            (0xF5, Opcode::RangeMakeIncl),
+            (0xF6, Opcode::RangeNonEmpty),
+        ];
+        for (byte, op) in expected {
+            let mut buf = Vec::new();
+            op.encode(&mut buf);
+            assert_eq!(buf[0], byte, "{op:?} encoded to unexpected discriminant");
         }
     }
 

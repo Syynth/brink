@@ -20,7 +20,7 @@ local_flag = { "local" }
 // T1c (issue #742): "record" | "fn_ref" | "closure" mirror
 // `value_type_name` in `inkt/write.rs` — a global var can legally declare
 // any of the three T1c function-value tags as its `value_type`.
-type_name = { "int" | "float" | "bool" | "string" | "list" | "divert_target" | "var_pointer" | "null" | "array" | "map" | "record" | "fn_ref" | "closure" | "handle" | "projection" | "option" }
+type_name = { "int" | "float" | "bool" | "string" | "list" | "divert_target" | "var_pointer" | "null" | "array" | "map" | "record" | "fn_ref" | "closure" | "handle" | "projection" | "option" | "range" }
 
 // ── Lists ───────────────────────────────────────────────────────────────────
 
@@ -153,7 +153,7 @@ source_loc = @{ ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ }
 
 // ── Values ──────────────────────────────────────────────────────────────────
 
-value = { array_value | map_value | list_value | var_pointer_value | fragment_ref_value | handle_value | projection_value | record_value | fn_ref_value | closure_value | option_value | string | float | integer | def_id | null_value | bool_value }
+value = { array_value | map_value | list_value | var_pointer_value | fragment_ref_value | handle_value | projection_value | record_value | fn_ref_value | closure_value | option_value | range_value | string | float | integer | def_id | null_value | bool_value }
 var_pointer_value = { "(" ~ "var_pointer" ~ def_id ~ ")" }
 fragment_ref_value = { "(" ~ "fragment_ref" ~ integer ~ ")" }
 // T1d handle value (docs/t1d-spec.md §2, docs/format-v4-rfc.md §1) — the
@@ -179,6 +179,12 @@ list_value = { "(" ~ "list" ~ list_value_items ~ list_value_origins ~ ")" }
 option_value = { some_value | none_value }
 some_value = { "(" ~ "some" ~ value ~ ")" }
 none_value = { "(" ~ "option_none" ~ ")" }
+// NS-A5 range value (docs/stdlib-spec.md §7, F7) — the textual mirror of
+// the VAL_RANGE wire tag: `(range <start> <end> incl|excl)`. The written
+// form (`..=` vs `..`) is preserved through the incl/excl token; reader
+// lands with the writer in the same PR (the #742 lesson).
+range_value = { "(" ~ "range" ~ integer ~ integer ~ range_form ~ ")" }
+range_form = { "incl" | "excl" }
 list_value_items = { "(" ~ "items" ~ def_id* ~ ")" }
 list_value_origins = { "(" ~ "origins" ~ def_id* ~ ")" }
 null_value = { "null" }

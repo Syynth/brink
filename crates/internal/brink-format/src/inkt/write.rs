@@ -748,6 +748,9 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::RandChance => write!(w, "rand_chance"),
         Opcode::RandPick => write!(w, "rand_pick"),
         Opcode::RandShuffle => write!(w, "rand_shuffle"),
+        Opcode::RangeMakeExcl => write!(w, "range_make_excl"),
+        Opcode::RangeMakeIncl => write!(w, "range_make_incl"),
+        Opcode::RangeNonEmpty => write!(w, "range_non_empty"),
     }
 }
 
@@ -806,6 +809,7 @@ fn value_type_name(vt: ValueType) -> &'static str {
         ValueType::Handle => "handle",
         ValueType::Projection => "projection",
         ValueType::Option => "option",
+        ValueType::Range => "range",
     }
 }
 
@@ -914,6 +918,18 @@ fn write_value(w: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
                 write!(w, ")")
             }
         },
+        // Range values (NS-A5, `docs/stdlib-spec.md` §7, F7): `(range
+        // <start> <end> incl|excl)` — the written form is preserved via the
+        // incl/excl token; reader lands with the writer in this same PR
+        // (the #742 dump/reader parity lesson).
+        Value::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            let form = if *inclusive { "incl" } else { "excl" };
+            write!(w, "(range {start} {end} {form})")
+        }
     }
 }
 

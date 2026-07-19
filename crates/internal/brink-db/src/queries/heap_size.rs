@@ -86,9 +86,14 @@ fn divert_target_heap(dt: &DivertTarget) -> usize {
 
 fn ty_heap(ty: &Ty) -> usize {
     match ty {
-        Ty::Int | Ty::Float | Ty::Bool | Ty::String | Ty::Divert | Ty::Unknown | Ty::Conflicted => {
-            0
-        }
+        Ty::Int
+        | Ty::Float
+        | Ty::Bool
+        | Ty::String
+        | Ty::Divert
+        | Ty::Range { .. }
+        | Ty::Unknown
+        | Ty::Conflicted => 0,
         Ty::List(name) | Ty::Struct(name) | Ty::Handle(name) => string_heap(name),
         Ty::Array(inner) | Ty::Option(inner) => size_of::<Ty>() + ty_heap(inner),
         Ty::Map(key, value) => size_of::<Ty>() * 2 + ty_heap(key) + ty_heap(value),
