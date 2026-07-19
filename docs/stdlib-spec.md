@@ -183,6 +183,55 @@ cross-referenced so views ≠ projections.
 - **The `list` reclaim dissolves**: type is `[T]`, literal `[…]`,
   vocabulary is "array"; the word "list" RETIRES entirely.
 
+### 4b. The ordering doctrine (RULED 2026-07-18)
+
+Serves `sort`/`sort_by`/`min`/`max`/heap (§8) and `compare` (§9.6).
+
+- **NaN flows through arithmetic (§2's NaN-totality untouched);
+  ordering contexts are where it stops.** DEV mode: a NaN operand
+  in `sort`/`sort_by`/`min`/`max`/`heap_push` is a
+  turn-terminating fault — the upstream bug surfaces at its first
+  ordering consumption. PROD mode: the pinned total order applies
+  — ordinary IEEE order with `-0 == +0` as a tie, NaN greater
+  than everything, NaN-vs-NaN ties. On NaN-free data the modes
+  agree exactly and cohere with `<`/`==` — zero
+  compare-vs-equality divergence on clean data (deliberately NOT
+  IEEE totalOrder, which would split `-0`/`+0` from `==`).
+- **The dev/prod split is FENCED**: available only where the prod
+  behavior is defined, total, and **fabricates no data** —
+  placement qualifies (every element preserved, order
+  deterministic, saves/replay-safe); fabrication never does
+  (`int("potato")`, OOB indexing stay always-fault). Checked int
+  overflow is a noted sibling candidate for the same knob — not
+  ruled. Knob home (project config + host override?) ⏳ tooling
+  sitting.
+- **Rows are mode-independent**: ordering verbs over `[float]`
+  carry `faults` unconditionally (the conservative union — prod
+  never fires it; the checker doesn't know modes exist).
+  `[int]`/`[string]`/`[bool]` orderings are total. Totality-gated
+  positions (wake conditions) therefore flag float orderings in
+  both modes — correct: a NaN-able wake condition is a landmine
+  regardless of build profile.
+- **What orders**: int · float (above) · bool (`false < true`) ·
+  strings lexicographic by USV (§3's unit; locale collation = the
+  intl pipeline's business, like casing) · arrays lexicographic
+  element-wise (elements recursively orderable; same NaN rule
+  inside). Structs/enums: ONLY via an explicit registry `compare`
+  impl (§9.6) — no structural auto-order (field declaration order
+  must not silently define semantics; derive-by-fields is
+  evidence-gated future). Not orderable: maps, flags subsets
+  (partial order), divert targets.
+- **Comparison operators stay frozen IEEE** (`NaN < x` false,
+  `NaN == NaN` false — ink-inherited, oracle-guarded, total).
+  Only the stdlib verbs carry the doctrine — the two-surface
+  pattern's third application.
+- **`sort_by`**: the comparator falls under the trio's
+  pure·silent rule plus the consistent-total-order LAW; the
+  implementation may fault on detected inconsistency; the
+  guarantee floor is "some permutation of the input, never
+  worse." `heap_push` checks at entry — the invariant then holds
+  over clean data.
+
 ## 5. Domain 4 — maps 🔶 (proposed, drafted between sittings)
 
 - Type `[K: V]` (doctrine §1.4); literal `Map { k: v }` (Phase A
@@ -315,11 +364,9 @@ precedent, oracle byte-identical):
   heap_pop(ref open) as node { … }` is the natural drain loop),
   maintaining the invariant over an ordinary `[T]`
   (`std::collections`). Rationale: zero new value kinds, zero wire
-  work, the Lua posture; min-heap. ⏳ **A total-ordering doctrine
-  is OWED, shared by `sort`/`sort_by`/heap** — the value model has
-  none today (map iteration order is itself an open ruling, and
-  NaN breaks float ordering: NaN-bearing `[float]` under
-  sort/heap is currently undefined — the doctrine must say). If the
+  work, the Lua posture; min-heap. Ordering per the ruled
+  doctrine (§4b): `heap_push` NaN-checks at entry (dev fault /
+  prod pinned order). If the
   ledger later shows shape-confusion incidents (heap-array indexed
   as if sorted), a sealed `Heap[T]` builtin is the designed
   upgrade path — recorded, not built.
@@ -382,11 +429,12 @@ precedent, oracle byte-identical):
    - `display` — `fn(T): string`, row ⊆ pure·silent·total; feeds
      the §1.6 boundary; enums/structs get structural defaults,
      user impls override. Machine states inherit it (#905).
-   - `compare` — `fn(T, T): int`, row ⊆ pure·silent·total; owns
-     the ⏳ total-ordering doctrine (§8) incl. the NaN decision,
-     made once. Coherence edge to state explicitly: user `compare`
-     vs ruled structural equality (`compare == 0` need not imply
-     `==`).
+   - `compare` — `fn(T, T): int`, row ⊆ pure·silent·total; user
+     impls slot into the RULED ordering doctrine (§4b). Coherence
+     edge still owed: user `compare` vs ruled structural equality
+     (`compare == 0` need not imply `==`) — the builtins cohere
+     on clean data by construction; the user-impl line needs
+     stating.
    - `iterate` — **pull-shaped**: `next(ref Self): Option[T]`,
      row ⊆ writes-receiver·silent·total, laws attached ("every
      element once; `none` terminal and sticky" — property-harness
@@ -426,14 +474,19 @@ precedent, oracle byte-identical):
 - Still awaiting the nod: §§5–9's remaining proposal content
   (updated to conform to the Option ruling but not themselves
   ruled).
+- **Also RULED 2026-07-18**: the ordering doctrine (§4b) — NaN
+  flows through arithmetic, faults at ordering contexts in DEV,
+  pinned non-fabricating total order in PROD; the dev/prod split
+  fenced to placement-never-fabrication; rows mode-independent;
+  the orderable-types roster; frozen IEEE operators.
 - In-section ⏳s: tower mini-spec (§2b) · view-materialization
   ratio (§3b) · intrinsic display notation lives in §9.4 now ·
   flags numeric-coupling ruling (§6) · rand::int empty-range
-  fault-vs-Option confirmation (§7) · total-ordering doctrine
-  incl. NaN, now homed in `compare` (§8/§9.6) · weighted-table
-  mutation surface (§8) · anonymous-record native spelling (§9.1,
-  owned by the code-dialect sitting) · holes' release policy
-  (§9.2) · protocol implementation spelling (§9.6).
+  fault-vs-Option confirmation (§7) · weighted-table mutation
+  surface (§8) · anonymous-record native spelling (§9.1, owned by
+  the code-dialect sitting) · holes' release policy (§9.2) ·
+  protocol implementation spelling + compare/equality coherence
+  line (§9.6) · dev/prod knob home (§4b, tooling sitting).
 - Maintainer-attention note: `remove` now names three verbs with
   divergent postures — seq remove-by-index (OOB ⇒ fault, the
   indexing contract), map remove-by-key (idempotent-total), flags
