@@ -314,7 +314,9 @@ fn run_command(command: Commands) -> ExitCode {
 }
 
 /// Resolve `AnalysisOptions` for `entry`, layering (in increasing priority):
-/// 1. `AnalysisOptions::default()` (`strict-ink` / `gradual`);
+/// 1. `AnalysisOptions::default()` (`strict-ink`; `types` unset — the
+///    effective policy is dialect-keyed per #1127: brink → strict,
+///    strict-ink → gradual);
 /// 2. a discovered `brink.toml`'s `[project] dialect`/`types` (#1005) — the
 ///    file walks up from `entry`'s directory to the nearest ancestor
 ///    containing `brink.toml`; a missing file changes nothing;
@@ -345,7 +347,7 @@ fn resolve_analysis_options(
         options.dialect = dialect;
     }
     if let Some(types) = types {
-        options.types = types;
+        options.types = Some(types);
     }
     Ok(options)
 }

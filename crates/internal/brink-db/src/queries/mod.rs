@@ -1542,9 +1542,14 @@ pub(crate) fn lir_knot_chunk_query(
 /// FG-4d (issue #830) also routes the per-knot chunk memos' `.types` read
 /// through this projection, so an `AnalysisOptions` edit that leaves `.types`
 /// unchanged keeps every knot chunk `Arc` pointer-identical.
+///
+/// Since the #1127 default flip this projects the *resolved* policy
+/// (`AnalysisOptions::type_policy()` — explicit `types` or the dialect-keyed
+/// default), so the cutoff argument is unchanged: same narrow `TypePolicy`
+/// value, resolved one query-hop later.
 #[salsa::tracked]
 pub(crate) fn type_policy_query(db: &dyn salsa::Database, project: ProjectInput) -> TypePolicy {
-    project.analysis_options(db).types
+    project.analysis_options(db).type_policy()
 }
 
 /// FG-4d **link phase**: assemble the per-knot chunk memos and the whole-root
@@ -1710,7 +1715,7 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
             lowering: &lowered_query(db, *f).diagnostics,
         })
         .collect();
-    let types = project.analysis_options(db).types;
+    let types = project.analysis_options(db).type_policy();
     let (mut errors, mut warnings) =
         partition_diagnostics(&inputs, diagnostics, disable_all, types);
 
@@ -1796,7 +1801,7 @@ pub(crate) fn lir_in_closure_query(db: &dyn salsa::Database, project: ProjectInp
             lowering: &lowered_query(db, *f).diagnostics,
         })
         .collect();
-    let types = project.analysis_options(db).types;
+    let types = project.analysis_options(db).type_policy();
     let (mut errors, mut warnings) =
         partition_diagnostics(&inputs, &diagnostics, disable_all, types);
 

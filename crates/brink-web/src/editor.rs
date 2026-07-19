@@ -211,8 +211,11 @@ impl EditorSession {
     }
 
     /// Set the TM-3 typed-mode policy (docs/typed-mode-spec.md §1, #660):
-    /// `"strict"` or `"gradual"`; any other value (or never calling this at
-    /// all) keeps the `Gradual` default. Mirrors `set_language_dialect`
+    /// `"strict"` or `"gradual"` (any other value maps to `"gradual"`).
+    /// Never calling this (and having no `brink.toml` `types` key) leaves
+    /// the dialect-keyed default in effect (issue #1127, ruled 2026-07-19):
+    /// `"brink"` → strict, `"strict-ink"` → gradual. An explicit call
+    /// always wins. Mirrors `set_language_dialect`
     /// exactly — this is the compile-facing counterpart of the compiler
     /// CLI's `--types strict`, previously reachable only there (PR #656 left
     /// `IdeSession` hardcoded to `Gradual`). `TypePolicy::Strict` requires

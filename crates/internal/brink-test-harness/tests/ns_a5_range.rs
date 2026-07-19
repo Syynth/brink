@@ -63,7 +63,7 @@ fn compile_strict(
         source,
         AnalysisOptions {
             dialect: Dialect::Brink,
-            types: TypePolicy::Strict,
+            types: Some(TypePolicy::Strict),
             ..AnalysisOptions::default()
         },
     )

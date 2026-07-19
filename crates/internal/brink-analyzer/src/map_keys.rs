@@ -332,7 +332,7 @@ mod tests {
         for types in [TypePolicy::Gradual, TypePolicy::Strict] {
             let opts = AnalysisOptions {
                 dialect: Dialect::Brink,
-                types,
+                types: Some(types),
                 ..Default::default()
             };
             let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);

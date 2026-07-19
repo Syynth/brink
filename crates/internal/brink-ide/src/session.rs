@@ -24,7 +24,7 @@ pub struct IdeSnapshot {
     external_check: ExternalCheckSeverity,
     semantic_type_check: SemanticTypeDiagnosticSeverity,
     dialect: Dialect,
-    types: TypePolicy,
+    types: Option<TypePolicy>,
 }
 
 impl IdeSnapshot {
@@ -89,16 +89,18 @@ pub struct IdeSession {
     /// background analysis pass regardless of this setting).
     language_dialect: Dialect,
     /// TM-3 typed-mode policy (docs/typed-mode-spec.md §1), set via
-    /// `set_type_policy`. Defaults to `TypePolicy::Gradual`, matching
-    /// `AnalysisOptions::default()` — byte-identical to pre-#619/#660
-    /// behavior until a caller opts in. Mirrors `language_dialect` exactly
-    /// (#660: PR #656 left this hardcoded to `Gradual` in both `snapshot`
-    /// and `analysis_options`, so the IDE/LSP/web surface could not reach
+    /// `set_type_policy`. `None` until a caller opts in — the effective
+    /// policy is then the dialect-keyed default (issue #1127, ruled
+    /// 2026-07-19: `brink` → strict, `strict-ink` → gradual), resolved by
+    /// `brink_analyzer::resolve_type_policy` via `AnalysisOptions::
+    /// type_policy()`. Mirrors `language_dialect` exactly (#660: PR #656
+    /// left this hardcoded to `Gradual` in both `snapshot` and
+    /// `analysis_options`, so the IDE/LSP/web surface could not reach
     /// `types = strict` at all — the compiler CLI's `--types strict` was the
     /// only path). Authoring-time/tooling input only, feeding
     /// `analyze`/`reanalyze`/`analyze_overlay`/`analyze_projection`, same as
     /// `language_dialect`.
-    type_policy: TypePolicy,
+    type_policy: Option<TypePolicy>,
     /// Per-file HIR projection cache (#480): the canonical structural model
     /// is computed once per edit and shared by every per-line/per-span view
     /// (`line_contexts`, folding, `hir_spans`). The flag records whether the
@@ -122,7 +124,7 @@ impl IdeSession {
             semantic_type_check: SemanticTypeDiagnosticSeverity::default(),
             dialect: None,
             language_dialect: Dialect::default(),
-            type_policy: TypePolicy::default(),
+            type_policy: None,
             projection_cache: RefCell::new(HashMap::new()),
         }
     }
@@ -202,15 +204,18 @@ impl IdeSession {
     /// normal passes (see `brink_analyzer::strict::config_error`) — same
     /// caller responsibility as `set_language_dialect`.
     pub fn set_type_policy(&mut self, types: TypePolicy) {
-        self.type_policy = types;
+        self.type_policy = Some(types);
         self.reanalyze();
     }
 
-    /// The registered TM-3 typed-mode policy (defaults to
-    /// `TypePolicy::Gradual`).
+    /// The *effective* TM-3 typed-mode policy: an explicit
+    /// `set_type_policy` value if one was ever registered, else the
+    /// dialect-keyed default (issue #1127 — `brink` → `Strict`,
+    /// `strict-ink` → `Gradual`), resolved through the one
+    /// `brink_analyzer::resolve_type_policy` seam.
     #[must_use]
     pub fn type_policy(&self) -> TypePolicy {
-        self.type_policy
+        brink_analyzer::resolve_type_policy(self.language_dialect, self.type_policy)
     }
 
     /// Set the severity policy for manifest-driven external checks, then
@@ -696,16 +701,26 @@ EXTERNAL add_state(who)
         );
     }
 
-    /// #660: `IdeSession` defaults to `TypePolicy::Gradual` (byte-identical
-    /// to pre-#619 behavior) until a caller opts in via `set_type_policy`.
+    /// #660/#1127: with no explicit `set_type_policy`, the effective policy
+    /// is the dialect-keyed default (2026-07-19 ruling) — `Gradual` under
+    /// the default `StrictInk` dialect (byte-identical to pre-#619
+    /// behavior), `Strict` once the dialect is `Brink`.
     #[test]
-    fn type_policy_defaults_to_gradual() {
-        let session = IdeSession::new();
+    fn type_policy_default_is_dialect_keyed() {
+        let mut session = IdeSession::new();
         assert_eq!(session.type_policy(), TypePolicy::Gradual);
         assert_eq!(
-            session.analysis_options().types,
+            session.analysis_options().type_policy(),
             TypePolicy::Gradual,
-            "analysis_options must mirror the default, not a hardcoded literal"
+            "analysis_options must mirror the resolved default"
+        );
+
+        session.set_language_dialect(Dialect::Brink);
+        assert_eq!(session.type_policy(), TypePolicy::Strict);
+        assert_eq!(
+            session.analysis_options().type_policy(),
+            TypePolicy::Strict,
+            "brink dialect with no explicit types defaults strict (#1127)"
         );
     }
 
@@ -751,13 +766,34 @@ EXTERNAL add_state(who)
         );
     }
 
-    /// #660: the default `TypePolicy::Gradual` must NOT flag the same
-    /// unused-param construct as `E065` — the setter must not blanket-enable
-    /// strict checks, only thread through the caller's actual choice.
+    /// #1127 (default flip): under `dialect = brink` with NO explicit
+    /// `set_type_policy`, the effective policy is `Strict`, so the
+    /// Unknown-escape check fires — the strict default reaches the analysis
+    /// path without any opt-in call.
     #[test]
-    fn gradual_default_does_not_flag_unknown_escape() {
+    fn brink_dialect_default_flags_unknown_escape() {
         let mut session = IdeSession::new();
         session.set_language_dialect(Dialect::Brink);
+        session.update_and_analyze("t.ink", "=== noop(x) ===\nHello.\n-> DONE\n".to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E065),
+            "brink-dialect default is strict (#1127): expected E065: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    /// #1127: `set_type_policy(Gradual)` remains the explicit opt-out knob
+    /// under `dialect = brink` — the same construct is silent again.
+    #[test]
+    fn explicit_gradual_opt_out_suppresses_unknown_escape() {
+        let mut session = IdeSession::new();
+        session.set_language_dialect(Dialect::Brink);
+        session.set_type_policy(TypePolicy::Gradual);
         session.update_and_analyze("t.ink", "=== noop(x) ===\nHello.\n-> DONE\n".to_string());
         let analysis = session.analysis().expect("analysis");
 
@@ -766,7 +802,7 @@ EXTERNAL add_state(who)
                 .diagnostics
                 .iter()
                 .any(|d| d.code == brink_ir::DiagnosticCode::E065),
-            "gradual (default) must not flag E065: {:?}",
+            "explicit gradual opt-out must not flag E065: {:?}",
             analysis.diagnostics
         );
     }

@@ -13,7 +13,7 @@ use brink_ir::DiagnosticCode;
 fn strict_opts() -> AnalysisOptions {
     AnalysisOptions {
         dialect: Dialect::Brink,
-        types: TypePolicy::Strict,
+        types: Some(TypePolicy::Strict),
         ..AnalysisOptions::default()
     }
 }
@@ -46,7 +46,7 @@ fn strict_with_strict_ink_dialect_reaches_production_diagnostics_as_config_error
     db.set_entry("main.ink");
     db.set_analysis_options(AnalysisOptions {
         dialect: Dialect::StrictInk,
-        types: TypePolicy::Strict,
+        types: Some(TypePolicy::Strict),
         ..AnalysisOptions::default()
     });
 

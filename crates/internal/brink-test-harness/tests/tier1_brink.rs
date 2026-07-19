@@ -1269,7 +1269,7 @@ fn strict_mode_rejects_int_of_a_divert_target_literal_with_e078() {
     let source = "=== knot ===\nHello.\n-> DONE\n=== main ===\n~ x = int(-> knot)\n-> DONE\n";
     let options = AnalysisOptions {
         dialect: Dialect::Brink,
-        types: brink_compiler::TypePolicy::Strict,
+        types: Some(brink_compiler::TypePolicy::Strict),
         ..AnalysisOptions::default()
     };
     let files: std::collections::HashMap<&str, &str> =

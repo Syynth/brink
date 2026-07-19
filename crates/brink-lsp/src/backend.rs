@@ -91,19 +91,23 @@ pub struct LanguageOptions {
     /// client-declared dialect too, instead of always defaulting to
     /// `StrictInk`.
     dialect: Arc<Mutex<Dialect>>,
-    /// `"strict"` or `"gradual"`; defaults to `Gradual`, matching
-    /// `AnalysisOptions::default()`. Mirrors `dialect` exactly (#660: PR
-    /// #656 left this reachable only via the compiler CLI's `--types
-    /// strict`, never via the IDE/LSP surface) — feeds `analysis_loop` so
-    /// its diagnostics analyze under the client-declared types policy too.
-    types: Arc<Mutex<TypePolicy>>,
+    /// `"strict"` or `"gradual"`; `None` when neither the client nor a
+    /// `brink.toml` ever said — the effective policy is then the
+    /// dialect-keyed default (issue #1127, ruled 2026-07-19: brink →
+    /// strict, strict-ink → gradual), resolved by
+    /// `AnalysisOptions::type_policy()` at each analysis pass. Mirrors
+    /// `dialect` exactly (#660: PR #656 left this reachable only via the
+    /// compiler CLI's `--types strict`, never via the IDE/LSP surface) —
+    /// feeds `analysis_loop` so its diagnostics analyze under the
+    /// client-declared types policy too.
+    types: Arc<Mutex<Option<TypePolicy>>>,
 }
 
 impl LanguageOptions {
     pub fn new() -> Self {
         Self {
             dialect: Arc::new(Mutex::new(Dialect::default())),
-            types: Arc::new(Mutex::new(TypePolicy::default())),
+            types: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -850,7 +854,7 @@ fn resolve_language_options(
     // brink` (a config-error diagnostic otherwise, `E064`) — the client's
     // responsibility, same as the compiler CLI.
     if let Some(types) = overrides.types {
-        options.types = types;
+        options.types = Some(types);
     }
 
     (options, outcome)
@@ -2298,10 +2302,7 @@ pub async fn analysis_loop(
                 .dialect
                 .lock()
                 .map_or_else(|_| Dialect::default(), |g| *g),
-            types: language
-                .types
-                .lock()
-                .map_or_else(|_| TypePolicy::default(), |g| *g),
+            types: language.types.lock().map_or_else(|_| None, |g| *g),
             ..AnalysisOptions::default()
         };
 

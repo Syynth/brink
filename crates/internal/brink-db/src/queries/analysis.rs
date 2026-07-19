@@ -420,7 +420,7 @@ pub(crate) fn whole_project_diagnostics_query(
     // inference from scratch via `infer_project` — the "inference finally
     // has a consumer" seam the per-def/per-SCC decomposition (FG-2, FG-2.1)
     // exists for. Gradual mode (the default) skips this block entirely.
-    if opts.types == TypePolicy::Strict {
+    if opts.type_policy() == TypePolicy::Strict {
         let strict_inference = (opts.dialect == brink_analyzer::Dialect::Brink)
             .then(|| type_inference_query(db, project).as_ref());
         // `strict_inference` is always `Some` here whenever `dialect =
@@ -607,7 +607,7 @@ pub(crate) fn has_errors_query(db: &dyn salsa::Database, project: ProjectInput) 
             lowering: &lowered_query(db, *f).diagnostics,
         })
         .collect();
-    let types = project.analysis_options(db).types;
+    let types = project.analysis_options(db).type_policy();
     let diagnostics = analysis_diagnostics_query(db, project);
     let (errors, _warnings) =
         super::partition_diagnostics(&inputs, diagnostics, disable_all, types);
@@ -661,7 +661,7 @@ pub(crate) fn has_errors_in_closure_query(db: &dyn salsa::Database, project: Pro
             lowering: &lowered_query(db, *f).diagnostics,
         })
         .collect();
-    let types = project.analysis_options(db).types;
+    let types = project.analysis_options(db).type_policy();
     let diagnostics: Vec<Diagnostic> = analysis_diagnostics_query(db, project)
         .iter()
         .filter(|d| closure.contains(&d.file))
