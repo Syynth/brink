@@ -1,4 +1,6 @@
-use brink_syntax::ast::{self, AstNode, SyntaxNodePtr};
+use brink_syntax::ast::{self, AstNode};
+
+use crate::provenance::NodeClass;
 
 use crate::{Block, DiagnosticCode, Sequence, SequenceType, Stmt};
 
@@ -31,7 +33,7 @@ impl LowerSequence for ast::SequenceWithAnnotation {
         };
 
         Ok(Sequence {
-            ptr: SyntaxNodePtr::from_node(self.syntax()),
+            ptr: scope.prov(NodeClass::Sequence, self.syntax()),
             kind,
             branches,
             container_id: None,
@@ -48,7 +50,7 @@ impl LowerSequence for ast::ImplicitSequence {
             .map(|b| wrap_content_as_block(b.syntax(), scope, sink))
             .collect();
         Ok(Sequence {
-            ptr: SyntaxNodePtr::from_node(self.syntax()),
+            ptr: scope.prov(NodeClass::Sequence, self.syntax()),
             kind: SequenceType::STOPPING,
             branches,
             container_id: None,
@@ -78,7 +80,7 @@ pub fn lower_block_sequence(
             .collect()
     });
     Sequence {
-        ptr: SyntaxNodePtr::from_node(seq.syntax()),
+        ptr: scope.prov(NodeClass::Sequence, seq.syntax()),
         kind,
         branches,
         container_id: None,

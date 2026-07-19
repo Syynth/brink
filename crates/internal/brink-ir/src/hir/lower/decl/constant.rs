@@ -9,6 +9,7 @@ use super::super::expr::LowerExpr;
 use super::super::helpers::name_from_ident;
 use super::super::types::lower_type_annotation;
 use super::DeclareSymbols;
+use crate::provenance::NodeClass;
 use crate::{ConstDecl, DiagnosticCode, Expr, SymbolKind};
 
 impl DeclareSymbols for ast::ConstDecl {
@@ -65,7 +66,7 @@ impl DeclareSymbols for ast::ConstDecl {
             .and_then(|ta| lower_type_annotation(&ta));
 
         Ok(ConstDecl {
-            ptr: ast::AstPtr::new(self),
+            ptr: scope.prov(NodeClass::ConstDecl, self.syntax()),
             name,
             value,
             annotation,

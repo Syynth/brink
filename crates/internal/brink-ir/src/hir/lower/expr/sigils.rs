@@ -8,7 +8,9 @@
 //! *allowed* is a `brink-analyzer` dialect-gate concern (E051/E052), decided
 //! after HIR lowering completes.
 
-use brink_syntax::ast::{self, AstNode, SyntaxNodePtr};
+use brink_syntax::ast::{self, AstNode};
+
+use crate::provenance::NodeClass;
 
 use crate::hir::types::{ArrayLiteral, FnLiteral, IndexExpr, MapLiteral, RefArgExpr};
 use crate::{DiagnosticCode, Expr, RefKind};
@@ -24,7 +26,7 @@ impl LowerExpr for ast::ArrayLiteral {
             elements.push(el.lower_expr(scope, sink)?);
         }
         Ok(Expr::ArrayLiteral(ArrayLiteral {
-            ptr: SyntaxNodePtr::from_node(self.syntax()),
+            ptr: scope.prov(NodeClass::ArrayLiteral, self.syntax()),
             elements,
         }))
     }
@@ -46,7 +48,7 @@ impl LowerExpr for ast::MapLiteral {
             entries.push((key, value));
         }
         Ok(Expr::MapLiteral(MapLiteral {
-            ptr: SyntaxNodePtr::from_node(self.syntax()),
+            ptr: scope.prov(NodeClass::MapLiteral, self.syntax()),
             entries,
         }))
     }
@@ -77,7 +79,7 @@ impl LowerExpr for ast::FnLiteral {
             args.push(a.lower_expr(scope, sink)?);
         }
         Ok(Expr::FnLiteral(FnLiteral {
-            ptr: SyntaxNodePtr::from_node(self.syntax()),
+            ptr: scope.prov(NodeClass::FnLiteral, self.syntax()),
             target,
             args,
         }))
@@ -92,7 +94,7 @@ impl LowerExpr for ast::RefExpr {
             .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E015))
             .and_then(|e| e.lower_expr(scope, sink))?;
         Ok(Expr::RefArg(RefArgExpr {
-            ptr: SyntaxNodePtr::from_node(self.syntax()),
+            ptr: scope.prov(NodeClass::RefArg, self.syntax()),
             operand: Box::new(operand),
         }))
     }
@@ -113,7 +115,7 @@ impl LowerExpr for ast::RangeExpr {
             .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E015))
             .and_then(|e| e.lower_expr(scope, sink))?;
         Ok(Expr::Range(crate::RangeExpr {
-            ptr: SyntaxNodePtr::from_node(self.syntax()),
+            ptr: scope.prov(NodeClass::Range, self.syntax()),
             start: Box::new(start),
             end: Box::new(end),
             inclusive: self.is_inclusive(),
@@ -133,7 +135,7 @@ impl LowerExpr for ast::IndexExpr {
             .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E015))
             .and_then(|e| e.lower_expr(scope, sink))?;
         Ok(Expr::Index(IndexExpr {
-            ptr: SyntaxNodePtr::from_node(self.syntax()),
+            ptr: scope.prov(NodeClass::Index, self.syntax()),
             base: Box::new(base),
             index: Box::new(index),
         }))

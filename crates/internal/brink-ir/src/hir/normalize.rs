@@ -230,7 +230,7 @@ fn splice_around(
     prefix: &[ContentPart],
     suffix: &[ContentPart],
     tags: &[Tag],
-    ptr: Option<brink_syntax::ast::SyntaxNodePtr>,
+    ptr: Option<crate::Provenance>,
 ) {
     let has_prefix = !prefix.is_empty();
     let has_suffix = !suffix.is_empty();
@@ -315,60 +315,32 @@ fn splice_around(
 }
 
 #[cfg(test)]
-#[expect(clippy::panic, clippy::items_after_statements)]
+#[expect(clippy::panic)]
 mod tests {
-    use brink_syntax::ast::{AstNode, SyntaxNodePtr};
-
     use super::super::types::*;
     use super::normalize_file;
 
     // ─── Helpers ────────────────────────────────────────────────────
 
-    fn dummy_ptr() -> SyntaxNodePtr {
-        let parsed = brink_syntax::parse("hello\n");
-        let root = parsed.tree().syntax().clone();
-        SyntaxNodePtr::from_node(&root)
+    fn dummy_ptr() -> crate::Provenance {
+        crate::Provenance::synthetic(
+            crate::provenance::NodeClass::Content,
+            rowan::TextRange::new(rowan::TextSize::new(0), rowan::TextSize::new(6)),
+        )
     }
 
-    fn dummy_tag_ptr() -> brink_syntax::ast::AstPtr<brink_syntax::ast::Tag> {
-        let parsed = brink_syntax::parse("hello #tag\n");
-        let root = parsed.tree().syntax().clone();
-        // Find the Tag node in the tree.
-        fn find_tag(
-            node: &brink_syntax::SyntaxNode,
-        ) -> Option<brink_syntax::ast::AstPtr<brink_syntax::ast::Tag>> {
-            use brink_syntax::ast::AstNode;
-            if let Some(tag) = brink_syntax::ast::Tag::cast(node.clone()) {
-                return Some(brink_syntax::ast::AstPtr::new(&tag));
-            }
-            for child in node.children() {
-                if let Some(ptr) = find_tag(&child) {
-                    return Some(ptr);
-                }
-            }
-            None
-        }
-        find_tag(&root).expect("should find Tag node in 'hello #tag'")
+    fn dummy_tag_ptr() -> crate::Provenance {
+        crate::Provenance::synthetic(
+            crate::provenance::NodeClass::Tag,
+            rowan::TextRange::new(rowan::TextSize::new(6), rowan::TextSize::new(10)),
+        )
     }
 
-    fn dummy_choice_ptr() -> brink_syntax::ast::AstPtr<brink_syntax::ast::Choice> {
-        let parsed = brink_syntax::parse("* choice\n");
-        let root = parsed.tree().syntax().clone();
-        fn find_choice(
-            node: &brink_syntax::SyntaxNode,
-        ) -> Option<brink_syntax::ast::AstPtr<brink_syntax::ast::Choice>> {
-            use brink_syntax::ast::AstNode;
-            if let Some(choice) = brink_syntax::ast::Choice::cast(node.clone()) {
-                return Some(brink_syntax::ast::AstPtr::new(&choice));
-            }
-            for child in node.children() {
-                if let Some(ptr) = find_choice(&child) {
-                    return Some(ptr);
-                }
-            }
-            None
-        }
-        find_choice(&root).expect("should find Choice node in '* choice'")
+    fn dummy_choice_ptr() -> crate::Provenance {
+        crate::Provenance::synthetic(
+            crate::provenance::NodeClass::Choice,
+            rowan::TextRange::new(rowan::TextSize::new(0), rowan::TextSize::new(8)),
+        )
     }
 
     fn text(s: &str) -> ContentPart {

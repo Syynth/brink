@@ -4,8 +4,9 @@
 //! returns (onwards), thread starts, and the various path forms
 //! (named path, `DONE`, `END`).
 
-use brink_syntax::ast::{self, AstNode, AstPtr, SyntaxNodePtr};
+use brink_syntax::ast::{self, AstNode};
 
+use crate::provenance::NodeClass;
 use crate::{
     DiagnosticCode, Divert, DivertPath, DivertTarget, Expr, RefKind, Return, Stmt, ThreadStart,
     TunnelCall,
@@ -47,7 +48,7 @@ impl LowerDivert for ast::DivertNode {
                 .collect();
             if !targets.is_empty() {
                 return Ok(Stmt::TunnelCall(TunnelCall {
-                    ptr: AstPtr::new(self),
+                    ptr: scope.prov(NodeClass::TunnelCall, self.syntax()),
                     targets,
                 }));
             }
@@ -70,7 +71,7 @@ impl LowerDivert for ast::DivertNode {
                 );
                 if !targets.is_empty() {
                     return Ok(Stmt::TunnelCall(TunnelCall {
-                        ptr: AstPtr::new(self),
+                        ptr: scope.prov(NodeClass::TunnelCall, self.syntax()),
                         targets,
                     }));
                 }
@@ -86,7 +87,7 @@ impl LowerDivert for ast::DivertNode {
                     }
                     DivertPath::Done => {
                         return Ok(Stmt::Divert(Divert {
-                            ptr: Some(SyntaxNodePtr::from_node(self.syntax())),
+                            ptr: Some(scope.prov(NodeClass::Divert, self.syntax())),
                             target: DivertTarget {
                                 path: DivertPath::Done,
                                 args: Vec::new(),
@@ -95,7 +96,7 @@ impl LowerDivert for ast::DivertNode {
                     }
                     DivertPath::End => {
                         return Ok(Stmt::Divert(Divert {
-                            ptr: Some(SyntaxNodePtr::from_node(self.syntax())),
+                            ptr: Some(scope.prov(NodeClass::Divert, self.syntax())),
                             target: DivertTarget {
                                 path: DivertPath::End,
                                 args: Vec::new(),
@@ -122,12 +123,12 @@ impl LowerDivert for ast::DivertNode {
             return match targets.len() {
                 0 => Err(sink.diagnose(range, DiagnosticCode::E012)),
                 1 => Ok(Stmt::Divert(Divert {
-                    ptr: Some(SyntaxNodePtr::from_node(self.syntax())),
+                    ptr: Some(scope.prov(NodeClass::Divert, self.syntax())),
                     #[expect(clippy::unwrap_used, reason = "length checked to be 1")]
                     target: targets.into_iter().next().unwrap(),
                 })),
                 _ => Ok(Stmt::TunnelCall(TunnelCall {
-                    ptr: AstPtr::new(self),
+                    ptr: scope.prov(NodeClass::TunnelCall, self.syntax()),
                     targets,
                 })),
             };
@@ -165,7 +166,7 @@ fn lower_thread_target(
         .unwrap_or_default();
 
     Some(ThreadStart {
-        ptr: AstPtr::new(thread),
+        ptr: scope.prov(NodeClass::ThreadStart, thread.syntax()),
         target: DivertTarget {
             path: DivertPath::Path(path),
             args,

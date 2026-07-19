@@ -1,8 +1,9 @@
 //! Stitch lowering: `lower_stitch`, `lower_top_level_stitch`.
 
-use brink_syntax::ast::{self, AstNode, AstPtr};
+use brink_syntax::ast::{self, AstNode};
 
-use crate::{Block, ContainerPtr, DiagnosticCode, Knot, ParamInfo, Stitch, SymbolKind};
+use crate::provenance::NodeClass;
+use crate::{Block, DiagnosticCode, Knot, ParamInfo, Stitch, SymbolKind};
 
 use super::super::block::LowerBlock;
 use super::super::context::{LowerScope, LowerSink, Lowered};
@@ -95,7 +96,7 @@ pub(super) fn lower_top_level_stitch(
     }
 
     Ok(Knot {
-        ptr: ContainerPtr::Stitch(AstPtr::new(stitch)),
+        ptr: scope.prov(NodeClass::Stitch, stitch.syntax()),
         name,
         is_function: false,
         params,
@@ -201,7 +202,7 @@ pub(super) fn lower_stitch(
     }
 
     Ok(Stitch {
-        ptr: AstPtr::new(stitch),
+        ptr: scope.prov(NodeClass::Stitch, stitch.syntax()),
         name,
         params,
         body,

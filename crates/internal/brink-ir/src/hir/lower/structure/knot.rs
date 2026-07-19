@@ -1,10 +1,11 @@
 //! Knot lowering: `lower_knot`, `lower_knot_body`, `lower_knot_params`, `lower_param`.
 
-use brink_syntax::ast::{self, AstNode, AstPtr};
+use brink_syntax::ast::{self, AstNode};
 
+use crate::provenance::NodeClass;
 use crate::{
-    Block, ContainerPtr, DiagnosticCode, Divert, DivertPath, DivertTarget, Knot, Name, Param,
-    ParamInfo, Path, Stitch, Stmt, SymbolKind,
+    Block, DiagnosticCode, Divert, DivertPath, DivertTarget, Knot, Name, Param, ParamInfo, Path,
+    Stitch, Stmt, SymbolKind,
 };
 
 use super::super::block::LowerBlock;
@@ -111,7 +112,7 @@ pub(super) fn lower_knot(
         .and_then(|ta| lower_type_annotation(&ta));
 
     Ok(Knot {
-        ptr: ContainerPtr::Knot(AstPtr::new(knot)),
+        ptr: scope.prov(NodeClass::Knot, knot.syntax()),
         name,
         is_function,
         params,

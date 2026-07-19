@@ -18,8 +18,9 @@
 //! [`resolve_include_path`] / [`compute_relative_path`] (inverses of each other).
 
 use brink_db::{compute_relative_path, resolve_include_path};
+use brink_ir::InkProvenanceResolver;
 use brink_syntax::SyntaxNode;
-use brink_syntax::ast::{AstNode as _, AstPtr, IncludeStmt};
+use brink_syntax::ast::{AstNode as _, IncludeStmt};
 use rowan::TextRange;
 
 use crate::rename::FileEdit;
@@ -79,7 +80,7 @@ pub fn rename_file(
             if resolve_include_path(fpath, &inc.file_path) != old {
                 continue;
             }
-            if let Some(range) = include_path_range(&inc.ptr, &root) {
+            if let Some(range) = include_path_range(fid, inc.ptr, &root) {
                 cross_file_edits.push(FileEdit {
                     file: fid,
                     range,
@@ -100,7 +101,7 @@ pub fn rename_file(
             if new_rel == inc.file_path {
                 continue; // unchanged (e.g. rename in place keeps the directory)
             }
-            if let Some(range) = include_path_range(&inc.ptr, &root) {
+            if let Some(range) = include_path_range(old_id, inc.ptr, &root) {
                 own_edits.push((
                     usize::from(range.start()),
                     usize::from(range.end()),
@@ -130,8 +131,13 @@ pub fn rename_file(
 
 /// The exact byte range of an `INCLUDE`'s file-path token (not the whole
 /// statement), resolved against the file's parse root.
-fn include_path_range(ptr: &AstPtr<IncludeStmt>, root: &SyntaxNode) -> Option<TextRange> {
-    let stmt = ptr.resolve(root)?;
+fn include_path_range(
+    file: brink_ir::FileId,
+    provenance: brink_ir::Provenance,
+    root: &SyntaxNode,
+) -> Option<TextRange> {
+    let resolver = InkProvenanceResolver::new(file, root);
+    let stmt: IncludeStmt = resolver.resolve_ast(provenance)?;
     Some(stmt.file_path()?.syntax().text_range())
 }
 

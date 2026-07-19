@@ -61,8 +61,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use brink_format::DefinitionId;
 use brink_ir::{
-    BaseType, Block, ContainerPtr, DocBlock, FileId, HirFile, HostManifest, Param, ResolutionMap,
-    SymbolIndex, SymbolKind, TypeExpr, TypeRef,
+    BaseType, Block, DocBlock, FileId, HirFile, HostManifest, Param, ResolutionMap, SymbolIndex,
+    SymbolKind, TypeExpr, TypeRef,
 };
 use rowan::TextRange;
 
@@ -430,7 +430,7 @@ fn type_ref_to_ty(t: &TypeRef, types: &BTreeMap<String, brink_ir::SemanticTypeDe
 /// `Stitch` nodes carry only a bare `Name`, not their own id.
 ///
 /// A *floating* stitch (`= stitch`, declared before any `== knot ==`
-/// header) lowers into `hir.knots` as a `Knot` node (`ContainerPtr::Stitch`)
+/// header) lowers into `hir.knots` as a `Knot` node (`NodeClass::Stitch` provenance)
 /// but was declared `SymbolKind::Stitch` with a bare name by
 /// `lower_top_level_stitch` — never `SymbolKind::Knot`, and never qualified
 /// with a knot prefix (there is no enclosing knot). So the symbol-kind used
@@ -445,10 +445,7 @@ fn collect_defs<'a>(files: &[(FileId, &'a HirFile)], index: &SymbolIndex) -> Vec
     let mut defs: Vec<Def<'a>> = Vec::new();
     for &(file_id, hir) in files {
         for knot in &hir.knots {
-            let knot_symbol_kind = match knot.ptr {
-                ContainerPtr::Knot(_) => SymbolKind::Knot,
-                ContainerPtr::Stitch(_) => SymbolKind::Stitch,
-            };
+            let knot_symbol_kind = knot.symbol_kind();
             if let Some(&id) = def_of.get(&(file_id, knot_symbol_kind, knot.name.text.clone())) {
                 defs.push(Def {
                     id,
@@ -1108,7 +1105,7 @@ mod tests {
     #[test]
     fn floating_stitch_body_is_inferred() {
         // A *floating* stitch — `= name`, declared before any `== knot ==`
-        // header — lowers into `hir.knots` (as `ContainerPtr::Stitch`) but
+        // header — lowers into `hir.knots` (with `NodeClass::Stitch` provenance) but
         // is declared `SymbolKind::Stitch` with a bare name, not
         // `SymbolKind::Knot`. Before #626, `collect_defs` always looked the
         // entry up as `SymbolKind::Knot`, the lookup silently failed, and
@@ -1123,8 +1120,8 @@ mod tests {
     #[test]
     fn floating_stitch_coexists_with_real_knot_and_its_nested_stitch() {
         // Regression guard for the fix itself: distinguishing floating
-        // stitches (`ContainerPtr::Stitch`) from real knots
-        // (`ContainerPtr::Knot`) in `collect_defs` must not disturb the
+        // stitches (`NodeClass::Stitch` provenance) from real knots
+        // (`NodeClass::Knot` provenance) in `collect_defs` must not disturb the
         // existing, already-working real-knot / nested-stitch lookup path.
         let (hir, index, res) = build(
             "= intro(hp)\n~ temp x = hp + 1\n-> DONE\n\

@@ -276,10 +276,7 @@ impl<'a> ConstructionVisitor<'a> {
     /// stitch promoted to knot status is indexed under `SymbolKind::Stitch`
     /// (#626), hence the `knot.ptr`-derived `kind`.
     fn knot_def_id(&self, knot: &Knot) -> Option<DefinitionId> {
-        let kind = match knot.ptr {
-            brink_ir::ContainerPtr::Knot(_) => SymbolKind::Knot,
-            brink_ir::ContainerPtr::Stitch(_) => SymbolKind::Stitch,
-        };
+        let kind = knot.symbol_kind();
         annotations::def_id_for(self.index, self.file, kind, &knot.name.text)
     }
 }

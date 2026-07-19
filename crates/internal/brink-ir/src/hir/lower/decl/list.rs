@@ -7,6 +7,7 @@ use super::super::directive::{DirectiveTarget, apply_scope_directives, directive
 use super::super::doc_comment::{DocPolicy, parse_doc_comment};
 use super::super::helpers::{make_name, name_from_ident};
 use super::DeclareSymbols;
+use crate::provenance::NodeClass;
 use crate::{DiagnosticCode, ListDecl, ListMember, SymbolKind};
 
 impl DeclareSymbols for ast::ListDecl {
@@ -14,7 +15,7 @@ impl DeclareSymbols for ast::ListDecl {
 
     fn declare_and_lower(
         &self,
-        _scope: &LowerScope,
+        scope: &LowerScope,
         sink: &mut impl LowerSink,
     ) -> Lowered<ListDecl> {
         let range = self.syntax().text_range();
@@ -67,7 +68,7 @@ impl DeclareSymbols for ast::ListDecl {
         }
 
         Ok(ListDecl {
-            ptr: ast::AstPtr::new(self),
+            ptr: scope.prov(NodeClass::ListDecl, self.syntax()),
             name,
             members,
         })

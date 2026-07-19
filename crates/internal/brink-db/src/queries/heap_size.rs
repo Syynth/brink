@@ -575,10 +575,10 @@ mod tests {
 
     /// Uses the real parse -> lower pipeline (same `lower_file` helper
     /// [`super::lower_file`] `lowered_query` calls) rather than
-    /// hand-built `HirFile`/`Knot` values — several HIR node types (e.g.
-    /// `ContainerPtr`) carry real `AstPtr`s with no meaningful `Default`,
-    /// so a genuine small-vs-large source pair is both easier to build and
-    /// closer to "known payloads" than a synthetic struct literal.
+    /// hand-built `HirFile`/`Knot` values — every HIR node carries a
+    /// `Provenance` with no meaningful `Default`, so a genuine
+    /// small-vs-large source pair is both easier to build and closer to
+    /// "known payloads" than a synthetic struct literal.
     #[test]
     fn lowered_file_heap_size_grows_with_story_length() {
         let small_src = "== knot\nHi.\n-> END\n";

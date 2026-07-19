@@ -61,10 +61,7 @@ pub(crate) fn check(
     for &(file, hir) in files {
         let resolution_by_range = resolution_index(resolutions, file);
         for knot in &hir.knots {
-            let kind = match knot.ptr {
-                brink_ir::ContainerPtr::Knot(_) => SymbolKind::Knot,
-                brink_ir::ContainerPtr::Stitch(_) => SymbolKind::Stitch,
-            };
+            let kind = knot.symbol_kind();
             let knot_locals = annotations::def_id_for(index, file, kind, &knot.name.text)
                 .and_then(|id| inference.bodies.get(&id))
                 .map(|b| &b.locals);

@@ -43,6 +43,15 @@ impl LowerScope {
             _ => label.to_string(),
         }
     }
+
+    /// Stamp ink-frontend [`crate::Provenance`] for `syntax` in this file.
+    pub fn prov(
+        &self,
+        class: crate::provenance::NodeClass,
+        syntax: &brink_syntax::SyntaxNode,
+    ) -> crate::Provenance {
+        crate::hir::ink_provenance(self.file_id, class, syntax)
+    }
 }
 
 // ─── Proof token ────────────────────────────────────────────────────

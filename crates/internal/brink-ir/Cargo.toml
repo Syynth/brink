@@ -21,6 +21,7 @@ regex.workspace = true
 
 [dev-dependencies]
 brink-analyzer = { path = "../brink-analyzer" }
+brink-codegen-inkb = { path = "../brink-codegen-inkb" }
 insta.workspace = true
 serde_json.workspace = true
 

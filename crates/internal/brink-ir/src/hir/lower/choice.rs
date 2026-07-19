@@ -3,8 +3,9 @@
 //! Implements [`LowerChoice`] on `ast::Choice` and provides gather lowering.
 
 use brink_syntax::SyntaxKind;
-use brink_syntax::ast::{self, AstNode, AstPtr, SyntaxNodePtr};
+use brink_syntax::ast::{self, AstNode};
 
+use crate::provenance::NodeClass;
 use crate::{Block, Choice, Content, ContentPart, Divert, Expr, InfixOp, Stmt, SymbolKind, Tag};
 
 use super::backbone::{BodyChild, classify_body_child};
@@ -119,7 +120,7 @@ impl LowerChoice for ast::Choice {
                 .next()
                 .and_then(|t| lower_divert_target_with_args(&t, scope, sink))?;
             Some(Divert {
-                ptr: Some(SyntaxNodePtr::from_node(d.syntax())),
+                ptr: Some(scope.prov(NodeClass::Divert, d.syntax())),
                 target,
             })
         });
@@ -141,7 +142,7 @@ impl LowerChoice for ast::Choice {
         body.stmts = preamble;
 
         Ok(Choice {
-            ptr: AstPtr::new(self),
+            ptr: scope.prov(NodeClass::Choice, self.syntax()),
             is_sticky,
             is_fallback,
             label,
