@@ -79,7 +79,7 @@ use brink_ir::hir::{
 use brink_ir::symbols::{DeclaredSymbol, SymbolManifest};
 use brink_ir::{Diagnostic, DiagnosticCode, Expr, FileId, SymbolKind};
 
-use crate::determinism::LookupSet;
+use crate::determinism::{LookupMap, LookupSet};
 
 /// Run every §4.2 admission check over one file's already-lowered
 /// `(HirFile, SymbolManifest)` pair.
@@ -707,6 +707,15 @@ fn check_is_function_sentinel(
     file_id: FileId,
     diags: &mut Vec<Diagnostic>,
 ) {
+    // Built once so the per-knot lookup below is O(1) — a `Vec::iter().find()`
+    // per knot would make this whole check O(n^2) over a knot-heavy file
+    // (caught by the NF-6 perf test: `perf_scales_linearly_with_file_size`).
+    let by_name: LookupMap<&str, &DeclaredSymbol> = manifest
+        .knots
+        .iter()
+        .map(|s| (s.name.as_str(), s))
+        .collect();
+
     for knot in &hir.knots {
         // A promoted top-level stitch never carries a function header —
         // `is_function` is always `false` there and the manifest never
@@ -715,7 +724,7 @@ fn check_is_function_sentinel(
         if knot.symbol_kind() != SymbolKind::Knot {
             continue;
         }
-        let Some(sym) = manifest.knots.iter().find(|s| s.name == knot.name.text) else {
+        let Some(sym) = by_name.get(knot.name.text.as_str()) else {
             continue; // absence is E122's concern, not this check's.
         };
         let sentinel = sym.detail.as_deref() == Some("function");
@@ -813,10 +822,15 @@ fn check_provenance_kind_consistency(
     file_id: FileId,
     diags: &mut Vec<Diagnostic>,
 ) {
+    // Built once — see `check_is_function_sentinel`'s comment on the same
+    // O(n^2)-via-repeated-linear-scan trap.
+    let knot_names: LookupSet<&str> = manifest.knots.iter().map(|s| s.name.as_str()).collect();
+    let stitch_names: LookupSet<&str> = manifest.stitches.iter().map(|s| s.name.as_str()).collect();
+
     for knot in &hir.knots {
         let expected = knot.symbol_kind();
-        let in_knots = manifest.knots.iter().any(|s| s.name == knot.name.text);
-        let in_stitches = manifest.stitches.iter().any(|s| s.name == knot.name.text);
+        let in_knots = knot_names.contains(knot.name.text.as_str());
+        let in_stitches = stitch_names.contains(knot.name.text.as_str());
         let ok = match expected {
             SymbolKind::Stitch => in_stitches && !in_knots,
             _ => in_knots && !in_stitches,
