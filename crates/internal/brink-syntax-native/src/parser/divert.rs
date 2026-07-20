@@ -10,8 +10,37 @@ use crate::SyntaxKind::{
 use super::Parser;
 
 /// `-> target` (a plain divert) or `-> place ->` (a tunnel call — divert,
-/// target, divert, charter §11: "KEPT as `-> place ->`").
+/// target, divert, charter §11: "KEPT as `-> place ->`"). Statement
+/// position — a line whose first token is `->` (`block::body_line`'s
+/// dispatch) — also consumes a trailing `NEWLINE`, since this call owns
+/// terminating the line. [`divert_in_content`] is the content-position
+/// sibling (N-1): a `->` that follows prose on the same content run
+/// shares this exact node-shape logic but must NOT consume the `NEWLINE`
+/// itself — the enclosing content loop (`content::content_items_until`)
+/// owns line termination there, same as it does for any other content
+/// item.
 pub(crate) fn divert_or_tunnel(p: &mut Parser<'_, '_>) {
+    divert_or_tunnel_core(p);
+    if p.at(NEWLINE) {
+        p.skip_ws();
+        p.bump();
+    }
+}
+
+/// The content-position sibling of [`divert_or_tunnel`] (N-1, charter
+/// §11: diverts are "kept verbatim" including in content position — the
+/// Fogg exhibit spells `* [The wager.] -> know_about_wager` this way).
+/// Called from `content::content_items_until` whenever a `DIVERT` token
+/// appears anywhere in a content run, not only as a line's first token.
+/// Does not consume a trailing `NEWLINE` — see the doc comment above.
+pub(crate) fn divert_in_content(p: &mut Parser<'_, '_>) {
+    divert_or_tunnel_core(p);
+}
+
+/// Shared grammar: `-> target` or `-> place ->`, without any
+/// newline-consumption policy (that differs by call site, see
+/// [`divert_or_tunnel`]/[`divert_in_content`]'s doc comments).
+fn divert_or_tunnel_core(p: &mut Parser<'_, '_>) {
     let checkpoint = p.checkpoint();
     p.bump(); // DIVERT (->)
     divert_target(p);
@@ -23,10 +52,6 @@ pub(crate) fn divert_or_tunnel(p: &mut Parser<'_, '_>) {
     } else {
         p.start_node_at(checkpoint, DIVERT_STMT);
         p.finish_node();
-    }
-    if p.at(NEWLINE) {
-        p.skip_ws();
-        p.bump();
     }
 }
 

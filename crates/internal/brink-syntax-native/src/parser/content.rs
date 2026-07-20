@@ -1,15 +1,16 @@
-//! Prose content: text runs, `{expr}` interpolation, `<>` glue, and
-//! `#`-tags (charter §5/§6/§11).
+//! Prose content: text runs, `{expr}` interpolation, `<>` glue, diverts in
+//! content position, and `#`-tags (charter §5/§6/§11).
 //!
 //! [`content_items_until`] is the shared engine: a loop that recognizes
-//! interpolation/glue/the annotated-brace family and folds everything else
-//! into `TEXT` runs, stopping at a caller-chosen set of terminators. Reused
-//! by `CONTENT_LINE` (stops at newline), choice-line anatomy (stops at
-//! `[`/`]`), and inline alternation bodies (stops at `|`).
+//! interpolation/glue/the annotated-brace family/diverts and folds
+//! everything else into `TEXT` runs, stopping at a caller-chosen set of
+//! terminators. Reused by `CONTENT_LINE` (stops at newline), choice-line
+//! anatomy (stops at `[`/`]`), and inline alternation bodies (stops at
+//! `|`).
 
 use crate::SyntaxKind::{
-    self, CONTENT_LINE, EOF, GLUE, GLUE_NODE, HASH, INTERPOLATION, L_BRACE, NEWLINE, R_BRACE, TAG,
-    TAG_LINE, TEXT,
+    self, CONTENT_LINE, DIVERT, EOF, GLUE, GLUE_NODE, HASH, INTERPOLATION, L_BRACE, NEWLINE,
+    R_BRACE, TAG, TAG_LINE, TEXT,
 };
 
 use super::Parser;
@@ -32,9 +33,9 @@ pub(crate) fn content_line(p: &mut Parser<'_, '_>) {
 }
 
 /// The shared prose-scanning loop: recognizes interpolation/glue/the
-/// annotated-brace family, folds everything else into `TEXT` runs, and
-/// stops as soon as the current (trivia-skipped) token is EOF or appears
-/// in `stop`. Does not consume the stopping token.
+/// annotated-brace family/diverts, folds everything else into `TEXT` runs,
+/// and stops as soon as the current (trivia-skipped) token is EOF or
+/// appears in `stop`. Does not consume the stopping token.
 pub(crate) fn content_items_until(p: &mut Parser<'_, '_>, stop: &[SyntaxKind]) {
     loop {
         p.skip_ws();
@@ -55,6 +56,17 @@ pub(crate) fn content_items_until(p: &mut Parser<'_, '_>, stop: &[SyntaxKind]) {
             L_BRACE if super::family::at_alternation(p) => super::family::alternation_block(p),
             L_BRACE => interpolation(p),
             GLUE => glue_node(p),
+            // N-1: a divert anywhere in a content run is a real DIVERT
+            // node (charter §11: diverts are "kept verbatim" including in
+            // content position — the Fogg exhibit spells
+            // `* [The wager.] -> know_about_wager` this way).
+            // `block::body_line` only recognized `->` as a divert when it
+            // was a line's first token; this loop had no case for it at
+            // all, so a `->` following prose text on the same line folded
+            // into a literal `TEXT` run instead (`text_run_until` below is
+            // updated to break on `DIVERT` too, so it hands control back
+            // here rather than swallowing the arrow as text).
+            DIVERT => super::divert::divert_in_content(p),
             _ => text_run_until(p, stop),
         }
     }
@@ -82,15 +94,19 @@ fn glue_node(p: &mut Parser<'_, '_>) {
 }
 
 /// A run of literal text: every raw token up to the next breaking
-/// construct (`{`, `<>`, a caller-supplied stop kind, or EOF), including
-/// any interior whitespace/comments — those are literal prose here, not
-/// trivia to discard. `HASH` always breaks a text run (tags are recognized
-/// structurally by every caller), even if the caller didn't ask for it.
+/// construct (`{`, `<>`, `->` (N-1), a caller-supplied stop kind, or EOF),
+/// including any interior whitespace/comments — those are literal prose
+/// here, not trivia to discard. `HASH`/`DIVERT` always break a text run
+/// (tags and diverts are recognized structurally by every caller), even if
+/// the caller didn't ask for it — mirrors `content_items_until`'s own
+/// unconditional-break agreement for `HASH`; without this, a `->` reached
+/// mid-run would get bumped as literal text before the outer loop ever saw
+/// it, and its `DIVERT` match arm would be dead code.
 fn text_run_until(p: &mut Parser<'_, '_>, stop: &[SyntaxKind]) {
     p.start_node(TEXT);
     loop {
         let k = p.nth_raw(0);
-        if k == EOF || k == L_BRACE || k == GLUE || k == HASH || stop.contains(&k) {
+        if k == EOF || k == L_BRACE || k == GLUE || k == HASH || k == DIVERT || stop.contains(&k) {
             break;
         }
         p.bump();
