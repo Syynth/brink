@@ -1,4 +1,5 @@
 /target
+/target-*/
 /docs/book/book
 /docs/book/src/playground
 /crates/zed-brink/target
