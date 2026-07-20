@@ -1,18 +1,17 @@
-//! Prose-dialect body lowering, stage 1: content lines, tags, glue,
-//! `{expr}` interpolation, diverts/tunnels/return, and the label-absorption
+//! Prose-dialect body lowering: content lines, tags, glue, `{expr}`
+//! interpolation, diverts/tunnels/return, the annotated-brace family's
+//! conditional/alternation half (`cond.rs`), and the label-absorption
 //! algorithm that dissolves G-1 content-line labels into
 //! `Stmt::LabeledBlock` (`docs/b0-sequencing.md` §B0.7).
 //!
-//! **Scope note**: the annotated-brace family (`{if}`/`{match}`/`{~}`/
-//! `{&}`/`{!}`/`{|}`, B0.7's second commit) and choice points (`{?}`, the
-//! choice-set/dissolved-gather commit) are not wired yet — both fall
-//! through to the generic "unrecognized construct" diagnostic (E129) below,
-//! same as any other not-yet-lowered body-position construct. The item-
-//! stream absorption mechanism this file introduces
-//! ([`lower_items`]/[`lower_continuation`]) is written to serve both the
-//! G-1 label case (wired now) and the `{?}` dissolved-gather case (wired in
-//! the choice-set commit) — see that commit's changes to this file for the
-//! `CHOICE_POINT` branch.
+//! **Scope note**: `{?}` choice points are not wired yet (their own
+//! commit) — they fall through to the generic "unrecognized construct"
+//! diagnostic (E129) below, same as any other not-yet-lowered body-position
+//! construct. The item-stream absorption mechanism this file introduces
+//! ([`lower_items`]) is written to serve both the G-1 label case (wired
+//! now) and the `{?}` dissolved-gather case (wired in the choice-set
+//! commit, which adds a sibling `lower_continuation` helper) — see that
+//! commit's changes to this file.
 //!
 //! # Label absorption, mechanically
 //!
@@ -37,6 +36,7 @@ use crate::{
     Expr, Name, Return, ReturnKind, Stmt, Tag, TunnelCall,
 };
 
+use super::cond::{lower_alternation, lower_conditional};
 use super::expr::lower_expr;
 use super::provenance::native_provenance;
 
@@ -146,6 +146,18 @@ fn lower_one_item(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnostic
             onwards_args: Vec::new(),
         })],
         N::RETURN_REDIRECT => lower_return_redirect(file_id, node, diags),
+        N::CONDITIONAL_BLOCK => {
+            let Some(cb) = ast::ConditionalBlock::cast(node.clone()) else {
+                return Vec::new();
+            };
+            vec![Stmt::Conditional(lower_conditional(file_id, &cb, diags))]
+        }
+        N::ALTERNATION_BLOCK => {
+            let Some(ab) = ast::AlternationBlock::cast(node.clone()) else {
+                return Vec::new();
+            };
+            vec![Stmt::Sequence(lower_alternation(file_id, &ab, diags, true))]
+        }
         // Declarations reachable at body position are handled by other
         // passes: `flow`/`fn` become stitches (`container.rs`), `var`/
         // `const`/`flags` are hoisted flat by `lower_native::lower`'s
@@ -165,12 +177,11 @@ fn lower_one_item(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnostic
         | N::MODULE_DECL
         // Already diagnosed by the parser itself.
         | N::ERROR => Vec::new(),
-        // `{?}` choice points and the annotated-brace family
-        // (`{if}`/`{match}`/`{~}`/`{&}`/`{!}`/`{|}`) land here until their
-        // own commits wire real lowering — loud (E129), never silently
-        // dropped. `@[…]` annotations at body position are the same story
-        // permanently: no directive channel is wired yet (B0.6's judgment
-        // call #5, still open).
+        // `{?}` choice points land here until the choice-set commit wires
+        // real lowering — loud (E129), never silently dropped. `@[…]`
+        // annotations at body position are the same story permanently: no
+        // directive channel is wired yet (B0.6's judgment call #5, still
+        // open).
         _ => {
             diags.push(diag(file_id, node.text_range(), DiagnosticCode::E129));
             Vec::new()
@@ -196,11 +207,12 @@ fn lower_content_line_body(
 }
 
 /// The shared "run of content-shaped items" lowering engine — used for a
-/// content line's own body-item lowering (and, from the choice-set/
-/// alternation commits onward, choice text regions and alternation
-/// branches). Handles inline `{expr}` interpolation, `<>` glue, and
-/// embedded diverts/tunnels (N-1: a `->` mid-run is a real node, not
-/// swallowed as text).
+/// content line's own body-item lowering, for alternation branches
+/// (`cond.rs`), and (from the choice-set commit onward) choice text
+/// regions. Handles inline `{expr}` interpolation, `<>` glue, embedded
+/// diverts/tunnels (N-1: a `->` mid-run is a real node, not swallowed as
+/// text), and inline conditional/alternation
+/// (`ContentPart::InlineConditional`/`InlineSequence`).
 ///
 /// `line_prov` becomes the `ptr` of the (possibly only) `Content` statement
 /// this run's trailing flush produces; interior flushes (before an embedded
@@ -211,7 +223,9 @@ fn lower_content_line_body(
 /// `trailing_eol`: whether the run's *final* flush may append
 /// `Stmt::EndOfLine` (when the content doesn't end with glue). `true` for a
 /// genuine content line. `false` for a synthesized fragment that isn't a
-/// whole line (wired by the alternation commit).
+/// whole line — an inline alternation branch (`cond.rs`'s
+/// `finish_inline_branch`): `{& a cat|a dog}.` must not force a line break
+/// after "a cat" before the trailing "." resolves on the same line.
 pub(super) fn lower_content_run(
     file_id: FileId,
     items: &[SyntaxNode],
@@ -250,12 +264,27 @@ pub(super) fn lower_content_run(
                 out.extend(lower_divert_like(file_id, node, diags));
                 i += 1;
             }
+            N::CONDITIONAL_BLOCK => {
+                if let Some(cb) = ast::ConditionalBlock::cast(node.clone()) {
+                    parts.push(ContentPart::InlineConditional(lower_conditional(
+                        file_id, &cb, diags,
+                    )));
+                }
+                i += 1;
+            }
+            N::ALTERNATION_BLOCK => {
+                if let Some(ab) = ast::AlternationBlock::cast(node.clone()) {
+                    parts.push(ContentPart::InlineSequence(lower_alternation(
+                        file_id, &ab, diags, false,
+                    )));
+                }
+                i += 1;
+            }
             N::ERROR => {
                 i += 1;
             }
-            // `{?}` choice points and the annotated-brace family, embedded
-            // mid-line — same "not wired yet" story as `lower_one_item`'s
-            // catch-all, until their own commits.
+            // `{?}` choice points, embedded mid-line — not wired until the
+            // choice-set commit.
             _ => {
                 diags.push(diag(file_id, node.text_range(), DiagnosticCode::E129));
                 i += 1;

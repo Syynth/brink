@@ -102,6 +102,7 @@
 //!    §13.2's declared sub-modules) — see judgment call #4.
 
 mod body;
+mod cond;
 mod container;
 mod decl;
 mod expr;

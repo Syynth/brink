@@ -242,7 +242,7 @@ fn well_formed_declaration_fixture_lowers_with_no_diagnostics() {
 // the same target `hir::types` shapes the old ink frontend produces for the
 // equivalent construct.
 
-use crate::{ContentPart, DivertPath, Expr, ReturnKind, Stmt};
+use crate::{CondKind, ContentPart, DivertPath, Expr, ReturnKind, SequenceType, Stmt};
 
 fn only_knot_body(hir: &HirFile) -> &crate::Block {
     &hir.knots[0].body
@@ -375,5 +375,91 @@ fn unrecognized_body_construct_is_diagnosed_not_dropped() {
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E129),
         "an unwired body-position construct must be diagnosed, not silently dropped: {diags:?}"
+    );
+}
+
+#[test]
+fn if_else_conditional_lowers_to_if_else_branches() {
+    // Braced-arm form, not the single-line colon form
+    // (`{if cond: … else: …}` all on one line) — that shape has a real
+    // grammar gap: `content_line`'s scan doesn't stop before a bare `else`
+    // reached mid-line (nothing in `content_items_until` special-cases the
+    // `KW_ELSE` keyword), so "Happy. else: Sad." is swallowed whole as one
+    // TEXT run and `at_else_arm` never gets a chance to fire. The
+    // multi-line colon form (`else:` alone at the start of its own line)
+    // is unaffected — `at_else_arm` is checked before each `body_line`
+    // call, so it fires correctly there. Flagged for the coordinator as a
+    // brink-syntax-native finding, not fixed here (B0.7 lowers whatever
+    // the parser hands it; this is a parser-level fix).
+    let (hir, _m, diags) =
+        lower_src("var mood = 1\nflow a() {\n  {if mood > 0 { Happy. } else { Sad. }}\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::Conditional(cond) = &body.stmts[0] else {
+        panic!("expected Conditional, got {body:?}");
+    };
+    // `InitialCondition`, not `IfElse` — see `cond::lower_conditional`'s doc
+    // comment: this is what ink's own equivalent `{cond: body - else: body2}`
+    // spelling actually compiles to (cross-frontend differential finding,
+    // `tests/b07_native_body.rs`).
+    assert_eq!(cond.kind, CondKind::InitialCondition);
+    assert_eq!(cond.branches.len(), 2);
+    assert!(cond.branches[0].condition.is_some());
+    assert!(cond.branches[1].condition.is_none());
+}
+
+#[test]
+fn match_conditional_lowers_to_switch_with_subject() {
+    let (hir, _m, diags) =
+        lower_src("var mood = 1\nflow a() {\n  {match mood { 1 => Happy. 2 => Sad. }}\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::Conditional(cond) = &body.stmts[0] else {
+        panic!("expected Conditional, got {body:?}");
+    };
+    assert!(matches!(cond.kind, CondKind::Switch(_)));
+    assert_eq!(cond.branches.len(), 2);
+}
+
+#[test]
+fn block_level_alternation_gets_leading_end_of_line_per_branch() {
+    let (hir, _m, diags) = lower_src("flow a() {\n  {~ One. | Two. | Three.}\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::Sequence(seq) = &body.stmts[0] else {
+        panic!("expected Sequence, got {body:?}");
+    };
+    assert_eq!(seq.kind, SequenceType::SHUFFLE);
+    assert_eq!(seq.branches.len(), 3);
+    for branch in &seq.branches {
+        assert!(
+            matches!(branch.stmts[0], Stmt::EndOfLine),
+            "block-level sequence branch must lead with EndOfLine: {branch:?}"
+        );
+    }
+}
+
+#[test]
+fn inline_alternation_inside_content_does_not_get_leading_eol() {
+    let (hir, _m, diags) = lower_src("flow a() {\n  You see {& a cat|a dog}.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::Content(c) = &body.stmts[0] else {
+        panic!("expected Content, got {:?}", body.stmts[0]);
+    };
+    let inline = c
+        .parts
+        .iter()
+        .find_map(|p| match p {
+            ContentPart::InlineSequence(s) => Some(s),
+            _ => None,
+        })
+        .expect("expected an InlineSequence part");
+    assert_eq!(inline.branches.len(), 2);
+    assert!(
+        inline.branches[0]
+            .stmts
+            .iter()
+            .all(|s| !matches!(s, Stmt::EndOfLine))
     );
 }
