@@ -95,12 +95,22 @@ pub(super) fn lower_top_level_container(
         }
     }
 
+    // B0.7 (`docs/b0-sequencing.md` §B0.7): the body is now the real
+    // prose-dialect lowering, not the empty stub — `super::body::lower_block`
+    // walks the same `body.items()` this loop just scanned for nested
+    // `flow`/`fn` declarations, skipping those (and every other
+    // declaration kind) as body-item statements, so there is no double
+    // lowering.
+    let body_block = node.body().map_or_else(Block::default, |b| {
+        super::body::lower_block(file_id, &b, diags)
+    });
+
     Some(Knot {
         ptr: native_provenance(file_id, NodeClass::Knot, syntax),
         name,
         is_function: node.is_function(),
         params,
-        body: Block::default(),
+        body: body_block,
         stitches,
         is_local: false,
         effects_assertion: None,
@@ -147,11 +157,14 @@ fn lower_stitch(
         }
     }
     let _ = enclosing_knot_name; // threaded for future diagnostic-message use
+    let body_block = node.body().map_or_else(Block::default, |b| {
+        super::body::lower_block(file_id, &b, diags)
+    });
     Some(Stitch {
         ptr: native_provenance(file_id, NodeClass::Stitch, syntax),
         name,
         params,
-        body: Block::default(),
+        body: body_block,
         is_local: false,
         effects_assertion: None,
         doc: None,

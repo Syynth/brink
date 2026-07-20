@@ -1,3 +1,5 @@
+#![allow(clippy::panic)]
+
 use super::*;
 use crate::DiagnosticCode;
 
@@ -17,7 +19,11 @@ fn top_level_flow_lowers_to_knot() {
     assert!(!knot.is_function);
     assert_eq!(knot.params.len(), 1);
     assert_eq!(knot.params[0].name.text, "name");
-    assert!(knot.body.stmts.is_empty(), "body must be the empty stub");
+    // B0.7 (`docs/b0-sequencing.md` §B0.7): bodies are real prose-dialect
+    // lowering now, not the B0.6-era empty stub — see
+    // `hir::lower_native::body`'s own test module for full construct
+    // coverage; this fixture only checks that *something* lowered.
+    assert!(!knot.body.stmts.is_empty(), "body must no longer be a stub");
     assert_eq!(manifest.knots.len(), 1);
     assert_eq!(manifest.knots[0].name, "greet");
 }
@@ -225,5 +231,149 @@ fn well_formed_declaration_fixture_lowers_with_no_diagnostics() {
     assert!(
         diags.is_empty(),
         "declaration-only fixture must be diagnostic-clean: {diags:?}"
+    );
+}
+
+// ─── B0.7: prose-dialect body lowering (docs/b0-sequencing.md §B0.7) ──────
+//
+// These are the HIR-differential gate for this slice (see the B0.7 issue's
+// exit-criteria discussion): the native→episode path isn't wired yet, so
+// correctness is proven at the HIR-shape level — each construct lowers to
+// the same target `hir::types` shapes the old ink frontend produces for the
+// equivalent construct.
+
+use crate::{ContentPart, DivertPath, Expr, ReturnKind, Stmt};
+
+fn only_knot_body(hir: &HirFile) -> &crate::Block {
+    &hir.knots[0].body
+}
+
+#[test]
+fn content_glue_interpolation_and_tags_lower() {
+    let (hir, _m, diags) = lower_src("flow a() {\n  Hi, {name}! <> #mood: happy\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    assert_eq!(
+        body.stmts.len(),
+        1,
+        "glue suppresses the EndOfLine: {body:?}"
+    );
+    let Stmt::Content(c) = &body.stmts[0] else {
+        panic!("expected Content, got {:?}", body.stmts[0]);
+    };
+    assert_eq!(c.tags.len(), 1);
+    assert!(matches!(&c.parts[0], ContentPart::Text(t) if t == "Hi, "));
+    assert!(matches!(
+        &c.parts[1],
+        ContentPart::Interpolation(Expr::Path(_))
+    ));
+    assert!(matches!(&c.parts[2], ContentPart::Text(t) if t == "! "));
+    assert!(matches!(c.parts[3], ContentPart::Glue));
+}
+
+#[test]
+fn content_without_glue_gets_end_of_line() {
+    let (hir, _m, diags) = lower_src("flow a() {\n  Plain line.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    assert_eq!(body.stmts.len(), 2);
+    assert!(matches!(body.stmts[0], Stmt::Content(_)));
+    assert!(matches!(body.stmts[1], Stmt::EndOfLine));
+}
+
+#[test]
+fn standalone_labeled_content_line_becomes_labeled_block() {
+    let (hir, _m, diags) = lower_src("flow a() {\n  Intro.\n  (mid) Middle.\n  End.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let labeled = body
+        .stmts
+        .iter()
+        .find_map(|s| match s {
+            Stmt::LabeledBlock(b) => Some(b),
+            _ => None,
+        })
+        .expect("expected a LabeledBlock absorbing the labeled line and everything after it");
+    assert_eq!(labeled.label.as_ref().unwrap().text, "mid");
+    // "End." must be inside the labeled block (absorbed), not a sibling.
+    assert!(labeled.stmts.len() >= 2, "labeled block: {labeled:?}");
+}
+
+#[test]
+fn divert_and_tunnel_lower() {
+    let (hir, _m, diags) =
+        lower_src("flow b() {\n  Bye.\n}\nflow a() {\n  -> b\n}\nflow c() {\n  -> b ->\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let a_body = &hir.knots[1].body;
+    assert!(matches!(a_body.stmts[0], Stmt::Divert(_)));
+    let c_body = &hir.knots[2].body;
+    assert!(matches!(c_body.stmts[0], Stmt::TunnelCall(_)));
+}
+
+#[test]
+fn inline_divert_mid_content_line_splits_into_two_statements() {
+    let (hir, _m, diags) = lower_src("flow b() {\n  Bye.\n}\nflow a() {\n  The wager. -> b\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = &hir.knots[1].body;
+    assert!(matches!(body.stmts[0], Stmt::Content(_)));
+    assert!(matches!(body.stmts[1], Stmt::Divert(_)));
+}
+
+#[test]
+fn end_and_done_targets_lower_to_sentinel_paths() {
+    let (hir, _m, diags) = lower_src("flow a() {\n  -> END\n}\nflow b() {\n  -> DONE\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::Divert(d) = &hir.knots[0].body.stmts[0] else {
+        panic!("expected Divert");
+    };
+    assert_eq!(d.target.path, DivertPath::End);
+    let Stmt::Divert(d) = &hir.knots[1].body.stmts[0] else {
+        panic!("expected Divert");
+    };
+    assert_eq!(d.target.path, DivertPath::Done);
+}
+
+#[test]
+fn explicit_return_stamps_explicit_kind() {
+    let (hir, _m, diags) = lower_src("fn f() {\n  return\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::Return(r) = &hir.knots[0].body.stmts[0] else {
+        panic!("expected Return");
+    };
+    assert_eq!(r.kind, ReturnKind::Explicit);
+    assert!(r.value.is_none());
+}
+
+#[test]
+fn return_redirect_to_named_path_stamps_tunnel_redirect() {
+    let (hir, _m, diags) = lower_src("flow b() {\n  Bye.\n}\nflow a() {\n  return -> b\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::Return(r) = &hir.knots[1].body.stmts[0] else {
+        panic!("expected Return, got {:?}", hir.knots[1].body.stmts[0]);
+    };
+    assert_eq!(r.kind, ReturnKind::TunnelRedirect);
+    assert!(matches!(r.value, Some(Expr::DivertTarget(_))));
+}
+
+#[test]
+fn return_redirect_to_done_lowers_as_plain_divert() {
+    let (hir, _m, diags) = lower_src("flow a() {\n  return -> DONE\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::Divert(d) = &hir.knots[0].body.stmts[0] else {
+        panic!(
+            "expected a plain Divert (Expr::DivertTarget cannot represent DONE), got {:?}",
+            hir.knots[0].body.stmts[0]
+        );
+    };
+    assert_eq!(d.target.path, DivertPath::Done);
+}
+
+#[test]
+fn unrecognized_body_construct_is_diagnosed_not_dropped() {
+    let (hir, _m, diags) = lower_src("flow a() {\n  @[effects(pure)]\n}\n");
+    assert!(hir.knots[0].body.stmts.is_empty());
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "an unwired body-position construct must be diagnosed, not silently dropped: {diags:?}"
     );
 }
