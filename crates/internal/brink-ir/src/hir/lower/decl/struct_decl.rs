@@ -14,7 +14,7 @@ use super::super::helpers::name_from_ident;
 use super::super::types::lower_type_expr;
 use super::DeclareSymbols;
 use crate::provenance::NodeClass;
-use crate::{DiagnosticCode, StructDecl, StructFieldDecl, SymbolKind};
+use crate::{DiagnosticCode, StructDecl, StructFieldDecl};
 
 impl DeclareSymbols for ast::StructDecl {
     type Output = StructDecl;
@@ -32,20 +32,11 @@ impl DeclareSymbols for ast::StructDecl {
             name_from_ident(&ident).ok_or_else(|| sink.diagnose(range, DiagnosticCode::E008))?;
         let (doc, issues) = parse_doc_comment(self.syntax(), DocPolicy::VALUE);
         issues.diagnose(sink);
-        sink.declare_full(
-            SymbolKind::Struct,
-            &name.text,
-            name.range,
-            Vec::new(),
-            None,
-            doc.clone(),
-        );
 
         // `#@private`/`#@public` visibility (M-2: STRUCTs are importable, §2).
         let dirs = super::super::directive::directives_before(self.syntax());
         let mut visibility = None;
         if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
-            sink.set_visibility(crate::SymbolKind::Struct, &name.text, vis);
             visibility = Some(vis);
         }
 

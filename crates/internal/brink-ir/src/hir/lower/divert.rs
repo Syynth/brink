@@ -8,13 +8,13 @@ use brink_syntax::ast::{self, AstNode};
 
 use crate::provenance::NodeClass;
 use crate::{
-    DiagnosticCode, Divert, DivertPath, DivertTarget, Expr, RefKind, Return, ReturnKind, Stmt,
-    ThreadStart, TunnelCall,
+    DiagnosticCode, Divert, DivertPath, DivertTarget, Expr, Return, ReturnKind, Stmt, ThreadStart,
+    TunnelCall,
 };
 
 use super::context::{LowerScope, LowerSink, Lowered};
 use super::expr::LowerExpr;
-use super::helpers::{lower_path, path_full_name};
+use super::helpers::lower_path;
 
 // ─── Trait definition ───────────────────────────────────────────────
 
@@ -149,14 +149,6 @@ fn lower_thread_target(
 ) -> Option<ThreadStart> {
     let ast_path = thread.target()?;
     let path = lower_path(&ast_path);
-    let full = path_full_name(&path);
-    sink.add_unresolved(
-        &full,
-        ast_path.syntax().text_range(),
-        RefKind::Divert,
-        &scope.to_scope(),
-        None,
-    );
 
     let args: Vec<Expr> = thread
         .arg_list()
@@ -195,8 +187,8 @@ pub fn lower_divert_target_with_args(
 
 fn lower_divert_path(
     t: &ast::DivertTargetWithArgs,
-    scope: &LowerScope,
-    sink: &mut impl LowerSink,
+    _scope: &LowerScope,
+    _sink: &mut impl LowerSink,
 ) -> Option<DivertPath> {
     if t.done_kw().is_some() {
         return Some(DivertPath::Done);
@@ -206,13 +198,5 @@ fn lower_divert_path(
     }
     let ast_path = t.path()?;
     let path = lower_path(&ast_path);
-    let full = path_full_name(&path);
-    sink.add_unresolved(
-        &full,
-        ast_path.syntax().text_range(),
-        RefKind::Divert,
-        &scope.to_scope(),
-        None,
-    );
     Some(DivertPath::Path(path))
 }

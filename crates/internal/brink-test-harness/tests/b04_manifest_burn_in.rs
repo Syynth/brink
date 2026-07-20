@@ -1,18 +1,27 @@
 //! B0.4 exit criterion: the DIFFERENTIAL BURN-IN
 //! (docs/hir-admission-contract.md Q3(b), docs/b0-sequencing.md §B0.4,
 //! issue #1173) — mandatory and run BEFORE the legacy hand-built manifest
-//! path is deleted.
+//! path was deleted.
 //!
-//! Runs both the legacy hand-built `SymbolManifest` (still built by
-//! `LowerSink`/`EffectSink` as the frontend lowers each file — unchanged by
-//! B0.4's first two steps) and the new `brink_ir::symbols::project_manifest`
-//! pipeline projection across the WHOLE oracle corpus (the same 390-case
-//! `collect_oracle_cases` corpus `b03_admission_corpus.rs` and
-//! `oracle_snapshots.rs` use — CLAUDE.md's "390 cases total"), and asserts
-//! the projected manifest is **structurally identical** to the legacy one.
-//! Only once this is green does the legacy path get deleted (a later B0.4
-//! commit) — this test is kept in-tree afterward as the proof (per the
-//! sequencing doc: "Keep the burn-in test in-tree").
+//! **History (why this reads as a tautology today).** This test was
+//! introduced and turned green — 397 files across 390 oracle cases,
+//! structurally identical in every case — while the frontend still built
+//! `SymbolManifest` by hand via `LowerSink`/`EffectSink`
+//! (`declare_full`/`add_local`/`add_unresolved`/`set_visibility`/
+//! `set_was`), comparing that hand-built manifest against
+//! `brink_ir::symbols::project_manifest(&hir)` computed from the same
+//! production `HirFile`. Only *after* that run was green did a follow-up
+//! commit delete the hand-built path: `LowerSink` lost every method but
+//! `diagnose`, and `brink-db`'s `lower_file` now calls `project_manifest`
+//! directly instead of merging per-knot/top-level manifest fragments. So
+//! `db.manifest(file_id)` (this test's "legacy" side) and
+//! `project_manifest(hir)` (its "projected" side) are now, by construction,
+//! the same function called twice — the comparison is definitionally true.
+//! Kept in-tree anyway per the sequencing doc ("Keep the burn-in test
+//! in-tree — it's the proof"): it still catches a real regression class
+//! (someone reintroducing a manifest-building side channel that disagrees
+//! with the projection), and its git history is the actual burn-in
+//! evidence for the coordinator's gate.
 //!
 //! # What "structurally identical" means here (judgment call — flagged for
 //! the coordinator)

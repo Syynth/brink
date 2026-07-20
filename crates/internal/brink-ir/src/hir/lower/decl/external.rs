@@ -8,7 +8,7 @@ use super::super::doc_comment::{DocPolicy, parse_doc_comment};
 use super::super::helpers::name_from_ident;
 use super::DeclareSymbols;
 use crate::provenance::NodeClass;
-use crate::{DiagnosticCode, ExternalDecl, ParamInfo, SymbolKind};
+use crate::{DiagnosticCode, ExternalDecl, ParamInfo};
 
 impl DeclareSymbols for ast::ExternalDecl {
     type Output = ExternalDecl;
@@ -43,15 +43,6 @@ impl DeclareSymbols for ast::ExternalDecl {
         let (doc, issues) = parse_doc_comment(self.syntax(), DocPolicy::EXTERNAL);
         issues.diagnose(sink);
 
-        sink.declare_full(
-            SymbolKind::External,
-            &name.text,
-            name.range,
-            param_infos.clone(),
-            None,
-            doc.clone(),
-        );
-
         #[expect(
             clippy::cast_possible_truncation,
             reason = "external params won't exceed 255"
@@ -65,7 +56,6 @@ impl DeclareSymbols for ast::ExternalDecl {
         let _ = apply_scope_directives(&dirs, DirectiveTarget::External, sink);
         let mut visibility = None;
         if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
-            sink.set_visibility(SymbolKind::External, &name.text, vis);
             visibility = Some(vis);
         }
         let mut was = None;
@@ -75,12 +65,6 @@ impl DeclareSymbols for ast::ExternalDecl {
             if old_name == name.text {
                 sink.diagnose(was_range, DiagnosticCode::E095);
             } else {
-                sink.set_was(
-                    SymbolKind::External,
-                    &name.text,
-                    old_name.clone(),
-                    was_range,
-                );
                 was = Some((old_name, was_range));
             }
         }

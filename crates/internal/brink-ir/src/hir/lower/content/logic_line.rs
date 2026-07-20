@@ -102,13 +102,6 @@ impl LowerBody for ast::LogicLine {
             let annotation = temp
                 .type_annotation()
                 .and_then(|ta| lower_type_annotation(&ta));
-            sink.add_local(crate::symbols::LocalSymbol {
-                name: name.text.clone(),
-                range: name.range,
-                scope: scope.to_scope(),
-                kind: crate::SymbolKind::Temp,
-                param_detail: None,
-            });
             return Ok(LogicLineOutput::TempDecl(TempDecl {
                 ptr: scope.prov(NodeClass::TempDecl, temp.syntax()),
                 name,

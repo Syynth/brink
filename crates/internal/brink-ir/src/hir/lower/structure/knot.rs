@@ -4,8 +4,7 @@ use brink_syntax::ast::{self, AstNode};
 
 use crate::provenance::NodeClass;
 use crate::{
-    Block, DiagnosticCode, Divert, DivertPath, DivertTarget, Knot, Name, Param, ParamInfo, Path,
-    Stitch, Stmt, SymbolKind,
+    Block, DiagnosticCode, Divert, DivertPath, DivertTarget, Knot, Name, Param, Path, Stitch, Stmt,
 };
 
 use super::super::block::LowerBlock;
@@ -19,13 +18,6 @@ use super::super::helpers::{make_name, name_from_ident};
 use super::super::types::lower_type_annotation;
 use super::stitch::lower_stitch;
 
-use crate::symbols::LocalSymbol;
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "B0.4 threaded doc/visibility/was capture through the existing directive-parsing \
-              flow rather than restructuring it; mirrors choice.rs's lower_choice precedent"
-)]
 pub(super) fn lower_knot(
     scope: &mut LowerScope,
     sink: &mut impl LowerSink,
@@ -45,44 +37,10 @@ pub(super) fn lower_knot(
 
     let is_function = header.is_function();
     let params = lower_knot_params(header.params(), sink);
-    let param_infos: Vec<ParamInfo> = params
-        .iter()
-        .map(|p| ParamInfo {
-            name: p.name.text.clone(),
-            is_ref: p.is_ref,
-            is_divert: p.is_divert,
-        })
-        .collect();
-    let detail = if is_function {
-        Some("function".to_owned())
-    } else {
-        None
-    };
     let (doc, issues) = parse_doc_comment(knot.syntax(), DocPolicy::CALLABLE);
     issues.diagnose(sink);
-    sink.declare_full(
-        SymbolKind::Knot,
-        &name_text,
-        ident.syntax().text_range(),
-        param_infos,
-        detail,
-        doc.clone(),
-    );
 
     scope.current_knot = Some(name_text.clone());
-    for p in &params {
-        sink.add_local(LocalSymbol {
-            name: p.name.text.clone(),
-            range: p.name.range,
-            scope: scope.to_scope(),
-            kind: crate::SymbolKind::Param,
-            param_detail: Some(ParamInfo {
-                name: p.name.text.clone(),
-                is_ref: p.is_ref,
-                is_divert: p.is_divert,
-            }),
-        });
-    }
     let (body, stitches) = knot.body().map_or_else(
         || (Block::default(), Vec::new()),
         |b| lower_knot_body(scope, sink, &b, &name_text),
@@ -101,7 +59,6 @@ pub(super) fn lower_knot(
         is_local = apply_scope_directives(&dirs, DirectiveTarget::Knot, sink);
         effects_assertion = effects_assertion_from_directives(&dirs, sink);
         if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
-            sink.set_visibility(crate::SymbolKind::Knot, &name_text, vis);
             visibility = Some(vis);
         }
         if let Some((old_name, was_range)) =
@@ -110,12 +67,6 @@ pub(super) fn lower_knot(
             if old_name == name_text {
                 sink.diagnose(was_range, DiagnosticCode::E095);
             } else {
-                sink.set_was(
-                    crate::SymbolKind::Knot,
-                    &name_text,
-                    old_name.clone(),
-                    was_range,
-                );
                 was = Some((old_name, was_range));
             }
         }
@@ -153,18 +104,13 @@ pub(super) fn lower_knot_body(
         .collect();
     let mut block = body.lower_block(scope, sink).unwrap_or_default();
 
-    // First-stitch auto-enter
+    // First-stitch auto-enter — the synthesized `Divert` below is itself
+    // the reference `project_manifest` picks up (its `DivertTarget.path`
+    // walk), so there is no separate ref to register here.
     if block.stmts.is_empty()
         && let Some(first) = stitches.first()
         && first.params.is_empty()
     {
-        sink.add_unresolved(
-            &first.name.text,
-            first.name.range,
-            crate::symbols::RefKind::Divert,
-            &scope.to_scope(),
-            None,
-        );
         block.stmts.push(Stmt::Divert(Divert {
             ptr: None,
             target: DivertTarget {

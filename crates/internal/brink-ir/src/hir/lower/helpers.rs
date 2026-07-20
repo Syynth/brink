@@ -34,14 +34,6 @@ pub fn lower_path(path: &ast::Path) -> Path {
     }
 }
 
-pub fn path_full_name(path: &Path) -> String {
-    path.segments
-        .iter()
-        .map(|s| s.text.as_str())
-        .collect::<Vec<_>>()
-        .join(".")
-}
-
 pub fn lower_prefix_op(pe: &ast::PrefixExpr) -> Option<PrefixOp> {
     let tok = pe.op_token()?;
     match tok.kind() {
