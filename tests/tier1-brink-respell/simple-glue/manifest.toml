@@ -1,0 +1,12 @@
+# INTERIM hand-respelled fixture. See ../README.md.
+ink_source = "tests/tier1/glue/simple-glue/story.ink"
+oracle_case = "tier1::glue::simple-glue"
+family = "glue"
+status = "hand-respelled, parse-verified only"
+notes = """
+Glue (`<>`) is kept verbatim (charter §11). This ink source needed ZERO
+textual changes to become valid `.brink` -- top-level content with no
+ink-specific sigils respells as an identity transform, which is itself a
+useful data point (the native surface is a strict superset of plain prose
+for content with no knots/choices/declarations).
+"""
