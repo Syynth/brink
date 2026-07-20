@@ -22,7 +22,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use brink_syntax_native::parse;
+use brink_syntax_native::{SyntaxKind, parse};
 
 /// `tests/tier1-brink-respell` at the repo root, resolved relative to this
 /// crate's manifest dir (`crates/internal/brink-syntax-native`) rather than
@@ -110,4 +110,93 @@ fn every_fixture_has_a_manifest() {
             path.display()
         );
     }
+}
+
+/// N-1's real proof (issue #1203): the README's N-1 finding names three
+/// fixtures whose inline `* [text] -> target` / same-line-in-body diverts
+/// used to parse clean but fold into literal `TEXT` — `sticky-choice`,
+/// `exhibit-fogg-passage`, and `manual-stitch-v1`. This asserts each one's
+/// CST now contains a real `DIVERT_STMT` or `TUNNEL_CALL` node at the
+/// inline-divert position, not just "zero parse errors" (which was already
+/// true before the fix and is exactly what let the bug hide). The expected
+/// counts below were hand-verified against each `story.brink`'s inline
+/// (same-line-as-prose) diverts:
+///
+/// - `sticky-choice`: one, `You eat another donut. -> homers_couch` inside
+///   the `+` choice's braced body (`* [Get off the couch] { ... -> END }`'s
+///   divert sits on its own line and was already recognized before N-1).
+/// - `exhibit-fogg-passage`: two, `* [The wager.] -> know_about_wager` and
+///   `* [I was surprised.] -> i_stared`.
+/// - `manual-stitch-v1`: three, `* [In first class] -> in_first_class`,
+///   `* [I'll go cheap] -> the_orient_express.in_third_class` (also
+///   exercises a dotted divert-target path in content position), and the
+///   nested stitch's own `* [Move to third class] -> in_third_class`.
+#[test]
+fn n1_affected_fixtures_parse_inline_diverts_as_divert_nodes() {
+    let cases: &[(&str, usize)] = &[
+        ("sticky-choice", 1),
+        ("exhibit-fogg-passage", 2),
+        ("manual-stitch-v1", 3),
+    ];
+
+    let root = fixtures_root().unwrap();
+    let mut failures = Vec::new();
+    for &(case, expected_inline_diverts) in cases {
+        let path = root.join(case).join("story.brink");
+        let source = fs::read_to_string(&path).unwrap();
+        let parsed = parse(&source);
+
+        assert!(
+            parsed.errors().is_empty(),
+            "{}: expected zero parse errors, got {:?}",
+            path.display(),
+            parsed.errors()
+        );
+
+        // A "real divert node" here means a DIVERT_STMT/TUNNEL_CALL whose
+        // own text does NOT start the line it's on — i.e. it followed some
+        // other content on the same source line, the exact N-1 shape.
+        // Standalone-line diverts (already handled pre-fix) are excluded
+        // from the count so this test can't pass by accident on a fixture
+        // that has plenty of ordinary statement-position diverts but none
+        // of the inline kind.
+        let inline_divert_count = parsed
+            .syntax()
+            .descendants()
+            .filter(|n| matches!(n.kind(), SyntaxKind::DIVERT_STMT | SyntaxKind::TUNNEL_CALL))
+            .filter(|n| !is_first_on_its_line(n))
+            .count();
+
+        if inline_divert_count != expected_inline_diverts {
+            failures.push(format!(
+                "{}: expected {expected_inline_diverts} inline DIVERT_STMT/TUNNEL_CALL node(s), found {inline_divert_count}",
+                path.display()
+            ));
+        }
+    }
+
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// `true` if `node`'s first token is also the first non-trivia token on
+/// its source line (nothing but whitespace precedes it since the last
+/// `\n`) — i.e. this is a statement-position construct, not one reached
+/// mid content-run.
+fn is_first_on_its_line(node: &brink_syntax_native::SyntaxNode) -> bool {
+    let Some(start) = node
+        .descendants_with_tokens()
+        .find_map(rowan::NodeOrToken::into_token)
+    else {
+        return false;
+    };
+    let mut prev = start.prev_token();
+    while let Some(tok) = prev {
+        match tok.kind() {
+            SyntaxKind::WHITESPACE => prev = tok.prev_token(),
+            SyntaxKind::NEWLINE => return true,
+            _ => return false,
+        }
+    }
+    // No previous token at all — this is the very first token in the file.
+    true
 }

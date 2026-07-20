@@ -138,6 +138,51 @@ fn arb_choice_point() -> impl Strategy<Value = String> {
         .prop_map(|lines| format!("{{?\n{}}}\n", lines.join("")))
 }
 
+/// N-1: a choice line whose text is followed, on the same line, by a plain
+/// divert — `* [text] -> target` (the exhibit-fogg-passage/manual-stitch-v1
+/// shape).
+fn arb_choice_line_with_inline_divert() -> impl Strategy<Value = String> {
+    (prop::bool::ANY, arb_text(), arb_ident()).prop_map(|(sticky, text, target)| {
+        let bullet = if sticky { "+" } else { "*" };
+        format!("{bullet} [{text}] -> {target}\n")
+    })
+}
+
+fn arb_choice_point_with_inline_divert() -> impl Strategy<Value = String> {
+    prop::collection::vec(arb_choice_line_with_inline_divert(), 1..=4)
+        .prop_map(|lines| format!("{{?\n{}}}\n", lines.join("")))
+}
+
+/// N-1: a multiline choice body whose content line carries a divert after
+/// prose on the same line — `* [text] {\n  prose -> target\n}` (the
+/// sticky-choice shape).
+fn arb_choice_line_with_body_divert() -> impl Strategy<Value = String> {
+    (arb_text(), arb_text(), arb_ident()).prop_map(|(choice_text, prose, target)| {
+        format!("* [{choice_text}] {{\n  {prose} -> {target}\n}}\n")
+    })
+}
+
+fn arb_choice_point_with_body_divert() -> impl Strategy<Value = String> {
+    prop::collection::vec(arb_choice_line_with_body_divert(), 1..=3)
+        .prop_map(|lines| format!("{{?\n{}}}\n", lines.join("")))
+}
+
+/// G-2: a choice line carrying trailing `{expr}` interpolation —
+/// `* text {ident}` — rather than a nested `CHOICE_BODY`.
+fn arb_choice_line_with_interpolation() -> impl Strategy<Value = String> {
+    (arb_text(), arb_ident()).prop_map(|(text, ident)| format!("* {text} {{{ident}}}\n"))
+}
+
+fn arb_choice_point_with_interpolation() -> impl Strategy<Value = String> {
+    prop::collection::vec(arb_choice_line_with_interpolation(), 1..=4)
+        .prop_map(|lines| format!("{{?\n{}}}\n", lines.join("")))
+}
+
+/// G-1: a content line opening with a `(label)` prefix.
+fn arb_labeled_content_line() -> impl Strategy<Value = String> {
+    (arb_ident(), arb_text()).prop_map(|(label, text)| format!("({label}) {text}\n"))
+}
+
 fn arb_alternation_inline() -> impl Strategy<Value = String> {
     (
         prop::sample::select(&["~", "&", "!", "|"][..]),
@@ -161,6 +206,16 @@ fn arb_body_line() -> impl Strategy<Value = String> {
         1 => arb_annotation_line(),
         2 => arb_choice_point(),
         1 => arb_alternation_inline(),
+        // N-1/G-2/G-1: real-narrative-content shapes the grammar-shaped
+        // generators above never produced (see the respell-fixture README's
+        // findings) — mixed into the general body/story fuzz so the "real
+        // content, not grammar-shaped" gap the interim respelling exposed
+        // gets ongoing property coverage, not just the dedicated tests
+        // above.
+        2 => arb_choice_point_with_inline_divert(),
+        1 => arb_choice_point_with_body_divert(),
+        1 => arb_choice_point_with_interpolation(),
+        1 => arb_labeled_content_line(),
     ]
 }
 
@@ -310,6 +365,101 @@ proptest! {
     fn choice_point_roundtrip(input in arb_choice_point()) {
         let parsed = parse(&input);
         prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    // ── N-1: inline diverts in content position ────────────────────────
+
+    #[test]
+    fn choice_point_with_inline_divert_roundtrip(input in arb_choice_point_with_inline_divert()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn choice_point_with_inline_divert_no_errors(input in arb_choice_point_with_inline_divert()) {
+        let parsed = parse(&input);
+        prop_assert!(parsed.errors().is_empty(), "input: {:?}\nerrors: {:?}", input, parsed.errors());
+    }
+
+    #[test]
+    fn choice_point_with_inline_divert_produces_divert_stmt(input in arb_choice_point_with_inline_divert()) {
+        let parsed = parse(&input);
+        prop_assert!(has_node_kind(&parsed.syntax(), SyntaxKind::DIVERT_STMT));
+        // And the divert's target is a real PATH node, not text swallowed
+        // into the enclosing CHOICE_INNER_CONTENT's TEXT run.
+        prop_assert!(has_node_kind(&parsed.syntax(), SyntaxKind::DIVERT_TARGET));
+        prop_assert!(has_node_kind(&parsed.syntax(), SyntaxKind::PATH));
+    }
+
+    #[test]
+    fn choice_point_with_body_divert_roundtrip(input in arb_choice_point_with_body_divert()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn choice_point_with_body_divert_no_errors(input in arb_choice_point_with_body_divert()) {
+        let parsed = parse(&input);
+        prop_assert!(parsed.errors().is_empty(), "input: {:?}\nerrors: {:?}", input, parsed.errors());
+    }
+
+    #[test]
+    fn choice_point_with_body_divert_produces_divert_stmt_inside_content_line(input in arb_choice_point_with_body_divert()) {
+        let parsed = parse(&input);
+        let root = parsed.syntax();
+        let content_line = root
+            .descendants()
+            .find(|n| n.kind() == SyntaxKind::CONTENT_LINE);
+        prop_assert!(content_line.is_some(), "no CONTENT_LINE found, tree: {:#?}", root);
+        let content_line = content_line.expect("checked above");
+        prop_assert!(has_node_kind(&content_line, SyntaxKind::DIVERT_STMT));
+        prop_assert!(has_node_kind(&content_line, SyntaxKind::TEXT));
+    }
+
+    // ── G-2: choice-line `{expr}` interpolation ─────────────────────────
+
+    #[test]
+    fn choice_point_with_interpolation_roundtrip(input in arb_choice_point_with_interpolation()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn choice_point_with_interpolation_no_errors(input in arb_choice_point_with_interpolation()) {
+        let parsed = parse(&input);
+        prop_assert!(parsed.errors().is_empty(), "input: {:?}\nerrors: {:?}", input, parsed.errors());
+    }
+
+    #[test]
+    fn choice_point_with_interpolation_produces_interpolation_not_choice_body(input in arb_choice_point_with_interpolation()) {
+        let parsed = parse(&input);
+        let root = parsed.syntax();
+        prop_assert!(has_node_kind(&root, SyntaxKind::INTERPOLATION));
+        // None of these generated choice lines have any nested-content
+        // braces beyond the trailing `{ident}` — a spurious CHOICE_BODY
+        // would mean G-2 regressed.
+        prop_assert!(!has_node_kind(&root, SyntaxKind::CHOICE_BODY));
+    }
+
+    // ── G-1: labeled content lines ───────────────────────────────────────
+
+    #[test]
+    fn labeled_content_line_roundtrip(input in arb_labeled_content_line()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn labeled_content_line_no_errors(input in arb_labeled_content_line()) {
+        let parsed = parse(&input);
+        prop_assert!(parsed.errors().is_empty(), "input: {:?}\nerrors: {:?}", input, parsed.errors());
+    }
+
+    #[test]
+    fn labeled_content_line_produces_label_node(input in arb_labeled_content_line()) {
+        let parsed = parse(&input);
+        prop_assert!(has_node_kind(&parsed.syntax(), SyntaxKind::LABEL));
+        prop_assert!(has_node_kind(&parsed.syntax(), SyntaxKind::CONTENT_LINE));
     }
 
     #[test]

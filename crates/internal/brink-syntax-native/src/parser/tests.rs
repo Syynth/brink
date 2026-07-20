@@ -10,6 +10,15 @@ fn assert_lossless(source: &str) -> Parse {
     parsed
 }
 
+/// The first direct-child node castable to the typed AST wrapper `N` — the
+/// `parser::tests` module's own escape hatch, since `ast::support`'s
+/// helpers of the same shape are `pub(super)`-scoped to the `ast` module
+/// and not visible from here. (N-1: used by the new inline-divert tests to
+/// pull the `DIVERT_TARGET` back out of a `DIVERT_STMT`.)
+fn find_child<N: crate::ast::AstNode>(node: &SyntaxNode) -> Option<N> {
+    node.children().find_map(N::cast)
+}
+
 #[test]
 fn empty_source_parses() {
     let p = assert_lossless("");
@@ -278,8 +287,239 @@ fn charter_exhibit_fogg_passage_respelling() {
     // gather dash — this must NOT trip the `MINUS`-as-entry-marker path.
     assert!(has_node_kind(&p.syntax(), SyntaxKind::CHOICE_POINT));
     assert!(has_node_kind(&p.syntax(), SyntaxKind::CONDITIONAL_BLOCK));
+    // N-1: the two `* [text] -> target` choice lines must now each
+    // produce a real DIVERT_STMT node (previously folded into TEXT — see
+    // `tests/tier1-brink-respell/README.md`'s N-1 finding). Three standalone
+    // statement-position diverts (`-> i_stared`, `-> END`) were already
+    // recognized before this fix, so the total is 2 (content-position) + 2
+    // (statement-position) = 4.
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::DIVERT_STMT), 4);
 }
 
 fn has_node_kind(root: &SyntaxNode, kind: SyntaxKind) -> bool {
     root.descendants().any(|node| node.kind() == kind)
+}
+
+fn count_node_kind(root: &SyntaxNode, kind: SyntaxKind) -> usize {
+    root.descendants()
+        .filter(|node| node.kind() == kind)
+        .count()
+}
+
+// ── N-1: inline diverts in content position ─────────────────────────
+
+#[test]
+fn divert_after_choice_bracket_text_is_a_divert_node_not_text() {
+    // The exact shape from the exhibit/manual-stitch-v1 fixtures:
+    // `* [text] -> target`. Before N-1's fix this parsed with zero errors
+    // but folded `-> know_about_wager` into a literal TEXT run.
+    let src = "flow f() {\n  {?\n    * [The wager.] -> know_about_wager\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let choice_inner = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CHOICE_INNER_CONTENT)
+        .expect("CHOICE_INNER_CONTENT");
+    assert!(
+        has_node_kind(&choice_inner, SyntaxKind::DIVERT_STMT),
+        "expected a DIVERT_STMT inside CHOICE_INNER_CONTENT, tree: {choice_inner:#?}"
+    );
+    // The divert's target must be a real PATH, not swallowed text.
+    let divert = choice_inner
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::DIVERT_STMT)
+        .expect("DIVERT_STMT");
+    let target = find_child::<crate::ast::DivertTarget>(&divert).expect("DIVERT_TARGET");
+    let path = target.path().expect("path");
+    let segs: Vec<_> = path.segments().map(|t| t.text().to_string()).collect();
+    assert_eq!(segs, vec!["know_about_wager".to_string()]);
+}
+
+#[test]
+fn divert_after_dotted_path_target_in_choice_text_parses() {
+    // manual-stitch-v1's other shape: a dotted stitch-addressing target.
+    let src = "flow f() {\n  {?\n    * [go] -> f.g\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let divert = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::DIVERT_STMT)
+        .expect("DIVERT_STMT");
+    let target = find_child::<crate::ast::DivertTarget>(&divert).expect("DIVERT_TARGET");
+    let path = target.path().expect("path");
+    assert!(!path.crosses_module_wall()); // `.` not `::`
+    let segs: Vec<_> = path.segments().map(|t| t.text().to_string()).collect();
+    assert_eq!(segs, vec!["f".to_string(), "g".to_string()]);
+}
+
+#[test]
+fn divert_inside_multiline_choice_body_after_prose_is_a_divert_node() {
+    // The sticky-choice shape: a `->` following prose on the SAME content
+    // line inside a braced CHOICE_BODY (as opposed to a divert on its own
+    // line, which was already recognized before this fix).
+    let src = "flow f() {\n  {?\n    + [Eat] {\n      You eat another donut. -> f\n    }\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let body = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CHOICE_BODY)
+        .expect("CHOICE_BODY");
+    let content_line = body
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CONTENT_LINE)
+        .expect("CONTENT_LINE");
+    // The divert is a child of the same CONTENT_LINE as the preceding
+    // prose, not a sibling body item.
+    assert!(
+        has_node_kind(&content_line, SyntaxKind::DIVERT_STMT),
+        "expected DIVERT_STMT nested inside the CONTENT_LINE, tree: {content_line:#?}"
+    );
+    assert!(has_node_kind(&content_line, SyntaxKind::TEXT));
+}
+
+#[test]
+fn tunnel_call_in_content_position_parses() {
+    // `->->` in content position: still a TUNNEL_CALL, not a divert
+    // followed by stray text.
+    let src = "flow f() {\n  {?\n    * [go] visit -> place ->\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::TUNNEL_CALL));
+}
+
+#[test]
+fn divert_to_end_in_content_position_parses() {
+    let src = "flow f() {\n  {?\n    * [go] The end. -> END\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let divert = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::DIVERT_STMT)
+        .expect("DIVERT_STMT");
+    let target = find_child::<crate::ast::DivertTarget>(&divert).expect("DIVERT_TARGET");
+    assert!(target.is_end());
+}
+
+// ── G-2: choice-line `{expr}` interpolation ──────────────────────────
+
+#[test]
+fn choice_line_interpolation_before_bracket_parses_as_interpolation() {
+    // `* Gold: {gold}` — from the README's G-2 finding: the `{` used to be
+    // swallowed as a premature CHOICE_BODY open.
+    let src = "flow f() {\n  {?\n    * Gold: {gold}\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let choice = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CHOICE)
+        .expect("CHOICE");
+    assert!(has_node_kind(&choice, SyntaxKind::INTERPOLATION));
+    // And no CHOICE_BODY was spuriously opened — this choice has no
+    // nested-content braces at all.
+    assert!(!has_node_kind(&choice, SyntaxKind::CHOICE_BODY));
+}
+
+#[test]
+fn choice_line_interpolation_inside_bracket_inner_content_parses() {
+    let src = "flow f() {\n  {?\n    * [Buy] You have {gold} left.\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let inner = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CHOICE_INNER_CONTENT)
+        .expect("CHOICE_INNER_CONTENT");
+    assert!(has_node_kind(&inner, SyntaxKind::INTERPOLATION));
+}
+
+#[test]
+fn choice_body_still_opens_as_a_body_not_interpolation() {
+    // The flip side: a genuine multiline CHOICE_BODY brace must still be
+    // recognized as CHOICE_BODY, not mis-swallowed as a (garbage)
+    // interpolation expression now that plain `{` no longer stops early.
+    let src = "flow f() {\n  {?\n    * [Eat] {\n      You eat. -> f\n    }\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::CHOICE_BODY));
+}
+
+#[test]
+fn choice_line_conditional_guard_and_trailing_interpolation_coexist() {
+    // Guard braces (handled before `choice_text` even runs) plus a trailing
+    // interpolation in the same choice line.
+    let src = "flow f() {\n  {?\n    * {if hp > 0} Gold: {gold}\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let choice = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CHOICE)
+        .expect("CHOICE");
+    assert!(has_node_kind(&choice, SyntaxKind::CHOICE_GUARD));
+    assert!(has_node_kind(&choice, SyntaxKind::INTERPOLATION));
+}
+
+// ── G-1: labeled content lines ────────────────────────────────────────
+
+#[test]
+fn labeled_content_line_produces_a_label_node() {
+    let src = "flow f() {\n  (start) You arrive at the garden.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let content_line = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CONTENT_LINE)
+        .expect("CONTENT_LINE");
+    assert!(has_node_kind(&content_line, SyntaxKind::LABEL));
+    assert!(has_node_kind(&content_line, SyntaxKind::TEXT));
+}
+
+#[test]
+fn labeled_content_line_as_backward_loop_divert_target() {
+    // Ink's `- (start)` mid-flow re-entry pattern (README G-1 finding):
+    // a label on a plain content line, later diverted back to from
+    // further down the same flow.
+    let src = concat!(
+        "flow loop() {\n",
+        "  (start) You spin around.\n",
+        "  {?\n",
+        "    * [Again] -> start\n",
+        "    * [Stop] -> END\n",
+        "  }\n",
+        "}\n",
+    );
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::LABEL));
+    // Both diverts (one to the label, one to END) parse as real nodes —
+    // exercises N-1 and G-1 together, the realistic combined idiom.
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::DIVERT_STMT), 2);
+}
+
+#[test]
+fn unlabeled_prose_starting_with_paren_is_unaffected() {
+    // A multi-word parenthetical does not match the `L_PAREN IDENT
+    // R_PAREN` lookahead shape, so it stays plain prose, not a spurious
+    // LABEL + error.
+    let src = "flow f() {\n  (a very long aside) continues here.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::LABEL));
+}
+
+#[test]
+fn label_inside_conditional_body_is_still_a_content_line_label() {
+    // G-1 says "ANY content line" — including one nested inside the
+    // annotated-brace family's colon/braced bodies, since those recurse
+    // through `body_line`/`content_line` too.
+    let src = "flow f() {\n  {if hp > 0: (alive) You live.}\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::LABEL));
 }

@@ -181,7 +181,20 @@ fn alternation_marker(p: &mut Parser<'_, '_>) {
 /// newline (whitespace/comments aside) — mirrors `brink-syntax`'s
 /// `is_multiline_block` check.
 fn is_multiline(p: &Parser<'_, '_>) -> bool {
-    let mut i = 0usize;
+    peek_is_newline(p, 0)
+}
+
+/// True when, starting `i` raw tokens ahead of the parser's current
+/// position, the next non-trivia raw token is a `NEWLINE`. The shared scan
+/// behind [`is_multiline`] (`i = 0`: is the token right here a newline,
+/// trivia aside) and `content::is_body_open_brace` (`i = 1`: is the token
+/// right after an as-yet-unconsumed `L_BRACE` a newline) — both are the
+/// same "does this brace open a multiline block" signal, checked from two
+/// different parser positions (family.rs consumes the brace + marker
+/// before asking; content.rs asks before consuming anything, since G-2
+/// needs the answer to decide whether to consume the brace as
+/// interpolation at all).
+pub(crate) fn peek_is_newline(p: &Parser<'_, '_>, mut i: usize) -> bool {
     loop {
         match p.nth_raw(i) {
             SyntaxKind::WHITESPACE | SyntaxKind::LINE_COMMENT | SyntaxKind::BLOCK_COMMENT => {
