@@ -178,6 +178,11 @@ fn arb_choice_point_with_interpolation() -> impl Strategy<Value = String> {
         .prop_map(|lines| format!("{{?\n{}}}\n", lines.join("")))
 }
 
+/// G-1: a content line opening with a `(label)` prefix.
+fn arb_labeled_content_line() -> impl Strategy<Value = String> {
+    (arb_ident(), arb_text()).prop_map(|(label, text)| format!("({label}) {text}\n"))
+}
+
 fn arb_alternation_inline() -> impl Strategy<Value = String> {
     (
         prop::sample::select(&["~", "&", "!", "|"][..]),
@@ -201,7 +206,7 @@ fn arb_body_line() -> impl Strategy<Value = String> {
         1 => arb_annotation_line(),
         2 => arb_choice_point(),
         1 => arb_alternation_inline(),
-        // N-1/G-2: real-narrative-content shapes the grammar-shaped
+        // N-1/G-2/G-1: real-narrative-content shapes the grammar-shaped
         // generators above never produced (see the respell-fixture README's
         // findings) — mixed into the general body/story fuzz so the "real
         // content, not grammar-shaped" gap the interim respelling exposed
@@ -210,6 +215,7 @@ fn arb_body_line() -> impl Strategy<Value = String> {
         2 => arb_choice_point_with_inline_divert(),
         1 => arb_choice_point_with_body_divert(),
         1 => arb_choice_point_with_interpolation(),
+        1 => arb_labeled_content_line(),
     ]
 }
 
@@ -433,6 +439,27 @@ proptest! {
         // braces beyond the trailing `{ident}` — a spurious CHOICE_BODY
         // would mean G-2 regressed.
         prop_assert!(!has_node_kind(&root, SyntaxKind::CHOICE_BODY));
+    }
+
+    // ── G-1: labeled content lines ───────────────────────────────────────
+
+    #[test]
+    fn labeled_content_line_roundtrip(input in arb_labeled_content_line()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn labeled_content_line_no_errors(input in arb_labeled_content_line()) {
+        let parsed = parse(&input);
+        prop_assert!(parsed.errors().is_empty(), "input: {:?}\nerrors: {:?}", input, parsed.errors());
+    }
+
+    #[test]
+    fn labeled_content_line_produces_label_node(input in arb_labeled_content_line()) {
+        let parsed = parse(&input);
+        prop_assert!(has_node_kind(&parsed.syntax(), SyntaxKind::LABEL));
+        prop_assert!(has_node_kind(&parsed.syntax(), SyntaxKind::CONTENT_LINE));
     }
 
     #[test]

@@ -5,7 +5,7 @@
 use crate::SyntaxKind::{
     CHOICE, CHOICE_BODY, CHOICE_BRACKET_CONTENT, CHOICE_BULLET, CHOICE_GUARD, CHOICE_INNER_CONTENT,
     CHOICE_POINT, CHOICE_START_CONTENT, ELSE_BRANCH, EOF, KW_ELSE, KW_IF, L_BRACE, L_BRACKET,
-    L_PAREN, LABEL, NEWLINE, PLUS, QUESTION, R_BRACE, R_BRACKET, R_PAREN, SPLICE, STAR, THREAD,
+    L_PAREN, NEWLINE, PLUS, QUESTION, R_BRACE, R_BRACKET, SPLICE, STAR, THREAD,
 };
 
 use super::Parser;
@@ -61,7 +61,7 @@ fn choice(p: &mut Parser<'_, '_>) {
     }
     p.skip_ws();
     if p.at(L_PAREN) {
-        label(p);
+        super::content::label(p);
     }
 
     choice_text(p);
@@ -83,14 +83,6 @@ fn choice_guard(p: &mut Parser<'_, '_>) {
     p.expect(KW_IF);
     super::expr::expression(p);
     p.expect(R_BRACE);
-    p.finish_node();
-}
-
-fn label(p: &mut Parser<'_, '_>) {
-    p.start_node(LABEL);
-    p.expect(L_PAREN);
-    p.expect(crate::SyntaxKind::IDENT);
-    p.expect(R_PAREN);
     p.finish_node();
 }
 

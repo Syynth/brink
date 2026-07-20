@@ -9,18 +9,25 @@
 //! `|`).
 
 use crate::SyntaxKind::{
-    self, CONTENT_LINE, DIVERT, EOF, GLUE, GLUE_NODE, HASH, INTERPOLATION, L_BRACE, NEWLINE,
-    R_BRACE, TAG, TAG_LINE, TEXT,
+    self, CONTENT_LINE, DIVERT, EOF, GLUE, GLUE_NODE, HASH, IDENT, INTERPOLATION, L_BRACE, L_PAREN,
+    LABEL, NEWLINE, R_BRACE, R_PAREN, TAG, TAG_LINE, TEXT,
 };
 
 use super::Parser;
 
 /// A single line of prose content, terminated by `NEWLINE` or EOF. Never
 /// consumes a bare `R_BRACE` (that closes the enclosing body, never the
-/// content line itself). Trailing `#tag`s are folded in before the line
-/// ends.
+/// content line itself). May open with a `(label)` — G-1 (RULED
+/// 2026-07-20, "label any content line"): extends the choice-line `(name)`
+/// label syntax (charter §11) to any content line, giving ink's `-
+/// (label)` mid-flow re-entry / backward-loop divert target a native
+/// spelling. Trailing `#tag`s are folded in before the line ends.
 pub(crate) fn content_line(p: &mut Parser<'_, '_>) {
     p.start_node(CONTENT_LINE);
+    if at_content_label(p) {
+        label(p);
+        p.skip_ws();
+    }
     content_items_until(p, &[NEWLINE, R_BRACE, HASH]);
     if p.at(HASH) {
         tag_line_tail(p);
@@ -30,6 +37,32 @@ pub(crate) fn content_line(p: &mut Parser<'_, '_>) {
         p.skip_ws();
         p.bump();
     }
+}
+
+/// `(ident)` at the very start of a content line — G-1's label prefix.
+/// Guarded by the same positive-lookahead discipline `decl.rs`'s Finding
+/// #5 uses for keyword-headed declarations (see that module's doc
+/// comment): only the exact `L_PAREN IDENT R_PAREN` shape commits to a
+/// `LABEL`; anything else (an empty `()`, a multi-word parenthetical, an
+/// unclosed paren) falls through to ordinary prose text, same as before
+/// this fix. This does not fully resolve the syntax's inherent ambiguity
+/// with a single-word parenthetical remark opening a line (`(Sighing) I
+/// trudge on.` is indistinguishable from a real label by construction) —
+/// that is the exact tradeoff the choice-line `(name)` syntax already
+/// accepts (charter §11); noted as a finding rather than papered over.
+fn at_content_label(p: &Parser<'_, '_>) -> bool {
+    p.at(L_PAREN) && p.nth(1) == IDENT && p.nth(2) == R_PAREN
+}
+
+/// `(name)` — a label. Shared by `content_line` (G-1) and `choice.rs`'s
+/// choice-line label (charter §11, "kept in the one label syntax"): one
+/// grammar rule, two call sites.
+pub(crate) fn label(p: &mut Parser<'_, '_>) {
+    p.start_node(LABEL);
+    p.expect(L_PAREN);
+    p.expect(IDENT);
+    p.expect(R_PAREN);
+    p.finish_node();
 }
 
 /// The shared prose-scanning loop: recognizes interpolation/glue/the

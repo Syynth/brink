@@ -463,3 +463,63 @@ fn choice_line_conditional_guard_and_trailing_interpolation_coexist() {
     assert!(has_node_kind(&choice, SyntaxKind::CHOICE_GUARD));
     assert!(has_node_kind(&choice, SyntaxKind::INTERPOLATION));
 }
+
+// ── G-1: labeled content lines ────────────────────────────────────────
+
+#[test]
+fn labeled_content_line_produces_a_label_node() {
+    let src = "flow f() {\n  (start) You arrive at the garden.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let content_line = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CONTENT_LINE)
+        .expect("CONTENT_LINE");
+    assert!(has_node_kind(&content_line, SyntaxKind::LABEL));
+    assert!(has_node_kind(&content_line, SyntaxKind::TEXT));
+}
+
+#[test]
+fn labeled_content_line_as_backward_loop_divert_target() {
+    // Ink's `- (start)` mid-flow re-entry pattern (README G-1 finding):
+    // a label on a plain content line, later diverted back to from
+    // further down the same flow.
+    let src = concat!(
+        "flow loop() {\n",
+        "  (start) You spin around.\n",
+        "  {?\n",
+        "    * [Again] -> start\n",
+        "    * [Stop] -> END\n",
+        "  }\n",
+        "}\n",
+    );
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::LABEL));
+    // Both diverts (one to the label, one to END) parse as real nodes —
+    // exercises N-1 and G-1 together, the realistic combined idiom.
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::DIVERT_STMT), 2);
+}
+
+#[test]
+fn unlabeled_prose_starting_with_paren_is_unaffected() {
+    // A multi-word parenthetical does not match the `L_PAREN IDENT
+    // R_PAREN` lookahead shape, so it stays plain prose, not a spurious
+    // LABEL + error.
+    let src = "flow f() {\n  (a very long aside) continues here.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::LABEL));
+}
+
+#[test]
+fn label_inside_conditional_body_is_still_a_content_line_label() {
+    // G-1 says "ANY content line" — including one nested inside the
+    // annotated-brace family's colon/braced bodies, since those recurse
+    // through `body_line`/`content_line` too.
+    let src = "flow f() {\n  {if hp > 0: (alive) You live.}\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::LABEL));
+}
