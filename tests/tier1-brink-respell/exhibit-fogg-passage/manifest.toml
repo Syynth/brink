@@ -22,6 +22,14 @@ The dissolved gather shows up here too: "I stared at Monsieur Fogg." is
 plain content immediately after the closed `{? }` choice point, with no
 gather dash, even though both choices reconverge into it.
 
+ENTRY POINT (fidelity fix, review of PR #1202): ink runs its ROOT content
+(the "We are going on a trip," opening + its two choices) at startup. The
+opening is a native `flow fogg_wager()`, so a top-level `-> fogg_wager`
+entry divert now runs it first — without it the story opened empty (a
+different episode). Native's story-entry convention (a leading top-level
+`-> flow`) is used here and parses clean; confirm it as the ruled entry
+convention in the G-batch (#1106).
+
 FUNC_populate_options_thread (the charter's SECOND named exhibit, §9) was
 grepped for exhaustively across the tree (source, docs, test fixtures,
 oracle JSON) and does NOT exist anywhere except as a name referenced in

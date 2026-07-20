@@ -1,3 +1,5 @@
+-> fogg_wager
+
 flow fogg_wager() {
   "We are going on a trip," said Monsieur Fogg.
   {?
