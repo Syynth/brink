@@ -403,3 +403,63 @@ fn divert_to_end_in_content_position_parses() {
     let target = find_child::<crate::ast::DivertTarget>(&divert).expect("DIVERT_TARGET");
     assert!(target.is_end());
 }
+
+// ── G-2: choice-line `{expr}` interpolation ──────────────────────────
+
+#[test]
+fn choice_line_interpolation_before_bracket_parses_as_interpolation() {
+    // `* Gold: {gold}` — from the README's G-2 finding: the `{` used to be
+    // swallowed as a premature CHOICE_BODY open.
+    let src = "flow f() {\n  {?\n    * Gold: {gold}\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let choice = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CHOICE)
+        .expect("CHOICE");
+    assert!(has_node_kind(&choice, SyntaxKind::INTERPOLATION));
+    // And no CHOICE_BODY was spuriously opened — this choice has no
+    // nested-content braces at all.
+    assert!(!has_node_kind(&choice, SyntaxKind::CHOICE_BODY));
+}
+
+#[test]
+fn choice_line_interpolation_inside_bracket_inner_content_parses() {
+    let src = "flow f() {\n  {?\n    * [Buy] You have {gold} left.\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let inner = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CHOICE_INNER_CONTENT)
+        .expect("CHOICE_INNER_CONTENT");
+    assert!(has_node_kind(&inner, SyntaxKind::INTERPOLATION));
+}
+
+#[test]
+fn choice_body_still_opens_as_a_body_not_interpolation() {
+    // The flip side: a genuine multiline CHOICE_BODY brace must still be
+    // recognized as CHOICE_BODY, not mis-swallowed as a (garbage)
+    // interpolation expression now that plain `{` no longer stops early.
+    let src = "flow f() {\n  {?\n    * [Eat] {\n      You eat. -> f\n    }\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::CHOICE_BODY));
+}
+
+#[test]
+fn choice_line_conditional_guard_and_trailing_interpolation_coexist() {
+    // Guard braces (handled before `choice_text` even runs) plus a trailing
+    // interpolation in the same choice line.
+    let src = "flow f() {\n  {?\n    * {if hp > 0} Gold: {gold}\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let choice = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CHOICE)
+        .expect("CHOICE");
+    assert!(has_node_kind(&choice, SyntaxKind::CHOICE_GUARD));
+    assert!(has_node_kind(&choice, SyntaxKind::INTERPOLATION));
+}

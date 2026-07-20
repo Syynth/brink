@@ -47,7 +47,26 @@ pub(crate) fn content_items_until(p: &mut Parser<'_, '_>, stop: &[SyntaxKind]) {
         // fall through to `text_run_until` and make zero progress —
         // `content_line` and every choice-anatomy caller rely on this
         // agreement to stay infinite-loop-safe.
-        if cur == EOF || cur == HASH || stop.contains(&cur) {
+        if cur == EOF || cur == HASH {
+            break;
+        }
+        if cur == L_BRACE {
+            // G-2: an `L_BRACE` a caller lists as a stop kind (choice-text
+            // scanning, where a trailing brace may open a nested-content
+            // `CHOICE_BODY`) only actually terminates the run when it is a
+            // genuine body-opener — see `is_body_open_brace`. Every other
+            // `L_BRACE` shape (the annotated-brace family, or bare
+            // `{expr}` interpolation) keeps scanning and falls through to
+            // the match below, exactly like a plain `content_line` call
+            // (which never lists `L_BRACE` in `stop`, so the generic
+            // `stop.contains` branch below never fires for it either —
+            // this `if` deliberately does NOT fall through to that branch,
+            // it's the one caller-supplied stop kind `L_BRACE` needs
+            // special-casing for).
+            if stop.contains(&L_BRACE) && is_body_open_brace(p) {
+                break;
+            }
+        } else if stop.contains(&cur) {
             break;
         }
         match cur {
@@ -70,6 +89,28 @@ pub(crate) fn content_items_until(p: &mut Parser<'_, '_>, stop: &[SyntaxKind]) {
             _ => text_run_until(p, stop),
         }
     }
+}
+
+/// True when the `L_BRACE` at the parser's current (unconsumed) position
+/// is a genuine body-opener (e.g. a choice's `CHOICE_BODY`) rather than
+/// bare `{expr}` interpolation — G-2's disambiguation. Only meaningful
+/// when the caller listed `L_BRACE` in its stop set (choice-text scanning,
+/// `choice.rs`'s `CHOICE_START_CONTENT`/`CHOICE_INNER_CONTENT`); a plain
+/// `content_line` never does, so this is never consulted there — a `{` mid
+/// content-line has no competing "body" grammar that could start there, so
+/// it's uniformly family-or-interpolation, unchanged from before this fix.
+fn is_body_open_brace(p: &Parser<'_, '_>) -> bool {
+    if super::family::at_choice_point(p)
+        || super::family::at_conditional(p)
+        || super::family::at_alternation(p)
+    {
+        return false;
+    }
+    // A bare `{` is a body-opener exactly when it's the multiline shape
+    // (immediately followed by a NEWLINE, trivia aside) — the same signal
+    // `family::is_multiline` uses for the alternation family, checked one
+    // token earlier here since the brace itself hasn't been consumed yet.
+    super::family::peek_is_newline(p, 1)
 }
 
 /// `{expr}` — bare-brace interpolation, and nothing else, ever (charter
