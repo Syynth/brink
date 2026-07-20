@@ -193,16 +193,150 @@ impl VarDecl {
     pub fn name_token(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, IDENT)
     }
+
+    /// The initializer expression's root node, if the `=` clause was
+    /// present. `var name = expr` always parses the initializer as exactly
+    /// one child node (whatever expression-grammar kind it is) after the
+    /// `IDENT`, so "the first child node" is unambiguous.
+    pub fn value(&self) -> Option<SyntaxNode> {
+        self.syntax.children().next()
+    }
 }
 
 impl ConstDecl {
     pub fn name_token(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, IDENT)
     }
+
+    /// See [`VarDecl::value`].
+    pub fn value(&self) -> Option<SyntaxNode> {
+        self.syntax.children().next()
+    }
+}
+
+impl FlagsDecl {
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, IDENT)
+    }
+
+    pub fn member_list(&self) -> Option<FlagsMemberList> {
+        support::child(&self.syntax)
+    }
+}
+
+impl FlagsMemberList {
+    pub fn members(&self) -> impl Iterator<Item = FlagsMember> {
+        support::children(&self.syntax)
+    }
+}
+
+impl FlagsMember {
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, IDENT)
+    }
+
+    /// `true` for a parenthesized member (`(name)`, the default-on entry).
+    pub fn is_active(&self) -> bool {
+        support::token(&self.syntax, L_PAREN).is_some()
+    }
+}
+
+impl StructDecl {
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, IDENT)
+    }
+
+    pub fn fields(&self) -> impl Iterator<Item = StructField> {
+        support::children(&self.syntax)
+    }
+}
+
+impl StructField {
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, IDENT)
+    }
+
+    /// The field's declared type — a bare dotted path in this skeleton
+    /// grammar (no generics/fn-types, `parser/decl.rs::struct_field`).
+    pub fn type_path(&self) -> Option<Path> {
+        support::child(&self.syntax)
+    }
+}
+
+impl ExternDecl {
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, IDENT)
+    }
+
+    pub fn param_list(&self) -> Option<ParamList> {
+        support::child(&self.syntax)
+    }
+}
+
+impl ImportDecl {
+    pub fn path(&self) -> Option<Path> {
+        support::child(&self.syntax)
+    }
 }
 
 impl UseDecl {
     pub fn tree(&self) -> Option<UseTree> {
+        support::child(&self.syntax)
+    }
+}
+
+impl UseTree {
+    /// The leading dotted/`::`-separated path segments, in order —
+    /// `use_tree`'s grammar lays these out as bare `IDENT` tokens
+    /// interspersed with `::` directly inside `USE_TREE` (no nested `PATH`
+    /// node, unlike `import`'s path), so this walks direct-child tokens up
+    /// to (not including) an `as`-alias or a nested `{ … }` list.
+    pub fn path_segments(&self) -> impl Iterator<Item = SyntaxToken> + '_ {
+        self.syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .take_while(|t| t.kind() != SyntaxKind::KW_AS)
+            .filter(|t| t.kind() == IDENT)
+    }
+
+    /// The `as alias` name, if this tree ends in one.
+    pub fn alias_token(&self) -> Option<SyntaxToken> {
+        let mut saw_as = false;
+        for el in self.syntax.children_with_tokens() {
+            let Some(tok) = el.into_token() else {
+                continue;
+            };
+            if tok.kind().is_trivia() {
+                continue;
+            }
+            if saw_as {
+                return if tok.kind() == IDENT { Some(tok) } else { None };
+            }
+            if tok.kind() == SyntaxKind::KW_AS {
+                saw_as = true;
+            }
+        }
+        None
+    }
+
+    /// The nested `{ a, b as c, … }` group, if this tree has one.
+    pub fn nested_list(&self) -> Option<UseTreeList> {
+        support::child(&self.syntax)
+    }
+}
+
+impl UseTreeList {
+    pub fn trees(&self) -> impl Iterator<Item = UseTree> {
+        support::children(&self.syntax)
+    }
+}
+
+impl ModuleDecl {
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, IDENT)
+    }
+
+    pub fn body(&self) -> Option<Block> {
         support::child(&self.syntax)
     }
 }
@@ -282,12 +416,134 @@ impl AnnotationArg {
 }
 
 impl CallExpr {
-    pub fn callee(&self) -> Option<PathExpr> {
+    /// The callee path. Fixed for B0.6 (`docs/b0-sequencing.md` §B0.6):
+    /// `expr::path_or_call` wraps a bare `PATH` node directly (not a nested
+    /// `PATH_EXPR`) when it commits to `CALL_EXPR` — the previous
+    /// `Option<PathExpr>` signature could never cast successfully against
+    /// the real grammar shape and always returned `None` for every call
+    /// expression. No test exercised it before B0.6's lowering needed it.
+    pub fn callee(&self) -> Option<Path> {
         support::child(&self.syntax)
     }
 
     pub fn arg_list(&self) -> Option<ArgList> {
         support::child(&self.syntax)
+    }
+}
+
+impl PathExpr {
+    pub fn path(&self) -> Option<Path> {
+        support::child(&self.syntax)
+    }
+}
+
+impl IntegerLit {
+    pub fn value_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, crate::SyntaxKind::INTEGER)
+    }
+
+    pub fn value(&self) -> Option<i64> {
+        self.value_token()
+            .and_then(|t| t.text().parse::<i64>().ok())
+    }
+}
+
+impl FloatLit {
+    pub fn value_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, crate::SyntaxKind::FLOAT)
+    }
+
+    pub fn value(&self) -> Option<f64> {
+        self.value_token()
+            .and_then(|t| t.text().parse::<f64>().ok())
+    }
+}
+
+impl BooleanLit {
+    pub fn value(&self) -> Option<bool> {
+        let tok = self
+            .syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .find(|t| matches!(t.kind(), SyntaxKind::KW_TRUE | SyntaxKind::KW_FALSE))?;
+        match tok.kind() {
+            SyntaxKind::KW_TRUE => Some(true),
+            SyntaxKind::KW_FALSE => Some(false),
+            _ => None,
+        }
+    }
+}
+
+impl ParenExpr {
+    /// The parenthesized inner expression's root node.
+    pub fn inner(&self) -> Option<SyntaxNode> {
+        self.syntax.children().next()
+    }
+}
+
+impl PrefixExpr {
+    /// The prefix operator token (`-` or `!`).
+    pub fn op_token(&self) -> Option<SyntaxToken> {
+        self.syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .find(|t| matches!(t.kind(), SyntaxKind::MINUS | SyntaxKind::BANG))
+    }
+
+    /// The operand's root node.
+    pub fn operand(&self) -> Option<SyntaxNode> {
+        self.syntax.children().next()
+    }
+}
+
+impl InfixExpr {
+    /// The left-hand operand's root node (the first child node).
+    pub fn lhs(&self) -> Option<SyntaxNode> {
+        self.syntax.children().next()
+    }
+
+    /// The right-hand operand's root node (the last child node).
+    pub fn rhs(&self) -> Option<SyntaxNode> {
+        self.syntax.children().last()
+    }
+
+    /// The operator token. Two adjacent `PIPE`s (`||`) are represented as
+    /// two tokens (see `expr::infix_binding_power`'s doc) — this returns
+    /// the *first* one; callers that need to distinguish `|` from `||`
+    /// check [`Self::is_double_pipe`].
+    pub fn op_token(&self) -> Option<SyntaxToken> {
+        self.syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .find(|t| {
+                matches!(
+                    t.kind(),
+                    SyntaxKind::AMP_AMP
+                        | SyntaxKind::EQ_EQ
+                        | SyntaxKind::BANG_EQ
+                        | SyntaxKind::LT
+                        | SyntaxKind::GT
+                        | SyntaxKind::LT_EQ
+                        | SyntaxKind::GT_EQ
+                        | SyntaxKind::PLUS
+                        | SyntaxKind::MINUS
+                        | SyntaxKind::STAR
+                        | SyntaxKind::SLASH
+                        | SyntaxKind::PERCENT
+                        | SyntaxKind::PIPE
+                )
+            })
+    }
+
+    /// `true` if the operator is `||` (two adjacent `PIPE` tokens) rather
+    /// than a single-token operator.
+    pub fn is_double_pipe(&self) -> bool {
+        let mut pipes = self
+            .syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .filter(|t| t.kind() == SyntaxKind::PIPE);
+        pipes.next().is_some() && pipes.next().is_some()
     }
 }
 

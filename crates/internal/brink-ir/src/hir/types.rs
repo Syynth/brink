@@ -2004,6 +2004,30 @@ pub enum DiagnosticCode {
     /// provenance class disagrees with the `SymbolKind` bucket its declared
     /// symbol was indexed under in the manifest.
     E128,
+
+    // ── B0.6 native frontend (docs/b0-sequencing.md §B0.6) ──
+    //
+    // The native `.brink` declaration lowering (`hir::lower_native`) is
+    // deliberately partial — bodies are B0.7/B0.8, and a handful of
+    // declaration-layer constructs (nested modules, `fn` nested below top
+    // level, the `@[…]` annotation channel, lambda expressions in value
+    // position) have no HIR representation yet. Per the contract's §4.4
+    // additive-open/closed-to-silent-extension posture, every such
+    // construct is a loud diagnostic, never a silent drop.
+    /// A native construct parses cleanly but has no HIR lowering yet in
+    /// this slice (a nested `module { … }` block, a `fn` declared below top
+    /// level, an `@[…]` annotation line, a lambda expression in value
+    /// position, or any other CST shape `hir::lower_native` does not yet
+    /// recognize). The construct is skipped — not silently: this diagnostic
+    /// names exactly what was skipped and why.
+    E129,
+    /// A native `flow` is declared more than two levels deep (a `flow`
+    /// nested inside another nested `flow`'s body) — the contract's Q4(b)
+    /// fence (`docs/hir-admission-contract.md` §5 Q4): exactly two
+    /// container levels for v1, addressing model written to generalize.
+    /// Depth-3+ nesting parses and is rejected here, never silently
+    /// flattened into a 2-level shape.
+    E130,
 }
 
 impl DiagnosticCode {
@@ -2143,6 +2167,8 @@ impl DiagnosticCode {
             Self::E126 => "E126",
             Self::E127 => "E127",
             Self::E128 => "E128",
+            Self::E129 => "E129",
+            Self::E130 => "E130",
         }
     }
 
@@ -2327,6 +2353,8 @@ impl DiagnosticCode {
             Self::E128 => {
                 "admission: container's provenance kind disagrees with its indexed symbol kind"
             }
+            Self::E129 => "native: construct parses but has no HIR lowering yet",
+            Self::E130 => "native: `flow` nested more than two levels deep is not yet supported",
         }
     }
 
@@ -2491,6 +2519,8 @@ impl DiagnosticCode {
             "E126" => Some(Self::E126),
             "E127" => Some(Self::E127),
             "E128" => Some(Self::E128),
+            "E129" => Some(Self::E129),
+            "E130" => Some(Self::E130),
             _ => None,
         }
     }
