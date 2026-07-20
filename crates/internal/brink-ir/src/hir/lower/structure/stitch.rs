@@ -51,7 +51,7 @@ pub(super) fn lower_top_level_stitch(
         ident.syntax().text_range(),
         param_infos,
         None,
-        doc,
+        doc.clone(),
     );
 
     scope.current_knot = Some(name_text.clone());
@@ -77,12 +77,15 @@ pub(super) fn lower_top_level_stitch(
     // the leading tag-line run of the body.
     let mut is_local = false;
     let mut effects_assertion = None;
+    let mut visibility = None;
+    let mut was = None;
     if let Some(b) = stitch.body() {
         let dirs = leading_body_directives(b.syntax());
         is_local = apply_scope_directives(&dirs, DirectiveTarget::Stitch, sink);
         effects_assertion = effects_assertion_from_directives(&dirs, sink);
         if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
             sink.set_visibility(crate::SymbolKind::Stitch, &name_text, vis);
+            visibility = Some(vis);
         }
         if let Some((old_name, was_range)) =
             super::super::directive::was_from_directives(&dirs, sink)
@@ -90,7 +93,13 @@ pub(super) fn lower_top_level_stitch(
             if old_name == name_text {
                 sink.diagnose(was_range, DiagnosticCode::E095);
             } else {
-                sink.set_was(crate::SymbolKind::Stitch, &name_text, old_name, was_range);
+                sink.set_was(
+                    crate::SymbolKind::Stitch,
+                    &name_text,
+                    old_name.clone(),
+                    was_range,
+                );
+                was = Some((old_name, was_range));
             }
         }
     }
@@ -109,6 +118,9 @@ pub(super) fn lower_top_level_stitch(
         // §3: `): type ===`), which this promoted-top-level-stitch path
         // never parses through.
         return_type: None,
+        doc,
+        visibility,
+        was,
     })
 }
 
@@ -149,7 +161,7 @@ pub(super) fn lower_stitch(
         ident.syntax().text_range(),
         param_infos,
         None,
-        doc,
+        doc.clone(),
     );
     for p in &params {
         sink.add_local(LocalSymbol {
@@ -173,12 +185,15 @@ pub(super) fn lower_stitch(
     // the leading tag-line run of the body.
     let mut is_local = false;
     let mut effects_assertion = None;
+    let mut visibility = None;
+    let mut was = None;
     if let Some(b) = stitch.body() {
         let dirs = leading_body_directives(b.syntax());
         is_local = apply_scope_directives(&dirs, DirectiveTarget::Stitch, sink);
         effects_assertion = effects_assertion_from_directives(&dirs, sink);
         if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
             sink.set_visibility(crate::SymbolKind::Stitch, &qualified, vis);
+            visibility = Some(vis);
         }
         // `#@was(old_name)` on a nested stitch takes the bare old stitch
         // name (the enclosing knot isn't being renamed) — qualify it the
@@ -194,9 +209,10 @@ pub(super) fn lower_stitch(
                 sink.set_was(
                     crate::SymbolKind::Stitch,
                     &qualified,
-                    old_qualified,
+                    old_qualified.clone(),
                     was_range,
                 );
+                was = Some((old_qualified, was_range));
             }
         }
     }
@@ -208,5 +224,8 @@ pub(super) fn lower_stitch(
         body,
         is_local,
         effects_assertion,
+        doc,
+        visibility,
+        was,
     })
 }

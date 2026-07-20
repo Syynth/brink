@@ -38,13 +38,15 @@ impl DeclareSymbols for ast::StructDecl {
             name.range,
             Vec::new(),
             None,
-            doc,
+            doc.clone(),
         );
 
         // `#@private`/`#@public` visibility (M-2: STRUCTs are importable, §2).
         let dirs = super::super::directive::directives_before(self.syntax());
+        let mut visibility = None;
         if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
             sink.set_visibility(crate::SymbolKind::Struct, &name.text, vis);
+            visibility = Some(vis);
         }
 
         let fields: Vec<StructFieldDecl> = self
@@ -56,6 +58,8 @@ impl DeclareSymbols for ast::StructDecl {
             ptr: scope.prov(NodeClass::StructDecl, self.syntax()),
             name,
             fields,
+            doc,
+            visibility,
         })
     }
 }

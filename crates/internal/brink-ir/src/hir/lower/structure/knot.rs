@@ -61,7 +61,7 @@ pub(super) fn lower_knot(
         ident.syntax().text_range(),
         param_infos,
         detail,
-        doc,
+        doc.clone(),
     );
 
     scope.current_knot = Some(name_text.clone());
@@ -89,12 +89,15 @@ pub(super) fn lower_knot(
     // line(s) in the leading tag-line run of the body.
     let mut is_local = false;
     let mut effects_assertion = None;
+    let mut visibility = None;
+    let mut was = None;
     if let Some(b) = knot.body() {
         let dirs = leading_body_directives(b.syntax());
         is_local = apply_scope_directives(&dirs, DirectiveTarget::Knot, sink);
         effects_assertion = effects_assertion_from_directives(&dirs, sink);
         if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
             sink.set_visibility(crate::SymbolKind::Knot, &name_text, vis);
+            visibility = Some(vis);
         }
         if let Some((old_name, was_range)) =
             super::super::directive::was_from_directives(&dirs, sink)
@@ -102,7 +105,13 @@ pub(super) fn lower_knot(
             if old_name == name_text {
                 sink.diagnose(was_range, DiagnosticCode::E095);
             } else {
-                sink.set_was(crate::SymbolKind::Knot, &name_text, old_name, was_range);
+                sink.set_was(
+                    crate::SymbolKind::Knot,
+                    &name_text,
+                    old_name.clone(),
+                    was_range,
+                );
+                was = Some((old_name, was_range));
             }
         }
     }
@@ -121,6 +130,9 @@ pub(super) fn lower_knot(
         is_local,
         effects_assertion,
         return_type,
+        doc,
+        visibility,
+        was,
     })
 }
 

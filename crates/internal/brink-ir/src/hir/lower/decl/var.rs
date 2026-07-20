@@ -30,7 +30,7 @@ impl DeclareSymbols for ast::VarDecl {
             name.range,
             Vec::new(),
             None,
-            doc,
+            doc.clone(),
         );
 
         let value = if let Some(e) = self.value() {
@@ -44,16 +44,20 @@ impl DeclareSymbols for ast::VarDecl {
         // above the declaration.
         let dirs = directives_before(self.syntax());
         let is_local = apply_scope_directives(&dirs, DirectiveTarget::Var, sink);
+        let mut visibility = None;
         if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
             sink.set_visibility(SymbolKind::Variable, &name.text, vis);
+            visibility = Some(vis);
         }
+        let mut was = None;
         if let Some((old_name, was_range)) =
             super::super::directive::was_from_directives(&dirs, sink)
         {
             if old_name == name.text {
                 sink.diagnose(was_range, DiagnosticCode::E095);
             } else {
-                sink.set_was(SymbolKind::Variable, &name.text, old_name, was_range);
+                sink.set_was(SymbolKind::Variable, &name.text, old_name.clone(), was_range);
+                was = Some((old_name, was_range));
             }
         }
 
@@ -67,6 +71,9 @@ impl DeclareSymbols for ast::VarDecl {
             value,
             is_local,
             annotation,
+            doc,
+            visibility,
+            was,
         })
     }
 }

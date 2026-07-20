@@ -33,7 +33,7 @@ impl DeclareSymbols for ast::ListDecl {
             name.range,
             Vec::new(),
             None,
-            doc,
+            doc.clone(),
         );
 
         let members: Vec<ListMember> = self
@@ -54,16 +54,20 @@ impl DeclareSymbols for ast::ListDecl {
         // `#@private`/`#@public` do (M-2: LISTs are importable, §2).
         let dirs = directives_before(self.syntax());
         let _ = apply_scope_directives(&dirs, DirectiveTarget::List, sink);
+        let mut visibility = None;
         if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
             sink.set_visibility(SymbolKind::List, &list_name_text, vis);
+            visibility = Some(vis);
         }
+        let mut was = None;
         if let Some((old_name, was_range)) =
             super::super::directive::was_from_directives(&dirs, sink)
         {
             if old_name == list_name_text {
                 sink.diagnose(was_range, DiagnosticCode::E095);
             } else {
-                sink.set_was(SymbolKind::List, &list_name_text, old_name, was_range);
+                sink.set_was(SymbolKind::List, &list_name_text, old_name.clone(), was_range);
+                was = Some((old_name, was_range));
             }
         }
 
@@ -71,6 +75,9 @@ impl DeclareSymbols for ast::ListDecl {
             ptr: scope.prov(NodeClass::ListDecl, self.syntax()),
             name,
             members,
+            doc,
+            visibility,
+            was,
         })
     }
 }

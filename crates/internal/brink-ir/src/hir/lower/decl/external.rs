@@ -47,9 +47,9 @@ impl DeclareSymbols for ast::ExternalDecl {
             SymbolKind::External,
             &name.text,
             name.range,
-            param_infos,
+            param_infos.clone(),
             None,
-            doc,
+            doc.clone(),
         );
 
         #[expect(
@@ -63,16 +63,20 @@ impl DeclareSymbols for ast::ExternalDecl {
         // dropped.
         let dirs = directives_before(self.syntax());
         let _ = apply_scope_directives(&dirs, DirectiveTarget::External, sink);
+        let mut visibility = None;
         if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
             sink.set_visibility(SymbolKind::External, &name.text, vis);
+            visibility = Some(vis);
         }
+        let mut was = None;
         if let Some((old_name, was_range)) =
             super::super::directive::was_from_directives(&dirs, sink)
         {
             if old_name == name.text {
                 sink.diagnose(was_range, DiagnosticCode::E095);
             } else {
-                sink.set_was(SymbolKind::External, &name.text, old_name, was_range);
+                sink.set_was(SymbolKind::External, &name.text, old_name.clone(), was_range);
+                was = Some((old_name, was_range));
             }
         }
 
@@ -80,6 +84,10 @@ impl DeclareSymbols for ast::ExternalDecl {
             ptr: scope.prov(NodeClass::ExternalDecl, self.syntax()),
             name,
             param_count,
+            params: param_infos,
+            doc,
+            visibility,
+            was,
         })
     }
 }
