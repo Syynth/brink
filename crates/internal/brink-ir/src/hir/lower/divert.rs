@@ -8,8 +8,8 @@ use brink_syntax::ast::{self, AstNode};
 
 use crate::provenance::NodeClass;
 use crate::{
-    DiagnosticCode, Divert, DivertPath, DivertTarget, Expr, RefKind, Return, Stmt, ThreadStart,
-    TunnelCall,
+    DiagnosticCode, Divert, DivertPath, DivertTarget, Expr, RefKind, Return, ReturnKind, Stmt,
+    ThreadStart, TunnelCall,
 };
 
 use super::context::{LowerScope, LowerSink, Lowered};
@@ -81,6 +81,7 @@ impl LowerDivert for ast::DivertNode {
                     DivertPath::Path(path) => {
                         return Ok(Stmt::Return(Return {
                             ptr: None,
+                            kind: ReturnKind::TunnelRedirect,
                             value: Some(Expr::DivertTarget(path.clone())),
                             onwards_args: target.args,
                         }));
@@ -109,6 +110,7 @@ impl LowerDivert for ast::DivertNode {
             // Bare `->->` with no targets — tunnel return
             return Ok(Stmt::Return(Return {
                 ptr: None,
+                kind: ReturnKind::TunnelRedirect,
                 value: None,
                 onwards_args: Vec::new(),
             }));

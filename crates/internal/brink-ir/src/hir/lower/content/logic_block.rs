@@ -11,7 +11,7 @@ use brink_syntax::ast::{self, AstNode};
 use crate::hir::types::{AwaitStmt, BlockStmt, ElseBranch, ForStmt, IfStmt, WhileStmt};
 use crate::provenance::NodeClass;
 use crate::symbols::LocalSymbol;
-use crate::{AssignOp, Assignment, DiagnosticCode, Return, SymbolKind, TempDecl};
+use crate::{AssignOp, Assignment, DiagnosticCode, Return, ReturnKind, SymbolKind, TempDecl};
 
 use super::super::context::{LowerScope, LowerSink, Lowered};
 use super::super::expr::LowerExpr;
@@ -132,6 +132,7 @@ fn lower_block_return(
     let value = ret.value().and_then(|e| e.lower_expr(scope, sink).ok());
     BlockStmt::Return(Return {
         ptr: Some(scope.prov(NodeClass::Return, ret.syntax())),
+        kind: ReturnKind::Explicit,
         value,
         onwards_args: Vec::new(),
     })

@@ -655,13 +655,33 @@ pub enum DivertPath {
 }
 
 /// `~ return expr` or bare `->->` (tunnel return).
+///
+/// The explicit-vs-tunnel distinction is carried by [`ReturnKind`] — never
+/// by `ptr` presence. `ptr` is uniform carrying-or-not provenance with no
+/// semantic load: a frontend may attach provenance to a tunnel return (or
+/// synthesize an explicit return without one) freely (contract D5 / F-I#6,
+/// retired by B0.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Return {
     pub ptr: Option<Provenance>,
+    /// Explicit `~ return` vs tunnel `->->` — the semantic bit formerly
+    /// smuggled through `ptr` presence.
+    pub kind: ReturnKind,
     pub value: Option<Expr>,
     /// Arguments for `->-> target(args)` tunnel onwards — pushed before the
     /// divert target on the value stack so the redirect target can pop them.
     pub onwards_args: Vec<Expr>,
+}
+
+/// Whether a [`Return`] is an explicit `~ return` or a tunnel return.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReturnKind {
+    /// `~ return [expr]` — return from a function knot. `E032` outside one.
+    Explicit,
+    /// `->->` / `->-> target(args)` — pop the tunnel frame, optionally
+    /// redirecting onwards. Never `E032`; lowers to LIR `is_tunnel`. The
+    /// future native `return -> x` respell stamps this explicitly.
+    TunnelRedirect,
 }
 
 // ─── Expressions ────────────────────────────────────────────────────

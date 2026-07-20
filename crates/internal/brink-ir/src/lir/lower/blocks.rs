@@ -68,7 +68,7 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
             let value = ret.value.as_ref().map(|e| lower_expr(e, ctx));
             out.push(lir::Stmt::Return {
                 value,
-                is_tunnel: false,
+                is_tunnel: ret.kind == hir::ReturnKind::TunnelRedirect,
                 args: Vec::new(),
             });
         }
