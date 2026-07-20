@@ -2221,6 +2221,7 @@ dependencies = [
  "brink-codegen-inkb",
  "brink-format",
  "brink-syntax",
+ "brink-syntax-native",
  "insta",
  "regex",
  "rowan",
