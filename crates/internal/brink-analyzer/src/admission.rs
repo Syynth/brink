@@ -831,3 +831,199 @@ fn check_provenance_kind_consistency(
         }
     }
 }
+
+// ─── Tests ──────────────────────────────────────────────────────────
+//
+// #672-A posture: each malformed-triple fixture is constructed directly
+// (not via a hand-rolled-from-scratch HirFile/SymbolManifest — that would
+// be enormous and brittle) by lowering real, valid `.ink` source through
+// the actual pipeline (`brink_ir::hir::lower`, the same entry point
+// `lower_file` composes) and then corrupting exactly the one field the
+// check under test cares about. This is "direct" (calls `validate_admission`
+// directly, no salsa) and "pipeline" (the base HIR/manifest is real lowering
+// output, not synthetic) at once.
+
+#[cfg(test)]
+mod tests {
+    use rowan::TextSize;
+
+    use brink_ir::hir::CondBranch;
+    use brink_ir::provenance::NodeClass;
+    use brink_ir::{Divert, Provenance};
+
+    use super::*;
+
+    fn lower_src(src: &str) -> (HirFile, SymbolManifest, TextSize) {
+        let parsed = brink_syntax::parse(src);
+        let tree = parsed.tree();
+        let (hir, manifest, _diags) = brink_ir::hir::lower(FileId(0), &tree);
+        (hir, manifest, TextSize::of(src))
+    }
+
+    fn codes(diags: &[Diagnostic]) -> Vec<DiagnosticCode> {
+        diags.iter().map(|d| d.code).collect()
+    }
+
+    #[test]
+    fn clean_file_has_no_admission_diagnostics() {
+        let (hir, manifest, len) =
+            lower_src("VAR x = 1\n== function foo ==\n~ return\n== knot ==\n{x}\n-> foo\n-> END\n");
+        let diags = validate_admission(FileId(0), &hir, &manifest, len);
+        assert!(diags.is_empty(), "expected a clean file, got: {diags:?}");
+    }
+
+    /// Corpus-reality regression (validate.rs's sibling
+    /// `inline_branch_diverts_produce_no_spurious_structural_diagnostics`
+    /// documents the same guarantee for E032/E033/E034): ink's own
+    /// inline-branch lowering always places a divert last in the branch —
+    /// `{cond: -> a text after divert}` lowers to `[Content, Divert]`, never
+    /// `[Divert, Content]` — so E127 must never fire on real corpus shapes
+    /// like this, only on a HIR a buggy frontend fabricated directly.
+    #[test]
+    fn inline_branch_diverts_produce_no_e127() {
+        let cases = [
+            "A {cond: -> away} B\n=== away ===\n-> END\n",
+            "{cond: -> a | -> b}\n=== a ===\n-> END\n=== b ===\n-> END\n",
+            "{cond: -> a text after divert}\n=== a ===\n-> END\n",
+            "Line {cond: -> a} {other: -> b}\n=== a ===\n-> END\n=== b ===\n-> END\n",
+        ];
+        for src in cases {
+            let (hir, manifest, len) = lower_src(src);
+            let diags = validate_admission(FileId(0), &hir, &manifest, len);
+            assert!(
+                !codes(&diags).contains(&DiagnosticCode::E127),
+                "inline-branch divert must not trigger E127: {src:?} -> {diags:?}"
+            );
+        }
+    }
+
+    /// Corpus-reality regression for the two scope-widened conventions
+    /// documented in the module doc: a promoted top-level stitch and a
+    /// pre-first-knot label are both legitimately bare (0 dots) — E126 must
+    /// not flag them.
+    #[test]
+    fn widened_conventions_produce_no_e126() {
+        let (hir, manifest, len) = lower_src("- (opening)\nHello\n= stitch_a\n-> END\n");
+        let diags = validate_admission(FileId(0), &hir, &manifest, len);
+        assert!(
+            !codes(&diags).contains(&DiagnosticCode::E126),
+            "bare promoted-stitch/pre-knot-label names must not trigger E126: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn e121_unresolved_ref_with_no_matching_hir_range() {
+        let (hir, mut manifest, len) = lower_src("VAR x = 1\n== knot ==\n{x}\n-> END\n");
+        let r = manifest
+            .unresolved
+            .first_mut()
+            .expect("one unresolved ref for `x`");
+        // Move the recorded range off the real `{x}` reference entirely.
+        r.range = TextRange::new(0.into(), 1.into());
+        let diags = validate_admission(FileId(0), &hir, &manifest, len);
+        assert!(codes(&diags).contains(&DiagnosticCode::E121), "{diags:?}");
+    }
+
+    #[test]
+    fn e122_declared_symbol_with_no_hir_node() {
+        let (hir, mut manifest, len) = lower_src("== knot ==\n-> END\n");
+        let sym = manifest.knots.first_mut().expect("one declared knot");
+        sym.name = "ghost".to_string();
+        let diags = validate_admission(FileId(0), &hir, &manifest, len);
+        assert!(codes(&diags).contains(&DiagnosticCode::E122), "{diags:?}");
+    }
+
+    #[test]
+    fn e123_is_function_sentinel_disagreement() {
+        let (mut hir, manifest, len) = lower_src("== function foo ==\n~ return\n");
+        hir.knots[0].is_function = false; // manifest still stamps the "function" sentinel
+        let diags = validate_admission(FileId(0), &hir, &manifest, len);
+        assert!(codes(&diags).contains(&DiagnosticCode::E123), "{diags:?}");
+    }
+
+    #[test]
+    fn e124_range_empty_is_malformed() {
+        let (mut hir, manifest, len) = lower_src("== knot ==\n-> END\n");
+        hir.knots[0].name.range = TextRange::new(len, len);
+        let diags = validate_admission(FileId(0), &hir, &manifest, len);
+        assert!(codes(&diags).contains(&DiagnosticCode::E124), "{diags:?}");
+    }
+
+    #[test]
+    fn e124_range_out_of_bounds_is_malformed() {
+        let (mut hir, manifest, len) = lower_src("== knot ==\n-> END\n");
+        let past_eof = len + TextSize::from(1000);
+        hir.knots[0].name.range = TextRange::new(len, past_eof);
+        let diags = validate_admission(FileId(0), &hir, &manifest, len);
+        assert!(codes(&diags).contains(&DiagnosticCode::E124), "{diags:?}");
+    }
+
+    #[test]
+    fn e125_duplicate_unresolved_ref_ranges() {
+        let (hir, mut manifest, len) =
+            lower_src("VAR x = 1\nVAR y = 2\n== knot ==\n{x} {y}\n-> END\n");
+        assert!(
+            manifest.unresolved.len() >= 2,
+            "need at least two refs: {manifest:?}"
+        );
+        let first_range = manifest.unresolved[0].range;
+        manifest.unresolved[1].range = first_range;
+        let diags = validate_admission(FileId(0), &hir, &manifest, len);
+        assert!(codes(&diags).contains(&DiagnosticCode::E125), "{diags:?}");
+    }
+
+    #[test]
+    fn e126_name_convention_violation() {
+        let (hir, mut manifest, len) = lower_src("== knot ==\n-> END\n");
+        manifest.knots[0].name = "a.b".to_string(); // knots must be bare (0 dots)
+        let diags = validate_admission(FileId(0), &hir, &manifest, len);
+        assert!(codes(&diags).contains(&DiagnosticCode::E126), "{diags:?}");
+    }
+
+    #[test]
+    fn e127_divert_not_last_in_inline_branch() {
+        let (mut hir, manifest, len) = lower_src("== knot ==\nHello\n-> END\n");
+        let synthetic_range = TextRange::new(0.into(), 1.into());
+        let branch_body = Block {
+            label: None,
+            stmts: vec![
+                Stmt::Divert(Divert {
+                    ptr: Some(Provenance::synthetic(NodeClass::Divert, synthetic_range)),
+                    target: DivertTarget {
+                        path: DivertPath::Done,
+                        args: Vec::new(),
+                    },
+                }),
+                Stmt::Content(Content {
+                    ptr: None,
+                    parts: Vec::new(),
+                    tags: Vec::new(),
+                }),
+            ],
+            container_id: None,
+        };
+        let cond = Conditional {
+            ptr: Provenance::synthetic(NodeClass::Conditional, synthetic_range),
+            kind: CondKind::InitialCondition,
+            branches: vec![CondBranch {
+                condition: None,
+                body: branch_body,
+                container_id: None,
+            }],
+        };
+        hir.knots[0].body.stmts.insert(0, Stmt::Conditional(cond));
+        let diags = validate_admission(FileId(0), &hir, &manifest, len);
+        assert!(codes(&diags).contains(&DiagnosticCode::E127), "{diags:?}");
+    }
+
+    #[test]
+    fn e128_provenance_kind_disagrees_with_manifest_bucket() {
+        let (hir, mut manifest, len) = lower_src("== knot ==\n-> END\n");
+        // Simulate a frontend that stamped `NodeClass::Knot` provenance but
+        // indexed the declaration under the stitch bucket.
+        let sym = manifest.knots.remove(0);
+        manifest.stitches.push(sym);
+        let diags = validate_admission(FileId(0), &hir, &manifest, len);
+        assert!(codes(&diags).contains(&DiagnosticCode::E128), "{diags:?}");
+    }
+}
