@@ -1,0 +1,30 @@
+# INTERIM hand-respelled fixture. See ../README.md.
+ink_source = "tests/tier1/gather/complex-flow-v1/story.ink"
+oracle_case = "tier1::gather::complex-flow-v1"
+family = "weave + gather (deep nesting)"
+status = "hand-respelled, parse-verified only"
+notes = """
+BONUS exhibit, not one of the core family-spanning six/seven: this ink
+source is very likely where the charter's own §5 illustrative example
+came from -- it contains the line `* *     'A wager!'[] I returned.`
+followed by nested body content, which is a near-verbatim match to the
+charter's literal spelling example `* 'A wager!'[] I returned. { ... }`.
+
+Ink's deep weave nesting (`*`, `* *`, `* * *`, and depth-matched `-`/`- -`/
+`- - -` gathers) respells as NESTED `{? }` choice points with braced
+choice bodies -- no depth-counting sigils anywhere, confirming the
+charter's central claim that nesting depth "falls out of structure"
+rather than needing to be spelled.
+
+The interesting case is the MID-LIST gather at depth 3
+(`- - -   He nodded again.`, sitting between two groups of `* * *`
+choices at the same weave depth). Ink's semantics: picking either of the
+first two choices converges at the gather text, then the *next* three
+choices at that depth become a fresh menu. This respells cleanly as TWO
+SEPARATE `{? }` blocks in sequence with the gather text as plain content
+between them -- exactly the charter's "next line after the block"
+mechanic, applied recursively. This is strong positive evidence for the
+gather-dissolution design: even ink's trickiest gather idiom (a gather
+splitting one choice list into two) has a mechanical, unambiguous native
+form. No gaps encountered.
+"""

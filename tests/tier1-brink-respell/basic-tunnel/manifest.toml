@@ -1,0 +1,11 @@
+# INTERIM hand-respelled fixture. See ../README.md.
+ink_source = "tests/tier1/diverts/basic-tunnel/story.ink"
+oracle_case = "tier1::diverts::basic-tunnel"
+family = "diverts/tunnels"
+status = "hand-respelled, parse-verified only"
+notes = """
+Tunnel call kept as `-> f ->` (charter §11); tunnel return respelled from
+ink's `->->` to `return` (the container-exit unification). No gaps
+encountered -- this is the smallest possible faithful respelling of the
+tunnel-call/tunnel-return pair.
+"""

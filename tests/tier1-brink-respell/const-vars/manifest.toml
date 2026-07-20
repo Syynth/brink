@@ -1,0 +1,14 @@
+# INTERIM hand-respelled fixture. See ../README.md.
+ink_source = "tests/tier1/variables/const/story.ink"
+oracle_case = "tier1::variables::const"
+family = "variables"
+status = "hand-respelled, parse-verified only"
+notes = """
+`VAR`/`CONST` lowercase to `var`/`const` (charter §11's declaration
+lowercasing). `{x}` bare-brace interpolation is unchanged (charter §6:
+"and nothing else, ever"). `var x = c` forward-references a `const`
+declared later in the file -- purely a parse-time non-issue here (paths
+are opaque idents to the B0.5 grammar); whether forward reference across
+declarations resolves at B0.6+ is a resolution-semantics question, not a
+syntax gap. No gaps encountered.
+"""
