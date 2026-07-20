@@ -1,28 +1,34 @@
 //! Prose-dialect body lowering: content lines, tags, glue, `{expr}`
-//! interpolation, diverts/tunnels/return, the annotated-brace family's
-//! conditional/alternation half (`cond.rs`), and the label-absorption
-//! algorithm that dissolves G-1 content-line labels into
-//! `Stmt::LabeledBlock` (`docs/b0-sequencing.md` §B0.7).
+//! interpolation, diverts/tunnels/return, and the label-absorption
+//! algorithm that dissolves both content-line labels (G-1) and choice-point
+//! gathers into `Stmt::LabeledBlock`/`ChoiceSet.continuation`
+//! (`docs/b0-sequencing.md` §B0.7).
 //!
-//! **Scope note**: `{?}` choice points are not wired yet (their own
-//! commit) — they fall through to the generic "unrecognized construct"
-//! diagnostic (E129) below, same as any other not-yet-lowered body-position
-//! construct. The item-stream absorption mechanism this file introduces
-//! ([`lower_items`]) is written to serve both the G-1 label case (wired
-//! now) and the `{?}` dissolved-gather case (wired in the choice-set
-//! commit, which adds a sibling `lower_continuation` helper) — see that
-//! commit's changes to this file.
+//! # The dissolved gather, mechanically
 //!
-//! # Label absorption, mechanically
+//! Native has no gather-dash token; charter §5 says "after the choices
+//! rejoin is simply the next line after the block." [`lower_items`]
+//! implements this literally: when it meets a `{?}` choice point, it does
+//! **not** keep iterating siblings — it recursively lowers everything that
+//! follows in the same item stream as the choice set's own
+//! `continuation: Block` (via [`lower_continuation`]), then returns. This
+//! is exactly old ink's own weave-fold behavior once a gather is reached
+//! (`lower/block/weave.rs::flush_choices`: "Gather after choices ... fold
+//! them recursively, and nest everything into the continuation") — native
+//! just never needs the depth-matching machinery that surrounds it there,
+//! because a `{?}` block's extent is never ambiguous.
 //!
-//! A `(name)` label is not itself a gather, but ink's own "standalone
-//! labeled gather" is the same concept applied to a labeled *content line*
-//! with no preceding choice block — see `lower/block/weave.rs`'s
+//! The same absorption shape handles G-1 labeled content lines: a `(name)`
+//! label is not itself a gather, but ink's own "standalone labeled gather"
+//! is the same concept applied to a labeled *content line* with no
+//! preceding choice block — see `weave.rs`'s
 //! `last_standalone_label`/`gather_stmts_start` retroactive
-//! `Stmt::LabeledBlock` wrap, which [`lower_items`] mirrors directly:
-//! everything from a labeled content line onward (through the rest of the
-//! enclosing item stream) becomes that label's `LabeledBlock`, not a flat
-//! sibling.
+//! `Stmt::LabeledBlock` wrap, which [`lower_items`] mirrors directly. One
+//! refinement, also lifted from old ink: a label immediately following a
+//! closed `{?}` block attaches to `continuation.label` directly rather than
+//! wrapping in a nested `LabeledBlock` (`weave.rs`'s `WeaveItem::Continuation`
+//! handling, built from `lower_gather_to_block`'s `label: gather.label()`)
+//! — see [`lower_continuation`].
 
 use brink_syntax_native::SyntaxKind as N;
 use brink_syntax_native::SyntaxNode;
@@ -36,6 +42,7 @@ use crate::{
     Expr, Name, Return, ReturnKind, Stmt, Tag, TunnelCall,
 };
 
+use super::choice::lower_choice_point;
 use super::cond::{lower_alternation, lower_conditional};
 use super::expr::lower_expr;
 use super::provenance::native_provenance;
@@ -72,11 +79,11 @@ pub(super) fn lower_block(
 }
 
 /// The shared item-stream lowering algorithm: dispatches each item, but a
-/// labeled content line **absorbs every item after it** (the G-1
-/// mechanism — see the module doc) rather than being folded as an ordinary
-/// sibling. Used for every body-shaped item list: knot/fn/stitch bodies,
-/// and (from the choice-set commit onward) choice bodies and conditional/
-/// alternation arm bodies.
+/// labeled content line or a `{?}` choice point **absorbs every item after
+/// it** (the dissolved-gather / G-1 mechanism — see the module doc) rather
+/// than being folded as an ordinary sibling. Used for every body-shaped
+/// item list: knot/fn/stitch bodies, choice bodies, conditional/alternation
+/// arm bodies.
 pub(super) fn lower_items(
     file_id: FileId,
     items: &[SyntaxNode],
@@ -102,14 +109,54 @@ pub(super) fn lower_items(
             return stmts;
         }
 
+        if node.kind() == N::CHOICE_POINT {
+            if let Some(cp) = ast::ChoicePoint::cast(node.clone()) {
+                let continuation = lower_continuation(file_id, items, i + 1, diags);
+                stmts.extend(lower_choice_point(file_id, &cp, continuation, diags));
+            }
+            return stmts;
+        }
+
         stmts.extend(lower_one_item(file_id, node, diags));
         i += 1;
     }
     stmts
 }
 
-/// Dispatch a single body item that is not a labeled content line (handled
-/// by [`lower_items`] itself, since it absorbs the rest of the stream).
+/// Build a `{?}` choice point's continuation `Block` from whatever follows
+/// it in the item stream. If the very next item is a labeled content line,
+/// its label attaches directly to `continuation.label` (the gather-label
+/// convention — see the module doc) instead of nesting a `LabeledBlock`
+/// one level in.
+fn lower_continuation(
+    file_id: FileId,
+    items: &[SyntaxNode],
+    start: usize,
+    diags: &mut Vec<Diagnostic>,
+) -> Block {
+    if let Some(node) = items.get(start)
+        && node.kind() == N::CONTENT_LINE
+        && let Some(cl) = ast::ContentLine::cast(node.clone())
+        && let Some(label) = cl.label().and_then(|l| name_from(l.name_token()))
+    {
+        let mut stmts = lower_content_line_body(file_id, &cl, diags);
+        stmts.extend(lower_items(file_id, items, start + 1, diags));
+        return Block {
+            label: Some(label),
+            stmts,
+            container_id: None,
+        };
+    }
+    Block {
+        label: None,
+        stmts: lower_items(file_id, items, start, diags),
+        container_id: None,
+    }
+}
+
+/// Dispatch a single body item that is neither a labeled content line nor a
+/// choice point (both handled by [`lower_items`] itself, since they can
+/// absorb the rest of the stream).
 fn lower_one_item(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnostic>) -> Vec<Stmt> {
     match node.kind() {
         N::CONTENT_LINE => {
@@ -177,11 +224,9 @@ fn lower_one_item(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnostic
         | N::MODULE_DECL
         // Already diagnosed by the parser itself.
         | N::ERROR => Vec::new(),
-        // `{?}` choice points land here until the choice-set commit wires
-        // real lowering — loud (E129), never silently dropped. `@[…]`
-        // annotations at body position are the same story permanently: no
-        // directive channel is wired yet (B0.6's judgment call #5, still
-        // open).
+        // `@[…]` annotations at body position: no directive channel is
+        // wired yet (B0.6's judgment call #5, still open) — loud, not
+        // dropped.
         _ => {
             diags.push(diag(file_id, node.text_range(), DiagnosticCode::E129));
             Vec::new()
@@ -190,8 +235,8 @@ fn lower_one_item(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnostic
 }
 
 /// Lower one `CONTENT_LINE`'s own content (its `LABEL` child, if any, is
-/// skipped here — [`lower_items`] already consumed it for the absorption
-/// decision before calling this).
+/// skipped here — [`lower_items`]/[`lower_continuation`] already consumed
+/// it for the absorption decision before calling this).
 fn lower_content_line_body(
     file_id: FileId,
     cl: &ast::ContentLine,
@@ -207,23 +252,26 @@ fn lower_content_line_body(
 }
 
 /// The shared "run of content-shaped items" lowering engine — used for a
-/// content line's own body-item lowering, for alternation branches
-/// (`cond.rs`), and (from the choice-set commit onward) choice text
-/// regions. Handles inline `{expr}` interpolation, `<>` glue, embedded
+/// content line's own body-item lowering and for alternation branches
+/// (`cond.rs`). Handles inline `{expr}` interpolation, `<>` glue, embedded
 /// diverts/tunnels (N-1: a `->` mid-run is a real node, not swallowed as
-/// text), and inline conditional/alternation
-/// (`ContentPart::InlineConditional`/`InlineSequence`).
+/// text), inline conditional/alternation (`ContentPart::InlineConditional`/
+/// `InlineSequence`), and — uniquely among the content-lowering helpers —
+/// an embedded `{?}` choice point, which absorbs the remainder of `items`
+/// as its continuation exactly like [`lower_items`] does at body-item
+/// granularity (the same dissolved-gather mechanism, one level down).
 ///
 /// `line_prov` becomes the `ptr` of the (possibly only) `Content` statement
 /// this run's trailing flush produces; interior flushes (before an embedded
-/// divert) always carry `ptr: None`, matching old ink's own accumulator
-/// convention (`content/accumulator.rs::flush` uses `ptr: None` for every
-/// flush except the line's own top-level one).
+/// divert/choice-point) always carry `ptr: None`, matching old ink's own
+/// accumulator convention (`content/accumulator.rs::flush` uses `ptr: None`
+/// for every flush except the line's own top-level one).
 ///
 /// `trailing_eol`: whether the run's *final* flush may append
 /// `Stmt::EndOfLine` (when the content doesn't end with glue). `true` for a
-/// genuine content line. `false` for a synthesized fragment that isn't a
-/// whole line — an inline alternation branch (`cond.rs`'s
+/// genuine content line (and for a `{?}` continuation, which behaves like
+/// ordinary subsequent lines). `false` for a synthesized fragment that
+/// isn't a whole line — an inline alternation branch (`cond.rs`'s
 /// `finish_inline_branch`): `{& a cat|a dog}.` must not force a line break
 /// after "a cat" before the trailing "." resolves on the same line.
 pub(super) fn lower_content_run(
@@ -264,6 +312,18 @@ pub(super) fn lower_content_run(
                 out.extend(lower_divert_like(file_id, node, diags));
                 i += 1;
             }
+            N::CHOICE_POINT => {
+                flush_content(&mut parts, &mut tags, &mut out, None, false);
+                if let Some(cp) = ast::ChoicePoint::cast(node.clone()) {
+                    let continuation = Block {
+                        label: None,
+                        stmts: lower_content_run(file_id, &items[i + 1..], line_prov, diags, true),
+                        container_id: None,
+                    };
+                    out.extend(lower_choice_point(file_id, &cp, continuation, diags));
+                }
+                return out;
+            }
             N::CONDITIONAL_BLOCK => {
                 if let Some(cb) = ast::ConditionalBlock::cast(node.clone()) {
                     parts.push(ContentPart::InlineConditional(lower_conditional(
@@ -283,8 +343,6 @@ pub(super) fn lower_content_run(
             N::ERROR => {
                 i += 1;
             }
-            // `{?}` choice points, embedded mid-line — not wired until the
-            // choice-set commit.
             _ => {
                 diags.push(diag(file_id, node.text_range(), DiagnosticCode::E129));
                 i += 1;

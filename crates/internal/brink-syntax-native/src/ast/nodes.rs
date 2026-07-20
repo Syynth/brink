@@ -369,8 +369,19 @@ impl ChoicePoint {
 
 impl Choice {
     /// `true` for a sticky (`+`) choice, `false` for a once-only (`*`) one.
+    ///
+    /// B0.7 fix (`docs/b0-sequencing.md` §B0.7, issue #1176): the bullet
+    /// token is wrapped in a nested `CHOICE_BULLET` node
+    /// (`choice.rs::choice`: `p.start_node(CHOICE_BULLET); p.bump(); …`),
+    /// never a direct token of `CHOICE` itself — `support::token` only
+    /// looks at direct children, so the original B0.5/B0.6 implementation
+    /// (`support::token(&self.syntax, PLUS)`) always returned `false`. Every
+    /// choice line in the corpus was silently lowering as once-only; caught
+    /// by B0.7's `choice_point_lowers_to_choice_set_with_sticky_and_once`
+    /// test, the first real exercise of a sticky (`+`) choice line.
     pub fn is_sticky(&self) -> bool {
-        support::token(&self.syntax, SyntaxKind::PLUS).is_some()
+        support::child::<ChoiceBullet>(&self.syntax)
+            .is_some_and(|b| support::token(&b.syntax, SyntaxKind::PLUS).is_some())
     }
 
     pub fn label(&self) -> Option<Label> {
