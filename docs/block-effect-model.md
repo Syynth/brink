@@ -124,8 +124,8 @@ that one boundary into a ladder, ordered by *who resumes*:
 
 | Rung | Resumer | Persistence | Value-context legality |
 |---|---|---|---|
-| **await** | the engine (`resolve_external`) | ephemeral (within-turn) | legal (already: `resume_function_eval`) |
-| **choice** | the player (`choose`) | **durable** (save point) | legal *only via ANF* (§8) |
+| **await** | the engine (`resolve_external`) | ephemeral, or durable when persistently parked (§10.3) | operand-position via ANF (§8) |
+| **choice** | the player (`choose`) | **durable** (save point) | operand-position via ANF (§8) |
 | **turn / DONE** | the driver (`continue`) | **durable** (save point) | n/a (statement boundary) |
 
 A block's **color is the outermost rung it can reach.** A pure fn reaches
@@ -218,11 +218,10 @@ provides the structural call-vs-divert distinction — `return_address`
    color (outermost suspension rung) exceeds its own. A fn cannot call a
    flow; a fn cannot await unless async-colored (per `flow-suspension-spec`
    §4, functions are synchronous).
-3. **No durable suspension in operand position** *except via ANF*
-   (§8). A choice (durable pause) appearing mid-expression is legal at the
-   surface but must be ANF-hoisted; the checker requires the hoist to be
-   possible (it always is) and rejects only a durable suspension the
-   lowering cannot move to a statement boundary.
+3. **Any suspension in operand position is ANF-hoisted** (§8) — uniformly,
+   whether await, choice, or a coroutine call. The surface is liberal; the
+   checker only requires the hoist be possible (it always is) and the
+   lowering moves the suspension to a statement boundary.
 4. **No up-coloring a fn to follow a divert** (a corollary of 1–2 stated at
    the fn boundary): a fn may hold and return divert targets but may not
    perform a transfer.
@@ -272,11 +271,21 @@ instruction offsets, ever") and the maintainer's constraint.
   existing splitting runs. Extends FS-2's per-site liveness/splitting to
   run on ANF-normalized IR.
 
-**Scope of the liberalization (for review):** proposed **for choice/value
-blocks only.** `await` keeps its statement-only surface rule
-(`flow-suspension-spec` §3) on the hot-loop-hygiene taste argument — ANF
-removes the *mechanical* objection but not that authoring-taste one.
-**Confirm or override on review.**
+**Scope of the liberalization — RULED (sitting): uniform.** Any expression
+whose effect signature includes a suspension or a value-yield — choice
+blocks, value blocks, coroutine calls, **and `await`** — gets the liberal
+surface and is ANF-lowered identically. The earlier "choice/value only,
+await stays statement-only" carve-out is **dropped**: carving one construct
+out of a uniform shape is exactly the exception authors must forever
+remember, and the taste argument behind it doesn't earn that cost. The one
+real asymmetry — an `await` is an *invisible* engine pause where a choice
+is a *visible* player act, so a mid-expression await hides a turn-split with
+no cue — is handled where visibility belongs: the **editor** surfaces
+suspension points (semantic tokens / the live renderer — the NS-T
+workstream), not the grammar. Uniformity in the language; visibility in the
+tooling. (This liberalizes `flow-suspension-spec` §3's statement-only
+*surface* rule for await; the §3 machinery is untouched, and functions stay
+synchronous per §4 — coloring is unaffected.)
 
 ---
 
@@ -337,18 +346,35 @@ type rules.
 
 ## 11. Open questions (must resolve before this governs a build)
 
-1. **§8 liberalization scope** — choice/value blocks only, or await too?
-   (Proposed: choice/value only; await stays statement-only.)
-2. **The effect-lattice join** — the exact composition of Emit / Transfer /
+1. **The effect-lattice join** — the composition of Emit / Transfer /
    Suspend(rung) / sequence-Impure with the existing pure/command/world-query
-   + fn-color rows is asserted (§3) but not worked out as a lattice. Needs
-   its own pass.
-3. **Entry-mode dual** (§7 deferred) — the caller-side of the value
+   + fn-color rows is asserted (§3) but not worked out as a lattice. The
+   maintainer has flagged (correctly) that the current row-accretion is
+   **not a properly designed effect system** and will "come home to roost."
+   The failure mode is precisely accretion without a core calculus: before
+   it roosts, a dedicated effects sitting should pick a small core (what an
+   effect *is*; how effects compose; the row/lattice discipline) and
+   *derive* the rows from it, informed by prior art (row-polymorphic effects
+   à la Koka, algebraic effect handlers, capability/coeffect systems) rather
+   than invented cold. Not v1; flagged now so it is not forgotten. Most of
+   what brink calls "effects" so far (purity, world-access, fn-color,
+   suspension) maps onto known systems — this is not uncharted, just
+   under-designed.
+2. **Entry-mode dual** (§7 deferred) — the caller-side of the value
    contract. Explicitly out of v1.
-4. **Sequencing** — B0.7 (prose bodies) is parked at its review gate; B0.8
+3. **Sequencing** — B0.7 (prose bodies) is parked at its review gate; B0.8
    (code bodies) is where this model lands. Proposed: land B0.7 (behavior
    pinned), hold before B0.8, run the design-ratification of this doc, fold
    the ratified model into B0.8's scope. Decide.
+4. **Post-landing runtime restructuring** (flagged by the maintainer;
+   explicitly *can wait*) — once the block/effect/coroutine model lands, the
+   runtime likely has restructuring opportunities the model exposes (e.g.
+   `CallFrameType` variants collapsing once fn = flow-with-no-suspension;
+   return handling unifying once value-return is uniform; the frame model
+   simplifying around FlowFrame). The §10 REFACTOR rows are the surface such
+   a restructuring would touch. Reserve a sitting for it *after* the model
+   builds — precedent is `docs/runtime-restructuring-spec.md` (the completed
+   9-step effort). Not now.
 
 ---
 
