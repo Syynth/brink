@@ -2284,6 +2284,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "brink-syntax-native"
+version = "0.0.11"
+dependencies = [
+ "insta",
+ "proptest",
+ "rowan",
+]
+
+[[package]]
 name = "brink-test-harness"
 version = "0.0.11"
 dependencies = [
