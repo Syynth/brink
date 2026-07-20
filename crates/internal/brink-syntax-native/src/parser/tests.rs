@@ -1,4 +1,5 @@
 use super::*;
+use crate::SyntaxNode;
 
 /// Every parser test's baseline invariant: the CST's total text equals the
 /// source, byte-for-byte (rowan guarantees this for any well-formed tree —
@@ -193,4 +194,61 @@ fn deeply_nested_interpolation_does_not_overflow_stack() {
     let p = assert_lossless(&wrapped);
     // Must hit the depth limit and recover, not blow the stack.
     let _ = p.errors();
+}
+
+// ── Charter exhibit (docs/native-surface-charter.md §9) ─────────────
+//
+// b0-sequencing.md's B0.5 exit criteria calls for "the two charter
+// exhibits (the Fogg passage, `FUNC_populate_options_thread` respelled)
+// parse clean". Neither exhibit's respelled `.brink` text is actually
+// checked into the repo — the charter says the respellings "live in the
+// sitting transcript" (§9), but no such transcript file exists anywhere
+// in this tree, and `FUNC_populate_options_thread`'s ink source isn't
+// checked in either (grep-searched, see the B0.5 report's findings).
+// The Fogg passage's ink ORIGINAL does exist, as an oracle fixture
+// (`tests/tier2/conditional/condtext-v1/story.ink`) — this test is a
+// good-faith respelling of that fixture into the ruled B0.5 surface,
+// standing in for the missing official exhibit. It is not a substitute
+// for running the real exhibit once it's committed somewhere.
+
+#[test]
+fn charter_exhibit_fogg_passage_respelling() {
+    let src = concat!(
+        "flow fogg_wager() {\n",
+        "  \"We are going on a trip,\" said Monsieur Fogg.\n",
+        "  {?\n",
+        "    * [The wager.] -> know_about_wager\n",
+        "    * [I was surprised.] -> i_stared\n",
+        "  }\n",
+        "}\n",
+        "\n",
+        "flow know_about_wager() {\n",
+        "  I had heard about the wager.\n",
+        "  -> i_stared\n",
+        "}\n",
+        "\n",
+        "flow i_stared() {\n",
+        "  I stared at Monsieur Fogg.\n",
+        "  {if know_about_wager {\n",
+        "    <> \"But surely you are not serious?\" I demanded.\n",
+        "  } else {\n",
+        "    <> \"But there must be a reason for this trip,\" I observed.\n",
+        "  }}\n",
+        "  He said nothing in reply, merely considering his newspaper ",
+        "with as much thoroughness as entomologist considering his ",
+        "latest pinned addition.\n",
+        "  -> END\n",
+        "}\n",
+    );
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    // The dissolved gather (charter §5): "I stared at Monsieur Fogg."
+    // is plain content immediately after the closed choice point, no
+    // gather dash — this must NOT trip the `MINUS`-as-entry-marker path.
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::CHOICE_POINT));
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::CONDITIONAL_BLOCK));
+}
+
+fn has_node_kind(root: &SyntaxNode, kind: SyntaxKind) -> bool {
+    root.descendants().any(|node| node.kind() == kind)
 }
