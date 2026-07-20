@@ -10,8 +10,8 @@
 use crate::SyntaxKind::{
     AMP_AMP, ARG_LIST, BANG, BANG_EQ, BOOLEAN_LIT, CALL_EXPR, COLON_COLON, COMMA, DOT, EQ_EQ,
     FLOAT, FLOAT_LIT, GT, GT_EQ, IDENT, INFIX_EXPR, INTEGER, INTEGER_LIT, KW_FALSE, KW_TRUE,
-    L_PAREN, LAMBDA_EXPR, LAMBDA_PARAMS, LT, LT_EQ, MINUS, PATH, PATH_EXPR, PATH_SEGMENT,
-    PAREN_EXPR, PERCENT, PIPE, PLUS, PREFIX_EXPR, QUOTE, R_PAREN, SLASH, STAR, STRING_ESCAPE,
+    L_PAREN, LAMBDA_EXPR, LAMBDA_PARAMS, LT, LT_EQ, MINUS, PAREN_EXPR, PATH, PATH_EXPR,
+    PATH_SEGMENT, PERCENT, PIPE, PLUS, PREFIX_EXPR, QUOTE, R_PAREN, SLASH, STAR, STRING_ESCAPE,
     STRING_LIT, STRING_TEXT,
 };
 
@@ -24,7 +24,7 @@ use super::Parser;
 enum Prec {
     None = 0,
     Or = 1,         // ||
-    And = 2,         // &&
+    And = 2,        // &&
     Equality = 3,   // ==, !=
     Comparison = 4, // <, >, <=, >=
     Add = 5,        // +, -

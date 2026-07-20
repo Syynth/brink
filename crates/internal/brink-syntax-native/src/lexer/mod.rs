@@ -312,8 +312,7 @@ impl<'src> Lexer<'src> {
             while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_digit() {
                 self.pos += 1;
             }
-            if self.pos < self.bytes.len() && ident::is_ident_continue_byte(self.bytes[self.pos])
-            {
+            if self.pos < self.bytes.len() && ident::is_ident_continue_byte(self.bytes[self.pos]) {
                 self.pos = ident::scan_ident(self.bytes, self.pos);
                 self.emit(SyntaxKind::IDENT, start);
                 return;

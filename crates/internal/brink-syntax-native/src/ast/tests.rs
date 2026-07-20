@@ -14,11 +14,7 @@ fn flow_decl_accessors() {
     let file = SourceFile::cast(parse.syntax()).expect("SOURCE_FILE root");
     let flow = file.flows().next().expect("one flow");
     assert_eq!(flow.name_token().expect("name").text(), "greet");
-    let params: Vec<_> = flow
-        .param_list()
-        .expect("param list")
-        .params()
-        .collect();
+    let params: Vec<_> = flow.param_list().expect("param list").params().collect();
     assert_eq!(params.len(), 2);
     assert!(!params[0].is_ref());
     assert!(params[1].is_ref());

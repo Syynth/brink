@@ -214,8 +214,24 @@ impl<'t, 'c> Parser<'t, 'c> {
     /// If the current non-trivia token matches `kind`, eat trivia then bump it.
     /// Returns `true` if consumed.
     fn eat(&mut self, kind: SyntaxKind) -> bool {
+        // Flush leading trivia *unconditionally*, before the check — not
+        // only on a match. Two correctness properties depend on this:
+        // (1) trailing trivia with nothing meaningful after it (a final
+        // comment, trailing whitespace at EOF) would otherwise never get
+        // flushed into the tree at all, since every loop-continuation
+        // check (`at_eof`, `at(R_BRACE)`, …) trivia-skips to decide
+        // "nothing left to do" without ever having called `bump` on the
+        // trivia itself — found by `proptest_native`'s
+        // `arbitrary_garbage_never_panics` (`"#//"` lost its trailing
+        // `//`) and `truncated_input_never_panics_and_roundtrips` (a
+        // truncated `flow a_a_() ` lost its trailing space). (2) it makes
+        // every `eat`/`expect` call site safe to follow with a raw
+        // `bump()` for a *different* token regardless of whether pending
+        // trivia sat between them — the class of bug this crate's parser
+        // tests caught repeatedly during development (e.g. `annotation_arg`
+        // bumping a stray space instead of the next `IDENT`).
+        self.skip_ws();
         if self.current() == kind {
-            self.skip_ws();
             self.bump();
             true
         } else {
@@ -251,7 +267,8 @@ impl<'t, 'c> Parser<'t, 'c> {
     /// loop calls this instead of `skip_ws` so multi-line lists parse.
     fn skip_ws_and_newlines(&mut self) {
         while self.pos < self.tokens.len()
-            && (self.tokens[self.pos].0.is_trivia() || self.tokens[self.pos].0 == SyntaxKind::NEWLINE)
+            && (self.tokens[self.pos].0.is_trivia()
+                || self.tokens[self.pos].0 == SyntaxKind::NEWLINE)
         {
             self.bump();
         }

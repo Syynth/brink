@@ -17,8 +17,14 @@ fn empty_source_is_empty() {
 
 #[test]
 fn keywords_classify() {
-    let toks = assert_lossless("flow fn var const flags struct extern import use module return ref if match else as true false END DONE");
-    let kinds: Vec<_> = toks.iter().map(|(k, _)| *k).filter(|k| !k.is_trivia()).collect();
+    let toks = assert_lossless(
+        "flow fn var const flags struct extern import use module return ref if match else as true false END DONE",
+    );
+    let kinds: Vec<_> = toks
+        .iter()
+        .map(|(k, _)| *k)
+        .filter(|k| !k.is_trivia())
+        .collect();
     assert_eq!(
         kinds,
         vec![
@@ -47,10 +53,22 @@ fn case_sensitive_keywords() {
 #[test]
 fn compound_tokens() {
     let toks = assert_lossless("@[ <> -> <- => :: ==");
-    let kinds: Vec<_> = toks.iter().map(|(k, _)| *k).filter(|k| !k.is_trivia()).collect();
+    let kinds: Vec<_> = toks
+        .iter()
+        .map(|(k, _)| *k)
+        .filter(|k| !k.is_trivia())
+        .collect();
     assert_eq!(
         kinds,
-        vec![AT_L_BRACKET, GLUE, DIVERT, THREAD, FAT_ARROW, COLON_COLON, EQ_EQ]
+        vec![
+            AT_L_BRACKET,
+            GLUE,
+            DIVERT,
+            THREAD,
+            FAT_ARROW,
+            COLON_COLON,
+            EQ_EQ
+        ]
     );
 }
 
@@ -70,7 +88,11 @@ fn double_pipe_is_two_tokens_not_compound() {
 #[test]
 fn integers_and_floats() {
     let toks = assert_lossless("42 3.14 0");
-    let kinds: Vec<_> = toks.iter().map(|(k, _)| *k).filter(|k| !k.is_trivia()).collect();
+    let kinds: Vec<_> = toks
+        .iter()
+        .map(|(k, _)| *k)
+        .filter(|k| !k.is_trivia())
+        .collect();
     assert_eq!(kinds, vec![INTEGER, FLOAT, INTEGER]);
 }
 

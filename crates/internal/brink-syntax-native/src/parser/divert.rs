@@ -33,11 +33,8 @@ pub(crate) fn divert_or_tunnel(p: &mut Parser<'_, '_>) {
 /// `END` / `DONE` / a `PATH` — the divert target.
 fn divert_target(p: &mut Parser<'_, '_>) {
     p.start_node(DIVERT_TARGET);
-    if p.eat(KW_END) {
-        // sentinel, no path
-    } else if p.eat(KW_DONE) {
-        // sentinel, no path
-    } else {
+    // `END`/`DONE` are sentinels with no path; either can be eaten.
+    if !p.eat(KW_END) && !p.eat(KW_DONE) {
         super::expr::path(p);
     }
     p.finish_node();
