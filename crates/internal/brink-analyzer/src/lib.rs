@@ -5,6 +5,7 @@
 //! duplicate detection, type checking). Both `brink-compiler` and `brink-lsp`
 //! consume the analysis result.
 
+mod admission;
 mod annotations;
 mod await_purity;
 mod comparator_contract;
@@ -33,6 +34,7 @@ mod validate;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+pub use admission::validate_admission;
 pub use annotations::{
     check as check_annotations, mismatches as annotation_mismatches, resolve as resolve_annotation,
 };
