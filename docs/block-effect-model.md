@@ -1,9 +1,10 @@
 # The unified block / effect / coroutine model
 
-Status: **DRAFT — PROPOSED 2026-07-20, awaiting maintainer ratification.**
-Three rulings *were* called during the design sitting that produced this
-doc (marked **RULED (sitting)** below); the rest is proposed and must be
-reviewed before it governs any build. Nothing here is implemented.
+Status: **RULED 2026-07-20 (maintainer-ratified).** Design doc; not yet
+implemented. The model governs the native block/effect/coroutine work and
+folds into B0.8 (code-body lowering). Deferred design areas are tracked as
+stub "needs design" issues (§11). Companion ruling recorded in
+`docs/decision-log.md`.
 
 Companions / governing docs this **extends** (does not replace):
 `docs/flow-suspension-spec.md` (the FlowFrame model + continuation-splitting
@@ -344,37 +345,37 @@ type rules.
 
 ---
 
-## 11. Open questions (must resolve before this governs a build)
+## 11. Deferred design & open items
 
-1. **The effect-lattice join** — the composition of Emit / Transfer /
-   Suspend(rung) / sequence-Impure with the existing pure/command/world-query
-   + fn-color rows is asserted (§3) but not worked out as a lattice. The
-   maintainer has flagged (correctly) that the current row-accretion is
-   **not a properly designed effect system** and will "come home to roost."
-   The failure mode is precisely accretion without a core calculus: before
-   it roosts, a dedicated effects sitting should pick a small core (what an
-   effect *is*; how effects compose; the row/lattice discipline) and
-   *derive* the rows from it, informed by prior art (row-polymorphic effects
-   à la Koka, algebraic effect handlers, capability/coeffect systems) rather
-   than invented cold. Not v1; flagged now so it is not forgotten. Most of
-   what brink calls "effects" so far (purity, world-access, fn-color,
-   suspension) maps onto known systems — this is not uncharted, just
-   under-designed.
-2. **Entry-mode dual** (§7 deferred) — the caller-side of the value
-   contract. Explicitly out of v1.
-3. **Sequencing** — B0.7 (prose bodies) is parked at its review gate; B0.8
-   (code bodies) is where this model lands. Proposed: land B0.7 (behavior
-   pinned), hold before B0.8, run the design-ratification of this doc, fold
-   the ratified model into B0.8's scope. Decide.
-4. **Post-landing runtime restructuring** (flagged by the maintainer;
-   explicitly *can wait*) — once the block/effect/coroutine model lands, the
-   runtime likely has restructuring opportunities the model exposes (e.g.
-   `CallFrameType` variants collapsing once fn = flow-with-no-suspension;
-   return handling unifying once value-return is uniform; the frame model
-   simplifying around FlowFrame). The §10 REFACTOR rows are the surface such
-   a restructuring would touch. Reserve a sitting for it *after* the model
-   builds — precedent is `docs/runtime-restructuring-spec.md` (the completed
-   9-step effort). Not now.
+**Deferred design areas — tracked as stub "needs design" issues, picked up
+when ready (not blocking this model):**
+
+- **Flow concurrency / structured spawning** → **#1210.** Language-level
+  `spawn` + structured-concurrency scope (goroutine-shaped but scoped),
+  with a detached form for ambient flows. The scheduling substrate already
+  exists (park/wake, batch drivers); the gap is the spawn surface + scoping.
+  Composes with value-returning flows (join yields the value).
+- **A real effect system (core calculus, not row-accretion)** → **#1211.**
+  The Emit / Transfer / Suspend / sequence-Impure rows are used pragmatically
+  here; putting them on a designed foundation (pick a core, derive the rows,
+  informed by prior art) is its own sitting — before it "comes home to
+  roost."
+- **Post-landing runtime restructuring** → **#1212.** Explicitly *after*
+  this model builds — the §10 REFACTOR rows are its scope surface.
+
+**Open item still in this doc (v2, not blocking v1):**
+
+- **Entry-mode dual** (§7 deferred) — the caller-side of the value contract
+  (a return type is meaningful only for call-entry, not divert-entry). Rule
+  §7.1 is the local approximation; the whole-program check is v2.
+
+**Live coordination decision (not a design stub):**
+
+- **Sequencing** — B0.7 (prose bodies) is parked at its review gate; B0.8
+  (code bodies) is where this model lands. Proposed: land B0.7 (behavior
+  pinned), then fold this ratified model into B0.8's scope rather than
+  building B0.8 on the old per-construct shape. Awaiting the coordination
+  call.
 
 ---
 
