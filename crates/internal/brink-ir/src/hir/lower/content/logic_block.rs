@@ -10,8 +10,7 @@ use brink_syntax::ast::{self, AstNode};
 
 use crate::hir::types::{AwaitStmt, BlockStmt, ElseBranch, ForStmt, IfStmt, WhileStmt};
 use crate::provenance::NodeClass;
-use crate::symbols::LocalSymbol;
-use crate::{AssignOp, Assignment, DiagnosticCode, Return, ReturnKind, SymbolKind, TempDecl};
+use crate::{AssignOp, Assignment, DiagnosticCode, Return, ReturnKind, TempDecl};
 
 use super::super::context::{LowerScope, LowerSink, Lowered};
 use super::super::expr::LowerExpr;
@@ -80,13 +79,6 @@ fn lower_block_temp_decl(
     let annotation = temp
         .type_annotation()
         .and_then(|ta| lower_type_annotation(&ta));
-    sink.add_local(LocalSymbol {
-        name: name.text.clone(),
-        range: name.range,
-        scope: scope.to_scope(),
-        kind: SymbolKind::Temp,
-        param_detail: None,
-    });
     Ok(BlockStmt::TempDecl(TempDecl {
         ptr: scope.prov(NodeClass::TempDecl, temp.syntax()),
         name,
@@ -175,13 +167,6 @@ fn lower_for_stmt(
         .iterable()
         .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E015))
         .and_then(|e| e.lower_expr(scope, sink))?;
-    sink.add_local(LocalSymbol {
-        name: var_name.text.clone(),
-        range: var_name.range,
-        scope: scope.to_scope(),
-        kind: SymbolKind::Temp,
-        param_detail: None,
-    });
     let body = f
         .body()
         .map(|b| lower_stmt_block(&b, scope, sink))

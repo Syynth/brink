@@ -5,8 +5,7 @@ use brink_syntax::parse;
 use rowan::TextRange;
 
 use crate::hir::lower::{
-    BodyChild, DeclareSymbols, EffectSink, LowerScope, LowerSink, classify_body_child,
-    lower_simple_body,
+    BodyChild, EffectSink, LowerScope, LowerSink, classify_body_child, lower_simple_body,
 };
 use crate::*;
 
@@ -21,28 +20,31 @@ fn make_sink() -> EffectSink {
 }
 
 /// Parse source and lower the root body.
-fn lower_body(source: &str) -> (Block, Vec<Diagnostic>, SymbolManifest) {
+fn lower_body(source: &str) -> (Block, Vec<Diagnostic>) {
     let parsed = parse(source);
     let tree = parsed.tree();
     let scope = make_scope();
     let mut sink = make_sink();
     let block = lower_simple_body(tree.syntax(), &scope, &mut sink);
-    let (manifest, diagnostics) = sink.finish();
-    (block, diagnostics, manifest)
+    let diagnostics = sink.finish();
+    (block, diagnostics)
 }
 
 // ─── Mock sink for testing trait abstraction ────────────────────────
+//
+// Post-B0.4, `LowerSink` only carries diagnostics — symbol declarations are
+// no longer a sink-write concern (`brink_ir::symbols::project_manifest`
+// derives the whole `SymbolManifest` from the finished `HirFile` instead),
+// so this mock only needs to record diagnostics.
 
 struct TestSink {
     diagnostics: Vec<(TextRange, DiagnosticCode)>,
-    symbols: Vec<(SymbolKind, String)>,
 }
 
 impl TestSink {
     fn new() -> Self {
         Self {
             diagnostics: Vec::new(),
-            symbols: Vec::new(),
         }
     }
 }
@@ -52,30 +54,6 @@ impl LowerSink for TestSink {
         self.diagnostics.push((range, code));
         crate::hir::lower::Diagnosed::test_token()
     }
-
-    fn declare_full(
-        &mut self,
-        kind: SymbolKind,
-        name: &str,
-        _range: TextRange,
-        _params: Vec<ParamInfo>,
-        _detail: Option<String>,
-        _doc: Option<DocBlock>,
-    ) {
-        self.symbols.push((kind, name.to_string()));
-    }
-
-    fn add_local(&mut self, _local: crate::symbols::LocalSymbol) {}
-
-    fn add_unresolved(
-        &mut self,
-        _path: &str,
-        _range: TextRange,
-        _kind: crate::symbols::RefKind,
-        _scope: &Scope,
-        _arg_count: Option<usize>,
-    ) {
-    }
 }
 
 // ─── Expression lowering tests ──────────────────────────────────────
@@ -83,7 +61,7 @@ impl LowerSink for TestSink {
 #[test]
 fn lower_integer_literal() {
     let source = "~ temp x = 42\n";
-    let (block, diags, _) = lower_body(source);
+    let (block, diags) = lower_body(source);
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(block.stmts.len(), 1);
     match &block.stmts[0] {
@@ -102,7 +80,7 @@ fn lower_integer_literal() {
 #[test]
 fn lower_infix_expression() {
     let source = "~ temp y = 3 + 4\n";
-    let (block, diags, _) = lower_body(source);
+    let (block, diags) = lower_body(source);
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(block.stmts.len(), 1);
     match &block.stmts[0] {
@@ -127,7 +105,7 @@ fn lower_infix_expression() {
 
 #[test]
 fn simple_text_line() {
-    let (block, diags, _) = lower_body("Hello, world!\n");
+    let (block, diags) = lower_body("Hello, world!\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(block.stmts.len(), 2, "expected Content + EndOfLine");
     assert!(matches!(&block.stmts[0], Stmt::Content(c) if !c.parts.is_empty()));
@@ -136,7 +114,7 @@ fn simple_text_line() {
 
 #[test]
 fn expression_interpolation() {
-    let (block, diags, _) = lower_body("Value is {x}\n");
+    let (block, diags) = lower_body("Value is {x}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(block.stmts.len(), 2);
     match &block.stmts[0] {
@@ -155,7 +133,7 @@ fn expression_interpolation() {
 
 #[test]
 fn tag_on_content_line() {
-    let (block, diags, _) = lower_body("Hello #greeting\n");
+    let (block, diags) = lower_body("Hello #greeting\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(block.stmts.len(), 2);
     match &block.stmts[0] {
@@ -174,7 +152,7 @@ fn tag_on_content_line() {
 #[test]
 fn logic_line_assignment() {
     let source = "~ temp x = 0\n~ x = 5\n";
-    let (block, diags, _) = lower_body(source);
+    let (block, diags) = lower_body(source);
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(block.stmts.len(), 2, "expected TempDecl + Assignment");
     assert!(matches!(&block.stmts[0], Stmt::TempDecl(_)));
@@ -187,7 +165,7 @@ fn logic_line_assignment() {
 fn logic_line_emits_diagnostic_on_malformed() {
     // A logic line with just `~` and nothing else should emit E014.
     let source = "~\n";
-    let (_, diags, _) = lower_body(source);
+    let (_, diags) = lower_body(source);
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E014),
         "expected E014 diagnostic, got: {:?}",
@@ -208,7 +186,7 @@ fn logic_line_emits_diagnostic_on_malformed() {
 #[test]
 fn computed_callee_indexed_emits_e104() {
     let source = "~ temp x = handlers[state](event)\n";
-    let (_, diags, _) = lower_body(source);
+    let (_, diags) = lower_body(source);
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E104),
         "expected E104 diagnostic, got: {:?}",
@@ -219,7 +197,7 @@ fn computed_callee_indexed_emits_e104() {
 #[test]
 fn computed_callee_field_access_emits_e104() {
     let source = "~ temp x = obj.field()\n";
-    let (_, diags, _) = lower_body(source);
+    let (_, diags) = lower_body(source);
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E104),
         "expected E104 diagnostic, got: {:?}",
@@ -230,7 +208,7 @@ fn computed_callee_field_access_emits_e104() {
 #[test]
 fn computed_callee_call_result_emits_e104() {
     let source = "~ temp x = get_handler()()\n";
-    let (_, diags, _) = lower_body(source);
+    let (_, diags) = lower_body(source);
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E104),
         "expected E104 diagnostic, got: {:?}",
@@ -243,7 +221,7 @@ fn bare_name_direct_call_never_emits_e104() {
     // The bare-name Direct-call fast path (RULED, t1c-spec §3) must never
     // trip the new rejection.
     let source = "~ temp x = bare(1, 2)\n";
-    let (_, diags, _) = lower_body(source);
+    let (_, diags) = lower_body(source);
     assert!(
         !diags.iter().any(|d| d.code == DiagnosticCode::E104),
         "bare-name call incorrectly rejected: {:?}",
@@ -257,7 +235,7 @@ fn explicit_call_form_never_emits_e104() {
     // ordinary named call (`Expr::Call(path = "call", …)`), never as the
     // new `CALL_EXPR` shape, so it must stay untouched by E104.
     let source = "~ temp x = call(handlers[state], event)\n";
-    let (_, diags, _) = lower_body(source);
+    let (_, diags) = lower_body(source);
     assert!(
         !diags.iter().any(|d| d.code == DiagnosticCode::E104),
         "call(f, args…) incorrectly rejected: {:?}",
@@ -279,29 +257,6 @@ fn mock_sink_records_diagnostics() {
             .iter()
             .any(|(_, code)| *code == DiagnosticCode::E014),
         "expected E014 in mock sink"
-    );
-}
-
-#[test]
-fn mock_sink_records_symbol_declarations() {
-    let parsed = parse("VAR x = 5\n");
-    let tree = parsed.tree();
-    let scope = make_scope();
-    let mut sink = TestSink::new();
-
-    // Declarations are hoisted, not part of body lowering.
-    // Directly test the DeclareSymbols trait.
-    for node in tree.syntax().descendants() {
-        if let Some(var) = brink_syntax::ast::VarDecl::cast(node) {
-            let _ = var.declare_and_lower(&scope, &mut sink);
-        }
-    }
-    assert!(
-        sink.symbols
-            .iter()
-            .any(|(kind, name)| *kind == SymbolKind::Variable && name == "x"),
-        "expected variable 'x' in mock sink, got: {:?}",
-        sink.symbols
     );
 }
 
@@ -338,7 +293,7 @@ fn classify_recognizes_logic_line() {
 #[test]
 fn accumulator_content_with_glue_suppresses_eol() {
     let source = "Hello<>\n";
-    let (block, diags, _) = lower_body(source);
+    let (block, diags) = lower_body(source);
     assert!(diags.is_empty());
     // Glue suppresses EndOfLine — should have Content only, no EndOfLine
     assert!(
@@ -356,7 +311,7 @@ fn accumulator_content_with_glue_suppresses_eol() {
 fn accumulator_logic_line_with_call_emits_eol() {
     // A function call in a logic line triggers EndOfLine
     let source = "=== function f() ===\n~ return 1\n=== main ===\n~ f()\n";
-    let (block, _, _) = lower_body(source);
+    let (block, _) = lower_body(source);
     // Root body might be empty (knots handle their own bodies),
     // so just verify it compiles and doesn't panic.
     let _ = block;

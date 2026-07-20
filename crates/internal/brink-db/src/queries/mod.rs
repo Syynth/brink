@@ -88,6 +88,7 @@ use brink_format::{
     CallAtom, CapabilityParam, DefinitionId, DirectEffects, EffectRowEntry, NameId, StoryData,
 };
 use brink_ir::suppressions::{Suppressions, apply_suppressions, parse_suppressions};
+use brink_ir::symbols::project_manifest;
 use brink_ir::{
     Diagnostic, DiagnosticCode, FileId, HirFile, ResolutionMap, Severity, SymbolIndex, SymbolKind,
     SymbolManifest, lower, lower_single_knot, lower_top_level,
@@ -2119,8 +2120,13 @@ pub fn partition_diagnostics(
 ///
 /// This is the exact composition the pre-salsa `set_file` performed
 /// (per-knot lowering + top-level lowering + assembly + syntax errors), kept
-/// intact rather than collapsed onto `brink_ir::lower` so the output is
-/// byte-identical to the previous pipeline.
+/// intact so the assembled `HirFile` stays byte-identical to the previous
+/// pipeline. The manifest is no longer assembled by merging per-knot/
+/// top-level manifest fragments (B0.4, docs/hir-admission-contract.md
+/// Q3(b), issue #1173): `project_manifest` derives the whole
+/// `SymbolManifest` from the fully assembled `HirFile` in one pass, so
+/// `lower_single_knot`/`lower_top_level` no longer need to produce a
+/// manifest at all.
 fn lower_file(file_id: FileId, parse: &Parse) -> LoweredFile {
     let tree = parse.tree();
 
@@ -2131,8 +2137,7 @@ fn lower_file(file_id: FileId, parse: &Parse) -> LoweredFile {
         .collect();
 
     // Top-level lowering (everything outside knots).
-    let (root_content, top_level_knots, top_manifest, top_diagnostics) =
-        lower_top_level(file_id, &tree);
+    let (root_content, top_level_knots, top_diagnostics) = lower_top_level(file_id, &tree);
 
     // Assemble a complete `HirFile`: use `lower()` for the declarations
     // (variables, constants, lists, externals, includes), then replace knots
@@ -2140,21 +2145,17 @@ fn lower_file(file_id: FileId, parse: &Parse) -> LoweredFile {
     let (mut hir, _full_manifest, _full_diag) = lower(file_id, &tree);
     hir.knots = knot_entries
         .iter()
-        .filter_map(|(knot, _, _)| knot.clone())
+        .filter_map(|(knot, _)| knot.clone())
         .collect();
     hir.knots.extend(top_level_knots);
     hir.root_content = root_content;
 
-    // Merge manifests: top-level + all knots.
-    let mut manifest = top_manifest;
-    for (_, knot_manifest, _) in &knot_entries {
-        merge_manifest_into(&mut manifest, knot_manifest);
-    }
+    let manifest = project_manifest(&hir);
 
     // Merge diagnostics, then surface parser/syntax errors as compile
     // diagnostics (`E037`) so malformed source fails the compile.
     let mut diagnostics = top_diagnostics;
-    for (_, _, knot_diags) in &knot_entries {
+    for (_, knot_diags) in &knot_entries {
         diagnostics.extend(knot_diags.iter().cloned());
     }
     diagnostics.extend(parse.errors().iter().map(|e| Diagnostic {
@@ -2178,20 +2179,4 @@ fn lower_file(file_id: FileId, parse: &Parse) -> LoweredFile {
         diagnostics,
         admission,
     }
-}
-
-/// Merge `src` manifest fields into `dst`.
-fn merge_manifest_into(dst: &mut SymbolManifest, src: &SymbolManifest) {
-    dst.knots.extend(src.knots.iter().cloned());
-    dst.stitches.extend(src.stitches.iter().cloned());
-    dst.variables.extend(src.variables.iter().cloned());
-    dst.constants.extend(src.constants.iter().cloned());
-    dst.lists.extend(src.lists.iter().cloned());
-    dst.externals.extend(src.externals.iter().cloned());
-    dst.labels.extend(src.labels.iter().cloned());
-    dst.list_items.extend(src.list_items.iter().cloned());
-    dst.locals.extend(src.locals.iter().cloned());
-    dst.unresolved.extend(src.unresolved.iter().cloned());
-    dst.docs
-        .extend(src.docs.iter().map(|(k, v)| (k.clone(), v.clone())));
 }

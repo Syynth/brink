@@ -7,9 +7,11 @@
 
 mod index;
 mod manifest;
+mod project;
 
 pub use index::{
     ParamInfo, ResolutionMap, ResolvedRef, Scope, SymbolIndex, SymbolInfo, SymbolKind, Visibility,
     VisibilityMark,
 };
 pub use manifest::{DeclaredSymbol, LocalSymbol, RefKind, SymbolManifest, UnresolvedRef};
+pub use project::project_manifest;

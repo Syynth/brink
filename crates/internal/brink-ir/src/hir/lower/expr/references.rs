@@ -2,25 +2,17 @@
 
 use brink_syntax::ast::{self, AstNode};
 
-use crate::{DiagnosticCode, Expr, Path, RefKind};
+use crate::{DiagnosticCode, Expr, Path};
 
 use super::super::context::{LowerScope, LowerSink, Lowered};
-use super::super::helpers::{lower_path, make_name, path_full_name};
+use super::super::helpers::{lower_path, make_name};
 use super::LowerExpr;
 
 // ─── Path / variable reference ──────────────────────────────────────
 
 impl LowerExpr for ast::Path {
-    fn lower_expr(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Expr> {
+    fn lower_expr(&self, _scope: &LowerScope, _sink: &mut impl LowerSink) -> Lowered<Expr> {
         let p = lower_path(self);
-        let full = path_full_name(&p);
-        sink.add_unresolved(
-            &full,
-            self.syntax().text_range(),
-            RefKind::Variable,
-            &scope.to_scope(),
-            None,
-        );
         Ok(Expr::Path(p))
     }
 }
@@ -49,13 +41,6 @@ impl LowerExpr for ast::FunctionCall {
                     .collect()
             })
             .unwrap_or_default();
-        sink.add_unresolved(
-            &name_text,
-            ident_range,
-            RefKind::Function,
-            &scope.to_scope(),
-            Some(args.len()),
-        );
         Ok(Expr::Call(path, args))
     }
 }
@@ -85,7 +70,7 @@ impl LowerExpr for ast::CallExpr {
 // ─── Divert targets and list literals ───────────────────────────────
 
 impl LowerExpr for ast::DivertTargetExpr {
-    fn lower_expr(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Expr> {
+    fn lower_expr(&self, _scope: &LowerScope, _sink: &mut impl LowerSink) -> Lowered<Expr> {
         // The parser always creates a PATH node (empty on error + E037),
         // so self.target() always returns Some (lane-A audit, #709: E018 is
         // unreachable).
@@ -93,25 +78,13 @@ impl LowerExpr for ast::DivertTargetExpr {
             unreachable!("parser guarantees PATH node in DivertTargetExpr")
         };
         let path = lower_path(&ast_path);
-        let full = path_full_name(&path);
-        sink.add_unresolved(
-            &full,
-            ast_path.syntax().text_range(),
-            RefKind::Divert,
-            &scope.to_scope(),
-            None,
-        );
         Ok(Expr::DivertTarget(path))
     }
 }
 
 impl LowerExpr for ast::ListExpr {
-    fn lower_expr(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Expr> {
+    fn lower_expr(&self, _scope: &LowerScope, _sink: &mut impl LowerSink) -> Lowered<Expr> {
         let items: Vec<Path> = self.items().map(|p| lower_path(&p)).collect();
-        for item in &items {
-            let full = path_full_name(item);
-            sink.add_unresolved(&full, item.range, RefKind::List, &scope.to_scope(), None);
-        }
         Ok(Expr::ListLiteral(items))
     }
 }

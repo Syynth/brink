@@ -6,7 +6,7 @@ use brink_syntax::SyntaxKind;
 use brink_syntax::ast::{self, AstNode};
 
 use crate::provenance::NodeClass;
-use crate::{Block, Choice, Content, ContentPart, Divert, Expr, InfixOp, Stmt, SymbolKind, Tag};
+use crate::{Block, Choice, Content, ContentPart, Divert, Expr, InfixOp, Stmt, Tag};
 
 use super::backbone::{BodyChild, classify_body_child};
 use super::content::{ContentAccumulator, DirectBackend, lower_content_node_children, lower_tags};
@@ -37,11 +37,6 @@ impl LowerChoice for ast::Choice {
         let is_sticky = bullets.is_sticky();
 
         let label = self.label().and_then(|l| name_from_ident(&l.identifier()?));
-
-        if let Some(ref label_name) = label {
-            let qualified = scope.qualify_label(&label_name.text);
-            sink.declare(SymbolKind::Label, &qualified, label_name.range);
-        }
 
         let is_fallback = self.start_content().is_none()
             && self.bracket_content().is_none()
@@ -230,11 +225,6 @@ pub fn lower_gather_to_block(
     let label = gather
         .label()
         .and_then(|l| name_from_ident(&l.identifier()?));
-
-    if let Some(ref label_name) = label {
-        let qualified = scope.qualify_label(&label_name.text);
-        sink.declare(SymbolKind::Label, &qualified, label_name.range);
-    }
 
     let content = gather.mixed_content().map(|mc| Content {
         ptr: None,

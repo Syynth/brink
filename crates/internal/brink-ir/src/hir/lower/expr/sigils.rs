@@ -13,10 +13,10 @@ use brink_syntax::ast::{self, AstNode};
 use crate::provenance::NodeClass;
 
 use crate::hir::types::{ArrayLiteral, FnLiteral, IndexExpr, MapLiteral, RefArgExpr};
-use crate::{DiagnosticCode, Expr, RefKind};
+use crate::{DiagnosticCode, Expr};
 
 use super::super::context::{LowerScope, LowerSink, Lowered};
-use super::super::helpers::{lower_path, path_full_name};
+use super::super::helpers::lower_path;
 use super::LowerExpr;
 
 impl LowerExpr for ast::ArrayLiteral {
@@ -61,19 +61,10 @@ impl LowerExpr for ast::FnLiteral {
             .target()
             .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E017))?;
         let target = lower_path(&ast_target);
-        let full = path_full_name(&target);
-        // The target registers as a Function reference: an unknown name is a
-        // compile error at resolution (E025, docs/t1c-spec.md §2 "unknown
-        // name is a compile error"); `arg_count` stays `None` because `#fn`
-        // binds a *prefix* of the param row — over-binding is the analyzer's
-        // own E081, not resolution's full-arity E031.
-        sink.add_unresolved(
-            &full,
-            target.range,
-            RefKind::Function,
-            &scope.to_scope(),
-            None,
-        );
+        // The target is a Function reference (`project_manifest` walks
+        // `FnLiteral.target` and always records `arg_count: None` for it —
+        // `#fn` binds a *prefix* of the param row, so full-arity checking
+        // doesn't apply the way it does for a direct call).
         let mut args = Vec::new();
         for a in self.args() {
             args.push(a.lower_expr(scope, sink)?);

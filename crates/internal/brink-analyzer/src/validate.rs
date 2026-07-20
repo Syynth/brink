@@ -379,6 +379,9 @@ mod tests {
             is_local: false,
             effects_assertion: None,
             return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -412,6 +415,9 @@ mod tests {
             is_local: false,
             effects_assertion: None,
             return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -447,6 +453,9 @@ mod tests {
             is_local: false,
             effects_assertion: None,
             return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -486,6 +495,9 @@ mod tests {
             is_local: false,
             effects_assertion: None,
             return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -523,6 +535,9 @@ mod tests {
             is_local: false,
             effects_assertion: None,
             return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -566,6 +581,9 @@ mod tests {
             is_local: false,
             effects_assertion: None,
             return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -606,6 +624,9 @@ mod tests {
             is_local: false,
             effects_assertion: None,
             return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -659,6 +680,9 @@ mod tests {
             is_local: false,
             effects_assertion: None,
             return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -714,6 +738,9 @@ mod tests {
             is_local: false,
             effects_assertion: None,
             return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -768,6 +795,9 @@ mod tests {
             is_local: false,
             effects_assertion: None,
             return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -832,6 +862,9 @@ mod tests {
             is_local: false,
             effects_assertion: None,
             return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
         });
 
         let files = vec![(FileId(0), &hir)];

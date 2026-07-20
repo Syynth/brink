@@ -216,6 +216,20 @@ pub struct Knot {
     /// not the same as an explicit `void`, which lowers as
     /// `TypeExpr::Named { name: "void" }` like every other nominal.
     pub return_type: Option<TypeExpr>,
+    /// Inline `///` doc-comment metadata, if any (B0.4,
+    /// docs/hir-admission-contract.md Q3(b)). Additive — carries what
+    /// `declare_full`'s `doc` parameter used to route straight into the
+    /// manifest, so [`crate::symbols::project_manifest`] can rebuild the
+    /// same `SymbolManifest.docs` entry from the HIR node alone.
+    pub doc: Option<crate::host_manifest::DocBlock>,
+    /// Explicit `#@private`/`#@public` visibility override, if any (M-2,
+    /// docs/modules-spec.md §4). Additive for B0.4 — mirrors
+    /// `DeclaredSymbol.visibility`.
+    pub visibility: Option<crate::VisibilityMark>,
+    /// `#@was(old_name)` rename record, if any (M-3,
+    /// docs/modules-spec.md §5). Additive for B0.4 — mirrors
+    /// `DeclaredSymbol.was`.
+    pub was: Option<(String, TextRange)>,
 }
 
 impl Knot {
@@ -247,6 +261,16 @@ pub struct Stitch {
     /// The `#@effects(…)` assertion directive line at the top of the body,
     /// if any (T2-2, docs/effects-spec.md §10, issue #861).
     pub effects_assertion: Option<EffectsAssertion>,
+    /// Inline `///` doc-comment metadata, if any (B0.4). See [`Knot::doc`].
+    pub doc: Option<crate::host_manifest::DocBlock>,
+    /// Explicit `#@private`/`#@public` visibility override, if any (B0.4).
+    /// See [`Knot::visibility`].
+    pub visibility: Option<crate::VisibilityMark>,
+    /// `#@was(old_name)` rename record, if any (B0.4). See [`Knot::was`] —
+    /// note the *stored* old name is already fully qualified
+    /// (`knot.old_stitch_name`) for a nested stitch, matching
+    /// `DeclaredSymbol.was`'s convention (`lower_stitch`'s qualification).
+    pub was: Option<(String, TextRange)>,
 }
 
 /// A parameter on a knot, stitch, or function.
@@ -1049,6 +1073,12 @@ pub struct VarDecl {
     /// The declared type annotation (TM-2, docs/typed-mode-spec.md §3:
     /// `VAR name: type = expr`), brink-dialect-gated syntax.
     pub annotation: Option<TypeExpr>,
+    /// Inline `///` doc-comment metadata, if any (B0.4). See [`Knot::doc`].
+    pub doc: Option<crate::host_manifest::DocBlock>,
+    /// Explicit `#@private`/`#@public` visibility override, if any (B0.4).
+    pub visibility: Option<crate::VisibilityMark>,
+    /// `#@was(old_name)` rename record, if any (B0.4).
+    pub was: Option<(String, TextRange)>,
 }
 
 /// `CONST x = expr`
@@ -1060,6 +1090,12 @@ pub struct ConstDecl {
     /// The declared type annotation (TM-2, docs/typed-mode-spec.md §3:
     /// `CONST name: type = expr`), brink-dialect-gated syntax.
     pub annotation: Option<TypeExpr>,
+    /// Inline `///` doc-comment metadata, if any (B0.4). See [`Knot::doc`].
+    pub doc: Option<crate::host_manifest::DocBlock>,
+    /// Explicit `#@private`/`#@public` visibility override, if any (B0.4).
+    pub visibility: Option<crate::VisibilityMark>,
+    /// `#@was(old_name)` rename record, if any (B0.4).
+    pub was: Option<(String, TextRange)>,
 }
 
 /// `~ temp x = expr`
@@ -1097,6 +1133,12 @@ pub struct ListDecl {
     pub ptr: Provenance,
     pub name: Name,
     pub members: Vec<ListMember>,
+    /// Inline `///` doc-comment metadata, if any (B0.4). See [`Knot::doc`].
+    pub doc: Option<crate::host_manifest::DocBlock>,
+    /// Explicit `#@private`/`#@public` visibility override, if any (B0.4).
+    pub visibility: Option<crate::VisibilityMark>,
+    /// `#@was(old_name)` rename record, if any (B0.4).
+    pub was: Option<(String, TextRange)>,
 }
 
 /// A single member in a list declaration.
@@ -1125,6 +1167,13 @@ pub struct StructDecl {
     /// `brink_format`'s `Value::Record` flat field vector will follow once
     /// TM-4c's codegen assigns a `ShapeId`.
     pub fields: Vec<StructFieldDecl>,
+    /// Inline `///` doc-comment metadata, if any (B0.4). See [`Knot::doc`].
+    pub doc: Option<crate::host_manifest::DocBlock>,
+    /// Explicit `#@private`/`#@public` visibility override, if any (B0.4).
+    /// Structs never carry a `#@was` rename (the lowering never parses one
+    /// for `STRUCT` — M-2 only wires visibility for this kind), so there is
+    /// no `was` field here, unlike the other declaration nodes.
+    pub visibility: Option<crate::VisibilityMark>,
 }
 
 /// One `field: type` pair inside a [`StructDecl`]'s body.
@@ -1140,6 +1189,19 @@ pub struct ExternalDecl {
     pub ptr: Provenance,
     pub name: Name,
     pub param_count: u8,
+    /// Per-parameter names (B0.4 addition — `param_count` alone cannot
+    /// reconstruct `DeclaredSymbol.params`, which the manifest carries for
+    /// hover/signature help; `is_ref`/`is_divert` are always `false` for an
+    /// `EXTERNAL` parameter, mirroring the pre-B0.4 manifest population in
+    /// `decl::external::declare_and_lower`). Invariant: `params.len() ==
+    /// usize::from(param_count)`.
+    pub params: Vec<crate::ParamInfo>,
+    /// Inline `///` doc-comment metadata, if any (B0.4). See [`Knot::doc`].
+    pub doc: Option<crate::host_manifest::DocBlock>,
+    /// Explicit `#@private`/`#@public` visibility override, if any (B0.4).
+    pub visibility: Option<crate::VisibilityMark>,
+    /// `#@was(old_name)` rename record, if any (B0.4).
+    pub was: Option<(String, TextRange)>,
 }
 
 /// `INCLUDE path/to/file.ink`
