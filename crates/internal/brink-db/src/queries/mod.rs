@@ -306,6 +306,15 @@ pub(crate) struct LoweredFile {
     pub hir: HirFile,
     pub manifest: SymbolManifest,
     pub diagnostics: Vec<Diagnostic>,
+    /// B0.3 `validate_admission` output (docs/hir-admission-contract.md
+    /// §4.2, issue #1172) — kept deliberately separate from `diagnostics`:
+    /// the admission gate is non-suppressible (NF-6, always-on), so it must
+    /// never flow through `apply_suppressions` the way lowering/syntax
+    /// diagnostics do (`partition_diagnostics` below). Computed here so it
+    /// runs on every lowering, matching the "the validator runs on every
+    /// keystroke in the editor" perf posture — see `heap_size.rs`'s
+    /// `lowered_file_heap_size` for the matching estimator update.
+    pub admission: Vec<Diagnostic>,
 }
 
 /// Lower one file to HIR. Salsa's dependency tracking on the `parse` input
@@ -2155,10 +2164,19 @@ fn lower_file(file_id: FileId, parse: &Parse) -> LoweredFile {
         code: DiagnosticCode::E037,
     }));
 
+    // B0.3 admission validator (docs/hir-admission-contract.md §4.2, issue
+    // #1172): a loud, non-suppressible pass wired directly at this seam so
+    // it runs on every lowering (NF-6, always-on). Kept in its own field —
+    // never folded into `diagnostics` above, which flows through
+    // `apply_suppressions` in `partition_diagnostics`.
+    let file_len = parse.syntax().text_range().end();
+    let admission = brink_analyzer::validate_admission(file_id, &hir, &manifest, file_len);
+
     LoweredFile {
         hir,
         manifest,
         diagnostics,
+        admission,
     }
 }
 

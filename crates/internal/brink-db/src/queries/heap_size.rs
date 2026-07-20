@@ -433,6 +433,7 @@ pub(crate) fn lowered_file_heap_size(value: &LoweredFile) -> usize {
     hir_file_heap(&value.hir)
         + manifest_heap(&value.manifest)
         + diagnostics_heap(&value.diagnostics)
+        + diagnostics_heap(&value.admission)
 }
 
 #[cfg(test)]

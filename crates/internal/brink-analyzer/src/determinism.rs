@@ -17,19 +17,34 @@
 //! `LookupMap` alias here — add one, with the same audit discipline, if a
 //! real use ever shows up.
 //!
-//! Do not reach for [`LookupSet`] to silence the lint on a new site without
-//! doing that audit first — if the new use is ever iterated for output,
-//! reach for `BTreeSet` (already used pervasively across this crate) or
-//! sort at the point of consumption instead.
+//! Do not reach for [`LookupSet`]/[`LookupMap`] to silence the lint on a new
+//! site without doing that audit first — if the new use is ever iterated
+//! for output, reach for `BTreeSet`/`BTreeMap` (already used pervasively
+//! across this crate) or sort at the point of consumption instead.
 
 /// A hashed set used only for membership tests (`.contains()`/`.insert()`
 /// as a "have I seen this" guard) — never iterated. Current uses:
 /// `dialect_gate::check`'s `resolved` set (already-resolved reference
-/// sites, queried by `.contains()` only) and `structs::check_literal_duplicates`'s
+/// sites, queried by `.contains()` only), `structs::check_literal_duplicates`'s
 /// `seen` set (duplicate-field guard walked alongside the field `Vec`,
-/// which is what actually orders the emitted diagnostics).
+/// which is what actually orders the emitted diagnostics), and
+/// `admission`'s reference-range/name-bucket sets (B0.3, issue #1172 —
+/// membership tests only, built once per file so a per-node manifest scan
+/// stays O(n) instead of O(n^2)).
 #[expect(
     clippy::disallowed_types,
     reason = "the crate's audited allow-list — see module doc"
 )]
 pub(crate) type LookupSet<T> = std::collections::HashSet<T>;
+
+/// A hashed map used only for keyed lookups (`.get()`/`.insert()`) —
+/// never iterated (no `.values()`/`.keys()`/`for (k, v) in`). Current use:
+/// `admission::check_is_function_sentinel` (B0.3, issue #1172) — a
+/// name→`DeclaredSymbol` index built once per file so the per-knot
+/// sentinel check stays O(n) instead of the O(n^2) a `Vec::iter().find()`
+/// per knot would give.
+#[expect(
+    clippy::disallowed_types,
+    reason = "the crate's audited allow-list — see module doc"
+)]
+pub(crate) type LookupMap<K, V> = std::collections::HashMap<K, V>;

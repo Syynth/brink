@@ -1893,6 +1893,55 @@ pub enum DiagnosticCode {
     /// *fault* residual instead (`RuntimeError::WeightedBadWeight`), so a
     /// table that exists is always rollable.
     E120,
+
+    // ── B0.3 HIR admission validator (docs/hir-admission-contract.md §4.2) ──
+    //
+    // Reserved range for the loud, non-suppressible `validate_admission`
+    // pass wired at the AST→HIR seam (issue #1172, docs/b0-sequencing.md
+    // §B0.3). Each check is a hard error — a malformed `(HirFile,
+    // SymbolManifest)` triple is a frontend bug, not a story-author mistake,
+    // so these never carry the warning-severity carve-out other codes do.
+    /// Contract §4.2 check 1a (manifest ⇄ HIR agreement): an
+    /// `UnresolvedRef.range` in the manifest has no matching
+    /// referencing-expression range anywhere in the file's HIR body — the
+    /// range-equality resolution join (Q2(a)) would silently fail to find
+    /// this reference at all.
+    E121,
+    /// Contract §4.2 check 1b (manifest ⇄ HIR agreement): a manifest-declared
+    /// symbol has no corresponding HIR declaration node of the same name —
+    /// the manifest and the HIR body have drifted apart.
+    E122,
+    /// Contract §4.2 check 1c (manifest ⇄ HIR agreement, F-I#4): a `Knot`'s
+    /// `is_function` flag disagrees with whether its declared symbol carries
+    /// the `"function"` detail sentinel.
+    E123,
+    /// Contract §4.2 check 2a (range well-formedness): a HIR node's source
+    /// range is empty or extends past the end of the source file — ranges
+    /// are resolution join keys and IDE geometry, so a garbage range would
+    /// otherwise corrupt resolution silently instead of erroring loudly.
+    /// Exempts the `Option<Provenance>`-carrying synthesized nodes
+    /// (`Content.ptr`/`Divert.ptr`/`Return.ptr`) when `None` (B0.1 finding
+    /// F-B2) — this fires only on a range that is present but malformed.
+    E124,
+    /// Contract §4.2 check 2b (join-key uniqueness, Q2(a)): two distinct
+    /// `UnresolvedRef` entries in the manifest share an identical source
+    /// range — the range-equality join can no longer distinguish them.
+    E125,
+    /// Contract §4.2 check 3 (name-convention conformance, F-I#3): a
+    /// declared symbol's qualified name does not match the dot-qualification
+    /// shape its `SymbolKind` requires (bare for knots/globals, `knot.stitch`
+    /// for stitches, `List.item` for list items, `knot[.stitch].label` for
+    /// labels).
+    E126,
+    /// Contract §4.2 check 4 (control-flow classification, F-I#7): a
+    /// terminal statement (`Divert`/`Return`) is not the last statement in
+    /// an inline conditional or sequence branch.
+    E127,
+    /// Contract §4.2 check 5 (provenance-kind ⇄ `SymbolKind` consistency,
+    /// F-I#5, the #626 floating-stitch trap): a `Knot`/`Stitch` HIR node's
+    /// provenance class disagrees with the `SymbolKind` bucket its declared
+    /// symbol was indexed under in the manifest.
+    E128,
 }
 
 impl DiagnosticCode {
@@ -2024,6 +2073,14 @@ impl DiagnosticCode {
             Self::E118 => "E118",
             Self::E119 => "E119",
             Self::E120 => "E120",
+            Self::E121 => "E121",
+            Self::E122 => "E122",
+            Self::E123 => "E123",
+            Self::E124 => "E124",
+            Self::E125 => "E125",
+            Self::E126 => "E126",
+            Self::E127 => "E127",
+            Self::E128 => "E128",
         }
     }
 
@@ -2190,6 +2247,24 @@ impl DiagnosticCode {
             }
             Self::E119 => "sort comparator must be a pure, silent function",
             Self::E120 => "`weighted` requires weight/value pairs with positive int weights",
+            Self::E121 => {
+                "admission: unresolved reference has no matching referencing expression in the HIR body"
+            }
+            Self::E122 => "admission: declared symbol has no corresponding HIR declaration node",
+            Self::E123 => {
+                "admission: knot's `is_function` disagrees with its indexed function sentinel"
+            }
+            Self::E124 => "admission: node range is empty or extends past the end of the file",
+            Self::E125 => "admission: two references share an identical source range",
+            Self::E126 => {
+                "admission: declared symbol's name does not match its kind's qualification shape"
+            }
+            Self::E127 => {
+                "admission: divert or return is not the last statement in an inline conditional/sequence branch"
+            }
+            Self::E128 => {
+                "admission: container's provenance kind disagrees with its indexed symbol kind"
+            }
         }
     }
 
@@ -2346,6 +2421,14 @@ impl DiagnosticCode {
             "E118" => Some(Self::E118),
             "E119" => Some(Self::E119),
             "E120" => Some(Self::E120),
+            "E121" => Some(Self::E121),
+            "E122" => Some(Self::E122),
+            "E123" => Some(Self::E123),
+            "E124" => Some(Self::E124),
+            "E125" => Some(Self::E125),
+            "E126" => Some(Self::E126),
+            "E127" => Some(Self::E127),
+            "E128" => Some(Self::E128),
             _ => None,
         }
     }
