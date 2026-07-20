@@ -99,6 +99,37 @@ fn use_and_import_and_module() {
 }
 
 #[test]
+fn use_decl_semicolon_is_consumed_by_the_decl_not_left_as_prose() {
+    // `;` has no role anywhere else in the grammar — confirm it becomes a
+    // token *inside* USE_DECL, not a stray token that just happens to
+    // round-trip as unrelated adjacent prose text.
+    let src = "use a::b;\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let use_decl = p
+        .syntax()
+        .children()
+        .find(|n| n.kind() == SyntaxKind::USE_DECL)
+        .expect("USE_DECL");
+    assert!(
+        use_decl
+            .children_with_tokens()
+            .any(|t| t.kind() == SyntaxKind::SEMICOLON),
+        "expected the `;` inside USE_DECL, tree: {use_decl:#?}"
+    );
+    // And nothing else at the top level — the `;` didn't spawn its own
+    // stray CONTENT_LINE sibling.
+    assert_eq!(p.syntax().children().count(), 1);
+}
+
+#[test]
+fn use_decl_without_semicolon_still_parses() {
+    let src = "use a::b\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+}
+
+#[test]
 fn var_const_flags_struct_extern() {
     let src = "var hp = 10\nconst MAX = 100\nflags Mood = (calm), wary, hostile\nstruct Item {\n  name: string,\n  weight: int\n}\nextern log(msg)\n";
     let p = assert_lossless(src);

@@ -12,7 +12,7 @@ pub fn lex_punctuation(bytes: &[u8], pos: usize) -> Option<(SyntaxKind, usize)> 
         AMP, AMP_AMP, AT, AT_L_BRACKET, BACKSLASH, BANG, BANG_EQ, CARET, COLON, COLON_COLON, COMMA,
         DIVERT, DOT, EQ, EQ_EQ, FAT_ARROW, GLUE, GT, GT_EQ, HASH, L_BRACE, L_BRACKET, L_PAREN, LT,
         LT_EQ, MINUS, MINUS_EQ, PERCENT, PIPE, PLUS, PLUS_EQ, QUESTION, QUOTE, R_BRACE, R_BRACKET,
-        R_PAREN, SLASH, SLASH_EQ, STAR, STAR_EQ, THREAD, TILDE,
+        R_PAREN, SEMICOLON, SLASH, SLASH_EQ, STAR, STAR_EQ, THREAD, TILDE,
     };
 
     let b = bytes[pos];
@@ -142,6 +142,7 @@ pub fn lex_punctuation(bytes: &[u8], pos: usize) -> Option<(SyntaxKind, usize)> 
         b',' => (COMMA, 1),
         b'.' => (DOT, 1),
         b'#' => (HASH, 1),
+        b';' => (SEMICOLON, 1),
         b'~' => (TILDE, 1),
         b'\\' => (BACKSLASH, 1),
         b'"' => (QUOTE, 1),

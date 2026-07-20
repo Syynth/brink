@@ -265,11 +265,18 @@ pub(crate) fn import_decl(p: &mut Parser<'_, '_>) {
 // ── use ──────────────────────────────────────────────────────────────
 
 /// `use path::{a, b as c};` — Rust's `use` syntax lifted verbatim (charter
-/// §13.2). No trailing `;` required, mirroring Finding #6.
+/// §13.2's literal example includes the trailing `;`). Unlike every other
+/// declaration in this skeleton (Finding #6: no statement terminator
+/// required elsewhere), `use` recognizes an *optional* trailing `;` —
+/// optional rather than required because this skeleton has no semantic
+/// gate to reject its absence yet, but recognized (not left to fall
+/// through as unrelated prose, which a semicolon with no other role in the
+/// grammar would otherwise silently do).
 pub(crate) fn use_decl(p: &mut Parser<'_, '_>) {
     p.start_node(USE_DECL);
     p.bump(); // KW_USE
     use_tree(p);
+    p.eat(crate::SyntaxKind::SEMICOLON);
     p.finish_node();
 }
 

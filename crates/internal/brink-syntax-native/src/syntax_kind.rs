@@ -140,6 +140,11 @@ pub enum SyntaxKind {
     DOT,
     /// `:`
     COLON,
+    /// `;` — recognized only as `use`'s optional statement terminator
+    /// (charter §13.2's literal example: `use story::market::{barter,
+    /// haggle};`). Not a general statement separator anywhere else in this
+    /// skeleton (Finding #6: no other declaration requires one).
+    SEMICOLON,
     /// `::` — the module-wall separator (charter §13.2). Lexed as one
     /// compound token so a bare `:` (used in inline `{if cond: …}` bodies)
     /// never gets swallowed by a stray adjacent colon.
@@ -447,6 +452,7 @@ impl SyntaxKind {
                 | Self::COMMA
                 | Self::DOT
                 | Self::COLON
+                | Self::SEMICOLON
                 | Self::COLON_COLON
                 | Self::HASH
                 | Self::TILDE
