@@ -1,0 +1,271 @@
+//! `var`/`const`/`flags`/`struct`/`extern` → their HIR decl nodes
+//! (`docs/b0-sequencing.md` §B0.6).
+//!
+//! Directive/annotation channel population (`is_local`, `effects_assertion`,
+//! `visibility`, `@[was]`, `///` docs) is deliberately **not** wired in this
+//! slice — see the `lower_native` module doc's judgment-call list. Every
+//! decl node below carries the B0.4 additive fields as their empty default
+//! (`None`/`false`), which is honest (no directive syntax was consumed to
+//! produce them) rather than fabricated.
+
+use brink_syntax_native::SyntaxKind as N;
+use brink_syntax_native::ast::{self, AstNode as _};
+use brink_syntax_native::{SyntaxNode, SyntaxToken};
+
+use crate::hir::FileId;
+use crate::provenance::NodeClass;
+use crate::{
+    ConstDecl, Diagnostic, DiagnosticCode, ExternalDecl, ListDecl, ListMember, Name, ParamInfo,
+    StructDecl, StructFieldDecl, TypeExpr, VarDecl,
+};
+
+use super::expr::{lower_expr, lower_path};
+use super::provenance::native_provenance;
+
+fn diag(file: FileId, range: rowan::TextRange, code: DiagnosticCode) -> Diagnostic {
+    Diagnostic {
+        file,
+        range,
+        message: code.title().to_string(),
+        code,
+    }
+}
+
+fn name_from(tok: Option<SyntaxToken>) -> Option<Name> {
+    tok.map(|t| Name {
+        text: t.text().to_string(),
+        range: t.text_range(),
+    })
+}
+
+/// `var name = expr`.
+pub(super) fn lower_var_decl(
+    file_id: FileId,
+    node: &ast::VarDecl,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<VarDecl> {
+    let range = node.syntax().text_range();
+    let Some(name) = name_from(node.name_token()) else {
+        diags.push(diag(file_id, range, DiagnosticCode::E004));
+        return None;
+    };
+    let Some(value_node) = node.value() else {
+        diags.push(diag(file_id, range, DiagnosticCode::E005));
+        return None;
+    };
+    let value = lower_expr(file_id, &value_node, diags);
+    Some(VarDecl {
+        ptr: native_provenance(file_id, NodeClass::VarDecl, node.syntax()),
+        name,
+        value,
+        is_local: false,
+        annotation: None,
+        doc: None,
+        visibility: None,
+        was: None,
+    })
+}
+
+/// `const name = expr`.
+pub(super) fn lower_const_decl(
+    file_id: FileId,
+    node: &ast::ConstDecl,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<ConstDecl> {
+    let range = node.syntax().text_range();
+    let Some(name) = name_from(node.name_token()) else {
+        diags.push(diag(file_id, range, DiagnosticCode::E006));
+        return None;
+    };
+    let Some(value_node) = node.value() else {
+        diags.push(diag(file_id, range, DiagnosticCode::E007));
+        return None;
+    };
+    let value = lower_expr(file_id, &value_node, diags);
+    Some(ConstDecl {
+        ptr: native_provenance(file_id, NodeClass::ConstDecl, node.syntax()),
+        name,
+        value,
+        annotation: None,
+        doc: None,
+        visibility: None,
+        was: None,
+    })
+}
+
+/// `flags Name = (member), member, …` — the charter's renamed `LIST`
+/// (§11), reusing ink's `ListDecl`/`ListMember` HIR shape verbatim.
+pub(super) fn lower_flags_decl(
+    file_id: FileId,
+    node: &ast::FlagsDecl,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<ListDecl> {
+    let range = node.syntax().text_range();
+    let Some(name) = name_from(node.name_token()) else {
+        diags.push(diag(file_id, range, DiagnosticCode::E008));
+        return None;
+    };
+    let members: Vec<ListMember> = node
+        .member_list()
+        .into_iter()
+        .flat_map(|ml| ml.members().collect::<Vec<_>>())
+        .filter_map(|m| {
+            let member_name = name_from(m.name_token());
+            if member_name.is_none() {
+                diags.push(diag(file_id, m.syntax().text_range(), DiagnosticCode::E009));
+            }
+            member_name.map(|n| ListMember {
+                name: n,
+                // No ordinal-value grammar in this skeleton
+                // (`parser/decl.rs::flags_member`) — unlike ink's
+                // `item = 5`, native flags members are name(+active)-only.
+                value: None,
+                is_active: m.is_active(),
+            })
+        })
+        .collect();
+    Some(ListDecl {
+        ptr: native_provenance(file_id, NodeClass::ListDecl, node.syntax()),
+        name,
+        members,
+        doc: None,
+        visibility: None,
+        was: None,
+    })
+}
+
+/// `struct Name { field: type, … }`.
+pub(super) fn lower_struct_decl(
+    file_id: FileId,
+    node: &ast::StructDecl,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<StructDecl> {
+    let range = node.syntax().text_range();
+    let Some(name) = name_from(node.name_token()) else {
+        // Reuses E001 ("knot missing a name")'s sibling shape — there is no
+        // dedicated ink STRUCT-missing-name code (ink's own STRUCT grammar
+        // always materializes a name node), so this borrows the nearest
+        // "declaration missing a name" code in the same family (E004: VAR)
+        // rather than minting a new one for a shape ink's own frontend
+        // never needed to diagnose.
+        diags.push(diag(file_id, range, DiagnosticCode::E004));
+        return None;
+    };
+    let fields: Vec<StructFieldDecl> = node
+        .fields()
+        .filter_map(|f| {
+            let field_name = name_from(f.name_token());
+            let ty = f.type_path().map(|p| {
+                let joined = p
+                    .segments()
+                    .map(|t| t.text().to_string())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                TypeExpr::Named {
+                    name: joined,
+                    range: p.syntax().text_range(),
+                }
+            });
+            if let (Some(n), Some(ty)) = (field_name, ty) {
+                Some(StructFieldDecl { name: n, ty })
+            } else {
+                diags.push(diag(file_id, f.syntax().text_range(), DiagnosticCode::E003));
+                None
+            }
+        })
+        .collect();
+    Some(StructDecl {
+        ptr: native_provenance(file_id, NodeClass::StructDecl, node.syntax()),
+        name,
+        fields,
+        doc: None,
+        visibility: None,
+    })
+}
+
+/// `extern name(params)`.
+pub(super) fn lower_extern_decl(
+    file_id: FileId,
+    node: &ast::ExternDecl,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<ExternalDecl> {
+    let range = node.syntax().text_range();
+    let Some(name) = name_from(node.name_token()) else {
+        diags.push(diag(file_id, range, DiagnosticCode::E010));
+        return None;
+    };
+    let params: Vec<ParamInfo> = node
+        .param_list()
+        .into_iter()
+        .flat_map(|pl| pl.params().collect::<Vec<_>>())
+        .filter_map(|p| {
+            // `is_ref`/`is_divert` are always `false` for an `EXTERNAL`
+            // parameter — matches ink's own `ExternalDecl.params` convention
+            // (`hir/types.rs` doc: "mirroring the pre-B0.4 manifest
+            // population in `decl::external::declare_and_lower`"), which
+            // discards `ref`-ness even though ink's EXTERNAL grammar
+            // syntactically permits it too (both frontends reuse the
+            // general param-list rule). A native `extern` writer who marks
+            // a param `ref` gets the same silent no-op ink already has —
+            // an existing wart, not one this slice introduces; flagged for
+            // #1106 as worth a shared diagnostic in a follow-up rather than
+            // diverging the two frontends' `ExternalDecl.params` semantics.
+            p.name_token().map(|t| ParamInfo {
+                name: t.text().to_string(),
+                is_ref: false,
+                is_divert: false,
+            })
+        })
+        .collect();
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "external params won't exceed 255, mirrors the ink lowering's own cast"
+    )]
+    let param_count = params.len() as u8;
+    Some(ExternalDecl {
+        ptr: native_provenance(file_id, NodeClass::ExternalDecl, node.syntax()),
+        name,
+        param_count,
+        params,
+        doc: None,
+        visibility: None,
+        was: None,
+    })
+}
+
+/// Every `IDENT` a native `PATH_SEGMENT` chain visits — reused by the
+/// struct-field type lowering above and left available for `import`/`use`
+/// lowering (`super::import`).
+pub(super) fn joined_path_text(path: &ast::Path) -> String {
+    lower_path(path)
+        .segments
+        .iter()
+        .map(|n| n.text.as_str())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// `true` if `node` sits directly inside `SOURCE_FILE` or a (possibly
+/// nested) `MODULE_DECL`'s `BLOCK` — the "flattened top-level scope" a
+/// struct/extern/use/import declaration must be declared in (mirrors ink's
+/// D6 posture: these four kinds are NOT hoisted by a whole-tree walk the
+/// way `var`/`const`/`flags` are — `docs/hir-admission-contract.md` D6,
+/// `hir/lower/structure/mod.rs`'s `file.struct_decls()`/`file.externals()`
+/// direct-children comments). `var`/`const`/`flags` skip this check
+/// entirely (collected via `.descendants()`, unconditionally hoisted, same
+/// as ink) — see the `lower_native` module doc's numbered judgment calls.
+pub(super) fn in_flattened_scope(node: &SyntaxNode) -> bool {
+    let Some(parent) = node.parent() else {
+        return true;
+    };
+    if parent.kind() == N::SOURCE_FILE {
+        return true;
+    }
+    if parent.kind() == N::BLOCK
+        && let Some(grandparent) = parent.parent()
+        && grandparent.kind() == N::MODULE_DECL
+    {
+        return in_flattened_scope(&grandparent);
+    }
+    false
+}

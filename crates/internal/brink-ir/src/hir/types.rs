@@ -2354,9 +2354,7 @@ impl DiagnosticCode {
                 "admission: container's provenance kind disagrees with its indexed symbol kind"
             }
             Self::E129 => "native: construct parses but has no HIR lowering yet",
-            Self::E130 => {
-                "native: `flow` nested more than two levels deep is not yet supported"
-            }
+            Self::E130 => "native: `flow` nested more than two levels deep is not yet supported",
         }
     }
 

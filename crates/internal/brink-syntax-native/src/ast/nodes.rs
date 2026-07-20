@@ -437,6 +437,116 @@ impl PathExpr {
     }
 }
 
+impl IntegerLit {
+    pub fn value_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, crate::SyntaxKind::INTEGER)
+    }
+
+    pub fn value(&self) -> Option<i64> {
+        self.value_token()
+            .and_then(|t| t.text().parse::<i64>().ok())
+    }
+}
+
+impl FloatLit {
+    pub fn value_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, crate::SyntaxKind::FLOAT)
+    }
+
+    pub fn value(&self) -> Option<f64> {
+        self.value_token()
+            .and_then(|t| t.text().parse::<f64>().ok())
+    }
+}
+
+impl BooleanLit {
+    pub fn value(&self) -> Option<bool> {
+        let tok = self
+            .syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .find(|t| matches!(t.kind(), SyntaxKind::KW_TRUE | SyntaxKind::KW_FALSE))?;
+        match tok.kind() {
+            SyntaxKind::KW_TRUE => Some(true),
+            SyntaxKind::KW_FALSE => Some(false),
+            _ => None,
+        }
+    }
+}
+
+impl ParenExpr {
+    /// The parenthesized inner expression's root node.
+    pub fn inner(&self) -> Option<SyntaxNode> {
+        self.syntax.children().next()
+    }
+}
+
+impl PrefixExpr {
+    /// The prefix operator token (`-` or `!`).
+    pub fn op_token(&self) -> Option<SyntaxToken> {
+        self.syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .find(|t| matches!(t.kind(), SyntaxKind::MINUS | SyntaxKind::BANG))
+    }
+
+    /// The operand's root node.
+    pub fn operand(&self) -> Option<SyntaxNode> {
+        self.syntax.children().next()
+    }
+}
+
+impl InfixExpr {
+    /// The left-hand operand's root node (the first child node).
+    pub fn lhs(&self) -> Option<SyntaxNode> {
+        self.syntax.children().next()
+    }
+
+    /// The right-hand operand's root node (the last child node).
+    pub fn rhs(&self) -> Option<SyntaxNode> {
+        self.syntax.children().last()
+    }
+
+    /// The operator token. Two adjacent `PIPE`s (`||`) are represented as
+    /// two tokens (see `expr::infix_binding_power`'s doc) — this returns
+    /// the *first* one; callers that need to distinguish `|` from `||`
+    /// check [`Self::is_double_pipe`].
+    pub fn op_token(&self) -> Option<SyntaxToken> {
+        self.syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .find(|t| {
+                matches!(
+                    t.kind(),
+                    SyntaxKind::AMP_AMP
+                        | SyntaxKind::EQ_EQ
+                        | SyntaxKind::BANG_EQ
+                        | SyntaxKind::LT
+                        | SyntaxKind::GT
+                        | SyntaxKind::LT_EQ
+                        | SyntaxKind::GT_EQ
+                        | SyntaxKind::PLUS
+                        | SyntaxKind::MINUS
+                        | SyntaxKind::STAR
+                        | SyntaxKind::SLASH
+                        | SyntaxKind::PERCENT
+                        | SyntaxKind::PIPE
+                )
+            })
+    }
+
+    /// `true` if the operator is `||` (two adjacent `PIPE` tokens) rather
+    /// than a single-token operator.
+    pub fn is_double_pipe(&self) -> bool {
+        let mut pipes = self
+            .syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .filter(|t| t.kind() == SyntaxKind::PIPE);
+        pipes.next().is_some() && pipes.next().is_some()
+    }
+}
+
 impl ArgList {
     /// `true` if this arg list opens with `(` at all (always true for a
     /// well-formed parse — exposed for error-recovery callers that walk a

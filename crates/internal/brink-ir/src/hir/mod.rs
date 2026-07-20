@@ -8,6 +8,7 @@
 pub mod frame_shape;
 mod ink_provenance;
 pub mod lower;
+pub mod lower_native;
 mod normalize;
 mod stamp;
 mod types;
