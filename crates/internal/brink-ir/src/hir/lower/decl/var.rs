@@ -56,7 +56,12 @@ impl DeclareSymbols for ast::VarDecl {
             if old_name == name.text {
                 sink.diagnose(was_range, DiagnosticCode::E095);
             } else {
-                sink.set_was(SymbolKind::Variable, &name.text, old_name.clone(), was_range);
+                sink.set_was(
+                    SymbolKind::Variable,
+                    &name.text,
+                    old_name.clone(),
+                    was_range,
+                );
                 was = Some((old_name, was_range));
             }
         }

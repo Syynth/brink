@@ -21,6 +21,11 @@ use super::stitch::lower_stitch;
 
 use crate::symbols::LocalSymbol;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "B0.4 threaded doc/visibility/was capture through the existing directive-parsing \
+              flow rather than restructuring it; mirrors choice.rs's lower_choice precedent"
+)]
 pub(super) fn lower_knot(
     scope: &mut LowerScope,
     sink: &mut impl LowerSink,

@@ -66,7 +66,12 @@ impl DeclareSymbols for ast::ListDecl {
             if old_name == list_name_text {
                 sink.diagnose(was_range, DiagnosticCode::E095);
             } else {
-                sink.set_was(SymbolKind::List, &list_name_text, old_name.clone(), was_range);
+                sink.set_was(
+                    SymbolKind::List,
+                    &list_name_text,
+                    old_name.clone(),
+                    was_range,
+                );
                 was = Some((old_name, was_range));
             }
         }
