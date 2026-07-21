@@ -355,6 +355,18 @@ pub struct Block {
 }
 
 impl Block {
+    /// Body block with no label/container, `tail` derived from `stmts`.
+    #[must_use]
+    pub fn from_stmts(stmts: Vec<Stmt>) -> Self {
+        let tail = tail_from_stmts(&stmts);
+        Self {
+            label: None,
+            stmts,
+            container_id: None,
+            tail,
+        }
+    }
+
     /// The block's [`Tail`] — see the field doc for the migration status
     /// (S1, docs/block-effect-model.md §10 row j: populated, unconsumed).
     #[must_use]

@@ -998,24 +998,20 @@ mod tests {
     fn e127_divert_not_last_in_inline_branch() {
         let (mut hir, manifest, len) = lower_src("== knot ==\nHello\n-> END\n");
         let synthetic_range = TextRange::new(0.into(), 1.into());
-        let branch_body = Block {
-            label: None,
-            stmts: vec![
-                Stmt::Divert(Divert {
-                    ptr: Some(Provenance::synthetic(NodeClass::Divert, synthetic_range)),
-                    target: DivertTarget {
-                        path: DivertPath::Done,
-                        args: Vec::new(),
-                    },
-                }),
-                Stmt::Content(Content {
-                    ptr: None,
-                    parts: Vec::new(),
-                    tags: Vec::new(),
-                }),
-            ],
-            container_id: None,
-        };
+        let branch_body = Block::from_stmts(vec![
+            Stmt::Divert(Divert {
+                ptr: Some(Provenance::synthetic(NodeClass::Divert, synthetic_range)),
+                target: DivertTarget {
+                    path: DivertPath::Done,
+                    args: Vec::new(),
+                },
+            }),
+            Stmt::Content(Content {
+                ptr: None,
+                parts: Vec::new(),
+                tags: Vec::new(),
+            }),
+        ]);
         let cond = Conditional {
             ptr: Provenance::synthetic(NodeClass::Conditional, synthetic_range),
             kind: CondKind::InitialCondition,
