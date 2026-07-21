@@ -1235,3 +1235,73 @@ fn conflicting_visibility_directives_is_e093() {
         "expected E093, got {diags:?}"
     );
 }
+
+// ─── Block::tail (S1, docs/block-effect-model.md §10 row j) ────────
+//
+// Expand-phase groundwork only: `tail` is populated from `stmts`' final
+// statement but consumed by nothing yet — `stmts` stays authoritative.
+// These tests pin the ink frontend's half of that population.
+
+#[test]
+fn block_ending_in_divert_has_diverge_tail() {
+    let (hir, diags) = lower_hir("== a ==\nHello\n-> b\n== b ==\nDone.\n-> END\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let a_body = &hir.knots[0].body;
+    assert!(
+        matches!(a_body.tail(), Tail::Diverge(Terminator::Divert(_))),
+        "expected Diverge(Divert) tail, got {:?}",
+        a_body.tail()
+    );
+    let b_body = &hir.knots[1].body;
+    assert!(
+        matches!(b_body.tail(), Tail::Diverge(Terminator::Divert(_))),
+        "-> END is still a Divert (DivertPath::End), got {:?}",
+        b_body.tail()
+    );
+}
+
+#[test]
+fn block_ending_in_explicit_return_has_diverge_tail() {
+    let (hir, diags) = lower_hir("=== function f() ===\n~ return 1\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = &hir.knots[0].body;
+    assert!(
+        matches!(body.tail(), Tail::Diverge(Terminator::Return(_))),
+        "expected Diverge(Return) tail, got {:?}",
+        body.tail()
+    );
+}
+
+#[test]
+fn plain_content_block_has_unit_tail() {
+    let (block, diags) = lower_body("Hello, world!\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(*block.tail(), Tail::Unit);
+}
+
+#[test]
+fn weave_choice_body_ending_in_divert_has_diverge_tail() {
+    // Weave folding appends trailing choice-body content statement-by-
+    // statement (`weave.rs`'s `WeaveItem::Stmt` arm mutates `c.body.stmts`
+    // in place after the choice's own construction) — `flush_choices` must
+    // re-derive `tail` from the final body before sealing it into the
+    // `ChoiceSet`, or this would still read the stale value from
+    // construction time.
+    let (hir, diags) =
+        lower_hir("== a ==\n* Choice.\n  more text\n  -> b\n== b ==\nDone.\n-> END\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::ChoiceSet(cs) = &hir.knots[0].body.stmts[0] else {
+        panic!("expected ChoiceSet, got {:?}", hir.knots[0].body.stmts[0]);
+    };
+    let choice_body = &cs.choices[0].body;
+    assert!(
+        matches!(choice_body.stmts.last(), Some(Stmt::Divert(_))),
+        "expected the weave-folded content to end in the divert, got {:?}",
+        choice_body.stmts
+    );
+    assert!(
+        matches!(choice_body.tail(), Tail::Diverge(Terminator::Divert(_))),
+        "expected Diverge(Divert) tail, got {:?}",
+        choice_body.tail()
+    );
+}
