@@ -369,8 +369,19 @@ impl ChoicePoint {
 
 impl Choice {
     /// `true` for a sticky (`+`) choice, `false` for a once-only (`*`) one.
+    ///
+    /// B0.7 fix (`docs/b0-sequencing.md` §B0.7, issue #1176): the bullet
+    /// token is wrapped in a nested `CHOICE_BULLET` node
+    /// (`choice.rs::choice`: `p.start_node(CHOICE_BULLET); p.bump(); …`),
+    /// never a direct token of `CHOICE` itself — `support::token` only
+    /// looks at direct children, so the original B0.5/B0.6 implementation
+    /// (`support::token(&self.syntax, PLUS)`) always returned `false`. Every
+    /// choice line in the corpus was silently lowering as once-only; caught
+    /// by B0.7's `choice_point_lowers_to_choice_set_with_sticky_and_once`
+    /// test, the first real exercise of a sticky (`+`) choice line.
     pub fn is_sticky(&self) -> bool {
-        support::token(&self.syntax, SyntaxKind::PLUS).is_some()
+        support::child::<ChoiceBullet>(&self.syntax)
+            .is_some_and(|b| support::token(&b.syntax, SyntaxKind::PLUS).is_some())
     }
 
     pub fn label(&self) -> Option<Label> {
@@ -567,5 +578,215 @@ impl DivertTarget {
 
     pub fn path(&self) -> Option<Path> {
         support::child(&self.syntax)
+    }
+}
+
+// ── B0.7 additions: body-dialect accessors ──────────────────────────
+//
+// Everything below was added for `hir::lower_native`'s body lowering
+// (`docs/b0-sequencing.md` §B0.7). B0.5/B0.6 hand-wrote a representative
+// subset of accessors "enough to prove the pattern end-to-end ... not
+// pre-building every accessor a later lowering pass might want" (this
+// file's module doc) — B0.7 is exactly that later pass.
+
+impl ContentLine {
+    /// The leading `(name)` label, if this line opens with one (G-1).
+    pub fn label(&self) -> Option<Label> {
+        support::child(&self.syntax)
+    }
+}
+
+impl Label {
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, IDENT)
+    }
+}
+
+impl DivertStmt {
+    pub fn target(&self) -> Option<DivertTarget> {
+        support::child(&self.syntax)
+    }
+}
+
+impl TunnelCall {
+    /// The one divert target between the opening and closing `->` (native's
+    /// `-> place ->` shape carries exactly one target, unlike ink's chained
+    /// `-> a -> b ->`).
+    pub fn target(&self) -> Option<DivertTarget> {
+        support::child(&self.syntax)
+    }
+}
+
+impl ReturnRedirect {
+    pub fn target(&self) -> Option<DivertTarget> {
+        support::child(&self.syntax)
+    }
+}
+
+impl Choice {
+    pub fn start_content(&self) -> Option<ChoiceStartContent> {
+        support::child(&self.syntax)
+    }
+
+    pub fn bracket_content(&self) -> Option<ChoiceBracketContent> {
+        support::child(&self.syntax)
+    }
+
+    pub fn inner_content(&self) -> Option<ChoiceInnerContent> {
+        support::child(&self.syntax)
+    }
+}
+
+impl ChoiceGuard {
+    /// The guard's condition expression — `CHOICE_GUARD`'s only child node
+    /// (`L_BRACE KW_IF expression R_BRACE`; the braces/keyword are tokens).
+    pub fn expr(&self) -> Option<SyntaxNode> {
+        self.syntax.children().next()
+    }
+}
+
+impl ChoiceBody {
+    pub fn items(&self) -> impl Iterator<Item = SyntaxNode> {
+        self.syntax.children()
+    }
+}
+
+impl ElseBranch {
+    /// The nested `CHOICE_BODY`, when this `else` belongs to a choice point
+    /// (`choice.rs::else_branch` — always braced, no colon form).
+    pub fn choice_body(&self) -> Option<ChoiceBody> {
+        support::child(&self.syntax)
+    }
+
+    /// The nested `BLOCK`, when this `else` belongs to the conditional
+    /// family's braced-arm form (`{if cond {…} else {…}}`).
+    pub fn block(&self) -> Option<Block> {
+        support::child(&self.syntax)
+    }
+
+    /// Every direct-child item, for the conditional family's colon-body
+    /// form (`{if cond: … else: …}`), where body items are direct children
+    /// with no wrapper node (`family.rs::colon_body`).
+    pub fn items(&self) -> impl Iterator<Item = SyntaxNode> {
+        self.syntax.children()
+    }
+}
+
+impl Splice {
+    pub fn path(&self) -> Option<Path> {
+        support::child(&self.syntax)
+    }
+
+    pub fn arg_list(&self) -> Option<ArgList> {
+        support::child(&self.syntax)
+    }
+}
+
+impl ConditionalBlock {
+    pub fn is_if(&self) -> bool {
+        support::token(&self.syntax, SyntaxKind::KW_IF).is_some()
+    }
+
+    pub fn is_match(&self) -> bool {
+        support::token(&self.syntax, SyntaxKind::KW_MATCH).is_some()
+    }
+
+    /// The head expression: the `if` condition or the `match` subject —
+    /// `CONDITIONAL_BLOCK`'s only child node that isn't an arm/else
+    /// (`family.rs::conditional_block`: the expression is parsed directly
+    /// into this node before the arm(s)).
+    pub fn condition(&self) -> Option<SyntaxNode> {
+        self.syntax.children().find(|n| {
+            !matches!(
+                n.kind(),
+                SyntaxKind::IF_ARM | SyntaxKind::ELSE_BRANCH | SyntaxKind::MATCH_ARM
+            )
+        })
+    }
+
+    pub fn if_arm(&self) -> Option<IfArm> {
+        support::child(&self.syntax)
+    }
+
+    pub fn else_arm(&self) -> Option<ElseBranch> {
+        support::child(&self.syntax)
+    }
+
+    /// `match`'s arms — direct children of `CONDITIONAL_BLOCK` itself
+    /// (`family.rs::match_arm_list` opens no wrapper node of its own).
+    pub fn match_arms(&self) -> impl Iterator<Item = MatchArm> {
+        support::children(&self.syntax)
+    }
+}
+
+impl IfArm {
+    /// The nested `BLOCK`, for the braced-arm form.
+    pub fn block(&self) -> Option<Block> {
+        support::child(&self.syntax)
+    }
+
+    /// Direct-child items, for the colon-body form (see `ElseBranch::items`).
+    pub fn items(&self) -> impl Iterator<Item = SyntaxNode> {
+        self.syntax.children()
+    }
+}
+
+impl MatchArm {
+    /// The pattern's expression — `MATCH_PATTERN`'s only child node.
+    pub fn pattern_expr(&self) -> Option<SyntaxNode> {
+        support::child::<MatchPattern>(&self.syntax).and_then(|p| p.syntax.children().next())
+    }
+
+    /// The nested `BLOCK`, for a braced arm body (`pattern => { … }`).
+    pub fn block(&self) -> Option<Block> {
+        support::child(&self.syntax)
+    }
+
+    /// The bare expression, for an unbraced arm body (`pattern => expr`) —
+    /// the one child node that is neither `MATCH_PATTERN` nor `BLOCK`.
+    pub fn bare_expr(&self) -> Option<SyntaxNode> {
+        self.syntax
+            .children()
+            .find(|n| !matches!(n.kind(), SyntaxKind::MATCH_PATTERN | SyntaxKind::BLOCK))
+    }
+}
+
+impl AlternationBlock {
+    /// The `~`/`&`/`!`/`|` marker token.
+    pub fn marker_token(&self) -> Option<SyntaxToken> {
+        support::child::<AlternationMarker>(&self.syntax).and_then(|m| {
+            m.syntax
+                .children_with_tokens()
+                .filter_map(rowan::NodeOrToken::into_token)
+                .find(|t| {
+                    matches!(
+                        t.kind(),
+                        SyntaxKind::TILDE | SyntaxKind::AMP | SyntaxKind::BANG | SyntaxKind::PIPE
+                    )
+                })
+        })
+    }
+
+    /// The multiline `-`-prefixed entries, if this block used that form
+    /// (`family.rs::multiline_entries`). Empty for the single-line
+    /// pipe-separated form — see [`Self::syntax`] for the raw child walk
+    /// callers need for that form instead (no per-alternative wrapper node
+    /// exists for it, `family.rs::inline_alternatives`).
+    pub fn entries(&self) -> impl Iterator<Item = Entry> {
+        support::children(&self.syntax)
+    }
+}
+
+impl Entry {
+    /// Every direct-child item inside this `-`-prefixed entry (the leading
+    /// `MINUS` is a token, filtered out by `.children()`).
+    pub fn items(&self) -> impl Iterator<Item = SyntaxNode> {
+        self.syntax.children()
+    }
+}
+
+impl TagLine {
+    pub fn tags(&self) -> impl Iterator<Item = Tag> {
+        support::children(&self.syntax)
     }
 }

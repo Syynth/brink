@@ -101,6 +101,9 @@
 //!    nested `module name { … }` *block* is a different concept (charter
 //!    §13.2's declared sub-modules) — see judgment call #4.
 
+mod body;
+mod choice;
+mod cond;
 mod container;
 mod decl;
 mod expr;
