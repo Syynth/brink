@@ -63,15 +63,28 @@ transfer ⇒ control flow).
 
 ## 2. The block substrate
 
-**[REFACTOR]** Today the HIR has separate node families — `Conditional`,
-`Sequence`, `ChoiceSet`/`Choice`, `ThreadStart`, fn bodies, lambda bodies
-— each re-encoding "what happens here." They collapse onto a single
-`Block { stmts, tail }` carrying a **mode/effect descriptor**. The
-constructs become *configurations* of one node, not distinct kinds. B0.6
-declaration lowering and B0.7 body lowering (which produce the current
-per-construct nodes) are the code reshaped by this; their **behavioral
-tests survive** the reshape (they pin observable lowering, not node
-identity).
+**[REFACTOR — corrected by the 2026-07-20 scoping pass.]** One shared body
+IR **already exists**: `Block`/`Stmt` in `brink-ir` (`hir/types.rs`,
+documented as "the universal body type"), and both frontends already target
+it. The per-construct types (`Conditional`, `Sequence`, `ChoiceSet`/`Choice`,
+`ThreadStart`) are `Stmt` *variants inside* that shared `Block`, not separate
+body structures. So this slice does **not** introduce a shared type — it
+**evolves the existing `Block` in place**: add a `tail` field, add an effect
+signature, and carry the structural kind (`SequenceType`, `CondKind`, choice
+flags, `ChoiceSet.continuation`) as **side-data on `Block`**.
+
+Honest scope (the scoping correction): the structural control-flow kinds do
+**not** dissolve. They survive to LIR `ContainerKind` and drive codegen, so
+they must persist as data, not be erased into effects (§3a). **The
+unification is on the surface / tail / effect axes; the structural zoo is a
+separate axis, reduced only later** (north star #1213). No crate relocation
+— moving the ink-HIR into `brink-syntax` would invert a dependency edge into
+a cycle the codebase already rejected (`lower_native/mod.rs` judgment call
+#1); instead the ink-shaped `Stmt` variants become a `brink-ir`-private
+module that stops being the cross-frontend interface. **Oracle firewall:**
+codegen has zero `hir::` references, so freezing LIR `ContainerKind` output
+and proving byte-identity at 5,577 after every slice keeps the migration
+safe. B0.6/B0.7 lowering is reshaped; their **behavioral tests survive**.
 
 **[SUBSTRATE]** The **tail** taxonomy already has its pieces: a tail is
 `Value(expr)` | `Diverge(terminator)` | `Unit`. `Diverge` is the
@@ -100,13 +113,16 @@ to the one that exists. The rows this model needs:
 - **Suspend(rung)** — parks for resumption; see §4. **[REFACTOR]** await
   suspension is designed (`flow-suspension-spec` §3); choice/turn parks
   become the same effect at other rungs.
-- **Impure(sequence)** — **RULED (sitting):** the ink sequence /
-  alternative family (cycles, shuffles, once-only, `{a|b|c}`) is **an
-  effect** — it violates purity (stateful selection advances a hidden
-  cursor) but nothing else. It is not a separate block universe; it is an
-  ordinary block whose selection carries an impurity effect. **[REFACTOR]**
-  of how sequences are modeled (they exist as `Sequence` HIR today; they
-  become "a block with the sequence-impurity effect").
+- **Impure(sequence)** — **RULED (sitting), corrected by scoping:** the ink
+  sequence / alternative family (cycles, shuffles, once-only, `{a|b|c}`)
+  carries an **impurity effect** (stateful selection advances a hidden
+  cursor). But that effect is **additive annotation only** — the structural
+  `SequenceType` (which selection discipline) survives to LIR `ContainerKind`
+  and drives the cycle/shuffle/once bytecode, so it persists as **side-data
+  on `Block`**, *not* erased into the effect. "Sequence is just an effect"
+  was aspirational; the honest statement is "a block with a sequence
+  structural-kind **and** an impurity effect row." Full structural reduction
+  is the north star (§3a, #1213).
 - **World** — the existing pure/command/world-query binding effects.
   **[SUBSTRATE]**, reused unchanged.
 - **Pure** — the absence of all of the above. **[SUBSTRATE]** concept.
@@ -114,6 +130,37 @@ to the one that exists. The rows this model needs:
 Interpolation is not a distinct construct: it is a block whose tail is a
 `Value` and whose position is content — the checker stringifies-and-emits
 the value. That is the G-2 dissolution stated in effect terms.
+
+---
+
+## 3a. What this unifies — and what it deliberately does not
+
+Stated honestly, because the scoping pass showed the original framing
+("constructs collapse to configurations of one node") oversold it:
+
+- **Genuinely unified — the real wins:** the **surface** (a block is a block
+  everywhere; the "embedded in content" grammar class dissolves), the
+  **tail** taxonomy (value/diverge/unit — dissolves G-2), the **effect
+  signature** (a cross-cutting axis carrying content-as-effect, the coloring
+  rules, the type rules), and **value-returning flows / coroutines**. These
+  land regardless of the structural kinds and are what the model is *for*.
+- **Deliberately not unified — the structural control-flow kinds** (Sequence
+  vs Conditional vs Choice). These are genuinely *different machines* — a
+  visit-counted cursor, a predicate branch, an interactive-and-convergent
+  choice — and their distinctions survive to LIR `ContainerKind` and drive
+  codegen. Forcing them into one node would be a *false* unification (making
+  the HIR look tidy by lying about codegen). They persist as side-data on
+  `Block` for now.
+
+**North star (#1213), sequenced after these wins:** reduce the language to a
+**minimal set of completely orthogonal concepts** and derive the constructs
+from that basis. First candidates: fold `Conditional` + `Sequence` into one
+`Select { branches, discipline }` (`Choice` likely stays distinct — richer:
+interactive + convergent); and, on the machine side, whether LIR
+`ContainerKind` could collapse to a discipline-parameterized "select" (that
+overlaps #1212, oracle-affecting). This pass can only be done well *after*
+the concepts exist — orthogonalizing a basis you are still assembling is
+premature.
 
 ---
 
@@ -323,7 +370,7 @@ synchronous per §4 — coloring is unaffected.)
 | g | `!`-tail terminators + `ReturnKind` | SUBSTRATE | B0.2 |
 | h | Divert-target *values* + computed-divert opcodes | SUBSTRATE | the "record" half (§6) |
 | i | FrameShapes section + per-site liveness analysis | SUBSTRATE | FS-3c, already landed |
-| j | Per-construct HIR node families → one `Block { stmts, tail }` + mode | REFACTOR | reshapes B0.6/B0.7 lowering; behavioral tests survive |
+| j | Evolve the **existing** shared `Block` in place: add `tail` + structural-kind side-data + effect sig (the shared `Block` already exists — §2) | REFACTOR | no crate move; oracle-firewall at LIR `ContainerKind`; reshapes B0.6/B0.7, tests survive |
 | k | Brace disambiguation: parse-time heuristic → type-time effect decision | REFACTOR | dissolves G-2; parser stops guessing |
 | l | Effect system: add Emit/Transfer/Suspend/sequence-Impure rows | REFACTOR | extend, do not fork |
 | m | Value-return made explicit & typed; flows may declare return types | REFACTOR | the mechanism (d) is substrate |
@@ -331,7 +378,7 @@ synchronous per §4 — coloring is unaffected.)
 | o | Value-returning flows / coroutine-vs-state + return-type toggle | NEW | §5 |
 | p | Type rule: no lateral divert from a value-flow | NEW | §7.1 |
 | q | Type rule: no calling up the ladder (generalized coloring) | NEW | §7.2 |
-| r | Sequence-as-effect (impurity) modeling | NEW | RULED (sitting) |
+| r | Sequence impurity effect row (additive); structural `SequenceType` **persists** as side-data | NEW+REFACTOR | effect additive; structural kind NOT erased (§3a, #1213) |
 | s | Emit-effect inference for code-dialect blocks | NEW | prose emits today, untracked |
 | t | ANF hoisting pass (front-half of continuation-splitting) | NEW | §8 |
 | u | Mid-expression suspension surface + its ANF obligation | NEW | RULED (sitting); choice/value blocks |
@@ -362,6 +409,13 @@ when ready (not blocking this model):**
   roost."
 - **Post-landing runtime restructuring** → **#1212.** Explicitly *after*
   this model builds — the §10 REFACTOR rows are its scope surface.
+- **Minimal orthogonal core (north star)** → **#1213.** Reduce the language
+  to a minimal set of completely orthogonal concepts and derive the
+  constructs from that basis (§3a). First candidates: fold `Conditional` +
+  `Sequence` into one `Select { branches, discipline }`; collapse the LIR
+  `ContainerKind` machine kinds (overlaps #1212). Sequenced *after* the
+  surface/tail/effect/coroutine wins — orthogonalizing a basis still being
+  assembled is premature.
 
 **Open item still in this doc (v2, not blocking v1):**
 
