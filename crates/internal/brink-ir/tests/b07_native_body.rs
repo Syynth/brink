@@ -287,11 +287,21 @@ flow elsewhere() {
         })
         .expect("native ChoiceSet");
 
+    // The third choice is a FALLBACK on both sides, reached through different
+    // surfaces: ink's implicit-fallback idiom (`* -> x`, a choice with no
+    // display text that only diverts → is_fallback: true) corresponds to
+    // native's explicit `else { -> x }` (also is_fallback: true). Native does
+    // not overload bare `* -> x` as fallback — it uses `else`. The is_fallback
+    // assertion below guards this correspondence (#1176 review).
     assert_eq!(ink_cs.choices.len(), native_cs.choices.len());
     for (ink_c, native_c) in ink_cs.choices.iter().zip(native_cs.choices.iter()) {
         assert_eq!(
             ink_c.is_sticky, native_c.is_sticky,
             "sticky/once flag must match: ink={ink_c:?} native={native_c:?}"
+        );
+        assert_eq!(
+            ink_c.is_fallback, native_c.is_fallback,
+            "fallback flag must match: ink={ink_c:?} native={native_c:?}"
         );
     }
     // Both gathers are labeled "again" and attach directly to the
