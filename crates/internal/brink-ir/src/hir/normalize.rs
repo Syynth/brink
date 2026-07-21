@@ -139,6 +139,11 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 if trailing_eol {
                     b.stmts.push(Stmt::EndOfLine);
                 }
+                // `splice_around` (suffix) and the EndOfLine push can both
+                // change the trailing stmt, so the cloned branch's `tail` may
+                // be stale — recompute it (harmless today, load-bearing at the
+                // S3 cutover). This pass runs on cloned HIR right before LIR.
+                b.recompute_tail();
                 branches.push(b);
             }
 
@@ -158,6 +163,7 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 if trailing_eol {
                     exhausted.stmts.push(Stmt::EndOfLine);
                 }
+                exhausted.recompute_tail();
                 branches.push(exhausted);
                 // Replace `once` with `stopping` so the exhausted branch repeats.
                 (seq.kind & !SequenceType::ONCE) | SequenceType::STOPPING
@@ -180,6 +186,7 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 if trailing_eol {
                     body.stmts.push(Stmt::EndOfLine);
                 }
+                body.recompute_tail();
                 branches.push(CondBranch {
                     condition: branch.condition.clone(),
                     body,
@@ -198,6 +205,7 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 if trailing_eol {
                     else_body.stmts.push(Stmt::EndOfLine);
                 }
+                else_body.recompute_tail();
                 branches.push(CondBranch {
                     condition: None,
                     body: else_body,
@@ -476,6 +484,62 @@ mod tests {
     }
 
     // ─── Tests ──────────────────────────────────────────────────────
+
+    /// Regression (S1 review F1): an inline-conditional branch whose body is
+    /// a bare divert carries `tail == Diverge` at construction. The lift
+    /// prepends surrounding text and appends a trailing `EndOfLine`, so the
+    /// lifted branch no longer ends in a terminator — its `tail` must flip to
+    /// `Unit`. `normalize.rs` runs on cloned HIR right before LIR, so a stale
+    /// `tail` here is the closest one to the eventual consumer.
+    #[test]
+    fn lifted_conditional_branch_with_divert_recomputes_tail() {
+        let divert_body = mk_block(vec![Stmt::Divert(Divert {
+            ptr: None,
+            target: DivertTarget {
+                path: DivertPath::End,
+                args: Vec::new(),
+            },
+        })]);
+        assert!(
+            matches!(divert_body.tail, Tail::Diverge(_)),
+            "precondition: a bare-divert body has a Diverge tail"
+        );
+        let inline_cond = ContentPart::InlineConditional(Conditional {
+            ptr: dummy_ptr(),
+            kind: CondKind::InitialCondition,
+            branches: vec![CondBranch {
+                condition: Some(Expr::Bool(true)),
+                body: divert_body,
+                container_id: None,
+            }],
+        });
+        // Surrounding text forces the prefix/else-synthesis path; the trailing
+        // EndOfLine drives the trailing-eol append inside the lift.
+        let content = mk_content(vec![text("A "), inline_cond]);
+        let mut hir = mk_hir(vec![Stmt::Content(content), Stmt::EndOfLine]);
+
+        normalize_file(&mut hir);
+
+        let cond = hir
+            .root_content
+            .stmts
+            .iter()
+            .find_map(|s| match s {
+                Stmt::Conditional(c) => Some(c),
+                _ => None,
+            })
+            .expect("inline conditional lifted to a Conditional stmt");
+        // Every lifted branch body's tail must match its stmts — no stale
+        // Diverge left behind after the EndOfLine append.
+        for branch in &cond.branches {
+            assert_eq!(
+                branch.body.tail,
+                crate::tail_from_stmts(&branch.body.stmts),
+                "lifted branch tail must match its stmts (not stale): {:?}",
+                branch.body
+            );
+        }
+    }
 
     #[test]
     fn simple_sequence_lift() {
