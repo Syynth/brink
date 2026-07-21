@@ -74,6 +74,10 @@ pub(super) fn lower_choice_point(
                 {
                     if let Some(last) = choices.last_mut() {
                         last.body.stmts.push(Stmt::ThreadStart(ts));
+                        // The splice is now the choice body's final
+                        // statement (docs/block-effect-model.md §10 row j)
+                        // — re-derive `tail`.
+                        last.body.recompute_tail();
                     } else {
                         preamble.push(Stmt::ThreadStart(ts));
                     }
@@ -163,10 +167,14 @@ fn lower_choice(file_id: FileId, c: &ast::Choice, diags: &mut Vec<Diagnostic>) -
         // attaching here (a B0.5 grammar gap, not a B0.7 lowering drop —
         // flagged for the coordinator, not fixed in this slice).
         tags: Vec::new(),
-        body: Block {
-            label: None,
-            stmts,
-            container_id: None,
+        body: {
+            let tail = crate::tail_from_stmts(&stmts);
+            Block {
+                label: None,
+                stmts,
+                container_id: None,
+                tail,
+            }
         },
         container_id: None,
     }
@@ -196,10 +204,14 @@ fn lower_fallback_choice(
         bracket_content: None,
         inner_content: None,
         tags: Vec::new(),
-        body: Block {
-            label: None,
-            stmts,
-            container_id: None,
+        body: {
+            let tail = crate::tail_from_stmts(&stmts);
+            Block {
+                label: None,
+                stmts,
+                container_id: None,
+                tail,
+            }
         },
         container_id: None,
     }

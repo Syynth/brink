@@ -370,9 +370,8 @@ mod tests {
             kind,
             branches: branches
                 .into_iter()
-                .map(|parts| Block {
-                    label: None,
-                    stmts: if parts.is_empty() {
+                .map(|parts| {
+                    let stmts = if parts.is_empty() {
                         Vec::new()
                     } else {
                         vec![Stmt::Content(Content {
@@ -380,8 +379,14 @@ mod tests {
                             parts,
                             tags: Vec::new(),
                         })]
-                    },
-                    container_id: None,
+                    };
+                    let tail = crate::tail_from_stmts(&stmts);
+                    Block {
+                        label: None,
+                        stmts,
+                        container_id: None,
+                        tail,
+                    }
                 })
                 .collect(),
             container_id: None,
@@ -395,22 +400,27 @@ mod tests {
             kind: CondKind::InitialCondition,
             branches: branches
                 .into_iter()
-                .map(|(condition, parts)| CondBranch {
-                    condition,
-                    body: Block {
-                        label: None,
-                        stmts: if parts.is_empty() {
-                            Vec::new()
-                        } else {
-                            vec![Stmt::Content(Content {
-                                ptr: Some(ptr),
-                                parts,
-                                tags: Vec::new(),
-                            })]
+                .map(|(condition, parts)| {
+                    let stmts = if parts.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![Stmt::Content(Content {
+                            ptr: Some(ptr),
+                            parts,
+                            tags: Vec::new(),
+                        })]
+                    };
+                    let tail = crate::tail_from_stmts(&stmts);
+                    CondBranch {
+                        condition,
+                        body: Block {
+                            label: None,
+                            stmts,
+                            container_id: None,
+                            tail,
                         },
                         container_id: None,
-                    },
-                    container_id: None,
+                    }
                 })
                 .collect(),
         })
@@ -424,10 +434,12 @@ mod tests {
     }
 
     fn mk_block(stmts: Vec<Stmt>) -> Block {
+        let tail = crate::tail_from_stmts(&stmts);
         Block {
             label: None,
             stmts,
             container_id: None,
+            tail,
         }
     }
 

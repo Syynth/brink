@@ -259,10 +259,12 @@ pub fn lower_gather_to_block(
         stmts.push(Stmt::EndOfLine);
     }
 
+    let tail = crate::tail_from_stmts(&stmts);
     Block {
         label,
         stmts,
         container_id: None,
+        tail,
     }
 }
 

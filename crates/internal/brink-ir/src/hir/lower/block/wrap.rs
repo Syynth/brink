@@ -39,9 +39,11 @@ pub fn wrap_content_as_block(
     if stmts.is_empty() {
         return Block::default();
     }
+    let tail = crate::tail_from_stmts(&stmts);
     Block {
         label: None,
         stmts,
         container_id: None,
+        tail,
     }
 }

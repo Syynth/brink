@@ -150,10 +150,13 @@ fn lower_match_arm(
         // expression grammar reused, not a real pattern language"). No
         // block-level construct exists for "the value of one expression"
         // in the prose dialect, so this is the least-invented fit.
+        let stmts = vec![Stmt::ExprStmt(lower_expr(file_id, &expr_node, diags))];
+        let tail = crate::tail_from_stmts(&stmts);
         Block {
             label: None,
-            stmts: vec![Stmt::ExprStmt(lower_expr(file_id, &expr_node, diags))],
+            stmts,
             container_id: None,
+            tail,
         }
     } else {
         diags.push(diag(
@@ -176,17 +179,23 @@ fn lower_match_arm(
 fn lower_arm_items(file_id: FileId, arm_syntax: &SyntaxNode, diags: &mut Vec<Diagnostic>) -> Block {
     if let Some(block_node) = arm_syntax.children().find(|n| n.kind() == N::BLOCK) {
         let items: Vec<SyntaxNode> = block_node.children().collect();
+        let stmts = lower_items(file_id, &items, 0, diags);
+        let tail = crate::tail_from_stmts(&stmts);
         Block {
             label: None,
-            stmts: lower_items(file_id, &items, 0, diags),
+            stmts,
             container_id: None,
+            tail,
         }
     } else {
         let items: Vec<SyntaxNode> = arm_syntax.children().collect();
+        let stmts = lower_items(file_id, &items, 0, diags);
+        let tail = crate::tail_from_stmts(&stmts);
         Block {
             label: None,
-            stmts: lower_items(file_id, &items, 0, diags),
+            stmts,
             container_id: None,
+            tail,
         }
     }
 }
@@ -220,10 +229,12 @@ pub(super) fn lower_alternation(
                 if is_block_level {
                     stmts.insert(0, Stmt::EndOfLine);
                 }
+                let tail = crate::tail_from_stmts(&stmts);
                 Block {
                     label: None,
                     stmts,
                     container_id: None,
+                    tail,
                 }
             })
             .collect()
@@ -306,9 +317,11 @@ fn finish_inline_branch(
     if is_block_level {
         stmts.insert(0, Stmt::EndOfLine);
     }
+    let tail = crate::tail_from_stmts(&stmts);
     Block {
         label: None,
         stmts,
         container_id: None,
+        tail,
     }
 }

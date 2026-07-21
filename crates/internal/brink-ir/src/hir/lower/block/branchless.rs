@@ -99,6 +99,9 @@ fn move_trailing_into_choice_body(stmts: &mut Vec<Stmt>) {
             && let Some(choice) = cs.choices.last_mut()
         {
             choice.body.stmts.extend(trailing);
+            // The extend may have changed the choice body's final statement
+            // (docs/block-effect-model.md §10 row j) — re-derive `tail`.
+            choice.body.recompute_tail();
         }
     }
 }

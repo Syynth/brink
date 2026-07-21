@@ -56,10 +56,12 @@ impl BodyBackend for DirectBackend {
     }
 
     fn finish(self) -> crate::Block {
+        let tail = crate::tail_from_stmts(&self.stmts);
         crate::Block {
             label: None,
             stmts: self.stmts,
             container_id: None,
+            tail,
         }
     }
 }
