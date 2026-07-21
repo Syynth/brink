@@ -122,11 +122,16 @@ fn lower_choice(file_id: FileId, c: &ast::Choice, diags: &mut Vec<Diagnostic>) -
         diags,
     );
     // At most one region carries a divert in well-formed input (a choice
-    // line ends once it diverts); if more than one somehow does, the first
-    // in text order wins and later ones are simply not re-emitted (no
-    // diagnostic — a truly pathological shape the grammar itself makes
-    // very hard to produce, not worth a dedicated code for).
-    let divert = start_divert.or(bracket_divert).or(inner_divert);
+    // line ends once it diverts). If more than one somehow does, keep the
+    // first in text order and flag the rest with E129 — silently dropping a
+    // real divert is a bug (silent-drop rule), the same way a second divert
+    // *within* a region is flagged above, even for a shape the grammar makes
+    // hard to produce.
+    let region_diverts = [start_divert, bracket_divert, inner_divert];
+    if region_diverts.iter().filter(|d| d.is_some()).count() > 1 {
+        diags.push(diag(file_id, c.syntax().text_range(), DiagnosticCode::E129));
+    }
+    let divert = region_diverts.into_iter().flatten().next();
 
     let mut stmts = Vec::new();
     if let Some(d) = divert {
