@@ -1,7 +1,7 @@
 #![allow(clippy::panic)]
 
 use super::*;
-use crate::DiagnosticCode;
+use crate::{DiagnosticCode, Tail, Terminator};
 
 fn lower_src(src: &str) -> (HirFile, SymbolManifest, Vec<Diagnostic>) {
     let parse = brink_syntax_native::parse(src);
@@ -589,5 +589,70 @@ fn unrecognized_body_construct_is_diagnosed_not_dropped() {
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E129),
         "an unwired body-position construct must be diagnosed, not silently dropped: {diags:?}"
+    );
+}
+
+// ─── Block::tail (S1, docs/block-effect-model.md §10 row j) ────────
+//
+// Expand-phase groundwork only: `tail` is populated from `stmts`' final
+// statement but consumed by nothing yet — `stmts` stays authoritative.
+// These tests pin the native frontend's half of that population.
+
+#[test]
+fn block_ending_in_divert_has_diverge_tail() {
+    let (hir, _m, diags) = lower_src("flow b() {\n  Bye.\n}\nflow a() {\n  -> b\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let a_body = &hir.knots[1].body;
+    assert!(
+        matches!(a_body.tail(), Tail::Diverge(Terminator::Divert(_))),
+        "expected Diverge(Divert) tail, got {:?}",
+        a_body.tail()
+    );
+}
+
+#[test]
+fn block_ending_in_explicit_return_has_diverge_tail() {
+    let (hir, _m, diags) = lower_src("fn f() {\n  return\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = &hir.knots[0].body;
+    assert!(
+        matches!(body.tail(), Tail::Diverge(Terminator::Return(_))),
+        "expected Diverge(Return) tail, got {:?}",
+        body.tail()
+    );
+}
+
+#[test]
+fn plain_content_block_has_unit_tail() {
+    let (hir, _m, diags) = lower_src("flow greet(name) {\n  Hi, {name}!\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(*hir.knots[0].body.tail(), Tail::Unit);
+}
+
+#[test]
+fn splice_appended_after_a_choice_body_recomputes_tail() {
+    // The choice's own body ends in `-> b` (a genuine terminator, folded
+    // into the body preamble by `lower_choice`) before the trailing splice
+    // is spliced onto it in place by `lower_choice_point` — this must flip
+    // the choice body's tail from `Diverge` back to `Unit` since the splice
+    // (`ThreadStart`, never a terminator) becomes the new final statement.
+    let (hir, _m, diags) = lower_src(
+        "flow opts() {\n  X.\n}\nflow a() {\n  {?\n    * Y. -> a\n    <- opts()\n  }\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::ChoiceSet(cs) = &hir.knots[1].body.stmts[0] else {
+        panic!("expected ChoiceSet, got {:?}", hir.knots[1].body.stmts[0]);
+    };
+    let choice = &cs.choices[0];
+    assert!(
+        matches!(choice.body.stmts.last(), Some(Stmt::ThreadStart(_))),
+        "expected the splice to be spliced onto the choice body, got {:?}",
+        choice.body.stmts
+    );
+    assert_eq!(
+        *choice.body.tail(),
+        Tail::Unit,
+        "a trailing splice (non-terminator) must flip tail back to Unit, got {:?}",
+        choice.body.tail()
     );
 }

@@ -124,6 +124,9 @@ pub(super) fn lower_knot_body(
                 args: Vec::new(),
             },
         }));
+        // The synthesized divert is now the block's final statement
+        // (docs/block-effect-model.md §10 row j) — re-derive `tail`.
+        block.recompute_tail();
     }
 
     (block, stitches)

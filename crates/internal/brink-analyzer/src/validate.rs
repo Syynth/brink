@@ -365,16 +365,12 @@ mod tests {
             },
             is_function: false,
             params: Vec::new(),
-            body: Block {
-                label: None,
-                stmts: vec![Stmt::Return(Return {
-                    ptr: Some(dummy_return_ptr()),
-                    kind: ReturnKind::Explicit,
-                    value: None,
-                    onwards_args: Vec::new(),
-                })],
-                container_id: None,
-            },
+            body: Block::from_stmts(vec![Stmt::Return(Return {
+                ptr: Some(dummy_return_ptr()),
+                kind: ReturnKind::Explicit,
+                value: None,
+                onwards_args: Vec::new(),
+            })]),
             stitches: Vec::new(),
             is_local: false,
             effects_assertion: None,
@@ -401,16 +397,12 @@ mod tests {
             },
             is_function: true,
             params: Vec::new(),
-            body: Block {
-                label: None,
-                stmts: vec![Stmt::Return(Return {
-                    ptr: Some(dummy_return_ptr()),
-                    kind: ReturnKind::Explicit,
-                    value: Some(Expr::Int(42)),
-                    onwards_args: Vec::new(),
-                })],
-                container_id: None,
-            },
+            body: Block::from_stmts(vec![Stmt::Return(Return {
+                ptr: Some(dummy_return_ptr()),
+                kind: ReturnKind::Explicit,
+                value: Some(Expr::Int(42)),
+                onwards_args: Vec::new(),
+            })]),
             stitches: Vec::new(),
             is_local: false,
             effects_assertion: None,
@@ -439,16 +431,12 @@ mod tests {
             },
             is_function: false,
             params: Vec::new(),
-            body: Block {
-                label: None,
-                stmts: vec![Stmt::Return(Return {
-                    ptr: None,
-                    kind: ReturnKind::TunnelRedirect,
-                    value: None,
-                    onwards_args: Vec::new(),
-                })],
-                container_id: None,
-            },
+            body: Block::from_stmts(vec![Stmt::Return(Return {
+                ptr: None,
+                kind: ReturnKind::TunnelRedirect,
+                value: None,
+                onwards_args: Vec::new(),
+            })]),
             stitches: Vec::new(),
             is_local: false,
             effects_assertion: None,
@@ -481,16 +469,12 @@ mod tests {
             },
             is_function: false,
             params: Vec::new(),
-            body: Block {
-                label: None,
-                stmts: vec![Stmt::Return(Return {
-                    ptr: Some(dummy_return_ptr()),
-                    kind: ReturnKind::TunnelRedirect,
-                    value: None,
-                    onwards_args: Vec::new(),
-                })],
-                container_id: None,
-            },
+            body: Block::from_stmts(vec![Stmt::Return(Return {
+                ptr: Some(dummy_return_ptr()),
+                kind: ReturnKind::TunnelRedirect,
+                value: None,
+                onwards_args: Vec::new(),
+            })]),
             stitches: Vec::new(),
             is_local: false,
             effects_assertion: None,
@@ -521,16 +505,12 @@ mod tests {
             },
             is_function: false,
             params: Vec::new(),
-            body: Block {
-                label: None,
-                stmts: vec![Stmt::Return(Return {
-                    ptr: None,
-                    kind: ReturnKind::Explicit,
-                    value: None,
-                    onwards_args: Vec::new(),
-                })],
-                container_id: None,
-            },
+            body: Block::from_stmts(vec![Stmt::Return(Return {
+                ptr: None,
+                kind: ReturnKind::Explicit,
+                value: None,
+                onwards_args: Vec::new(),
+            })]),
             stitches: Vec::new(),
             is_local: false,
             effects_assertion: None,
@@ -559,24 +539,20 @@ mod tests {
             },
             is_function: false,
             params: Vec::new(),
-            body: Block {
-                label: None,
-                stmts: vec![
-                    Stmt::Divert(Divert {
-                        ptr: None,
-                        target: DivertTarget {
-                            path: DivertPath::Done,
-                            args: Vec::new(),
-                        },
-                    }),
-                    Stmt::Content(Content {
-                        ptr: Some(Provenance::synthetic(NodeClass::Content, dummy_range())),
-                        parts: vec![ContentPart::Text("unreachable".into())],
-                        tags: Vec::new(),
-                    }),
-                ],
-                container_id: None,
-            },
+            body: Block::from_stmts(vec![
+                Stmt::Divert(Divert {
+                    ptr: None,
+                    target: DivertTarget {
+                        path: DivertPath::Done,
+                        args: Vec::new(),
+                    },
+                }),
+                Stmt::Content(Content {
+                    ptr: Some(Provenance::synthetic(NodeClass::Content, dummy_range())),
+                    parts: vec![ContentPart::Text("unreachable".into())],
+                    tags: Vec::new(),
+                }),
+            ]),
             stitches: Vec::new(),
             is_local: false,
             effects_assertion: None,
@@ -606,20 +582,16 @@ mod tests {
             },
             is_function: false,
             params: Vec::new(),
-            body: Block {
-                label: None,
-                stmts: vec![
-                    Stmt::Divert(Divert {
-                        ptr: None,
-                        target: DivertTarget {
-                            path: DivertPath::Done,
-                            args: Vec::new(),
-                        },
-                    }),
-                    Stmt::EndOfLine,
-                ],
-                container_id: None,
-            },
+            body: Block::from_stmts(vec![
+                Stmt::Divert(Divert {
+                    ptr: None,
+                    target: DivertTarget {
+                        path: DivertPath::Done,
+                        args: Vec::new(),
+                    },
+                }),
+                Stmt::EndOfLine,
+            ]),
             stitches: Vec::new(),
             is_local: false,
             effects_assertion: None,
@@ -652,30 +624,26 @@ mod tests {
             },
             is_function: false,
             params: Vec::new(),
-            body: Block {
-                label: None,
-                stmts: vec![
-                    Stmt::ThreadStart(ThreadStart {
-                        ptr: Provenance::synthetic(NodeClass::ThreadStart, dummy_range()),
-                        target: DivertTarget {
-                            path: DivertPath::Path(Path {
-                                segments: vec![Name {
-                                    text: "other".into(),
-                                    range: dummy_range(),
-                                }],
+            body: Block::from_stmts(vec![
+                Stmt::ThreadStart(ThreadStart {
+                    ptr: Provenance::synthetic(NodeClass::ThreadStart, dummy_range()),
+                    target: DivertTarget {
+                        path: DivertPath::Path(Path {
+                            segments: vec![Name {
+                                text: "other".into(),
                                 range: dummy_range(),
-                            }),
-                            args: Vec::new(),
-                        },
-                    }),
-                    Stmt::Content(Content {
-                        ptr: Some(Provenance::synthetic(NodeClass::Content, dummy_range())),
-                        parts: vec![ContentPart::Text("still reachable".into())],
-                        tags: Vec::new(),
-                    }),
-                ],
-                container_id: None,
-            },
+                            }],
+                            range: dummy_range(),
+                        }),
+                        args: Vec::new(),
+                    },
+                }),
+                Stmt::Content(Content {
+                    ptr: Some(Provenance::synthetic(NodeClass::Content, dummy_range())),
+                    parts: vec![ContentPart::Text("still reachable".into())],
+                    tags: Vec::new(),
+                }),
+            ]),
             stitches: Vec::new(),
             is_local: false,
             effects_assertion: None,
@@ -710,30 +678,26 @@ mod tests {
             },
             is_function: false,
             params: Vec::new(),
-            body: Block {
-                label: None,
-                stmts: vec![
-                    Stmt::TunnelCall(TunnelCall {
-                        ptr: Provenance::synthetic(NodeClass::TunnelCall, dummy_range()),
-                        targets: vec![DivertTarget {
-                            path: DivertPath::Path(Path {
-                                segments: vec![Name {
-                                    text: "wave".into(),
-                                    range: dummy_range(),
-                                }],
+            body: Block::from_stmts(vec![
+                Stmt::TunnelCall(TunnelCall {
+                    ptr: Provenance::synthetic(NodeClass::TunnelCall, dummy_range()),
+                    targets: vec![DivertTarget {
+                        path: DivertPath::Path(Path {
+                            segments: vec![Name {
+                                text: "wave".into(),
                                 range: dummy_range(),
-                            }),
-                            args: Vec::new(),
-                        }],
-                    }),
-                    Stmt::Content(Content {
-                        ptr: Some(Provenance::synthetic(NodeClass::Content, dummy_range())),
-                        parts: vec![ContentPart::Text("and we're off".into())],
-                        tags: Vec::new(),
-                    }),
-                ],
-                container_id: None,
-            },
+                            }],
+                            range: dummy_range(),
+                        }),
+                        args: Vec::new(),
+                    }],
+                }),
+                Stmt::Content(Content {
+                    ptr: Some(Provenance::synthetic(NodeClass::Content, dummy_range())),
+                    parts: vec![ContentPart::Text("and we're off".into())],
+                    tags: Vec::new(),
+                }),
+            ]),
             stitches: Vec::new(),
             is_local: false,
             effects_assertion: None,
@@ -768,29 +732,25 @@ mod tests {
             },
             is_function: false,
             params: Vec::new(),
-            body: Block {
-                label: None,
-                stmts: vec![Stmt::ChoiceSet(Box::new(ChoiceSet {
-                    choices: vec![Choice {
-                        ptr: dummy_choice_ptr(),
-                        is_sticky: false,
-                        is_fallback: true,
-                        label: None,
-                        condition: None,
-                        start_content: None,
-                        bracket_content: None,
-                        inner_content: None,
-                        tags: Vec::new(),
-                        body: Block::default(),
-                        container_id: None,
-                    }],
-                    continuation: Block::default(),
-                    context: ChoiceSetContext::Weave,
-                    depth: 1,
-                    gather_id: None,
-                }))],
-                container_id: None,
-            },
+            body: Block::from_stmts(vec![Stmt::ChoiceSet(Box::new(ChoiceSet {
+                choices: vec![Choice {
+                    ptr: dummy_choice_ptr(),
+                    is_sticky: false,
+                    is_fallback: true,
+                    label: None,
+                    condition: None,
+                    start_content: None,
+                    bracket_content: None,
+                    inner_content: None,
+                    tags: Vec::new(),
+                    body: Block::default(),
+                    container_id: None,
+                }],
+                continuation: Block::default(),
+                context: ChoiceSetContext::Weave,
+                depth: 1,
+                gather_id: None,
+            }))]),
             stitches: Vec::new(),
             is_local: false,
             effects_assertion: None,
@@ -820,44 +780,40 @@ mod tests {
             },
             is_function: false,
             params: Vec::new(),
-            body: Block {
-                label: None,
-                stmts: vec![Stmt::ChoiceSet(Box::new(ChoiceSet {
-                    choices: vec![
-                        Choice {
-                            ptr: dummy_choice_ptr(),
-                            is_sticky: false,
-                            is_fallback: true,
-                            label: None,
-                            condition: None,
-                            start_content: None,
-                            bracket_content: None,
-                            inner_content: None,
-                            tags: Vec::new(),
-                            body: Block::default(),
-                            container_id: None,
-                        },
-                        Choice {
-                            ptr: dummy_choice_ptr(),
-                            is_sticky: false,
-                            is_fallback: false,
-                            label: None,
-                            condition: None,
-                            start_content: None,
-                            bracket_content: None,
-                            inner_content: None,
-                            tags: Vec::new(),
-                            body: Block::default(),
-                            container_id: None,
-                        },
-                    ],
-                    continuation: Block::default(),
-                    context: ChoiceSetContext::Weave,
-                    depth: 1,
-                    gather_id: None,
-                }))],
-                container_id: None,
-            },
+            body: Block::from_stmts(vec![Stmt::ChoiceSet(Box::new(ChoiceSet {
+                choices: vec![
+                    Choice {
+                        ptr: dummy_choice_ptr(),
+                        is_sticky: false,
+                        is_fallback: true,
+                        label: None,
+                        condition: None,
+                        start_content: None,
+                        bracket_content: None,
+                        inner_content: None,
+                        tags: Vec::new(),
+                        body: Block::default(),
+                        container_id: None,
+                    },
+                    Choice {
+                        ptr: dummy_choice_ptr(),
+                        is_sticky: false,
+                        is_fallback: false,
+                        label: None,
+                        condition: None,
+                        start_content: None,
+                        bracket_content: None,
+                        inner_content: None,
+                        tags: Vec::new(),
+                        body: Block::default(),
+                        container_id: None,
+                    },
+                ],
+                continuation: Block::default(),
+                context: ChoiceSetContext::Weave,
+                depth: 1,
+                gather_id: None,
+            }))]),
             stitches: Vec::new(),
             is_local: false,
             effects_assertion: None,

@@ -526,11 +526,7 @@ mod tests {
             file,
             params: Vec::new(),
             return_annotation: None,
-            body: Block {
-                label: None,
-                stmts: big_stmts,
-                container_id: None,
-            },
+            body: Block::from_stmts(big_stmts),
         };
 
         let small_size = def_body_heap_size(&Some(Arc::new(small)));

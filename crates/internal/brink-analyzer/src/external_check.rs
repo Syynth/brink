@@ -1528,11 +1528,7 @@ mod tests {
             range: rng(),
         };
         HirFile {
-            root_content: Block {
-                label: None,
-                stmts: vec![Stmt::ExprStmt(Expr::Call(path, args))],
-                container_id: None,
-            },
+            root_content: Block::from_stmts(vec![Stmt::ExprStmt(Expr::Call(path, args))]),
             knots: Vec::new(),
             variables: Vec::new(),
             constants: Vec::new(),

@@ -71,10 +71,13 @@ pub(super) fn lower_block(
     diags: &mut Vec<Diagnostic>,
 ) -> Block {
     let items: Vec<SyntaxNode> = block.items().collect();
+    let stmts = lower_items(file_id, &items, 0, diags);
+    let tail = crate::tail_from_stmts(&stmts);
     Block {
         label: None,
-        stmts: lower_items(file_id, &items, 0, diags),
+        stmts,
         container_id: None,
+        tail,
     }
 }
 
@@ -101,10 +104,12 @@ pub(super) fn lower_items(
         {
             let mut inner = lower_content_line_body(file_id, &cl, diags);
             inner.extend(lower_items(file_id, items, i + 1, diags));
+            let inner_tail = crate::tail_from_stmts(&inner);
             stmts.push(Stmt::LabeledBlock(Box::new(Block {
                 label: Some(label),
                 stmts: inner,
                 container_id: None,
+                tail: inner_tail,
             })));
             return stmts;
         }
@@ -141,16 +146,21 @@ fn lower_continuation(
     {
         let mut stmts = lower_content_line_body(file_id, &cl, diags);
         stmts.extend(lower_items(file_id, items, start + 1, diags));
+        let tail = crate::tail_from_stmts(&stmts);
         return Block {
             label: Some(label),
             stmts,
             container_id: None,
+            tail,
         };
     }
+    let stmts = lower_items(file_id, items, start, diags);
+    let tail = crate::tail_from_stmts(&stmts);
     Block {
         label: None,
-        stmts: lower_items(file_id, items, start, diags),
+        stmts,
         container_id: None,
+        tail,
     }
 }
 
@@ -315,10 +325,13 @@ pub(super) fn lower_content_run(
             N::CHOICE_POINT => {
                 flush_content(&mut parts, &mut tags, &mut out, None, false);
                 if let Some(cp) = ast::ChoicePoint::cast(node.clone()) {
+                    let stmts = lower_content_run(file_id, &items[i + 1..], line_prov, diags, true);
+                    let tail = crate::tail_from_stmts(&stmts);
                     let continuation = Block {
                         label: None,
-                        stmts: lower_content_run(file_id, &items[i + 1..], line_prov, diags, true),
+                        stmts,
                         container_id: None,
+                        tail,
                     };
                     out.extend(lower_choice_point(file_id, &cp, continuation, diags));
                 }

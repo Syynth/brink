@@ -342,6 +342,101 @@ pub struct Block {
     /// Pre-assigned container ID for blocks that become LIR containers
     /// (gather continuations, labeled blocks). Stamped by [`super::stamp_container_ids`].
     pub container_id: Option<brink_format::DefinitionId>,
+    /// The block's value/control-flow shape, derived from `stmts`' final
+    /// statement (docs/block-effect-model.md §2, §10 row j — S1 of the
+    /// block/effect migration). **Expand-phase groundwork only:** both
+    /// frontends populate this field, but `stmts` remains the sole source of
+    /// truth for every consumer (analyzer, HIR→LIR lowering, codegen) — `tail`
+    /// is redundant-but-correct data, not yet read by anything. A later
+    /// migrate/contract slice cuts consumers over and lets `stmts` stop
+    /// carrying the terminator. Use [`Block::tail`] to read it and
+    /// [`tail_from_stmts`]/[`Block::recompute_tail`] to (re)derive it.
+    pub tail: Tail,
+}
+
+impl Block {
+    /// Body block with no label/container, `tail` derived from `stmts`.
+    #[must_use]
+    pub fn from_stmts(stmts: Vec<Stmt>) -> Self {
+        let tail = tail_from_stmts(&stmts);
+        Self {
+            label: None,
+            stmts,
+            container_id: None,
+            tail,
+        }
+    }
+
+    /// The block's [`Tail`] — see the field doc for the migration status
+    /// (S1, docs/block-effect-model.md §10 row j: populated, unconsumed).
+    #[must_use]
+    pub fn tail(&self) -> &Tail {
+        &self.tail
+    }
+
+    /// Recompute `tail` from the current `stmts`. Frontends call this after
+    /// mutating an already-built block's `stmts` in place (e.g. appending a
+    /// synthesized divert, or splicing weave-fold content into a choice
+    /// body) so `tail` doesn't go stale relative to the new final statement.
+    pub fn recompute_tail(&mut self) {
+        self.tail = tail_from_stmts(&self.stmts);
+    }
+}
+
+/// The value or control-flow shape a [`Block`] resolves to (the "tail"
+/// taxonomy, docs/block-effect-model.md §2): a value-yielding expression, a
+/// terminator that diverts control away, or neither ("falls through").
+///
+/// S1 of the block/effect migration (docs/block-effect-model.md §10 row j):
+/// populated by both frontends from `stmts`' final statement, consumed by
+/// nothing yet — `stmts` stays authoritative until a later slice.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Tail {
+    /// A value-yielding tail (a block-as-expression, e.g. the eventual
+    /// interpolation/value-block case, docs/block-effect-model.md §3). Not
+    /// produced by any construct this slice populates — defined ahead of
+    /// its consumer per the model's tail taxonomy (§2).
+    Value(Expr),
+    /// A terminator: the block's last statement transfers control and
+    /// execution never falls through to whatever follows. Carries the same
+    /// terminator data already recorded on the final `Stmt` — not a
+    /// parallel representation (docs/block-effect-model.md §2).
+    Diverge(Terminator),
+    /// No terminating tail — execution falls through to whatever follows.
+    #[default]
+    Unit,
+}
+
+/// The terminator shapes a [`Tail::Diverge`] carries — the existing
+/// `Divert`/`Return` statement data (DONE/END ride `Divert`'s
+/// `DivertPath::Done`/`End`; explicit-return vs. tunnel-redirect ride
+/// `Return`'s `ReturnKind`), reused verbatim per
+/// docs/block-effect-model.md §2's "already exists" `!`-terminator note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Terminator {
+    /// `-> target`, `-> DONE`, `-> END`.
+    Divert(Divert),
+    /// `~ return expr` or bare `->->` (tunnel return) — see [`ReturnKind`].
+    Return(Return),
+}
+
+/// Compute the [`Tail`] a block with these statements should carry:
+/// `Tail::Diverge` when the last statement is a terminator (`Stmt::Divert`
+/// or `Stmt::Return`), `Tail::Unit` otherwise. `Stmt::TunnelCall` is
+/// deliberately not a terminator here — a tunnel call returns control to the
+/// statement after it once the tunnel pops, so a block ending in one still
+/// falls through (docs/block-effect-model.md §2).
+///
+/// Both frontends call this at construction time; call sites that mutate an
+/// already-built block's `stmts` afterward should call
+/// [`Block::recompute_tail`] instead of re-deriving this inline.
+#[must_use]
+pub fn tail_from_stmts(stmts: &[Stmt]) -> Tail {
+    match stmts.last() {
+        Some(Stmt::Divert(d)) => Tail::Diverge(Terminator::Divert(d.clone())),
+        Some(Stmt::Return(r)) => Tail::Diverge(Terminator::Return(r.clone())),
+        _ => Tail::Unit,
+    }
 }
 
 /// A single statement within a block.
