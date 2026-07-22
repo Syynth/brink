@@ -458,7 +458,9 @@ fn prefix_binds_tighter_than_infix() {
 //
 // #1193 is test-only: a genuine parser bug must be reported, not patched,
 // to avoid a parallel wave of agents forking the grammar (this crate's
-// own house rules). Found while writing the precedence-ladder tests above.
+// own house rules). Found while writing the precedence-ladder tests
+// above; tracked in its own issue, #1251, so it isn't only a comment on
+// a closed test-coverage issue.
 //
 // `expr::expression_bp`'s recursive call for an infix RHS is
 // `expression_bp(p, prec)` — using the JUST-CONSUMED operator's OWN
@@ -475,7 +477,7 @@ fn prefix_binds_tighter_than_infix() {
 // The standard Pratt fix is recursing with `min_bp = prec + 1` (or an
 // equivalent "only recurse on strictly higher precedence" comparison) —
 // not implemented here as that is a parser fix, out of this issue's scope.
-// TODO(bug, filed on #1193): `expr::expression_bp`'s infix loop is
+// TODO(bug, filed on #1251): `expr::expression_bp`'s infix loop is
 // right-associative for every symmetric operator; should be left-assoc.
 // These tests pin the CURRENT (wrong) shape so a future fix is a visible,
 // intentional snapshot change here rather than a silent behavior drift.
@@ -501,8 +503,8 @@ fn known_bug_minus_chain_is_right_associative_not_left() {
     assert_eq!(
         rhs.kind(),
         SyntaxKind::INFIX_EXPR,
-        "TODO(bug #1193 finding): `a - b - c` should parse left-associative \
-         as `(a - b) - c` (INFIX_EXPR on the LHS); it currently parses as \
+        "TODO(bug #1251): `a - b - c` should parse left-associative as \
+         `(a - b) - c` (INFIX_EXPR on the LHS); it currently parses as \
          `a - (b - c)` (INFIX_EXPR on the RHS) — see the section doc above"
     );
 }
@@ -519,7 +521,7 @@ fn known_bug_slash_chain_is_right_associative_not_left() {
     assert_eq!(
         rhs.kind(),
         SyntaxKind::INFIX_EXPR,
-        "TODO(bug #1193 finding): same right-associativity bug as `-`, see \
+        "TODO(bug #1251): same right-associativity bug as `-`, see \
          `known_bug_minus_chain_is_right_associative_not_left`"
     );
 }
@@ -1224,10 +1226,13 @@ fn adversarial_mixed_garbage_tokens_in_call_args() {
     assert!(!p.errors().is_empty());
 }
 
-// ── O. Proptest round-trip generator (local — #1199 owns the shared ──
-// ── `tests/proptest_native.rs` harness this wave; this generator is   ──
-// ── this family's own, per the issue's "put it in your own family    ──
-// ── file" instruction)                                                ──
+// ── O. Proptest round-trip generator (local to this family file — see  ──
+// ── the PR discussion: #1199's own scope is `fuzz_repro.rs`, a         ──
+// ── `.brink`-corpus round-trip test, and a new `fuzz/` crate, not      ──
+// ── `tests/proptest_native.rs`, so this generator stays local here     ──
+// ── rather than claiming ownership of the shared harness. Its keyword  ──
+// ── filter reuses the crate's real classifier so it can never drift    ──
+// ── from `classify_keyword`'s actual keyword set again.)               ──
 
 mod proptest_roundtrip {
     use super::*;
@@ -1235,7 +1240,7 @@ mod proptest_roundtrip {
 
     fn arb_ident() -> impl Strategy<Value = String> {
         "[a-z][a-z0-9]{0,5}".prop_filter("not a keyword", |s| {
-            !matches!(s.as_str(), "true" | "false" | "var" | "const")
+            crate::lexer::classify_keyword(s) == SyntaxKind::IDENT
         })
     }
 
