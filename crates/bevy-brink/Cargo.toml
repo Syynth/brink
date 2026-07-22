@@ -92,6 +92,9 @@ brink-ir = { path = "../internal/brink-ir" }
 # serde_json is a regular dependency now (handle.rs's SaveKey erasure); the
 # `book_saves` example also round-trips a composed save map through it to
 # prove `SaveState` really is Serialize/Deserialize end to end.
+# `benches/batch_call.rs` (#1058) times the engine→ink batch entry point
+# (call_ink_functions) against a loop of single call_ink_function calls.
+divan.workspace = true
 
 [[example]]
 name = "play_story"
@@ -131,6 +134,15 @@ name = "async_external"
 # `tests/scenario_bench_model.rs` instead (includes the same source).
 [[bench]]
 name = "scenario_bench"
+harness = false
+test = false
+
+# Engine→ink batch entry point (#1058, BH-5): times call_ink_functions
+# (one VM-eval setup for N calls) against a loop of single call_ink_function
+# calls (N setups), reporting the amortized µs/call. `harness = false` — divan
+# provides its own `main`. `test = false` — `cargo test` must not run it.
+[[bench]]
+name = "batch_call"
 harness = false
 test = false
 
