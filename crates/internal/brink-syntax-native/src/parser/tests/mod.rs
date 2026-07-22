@@ -33,6 +33,17 @@ fn has_node_kind(root: &SyntaxNode, kind: SyntaxKind) -> bool {
     root.descendants().any(|node| node.kind() == kind)
 }
 
+/// Token-level counterpart to `has_node_kind` — `descendants()` yields only
+/// nodes, so a check for a token kind (e.g. `ERROR_TOKEN`, which
+/// `SyntaxKind::is_token()` lists and is therefore never wrapped in a
+/// `start_node` call) must walk `descendants_with_tokens()` instead, or the
+/// assertion can never fail regardless of what the parser actually emitted.
+fn has_token_kind(root: &SyntaxNode, kind: SyntaxKind) -> bool {
+    root.descendants_with_tokens()
+        .filter_map(rowan::NodeOrToken::into_token)
+        .any(|token| token.kind() == kind)
+}
+
 fn count_node_kind(root: &SyntaxNode, kind: SyntaxKind) -> usize {
     root.descendants()
         .filter(|node| node.kind() == kind)
