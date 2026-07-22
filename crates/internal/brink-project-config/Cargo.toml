@@ -12,7 +12,6 @@ readme.workspace = true
 # standalone, so that publish is now unblocked; flip this off once done.
 keywords.workspace = true
 categories.workspace = true
-publish = false
 
 # Unpublished (decision 2026-07-22). This crate blocked ALL crate releases from
 # 2026-07-19: `cargo publish` verifies a crate by building its packaged tarball
