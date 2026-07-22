@@ -1779,7 +1779,7 @@ fn resolve_analysis_options(entry: &Path) -> Result<brink_analyzer::AnalysisOpti
                 loaded.path.display()
             );
         }
-        brink_project_config::apply_to_options(&mut options, &loaded.config, false, false);
+        options.apply_project_config(&loaded.config, false, false);
     }
     Ok(options)
 }

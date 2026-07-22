@@ -80,21 +80,15 @@ use rowan::TextRange;
 use crate::annotations;
 use crate::infer::{InferenceResult, InferredSig, Ty};
 
-/// `types` project policy (docs/typed-mode-spec.md §1). `Gradual` is the
-/// pre-flip behavior — `Unknown` unifies with anything, annotations are
-/// optional seasoning, and none of this module's checks run. `Strict`
-/// requires `dialect = brink` and turns on [`config_error`]/[`check`].
-///
-/// The *default* is dialect-keyed since the 2026-07-19 "Typing posture
-/// ruled" decision (issue #1127) — see [`resolve_type_policy`]. The derived
-/// `Default` (`Gradual`) exists only so pre-resolution containers can derive
-/// theirs; policy defaulting must never read it directly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TypePolicy {
-    #[default]
-    Gradual,
-    Strict,
-}
+// `TypePolicy` is defined in `brink-project-config` alongside `Dialect` —
+// both are project-policy types the analyzer consumes rather than owns, and
+// keeping them there is what lets that crate publish standalone (#1234).
+// Re-exported so every existing `brink_analyzer::TypePolicy` path is
+// unchanged. The *default* remains dialect-keyed via `resolve_type_policy`
+// below (issue #1127); the derived `Default` (`Gradual`) exists only so
+// pre-resolution containers can derive theirs and must never be read as the
+// policy default.
+pub use brink_project_config::TypePolicy;
 
 /// THE `types`-default resolution function (issue #1127, decision-log
 /// 2026-07-19 "Typing posture ruled"). An explicit `types = …` — a CLI

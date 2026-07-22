@@ -336,12 +336,7 @@ fn resolve_analysis_options(
         for warning in &loaded.warnings {
             tracing::warn!("[{}] {warning}", loaded.path.display());
         }
-        brink_project_config::apply_to_options(
-            &mut options,
-            &loaded.config,
-            dialect.is_some(),
-            types.is_some(),
-        );
+        options.apply_project_config(&loaded.config, dialect.is_some(), types.is_some());
     }
     if let Some(dialect) = dialect {
         options.dialect = dialect;
