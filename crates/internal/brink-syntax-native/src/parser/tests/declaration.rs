@@ -690,6 +690,19 @@ fn unexpected_token_in_param_list_recovers() {
     // (its `IDENT` expectation fails immediately), so the outer loop's
     // `error_recover` wraps the comma itself in an `ERROR` node and the
     // list still closes on `)`.
+    //
+    // But `param` calls `p.start_node(PARAM)` *before* checking `IDENT`
+    // (unlike `flags_member`/`struct_field`, which return before
+    // `start_node` on a bad lookahead) — so the zero-progress attempt
+    // still leaves behind a real, zero-width, nameless `PARAM` sibling
+    // ahead of the well-formed one and the `ERROR`-wrapped comma. That
+    // reaches the typed AST as a nameless `Param` `hir::lower_native`
+    // would iterate over; filtering it out of `params()` here (as a prior
+    // version of this test did) would hide the artifact instead of
+    // asserting it, so both params — and their exact text — are asserted
+    // explicitly below. #1192 gap: same class as
+    // `use_tree_list_unexpected_token_recovers`'s empty-`USE_TREE`
+    // artifact.
     let src = "flow f(, a) {\n}\n";
     let p = assert_lossless(src);
     assert!(
@@ -700,16 +713,35 @@ fn unexpected_token_in_param_list_recovers() {
         p.errors()
     );
     let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl still recovers");
-    let params: Vec<_> = flow
-        .param_list()
-        .expect("param list")
-        .params()
-        .filter(|p| p.name_token().is_some())
-        .collect();
+    let params: Vec<_> = flow.param_list().expect("param list").params().collect();
     assert_eq!(
         params.len(),
-        1,
-        "the well-formed param after the garbage comma still parses"
+        2,
+        "the zero-width nameless PARAM left by the garbage comma is a real \
+         sibling of the well-formed param, not absorbed by it: {:?}",
+        params
+            .iter()
+            .map(|p| p.syntax().text().to_string())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        params[0].name_token().is_none(),
+        "the garbage comma produced a nameless PARAM"
+    );
+    assert_eq!(
+        params[1]
+            .name_token()
+            .expect("second param has a name")
+            .text(),
+        "a"
+    );
+    assert_eq!(
+        params
+            .iter()
+            .map(|p| p.syntax().text().to_string())
+            .collect::<Vec<_>>(),
+        vec![String::new(), " a".to_string()],
+        "the nameless PARAM is zero-width; the well-formed one still carries its leading space"
     );
 }
 
@@ -868,6 +900,18 @@ fn use_tree_list_unexpected_token_recovers() {
     // token is wrapped in its own `ERROR` node by `use_tree_list`'s
     // zero-progress `error_recover`, and the well-formed `b` after them
     // still parses as a real `USE_TREE`.
+    //
+    // But `use_tree` calls `p.start_node(USE_TREE)` before checking
+    // whether anything path-shaped follows, so each garbage token also
+    // leaves behind an empty `USE_TREE` sibling — the nested group ends up
+    // with 3 `USE_TREE` children (2 empty + `b`), for 4 total in the whole
+    // decl once the outer `a::{...}` tree is counted. A `flat_map` straight
+    // to path segments (as a prior version of this test did) would hide
+    // that shape instead of asserting it — filtered results are `["b"]`
+    // either way, so the test couldn't fail if the extra empty nodes
+    // vanished OR multiplied. Asserted explicitly below. #1192 gap: same
+    // class as `unexpected_token_in_param_list_recovers`'s nameless
+    // `PARAM` artifact.
     let src = "use a::{1, b};\n";
     let p = assert_lossless(src);
     assert!(
@@ -875,14 +919,25 @@ fn use_tree_list_unexpected_token_recovers() {
         "expected at least 2 recovery errors, got: {:?}",
         p.errors()
     );
+    assert_eq!(
+        count_node_kind(&p.syntax(), SyntaxKind::USE_TREE),
+        4,
+        "outer a::{{...}} tree + 2 empty garbage-token artifacts + the real `b`"
+    );
     let decl: ast::UseDecl = find_child(&p.syntax()).expect("use decl still recovers");
     let group = decl
         .tree()
         .expect("use tree")
         .nested_list()
         .expect("nested group");
-    let names: Vec<_> = group
-        .trees()
+    let members: Vec<_> = group.trees().collect();
+    assert_eq!(
+        members.len(),
+        3,
+        "2 empty USE_TREE artifacts from the garbage `1` and `,`, plus the real `b`"
+    );
+    let names: Vec<_> = members
+        .iter()
         .flat_map(|t| {
             t.path_segments()
                 .map(|tok| tok.text().to_string())
@@ -951,17 +1006,32 @@ fn module_without_brace_shape_is_prose_not_a_decl() {
 }
 
 #[test]
-fn module_decl_missing_brace_body_recovers() {
-    // `module name` with no `{` at all — `module_decl` falls to its
-    // explicit `else` branch and records an error instead of a body, but
-    // is guarded by `at_module_decl` (which requires `L_BRACE` at position
-    // 2), so this can only be reached if a body vanishes mid-stream
-    // (unterminated input); confirmed here on a truncated file.
+fn module_decl_missing_closing_brace_recovers_via_block_eof() {
+    // NOT `module_decl`'s own `else` branch (that name was wrong — no
+    // brace is "missing" here, the CLOSING one is): `at_module_decl`
+    // requires `L_BRACE` at position 2 before `module_decl` is ever
+    // called, so by the time we're inside it the opening `{` is always
+    // already there. That makes `module_decl`'s own
+    // "expected a braced body after the module header" `else` arm
+    // unreachable dead code (same class of reachability observation as
+    // the inline note on `extern_decl_bare_name_with_no_parens_is_prose_not_a_decl`
+    // above, and reported as a #1192 gap alongside it) — confirmed by
+    // `module_without_brace_shape_is_prose_not_a_decl` just below, which
+    // shows a bodyless `module` header falls through to prose instead of
+    // ever reaching `module_decl` at all.
+    //
+    // What this test actually documents: an unterminated body.
+    // `super::block::block(p)` opens its `BLOCK` node, the item loop runs
+    // out of input before finding `R_BRACE`, and `p.expect(R_BRACE)`
+    // records exactly one error — "expected R_BRACE, found EOF" — then
+    // the `BLOCK` node still closes best-effort so `module_decl` still
+    // finishes.
     let src = "module inner {\n  var x = 1\n";
     let p = assert_lossless(src);
+    assert_eq!(p.errors().len(), 1, "errors: {:?}", p.errors());
     assert!(
-        !p.errors().is_empty(),
-        "expected recovery errors: {:?}",
+        p.errors()[0].message.contains("R_BRACE") && p.errors()[0].message.contains("EOF"),
+        "expected the block's missing-R_BRACE-at-EOF error, got: {:?}",
         p.errors()
     );
     let decl: ast::ModuleDecl = find_child(&p.syntax()).expect("module decl still recovers");
@@ -1030,6 +1100,21 @@ mod prop {
     fn arb_param() -> impl Strategy<Value = String> {
         (prop::bool::ANY, arb_ident())
             .prop_map(|(is_ref, name)| if is_ref { format!("ref {name}") } else { name })
+    }
+
+    // `flow`/`fn`/`PARAM_LIST` are the first node kinds #1192 names — the
+    // generators above (const/flags/struct/extern/import/use/module)
+    // omitted them entirely. `arb_param` already covers the shared
+    // `PARAM_LIST`/`PARAM` shape; these two round it out with the
+    // declaration headers that actually own a param list and a body.
+    fn arb_flow_decl() -> impl Strategy<Value = String> {
+        (arb_ident(), prop::collection::vec(arb_param(), 0..=4))
+            .prop_map(|(name, params)| format!("flow {name}({}) {{\n}}\n", params.join(", ")))
+    }
+
+    fn arb_fn_decl() -> impl Strategy<Value = String> {
+        (arb_ident(), prop::collection::vec(arb_param(), 0..=4))
+            .prop_map(|(name, params)| format!("fn {name}({}) {{\n}}\n", params.join(", ")))
     }
 
     fn arb_extern_decl() -> impl Strategy<Value = String> {
@@ -1130,6 +1215,28 @@ mod prop {
         }
 
         #[test]
+        fn flow_decl_roundtrip(input in arb_flow_decl()) {
+            prop_assert!(parse_ok_roundtrip(&input));
+        }
+
+        #[test]
+        fn flow_decl_no_errors(input in arb_flow_decl()) {
+            let parsed = crate::parse(&input);
+            prop_assert!(parsed.errors().is_empty(), "input: {input:?} errors: {:?}", parsed.errors());
+        }
+
+        #[test]
+        fn fn_decl_roundtrip(input in arb_fn_decl()) {
+            prop_assert!(parse_ok_roundtrip(&input));
+        }
+
+        #[test]
+        fn fn_decl_no_errors(input in arb_fn_decl()) {
+            let parsed = crate::parse(&input);
+            prop_assert!(parsed.errors().is_empty(), "input: {input:?} errors: {:?}", parsed.errors());
+        }
+
+        #[test]
         fn extern_decl_roundtrip(input in arb_extern_decl()) {
             prop_assert!(parse_ok_roundtrip(&input));
         }
@@ -1168,6 +1275,13 @@ mod prop {
         }
 
         // ── Adversarial: truncated declarations never panic, stay lossless ─
+
+        #[test]
+        fn truncated_flow_decl_never_panics(input in arb_flow_decl(), cut in 0u32..100) {
+            let mutated = truncated(&input, cut);
+            let parsed = crate::parse(&mutated);
+            prop_assert_eq!(parsed.syntax().text().to_string(), mutated);
+        }
 
         #[test]
         fn truncated_struct_decl_never_panics(input in arb_struct_decl(), cut in 0u32..100) {
