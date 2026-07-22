@@ -9,6 +9,11 @@
 //! multiline-dash-`ENTRY` forms) is a deliberate divergence documented on
 //! `CONDITIONAL_BLOCK` in `syntax_kind.rs` (Finding #4, flagged for
 //! Track-B confirmation).
+//!
+//! Two genuine parser gaps surfaced while writing this coverage (same-line
+//! colon-form `else:` swallowed silently; no flat `else if` chain sugar)
+//! are pinned as current behavior below and tracked for a real fix in
+//! #1254, not in this now-closed issue.
 
 use super::*;
 
@@ -95,10 +100,11 @@ fn colon_form_else_on_the_same_line_is_not_recognized_as_an_else_arm() {
     // bug is specifically "on the identical physical line as trailing
     // if-body content", not "colon-form else in general".
     //
-    // Reported on #1197 (scope overflow). TODO: update this assertion if
-    // `colon_body` is later taught to recognize `else` as a boundary
-    // mid-line (would need `content_items_until` or `colon_body` itself
-    // to special-case `KW_ELSE` the way it already special-cases `HASH`).
+    // Reported on #1254 (follow-up; scope overflow from #1197). TODO:
+    // update this assertion if `colon_body` is later taught to recognize
+    // `else` as a boundary mid-line (would need `content_items_until` or
+    // `colon_body` itself to special-case `KW_ELSE` the way it already
+    // special-cases `HASH`).
     let src = "flow garden() {\n  {if hp > 0: You live. else: You die.}\n}\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
@@ -109,7 +115,7 @@ fn colon_form_else_on_the_same_line_is_not_recognized_as_an_else_arm() {
         .expect("CONDITIONAL_BLOCK");
     assert!(
         cond.else_arm().is_none(),
-        "TODO(#1197 follow-up): no ELSE_BRANCH is produced today; `else: You die.` \
+        "TODO(#1254 follow-up): no ELSE_BRANCH is produced today; `else: You die.` \
          is swallowed into the if-arm's TEXT instead — update this assertion once fixed"
     );
     // The swallowed "else: You die." literally appears as visible prose
@@ -218,9 +224,23 @@ fn conditional_arms_may_independently_choose_colon_or_brace_form() {
 
 #[test]
 fn conditional_arms_mixed_form_other_direction() {
+    // Mirror of `conditional_arms_may_independently_choose_colon_or_brace_form`
+    // above, with the forms swapped: braced `if` arm, colon-form `else`.
+    // Pins the actual shape, not just "no error" — this would still pass
+    // if the braced-if/colon-else combination stopped producing an
+    // ELSE_BRANCH.
     let src = "flow garden() {\n  {if hp > 0 { You live. } else: You die.}\n}\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let cond: ast::ConditionalBlock = p
+        .syntax()
+        .descendants()
+        .find_map(ast::ConditionalBlock::cast)
+        .expect("CONDITIONAL_BLOCK");
+    assert!(cond.if_arm().expect("IF_ARM").block().is_some());
+    let else_arm = cond.else_arm().expect("ELSE_BRANCH");
+    assert!(else_arm.block().is_none());
+    assert!(else_arm.items().next().is_some());
 }
 
 #[test]
@@ -282,15 +302,15 @@ fn else_if_flat_chain_is_not_recognized_as_a_chain() {
     // literal `else` token (error), unwinds, and the rest
     // (`else if b { B } else { C }`) falls through to the enclosing
     // block's ordinary body-line dispatch as prose/interpolation debris.
-    // Reported on #1197 (scope overflow) rather than fixed here — fixing
-    // it means either teaching `at_else_arm` to recognize `else if` as a
-    // third arm-opener shape or auto-wrapping, either of which is a real
-    // grammar change, not test coverage.
+    // Reported on #1254 (follow-up; scope overflow from #1197) rather than
+    // fixed here — fixing it means either teaching `at_else_arm` to
+    // recognize `else if` as a third arm-opener shape or auto-wrapping,
+    // either of which is a real grammar change, not test coverage.
     let src = "flow garden() {\n  {if a { A } else if b { B } else { C }}\n}\n";
     let p = assert_lossless(src);
     assert!(
         !p.errors().is_empty(),
-        "TODO(#1197 follow-up): flat `else if` currently fails to chain; \
+        "TODO(#1254 follow-up): flat `else if` currently fails to chain; \
          update this assertion if/when `at_else_arm` gains `else if` support"
     );
     // The malformed tail never becomes a second CONDITIONAL_BLOCK arm —
@@ -477,10 +497,45 @@ fn alternation_inline_empty_alternatives_between_pipes() {
 #[test]
 fn alternation_inline_trailing_tag() {
     // `inline_alternatives` special-cases `HASH` explicitly so a trailing
-    // tag doesn't spin the loop (family.rs comment on the `HASH` arm).
+    // tag doesn't spin the loop (family.rs comment on the `HASH` arm) —
+    // the tag must land INSIDE the ALTERNATION_BLOCK for this to actually
+    // exercise that arm (a tag after the closing `}` is a sibling
+    // TAG_LINE and never reaches `inline_alternatives` at all).
+    let src = "flow f() {\n  {~a|b #tag}\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let alt: ast::AlternationBlock = p
+        .syntax()
+        .descendants()
+        .find_map(ast::AlternationBlock::cast)
+        .expect("ALTERNATION_BLOCK");
+    assert!(
+        alt.syntax()
+            .descendants()
+            .any(|n| n.kind() == SyntaxKind::TAG),
+        "trailing #tag must be a child of the ALTERNATION_BLOCK"
+    );
+}
+
+#[test]
+fn alternation_inline_trailing_tag_outside_the_brace_is_not_inside_the_block() {
+    // Companion to the above: a tag AFTER the closing `}` is ordinary
+    // trailing-tag syntax on the enclosing line, not something
+    // `inline_alternatives`' HASH special case ever sees.
     let src = "flow f() {\n  {~a|b} #tag\n}\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let alt: ast::AlternationBlock = p
+        .syntax()
+        .descendants()
+        .find_map(ast::AlternationBlock::cast)
+        .expect("ALTERNATION_BLOCK");
+    assert!(
+        !alt.syntax()
+            .descendants()
+            .any(|n| n.kind() == SyntaxKind::TAG),
+        "the outside-the-brace tag must NOT be a child of the ALTERNATION_BLOCK"
+    );
 }
 
 // ── Section F: ALTERNATION_MARKER — multiline dash-ENTRY form ─────────
@@ -714,12 +769,12 @@ fn empty_inline_alternation_currently_accepted_without_error() {
     // grammar's `inline_alternatives` loop breaks immediately on `R_BRACE`
     // with zero iterations and records no error — an `ALTERNATION_BLOCK`
     // with only a marker child, no alternatives, is currently accepted.
-    // Not fixed here (test-only issue); reported on #1197.
+    // Not fixed here (test-only issue); noted (not filed as a gap) in #1254.
     let src = "flow f() {\n  {~}\n}\n";
     let p = assert_lossless(src);
     assert!(
         p.errors().is_empty(),
-        "TODO(#1197 follow-up): update if empty-alternation validation is added; errors: {:?}",
+        "TODO(#1254 follow-up): update if empty-alternation validation is added; errors: {:?}",
         p.errors()
     );
     let alt: ast::AlternationBlock = p
@@ -738,9 +793,15 @@ fn empty_multiline_alternation_currently_accepted_without_error() {
     let p = assert_lossless(src);
     assert!(
         p.errors().is_empty(),
-        "TODO(#1197 follow-up): update if empty-alternation validation is added; errors: {:?}",
+        "TODO(#1254 follow-up): update if empty-alternation validation is added; errors: {:?}",
         p.errors()
     );
+    let alt: ast::AlternationBlock = p
+        .syntax()
+        .descendants()
+        .find_map(ast::AlternationBlock::cast)
+        .expect("ALTERNATION_BLOCK");
+    assert_eq!(alt.entries().count(), 0);
 }
 
 // ── Section I: adversarial inputs targeting family.rs's dispatch ──────
