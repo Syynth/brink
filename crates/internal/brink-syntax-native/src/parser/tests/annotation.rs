@@ -361,19 +361,32 @@ fn annotation_line_excess_closers_recovers_without_panic() {
 fn lone_at_outside_bracket_is_plain_text_not_error_token() {
     // NOTE: `docs/directive-annotations-spec.md` §5b is explicit that "a
     // lone `@` in prose stays plain text", and that is exactly what this
-    // asserts. This directly contradicts the doc comment on
-    // `SyntaxKind::AT` in `syntax_kind.rs` ("is emitted as `ERROR_TOKEN`")
-    // — that comment is stale (the lexer's own `lex_punctuation` doc
-    // comment already says the opposite: "a lone `@` is `AT`... not
-    // otherwise meaningful punctuation"). This is a documentation nit, not
-    // a parser bug: the actual behavior matches the spec, so nothing here
-    // needs `#[ignore]` — only the `AT` doc comment (out of this file's
-    // scope) is wrong. Filed as a scope note on #1198.
+    // asserts. The doc comment on `SyntaxKind::AT` in `syntax_kind.rs`
+    // (fixed in this same wave) previously claimed a lone `@` "is emitted
+    // as `ERROR_TOKEN`" — stale, contradicting `lex_punctuation`'s own doc
+    // comment ("a lone `@` is `AT`... not otherwise meaningful
+    // punctuation"). Actual behavior matches the spec.
+    //
+    // `has_node_kind` only walks `descendants()`, which yields nodes —
+    // `ERROR_TOKEN` is a token kind (`SyntaxKind::is_token()`), so a node-
+    // level absence check can never fail regardless of what the parser
+    // emits. Use `has_token_kind` (`descendants_with_tokens()`) instead,
+    // and positively assert the `AT` token itself is present with the
+    // expected text — the absence check alone can't tell "no ERROR_TOKEN
+    // because it's an AT token" from "no ERROR_TOKEN because nothing was
+    // lexed at all".
     let src = "@name\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::ANNOTATION_LINE));
-    assert!(!has_node_kind(&p.syntax(), SyntaxKind::ERROR_TOKEN));
+    assert!(!has_token_kind(&p.syntax(), SyntaxKind::ERROR_TOKEN));
+    let at_token = p
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(rowan::NodeOrToken::into_token)
+        .find(|t| t.kind() == SyntaxKind::AT)
+        .expect("AT token");
+    assert_eq!(at_token.text(), "@");
     assert_eq!(text_run_concat(&p.syntax()), "@name");
 }
 
@@ -383,7 +396,98 @@ fn lone_at_inside_flow_body_is_plain_text() {
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::ANNOTATION_LINE));
+    assert!(!has_token_kind(&p.syntax(), SyntaxKind::ERROR_TOKEN));
+    let at_token = p
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(rowan::NodeOrToken::into_token)
+        .find(|t| t.kind() == SyntaxKind::AT)
+        .expect("AT token");
+    assert_eq!(at_token.text(), "@");
     assert!(text_run_concat(&p.syntax()).contains("@oops"));
+}
+
+/// `annotation_line` is reached only via `block::body_line`
+/// (`parser/block.rs:161`), which serves both file scope and block bodies
+/// — but every `@[…]` case above this point in the file is at file scope.
+/// This is the family's only clean-parse, structurally-walked case in the
+/// position annotations are actually meant to be used: inside a `flow`
+/// body, immediately before a statement (spec §5b / `lexer/tests.rs:294`'s
+/// shape).
+#[test]
+fn annotation_line_in_block_body_before_divert() {
+    // Uses §5b's own canonical fixture (same order as
+    // `annotation_arg_spec_effects_fixture` above), placed at the position
+    // annotations are actually meant to be used: inside a flow body.
+    let src = "flow f() {\n  @[effects(reads(gold, hp), pure)]\n  -> END\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+
+    let flow = find_child::<crate::ast::FlowDecl>(&p.syntax()).expect("FlowDecl");
+    let body = flow.body().expect("flow body BLOCK");
+    let items: Vec<_> = body.items().collect();
+    let annotation_idx = items
+        .iter()
+        .position(|n| n.kind() == SyntaxKind::ANNOTATION_LINE)
+        .expect("ANNOTATION_LINE is a direct child of the block");
+    let divert_idx = items
+        .iter()
+        .position(|n| n.kind() == SyntaxKind::DIVERT_STMT)
+        .expect("DIVERT_STMT is a direct child of the block");
+    assert!(
+        annotation_idx < divert_idx,
+        "annotation must precede the statement it annotates"
+    );
+
+    let line = crate::ast::AnnotationLine::cast(items[annotation_idx].clone())
+        .expect("AnnotationLine cast");
+    assert_eq!(line.name_token().unwrap().text(), "effects");
+    let args = line.args().expect("ANNOTATION_ARGS");
+    let top: Vec<_> = args.args().collect();
+    assert_eq!(top.len(), 2);
+    assert_eq!(top[0].name_token().unwrap().text(), "reads");
+    assert_eq!(top[1].name_token().unwrap().text(), "pure");
+}
+
+/// Adversarial in-body interaction, never exercised elsewhere in this file:
+/// `annotation_line`'s consume-to-`NEWLINE` trailing-text sweep runs after
+/// its own `expect(R_BRACKET)`, with no awareness of the enclosing block's
+/// `R_BRACE`. On a one-line block body, that sweep eats the block's closing
+/// `}` as "unexpected text after `]`" — the `}` is not a `NEWLINE`, so
+/// nothing stops the sweep there. Pinning down the actual (buggy-looking)
+/// behavior: the annotation line's own trailing-text error fires, the `}`
+/// ends up inside the `ANNOTATION_LINE` node (not the `BLOCK`), and
+/// `braced_item_list` then reports its own `expected R_BRACE` error at EOF
+/// since the brace was already consumed. Losslessness still holds — every
+/// byte is somewhere in the tree — but the block is left syntactically
+/// unterminated. Reported as-is per this issue's recovery-only scope; not
+/// fixed here.
+#[test]
+fn annotation_line_in_single_line_block_eats_closing_brace() {
+    let src = "flow f() { @[local] }\n";
+    let p = assert_lossless(src);
+
+    assert_eq!(p.errors().len(), 2, "errors: {:?}", p.errors());
+    assert!(
+        p.errors()[0].message.contains("unexpected text after"),
+        "errors: {:?}",
+        p.errors()
+    );
+    assert!(
+        p.errors()[1].message.contains("R_BRACE"),
+        "errors: {:?}",
+        p.errors()
+    );
+
+    let flow = find_child::<crate::ast::FlowDecl>(&p.syntax()).expect("FlowDecl");
+    let body = flow.body().expect("flow body BLOCK");
+    let annotation_node = body
+        .items()
+        .find(|n| n.kind() == SyntaxKind::ANNOTATION_LINE)
+        .expect("ANNOTATION_LINE is still a direct child of the block");
+    // The `}` byte is folded into the ANNOTATION_LINE's own text (the
+    // trailing-text sweep swallowed it) rather than terminating BLOCK.
+    assert!(annotation_node.text().to_string().contains('}'));
 }
 
 #[test]
