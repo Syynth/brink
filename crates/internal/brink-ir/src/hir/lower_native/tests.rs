@@ -282,11 +282,67 @@ fn module_block_is_flagged_and_flattened() {
 }
 
 #[test]
-fn root_content_is_always_empty() {
+fn root_content_is_empty_without_a_main_flow() {
     let (hir, _manifest, _diags) = lower_src("flow a() {}\n");
     assert!(hir.root_content.stmts.is_empty());
     assert!(hir.includes.is_empty());
     assert!(hir.module.is_none());
+}
+
+// ─── `flow main()` entry convention (ruled 2026-07-21, docs/decision-log.md) ──
+
+#[test]
+fn top_level_main_flow_synthesizes_a_root_divert() {
+    let (hir, _manifest, diags) = lower_src("flow main() {\n  Hi.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.root_content.stmts.len(), 1);
+    let Stmt::Divert(d) = &hir.root_content.stmts[0] else {
+        panic!(
+            "expected root_content to be a single Divert, got {:?}",
+            hir.root_content.stmts[0]
+        );
+    };
+    assert!(d.ptr.is_none(), "synthesized entry divert has no source ptr");
+    let DivertPath::Path(path) = &d.target.path else {
+        panic!("expected a named divert target, got {:?}", d.target.path);
+    };
+    assert_eq!(path.segments.len(), 1);
+    assert_eq!(path.segments[0].text, "main");
+    assert!(d.target.args.is_empty());
+    assert!(
+        matches!(hir.root_content.tail(), Tail::Diverge(Terminator::Divert(_))),
+        "the synthesized divert must also drive Block::tail: {:?}",
+        hir.root_content.tail()
+    );
+}
+
+#[test]
+fn nested_main_flow_does_not_synthesize_an_entry() {
+    // Only a *top-level* `main` counts — a stitch named `main` nested inside
+    // another flow is not the story's entry point.
+    let (hir, _manifest, diags) = lower_src("flow outer() {\n  flow main() {\n    Hi.\n  }\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(hir.root_content.stmts.is_empty());
+}
+
+#[test]
+fn function_named_main_does_not_synthesize_an_entry() {
+    // `fn main()` is a function, not a flow — not eligible for the entry
+    // convention (a function is called for its value, not diverted into).
+    let (hir, _manifest, diags) = lower_src("fn main() {\n  Hi.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(hir.root_content.stmts.is_empty());
+}
+
+#[test]
+fn parameterized_main_flow_does_not_synthesize_an_entry() {
+    // A bare entry divert cannot supply arguments — synthesizing one for a
+    // `main` that requires params would either drop them silently or invent
+    // values from nowhere. Neither is acceptable, so no entry is
+    // synthesized; `main` remains an ordinary, host-enterable flow.
+    let (hir, _manifest, diags) = lower_src("flow main(who) {\n  Hi, {who}.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(hir.root_content.stmts.is_empty());
 }
 
 #[test]

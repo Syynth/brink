@@ -66,9 +66,12 @@
 //!    over a named target, not an anonymous body — charter §8, no lambda
 //!    node exists); any other body-line construct reaching top-level
 //!    declaration position (content/tags/choices/diverts/conditionals with
-//!    no enclosing `flow`/`fn` — native's `root_content` equivalent is
-//!    hard-`Block::default()` per the contract, so such content has
-//!    nowhere to go and must not vanish silently); `struct`/`extern`/
+//!    no enclosing `flow`/`fn` — a native file has no top-level body ground
+//!    the way ink's root weave does; the only top-level "entry" spelling is
+//!    the `flow main()` naming convention (`entry_root_content`, ruled
+//!    2026-07-21), not literal content or a divert at file-root position —
+//!    so such content has nowhere to go and must not vanish silently);
+//!    `struct`/`extern`/
 //!    `use`/`import` declared below the flattened top-level scope (nested
 //!    inside a `flow`/`fn` body) — ink restricts these four kinds to
 //!    top-level-only (D6), and the native grammar's shared `item()`
@@ -119,7 +122,10 @@ use brink_syntax_native::{SyntaxNode, SyntaxToken};
 
 use crate::hir::FileId;
 use crate::symbols::{SymbolManifest, project_manifest};
-use crate::{Diagnostic, DiagnosticCode, ExternalDecl, HirFile, Import, Knot, StructDecl};
+use crate::{
+    Diagnostic, DiagnosticCode, Divert, DivertPath, DivertTarget, ExternalDecl, HirFile, Import,
+    Knot, Path, StructDecl,
+};
 
 mod import;
 
@@ -128,8 +134,10 @@ mod import;
 /// Produces the same `(HirFile, SymbolManifest, Vec<Diagnostic>)` triple
 /// contract §1.1 requires of *any* frontend — the manifest is
 /// [`project_manifest`]'s pure projection of the just-built `HirFile`
-/// (B0.4), exactly as [`crate::hir::lower::lower`] does for ink. Bodies are
-/// always the empty stub; see the module doc's judgment call #3.
+/// (B0.4), exactly as [`crate::hir::lower::lower`] does for ink. `Knot`/
+/// `Stitch` bodies are always the empty stub; see the module doc's judgment
+/// call #3. `root_content` is the one exception: see [`entry_root_content`]
+/// for the `flow main()` entry convention.
 #[must_use]
 pub fn lower(
     file_id: FileId,
@@ -188,8 +196,10 @@ pub fn lower(
         }
     }
 
+    let root_content = entry_root_content(&top.knots);
+
     let hir = HirFile {
-        root_content: crate::Block::default(),
+        root_content,
         knots: top.knots,
         variables,
         constants,
@@ -209,6 +219,50 @@ pub fn lower(
     };
     let manifest = project_manifest(&hir);
     (hir, manifest, diags)
+}
+
+/// The native story-entry convention (maintainer-ruled 2026-07-21,
+/// `docs/decision-log.md`): **a top-level `flow main()` is a native
+/// story's default standalone entry point.** Mirrors ink's own "root
+/// content is the entry" model (the ink frontend's
+/// [`crate::hir::lower::lower`] populates `root_content` from the file's
+/// literal top-level weave body) using the same `Divert`/`Block` HIR — no
+/// new entry mechanism, no new HIR node. When a top-level, non-function,
+/// zero-parameter `flow` named `main` exists, `root_content` becomes a
+/// single synthesized `Divert` to it. Any other top-level `flow`/`fn`
+/// remains host-entry-only (effects-spec §10 "play from here") — a project
+/// with no `main` has an empty `root_content`, which is not an error, only
+/// "no standalone entry point".
+///
+/// The synthesized `Divert` carries `ptr: None` — it is not backed by any
+/// real `DIVERT_STMT` source node (nothing is written at file-root
+/// position; the convention is implied by the flow's name), so there is no
+/// honest provenance to attach, unlike every other `Divert` this frontend
+/// produces. The target `Path`'s `Name` reuses `main`'s own declared name
+/// token — real source provenance, not a fabricated range.
+///
+/// A `main` with parameters is deliberately **not** matched: a bare entry
+/// divert cannot supply arguments, and silently dropping required params
+/// would be a silent data drop (a standing rule, `CLAUDE.md` "Flag silent
+/// data drops"). Such a file simply has no synthesized entry — `main` is
+/// still an ordinary flow, reachable as a host entry point.
+fn entry_root_content(knots: &[Knot]) -> crate::Block {
+    let Some(main) = knots
+        .iter()
+        .find(|k| !k.is_function && k.params.is_empty() && k.name.text == "main")
+    else {
+        return crate::Block::default();
+    };
+    crate::Block::from_stmts(vec![crate::Stmt::Divert(Divert {
+        ptr: None,
+        target: DivertTarget {
+            path: DivertPath::Path(Path {
+                segments: vec![main.name.clone()],
+                range: main.name.range,
+            }),
+            args: Vec::new(),
+        },
+    })])
 }
 
 #[derive(Default)]
