@@ -352,9 +352,13 @@ in the host half is settled above.
 
 Sleeping is a bevy-brink API, not an ink construct. The game sets a
 flow's **standing wake policy**; ink authors write ordinary knots. A
-language-level `await {cond}` primitive is recorded as a **future
-direction** (a real design round: new park kind, save/replay
-semantics) — attractive later, not foreclosed, not v1.
+language-level `await {cond}` primitive **is planned, not deferred** —
+subsequently ruled as statement-position syntax in
+`flow-suspension-spec.md` §3 (2026-07-16). (The earlier "future
+direction, not v1" wording here is **superseded spec drift**, corrected
+2026-07-21.) Host-driven reactive sleep (this section) and in-language
+`await` are **complementary**, not competing: the host sets a standing
+policy on ordinary knots; `await` is the author-written park form.
 
 **The wake contract** (ruled precisely):
 
@@ -485,13 +489,13 @@ writes / calls / emits / suspend defeat fusion).
    inferred constraint — there is no author-facing coloring syntax and no
    viral annotation. §11's intent (interior effects inferred, always; no
    author coloring surface) is preserved. **Confirm the framing.**
-2. **`await` posture gap.** §13.1 records a language-level `await` as a
-   *future direction, not v1* (reactive sleep is host-driven), while
-   `flow-suspension-spec.md` §3 rules `await` as statement-position
-   syntax. Folding `suspend(rung)` into the row leans on the suspension
-   model. This is a **pre-existing posture difference between two ruled
-   specs**, surfaced here, **not resolved** in this amendment — it needs
-   an explicit reconciliation of its own.
+2. **`await` posture gap — RESOLVED 2026-07-21 (spec drift, not a
+   conflict).** §13.1 formerly called a language-level `await` a "future
+   direction, not v1," which predated `flow-suspension-spec.md` §3 ruling
+   `await` as statement syntax. Corrected in §13.1: `await` is **planned**;
+   host-driven reactive sleep and in-language `await` are complementary.
+   Folding `suspend(rung)` into the row rests on that (planned) suspension
+   model, with no spec conflict.
 
 ### 14.6 Build posture
 
