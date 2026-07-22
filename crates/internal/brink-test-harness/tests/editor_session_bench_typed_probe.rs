@@ -9,7 +9,12 @@
 //!
 //! This drives the *actual compiled binary* (not its internal functions) via
 //! `CARGO_BIN_EXE_editor_session_bench`, once with `BENCH_TYPED` unset and
-//! once with `BENCH_TYPED=1`, and asserts on the printed growth-table rows:
+//! once with `BENCH_TYPED=1`, and asserts on the printed growth-table rows'
+//! `query | <family>` row specifically — matched on the exact `kind`/`name`
+//! columns (see [`final_count`]), not a substring search over the whole
+//! line, since a family's own `struct | <family>::interned_arguments` row
+//! and other families' names (`signature_query` is a substring of
+//! `inferred_signature_query`) can otherwise be misread as the target row:
 //!
 //! - Without the probe: every inference-only per-def family's final `count`
 //!   is `0` (the T2/FS effects layer legitimately reaches `call_edges_query`
@@ -64,14 +69,32 @@ fn run_bench(typed: bool) -> String {
 }
 
 /// Parse a growth-table row's final (post-edits) `count` for the named
-/// query, e.g. `count      0 ->     32 (Δ+32)` -> `32`. Returns `None` if the
-/// family never appears in the growth table at all (never invoked).
+/// *query* family, e.g. `count      0 ->     32 (Δ+32)` -> `32`. Returns
+/// `None` if the family never appears in the growth table at all (never
+/// invoked).
+///
+/// Matches the `kind`/`name` columns exactly (split the row on `|`, require
+/// the kind column to be `query` and the trimmed name column to equal
+/// `family`), mirroring `fg5_memory_ceilings.rs`'s `row()`
+/// (`r.kind == IngredientKind::Query && r.name == name`). A plain substring
+/// search over the whole line is not enough: every family's `struct |
+/// <family>::interned_arguments` row sorts before its `query | <family>` row
+/// (`Struct < Query` in ingredient-kind order) and would win a bare
+/// `.contains(family)` search, and some family names are substrings of
+/// others (`signature_query` inside `inferred_signature_query`), so a
+/// substring match also risks reading a different family's row entirely.
 fn final_count(stdout: &str, family: &str) -> Option<u64> {
     let pattern =
         Regex::new(r"count\s+\d+\s*->\s*(\d+)").expect("count-delta pattern is a valid regex");
     stdout
         .lines()
-        .find(|line| line.contains("| growth |") && line.contains(family))
+        .filter(|line| line.contains("| growth |"))
+        .find(|line| {
+            let mut columns = line.split('|');
+            let kind = columns.nth(2).map(str::trim);
+            let name = columns.next().map(str::trim);
+            kind == Some("query") && name == Some(family)
+        })
         .and_then(|line| pattern.captures(line))
         .and_then(|caps| caps.get(1))
         .and_then(|m| m.as_str().parse::<u64>().ok())
