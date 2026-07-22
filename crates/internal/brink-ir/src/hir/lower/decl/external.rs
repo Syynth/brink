@@ -7,14 +7,15 @@ use super::super::directive::{DirectiveTarget, apply_scope_directives, directive
 use super::super::doc_comment::{DocPolicy, parse_doc_comment};
 use super::super::helpers::name_from_ident;
 use super::DeclareSymbols;
-use crate::{DiagnosticCode, ExternalDecl, ParamInfo, SymbolKind};
+use crate::provenance::NodeClass;
+use crate::{DiagnosticCode, ExternalDecl, ParamInfo};
 
 impl DeclareSymbols for ast::ExternalDecl {
     type Output = ExternalDecl;
 
     fn declare_and_lower(
         &self,
-        _scope: &LowerScope,
+        scope: &LowerScope,
         sink: &mut impl LowerSink,
     ) -> Lowered<ExternalDecl> {
         let range = self.syntax().text_range();
@@ -42,15 +43,6 @@ impl DeclareSymbols for ast::ExternalDecl {
         let (doc, issues) = parse_doc_comment(self.syntax(), DocPolicy::EXTERNAL);
         issues.diagnose(sink);
 
-        sink.declare_full(
-            SymbolKind::External,
-            &name.text,
-            name.range,
-            param_infos,
-            None,
-            doc,
-        );
-
         #[expect(
             clippy::cast_possible_truncation,
             reason = "external params won't exceed 255"
@@ -62,23 +54,29 @@ impl DeclareSymbols for ast::ExternalDecl {
         // dropped.
         let dirs = directives_before(self.syntax());
         let _ = apply_scope_directives(&dirs, DirectiveTarget::External, sink);
+        let mut visibility = None;
         if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
-            sink.set_visibility(SymbolKind::External, &name.text, vis);
+            visibility = Some(vis);
         }
+        let mut was = None;
         if let Some((old_name, was_range)) =
             super::super::directive::was_from_directives(&dirs, sink)
         {
             if old_name == name.text {
                 sink.diagnose(was_range, DiagnosticCode::E095);
             } else {
-                sink.set_was(SymbolKind::External, &name.text, old_name, was_range);
+                was = Some((old_name, was_range));
             }
         }
 
         Ok(ExternalDecl {
-            ptr: ast::AstPtr::new(self),
+            ptr: scope.prov(NodeClass::ExternalDecl, self.syntax()),
             name,
             param_count,
+            params: param_infos,
+            doc,
+            visibility,
+            was,
         })
     }
 }

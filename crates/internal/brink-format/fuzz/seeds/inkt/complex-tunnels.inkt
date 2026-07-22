@@ -1,0 +1,117 @@
+(story checksum=0xb86c3738
+
+  (name_table
+    0 "num"
+    1 ""
+    2 "one"
+    3 "oneAndAHalf"
+    4 "two"
+  )
+
+  (addresses
+    (address $01_406ea523c53def -> $01_406ea523c53def +0)
+    (address $01_7c67ee6d10d6af -> $01_7c67ee6d10d6af +0)
+    (address $01_57802b99e8d9f3 -> $01_57802b99e8d9f3 +0)
+    (address $01_11b838d5dee655 -> $01_11b838d5dee655 +0)
+  )
+
+  (address_paths
+    (path 1 -> $01_406ea523c53def)
+    (path 2 -> $01_7c67ee6d10d6af)
+    (path 3 -> $01_57802b99e8d9f3)
+    (path 4 -> $01_11b838d5dee655)
+  )
+
+  (visibility
+    (private $07_381ec5bf9d4198)
+    (private $07_63298cf68df0a4)
+    (private $07_74d385348244f3)
+  )
+
+  (effect_rows
+    (row $01_11b838d5dee655
+      (reads)
+      (writes)
+      (calls)
+    )
+    (row $01_57802b99e8d9f3
+      (reads)
+      (writes)
+      (calls)
+    )
+    (row $01_7c67ee6d10d6af
+      (reads)
+      (writes)
+      (calls)
+    )
+  )
+
+  (container $01_406ea523c53def
+    (name 1)
+    (lines
+      0 "three (3)" @e2f12e79e3fd96a6 (source "tests/tier1/diverts/I062-complex-tunnels/story.ink" 25..35)
+    )
+    (code
+      push_int 1
+      tunnel_call $01_7c67ee6d10d6af
+      push_int 2
+      tunnel_call $01_11b838d5dee655
+      emit_line 0 0
+      emit_newline
+      done
+    )
+  )
+
+  (container $01_7c67ee6d10d6af
+    (name 2)
+    (path_hash 322)
+    (params 1 (val 0))
+    (lines
+      0 (template (lit "one (") (slot 0) (lit ")")) @b840b941f34e9d7f (slots 0:"num") (source "tests/tier1/diverts/I062-complex-tunnels/story.ink" 50..62)
+    )
+    (code
+      declare_temp 0
+      get_temp 0
+      emit_line 0 1
+      emit_newline
+      push_float 1.5
+      tunnel_call $01_57802b99e8d9f3
+      push_null
+      tunnel_return
+    )
+  )
+
+  (container $01_57802b99e8d9f3
+    (name 3)
+    (path_hash 1041)
+    (params 1 (val 0))
+    (lines
+      0 (template (lit "one and a half (") (slot 0) (lit ")")) @b0e863ac0cc1e2d5 (slots 0:"num") (source "tests/tier1/diverts/I062-complex-tunnels/story.ink" 114..137)
+    )
+    (code
+      declare_temp 0
+      get_temp 0
+      emit_line 0 1
+      emit_newline
+      push_null
+      tunnel_return
+    )
+  )
+
+  (container $01_11b838d5dee655
+    (name 4)
+    (path_hash 346)
+    (params 1 (val 0))
+    (lines
+      0 (template (lit "two (") (slot 0) (lit ")")) @b4f2a083ded894a8 (slots 0:"num") (source "tests/tier1/diverts/I062-complex-tunnels/story.ink" 158..170)
+    )
+    (code
+      declare_temp 0
+      get_temp 0
+      emit_line 0 1
+      emit_newline
+      push_null
+      tunnel_return
+    )
+  )
+)

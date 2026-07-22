@@ -68,7 +68,7 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
             let value = ret.value.as_ref().map(|e| lower_expr(e, ctx));
             out.push(lir::Stmt::Return {
                 value,
-                is_tunnel: false,
+                is_tunnel: ret.kind == hir::ReturnKind::TunnelRedirect,
                 args: Vec::new(),
             });
         }
@@ -81,6 +81,14 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
             }));
         }
         hir::BlockStmt::While(w) => {
+            // `while await cond { … }` (docs/flow-suspension-spec.md §3): the
+            // persistent-await loop is a suspension point, fenced at lowering
+            // (E052) exactly like a bare `await` until FS-3. A plain `while`
+            // loop lowers as usual.
+            if w.is_await {
+                super::stmts::emit_await_lowering_fence(ctx, w.ptr.text_range());
+                return;
+            }
             let condition = lower_expr(&w.condition, ctx);
             ctx.push_block_scope();
             ctx.loop_depth += 1;
@@ -105,6 +113,12 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
                 out.push(lir::Stmt::ExprStmt(lower_expr(expr, ctx)));
             }
         }
+        // `await <cond>` inside a `~ { … }` block (docs/flow-suspension-spec.md
+        // §3) — fenced at lowering (E052) until FS-3, same as the top-level
+        // `~ await` and `while await` forms.
+        hir::BlockStmt::Await(a) => {
+            super::stmts::emit_await_lowering_fence(ctx, a.ptr.text_range());
+        }
     }
 }
 
@@ -120,7 +134,7 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
 /// a `Program` at all, independent of and non-suppressible relative to any
 /// analysis-phase diagnostic covering the same construct.
 fn lower_loop_control(
-    ptr: &brink_syntax::ast::SyntaxNodePtr,
+    ptr: &crate::Provenance,
     keyword: &str,
     stmt: lir::Stmt,
     ctx: &mut LowerCtx<'_>,
@@ -516,34 +530,35 @@ fn lower_indexed_assignment(
 /// `Arc` (refcount 1) whenever nothing else aliases the container — O(1)
 /// amortized in-place mutation instead of an O(n) COW copy on every write.
 ///
-/// **Evaluation order** (correctness-critical): the index, the RHS value,
-/// and (for compound assignment) the pre-mutation `current = a[idx]` read
-/// are ALL fully evaluated — via a non-taking, ordinary read of the
-/// still-intact root — *before* the root is taken. This matters because
-/// either expression may reference the root variable by name (e.g. `a[0] =
-/// a[1] + 1`, or a compound `a[i] += a[i]`) and must see its pre-mutation
-/// value, not the `Value::Null` a take would leave behind if it happened
-/// first.
+/// **Evaluation order** (correctness-critical): the index and the RHS value
+/// are fully evaluated — via a non-taking, ordinary read of the still-intact
+/// root — *before* the root is taken. This matters because either
+/// expression may reference the root variable by name (e.g. `a[0] = a[1] +
+/// 1`) and must see its pre-mutation value, not the `Value::Null` a take
+/// would leave behind if it happened first.
 ///
-/// **Fault-during-RMW slot state** (issue #576's required property): the
-/// `current = a[idx]` read is *always* computed (even for plain `=`, where
-/// its value is otherwise unused) specifically to force the exact same
-/// bounds/key validation `IndexSet`'s mutate step would do — using an
-/// ordinary `Index` read, which is non-mutating (never calls
-/// `array_make_mut`/`map_make_mut`) and therefore can't itself trigger a
-/// COW; it's a transient `Arc`-bump-and-drop of the *container* plus a
-/// clone of the single *element*, negligible next to the O(n) copy this
-/// fast path exists to avoid. Because that read uses the identical
-/// container value and index the later take-based mutate will use (nothing
-/// mutates in between), a fault there is proof the mutate would fault too
-/// — so by the time the root is actually taken (after this check passes),
-/// the mutate is *guaranteed* to succeed. The root is therefore **never**
-/// left holding `Value::Null` due to a fault on this fast path — a fault
-/// (out-of-bounds index, missing map key, or a non-collection root) is
-/// caught before anything is taken, leaving the root completely untouched,
-/// exactly like the pre-#576 clone-based RMW. See
-/// `fault_during_flat_indexed_assignment_leaves_root_unchanged` (runtime
-/// crate) for the property test.
+/// **Compound assignment** (`+=`/`-=`) additionally computes the
+/// pre-mutation `current = a[idx]` read (needed as the operand) *before*
+/// the take, via the same non-taking `Index` read — unchanged by issue
+/// #856. As a side effect this still catches out-of-bounds/missing-key/
+/// non-collection faults before anything is taken, leaving the root
+/// completely untouched on a compound-assign fault, exactly like the
+/// pre-#576 clone-based RMW.
+///
+/// **Plain assignment** (`a[idx] = v`) does **not** compute `current` —
+/// nothing needs its value, and (issue #856, ruled 2026-07-15) `IndexSet`'s
+/// map branch is now insert-on-absent, so there's no missing-key fault left
+/// to pre-empt there. The remaining fault causes on this path
+/// (out-of-bounds array index, an invalid-domain map key, a non-collection
+/// root) are still turn-terminating faults, but now surface *inside* the
+/// take-based mutate step rather than before it, so the root can be left
+/// `Value::Null` on one of those — the same documented, deliberate
+/// no-precheck trade-off `fault_during_insert_leaves_root_null`/
+/// `fault_during_remove_leaves_root_null` (runtime crate) already accept for
+/// `insert`/`remove`'s author-supplied keys ("a fault anywhere mid-turn
+/// already leaves earlier same-turn mutations applied"). See
+/// `fault_during_flat_index_assignment_leaves_root_null` (runtime crate,
+/// renamed by #856 from `..._leaves_root_unchanged`) for the property test.
 fn lower_flat_indexed_assignment(
     root_target: lir::AssignTarget,
     index_hir: &hir::Expr,
@@ -562,18 +577,23 @@ fn lower_flat_indexed_assignment(
     let rhs_value = lower_expr(value_expr, ctx);
     let (rhs_slot, rhs_name) = declare_synthetic("__rhs", rhs_value, ctx, out);
 
-    // 3. Pre-mutation `current = a[idx]`, ALWAYS computed (fault pre-check
-    //    + compound assignment's operand — see doc above), via an ordinary
-    //    (non-taking) read of the still-intact root.
-    let current = lir::Expr::Index {
-        base: Box::new(get_expr_for_target(&root_target)),
-        index: Box::new(lir::Expr::GetTemp(idx_slot, idx_name)),
-    };
-    let (current_slot, current_name) = declare_synthetic("__current", current, ctx, out);
-
+    // 3. Compound assignment only (`+=`/`-=`): pre-mutation `current =
+    //    a[idx]`, needed as the operand, via an ordinary (non-taking) read
+    //    of the still-intact root. As a side effect this also validates the
+    //    index/key before anything is taken (see doc above) — plain `=`
+    //    skips this entirely (issue #856): it doesn't need `current`'s
+    //    value, and `IndexSet`'s map branch no longer faults on a missing
+    //    key, so there's nothing left to pre-empt for maps; the remaining
+    //    fault causes (array OOB, invalid-domain map key, non-collection
+    //    root) are still faults, just inside the take-based mutate step.
     let rhs = if op == AssignOp::Set {
         lir::Expr::GetTemp(rhs_slot, rhs_name)
     } else {
+        let current = lir::Expr::Index {
+            base: Box::new(get_expr_for_target(&root_target)),
+            index: Box::new(lir::Expr::GetTemp(idx_slot, idx_name)),
+        };
+        let (current_slot, current_name) = declare_synthetic("__current", current, ctx, out);
         // `op == AssignOp::Set` is excluded above, so only `Add`/`Sub`
         // ever reach here.
         let infix_op = if op == AssignOp::Sub {
@@ -588,10 +608,14 @@ fn lower_flat_indexed_assignment(
         )
     };
 
-    // 4. Take the root — step 3 already proved this exact index is valid
-    //    against this exact container value (nothing mutated in between),
-    //    so nothing from here on can fault; the root is never left
-    //    `Value::Null` on this fast path.
+    // 4. Take the root. For compound assignment, step 3 already proved this
+    //    exact index is valid against this exact container value (nothing
+    //    mutated in between), so nothing from here on can fault; the root
+    //    is never left `Value::Null` on that path. For plain `=`, step 5's
+    //    `IndexSet` can still fault (array OOB, invalid-domain map key,
+    //    non-collection root) — the documented, deliberate trade-off
+    //    `fault_during_insert_leaves_root_null` already accepts for
+    //    `insert`/`remove`'s author-supplied keys applies here too.
     let (c_slot, c_name) = declare_synthetic("__c", take_expr_for_target(&root_target), ctx, out);
 
     // 5. Mutate in place: base is a *take* from `c_slot` too — `c_slot`'s
@@ -807,6 +831,29 @@ enum MutatorKind {
     Insert,
     /// `remove(x, k_or_i)` — 2 args.
     Remove,
+    /// `clear(m)` — 1 arg (NS-A1, `docs/stdlib-spec.md` §5): empty the map
+    /// in place, total.
+    Clear,
+    /// `shuffle(a)` — 1 arg (NS-A6, `docs/stdlib-spec.md` §7): Fisher-Yates
+    /// shuffle of the array in place; every element swap draws through the
+    /// one RNG cell. `shuffled(a)` is the functional twin (ordinary
+    /// expression lowering).
+    Shuffle,
+    /// `sort(a)` — 1 arg (NS-A4, `docs/stdlib-spec.md` §4b): sort the
+    /// array in place by the doctrine order (dev NaN-fault / prod pinned
+    /// placement at the runtime knob). `sorted(a)` is the functional twin.
+    Sort,
+    /// `sort_by(a, cmp)` — 2 args (NS-A4, F0 ruled 2026-07-19): sort the
+    /// array in place by a comparator function value `fn(T, T): int`.
+    /// `sorted_by(a, cmp)` is the functional twin.
+    SortBy,
+    /// `heap_push(a, x)` — 2 args (NS-A7, `docs/stdlib-spec.md` §8): sift
+    /// `x` into the min-heap maintained over the array, in place (§4b
+    /// entry check: dev NaN-fault / prod pinned placement at the runtime
+    /// knob). `heap_pop`/`heap_peek` are not mutator-statement shapes —
+    /// `heap_pop` is the `pop` expression/bracket shape, `heap_peek` a
+    /// pure expression.
+    HeapPush,
 }
 
 impl MutatorKind {
@@ -820,13 +867,19 @@ impl MutatorKind {
             "push" => Some(Self::Push),
             "insert" => Some(Self::Insert),
             "remove" => Some(Self::Remove),
+            "clear" => Some(Self::Clear),
+            "shuffle" => Some(Self::Shuffle),
+            "sort" => Some(Self::Sort),
+            "sort_by" => Some(Self::SortBy),
+            "heap_push" => Some(Self::HeapPush),
             _ => None,
         }
     }
 
     fn expected_argc(self) -> usize {
         match self {
-            Self::Push | Self::Remove => 2,
+            Self::Clear | Self::Shuffle | Self::Sort => 1,
+            Self::Push | Self::Remove | Self::SortBy | Self::HeapPush => 2,
             Self::Insert => 3,
         }
     }
@@ -838,6 +891,11 @@ impl MutatorKind {
             Self::Push => "push(container, value)",
             Self::Insert => "insert(container, key_or_index, value)",
             Self::Remove => "remove(container, key_or_index)",
+            Self::Clear => "clear(map)",
+            Self::Shuffle => "shuffle(array)",
+            Self::Sort => "sort(array)",
+            Self::SortBy => "sort_by(array, comparator)",
+            Self::HeapPush => "heap_push(array, value)",
         }
     }
 }
@@ -867,6 +925,48 @@ fn is_lvalue_expr(expr: &hir::Expr) -> bool {
 /// `lower_block_with_children`) — a function call used as a statement for
 /// its side effect is not a T1b-only concept (ordinary knots/externals are
 /// already callable that way outside any block).
+/// `seed(n)` (NS-A6, `docs/stdlib-spec.md` §7): statement-only like the
+/// mutators, but its argument is an ordinary value, not an lvalue
+/// receiver — it writes the RNG cell, not its argument — so it takes its
+/// own path rather than joining `MutatorKind`'s lvalue/RMW machinery. It
+/// lowers to the frozen `SEED_RANDOM` builtin (one RNG cell, two
+/// surfaces, no drift); `ExprStmt` discards the op's `Null`. Same shadow
+/// discipline as the mutators: a resolvable user symbol of the same name
+/// falls through to ordinary call lowering.
+fn try_lower_seed_stmt(
+    path: &hir::Path,
+    args: &[hir::Expr],
+    ctx: &mut LowerCtx<'_>,
+    out: &mut Vec<lir::Stmt>,
+) -> bool {
+    if ctx.temp_slot("seed").is_some() || ctx.resolve_path(path.range).is_some() {
+        return false;
+    }
+    if args.len() != 1 {
+        ctx.diagnostics.push(Diagnostic {
+            file: ctx.file,
+            range: path.range,
+            message: format!(
+                "{}: `seed` expects 1 argument(s), got {} — expected signature: `seed(n)`",
+                DiagnosticCode::E058.title(),
+                args.len(),
+            ),
+            code: DiagnosticCode::E058,
+        });
+        return true;
+    }
+    let arg = lower_expr(&args[0], ctx);
+    out.push(lir::Stmt::ExprStmt(lir::Expr::CallBuiltin {
+        builtin: lir::BuiltinFn::SeedRandom,
+        args: vec![arg],
+    }));
+    true
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one desugar arm per mutator kind — the NS-A7 heap_push arm pushed this past 100"
+)]
 pub(super) fn try_lower_mutator_stmt(
     expr: &hir::Expr,
     ctx: &mut LowerCtx<'_>,
@@ -876,6 +976,14 @@ pub(super) fn try_lower_mutator_stmt(
         return false;
     };
     let name = super::expr::path_to_string(path);
+
+    if name == "seed" && try_lower_seed_stmt(path, args, ctx, out) {
+        return true;
+    }
+    if name == "seed" {
+        return false;
+    }
+
     let Some(kind) = MutatorKind::from_name(&name) else {
         return false;
     };
@@ -978,6 +1086,17 @@ pub(super) fn try_lower_mutator_stmt(
                 key: Box::new(key),
             }
         }
+        MutatorKind::Clear => lir::Expr::MapClear(Box::new(container())),
+        MutatorKind::Shuffle => lir::Expr::RandShuffle(Box::new(container())),
+        MutatorKind::Sort => lir::Expr::SeqSorted(Box::new(container())),
+        MutatorKind::SortBy => lir::Expr::SeqSortedBy {
+            seq: Box::new(container()),
+            cmp: Box::new(lower_expr(&args[1], ctx)),
+        },
+        MutatorKind::HeapPush => lir::Expr::HeapPush {
+            seq: Box::new(container()),
+            value: Box::new(lower_expr(&args[1], ctx)),
+        },
     };
 
     out.push(lir::Stmt::Assign {
@@ -1077,6 +1196,19 @@ fn lower_bare_mutator(
         MutatorKind::Remove => lir::Expr::CollectionRemove {
             base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
             key: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
+        },
+        MutatorKind::Clear => lir::Expr::MapClear(Box::new(lir::Expr::TakeTemp(c_slot, c_name))),
+        MutatorKind::Shuffle => {
+            lir::Expr::RandShuffle(Box::new(lir::Expr::TakeTemp(c_slot, c_name)))
+        }
+        MutatorKind::Sort => lir::Expr::SeqSorted(Box::new(lir::Expr::TakeTemp(c_slot, c_name))),
+        MutatorKind::SortBy => lir::Expr::SeqSortedBy {
+            seq: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
+            cmp: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
+        },
+        MutatorKind::HeapPush => lir::Expr::HeapPush {
+            seq: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
+            value: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
         },
     };
 

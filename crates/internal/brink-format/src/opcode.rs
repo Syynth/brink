@@ -249,6 +249,156 @@ const MAKE_CLOSURE: u8 = 0xD7;
 const CALL_VALUE: u8 = 0xD8;
 const BIND_VALUE: u8 = 0xD9;
 
+// Projection opcodes (T1e, `docs/format-v4-rfc.md` §3 "Projections" — named
+// there, numerically unallocated; assigned here, contiguous and adjacent to
+// the function-value block above, this PR's own reservation). First live
+// emission of the reserved projection surface (`docs/t1e-spec.md` §3/§8
+// T1e-2).
+//   0xDA MakeProjection(root, segment_count)   0xDB ProjRead
+//   0xDC ProjWrite
+// `MakeProjection` pops `segment_count` values off the stack (pushed by
+// codegen in source order; the VM's LIFO pop collects them reversed, then
+// reverses once more to restore source order — same shape `MakeClosure`'s
+// bound-arg row uses) and classifies each into a `ProjSegment` (`Int` →
+// `Index`, else → `Key`,
+// `docs/format-v4-rfc.md` §1), building a `Value::Projection` rooted at
+// `root`. `ProjRead`/`ProjWrite` implement the spec's root-cell RMW
+// discipline (take root → walk → `make_mut` spine → write → store back);
+// both fault `RuntimeError::ProjectionInvalidated` on a path that no longer
+// resolves (shrunk array, missing key, removed struct field — spec §1(2)).
+// The compiler's own emission path for dereferencing a projection-bound
+// `ref` parameter reuses the *same* underlying walk (`brink_runtime::proj_ops`)
+// through `GetTemp`/`SetTemp`/`TakeTemp`'s additive `Value::Projection`
+// dispatch arm rather than interleaving these bytes at every param access —
+// see those opcodes' VM dispatch for the shared implementation. `ProjRead`/
+// `ProjWrite` remain real, independently encodable/dispatchable opcodes.
+const MAKE_PROJECTION: u8 = 0xDA;
+const PROJ_READ: u8 = 0xDB;
+const PROJ_WRITE: u8 = 0xDC;
+
+// `char_at(s, i)` stdlib pure function (T1b stdlib slice 1 completion, issue
+// #857) — contiguous and adjacent to the projection block above, this PR's
+// own reservation (no prior RFC allocation for this one; same "assigned
+// here" precedent as the record/conversion/function-value/projection blocks
+// above it). Pops `i` then `s`, pushes the single-character `String` at
+// Unicode-scalar-value index `i` (chars, not UTF-8 bytes — author sanity per
+// the issue). Turn-terminating faults (value-model-spec §11c): `s` isn't a
+// `String` (`RuntimeError::NotIndexable`); `i` isn't an `Int`
+// (`RuntimeError::CharAtIndexNotInt`); `i` outside `[0, char_count)`
+// (`RuntimeError::CharAtOutOfBounds`, `len` = char count).
+const CHAR_AT: u8 = 0xDD;
+
+// NS-A1 Option[T] + the ruled stdlib flips (`docs/stdlib-spec.md`
+// §1.1/§1.4, §§3-5; `docs/stdlib-sequencing.md` §2 Wave A1) — this PR's own
+// reservation, same "assigned here" precedent as the record/conversion/
+// function-value/projection/char_at blocks above. `PUSH_NONE`/`MAKE_SOME`
+// take the two bytes remaining before the string-eval block (0xE0/0xE1);
+// the verb flips continue contiguously after it at 0xE2.
+//
+// Option construction:
+//   0xDE PushNone   `[]` → `none`  (`Value::OptionVal(None)`)
+//   0xDF MakeSome   `[x]` → `some(x)` — total over every value
+//
+// The verb flips, all brink-dialect intrinsics returning `Option` (absence
+// = `none`, never a fault; malformed *questions* — wrong container type,
+// unorderable elements — stay turn-terminating faults, the ruled
+// fault-vs-absence doctrine):
+//   0xE2 StrFind         `[s, sub]` → `Option[int]` (USV index, not bytes)
+//   0xE3 SeqIndexOf      `[a, x]` → `Option[int]` (structural equality)
+//   0xE4 SeqMin          `[a]` → `Option[T]` (empty → none)
+//   0xE5 SeqMax          `[a]` → `Option[T]`
+//   0xE6 SeqFirst        `[a]` → `Option[T]`
+//   0xE7 SeqLast         `[a]` → `Option[T]`
+//   0xE8 SeqPop          `[a]` → pushes `Option[T]` (popped element or
+//                        none), then the shrunk array on top — codegen
+//                        brackets it Take*/SeqPop/Set* so the array writes
+//                        back to its root cell and the Option remains as
+//                        the expression value
+//   0xE9 MapGetOpt       `[m, k]` → `Option[V]` (missing key → none; a
+//                        non-scalar key is a fault — malformed question)
+//   0xEA MapContainsValue `[m, v]` → `Bool` (content-equality scan, O(n))
+//   0xEB MapClear        `[m]` → empty map (statement-only mutator;
+//                        in-place-ness comes from the RMW write-back)
+//
+// `SeqMin`/`SeqMax` order int/float (numeric promotion), bool, string for
+// now, with float NaN placed by the ruled PROD pinned order (§4b: NaN
+// greater than everything, NaN-vs-NaN ties, -0 == +0). The dev-mode
+// NaN-fault and the full orderable roster (arrays-lexicographic, compare
+// protocol) land with wave A4 — the rows are mode-independent either way.
+const PUSH_NONE: u8 = 0xDE;
+const MAKE_SOME: u8 = 0xDF;
+const STR_FIND: u8 = 0xE2;
+const SEQ_INDEX_OF: u8 = 0xE3;
+const SEQ_MIN: u8 = 0xE4;
+const SEQ_MAX: u8 = 0xE5;
+const SEQ_FIRST: u8 = 0xE6;
+const SEQ_LAST: u8 = 0xE7;
+const SEQ_POP: u8 = 0xE8;
+const MAP_GET_OPT: u8 = 0xE9;
+const MAP_CONTAINS_VALUE: u8 = 0xEA;
+const MAP_CLEAR: u8 = 0xEB;
+
+// NS-A6 rand verbs (`docs/stdlib-spec.md` §7; this PR's own reservation,
+// same "assigned here" precedent as the NS-A1 block above): the four draw
+// ops fill the remaining bytes before the lifecycle block (0xF0+),
+// contiguously after NS-A1's 0xEB. `seed(n)` reuses the frozen
+// `SEED_RANDOM` byte (0x85) — one cell, two surfaces, no drift.
+const RAND_FLOAT: u8 = 0xEC;
+const RAND_CHANCE: u8 = 0xED;
+const RAND_PICK: u8 = 0xEE;
+const RAND_SHUFFLE: u8 = 0xEF;
+
+// NS-A5 range ops (`docs/stdlib-spec.md` §7, F7 ruled 2026-07-19; this
+// PR's own reservation). The 0xEC-0xEF block is full and 0xF0-0xF3 are
+// lifecycle, so these take the next free bytes after the lifecycle block's
+// tail. Two construction ops rather than one flag-operand op keeps the
+// whole rand/range family operand-free (disasm and roundtrip stay
+// table-driven). `rand::int` deliberately has NO byte here — it rides the
+// existing `CONVERT_INT` (0xE2): `int(x)` is ONE value-directed verb whose
+// range leg is the draw (see `brink-runtime::vm`'s `ConvertInt` dispatch).
+const RANGE_MAKE_EXCL: u8 = 0xF4;
+const RANGE_MAKE_INCL: u8 = 0xF5;
+const RANGE_NON_EMPTY: u8 = 0xF6;
+
+// NS-A8 numeric tower (`docs/tower-mini-spec.md`, issue #1114; this PR's own
+// reservation, same "assigned here" precedent as the NS-A1/NS-A6/NS-A5
+// blocks above). ONE discriminant byte with a `u8` kind immediate —
+// deliberate opcode-space economy: after NS-A5 the free one-byte space is
+// down to 0xF7-0xFD + 0xFF (0xF0-0xF3 are lifecycle, 0xF4-0xF6 the range
+// ops, 0xFE debug), so the tower's thirteen operations share a single
+// `Tower(TowerOp)` opcode instead of eating most of what remains. Wire:
+// `0xF7`, then the [`TowerOp`] kind byte (a `SequenceKind`-style closed
+// sub-enum; unknown kinds are a decode error, the same reserved-tag
+// discipline as everywhere else).
+const TOWER: u8 = 0xF7;
+
+// NS-A4 ordering verbs (`docs/stdlib-spec.md` §4b, issue #1110; this PR's
+// own reservation, same "assigned here" precedent as the NS-A1/A5/A6/A8
+// blocks above). Two ops serve all four source verbs: `sort(a)` /
+// `sorted(a)` share `SeqSorted` (in-place-ness comes from the RMW
+// write-back, the `shuffle`/`shuffled` precedent), and `sort_by(a, cmp)` /
+// `sorted_by(a, cmp)` share `SeqSortedBy`. NaN placement is
+// mode-dependent (§4b: dev fault / prod pinned order) — the *mode* lives
+// in the runtime (host knob), never in the bytecode, so one compiled
+// story serves both modes.
+const SEQ_SORTED: u8 = 0xF8;
+const SEQ_SORTED_BY: u8 = 0xF9;
+
+// NS-A7 collections+ (`docs/stdlib-spec.md` §8, issue #1113; this PR's own
+// reservation, same "assigned here" precedent as the NS-A1/A4/A5/A6/A8
+// blocks above). ONE discriminant byte with a `u8` kind immediate — the
+// NS-A8 `Tower` economy applied again: after NS-A4 the free one-byte space
+// is down to 0xFA-0xFD + 0xFF, so the five `Weighted`/heap operations share
+// a single `Collect(CollectOp)` opcode instead of eating all of it. Wire:
+// `0xFA`, then the [`CollectOp`] kind byte (a `TowerOp`-style closed
+// sub-enum; unknown kinds are a decode error, the same reserved-tag
+// discipline as everywhere else). All five kinds are operand-free:
+// `weighted_new` takes its flattened pair row as ONE array value built by
+// the preceding `ArrayNew` (a transient codegen artifact), so disasm and
+// roundtrip stay table-driven — the NS-A5 "keep the family operand-free"
+// discipline.
+const COLLECT: u8 = 0xFA;
+
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
 const LIST_NOT_CONTAINS: u8 = 0xB1;
@@ -277,6 +427,216 @@ const END_STRING_EVAL: u8 = 0xE1;
 const SOURCE_LOCATION: u8 = 0xFE;
 
 // ── Types ───────────────────────────────────────────────────────────────────
+
+/// The tower operation selected by an [`Opcode::Tower`] instruction's kind
+/// byte (NS-A8, `docs/tower-mini-spec.md`; `docs/stdlib-spec.md` §2b).
+///
+/// Constructors pop their lanes/columns and push the built value; verbs pop
+/// their operands and push the result. All semantics are glam's (T3:
+/// conventions per glam, wholesale); all operations are pure. The
+/// `+`/`-`/`*` operator family does NOT live here — it rides the existing
+/// `Add`/`Subtract`/`Multiply`/`Negate` opcodes via `value_ops::binary_op`'s
+/// tower arms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TowerOp {
+    /// `[x, y]` → `vec2`. Numeric lanes (ints promote to f32).
+    MakeVec2,
+    /// `[x, y, z]` → `vec3`.
+    MakeVec3,
+    /// `[x, y, z, w]` → `vec4`.
+    MakeVec4,
+    /// `[x, y, z, w]` → `quat` — raw lanes, glam `Quat::from_xyzw`.
+    MakeQuat,
+    /// `[col0, col1]` → `mat2` from `vec2` columns (column-major, T3).
+    MakeMat2,
+    /// `[col0, col1, col2]` → `mat3` from `vec3` columns.
+    MakeMat3,
+    /// `[col0, col1, col2, col3]` → `mat4` from `vec4` columns.
+    MakeMat4,
+    /// `[a, b]` → `float` — dot product of two same-size vectors.
+    Dot,
+    /// `[a, b]` → `vec3` — cross product, `vec3` only.
+    Cross,
+    /// `[a, b]` → componentwise minimum of two same-kind vectors.
+    Min,
+    /// `[a, b]` → componentwise maximum of two same-kind vectors.
+    Max,
+    /// `[x, lo, hi]` → componentwise clamp of three same-kind vectors.
+    Clamp,
+    /// `[a, b, t]` → linear interpolation with scalar `t`: vectors
+    /// componentwise, quats via glam's normalizing `Quat::lerp`.
+    Lerp,
+}
+
+impl TowerOp {
+    /// Every tower op, in kind-byte order (tests + tooling).
+    pub const ALL: [TowerOp; 13] = [
+        Self::MakeVec2,
+        Self::MakeVec3,
+        Self::MakeVec4,
+        Self::MakeQuat,
+        Self::MakeMat2,
+        Self::MakeMat3,
+        Self::MakeMat4,
+        Self::Dot,
+        Self::Cross,
+        Self::Min,
+        Self::Max,
+        Self::Clamp,
+        Self::Lerp,
+    ];
+
+    fn to_byte(self) -> u8 {
+        match self {
+            Self::MakeVec2 => 0,
+            Self::MakeVec3 => 1,
+            Self::MakeVec4 => 2,
+            Self::MakeQuat => 3,
+            Self::MakeMat2 => 4,
+            Self::MakeMat3 => 5,
+            Self::MakeMat4 => 6,
+            Self::Dot => 7,
+            Self::Cross => 8,
+            Self::Min => 9,
+            Self::Max => 10,
+            Self::Clamp => 11,
+            Self::Lerp => 12,
+        }
+    }
+
+    fn from_byte(b: u8) -> Result<Self, DecodeError> {
+        match b {
+            0 => Ok(Self::MakeVec2),
+            1 => Ok(Self::MakeVec3),
+            2 => Ok(Self::MakeVec4),
+            3 => Ok(Self::MakeQuat),
+            4 => Ok(Self::MakeMat2),
+            5 => Ok(Self::MakeMat3),
+            6 => Ok(Self::MakeMat4),
+            7 => Ok(Self::Dot),
+            8 => Ok(Self::Cross),
+            9 => Ok(Self::Min),
+            10 => Ok(Self::Max),
+            11 => Ok(Self::Clamp),
+            12 => Ok(Self::Lerp),
+            _ => Err(DecodeError::InvalidTowerOp(b)),
+        }
+    }
+
+    /// The `.inkt` mnemonic for this kind (also the `program_model`
+    /// disassembly text). Stable, boring, `snake_case`.
+    #[must_use]
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            Self::MakeVec2 => "make_vec2",
+            Self::MakeVec3 => "make_vec3",
+            Self::MakeVec4 => "make_vec4",
+            Self::MakeQuat => "make_quat",
+            Self::MakeMat2 => "make_mat2",
+            Self::MakeMat3 => "make_mat3",
+            Self::MakeMat4 => "make_mat4",
+            Self::Dot => "dot",
+            Self::Cross => "cross",
+            Self::Min => "tower_min",
+            Self::Max => "tower_max",
+            Self::Clamp => "tower_clamp",
+            Self::Lerp => "tower_lerp",
+        }
+    }
+
+    /// Inverse of [`mnemonic`](Self::mnemonic) for the `.inkt` reader.
+    #[must_use]
+    pub fn from_mnemonic(s: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|op| op.mnemonic() == s)
+    }
+}
+
+/// The collections+ operation selected by an [`Opcode::Collect`]
+/// instruction's kind byte (NS-A7, `docs/stdlib-spec.md` §8, issue #1113).
+///
+/// `Weighted[T]` construction plus `rand::roll`, and the humble heap —
+/// verbs over ordinary arrays, min-heap, ordering per the ruled §4b
+/// doctrine (`total_order_cmp`, the one comparison core). `RandRoll` is
+/// the only draw (one RNG-cell write); everything else is placement or
+/// pure reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CollectOp {
+    /// `[pairs]` → `Weighted[T]` — pops ONE array of flattened
+    /// `weight, value, weight, value, …` entries (built by the preceding
+    /// `ArrayNew`; a transient codegen artifact, never observable).
+    /// Evidence-by-construction (§8): faults on a malformed pair row, a
+    /// non-int weight, or a non-positive weight — so a `Weighted` that
+    /// exists is always rollable.
+    WeightedNew,
+    /// `[w]` → `T` — one weighted draw from a `Weighted[T]` table. Total
+    /// over any table that exists (construction is the validator); writes
+    /// the RNG cell like every draw.
+    RandRoll,
+    /// `[a, x]` → `[a']` — push `x` into the min-heap maintained over the
+    /// array (sift-up; in-place-ness comes from the RMW write-back, the
+    /// `SeqSorted` precedent). §4b entry-check: DEV faults on a NaN in
+    /// the entering element; PROD places it by the pinned total order.
+    HeapPush,
+    /// `[a]` → pushes `Option[T]` (the extracted minimum, `none` on
+    /// empty), then the shrunk re-heapified array on top of it — the
+    /// `SeqPop` stack contract, so the codegen take/store bracket writes
+    /// the array back and leaves the Option as the expression value.
+    HeapPop,
+    /// `[a]` → `Option[T]` — the minimum without extraction (`none` on
+    /// empty). Pure read.
+    HeapPeek,
+}
+
+impl CollectOp {
+    /// Every collections+ op, in kind-byte order (tests + tooling).
+    pub const ALL: [CollectOp; 5] = [
+        Self::WeightedNew,
+        Self::RandRoll,
+        Self::HeapPush,
+        Self::HeapPop,
+        Self::HeapPeek,
+    ];
+
+    fn to_byte(self) -> u8 {
+        match self {
+            Self::WeightedNew => 0,
+            Self::RandRoll => 1,
+            Self::HeapPush => 2,
+            Self::HeapPop => 3,
+            Self::HeapPeek => 4,
+        }
+    }
+
+    fn from_byte(b: u8) -> Result<Self, DecodeError> {
+        match b {
+            0 => Ok(Self::WeightedNew),
+            1 => Ok(Self::RandRoll),
+            2 => Ok(Self::HeapPush),
+            3 => Ok(Self::HeapPop),
+            4 => Ok(Self::HeapPeek),
+            _ => Err(DecodeError::InvalidCollectOp(b)),
+        }
+    }
+
+    /// The `.inkt` mnemonic for this kind (also the `program_model`
+    /// disassembly text). Stable, boring, `snake_case`.
+    #[must_use]
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            Self::WeightedNew => "weighted_new",
+            Self::RandRoll => "rand_roll",
+            Self::HeapPush => "heap_push",
+            Self::HeapPop => "heap_pop",
+            Self::HeapPeek => "heap_peek",
+        }
+    }
+
+    /// Inverse of [`mnemonic`](Self::mnemonic) for the `.inkt` reader.
+    #[must_use]
+    pub fn from_mnemonic(s: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|op| op.mnemonic() == s)
+    }
+}
 
 /// The kind of sequence/shuffle container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -371,6 +731,10 @@ pub enum DecodeError {
     InvalidDefinitionId(u64),
     /// Invalid sequence kind byte.
     InvalidSequenceKind(u8),
+    /// Invalid tower op kind byte (NS-A8 `Tower` opcode immediate).
+    InvalidTowerOp(u8),
+    /// Invalid collections+ op kind byte (NS-A7 `Collect` opcode immediate).
+    InvalidCollectOp(u8),
     /// .inkb magic bytes are not `INKB`.
     BadMagic([u8; 4]),
     /// .inkb version is not supported.
@@ -409,6 +773,39 @@ pub enum DecodeError {
     /// `docs/modules-spec.md` §5) carried a version byte this reader doesn't
     /// know how to decode.
     UnsupportedSectionVersion { section: u8, version: u8 },
+    /// A `VAL_PROJECTION` segment carried an unknown kind byte — either
+    /// malformed bytecode or the RESERVED range-segment kind (`2`,
+    /// `docs/format-v4-rfc.md` §1), which nothing emits in T1e and the
+    /// reader therefore rejects (`docs/t1e-spec.md` §3).
+    InvalidProjSegmentKind(u8),
+    /// An `EffectRows` call atom carried an unknown capability-parameter tag
+    /// (T2-3, `docs/effects-spec.md` §11). Only `Any` (`0`) is legal in this
+    /// section version; path-granular tags are reserved (#826).
+    InvalidEffectCapParam(u8),
+    /// An `EffectRows` call atom carried a non-`None` handle-parameter slot
+    /// (T2-3, `docs/effects-spec.md` §11, `docs/t1d-spec.md` §7). The slot is
+    /// reserved — nothing emits a bound handle in this section version.
+    InvalidEffectHandleParam(u8),
+    /// A `DirectEffects` extension-flags byte (NS-A2, `EffectRows` section
+    /// version 3) carried a set bit outside the known
+    /// emits/tags/faults mask — the reserved bits (3–7) are rejected until
+    /// a section version graduates them.
+    InvalidEffectDimensions(u8),
+    /// A `ContainerDef`'s declared `param_count` disagreed with the number
+    /// of per-param name/mode metadata entries that followed it (#954,
+    /// sibling of the `.inkt` reader's same guard, #745). `ContainerDef`'s
+    /// documented invariant is that `params.len()` always equals
+    /// `param_count` whenever per-param metadata is present at all (empty
+    /// `params` is the separate, legitimate "count only, no metadata" case).
+    /// A mutated/corrupt `.inkb` asserting otherwise is malformed input.
+    ParamCountMismatch { declared: u8, actual: usize },
+    /// A `VAL_MAP` entry list carried the same key twice. A legitimate
+    /// encoder never emits this — `OrderedMap::insert` de-duplicates on the
+    /// write side — so a repeated key is a corrupt or crafted `.inkb`; the
+    /// content-based `OrderedMap` `Eq` (issue #909) assumes each key appears
+    /// once, so this is rejected rather than silently keeping the last
+    /// occurrence (issue #985).
+    DuplicateMapKey,
 }
 
 impl fmt::Display for DecodeError {
@@ -420,6 +817,8 @@ impl fmt::Display for DecodeError {
                 write!(f, "invalid definition id: {raw:#018x}")
             }
             Self::InvalidSequenceKind(b) => write!(f, "invalid sequence kind: {b}"),
+            Self::InvalidTowerOp(b) => write!(f, "invalid tower op kind: {b:#04x}"),
+            Self::InvalidCollectOp(b) => write!(f, "invalid collections+ op kind: {b:#04x}"),
             Self::BadMagic(m) => write!(f, "bad magic: {m:02x?}"),
             Self::UnsupportedVersion(v) => write!(f, "unsupported .inkb version: {v}"),
             Self::InvalidUtf8 => write!(f, "invalid UTF-8 in string field"),
@@ -459,6 +858,25 @@ impl fmt::Display for DecodeError {
                     "unsupported section-local version {version} for section {section:#04x}"
                 )
             }
+            Self::InvalidProjSegmentKind(b) => {
+                write!(f, "invalid projection segment kind: {b:#04x}")
+            }
+            Self::InvalidEffectCapParam(b) => {
+                write!(f, "invalid effect capability-parameter tag: {b:#04x}")
+            }
+            Self::InvalidEffectHandleParam(b) => {
+                write!(f, "reserved effect handle-parameter slot set: {b:#04x}")
+            }
+            Self::InvalidEffectDimensions(b) => {
+                write!(f, "reserved effect-dimension flag bits set: {b:#04x}")
+            }
+            Self::ParamCountMismatch { declared, actual } => {
+                write!(
+                    f,
+                    "container params metadata count ({actual}) does not match declared param_count ({declared})"
+                )
+            }
+            Self::DuplicateMapKey => write!(f, "duplicate key in map value"),
         }
     }
 }
@@ -734,6 +1152,179 @@ pub enum Opcode {
     /// callee is not a function value; `bound + argc` exceeds the target's
     /// declared arity.
     BindValue(u8),
+
+    // ── Path projections (T1e, `docs/t1e-spec.md` §3) ─────────────────────
+    /// `[seg_0, …, seg_{n-1}]` → `Projection` (`n` = `segment_count`, pushed
+    /// by codegen in source order; the VM's LIFO pop-then-reverse restores
+    /// it). Each popped value is classified `Int` → `ProjSegment::Index`, else →
+    /// `ProjSegment::Key` and paired with the static `root` cell to build a
+    /// `Value::Projection` (`docs/format-v4-rfc.md` §1). Emitted at every
+    /// real path-projection `ref`-argument creation site (`ref
+    /// npc.inventory[3]`) — the T1e-1 `E099` lowering fence this replaces.
+    MakeProjection {
+        root: DefinitionId,
+        segment_count: u8,
+    },
+    /// `[projection]` → value. Root-cell RMW read: take the root cell's
+    /// *current* value, walk the segment chain, push the result. Faults
+    /// `ProjectionInvalidated` (turn-terminating) if the path no longer
+    /// resolves (spec §1(2)).
+    ProjRead,
+    /// `[projection, value]` → (assigns, pushes nothing). Root-cell RMW
+    /// write: take root → walk → `make_mut` spine → write the final segment
+    /// → store back (spec §3). Faults `ProjectionInvalidated` on an
+    /// unresolved path, same domain as `ProjRead`.
+    ProjWrite,
+
+    // ── Stdlib slice 1 completion (`docs/t1b-surface-spec.md` §5, issue
+    // #857) ───────────────────────────────────────────────────────────────
+    /// `[s, i]` → single-character `String`. The `char_at(s, i)` stdlib pure
+    /// function: `i` indexes Unicode scalar values ("chars"), not UTF-8
+    /// bytes. Turn-terminating fault (value-model-spec §11c) on a non-`Int`
+    /// `i`, a non-`String` `s`, or `i` outside `[0, char_count)`.
+    CharAt,
+
+    // ── NS-A1: Option[T] + the ruled stdlib flips (`docs/stdlib-spec.md`
+    // §1.1/§1.4, §§3-5) ──────────────────────────────────────────────────
+    /// `[]` → `none`. Push the `Option[T]` absence value.
+    PushNone,
+    /// `[x]` → `some(x)`. Wrap the top of stack — total over every value.
+    MakeSome,
+    /// `[s, sub]` → `Option[int]`: index of `sub`'s first occurrence in
+    /// `s`, counted in Unicode scalar values (chars, not bytes — the §3
+    /// indexing unit `char_at` already uses); absent → `none`.
+    /// Turn-terminating fault on non-string arguments.
+    StrFind,
+    /// `[a, x]` → `Option[int]`: index of the first element structurally
+    /// equal to `x`; absent → `none`. Fault on a non-array container.
+    SeqIndexOf,
+    /// `[a]` → `Option[T]`: least element (empty → `none`). Orders
+    /// int/float (numeric promotion, NaN per the §4b pinned prod order),
+    /// bool, string; anything else faults (unorderable — wave A4 grows the
+    /// roster). Ties keep the first occurrence.
+    SeqMin,
+    /// `[a]` → `Option[T]`: greatest element — see [`SeqMin`](Self::SeqMin).
+    SeqMax,
+    /// `[a]` → `Option[T]`: first element (empty → `none`).
+    SeqFirst,
+    /// `[a]` → `Option[T]`: last element (empty → `none`).
+    SeqLast,
+    /// `[a]` → pushes `Option[T]` (the removed last element, or `none` on
+    /// empty), then the shrunk array on top of it. Codegen brackets this
+    /// `TakeGlobal`/`TakeTemp` … `SetGlobal`/`SetTemp` so the array writes
+    /// back to its root cell and the Option remains as the expression's
+    /// value. Fault on a non-array.
+    SeqPop,
+    /// `[m, k]` → `Option[V]`: the non-faulting map read (`get(m, k)`,
+    /// §5 — martyr #3 redeemed). Missing key → `none`; a key outside the
+    /// int/string/bool key domain is a turn-terminating fault (malformed
+    /// question), as is a non-map container. The faulting `m[k]`
+    /// ([`MapGet`](Self::MapGet)) stays the "I expect it there" read.
+    MapGetOpt,
+    /// `[m, v]` → `Bool`: content-equality scan over the map's values
+    /// (§5 — honest O(n)). Fault on a non-map.
+    MapContainsValue,
+    /// `[m]` → empty map. The `clear(m)` statement-only mutator's
+    /// primitive; in-place-ness comes from the RMW write-back, exactly
+    /// like [`MapInsert`](Self::MapInsert)/[`MapRemove`](Self::MapRemove).
+    /// Fault on a non-map.
+    MapClear,
+
+    // ── NS-A6: the `std::rand` draw verbs (`docs/stdlib-spec.md` §7,
+    // ruled 2026-07-18; `docs/stdlib-sequencing.md` §2 Wave A6). Every op
+    // below draws through the ONE RNG state cell (`rng_seed` +
+    // `previous_random` — the same cell ink's `RANDOM`/`SEED_RANDOM` have
+    // always used; one cell, two surfaces, no drift) and is an ordinary
+    // *write* to that cell in the effect row
+    // (`DefinitionId::RNG_CELL`). `seed(n)` needs no new op — it lowers to
+    // the frozen [`SeedRandom`](Self::SeedRandom). ────────────────────────
+    /// `[]` → `Float` uniform in `[0,1)`. One draw. The value is built from
+    /// the draw's top 24 bits (`draw >> 7`) divided by 2²⁴, so every result
+    /// is exactly representable in the f32 payload and 1.0 is unreachable —
+    /// part of the pinned-algorithm stability contract (see
+    /// `brink-runtime::rand_ops`).
+    RandFloat,
+    /// `[p]` → `Bool`: one uniform `[0,1)` draw `u`, result `u < p` with
+    /// `p` clamped to `[0,1]` and NaN → `false` (F3, ruled 2026-07-19:
+    /// interpretation, not fabrication — total over the numeric domain).
+    /// Always consumes exactly one draw, NaN included. Fault on a
+    /// non-numeric `p` (malformed question).
+    RandChance,
+    /// `[coll]` → `Option[T]`: uniform draw of one element from an array
+    /// (→ `some(elem)`) or a flags subset (→ `some(single-item list)`,
+    /// mirroring the frozen `ListRandom` selection). Empty → `none`
+    /// *without* consuming a draw. Fault on any other collection type.
+    RandPick,
+    /// `[a]` → `[a']`: Fisher-Yates shuffle of an array, `len-1` draws
+    /// (none for `len < 2`), each advancing the RNG cell. One op serves
+    /// both surfaces: `shuffle(a)` (statement-only, RMW write-back) and
+    /// `shuffled(a)` (functional). Fault on a non-array.
+    RandShuffle,
+    /// `[start, end]` → `Range` (NS-A5, F7): construct an exclusive
+    /// (`start..end`) range value from two int bounds. Fault on non-int
+    /// bounds (malformed question — the T1b stdlib doctrine; no numeric
+    /// coercion, range bounds are ints by ruling).
+    RangeMakeExcl,
+    /// `[start, end]` → `Range` (NS-A5, F7): construct an inclusive
+    /// (`start..=end`) range value from two int bounds. Same fault
+    /// contract as [`RangeMakeExcl`](Self::RangeMakeExcl).
+    RangeMakeIncl,
+    /// `[r]` → `Option[Range]` (NS-A5, the `non_empty(r)` validator —
+    /// S2 ruled 2026-07-19): `some(r)` when the range denotes at least one
+    /// element, `none` when it is empty. The Option tax sits once at the
+    /// boundary where dynamic bounds enter; the checker types the `some`
+    /// payload as the inhabited-range refinement. Pure — no draw, no
+    /// write. Fault on a non-range operand.
+    RangeNonEmpty,
+
+    // ── NS-A4: the ordering verbs (`docs/stdlib-spec.md` §4b, issue
+    // #1110) ────────────────────────────────────────────────────────────
+    /// `[a]` → `[a']`: the array sorted ascending by the §4b ordering
+    /// doctrine — int/float (numeric promotion), bool (`false < true`),
+    /// string (USV-lexicographic), arrays lexicographic element-wise
+    /// (recursively). Stable (equal elements keep their input order).
+    /// Float NaN is mode-dependent: DEV mode faults on any NaN comparand
+    /// (`UnorderedComparand` — the upstream bug surfaces at its first
+    /// ordering consumption); PROD mode places it by the pinned
+    /// non-fabricating total order (`-0 == +0` ties, NaN greatest,
+    /// NaN-vs-NaN ties). One op serves both surfaces: `sort(a)`
+    /// (statement-only, RMW write-back) and `sorted(a)` (functional) —
+    /// the `RandShuffle` precedent. Fault on a non-array or unorderable
+    /// elements (structs/enums without a registered `compare`, maps,
+    /// flags subsets, divert targets — malformed question, all modes).
+    SeqSorted,
+    /// `[a, cmp]` → `[a']`: the array sorted ascending by a user
+    /// comparator — `cmp` is a function value (`FnRef`/`Closure`) of
+    /// shape `fn(T, T): int` (negative = less, zero = tie, positive =
+    /// greater; F0 ruled 2026-07-19). Stable. The comparator runs under
+    /// the pure·silent contract (checker-enforced where provable); the
+    /// VM evaluates it re-entrantly with output isolated and faults if it
+    /// yields, presents choices, calls an external, or returns a
+    /// non-int. No NaN check here — F14: `sort_by` does not inherit
+    /// `F:float`; the comparator owns the element semantics. One op
+    /// serves `sort_by(a, cmp)` (statement-only, RMW write-back) and
+    /// `sorted_by(a, cmp)` (functional). Fault on a non-array or
+    /// non-function comparator.
+    SeqSortedBy,
+
+    // ── NS-A8: the numeric tower (`docs/tower-mini-spec.md`, issue
+    // #1114) ────────────────────────────────────────────────────────────
+    /// One opcode, thirteen operations: the [`TowerOp`] immediate selects
+    /// the constructor or verb (see its per-kind docs for stack shapes).
+    /// All pure; wrong-operand-type is a turn-terminating fault (a
+    /// malformed question, per the ruled fault-vs-absence doctrine). The
+    /// tower's operator family (`+`/`-`/`*`, `mat*vec`, `quat*quat`,
+    /// `quat*vec`) rides the frozen arithmetic opcodes instead — see
+    /// `value_ops::binary_op`.
+    Tower(TowerOp),
+
+    // ── NS-A7: collections+ (`docs/stdlib-spec.md` §8, issue #1113) ────
+    /// One opcode, five operations: the [`CollectOp`] immediate selects
+    /// `Weighted[T]` construction, the `rand::roll` draw, or one of the
+    /// heap verbs (see its per-kind docs for stack shapes). `RandRoll`
+    /// writes the RNG cell; `HeapPush` carries the §4b dev/prod NaN
+    /// entry-check; everything else is pure over its operands.
+    Collect(CollectOp),
 
     // ── Lifecycle ───────────────────────────────────────────────────────
     Done,
@@ -1058,6 +1649,58 @@ impl Opcode {
                 write_u8(buf, argc);
             }
 
+            // Path projections (T1e)
+            Self::MakeProjection {
+                root,
+                segment_count,
+            } => {
+                write_u8(buf, MAKE_PROJECTION);
+                write_def_id(buf, root);
+                write_u8(buf, segment_count);
+            }
+            Self::ProjRead => write_u8(buf, PROJ_READ),
+            Self::ProjWrite => write_u8(buf, PROJ_WRITE),
+
+            // Stdlib slice 1 completion (#857)
+            Self::CharAt => write_u8(buf, CHAR_AT),
+
+            // NS-A1 Option + stdlib flips
+            Self::PushNone => write_u8(buf, PUSH_NONE),
+            Self::MakeSome => write_u8(buf, MAKE_SOME),
+            Self::StrFind => write_u8(buf, STR_FIND),
+            Self::SeqIndexOf => write_u8(buf, SEQ_INDEX_OF),
+            Self::SeqMin => write_u8(buf, SEQ_MIN),
+            Self::SeqMax => write_u8(buf, SEQ_MAX),
+            Self::SeqFirst => write_u8(buf, SEQ_FIRST),
+            Self::SeqLast => write_u8(buf, SEQ_LAST),
+            Self::SeqPop => write_u8(buf, SEQ_POP),
+            Self::MapGetOpt => write_u8(buf, MAP_GET_OPT),
+            Self::MapContainsValue => write_u8(buf, MAP_CONTAINS_VALUE),
+            Self::MapClear => write_u8(buf, MAP_CLEAR),
+            Self::RandFloat => write_u8(buf, RAND_FLOAT),
+            Self::RandChance => write_u8(buf, RAND_CHANCE),
+            Self::RandPick => write_u8(buf, RAND_PICK),
+            Self::RandShuffle => write_u8(buf, RAND_SHUFFLE),
+            Self::RangeMakeExcl => write_u8(buf, RANGE_MAKE_EXCL),
+            Self::RangeMakeIncl => write_u8(buf, RANGE_MAKE_INCL),
+            Self::RangeNonEmpty => write_u8(buf, RANGE_NON_EMPTY),
+
+            // NS-A4 ordering verbs
+            Self::SeqSorted => write_u8(buf, SEQ_SORTED),
+            Self::SeqSortedBy => write_u8(buf, SEQ_SORTED_BY),
+
+            // NS-A7 collections+: discriminant + CollectOp kind byte.
+            Self::Collect(op) => {
+                write_u8(buf, COLLECT);
+                write_u8(buf, op.to_byte());
+            }
+
+            // NS-A8 numeric tower: discriminant + TowerOp kind byte.
+            Self::Tower(op) => {
+                write_u8(buf, TOWER);
+                write_u8(buf, op.to_byte());
+            }
+
             // Lifecycle
             Self::Done => write_u8(buf, DONE),
             Self::Yield => write_u8(buf, YIELD),
@@ -1268,6 +1911,50 @@ impl Opcode {
             },
             CALL_VALUE => Self::CallValue(read_u8(buf, offset)?),
             BIND_VALUE => Self::BindValue(read_u8(buf, offset)?),
+
+            // Path projections (T1e)
+            MAKE_PROJECTION => Self::MakeProjection {
+                root: read_def_id(buf, offset)?,
+                segment_count: read_u8(buf, offset)?,
+            },
+            PROJ_READ => Self::ProjRead,
+            PROJ_WRITE => Self::ProjWrite,
+
+            // Stdlib slice 1 completion (#857)
+            CHAR_AT => Self::CharAt,
+
+            // NS-A1 Option + stdlib flips
+            PUSH_NONE => Self::PushNone,
+            MAKE_SOME => Self::MakeSome,
+            STR_FIND => Self::StrFind,
+            SEQ_INDEX_OF => Self::SeqIndexOf,
+            SEQ_MIN => Self::SeqMin,
+            SEQ_MAX => Self::SeqMax,
+            SEQ_FIRST => Self::SeqFirst,
+            SEQ_LAST => Self::SeqLast,
+            SEQ_POP => Self::SeqPop,
+            MAP_GET_OPT => Self::MapGetOpt,
+            MAP_CONTAINS_VALUE => Self::MapContainsValue,
+            MAP_CLEAR => Self::MapClear,
+            RAND_FLOAT => Self::RandFloat,
+            RAND_CHANCE => Self::RandChance,
+            RAND_PICK => Self::RandPick,
+            RAND_SHUFFLE => Self::RandShuffle,
+            RANGE_MAKE_EXCL => Self::RangeMakeExcl,
+            RANGE_MAKE_INCL => Self::RangeMakeIncl,
+            RANGE_NON_EMPTY => Self::RangeNonEmpty,
+
+            // NS-A4 ordering verbs
+            SEQ_SORTED => Self::SeqSorted,
+            SEQ_SORTED_BY => Self::SeqSortedBy,
+
+            // NS-A8 numeric tower: TowerOp kind byte follows; unknown
+            // kinds are a decode error (reserved-tag discipline).
+            TOWER => Self::Tower(TowerOp::from_byte(read_u8(buf, offset)?)?),
+
+            // NS-A7 collections+: CollectOp kind byte follows; unknown
+            // kinds are a decode error (reserved-tag discipline).
+            COLLECT => Self::Collect(CollectOp::from_byte(read_u8(buf, offset)?)?),
 
             // Lifecycle
             DONE => Self::Done,
@@ -1589,6 +2276,193 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_ns_a1_option_and_stdlib_flips() {
+        for op in [
+            Opcode::PushNone,
+            Opcode::MakeSome,
+            Opcode::StrFind,
+            Opcode::SeqIndexOf,
+            Opcode::SeqMin,
+            Opcode::SeqMax,
+            Opcode::SeqFirst,
+            Opcode::SeqLast,
+            Opcode::SeqPop,
+            Opcode::MapGetOpt,
+            Opcode::MapContainsValue,
+            Opcode::MapClear,
+        ] {
+            roundtrip(&op);
+        }
+    }
+
+    /// The NS-A1 block layout: `PushNone`/`MakeSome` fill the two bytes
+    /// before the string-eval block (0xE0/0xE1), the verb flips continue
+    /// contiguously after it (0xE2-0xEB).
+    #[test]
+    fn ns_a1_opcode_block_layout() {
+        let expected: [(u8, Opcode); 12] = [
+            (0xDE, Opcode::PushNone),
+            (0xDF, Opcode::MakeSome),
+            (0xE2, Opcode::StrFind),
+            (0xE3, Opcode::SeqIndexOf),
+            (0xE4, Opcode::SeqMin),
+            (0xE5, Opcode::SeqMax),
+            (0xE6, Opcode::SeqFirst),
+            (0xE7, Opcode::SeqLast),
+            (0xE8, Opcode::SeqPop),
+            (0xE9, Opcode::MapGetOpt),
+            (0xEA, Opcode::MapContainsValue),
+            (0xEB, Opcode::MapClear),
+        ];
+        for (byte, op) in expected {
+            let mut buf = Vec::new();
+            op.encode(&mut buf);
+            assert_eq!(buf[0], byte, "{op:?} encoded to unexpected discriminant");
+        }
+    }
+
+    #[test]
+    fn roundtrip_ns_a6_rand_verbs() {
+        for op in [
+            Opcode::RandFloat,
+            Opcode::RandChance,
+            Opcode::RandPick,
+            Opcode::RandShuffle,
+        ] {
+            roundtrip(&op);
+        }
+    }
+
+    #[test]
+    fn roundtrip_ns_a5_range_ops() {
+        for op in [
+            Opcode::RangeMakeExcl,
+            Opcode::RangeMakeIncl,
+            Opcode::RangeNonEmpty,
+        ] {
+            roundtrip(&op);
+        }
+    }
+
+    /// The NS-A5 block layout: the three range ops take the first free
+    /// bytes after the lifecycle block (0xF0-0xF3). `rand::int` has NO
+    /// byte — it rides the existing `ConvertInt` (0xE2), a value-directed
+    /// dispatch in the VM.
+    #[test]
+    fn ns_a5_opcode_block_layout() {
+        let expected: [(u8, Opcode); 3] = [
+            (0xF4, Opcode::RangeMakeExcl),
+            (0xF5, Opcode::RangeMakeIncl),
+            (0xF6, Opcode::RangeNonEmpty),
+        ];
+        for (byte, op) in expected {
+            let mut buf = Vec::new();
+            op.encode(&mut buf);
+            assert_eq!(buf[0], byte, "{op:?} encoded to unexpected discriminant");
+        }
+    }
+
+    /// The NS-A6 block layout: the four rand draw ops fill 0xEC-0xEF,
+    /// contiguously after NS-A1's 0xEB, up against the lifecycle block
+    /// (0xF0+). `seed(n)` deliberately has no byte here — it reuses the
+    /// frozen `SeedRandom` (0x85): one RNG cell, two surfaces, no drift.
+    #[test]
+    fn ns_a6_opcode_block_layout() {
+        let expected: [(u8, Opcode); 4] = [
+            (0xEC, Opcode::RandFloat),
+            (0xED, Opcode::RandChance),
+            (0xEE, Opcode::RandPick),
+            (0xEF, Opcode::RandShuffle),
+        ];
+        for (byte, op) in expected {
+            let mut buf = Vec::new();
+            op.encode(&mut buf);
+            assert_eq!(buf[0], byte, "{op:?} encoded to unexpected discriminant");
+        }
+    }
+
+    /// The NS-A4 block layout: the two ordering ops take the next free
+    /// bytes after NS-A8's `Tower` discriminant (0xF7). Two ops serve
+    /// four source verbs — `sort`/`sorted` share `SeqSorted`,
+    /// `sort_by`/`sorted_by` share `SeqSortedBy` (in-place-ness comes
+    /// from the RMW write-back, the `shuffle`/`shuffled` precedent).
+    #[test]
+    fn ns_a4_opcode_block_layout() {
+        let expected: [(u8, Opcode); 2] = [(0xF8, Opcode::SeqSorted), (0xF9, Opcode::SeqSortedBy)];
+        for (byte, op) in expected {
+            let mut buf = Vec::new();
+            op.encode(&mut buf);
+            assert_eq!(buf[0], byte, "{op:?} encoded to unexpected discriminant");
+            roundtrip(&op);
+        }
+    }
+
+    #[test]
+    fn roundtrip_ns_a8_tower_ops() {
+        for kind in TowerOp::ALL {
+            roundtrip(&Opcode::Tower(kind));
+        }
+    }
+
+    /// The NS-A8 layout: ONE discriminant byte (0xF7 — the first free byte
+    /// after the NS-A5 range ops at 0xF4-0xF6) with the `TowerOp` kind as a
+    /// u8 immediate in kind-byte order 0..=12. Deliberate opcode-space
+    /// economy — see the `TOWER` const's comment.
+    #[test]
+    fn ns_a8_tower_opcode_layout() {
+        for (i, kind) in TowerOp::ALL.into_iter().enumerate() {
+            let mut buf = Vec::new();
+            Opcode::Tower(kind).encode(&mut buf);
+            #[expect(clippy::cast_possible_truncation, reason = "13 kinds")]
+            let expected_kind = i as u8;
+            assert_eq!(buf, [0xF7, expected_kind], "{kind:?} layout drifted");
+        }
+    }
+
+    /// An unknown tower kind byte is a decode error, not a silent skip —
+    /// the same reserved-tag discipline as every other closed sub-enum.
+    #[test]
+    fn decode_unknown_tower_kind_rejected() {
+        let buf = [0xF7, 13];
+        let mut offset = 0;
+        let err = Opcode::decode(&buf, &mut offset).unwrap_err();
+        assert_eq!(err, DecodeError::InvalidTowerOp(13));
+    }
+
+    #[test]
+    fn roundtrip_ns_a7_collect_ops() {
+        for kind in CollectOp::ALL {
+            roundtrip(&Opcode::Collect(kind));
+        }
+    }
+
+    /// The NS-A7 layout: ONE discriminant byte (0xFA — the first free byte
+    /// after the NS-A4 ordering verbs at 0xF8/0xF9) with the `CollectOp`
+    /// kind as a u8 immediate in kind-byte order 0..=4. The NS-A8 Tower
+    /// opcode-space economy applied again — see the `COLLECT` const's
+    /// comment.
+    #[test]
+    fn ns_a7_collect_opcode_layout() {
+        for (i, kind) in CollectOp::ALL.into_iter().enumerate() {
+            let mut buf = Vec::new();
+            Opcode::Collect(kind).encode(&mut buf);
+            #[expect(clippy::cast_possible_truncation, reason = "5 kinds")]
+            let expected_kind = i as u8;
+            assert_eq!(buf, [0xFA, expected_kind], "{kind:?} layout drifted");
+        }
+    }
+
+    /// An unknown collections+ kind byte is a decode error, not a silent
+    /// skip — same reserved-tag discipline as `TowerOp`.
+    #[test]
+    fn decode_unknown_collect_kind_rejected() {
+        let buf = [0xFA, 5];
+        let mut offset = 0;
+        let err = Opcode::decode(&buf, &mut offset).unwrap_err();
+        assert_eq!(err, DecodeError::InvalidCollectOp(5));
+    }
+
+    #[test]
     fn roundtrip_lifecycle() {
         for op in [Opcode::Done, Opcode::Yield, Opcode::End, Opcode::Nop] {
             roundtrip(&op);
@@ -1737,6 +2611,18 @@ mod tests {
         let mut buf = Vec::new();
         Opcode::ConvertString.encode(&mut buf);
         assert_eq!(buf[0], 0xD5);
+    }
+
+    /// The `char_at(s, i)` stdlib-slice-1-completion opcode (`0xDD` — issue
+    /// #857) round-trips and sits contiguous and adjacent to the projection
+    /// block, matching the reservation comment above `CHAR_AT`.
+    #[test]
+    fn roundtrip_char_at_opcode() {
+        roundtrip(&Opcode::CharAt);
+
+        let mut buf = Vec::new();
+        Opcode::CharAt.encode(&mut buf);
+        assert_eq!(buf[0], 0xDD);
     }
 
     #[test]

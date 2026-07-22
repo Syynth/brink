@@ -291,8 +291,12 @@ export class EditorSessionHandle {
 
   /**
    * Set the TM-3 typed-mode policy (docs/typed-mode-spec.md §1, #660):
-   * `"strict"` or `"gradual"` (default — any other value, or never calling
-   * this at all, keeps `Gradual`). Mirrors `setLanguageDialect` exactly.
+   * `"strict"` or `"gradual"`. Never calling this keeps the dialect-keyed
+   * default (NS-A9, 2026-07-19): `"brink"` sessions resolve `strict`,
+   * `"strict-ink"` sessions resolve `gradual`; an explicit call — or a
+   * `types` field applied via `applyProjectConfig` — always wins over that
+   * default. An unrecognized value is ignored (the resolved policy is
+   * unchanged). Mirrors `setLanguageDialect` exactly.
    * `"strict"` requires `setLanguageDialect("brink")` to also be in effect,
    * or the compile/analysis surface a single project-level `E064`
    * config-error diagnostic instead of running the normal passes (the
@@ -302,6 +306,32 @@ export class EditorSessionHandle {
   setTypePolicy(value: "strict" | "gradual"): void {
     this.bump();
     this.session.set_type_policy(value);
+  }
+
+  /**
+   * Parse a `brink.toml` project settings file (#1005 — dialect + type
+   * policy, one config every compiler mount reads) and apply its
+   * `[project] dialect`/`types` to this session. The wasm sandbox has no
+   * filesystem of its own: read `brink.toml`'s text with whatever host API
+   * your embedder has (Node `fs`, the File System Access API, a bundler
+   * import, …) and pass it here — this method does the discovery-free
+   * parsing + application, mirroring what `brink compile`/`brink ide` do
+   * with real filesystem discovery.
+   *
+   * Call this once, right after construction, before any explicit
+   * {@link setLanguageDialect}/{@link setTypePolicy} call — an explicit
+   * call always overrides the file for that field (matches the CLI's
+   * `--dialect`/`--types` flag precedence: the file is the default, code
+   * wins). Re-analyzes immediately for whichever field the file sets.
+   *
+   * Returns the list of warning strings for unrecognized keys — never an
+   * error (forward compat). Throws only on malformed TOML or a recognized
+   * key with an invalid value.
+   */
+  applyProjectConfig(toml: string): string[] {
+    this.bump();
+    const json = this.session.apply_project_config(toml);
+    return JSON.parse(json) as string[];
   }
 
   setActiveFile(path: string): boolean {
@@ -945,11 +975,28 @@ export class StoryRunnerHandle {
     return this.runner.call_function(name, args) as ExternalValue;
   }
 
+  // ── Primary-flow drive (documented sugar) ────────────────────────
+  //
+  // FS-3w (`docs/flow-suspension-spec.md` §10.1): `continue` lives on the
+  // flow, not the story. These story-level drive methods
+  // (`continueStory`/`continueSingle`/`continueStoryAsync`/…) are
+  // documented **sugar for the primary flow** — the always-present default
+  // flow this runner was constructed with. Spawned/ambient flows are
+  // addressable via `flow(name)` / `continueFlow(name)`, each with its own
+  // `Line` stream. Nothing here changes behavior: the primary flow is what
+  // every prior consumer has always been driving.
+
+  /** Drive the **primary flow** to its next pause, returning every `Line`
+   * up to and including the terminal one. Documented sugar for the default
+   * flow (see the section note above); `flow(name).continueMaximally()` is
+   * the per-flow equivalent for a spawned flow. */
   continueStory(): Line[] {
     const json = this.runner.continue_story();
     return JSON.parse(json) as Line[];
   }
 
+  /** Produce one `Line` from the **primary flow**. Documented sugar for the
+   * default flow (see the section note above). */
   continueSingle(): Line {
     const json = this.runner.continue_single();
     return JSON.parse(json) as Line;
@@ -1116,20 +1163,47 @@ export class StoryRunnerHandle {
     return this.runner.checksum();
   }
 
-  // ── Shared flows (#200) ──────────────────────────────────────────
+  // ── Flow-addressed consumption (#200, FS-3w) ─────────────────────
   // Concurrent flows of one story that SHARE this runner's globals / visit
-  // counts / rng (true ink flow semantics), each with its own call stack.
-  // Drives the studio's "+ new flow". Distinct from a separate
-  // `StoryRunnerHandle`, which is an isolated playthrough.
+  // counts / rng (true ink flow semantics), each with its own call stack
+  // and its own `Line` stream. Drives the studio's "+ new flow". Distinct
+  // from a separate `StoryRunnerHandle`, which is an isolated playthrough.
+  //
+  // FS-3w (`docs/flow-suspension-spec.md` §10.1): spawned/ambient flows are
+  // **addressable handles**. Use `flow(name)` for an object handle, or the
+  // name-addressed methods below directly. The primary flow is driven by
+  // the story-level `continue*` methods above (documented sugar).
 
-  /** Spawn a shared-context flow at the program root (or `path`). */
-  spawnFlow(name: string, path?: string): void {
+  /** Spawn a shared-context flow at the program root (or `path`), returning
+   * an addressable {@link FlowHandle} for it (FS-3w §10.1). */
+  spawnFlow(name: string, path?: string): FlowHandle {
     this.runner.spawn_flow(name, path);
+    return new FlowHandle(this, name);
   }
 
-  /** Advance a shared flow by one line. */
+  /** An addressable handle for a spawned/ambient flow — its own `Line`
+   * stream, choices, debug snapshot, and teardown. A thin, allocation-free
+   * view over the name-addressed methods; does not have to exist for those
+   * to work. */
+  flow(name: string): FlowHandle {
+    return new FlowHandle(this, name);
+  }
+
+  /** Advance a shared flow by one line (that flow's `Line` stream). */
   continueFlow(name: string): Line {
     return JSON.parse(this.runner.continue_flow(name)) as Line;
+  }
+
+  /** Drive a shared flow to its next terminal line, collecting every `Line`
+   * up to and including it — the raw entry point behind
+   * `flow(name).continueMaximally()`. Capped at the runtime's
+   * `FlowInstance::LINE_LIMIT` (10,000 lines/turn), the same bound
+   * `continueStory` enforces for the primary flow: an infinite-emitting flow
+   * throws (the wasm `RuntimeError::LineLimitExceeded` surfaced as a JS
+   * `Error`, matching `continueStory`'s error shape) instead of growing an
+   * unbounded array and hanging the host (#999). */
+  continueFlowMaximally(name: string): Line[] {
+    return JSON.parse(this.runner.continue_flow_maximally(name)) as Line[];
   }
 
   /** Select a choice in a shared flow. */
@@ -1150,6 +1224,19 @@ export class StoryRunnerHandle {
   /** Per-flow debug snapshot (State View) for a named flow. */
   flowDebugSnapshot(name: string): DebugState {
     return JSON.parse(this.runner.flow_debug_snapshot(name)) as DebugState;
+  }
+
+  /** Re-evaluate parked flows' wake conditions and return the flow ids that
+   * woke (`docs/flow-suspension-spec.md` §10.2). Waking never
+   * auto-continues — drive a woken flow via `continueFlow`/`flow(id)` when
+   * you want its output.
+   *
+   * **Returns `[]` until parks exist (FS-3r).** No flow can park in today's
+   * runtime — the E052 fence keeps `await` from lowering, so
+   * `Line.type === "suspended"` is never produced. Exported now (FS-3w) so
+   * hosts wire the wake loop against a stable shape. */
+  wakeCheck(): string[] {
+    return JSON.parse(this.runner.wake_check()) as string[];
   }
 
   // ── Speculative evaluation (F4.3, docs/speculative-eval-spec.md) ─
@@ -1407,6 +1494,77 @@ export class StoryRunnerHandle {
 
   free(): void {
     this.runner.free();
+  }
+}
+
+/**
+ * The name-addressed flow methods a {@link FlowHandle} needs from its owner.
+ * Both {@link StoryRunnerHandle} and {@link StorySessionHandle} implement
+ * this shape (#1000 — the two session surfaces stay parallel), so a
+ * `FlowHandle` works identically whichever one spawned it.
+ */
+interface FlowHost {
+  continueFlow(name: string): Line;
+  continueFlowMaximally(name: string): Line[];
+  chooseFlow(name: string, index: number): void;
+  flowDebugSnapshot(name: string): DebugState;
+  destroyFlow(name: string): void;
+}
+
+/**
+ * An addressable handle for one spawned/ambient flow of a {@link FlowHost}
+ * (a {@link StoryRunnerHandle} or {@link StorySessionHandle}) (FS-3w,
+ * `docs/flow-suspension-spec.md` §10.1).
+ *
+ * Each flow shares its owner's globals / visit counts / rng (true ink
+ * flow semantics) but keeps its own call stack and its own `Line` stream —
+ * `continue`/`choose` here drive *this* flow, not the primary one. The
+ * handle is a thin, allocation-free view over the owner's name-addressed
+ * flow methods (`continueFlow`/`chooseFlow`/…); it holds only the owner
+ * and the flow's name, so obtaining one never has to precede driving the
+ * flow, and a flow can be driven by name without a handle at all.
+ */
+export class FlowHandle {
+  constructor(
+    private readonly host: FlowHost,
+    /** This flow's id (its spawn name). */
+    readonly name: string,
+  ) {}
+
+  /** Advance this flow by one line (this flow's `Line` stream). The line
+   * may be `{ type: "suspended" }` once FS-3r lands parks; today it never
+   * is. */
+  continue(): Line {
+    return this.host.continueFlow(this.name);
+  }
+
+  /** Drive this flow to its next pause, collecting every `Line` up to and
+   * including the terminal one (the per-flow analogue of the primary
+   * flow's `continueStory`).
+   *
+   * Bounded by the runtime's `FlowInstance::LINE_LIMIT` (10,000 lines/turn),
+   * enforced wasm-side (`continue_flow_maximally`) rather than looped
+   * client-side — an infinite-emitting flow throws (matching
+   * `continueStory`'s `RuntimeError::LineLimitExceeded` error shape)
+   * instead of growing this method's returned array without bound and
+   * hanging the host (#999). */
+  continueMaximally(): Line[] {
+    return this.host.continueFlowMaximally(this.name);
+  }
+
+  /** Select a choice presented by this flow. */
+  choose(index: number): void {
+    this.host.chooseFlow(this.name, index);
+  }
+
+  /** Per-flow debug snapshot (State View) for this flow. */
+  debugSnapshot(): DebugState {
+    return this.host.flowDebugSnapshot(this.name);
+  }
+
+  /** Destroy this flow. The handle is inert afterward. */
+  destroy(): void {
+    this.host.destroyFlow(this.name);
   }
 }
 
@@ -1861,14 +2019,33 @@ export class StorySessionHandle {
   // design (docs/story-session-spec.md's "shared flows keep working; their
   // externals never journal").
 
-  /** Spawn a shared-context flow at the program root (or `path`). */
-  spawnFlow(name: string, path?: string): void {
+  /** Spawn a shared-context flow at the program root (or `path`), returning
+   * an addressable {@link FlowHandle} for it — aligned with
+   * `StoryRunnerHandle.spawnFlow` (#1000), whose `FlowHandle` return this
+   * mirrors so session consumers can drive a spawned flow the same way. */
+  spawnFlow(name: string, path?: string): FlowHandle {
     this.session.spawn_flow(name, path);
+    return new FlowHandle(this, name);
+  }
+
+  /** An addressable handle for a spawned/ambient flow of this session — its
+   * own `Line` stream, choices, debug snapshot, and teardown. Mirrors
+   * `StoryRunnerHandle.flow`. */
+  flow(name: string): FlowHandle {
+    return new FlowHandle(this, name);
   }
 
   /** Advance a shared flow by one line. */
   continueFlow(name: string): Line {
     return JSON.parse(this.session.continue_flow(name)) as Line;
+  }
+
+  /** Drive a shared flow to its next terminal line, collecting every `Line`
+   * up to and including it. Capped at the runtime's `FlowInstance::LINE_LIMIT`
+   * (10,000 lines/turn) — an infinite-emitting flow throws instead of
+   * growing an unbounded array and hanging the host (#999). */
+  continueFlowMaximally(name: string): Line[] {
+    return JSON.parse(this.session.continue_flow_maximally(name)) as Line[];
   }
 
   /** Select a choice in a shared flow. */
@@ -1889,6 +2066,19 @@ export class StorySessionHandle {
   /** Per-flow debug snapshot (State View) for a named flow. */
   flowDebugSnapshot(name: string): DebugState {
     return JSON.parse(this.session.flow_debug_snapshot(name)) as DebugState;
+  }
+
+  /** Re-evaluate parked flows' wake conditions and return the flow ids that
+   * woke (`docs/flow-suspension-spec.md` §10.2). Waking never
+   * auto-continues — drive a woken flow via `continueFlow`/`chooseFlow` when
+   * you want its output.
+   *
+   * **Returns `[]` until parks exist (FS-3r).** No flow can park in today's
+   * runtime — the E052 fence keeps `await` from lowering, so
+   * `Line.type === "suspended"` is never produced. Exported now (FS-3w) so
+   * hosts wire the wake loop against a stable shape. */
+  wakeCheck(): string[] {
+    return JSON.parse(this.session.wake_check()) as string[];
   }
 
   /** Export the session journal — the durable save artifact (embeds a

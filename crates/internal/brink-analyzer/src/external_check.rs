@@ -97,27 +97,34 @@ pub struct ValueMeta {
 /// The type of a VAR/CONST initializer literal. Deliberately separate from
 /// the host-manifest `BaseType` vocabulary — `Divert`/`List` are ink runtime
 /// concepts that must not leak into the manifest serialization schema.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `List` carries the declaring LIST's name (issue #628): a list-literal
+/// initializer's type is nominal (`list<L>`), same as every other list type
+/// in the `Ty` universe (`Ty::List`, TM-2's `list<L>` annotation) — the
+/// scalar/divert variants have no such nominal identity, so they stay bare.
+/// Not `Copy` any more (the `String` payload), unlike before.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InferredType {
     Int,
     Float,
     Bool,
     String,
     Divert,
-    List,
+    List(String),
 }
 
 impl InferredType {
-    /// Display name, as shown in hover (e.g. `health: int`).
+    /// Display name, as shown in hover (e.g. `health: int`,
+    /// `weather: list<Weathers>`).
     #[must_use]
-    pub fn name(self) -> &'static str {
+    pub fn name(&self) -> String {
         match self {
-            Self::Int => "int",
-            Self::Float => "float",
-            Self::Bool => "bool",
-            Self::String => "string",
-            Self::Divert => "divert",
-            Self::List => "list",
+            Self::Int => "int".to_string(),
+            Self::Float => "float".to_string(),
+            Self::Bool => "bool".to_string(),
+            Self::String => "string".to_string(),
+            Self::Divert => "divert".to_string(),
+            Self::List(list) => format!("list<{list}>"),
         }
     }
 }
@@ -145,6 +152,21 @@ pub struct ResolvedType {
     /// The studio-builtin argument widget for this type (argument-widget spec)
     /// — advisory; drives the inline affordance + editor, never checked.
     pub widget: Option<brink_ir::WidgetDecl>,
+}
+
+impl ResolvedType {
+    /// Whether this type actually resolved against a base keyword or a
+    /// registered semantic type — `false` means `name` is neither (#1027):
+    /// [`resolve_type`] still builds a `ResolvedType` for an unregistered
+    /// name (so callers keep the written name for display), but `base` is
+    /// `None` in that case. Consumers that render a type with unconditional
+    /// confidence (hover, signature help) must check this first — showing
+    /// `id: var_id` for an unregistered `var_id` is exactly the #1004
+    /// divergence this issue closes.
+    #[must_use]
+    pub fn is_registered(&self) -> bool {
+        self.base.is_some()
+    }
 }
 
 /// Build the per-external enrichment map and collect manifest-driven
@@ -381,7 +403,7 @@ fn add_value_meta(
     let doc = inline_docs
         .get(&(kind, name.to_string()))
         .and_then(|d| d.doc.clone());
-    let ty = init.and_then(infer_literal_type);
+    let ty = init.and_then(|e| infer_literal_type(e, index));
     let value_text = if show_value {
         init.and_then(literal_display)
     } else {
@@ -413,19 +435,80 @@ fn add_value_meta(
 
 /// The [`InferredType`] of an initializer literal, or `None` for anything
 /// whose type isn't statically obvious (calls, references, arithmetic).
-pub(crate) fn infer_literal_type(expr: &Expr) -> Option<InferredType> {
+///
+/// `index` resolves a `ListLiteral`'s items to their declaring LIST (issue
+/// #628) — every other arm is purely syntactic and ignores it.
+pub(crate) fn infer_literal_type(expr: &Expr, index: &SymbolIndex) -> Option<InferredType> {
     match expr {
         Expr::Int(_) => Some(InferredType::Int),
         Expr::Float(_) => Some(InferredType::Float),
         Expr::Bool(_) => Some(InferredType::Bool),
         Expr::String(_) => Some(InferredType::String),
         Expr::DivertTarget(_) => Some(InferredType::Divert),
-        Expr::ListLiteral(_) => Some(InferredType::List),
+        Expr::ListLiteral(items) => list_literal_name(items, index).map(InferredType::List),
         Expr::Prefix(brink_ir::hir::PrefixOp::Negate, inner) => match inner.as_ref() {
-            Expr::Int(_) | Expr::Float(_) => infer_literal_type(inner),
+            Expr::Int(_) | Expr::Float(_) => infer_literal_type(inner, index),
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// The declaring LIST name for a list literal's items (issue #628), if any
+/// item resolves unambiguously. Mirrors `infer::body::infer_list_literal`'s
+/// policy exactly — first-resolved-item wins, so this phase-0 stub and the
+/// real per-body HM inference never disagree: a "mixed" literal whose items
+/// span more than one LIST (legal ink; the spec has no ruling narrowing it
+/// further) reports whichever list its first resolvable item belongs to, not
+/// a synthesized union. An item that doesn't resolve to a known list item
+/// (typo, or a genuinely ambiguous bare name with no qualifying prefix) is
+/// skipped, same "Unknown escape" fallback every other unrepresentable
+/// initializer already gets — not a silent drop, since `None` still surfaces
+/// as "no inferred type" rather than a wrong guess.
+fn list_literal_name(items: &[brink_ir::hir::Path], index: &SymbolIndex) -> Option<String> {
+    items
+        .iter()
+        .find_map(|item| resolve_list_item_name(item, index))
+}
+
+/// One list-literal item's declaring LIST name, resolved the same way
+/// `resolve::lookup_list_item_bare` (bare form) and the qualified-list-item
+/// branch of `resolve::lookup_by_name` (qualified form) do. List items are
+/// always project-global — never locally scoped — so no `ImportScope`/
+/// per-file resolution map is needed here, unlike general path resolution.
+fn resolve_list_item_name(item: &brink_ir::hir::Path, index: &SymbolIndex) -> Option<String> {
+    let segments: Vec<&str> = item.segments.iter().map(|s| s.text.as_str()).collect();
+    let is_list_item = |id: &DefinitionId| {
+        index
+            .symbols
+            .get(id)
+            .is_some_and(|info| info.kind == SymbolKind::ListItem)
+    };
+
+    if segments.len() > 1 {
+        // Qualified `ListName.ItemName` — an exact index hit is authoritative,
+        // same as `resolve::lookup_by_name`'s qualified-list-item branch.
+        let qualified = segments.join(".");
+        if index
+            .by_name
+            .get(qualified.as_str())
+            .is_some_and(|ids| ids.iter().any(is_list_item))
+        {
+            return qualified.split_once('.').map(|(list, _)| list.to_string());
+        }
+    }
+
+    // Bare — suffix-match over every declared list item; ambiguous (two-plus
+    // lists share this item name) or unresolved both fall through to `None`.
+    let bare = segments.last()?;
+    match crate::resolve::lookup_list_item_bare(index, bare) {
+        crate::resolve::BareItemResult::Unique(id) => index
+            .symbols
+            .get(&id)
+            .and_then(|info| info.name.split_once('.').map(|(list, _)| list.to_string())),
+        crate::resolve::BareItemResult::Ambiguous | crate::resolve::BareItemResult::NotFound => {
+            None
+        }
     }
 }
 
@@ -471,6 +554,15 @@ fn path_display(path: &Path) -> String {
 /// validated against nothing) so an unresolved name is silently accepted as
 /// `base: None` rather than diagnosed (#339). Returns `None` for an
 /// unspecified (empty) ref.
+///
+/// Classification (base keyword / registered / unregistered) goes through
+/// [`crate::type_resolution::classify`] — the same function
+/// `infer::type_ref_to_ty` (strict inference) uses — so an unregistered name
+/// is classified identically on both paths (#1027). A `base: None`
+/// [`ResolvedType`] coming out of the `Unregistered` arm below is this
+/// function's honest way of saying "unresolved"; see
+/// [`ResolvedType::is_registered`] for the flag consumers must check before
+/// rendering the name with any confidence.
 fn resolve_type(
     t: &TypeRef,
     types: &BTreeMap<String, SemanticTypeDef>,
@@ -478,47 +570,47 @@ fn resolve_type(
     check_unknown_types: bool,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<ResolvedType> {
-    if t.is_unspecified() {
-        return None;
-    }
-    if let Some(base) = t.as_base() {
-        return Some(ResolvedType {
+    use crate::type_resolution::{TypeShape, classify};
+
+    match classify(t, types) {
+        TypeShape::Unspecified => None,
+        TypeShape::Base(base) => Some(ResolvedType {
             name: t.0.clone(),
             base: Some(base),
             constraint: None,
             values: None,
             widget: None,
-        });
-    }
-    if let Some(def) = types.get(t.0.trim()) {
-        return Some(ResolvedType {
+        }),
+        TypeShape::Registered(def) => Some(ResolvedType {
             name: t.0.clone(),
             base: Some(def.base),
             constraint: def.constraint.clone(),
             values: def.values.clone(),
             widget: def.widget.clone(),
-        });
+        }),
+        TypeShape::Unregistered => {
+            if check_unknown_types {
+                diags.push(Diagnostic {
+                    file: info.file,
+                    range: info.range,
+                    message: format!(
+                        "{}: `{}` (on `{}`)",
+                        DiagnosticCode::E040.title(),
+                        t.0.trim(),
+                        info.name,
+                    ),
+                    code: DiagnosticCode::E040,
+                });
+            }
+            Some(ResolvedType {
+                name: t.0.clone(),
+                base: None,
+                constraint: None,
+                values: None,
+                widget: None,
+            })
+        }
     }
-    if check_unknown_types {
-        diags.push(Diagnostic {
-            file: info.file,
-            range: info.range,
-            message: format!(
-                "{}: `{}` (on `{}`)",
-                DiagnosticCode::E040.title(),
-                t.0.trim(),
-                info.name,
-            ),
-            code: DiagnosticCode::E040,
-        });
-    }
-    Some(ResolvedType {
-        name: t.0.clone(),
-        base: None,
-        constraint: None,
-        values: None,
-        widget: None,
-    })
 }
 
 // ─── Call-site literal checks (E041 type, E042 closed-domain) ───────────
@@ -1321,6 +1413,7 @@ mod tests {
                 .as_ref()
                 .expect("value meta")
                 .ty
+                .clone()
         };
         assert_eq!(ty("health"), Some(InferredType::Int));
         assert_eq!(ty("speed"), Some(InferredType::Float));
@@ -1381,8 +1474,37 @@ mod tests {
             meta_by_name(&result, SymbolKind::Variable, "exit")
                 .value
                 .as_ref()
-                .and_then(|v| v.ty),
+                .and_then(|v| v.ty.clone()),
             Some(InferredType::Divert)
+        );
+    }
+
+    #[test]
+    fn list_literal_var_infers_the_declaring_list_name() {
+        // Issue #628: a VAR initialized directly to a list literal must keep
+        // the nominal LIST identity through the phase-0 `Sig`
+        // stub/`SymbolMeta` enrichment, not collapse to a bare "list".
+        let result = analyze_source("LIST Weathers = sunny, rainy, snowy\nVAR w = (sunny)\n");
+        assert_eq!(
+            meta_by_name(&result, SymbolKind::Variable, "w")
+                .value
+                .as_ref()
+                .and_then(|v| v.ty.clone()),
+            Some(InferredType::List("Weathers".to_string()))
+        );
+    }
+
+    #[test]
+    fn list_literal_var_infers_the_list_name_when_qualified() {
+        let result = analyze_source(
+            "LIST Weathers = sunny, rainy\nVAR w = (Weathers.sunny, Weathers.rainy)\n",
+        );
+        assert_eq!(
+            meta_by_name(&result, SymbolKind::Variable, "w")
+                .value
+                .as_ref()
+                .and_then(|v| v.ty.clone()),
+            Some(InferredType::List("Weathers".to_string()))
         );
     }
 
@@ -1406,11 +1528,7 @@ mod tests {
             range: rng(),
         };
         HirFile {
-            root_content: Block {
-                label: None,
-                stmts: vec![Stmt::ExprStmt(Expr::Call(path, args))],
-                container_id: None,
-            },
+            root_content: Block::from_stmts(vec![Stmt::ExprStmt(Expr::Call(path, args))]),
             knots: Vec::new(),
             variables: Vec::new(),
             constants: Vec::new(),

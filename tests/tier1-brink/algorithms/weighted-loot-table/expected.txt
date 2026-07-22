@@ -1,0 +1,3 @@
+Table (name, weight out of 100): [LootEntry { name: common_ore, weight: 50 }, LootEntry { name: iron_sword, weight: 25 }, LootEntry { name: healing_potion, weight: 15 }, LootEntry { name: rare_gem, weight: 8 }, LootEntry { name: legendary_relic, weight: 2 }].
+20 rolls: [rare_gem, common_ore, common_ore, common_ore, common_ore, rare_gem, common_ore, common_ore, common_ore, healing_potion, common_ore, common_ore, iron_sword, common_ore, common_ore, common_ore, common_ore, legendary_relic, common_ore, iron_sword].
+Tally: {rare_gem: 2, common_ore: 14, healing_potion: 1, iron_sword: 2, legendary_relic: 1}.

@@ -16,6 +16,10 @@ brink-compiler = { workspace = true }
 brink-driver = { workspace = true }
 brink-ir = { workspace = true }
 brink-codegen-inkb = { workspace = true }
+# For `corpus::explore_from_brink_native` (first-light, #1106): the native
+# `.brink` frontend, composed by hand (no `brink-db`/salsa, no INCLUDE
+# graph) — see that function's doc for why this is the honest minimal path.
+brink-syntax-native = { workspace = true }
 # For the editor_session_bench bin (#529): drives ProjectDb directly and
 # reads its salsa memo-table snapshot. `memory-introspection` is brink-db's
 # explicit opt-in to salsa's `salsa_unstable` introspection surface (see that
@@ -32,6 +36,24 @@ serde_json = { workspace = true }
 insta = { workspace = true }
 proptest = { workspace = true }
 brink-syntax = { path = "../brink-syntax" }
+# For the corpus differential oracle (issue #898): extracting a fixed
+# corpus case's seeded VAR literal (grid/weights/values/sequences) out of
+# its story.ink source text, and its printed result out of the golden
+# transcript — already a workspace dep (brink-ir uses it for the
+# dialogue-dialect pattern subset), no new dependency added.
+regex = { workspace = true }
+
+[features]
+# T2 ground-truth effect-completeness harness (issue #870): forwards to
+# `brink-runtime`'s bench/test-only `effect-trace` recorder. Not part of
+# `default` — `cargo test --workspace` never builds
+# `tests/t2_ground_truth_effects.rs` (see that file's `required-features`);
+# CI runs it as its own job with `--features effect-trace`.
+effect-trace = ["brink-runtime/effect-trace"]
+
+[[test]]
+name = "t2_ground_truth_effects"
+required-features = ["effect-trace"]
 
 [lints]
 workspace = true

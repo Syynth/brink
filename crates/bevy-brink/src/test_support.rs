@@ -70,6 +70,40 @@ pub fn compile_test_story_brink(
     (program, tables, initial_context)
 }
 
+/// [`compile_test_story_brink`] with an explicit `types = gradual` opt-out
+/// (NS-A9 flipped the brink dialect's default to strict). For fixtures whose
+/// *subject* is regime-independent runtime behavior but whose construction is
+/// gradual-locked — e.g. the `VAR x = 0` → struct-reassign placeholder idiom
+/// (struct literals are not legal declaration defaults, E075), which strict
+/// types as the scalar and rejects at the reassignment.
+pub fn compile_test_story_brink_gradual(
+    source: &str,
+) -> (Program, Vec<Vec<brink_format::LineEntry>>, World) {
+    use brink_compiler::{AnalysisOptions, Dialect, TypePolicy};
+    let output = brink_compiler::compile_with_options(
+        "test.ink",
+        |path| {
+            if path == "test.ink" {
+                Ok(source.to_string())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("unexpected include: {path}"),
+                ))
+            }
+        },
+        AnalysisOptions {
+            dialect: Dialect::Brink,
+            types: Some(TypePolicy::Gradual),
+            ..AnalysisOptions::default()
+        },
+    )
+    .expect("brink test fixture should compile");
+    let (program, tables) = brink_runtime::link(&output.data).expect("test fixture should link");
+    let initial_context = fresh_context(&program);
+    (program, tables, initial_context)
+}
+
 /// Build an `App` with the minimum plugins needed to exercise
 /// `BrinkPlugin<()>`'s systems without spinning up a full Bevy game.
 pub fn make_test_app() -> App {
@@ -96,6 +130,9 @@ pub fn add_story_assets(
         .add(ProgramAsset {
             program,
             initial_context,
+            // Test-harness helper for fulfillment/replay/locale tests, none
+            // of which exercise BH-1's capability join — empty is correct.
+            effect_rows: Vec::new(),
         });
     let tables_handle = world
         .resource_mut::<Assets<LineTablesAsset>>()

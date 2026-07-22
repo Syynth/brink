@@ -1,0 +1,4 @@
+Path found: true.
+Path: (0,0) -> (1,0) -> (2,0) -> (3,0).
+Path length: 4.
+Nodes dequeued: 7.

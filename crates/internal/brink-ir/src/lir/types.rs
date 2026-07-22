@@ -436,6 +436,17 @@ pub enum CallArg {
     RefGlobal(DefinitionId),
     /// `ref` argument targeting a temp variable — emits `PushTempPointer`.
     RefTemp(u16, NameId),
+    /// A real path-projection `ref` argument (`ref npc.hp`, `ref
+    /// party[leader].hp`, T1e-2, `docs/t1e-spec.md` §2/§3) — a durable
+    /// global root plus one or more segment expressions, evaluated once
+    /// (snapshot-at-creation, spec §1(1)) and emitted as `MakeProjection`.
+    /// A bare zero-segment `ref x` never reaches this variant — it lowers
+    /// exactly like today's unmarked ref-argument binding
+    /// ([`RefGlobal`]/[`RefTemp`]).
+    RefProjection {
+        root: DefinitionId,
+        segments: Vec<Expr>,
+    },
 }
 
 // ─── Choice sets ─────────────────────────────────────────────────────
@@ -747,6 +758,196 @@ pub enum Expr {
         base: Box<Expr>,
         key: Box<Expr>,
     },
+    /// `[s, i]` → single-character `String`. The `char_at(s, i)` stdlib pure
+    /// function (T1b stdlib slice 1 completion, issue #857): `i` indexes
+    /// Unicode scalar values ("chars"), not UTF-8 bytes — author sanity, per
+    /// the issue. Turn-terminating fault on `i` out of `[0, char_count)`
+    /// (value-model-spec §11c: no silent garbage), matching `Index`'s
+    /// out-of-bounds fault posture.
+    CharAt {
+        s: Box<Expr>,
+        index: Box<Expr>,
+    },
+
+    // ── NS-A1: Option[T] + the ruled stdlib flips (`docs/stdlib-spec.md`
+    // §1.4, §§3-5; issue #1107) ─────────────────────────────────────────
+    /// The bare `none` Option literal — `Opcode::PushNone`. Produced by an
+    /// unresolved single-segment `none` path in the brink dialect (an
+    /// author symbol of the same name always wins, E035-warned).
+    OptionNone,
+    /// `some(x)` — `Opcode::MakeSome`, total over every value.
+    OptionSome(Box<Expr>),
+    /// `[s, sub]` → `Option[int]`. The `find(s, sub)` stdlib pure function
+    /// (§3, martyr #1 redeemed): USV index of the first occurrence, `none`
+    /// when absent.
+    StrFind {
+        s: Box<Expr>,
+        sub: Box<Expr>,
+    },
+    /// `[a, x]` → `Option[int]`. The `index_of(a, x)` stdlib pure function
+    /// (§4, martyr #2 redeemed): structural-equality scan, `none` absent.
+    SeqIndexOf {
+        seq: Box<Expr>,
+        needle: Box<Expr>,
+    },
+    /// `[a]` → `Option[T]`. The `min(a)` stdlib pure function (§4/§4b —
+    /// empty → `none`; float NaN is mode-dependent since NS-A4: dev-mode
+    /// fault / prod-mode pinned placement, decided at the runtime knob).
+    SeqMin(Box<Expr>),
+    /// `[a]` → `Option[T]`. The `max(a)` stdlib pure function.
+    SeqMax(Box<Expr>),
+    /// `[a]` → `Option[T]`. The `first(a)` stdlib pure function (§4).
+    SeqFirst(Box<Expr>),
+    /// `[a]` → `Option[T]`. The `last(a)` stdlib pure function (§4).
+    SeqLast(Box<Expr>),
+    /// `pop(a)` (§4): mutates its bare-lvalue receiver in place AND
+    /// produces `Option[T]` (the removed last element; empty → `none`) —
+    /// the one A1 verb that is both mutator and expression. Codegen emits
+    /// the take → `SeqPop` → store-back bracket against `root` directly
+    /// (`TakeGlobal`/`TakeTemp` … `SetGlobal`/`SetTemp`), so the shrunk
+    /// array writes back to the root cell and the Option remains on the
+    /// stack as the expression's value. Restricted at lowering to a bare
+    /// variable/temp receiver (a chained lvalue like `pop(grid[0])` is the
+    /// E055-family error for now — scope fence, see the A1 PR notes).
+    SeqPop {
+        root: AssignTarget,
+    },
+    /// `[m, k]` → `Option[V]`. The `get(m, k)` stdlib pure function (§5,
+    /// martyr #3 redeemed): missing key → `none`; the faulting `m[k]`
+    /// (`Index`) stays the "I expect it there" read.
+    MapGetOpt {
+        map: Box<Expr>,
+        key: Box<Expr>,
+    },
+    /// `[m, v]` → `Bool`. The `contains_value(m, v)` stdlib pure function
+    /// (§5): content-equality scan over values, honest O(n).
+    MapContainsValue {
+        map: Box<Expr>,
+        value: Box<Expr>,
+    },
+    /// `CollectionRemove`'s sibling for the `clear` stdlib mutator (§5):
+    /// evaluates `base` (a map) and pushes the *emptied* container. Never
+    /// produced by ordinary expression lowering; only by the
+    /// mutator-statement desugaring (`lir::lower::blocks`), same RMW
+    /// write-back discipline as `CollectionInsert`/`CollectionRemove`.
+    MapClear(Box<Expr>),
+
+    // ── NS-A4: the ordering verbs (`docs/stdlib-spec.md` §4b, issue
+    // #1110) ────────────────────────────────────────────────────────────
+    /// `Opcode::SeqSorted`: evaluates an array, pushes it sorted ascending
+    /// by the §4b doctrine order (stable; dev-mode NaN fault / prod pinned
+    /// placement at the runtime knob). Two surfaces share it: `sorted(a)`
+    /// (functional, ordinary expression lowering) and `sort(a)`
+    /// (statement-only mutator, RMW write-back via `lir::lower::blocks`) —
+    /// the `RandShuffle` precedent.
+    SeqSorted(Box<Expr>),
+    /// `Opcode::SeqSortedBy`: evaluates an array and a comparator function
+    /// value (`fn(T, T): int`, F0), pushes the array sorted by the
+    /// comparator (stable; re-entrant VM evaluation at the op). Two
+    /// surfaces: `sorted_by(a, cmp)` (functional) and `sort_by(a, cmp)`
+    /// (statement-only mutator, RMW write-back).
+    SeqSortedBy {
+        seq: Box<Expr>,
+        cmp: Box<Expr>,
+    },
+
+    // ── NS-A8: the numeric tower (`docs/tower-mini-spec.md`, issue
+    // #1114) ────────────────────────────────────────────────────────────
+    /// One node for the whole tower family — `Opcode::Tower(op)` after the
+    /// args are pushed left-to-right. Constructors (`vec2(x, y)` …
+    /// `mat4(c0, c1, c2, c3)`), `dot`/`cross`, and the tower-wide
+    /// two-arg `min`/`max` plus `clamp(x, lo, hi)`/`lerp(a, b, t)`. All
+    /// pure; arity is checked at lowering (E031), operand *kinds* at
+    /// runtime (`StdlibWrongType` — a malformed question faults, per the
+    /// ruled doctrine). The `+`/`-`/`*` operator family lowers through the
+    /// ordinary binary ops, not this node.
+    Tower {
+        op: brink_format::TowerOp,
+        args: Vec<Expr>,
+    },
+
+    // ── NS-A7: `Weighted[T]` + the humble heap (`docs/stdlib-spec.md`
+    // §8, issue #1113) ──────────────────────────────────────────────────
+    /// `weighted(w1, v1, w2, v2, …)` → `Weighted[T]` —
+    /// `Opcode::Collect(WeightedNew)` after the flattened pair row is
+    /// pushed and gathered by an `ArrayNew(2n)` (a transient codegen
+    /// artifact, never observable). The compile-classifiable refusals
+    /// (empty/odd row, literal non-positive-int weight) are E120 at
+    /// lowering; computed weights carry the construction-fault residual at
+    /// the op (`WeightedBadWeight`) — the E078-style split, so a table
+    /// that exists is always rollable. Pairs are `(weight, value)` in
+    /// construction order (order is semantic for display and the roll
+    /// walk; equality alone is the F17 multiset).
+    WeightedNew {
+        pairs: Vec<(Expr, Expr)>,
+    },
+    /// `roll(w)` → `T` — `Opcode::Collect(RandRoll)`: one weighted draw
+    /// from a `Weighted[T]` table. Total over any table that exists
+    /// (construction is the validator); a draw, so its row writes the RNG
+    /// cell like the NS-A6 verbs below.
+    RandRoll(Box<Expr>),
+    /// `Opcode::Collect(HeapPush)`: evaluates an array and an element,
+    /// pushes the array with the element sifted into the §4b min-heap
+    /// position (dev-mode NaN entry fault / prod pinned placement at the
+    /// runtime knob). Statement-only mutator surface (`heap_push(a, x)`,
+    /// RMW write-back via `lir::lower::blocks`) — never produced by
+    /// ordinary expression lowering (E056 there).
+    HeapPush {
+        seq: Box<Expr>,
+        value: Box<Expr>,
+    },
+    /// `heap_pop(a)` (§8): mutates its bare-lvalue receiver in place AND
+    /// produces `Option[T]` (the extracted minimum; empty → `none`) — the
+    /// `SeqPop` shape exactly: codegen emits the take →
+    /// `Collect(HeapPop)` → store-back bracket against `root`, the op
+    /// pushes the Option under the re-heapified array, and the store
+    /// leaves the Option as the expression value. Same bare-receiver
+    /// restriction (E055 on anything else — the A1 scope fence).
+    HeapPop {
+        root: AssignTarget,
+    },
+    /// `heap_peek(a)` → `Option[T]` — `Opcode::Collect(HeapPeek)`: the
+    /// minimum without extraction (`none` on empty). Pure read.
+    HeapPeek(Box<Expr>),
+
+    // ── NS-A6: the `std::rand` draw verbs (`docs/stdlib-spec.md` §7,
+    // issue #1112). Every one is a write to the RNG cell in the effect
+    // row; `seed(n)` has no variant here — it lowers to the frozen
+    // `CallBuiltin(SeedRandom)` (one cell, two surfaces, no drift). ─────
+    /// `float()` (nullary) → `Float` in `[0,1)` — `Opcode::RandFloat`. One
+    /// draw. The unary `float(x)` spelling stays `ConvertFloat`;
+    /// disambiguated by arity at lowering (F4, resolved in-wave).
+    RandFloat,
+    /// `chance(p)` → `Bool` — `Opcode::RandChance`. `p` clamped to
+    /// `[0,1]`, NaN → `false` (F3, ruled 2026-07-19); one draw always.
+    RandChance(Box<Expr>),
+    /// `pick(coll)` → `Option[T]` — `Opcode::RandPick`. Uniform draw from
+    /// an array, flags subset, or range (NS-A5); empty → `none`.
+    RandPick(Box<Expr>),
+    /// The Fisher–Yates primitive — `Opcode::RandShuffle`: evaluates an
+    /// array, pushes the shuffled array. Two surfaces share it:
+    /// `shuffled(a)` (functional, ordinary expression lowering) and
+    /// `shuffle(a)` (statement-only mutator, RMW write-back via
+    /// `lir::lower::blocks` exactly like `MapClear`).
+    RandShuffle(Box<Expr>),
+
+    // ── NS-A5: range values + the inhabited-range refinement
+    // (`docs/stdlib-spec.md` §7, F7/F8, issue #1111). ────────────────
+    /// `start..end` / `start..=end` — `Opcode::RangeMakeExcl`/
+    /// `RangeMakeIncl`: evaluates both bounds (ints — the op faults on
+    /// anything else), pushes the range value. `int(range)` has no
+    /// variant of its own — the unary `int(x)` spelling stays
+    /// `ConvertInt`, whose VM op dispatches on the operand (range →
+    /// draw, else conversion).
+    RangeMake {
+        start: Box<Expr>,
+        end: Box<Expr>,
+        inclusive: bool,
+    },
+    /// `non_empty(r)` → `Option[Range]` — `Opcode::RangeNonEmpty`: the
+    /// inhabited-range validator (S2), `some(r)` iff `r` denotes at least
+    /// one element. Pure — no draw.
+    RangeNonEmpty(Box<Expr>),
 
     // ── Records (TM-4c, `docs/typed-mode-spec.md` §6) ───────────────
     /// `Name#{field: expr, …}` construction. `fields` is in the exact order

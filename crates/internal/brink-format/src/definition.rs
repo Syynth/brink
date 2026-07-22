@@ -174,6 +174,184 @@ pub struct AliasEntry {
     pub new: DefinitionId,
 }
 
+/// The capability-parameter slot carried by every call atom in a factored
+/// effect row (T2-3, `docs/effects-spec.md` §11; ruled 2026-07-14,
+/// `docs/t1d-spec.md` §7).
+///
+/// v1 populates every atom as [`CapabilityParam::Any`] — component-granular,
+/// the whole capability unrefined. Path-granular refinement (#826) and the
+/// instance-resolving handle parameter are later narrowing rungs; their
+/// discriminants are reserved (the strict reader rejects them until a section
+/// version graduates them), the same reservation discipline the projection
+/// range segment follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CapabilityParam {
+    /// The whole capability, unrefined — the only value v1 ever emits.
+    #[default]
+    Any,
+}
+
+/// A single call atom in an effect row's direct part (`docs/effects-spec.md`
+/// §2/§11): the name of an `EXTERNAL` binding (a call-kind), plus its
+/// [capability-parameter slot](CapabilityParam) and a **reserved
+/// handle-parameter slot**.
+///
+/// The handle-parameter slot (`docs/t1d-spec.md` §7) is where a
+/// handle-parameterized atom (`Transform(@argN)`) will record which minted
+/// handle bounds the capability; v1 leaves it `None` (the reserved wire byte is
+/// `0`). Possession-bounded capabilities are the tier-2 security model — out of
+/// scope for this slice, but the slot ships now so the row encoding need not
+/// change to carry it later.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallAtom {
+    /// The `EXTERNAL` binding name (interned into the story's `name_table`).
+    pub name: NameId,
+    /// Capability-parameter slot — v1 always [`CapabilityParam::Any`].
+    pub capability: CapabilityParam,
+    /// Reserved handle-parameter slot — v1 always `None`. A non-`None` value
+    /// is never emitted in this section version.
+    pub handle_param: Option<u8>,
+}
+
+/// The direct part of a factored effect row (`docs/effects-spec.md` §7/§11):
+/// the atoms a definition (and everything it statically calls) may perform,
+/// independent of any dispatch-cell narrowing. Mirrors the analyzer's flat
+/// `EffectRow`, lowered to wire vocabulary (cells as [`DefinitionId`]s, call
+/// kinds as [`CallAtom`]s).
+///
+/// Sets are stored as vectors already sorted/deduplicated by the producer so
+/// the encoding is deterministic (the analyzer sources them from `BTreeSet`s).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the four bools are independent wire dimensions of one factored \
+              effect row (opaque + the NS-A2 emits/tags/faults flags), not a \
+              state machine in disguise — mirrors the analyzer's EffectRow"
+)]
+pub struct DirectEffects {
+    /// Global cells this row may read.
+    pub reads: Vec<DefinitionId>,
+    /// Global cells this row may write.
+    pub writes: Vec<DefinitionId>,
+    /// Call-kind atoms this row may transitively perform.
+    pub calls: Vec<CallAtom>,
+    /// The pessimal top element (`docs/effects-spec.md` §3): this row performs
+    /// a call whose effects inference cannot summarize.
+    pub opaque: bool,
+    /// NS-A2 (issue #1108, from #1087): the definition may produce content —
+    /// narration/dialogue fragments a host renders (glue-only output counts;
+    /// tag-only lines do NOT — those set [`Self::tags`]). Bool v1.
+    pub emits: bool,
+    /// NS-A2 (issue #1108, from #1087's second ruling): the definition may
+    /// touch the tag channel. Independent of [`Self::emits`]. Bool v1.
+    pub tags: bool,
+    /// NS-A2 (issue #1108, from #1097): the definition may raise a
+    /// turn-terminating fault. Bool v1 — per-fault-kind granularity is the
+    /// reserved refinement and graduates via a section-version bump, the
+    /// same reservation discipline the capability/handle slots follow.
+    pub faults: bool,
+}
+
+/// A per-dispatch entry in a factored effect row (`docs/effects-spec.md` §7):
+/// the row a call through a dispatch `cell` contributes, whether that dispatch
+/// is runtime-**narrowable** (its cell is not in the entry's own write set),
+/// and the **static fallback** row used when narrowing does not apply.
+///
+/// v1 emits none of these (call-through-value is inferred as opaque, folded
+/// into the direct part) — but the encoding ships the structure now, because a
+/// flat row structurally forecloses the §7 narrowing the host will do at
+/// schedule-commit. The reader round-trips a populated dispatch list so writer
+/// and reader stay paired (the #742 lesson).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchEntry {
+    /// The dispatch cell whose live fn tokens the host may narrow against.
+    pub cell: DefinitionId,
+    /// Whether this dispatch is statically narrowable (`docs/effects-spec.md`
+    /// §7 soundness gate: the cell is not in the entry's own write set).
+    pub narrowable: bool,
+    /// The static fallback row — the conservative join used when the host does
+    /// not (or cannot) narrow.
+    pub fallback: DirectEffects,
+}
+
+/// One entry in the `EffectRows` `DefinitionId → row` table (T2-3,
+/// `docs/effects-spec.md` §11, `docs/format-v4-rfc.md` §2 `EffectRows`
+/// reservation): a factored effect row for one definition.
+///
+/// Every knot/stitch ships one — the per-container row is the host's
+/// resume-scheduling estimate (`docs/effects-spec.md` §12.1: a flow resumes
+/// from wherever it parked). The row is additive metadata; the runtime does
+/// not consume it yet (`sleep`/narrowing are the future clients), so a story
+/// carrying rows is byte-identical in behavior to one without.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectRowEntry {
+    /// The definition (knot/stitch) this row summarizes.
+    pub def: DefinitionId,
+    /// The freeze bit (#882, `docs/effects-spec.md` §10 sitting-2 ruling;
+    /// corroborated on `main` by `docs/modules-spec.md` §4 boundary rule 1/2
+    /// and the 2026-07-14 "Modules & visibility rulings" decision-log entry —
+    /// `docs/effects-spec.md` itself never merged past `docs/effects-skeleton`).
+    ///
+    /// `true` for every def by default: the row is a legitimate host
+    /// **entry point** (host-callable by path/name — `begin_function_eval`,
+    /// entry lookup, play-from-here). `false` for a `#@private` definition:
+    /// **not an entry** — host-facing name lookup on it is refused (the
+    /// load-error class effects-spec §10 rules) — but the row itself is not
+    /// dropped from the table. `#@private` hides the *name*, not the *cell*:
+    /// a private knot/stitch can still be captured as a first-class fn-value
+    /// token that a *public* path holds and later calls through, and the
+    /// dispatch-narrowing machinery (§7) resolves such a token by
+    /// `DefinitionId`, not by name — so the row must stay resolvable in this
+    /// table regardless of `is_entry`. This is unconditional (never a
+    /// reachability computation over whether some public path actually holds
+    /// such a token today): proving that would need whole-program fn-value
+    /// capture analysis, which conservative-total rows do not attempt.
+    /// Dev-tooling (play-from-here, `brink ide` effects-diff) is the
+    /// documented visibility override (modules-spec §4 rule 3) and may read
+    /// a non-entry row directly from this table; only *host* semantic lookup
+    /// respects `is_entry`.
+    pub is_entry: bool,
+    /// The direct part — atoms independent of dispatch narrowing.
+    pub direct: DirectEffects,
+    /// Per-dispatch entries (empty in v1).
+    pub dispatches: Vec<DispatchEntry>,
+}
+
+/// The name-keyed **frame shape** for one `await` site
+/// (`docs/flow-suspension-spec.md` §4/§11): the static description of which
+/// locals cross the park at that site, so the runtime knows what to
+/// spill on park and restore on wake.
+///
+/// Emitted into the `FrameShapes` [`StoryData`](crate::StoryData) section
+/// (`.inkb` tag `0x10`,
+/// `.inkt` `(frame_shapes …)`). The shape is **name-keyed** — the runtime
+/// spills/restores crossing locals by name, riding the same rehydration
+/// machinery as `#@was`/saves (spec §7), so a frame survives recompiles
+/// without instruction offsets (spec §2/§3).
+///
+/// **Reserved-through-fence**: the FS-3c compiler slice lands this section's
+/// encoding (writer + reader + round-trips) but does not yet *emit* a
+/// non-empty table — the E052 `await` lowering fence keeps `await` from
+/// producing any `StoryData`. First emission rides the continuation-splitting
+/// codegen when the fence drops (FS-3r), the same reserved-then-materialized
+/// discipline `StructShapes` followed. `frame_shapes` is therefore empty for
+/// every story compiled today (and for all converter output).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameShapeDef {
+    /// The `await` site's stable identity — the [`DefinitionId`] of the
+    /// synthesized resume/continuation container (spec §11.1: stable identity
+    /// = module + enclosing def + site index). This is both the wake-policy
+    /// site id and the container the runtime enters from its top on resume.
+    pub site: DefinitionId,
+    /// The name-keyed crossing locals, in stable declared order (spec §4).
+    /// Each entry is the local's interned [`NameId`] (into the story's
+    /// `name_table`); the runtime's frame record is keyed by these names.
+    /// Values are not stored here — the shape is static; the live values live
+    /// in the save-time `SuspendedFlow.frame` (`docs/flow-suspension-spec.md`
+    /// §2, FS-1).
+    pub slots: Vec<NameId>,
+}
+
 /// A single list item definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ListItemDef {

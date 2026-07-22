@@ -19,7 +19,13 @@ use crate::value_ops;
 /// the current line tables and plural resolver. This enables locale-hot-swap:
 /// the same transcript can be re-rendered in different languages without
 /// re-executing the story.
-#[derive(Debug, Clone)]
+///
+/// `PartialEq` (issue #746): structural equality over the part's own fields
+/// — used by the `.brkt` transcript round-trip law
+/// (`brink-runtime/tests/law_transcript_roundtrip.rs`) to assert decoded
+/// parts equal the originals. Every field type already implements it
+/// (`Value`'s hand-written impl, `LineFlags`'s derive).
+#[derive(Debug, Clone, PartialEq)]
 pub enum OutputPart {
     /// Eagerly-resolved text. Not produced by the VM in production —
     /// used in tests and available for external transcript construction.
@@ -260,7 +266,7 @@ fn resolve_select<'a>(
 }
 
 /// A finalized fragment — structural output parts plus any associated tags.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Fragment {
     pub parts: Vec<OutputPart>,
     pub tags: Vec<String>,
@@ -523,6 +529,15 @@ impl OutputBuffer {
     }
 
     /// Returns true if a capture is currently active.
+    /// Whether a string-eval/tag/function-return capture is active — pushes
+    /// currently route to transient scratch, not visible output (NS-A2:
+    /// the `effect-trace` emit recorder's visibility guard; unused in
+    /// ordinary builds, hence the allow).
+    #[cfg_attr(not(feature = "effect-trace"), expect(dead_code))]
+    pub fn in_capture(&self) -> bool {
+        self.capture_depth > 0
+    }
+
     pub fn has_checkpoint(&self) -> bool {
         self.capture_depth > 0
     }

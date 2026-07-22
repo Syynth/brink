@@ -8,8 +8,8 @@ use crate::SyntaxKind::{
     self, AMP, AMP_AMP, BANG, BANG_EQ, BANG_QUESTION, CARET, COLON, DIVERT, DOLLAR, EQ, EQ_EQ,
     FLOAT, GT, GT_EQ, HASH, IDENT, INTEGER, KW_AND, KW_CYCLE, KW_DONE, KW_ELSE, KW_END, KW_FALSE,
     KW_FUNCTION, KW_HAS, KW_HASNT, KW_MOD, KW_NOT, KW_ONCE, KW_OR, KW_REF, KW_SHUFFLE, KW_STOPPING,
-    KW_TODO, KW_TRUE, LT, LT_EQ, MINUS, MINUS_EQ, NEWLINE, PERCENT, PIPE, PLUS, PLUS_EQ, QUESTION,
-    SLASH, STAR, TILDE,
+    KW_TODO, KW_TRUE, L_PAREN, LT, LT_EQ, MINUS, MINUS_EQ, NEWLINE, PERCENT, PIPE, PLUS, PLUS_EQ,
+    QUESTION, R_PAREN, SLASH, STAR, TILDE,
 };
 use crate::ast::AstNode as _;
 use crate::ast::ast_node;
@@ -45,6 +45,7 @@ ast_node!(AuthorWarning, AUTHOR_WARNING);
 ast_node!(LogicLine, LOGIC_LINE);
 ast_node!(ContentLine, CONTENT_LINE);
 ast_node!(TagLine, TAG_LINE);
+ast_node!(AnnotationLine, ANNOTATION_LINE);
 ast_node!(StrayClosingBrace, STRAY_CLOSING_BRACE);
 
 // ── Logic ────────────────────────────────────────────────────────────
@@ -52,6 +53,7 @@ ast_node!(StrayClosingBrace, STRAY_CLOSING_BRACE);
 ast_node!(ReturnStmt, RETURN_STMT);
 ast_node!(TempDecl, TEMP_DECL);
 ast_node!(Assignment, ASSIGNMENT);
+ast_node!(AwaitStmt, AWAIT_STMT);
 
 // ── Content ──────────────────────────────────────────────────────────
 
@@ -122,6 +124,7 @@ ast_node!(ArrayLiteral, ARRAY_LITERAL);
 ast_node!(MapLiteral, MAP_LITERAL);
 ast_node!(MapEntry, MAP_ENTRY);
 ast_node!(IndexExpr, INDEX_EXPR);
+ast_node!(RangeExpr, RANGE_EXPR);
 
 // ── T1b superset: multi-line `~ { … }` blocks (docs/t1b-surface-spec.md §2) ──
 
@@ -153,6 +156,14 @@ ast_node!(FieldAccessExpr, FIELD_ACCESS_EXPR);
 // ── T1c function values (docs/t1c-spec.md §2) ─────────────────────────
 
 ast_node!(FnLiteral, FN_LITERAL);
+
+// ── T1e path projections (docs/t1e-spec.md §2) ────────────────────────
+
+ast_node!(RefExpr, REF_EXPR);
+
+// ── Computed-callee call attempt (docs/t1c-spec.md §3/§10, issue #869) ──
+
+ast_node!(CallExpr, CALL_EXPR);
 
 // ── Diverts ──────────────────────────────────────────────────────────
 
@@ -309,6 +320,22 @@ pub enum Expr {
     /// `#fn(target, args…)` — function-value creation (T1c,
     /// docs/t1c-spec.md §2, brink extension).
     FnLiteral(FnLiteral),
+    /// `ref lvalue-path` — path-projection creation (T1e,
+    /// docs/t1e-spec.md §2, brink extension). Legal only in ref-argument
+    /// position (calls, `#fn(…)`, `bind(…)`) — a `brink-analyzer` concern,
+    /// not a grammar one.
+    RefExpr(RefExpr),
+    /// `expr(args…)` where `expr` isn't a bare identifier immediately
+    /// followed by `(` (that shape is `FunctionCall`) — a computed callee
+    /// (indexed, field access, call-result, parenthesized, …). Parses so
+    /// the call syntax and its args aren't silently reinterpreted as
+    /// trailing prose text; always rejected at HIR lowering (E104,
+    /// docs/t1c-spec.md §3/§10, issue #869) since Direct-call syntax is
+    /// RULED to a bare variable/temp/param callee only.
+    ComputedCall(CallExpr),
+    /// `a..b` / `a..=b` — range literal (NS-A5, docs/stdlib-spec.md §7,
+    /// brink extension).
+    Range(RangeExpr),
 }
 
 impl std::fmt::Debug for Expr {
@@ -345,6 +372,9 @@ impl crate::ast::AstNode for Expr {
                 | SyntaxKind::STRUCT_LITERAL
                 | SyntaxKind::FIELD_ACCESS_EXPR
                 | SyntaxKind::FN_LITERAL
+                | SyntaxKind::REF_EXPR
+                | SyntaxKind::CALL_EXPR
+                | SyntaxKind::RANGE_EXPR
         )
     }
 
@@ -368,6 +398,9 @@ impl crate::ast::AstNode for Expr {
             SyntaxKind::STRUCT_LITERAL => StructLiteral::cast(node).map(Expr::StructLiteral),
             SyntaxKind::FIELD_ACCESS_EXPR => FieldAccessExpr::cast(node).map(Expr::FieldAccess),
             SyntaxKind::FN_LITERAL => FnLiteral::cast(node).map(Expr::FnLiteral),
+            SyntaxKind::REF_EXPR => RefExpr::cast(node).map(Expr::RefExpr),
+            SyntaxKind::CALL_EXPR => CallExpr::cast(node).map(Expr::ComputedCall),
+            SyntaxKind::RANGE_EXPR => RangeExpr::cast(node).map(Expr::Range),
             _ => None,
         }
     }
@@ -392,6 +425,9 @@ impl crate::ast::AstNode for Expr {
             Expr::StructLiteral(n) => n.syntax(),
             Expr::FieldAccess(n) => n.syntax(),
             Expr::FnLiteral(n) => n.syntax(),
+            Expr::RefExpr(n) => n.syntax(),
+            Expr::ComputedCall(n) => n.syntax(),
+            Expr::Range(n) => n.syntax(),
         }
     }
 }
@@ -759,6 +795,12 @@ impl LogicLine {
         support::child(&self.syntax)
     }
 
+    /// The `~ await <cond>` `FlowFrame` suspension point, if this logic line is
+    /// one (docs/flow-suspension-spec.md §3).
+    pub fn await_stmt(&self) -> Option<AwaitStmt> {
+        support::child(&self.syntax)
+    }
+
     /// The T1b `~ { … }` multi-line block body, if this logic line opens one
     /// (docs/t1b-surface-spec.md §2) rather than a single statement.
     pub fn stmt_block(&self) -> Option<StmtBlock> {
@@ -771,6 +813,54 @@ impl LogicLine {
 impl TagLine {
     pub fn tags(&self) -> Option<Tags> {
         support::child(&self.syntax)
+    }
+}
+
+// ── AnnotationLine ───────────────────────────────────────────────────
+
+impl AnnotationLine {
+    /// The annotation's name token — the `IDENT` after `@[` (e.g. `effects`
+    /// in `@[effects(pure)]`).
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        self.syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .find(|t| t.kind() == IDENT)
+    }
+
+    /// The raw text between the annotation's balanced `( … )` argument
+    /// parens, if present — `None` for a bare `@[name]`. Mirrors the
+    /// directive channel's raw-string argument contract
+    /// (`brink-ir`'s `ParsedDirective::arg`): the argument mini-grammar is
+    /// parsed downstream, not here.
+    pub fn arg_text(&self) -> Option<String> {
+        let mut depth = 0usize;
+        let mut collecting = false;
+        let mut out = String::new();
+        for el in self.syntax.children_with_tokens() {
+            let rowan::NodeOrToken::Token(tok) = el else {
+                continue;
+            };
+            match tok.kind() {
+                L_PAREN => {
+                    if collecting {
+                        out.push_str(tok.text());
+                    }
+                    depth += 1;
+                    collecting = true;
+                }
+                R_PAREN => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return Some(out);
+                    }
+                    out.push_str(tok.text());
+                }
+                _ if collecting => out.push_str(tok.text()),
+                _ => {}
+            }
+        }
+        collecting.then_some(out)
     }
 }
 
@@ -788,6 +878,17 @@ impl ReturnStmt {
     /// Returns `true` if the return has a value expression.
     pub fn has_value(&self) -> bool {
         self.value().is_some()
+    }
+}
+
+// ── AwaitStmt ────────────────────────────────────────────────────────
+
+impl AwaitStmt {
+    /// The condition expression — the `<cond>` in `await <cond>`
+    /// (docs/flow-suspension-spec.md §3). Absent only for a malformed bare
+    /// `await` with no expression (the parser emits a diagnostic there).
+    pub fn condition(&self) -> Option<Expr> {
+        self.syntax.children().find_map(Expr::cast)
     }
 }
 
@@ -859,6 +960,9 @@ pub enum BlockStmt {
     Break(BreakStmt),
     Continue(ContinueStmt),
     ExprStmt(ExprStmt),
+    /// `await <cond>` — a `FlowFrame` suspension point inside a `~ { … }` block
+    /// (docs/flow-suspension-spec.md §3).
+    Await(AwaitStmt),
 }
 
 impl std::fmt::Debug for BlockStmt {
@@ -880,6 +984,7 @@ impl crate::ast::AstNode for BlockStmt {
                 | SyntaxKind::BREAK_STMT
                 | SyntaxKind::CONTINUE_STMT
                 | SyntaxKind::EXPR_STMT
+                | SyntaxKind::AWAIT_STMT
         )
     }
 
@@ -894,6 +999,7 @@ impl crate::ast::AstNode for BlockStmt {
             SyntaxKind::BREAK_STMT => BreakStmt::cast(node).map(BlockStmt::Break),
             SyntaxKind::CONTINUE_STMT => ContinueStmt::cast(node).map(BlockStmt::Continue),
             SyntaxKind::EXPR_STMT => ExprStmt::cast(node).map(BlockStmt::ExprStmt),
+            SyntaxKind::AWAIT_STMT => AwaitStmt::cast(node).map(BlockStmt::Await),
             _ => None,
         }
     }
@@ -909,6 +1015,7 @@ impl crate::ast::AstNode for BlockStmt {
             BlockStmt::Break(n) => n.syntax(),
             BlockStmt::Continue(n) => n.syntax(),
             BlockStmt::ExprStmt(n) => n.syntax(),
+            BlockStmt::Await(n) => n.syntax(),
         }
     }
 }
@@ -965,6 +1072,19 @@ impl WhileStmt {
 
     pub fn body(&self) -> Option<StmtBlock> {
         support::child(&self.syntax)
+    }
+
+    /// Whether this is the persistent-await form `while await cond { … }`
+    /// (docs/flow-suspension-spec.md §3) rather than a plain `while` loop. The
+    /// parser bumps the marker `await` as a direct `IDENT` token child (the
+    /// `while` keyword is the only other direct `IDENT` token; the condition
+    /// lives inside an `Expr` node, never a bare token), so the presence of an
+    /// `IDENT` token spelled `await` here is the unambiguous marker.
+    pub fn is_await(&self) -> bool {
+        self.syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .any(|tok| tok.kind() == SyntaxKind::IDENT && tok.text() == "await")
     }
 }
 
@@ -1043,6 +1163,29 @@ impl IndexExpr {
     /// The index expression (the second `Expr` child) — `i` in `a[i]`.
     pub fn index(&self) -> Option<Expr> {
         self.syntax.children().filter_map(Expr::cast).nth(1)
+    }
+}
+
+// ── RangeExpr (NS-A5, docs/stdlib-spec.md §7) ────────────────────────
+
+impl RangeExpr {
+    /// The start bound (the first `Expr` child) — `a` in `a..b`.
+    pub fn start(&self) -> Option<Expr> {
+        self.syntax.children().find_map(Expr::cast)
+    }
+
+    /// The end bound (the second `Expr` child) — `b` in `a..b`.
+    pub fn end(&self) -> Option<Expr> {
+        self.syntax.children().filter_map(Expr::cast).nth(1)
+    }
+
+    /// `true` for the inclusive `..=` form — detected by the `EQ` token the
+    /// parser bumped between the dots and the end bound.
+    pub fn is_inclusive(&self) -> bool {
+        self.syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .any(|t| t.kind() == SyntaxKind::EQ)
     }
 }
 
@@ -1161,6 +1304,25 @@ impl FnLiteral {
             .children()
             .filter_map(Expr::cast)
             .filter(move |e| Some(e.syntax()) != target_node.as_ref())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// T1e path projections (docs/t1e-spec.md §2)
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── RefExpr ──────────────────────────────────────────────────────────
+
+impl RefExpr {
+    pub fn ref_kw(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, KW_REF)
+    }
+
+    /// The lvalue-shaped operand after `ref` — a plain path, a dotted field
+    /// chain, `[…]` indexing, or a mix. `None` on malformed input (`ref` at
+    /// end of input, or followed by a token that starts no expression).
+    pub fn operand(&self) -> Option<Expr> {
+        support::child(&self.syntax)
     }
 }
 
@@ -1678,6 +1840,21 @@ impl FunctionCall {
 
     pub fn name(&self) -> Option<String> {
         self.identifier().and_then(|id| id.name())
+    }
+
+    pub fn arg_list(&self) -> Option<ArgList> {
+        support::child(&self.syntax)
+    }
+}
+
+// ── CallExpr (computed-callee call attempt, issue #869) ──────────────
+
+impl CallExpr {
+    /// The callee expression — the first (and only non-`ARG_LIST`) child.
+    /// Always some non-identifier-immediately-followed-by-`(` shape
+    /// (`FUNCTION_CALL`'s bare-name fast path never reaches this node).
+    pub fn callee(&self) -> Option<Expr> {
+        self.syntax.children().find_map(Expr::cast)
     }
 
     pub fn arg_list(&self) -> Option<ArgList> {

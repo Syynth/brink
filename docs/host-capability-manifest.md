@@ -141,9 +141,9 @@ runtime. Catches signature/type mismatches, not logic errors.
 
 ```jsonc
 { "externals": [
-    { "name": "has",    "params": [["item","string"]], "returns": "bool", "kind": "query" },
-    { "name": "camera", "params": [["target","string"]], "returns": "void", "kind": "presentation" },
-    { "name": "grant",  "params": [["item","string"]], "returns": "void", "kind": "effect" }
+    { "name": "has",    "params": [{"name": "item", "ty": "string"}], "returns": "bool", "kind": "query" },
+    { "name": "camera", "params": [{"name": "target", "ty": "string"}], "returns": "void", "kind": "presentation" },
+    { "name": "grant",  "params": [{"name": "item", "ty": "string"}], "returns": "void", "kind": "effect" }
 ] }
 ```
 
@@ -156,7 +156,7 @@ express a real taxonomy. Designed in #210 (the panel renders collapsible section
 + search over it).
 
 ```jsonc
-{ "name": "set_move_route", "params": [["actor","int"]], "returns": "void",
+{ "name": "set_move_route", "params": [{"name": "actor", "ty": "int"}], "returns": "void",
   "kind": "effect", "path": ["Map", "Movement"] }
 ```
 
@@ -246,7 +246,7 @@ editor (a map) requests `modal`:
 
 ```jsonc
 { "name": "place_object",
-  "params": [["x","int"], ["y","int"]],
+  "params": [{"name": "x", "ty": "int"}, {"name": "y", "ty": "int"}],
   "widgets": [ { "group": [0,1], "type": "map_point",
                  "editor": "rmmz.map_picker", "surface": "modal" } ] }
 ```

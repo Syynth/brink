@@ -182,6 +182,11 @@ fn walk_stmt(stmt: &Stmt, ctx: ContentContext, v: &mut impl HirVisitor) {
         Stmt::ExprStmt(e) => walk_expr(e, v),
         Stmt::EndOfLine => {}
         Stmt::LogicBlock(lb) => walk_logic_block(lb, v),
+        Stmt::Await(a) => {
+            if let Some(e) = &a.condition {
+                walk_expr(e, v);
+            }
+        }
     }
     v.exit_stmt(stmt);
 }
@@ -222,6 +227,11 @@ fn walk_block_stmt(bs: &BlockStmt, v: &mut impl HirVisitor) {
         BlockStmt::For(f) => walk_for_stmt(f, v),
         BlockStmt::Break(_) | BlockStmt::Continue(_) => {}
         BlockStmt::ExprStmt(e) => walk_expr(e, v),
+        BlockStmt::Await(a) => {
+            if let Some(e) = &a.condition {
+                walk_expr(e, v);
+            }
+        }
     }
 }
 
@@ -376,6 +386,13 @@ fn walk_expr(expr: &Expr, v: &mut impl HirVisitor) {
             for arg in &fl.args {
                 walk_expr(arg, v);
             }
+        }
+        // T1e `ref lvalue-path`: only the operand descends.
+        Expr::RefArg(ra) => walk_expr(&ra.operand, v),
+        // NS-A5 `start..end` / `start..=end`: both bounds descend.
+        Expr::Range(r) => {
+            walk_expr(&r.start, v);
+            walk_expr(&r.end, v);
         }
     }
 }

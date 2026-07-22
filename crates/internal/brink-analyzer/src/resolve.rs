@@ -353,6 +353,18 @@ fn resolve_variable(
             diagnostics.push(ambiguous_diag(file_id, uref.range, path));
         }
         VarResult::NotFound => {
+            // NS-A1 (`docs/stdlib-spec.md` §1.4): an otherwise-unresolved
+            // bare `none` is the brink-dialect Option absence literal —
+            // same "skip resolution, no diagnostic here" treatment as the
+            // T1b stdlib call names in `resolve_function`. Every user
+            // symbol interpretation above wins first (a LIST item, VAR,
+            // temp, … named `none` shadows the literal, E035-warned at its
+            // declaration); `strict-ink` rejection is the dialect gate's
+            // job, and the bare-`none`-needs-context declaration rule is
+            // E107 (`option_rules`).
+            if path == "none" {
+                return;
+            }
             diagnostics.push(unresolved_diag(
                 file_id,
                 uref.range,
@@ -818,6 +830,93 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             // backstop for both `call` and `bind`, exactly as before.
             | "call"
             | "bind"
+            // `char_at(s, i)` (T1b stdlib slice 1 completion, issue #857):
+            // chars-indexed (Unicode scalar values, not bytes) single-
+            // character-`String` read into `s`. VM-native, same
+            // shadowing/dialect-gate machinery as the rest of this list.
+            | "char_at"
+            // NS-A1 (issue #1107, `docs/stdlib-spec.md` §§3-5 + §1.4): the
+            // Option verb flips — text `find`, seq `index_of`/`min`/`max`/
+            // `first`/`last`/`pop`, map `get`/`contains_value`/`clear` —
+            // plus the `some(x)` Option constructor. Same slice-1 machinery
+            // end to end (shadowable with E035, `strict-ink` rejection via
+            // the dialect gate). The bare `none` literal resolves in
+            // *variable* position (see `resolve_variable`), not here.
+            | "find"
+            | "index_of"
+            | "min"
+            | "max"
+            | "first"
+            | "last"
+            | "pop"
+            | "get"
+            | "contains_value"
+            | "clear"
+            | "some"
+            // NS-A6 (issue #1112, `docs/stdlib-spec.md` §7): the
+            // `std::rand` draw verbs — every one an ordinary *write* to
+            // the RNG state cell (`DefinitionId::RNG_CELL`) in the effect
+            // row. `float` (nullary draw / unary conversion — the F4
+            // arity split, resolved in-wave) and `int` (conversion only;
+            // `int(range)` waits on A5's inhabited-range refinement) are
+            // already listed above. Same slice-1 machinery end to end:
+            // shadowable with E035, `strict-ink` rejection via the
+            // dialect gate.
+            | "chance"
+            | "pick"
+            | "shuffle"
+            | "shuffled"
+            | "seed"
+            // NS-A5 (issue #1111, `docs/stdlib-spec.md` §7): the
+            // inhabited-range validator `non_empty(r)` →
+            // `Option[NonEmptyRange]`. Pure — no draw. `int(range)` (the
+            // draw leg) needs no entry: `int` is already listed above and
+            // the VM dispatches on the operand. Same slice-1 machinery:
+            // shadowable with E035, `strict-ink` rejection via the
+            // dialect gate.
+            | "non_empty"
+            // NS-A7 (issue #1113, `docs/stdlib-spec.md` §8): `Weighted[T]`
+            // construction (`weighted(w1, v1, …)` — E120 refuses
+            // statically-malformed tables), the `roll(w)` draw (an
+            // RNG-cell write like the NS-A6 verbs), and the humble heap
+            // (`heap_push`/`heap_pop`/`heap_peek` over ordinary arrays,
+            // §4b ordering). Same slice-1 machinery: shadowable with
+            // E035, `strict-ink` rejection via the dialect gate.
+            | "weighted"
+            | "roll"
+            | "heap_push"
+            | "heap_pop"
+            | "heap_peek"
+            // NS-A4 (issue #1110, `docs/stdlib-spec.md` §4b, F0): the
+            // ordering verbs — imperative in-place `sort`/`sort_by` +
+            // functional past-participle twins `sorted`/`sorted_by`.
+            // Same slice-1 machinery: shadowable with E035, `strict-ink`
+            // rejection via the dialect gate.
+            | "sort"
+            | "sort_by"
+            | "sorted"
+            | "sorted_by"
+            // NS-A8 (issue #1114, `docs/tower-mini-spec.md`; ruled shape
+            // `docs/stdlib-spec.md` §2b): the numeric tower — constructors
+            // (`vec2(x, y)` … `mat4(c0, c1, c2, c3)`, matrices from
+            // column vectors per T3's column-major pin), `dot`/`cross`,
+            // and the tower-wide `clamp`/`lerp` (`min`/`max` are already
+            // listed above — their two-arg call shape lowers to the tower
+            // componentwise forms, the one-arg shape stays the NS-A1
+            // array extremum). Same slice-1 machinery end to end:
+            // shadowable with E035, `strict-ink` rejection via the
+            // dialect gate. All pure.
+            | "vec2"
+            | "vec3"
+            | "vec4"
+            | "quat"
+            | "mat2"
+            | "mat3"
+            | "mat4"
+            | "dot"
+            | "cross"
+            | "clamp"
+            | "lerp"
     )
 }
 
@@ -877,7 +976,13 @@ pub(crate) fn lookup_by_name(
 }
 
 /// Result of a bare list item lookup.
-enum BareItemResult {
+///
+/// `pub(crate)` (issue #628): the phase-0 `Sig` stub's list-literal type
+/// inference (`external_check::resolve_list_item_name`) reuses this exact
+/// bare-name resolution — the declaring LIST is always a project-global
+/// lookup, never locally scoped, so that stub can call straight in without
+/// threading an `ImportScope` through `signature()`.
+pub(crate) enum BareItemResult {
     /// Exactly one match.
     Unique(DefinitionId),
     /// Multiple matches across different lists — caller must qualify.
@@ -889,7 +994,7 @@ enum BareItemResult {
 /// Look up a list item by its bare (unqualified) name.
 /// Searches all `ListName.ItemName` entries for a suffix match.
 /// Returns `Ambiguous` if multiple lists contain an item with this name.
-fn lookup_list_item_bare(index: &SymbolIndex, bare_name: &str) -> BareItemResult {
+pub(crate) fn lookup_list_item_bare(index: &SymbolIndex, bare_name: &str) -> BareItemResult {
     let suffix = format!(".{bare_name}");
     let mut found: Option<DefinitionId> = None;
     for (name, ids) in &index.by_name {

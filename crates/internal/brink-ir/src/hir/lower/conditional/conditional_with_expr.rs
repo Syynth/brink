@@ -1,4 +1,7 @@
-use brink_syntax::ast::{self, AstNode, SyntaxNodePtr};
+use brink_syntax::ast::{self, AstNode};
+
+use crate::Provenance;
+use crate::provenance::NodeClass;
 
 use crate::{Block, CondBranch, CondKind, Conditional, DiagnosticCode, Expr};
 
@@ -15,7 +18,7 @@ impl LowerConditional for ast::ConditionalWithExpr {
         scope: &LowerScope,
         sink: &mut impl LowerSink,
     ) -> Lowered<Conditional> {
-        let ptr = SyntaxNodePtr::from_node(self.syntax());
+        let ptr = scope.prov(NodeClass::Conditional, self.syntax());
         let range = self.syntax().text_range();
         let condition = self
             .condition()
@@ -33,7 +36,7 @@ impl LowerConditional for ast::ConditionalWithExpr {
 fn lower_conditional_with_expr(
     cond: &ast::ConditionalWithExpr,
     condition: &Expr,
-    ptr: SyntaxNodePtr,
+    ptr: Provenance,
     scope: &LowerScope,
     sink: &mut impl LowerSink,
 ) -> Conditional {

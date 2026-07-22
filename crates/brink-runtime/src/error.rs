@@ -151,9 +151,12 @@ pub enum RuntimeError {
     /// Array index read/write out of bounds (`0 <= index < len` required).
     #[error("array index {index} out of bounds (len {len})")]
     IndexOutOfBounds { index: i32, len: usize },
-    /// Map key read/write on a key that isn't present. Indexed *write*
-    /// (`m[k] = v`) requires the key to already exist — it never inserts;
-    /// use the `insert()` stdlib mutator (T1b-3) to add a new key.
+    /// Map key *read* (`m[k]`, `MapGet`) on a key that isn't present, or a
+    /// path-projection *write* through a `ref` whose final segment key
+    /// isn't present (`docs/t1e-spec.md` §4). Indexed *assignment*
+    /// (`m[k] = v` via the `IndexSet` opcode) no longer raises this fault on
+    /// a missing key — it inserts instead (JS/Python semantics, issue #856,
+    /// ruled 2026-07-15).
     #[error("map has no key {key}")]
     MapKeyNotFound { key: String },
     /// `a[i]`/`a[i] = v`/`m[k]`/`m[k] = v` where `a`/`m` isn't an
@@ -208,16 +211,26 @@ pub enum RuntimeError {
     /// zero-defaulting, no silent garbage (ruling 1: "Parse failure is a
     /// turn-terminating fault... like a missing map key"). Unlike this,
     /// the classic uppercase `INT()`/`FLOAT()` builtins keep their
-    /// pre-existing silent-0 legacy behavior (`value_ops::cast_to_int`/
-    /// `cast_to_float`) — untouched, oracle-byte-identical, a distinct
-    /// code path.
+    /// pre-existing silent-0-on-string-parse-failure legacy behavior
+    /// (`value_ops::cast_to_int`/`cast_to_float`) untouched within their own
+    /// `Int`/`Float`/`Bool`/`String` domain — oracle-byte-identical, a
+    /// distinct code path. Outside that domain (divert targets, pointers,
+    /// collections, records, function/handle/projection values), the
+    /// uppercase builtins now raise [`InvalidConversionDomain`](Self::InvalidConversionDomain)
+    /// too (issue #955) instead of the wildcard-fold-to-zero they used to —
+    /// those variants were never oracle-reachable through `INT()`/`FLOAT()`.
     #[error("cannot parse {input:?} as {target}")]
     ConversionParseFailure { target: &'static str, input: String },
     /// `int(x)`/`float(x)` where `x` is outside the permissive
     /// numeric+bool domain (divert targets, LIST values, arrays, maps,
     /// records) — compile error under `types = strict` (`brink-analyzer`'s
     /// intrinsic typing/domain check), turn-terminating fault under
-    /// `types = gradual` (ruling 2).
+    /// `types = gradual` (ruling 2). Also raised by the classic uppercase
+    /// `INT()`/`FLOAT()` builtins (`value_ops::cast_to_int`/`cast_to_float`)
+    /// for the same reason, with an uppercase `target` label (issue #955) —
+    /// no spec (`value-model-spec.md`, `t1c`/`t1d`/`t1e-spec.md`) rules a
+    /// conversion for those variants, so faulting is the conservative
+    /// default rather than the old silent zero.
     #[error("cannot convert a {got} value to {target}")]
     InvalidConversionDomain {
         target: &'static str,
@@ -258,4 +271,178 @@ pub enum RuntimeError {
         "function value ref-binds flow-private cell `{0}`; cross-flow invocation is a fault in T1c (see #597)"
     )]
     FunctionValueCrossFlowLocal(String),
+
+    // ── T1e path projections (docs/t1e-spec.md §1(2)/§3) ──────────────────
+    /// A live path projection's snapshot segments no longer resolve against
+    /// the root cell's *current* value at read or write time: a shrunk
+    /// array, a removed map key, or a struct field dropped by recompile.
+    /// The single ratified turn-terminating fault for every path-invalidation
+    /// cause (spec §1(2): "a defined turn-terminating runtime fault — not a
+    /// clamp, not UB"). The payload carries the underlying cause (an
+    /// `IndexOutOfBounds`/`MapKeyNotFound`/`RecordFieldNotFound`-shaped
+    /// message, or a root-resolution failure).
+    #[error("projection invalidated: {0}")]
+    ProjectionInvalidated(String),
+
+    // ── Stdlib slice 1 completion: `char_at` (`docs/t1b-surface-spec.md`
+    // §5, issue #857) ──────────────────────────────────────────────────────
+    /// `char_at(s, i)`'s index expression didn't evaluate to an `Int`.
+    #[error("char_at index must be an int, got {0}")]
+    CharAtIndexNotInt(&'static str),
+    /// `char_at(s, i)` where `i` is outside `[0, char_count)` — chars
+    /// (Unicode scalar values), not UTF-8 bytes (the issue's "author
+    /// sanity" ruling), so `len` is `s.chars().count()`, never
+    /// `s.len()`. Turn-terminating fault, no silent empty/clamped result
+    /// (value-model-spec §11c) — matches `IndexOutOfBounds`'s posture for
+    /// arrays.
+    #[error("char_at index {index} out of bounds ({len} chars)")]
+    CharAtOutOfBounds { index: i32, len: usize },
+
+    // ── NS-A1 Option[T] + the ruled stdlib flips (`docs/stdlib-spec.md`
+    // §§3-5) ──────────────────────────────────────────────────────────────
+    /// A stdlib verb was handed a container/argument of the wrong runtime
+    /// type — `find` on a non-string, `min`/`first`/`pop` on a non-array,
+    /// `get`/`contains_value`/`clear` on a non-map. A malformed *question*
+    /// is a bug (the ruled fault-vs-absence doctrine), so this is a
+    /// turn-terminating fault, never a `none`.
+    #[error("`{verb}` expects {expected}, got {found}")]
+    StdlibWrongType {
+        verb: &'static str,
+        expected: &'static str,
+        found: &'static str,
+    },
+    /// `min`/`max` reached an element outside the currently-orderable set
+    /// (int/float/bool/string, homogeneous per the §4b roster), or a
+    /// cross-type pair (int vs string). Turn-terminating fault — an
+    /// unorderable extremum question is malformed, not absent.
+    #[error("`{verb}` cannot order element of type {found}")]
+    NotOrderable {
+        verb: &'static str,
+        found: &'static str,
+    },
+
+    // ── NS-A4: the ordering doctrine (`docs/stdlib-spec.md` §4b, issue
+    // #1110) ──────────────────────────────────────────────────────────────
+    /// DEV mode only: an ordering verb (`sort`/`sorted`/`min`/`max`; A7
+    /// adds `heap_push`) reached a float NaN comparand. NaN flows freely
+    /// through arithmetic — ordering contexts are where it stops: in dev
+    /// mode the upstream bug surfaces at its first ordering consumption as
+    /// this turn-terminating fault. PROD mode instead places NaN by the
+    /// pinned non-fabricating total order (`-0 == +0` ties, NaN greatest,
+    /// NaN-vs-NaN ties) and keeps moving — the mode changes WHERE execution
+    /// stops, never WHAT values are fabricated. `sort_by`/`sorted_by`
+    /// deliberately do NOT raise this (F14: the comparator owns the order).
+    #[error(
+        "`{verb}` reached a NaN comparand — NaN cannot be ordered (dev-mode fault; prod mode \
+         places NaN by the pinned total order)"
+    )]
+    UnorderedComparand { verb: &'static str },
+    /// `sort_by`/`sorted_by` was handed a comparator that is not a function
+    /// value (`FnRef`/`Closure`). Malformed question — turn-terminating.
+    #[error("`{verb}` comparator must be a function value `fn(T, T): int`, got {found}")]
+    ComparatorNotAFunction {
+        verb: &'static str,
+        found: &'static str,
+    },
+    /// A `sort_by`/`sorted_by` comparator returned something other than an
+    /// int (F0's ruled shape: negative = less, zero = tie, positive =
+    /// greater). Turn-terminating — a silent coercion here would scramble
+    /// the order.
+    #[error(
+        "`{verb}` comparator must return an int (negative = less, zero = tie, positive = \
+         greater), got {found}"
+    )]
+    ComparatorReturnType {
+        verb: &'static str,
+        found: &'static str,
+    },
+    /// A `sort_by`/`sorted_by` comparator broke the pure·silent contract in
+    /// a way the VM can observe: it presented a choice, reached
+    /// `-> DONE`/`-> END`, called an external function, exceeded the
+    /// nested-evaluation step budget, or recursed past the nesting depth
+    /// limit. The checker enforces the contract statically where the
+    /// comparator's origin is provable (E119); this is the gradual-mode
+    /// runtime residual.
+    #[error("`{verb}` comparator {what} — comparators must be pure, silent functions")]
+    ComparatorEscaped {
+        verb: &'static str,
+        what: &'static str,
+    },
+    /// DEV mode only (F34, ruled 2026-07-19): a `sort_by`/`sorted_by`
+    /// comparator performed a world-write mid-sort — assigned a global
+    /// (directly, or through a `ref`-parameter pointer / path projection)
+    /// or advanced the RNG cell (a draw IS a write: a random comparator is
+    /// exactly the non-determinism the pure·silent contract bans). PROD
+    /// mode skips the check entirely and the write executes — defined and
+    /// deterministic, because the stable merge-sort's comparison sequence
+    /// is fixed (the mode changes WHERE execution stops, never WHAT the
+    /// sort produces). Visit-count increments from the comparator's own
+    /// invocation are NOT world-writes — they are the ruled in-story
+    /// dispatch semantics and stay exempt. Reads are not guarded at
+    /// runtime (E119's static bound owns the read posture). Like
+    /// [`ComparatorEscaped`](Self::ComparatorEscaped), this is the
+    /// gradual-mode runtime residual of the E119 gate.
+    #[error(
+        "`{verb}` comparator {what} — comparators must be pure, silent functions (dev-mode \
+         fault; prod mode executes the write)"
+    )]
+    ComparatorWroteState {
+        verb: &'static str,
+        what: &'static str,
+    },
+
+    // ── F27: Option has no truthiness (`docs/stdlib-spec.md` §1.6, ruled
+    // 2026-07-19, issue #1120) ────────────────────────────────────────────
+    /// A `Value::OptionVal` reached the VM's truthiness evaluation (`GotoIf`,
+    /// `JumpIfFalse`, `Not`, a choice condition). Option has **no**
+    /// truthiness — truthiness is a quiet coercion of exactly the kind
+    /// `Option[T] ≠ T` exists to ban — so this is the gradual-mode
+    /// turn-terminating fault; `types = strict` reports the same condition
+    /// statically (E116). Authors write `== none` / `== some(x)` (or, post-B1,
+    /// the `as`-binding). Supersedes NS-A1's shipped falsy-none behavior.
+    #[error("an Option has no truthiness — test `== none` / `== some(x)` explicitly")]
+    OptionTruthiness,
+
+    // ── NS-A5: the inhabited-range refinement (`docs/stdlib-spec.md` §7,
+    // F8 ruled 2026-07-19) ────────────────────────────────────────────────
+    /// `int(range)` reached an **empty** range at runtime — the F8 gradual-
+    /// mode residual, and THE template for every future value refinement:
+    /// under gradual typing the refinement check is inert at compile time
+    /// and this turn-terminating fault is what remains; under `types =
+    /// strict` the same condition is unrepresentable (the checker demands
+    /// `NonEmptyRange` evidence — a provably-inhabited literal or a
+    /// `non_empty(r)` unwrap — and reports E117 statically). A draw from
+    /// nothing is a malformed question, never an absence, so this is a
+    /// fault and not a `none` (the ruled fault-vs-absence doctrine;
+    /// contrast `pick(0..0)`, which IS absence and returns `none`).
+    #[error("`int` cannot draw from the empty range {range} — validate with `non_empty(r)` first")]
+    EmptyRangeDraw {
+        /// The written form of the offending range (`0..0`, `5..=2`, …).
+        range: String,
+    },
+
+    // ── NS-A7: Weighted[T] evidence-by-construction (`docs/stdlib-spec.md`
+    // §8, issue #1113) ────────────────────────────────────────────────────
+    /// `weighted(…)` reached a **computed** weight that is not a positive
+    /// int at construction time — the E078-style split's runtime half: a
+    /// weight the checker could classify statically is the E120 compile
+    /// error; a computed weight that turns out zero/negative/non-int is
+    /// this turn-terminating construction fault. Construction is the
+    /// validator (the §7 parse-don't-validate shape), so `roll` over any
+    /// table that exists is total.
+    #[error(
+        "`weighted` requires positive int weights, got {found} — construction refuses empty/zero/negative-weight tables"
+    )]
+    WeightedBadWeight {
+        /// Display form of the offending weight value (`0`, `-3`, `1.5`, a
+        /// type name for non-numerics).
+        found: String,
+    },
+    /// The `weighted_new` op received a malformed pair row (empty, or an
+    /// odd flattened length). Unreachable through the compiler — the E120
+    /// gate refuses empty/odd construction shapes statically — so this
+    /// guards hand-crafted or corrupt bytecode only (the malformed-bytecode
+    /// robustness discipline, never a panic).
+    #[error("`weighted` construction received {detail}")]
+    WeightedMalformedTable { detail: &'static str },
 }

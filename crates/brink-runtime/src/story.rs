@@ -60,6 +60,23 @@ pub enum Line {
     },
     /// The story has permanently ended (ink `-> END`).
     End { text: String, tags: Vec<String> },
+    /// A flow parked at an `await` site (the `FlowFrame` model,
+    /// `docs/flow-suspension-spec.md` §10.1). Like `Done`, a park is a
+    /// **turn boundary**: text accumulated before the park flushes with
+    /// it, so the pre-`await` state is never held hostage. The host wakes
+    /// the flow via [`Story::wake_check`] and drives it when it wants
+    /// output — a park never auto-continues.
+    ///
+    /// **Runtime-unreachable until FS-3r.** No code path in today's
+    /// runtime constructs this variant — the E052 lowering fence
+    /// (`docs/flow-suspension-spec.md` §11.4) keeps `await` from
+    /// producing bytecode, so `park`/`spill`/`resume` do not yet exist.
+    /// It ships now (FS-3w, the web-surface slice) purely so consumers
+    /// migrate the API *shape* early: every marshal leg over `Line` names
+    /// it, and adding it makes each missed leg a compile error by design.
+    /// See `line_suspended_is_terminal_and_never_constructed_in_runtime`
+    /// for the "nothing constructs it" guard.
+    Suspended { text: String, tags: Vec<String> },
 }
 
 impl Line {
@@ -69,7 +86,8 @@ impl Line {
             Self::Text { text, .. }
             | Self::Done { text, .. }
             | Self::Choices { text, .. }
-            | Self::End { text, .. } => text,
+            | Self::End { text, .. }
+            | Self::Suspended { text, .. } => text,
         }
     }
 
@@ -79,11 +97,14 @@ impl Line {
             Self::Text { tags, .. }
             | Self::Done { tags, .. }
             | Self::Choices { tags, .. }
-            | Self::End { tags, .. } => tags,
+            | Self::End { tags, .. }
+            | Self::Suspended { tags, .. } => tags,
         }
     }
 
-    /// Returns true if this is a terminal variant (`Done`, `Choices`, or `End`).
+    /// Returns true if this is a terminal variant (`Done`, `Choices`,
+    /// `End`, or `Suspended`) — anything but `Text`. A park is a turn
+    /// boundary, so `Suspended` is terminal.
     pub fn is_terminal(&self) -> bool {
         !matches!(self, Self::Text { .. })
     }
@@ -361,6 +382,45 @@ pub(crate) struct PendingChoice {
     pub thread_fork: Thread,
 }
 
+/// The dev/prod execution mode (NS-A4, `docs/stdlib-spec.md` §4b, ruled
+/// 2026-07-18): the knob that decides WHERE execution stops on an unordered
+/// comparand — never WHAT values are fabricated.
+///
+/// The split is **fenced to placement**: it exists only where the prod
+/// behavior is defined, total, and fabricates no data. Ordering contexts
+/// qualify (`sort`/`sorted`/`min`/`max`; A7 adds `heap_push`): every element
+/// is preserved, the order is deterministic, saves/replay are safe.
+/// Fabrication never qualifies — `int("potato")`, OOB indexing stay
+/// always-fault in both modes. Effect rows are mode-independent (the checker
+/// doesn't know modes exist).
+///
+/// - [`Dev`](Self::Dev) (the default — the Rust dev-profile analogy, like
+///   debug-build overflow checks): a float NaN comparand in an ordering
+///   context is a turn-terminating [`RuntimeError::UnorderedComparand`]
+///   fault, surfacing the upstream bug at its first ordering consumption.
+/// - [`Prod`](Self::Prod): the pinned non-fabricating total order applies —
+///   ordinary IEEE order with `-0 == +0` as a tie, NaN greater than
+///   everything, NaN-vs-NaN ties (deliberately NOT IEEE `totalOrder`, whose
+///   `-0 < +0` would split ordering from `==` on clean data). Execution
+///   keeps moving.
+///
+/// On NaN-free data the modes agree exactly and cohere with `<`/`==`.
+///
+/// The knob's *home* is project config (`brink.toml` profile) with a
+/// host-API override (ruled 2026-07-19; tooling wires the config side).
+/// This runtime mechanism is the host-API leg: set it via
+/// [`Story::set_exec_mode`] / [`FlowInstance::set_exec_mode`]. The mode is
+/// a host/build knob, not story state — it is never embedded in `.inkb`
+/// (mirroring `dialect`/`types`) and never persisted in saves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExecMode {
+    /// Fault on unordered comparands (NaN) in ordering contexts.
+    #[default]
+    Dev,
+    /// Keep moving: place NaN by the pinned non-fabricating total order.
+    Prod,
+}
+
 /// Per-flow execution context. Owns threads, eval stack, output, choices.
 #[derive(Debug, Clone)]
 #[expect(
@@ -382,6 +442,15 @@ pub(crate) struct Flow {
     /// pending choices — the story passed through an empty choice set.
     /// Cleared at the start of each `continue_single` call.
     pub did_unsafe_yield: bool,
+    /// The dev/prod execution mode (NS-A4, [`ExecMode`]). A host/build
+    /// knob, not story state — never persisted; defaults to
+    /// [`ExecMode::Dev`].
+    pub exec_mode: ExecMode,
+    /// Depth of in-flight nested comparator evaluations (`sort_by`/
+    /// `sorted_by` — `vm::call_comparator`). Transient VM bookkeeping (a
+    /// comparator always completes within one opcode); guards Rust stack
+    /// recursion when a comparator itself sorts with a comparator.
+    pub comparator_depth: u16,
 }
 
 impl Flow {
@@ -704,6 +773,8 @@ impl FlowInstance {
                 skipping_choice: false,
                 did_safe_exit: false,
                 did_unsafe_yield: false,
+                exec_mode: ExecMode::default(),
+                comparator_depth: 0,
             },
             status: StoryStatus::Active,
             stats: Stats::default(),
@@ -744,6 +815,22 @@ impl FlowInstance {
     #[must_use]
     pub fn visibility_enforced(&self) -> bool {
         self.enforce_visibility
+    }
+
+    /// Set the dev/prod execution mode on this flow instance (NS-A4,
+    /// [`ExecMode`] — see its docs for the §4b doctrine). Mirrors
+    /// [`Story::set_exec_mode`](crate::Story::set_exec_mode) for consumers
+    /// that drive a `FlowInstance` directly (`bevy-brink`,
+    /// [`crate::Speculation`]). Takes effect immediately — the mode is
+    /// consulted at each ordering-verb execution.
+    pub fn set_exec_mode(&mut self, mode: ExecMode) {
+        self.flow.exec_mode = mode;
+    }
+
+    /// The current dev/prod execution mode (NS-A4, [`ExecMode`]).
+    #[must_use]
+    pub fn exec_mode(&self) -> ExecMode {
+        self.flow.exec_mode
     }
 
     /// Maximum VM steps per `continue_maximally` call before erroring.
@@ -1935,6 +2022,12 @@ pub struct Story<R: StoryRng = FastRng> {
     /// to start flows at private knots. No effect on stories without any
     /// `#@private` definition (the fast path short-circuits on that).
     enforce_visibility: bool,
+    /// The dev/prod execution mode (NS-A4, [`ExecMode`]). A host/build
+    /// knob mirrored onto every owned [`FlowInstance`] — see
+    /// [`set_exec_mode`](Self::set_exec_mode). Not persisted in a
+    /// [`StorySnapshot`] (the mode is a property of the host/build, not of
+    /// story state).
+    exec_mode: ExecMode,
     _rng: PhantomData<R>,
 }
 
@@ -1950,6 +2043,7 @@ impl<R: StoryRng> Clone for Story<R> {
             shared_instances: self.shared_instances.clone(),
             resolver: None,
             enforce_visibility: self.enforce_visibility,
+            exec_mode: self.exec_mode,
             _rng: PhantomData,
         }
     }
@@ -1982,6 +2076,7 @@ impl<R: StoryRng> Story<R> {
             shared_instances: HashMap::new(),
             resolver: None,
             enforce_visibility: true,
+            exec_mode: ExecMode::default(),
             _rng: PhantomData,
         }
     }
@@ -2021,6 +2116,36 @@ impl<R: StoryRng> Story<R> {
     #[must_use]
     pub fn visibility_enforced(&self) -> bool {
         self.enforce_visibility
+    }
+
+    /// Set the dev/prod execution mode (NS-A4, [`ExecMode`] — see its docs
+    /// for the §4b ordering doctrine). **Dev** (the default) faults on a
+    /// float NaN comparand in an ordering context; **Prod** keeps moving
+    /// with the pinned non-fabricating total order. The knob's home is
+    /// project config (`brink.toml` profile) with this host-API override
+    /// (ruled 2026-07-19); the mode is never embedded in `.inkb` and never
+    /// persisted in saves or snapshots.
+    ///
+    /// Propagates to every [`FlowInstance`] this `Story` currently owns
+    /// (`default`, named, shared) — the same sync discipline as
+    /// [`set_visibility_enforcement`](Self::set_visibility_enforcement).
+    /// Flows spawned after this call inherit the `Story`'s current setting
+    /// at spawn time.
+    pub fn set_exec_mode(&mut self, mode: ExecMode) {
+        self.exec_mode = mode;
+        self.default.set_exec_mode(mode);
+        for (flow, _, _) in self.instances.values_mut() {
+            flow.set_exec_mode(mode);
+        }
+        for flow in self.shared_instances.values_mut() {
+            flow.set_exec_mode(mode);
+        }
+    }
+
+    /// The current dev/prod execution mode (default [`ExecMode::Dev`]).
+    #[must_use]
+    pub fn exec_mode(&self) -> ExecMode {
+        self.exec_mode
     }
 
     /// Set the plural resolver for Select resolution in localized lines.
@@ -2360,6 +2485,10 @@ impl<R: StoryRng> Story<R> {
             // reattached story defaults to enforcing; the host re-applies a
             // dev override if it wants one.
             enforce_visibility: true,
+            // Same posture for the dev/prod mode (NS-A4): a host/build
+            // knob, not persisted state — a reattached story defaults to
+            // Dev; the host re-applies its own setting.
+            exec_mode: ExecMode::default(),
             _rng: PhantomData,
         };
         // `snapshot.default`/`snapshot.instances` carry whatever
@@ -2369,6 +2498,9 @@ impl<R: StoryRng> Story<R> {
         // reattached story's own (enforcing) setting so the two can't
         // diverge.
         story.set_visibility_enforcement(true);
+        // Same re-sync for the exec mode (the flows in the snapshot carry
+        // whatever mode they had at detach time).
+        story.set_exec_mode(ExecMode::default());
         story
     }
 
@@ -2633,6 +2765,7 @@ impl<R: StoryRng> Story<R> {
         // set before spawning must apply to newly spawned flows too, not
         // just the flows that existed at override time).
         flow.set_visibility_enforcement(self.enforce_visibility);
+        flow.set_exec_mode(self.exec_mode);
         self.instances
             .insert(name.to_owned(), (flow, ctx, FlowLocal::new()));
         Ok(())
@@ -2695,6 +2828,28 @@ impl<R: StoryRng> Story<R> {
         names
     }
 
+    /// Re-evaluate the wake conditions of parked flows and return the ids
+    /// of the flows that woke, sorted for determinism
+    /// (`docs/flow-suspension-spec.md` §10.2). Waking never auto-continues:
+    /// the host drives a woken flow via [`Story::continue_flow_single`] when
+    /// it wants output.
+    ///
+    /// **Returns an empty list until parks exist (FS-3r).** No flow can be
+    /// parked in today's runtime — the E052 lowering fence keeps `await`
+    /// from producing bytecode ([`Line::Suspended`] is unreachable), so
+    /// there are no conditions to re-evaluate. The method ships now (FS-3w)
+    /// so hosts wire the wake loop against a stable shape; FS-3r fills in
+    /// real condition evaluation + dirty-tracking without changing this
+    /// signature. Dirty-tracking is not built here — this is the free stub.
+    #[must_use]
+    pub fn wake_check(&mut self) -> Vec<String> {
+        // FS-3r: iterate parked flows, re-evaluate each dirty condition in
+        // the owning flow's context via the isolated function-eval
+        // machinery, collect woken ids. No flow can be parked yet, so the
+        // woken set is always empty.
+        Vec::new()
+    }
+
     // ── Shared flows (#200) ─────────────────────────────────────────
     // Spawn a flow that **shares** `default_context` (globals / visit counts /
     // rng) with the default flow — true ink concurrent-flow semantics — while
@@ -2733,6 +2888,7 @@ impl<R: StoryRng> Story<R> {
         // Inherit this `Story`'s current enforcement setting — see
         // `spawn_flow`'s identical note.
         flow.set_visibility_enforcement(self.enforce_visibility);
+        flow.set_exec_mode(self.exec_mode);
         self.shared_instances.insert(name.to_owned(), flow);
         Ok(())
     }
@@ -2755,6 +2911,43 @@ impl<R: StoryRng> Story<R> {
             .ok_or_else(|| RuntimeError::UnknownFlow(name.to_owned()))?;
         let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
         instance.step_single_line::<R>(
+            &self.program,
+            &self.line_tables,
+            &mut view,
+            handler,
+            resolver,
+        )
+    }
+
+    /// Run a shared flow to its next terminal line (against the shared
+    /// context) — the shared-flow analogue of [`Self::continue_flow_maximally`]
+    /// (which drives an *isolated* flow instead). Bounded by
+    /// [`FlowInstance::LINE_LIMIT`] via
+    /// [`drive_to_terminal`](FlowInstance::drive_to_terminal): an
+    /// infinite-emitting flow errors with [`RuntimeError::LineLimitExceeded`]
+    /// rather than growing the returned `Vec` without bound (guard against
+    /// unbounded growth).
+    pub fn continue_flow_maximally_shared(
+        &mut self,
+        name: &str,
+    ) -> Result<Vec<Line>, RuntimeError> {
+        self.continue_flow_maximally_shared_with(name, &FallbackHandler)
+    }
+
+    /// Run a shared flow to its next terminal line with an external-function
+    /// handler. See [`Self::continue_flow_maximally_shared`].
+    pub fn continue_flow_maximally_shared_with(
+        &mut self,
+        name: &str,
+        handler: &dyn ExternalFnHandler,
+    ) -> Result<Vec<Line>, RuntimeError> {
+        let resolver = self.resolver.as_deref();
+        let instance = self
+            .shared_instances
+            .get_mut(name)
+            .ok_or_else(|| RuntimeError::UnknownFlow(name.to_owned()))?;
+        let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
+        instance.drive_to_terminal::<R>(
             &self.program,
             &self.line_tables,
             &mut view,
@@ -3197,6 +3390,7 @@ mod tests {
                 Line::Text { .. } => {}
                 Line::Done { .. } => panic!("story hit Done before presenting choices"),
                 Line::End { .. } => panic!("story ended before presenting choices"),
+                Line::Suspended { .. } => panic!("story parked before presenting choices"),
             }
         }
     }
@@ -3209,7 +3403,8 @@ mod tests {
             match story.continue_single().unwrap() {
                 Line::Choices { text: t, .. }
                 | Line::Done { text: t, .. }
-                | Line::End { text: t, .. } => {
+                | Line::End { text: t, .. }
+                | Line::Suspended { text: t, .. } => {
                     text.push_str(&t);
                     return text;
                 }
@@ -3263,6 +3458,84 @@ mod tests {
         let data = brink_format::read_inkb(&bytes).expect("decode");
         let (prog, tables) = link(&data).expect("link");
         Story::new(Arc::new(prog), tables)
+    }
+
+    /// FS-3w guard (`docs/flow-suspension-spec.md` §10.1): `Line::Suspended`
+    /// ships on the `Line` surface now but is **runtime-unreachable until
+    /// FS-3r** — the E052 lowering fence keeps `await` from producing
+    /// bytecode, so no `park`/`spill`/`resume` path exists to construct it.
+    /// This pins both halves: the variant's accessor/terminal contract, and
+    /// that driving a representative story (including one that spins up a
+    /// shared flow) never yields a `Suspended` line, and that `wake_check`
+    /// reports no woken flows because none can park.
+    #[test]
+    fn line_suspended_is_terminal_and_never_constructed_in_runtime() {
+        // The variant behaves like any other terminal: it carries text/tags
+        // and reports terminal.
+        let parked = Line::Suspended {
+            text: "pre-await".to_owned(),
+            tags: vec!["t".to_owned()],
+        };
+        assert_eq!(parked.text(), "pre-await");
+        assert_eq!(parked.tags(), ["t".to_owned()]);
+        assert!(parked.is_terminal(), "a park is a turn boundary");
+
+        // Drive a small story with a shared flow to a terminal; nothing the
+        // runtime produces is ever `Suspended`.
+        let src = "Hello -> knot\n== knot ==\nWorld\n-> DONE\n";
+        let mut story = story_from_source(src);
+        story
+            .spawn_flow_shared("f", None)
+            .expect("spawn shared flow");
+        for _ in 0..64 {
+            let line = story.continue_single().expect("continue");
+            assert!(
+                !matches!(line, Line::Suspended { .. }),
+                "runtime must never construct Line::Suspended before FS-3r"
+            );
+            if line.is_terminal() {
+                break;
+            }
+        }
+        for _ in 0..64 {
+            let line = story.continue_flow_single("f").expect("continue flow");
+            assert!(
+                !matches!(line, Line::Suspended { .. }),
+                "a shared flow must never construct Line::Suspended before FS-3r"
+            );
+            if line.is_terminal() {
+                break;
+            }
+        }
+
+        // No flow can park, so `wake_check` reports an empty woken set.
+        assert!(
+            story.wake_check().is_empty(),
+            "wake_check returns no woken flows until parks exist (FS-3r)"
+        );
+    }
+
+    /// #999: a shared flow that emits text forever must error at
+    /// `FlowInstance::LINE_LIMIT` rather than growing `continue_flow_maximally_shared`'s
+    /// returned `Vec<Line>` without bound — the shared-flow analogue of
+    /// `drive_to_terminal_errors_at_line_limit` above, exercised through the
+    /// `Story`-level entry point the wasm leg (`brink-web`) actually calls.
+    #[test]
+    fn continue_flow_maximally_shared_errors_at_line_limit() {
+        let src = "-> spam\n\n=== spam ===\nLine.\n-> spam\n";
+        let mut story = story_from_source(src);
+        story
+            .spawn_flow_shared("f", None)
+            .expect("spawn shared flow at the root (immediately diverts into `spam`)");
+        let err = story
+            .continue_flow_maximally_shared("f")
+            .expect_err("infinite-emitting flow should hit the line limit rather than hang");
+        match err {
+            RuntimeError::LineLimitExceeded(n) => {
+                assert_eq!(n, FlowInstance::LINE_LIMIT);
+            }
+            other => panic!("expected LineLimitExceeded, got {other:?}"),
+        }
     }
 
     /// `Choice.index` (the live, visible choice list) must be the *raw*

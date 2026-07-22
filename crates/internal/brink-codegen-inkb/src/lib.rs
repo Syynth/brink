@@ -145,6 +145,16 @@ pub fn emit(program: &lir::Program) -> Result<StoryData, CodegenError> {
         // through — the LIR already sorted it deterministically.
         private_defs: program.private_defs.clone(),
         alias_table: program.aliases.clone(),
+        // T2-3 `EffectRows`: codegen has no analyzer access, so it emits an
+        // empty table here. The `story_data` db query populates the real rows
+        // from `effects_query` after this `emit` (the one canonical codegen
+        // site) — see `docs/effects-spec.md` §11.
+        effect_rows: Vec::new(),
+        // FS-3 `FrameShapes` (`docs/flow-suspension-spec.md` §4/§11): the E052
+        // `await` lowering fence stands, so no `await` reaches codegen and no
+        // frame shapes are synthesized. Emitted empty; first population rides
+        // the continuation-splitting codegen when the fence drops (FS-3r).
+        frame_shapes: Vec::new(),
         source_checksum: 0,
     })
 }

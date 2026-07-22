@@ -24,6 +24,27 @@
 //! memo surviving the remove/re-add round-trip diverges from the fresh
 //! compile.
 //!
+//! Call-graph topology op (issue #639): every other mutation op edits a
+//! def's body without changing which defs call which — a pure body edit
+//! never changes `scc_membership()`'s condensation, only
+//! `call_edges(def)`-level topology changes do (design doc §9's FG-2
+//! bullet). `mutate()`'s op 7 adds or removes a `~ callee(args)` call or a
+//! `-> callee(args)` divert-with-args edge between defs that already exist
+//! in the project (self-recursion counts — it turns a singleton SCC into a
+//! self-loop), marked so the same op can find and remove it again later.
+//! This is on top of, not instead of, FG-2's own hand-crafted
+//! `fg2_scc_dependency_edges.rs` regression test.
+//!
+//! Topology-thin corpus (issue #986): the original `PROJECTS` list was
+//! mostly shallow, few-edge call graphs, so op 7 had little real
+//! dependency-graph structure to churn against. `tier2/callgraph/*` adds
+//! purpose-built seeds with deeper/wider shapes — a call chain, a
+//! diamond (fan-out/fan-in with a shared callee), and a genuine cycle built
+//! from mutually-tunneling knots — see `PROJECTS`'s doc comment for the
+//! per-fixture rationale. Deliberately excluded from the oracle corpus (no
+//! `oracle/` subdirectory) so they add real topology without moving the
+//! ratchet.
+//!
 //! Bounded: `EDITS_PER_PROJECT` edits over a fixed project list; every step
 //! is a small-project compile, so the whole test stays well under the
 //! workspace's test-time budget and cannot hang (no loops without bounds).
@@ -34,18 +55,43 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use brink_driver::ProjectDb;
+use regex::Regex;
 
 /// Seeded edits applied to each project.
 const EDITS_PER_PROJECT: u64 = 16;
 
 /// Corpus-derived projects under `tests/` (workspace root), chosen to cover
 /// single-file, flat-include, and nested-include shapes.
+///
+/// `tier2/callgraph/*` (issue #986): purpose-built fixtures — not part of
+/// the oracle corpus (no `oracle/` subdirectory, so `collect_oracle_cases`
+/// never sees them and the ratchet is untouched) — that give the call-graph
+/// topology op (issue #639, op 7 in `mutate()`) real dependency-graph depth
+/// and width to churn, instead of the few-edges-thin shapes the rest of
+/// `PROJECTS` happens to have:
+///
+/// - `deep-chain`: a 5-deep function-call chain and a parallel 5-deep
+///   knot-divert chain, so an added/removed edge can land mid-chain and
+///   shift `scc_membership()`'s condensation across real depth.
+/// - `diamond-shared-callee`: a fan-out/fan-in shape at both the function
+///   level (`diamond_top` calls `diamond_left` and `diamond_right`, both of
+///   which call the shared `diamond_bottom`) and the knot-divert level (a
+///   choice fans out to two branches that reconverge), exercising a
+///   dependency graph with real width and a shared descendant.
+/// - `cycle-via-tunnels`: a genuine 3-node call-graph cycle (`ping` tunnels
+///   to `pong`, `pong` tunnels to `ring`, `ring` tunnels back to `ping`,
+///   depth-guarded so it still terminates), giving op 7 a non-trivial SCC
+///   (size > 1) to add/remove edges against instead of every other
+///   project's DAG-only shape.
 const PROJECTS: &[&str] = &[
     "tier1/basics/I002-fogg-comforts-passepartout",
     "tier1/weave/I041-weave-gathers",
     "tier1/knots/I128-knot-stitch-gather-counts",
     "tier2/variabletext/sequence",
     "tier2/functions/using-function-and-increment-together",
+    "tier2/callgraph/deep-chain",
+    "tier2/callgraph/diamond-shared-callee",
+    "tier2/callgraph/cycle-via-tunnels",
     "tier3/misc/I024-includes",
     "tier3/misc/I025-nested-includes",
 ];
@@ -105,9 +151,68 @@ fn load_project(dir: &Path) -> BTreeMap<String, String> {
     files
 }
 
+/// A top-level knot/function def discovered by scanning the project's
+/// *original* source for `== name ==` / `=== function name(params) ===`
+/// style headers (issue #639). Single-`=` stitch headers are excluded —
+/// stitches need a dotted, parent-knot-qualified name to call from outside
+/// their own knot, which this synthetic edge doesn't model.
+///
+/// Computed once per project from `originals` (headers are never added or
+/// removed by any mutation op, this one included — only the call/divert
+/// *sites* referencing them churn), so every step's `mutate()` call reuses
+/// the same candidate list.
+struct CallableDef {
+    name: String,
+    arity: usize,
+}
+
+/// Marks a call/divert-with-args line this file's `mutate()` op 7 inserted,
+/// so a later invocation of the same op can find and remove it again (the
+/// "remove" half of "add/remove a call-graph edge"). A valid ink line
+/// comment, so it never changes the statement it trails.
+const CALL_EDGE_MARKER: &str = "// fz-call-edge";
+
+/// Scan every file's text for def headers eligible as a call/divert-with-
+/// args target: `={2,}` (excludes single-`=` stitches), an optional
+/// `function` keyword, a name, and an optional parenthesized param list
+/// whose comma count gives the arity a synthetic call site must match.
+fn discover_callable_defs(files: &BTreeMap<String, String>) -> Vec<CallableDef> {
+    let header = Regex::new(
+        r"^\s*={2,}\s*(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(([^)]*)\))?\s*=*\s*$",
+    )
+    .expect("valid regex");
+    let mut defs: Vec<CallableDef> = Vec::new();
+    for text in files.values() {
+        for line in text.lines() {
+            let Some(caps) = header.captures(line) else {
+                continue;
+            };
+            let name = caps[1].to_owned();
+            let arity = caps.get(2).map_or(0, |params| {
+                let params = params.as_str().trim();
+                if params.is_empty() {
+                    0
+                } else {
+                    params.split(',').count()
+                }
+            });
+            defs.push(CallableDef { name, arity });
+        }
+    }
+    defs.sort_by(|a, b| a.name.cmp(&b.name));
+    defs.dedup_by(|a, b| a.name == b.name);
+    defs
+}
+
 /// One seeded mutation of one file. Never creates or deletes `INCLUDE`
 /// lines, so the project file set is stable across the whole run.
-fn mutate(rng: &mut Lcg, original: &str, current: &str, step: u64) -> String {
+fn mutate(
+    rng: &mut Lcg,
+    original: &str,
+    current: &str,
+    step: u64,
+    callable_defs: &[CallableDef],
+) -> String {
     let lines: Vec<&str> = current.lines().collect();
     // Line indices that are safe to touch (not INCLUDE).
     let safe: Vec<usize> = (0..lines.len())
@@ -117,7 +222,7 @@ fn mutate(rng: &mut Lcg, original: &str, current: &str, step: u64) -> String {
         return current.to_owned();
     }
 
-    let op = rng.pick(8);
+    let op = rng.pick(9);
     let at = safe[rng.pick(safe.len())];
     let mut out: Vec<String> = lines.iter().map(|&l| l.to_owned()).collect();
     match op {
@@ -174,6 +279,40 @@ fn mutate(rng: &mut Lcg, original: &str, current: &str, step: u64) -> String {
         // family's incremental path; anywhere else it is harmless comment
         // churn that must still leave every query equal to fresh.
         6 => out.insert(at, format!("/// Fuzzed doc, step {step}.")),
+        // Call-graph topology op (issue #639): add or remove a call/
+        // divert-with-args edge between defs that already exist in this
+        // project — a body-only edit never changes `scc_membership()`'s
+        // condensation, only a topology change does, per the design doc's
+        // FG-2 ask that this harness fuzz that class of edit too.
+        7 => {
+            if callable_defs.is_empty() {
+                // No callable def exists in this project shape (a
+                // single-flow, no-knot corpus case) — harmless fallback,
+                // same shape as op 5's "not applicable here" branch.
+                out.insert(at, format!("A fuzzed line, step {step}."));
+            } else if let Some(idx) = out.iter().position(|l| l.contains(CALL_EDGE_MARKER)) {
+                // Remove: a prior invocation of this op already added a
+                // marked edge somewhere in the file — strip it. This is
+                // the topology-*removing* half of add/remove.
+                out.remove(idx);
+            } else {
+                // Add: a call or divert-with-args edge to a def that
+                // already exists in the project. Self-recursion is a
+                // legitimate topology change too — it turns a singleton
+                // SCC into a self-loop.
+                let callee = &callable_defs[rng.pick(callable_defs.len())];
+                let args = (0..callee.arity)
+                    .map(|_| rng.pick(9).to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let line = if rng.pick(2) == 0 {
+                    format!("~ {}({args}) {CALL_EDGE_MARKER}", callee.name)
+                } else {
+                    format!("-> {}({args}) {CALL_EDGE_MARKER}", callee.name)
+                };
+                out.insert(at, line);
+            }
+        }
         // Revert the file to its original content.
         _ => return original.to_owned(),
     }
@@ -250,6 +389,60 @@ fn assert_fg3_families_match(
     }
 }
 
+/// FG-1 (#630)/FG-2 (#631)/T2-1 (#860, swept in via #746): assert every
+/// per-def/per-SCC query family agrees between a long-lived incremental db
+/// and a from-scratch one, for every non-local def:
+///
+/// - `signature(def)` (FG-1) — the equivalence gate the design doc asks
+///   `incremental_fuzz` to carry for the narrowed dependency edge
+///   (declaring-file-only, not every project file's HIR);
+/// - `inferred_signature(def)`/`infer_body(def)` (FG-2) — the per-def/
+///   per-SCC inference views, per the design doc §7's explicit ask to sweep
+///   every new per-def family into this harness;
+/// - `effects(def)` (T2-1, #860) — the same shape of per-def/per-SCC query,
+///   sited beside `inferred_signature` in `brink-db` with its own per-SCC
+///   fixpoint (`solve_scc_effects`), so it gets the identical gate.
+///
+/// Extracted from the main fuzz loop to keep it under clippy's line-count
+/// lint, the same reason `assert_fg3_families_match` above was extracted.
+fn assert_per_def_families_match(db: &ProjectDb, fresh_db: &ProjectDb, project: &str, step: u64) {
+    let mut defs: Vec<_> = db
+        .symbol_index()
+        .symbols
+        .iter()
+        .filter(|(_, info)| {
+            !matches!(
+                info.kind,
+                brink_ir::SymbolKind::Param | brink_ir::SymbolKind::Temp
+            )
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    defs.sort();
+    for def in defs {
+        assert_eq!(
+            db.signature(def),
+            fresh_db.signature(def),
+            "{project}: signature({def:?}) diverged from fresh compile after edit {step}"
+        );
+        assert_eq!(
+            db.inferred_signature(def),
+            fresh_db.inferred_signature(def),
+            "{project}: inferred_signature({def:?}) diverged from fresh compile after edit {step}"
+        );
+        assert_eq!(
+            db.infer_body(def),
+            fresh_db.infer_body(def),
+            "{project}: infer_body({def:?}) diverged from fresh compile after edit {step}"
+        );
+        assert_eq!(
+            db.effects(def),
+            fresh_db.effects(def),
+            "{project}: effects({def:?}) diverged from fresh compile after edit {step}"
+        );
+    }
+}
+
 #[test]
 fn incremental_story_data_equals_fresh_compile() {
     let root = workspace_root().join("tests");
@@ -260,6 +453,10 @@ fn incremental_story_data_equals_fresh_compile() {
         let originals = load_project(&dir);
         let mut current = originals.clone();
         let paths: Vec<String> = current.keys().cloned().collect();
+        // Call-graph topology op (#639): the candidate callee list is
+        // fixed per project — def headers are never added/removed by any
+        // mutation op, only the call/divert sites referencing them churn.
+        let callable_defs = discover_callable_defs(&originals);
 
         // Long-lived incremental db.
         let mut db = ProjectDb::new();
@@ -297,7 +494,13 @@ fn incremental_story_data_equals_fresh_compile() {
                     // INCLUDE of this path must now miss. Output is not
                     // compared here (the file set differs from `current`).
                     let _ = db.story_data().expect("entry still set");
-                    let edited = mutate(&mut rng, &originals[&path], &current[&path], step);
+                    let edited = mutate(
+                        &mut rng,
+                        &originals[&path],
+                        &current[&path],
+                        step,
+                        &callable_defs,
+                    );
                     current.insert(path.clone(), edited.clone());
                     let id_after = db.set_file(&path, edited);
                     assert_eq!(
@@ -307,7 +510,13 @@ fn incremental_story_data_equals_fresh_compile() {
                     );
                 } else {
                     let path = &paths[rng.pick(paths.len())];
-                    let edited = mutate(&mut rng, &originals[path], &current[path], step);
+                    let edited = mutate(
+                        &mut rng,
+                        &originals[path],
+                        &current[path],
+                        step,
+                        &callable_defs,
+                    );
                     current.insert(path.clone(), edited.clone());
                     db.update_file(path, edited);
                 }
@@ -335,46 +544,11 @@ fn incremental_story_data_equals_fresh_compile() {
             // explicit sweep-every-new-family ask).
             assert_fg3_families_match(&db, &fresh_db, project, &paths, step);
 
-            // FG-1 (#630): the per-def `signature(def)` query must agree
-            // between the long-lived incremental db and a from-scratch one,
-            // for every non-local def — the equivalence gate the design doc
-            // asks incremental_fuzz to carry for the narrowed dependency
-            // edge (declaring-file-only, not every project file's HIR).
-            //
-            // FG-2 (#631): extend the same equivalence gate to the new
-            // per-def/per-SCC inference views — `inferred_signature(def)`
-            // and `infer_body(def)` — per the design doc §7's explicit ask
-            // to sweep every new per-def family into this harness.
-            let mut defs: Vec<_> = db
-                .symbol_index()
-                .symbols
-                .iter()
-                .filter(|(_, info)| {
-                    !matches!(
-                        info.kind,
-                        brink_ir::SymbolKind::Param | brink_ir::SymbolKind::Temp
-                    )
-                })
-                .map(|(id, _)| *id)
-                .collect();
-            defs.sort();
-            for def in defs {
-                assert_eq!(
-                    db.signature(def),
-                    fresh_db.signature(def),
-                    "{project}: signature({def:?}) diverged from fresh compile after edit {step}"
-                );
-                assert_eq!(
-                    db.inferred_signature(def),
-                    fresh_db.inferred_signature(def),
-                    "{project}: inferred_signature({def:?}) diverged from fresh compile after edit {step}"
-                );
-                assert_eq!(
-                    db.infer_body(def),
-                    fresh_db.infer_body(def),
-                    "{project}: infer_body({def:?}) diverged from fresh compile after edit {step}"
-                );
-            }
+            // FG-1/FG-2/T2-1 per-def query families — extracted to its own
+            // function (see its doc) to keep this loop under clippy's
+            // line-count lint, the same reason `assert_fg3_families_match`
+            // was extracted above.
+            assert_per_def_families_match(&db, &fresh_db, project, step);
         }
     }
 

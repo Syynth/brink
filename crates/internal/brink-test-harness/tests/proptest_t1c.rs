@@ -34,7 +34,7 @@ fn run_brink(source: &str) -> String {
     loop {
         match story.continue_single().expect(&step_msg) {
             Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } => {
+            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
                 out.push_str(&text);
                 break;
             }
@@ -93,7 +93,7 @@ proptest! {
              D:{{direct}}\n\
              C:{{chained}}\n\
              -> END\n\n\
-             === function add4(a, b, c, d) ===\n\
+             === function add4(a: int, b: int, c: int, d: int): int ===\n\
              ~ return a + b + c + d\n"
         );
         let out = run_brink(&source);

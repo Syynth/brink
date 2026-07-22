@@ -54,13 +54,41 @@
 //! wrong file's declaration. With locals gone, dropping the rest is
 //! behavior-neutral by construction (locked by the `query_equivalence` tests
 //! and the oracle gate).
+//!
+//! # Memory bounding (FG-5, issue #647, decision log "FG-5 memory bounding")
+//!
+//! The per-file query families (`parse`, `lowered`, `suppressions`,
+//! `resolve`, `per_file_diagnostics`, `value_meta`, `call_site_diagnostics`,
+//! `diagnostics`) and the per-def families keyed by [`DefKey`]
+//! (`signature`, `def_body`,
+//! `referenced_globals`, `call_edges`, `solve_scc`, `inferred_signature`,
+//! `infer_body`) each carry a salsa `lru` capacity — a **runaway guard**,
+//! not a working-set trim. Issue #537's measurement (large synthetic
+//! projects, 2,000-edit sessions) showed every one of these families scales
+//! with live project size and shows zero session-length growth, so a tight
+//! LRU would only evict live working-set entries and buy recompute churn on
+//! big projects, never save memory. The ceilings are sized far above
+//! realistic project scale on purpose (≈30× the measured 132-file scale for
+//! per-file families, ≈10× the measured 1,549-def scale for per-def
+//! families) so they never evict in steady state, and exist only to cap the
+//! pathological/runaway case. **No eviction *policy* design happened here**
+//! — that was explicitly ruled out by the data; see the decision log entry
+//! for the full ruling. `def_body`, `solve_scc`, `signature`, `infer_body`,
+//! and `lowered` additionally specify a `heap_size` estimator
+//! ([`heap_size`], issue #538) — the families #537 flagged as the dominant
+//! Arc-hidden payloads, so `crate::memory::snapshot`'s `heap_bytes` column
+//! reads `Some(_)` for them instead of the honest-`None` every query
+//! reported before this pass.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use brink_analyzer::{AnalysisOptions, CallGraph, InferenceResult, SccGraph, Sig, TypePolicy};
-use brink_format::{DefinitionId, StoryData};
+use brink_format::{
+    CallAtom, CapabilityParam, DefinitionId, DirectEffects, EffectRowEntry, NameId, StoryData,
+};
 use brink_ir::suppressions::{Suppressions, apply_suppressions, parse_suppressions};
+use brink_ir::symbols::project_manifest;
 use brink_ir::{
     Diagnostic, DiagnosticCode, FileId, HirFile, ResolutionMap, Severity, SymbolIndex, SymbolKind,
     SymbolManifest, lower, lower_single_knot, lower_top_level,
@@ -72,12 +100,15 @@ use crate::determinism::{LookupMap, LookupSet};
 use crate::include_graph::IncludeGraph;
 
 mod analysis;
+mod heap_size;
 
 pub use analysis::ResolvedProject;
 pub(crate) use analysis::{
-    analysis_diagnostics_query, analysis_query, call_site_diagnostics_query, call_site_metas_query,
-    contributor_diagnostics_query, diagnostics_query, external_meta_query, has_errors_query,
-    inline_docs_query, per_file_diagnostics_query, resolutions_index_query, value_meta_query,
+    analysis_diagnostics_query, analysis_query, await_purity_diagnostics_query,
+    call_site_diagnostics_query, call_site_metas_query, comparator_contract_diagnostics_query,
+    contributor_diagnostics_query, diagnostics_query, effects_assertion_diagnostics_query,
+    external_meta_query, has_errors_in_closure_query, has_errors_query, inline_docs_query,
+    per_file_diagnostics_query, resolutions_index_query, value_meta_query,
     whole_project_diagnostics_query,
 };
 
@@ -161,7 +192,25 @@ impl Default for BrinkDatabase {
                 // an unrelated AnalysisOptions edit can't re-execute the
                 // `no_eq` lowering memo.
                 .ingredient::<has_errors_query>()
+                // Issue #1032 collapse ruling: the closure-scoped counterpart
+                // `compileProject`'s artifact path (`story_data_query`) reads
+                // instead of the whole-project `has_errors_query`/`lir_query`
+                // above — see `has_errors_in_closure_query`'s doc comment.
+                .ingredient::<has_errors_in_closure_query>()
                 .ingredient::<type_policy_query>()
+                // FG-4d (issue #830): per-knot LIR chunk memos + the
+                // cutoff-friendly struct-shape projection they read;
+                // `lir_lowering_query` is now the link phase assembling them.
+                .ingredient::<struct_shape_data_query>()
+                .ingredient::<normalized_stamped_query>()
+                // FG-4e (issue #839): decl_hir_query is the per-file
+                // backdating projection lir_prelude_decls_query reads
+                // instead of raw HIR, so a knot body edit doesn't force the
+                // whole-project declaration collection to re-execute.
+                .ingredient::<decl_hir_query>()
+                .ingredient::<lir_prelude_decls_query>()
+                .ingredient::<KnotChunkKey<'_>>()
+                .ingredient::<lir_knot_chunk_query>()
                 .ingredient::<lir_lowering_query>()
                 // Layer 2/3: type inference (TM-1, advisory-only).
                 // Per-def/per-SCC decomposition (FG-2, issue #631):
@@ -184,8 +233,29 @@ impl Default for BrinkDatabase {
                 .ingredient::<type_inference_query>()
                 .ingredient::<infer_body_query>()
                 .ingredient::<type_diagnostics_query>()
+                // T2-1 (issue #860): advisory effect-row inference, sited
+                // beside inferred_signature. def_effect_atoms_query is the
+                // per-def atom harvest (same body walk referenced_globals/
+                // call_edges drive); effects_scc_query lifts solve_scc's
+                // per-SCC fixpoint to the effect lattice; effects_query is the
+                // per-def view.
+                .ingredient::<def_effect_atoms_query>()
+                .ingredient::<effects_scc_query>()
+                .ingredient::<effects_query>()
+                // T2-2 (issue #861): the `#@effects(…)` assertion's
+                // per-file exceedance check, reading `effects_query` only
+                // for defs that actually carry an assertion.
+                .ingredient::<effects_assertion_diagnostics_query>()
+                // FS-2 (issue #928): the `await`-condition purity gate (E105),
+                // reading `effects_query` only for defs a condition calls.
+                .ingredient::<await_purity_diagnostics_query>()
+                // NS-A4 (issue #1110): the comparator-contract gate (E119),
+                // reading `effects_query` only for defs named as inline
+                // `#fn` comparators of `sort_by`/`sorted_by`.
+                .ingredient::<comparator_contract_diagnostics_query>()
                 // Layer 3.
                 .ingredient::<lir_query>()
+                .ingredient::<lir_in_closure_query>()
                 .ingredient::<story_data_query>()
                 .build(),
         }
@@ -221,7 +291,11 @@ pub(crate) struct ProjectInput {
 // ─── Layer 1: per-file queries ───────────────────────────────────────
 
 /// Parse one file's text into a lossless CST.
-#[salsa::tracked(returns(ref))]
+///
+/// `lru = 4096`: a per-file runaway-guard ceiling (issue #647, decision log
+/// "FG-5 memory bounding"), not a working-set trim — see this module's doc
+/// comment's "Memory bounding" section.
+#[salsa::tracked(returns(ref), lru = 4096)]
 pub(crate) fn parse_query(db: &dyn salsa::Database, file: SourceFile) -> Parse {
     brink_syntax::parse(file.text(db))
 }
@@ -233,18 +307,34 @@ pub(crate) struct LoweredFile {
     pub hir: HirFile,
     pub manifest: SymbolManifest,
     pub diagnostics: Vec<Diagnostic>,
+    /// B0.3 `validate_admission` output (docs/hir-admission-contract.md
+    /// §4.2, issue #1172) — kept deliberately separate from `diagnostics`:
+    /// the admission gate is non-suppressible (NF-6, always-on), so it must
+    /// never flow through `apply_suppressions` the way lowering/syntax
+    /// diagnostics do (`partition_diagnostics` below). Computed here so it
+    /// runs on every lowering, matching the "the validator runs on every
+    /// keystroke in the editor" perf posture — see `heap_size.rs`'s
+    /// `lowered_file_heap_size` for the matching estimator update.
+    pub admission: Vec<Diagnostic>,
 }
 
 /// Lower one file to HIR. Salsa's dependency tracking on the `parse` input
 /// replaces the retired per-knot green-node/byte-offset cache (`knot_cache`):
 /// the composition below is byte-identical to what `set_file` produced.
-#[salsa::tracked(returns(ref))]
+///
+/// `lru = 4096`: per-file runaway-guard ceiling (issue #647). `heap_size`:
+/// one of the five #538/#647 estimators — #537 flagged this family's
+/// per-def analogues (`def_body`/`solve_scc`) as the dominant Arc-hidden
+/// payload; this is the per-file sibling.
+#[salsa::tracked(returns(ref), lru = 4096, heap_size = heap_size::lowered_file_heap_size)]
 pub(crate) fn lowered_query(db: &dyn salsa::Database, file: SourceFile) -> LoweredFile {
     lower_file(file.file_id(db), parse_query(db, file))
 }
 
 /// Parsed suppression/expectation directives for one file.
-#[salsa::tracked(returns(ref))]
+///
+/// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
+#[salsa::tracked(returns(ref), lru = 4096)]
 pub(crate) fn suppressions_query(db: &dyn salsa::Database, file: SourceFile) -> Suppressions {
     parse_suppressions(file.text(db))
 }
@@ -375,7 +465,9 @@ pub(crate) fn resolution_index_query(
 /// projection for globals and this file's own `manifest.locals` for
 /// param/temp lookups — the per-file dependency edge that lets a `~ temp`
 /// edit in file Y leave file X's memo untouched (issue #517).
-#[salsa::tracked(returns(ref))]
+///
+/// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
+#[salsa::tracked(returns(ref), lru = 4096)]
 pub(crate) fn resolve_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
@@ -442,7 +534,14 @@ pub(crate) struct DefKey<'db> {
 /// reading it is the same coarse dependency shape `per_file_diagnostics_query`
 /// already reads `host_manifest` at, not a reintroduction of whole-project
 /// per-file churn.
-#[salsa::tracked]
+///
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647, decision log
+/// "FG-5 memory bounding" — #537's data showed this family scales with
+/// live project defs, never with session length, so the ceiling is sized
+/// far above realistic project scale and never evicts in steady state).
+/// `heap_size = heap_size::signature_heap_size`: one of the five #538
+/// estimators — #537 named `signature` the widest-fanout per-def memo.
+#[salsa::tracked(lru = 16384, heap_size = heap_size::signature_heap_size)]
 pub(crate) fn signature_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -549,7 +648,11 @@ pub(crate) struct DefBody {
     pub body: brink_ir::Block,
 }
 
-#[salsa::tracked]
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647). `heap_size =
+/// heap_size::def_body_heap_size`: one of the five #538 estimators — #537
+/// named `def_body` (holds a full HIR `Block` clone per def) one of the
+/// two dominant Arc-hidden-payload families.
+#[salsa::tracked(lru = 16384, heap_size = heap_size::def_body_heap_size)]
 pub(crate) fn def_body_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -587,7 +690,9 @@ pub(crate) fn def_body_query<'db>(
 /// `project.analysis_options(db)` here would only add a needless
 /// project-wide invalidation edge to the FG-2.1 narrow per-def dependency
 /// this query exists to keep narrow, for zero behavioral benefit.
-#[salsa::tracked]
+///
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 16384)]
 pub(crate) fn referenced_globals_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -634,7 +739,9 @@ pub(crate) fn referenced_globals_query<'db>(
 /// pass 1 discards every computed type, so the manifest can never change
 /// this query's output, and reading `project.analysis_options(db)` here
 /// would only widen this per-def query's dependency edge for no benefit.
-#[salsa::tracked]
+///
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 16384)]
 pub(crate) fn call_edges_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -763,7 +870,12 @@ pub(crate) struct SolvedScc {
 /// whole-project-HIR churn FG-2/FG-2.1 eliminated — a doc-content-preserving
 /// edit backdates through `inline_docs_query`'s own `Eq` cutoff exactly like
 /// every other reader of that memo.
-#[salsa::tracked]
+///
+/// `lru = 16384`: per-def (per-SCC) runaway-guard ceiling (issue #647).
+/// `heap_size = heap_size::solve_scc_heap_size`: one of the five #538
+/// estimators — #537 named `solve_scc` (holds signatures+bodies per SCC)
+/// the other dominant Arc-hidden-payload family alongside `def_body`.
+#[salsa::tracked(lru = 16384, heap_size = heap_size::solve_scc_heap_size)]
 pub(crate) fn solve_scc_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -824,7 +936,7 @@ pub(crate) fn solve_scc_query<'db>(
     let mut globals: BTreeMap<DefinitionId, brink_analyzer::Ty> = BTreeMap::new();
     for gid in global_ids {
         if let Some(sig) = signature_query(db, project, DefKey::new(db, gid)) {
-            if let Some(vt) = sig.value_type {
+            if let Some(vt) = sig.value_type.clone() {
                 globals.insert(gid, brink_analyzer::Ty::from(vt));
             } else if let Some(ft) = sig.fn_type.clone() {
                 globals.insert(gid, ft);
@@ -863,7 +975,9 @@ pub(crate) fn solve_scc_query<'db>(
 /// the missing per-def API TM-2's firewall consumer needs most). `None` for
 /// a def with no inferable body (not a knot/stitch, or an unknown id) — same
 /// `None` contract as [`signature_query`]/[`infer_body_query`].
-#[salsa::tracked]
+///
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 16384)]
 pub(crate) fn inferred_signature_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -874,6 +988,128 @@ pub(crate) fn inferred_signature_query<'db>(
     let scc_id = *membership.member_of.get(&def_id)?;
     let solved = solve_scc_query(db, project, DefKey::new(db, scc_id));
     solved.signatures.get(&def_id).cloned().map(Arc::new)
+}
+
+/// One def's raw effect atoms (T2-1, docs/effects-spec.md §2/§4, issue #860 —
+/// `def_effect_atoms(def)`). The per-def read/write/call-kind atom bundle the
+/// effect-row fixpoint closes over, harvested by the exact same body walk
+/// [`referenced_globals_query`]/[`call_edges_query`] already drive — same
+/// declaring-file-only HIR + resolution dependency edges, same index-sourced
+/// [`inferable_defs_query`] for classifying a call target as an edge vs. a
+/// terminal external. Passes `None` for the manifest for the same reason
+/// [`call_edges_query`] does: this pass discards every computed type, so the
+/// manifest can never change the *structural* atom sets it keeps.
+///
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 16384)]
+pub(crate) fn def_effect_atoms_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: ProjectInput,
+    def: DefKey<'db>,
+) -> Arc<brink_analyzer::EffectAtoms> {
+    let index = inference_index_query(db, project);
+    let def_id = def.def(db);
+    let Some(declaring_file) = index.symbols.get(&def_id).map(|info| info.file) else {
+        return Arc::new(brink_analyzer::EffectAtoms::default());
+    };
+    let Some(file) = project
+        .files(db)
+        .iter()
+        .find(|f| f.file_id(db) == declaring_file)
+    else {
+        return Arc::new(brink_analyzer::EffectAtoms::default());
+    };
+    let hir = &lowered_query(db, *file).hir;
+    let (resolutions, _diags) = resolve_query(db, project, *file);
+    let inferable = inferable_defs_query(db, project);
+    Arc::new(brink_analyzer::def_effect_atoms(
+        def_id,
+        &[(declaring_file, hir)],
+        index,
+        resolutions,
+        inferable,
+        None,
+    ))
+}
+
+/// One SCC's finalized effect rows (T2-1, docs/effects-spec.md §4, issue #860
+/// — the per-SCC effect fixpoint, lifting [`solve_scc_query`]'s exact shape to
+/// the effect lattice). Reads every condensation-predecessor SCC's
+/// `effects_scc_query` first for `known_rows` (recursion is acyclic — the
+/// condensation is a DAG, same Fork 1 ruling [`solve_scc_query`] relies on, so
+/// salsa never sees a cycle), collects every member's
+/// [`def_effect_atoms_query`], then runs [`brink_analyzer::solve_scc_effects`]
+/// for this component's own members. Returns an empty map for an id that isn't
+/// any component's minimum member (defensive — never panics on a stale key).
+///
+/// `lru = 16384`: per-def (per-SCC) runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 16384)]
+pub(crate) fn effects_scc_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: ProjectInput,
+    scc: DefKey<'db>,
+) -> Arc<BTreeMap<DefinitionId, brink_analyzer::EffectRow>> {
+    let scc_id: SccId = scc.def(db);
+    let membership = scc_membership_query(db, project);
+    let Some(batch) = membership
+        .order
+        .iter()
+        .find(|comp| comp.iter().next().copied() == Some(scc_id))
+    else {
+        return Arc::new(BTreeMap::new());
+    };
+
+    let mut known_rows: BTreeMap<DefinitionId, brink_analyzer::EffectRow> = BTreeMap::new();
+    if let Some(deps) = membership.depends_on.get(&scc_id) {
+        for &dep in deps {
+            let solved = effects_scc_query(db, project, DefKey::new(db, dep));
+            known_rows.extend(solved.iter().map(|(k, v)| (*k, v.clone())));
+        }
+    }
+
+    let atoms: BTreeMap<DefinitionId, brink_analyzer::EffectAtoms> = batch
+        .iter()
+        .map(|&id| {
+            (
+                id,
+                (*def_effect_atoms_query(db, project, DefKey::new(db, id))).clone(),
+            )
+        })
+        .collect();
+
+    Arc::new(brink_analyzer::solve_scc_effects(
+        batch,
+        &atoms,
+        &known_rows,
+    ))
+}
+
+/// Per-def effect row (T2-1, docs/effects-spec.md §4, issue #860 —
+/// `effects(def)`, the advisory row query sited beside
+/// [`inferred_signature_query`]). Routes through the def's SCC exactly as
+/// [`inferred_signature_query`] routes through [`solve_scc_query`]. `None` for
+/// a def with no inferable body (not a knot/stitch, or an unknown id) — same
+/// contract as [`inferred_signature_query`]/[`infer_body_query`].
+///
+/// **Consumed by `story_data` since T2-3** (#862): `populate_effect_rows`
+/// reads this for every inferable def to emit the `EffectRows` section. The
+/// row is still additive metadata the *runtime* does not consume (the linker
+/// never reads `effect_rows`), so the oracle stays byte-identical — but the row
+/// now ships in the `.inkb`, so this is no longer advisory-only. `lir_product`
+/// and `diagnostics` still do not read it.
+///
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 16384)]
+pub(crate) fn effects_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: ProjectInput,
+    def: DefKey<'db>,
+) -> Option<Arc<brink_analyzer::EffectRow>> {
+    let def_id = def.def(db);
+    let membership = scc_membership_query(db, project);
+    let scc_id = *membership.member_of.get(&def_id)?;
+    let solved = effects_scc_query(db, project, DefKey::new(db, scc_id));
+    solved.get(&def_id).cloned().map(Arc::new)
 }
 
 /// Whole-project type inference — now an aggregation over
@@ -914,7 +1150,10 @@ pub(crate) fn type_inference_query(
 /// whole-project `type_inference_query` memo pre-decomposition. `None` for a
 /// def with no inferable body (not a knot/stitch, or an unknown id) — same
 /// `None` contract as [`signature_query`].
-#[salsa::tracked]
+///
+/// `lru = 16384`: per-def runaway-guard ceiling (issue #647). `heap_size =
+/// heap_size::infer_body_heap_size`: one of the five #538 estimators.
+#[salsa::tracked(lru = 16384, heap_size = heap_size::infer_body_heap_size)]
 pub(crate) fn infer_body_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -1013,6 +1252,294 @@ impl PartialEq for LirLowering {
     }
 }
 
+// ─── FG-4d: per-container LIR chunk memos + link ─────────────────────
+//
+// `lir_lowering_query` below is now the **link phase**
+// (`docs/fine-grained-salsa-proposal.md` §5 + the three-resolution-moments
+// appendix): it reads a per-knot chunk memo per definition, assembles them
+// (plus the whole-root chunk) into a `Program`, and gates on
+// `has_errors_query`. The per-knot memos (`lir_knot_chunk_query`) are the
+// FG-4d win — an edit that leaves a knot's declaring file, the project
+// resolutions, and the struct-shape projection unchanged leaves that knot's
+// chunk `Arc` pointer-identical (non-re-execution), and the whole-project
+// link re-runs but backdates on the `StoryData` `Eq` firebreak
+// (`story_data_query`). Byte-identity with the monolithic path is by
+// construction: the chunk lowering and assembly are the *same* `brink-ir`
+// functions `lower_to_program_with_type_mode` composes, fed the same inputs
+// in the same interleaved walk order.
+//
+// Input-breadth limit (issue #830, #815): the per-knot memo depends on the
+// whole-project `resolutions_index_query` and `struct_shape_data_query`, so
+// non-re-execution holds for edits those two backdate across (a
+// diagnostics-only / `AnalysisOptions` edit, and — for a knot in an
+// *unedited* file — any edit whose resolutions/struct-shapes are unchanged).
+// `topological_order` is now narrowed to `entry`'s transitive `INCLUDE`
+// closure (issue #815, landed separately) rather than falling back to all
+// project files, so `struct_shape_data_query` and the link's own inputs are
+// scoped the same way.
+
+/// The cutoff-friendly struct-shape projection (FG-4d): the
+/// `NameId`-free, `Eq`-able [`StructShapeData`] the per-knot chunk memo reads
+/// instead of every file's HIR. Backdates when no `STRUCT` declaration (or
+/// struct-typed global annotation) changed, so an unrelated edit leaves the
+/// knot chunks that read it pointer-identical. Reads the same
+/// `resolutions_index_query` index the monolithic path's `build_prelude`
+/// does, so its ids/offsets are byte-identical.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn struct_shape_data_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> brink_ir::lir::StructShapeData {
+    let Some(entry) = project.entry(db) else {
+        return brink_ir::lir::StructShapeData::default();
+    };
+    let files = project.files(db);
+    let graph = include_graph_query(db, project);
+    let by_id: LookupMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
+    let topo = graph.topological_order(entry);
+    let hir_refs: Vec<(FileId, &HirFile)> = topo
+        .iter()
+        .filter_map(|id| by_id.get(id).map(|f| (*id, &lowered_query(db, *f).hir)))
+        .collect();
+    let resolved = resolutions_index_query(db, project);
+    brink_ir::lir::build_struct_shape_data(&hir_refs, &resolved.index)
+}
+
+/// One file's declaration-only HIR projection (issue #839 / FG-4e):
+/// `constants`/`variables`/`lists`/`structs`/`externals` kept, `root_content`
+/// and every knot's body dropped to `Block::default()`/`Vec::new()`. Backed
+/// by [`HirFile`]'s derived `PartialEq`, so a body-only edit — one that
+/// leaves every declaration untouched — backdates this memo across the edit,
+/// same as [`normalized_stamped_query`] backdates the file's syntax tree.
+///
+/// This is the per-file dependency edge [`lir_prelude_decls_query`] reads
+/// instead of the raw, body-carrying [`lowered_query`]: `brink_ir::lir`'s
+/// declaration-collection passes ([`collect_globals`], [`collect_lists`],
+/// [`collect_externals`], [`build_shape_table`], [`build_global_shape_map`])
+/// never read `root_content`/`knots` (see `PreludeDecls`'s doc in
+/// `brink-ir`), so stripping them here is behavior-neutral for every reader
+/// and turns "any reachable file changed" into "a reachable file's
+/// declarations changed" as the trigger for re-interning the project name
+/// table.
+///
+/// [`collect_globals`]: brink_ir::lir::build_prelude_decls
+/// [`collect_lists`]: brink_ir::lir::build_prelude_decls
+/// [`collect_externals`]: brink_ir::lir::build_prelude_decls
+/// [`build_shape_table`]: brink_ir::lir::build_prelude_decls
+/// [`build_global_shape_map`]: brink_ir::lir::build_prelude_decls
+#[salsa::tracked(returns(ref))]
+pub(crate) fn decl_hir_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+) -> HirFile {
+    let _ = project;
+    let hir = &lowered_query(db, file).hir;
+    HirFile {
+        root_content: brink_ir::hir::Block::default(),
+        knots: Vec::new(),
+        ..hir.clone()
+    }
+}
+
+/// One file's HIR after the pre-LIR normalize + container-id stamp passes,
+/// memoized per file (FG-4d). Without this, each of a K-knot file's per-knot
+/// chunk memos would repeat the file's normalize+stamp, turning a cold
+/// compile into O(K²) work per file; sharing it here keeps the per-def split
+/// from regressing cold compile. Both passes are per-file independent, so
+/// this is byte-identical to the file's slice of the whole-project prelude.
+/// Reads the whole-project index only for label-container stamping (the same
+/// index the monolithic path stamps with), and `HirFile`'s value `Eq`
+/// backdates it across edits that leave this file's normalized shape
+/// unchanged.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn normalized_stamped_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+) -> Arc<HirFile> {
+    let resolved = resolutions_index_query(db, project);
+    let mut hir = lowered_query(db, file).hir.clone();
+    brink_ir::normalize_file(&mut hir);
+    let mut slice = [(file.file_id(db), hir)];
+    brink_ir::stamp_container_ids(&mut slice, &resolved.index);
+    let [(_, stamped)] = slice;
+    Arc::new(stamped)
+}
+
+/// [`brink_ir::lir::PreludeDecls`] wrapped so [`lir_prelude_decls_query`]
+/// (`no_eq`: the wrapped `ShapeTable`/`GlobalShapeMap` carry `NameId`s valid
+/// only within this specific prelude's numbering, so they cannot be `Eq`
+/// without a NameId-free relocation redesign — same reasoning as
+/// [`LirLowering`]'s `program`) can still satisfy salsa's `Update` bound.
+/// `Arc`-wrapped so a validated (non-re-executed) memo hands back the *same*
+/// allocation — `Arc::ptr_eq` is the non-re-execution proof, same pattern as
+/// [`LoweredChunk`].
+#[derive(Clone)]
+pub(crate) struct PreludeDeclsResult {
+    pub decls: Arc<brink_ir::lir::PreludeDecls>,
+}
+
+impl PartialEq for PreludeDeclsResult {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.decls, &other.decls)
+    }
+}
+
+/// The whole-project declaration-level prelude (issue #839 / FG-4e —
+/// `docs/fine-grained-salsa-proposal.md`'s pattern, applied past structs to
+/// the rest of `build_prelude`): [`brink_ir::lir::build_prelude_decls`] over
+/// every entry-reachable file's [`decl_hir_query`] projection instead of the
+/// monolithic link's inline `build_prelude` call over raw, body-carrying
+/// HIR. Because [`decl_hir_query`] itself backdates across a body-only edit,
+/// a knot body edit anywhere in the project leaves *this* query's recorded
+/// dependencies unchanged — [`lir_lowering_query`] no longer pays
+/// `collect_globals`/`collect_lists`/`collect_externals`/`build_shape_table`/
+/// `build_global_shape_map`'s full re-interning cost on every recompile, only
+/// when some reachable file's actual declarations change (`fg4e_prelude_
+/// decls.rs`).
+///
+/// Same input-breadth limit as [`struct_shape_data_query`] (issue #815):
+/// scoped to `entry`'s transitive `INCLUDE` closure, not full backdating
+/// across *any* unrelated project file's declarations (that would need a
+/// per-file decl memo feeding the interning step directly, which the
+/// project-wide, order-sensitive `NameTable` this produces does not allow
+/// without the same NameId-free-projection-plus-relocation redesign
+/// `StructShapeData` did for structs alone — out of this slice's scope, see
+/// the PR description).
+#[salsa::tracked(no_eq)]
+pub(crate) fn lir_prelude_decls_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> PreludeDeclsResult {
+    let type_mode = match type_policy_query(db, project) {
+        TypePolicy::Strict => brink_ir::lir::TypeMode::Strict,
+        TypePolicy::Gradual => brink_ir::lir::TypeMode::Gradual,
+    };
+    let Some(entry) = project.entry(db) else {
+        return PreludeDeclsResult {
+            decls: Arc::new(brink_ir::lir::PreludeDecls::empty(type_mode)),
+        };
+    };
+    let files = project.files(db);
+    let by_id: LookupMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
+    let graph = include_graph_query(db, project);
+    let topo = graph.topological_order(entry);
+    let decl_refs: Vec<(FileId, &HirFile)> = topo
+        .iter()
+        .filter_map(|id| {
+            by_id
+                .get(id)
+                .map(|f| (*id, decl_hir_query(db, project, *f)))
+        })
+        .collect();
+    let resolved = resolutions_index_query(db, project);
+    let decls = brink_ir::lir::build_prelude_decls(
+        &decl_refs,
+        &resolved.index,
+        &resolved.resolutions,
+        type_mode,
+    );
+    PreludeDeclsResult {
+        decls: Arc::new(decls),
+    }
+}
+
+/// Interned key for [`lir_knot_chunk_query`]: a knot identified by its
+/// declaring file and its index within that file's knot list. Keyed on
+/// `(FileId, knot_index)` rather than the knot's `DefinitionId` so two knots
+/// that would hash to the same address (e.g. same-named file-local knots)
+/// never collapse onto one memo — the byte-identity hazard `DefinitionId`
+/// keying would carry.
+#[salsa::interned]
+pub(crate) struct KnotChunkKey<'db> {
+    pub file: FileId,
+    pub knot_index: u32,
+}
+
+/// One knot's lowered LIR chunk plus its lowering diagnostics — the value a
+/// per-knot memo stores. `chunk` is `Arc`-wrapped so a validated (non-re-
+/// executed) memo hands back the *same* allocation, which
+/// `Arc::ptr_eq` detects (the non-re-execution proof — same reasoning as
+/// `LirLowering`'s `program`). The `PartialEq` exists solely to satisfy
+/// salsa's `Update` bound; `no_eq` disables backdating, so it is never used
+/// to claim two independently-lowered chunks equal.
+#[derive(Clone, Default)]
+pub(crate) struct LoweredChunk {
+    pub chunk: Arc<brink_ir::lir::ScopeChunk>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+impl PartialEq for LoweredChunk {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.chunk, &other.chunk) && self.diagnostics == other.diagnostics
+    }
+}
+
+/// Lower one knot into a self-contained LIR chunk — the per-`DefinitionId`
+/// unit of FG-4d. Reads only the declaring file's `lowered_query` HIR
+/// (per-file edge), the whole-project `resolutions_index_query`
+/// (backdates across body/diagnostics edits), and
+/// `struct_shape_data_query` (backdates unless a struct declaration
+/// changed) — so a knot in an unedited file whose resolutions and struct
+/// shapes are unchanged keeps its chunk `Arc` across the edit. `no_eq`:
+/// `ScopeChunk` has no `PartialEq` (holds `lir::Container`), so this never
+/// backdates — the link re-runs and re-anchors on `StoryData`'s `Eq`.
+#[salsa::tracked(no_eq)]
+pub(crate) fn lir_knot_chunk_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    key: KnotChunkKey<'_>,
+) -> LoweredChunk {
+    let file_id = key.file(db);
+    let knot_index = key.knot_index(db) as usize;
+    let Some(source) = project
+        .files(db)
+        .iter()
+        .copied()
+        .find(|f| f.file_id(db) == file_id)
+    else {
+        return LoweredChunk::default();
+    };
+
+    let resolved = resolutions_index_query(db, project);
+    let shape_data = struct_shape_data_query(db, project);
+    // Narrow `.types` projection (issue #806/#809) — not the raw
+    // `AnalysisOptions` field — so an unrelated options edit doesn't
+    // re-execute this chunk memo.
+    let type_mode = match type_policy_query(db, project) {
+        TypePolicy::Strict => brink_ir::lir::TypeMode::Strict,
+        TypePolicy::Gradual => brink_ir::lir::TypeMode::Gradual,
+    };
+    let file_paths: LookupMap<FileId, String> = project
+        .files(db)
+        .iter()
+        .map(|f| (f.file_id(db), f.path(db).clone()))
+        .collect();
+
+    // The file's normalized+stamped HIR, shared across all its knots'
+    // memos (so a K-knot file normalizes once, not K times).
+    let hir_file = normalized_stamped_query(db, project, source);
+    let Some(knot) = hir_file.knots.get(knot_index) else {
+        return LoweredChunk::default();
+    };
+
+    let (chunk, diagnostics) = brink_ir::lir::lower_knot_chunk_incremental(
+        hir_file,
+        knot,
+        &resolved.index,
+        &resolved.resolutions,
+        &file_paths,
+        shape_data,
+        type_mode,
+        file_id,
+    );
+    LoweredChunk {
+        chunk: Arc::new(chunk),
+        diagnostics,
+    }
+}
+
 /// The project's TM-3 `types` policy as its own narrow projection query
 /// (issue #806 / PR #809, mirroring [`has_errors_query`]'s pattern): a raw
 /// `project.analysis_options(db).types` field read inside
@@ -1026,17 +1553,40 @@ impl PartialEq for LirLowering {
 /// [`lir_lowering_query`] (and its `Arc<Program>` pointer) fully validated —
 /// see `fg4a_dependency_edges.rs`. Behavior-neutral by construction: the
 /// same field, read one query-hop later.
+///
+/// FG-4d (issue #830) also routes the per-knot chunk memos' `.types` read
+/// through this projection, so an `AnalysisOptions` edit that leaves `.types`
+/// unchanged keeps every knot chunk `Arc` pointer-identical.
+///
+/// Since the #1127 default flip this projects the *resolved* policy
+/// (`AnalysisOptions::type_policy()` — explicit `types` or the dialect-keyed
+/// default), so the cutoff argument is unchanged: same narrow `TypePolicy`
+/// value, resolved one query-hop later.
 #[salsa::tracked]
 pub(crate) fn type_policy_query(db: &dyn salsa::Database, project: ProjectInput) -> TypePolicy {
-    project.analysis_options(db).types
+    project.analysis_options(db).type_policy()
 }
 
+/// FG-4d **link phase**: assemble the per-knot chunk memos and the whole-root
+/// chunk into a `Program`. See the section comment above for the
+/// byte-identity and non-re-execution arguments.
+///
+/// Gated on [`has_errors_in_closure_query`] (issue #1032 collapse ruling),
+/// not the whole-project [`has_errors_query`] — this function has two
+/// callers with different pre-conditions: [`lir_query`] already gates on the
+/// (stronger) whole-project check before ever calling here, so for that
+/// caller this is inert (whole-project-clean implies closure-clean, since
+/// the closure is a subset); [`lir_in_closure_query`] gates on exactly this
+/// (weaker) check itself, so this must use the same one to actually permit
+/// lowering when only a file outside `entry`'s closure is broken. The
+/// per-file lowering below was already scoped to `topological_order(entry)`
+/// (issue #815) regardless of which gate is used here.
 #[salsa::tracked(no_eq)]
 pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput) -> LirLowering {
     let Some(entry) = project.entry(db) else {
         return LirLowering::default();
     };
-    if has_errors_query(db, project) {
+    if has_errors_in_closure_query(db, project) {
         return LirLowering::default();
     }
 
@@ -1044,67 +1594,104 @@ pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput
     let resolved = resolutions_index_query(db, project);
 
     // LIR inputs in topological include order (paste-before semantics),
-    // mirroring `Driver::lir_inputs`.
+    // mirroring `Driver::lir_inputs`. Narrowed to `entry`'s transitive
+    // `INCLUDE` closure (issue #815) — files outside it never lower here;
+    // their diagnostics still run independently via
+    // `analysis_diagnostics_query`/`diagnostics_query` below and in
+    // `super::diagnostics_query`, which iterate `project.files(db)`
+    // directly rather than through this topo order.
     let graph = include_graph_query(db, project);
-    let all_ids: Vec<FileId> = files.iter().map(|f| f.file_id(db)).collect();
     let by_id: LookupMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
-    let topo = graph.topological_order(entry, &all_ids);
-    let hir_refs: Vec<(FileId, &HirFile)> = topo
-        .iter()
-        .filter_map(|id| by_id.get(id).map(|f| (*id, &lowered_query(db, *f).hir)))
-        .collect();
+    let topo = graph.topological_order(entry);
     let paths: LookupMap<FileId, String> = topo
         .iter()
         .filter_map(|id| by_id.get(id).map(|f| (*id, f.path(db).clone())))
         .collect();
 
     // TM-4c (`docs/typed-mode-spec.md` §6): the project's `types` policy
-    // gates static-offset record field ops — map the analyzer's
-    // `TypePolicy` to `brink-ir`'s local mirror (`brink-ir` sits below
-    // `brink-analyzer` in the crate graph and can't name `TypePolicy`
-    // directly). Read through the narrow [`type_policy_query`] projection,
-    // never the raw `AnalysisOptions` input field — see its doc comment
-    // (issue #806).
+    // gates static-offset record field ops, and also partitions lowering
+    // diagnostics by effective severity below. Read through the narrow
+    // [`type_policy_query`] projection, never the raw `AnalysisOptions`
+    // input field — see its doc comment (issue #806).
+    //
+    // [`brink-ir`'s local `TypeMode` mirror](brink_ir::lir::TypeMode) is now
+    // decided once, inside [`lir_prelude_decls_query`]'s own
+    // `type_policy_query` read — this function no longer needs its own copy
+    // (issue #839 / FG-4e removed the direct `build_prelude` call that used
+    // to consume it here).
     let types = type_policy_query(db, project);
-    let type_mode = match types {
-        TypePolicy::Strict => brink_ir::lir::TypeMode::Strict,
-        TypePolicy::Gradual => brink_ir::lir::TypeMode::Gradual,
-    };
-    let (program, lir_diagnostics) = brink_ir::lir::lower_to_program_with_type_mode(
-        &hir_refs,
+
+    // Whole-project prelude (issue #839 / FG-4e): declarations + struct
+    // shapes + the seeded name table come from [`lir_prelude_decls_query`]
+    // (its own memo, cutoff-friendly across body-only edits — see its doc),
+    // and the normalized+stamped HIR reuses the already-memoized per-file
+    // [`normalized_stamped_query`] instead of `build_prelude`'s inline
+    // normalize+stamp recompute. `assemble_prelude` is pure composition —
+    // byte-identical to the monolithic `build_prelude` by construction (see
+    // `PreludeDecls`'s doc in `brink-ir`).
+    let prelude_decls = lir_prelude_decls_query(db, project);
+    let normalized: Vec<(FileId, HirFile)> = topo
+        .iter()
+        .filter_map(|id| {
+            by_id
+                .get(id)
+                .map(|f| (*id, (**normalized_stamped_query(db, project, *f)).clone()))
+        })
+        .collect();
+    let prelude = brink_ir::lir::assemble_prelude((*prelude_decls.decls).clone(), normalized);
+    let (root_chunks, root_temp_slots) = brink_ir::lir::lower_root_content_for_prelude(
+        &prelude,
         &resolved.index,
         &resolved.resolutions,
         &paths,
-        type_mode,
     );
 
+    // Interleave in walk order (per file: root content, then that file's
+    // knots) — the order the assembler dedups names against. Knot chunks come
+    // from the per-knot memos; declaration diagnostics lead, matching the
+    // monolithic diagnostic order exactly.
+    let mut lir_diagnostics = prelude.decl_diagnostics.clone();
+    let mut ordered_chunks: Vec<brink_ir::lir::ScopeChunk> = Vec::new();
+    let prelude_files = prelude.files();
+    let mut root_iter = root_chunks.into_iter();
+    for (file_id, hir_file) in &prelude_files {
+        if let Some((chunk, diags)) = root_iter.next() {
+            ordered_chunks.push(chunk);
+            lir_diagnostics.extend(diags);
+        }
+        for knot_index in 0..hir_file.knots.len() {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a file won't declare anywhere near u32::MAX knots"
+            )]
+            let key = KnotChunkKey::new(db, *file_id, knot_index as u32);
+            let lowered = lir_knot_chunk_query(db, project, key);
+            ordered_chunks.push((*lowered.chunk).clone());
+            lir_diagnostics.extend(lowered.diagnostics.clone());
+        }
+    }
+
+    let program =
+        brink_ir::lir::assemble_program(&prelude, ordered_chunks, root_temp_slots, &resolved.index);
+
     // LIR lowering itself is total (T1b-2: every construct lowers to a
-    // program regardless of dialect) — a diagnostic pushed during lowering
-    // doesn't stop `lower_to_program` from returning `Some`. It must still
-    // be severity-partitioned like every other diagnostic here: an
-    // Error-severity one (T1b-3's E055/E056 — a collection mutator's rvalue
-    // first argument, or a mutator used in expression position) blocks
-    // compilation exactly like an analysis-phase error would, not just a
-    // cosmetic warning on an otherwise-successful compile.
+    // program regardless of dialect). Error-severity lowering diagnostics
+    // (T1b-3's E055/E056) still gate `program: None` exactly like an
+    // analysis-phase error would.
     let (lir_errors, lir_warnings): (Vec<Diagnostic>, Vec<Diagnostic>) = lir_diagnostics
         .into_iter()
         .partition(|d| brink_analyzer::effective_severity(d.code, types) == Severity::Error);
 
-    if program.is_some() && lir_errors.is_empty() {
+    if lir_errors.is_empty() {
         LirLowering {
-            program: program.map(Arc::new),
+            program: Some(Arc::new(program)),
             errors: lir_errors,
             warnings: lir_warnings,
         }
     } else {
-        // Either `lower_to_program` refused to lower (its residual-extension
-        // backstop fired — E053, meaning a T1b brink-extension HIR node
-        // reached LIR lowering despite the dialect gate, only possible if
-        // the gate's analysis diagnostic was suppressed — see #572 review),
-        // or lowering succeeded but produced an Error-severity diagnostic
-        // (T1b-3's rvalue-mutator/mutator-in-expression-position checks).
-        // Either way: surface it as a compile error, never return a corrupt,
-        // partial, or diagnostically-invalid program.
+        // A lowering-phase Error-severity diagnostic (E055/E056) blocks
+        // compilation: surface it, never hand back a diagnostically-invalid
+        // program.
         LirLowering {
             program: None,
             errors: lir_errors,
@@ -1143,7 +1730,7 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
             lowering: &lowered_query(db, *f).diagnostics,
         })
         .collect();
-    let types = project.analysis_options(db).types;
+    let types = project.analysis_options(db).type_policy();
     let (mut errors, mut warnings) =
         partition_diagnostics(&inputs, diagnostics, disable_all, types);
 
@@ -1159,6 +1746,81 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
     // this exact `errors.is_empty()` value from the same inputs (see its
     // doc comment), so this is behavior-neutral by construction.
     if has_errors_query(db, project) {
+        return LirProduct {
+            program: None,
+            errors,
+            warnings,
+        };
+    }
+
+    let lowering = lir_lowering_query(db, project);
+    errors.extend(lowering.errors);
+    warnings.extend(lowering.warnings);
+
+    LirProduct {
+        program: lowering.program,
+        errors,
+        warnings,
+    }
+}
+
+/// The compile-scoped counterpart to [`lir_query`] (issue #1032 collapse
+/// ruling, option (a) "both, scoped"): gates on [`has_errors_in_closure_query`]
+/// — `entry`'s transitive `INCLUDE` closure — instead of the whole-project
+/// [`has_errors_query`]. [`lir_query`] itself is untouched: `db.lir_product()`
+/// and `db.has_errors()` stay whole-project-gated, exactly as FG-4a's
+/// dependency-edge tests (`fg4a_dependency_edges.rs`) pin.
+///
+/// This is what [`story_data_query`] reads, so `db.story_data()` —
+/// `compileProject`'s artifact path — no longer fails a clean entry just
+/// because some other file loaded into the same session db (a WIP scratch
+/// file, a second unrelated story) happens to have an error. That error
+/// still surfaces through `diagnostics_query`/`db.diagnostics(file)`
+/// (unchanged, whole-project) — this only narrows the *build gate*, not
+/// what's diagnosed. For the CLI driver (`brink-compiler`), whose db is
+/// already built from `brink-driver::discover(entry)` — entry plus its
+/// transitive `INCLUDE`s only — `project.files(db)` and the closure coincide,
+/// so this is behaviorally identical to the old whole-project gate there.
+///
+/// `errors`/`warnings` are computed the same closure-filtered way
+/// [`has_errors_in_closure_query`] computes its verdict, so a file outside
+/// `entry`'s closure never contributes to `compileProject`'s own error/
+/// warning list either.
+#[salsa::tracked(returns(ref), no_eq)]
+pub(crate) fn lir_in_closure_query(db: &dyn salsa::Database, project: ProjectInput) -> LirProduct {
+    let files = project.files(db);
+    let Some(entry) = project.entry(db) else {
+        return LirProduct::default();
+    };
+
+    let graph = include_graph_query(db, project);
+    let closure: LookupSet<FileId> = graph.topological_order(entry).into_iter().collect();
+
+    let diagnostics: Vec<Diagnostic> = analysis_diagnostics_query(db, project)
+        .iter()
+        .filter(|d| closure.contains(&d.file))
+        .cloned()
+        .collect();
+
+    let disable_all = files
+        .iter()
+        .find(|f| f.file_id(db) == entry)
+        .is_some_and(|f| suppressions_query(db, *f).disable_all);
+    let inputs: Vec<FileDiagnostics<'_>> = files
+        .iter()
+        .filter(|f| closure.contains(&f.file_id(db)))
+        .map(|f| FileDiagnostics {
+            file: f.file_id(db),
+            source: f.text(db),
+            suppressions: suppressions_query(db, *f),
+            lowering: &lowered_query(db, *f).diagnostics,
+        })
+        .collect();
+    let types = project.analysis_options(db).type_policy();
+    let (mut errors, mut warnings) =
+        partition_diagnostics(&inputs, &diagnostics, disable_all, types);
+
+    if has_errors_in_closure_query(db, project) {
         return LirProduct {
             program: None,
             errors,
@@ -1203,9 +1865,116 @@ pub struct CompileProduct {
 /// with an empty range) rather than silently downgrading to `story: None`
 /// with an empty `errors` — which would look like "nothing to compile" to
 /// every caller instead of "codegen refused to compile this."
+/// Populate the T2-3 `EffectRows` table (#862, `docs/effects-spec.md` §11):
+/// one factored row per inferable definition (every knot/stitch — the host's
+/// resume-scheduling estimate, §12.1). Rows are read straight off the advisory
+/// [`effects_query`] fixpoint and lowered to wire vocabulary:
+///
+/// - `reads`/`writes` cells ride through as [`DefinitionId`]s (already sorted —
+///   they come from `BTreeSet`s).
+/// - each call-kind name is interned into the story's `name_table`
+///   (find-or-append, in the row's sorted call order for determinism) and
+///   emitted as a [`CallAtom`] with the capability-parameter slot populated
+///   `Any` (component-granular, the v1 value) and the reserved
+///   handle-parameter slot left `None`.
+/// - the per-dispatch entry list is empty in v1 (call-through-value is inferred
+///   as opaque, folded into the direct part) — but the row structure ships the
+///   slot so §7 narrowing is not structurally foreclosed.
+/// - **#882 freeze semantics**: `is_entry` is `false` exactly when `def` is in
+///   `story.private_defs` (already populated by codegen from
+///   `Program::private_defs` — `#@private`, `docs/modules-spec.md` §4 — by
+///   the time this runs), `true` otherwise. This is the *only* filter T2-3 was
+///   missing: every row still ships regardless (a `#@private` knot/stitch can
+///   still be captured as a fn-value token a *public* path holds, and the
+///   dispatch-narrowing machinery resolves that token by `DefinitionId`, not
+///   by name — `#@private` hides the name, not the cell). `is_entry` only
+///   gates whether the row is a legitimate *host-lookup* target; it is never
+///   used to drop a row from this table.
+///
+/// Appending call names to `name_table` is safe for inertness: existing
+/// `NameId` indices are unchanged, and the only references to the appended
+/// names are from `effect_rows`, which the runtime does not read.
+#[expect(clippy::cast_possible_truncation)]
+fn populate_effect_rows(db: &dyn salsa::Database, project: ProjectInput, story: &mut StoryData) {
+    let inferable = inferable_defs_query(db, project);
+    if inferable.is_empty() {
+        return;
+    }
+
+    // Owned name→id lookup so we can both read and append to `name_table`.
+    let mut name_lookup: BTreeMap<String, u16> = story
+        .name_table
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.clone(), i as u16))
+        .collect();
+
+    // `story.private_defs` is sorted ascending by raw id (codegen hands it
+    // straight from `Program::private_defs`, itself sorted by
+    // `brink_ir::lir::lower::build_prelude_decls` — see that fn's doc). Cloned
+    // once up front (small — one `u64` per `#@private` def, empty for the
+    // all-public pre-modules world) so the loop below can freely mutate
+    // `story.name_table` alongside without a field-borrow conflict; membership
+    // is then a deterministic, order-independent binary search (mirrors
+    // `brink_runtime::Program::is_private`).
+    let private_defs = story.private_defs.clone();
+    let is_private = |def: DefinitionId| {
+        private_defs
+            .binary_search_by_key(&def.to_raw(), |d| d.to_raw())
+            .is_ok()
+    };
+
+    let mut rows: Vec<EffectRowEntry> = Vec::with_capacity(inferable.len());
+    for &def in inferable {
+        let Some(row) = effects_query(db, project, DefKey::new(db, def)) else {
+            continue;
+        };
+        let mut calls: Vec<CallAtom> = Vec::with_capacity(row.calls.len());
+        for name in &row.calls {
+            let id = if let Some(&id) = name_lookup.get(name) {
+                id
+            } else {
+                let id = story.name_table.len() as u16;
+                story.name_table.push(name.clone());
+                name_lookup.insert(name.clone(), id);
+                id
+            };
+            calls.push(CallAtom {
+                name: NameId(id),
+                capability: CapabilityParam::Any,
+                handle_param: None,
+            });
+        }
+        rows.push(EffectRowEntry {
+            def,
+            is_entry: !is_private(def),
+            direct: DirectEffects {
+                reads: row.reads.iter().copied().collect(),
+                writes: row.writes.iter().copied().collect(),
+                calls,
+                opaque: row.opaque,
+                // NS-A2 (issue #1108): the three new row dimensions ship
+                // straight from the analyzer's inferred row.
+                emits: row.emits,
+                tags: row.tags,
+                faults: row.faults,
+            },
+            dispatches: Vec::new(),
+        });
+    }
+    // `inferable` is a `BTreeSet`, so `rows` is already sorted by `def`.
+    story.effect_rows = rows;
+}
+
+/// Reads [`lir_in_closure_query`], not [`lir_query`] (issue #1032 collapse
+/// ruling): `db.story_data()` — `compileProject`'s artifact path — gates on
+/// `entry`'s `INCLUDE` closure only, so an error in some other file sharing
+/// the session db no longer blocks this entry's build. `db.lir_product()`/
+/// `db.has_errors()` stay on [`lir_query`]/[`has_errors_query`], whole-project
+/// as before.
 #[salsa::tracked(returns(ref))]
 pub(crate) fn story_data_query(db: &dyn salsa::Database, project: ProjectInput) -> CompileProduct {
-    let lir = lir_query(db, project);
+    let lir = lir_in_closure_query(db, project);
     let Some(program) = lir.program.as_ref() else {
         return CompileProduct {
             story: None,
@@ -1214,11 +1983,20 @@ pub(crate) fn story_data_query(db: &dyn salsa::Database, project: ProjectInput) 
         };
     };
     match brink_codegen_inkb::emit(program) {
-        Ok(story) => CompileProduct {
-            story: Some(Arc::new(story)),
-            errors: lir.errors.clone(),
-            warnings: lir.warnings.clone(),
-        },
+        Ok(mut story) => {
+            // T2-3 (#862, `docs/effects-spec.md` §11): first real emission into
+            // the `EffectRows` section. Codegen has no analyzer access, so the
+            // rows are attached here — this query is the one canonical codegen
+            // site (FG-6), so there is exactly one emission point. The rows are
+            // additive metadata the runtime does not consume yet, so episodes
+            // stay byte-identical (the linker never reads `effect_rows`).
+            populate_effect_rows(db, project, &mut story);
+            CompileProduct {
+                story: Some(Arc::new(story)),
+                errors: lir.errors.clone(),
+                warnings: lir.warnings.clone(),
+            }
+        }
         Err(err) => {
             let mut errors = lir.errors.clone();
             errors.push(Diagnostic {
@@ -1342,8 +2120,13 @@ pub fn partition_diagnostics(
 ///
 /// This is the exact composition the pre-salsa `set_file` performed
 /// (per-knot lowering + top-level lowering + assembly + syntax errors), kept
-/// intact rather than collapsed onto `brink_ir::lower` so the output is
-/// byte-identical to the previous pipeline.
+/// intact so the assembled `HirFile` stays byte-identical to the previous
+/// pipeline. The manifest is no longer assembled by merging per-knot/
+/// top-level manifest fragments (B0.4, docs/hir-admission-contract.md
+/// Q3(b), issue #1173): `project_manifest` derives the whole
+/// `SymbolManifest` from the fully assembled `HirFile` in one pass, so
+/// `lower_single_knot`/`lower_top_level` no longer need to produce a
+/// manifest at all.
 fn lower_file(file_id: FileId, parse: &Parse) -> LoweredFile {
     let tree = parse.tree();
 
@@ -1354,8 +2137,7 @@ fn lower_file(file_id: FileId, parse: &Parse) -> LoweredFile {
         .collect();
 
     // Top-level lowering (everything outside knots).
-    let (root_content, top_level_knots, top_manifest, top_diagnostics) =
-        lower_top_level(file_id, &tree);
+    let (root_content, top_level_knots, top_diagnostics) = lower_top_level(file_id, &tree);
 
     // Assemble a complete `HirFile`: use `lower()` for the declarations
     // (variables, constants, lists, externals, includes), then replace knots
@@ -1363,21 +2145,17 @@ fn lower_file(file_id: FileId, parse: &Parse) -> LoweredFile {
     let (mut hir, _full_manifest, _full_diag) = lower(file_id, &tree);
     hir.knots = knot_entries
         .iter()
-        .filter_map(|(knot, _, _)| knot.clone())
+        .filter_map(|(knot, _)| knot.clone())
         .collect();
     hir.knots.extend(top_level_knots);
     hir.root_content = root_content;
 
-    // Merge manifests: top-level + all knots.
-    let mut manifest = top_manifest;
-    for (_, knot_manifest, _) in &knot_entries {
-        merge_manifest_into(&mut manifest, knot_manifest);
-    }
+    let manifest = project_manifest(&hir);
 
     // Merge diagnostics, then surface parser/syntax errors as compile
     // diagnostics (`E037`) so malformed source fails the compile.
     let mut diagnostics = top_diagnostics;
-    for (_, _, knot_diags) in &knot_entries {
+    for (_, knot_diags) in &knot_entries {
         diagnostics.extend(knot_diags.iter().cloned());
     }
     diagnostics.extend(parse.errors().iter().map(|e| Diagnostic {
@@ -1387,25 +2165,18 @@ fn lower_file(file_id: FileId, parse: &Parse) -> LoweredFile {
         code: DiagnosticCode::E037,
     }));
 
+    // B0.3 admission validator (docs/hir-admission-contract.md §4.2, issue
+    // #1172): a loud, non-suppressible pass wired directly at this seam so
+    // it runs on every lowering (NF-6, always-on). Kept in its own field —
+    // never folded into `diagnostics` above, which flows through
+    // `apply_suppressions` in `partition_diagnostics`.
+    let file_len = parse.syntax().text_range().end();
+    let admission = brink_analyzer::validate_admission(file_id, &hir, &manifest, file_len);
+
     LoweredFile {
         hir,
         manifest,
         diagnostics,
+        admission,
     }
-}
-
-/// Merge `src` manifest fields into `dst`.
-fn merge_manifest_into(dst: &mut SymbolManifest, src: &SymbolManifest) {
-    dst.knots.extend(src.knots.iter().cloned());
-    dst.stitches.extend(src.stitches.iter().cloned());
-    dst.variables.extend(src.variables.iter().cloned());
-    dst.constants.extend(src.constants.iter().cloned());
-    dst.lists.extend(src.lists.iter().cloned());
-    dst.externals.extend(src.externals.iter().cloned());
-    dst.labels.extend(src.labels.iter().cloned());
-    dst.list_items.extend(src.list_items.iter().cloned());
-    dst.locals.extend(src.locals.iter().cloned());
-    dst.unresolved.extend(src.unresolved.iter().cloned());
-    dst.docs
-        .extend(src.docs.iter().map(|(k, v)| (k.clone(), v.clone())));
 }

@@ -2,9 +2,9 @@
 
 use brink_format::{
     AddressPath, ClosureEnvEntry, ContainerDef, CountingFlags, DefinitionId, DefinitionTag,
-    ExternalFnDef, GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, MapKey,
-    NameId, OrderedMap, PluralCategory, ScopeLineTable, SectionKind, SelectKey, ShapeId, SlotInfo,
-    SourceLocation, StoryData, Value, ValueType, read_inkb, read_inkb_index, write_inkb,
+    ExternalFnDef, GlobalVarDef, LineContent, LineEntry, LinePart, ListDef, ListItemDef, ListValue,
+    MapKey, NameId, OrderedMap, PluralCategory, ScopeLineTable, SectionKind, SelectKey, ShapeId,
+    SlotInfo, SourceLocation, StoryData, Value, ValueType, read_inkb, read_inkb_index, write_inkb,
 };
 use proptest::prelude::*;
 
@@ -132,6 +132,39 @@ fn arb_value_type() -> impl Strategy<Value = ValueType> {
         // now produce a `Handle` payload, same rationale as the collection
         // types above.
         Just(ValueType::Handle),
+        // T1e projection value type (docs/t1e-spec.md §3): `arb_value` below
+        // can now produce a `Projection` payload, same rationale.
+        Just(ValueType::Projection),
+        // The ink LIST value type (value-model-spec §4's nominal list
+        // domain, `VAL_LIST` on the wire): issue #746 — `arb_value` below
+        // can now produce a `List` payload, same rationale as every other
+        // family above.
+        Just(ValueType::List),
+        // NS-A8 tower value types (docs/tower-mini-spec.md T5): `arb_value`
+        // below can now produce tower payloads, same rationale.
+        Just(ValueType::Vec2),
+        Just(ValueType::Vec3),
+        Just(ValueType::Vec4),
+        Just(ValueType::Quat),
+        Just(ValueType::Mat2),
+        Just(ValueType::Mat3),
+        Just(ValueType::Mat4),
+        // NS-A7 weighted table value type (docs/stdlib-spec.md §8), same
+        // rationale.
+        Just(ValueType::Weighted),
+    ]
+}
+
+/// A single `ProjSegment` — scalar-only payloads (never a full recursive
+/// `Value`) so `arb_value_leaf` can stay a leaf generator (T1e, segment
+/// values are always scalar in practice: an index, a map key, or a struct
+/// field name).
+fn arb_proj_segment() -> impl Strategy<Value = brink_format::ProjSegment> {
+    prop_oneof![
+        any::<i32>().prop_map(brink_format::ProjSegment::Index),
+        any::<i32>().prop_map(|n| brink_format::ProjSegment::Key(Value::Int(n))),
+        ".*".prop_map(|s: String| brink_format::ProjSegment::Key(Value::String(s.into()))),
+        any::<bool>().prop_map(|b| brink_format::ProjSegment::Key(Value::Bool(b))),
     ]
 }
 
@@ -162,10 +195,48 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
         // default reaches the wire as a global's `default_value`.
         arb_def_id().prop_map(Value::FnRef),
         arb_closure(),
+        // NS-A5 range values (F7, `VAL_RANGE` on the wire): a flat scalar
+        // leaf — start/end/inclusive round-trip bit-for-bit (the written
+        // form is preserved; only *equality* is content-based).
+        (any::<i32>(), any::<i32>(), any::<bool>())
+            .prop_map(|(start, end, inclusive)| Value::range(start, end, inclusive)),
         // T1d handle values (docs/t1d-spec.md §2): the reserved `VAL_HANDLE`
         // tag's first emission — round-tripped here like every other value
         // tag.
         (arb_name_id(), any::<u64>()).prop_map(|(kind, id)| Value::handle(kind, id)),
+        // T1e projection values (docs/t1e-spec.md §3): the reserved
+        // `VAL_PROJECTION` tag's first emission — round-tripped here like
+        // every other value tag. Segment kind `2=range` stays RESERVED
+        // (never generated — `arb_proj_segment` has no such arm).
+        (
+            arb_def_id(),
+            prop::collection::vec(arb_proj_segment(), 0..4)
+        )
+            .prop_map(|(cell, segments)| Value::projection(cell, segments)),
+        // Ink LIST values (value-model-spec §4, `VAL_LIST` on the wire):
+        // issue #746 — the one member of this leaf family that was still
+        // missing from this fuzzer even though the `.inkb` writer/reader
+        // have supported `VAL_LIST` since the format's original list
+        // support landed. `items`/`origins` are both `ListItem`-tagged
+        // `DefinitionId`s in production, but the round-trip codec never
+        // inspects the tag, so any `arb_def_id()` exercises the same
+        // encode/decode arms.
+        (
+            prop::collection::vec(arb_def_id(), 0..4),
+            prop::collection::vec(arb_def_id(), 0..4),
+        )
+            .prop_map(|(items, origins)| Value::List(ListValue { items, origins }.into())),
+        // NS-A8 tower values (docs/tower-mini-spec.md T5): the seven lane
+        // families, lanes drawn from proptest's default finite-f32 domain
+        // and rebuilt through glam's explicit array constructors — the
+        // round-trip pins the hand-serialized little-endian lane wire.
+        any::<[f32; 2]>().prop_map(|l| Value::Vec2(glam::Vec2::from_array(l))),
+        any::<[f32; 3]>().prop_map(|l| Value::Vec3(glam::Vec3::from_array(l))),
+        any::<[f32; 4]>().prop_map(|l| Value::Vec4(glam::Vec4::from_array(l))),
+        any::<[f32; 4]>().prop_map(|l| Value::Quat(glam::Quat::from_array(l))),
+        any::<[f32; 4]>().prop_map(|l| Value::Mat2(glam::Mat2::from_cols_array(&l))),
+        any::<[f32; 9]>().prop_map(|l| Value::Mat3(glam::Mat3::from_cols_array(&l))),
+        any::<[f32; 16]>().prop_map(|l| Value::Mat4(glam::Mat4::from_cols_array(&l))),
     ]
 }
 
@@ -180,8 +251,21 @@ fn arb_value() -> impl Strategy<Value = Value> {
                 }
                 Value::map(map)
             }),
-            (any::<u32>(), prop::collection::vec(inner, 0..4))
+            (any::<u32>(), prop::collection::vec(inner.clone(), 0..4))
                 .prop_map(|(shape, fields)| Value::record(ShapeId(shape), fields)),
+            // Weighted tables (NS-A7, docs/stdlib-spec.md §8): 1-3
+            // positive-weight entries (the evidence-by-construction
+            // invariant the reader enforces), values from the full
+            // recursive universe.
+            prop::collection::vec((1i32..=i32::MAX, inner.clone()), 1..4).prop_map(Value::weighted),
+            // Option values (NS-A1, docs/stdlib-spec.md §1.4): both
+            // variants, payload from the full recursive universe so
+            // `some(none)`/`some(#[..])` nesting rides the writer/reader
+            // fuzz too.
+            prop::option::of(inner).prop_map(|payload| match payload {
+                None => Value::none(),
+                Some(v) => Value::some(v),
+            }),
         ]
     })
 }
@@ -202,6 +286,49 @@ fn arb_closure() -> impl Strategy<Value = Value> {
     );
     (arb_def_id(), prop::collection::vec(entry, 0..4))
         .prop_map(|(target, env)| Value::closure(target, env))
+}
+
+/// Structural exhaustiveness guard (issue #667, mirroring the identical guard
+/// `proptest_inkt.rs` added for #883/#397): a match over every current
+/// [`Value`] variant with **no wildcard arm**, so this fails to compile the
+/// moment a new variant is added to the enum. Never called — the only
+/// purpose is the compile-time forcing function: whoever adds a `Value`
+/// variant must also add an arm here (and, per the doc, teach
+/// `arb_value`/`arb_value_leaf` above to generate it), instead of the new
+/// variant silently escaping this `.inkb` writer/reader fuzz coverage the way
+/// `Record`'s `value_to_js` wildcard let it escape the wasm marshal boundary
+/// (#667: PR #664's review finding).
+#[expect(dead_code, reason = "compile-time-only exhaustiveness guard, see doc")]
+fn assert_value_variants_exhaustive(value: &Value) {
+    match value {
+        Value::Int(_)
+        | Value::Float(_)
+        | Value::Bool(_)
+        | Value::String(_)
+        | Value::List(_)
+        | Value::DivertTarget(_)
+        | Value::VariablePointer(_)
+        | Value::TempPointer { .. }
+        | Value::Null
+        | Value::FragmentRef(_)
+        | Value::Array(_)
+        | Value::Map(_)
+        | Value::Record { .. }
+        | Value::FnRef(_)
+        | Value::Closure(_)
+        | Value::Handle { .. }
+        | Value::Projection(_)
+        | Value::OptionVal(_)
+        | Value::Range { .. }
+        | Value::Vec2(_)
+        | Value::Vec3(_)
+        | Value::Vec4(_)
+        | Value::Quat(_)
+        | Value::Mat2(_)
+        | Value::Mat3(_)
+        | Value::Mat4(_)
+        | Value::Weighted(_) => {}
+    }
 }
 
 fn arb_container_with_lines() -> impl Strategy<Value = (ContainerDef, ScopeLineTable)> {
@@ -323,6 +450,8 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                     struct_shapes: vec![],
                     private_defs: vec![],
                     alias_table: vec![],
+                    effect_rows: vec![],
+                    frame_shapes: Vec::new(),
                     source_checksum: 0,
                 }
             },
@@ -349,8 +478,8 @@ proptest! {
         // Correct version.
         prop_assert_eq!(index.version, 5);
 
-        // Exactly 13 sections in canonical order.
-        prop_assert_eq!(index.sections.len(), 13);
+        // Exactly 14 sections in canonical order.
+        prop_assert_eq!(index.sections.len(), 14);
         prop_assert_eq!(index.sections[0].kind, SectionKind::NameTable);
         prop_assert_eq!(index.sections[1].kind, SectionKind::Variables);
         prop_assert_eq!(index.sections[2].kind, SectionKind::ListDefs);
@@ -363,7 +492,8 @@ proptest! {
         prop_assert_eq!(index.sections[9].kind, SectionKind::AddressPaths);
         prop_assert_eq!(index.sections[10].kind, SectionKind::LiteralPool);
         prop_assert_eq!(index.sections[11].kind, SectionKind::StructShapes);
-        prop_assert_eq!(index.sections[12].kind, SectionKind::AliasTable);
+        prop_assert_eq!(index.sections[12].kind, SectionKind::EffectRows);
+        prop_assert_eq!(index.sections[13].kind, SectionKind::AliasTable);
 
         let header_size = u32::try_from(index.header_size()).unwrap();
 

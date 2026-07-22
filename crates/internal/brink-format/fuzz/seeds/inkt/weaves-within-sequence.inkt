@@ -1,0 +1,86 @@
+(story checksum=0xb9d7ca9d
+
+  (name_table
+    0 ""
+  )
+
+  (addresses
+    (address $01_406ea523c53def -> $01_406ea523c53def +0)
+    (address $01_a8f04a690dbaa8 -> $01_a8f04a690dbaa8 +0)
+    (address $01_e6f68c789056c7 -> $01_e6f68c789056c7 +0)
+    (address $01_54f2a369a54714 -> $01_54f2a369a54714 +0)
+    (address $01_7ee88bb88c362a -> $01_7ee88bb88c362a +0)
+  )
+
+  (address_paths
+    (path 0 -> $01_406ea523c53def)
+  )
+
+  (container $01_406ea523c53def
+    (name 0)
+    (lines
+      0 "choice" @b71f59971da8ee4c
+      1 "choice" @b71f59971da8ee4c
+      2 "nextline" @8f7030c49d4d77ed
+    )
+    (code
+      enter_container $01_a8f04a690dbaa8
+      emit_newline
+      done
+    )
+  )
+
+  (container $01_a8f04a690dbaa8
+    (scope $01_406ea523c53def)
+    (flags visits start_only)
+    (path_hash 48)
+    (code
+      current_visit_count
+      push_int 1
+      sequence shuffle 0
+      duplicate
+      push_int 0
+      equal
+      jump_if_false 15
+      pop
+      enter_container $01_e6f68c789056c7
+      jump 2
+      pop
+      nop
+    )
+  )
+
+  (container $01_e6f68c789056c7
+    (scope $01_406ea523c53def)
+    (path_hash 257)
+    (code
+      emit_newline
+      begin_fragment
+      emit_line 0 0
+      end_fragment
+      begin_choice start+once $01_54f2a369a54714
+      end_choice
+    )
+  )
+
+  (container $01_54f2a369a54714
+    (scope $01_406ea523c53def)
+    (flags visits start_only)
+    (path_hash 495)
+    (code
+      emit_line 1 0
+      emit_newline
+      emit_line 2 0
+      emit_newline
+      end
+    )
+  )
+
+  (container $01_7ee88bb88c362a
+    (scope $01_406ea523c53def)
+    (path_hash 499)
+    (code
+      done
+    )
+  )
+)

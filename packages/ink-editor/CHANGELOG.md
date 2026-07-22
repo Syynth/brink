@@ -1,5 +1,128 @@
 # @brink-lang/editor
 
+## 0.14.0
+
+### Patch Changes
+
+- Updated dependencies [9481137]
+- Updated dependencies [a6e8a6a]
+  - @brink-lang/web@0.14.0
+
+## 0.13.0
+
+### Minor Changes
+
+- abe28a2: Host-registered argument handlers for primitive base types (#990). A host can
+  now register a widget against a **base type** (`bool` | `int` | `float` |
+  `string`), not just a `host.<vendor>.<name>` semantic id — e.g.
+  `setHostWidgets([{ type: "bool", … }])` gives every `bool`-typed argument the
+  host's own toggle, in the host's own design system, with zero brink-shipped
+  opinion on primitives. This runs through the same `matchHostWidget` fallback
+  that already resolved semantic types; it is now an intentional, documented,
+  tested part of the contract.
+
+  New API surface:
+
+  - `getHostWidget` and `matchHostWidget` are now exported, so a host (or a
+    consumer's tests) can introspect widget registration/resolution directly.
+  - `ArgumentWidget.editor.surface` gains `"inline"` alongside `"popover"` /
+    `"modal"` — mounts the widget's control directly in the argument Form's row
+    (where a text field would sit) instead of `buildHostField`'s summary-chip +
+    expandable editor. The right shape for a primitive control (a bool toggle,
+    a number stepper) that IS the field, not something you open an editor on.
+    Only the Form honors it; the in-editor Edit/Fill affordances have no row to
+    mount into and keep the popover chrome for the same widget.
+
+  **Behavior change:** the argument Form's per-field control precedence is now
+  **color → hostWidget → values → text** (previously values was checked before
+  hostWidget). A field that declares both a host widget and `values` now gets
+  the widget — before this fix a host widget could never win over a plain
+  values dropdown on the same type, which also blocked rich pickers (e.g. an
+  icon-grid item browser) for semantic types that also carry `setHostValues`
+  labels. A field with `values` and no `hostWidget` is unaffected.
+
+### Patch Changes
+
+- 909bb26: `dialect.ts`'s `ResolvedDialect.compile` no longer unconditionally constructs
+  its per-kind `RegExp`s with the `d` (`hasIndices`) flag (#1013). That flag
+  needs V8 9.0 / Chromium 90+ — NW.js-hosted embedders on older Chromium (e.g.
+  RPG Maker MZ's bundled NW.js is Chromium 88, with no newer official runtime)
+  threw `SyntaxError: Invalid flags supplied to RegExp constructor 'd'` at
+  construction, black-screening the embedder at boot before a single line was
+  ever classified.
+
+  Support is now feature-detected once at module scope. Modern engines keep the
+  `d`-flag path unchanged (indices read straight off the match). Older engines
+  fall back to a capture-group walk that reconstructs the same per-named-group
+  `[start, end)` spans by locating each group's captured text within its
+  nearest enclosing named group's span — correctly handling nested groups (e.g.
+  `parenthetical`'s `content` wrapping `content_inner`) — with no loss of
+  `DialectMatch` fidelity (`kind`/`attrs`/`hiddenSpans`/`contentSpan` are
+  byte-identical to the `d`-flag path on every input the at-cue conformance
+  corpus and generalization suite cover).
+
+- Updated dependencies [17ad933]
+- Updated dependencies [f53c6c7]
+- Updated dependencies [7e8aa7f]
+- Updated dependencies [b9a86e2]
+  - @brink-lang/web@0.13.0
+
+## 0.12.0
+
+### Patch Changes
+
+- Updated dependencies [6cb663a]
+  - @brink-lang/web@0.12.0
+
+## 0.11.1
+
+### Patch Changes
+
+- Updated dependencies [c246a4a]
+- Updated dependencies [ae66340]
+- Updated dependencies [7baa01f]
+- Updated dependencies [aa43bb6]
+- Updated dependencies [edf92bc]
+- Updated dependencies [d350551]
+- Updated dependencies [3c1e1e1]
+- Updated dependencies [c03a73a]
+- Updated dependencies [83717d3]
+- Updated dependencies [302c6a2]
+- Updated dependencies [4a08940]
+- Updated dependencies [b86fee8]
+- Updated dependencies [1e1be68]
+- Updated dependencies [c36b8c4]
+- Updated dependencies [71dd2fc]
+- Updated dependencies [213a7f5]
+- Updated dependencies [730c947]
+- Updated dependencies [a0d9ee2]
+- Updated dependencies [7ac0a5d]
+- Updated dependencies [1198586]
+- Updated dependencies [058f410]
+- Updated dependencies [7500e27]
+- Updated dependencies [bcb5cd3]
+- Updated dependencies [c62687c]
+- Updated dependencies [8870113]
+- Updated dependencies [e16e8f8]
+- Updated dependencies [820f6c5]
+- Updated dependencies [45eb96b]
+- Updated dependencies [e8cb050]
+- Updated dependencies
+- Updated dependencies [fe0c16d]
+- Updated dependencies [6266cbf]
+- Updated dependencies [9e9f07a]
+- Updated dependencies [878be79]
+- Updated dependencies [c66409b]
+- Updated dependencies [86c4bee]
+- Updated dependencies [fdf94f6]
+- Updated dependencies [9d559a3]
+- Updated dependencies [cc1d11e]
+- Updated dependencies [62cb759]
+- Updated dependencies [a350dcf]
+- Updated dependencies [3ad1bc5]
+- Updated dependencies [2b7dd5a]
+  - @brink-lang/web@0.11.1
+
 ## 0.9.3
 
 ### Patch Changes

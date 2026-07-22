@@ -34,8 +34,15 @@ export interface FormField {
   /** Position in the call's argument list. Defaults to the field's array index
    *  (callers with arg-groups must set this explicitly). */
   paramIndex?: number;
-  /** Semantic-type name, shown in the label (e.g. `hex_color`). */
+  /** Semantic-type name (e.g. `hex_color`) — used for widget-kind matching
+   *  and as the text-field placeholder. The label renders `typeDisplay`
+   *  when present (#1027/#1053), not this raw name — an unregistered
+   *  semantic type must not be shown with false confidence. */
   typeName?: string;
+  /** The honest display string for `typeName` (#1027/#1053): the bare name
+   *  when registered, `name ⚠ unregistered semantic type — E040` otherwise.
+   *  The label prefers this over `typeName`. */
+  typeDisplay?: string;
   /** Built-in widget kind (`color`, …) → an embedded picker. */
   widgetKind?: string;
   /** Value-list options (#174) → a dropdown of `label`s inserting `value`s. */
@@ -193,23 +200,39 @@ export function openArgumentForm(anchor: HTMLElement, opts: ArgumentFormOptions)
   return () => popover?.close();
 }
 
-/** A label cell — `param: type` (or just `param`). */
-function labelCell(field: { paramName: string; typeName?: string }): HTMLElement {
+/** A label cell — `param: type` (or just `param`). Prefers `typeDisplay`
+ *  over `typeName` (#1027/#1053) — an unregistered semantic type renders
+ *  with the honesty marker instead of a bare, confident name. */
+function labelCell(field: {
+  paramName: string;
+  typeName?: string;
+  typeDisplay?: string;
+}): HTMLElement {
   const label = document.createElement("span");
   label.className = "brink-arg-form-label";
-  label.textContent = field.typeName ? `${field.paramName}: ${field.typeName}` : field.paramName;
+  const typeText = field.typeDisplay ?? field.typeName;
+  label.textContent = typeText ? `${field.paramName}: ${typeText}` : field.paramName;
   return label;
 }
 
-/** Dispatch a non-grouped parameter to its control. */
+/**
+ * Dispatch a non-grouped parameter to its control. Precedence (#990):
+ * **color → hostWidget → values → text.** A host widget outranks a plain
+ * values dropdown — before this fix a semantic type with BOTH a host widget
+ * AND `setHostValues` labels (a rich picker over the same domain, e.g. an
+ * icon-grid item browser) could never get its widget in the Form, because
+ * `values` was checked first and always won. This is an observable behavior
+ * change for any consumer whose host widget + values combination silently
+ * fell back to the dropdown — the widget now renders instead (changeset).
+ */
 function buildField(row: HTMLElement, field: FormField, pi: number, rt: FormRuntime): void {
   row.appendChild(labelCell(field));
   if (field.widgetKind === "color") {
     buildColorField(row, field, pi, rt);
-  } else if (field.values && field.values.length > 0) {
-    buildEnumField(row, field, pi, rt);
   } else if (field.hostWidget) {
     buildHostField(row, field, pi, rt);
+  } else if (field.values && field.values.length > 0) {
+    buildEnumField(row, field, pi, rt);
   } else {
     buildTextField(row, field, pi, rt);
   }
@@ -275,8 +298,10 @@ function buildEnumField(row: HTMLElement, field: FormField, pi: number, rt: Form
   row.appendChild(select);
 }
 
-/** A host single-slot widget: a summary chip + Edit that embeds the host editor
- *  inline in the row. `resolve` updates the draft + summary; `cancel` collapses. */
+/** A host single-slot widget. `editor.surface: "inline"` mounts the control
+ *  directly in the row (#990, e.g. a bool toggle); otherwise a summary chip +
+ *  Edit expands the editor in place (see `mountHostEditor`). `resolve` updates
+ *  the draft (+ summary, when chipped); `cancel` collapses (chipped only). */
 function buildHostField(row: HTMLElement, field: FormField, pi: number, rt: FormRuntime): void {
   const widget = field.hostWidget!;
   // Empty slots fall back to the param name (a placeholder identifier) so Apply
@@ -327,10 +352,62 @@ function buildGroupField(row: HTMLElement, group: FormGroup, rt: FormRuntime): v
   });
 }
 
-/** Shared chrome for an embedded host editor (single-slot or group): a summary
- *  chip + Edit toggling an inline editor container. `onResolve` writes drafts;
- *  the summary refreshes from the widget's `inline` label. While open, the
- *  editor re-renders if a sibling draft in `contextIndices` changes. */
+/**
+ * `editor.surface: "inline"` (#990): mount the widget's control directly in
+ * the row, where a text field would sit — no summary chip, no Edit toggle.
+ * `resolve` writes the draft live (a toggle/stepper resolves on every
+ * interaction, not once-then-close); `cancel` is a no-op — there is no
+ * collapsed state to revert to. Re-renders if a sibling draft in
+ * `contextIndices` changes, same as the popover/modal path.
+ */
+function mountInlineHostEditor(
+  row: HTMLElement,
+  widget: ArgumentWidget,
+  ctx: () => ArgumentWidgetContext,
+  contextIndices: number[],
+  rt: FormRuntime,
+  onResolve: (values: string[]) => void,
+): void {
+  const container = document.createElement("div");
+  container.className = "brink-arg-form-inline";
+  const host: ArgumentWidgetEditorHost = {
+    resolve: (values) => onResolve(values),
+    cancel: () => {},
+  };
+  let teardown: (() => void) | undefined;
+  const renderEditor = (): void => {
+    teardown?.();
+    if (teardown) rt.teardowns.delete(teardown);
+    container.replaceChildren();
+    teardown = widget.editor.render(ctx(), host, container);
+    if (teardown) rt.teardowns.add(teardown);
+  };
+  renderEditor();
+  if (contextIndices.length > 0) {
+    const redrawer = (changedIndex: number): void => {
+      if (contextIndices.includes(changedIndex)) renderEditor();
+    };
+    rt.redrawers.add(redrawer);
+  }
+  row.appendChild(container);
+}
+
+/**
+ * Shared chrome for an embedded host editor (single-slot or group). Dispatches
+ * on the widget's `editor.surface` (#990):
+ *
+ * - **`"inline"`** — the control mounts directly in the row, in the text
+ *   field's place: no summary chip, no Edit button, no expand/collapse. The
+ *   right shape for a primitive control (a bool toggle, a number stepper)
+ *   that IS the field, not an editor of it.
+ * - **`"popover"` / `"modal"` / unset** — a summary chip + Edit toggling an
+ *   expandable editor container (unchanged), for rich pickers where showing
+ *   the full editor inline in every row would be too heavy.
+ *
+ * `onResolve` writes drafts; while a non-inline editor is open (or an inline
+ * one is always mounted), it re-renders if a sibling draft in
+ * `contextIndices` changes.
+ */
 function mountHostEditor(
   row: HTMLElement,
   widget: ArgumentWidget,
@@ -339,6 +416,11 @@ function mountHostEditor(
   rt: FormRuntime,
   onResolve: (values: string[]) => void,
 ): void {
+  if (widget.editor.surface === "inline") {
+    mountInlineHostEditor(row, widget, ctx, contextIndices, rt, onResolve);
+    return;
+  }
+
   const summary = document.createElement("span");
   summary.className = "brink-arg-form-host";
   const refresh = (): void => {

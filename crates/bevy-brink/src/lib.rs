@@ -31,12 +31,16 @@ extern crate self as bevy_brink;
 
 mod asset;
 mod async_bind;
+mod batch;
 mod bindings;
 mod brkt;
 mod call;
+mod capability;
 mod event;
 mod flow;
 mod globals;
+#[cfg(feature = "effect-trace")]
+mod ground_truth;
 mod handle;
 mod input;
 mod line_tables;
@@ -45,6 +49,7 @@ mod plugin;
 #[cfg(feature = "dev")]
 mod replay;
 mod request;
+mod sleep;
 #[cfg(feature = "dev")]
 mod source_loader;
 #[cfg(test)]
@@ -59,6 +64,8 @@ pub use async_bind::{
     BrinkAwaiting, BrinkExternalAwaited, BrinkPendingTask, BrinkResolveExternalExt,
     poll_brink_tasks,
 };
+pub use batch::parallel::advance_batch_parallel;
+pub use batch::{BrinkBatchReport, FlowAccessRecord, advance_batch};
 /// `#[derive(BrinkCommand)]` — generates [`BrinkCommand::from_ink_args`].
 /// Shares its name with the trait (macro vs. type namespace), so a single
 /// `use bevy_brink::BrinkCommand;` brings both into scope.
@@ -106,8 +113,8 @@ pub use brink_runtime::transcript::{TranscriptData, TranscriptError};
 /// `World` is deliberately absent here — it collides with `bevy::prelude::World`
 /// under a glob import, so it is re-exported under the alias [`BrinkWorld`].
 pub use brink_runtime::{
-    Choice, ContextView, FallbackHandler, FlowInstance, FlowLocal, Line, LoadReport, PolicyError,
-    Program, RuntimeError, SaveState, Scope, WorldPolicy,
+    Choice, ContextView, ExecMode, FallbackHandler, FlowInstance, FlowLocal, Line, LoadReport,
+    PolicyError, Program, RuntimeError, SaveState, Scope, WorldPolicy,
 };
 pub use brkt::{
     BrktLoader, BrktLoaderError, TranscriptAsset, capture_transcript, render_transcript_asset,
@@ -116,14 +123,22 @@ pub use call::{
     BrinkCallCommandsExt, BrinkCallFailed, BrinkCallRequest, BrinkCallResolved, IntoBrinkArgs,
     resolve_brink_calls,
 };
+pub use capability::{
+    BrinkCapabilityAppExt, CapabilityChanges, CapabilityEffects, CapabilityError,
+    CapabilityManifest, CapabilityManifestExternal, CapabilityRegistry, CapabilityTable,
+    ContainerAccess, ContainerAccessTable, compute_container_access, detect_capability_changes,
+    dump_container_access, rebuild_capability_table,
+};
 #[cfg(feature = "dev")]
 pub use event::BrinkFlowReset;
 pub use event::{BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone};
 pub use flow::{Advance, BrinkFlow};
 pub use globals::{
-    BrinkContext, BrinkGlobals, BrinkWorldPolicy, flow_context_view, load_flow_state,
-    save_flow_state,
+    BrinkContext, BrinkExecMode, BrinkGlobals, BrinkWorldPolicy, flow_context_view,
+    load_flow_state, save_flow_state,
 };
+#[cfg(feature = "effect-trace")]
+pub use ground_truth::{AccessKind, GroundTruthLog, ObservedAccess, Violation, check};
 pub use handle::{
     BrinkDeadHandleDeref, BrinkHandleAppExt, HandleEntityRemap, HandleKind, HandleKinds,
     HandleLoadError, HandleRegistry, HandleRetentionMetrics, HandleSaveEntry, HandleSaveState,
@@ -141,6 +156,10 @@ pub use plugin::{BrinkAssetsPlugin, BrinkPlugin};
 #[cfg(feature = "dev")]
 pub use replay::{BrinkReplayConfig, BrinkReplayLog, ReplayQueryModeOverride, replay_on_reload};
 pub use request::{BrinkFlowRequest, FlowStart, fulfill_flow_requests};
+pub use sleep::{
+    DetectSummary, FlowSleep, SleepState, WakeArming, WakeConditionPurityError,
+    check_named_condition_purity, check_value_condition_purity, mark_wake_dirty, run_flow_sleep,
+};
 #[cfg(feature = "dev")]
-pub use source_loader::{InkLoader, InkLoaderError};
+pub use source_loader::{CompileStoryInlineError, InkLoader, InkLoaderError, compile_story_inline};
 pub use transcript::{BrinkTranscript, refresh_transcripts};

@@ -7,10 +7,12 @@
 //! fields are complete/well-typed is `brink-analyzer`'s strict-mode
 //! construction check, not this module's.
 
-use brink_syntax::ast::{self, AstNode, SyntaxNodePtr};
+use brink_syntax::ast::{self, AstNode};
+
+use crate::provenance::NodeClass;
 
 use crate::hir::types::{FieldAccessExpr, StructLiteral};
-use crate::{DiagnosticCode, Expr, RefKind};
+use crate::{DiagnosticCode, Expr};
 
 use super::super::context::{LowerScope, LowerSink, Lowered};
 use super::super::helpers::{make_name, name_from_ident};
@@ -26,15 +28,7 @@ impl LowerExpr for ast::StructLiteral {
             .name()
             .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E017))?;
         let shape_range = ident.syntax().text_range();
-        let shape = make_name(shape_name_text.clone(), shape_range);
-
-        sink.add_unresolved(
-            &shape_name_text,
-            shape_range,
-            RefKind::Struct,
-            &scope.to_scope(),
-            None,
-        );
+        let shape = make_name(shape_name_text, shape_range);
 
         let mut fields = Vec::new();
         for f in self.fields() {
@@ -52,7 +46,7 @@ impl LowerExpr for ast::StructLiteral {
         }
 
         Ok(Expr::StructLiteral(StructLiteral {
-            ptr: SyntaxNodePtr::from_node(self.syntax()),
+            ptr: scope.prov(NodeClass::StructLiteral, self.syntax()),
             shape,
             fields,
         }))
@@ -72,7 +66,7 @@ impl LowerExpr for ast::FieldAccessExpr {
         let field = name_from_ident(&field_ident)
             .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E017))?;
         Ok(Expr::FieldAccess(FieldAccessExpr {
-            ptr: SyntaxNodePtr::from_node(self.syntax()),
+            ptr: scope.prov(NodeClass::FieldAccess, self.syntax()),
             base: Box::new(base),
             field,
         }))

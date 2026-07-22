@@ -17,11 +17,18 @@
 //! `int`/`float` are turn-terminating faults (never zero-defaulting) on a
 //! string that fails to parse, or on any value outside the domain above
 //! (divert targets, LIST values, arrays, maps, records) — ruling 1/2. This
-//! is a **new, distinct** fault-carrying path: the pre-existing uppercase
-//! `INT()`/`FLOAT()` builtins (`value_ops::cast_to_int`/`cast_to_float`)
-//! keep their legacy silent-0-on-failure behavior untouched, since that
-//! behavior is oracle-anchored (byte-identical requirement) and this PR
-//! must not disturb it.
+//! is a **new, distinct** fault-carrying path from the pre-existing
+//! uppercase `INT()`/`FLOAT()` builtins (`value_ops::cast_to_int`/
+//! `cast_to_float`): those keep their legacy silent-0-on-string-parse-failure
+//! behavior untouched within their own reachable `Int`/`Float`/`Bool`/
+//! `String` domain, since that behavior is oracle-anchored
+//! (byte-identical requirement). Outside that domain, `cast_to_int`/
+//! `cast_to_float` used to silently fold every other `Value` variant to
+//! `0`/`0.0` through a wildcard arm; issue #955 closed that hazard by
+//! making them fault too (`RuntimeError::InvalidConversionDomain`, same
+//! variant this module raises, distinguished by an uppercase `target`
+//! label) — those variants were never oracle-reachable, so the ratchet is
+//! unaffected.
 
 use alloc::string::ToString;
 
@@ -123,6 +130,20 @@ fn type_name(v: &Value) -> &'static str {
         Value::Record { .. } => "record",
         Value::FnRef(_) | Value::Closure(_) => "fn",
         Value::Handle { .. } => "handle",
+        Value::Projection(_) => "projection",
+        // NS-A1: an Option is outside `int`/`float`'s numeric+bool domain —
+        // the ruled `Option[T] ≠ T` strictness means no implicit unwrap,
+        // even of a `some(3)`. (`string(x)` stays total via `stringify`.)
+        Value::OptionVal(_) => "option",
+        Value::Range { .. } => "range",
+        Value::Vec2(_) => "vec2",
+        Value::Vec3(_) => "vec3",
+        Value::Vec4(_) => "vec4",
+        Value::Quat(_) => "quat",
+        Value::Mat2(_) => "mat2",
+        Value::Mat3(_) => "mat3",
+        Value::Mat4(_) => "mat4",
+        Value::Weighted(_) => "weighted",
     }
 }
 
@@ -145,6 +166,8 @@ mod tests {
             skipping_choice: false,
             did_safe_exit: false,
             did_unsafe_yield: false,
+            exec_mode: crate::story::ExecMode::default(),
+            comparator_depth: 0,
         }
     }
 
@@ -393,6 +416,35 @@ mod tests {
         push(&mut flow, Value::Int(42));
         convert_to_string(&mut flow, &program).unwrap();
         assert_eq!(flow.pop_value().unwrap(), Value::String("42".into()));
+    }
+
+    #[test]
+    fn string_of_record_and_option_use_the_one_display_path() {
+        // F1 (ruled 2026-07-19): `string()` and interpolation dispatch
+        // through ONE display path (`value_ops::stringify`) — this pins the
+        // structural struct default and the Option forms on the `string()`
+        // leg specifically (the interpolation leg is pinned in
+        // `value_ops`' own tests and the `struct-display-default`
+        // tier1-brink case).
+        let mut program = empty_program();
+        program.name_table = vec!["Point".to_string(), "x".to_string(), "y".to_string()];
+        program.struct_shapes = vec![crate::program::StructShapeEntry {
+            name: brink_format::NameId(0),
+            fields: vec![brink_format::NameId(1), brink_format::NameId(2)],
+        }];
+        let mut flow = test_flow();
+        push(
+            &mut flow,
+            Value::record(brink_format::ShapeId(0), vec![Value::Int(1), Value::Int(2)]),
+        );
+        convert_to_string(&mut flow, &program).unwrap();
+        assert_eq!(
+            flow.pop_value().unwrap(),
+            Value::String("Point { x: 1, y: 2 }".into())
+        );
+        push(&mut flow, Value::none());
+        convert_to_string(&mut flow, &program).unwrap();
+        assert_eq!(flow.pop_value().unwrap(), Value::String("none".into()));
     }
 
     #[test]

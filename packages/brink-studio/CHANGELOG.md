@@ -1,5 +1,79 @@
 # @brink-lang/studio
 
+## 0.14.0
+
+### Patch Changes
+
+- Updated dependencies [9481137]
+- Updated dependencies [a6e8a6a]
+  - @brink-lang/web@0.14.0
+
+## 0.13.0
+
+### Patch Changes
+
+- Updated dependencies [17ad933]
+- Updated dependencies [f53c6c7]
+- Updated dependencies [7e8aa7f]
+- Updated dependencies [b9a86e2]
+  - @brink-lang/web@0.13.0
+
+## 0.12.0
+
+### Patch Changes
+
+- Updated dependencies [6cb663a]
+  - @brink-lang/web@0.12.0
+
+## 0.11.1
+
+### Patch Changes
+
+- Updated dependencies [c246a4a]
+- Updated dependencies [ae66340]
+- Updated dependencies [7baa01f]
+- Updated dependencies [aa43bb6]
+- Updated dependencies [edf92bc]
+- Updated dependencies [d350551]
+- Updated dependencies [3c1e1e1]
+- Updated dependencies [c03a73a]
+- Updated dependencies [83717d3]
+- Updated dependencies [302c6a2]
+- Updated dependencies [4a08940]
+- Updated dependencies [b86fee8]
+- Updated dependencies [1e1be68]
+- Updated dependencies [c36b8c4]
+- Updated dependencies [71dd2fc]
+- Updated dependencies [213a7f5]
+- Updated dependencies [730c947]
+- Updated dependencies [a0d9ee2]
+- Updated dependencies [7ac0a5d]
+- Updated dependencies [1198586]
+- Updated dependencies [058f410]
+- Updated dependencies [7500e27]
+- Updated dependencies [bcb5cd3]
+- Updated dependencies [c62687c]
+- Updated dependencies [8870113]
+- Updated dependencies [e16e8f8]
+- Updated dependencies [820f6c5]
+- Updated dependencies [45eb96b]
+- Updated dependencies [e8cb050]
+- Updated dependencies
+- Updated dependencies [fe0c16d]
+- Updated dependencies [6266cbf]
+- Updated dependencies [9e9f07a]
+- Updated dependencies [878be79]
+- Updated dependencies [c66409b]
+- Updated dependencies [86c4bee]
+- Updated dependencies [fdf94f6]
+- Updated dependencies [9d559a3]
+- Updated dependencies [cc1d11e]
+- Updated dependencies [62cb759]
+- Updated dependencies [a350dcf]
+- Updated dependencies [3ad1bc5]
+- Updated dependencies [2b7dd5a]
+  - @brink-lang/web@0.11.1
+
 ## 0.8.3
 
 ### Patch Changes

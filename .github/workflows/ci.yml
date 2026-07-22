@@ -60,6 +60,32 @@ jobs:
           version: v0.14.0
       - run: wasm-pack test --node crates/brink-web
 
+  # `brink-format` and `brink-runtime` claim `no_std` + `alloc` portability
+  # (`docs/no-std-portability.md`, #434): both have a default-enabled `std`
+  # feature and fall back to `core`/`alloc` without it. No job ever built
+  # that configuration, so it rotted silently — `proj_ops.rs`'s `.to_owned()`
+  # call shipped without the `alloc::borrow::ToOwned` import and broke
+  # `cargo check -p brink-runtime --no-default-features` on main with no CI
+  # signal (#1135). One job per crate (matrix, fail-fast: false) so a break
+  # in one crate's no_std build doesn't hide a break in the other's.
+  no-std:
+    name: no_std (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [brink-format, brink-runtime]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: no-std-${{ matrix.crate }}
+      - run: cargo check -p ${{ matrix.crate }} --no-default-features
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -78,7 +104,114 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      - run: cargo test --workspace
+      # bevy-brink (+ bevy-brink-derive) is EXCLUDED from the CI gate: the bevy
+      # dependency graph is the dominant build cost and its examples link a
+      # 300+ rlib binary that intermittently crashes the runner's linker (ld
+      # bus error). Parser/compiler PRs never touch it. Test bevy-brink locally
+      # or via an on-demand job when changing it. (2026-07-20)
+      - run: cargo test --workspace --exclude bevy-brink --exclude bevy-brink-derive
+
+  # `--features bench-counters` is off by default (it's a compile-time cut,
+  # not a runtime toggle — see `crates/brink-runtime/src/bench_counters.rs`),
+  # so the `test` job above never builds or runs anything gated on it. PR
+  # #921's counter-forwarding proofs
+  # (`collection_global_axis_forwards_nonzero_counters` plus the
+  # bench-counters-gated scenario-story compile+run) only ever ran locally
+  # until this job existed (#923, tracked from #897). A separate job (not a
+  # step folded into `test`) so its own distinct feature/cache combination is
+  # visible in the checks list and a failure here can't be masked by the
+  # default-feature run passing.
+  test-bench-counters:
+    name: Test (bench-counters)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      # Same bevy-brink dev-dependency system libs as the `test` job above.
+      - name: Install Linux dependencies (bevy)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: bench-counters
+      # bevy-brink dropped from CI (see the `test` job) — keep brink-runtime's
+      # bench-counters coverage, which is cheap and bevy-free.
+      - run: cargo test -p brink-runtime --features bench-counters
+
+  # #956 (tracked from #897): the standard `clippy`/`test` jobs below only
+  # ever build the workspace's *default* feature sets, so a feature-gated
+  # module can bitrot invisibly. That's exactly how #765's xliff2 CDATA gap
+  # (found by a hand-run `clippy --all-features`) and #923's bench-counters
+  # gap got in — each closed one feature at a time (`test-bench-counters`
+  # above). One `--all-features` leg closes the whole class at once instead
+  # of chasing each gap after the fact.
+  #
+  # Feature unification across the workspace made `--workspace --all-features`
+  # feasible here (verified: no combination conflicts among xliff2's
+  # `metadata`, brink-format's `inkt`/`std`, brink-runtime's
+  # `bench-counters`/`effect-trace`/`testing`, bevy-brink's
+  # `dev`/`bench-counters`/`effect-trace`, brink-db's `memory-introspection`,
+  # or brink-test-harness's `effect-trace` forwarding) — if a future feature
+  # ever proves mutually exclusive workspace-wide, fall back to a per-crate
+  # `-p` matrix here rather than dropping the leg.
+  #
+  # This subsumes #947 (a proposed `--features effect-trace` leg for
+  # brink-runtime + bevy-brink): both crates' `effect-trace` feature is part
+  # of `--all-features`, so their ground-truth tests
+  # (`brink-runtime::effect_trace`'s recorder-backed assertions and
+  # `bevy-brink::ground_truth`'s `#[cfg(test)]` module, gated by
+  # `#[cfg(feature = "effect-trace")] mod ground_truth;` in
+  # `crates/bevy-brink/src/lib.rs`) already run here — no separate job
+  # needed.
+  clippy-all-features:
+    name: Clippy (all features)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      # Same bevy-brink dev-dependency system libs as the `test` job above.
+      - name: Install Linux dependencies (bevy)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: all-features
+      - run: cargo clippy --workspace --all-targets --all-features --exclude bevy-brink --exclude bevy-brink-derive -- -D warnings
+
+  # Companion to `clippy-all-features` above — see its comment for why this
+  # leg exists and how it subsumes #947. Runtime cost measured comparable to
+  # the default `test` job (workspace test compile dominates; the extra
+  # feature-gated test functions are a handful of fast unit/integration
+  # tests), so it runs `cargo test`, not just clippy.
+  test-all-features:
+    name: Test (all features)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      # Same bevy-brink dev-dependency system libs as the `test` job above.
+      - name: Install Linux dependencies (bevy)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: all-features
+      - run: cargo test --workspace --all-features --exclude bevy-brink --exclude bevy-brink-derive
 
   clippy:
     name: Clippy
@@ -97,7 +230,7 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-targets --exclude bevy-brink --exclude bevy-brink-derive -- -D warnings
 
   fmt:
     name: Format
@@ -160,6 +293,30 @@ jobs:
           - target: vm_no_panic
             crate_dir: crates/brink-runtime/fuzz
             seed_dir: seeds/vm_no_panic
+          # brink-format's 6 targets (#745) — never previously wired into
+          # this matrix despite existing in-tree. The two shared seed
+          # dirs mirror the shape above: `seeds/inkb` for the four targets
+          # that take a `.inkb` byte buffer, `seeds/inkt` for the two that
+          # take a `.inkt` string, same as brink-syntax's single
+          # `seeds/ink` dir shared by its two `&str`-input targets.
+          - target: read_no_panic
+            crate_dir: crates/internal/brink-format/fuzz
+            seed_dir: seeds/inkb
+          - target: write_read_roundtrip
+            crate_dir: crates/internal/brink-format/fuzz
+            seed_dir: seeds/inkb
+          - target: read_index_no_panic
+            crate_dir: crates/internal/brink-format/fuzz
+            seed_dir: seeds/inkb
+          - target: section_reads_no_panic
+            crate_dir: crates/internal/brink-format/fuzz
+            seed_dir: seeds/inkb
+          - target: read_inkt_no_panic
+            crate_dir: crates/internal/brink-format/fuzz
+            seed_dir: seeds/inkt
+          - target: inkt_write_read_roundtrip
+            crate_dir: crates/internal/brink-format/fuzz
+            seed_dir: seeds/inkt
     # Hard backstop independent of the target's own `-max_total_time`
     # budget (30s of intended fuzz time) — if a target ever fails to
     # self-terminate, the job dies here instead of burning CI minutes
@@ -183,6 +340,54 @@ jobs:
         run: |
           mkdir -p corpus/${{ matrix.target }}
           cargo +nightly fuzz run ${{ matrix.target }} corpus/${{ matrix.target }} ${{ matrix.seed_dir }} -- -seed=1 -max_total_time=30 -max_len=8192
+
+  # BH-3's determinism law (#927, closing #926): the parallel batch driver
+  # must be byte-identical to the serial driver, in flow-id order, over
+  # randomized workloads. It already runs inside the `test` job's
+  # `cargo test --workspace` above, but sharing that job means a law
+  # violation is just one more failure buried in a huge workspace test blob
+  # instead of naming itself in the checks list (#897, tracked to #940).
+  #
+  # Same fuzz-smoke shape as the `fuzz` matrix above: an independent job (not
+  # a step folded into `test`), a seed PINNED via env var rather than left to
+  # the test's hardcoded default (reproducible across runs, and the matrix
+  # shape lets a future PR add more pinned-seed lanes without any one
+  # violation silently skipping the others), and a modest fixed iteration
+  # budget (64 randomized workloads) — this is a correctness gate on every
+  # PR, not a soak/fuzz campaign.
+  determinism-law:
+    name: Determinism law (BH-3) — seed ${{ matrix.seed }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - seed: 918273645
+            iterations: 64
+    # Hard backstop: this test is a handful of seconds of work, so a hang
+    # here means the parallel driver deadlocked, not that the budget was too
+    # tight.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      BRINK_DETERMINISM_LAW_SEED: ${{ matrix.seed }}
+      BRINK_DETERMINISM_LAW_ITERATIONS: ${{ matrix.iterations }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      # Same bevy-brink dev-dependency system libs as the `test` job above.
+      - name: Install Linux dependencies (bevy)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: determinism-law-${{ matrix.seed }}
+      - name: Determinism law (pinned seed ${{ matrix.seed }}, ${{ matrix.iterations }} iterations)
+        run: cargo test -p bevy-brink --lib batch::tests::parallel_equals_serial_over_randomized_workloads -- --exact
 
   book:
     name: Book
@@ -218,7 +423,7 @@ jobs:
       # One cargo invocation for the whole package set: rustdoc resolves the
       # examples off -L, and two builds of a crate with different hashes make
       # it bail with E0464. See the `book-test` recipe in the justfile.
-      - run: cargo build -p brink-runtime -p brink-compiler -p brink-format -p brink-intl -p bevy-brink
+      - run: cargo build -p brink-runtime -p brink-compiler -p brink-format -p brink-intl -p bevy-brink -p brink-project-config
         env:
           CARGO_TARGET_DIR: target/book-doctest
       # Run mdbook under the pinned toolchain (rust-toolchain.toml). `cargo

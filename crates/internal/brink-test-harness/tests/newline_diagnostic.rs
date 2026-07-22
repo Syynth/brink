@@ -108,6 +108,7 @@ fn stmt_name(s: &Stmt) -> &'static str {
         Stmt::ExprStmt(_) => "ExprStmt",
         Stmt::EndOfLine => "EndOfLine",
         Stmt::LogicBlock(_) => "LogicBlock",
+        Stmt::Await(_) => "Await",
     }
 }
 
@@ -800,6 +801,12 @@ VAR drugged = false
                 steps.push(format!("End {text:?}"));
                 break;
             }
+            // FS-3r park — runtime-unreachable today, a terminal boundary.
+            Ok(brink_runtime::Line::Suspended { text, .. }) => {
+                println!("step {i}: Suspended {text:?}");
+                steps.push(format!("Suspended {text:?}"));
+                break;
+            }
             Err(e) => {
                 println!("step {i}: Error {e:?}");
                 break;
@@ -889,6 +896,11 @@ VAR drugged = false
             }
             Ok(brink_runtime::Line::End { text, .. }) => {
                 println!("step {i}: End {text:?}");
+                break;
+            }
+            // FS-3r park — runtime-unreachable today, a terminal boundary.
+            Ok(brink_runtime::Line::Suspended { text, .. }) => {
+                println!("step {i}: Suspended {text:?}");
                 break;
             }
             Err(e) => {
@@ -1043,6 +1055,11 @@ VAR drugged = false
             }
             Ok(brink_runtime::Line::End { text, .. }) => {
                 println!("step {i}: End {text:?}");
+                break;
+            }
+            // FS-3r park — runtime-unreachable today, a terminal boundary.
+            Ok(brink_runtime::Line::Suspended { text, .. }) => {
+                println!("step {i}: Suspended {text:?}");
                 break;
             }
             Err(e) => {

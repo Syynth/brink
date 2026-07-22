@@ -52,7 +52,11 @@ use bevy_app::App;
 use bevy_asset::Assets;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::event::Event;
+#[cfg(feature = "effect-trace")]
+use bevy_ecs::query::Access;
 use bevy_ecs::resource::Resource;
+#[cfg(feature = "effect-trace")]
+use bevy_ecs::system::BoxedSystem;
 use bevy_ecs::system::{Commands, In, IntoSystem, Query, Res, ResMut, SystemId, SystemState};
 use bevy_ecs::world::World;
 use bevy_log::warn;
@@ -144,7 +148,13 @@ enum AsyncKind {
 }
 /// A deferred World mutation that triggers a parsed command event. Boxed
 /// so heterogeneous command types share one buffer; run during flush.
-type TriggerFn = Box<dyn FnOnce(&mut World) + Send>;
+///
+/// `pub(crate)` so the batch driver ([`crate::batch`]) can hold a flow's
+/// buffered command triggers across the batch's Step phase and replay them
+/// in deterministic flow-id order at Apply (`docs/effects-spec.md` §12.4),
+/// rather than flushing each flow's commands immediately as the serial API
+/// does.
+pub(crate) type TriggerFn = Box<dyn FnOnce(&mut World) + Send>;
 
 /// A parsed command ready to be triggered against the World, plus the
 /// value to return to ink.
@@ -167,6 +177,13 @@ pub struct BrinkBindings<M: Send + Sync + 'static = ()> {
     pure: HashMap<String, PureFn>,
     commands: HashMap<String, CommandFn>,
     queries: HashMap<String, QuerySystemId>,
+    /// Each query binding's real, bevy-declared [`Access`], captured once at
+    /// `bind_brink_query` registration time (issue #938's host-side
+    /// ground-truth check — see `crate::ground_truth`'s module docs for why
+    /// registration time is the right moment: bevy's own component access
+    /// is static, so it never varies dispatch to dispatch).
+    #[cfg(feature = "effect-trace")]
+    query_access: HashMap<String, Access>,
     /// Async (defer-across-frames) bindings: `bind_brink_async` (event) and
     /// `bind_brink_task` (detached task). A flow pauses on these and resolves
     /// out-of-band.
@@ -180,6 +197,8 @@ impl<M: Send + Sync + 'static> Default for BrinkBindings<M> {
             pure: HashMap::new(),
             commands: HashMap::new(),
             queries: HashMap::new(),
+            #[cfg(feature = "effect-trace")]
+            query_access: HashMap::new(),
             async_bindings: HashMap::new(),
             _marker: PhantomData,
         }
@@ -206,6 +225,14 @@ impl<M: Send + Sync + 'static> BrinkBindings<M> {
     /// The [`SystemId`] of the query binding registered under `name`, if any.
     fn query(&self, name: &str) -> Option<QuerySystemId> {
         self.queries.get(name).copied()
+    }
+
+    /// The real bevy [`Access`] a `bind_brink_query` binding's system
+    /// carries, if `name` was registered while the `effect-trace` feature
+    /// was enabled (see [`crate::ground_truth`]'s `check` function).
+    #[cfg(feature = "effect-trace")]
+    pub(crate) fn query_access(&self, name: &str) -> Option<&Access> {
+        self.query_access.get(name)
     }
 }
 
@@ -234,8 +261,11 @@ impl<M: Send + Sync + 'static> BrinkHandler<'_, M> {
 
     /// Take the buffered command-event triggers, leaving the handler empty.
     /// Used by [`advance_flow`] to accumulate triggers across the
-    /// suspensions of a single line and flush them against the World.
-    fn take_queued(&self) -> Vec<TriggerFn> {
+    /// suspensions of a single line and flush them against the World, and by
+    /// the batch driver ([`crate::batch`]) to move a flow's buffered command
+    /// triggers into its per-flow batch outcome for deterministic flow-id-
+    /// ordered replay at Apply.
+    pub(crate) fn take_queued(&self) -> Vec<TriggerFn> {
         std::mem::take(&mut self.queued.borrow_mut())
     }
 
@@ -455,11 +485,32 @@ impl BrinkBindingsAppExt for App {
         S: IntoSystem<In<BrinkQueryInput>, Value, SM> + 'static,
     {
         let name = name.into();
+        // With `effect-trace`, capture the system's real bevy-declared
+        // `Access` once, at registration — bevy's own component access is
+        // static (a `Query<&Foo>` declares the same access whether or not it
+        // ever matches an entity), so this is the exact ground truth
+        // `crate::ground_truth::check` later compares real dispatches
+        // against. `register_boxed_system` (rather than `register_system`)
+        // lets us call `System::initialize` ourselves first without needing
+        // `S: Clone`; the already-initialized boxed system is then handed to
+        // bevy exactly as `register_system` would have built it, so the
+        // registered binding behaves identically either way.
+        #[cfg(feature = "effect-trace")]
+        let (id, access) = {
+            let mut boxed: BoxedSystem<In<BrinkQueryInput>, Value> =
+                Box::new(IntoSystem::into_system(system));
+            let access = boxed.initialize(self.world_mut()).combined_access().clone();
+            let id = self.world_mut().register_boxed_system(boxed);
+            (id, access)
+        };
+        #[cfg(not(feature = "effect-trace"))]
         let id = self.world_mut().register_system(system);
         {
             let mut reg = self
                 .world_mut()
                 .get_resource_or_insert_with(BrinkBindings::<M>::default);
+            #[cfg(feature = "effect-trace")]
+            reg.query_access.insert(name.clone(), access);
             reg.queries.insert(name, id);
         }
         self
@@ -812,7 +863,10 @@ fn emit_line_event_world<M: Send + Sync + 'static>(world: &mut World, entity: En
                 BrinkChoicesPresented::<M>::new(e, text.clone(), tags.clone(), choices.clone())
             });
         }
-        Line::Done { text, tags } => {
+        // A park (`Line::Suspended`, FS-3r) is a turn boundary like `Done`;
+        // runtime-unreachable today behind the E052 fence, grouped here so
+        // the exhaustive match keeps compiling as the variant lands.
+        Line::Done { text, tags } | Line::Suspended { text, tags } => {
             world
                 .entity_mut(entity)
                 .trigger(|e| BrinkTurnDone::<M>::new(e, text.clone(), tags.clone()));
@@ -1015,9 +1069,11 @@ enum Dispatch {
     Query {
         system: QuerySystemId,
         qargs: Vec<Value>,
-        /// External name, carried only in dev builds so the resolved query
-        /// result can be recorded into the flow's replay log.
-        #[cfg(feature = "dev")]
+        /// External name, carried in dev builds so the resolved query result
+        /// can be recorded into the flow's replay log, and in `effect-trace`
+        /// builds so the dispatch can be logged against the binding's
+        /// captured `Access` (issue #938's ground-truth check).
+        #[cfg(any(feature = "dev", feature = "effect-trace"))]
         name: String,
     },
     /// `bind_brink_async` (event): fire [`BrinkExternalAwaited`] + insert the
@@ -1091,7 +1147,7 @@ fn decide_dispatch<M: Send + Sync + 'static>(world: &mut World, entity: Entity) 
         Dispatch::Query {
             system,
             qargs,
-            #[cfg(feature = "dev")]
+            #[cfg(any(feature = "dev", feature = "effect-trace"))]
             name,
         }
     } else if let Some(kind) = bindings.async_bindings.get(&name) {
@@ -1128,12 +1184,28 @@ fn dispatch_one_external<M: Send + Sync + 'static>(world: &mut World, entity: En
         Dispatch::Query {
             system,
             qargs,
-            #[cfg(feature = "dev")]
+            #[cfg(any(feature = "dev", feature = "effect-trace"))]
             name,
         } => match world.run_system_with(system, (entity, qargs.clone())) {
             Ok(value) => {
                 #[cfg(feature = "dev")]
                 crate::replay::record_external::<M>(world, entity, &name, &qargs, &value);
+                // Issue #938's host-side ground-truth check: log this real
+                // dispatch's binding-declared `Access` (captured at
+                // `bind_brink_query` registration) so a test/harness can
+                // later assert it stayed a subset of BH-1's row-join
+                // (`crate::ground_truth::check`). A missing `BrinkBindings<M>`
+                // resource or an unregistered binding name (should not
+                // happen — this dispatch only runs for a name `bindings.query`
+                // just resolved) skips recording rather than panicking.
+                #[cfg(feature = "effect-trace")]
+                if let Some(access) = world
+                    .get_resource::<BrinkBindings<M>>()
+                    .and_then(|b| b.query_access(&name))
+                    .cloned()
+                {
+                    crate::ground_truth::record::<M>(world, entity, &name, access);
+                }
                 let mut flows = world.query::<&mut BrinkFlow<M>>();
                 if let Ok(mut flow) = flows.get_mut(world, entity) {
                     flow.inner.resolve_external(value);
@@ -1207,7 +1279,7 @@ pub fn resolve_pending_externals<M: Send + Sync + 'static>(world: &mut World) {
 #[expect(clippy::panic, reason = "tests assert via panic on the error arm")]
 mod tests {
     use super::*;
-    use crate::test_support::compile_test_story;
+    use crate::test_support::{compile_test_story, compile_test_story_brink_gradual};
     use bevy_ecs::prelude::*;
     use brink_runtime::{FastRng, FlowInstance};
 
@@ -1373,6 +1445,129 @@ mod tests {
             }
             other => panic!("expected Resolved(map), got {other:?}"),
         }
+    }
+
+    // ── T1e pass-through audit (docs/t1e-spec.md §8 item 3, issue #850) ──
+    //
+    // "bevy-brink pass-through audit: projections cross bindings as
+    // ordinary values; the host never walks paths — assert it." Two halves:
+    //
+    // 1. A raw `Value::Projection` can *structurally never* reach a binding
+    //    from real compiled ink. `ref lvalue-path` (`ref npc.hp`) only
+    //    lowers to `MakeProjection` when the target's own declared
+    //    parameter is `ref` (`brink_ir::lir::lower::expr::lower_call_args`:
+    //    `is_ref = params[i].is_ref`) — and an `EXTERNAL` declaration's
+    //    grammar has no `ref` marker at all
+    //    (`brink_syntax::parser::declaration::function_param_list` parses
+    //    plain identifiers only, unlike a knot/function header's
+    //    `KNOT_PARAMS`, which does). So `heal(ref npc.hp, 5)` against an
+    //    `EXTERNAL heal` can never lower to a projection; it hits the
+    //    ordinary ref-argument fence and fails to compile. `bindings.rs`'s
+    //    `ExternalFnHandler::call` therefore never sees the `(root,
+    //    segments)` descriptor — only a real, structural guarantee.
+    // 2. Once a projection-bound `ref` parameter *is* read inside an
+    //    ordinary ink function body (the only way to observe one), the
+    //    read auto-dereferences to a plain value before it can be used as
+    //    an argument anywhere (`vm.rs`'s `GetTemp` dispatch, T1e-2) — so a
+    //    value derived from a projection and handed to an external binding
+    //    always arrives as an ordinary snapshot, never the projection
+    //    itself.
+
+    /// Half 1: `ref npc.hp` against an `EXTERNAL` target fails to compile —
+    /// there is no lowering path that could hand a raw `Value::Projection`
+    /// to a host binding.
+    #[test]
+    fn ref_projection_argument_to_an_external_call_fails_to_compile() {
+        use brink_compiler::{AnalysisOptions, CompileError, Dialect};
+        let src = "EXTERNAL heal(target, amount)\n\
+                    STRUCT NPC = #{hp: int}\n\
+                    VAR npc = 0\n\
+                    === main ===\n\
+                    ~ npc = NPC#{hp: 1}\n\
+                    ~ heal(ref npc.hp, 5)\n\
+                    -> END\n";
+        let err = brink_compiler::compile_with_options(
+            "audit.ink",
+            |path| {
+                if path == "audit.ink" {
+                    Ok(src.to_string())
+                } else {
+                    Err(std::io::Error::new(std::io::ErrorKind::NotFound, path))
+                }
+            },
+            AnalysisOptions {
+                dialect: Dialect::Brink,
+                ..AnalysisOptions::default()
+            },
+        )
+        .expect_err("a ref-projection argument to an EXTERNAL target must not compile");
+        let CompileError::Diagnostics(diags) = err else {
+            panic!("expected a diagnostics rejection, got {err:?}");
+        };
+        assert!(
+            !diags.is_empty(),
+            "expected at least one diagnostic rejecting the construct"
+        );
+    }
+
+    /// Half 2: an ink function with a projection-bound `ref` parameter
+    /// reads it and forwards the *resolved* value to an external binding —
+    /// the binding observes a plain `Value::Int`, never a `Value::Projection`.
+    #[test]
+    fn value_read_through_a_ref_projection_reaches_a_binding_as_a_plain_snapshot() {
+        let src = "STRUCT NPC = #{hp: int, name: string}\n\
+                    VAR npc = 0\n\
+                    EXTERNAL report(x)\n\n\
+                    ~ npc = NPC#{hp: 7, name: \"x\"}\n\
+                    ~ temp result = heal(ref npc.hp, 5)\n\
+                    Result: {result}\n\
+                    -> END\n\n\
+                    === function heal(ref hp, amount) ===\n\
+                    ~ temp seen = report(hp)\n\
+                    ~ hp = hp + amount\n\
+                    ~ return hp\n";
+        // NS-A9 (strict brink default): the `VAR npc = 0` → struct-reassign
+        // placeholder idiom is gradual-locked (E075 — struct literals are not
+        // legal declaration defaults), and the subject here (projection
+        // resolution at the binding seam) is regime-independent.
+        let (program, tables, _ctx) = compile_test_story_brink_gradual(src);
+
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<Value>>> = std::sync::Arc::default();
+        let seen_for_binding = std::sync::Arc::clone(&seen);
+        let mut app = App::new();
+        app.bind_brink_fn::<(), _, _>("report", move |args| {
+            seen_for_binding
+                .lock()
+                .expect("lock")
+                .push(args.first().cloned().unwrap_or(Value::Null));
+            Value::Null
+        });
+        let bindings = app.world().resource::<BrinkBindings<()>>();
+        let handler = bindings.handler();
+
+        let (mut flow, mut ctx) = FlowInstance::new_at_root(&program);
+        let mut text = String::new();
+        loop {
+            let line = flow
+                .step_single_line::<FastRng>(&program, &tables, &mut ctx, &handler, None)
+                .unwrap();
+            text.push_str(line.text());
+            if line.is_terminal() {
+                break;
+            }
+        }
+
+        assert!(
+            text.contains("Result: 12"),
+            "heal(ref npc.hp, 5) should read 7, add 5, and return 12; got {text:?}"
+        );
+        let captured = seen.lock().expect("lock");
+        assert_eq!(
+            captured.as_slice(),
+            &[Value::Int(7)],
+            "the binding must see the dereferenced value (7), never a Value::Projection: \
+             got {captured:?}"
+        );
     }
 
     /// End-to-end: a pure-fn binding's return value is inlined into story
@@ -1601,8 +1796,8 @@ mod tests {
             "-> END\n\
              === function make_doubler() ===\n~ return #fn(double)\n\
              === function make_adder() ===\n~ return bind(#fn(add), 10)\n\
-             === function double(x) ===\n~ return x + x\n\
-             === function add(a, b) ===\n~ return a + b\n",
+             === function double(x: int): int ===\n~ return x + x\n\
+             === function add(a: int, b: int): int ===\n~ return a + b\n",
         );
         let story = add_story_assets(&mut app, program, tables, ctx);
         let entity = app

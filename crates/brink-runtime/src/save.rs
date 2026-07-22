@@ -76,9 +76,18 @@ pub fn save_state<C: ContextAccess + ?Sized>(program: &Program, ctx: &C) -> Save
 
     let globals: BTreeMap<String, Value> = (0..program.global_count())
         .filter_map(|idx| {
-            program
-                .global_slot_name(idx as usize)
-                .map(|name| (name.to_owned(), ctx.global(idx).clone()))
+            program.global_slot_name(idx as usize).map(|name| {
+                let value = ctx.global(idx).clone();
+                // Same mechanism as `Opcode::GetGlobal`'s read (a bare
+                // `Arc::clone` on a collection-typed `Value`) — reported
+                // through the same counter so a save/load cycle's
+                // Arc-clone count is visible to `bench-counters`
+                // (issue #821 Workstream C), not silently invisible just
+                // because it's a host-side `ContextAccess` read rather
+                // than a VM opcode.
+                crate::vm::note_value_share(&value);
+                (name.to_owned(), value)
+            })
         })
         .collect();
 
@@ -132,6 +141,10 @@ pub fn save_state<C: ContextAccess + ?Sized>(program: &Program, ctx: &C) -> Save
         turn_index: ctx.turn_index(),
         rng_seed: ctx.rng_seed(),
         previous_random: ctx.previous_random(),
+        // FS-1 is format-only (`docs/flow-suspension-spec.md` §9): the
+        // runtime spill/restore that would populate a live suspended flow
+        // here is FS-3 scope. Always `None` until then.
+        suspended: None,
     }
 }
 
@@ -185,7 +198,19 @@ pub fn load_state<C: ContextAccess + ?Sized>(
                 let value = if renames_matter {
                     rebind_value(program, value, &mut report)
                 } else {
-                    value.clone()
+                    // The common path (no `#@was` aliases active): a
+                    // bare `Value::clone()`, same mechanism as
+                    // `Opcode::GetGlobal`'s read — noted so a full
+                    // save/load round trip's Arc-clone count is visible
+                    // to `bench-counters` (issue #821 Workstream C), not
+                    // just the save half. The `renames_matter` branch
+                    // above calls `rebind_value`, which recursively
+                    // rebuilds compound values rather than cloning the
+                    // top-level `Arc` — not the same mechanism, so not
+                    // noted here (would overstate the count).
+                    let cloned = value.clone();
+                    crate::vm::note_value_share(&cloned);
+                    cloned
                 };
                 ctx.set_global(idx, value);
             }
@@ -479,6 +504,30 @@ fn rebind_value(program: &Program, value: &Value, report: &mut LoadReport) -> Va
                     .collect(),
             ),
         },
+        // T1e (docs/t1e-spec.md §3): "rehydration validates the root cell
+        // like VariablePointer today, and the `#@was` alias table applies
+        // to the root's identity on the miss path" — the *same*
+        // `rebind_value_global_id` a `VariablePointer` root uses, since a
+        // projection's cell reference is that identical payload shape
+        // (`docs/format-v4-rfc.md` §1: "cell reference = the existing
+        // VAL_VAR_POINTER payload shape, reused not reinvented"). Segment
+        // values recurse too — a `Key` segment can itself carry an id
+        // needing rebinding (e.g. a divert-target map key is not legal,
+        // but a nested closure/array segment value theoretically could be).
+        Value::Projection(p) => {
+            let cell = rebind_value_global_id(program, p.cell, report);
+            let segments = p
+                .segments
+                .iter()
+                .map(|seg| match seg {
+                    brink_format::ProjSegment::Index(n) => brink_format::ProjSegment::Index(*n),
+                    brink_format::ProjSegment::Key(v) => {
+                        brink_format::ProjSegment::Key(rebind_value(program, v, report))
+                    }
+                })
+                .collect();
+            Value::projection(cell, segments)
+        }
         other => other.clone(),
     }
 }

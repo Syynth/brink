@@ -1,0 +1,8 @@
+Plan found: true.
+Plan: pickup_weapon -> load_weapon -> move_to_enemy -> attack_enemy.
+Total cost: 7.
+Nodes expanded: 10.
+Step 1: pickup_weapon (cost 2) -> enemy_dead=false
+Step 2: load_weapon (cost 1) -> enemy_dead=false
+Step 3: move_to_enemy (cost 3) -> enemy_dead=false
+Step 4: attack_enemy (cost 1) -> enemy_dead=true

@@ -48,6 +48,24 @@ default = ["dev"]
 # `.brkt`) assets are loadable — suitable for shipping a release binary
 # that doesn't carry the brink compiler.
 dev = ["dep:brink-compiler", "dep:brink-syntax"]
+# Bench-only #821 Arc-clone/COW-copy debug counters, forwarded to
+# brink-runtime (see `crates/brink-runtime/src/bench_counters.rs`,
+# `docs/runtime-bench.md`). Off by default — compile-time cut, not a
+# runtime toggle. Used by `benches/scenario_bench.rs` (issue #900).
+bench-counters = ["brink-runtime/bench-counters"]
+# Host-side ground-truth check (issue #938, the effect-trace pattern applied
+# to the bevy boundary — see `crates/bevy-brink/src/ground_truth.rs`'s module
+# docs). Off by default, exactly like `brink-runtime`'s own `effect-trace`
+# feature (`crates/brink-runtime/src/effect_trace.rs`): an ordinary build
+# pays exactly zero cost. When enabled, `bind_brink_query` captures each
+# binding's real bevy-declared `Access` at registration time and every
+# actual dispatch is recorded so a test/harness can assert it stays a subset
+# of BH-1's manifest-declared row-join (`crates/bevy-brink/src/capability.rs`)
+# — no `unsafe`, wraps the existing safe query-dispatch call site. Pulls in
+# `bevy_ecs/debug` so `Components::get_name` resolves a real Rust type name
+# for a violation's offending component instead of a placeholder string —
+# required for this feature's own "name the component" acceptance bar.
+effect-trace = ["bevy_ecs/debug"]
 
 [dev-dependencies]
 # The `play_story` example uses the bevy umbrella crate for windowing,
@@ -64,6 +82,13 @@ brink-runtime = { path = "../brink-runtime", features = ["testing"]  }
 # The locale example + tests build `.inkl` overlays via the intl pipeline
 # (export_lines + compile_locale).
 brink-intl = { path = "../internal/brink-intl" }
+# tests/manifest_field_convergence.rs (#911, BH follow-up deliverable 1)
+# cross-validates one manifest JSON literal against both `capability::
+# CapabilityManifest` (this crate) and `brink_ir::host_manifest::
+# HostManifest` (the compiler/IDE-side type parsing the same on-disk
+# file) — already a transitive dependency via the `brink-compiler` dev-dep
+# above, so this adds no new build work, just a direct path to it.
+brink-ir = { path = "../internal/brink-ir" }
 # serde_json is a regular dependency now (handle.rs's SaveKey erasure); the
 # `book_saves` example also round-trips a composed save map through it to
 # prove `SaveState` really is Serialize/Deserialize end to end.
@@ -95,6 +120,19 @@ name = "async_task"
 # resolve_brink_external.
 [[example]]
 name = "async_external"
+
+# Scenario harness skeleton + SERIAL-driver baselines (issue #900, BH-B-1):
+# headless MinimalPlugins runner, ScenarioConfig axes matrix, CSV+markdown
+# baseline output. See the file's module docs for the honesty caveats.
+# `test = false`: `cargo test` must not run this target's `main()` — it
+# would execute the full 1/100/1k/10k baseline matrix and rewrite the
+# checked-in baseline files as a side effect of an ordinary test run.
+# Real `cargo test` coverage of the generator/driver logic lives in
+# `tests/scenario_bench_model.rs` instead (includes the same source).
+[[bench]]
+name = "scenario_bench"
+harness = false
+test = false
 
 [lints]
 workspace = true

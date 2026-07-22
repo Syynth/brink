@@ -82,6 +82,41 @@ const VAL_HANDLE: u8 = 0x0D;
 // TM-4 record tag — shared numeric surface with the `.inkb` format
 // (`docs/format-v4-rfc.md` §1: `ShapeId`, then field values in shape order).
 const VAL_RECORD: u8 = 0x0F;
+// T1e projection tag — shared numeric surface with the `.inkb` format
+// (`docs/format-v4-rfc.md` §1: cell reference, u8 segment count, segments).
+// A projection rides the append-only transcript / journal / speculation
+// snapshots as an ordinary value (`docs/t1e-spec.md` §3: "Saves/journal/
+// speculation: ordinary values"), e.g. via `Opcode::EmitValue`.
+const VAL_PROJECTION: u8 = 0x0E;
+/// NS-A1 Option value tag (`docs/stdlib-spec.md` §1.4): flag byte (0 =
+/// `none`, 1 = `some`), then the inner value when `some` — mirrors the
+/// `.inkb` `VAL_OPTION` wire form exactly, like every tag above.
+const VAL_OPTION: u8 = 0x10;
+/// NS-A5 range value tag (`docs/stdlib-spec.md` §7, F7): start i32, end
+/// i32, one flag byte (0 = `..` exclusive, 1 = `..=` inclusive) — mirrors
+/// the `.inkb` `VAL_RANGE` wire form exactly. Flat: never recurses, no
+/// depth accounting (a range holds two ints, never another value).
+const VAL_RANGE: u8 = 0x11;
+// NS-A8 tower value tags (`docs/tower-mini-spec.md` T5): explicit
+// little-endian f32 lanes — vec/quat `x, y(, z, w)`, matrices column-major
+// column-by-column — mirroring the `.inkb` wire form exactly, like every
+// tag above. NEVER glam's memory layout: lanes go through glam's explicit
+// `to_array`/`from_array`/`to_cols_array`/`from_cols_array` conversions.
+const VAL_VEC2: u8 = 0x12;
+const VAL_VEC3: u8 = 0x13;
+const VAL_VEC4: u8 = 0x14;
+const VAL_QUAT: u8 = 0x15;
+const VAL_MAT2: u8 = 0x16;
+const VAL_MAT3: u8 = 0x17;
+const VAL_MAT4: u8 = 0x18;
+/// NS-A7 weighted tables (`docs/stdlib-spec.md` §8): mirrors the `.inkb`
+/// `VAL_WEIGHTED` wire form exactly — u32 entry count, then per entry an
+/// i32 weight and a recursively-encoded value. Depth-counted like the
+/// collection tags; the reader enforces the evidence-by-construction
+/// invariant (non-empty, weights ≥ 1).
+const VAL_WEIGHTED: u8 = 0x19;
+const PROJ_SEG_INDEX: u8 = 0x00;
+const PROJ_SEG_KEY: u8 = 0x01;
 
 // ── Error type ────────────────────────────────────────────────────────────
 
@@ -108,6 +143,14 @@ pub enum TranscriptError {
     InvalidDefinitionId,
     #[error("value nesting exceeded max decode depth ({0})")]
     MaxDepthExceeded(usize),
+    /// A `VAL_MAP` entry list carried the same key twice. A legitimate
+    /// writer never emits this — `OrderedMap::insert` de-duplicates on the
+    /// write side — so a repeated key is a corrupt or crafted `.brkt`; the
+    /// content-based `OrderedMap` `Eq` (issue #909) assumes each key appears
+    /// once, so this is rejected rather than silently keeping the last
+    /// occurrence (issue #985).
+    #[error("duplicate key in map value")]
+    DuplicateMapKey,
 }
 
 // ── Write ─────────────────────────────────────────────────────────────────
@@ -213,6 +256,22 @@ pub fn write_transcript(
         }
     }
 
+    // Serialize fragment tags, appended as a trailing section *after* every
+    // fragment's parts (rather than inline per-fragment) so that a `.brkt`
+    // file written before this section existed remains readable: the reader
+    // detects the section's absence via a plain "any bytes left?" check (the
+    // same backward-compat idiom already used for the fragment section
+    // itself, above) and falls back to empty tags, instead of misreading a
+    // later fragment's part bytes as an earlier fragment's tag bytes (which
+    // an inline per-fragment layout could not distinguish after the fact).
+    // Fixes #953: `Fragment::tags` was silently dropped by this codec.
+    for fragment in fragments {
+        write_u32(&mut body, fragment.tags.len() as u32);
+        for tag in &fragment.tags {
+            write_str(&mut body, tag);
+        }
+    }
+
     // Build header
     let content_crc = crc32(&body);
     let mut buf = Vec::with_capacity(HEADER_SIZE + body.len());
@@ -242,6 +301,11 @@ pub struct TranscriptData {
 }
 
 /// Deserialize a transcript from the `.brkt` binary format.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per part tag, duplicated for the top-level parts \
+              and the per-fragment parts, plus the #953 trailing tag section"
+)]
 pub fn read_transcript(bytes: &[u8]) -> Result<TranscriptData, TranscriptError> {
     if bytes.len() < HEADER_SIZE {
         return Err(TranscriptError::UnexpectedEof);
@@ -346,6 +410,24 @@ pub fn read_transcript(bytes: &[u8]) -> Result<TranscriptData, TranscriptError> 
             parts: frag_parts,
             tags: Vec::new(),
         });
+    }
+
+    // Fragment tags (fixes #953): a trailing section written after every
+    // fragment's parts (see `write_transcript`'s matching comment). Older
+    // transcripts written before this section existed end exactly at the
+    // fragment section, so `off == bytes.len()` there and every fragment
+    // keeps the empty `tags` it was constructed with above — the same
+    // observable (if buggy) behavior those files always had, preserved for
+    // backward compatibility rather than erroring on legacy saves.
+    if off < bytes.len() {
+        for fragment in &mut fragments {
+            let tag_count = read_u32(bytes, &mut off)? as usize;
+            let mut tags = Vec::with_capacity(tag_count.min(bytes.len().saturating_sub(off)));
+            for _ in 0..tag_count {
+                tags.push(read_str(bytes, &mut off)?);
+            }
+            fragment.tags = tags;
+        }
     }
 
     Ok(TranscriptData {
@@ -484,6 +566,10 @@ fn read_def_id(buf: &[u8], off: &mut usize) -> Result<DefinitionId, TranscriptEr
 // ── Value encoding ────────────────────────────────────────────────────────
 
 #[expect(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per value tag — T1e's VAL_PROJECTION arm pushed this past 100"
+)]
 fn encode_value(v: &Value, buf: &mut Vec<u8>) {
     match v {
         Value::Int(n) => {
@@ -581,7 +667,117 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
             write_u16(buf, kind.0);
             write_u64(buf, *id);
         }
+        // Projection values (T1e, spec §3: "Saves/journal/speculation:
+        // ordinary values"). Segment kind `2=range` is RESERVED and never
+        // written — `ProjSegment` has no variant to produce it.
+        Value::Projection(p) => {
+            write_u8(buf, VAL_PROJECTION);
+            write_def_id(buf, p.cell);
+            write_u8(buf, p.segments.len() as u8);
+            for seg in &p.segments {
+                match seg {
+                    brink_format::ProjSegment::Index(n) => {
+                        write_u8(buf, PROJ_SEG_INDEX);
+                        write_i32(buf, *n);
+                    }
+                    brink_format::ProjSegment::Key(v) => {
+                        write_u8(buf, PROJ_SEG_KEY);
+                        encode_value(v, buf);
+                    }
+                }
+            }
+        }
+        // Option values (NS-A1, `docs/stdlib-spec.md` §1.4): an Option in a
+        // global/frame slot journals as an ordinary value, same as every
+        // variant above.
+        Value::OptionVal(inner) => {
+            write_u8(buf, VAL_OPTION);
+            match inner {
+                None => write_u8(buf, 0),
+                Some(v) => {
+                    write_u8(buf, 1);
+                    encode_value(v, buf);
+                }
+            }
+        }
+        // Range values (NS-A5, F7): a range in a global/frame slot journals
+        // as an ordinary value — this is exactly the FlowFrame iterator-
+        // spill durability the F7 ruling demanded (`for i in 0..n` across
+        // an `await` parks its snapshot range in the frame record). The
+        // written form is preserved.
+        Value::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            write_u8(buf, VAL_RANGE);
+            write_i32(buf, *start);
+            write_i32(buf, *end);
+            write_u8(buf, u8::from(*inclusive));
+        }
+        // Tower values (NS-A8, `docs/tower-mini-spec.md` T5): explicit
+        // little-endian f32 lanes in the pinned order, via glam's explicit
+        // array conversions — mirrors the `.inkb` wire form exactly.
+        Value::Vec2(v) => {
+            write_u8(buf, VAL_VEC2);
+            write_f32_lanes(buf, &v.to_array());
+        }
+        Value::Vec3(v) => {
+            write_u8(buf, VAL_VEC3);
+            write_f32_lanes(buf, &v.to_array());
+        }
+        Value::Vec4(v) => {
+            write_u8(buf, VAL_VEC4);
+            write_f32_lanes(buf, &v.to_array());
+        }
+        Value::Quat(q) => {
+            write_u8(buf, VAL_QUAT);
+            write_f32_lanes(buf, &q.to_array());
+        }
+        Value::Mat2(m) => {
+            write_u8(buf, VAL_MAT2);
+            write_f32_lanes(buf, &m.to_cols_array());
+        }
+        Value::Mat3(m) => {
+            write_u8(buf, VAL_MAT3);
+            write_f32_lanes(buf, &m.to_cols_array());
+        }
+        Value::Mat4(m) => {
+            write_u8(buf, VAL_MAT4);
+            write_f32_lanes(buf, &m.to_cols_array());
+        }
+        Value::Weighted(w) => {
+            write_u8(buf, VAL_WEIGHTED);
+            write_u32(buf, w.entries.len() as u32);
+            for (weight, value) in &w.entries {
+                write_i32(buf, *weight);
+                encode_value(value, buf);
+            }
+        }
     }
+}
+
+/// NS-A8 (`docs/tower-mini-spec.md` T5): write tower lanes as explicit
+/// little-endian f32s, one by one — the hand-serialized tower wire form
+/// (same helper shape as the `.inkb` writer's).
+fn write_f32_lanes(buf: &mut Vec<u8>, lanes: &[f32]) {
+    for lane in lanes {
+        buf.extend_from_slice(&lane.to_le_bytes());
+    }
+}
+
+/// NS-A8 (`docs/tower-mini-spec.md` T5): read `N` explicit little-endian
+/// f32 lanes; the caller rebuilds the glam value through its explicit
+/// `from_array`/`from_cols_array` constructor.
+fn read_f32_lanes<const N: usize>(
+    buf: &[u8],
+    off: &mut usize,
+) -> Result<[f32; N], TranscriptError> {
+    let mut lanes = [0.0f32; N];
+    for lane in &mut lanes {
+        *lane = read_f32(buf, off)?;
+    }
+    Ok(lanes)
 }
 
 /// Encode a [`MapKey`] using the scalar `VAL_*` tag surface (`int`/`string`/
@@ -604,6 +800,10 @@ fn encode_map_key(key: &MapKey, buf: &mut Vec<u8>) {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per value tag — T1e's VAL_PROJECTION arm pushed this past 100"
+)]
 fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, TranscriptError> {
     if depth > MAX_DECODE_DEPTH {
         return Err(TranscriptError::MaxDepthExceeded(MAX_DECODE_DEPTH));
@@ -660,6 +860,12 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Tran
             for _ in 0..len {
                 let key = decode_map_key(buf, off)?;
                 let val = decode_value(buf, off, depth + 1)?;
+                // A repeated key would violate the content-based `OrderedMap`
+                // `Eq` (#909); reject rather than silently keeping the last
+                // occurrence (#985).
+                if map.contains_key(&key) {
+                    return Err(TranscriptError::DuplicateMapKey);
+                }
                 map.insert(key, val);
             }
             Ok(Value::map(map))
@@ -695,6 +901,91 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Tran
             let kind = NameId(read_u16(buf, off)?);
             let id = read_u64(buf, off)?;
             Ok(Value::handle(kind, id))
+        }
+        // Projection values (T1e, `docs/format-v4-rfc.md` §1).
+        VAL_PROJECTION => {
+            let cell = read_def_id(buf, off)?;
+            let count = read_u8(buf, off)? as usize;
+            let mut segments = Vec::with_capacity(count.min(buf.len().saturating_sub(*off)));
+            for _ in 0..count {
+                let kind = read_u8(buf, off)?;
+                let seg = match kind {
+                    PROJ_SEG_INDEX => brink_format::ProjSegment::Index(read_i32(buf, off)?),
+                    PROJ_SEG_KEY => {
+                        brink_format::ProjSegment::Key(decode_value(buf, off, depth + 1)?)
+                    }
+                    other => return Err(TranscriptError::InvalidValueTag(other)),
+                };
+                segments.push(seg);
+            }
+            Ok(Value::projection(cell, segments))
+        }
+        // Option values (NS-A1): flag byte then inner-when-some; any other
+        // flag byte is corrupt input. Depth-counted like the collections.
+        VAL_OPTION => match read_u8(buf, off)? {
+            0 => Ok(Value::none()),
+            1 => Ok(Value::some(decode_value(buf, off, depth + 1)?)),
+            other => Err(TranscriptError::InvalidValueTag(other)),
+        },
+        // Range values (NS-A5, F7): flat — start, end, incl/excl flag; any
+        // other flag byte is corrupt input. No recursion, no depth.
+        VAL_RANGE => {
+            let start = read_i32(buf, off)?;
+            let end = read_i32(buf, off)?;
+            let inclusive = match read_u8(buf, off)? {
+                0 => false,
+                1 => true,
+                other => return Err(TranscriptError::InvalidValueTag(other)),
+            };
+            Ok(Value::range(start, end, inclusive))
+        }
+        // Tower values (NS-A8): fixed-size little-endian f32 lanes in the
+        // pinned order, rebuilt through glam's explicit array constructors.
+        // Leaves — no counts, no recursion, no depth concerns.
+        VAL_VEC2 => Ok(Value::Vec2(glam::Vec2::from_array(read_f32_lanes::<2>(
+            buf, off,
+        )?))),
+        VAL_VEC3 => Ok(Value::Vec3(glam::Vec3::from_array(read_f32_lanes::<3>(
+            buf, off,
+        )?))),
+        VAL_VEC4 => Ok(Value::Vec4(glam::Vec4::from_array(read_f32_lanes::<4>(
+            buf, off,
+        )?))),
+        VAL_QUAT => Ok(Value::Quat(glam::Quat::from_array(read_f32_lanes::<4>(
+            buf, off,
+        )?))),
+        VAL_MAT2 => Ok(Value::Mat2(glam::Mat2::from_cols_array(&read_f32_lanes::<
+            4,
+        >(
+            buf, off
+        )?))),
+        VAL_MAT3 => Ok(Value::Mat3(glam::Mat3::from_cols_array(&read_f32_lanes::<
+            9,
+        >(
+            buf, off
+        )?))),
+        VAL_MAT4 => Ok(Value::Mat4(glam::Mat4::from_cols_array(&read_f32_lanes::<
+            16,
+        >(
+            buf, off
+        )?))),
+        // Weighted tables (NS-A7): mirror of the `.inkb` reader, invariant
+        // checks included — a violating payload is corrupt input.
+        VAL_WEIGHTED => {
+            let count = read_u32(buf, off)? as usize;
+            if count == 0 {
+                return Err(TranscriptError::InvalidValueTag(VAL_WEIGHTED));
+            }
+            let mut entries = Vec::with_capacity(count.min(1024));
+            for _ in 0..count {
+                let weight = read_i32(buf, off)?;
+                if weight < 1 {
+                    return Err(TranscriptError::InvalidValueTag(VAL_WEIGHTED));
+                }
+                let value = decode_value(buf, off, depth + 1)?;
+                entries.push((weight, value));
+            }
+            Ok(Value::weighted(entries))
         }
         _ => Err(TranscriptError::InvalidValueTag(tag)),
     }
@@ -767,6 +1058,39 @@ mod tests {
         assert!(matches!(&data.parts[2], OutputPart::Newline));
         assert!(matches!(&data.parts[3], OutputPart::Tag(s) if s == "tag1"));
         assert!(matches!(&data.parts[4], OutputPart::Glue));
+    }
+
+    /// NS-A8 (`docs/tower-mini-spec.md` T5): a tower value in an
+    /// `OutputPart::ValueRef` crosses the `.brkt` round-trip as explicit
+    /// little-endian lanes — including a NaN lane, compared here by lane
+    /// bits (a NaN-bearing vector correctly never compares equal, T4).
+    #[test]
+    fn round_trip_value_ref_tower() {
+        let parts = vec![
+            OutputPart::ValueRef(Value::Vec3(glam::Vec3::new(1.5, -0.0, 3.0))),
+            OutputPart::ValueRef(Value::Quat(glam::Quat::from_xyzw(0.5, -0.5, 0.5, 0.5))),
+            OutputPart::ValueRef(Value::Mat2(glam::Mat2::from_cols_array(&[
+                1.0, 2.0, 3.0, 4.0,
+            ]))),
+            OutputPart::ValueRef(Value::Vec2(glam::Vec2::new(f32::NAN, 7.0))),
+        ];
+        let bytes = write_transcript(&parts, 0, &[]);
+        let data = read_transcript(&bytes).unwrap();
+        assert_eq!(data.parts.len(), 4);
+        assert!(
+            matches!(&data.parts[0], OutputPart::ValueRef(v) if *v == Value::Vec3(glam::Vec3::new(1.5, -0.0, 3.0)))
+        );
+        assert!(
+            matches!(&data.parts[1], OutputPart::ValueRef(v) if *v == Value::Quat(glam::Quat::from_xyzw(0.5, -0.5, 0.5, 0.5)))
+        );
+        assert!(
+            matches!(&data.parts[2], OutputPart::ValueRef(v) if *v == Value::Mat2(glam::Mat2::from_cols_array(&[1.0, 2.0, 3.0, 4.0])))
+        );
+        let OutputPart::ValueRef(Value::Vec2(v)) = &data.parts[3] else {
+            unreachable!("expected vec2 part, got {:?}", data.parts[3]);
+        };
+        assert_eq!(v.x.to_bits(), f32::NAN.to_bits(), "NaN lane bits drifted");
+        assert_eq!(v.y.to_bits(), 7.0f32.to_bits());
     }
 
     // A collection reaches the transcript through `Opcode::EmitValue`, which
@@ -891,6 +1215,43 @@ mod tests {
         }
     }
 
+    /// T1e (`docs/t1e-spec.md` §3: "Saves/journal/speculation: ordinary
+    /// values") — the transcript leg of the per-codec round-trip discipline
+    /// (inkb/inkt/transcript, the wave-11 lesson): the `VAL_PROJECTION`
+    /// (0x0E) encode/decode arms, a bare projection and one nested inside a
+    /// collection, with a mixed index+key segment chain.
+    #[test]
+    fn round_trip_value_ref_projection() {
+        use brink_format::ProjSegment;
+
+        let cell = DefinitionId::new(brink_format::DefinitionTag::GlobalVar, 42);
+        let proj = Value::projection(
+            cell,
+            vec![
+                ProjSegment::Key(Value::String("hp".into())),
+                ProjSegment::Index(3),
+            ],
+        );
+        let nested = Value::array(vec![Value::projection(cell, vec![]), Value::Bool(true)]);
+
+        let parts = vec![
+            OutputPart::ValueRef(proj.clone()),
+            OutputPart::ValueRef(nested.clone()),
+        ];
+        let bytes = write_transcript(&parts, 13, &[]);
+        let data = read_transcript(&bytes).unwrap();
+
+        assert_eq!(data.parts.len(), 2);
+        match &data.parts[0] {
+            OutputPart::ValueRef(v) => assert_eq!(*v, proj),
+            other => unreachable!("expected ValueRef(projection), got {other:?}"),
+        }
+        match &data.parts[1] {
+            OutputPart::ValueRef(v) => assert_eq!(*v, nested),
+            other => unreachable!("expected ValueRef(nested projection), got {other:?}"),
+        }
+    }
+
     #[test]
     fn round_trip_line_ref_with_slots() {
         let parts = vec![OutputPart::LineRef {
@@ -932,6 +1293,69 @@ mod tests {
         assert_eq!(data.parts.len(), 2); // Checkpoint filtered
         assert!(matches!(&data.parts[0], OutputPart::Text(_)));
         assert!(matches!(&data.parts[1], OutputPart::Newline));
+    }
+
+    // ── #953: Fragment::tags round-trip ─────────────────────────────────────
+    //
+    // `write_transcript` never serialized `Fragment::tags` and
+    // `read_transcript` always reconstructed an empty `Vec` — a transcript
+    // with tagged fragments (live, populated data — see
+    // `OutputBuffer::push_fragment_tag`) round-tripped to untagged. This
+    // pins the fix: tags now travel through the `.brkt` codec.
+    #[test]
+    fn round_trip_fragment_tags() {
+        let fragments = vec![
+            crate::output::Fragment {
+                parts: vec![OutputPart::Text("hp: 10".to_string())],
+                tags: vec!["a_tag".to_string(), "b_tag".to_string()],
+            },
+            crate::output::Fragment {
+                parts: vec![OutputPart::Newline],
+                tags: Vec::new(),
+            },
+        ];
+        let bytes = write_transcript(&[], 0, &fragments);
+        let data = read_transcript(&bytes).unwrap();
+
+        assert_eq!(data.fragments.len(), 2);
+        assert_eq!(
+            data.fragments[0].tags,
+            vec!["a_tag".to_string(), "b_tag".to_string()]
+        );
+        assert_eq!(data.fragments[0].parts, fragments[0].parts);
+        assert!(data.fragments[1].tags.is_empty());
+    }
+
+    // Every `.brkt` file written before this fix has the fragment section
+    // (fragment_count + per-fragment parts) with NO trailing tag section —
+    // the reader must keep decoding those files (not error), falling back
+    // to empty tags per fragment, exactly as it did before this fix. This
+    // hand-builds that exact pre-fix byte shape rather than relying on the
+    // current writer (which now always appends the tag section) so the
+    // legacy shape is pinned even after the writer changes further.
+    #[test]
+    fn legacy_transcript_without_tag_section_reads_as_empty_tags() {
+        let mut body = Vec::new();
+        write_u32(&mut body, 0); // part count
+        write_u32(&mut body, 1); // fragment count
+        write_u32(&mut body, 1); // fragment 0's part count
+        write_u8(&mut body, TAG_TEXT);
+        write_str(&mut body, "legacy");
+        // (no tag section appended — matches the pre-#953 writer)
+
+        let content_crc = crc32(&body);
+        let mut bytes = Vec::with_capacity(HEADER_SIZE + body.len());
+        bytes.extend_from_slice(MAGIC);
+        write_u16(&mut bytes, VERSION);
+        write_u16(&mut bytes, 0);
+        write_u32(&mut bytes, 0xCAFE_BABE);
+        write_u32(&mut bytes, content_crc);
+        bytes.extend(body);
+
+        let data = read_transcript(&bytes).expect("legacy transcript must still decode");
+        assert_eq!(data.fragments.len(), 1);
+        assert!(matches!(&data.fragments[0].parts[0], OutputPart::Text(s) if s == "legacy"));
+        assert!(data.fragments[0].tags.is_empty());
     }
 
     #[test]
@@ -1072,5 +1496,78 @@ mod tests {
             read_transcript(&bytes),
             Err(TranscriptError::MaxDepthExceeded(MAX_DECODE_DEPTH))
         ));
+    }
+
+    // Issue #985 (follow-up to #909): `OrderedMap`'s `Eq` is content-based
+    // and assumes each key appears at most once. A legitimate `write_transcript`
+    // never emits a duplicate `VAL_MAP` key — `OrderedMap::insert`
+    // de-duplicates on the write side, so `encode_value` can't be driven
+    // into producing one from an in-memory `Value`. This hand-builds the raw
+    // `VAL_MAP` bytes (the crafted/corrupt-payload scenario the issue
+    // describes) with the same `int` key twice, proving the reader rejects
+    // it with a decode error rather than silently keeping the last
+    // occurrence and handing back an invariant-violating `OrderedMap`.
+    fn duplicate_int_key_map_body() -> Vec<u8> {
+        let mut body = Vec::new();
+        write_u32(&mut body, 1); // part count
+        write_u8(&mut body, TAG_VALUE_REF);
+        write_u8(&mut body, VAL_MAP);
+        write_u32(&mut body, 2); // entry count
+        write_u8(&mut body, VAL_INT);
+        write_i32(&mut body, 0);
+        write_u8(&mut body, VAL_INT);
+        write_i32(&mut body, 1);
+        write_u8(&mut body, VAL_INT);
+        write_i32(&mut body, 0);
+        write_u8(&mut body, VAL_INT);
+        write_i32(&mut body, 2);
+        write_u32(&mut body, 0); // fragment count
+        body
+    }
+
+    fn wrap_body_as_transcript(body: &[u8]) -> Vec<u8> {
+        let content_crc = crc32(body);
+        let mut bytes = Vec::with_capacity(HEADER_SIZE + body.len());
+        bytes.extend_from_slice(MAGIC);
+        write_u16(&mut bytes, VERSION);
+        write_u16(&mut bytes, 0);
+        write_u32(&mut bytes, 0);
+        write_u32(&mut bytes, content_crc);
+        bytes.extend_from_slice(body);
+        bytes
+    }
+
+    #[test]
+    fn decode_value_rejects_duplicate_map_key() {
+        let bytes = wrap_body_as_transcript(&duplicate_int_key_map_body());
+        assert!(matches!(
+            read_transcript(&bytes),
+            Err(TranscriptError::DuplicateMapKey)
+        ));
+    }
+
+    #[test]
+    fn decode_value_accepts_distinct_map_keys() {
+        let mut body = Vec::new();
+        write_u32(&mut body, 1); // part count
+        write_u8(&mut body, TAG_VALUE_REF);
+        write_u8(&mut body, VAL_MAP);
+        write_u32(&mut body, 2); // entry count
+        write_u8(&mut body, VAL_INT);
+        write_i32(&mut body, 0);
+        write_u8(&mut body, VAL_INT);
+        write_i32(&mut body, 1);
+        write_u8(&mut body, VAL_INT);
+        write_i32(&mut body, 5);
+        write_u8(&mut body, VAL_INT);
+        write_i32(&mut body, 2);
+        write_u32(&mut body, 0); // fragment count
+
+        let bytes = wrap_body_as_transcript(&body);
+        let data = read_transcript(&bytes).expect("distinct keys must decode cleanly");
+        match &data.parts[0] {
+            OutputPart::ValueRef(Value::Map(map)) => assert_eq!(map.len(), 2),
+            other => unreachable!("expected ValueRef(map), got {other:?}"),
+        }
     }
 }

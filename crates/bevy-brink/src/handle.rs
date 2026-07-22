@@ -368,6 +368,14 @@ impl<M: Send + Sync + 'static> HandleKinds<M> {
     pub fn kind_names(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.kinds.keys().copied()
     }
+
+    /// `true` when no [`HandleKind`] is registered for `M` — the whole
+    /// registry-GC machinery is inert, so the `-> DONE` reachable-token
+    /// sweep has provably nothing to collect and can be skipped (#1007).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.kinds.is_empty()
+    }
 }
 
 /// App-builder extension for registering [`HandleKind`] implementors.
@@ -772,11 +780,22 @@ fn sweep_registries<M: Send + Sync + 'static>(
 )]
 pub fn gc_on_turn_done<M: Send + Sync + 'static>(
     _on: On<BrinkTurnDone<M>>,
+    kinds: Option<Res<HandleKinds<M>>>,
     mut globals: Option<ResMut<BrinkGlobals<M>>>,
     programs: Res<Assets<ProgramAsset>>,
     mut contexts: Query<(&BrinkProgram<M>, &mut BrinkContext<M>)>,
     mut commands: Commands,
 ) {
+    // Fast path: when no handle kind is registered for `M`, the reachable
+    // sweep is a provable no-op (nothing to retain, nothing to drop). Bail
+    // BEFORE the O(total flows) reachable-token walk below — otherwise a
+    // handle-free flow population pays a full-population scan on every
+    // `-> DONE`, making a wake-storm O(n²) (#1007). Registering a kind
+    // opts back into the per-turn sweep.
+    if kinds.is_none_or(|k| k.is_empty()) {
+        return;
+    }
+
     let Some(globals) = globals.as_deref_mut() else {
         return;
     };
@@ -898,6 +917,7 @@ mod tests {
             rng_seed: 0,
             previous_random: 0,
             global_ids: BTreeMap::new(),
+            suspended: None,
         }
     }
 
@@ -1501,6 +1521,61 @@ mod tests {
         assert!(
             !reg.contains(orphan_id),
             "unreferenced token must be dropped by the -> DONE sweep"
+        );
+    }
+
+    /// The registered-kinds predicate the `-> DONE` GC gate keys on (#1007):
+    /// empty until a host registers a [`HandleKind`], non-empty after.
+    #[test]
+    fn handle_kinds_is_empty_tracks_registration() {
+        let mut app = make_test_app();
+        assert!(
+            app.world().resource::<HandleKinds<()>>().is_empty(),
+            "no kind registered → empty",
+        );
+        app.register_handle_kind::<(), TimerKind>(TimerKind);
+        assert!(
+            !app.world().resource::<HandleKinds<()>>().is_empty(),
+            "after register_handle_kind → non-empty",
+        );
+    }
+
+    /// End-to-end gate proof: a handle-free story reaching `-> DONE` fires
+    /// [`BrinkTurnDone`] but [`gc_on_turn_done`] must short-circuit on the
+    /// empty [`HandleKinds`] before the O(total flows) reachable-token walk
+    /// (#1007) — so no sweep runs and no retention metrics are recorded,
+    /// while playback still reaches DONE.
+    #[test]
+    fn gc_on_turn_done_skips_scan_when_no_kinds_registered() {
+        let (program, tables, ctx) = compile_test_story("Hi.\n-> DONE\n");
+        let mut app = make_test_app();
+        // Deliberately NO `register_handle_kind` — the plugin still inserts an
+        // empty `HandleKinds<()>`, which is exactly what the gate checks.
+        let story = add_story_assets(&mut app, program, tables, ctx);
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+        app.update(); // fulfill
+
+        assert!(
+            app.world().resource::<HandleKinds<()>>().is_empty(),
+            "gate precondition: no kind registered",
+        );
+
+        {
+            let world = app.world_mut();
+            let _ = advance_flow::<()>(world, entity).expect("advances to -> DONE");
+            world.flush();
+        }
+        app.update(); // fires BrinkTurnDone → gc_on_turn_done early-returns
+
+        assert!(
+            app.world()
+                .resource::<HandleRetentionMetrics<()>>()
+                .per_kind
+                .is_empty(),
+            "handle-free -> DONE must record no retention metrics (gate skipped the sweep)",
         );
     }
 }

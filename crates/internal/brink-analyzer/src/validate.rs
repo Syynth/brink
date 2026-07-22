@@ -4,7 +4,7 @@
 //! structurally invalid patterns that the parser accepts but the language
 //! semantics forbid.
 
-use brink_ir::hir::{Block, Choice, ChoiceSet, HirVisitor, Knot, Stmt};
+use brink_ir::hir::{Block, Choice, ChoiceSet, HirVisitor, Knot, ReturnKind, Stmt};
 use brink_ir::{Diagnostic, DiagnosticCode, FileId, HirFile};
 
 /// Run all structural validation passes on the given files.
@@ -218,10 +218,12 @@ impl HirVisitor for StructuralChecks {
             s.saw_terminal = true;
         }
 
-        // E032: explicit return (has a syntax ptr — tunnel returns are None)
-        // outside a function.
+        // E032: explicit `~ return` outside a function. Keys off
+        // `ReturnKind`, never `ptr` presence — provenance on a `Return` is
+        // uniform carrying-or-not metadata with no semantic load (a
+        // provenance-carrying tunnel return is legal and clean).
         if let Stmt::Return(ret) = stmt
-            && ret.ptr.is_some()
+            && ret.kind == ReturnKind::Explicit
             && !self.in_function
         {
             let range = ret
@@ -253,33 +255,28 @@ impl HirVisitor for StructuralChecks {
 /// Extract a source range from a statement, if available.
 fn stmt_range(stmt: &Stmt) -> Option<rowan::TextRange> {
     match stmt {
-        Stmt::Content(c) => c
-            .ptr
-            .as_ref()
-            .map(brink_syntax::ast::SyntaxNodePtr::text_range),
-        Stmt::Divert(d) => d
-            .ptr
-            .as_ref()
-            .map(brink_syntax::ast::SyntaxNodePtr::text_range),
+        Stmt::Content(c) => c.ptr.as_ref().map(brink_ir::Provenance::text_range),
+        Stmt::Divert(d) => d.ptr.as_ref().map(brink_ir::Provenance::text_range),
         Stmt::TunnelCall(t) => Some(t.ptr.text_range()),
         Stmt::ThreadStart(t) => Some(t.ptr.text_range()),
         Stmt::TempDecl(t) => Some(t.ptr.text_range()),
         Stmt::Assignment(a) => Some(a.ptr.text_range()),
-        Stmt::Return(r) => r.ptr.as_ref().map(brink_syntax::ast::AstPtr::text_range),
+        Stmt::Return(r) => r.ptr.as_ref().map(brink_ir::Provenance::text_range),
         Stmt::ChoiceSet(cs) => cs.choices.first().map(|c| c.ptr.text_range()),
         Stmt::Conditional(c) => Some(c.ptr.text_range()),
         Stmt::Sequence(s) => Some(s.ptr.text_range()),
         Stmt::LabeledBlock(b) => b.label.as_ref().map(|l| l.range),
         Stmt::ExprStmt(_) | Stmt::EndOfLine => None,
         Stmt::LogicBlock(lb) => Some(lb.ptr.text_range()),
+        Stmt::Await(a) => Some(a.ptr.text_range()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use brink_ir::hir::*;
+    use brink_ir::provenance::{NodeClass, Provenance};
     use brink_ir::{DiagnosticCode, FileId, HirFile};
-    use brink_syntax::ast::{self, AstPtr, SyntaxNodePtr};
     use rowan::{TextRange, TextSize};
 
     use super::*;
@@ -343,16 +340,16 @@ mod tests {
         TextRange::new(TextSize::new(0), TextSize::new(1))
     }
 
-    fn dummy_knot_ptr() -> ContainerPtr {
-        ContainerPtr::Knot(AstPtr::from_range(dummy_range()))
+    fn dummy_knot_ptr() -> Provenance {
+        Provenance::synthetic(NodeClass::Knot, dummy_range())
     }
 
-    fn dummy_choice_ptr() -> AstPtr<ast::Choice> {
-        AstPtr::from_range(dummy_range())
+    fn dummy_choice_ptr() -> Provenance {
+        Provenance::synthetic(NodeClass::Choice, dummy_range())
     }
 
-    fn dummy_return_ptr() -> AstPtr<ast::ReturnStmt> {
-        AstPtr::from_range(dummy_range())
+    fn dummy_return_ptr() -> Provenance {
+        Provenance::synthetic(NodeClass::Return, dummy_range())
     }
 
     // ── E032: return outside function ────────────────────────────
@@ -368,18 +365,19 @@ mod tests {
             },
             is_function: false,
             params: Vec::new(),
-            body: Block {
-                label: None,
-                stmts: vec![Stmt::Return(Return {
-                    ptr: Some(dummy_return_ptr()),
-                    value: None,
-                    onwards_args: Vec::new(),
-                })],
-                container_id: None,
-            },
+            body: Block::from_stmts(vec![Stmt::Return(Return {
+                ptr: Some(dummy_return_ptr()),
+                kind: ReturnKind::Explicit,
+                value: None,
+                onwards_args: Vec::new(),
+            })]),
             stitches: Vec::new(),
             is_local: false,
+            effects_assertion: None,
             return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -399,18 +397,19 @@ mod tests {
             },
             is_function: true,
             params: Vec::new(),
-            body: Block {
-                label: None,
-                stmts: vec![Stmt::Return(Return {
-                    ptr: Some(dummy_return_ptr()),
-                    value: Some(Expr::Int(42)),
-                    onwards_args: Vec::new(),
-                })],
-                container_id: None,
-            },
+            body: Block::from_stmts(vec![Stmt::Return(Return {
+                ptr: Some(dummy_return_ptr()),
+                kind: ReturnKind::Explicit,
+                value: Some(Expr::Int(42)),
+                onwards_args: Vec::new(),
+            })]),
             stitches: Vec::new(),
             is_local: false,
+            effects_assertion: None,
             return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -432,26 +431,99 @@ mod tests {
             },
             is_function: false,
             params: Vec::new(),
-            body: Block {
-                label: None,
-                stmts: vec![Stmt::Return(Return {
-                    ptr: None, // tunnel return
-                    value: None,
-                    onwards_args: Vec::new(),
-                })],
-                container_id: None,
-            },
+            body: Block::from_stmts(vec![Stmt::Return(Return {
+                ptr: None,
+                kind: ReturnKind::TunnelRedirect,
+                value: None,
+                onwards_args: Vec::new(),
+            })]),
             stitches: Vec::new(),
             is_local: false,
+            effects_assertion: None,
             return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
         });
 
         let files = vec![(FileId(0), &hir)];
         let diags = validate(&files);
         assert!(
             diags.is_empty(),
-            "tunnel return (ptr=None) should not trigger E032: {diags:?}"
+            "tunnel return should not trigger E032: {diags:?}"
         );
+    }
+
+    /// The D5/F-I#6 trap this slice kills: a tunnel return that *carries*
+    /// provenance must still classify as a tunnel return — E032 keys off
+    /// `ReturnKind`, never `ptr` presence. No ink surface syntax produces
+    /// this shape today; a provenance-stamping frontend (native) will.
+    #[test]
+    fn provenance_carrying_tunnel_return_no_e032() {
+        let mut hir = empty_hir();
+        hir.knots.push(Knot {
+            ptr: dummy_knot_ptr(),
+            name: Name {
+                text: "my_knot".into(),
+                range: dummy_range(),
+            },
+            is_function: false,
+            params: Vec::new(),
+            body: Block::from_stmts(vec![Stmt::Return(Return {
+                ptr: Some(dummy_return_ptr()),
+                kind: ReturnKind::TunnelRedirect,
+                value: None,
+                onwards_args: Vec::new(),
+            })]),
+            stitches: Vec::new(),
+            is_local: false,
+            effects_assertion: None,
+            return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
+        });
+
+        let files = vec![(FileId(0), &hir)];
+        let diags = validate(&files);
+        assert!(
+            diags.is_empty(),
+            "provenance-carrying tunnel return must not trigger E032: {diags:?}"
+        );
+    }
+
+    /// The converse direction: an explicit return synthesized *without*
+    /// provenance still errors outside a function — the kind alone decides.
+    #[test]
+    fn pointerless_explicit_return_still_emits_e032() {
+        let mut hir = empty_hir();
+        hir.knots.push(Knot {
+            ptr: dummy_knot_ptr(),
+            name: Name {
+                text: "my_knot".into(),
+                range: dummy_range(),
+            },
+            is_function: false,
+            params: Vec::new(),
+            body: Block::from_stmts(vec![Stmt::Return(Return {
+                ptr: None,
+                kind: ReturnKind::Explicit,
+                value: None,
+                onwards_args: Vec::new(),
+            })]),
+            stitches: Vec::new(),
+            is_local: false,
+            effects_assertion: None,
+            return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
+        });
+
+        let files = vec![(FileId(0), &hir)];
+        let diags = validate(&files);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::E032);
     }
 
     // ── E033: unreachable code after divert ──────────────────────
@@ -467,27 +539,27 @@ mod tests {
             },
             is_function: false,
             params: Vec::new(),
-            body: Block {
-                label: None,
-                stmts: vec![
-                    Stmt::Divert(Divert {
-                        ptr: None,
-                        target: DivertTarget {
-                            path: DivertPath::Done,
-                            args: Vec::new(),
-                        },
-                    }),
-                    Stmt::Content(Content {
-                        ptr: Some(SyntaxNodePtr::from_range(dummy_range())),
-                        parts: vec![ContentPart::Text("unreachable".into())],
-                        tags: Vec::new(),
-                    }),
-                ],
-                container_id: None,
-            },
+            body: Block::from_stmts(vec![
+                Stmt::Divert(Divert {
+                    ptr: None,
+                    target: DivertTarget {
+                        path: DivertPath::Done,
+                        args: Vec::new(),
+                    },
+                }),
+                Stmt::Content(Content {
+                    ptr: Some(Provenance::synthetic(NodeClass::Content, dummy_range())),
+                    parts: vec![ContentPart::Text("unreachable".into())],
+                    tags: Vec::new(),
+                }),
+            ]),
             stitches: Vec::new(),
             is_local: false,
+            effects_assertion: None,
             return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -510,23 +582,23 @@ mod tests {
             },
             is_function: false,
             params: Vec::new(),
-            body: Block {
-                label: None,
-                stmts: vec![
-                    Stmt::Divert(Divert {
-                        ptr: None,
-                        target: DivertTarget {
-                            path: DivertPath::Done,
-                            args: Vec::new(),
-                        },
-                    }),
-                    Stmt::EndOfLine,
-                ],
-                container_id: None,
-            },
+            body: Block::from_stmts(vec![
+                Stmt::Divert(Divert {
+                    ptr: None,
+                    target: DivertTarget {
+                        path: DivertPath::Done,
+                        args: Vec::new(),
+                    },
+                }),
+                Stmt::EndOfLine,
+            ]),
             stitches: Vec::new(),
             is_local: false,
+            effects_assertion: None,
             return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -552,33 +624,33 @@ mod tests {
             },
             is_function: false,
             params: Vec::new(),
-            body: Block {
-                label: None,
-                stmts: vec![
-                    Stmt::ThreadStart(ThreadStart {
-                        ptr: AstPtr::from_range(dummy_range()),
-                        target: DivertTarget {
-                            path: DivertPath::Path(Path {
-                                segments: vec![Name {
-                                    text: "other".into(),
-                                    range: dummy_range(),
-                                }],
+            body: Block::from_stmts(vec![
+                Stmt::ThreadStart(ThreadStart {
+                    ptr: Provenance::synthetic(NodeClass::ThreadStart, dummy_range()),
+                    target: DivertTarget {
+                        path: DivertPath::Path(Path {
+                            segments: vec![Name {
+                                text: "other".into(),
                                 range: dummy_range(),
-                            }),
-                            args: Vec::new(),
-                        },
-                    }),
-                    Stmt::Content(Content {
-                        ptr: Some(SyntaxNodePtr::from_range(dummy_range())),
-                        parts: vec![ContentPart::Text("still reachable".into())],
-                        tags: Vec::new(),
-                    }),
-                ],
-                container_id: None,
-            },
+                            }],
+                            range: dummy_range(),
+                        }),
+                        args: Vec::new(),
+                    },
+                }),
+                Stmt::Content(Content {
+                    ptr: Some(Provenance::synthetic(NodeClass::Content, dummy_range())),
+                    parts: vec![ContentPart::Text("still reachable".into())],
+                    tags: Vec::new(),
+                }),
+            ]),
             stitches: Vec::new(),
             is_local: false,
+            effects_assertion: None,
             return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -606,33 +678,33 @@ mod tests {
             },
             is_function: false,
             params: Vec::new(),
-            body: Block {
-                label: None,
-                stmts: vec![
-                    Stmt::TunnelCall(TunnelCall {
-                        ptr: AstPtr::from_range(dummy_range()),
-                        targets: vec![DivertTarget {
-                            path: DivertPath::Path(Path {
-                                segments: vec![Name {
-                                    text: "wave".into(),
-                                    range: dummy_range(),
-                                }],
+            body: Block::from_stmts(vec![
+                Stmt::TunnelCall(TunnelCall {
+                    ptr: Provenance::synthetic(NodeClass::TunnelCall, dummy_range()),
+                    targets: vec![DivertTarget {
+                        path: DivertPath::Path(Path {
+                            segments: vec![Name {
+                                text: "wave".into(),
                                 range: dummy_range(),
-                            }),
-                            args: Vec::new(),
-                        }],
-                    }),
-                    Stmt::Content(Content {
-                        ptr: Some(SyntaxNodePtr::from_range(dummy_range())),
-                        parts: vec![ContentPart::Text("and we're off".into())],
-                        tags: Vec::new(),
-                    }),
-                ],
-                container_id: None,
-            },
+                            }],
+                            range: dummy_range(),
+                        }),
+                        args: Vec::new(),
+                    }],
+                }),
+                Stmt::Content(Content {
+                    ptr: Some(Provenance::synthetic(NodeClass::Content, dummy_range())),
+                    parts: vec![ContentPart::Text("and we're off".into())],
+                    tags: Vec::new(),
+                }),
+            ]),
             stitches: Vec::new(),
             is_local: false,
+            effects_assertion: None,
             return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -660,32 +732,32 @@ mod tests {
             },
             is_function: false,
             params: Vec::new(),
-            body: Block {
-                label: None,
-                stmts: vec![Stmt::ChoiceSet(Box::new(ChoiceSet {
-                    choices: vec![Choice {
-                        ptr: dummy_choice_ptr(),
-                        is_sticky: false,
-                        is_fallback: true,
-                        label: None,
-                        condition: None,
-                        start_content: None,
-                        bracket_content: None,
-                        inner_content: None,
-                        tags: Vec::new(),
-                        body: Block::default(),
-                        container_id: None,
-                    }],
-                    continuation: Block::default(),
-                    context: ChoiceSetContext::Weave,
-                    depth: 1,
-                    gather_id: None,
-                }))],
-                container_id: None,
-            },
+            body: Block::from_stmts(vec![Stmt::ChoiceSet(Box::new(ChoiceSet {
+                choices: vec![Choice {
+                    ptr: dummy_choice_ptr(),
+                    is_sticky: false,
+                    is_fallback: true,
+                    label: None,
+                    condition: None,
+                    start_content: None,
+                    bracket_content: None,
+                    inner_content: None,
+                    tags: Vec::new(),
+                    body: Block::default(),
+                    container_id: None,
+                }],
+                continuation: Block::default(),
+                context: ChoiceSetContext::Weave,
+                depth: 1,
+                gather_id: None,
+            }))]),
             stitches: Vec::new(),
             is_local: false,
+            effects_assertion: None,
             return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
         });
 
         let files = vec![(FileId(0), &hir)];
@@ -708,47 +780,47 @@ mod tests {
             },
             is_function: false,
             params: Vec::new(),
-            body: Block {
-                label: None,
-                stmts: vec![Stmt::ChoiceSet(Box::new(ChoiceSet {
-                    choices: vec![
-                        Choice {
-                            ptr: dummy_choice_ptr(),
-                            is_sticky: false,
-                            is_fallback: true,
-                            label: None,
-                            condition: None,
-                            start_content: None,
-                            bracket_content: None,
-                            inner_content: None,
-                            tags: Vec::new(),
-                            body: Block::default(),
-                            container_id: None,
-                        },
-                        Choice {
-                            ptr: dummy_choice_ptr(),
-                            is_sticky: false,
-                            is_fallback: false,
-                            label: None,
-                            condition: None,
-                            start_content: None,
-                            bracket_content: None,
-                            inner_content: None,
-                            tags: Vec::new(),
-                            body: Block::default(),
-                            container_id: None,
-                        },
-                    ],
-                    continuation: Block::default(),
-                    context: ChoiceSetContext::Weave,
-                    depth: 1,
-                    gather_id: None,
-                }))],
-                container_id: None,
-            },
+            body: Block::from_stmts(vec![Stmt::ChoiceSet(Box::new(ChoiceSet {
+                choices: vec![
+                    Choice {
+                        ptr: dummy_choice_ptr(),
+                        is_sticky: false,
+                        is_fallback: true,
+                        label: None,
+                        condition: None,
+                        start_content: None,
+                        bracket_content: None,
+                        inner_content: None,
+                        tags: Vec::new(),
+                        body: Block::default(),
+                        container_id: None,
+                    },
+                    Choice {
+                        ptr: dummy_choice_ptr(),
+                        is_sticky: false,
+                        is_fallback: false,
+                        label: None,
+                        condition: None,
+                        start_content: None,
+                        bracket_content: None,
+                        inner_content: None,
+                        tags: Vec::new(),
+                        body: Block::default(),
+                        container_id: None,
+                    },
+                ],
+                continuation: Block::default(),
+                context: ChoiceSetContext::Weave,
+                depth: 1,
+                gather_id: None,
+            }))]),
             stitches: Vec::new(),
             is_local: false,
+            effects_assertion: None,
             return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
         });
 
         let files = vec![(FileId(0), &hir)];

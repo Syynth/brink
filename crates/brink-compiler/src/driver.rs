@@ -1,6 +1,7 @@
 //! Compilation driver: file discovery, parsing, lowering, analysis, codegen.
 
 use std::io;
+use std::sync::Arc;
 
 use brink_driver::{AnalysisOptions, Driver};
 use brink_ir::Diagnostic;
@@ -62,13 +63,17 @@ where
 /// registered host-capability manifest and its external-check severity, so
 /// manifest-driven diagnostics surface in the compile output.
 ///
-/// Pulls the memoized `lir` query and emits codegen outside the db: emitting
-/// here produces the owned `StoryData` that `CompileOutput` needs directly,
-/// where pulling the `story_data` query would hand back an `Arc` whose
-/// contents must be deep-cloned out of the memo table (a measurable cold-
-/// compile cost for a one-shot batch build that will never reuse the memo).
-/// Long-lived consumers that want the memoized story pull
-/// `ProjectDb::story_data` instead; both run the identical `emit`.
+/// FG-6 (#841, "single compile pipeline"): pulls the memoized `story_data`
+/// query — the one canonical codegen site — rather than pulling `lir` and
+/// running `brink_codegen_inkb::emit` a second time here. Every batch caller
+/// (CLI, brink-web, intl, the oracle harness) reaches codegen through this
+/// query now, so there is exactly one `emit` call on the compile path and no
+/// way for a driver-local emit to drift from the query's. The owned
+/// `StoryData` that `CompileOutput` needs is unwrapped from the memoized
+/// `Arc` — deep-cloned when the memo still holds a reference (the ordinary
+/// one-shot case). That fixed clone cost is the accepted, measured price of
+/// collapsing the two pipelines into one (issue #841 gate note); it is not
+/// hidden.
 pub fn compile_with_options<F>(
     entry: &str,
     read_file: F,
@@ -79,16 +84,16 @@ where
 {
     let (driver, _entry_id) = prepare_driver(entry, read_file, options)?;
 
-    let product = driver.db().lir_product().cloned().unwrap_or_default();
+    let product = driver.db().story_data().cloned().unwrap_or_default();
 
-    let Some(program) = product.program else {
+    let Some(story) = product.story else {
         let mut all = product.errors;
         all.extend(product.warnings);
         return Err(CompileError::Diagnostics(resolve_diagnostics(&driver, all)));
     };
 
     Ok(CompileOutput {
-        data: brink_codegen_inkb::emit(&program)?,
+        data: Arc::unwrap_or_clone(story),
         warnings: resolve_diagnostics(&driver, product.warnings),
     })
 }

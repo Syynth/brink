@@ -6,8 +6,9 @@ use alloc::vec::Vec;
 use crate::codec::{crc32, read_def_id, read_i32, read_str, read_u8, read_u16, read_u32, read_u64};
 use crate::counting::CountingFlags;
 use crate::definition::{
-    AddressDef, AddressPath, AliasEntry, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry,
-    ListDef, ListItemDef, ParamMeta, ScopeLineTable, SlotInfo, SourceLocation, StructShapeDef,
+    AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef, DirectEffects,
+    DispatchEntry, EffectRowEntry, ExternalFnDef, FrameShapeDef, GlobalVarDef, LineEntry, ListDef,
+    ListItemDef, ParamMeta, ScopeLineTable, SlotInfo, SourceLocation, StructShapeDef,
 };
 use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -17,14 +18,18 @@ use crate::value::{
     ClosureEnvEntry, ListValue, MAX_DECODE_DEPTH, MapKey, OrderedMap, ShapeId, Value, ValueType,
 };
 
-use super::write::ALIAS_TABLE_SECTION_VERSION;
+use super::write::{
+    ALIAS_TABLE_SECTION_VERSION, EFFECT_ROWS_SECTION_VERSION, FRAME_SHAPES_SECTION_VERSION,
+};
 use super::{
-    CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HEADER_PREAMBLE, InkbIndex,
-    KEY_CARDINAL, KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN, LINE_TEMPLATE, MAGIC,
-    PART_LITERAL, PART_SELECT, PART_SLOT, SECTION_ENTRY_SIZE, SectionEntry, SectionKind, VAL_ARRAY,
-    VAL_BOOL, VAL_CLOSURE, VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE,
-    VAL_INT, VAL_LIST, VAL_MAP, VAL_NULL, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION,
-    safe_capacity,
+    CAP_PARAM_ANY, CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HANDLE_PARAM_NONE,
+    HEADER_PREAMBLE, InkbIndex, KEY_CARDINAL, KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN,
+    LINE_TEMPLATE, MAGIC, PART_LITERAL, PART_SELECT, PART_SLOT, PROJ_SEG_INDEX, PROJ_SEG_KEY,
+    SECTION_ENTRY_SIZE, SectionEntry, SectionKind, VAL_ARRAY, VAL_BOOL, VAL_CLOSURE,
+    VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT, VAL_LIST,
+    VAL_MAP, VAL_MAT2, VAL_MAT3, VAL_MAT4, VAL_NULL, VAL_OPTION, VAL_PROJECTION, VAL_QUAT,
+    VAL_RANGE, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VAL_VEC2, VAL_VEC3, VAL_VEC4, VAL_WEIGHTED,
+    VERSION, safe_capacity,
 };
 
 // ── Tier 1: Full story read ─────────────────────────────────────────────────
@@ -57,6 +62,8 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
     let struct_shapes = read_section_struct_shapes(buf, &index)?;
     let private_defs = read_section_visibility(buf, &index)?;
     let alias_table = read_section_alias_table(buf, &index)?;
+    let effect_rows = read_section_effect_rows(buf, &index)?;
+    let frame_shapes = read_section_frame_shapes(buf, &index)?;
 
     Ok(StoryData {
         containers,
@@ -73,6 +80,8 @@ pub fn read_inkb(buf: &[u8]) -> Result<StoryData, DecodeError> {
         struct_shapes,
         private_defs,
         alias_table,
+        effect_rows,
+        frame_shapes,
         source_checksum: index.checksum,
     })
 }
@@ -349,10 +358,42 @@ fn decode_value_type(buf: &[u8], off: &mut usize) -> Result<ValueType, DecodeErr
         VAL_FN_REF => Ok(ValueType::FnRef),
         VAL_CLOSURE => Ok(ValueType::Closure),
         VAL_HANDLE => Ok(ValueType::Handle),
+        VAL_PROJECTION => Ok(ValueType::Projection),
+        VAL_OPTION => Ok(ValueType::Option),
+        VAL_RANGE => Ok(ValueType::Range),
+        VAL_VEC2 => Ok(ValueType::Vec2),
+        VAL_VEC3 => Ok(ValueType::Vec3),
+        VAL_VEC4 => Ok(ValueType::Vec4),
+        VAL_QUAT => Ok(ValueType::Quat),
+        VAL_MAT2 => Ok(ValueType::Mat2),
+        VAL_MAT3 => Ok(ValueType::Mat3),
+        VAL_MAT4 => Ok(ValueType::Mat4),
+        VAL_WEIGHTED => Ok(ValueType::Weighted),
         _ => Err(DecodeError::InvalidValueType(tag)),
     }
 }
 
+/// NS-A8 (`docs/tower-mini-spec.md` T5): read `N` explicit little-endian
+/// f32 lanes — the hand-serialized tower wire form `write_f32_lanes`
+/// produced. The lanes are handed back as a plain array; the caller builds
+/// the glam value through its explicit `from_array`/`from_cols_array`
+/// constructor (never a memory-layout cast).
+fn read_f32_lanes<const N: usize>(buf: &[u8], off: &mut usize) -> Result<[f32; N], DecodeError> {
+    if *off + 4 * N > buf.len() {
+        return Err(DecodeError::UnexpectedEof);
+    }
+    let mut lanes = [0.0f32; N];
+    for lane in &mut lanes {
+        *lane = f32::from_le_bytes([buf[*off], buf[*off + 1], buf[*off + 2], buf[*off + 3]]);
+        *off += 4;
+    }
+    Ok(lanes)
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per value tag — the NS-A1 VAL_OPTION arm pushed this past 100"
+)]
 fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, DecodeError> {
     if depth > MAX_DECODE_DEPTH {
         return Err(DecodeError::MaxDepthExceeded(MAX_DECODE_DEPTH));
@@ -403,6 +444,12 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Deco
             for _ in 0..len {
                 let key = decode_map_key(buf, off)?;
                 let val = decode_value(buf, off, depth + 1)?;
+                // A repeated key would violate the content-based `OrderedMap`
+                // `Eq` (#909); reject rather than silently keeping the last
+                // occurrence (#985).
+                if map.contains_key(&key) {
+                    return Err(DecodeError::DuplicateMapKey);
+                }
                 map.insert(key, val);
             }
             Ok(Value::map(map))
@@ -440,7 +487,112 @@ fn decode_value(buf: &[u8], off: &mut usize, depth: usize) -> Result<Value, Deco
             let id = read_u64(buf, off)?;
             Ok(Value::handle(kind, id))
         }
+        // Projection values (T1e, `docs/format-v4-rfc.md` §1). Segment kind
+        // `2=range` is RESERVED — `decode_proj_segment` rejects it since no
+        // `ProjSegment` variant exists to decode into (`docs/t1e-spec.md` §3).
+        VAL_PROJECTION => {
+            let cell = read_def_id(buf, off)?;
+            let count = read_u8(buf, off)? as usize;
+            let mut segments = Vec::with_capacity(safe_capacity(count, buf.len(), *off, 1));
+            for _ in 0..count {
+                segments.push(decode_proj_segment(buf, off, depth + 1)?);
+            }
+            Ok(Value::projection(cell, segments))
+        }
+        // Option values (NS-A1, `docs/stdlib-spec.md` §1.4): flag byte
+        // (0 = none, 1 = some) then the inner value when some. Any other
+        // flag byte is corrupt input. Depth-counted like the collection
+        // tags — a crafted chain of nested `some`s is the same recursion
+        // shape as nested single-element arrays.
+        VAL_OPTION => match read_u8(buf, off)? {
+            0 => Ok(Value::none()),
+            1 => Ok(Value::some(decode_value(buf, off, depth + 1)?)),
+            other => Err(DecodeError::InvalidValueType(other)),
+        },
+        // Range values (NS-A5, F7): start i32, end i32, inclusive flag.
+        // Flat — a range holds two ints, never another value, so there is
+        // no recursion and no depth accounting. Any flag byte other than
+        // 0/1 is corrupt input.
+        VAL_RANGE => {
+            let start = read_i32(buf, off)?;
+            let end = read_i32(buf, off)?;
+            let inclusive = match read_u8(buf, off)? {
+                0 => false,
+                1 => true,
+                other => return Err(DecodeError::InvalidValueType(other)),
+            };
+            Ok(Value::range(start, end, inclusive))
+        }
+        // Tower values (NS-A8, `docs/tower-mini-spec.md` T5): explicit
+        // little-endian f32 lanes in the pinned order (vec/quat `x, y(, z,
+        // w)`; matrices column-major), rebuilt through glam's explicit
+        // array constructors. Fixed sizes — no counts, no recursion, no
+        // depth concerns (tower values are leaves).
+        VAL_VEC2 => Ok(Value::Vec2(glam::Vec2::from_array(read_f32_lanes::<2>(
+            buf, off,
+        )?))),
+        VAL_VEC3 => Ok(Value::Vec3(glam::Vec3::from_array(read_f32_lanes::<3>(
+            buf, off,
+        )?))),
+        VAL_VEC4 => Ok(Value::Vec4(glam::Vec4::from_array(read_f32_lanes::<4>(
+            buf, off,
+        )?))),
+        VAL_QUAT => Ok(Value::Quat(glam::Quat::from_array(read_f32_lanes::<4>(
+            buf, off,
+        )?))),
+        VAL_MAT2 => Ok(Value::Mat2(glam::Mat2::from_cols_array(&read_f32_lanes::<
+            4,
+        >(
+            buf, off
+        )?))),
+        VAL_MAT3 => Ok(Value::Mat3(glam::Mat3::from_cols_array(&read_f32_lanes::<
+            9,
+        >(
+            buf, off
+        )?))),
+        VAL_MAT4 => Ok(Value::Mat4(glam::Mat4::from_cols_array(&read_f32_lanes::<
+            16,
+        >(
+            buf, off
+        )?))),
+        // Weighted tables (NS-A7, `docs/stdlib-spec.md` §8): u32 entry
+        // count, then per entry an i32 weight and a recursively-decoded
+        // value. Depth-counted like the collection tags. The §8
+        // evidence-by-construction invariant is enforced HERE too: an
+        // empty table or a non-positive weight is corrupt input (a
+        // `Weighted` never enters the runtime invalid, even from a
+        // crafted file).
+        VAL_WEIGHTED => {
+            let count = read_u32(buf, off)?;
+            if count == 0 {
+                return Err(DecodeError::InvalidValueType(VAL_WEIGHTED));
+            }
+            let mut entries = Vec::with_capacity(safe_capacity(count as usize, buf.len(), *off, 5));
+            for _ in 0..count {
+                let weight = read_i32(buf, off)?;
+                if weight < 1 {
+                    return Err(DecodeError::InvalidValueType(VAL_WEIGHTED));
+                }
+                let value = decode_value(buf, off, depth + 1)?;
+                entries.push((weight, value));
+            }
+            Ok(Value::weighted(entries))
+        }
         _ => Err(DecodeError::InvalidValueType(tag)),
+    }
+}
+
+/// Decode a single [`crate::ProjSegment`] written by `encode_proj_segment`.
+fn decode_proj_segment(
+    buf: &[u8],
+    off: &mut usize,
+    depth: usize,
+) -> Result<crate::ProjSegment, DecodeError> {
+    let kind = read_u8(buf, off)?;
+    match kind {
+        PROJ_SEG_INDEX => Ok(crate::ProjSegment::Index(read_i32(buf, off)?)),
+        PROJ_SEG_KEY => Ok(crate::ProjSegment::Key(decode_value(buf, off, depth)?)),
+        other => Err(DecodeError::InvalidProjSegmentKind(other)),
     }
 }
 
@@ -602,6 +754,152 @@ pub fn read_section_alias_table(
     Ok(entries)
 }
 
+/// Read the T2-3 `EffectRows` section (`docs/effects-spec.md` §11) from a
+/// complete `.inkb` file using its index. Absent section (converter output, or
+/// a story compiled before this slice) decodes as empty, mirroring
+/// [`read_section_alias_table`]. The section-local version byte is checked
+/// independently of the whole-file `VERSION` — see [`EFFECT_ROWS_SECTION_VERSION`].
+pub fn read_section_effect_rows(
+    buf: &[u8],
+    index: &InkbIndex,
+) -> Result<Vec<EffectRowEntry>, DecodeError> {
+    let Some(range) = index.section_range(SectionKind::EffectRows) else {
+        return Ok(Vec::new());
+    };
+    let mut off = range.start;
+    let section_version = read_u8(buf, &mut off)?;
+    if section_version != EFFECT_ROWS_SECTION_VERSION {
+        return Err(DecodeError::UnsupportedSectionVersion {
+            section: SectionKind::EffectRows as u8,
+            version: section_version,
+        });
+    }
+    let count = read_u32(buf, &mut off)? as usize;
+    // Minimum per-entry footprint: def_id(8) + is_entry(1) +
+    // direct(3×u32 counts + opaque + dims) + dispatch count(4) =
+    // 8 + 1 + 13 + 1 + 4 = 27 bytes.
+    let mut rows = Vec::with_capacity(safe_capacity(count, buf.len(), off, 27));
+    for _ in 0..count {
+        let def = read_def_id(buf, &mut off)?;
+        // #882 freeze bit — see `EffectRowEntry::is_entry`'s doc.
+        let is_entry = read_u8(buf, &mut off)? != 0;
+        let direct = decode_direct_effects(buf, &mut off)?;
+        let dispatch_count = read_u32(buf, &mut off)? as usize;
+        let mut dispatches = Vec::with_capacity(safe_capacity(dispatch_count, buf.len(), off, 13));
+        for _ in 0..dispatch_count {
+            let cell = read_def_id(buf, &mut off)?;
+            let narrowable = read_u8(buf, &mut off)? != 0;
+            let fallback = decode_direct_effects(buf, &mut off)?;
+            dispatches.push(DispatchEntry {
+                cell,
+                narrowable,
+                fallback,
+            });
+        }
+        rows.push(EffectRowEntry {
+            def,
+            is_entry,
+            direct,
+            dispatches,
+        });
+    }
+    Ok(rows)
+}
+
+/// Read the FS-3 `FrameShapes` section (`docs/flow-suspension-spec.md`
+/// §4/§11) from a complete `.inkb` file using its index. Absent section (every
+/// story compiled behind the E052 fence, and all converter output) decodes as
+/// empty, mirroring [`read_section_visibility`]. The section-local version byte
+/// is checked independently of the whole-file `VERSION` — see
+/// [`FRAME_SHAPES_SECTION_VERSION`].
+pub fn read_section_frame_shapes(
+    buf: &[u8],
+    index: &InkbIndex,
+) -> Result<Vec<FrameShapeDef>, DecodeError> {
+    let Some(range) = index.section_range(SectionKind::FrameShapes) else {
+        return Ok(Vec::new());
+    };
+    let mut off = range.start;
+    let section_version = read_u8(buf, &mut off)?;
+    if section_version != FRAME_SHAPES_SECTION_VERSION {
+        return Err(DecodeError::UnsupportedSectionVersion {
+            section: SectionKind::FrameShapes as u8,
+            version: section_version,
+        });
+    }
+    let count = read_u32(buf, &mut off)? as usize;
+    // Minimum per-entry footprint: site def_id(8) + slot count(4) = 12 bytes.
+    let mut shapes = Vec::with_capacity(safe_capacity(count, buf.len(), off, 12));
+    for _ in 0..count {
+        let site = read_def_id(buf, &mut off)?;
+        let slot_count = read_u32(buf, &mut off)? as usize;
+        let mut slots = Vec::with_capacity(safe_capacity(slot_count, buf.len(), off, 2));
+        for _ in 0..slot_count {
+            slots.push(NameId(read_u16(buf, &mut off)?));
+        }
+        shapes.push(FrameShapeDef { site, slots });
+    }
+    Ok(shapes)
+}
+
+/// Decode a [`DirectEffects`] block written by `encode_direct_effects`.
+fn decode_direct_effects(buf: &[u8], off: &mut usize) -> Result<DirectEffects, DecodeError> {
+    let read_count = read_u32(buf, off)? as usize;
+    let mut reads = Vec::with_capacity(safe_capacity(read_count, buf.len(), *off, 8));
+    for _ in 0..read_count {
+        reads.push(read_def_id(buf, off)?);
+    }
+    let write_count = read_u32(buf, off)? as usize;
+    let mut writes = Vec::with_capacity(safe_capacity(write_count, buf.len(), *off, 8));
+    for _ in 0..write_count {
+        writes.push(read_def_id(buf, off)?);
+    }
+    let call_count = read_u32(buf, off)? as usize;
+    let mut calls = Vec::with_capacity(safe_capacity(call_count, buf.len(), *off, 4));
+    for _ in 0..call_count {
+        calls.push(decode_call_atom(buf, off)?);
+    }
+    let opaque = read_u8(buf, off)? != 0;
+    // NS-A2 extension-flags byte (section version 3): the strict reader
+    // rejects reserved bits (3–7) until a section version graduates them —
+    // the same reservation discipline the capability/handle slots follow.
+    let dims = read_u8(buf, off)?;
+    if dims & !super::EFFECT_DIM_KNOWN_MASK != 0 {
+        return Err(DecodeError::InvalidEffectDimensions(dims));
+    }
+    Ok(DirectEffects {
+        reads,
+        writes,
+        calls,
+        opaque,
+        emits: dims & super::EFFECT_DIM_EMITS != 0,
+        tags: dims & super::EFFECT_DIM_TAGS != 0,
+        faults: dims & super::EFFECT_DIM_FAULTS != 0,
+    })
+}
+
+/// Decode a single [`CallAtom`] written by `encode_call_atom`. The strict
+/// reader rejects a non-`Any` capability tag (path-granular is reserved, #826)
+/// and a non-`None` handle-parameter slot (reserved, `docs/t1d-spec.md` §7) —
+/// the same reservation discipline the projection range segment follows.
+fn decode_call_atom(buf: &[u8], off: &mut usize) -> Result<CallAtom, DecodeError> {
+    let name = NameId(read_u16(buf, off)?);
+    let cap_tag = read_u8(buf, off)?;
+    let capability = match cap_tag {
+        CAP_PARAM_ANY => CapabilityParam::Any,
+        other => return Err(DecodeError::InvalidEffectCapParam(other)),
+    };
+    let handle_tag = read_u8(buf, off)?;
+    if handle_tag != HANDLE_PARAM_NONE {
+        return Err(DecodeError::InvalidEffectHandleParam(handle_tag));
+    }
+    Ok(CallAtom {
+        name,
+        capability,
+        handle_param: None,
+    })
+}
+
 fn decode_external(buf: &[u8], off: &mut usize) -> Result<ExternalFnDef, DecodeError> {
     let id = read_def_id(buf, off)?;
     let name = NameId(read_u16(buf, off)?);
@@ -641,6 +939,19 @@ fn decode_container(buf: &[u8], off: &mut usize) -> Result<ContainerDef, DecodeE
         let name = NameId(read_u16(buf, off)?);
         let is_ref = read_u8(buf, off)? != 0;
         params.push(ParamMeta { name, is_ref });
+    }
+    // `ContainerDef::params`'s doc invariant: `params.len()` always equals
+    // `param_count` whenever per-param metadata is present at all (empty
+    // `params` is the separate, legitimate "count only, no metadata" case).
+    // A mutated `.inkb` asserting otherwise is malformed input, not
+    // silently-acceptable data — mirrors the `.inkt` reader's guard (#745,
+    // #954), rejecting with a decode error rather than constructing an
+    // inconsistent `ContainerDef`.
+    if !params.is_empty() && params.len() != usize::from(param_count) {
+        return Err(DecodeError::ParamCountMismatch {
+            declared: param_count,
+            actual: params.len(),
+        });
     }
 
     let bytecode_len = read_u32(buf, off)? as usize;
@@ -799,5 +1110,66 @@ fn decode_plural_category(buf: &[u8], off: &mut usize) -> Result<PluralCategory,
         CAT_MANY => Ok(PluralCategory::Many),
         CAT_OTHER => Ok(PluralCategory::Other),
         _ => Err(DecodeError::InvalidPluralCategory(tag)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codec::{write_u8, write_u32};
+
+    /// Hand-build a `VAL_MAP` payload carrying the same `int` key twice — no
+    /// legitimate encoder emits this (`OrderedMap::insert` de-duplicates on
+    /// the write side), so this is the "crafted payload" scenario issue #985
+    /// guards against: the reader must reject it with a decode error, never
+    /// construct an `OrderedMap` that violates the content-based `Eq`
+    /// invariant (#909) by silently keeping the last occurrence.
+    fn duplicate_int_key_map_bytes() -> Vec<u8> {
+        let mut buf = Vec::new();
+        write_u8(&mut buf, VAL_MAP);
+        write_u32(&mut buf, 2); // two entries
+        // entry 0: key = int(0), value = int(1)
+        write_u8(&mut buf, VAL_INT);
+        buf.extend_from_slice(&0i32.to_le_bytes());
+        write_u8(&mut buf, VAL_INT);
+        buf.extend_from_slice(&1i32.to_le_bytes());
+        // entry 1: key = int(0) again, value = int(2)
+        write_u8(&mut buf, VAL_INT);
+        buf.extend_from_slice(&0i32.to_le_bytes());
+        write_u8(&mut buf, VAL_INT);
+        buf.extend_from_slice(&2i32.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn decode_value_rejects_duplicate_map_key() {
+        let buf = duplicate_int_key_map_bytes();
+        let mut off = 0;
+        assert_eq!(
+            decode_value(&buf, &mut off, 0),
+            Err(DecodeError::DuplicateMapKey)
+        );
+    }
+
+    #[test]
+    fn decode_value_accepts_distinct_map_keys() {
+        let mut buf = Vec::new();
+        write_u8(&mut buf, VAL_MAP);
+        write_u32(&mut buf, 2);
+        write_u8(&mut buf, VAL_INT);
+        buf.extend_from_slice(&0i32.to_le_bytes());
+        write_u8(&mut buf, VAL_INT);
+        buf.extend_from_slice(&1i32.to_le_bytes());
+        write_u8(&mut buf, VAL_INT);
+        buf.extend_from_slice(&5i32.to_le_bytes());
+        write_u8(&mut buf, VAL_INT);
+        buf.extend_from_slice(&2i32.to_le_bytes());
+
+        let mut off = 0;
+        let value = decode_value(&buf, &mut off, 0).expect("distinct keys decode cleanly");
+        let Value::Map(map) = value else {
+            unreachable!("expected a map value");
+        };
+        assert_eq!(map.len(), 2);
     }
 }

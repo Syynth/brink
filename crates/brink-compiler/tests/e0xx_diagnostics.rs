@@ -71,6 +71,25 @@ fn compile(
     )
 }
 
+fn compile_multifile(
+    entry: &str,
+    files: &HashMap<&str, &str>,
+    options: AnalysisOptions,
+) -> Result<brink_compiler::CompileOutput, brink_compiler::CompileError> {
+    brink_compiler::compile_with_options(
+        entry,
+        |path| {
+            files.get(path).map(|s| (*s).to_string()).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("file not found: {path}"),
+                )
+            })
+        },
+        options,
+    )
+}
+
 fn default_options() -> AnalysisOptions {
     AnalysisOptions::default()
 }
@@ -82,10 +101,21 @@ fn brink_options() -> AnalysisOptions {
     }
 }
 
+/// The explicit `types = gradual` opt-out knob (#1127, ruled 2026-07-19:
+/// the brink dialect's implicit default is now strict) — for fixtures that
+/// TEST deliberately-dynamic behavior the strict default would reject.
+fn gradual_options() -> AnalysisOptions {
+    AnalysisOptions {
+        dialect: Dialect::Brink,
+        types: Some(TypePolicy::Gradual),
+        ..AnalysisOptions::default()
+    }
+}
+
 fn strict_options() -> AnalysisOptions {
     AnalysisOptions {
         dialect: Dialect::Brink,
-        types: TypePolicy::Strict,
+        types: Some(TypePolicy::Strict),
         ..AnalysisOptions::default()
     }
 }
@@ -368,6 +398,43 @@ fn e027_ambiguous_bare_list_item_reference() {
     let diags = errors_of(err);
     // The ambiguous *reference* is the third `shared`.
     assert_code_at_nth(&diags, DiagnosticCode::E027, source, "shared", 2);
+}
+
+#[test]
+fn e025_multifile_with_earlier_multibyte_utf8_maintains_byte_offsets() {
+    // Regression test for cross-file diagnostic offset tracking when an
+    // earlier included file contains multi-byte UTF-8 content (#1056).
+    // An included file with UTF-8 multi-byte characters (e.g., "café" or emoji)
+    // should not cause byte-offset miscalculation for diagnostics in later files.
+    let files: HashMap<&str, &str> = HashMap::from([
+        ("helpers.ink", "== café ==\nWelcome to the café.\n-> END\n"),
+        ("main.ink", "INCLUDE helpers.ink\n~ temp t = missing\nHi\n"),
+    ]);
+    let err = compile_multifile("main.ink", &files, default_options())
+        .map(|_| ())
+        .expect_err("unresolved reference should fail compile");
+    let diags = errors_of(err);
+
+    // The diagnostic for the unresolved `missing` reference should exist,
+    // and its byte offset within main.ink should point to "missing".
+    // The multi-byte content in helpers.ink must not shift offsets in main.ink.
+    let main_content = "INCLUDE helpers.ink\n~ temp t = missing\nHi\n";
+    let expected_byte_offset = find_nth(main_content, "missing", 0);
+    assert!(
+        diags.iter().any(|d| {
+            let start = usize::from(d.range.start());
+            d.code == DiagnosticCode::E025
+                && d.path.contains("main.ink")
+                && expected_byte_offset <= start
+                && start <= expected_byte_offset + "missing".len()
+        }),
+        "expected E025 for 'missing' at byte offset {} in main.ink, got: {:?}",
+        expected_byte_offset,
+        diags
+            .iter()
+            .map(|d| format!("{}@{}:{:?}", d.code.as_str(), d.path, d.range))
+            .collect::<Vec<_>>()
+    );
 }
 
 // ─── Structural validation (E032, E034, E036, E037) ──────────────────
@@ -766,4 +833,213 @@ fn e084_duplicate_field_under_gradual() {
 fn e084_duplicate_field_under_strict() {
     let source = format!("{POINT_SRC}~ temp p = Point#{{x: 1.0, x: 2.0, y: 3.0}}\nHi\n");
     assert_error_at(&source, strict_options(), DiagnosticCode::E084, "x: 2.0");
+}
+
+// ─── T1e-1 path projections (E097–E099, docs/t1e-spec.md §2/§6, issue #831) ──
+
+const HEAL_SRC: &str = "=== function heal(ref hp: int, k: int) ===\n~ hp = hp + k\n\n";
+
+#[test]
+fn e080_ref_projection_root_is_a_temp() {
+    // T1e's `ref` extends the existing E080 code (not a new one) to the
+    // path-projection grammar — same durable-root obligation as T1c's
+    // unmarked ref-argument form.
+    let source = format!("{HEAL_SRC}=== main ===\n~ temp t = 1\n~ heal(ref t, 5)\n-> DONE\n");
+    assert_error_at(&source, brink_options(), DiagnosticCode::E080, "ref t");
+}
+
+#[test]
+fn e097_standalone_ref_projection() {
+    let source = "VAR gold = 5\n=== main ===\n~ temp r = ref gold\n-> DONE\n";
+    assert_error_at(source, brink_options(), DiagnosticCode::E097, "ref gold");
+}
+
+#[test]
+fn e098_strict_unknown_field_segment() {
+    let source = format!(
+        "STRUCT NPC = #{{hp: int}}\nVAR npc: NPC = NPC#{{hp: 10}}\n{HEAL_SRC}\
+         === main ===\n~ heal(ref npc.mana, 5)\n-> DONE\n"
+    );
+    assert_error_at(&source, strict_options(), DiagnosticCode::E098, "npc.mana");
+}
+
+#[test]
+fn real_path_projection_lowers_for_real_no_longer_e099() {
+    // T1e-2 (docs/t1e-spec.md §3, tracking #828) replaces the T1e-1 E099
+    // lowering fence with real `MakeProjection` emission for a genuine path
+    // projection (a real segment, not a bare single-name `ref`) that passes
+    // every analyzer check. `npc` here has no statically-known STRUCT shape
+    // (gradual mode, no `VAR npc: Shape` annotation), so `.hp` is a runtime
+    // by-name segment — exactly the case the old fence used to stop at.
+    let source = format!("VAR npc = 5\n{HEAL_SRC}=== main ===\n~ heal(ref npc.hp, 5)\n-> DONE\n");
+    // E099 is error-severity (the old fence made `compile` fail); a
+    // successful compile alone proves it no longer fires here.
+    let out = compile(&source, gradual_options())
+        .unwrap_or_else(|e| panic!("a real path-projection ref-argument must lower: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}
+
+#[test]
+fn e099_bind_ref_argument_always_fences_even_zero_segment() {
+    // `bind(f, args…)` (docs/t1c-spec.md §3) is val-only currying at LIR —
+    // `BindValue`'s args have no `CallArg`/ref-capture concept at all
+    // (unlike ordinary calls/`#fn`, which already have `RefGlobal`). So
+    // *any* `ref`-marked bind argument fences here, even the zero-segment
+    // case that a plain call/`#fn` would lower for real — there's no
+    // "today's unmarked behavior" to fall back to for `bind`, since `bind`
+    // never supported ref-argument binding before T1e either. Proves this
+    // is a clean, targeted stop, not a silent value-lowering of a `ref`.
+    let source = format!(
+        "VAR gold = 5\n{HEAL_SRC}=== main ===\n~ temp f = #fn(heal, gold)\n\
+         ~ temp g = bind(f, ref gold)\n-> DONE\n"
+    );
+    // Gradual knob (#1127): the subject is the LIR-layer bind fence, which
+    // is only reachable once analysis passes — `#fn` over a `ref`-param
+    // function stays Unknown under strict inference (E065 gates lowering
+    // first), so this fixture TESTS the dynamic regime's fence.
+    assert_error_at(&source, gradual_options(), DiagnosticCode::E099, "ref gold");
+}
+
+#[test]
+fn ref_marked_bare_var_arg_compiles_clean_through_the_real_pipeline() {
+    // The zero-segment case (`ref gold`, no dotted field / `[…]` index) is
+    // not a projection at all — it must compile exactly like today's
+    // unmarked `ref`-argument form, never hitting E097/E099.
+    let source = format!("VAR gold = 5\n{HEAL_SRC}=== main ===\n~ heal(ref gold, 5)\n-> DONE\n");
+    let out = compile(&source, brink_options())
+        .unwrap_or_else(|e| panic!("a bare single-name `ref` must compile clean: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}
+
+// ─── Computed-callee call attempt (E104, docs/t1c-spec.md §3/§10, #869) ──
+//
+// A direct call `expr(args…)` where `expr` isn't a bare variable/temp/param
+// name — pre-#869 this silently dropped the call entirely (the parser left
+// `(args…)` unconsumed, so it resurfaced as prose text on the content
+// line). Direct-call syntax is RULED (t1c-spec §3) to a bare-name callee
+// only, and dispatch through a computed callee via bare-call sugar
+// ("method-call syntax") is explicitly out of T1c (§10) — so every shape
+// below is a loud compile error, never a silent no-op. One fixture per
+// non-bare-name callee shape the npc-fsm/behavior-tree tier1 corpus
+// fixtures found (indexed, dotted field, call-result), plus proof that the
+// ratified `call(f, args…)` Explicit form and the bare-name Direct form are
+// both untouched.
+
+#[test]
+fn e104_indexed_callee() {
+    let source = "VAR handlers = #{}\nVAR state = \"x\"\n=== main ===\n\
+                  ~ handlers[state](1)\n-> DONE\n";
+    assert_error_at(
+        source,
+        brink_options(),
+        DiagnosticCode::E104,
+        "handlers[state](1)",
+    );
+}
+
+#[test]
+fn e104_dotted_field_callee() {
+    let source = "VAR obj = #{}\n=== main ===\n~ obj.field()\n-> DONE\n";
+    assert_error_at(source, brink_options(), DiagnosticCode::E104, "obj.field()");
+}
+
+#[test]
+fn e104_call_result_callee_dialect_independent() {
+    // No brink-only construct in sight (a plain `function`, `return`, two
+    // ordinary calls) — proves E104 fires the same under strict-ink
+    // (`default_options()`) as under brink, unlike every dialect-gated T1b/
+    // T1c construct: a computed callee is invalid syntax in every dialect,
+    // not a brink extension strict-ink rejects.
+    let source = "=== function get_handler() ===\n~ return 1\n\n\
+                  === main ===\n~ get_handler()()\n-> DONE\n";
+    assert_error_at(
+        source,
+        default_options(),
+        DiagnosticCode::E104,
+        "get_handler()()",
+    );
+}
+
+#[test]
+fn bare_name_direct_call_unaffected_by_e104() {
+    let source = "=== function bare(a: int, b: int): int ===\n~ return a + b\n\n\
+                  === main ===\n~ bare(1, 2)\n-> DONE\n";
+    let out = compile(source, brink_options())
+        .unwrap_or_else(|e| panic!("a bare-name direct call must compile clean: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}
+
+#[test]
+fn explicit_call_form_unaffected_by_e104() {
+    // `call(f, args…)` lowers as an ordinary named call (`Expr::Call(path =
+    // "call", …)`), never as the new `CALL_EXPR` shape — the same
+    // computed-callee expression that's rejected via bare-call sugar above
+    // dispatches correctly through the ratified Explicit form.
+    let source = "VAR handlers = #{}\nVAR state = \"x\"\n=== main ===\n\
+                  ~ call(handlers[state], 1)\n-> DONE\n";
+    let out = compile(source, gradual_options())
+        .unwrap_or_else(|e| panic!("call(f, args…) must compile clean: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}
+
+// ─── E113: reserved protocol method names (NS-A3, issue #1109; F6 ruled
+// 2026-07-19, docs/stdlib-spec.md §9.6). Hard error under the brink
+// dialect only — under strict-ink there is no protocol registry and
+// vanilla ink identifiers stay untouched. E114/E115 (protocol impl
+// contract/shape validation) are pipeline-covered in
+// `brink-analyzer::protocols`' own tests: impl registration is a
+// programmatic surface (no source spelling until the code-dialect
+// sitting), so no `.ink` fixture can reach them. ─────────────────────
+
+#[test]
+fn e113_knot_named_display_is_reserved_in_brink() {
+    let source = "== display ==\nHello.\n-> DONE\n";
+    assert_error_at(source, brink_options(), DiagnosticCode::E113, "display");
+}
+
+#[test]
+fn e113_function_named_next_is_reserved_in_brink() {
+    let source = "=== function next(x) ===\n~ return x\n=== main ===\nHi.\n-> DONE\n";
+    assert_error_at(source, brink_options(), DiagnosticCode::E113, "next");
+}
+
+#[test]
+fn e113_var_named_compare_is_reserved_in_brink() {
+    let source = "VAR compare = 1\n== k ==\n{compare}\n-> DONE\n";
+    assert_error_at(source, brink_options(), DiagnosticCode::E113, "compare");
+}
+
+#[test]
+fn e113_temp_named_display_in_logic_block_is_reserved() {
+    let source = "== k ==\n~ {\n    temp display = 1\n}\n-> DONE\n";
+    assert_error_at(source, brink_options(), DiagnosticCode::E113, "display");
+}
+
+#[test]
+fn e113_does_not_fire_under_strict_ink() {
+    // Vanilla ink may freely name a VAR `display` — the reservation is a
+    // brink-dialect protocol concern (the oracle corpus stays out of
+    // reach by construction).
+    let source = "VAR display = 1\n== k ==\n{display}\n-> DONE\n";
+    let out = compile(source, default_options())
+        .unwrap_or_else(|e| panic!("strict-ink must not reserve protocol names: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E113),
+        "{:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn e113_list_member_named_next_stays_legal_in_brink() {
+    // Deliberate carve-out: LIST members are value-position narrative
+    // vocabulary (`next` is plausible domain language), not callables.
+    let source = "LIST steps = intro, next, outro\n== k ==\nHi.\n-> DONE\n";
+    let out = compile(source, brink_options())
+        .unwrap_or_else(|e| panic!("LIST members are not reserved: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E113),
+        "{:?}",
+        out.warnings
+    );
 }

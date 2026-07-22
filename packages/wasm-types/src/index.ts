@@ -12,6 +12,13 @@ export interface Diagnostic {
   end: number;
   message: string;
   severity: "Error" | "Warning";
+  /**
+   * Structured diagnostic code, e.g. `"E065"` (issue #1004). Lets consumers
+   * filter or group diagnostics programmatically instead of string-matching
+   * `message`. Optional for backward compatibility with older mocks/fixtures;
+   * the wasm compile channel always populates it.
+   */
+  code?: string;
   /** Path of the file this diagnostic belongs to (may be an INCLUDEd file). */
   file: string;
 }
@@ -107,6 +114,17 @@ export type LineType =
   | "done"
   | "choices"
   | "end"
+  /**
+   * A flow parked at an `await` (`docs/flow-suspension-spec.md` §10.1).
+   * Like `"done"`, a park is a turn boundary — text accumulated before it
+   * flushes with the line. Drive the flow again via `continueFlow`/
+   * `wakeCheck` when the host wants output; a park never auto-continues.
+   *
+   * **Runtime-unreachable until FS-3r.** No `Line` the runtime produces
+   * today carries this type (the E052 fence keeps `await` from lowering).
+   * It ships now (FS-3w) so hosts migrate the API shape early.
+   */
+  | "suspended"
   | "awaiting_external";
 
 export interface Line {
@@ -174,7 +192,9 @@ export type JournalValue = unknown;
  * because `StepOutcome` below never carries the `awaiting_external` variant —
  * that lives on `StepOutcome` itself). */
 export interface SessionLine {
-  type: "text" | "done" | "choices" | "end";
+  /** `"suspended"` (a flow parked at an `await`) is runtime-unreachable
+   * until FS-3r — see {@link LineType}. */
+  type: "text" | "done" | "choices" | "end" | "suspended";
   text: string;
   tags: string[];
   choices?: Choice[];
@@ -387,8 +407,15 @@ export interface SlotWidget {
   param_name: string;
   /** The built-in widget kind for this slot's type (`color`, …), if any. */
   widget?: string;
-  /** The semantic-type name, if the param is typed. */
+  /** The semantic-type name, if the param is typed. Always the bare written
+   *  name — widget-kind matching (`matchHostWidget`'s fallback) uses this
+   *  field; render `type_display`, not this, for a user-visible label. */
   type_name?: string;
+  /** The honest display string for `type_name` (#1027/#1053): the bare name
+   *  when it resolves to a base keyword or a registered semantic type,
+   *  `name ⚠ unregistered semantic type — E040` otherwise. Present iff
+   *  `type_name` is present. */
+  type_display?: string;
   /** Static value-list items (#174) — the Form renders these as a dropdown. */
   values?: ValueItem[];
   state: SlotState;
@@ -481,14 +508,26 @@ export interface ArgumentWidgetEditorHost {
  * host-rendered, into a studio-owned popover/modal via a mount-callback.
  */
 export interface ArgumentWidget {
-  /** Semantic type / widget id this renders for. Host ids: `host.<vendor>.<name>`. */
+  /** Semantic type / widget id this renders for. Either a host id
+   *  (`host.<vendor>.<name>`) or a **base type** (`bool` | `int` | `float` |
+   *  `string`) — registering against a base type gives every param of that
+   *  primitive type the host's control (e.g. a `bool` toggle), with no brink
+   *  built-in opinion (argument-widget-spec §3.1, #990). Matched against a
+   *  slot's declared `widget` kind first, falling back to its `type_name`
+   *  (base or semantic) — see `matchHostWidget`. */
   type: string;
   /** Optional inline label data — the studio draws the chip from it. */
   inline?(ctx: ArgumentWidgetContext): { text: string; className?: string };
   /** The editor — the only host-rendered surface. Mount the body into
    *  `container`, resolve/cancel through `host`, and return a teardown. */
   editor: {
-    surface?: "popover" | "modal";
+    /** `"popover"` (default) or `"modal"` for a rich picker anchored/overlaid
+     *  on the call site; `"inline"` mounts the control directly in the Form
+     *  row where a text field would sit (argument-widget-spec §3.1, #990) —
+     *  the right shape for a primitive (a bool toggle, a number stepper).
+     *  Only `buildField`'s Form honors `"inline"`; the in-editor call/Edit/
+     *  Fill affordances have no row to mount into and fall back to popover. */
+    surface?: "popover" | "modal" | "inline";
     render(
       ctx: ArgumentWidgetContext,
       host: ArgumentWidgetEditorHost,

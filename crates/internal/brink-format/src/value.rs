@@ -1,5 +1,6 @@
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
@@ -56,6 +57,28 @@ pub enum ValueType {
     Closure,
     /// An opaque host-resource token ([`Value::Handle`]) — T1d.
     Handle,
+    /// A symbolic path projection ([`Value::Projection`]) — T1e.
+    Projection,
+    /// A typed-absence value ([`Value::OptionVal`]) — NS-A1, `Option[T]`.
+    Option,
+    /// An integer range value ([`Value::Range`]) — NS-A5, F7.
+    Range,
+    /// A 2-lane f32 vector ([`Value::Vec2`]) — NS-A8, the numeric tower.
+    Vec2,
+    /// A 3-lane f32 vector ([`Value::Vec3`]) — NS-A8.
+    Vec3,
+    /// A 4-lane f32 vector ([`Value::Vec4`]) — NS-A8.
+    Vec4,
+    /// A rotation quaternion, `(x, y, z, w)` ([`Value::Quat`]) — NS-A8.
+    Quat,
+    /// A column-major 2×2 f32 matrix ([`Value::Mat2`]) — NS-A8.
+    Mat2,
+    /// A column-major 3×3 f32 matrix ([`Value::Mat3`]) — NS-A8.
+    Mat3,
+    /// A column-major 4×4 f32 matrix ([`Value::Mat4`]) — NS-A8.
+    Mat4,
+    /// A weighted table ([`Value::Weighted`]) — NS-A7, `Weighted[T]`.
+    Weighted,
 }
 
 /// A runtime value in the ink VM.
@@ -177,6 +200,207 @@ pub enum Value {
         /// The host-allocated token id. Opaque to the script.
         id: u64,
     },
+    /// A symbolic path projection (`docs/t1e-spec.md` §1/§3, wire tag
+    /// `VAL_PROJECTION`): `(root cell, path segments)` — never an interior
+    /// pointer. Created only in `ref`-argument position (`ref
+    /// npc.inventory[3]`); reads walk the path against the root's *current*
+    /// value, writes desugar to root-cell RMW (take → walk → `make_mut`
+    /// spine → write → store back, spec §3). The segment list is fixed at
+    /// creation ("index expressions snapshot at `ref` creation", spec §1) —
+    /// there is no lazy re-evaluation.
+    ///
+    /// Wrapped in `Arc` for the same O(1)-clone discipline as
+    /// [`Closure`](Self::Closure). Structural equality (spec §4 PROPOSED,
+    /// implemented here): same root cell and equal segments.
+    Projection(Arc<ProjectionValue>),
+    /// A typed-absence value — the compiler-owned `Option[T]` enum (NS-A1,
+    /// `docs/stdlib-spec.md` §1.1/§1.4, ruled 2026-07-18: "a fault says
+    /// 'your program is wrong'; Option says 'the world didn't have one'").
+    ///
+    /// `Option[T]` is the third compiler-known parameterized builtin
+    /// (joining `[T]`/`[K: V]`) — a compiler-owned enum shape, NOT user
+    /// generics. Runtime representation: `None` is payload-free (no
+    /// allocation); `Some` wraps its inner value behind an `Arc` so clone
+    /// stays O(1) like every other heap-bearing variant. Nesting is legal
+    /// and meaningful (`some(none) != none` — the wire and equality both
+    /// preserve it).
+    ///
+    /// Named `OptionVal` (not `Option`) purely to avoid the eternal
+    /// `core::option::Option` shadowing hazard inside `match` arms; the
+    /// [`ValueType`] discriminant and every author-facing surface still
+    /// say "option".
+    ///
+    /// Structural equality: `none == none`; `some(x) == some(y)` iff
+    /// `x == y`; an Option is never equal to a bare `T` (the ruled
+    /// `Option[T] ≠ T` strictness holds at the value layer too). Display
+    /// (`stringify`/`string(x)`): `none` / `some(<inner>)` — the boring,
+    /// stable form; the §1.6 display-boundary forgiveness is Track B4 and
+    /// deliberately NOT implemented here.
+    OptionVal(Option<Arc<Value>>),
+    /// An integer range value (NS-A5, `docs/stdlib-spec.md` §7 — F7, ruled
+    /// 2026-07-19: "ranges are a REAL Value kind"). `start..end` (exclusive)
+    /// or `start..=end` (inclusive) over `int` bounds — v1 is int-only.
+    ///
+    /// Ranges join the closed iterable set (`for i in 0..n`), index like a
+    /// virtual array of their elements, and are the substrate of the
+    /// language's first value refinement (the inhabited range consumed by
+    /// `rand::int`). A durable wire form exists (`VAL_RANGE`) because
+    /// `FlowFrame` spills for-loop iterators across `await` — a range held
+    /// in a loop snapshot must survive save/load.
+    ///
+    /// A no-payload scalar (two `i32`s + a flag); no `Arc` needed. The
+    /// **written form is preserved** — `1..7` and `1..=6` keep their
+    /// `inclusive` flag through saves, the transcript, and display — but
+    /// **equality is content equality** (F7's ruling word): two ranges are
+    /// equal iff they denote the same integer sequence, so `1..=6 == 1..7`
+    /// and every empty range equals every other empty range. This is the
+    /// same content-over-form posture as the #909 map-equality ruling
+    /// (insertion order iterates, content compares).
+    Range {
+        /// The first element of the range (always inclusive).
+        start: i32,
+        /// The written end bound; whether it is an element depends on
+        /// `inclusive`.
+        end: i32,
+        /// `true` for the `..=` form (`end` is the last element), `false`
+        /// for the `..` form (`end` is one past the last element).
+        inclusive: bool,
+    },
+    /// A 2-lane f32 vector (NS-A8, `docs/tower-mini-spec.md` T1: the tower
+    /// value kinds are **glam-backed** — glam is the in-memory compute type,
+    /// so vector/quaternion/matrix ops arrive correct-by-construction).
+    ///
+    /// Serde discipline (T5): the derive on `Value` routes every tower
+    /// variant through the hand-written lane modules in [`tower_serde`] —
+    /// explicit `x, y(, z, w)` lane order for vectors and the quat,
+    /// column-major column-by-column for matrices — NEVER glam's memory
+    /// representation (which varies with SIMD features and versions) and
+    /// never glam's own `serde` feature (kept off in `Cargo.toml`).
+    ///
+    /// Equality (T4): componentwise IEEE via glam's derived `PartialEq` — a
+    /// NaN-bearing vector never equals itself, `-0.0 == +0.0` per lane,
+    /// exactly like bare `Float`. Tower values are NOT orderable (§4b: a
+    /// vector in an ordering context is a `NotOrderable` fault) and are
+    /// never legal map keys (`MapKey::from_value` has no tower arms).
+    Vec2(#[serde(with = "tower_serde::vec2")] glam::Vec2),
+    /// A 3-lane f32 vector (NS-A8). The **unaligned** `glam::Vec3` (not
+    /// `Vec3A`) per the mini-spec — aligned variants would bloat every
+    /// `Value`. See [`Vec2`](Self::Vec2) for the shared tower discipline.
+    Vec3(#[serde(with = "tower_serde::vec3")] glam::Vec3),
+    /// A 4-lane f32 vector (NS-A8). See [`Vec2`](Self::Vec2).
+    Vec4(#[serde(with = "tower_serde::vec4")] glam::Vec4),
+    /// A rotation quaternion (NS-A8), lane order `(x, y, z, w)` per glam
+    /// (T3: conventions per glam, wholesale — right-handed, `quat * quat`
+    /// composes, `quat * vec` rotates). See [`Vec2`](Self::Vec2).
+    Quat(#[serde(with = "tower_serde::quat")] glam::Quat),
+    /// A column-major 2×2 f32 matrix (NS-A8, T2: all matrix sizes ship).
+    /// See [`Vec2`](Self::Vec2).
+    Mat2(#[serde(with = "tower_serde::mat2")] glam::Mat2),
+    /// A column-major 3×3 f32 matrix (NS-A8). The **unaligned** `glam::Mat3`
+    /// (not `Mat3A`). See [`Vec2`](Self::Vec2).
+    Mat3(#[serde(with = "tower_serde::mat3")] glam::Mat3),
+    /// A column-major 4×4 f32 matrix (NS-A8). See [`Vec2`](Self::Vec2).
+    Mat4(#[serde(with = "tower_serde::mat4")] glam::Mat4),
+    /// A weighted table (NS-A7, `docs/stdlib-spec.md` §8): `Weighted[T]` —
+    /// positive-int weights over values, in construction order.
+    /// **Evidence-by-construction**: the only producer (`weighted_new`)
+    /// refuses empty tables and non-positive/non-int weights, so a
+    /// `Weighted` that exists is always a valid `roll` target (total). The
+    /// entry row is a **multiset** (F17: duplicate weights legal and
+    /// meaningful — deliberately divergent from `Map`'s key-set). v1 is
+    /// construct-and-roll: no `len`, no iteration, no mutation.
+    Weighted(Arc<WeightedValue>),
+}
+
+/// Hand-written serde lane codecs for the tower variants (NS-A8,
+/// `docs/tower-mini-spec.md` T5): each type serializes as its flat lane
+/// array — vectors and the quat as `[x, y(, z, w)]`, matrices as their
+/// column-major `to_cols_array()` — and deserializes back through glam's
+/// explicit `from_array`/`from_cols_array` constructors. Glam computes; the
+/// serialized form is ours: no glam memory layout, no serde-through-glam.
+pub mod tower_serde {
+    /// Expand one lane codec module: `to`/`from` are the explicit
+    /// lane-array conversions (never a memory-layout cast). Matrix `from`
+    /// constructors (`from_cols_array`) take the array by reference, hence
+    /// the closure rather than a bare path.
+    macro_rules! lane_codec {
+        ($name:ident, $ty:ty, $lanes:literal, $to:ident, |$a:ident| $from:expr) => {
+            pub mod $name {
+                use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+                pub fn serialize<S: Serializer>(v: &$ty, s: S) -> Result<S::Ok, S::Error> {
+                    v.$to().serialize(s)
+                }
+
+                pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<$ty, D::Error> {
+                    <[f32; $lanes]>::deserialize(d).map(|$a| $from)
+                }
+            }
+        };
+    }
+
+    lane_codec!(vec2, glam::Vec2, 2, to_array, |a| glam::Vec2::from_array(a));
+    lane_codec!(vec3, glam::Vec3, 3, to_array, |a| glam::Vec3::from_array(a));
+    lane_codec!(vec4, glam::Vec4, 4, to_array, |a| glam::Vec4::from_array(a));
+    lane_codec!(quat, glam::Quat, 4, to_array, |a| glam::Quat::from_array(a));
+    lane_codec!(mat2, glam::Mat2, 4, to_cols_array, |a| {
+        glam::Mat2::from_cols_array(&a)
+    });
+    lane_codec!(mat3, glam::Mat3, 9, to_cols_array, |a| {
+        glam::Mat3::from_cols_array(&a)
+    });
+    lane_codec!(mat4, glam::Mat4, 16, to_cols_array, |a| {
+        glam::Mat4::from_cols_array(&a)
+    });
+}
+
+/// The payload of a [`Value::Projection`] — the root cell plus its ordered
+/// segment chain (`docs/t1e-spec.md` §1/§3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectionValue {
+    /// The durable root cell this projection reads/writes through (a global
+    /// `VAR`/`#@local` — never a temp, enforced at compile time by T1e-1's
+    /// E080 durable-root check). Mirrors the `VAL_VAR_POINTER` payload shape
+    /// (`docs/format-v4-rfc.md` §1: "cell reference … reused not
+    /// reinvented").
+    pub cell: DefinitionId,
+    /// The ordered path segments, fixed at creation.
+    pub segments: Vec<ProjSegment>,
+}
+
+/// One path-projection segment (`docs/format-v4-rfc.md` §1: `segments: 0 =
+/// index i32, 1 = key value`). Segment kind `2 = range` is RESERVED and never
+/// constructed in T1e (icebox #829 — sequence slices/ranges).
+///
+/// The kind recorded here is a **wire-compactness choice**, not a semantic
+/// tag the walker trusts blindly: an evaluated segment value that happens to
+/// be an `Int` is captured as [`Index`](Self::Index) (the compact i32 form);
+/// everything else — a map key of another scalar type, or a struct field
+/// name (always a `Value::String` literal) — is captured as
+/// [`Key`](Self::Key). Walking dispatches on the *root's current container
+/// type* at each step (spec §4: reads walk against the root's current
+/// value), so an `Index(n)` segment applied to a `Map` is reinterpreted as
+/// `MapKey::Int(n)` — the distinction never forecloses either domain.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ProjSegment {
+    /// `[i]` — captured because the evaluated segment value was an `Int`.
+    Index(i32),
+    /// `[k]` (a non-`Int` map key) or `.field` (a struct field name,
+    /// captured as `Value::String`).
+    Key(Value),
+}
+
+impl ProjSegment {
+    /// Build a segment from an evaluated `Value` — the classification rule
+    /// this whole module documents: `Int` → [`Index`](Self::Index), anything
+    /// else → [`Key`](Self::Key).
+    #[must_use]
+    pub fn from_value(v: Value) -> Self {
+        match v {
+            Value::Int(n) => Self::Index(n),
+            other => Self::Key(other),
+        }
+    }
 }
 
 /// The payload of a [`Value::Closure`] — the fn token plus its bound-arg
@@ -226,6 +450,93 @@ impl Value {
             Self::FnRef(_) => ValueType::FnRef,
             Self::Closure(_) => ValueType::Closure,
             Self::Handle { .. } => ValueType::Handle,
+            Self::Projection(_) => ValueType::Projection,
+            Self::OptionVal(_) => ValueType::Option,
+            Self::Range { .. } => ValueType::Range,
+            Self::Vec2(_) => ValueType::Vec2,
+            Self::Vec3(_) => ValueType::Vec3,
+            Self::Vec4(_) => ValueType::Vec4,
+            Self::Quat(_) => ValueType::Quat,
+            Self::Mat2(_) => ValueType::Mat2,
+            Self::Mat3(_) => ValueType::Mat3,
+            Self::Mat4(_) => ValueType::Mat4,
+            Self::Weighted(_) => ValueType::Weighted,
+        }
+    }
+
+    /// Build a [`Range`](Self::Range) from its written bounds.
+    pub fn range(start: i32, end: i32, inclusive: bool) -> Self {
+        Self::Range {
+            start,
+            end,
+            inclusive,
+        }
+    }
+
+    /// Borrow the `(start, end, inclusive)` triple if this value is a
+    /// [`Range`](Self::Range).
+    pub fn as_range(&self) -> Option<(i32, i32, bool)> {
+        match self {
+            Self::Range {
+                start,
+                end,
+                inclusive,
+            } => Some((*start, *end, *inclusive)),
+            _ => None,
+        }
+    }
+
+    /// The one-past-the-last element bound of a [`Range`](Self::Range),
+    /// normalized over the written form (`i64` so `1..=i32::MAX` cannot
+    /// overflow). `None` for any non-range value.
+    pub fn range_end_exclusive(&self) -> Option<i64> {
+        match self {
+            Self::Range { end, inclusive, .. } => {
+                Some(i64::from(*end) + i64::from(u8::from(*inclusive)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Number of elements a [`Range`](Self::Range) denotes (`0` for an empty
+    /// range — a range never has negative length). `None` for any non-range
+    /// value. `i64` because `i32::MIN..=i32::MAX` has 2³² elements.
+    pub fn range_len(&self) -> Option<i64> {
+        match self {
+            Self::Range { start, .. } => {
+                let end_ex = self.range_end_exclusive()?;
+                Some((end_ex - i64::from(*start)).max(0))
+            }
+            _ => None,
+        }
+    }
+
+    /// Build a [`Weighted`](Self::Weighted) table from `(weight, value)`
+    /// entries. The caller owns the §8 evidence-by-construction invariant
+    /// (non-empty, positive weights) — the VM's `weighted_new` op and the
+    /// wire reader both validate before calling this.
+    #[must_use]
+    pub fn weighted(entries: Vec<(i32, Value)>) -> Self {
+        Self::Weighted(Arc::new(WeightedValue { entries }))
+    }
+
+    /// Build a `some(inner)` [`OptionVal`](Self::OptionVal).
+    pub fn some(inner: Value) -> Self {
+        Self::OptionVal(Some(Arc::new(inner)))
+    }
+
+    /// Build a `none` [`OptionVal`](Self::OptionVal).
+    pub fn none() -> Self {
+        Self::OptionVal(None)
+    }
+
+    /// Borrow the Option payload if this value is an
+    /// [`OptionVal`](Self::OptionVal): `Some(Some(&inner))` for `some(x)`,
+    /// `Some(None)` for `none`, `None` for any non-Option value.
+    pub fn as_option(&self) -> Option<Option<&Value>> {
+        match self {
+            Self::OptionVal(inner) => Some(inner.as_deref()),
+            _ => None,
         }
     }
 
@@ -342,6 +653,80 @@ impl Value {
     pub fn as_handle(&self) -> Option<(NameId, u64)> {
         match self {
             Self::Handle { kind, id } => Some((*kind, *id)),
+            _ => None,
+        }
+    }
+
+    /// Build a [`Projection`](Self::Projection) from a root cell and its
+    /// ordered segment chain (`docs/t1e-spec.md` §1/§3).
+    pub fn projection(cell: DefinitionId, segments: Vec<ProjSegment>) -> Self {
+        Self::Projection(Arc::new(ProjectionValue { cell, segments }))
+    }
+
+    /// Borrow the projection payload if this value is a
+    /// [`Projection`](Self::Projection).
+    pub fn as_projection(&self) -> Option<&Arc<ProjectionValue>> {
+        match self {
+            Self::Projection(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// Extract the glam payload if this value is a [`Vec2`](Self::Vec2) —
+    /// the NS-A8 identity-marshal read for binding authors (T1: glam is the
+    /// compute type on both sides of the boundary). Strict like
+    /// [`as_int`](Self::as_int): no cross-kind coercion.
+    pub fn as_vec2(&self) -> Option<glam::Vec2> {
+        match self {
+            Self::Vec2(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Extract the glam payload if this value is a [`Vec3`](Self::Vec3).
+    pub fn as_vec3(&self) -> Option<glam::Vec3> {
+        match self {
+            Self::Vec3(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Extract the glam payload if this value is a [`Vec4`](Self::Vec4).
+    pub fn as_vec4(&self) -> Option<glam::Vec4> {
+        match self {
+            Self::Vec4(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Extract the glam payload if this value is a [`Quat`](Self::Quat).
+    pub fn as_quat(&self) -> Option<glam::Quat> {
+        match self {
+            Self::Quat(q) => Some(*q),
+            _ => None,
+        }
+    }
+
+    /// Extract the glam payload if this value is a [`Mat2`](Self::Mat2).
+    pub fn as_mat2(&self) -> Option<glam::Mat2> {
+        match self {
+            Self::Mat2(m) => Some(*m),
+            _ => None,
+        }
+    }
+
+    /// Extract the glam payload if this value is a [`Mat3`](Self::Mat3).
+    pub fn as_mat3(&self) -> Option<glam::Mat3> {
+        match self {
+            Self::Mat3(m) => Some(*m),
+            _ => None,
+        }
+    }
+
+    /// Extract the glam payload if this value is a [`Mat4`](Self::Mat4).
+    pub fn as_mat4(&self) -> Option<glam::Mat4> {
+        match self {
+            Self::Mat4(m) => Some(*m),
             _ => None,
         }
     }
@@ -474,6 +859,53 @@ impl PartialEq for Value {
             (Self::Handle { kind: ka, id: ida }, Self::Handle { kind: kb, id: idb }) => {
                 ka == kb && ida == idb
             }
+            // Projection equality (T1e, docs/t1e-spec.md §4 PROPOSED): same
+            // root cell + equal segments, with the `Arc::ptr_eq` fast path
+            // mirroring every other heap-allocated variant.
+            (Self::Projection(a), Self::Projection(b)) => Arc::ptr_eq(a, b) || a == b,
+            // Option equality (NS-A1): structural — `none == none`,
+            // `some(x) == some(y)` iff `x == y`, with the `Arc::ptr_eq`
+            // fast path on the `some` payload mirroring every other
+            // heap-allocated variant. Cross-variant (`some(1) == 1`) falls
+            // through to `false` below — the ruled `Option[T] ≠ T`
+            // strictness at the value layer.
+            // Weighted equality (NS-A7): multiset content with the
+            // `Arc::ptr_eq` fast path — see `WeightedValue`'s `PartialEq`.
+            (Self::Weighted(a), Self::Weighted(b)) => Arc::ptr_eq(a, b) || a == b,
+            (Self::OptionVal(a), Self::OptionVal(b)) => match (a, b) {
+                (None, None) => true,
+                (Some(x), Some(y)) => Arc::ptr_eq(x, y) || x == y,
+                _ => false,
+            },
+            // Range equality (NS-A5, F7 "content equality"): two ranges are
+            // equal iff they denote the same integer sequence — the written
+            // form (`..` vs `..=`) is display fidelity, not content, so
+            // `1..=6 == 1..7`, and every empty range equals every other
+            // empty range (both denote the zero-length sequence, exactly as
+            // two empty arrays are equal). The #909 map ruling is the
+            // precedent: content compares, form displays.
+            (a @ Self::Range { start: sa, .. }, b @ Self::Range { start: sb, .. }) => {
+                let (la, lb) = (a.range_len(), b.range_len());
+                match (la, lb) {
+                    (Some(0), Some(0)) => true,
+                    (Some(x), Some(y)) => x == y && sa == sb,
+                    // Unreachable: both sides are `Range`.
+                    _ => false,
+                }
+            }
+            // Tower equality (NS-A8, `docs/tower-mini-spec.md` T4):
+            // componentwise IEEE via glam's own `PartialEq` — a NaN lane
+            // makes a value unequal to *itself*, `-0.0 == +0.0` per lane,
+            // exactly like the bare `Float` arm above. Cross-kind pairs
+            // (`Vec2` vs `Vec3`) fall through to `false` below, like every
+            // other cross-variant pair.
+            (Self::Vec2(a), Self::Vec2(b)) => a == b,
+            (Self::Vec3(a), Self::Vec3(b)) => a == b,
+            (Self::Vec4(a), Self::Vec4(b)) => a == b,
+            (Self::Quat(a), Self::Quat(b)) => a == b,
+            (Self::Mat2(a), Self::Mat2(b)) => a == b,
+            (Self::Mat3(a), Self::Mat3(b)) => a == b,
+            (Self::Mat4(a), Self::Mat4(b)) => a == b,
             _ => false,
         }
     }
@@ -520,6 +952,53 @@ impl From<()> for Value {
     /// fire-and-forget external that produces no value.
     fn from((): ()) -> Self {
         Self::Null
+    }
+}
+
+// NS-A8: identity conversions from the glam compute types (T1 — "one
+// workspace-pinned glam version shared with bevy-brink → the bevy marshal is
+// identity on the same types"). A host binding returning `impl Into<Value>`
+// can hand back a `glam::Vec3` directly.
+
+impl From<glam::Vec2> for Value {
+    fn from(v: glam::Vec2) -> Self {
+        Self::Vec2(v)
+    }
+}
+
+impl From<glam::Vec3> for Value {
+    fn from(v: glam::Vec3) -> Self {
+        Self::Vec3(v)
+    }
+}
+
+impl From<glam::Vec4> for Value {
+    fn from(v: glam::Vec4) -> Self {
+        Self::Vec4(v)
+    }
+}
+
+impl From<glam::Quat> for Value {
+    fn from(v: glam::Quat) -> Self {
+        Self::Quat(v)
+    }
+}
+
+impl From<glam::Mat2> for Value {
+    fn from(v: glam::Mat2) -> Self {
+        Self::Mat2(v)
+    }
+}
+
+impl From<glam::Mat3> for Value {
+    fn from(v: glam::Mat3) -> Self {
+        Self::Mat3(v)
+    }
+}
+
+impl From<glam::Mat4> for Value {
+    fn from(v: glam::Mat4) -> Self {
+        Self::Mat4(v)
     }
 }
 
@@ -606,11 +1085,123 @@ impl From<Arc<str>> for MapKey {
 ///
 /// `insert`/`remove` preserve insertion order: re-inserting an existing key
 /// overwrites its value in place (keeping the key's original position), and
+/// The payload of a [`Value::Weighted`] (NS-A7, `docs/stdlib-spec.md` §8):
+/// positive-int weights over values, kept in construction order.
+///
+/// `PartialEq` is hand-written: equality is **multiset content** — the same
+/// `(weight, value)` entries with the same multiplicities, regardless of
+/// order (the #909 map content-over-form precedent applied to the F17
+/// multiset: `weighted(3, "a", 1, "b") == weighted(1, "b", 3, "a")`).
+/// Duplicate entries are legal and multiplicity-sensitive. Construction
+/// order still governs display and the `roll` draw walk (deterministic
+/// offset → entry mapping), exactly as map iteration order survives the
+/// order-insensitive map equality. O(n²) matching — the accepted trade for
+/// small, hand-written game-scale tables (same as `OrderedMap`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeightedValue {
+    /// `(weight, value)` entries in construction order. Invariant (held by
+    /// the only producer, `weighted_new`, and the wire reader): non-empty,
+    /// every weight ≥ 1.
+    pub entries: Vec<(i32, Value)>,
+}
+
+impl WeightedValue {
+    /// The total weight of the table as an `i64` (a sum of `i32` weights
+    /// can exceed `i32::MAX`; the draw walks in `i64`).
+    #[must_use]
+    pub fn total_weight(&self) -> i64 {
+        self.entries.iter().map(|(w, _)| i64::from(*w)).sum()
+    }
+}
+
+impl PartialEq for WeightedValue {
+    fn eq(&self, other: &Self) -> bool {
+        if self.entries.len() != other.entries.len() {
+            return false;
+        }
+        let mut used = vec![false; other.entries.len()];
+        'outer: for (w, v) in &self.entries {
+            for (i, (ow, ov)) in other.entries.iter().enumerate() {
+                if !used[i] && w == ow && v == ov {
+                    used[i] = true;
+                    continue 'outer;
+                }
+            }
+            return false;
+        }
+        true
+    }
+}
+
 /// `remove` shifts later entries down. Lookups are linear; that is the
 /// intended trade for small maps and stable ordering.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+///
+/// `PartialEq` is hand-written, not derived (issue #909, ruled 2026-07-18 —
+/// `docs/decision-log.md` "Map/record equality is insertion-order-insensitive"):
+/// equality is **content-based**, comparing key→value pairs regardless of
+/// insertion order — `#{a:1,b:2} == #{b:2,a:1}` is `true`. Only equality
+/// ignores order; [`iter`](Self::iter)/[`keys`](Self::keys)/[`values`](Self::values)
+/// and every codec still walk `entries` in insertion order, unchanged. The
+/// derived `PartialEq` this replaces compared `entries` as a `Vec`, which is
+/// order-sensitive — the bug. `Value::Map`'s `Arc::ptr_eq` fast path (same
+/// snapshot → instant `true`) lives one level up in `impl PartialEq for
+/// Value`; this impl is the structural fallback it calls into.
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct OrderedMap {
     entries: Vec<(MapKey, Value)>,
+}
+
+impl<'de> Deserialize<'de> for OrderedMap {
+    /// Hand-written, not derived (issue #985, follow-up to #909): the derived
+    /// impl would deserialize `entries` verbatim as a `Vec<(MapKey, Value)>`,
+    /// letting a crafted or corrupt payload carry a duplicate key and
+    /// construct a map that violates the content-based `Eq` invariant above
+    /// — `Eq` assumes each key appears at most once. This decodes into the
+    /// same shape the derive would have produced, then walks the entries
+    /// through the same duplicate-key check the `.inkb`/`.inkt`/transcript
+    /// decoders use (rejecting rather than silently keeping the last
+    /// occurrence — a legitimate encoder never emits a repeat, since
+    /// `insert` de-duplicates on the write side, so a repeat is corrupt
+    /// input, never a panic).
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Shadow {
+            entries: Vec<(MapKey, Value)>,
+        }
+
+        let shadow = Shadow::deserialize(deserializer)?;
+        let mut map = Self::with_capacity(shadow.entries.len());
+        for (key, value) in shadow.entries {
+            if map.contains_key(&key) {
+                return Err(serde::de::Error::custom("duplicate key in map value"));
+            }
+            map.insert(key, value);
+        }
+        Ok(map)
+    }
+}
+
+impl PartialEq for OrderedMap {
+    /// Content comparison: same number of entries, and every key in `self`
+    /// maps to an equal value in `other`. Order-insensitive by construction
+    /// (a lookup by key, not a positional walk) — the len check is a fast
+    /// path (mismatched sizes can never be equal, and it makes the
+    /// same-length-different-keys case cheap to reject), and the per-entry
+    /// `get` gives each comparison the same `Value::eq` `Arc::ptr_eq`
+    /// shortcuts as any other structural compare. `O(n)` entries, each a
+    /// linear `get` — `O(n^2)` worst case, the accepted trade for small,
+    /// game-scale maps (same trade `get`/`insert`/`remove` already make).
+    fn eq(&self, other: &Self) -> bool {
+        self.entries.len() == other.entries.len()
+            && self.entries.iter().all(|(key, value)| {
+                other
+                    .get(key)
+                    .is_some_and(|other_value| other_value == value)
+            })
+    }
 }
 
 impl OrderedMap {
@@ -646,6 +1237,19 @@ impl OrderedMap {
     /// Whether `key` is present.
     pub fn contains_key(&self, key: &MapKey) -> bool {
         self.entries.iter().any(|(k, _)| k == key)
+    }
+
+    /// Mutably borrow the value for `key`, or `None` if absent. The
+    /// intermediate-segment leg of the T1e projection RMW spine
+    /// (`docs/t1e-spec.md` §3): recursing a `make_mut` chain through a map
+    /// needs a mutable handle to an *existing* entry without touching
+    /// insertion order, which [`insert`](Self::insert) alone (add-or-replace)
+    /// can't provide.
+    pub fn get_mut(&mut self, key: &MapKey) -> Option<&mut Value> {
+        self.entries
+            .iter_mut()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v)
     }
 
     /// Insert `value` under `key`, returning the previous value if the key was
@@ -863,6 +1467,113 @@ mod tests {
         assert_eq!(m.get(&MapKey::from("a")), Some(&Value::Int(10)));
     }
 
+    // ── OrderedMap::deserialize: duplicate-key rejection (#985, follow-up to
+    // #909) ──────────────────────────────────────────────────────────────
+    //
+    // `OrderedMap`'s `Eq` is content-based and assumes each key appears at
+    // most once. A legitimate `Serialize` never emits a duplicate key —
+    // `insert` de-duplicates on the write side — so a JSON payload with a
+    // repeated key only ever arises from a hand-crafted or corrupted save/
+    // journal file (the serde deserialize boundary `Story::load_state` and
+    // friends go through). The hand-written `Deserialize` below must reject
+    // it with a decode error, never silently keep the last occurrence and
+    // hand back a map that violates the invariant its `Eq` relies on.
+
+    #[test]
+    fn ordered_map_deserialize_rejects_duplicate_key() {
+        let json = r#"{"entries":[[{"Str":"a"},{"Int":1}],[{"Str":"a"},{"Int":2}]]}"#;
+        let err = serde_json::from_str::<OrderedMap>(json)
+            .expect_err("duplicate key must not deserialize");
+        assert!(
+            err.to_string().contains("duplicate key"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn ordered_map_deserialize_accepts_distinct_keys() {
+        let json = r#"{"entries":[[{"Str":"a"},{"Int":1}],[{"Str":"b"},{"Int":2}]]}"#;
+        let m: OrderedMap = serde_json::from_str(json).expect("distinct keys must deserialize");
+        assert_eq!(m.len(), 2);
+        assert_eq!(m.get(&MapKey::from("a")), Some(&Value::Int(1)));
+        assert_eq!(m.get(&MapKey::from("b")), Some(&Value::Int(2)));
+    }
+
+    #[test]
+    fn ordered_map_serde_json_round_trip_without_duplicates() {
+        let mut m = OrderedMap::new();
+        m.insert(MapKey::from("hp"), Value::Int(10));
+        m.insert(MapKey::from(true), Value::String("flag".into()));
+        m.insert(MapKey::from(7), Value::Float(1.5));
+        let json = serde_json::to_string(&m).expect("serialize");
+        let back: OrderedMap = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, m);
+    }
+
+    // A crafted `Value::Map` payload (the shape a `SaveState`/journal decode
+    // actually walks) must reject the same way as the bare `OrderedMap` case
+    // above — the duplicate-key check has to fire through `Value`'s derived
+    // `Deserialize` too, not just when `OrderedMap` is deserialized directly.
+    // ── NS-A8 tower: equality + serde lane discipline ──────────────────
+
+    #[test]
+    fn tower_equality_is_componentwise_ieee() {
+        let a = Value::Vec2(glam::Vec2::new(1.0, 2.0));
+        assert_eq!(a, Value::Vec2(glam::Vec2::new(1.0, 2.0)));
+        // -0 == +0 per lane; a NaN lane never equals itself (T4).
+        assert_eq!(
+            Value::Vec2(glam::Vec2::new(-0.0, 1.0)),
+            Value::Vec2(glam::Vec2::new(0.0, 1.0))
+        );
+        let nan = Value::Vec3(glam::Vec3::new(f32::NAN, 0.0, 0.0));
+        assert_ne!(nan.clone(), nan);
+        // Cross-kind is plain inequality at the value layer.
+        assert_ne!(a, Value::Vec3(glam::Vec3::new(1.0, 2.0, 0.0)));
+    }
+
+    /// T5: the serde form is the flat lane array — explicit lanes
+    /// (column-major for matrices), never glam's memory representation.
+    #[test]
+    fn tower_serde_is_flat_lane_arrays() {
+        let v = Value::Vec3(glam::Vec3::new(1.0, 2.5, -3.0));
+        let json = serde_json::to_string(&v).expect("serialize");
+        assert_eq!(json, r#"{"Vec3":[1.0,2.5,-3.0]}"#);
+        let back: Value = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, v);
+
+        let m = Value::Mat2(glam::Mat2::from_cols_array(&[1.0, 2.0, 3.0, 4.0]));
+        let json = serde_json::to_string(&m).expect("serialize");
+        assert_eq!(json, r#"{"Mat2":[1.0,2.0,3.0,4.0]}"#);
+        let back: Value = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, m);
+
+        let q = Value::Quat(glam::Quat::from_xyzw(0.1, 0.2, 0.3, 0.4));
+        let back: Value = serde_json::from_str(&serde_json::to_string(&q).expect("serialize"))
+            .expect("deserialize");
+        assert_eq!(back, q);
+    }
+
+    #[test]
+    fn tower_accessors_and_from_impls_are_identity() {
+        let v = glam::Vec3::new(1.0, 2.0, 3.0);
+        assert_eq!(Value::from(v).as_vec3(), Some(v));
+        assert_eq!(Value::from(v).as_vec2(), None);
+        let m = glam::Mat4::IDENTITY;
+        assert_eq!(Value::from(m).as_mat4(), Some(m));
+        assert_eq!(Value::Int(1).as_quat(), None);
+    }
+
+    #[test]
+    fn value_map_deserialize_rejects_duplicate_key() {
+        let json = r#"{"Map":{"entries":[[{"Str":"a"},{"Int":1}],[{"Str":"a"},{"Int":2}]]}}"#;
+        let err =
+            serde_json::from_str::<Value>(json).expect_err("duplicate key must not deserialize");
+        assert!(
+            err.to_string().contains("duplicate key"),
+            "unexpected error: {err}"
+        );
+    }
+
     // ── Copy-on-write mechanics (take → make_mut → write-back) ──────────────
 
     #[test]
@@ -971,9 +1682,11 @@ mod tests {
     }
 
     #[test]
-    fn map_equality_is_order_sensitive() {
-        // Insertion order is observable, so two maps with the same entries in
-        // different order are distinct values.
+    fn map_equality_is_content_based_insertion_order_insensitive() {
+        // Issue #909, ruled 2026-07-18: #{a:1,b:2} == #{b:2,a:1} is TRUE.
+        // Two maps with the same key/value pairs inserted in different
+        // orders are the same value — equality ignores insertion order even
+        // though iteration/serialization order still follows it.
         let m1: OrderedMap = [
             (MapKey::from("a"), Value::Int(1)),
             (MapKey::from("b"), Value::Int(2)),
@@ -986,8 +1699,89 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        assert_ne!(Value::map(m1.clone()), Value::map(m2));
-        assert_eq!(Value::map(m1.clone()), Value::map(m1));
+        // Both directions — PartialEq::eq isn't assumed symmetric by the
+        // impl, so both orderings of the comparison are checked explicitly.
+        assert_eq!(Value::map(m1.clone()), Value::map(m2.clone()));
+        assert_eq!(Value::map(m2.clone()), Value::map(m1.clone()));
+        assert_eq!(Value::map(m1.clone()), Value::map(m1.clone()));
+
+        // Iteration order is unaffected by the equality ruling — each map
+        // still yields its own entries in the order they were inserted.
+        assert_eq!(
+            m1.keys().cloned().collect::<Vec<_>>(),
+            vec![MapKey::from("a"), MapKey::from("b")]
+        );
+        assert_eq!(
+            m2.keys().cloned().collect::<Vec<_>>(),
+            vec![MapKey::from("b"), MapKey::from("a")]
+        );
+    }
+
+    #[test]
+    fn map_equality_still_rejects_different_content() {
+        // Content-based equality must still distinguish maps that genuinely
+        // differ — same key count, different values; and different key
+        // counts entirely (exercises the len fast-path).
+        let a: OrderedMap = [(MapKey::from("a"), Value::Int(1))].into_iter().collect();
+        let b: OrderedMap = [(MapKey::from("a"), Value::Int(2))].into_iter().collect();
+        assert_ne!(Value::map(a.clone()), Value::map(b));
+
+        let c: OrderedMap = [
+            (MapKey::from("a"), Value::Int(1)),
+            (MapKey::from("b"), Value::Int(2)),
+        ]
+        .into_iter()
+        .collect();
+        assert_ne!(Value::map(a), Value::map(c));
+    }
+
+    #[test]
+    fn nested_map_equality_is_order_insensitive_at_every_level() {
+        // A map value nested inside another map/array is compared through
+        // the same content-based rule, recursively — reordering the inner
+        // map's keys must not change the outer value's equality.
+        let inner1: OrderedMap = [
+            (MapKey::from("x"), Value::Int(1)),
+            (MapKey::from("y"), Value::Int(2)),
+        ]
+        .into_iter()
+        .collect();
+        let inner2: OrderedMap = [
+            (MapKey::from("y"), Value::Int(2)),
+            (MapKey::from("x"), Value::Int(1)),
+        ]
+        .into_iter()
+        .collect();
+
+        let outer1: OrderedMap = [
+            (MapKey::from("inner"), Value::map(inner1)),
+            (MapKey::from("other"), Value::Int(9)),
+        ]
+        .into_iter()
+        .collect();
+        let outer2: OrderedMap = [
+            (MapKey::from("other"), Value::Int(9)),
+            (MapKey::from("inner"), Value::map(inner2)),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(Value::map(outer1), Value::map(outer2));
+    }
+
+    #[test]
+    fn record_equality_is_unaffected_by_map_ordering_ruling() {
+        // Records are shape-ordered, not insertion-ordered (fields have a
+        // fixed position from the closed shape) — the map ruling must not
+        // change record equality, which stays a positional field compare
+        // gated on matching `ShapeId`. Field order can't be reordered
+        // through the public API, so this locks the existing behavior
+        // rather than exercising a new order-insensitivity path.
+        let shape = ShapeId(0);
+        let r1 = Value::record(shape, vec![Value::Int(1), Value::Int(2)]);
+        let r2 = Value::record(shape, vec![Value::Int(1), Value::Int(2)]);
+        let r3 = Value::record(shape, vec![Value::Int(2), Value::Int(1)]);
+        assert_eq!(r1, r2);
+        assert_ne!(r1, r3);
     }
 
     #[test]
@@ -1141,5 +1935,128 @@ mod tests {
             Value::Null,
         ]);
         assert_eq!(json_round_trip(&v), v);
+    }
+
+    // ── Option (NS-A1, docs/stdlib-spec.md §1.1/§1.4) ───────────────────
+
+    #[test]
+    fn option_value_type_and_constructors() {
+        assert_eq!(Value::none().value_type(), ValueType::Option);
+        assert_eq!(Value::some(Value::Int(3)).value_type(), ValueType::Option);
+        assert_eq!(Value::none().as_option(), Some(None));
+        assert_eq!(
+            Value::some(Value::Int(3)).as_option(),
+            Some(Some(&Value::Int(3)))
+        );
+        assert_eq!(Value::Int(3).as_option(), None);
+    }
+
+    #[test]
+    fn option_equality_is_structural() {
+        assert_eq!(Value::none(), Value::none());
+        assert_eq!(Value::some(Value::Int(1)), Value::some(Value::Int(1)));
+        assert_ne!(Value::some(Value::Int(1)), Value::some(Value::Int(2)));
+        assert_ne!(Value::some(Value::Int(1)), Value::none());
+        // The ruled `Option[T] ≠ T` strictness at the value layer: a
+        // wrapped value is never equal to its bare form.
+        assert_ne!(Value::some(Value::Int(1)), Value::Int(1));
+        assert_ne!(Value::none(), Value::Null);
+    }
+
+    #[test]
+    fn option_nesting_is_preserved() {
+        // some(none) is a real value, distinct from none — the enum shape
+        // nests like any parameterized builtin.
+        let some_none = Value::some(Value::none());
+        assert_ne!(some_none, Value::none());
+        assert_eq!(some_none, Value::some(Value::none()));
+    }
+
+    #[test]
+    fn option_clone_is_arc_bump() {
+        let v = Value::some(Value::array(vec![Value::Int(1)]));
+        let v2 = v.clone();
+        let (Value::OptionVal(Some(a)), Value::OptionVal(Some(b))) = (&v, &v2) else {
+            unreachable!("both are freshly built some values");
+        };
+        assert!(Arc::ptr_eq(a, b), "clone shares the payload Arc");
+    }
+
+    #[test]
+    fn option_serde_round_trip_is_structural() {
+        for v in [
+            Value::none(),
+            Value::some(Value::Int(7)),
+            Value::some(Value::none()),
+            Value::array(vec![Value::none(), Value::some(Value::from("x"))]),
+        ] {
+            assert_eq!(json_round_trip(&v), v);
+        }
+    }
+
+    // ── NS-A5 `Value::Range` (F7, docs/stdlib-spec.md §7) ──────────────────
+
+    #[test]
+    fn range_value_type_and_accessors() {
+        let r = Value::range(1, 6, true);
+        assert_eq!(r.value_type(), ValueType::Range);
+        assert_eq!(r.as_range(), Some((1, 6, true)));
+        assert_eq!(Value::Int(1).as_range(), None);
+        assert_eq!(r.range_end_exclusive(), Some(7));
+        assert_eq!(Value::range(1, 7, false).range_end_exclusive(), Some(7));
+        assert_eq!(r.range_len(), Some(6));
+        assert_eq!(Value::range(0, 0, false).range_len(), Some(0));
+        // Backwards ranges are empty, never negative-length.
+        assert_eq!(Value::range(5, 2, false).range_len(), Some(0));
+        // i64 normalization: 1..=i32::MAX does not overflow.
+        assert_eq!(
+            Value::range(1, i32::MAX, true).range_end_exclusive(),
+            Some(i64::from(i32::MAX) + 1)
+        );
+        assert_eq!(
+            Value::range(i32::MIN, i32::MAX, true).range_len(),
+            Some(1i64 << 32)
+        );
+    }
+
+    #[test]
+    fn range_equality_is_content_equality() {
+        // Same sequence, different written form: equal (F7 "content
+        // equality" — the form is display fidelity, not content).
+        assert_eq!(Value::range(1, 6, true), Value::range(1, 7, false));
+        assert_eq!(Value::range(1, 7, false), Value::range(1, 6, true));
+        // Same form, same bounds: equal.
+        assert_eq!(Value::range(0, 3, false), Value::range(0, 3, false));
+        // Different sequences: unequal.
+        assert_ne!(Value::range(0, 3, false), Value::range(1, 3, false));
+        assert_ne!(Value::range(0, 3, false), Value::range(0, 4, false));
+        // Every empty range equals every other empty range (both denote
+        // the zero-length sequence, like two empty arrays).
+        assert_eq!(Value::range(0, 0, false), Value::range(5, 5, false));
+        assert_eq!(Value::range(9, 2, false), Value::range(0, 0, false));
+        // An empty range is never equal to a non-empty one.
+        assert_ne!(Value::range(0, 0, false), Value::range(0, 1, false));
+        // Cross-variant: a range is not an array, int, or anything else.
+        assert_ne!(Value::range(0, 2, false), Value::array(vec![]));
+        assert_ne!(Value::range(0, 2, false), Value::Int(0));
+    }
+
+    #[test]
+    fn range_serde_round_trip_preserves_the_written_form() {
+        for v in [
+            Value::range(1, 6, true),
+            Value::range(0, 10, false),
+            Value::range(-3, 3, false),
+            Value::range(0, 0, false),
+            Value::array(vec![Value::range(1, 2, true), Value::Int(9)]),
+        ] {
+            let back = json_round_trip(&v);
+            assert_eq!(back, v);
+            // The written form survives (not just content equality): the
+            // triple round-trips bit-for-bit.
+            if let Value::Range { .. } = &v {
+                assert_eq!(back.as_range(), v.as_range());
+            }
+        }
     }
 }

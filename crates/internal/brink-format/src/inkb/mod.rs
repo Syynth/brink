@@ -29,17 +29,19 @@ pub(crate) mod write;
 
 pub use read::{
     read_inkb, read_inkb_index, read_section_address_paths, read_section_addresses,
-    read_section_alias_table, read_section_containers, read_section_externals,
-    read_section_line_tables, read_section_list_defs, read_section_list_items,
-    read_section_list_literals, read_section_literal_pool, read_section_name_table,
-    read_section_struct_shapes, read_section_variables, read_section_visibility,
+    read_section_alias_table, read_section_containers, read_section_effect_rows,
+    read_section_externals, read_section_frame_shapes, read_section_line_tables,
+    read_section_list_defs, read_section_list_items, read_section_list_literals,
+    read_section_literal_pool, read_section_name_table, read_section_struct_shapes,
+    read_section_variables, read_section_visibility,
 };
 pub use write::{
     assemble_inkb, write_inkb, write_section_address_paths, write_section_addresses,
-    write_section_alias_table, write_section_containers, write_section_externals,
-    write_section_line_tables, write_section_list_defs, write_section_list_items,
-    write_section_list_literals, write_section_literal_pool, write_section_name_table,
-    write_section_struct_shapes, write_section_variables, write_section_visibility,
+    write_section_alias_table, write_section_containers, write_section_effect_rows,
+    write_section_externals, write_section_frame_shapes, write_section_line_tables,
+    write_section_list_defs, write_section_list_items, write_section_list_literals,
+    write_section_literal_pool, write_section_name_table, write_section_struct_shapes,
+    write_section_variables, write_section_visibility,
 };
 
 use core::ops::Range;
@@ -76,9 +78,10 @@ pub(crate) const HEADER_PREAMBLE: usize = 16;
 /// Each offset table entry: kind(1) + reserved(3) + offset(4)
 pub(crate) const SECTION_ENTRY_SIZE: usize = 8;
 /// Number of *mandatory* sections in the current format (always present,
-/// including the possibly-empty `AliasTable`). The optional `Visibility`
-/// section (M-2b) adds one more entry to the offset table when non-empty.
-pub(crate) const SECTION_COUNT: u8 = 13;
+/// including the possibly-empty `AliasTable` and `EffectRows`). The optional
+/// `Visibility` section (M-2b) adds one more entry to the offset table when
+/// non-empty.
+pub(crate) const SECTION_COUNT: u8 = 14;
 
 // Value type tags
 pub(crate) const VAL_INT: u8 = 0x00;
@@ -109,12 +112,86 @@ pub(crate) const VAL_CLOSURE: u8 = 0x0C;
 // host-resource tokens. `kind NameId, u64 id` — no live pointer, no
 // dedicated opcode; handles enter the script world only via bindings.
 pub(crate) const VAL_HANDLE: u8 = 0x0D;
+// T1e (`docs/t1e-spec.md` §3, `docs/format-v4-rfc.md` §1): symbolic path
+// projections. `cell reference (= VAL_VAR_POINTER payload shape), u8 segment
+// count, then segments (u8 kind: 0=index i32 / 1=key value)`. Segment kind
+// `2=range` is RESERVED — never emitted (icebox #829). First emission of
+// this reserved tag.
+pub(crate) const VAL_PROJECTION: u8 = 0x0E;
+// NS-A1 (`docs/stdlib-spec.md` §1.1/§1.4, ruled 2026-07-18): the compiler-
+// owned `Option[T]` enum. Wire form: one flag byte (0 = `none`, 1 =
+// `some`), then the inner value when `some` — the enum's two variants,
+// nothing more. Next free tag after `VAL_RECORD` (0x0F); this PR's own
+// reservation, same "assigned here" precedent as the record/handle/
+// projection tags above. Recursion counts toward `MAX_DECODE_DEPTH`
+// exactly like the collection tags (a crafted chain of nested `some`s is
+// the same stack-overflow shape as nested single-element arrays).
+pub(crate) const VAL_OPTION: u8 = 0x10;
+// NS-A5 (`docs/stdlib-spec.md` §7, F7 ruled 2026-07-19): the integer range
+// value kind. Wire form: start i32, end i32, one flag byte (0 = `..`
+// exclusive, 1 = `..=` inclusive) — flat, no recursion, so it does NOT
+// count toward `MAX_DECODE_DEPTH` (a range holds two ints, never another
+// value). Next free tag after `VAL_OPTION` (0x10); same "assigned here"
+// reservation precedent as its neighbors. Distinct from the RESERVED
+// projection-*segment* kind 0x02 below — that is a different namespace.
+pub(crate) const VAL_RANGE: u8 = 0x11;
+// NS-A8 (`docs/tower-mini-spec.md` T5, issue #1114): the numeric tower.
+// Wire form is hand-serialized **explicit little-endian f32 lanes** — never
+// glam's memory layout (it varies with SIMD features and versions) and never
+// serde-through-glam. Lane order: vectors and the quat `x, y(, z, w)`;
+// matrices column-major, column-by-column. Fixed payload sizes (no counts,
+// no recursion — tower values are leaves, so like `VAL_RANGE` they do NOT
+// count toward `MAX_DECODE_DEPTH`): vec2 = 8 bytes, vec3 = 12,
+// vec4/quat/mat2 = 16, mat3 = 36, mat4 = 64. Next free tags after
+// `VAL_RANGE` (0x11); this PR's own reservation, the same "assigned here"
+// precedent as the record/handle/projection/option/range tags above. No
+// format `VERSION` bump — additive value tags follow the NS-A1 `VAL_OPTION`
+// precedent (an old reader rejects the unknown tag; an old file simply
+// never contains one).
+pub(crate) const VAL_VEC2: u8 = 0x12;
+pub(crate) const VAL_VEC3: u8 = 0x13;
+pub(crate) const VAL_VEC4: u8 = 0x14;
+pub(crate) const VAL_QUAT: u8 = 0x15;
+pub(crate) const VAL_MAT2: u8 = 0x16;
+pub(crate) const VAL_MAT3: u8 = 0x17;
+pub(crate) const VAL_MAT4: u8 = 0x18;
+// NS-A7 (`docs/stdlib-spec.md` §8, issue #1113): the weighted table.
+// Wire form: u32 entry count, then per entry an i32 weight followed by a
+// recursively-encoded value. Values recurse, so decoding counts toward
+// `MAX_DECODE_DEPTH` exactly like the collection tags. The reader enforces
+// the §8 evidence-by-construction invariant (non-empty, weights ≥ 1) — a
+// violating payload is a decode error, so a `Weighted` never enters the
+// runtime invalid, even from a crafted file. Next free tag after
+// `VAL_MAT4` (0x18); this PR's own reservation, additive per the NS-A1
+// `VAL_OPTION` precedent (no `VERSION` bump).
+pub(crate) const VAL_WEIGHTED: u8 = 0x19;
+/// Wire kind for a [`crate::ProjSegment::Index`] segment.
+pub(crate) const PROJ_SEG_INDEX: u8 = 0x00;
+/// Wire kind for a [`crate::ProjSegment::Key`] segment.
+pub(crate) const PROJ_SEG_KEY: u8 = 0x01;
+// Segment kind 0x02 (range: start i32, end i32) is RESERVED — sequence
+// slices/ranges (icebox #829). Never emitted; the reader rejects it
+// (`InvalidProjSegmentKind`) since no `ProjSegment` variant exists to decode
+// into, the same discipline the value-tag reservations above follow.
 
-// Reserved v4 value tags — numeric assignments frozen by the one-bump rule,
-// emitted by nothing in 4.0 (each is materialized when its milestone lands,
-// still under VERSION 4). The strict reader rejects them until then because no
-// `Value` variant exists to decode into. See `docs/format-v4-rfc.md` §1:
-//   0x0E VAL_PROJECTION (T1e)
+// EffectRows call-atom slots (T2-3, `docs/effects-spec.md` §11). The
+// capability-parameter slot is populated `(any)` in v1; the handle-parameter
+// slot is reserved (`docs/t1d-spec.md` §7) and always `None`.
+/// Capability-parameter slot value: the whole capability, unrefined. The only
+/// value v1 emits; path-granular tags (#826) are reserved (reader rejects).
+pub(crate) const CAP_PARAM_ANY: u8 = 0x00;
+/// Handle-parameter slot value: no bound handle. The only value v1 emits;
+/// a non-zero slot is the reserved handle-parameterized form (reader rejects).
+pub(crate) const HANDLE_PARAM_NONE: u8 = 0x00;
+
+/// NS-A2 (issue #1108): bit assignments for the `DirectEffects` extension
+/// flags byte (`EffectRows` section version 3). Bits 3–7 are RESERVED —
+/// the strict reader rejects a nonzero reserved bit until a section version
+/// graduates it (the same discipline as the capability/handle slots).
+pub(crate) const EFFECT_DIM_EMITS: u8 = 0b0000_0001;
+pub(crate) const EFFECT_DIM_TAGS: u8 = 0b0000_0010;
+pub(crate) const EFFECT_DIM_FAULTS: u8 = 0b0000_0100;
+pub(crate) const EFFECT_DIM_KNOWN_MASK: u8 = EFFECT_DIM_EMITS | EFFECT_DIM_TAGS | EFFECT_DIM_FAULTS;
 
 // LineContent tags
 pub(crate) const LINE_PLAIN: u8 = 0x00;
@@ -166,12 +243,22 @@ pub enum SectionKind {
     /// encoding at the format layer only — nothing in the compiler emits a
     /// non-empty table yet (see the PR description's scope note).
     StructShapes = 0x0C,
+    /// T2-3 `EffectRows` (`docs/effects-spec.md` §11, `docs/format-v4-rfc.md`
+    /// §2): the `DefinitionId → row` table of factored effect rows — one per
+    /// knot/stitch (the resume-scheduling estimate, §12.1). Section-locally
+    /// versioned (one prefix byte) so the row encoding can grow without a
+    /// format-wide bump — the reservation this graduates was made for exactly
+    /// this, so no `VERSION` bump accompanies it. Always present (possibly
+    /// empty). Was reserved (count-0) through v5; this slice lands the real
+    /// encoding **and** first emission (rows are inert metadata the runtime
+    /// does not yet read).
+    EffectRows = 0x0D,
     /// M-2b `Visibility` (`docs/modules-spec.md` §4, `docs/format-spec.md`):
     /// the `DefinitionId`s of every `#@private` definition, sorted ascending.
     /// **Omitted entirely when empty** (the common all-public case), so
     /// public-only stories stay byte-identical for that section — the
     /// section is purely additive and self-framed in the offset table.
-    /// `0x0D` is reserved for `EffectRows`, so this takes the next free tag.
+    /// `0x0D` is claimed by `EffectRows`, so this takes the next free tag.
     Visibility = 0x0E,
     /// M-3 `AliasTable` (`docs/modules-spec.md` §5): old→new `DefinitionId`
     /// rename records from `#@was(old_name)` directives. Section-locally
@@ -180,19 +267,21 @@ pub enum SectionKind {
     /// `0x0E` was claimed by `Visibility` (M-2b), so this takes the next
     /// free tag.
     AliasTable = 0x0F,
+    /// FS-3 `FrameShapes` (`docs/flow-suspension-spec.md` §4/§11): one
+    /// name-keyed frame shape per `await` site — the static crossing-locals
+    /// description the runtime spills/restores around a park.
+    /// Section-locally versioned (one prefix byte) so the shape encoding can
+    /// grow without a format-wide bump. **Omitted entirely when empty** (the
+    /// common case — and, behind the E052 fence, the *only* case today, since
+    /// no `await` compiles yet), so all existing stories stay byte-identical
+    /// and no `VERSION` bump is needed. `0x0F` was claimed by `AliasTable`, so
+    /// this takes the next free tag.
+    FrameShapes = 0x10,
 }
 
-// Reserved v4 section kinds — numeric assignments frozen by the §9 one-bump
-// rule (`docs/format-v4-rfc.md` §2 "Sections"), emitted by nothing in 4.0,
-// still unclaimed in 5.0. Deliberately NOT a `SectionKind` variant: `from_u8`
-// has no match arm for this, so the strict reader keeps rejecting it
-// (`InvalidSectionKind`) until its milestone lands and a real variant is
-// added, the same discipline `StructShapes` itself followed before it
-// graduated, and `Visibility` (0x0E, skipping this gap) followed. `AliasTable`
-// takes the next tag after `Visibility`, 0x0F.
-//   0x0D EffectRows    — reserved, count always 0, section-locally
-//                        versioned so T2 can define the row encoding without
-//                        another format bump
+// All v4-reserved section kinds have now graduated: `LiteralPool` (0x0B),
+// `StructShapes` (0x0C), and `EffectRows` (0x0D, T2-3). `Visibility` (0x0E)
+// and `AliasTable` (0x0F) were later one-bump additions past the reserved gap.
 
 impl SectionKind {
     pub(crate) fn from_u8(tag: u8) -> Result<Self, DecodeError> {
@@ -209,8 +298,10 @@ impl SectionKind {
             0x0A => Ok(Self::AddressPaths),
             0x0B => Ok(Self::LiteralPool),
             0x0C => Ok(Self::StructShapes),
+            0x0D => Ok(Self::EffectRows),
             0x0E => Ok(Self::Visibility),
             0x0F => Ok(Self::AliasTable),
+            0x10 => Ok(Self::FrameShapes),
             _ => Err(DecodeError::InvalidSectionKind(tag)),
         }
     }
@@ -274,24 +365,26 @@ pub(crate) fn safe_capacity(
 mod tests {
     use super::*;
 
-    /// `EffectRows` (0x0D, `docs/format-v4-rfc.md` §2) is numbered but
-    /// deliberately not a `SectionKind` variant — the strict reader must keep
-    /// rejecting it until its milestone lands. `LiteralPool` (0x0B)
-    /// graduated to a real section in T1b-2 (#570); `StructShapes` (0x0C)
-    /// graduates here (TM-4, #620).
+    /// Every v4-reserved section tag has now graduated to a real
+    /// `SectionKind` variant — `LiteralPool` (0x0B, T1b-2 #570),
+    /// `StructShapes` (0x0C, TM-4 #620), and `EffectRows` (0x0D, T2-3 #862).
+    /// `FrameShapes` (0x10, FS-3c) is the newest tag; the next unclaimed tag
+    /// (0x11) is still rejected.
     #[test]
-    fn from_u8_rejects_reserved_v4_sections() {
-        let tag = 0x0Du8;
+    fn from_u8_rejects_unclaimed_section_tag() {
+        let tag = 0x11u8;
         let err = SectionKind::from_u8(tag).unwrap_err();
         assert_eq!(err, DecodeError::InvalidSectionKind(tag));
     }
 
     #[test]
     fn from_u8_accepts_all_current_sections() {
-        for tag in 0x01u8..=0x0C {
+        // 0x01..=0x0D are contiguous real sections (EffectRows graduated 0x0D).
+        for tag in 0x01u8..=0x0D {
             assert!(SectionKind::from_u8(tag).is_ok());
         }
         assert!(SectionKind::from_u8(0x0E).is_ok(), "Visibility (M-2b)");
         assert!(SectionKind::from_u8(0x0F).is_ok(), "AliasTable (M-3)");
+        assert!(SectionKind::from_u8(0x10).is_ok(), "FrameShapes (FS-3c)");
     }
 }

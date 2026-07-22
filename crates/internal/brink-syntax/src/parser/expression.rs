@@ -1,11 +1,12 @@
 use crate::SyntaxKind::{
-    self, AMP_AMP, ARRAY_LITERAL, BANG, BANG_EQ, BANG_QUESTION, BOOLEAN_LIT, CARET, COLON, COMMA,
-    DIVERT, DIVERT_TARGET_EXPR, DOT, EOF, EQ_EQ, FIELD_ACCESS_EXPR, FLOAT, FLOAT_LIT, FN_LITERAL,
-    FUNCTION_CALL, GT, GT_EQ, HASH, IDENT, IDENTIFIER, INDEX_EXPR, INFIX_EXPR, INTEGER,
-    INTEGER_LIT, KW_AND, KW_FALSE, KW_HAS, KW_HASNT, KW_MOD, KW_NOT, KW_OR, KW_TRUE, L_BRACE,
-    L_BRACKET, L_PAREN, LIST_EXPR, LT, LT_EQ, MAP_ENTRY, MAP_LITERAL, MINUS, MINUS_EQ, NEWLINE,
-    PAREN_EXPR, PERCENT, PIPE, PLUS, PLUS_EQ, POSTFIX_EXPR, PREFIX_EXPR, QUESTION, QUOTE, R_BRACE,
-    R_BRACKET, R_PAREN, SLASH, STAR, STRING_LIT, STRUCT_FIELD_INIT, STRUCT_LITERAL,
+    self, AMP_AMP, ARRAY_LITERAL, BANG, BANG_EQ, BANG_QUESTION, BOOLEAN_LIT, CALL_EXPR, CARET,
+    COLON, COMMA, DIVERT, DIVERT_TARGET_EXPR, DOT, EOF, EQ, EQ_EQ, FIELD_ACCESS_EXPR, FLOAT,
+    FLOAT_LIT, FN_LITERAL, FUNCTION_CALL, GT, GT_EQ, HASH, IDENT, IDENTIFIER, INDEX_EXPR,
+    INFIX_EXPR, INTEGER, INTEGER_LIT, KW_AND, KW_FALSE, KW_HAS, KW_HASNT, KW_MOD, KW_NOT, KW_OR,
+    KW_REF, KW_SHUFFLE, KW_TRUE, L_BRACE, L_BRACKET, L_PAREN, LIST_EXPR, LT, LT_EQ, MAP_ENTRY,
+    MAP_LITERAL, MINUS, MINUS_EQ, NEWLINE, PAREN_EXPR, PERCENT, PIPE, PLUS, PLUS_EQ, POSTFIX_EXPR,
+    PREFIX_EXPR, QUESTION, QUOTE, R_BRACE, R_BRACKET, R_PAREN, RANGE_EXPR, REF_EXPR, SLASH, STAR,
+    STRING_LIT, STRUCT_FIELD_INIT, STRUCT_LITERAL,
 };
 
 use super::Parser;
@@ -23,10 +24,13 @@ enum Prec {
     Equality = 4,   // ==, !=
     Comparison = 5, // <, >, <=, >=
     HasOps = 6,     // has, hasnt, ?, !?
-    Add = 7,        // +, -
-    Mul = 8,        // *, /, %, mod
-    Intersect = 9,  // ^ (list intersection in ink, not power)
-    Prefix = 10,    // -, !, not (unary)
+    Range = 7,      // .., ..= (NS-A5 — binds tighter than ==, so `r == 1..5`
+    // compares against the range; looser than +, so
+    // `lo..hi+1` ranges to the sum)
+    Add = 8,        // +, -
+    Mul = 9,        // *, /, %, mod
+    Intersect = 10, // ^ (list intersection in ink, not power)
+    Prefix = 11,    // -, !, not (unary)
                     // Postfix (++, --) is handled without a Prec value — bumped directly in the loop.
 }
 
@@ -66,6 +70,12 @@ pub(crate) fn expression(p: &mut Parser<'_, '_>) {
 }
 
 /// Pratt expression parser core.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one commented arm per operator family — the NS-A5 range arm \
+              pushed this just past 100; splitting the loop would obscure \
+              the single Pratt structure"
+)]
 fn expression_bp(p: &mut Parser<'_, '_>, min_bp: Prec) {
     let checkpoint = p.checkpoint();
 
@@ -136,6 +146,63 @@ fn expression_bp(p: &mut Parser<'_, '_>, min_bp: Prec) {
             p.start_node(IDENTIFIER);
             p.bump(); // field name
             p.finish_node();
+            p.finish_node();
+            continue;
+        }
+
+        // Postfix call attempt on a non-bare-name callee: `expr(args…)`.
+        // The bare-name shape (`ident` immediately followed by `(`) is
+        // already fully consumed by `function_call` in `atom()` before this
+        // loop ever runs, so reaching `(` here means the callee just parsed
+        // is something else — an `INDEX_EXPR`, `FIELD_ACCESS_EXPR`,
+        // `PAREN_EXPR`, a chained `FUNCTION_CALL` result, etc. Direct-call
+        // syntax is RULED (t1c-spec §3) to a bare variable/temp/param
+        // callee only — dispatch through a computed callee is the
+        // Explicit `call(f, args…)` form instead, and "method-call syntax"
+        // is explicitly out of T1c (§10) — so this is never a legal
+        // construct. Parse it anyway (mirrors `FUNCTION_CALL`'s shape)
+        // rather than leaving `(args…)` unconsumed: today that tail
+        // silently reappears as trailing prose TEXT on the content line,
+        // corrupting output on top of dropping the call entirely (issue
+        // #869's "silent no-op" class — confirmed on all three
+        // non-bare-name callee shapes by the npc-fsm/behavior-tree tier1
+        // corpus fixtures). `brink-ir`'s HIR lowering turns this into a
+        // loud E104 diagnostic instead of a silent drop.
+        if p.current() == L_PAREN {
+            p.start_node_at(checkpoint, CALL_EXPR);
+            p.bump(); // (
+            p.skip_ws();
+            if p.current() != R_PAREN {
+                super::divert::arg_list(p);
+            }
+            p.skip_ws();
+            p.expect(R_PAREN);
+            p.finish_node();
+            continue;
+        }
+
+        // `..` / `..=` — range literal (NS-A5, docs/stdlib-spec.md §7).
+        // Two adjacent DOT tokens (same raw-adjacency trick as `++`/`||`;
+        // the lexer never merges them — `1..5` lexes INTEGER DOT DOT
+        // INTEGER because a float requires a digit after its dot), plus an
+        // adjacent EQ for the inclusive form. Non-associative in spirit:
+        // the right operand is parsed AT `Prec::Range`, so `a..b..c` nests
+        // only leftward — `(a..b)..c` — and dies in the analyzer (a range
+        // bound must be an int, never a range).
+        if p.current() == DOT && p.nth_raw(1) == DOT {
+            let prec = Prec::Range;
+            if prec <= min_bp {
+                break;
+            }
+            let inclusive = p.nth_raw(2) == EQ;
+            p.start_node_at(checkpoint, RANGE_EXPR);
+            p.bump(); // first .
+            p.bump(); // second .
+            if inclusive {
+                p.bump(); // =
+            }
+            p.skip_ws();
+            expression_bp(p, prec);
             p.finish_node();
             continue;
         }
@@ -224,6 +291,18 @@ fn atom(p: &mut Parser<'_, '_>) -> bool {
             true
         }
 
+        // `shuffle(…)` in expression/statement position (NS-A6, issue
+        // #1112): `shuffle` is lexed as `KW_SHUFFLE` for the sequence
+        // header (`{shuffle: …}` — always followed by `:`), so the stdlib
+        // mutator call spelling needs this contextual arm. Gated on `(`,
+        // which a sequence header position can never produce; the AST
+        // layer's `Identifier::name`/`Path::segments` already accept
+        // keyword tokens as contextual identifiers.
+        KW_SHUFFLE if p.nth(1) == L_PAREN => {
+            function_call(p);
+            true
+        }
+
         // Literals
         INTEGER => {
             p.start_node(INTEGER_LIT);
@@ -271,8 +350,33 @@ fn atom(p: &mut Parser<'_, '_>) -> bool {
             true
         }
 
+        // `ref lvalue-path` — path-projection creation (T1e §2,
+        // docs/t1e-spec.md). Expression position, same superset-grammar
+        // rule as the sigil family above: `brink-syntax` always parses it;
+        // whether the position is legal (ref-argument only — calls,
+        // `#fn(…)`, `bind(…)` — never standalone) and whether the root is a
+        // durable cell is `brink-analyzer`'s job.
+        KW_REF => {
+            ref_expr(p);
+            true
+        }
+
         _ => false,
     }
+}
+
+/// `ref` `operand` — one link of the T1e path-projection grammar
+/// (docs/t1e-spec.md §2). `operand` reuses the ordinary Pratt parser at
+/// `Prec::Prefix` (tightest), so it naturally picks up a bare path, a dotted
+/// field chain, `[…]` indexing, or a mix (`ref party[leader].hp`) — those
+/// postfix forms already parse as part of any primary expression (T1b §4,
+/// TM-4b §6); nothing new needed here beyond the `ref` keyword itself.
+fn ref_expr(p: &mut Parser<'_, '_>) {
+    p.start_node(REF_EXPR);
+    p.bump(); // `ref`
+    p.skip_ws();
+    expression_bp(p, Prec::Prefix);
+    p.finish_node();
 }
 
 /// `[ index ]` — one link of a postfix indexing chain (T1b §4): `a[0]`,

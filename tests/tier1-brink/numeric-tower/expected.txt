@@ -1,0 +1,23 @@
+a is vec3 { x: 1, y: 2, z: 3 }.
+sum vec3 { x: 5, y: 7, z: 9 }.
+diff vec3 { x: 3, y: 3, z: 3 }.
+prod vec3 { x: 4, y: 10, z: 18 }.
+scaled vec3 { x: 2, y: 4, z: 6 } and vec3 { x: 2, y: 4, z: 6 }.
+negated vec3 { x: -1, y: -2, z: -3 }.
+dot 32.
+cross vec3 { x: 0, y: 0, z: 1 }.
+lanes 1 2 3.
+v is vec2 { x: 3, y: 4 }, dot 25.
+mins vec3 { x: 1, y: 2, z: 3 }, maxes vec2 { x: 3, y: 4 }.
+clamped vec2 { x: 0, y: 2 }.
+lerped vec2 { x: 5, y: 10 }.
+q is quat { x: 0, y: 0, z: 0, w: 1 }.
+rotated vec3 { x: 1, y: 2, z: 3 }.
+m is mat2 { x_axis: vec2 { x: 1, y: 2 }, y_axis: vec2 { x: 3, y: 4 } }.
+col vec2 { x: 3, y: 4 }.
+transformed vec2 { x: 1, y: 2 }.
+same true, different false.
+int lanes promoted.
+composed mat2 { x_axis: vec2 { x: 3, y: 4 }, y_axis: vec2 { x: -1, y: -2 } }.
+mat scaled mat2 { x_axis: vec2 { x: 2, y: 4 }, y_axis: vec2 { x: 6, y: 8 } } and mat2 { x_axis: vec2 { x: 3, y: 6 }, y_axis: vec2 { x: 9, y: 12 } }.
+divided vec3 { x: 0.5, y: 1, z: 1.5 } and vec2 { x: 1.5, y: 2 }.

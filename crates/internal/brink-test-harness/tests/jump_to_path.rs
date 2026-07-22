@@ -45,7 +45,8 @@ fn run_to_yield(story: &mut Story<FastRng>) -> String {
             Line::Text { text, .. }
             | Line::Done { text, .. }
             | Line::Choices { text, .. }
-            | Line::End { text, .. } => text.as_str(),
+            | Line::End { text, .. }
+            | Line::Suspended { text, .. } => text.as_str(),
         })
         .collect()
 }
@@ -314,7 +315,8 @@ fn jump_into_tunnel_target_completes_on_frameless_return() {
                 Line::Text { text, .. }
                 | Line::Done { text, .. }
                 | Line::Choices { text, .. }
-                | Line::End { text, .. } => text.as_str(),
+                | Line::End { text, .. }
+                | Line::Suspended { text, .. } => text.as_str(),
             })
             .collect::<String>(),
         "Side content.\n"

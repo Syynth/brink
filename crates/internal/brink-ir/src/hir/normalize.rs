@@ -139,6 +139,11 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 if trailing_eol {
                     b.stmts.push(Stmt::EndOfLine);
                 }
+                // `splice_around` (suffix) and the EndOfLine push can both
+                // change the trailing stmt, so the cloned branch's `tail` may
+                // be stale — recompute it (harmless today, load-bearing at the
+                // S3 cutover). This pass runs on cloned HIR right before LIR.
+                b.recompute_tail();
                 branches.push(b);
             }
 
@@ -158,6 +163,7 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 if trailing_eol {
                     exhausted.stmts.push(Stmt::EndOfLine);
                 }
+                exhausted.recompute_tail();
                 branches.push(exhausted);
                 // Replace `once` with `stopping` so the exhausted branch repeats.
                 (seq.kind & !SequenceType::ONCE) | SequenceType::STOPPING
@@ -180,6 +186,7 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 if trailing_eol {
                     body.stmts.push(Stmt::EndOfLine);
                 }
+                body.recompute_tail();
                 branches.push(CondBranch {
                     condition: branch.condition.clone(),
                     body,
@@ -198,6 +205,7 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 if trailing_eol {
                     else_body.stmts.push(Stmt::EndOfLine);
                 }
+                else_body.recompute_tail();
                 branches.push(CondBranch {
                     condition: None,
                     body: else_body,
@@ -230,7 +238,7 @@ fn splice_around(
     prefix: &[ContentPart],
     suffix: &[ContentPart],
     tags: &[Tag],
-    ptr: Option<brink_syntax::ast::SyntaxNodePtr>,
+    ptr: Option<crate::Provenance>,
 ) {
     let has_prefix = !prefix.is_empty();
     let has_suffix = !suffix.is_empty();
@@ -315,60 +323,32 @@ fn splice_around(
 }
 
 #[cfg(test)]
-#[expect(clippy::panic, clippy::items_after_statements)]
+#[expect(clippy::panic)]
 mod tests {
-    use brink_syntax::ast::{AstNode, SyntaxNodePtr};
-
     use super::super::types::*;
     use super::normalize_file;
 
     // ─── Helpers ────────────────────────────────────────────────────
 
-    fn dummy_ptr() -> SyntaxNodePtr {
-        let parsed = brink_syntax::parse("hello\n");
-        let root = parsed.tree().syntax().clone();
-        SyntaxNodePtr::from_node(&root)
+    fn dummy_ptr() -> crate::Provenance {
+        crate::Provenance::synthetic(
+            crate::provenance::NodeClass::Content,
+            rowan::TextRange::new(rowan::TextSize::new(0), rowan::TextSize::new(6)),
+        )
     }
 
-    fn dummy_tag_ptr() -> brink_syntax::ast::AstPtr<brink_syntax::ast::Tag> {
-        let parsed = brink_syntax::parse("hello #tag\n");
-        let root = parsed.tree().syntax().clone();
-        // Find the Tag node in the tree.
-        fn find_tag(
-            node: &brink_syntax::SyntaxNode,
-        ) -> Option<brink_syntax::ast::AstPtr<brink_syntax::ast::Tag>> {
-            use brink_syntax::ast::AstNode;
-            if let Some(tag) = brink_syntax::ast::Tag::cast(node.clone()) {
-                return Some(brink_syntax::ast::AstPtr::new(&tag));
-            }
-            for child in node.children() {
-                if let Some(ptr) = find_tag(&child) {
-                    return Some(ptr);
-                }
-            }
-            None
-        }
-        find_tag(&root).expect("should find Tag node in 'hello #tag'")
+    fn dummy_tag_ptr() -> crate::Provenance {
+        crate::Provenance::synthetic(
+            crate::provenance::NodeClass::Tag,
+            rowan::TextRange::new(rowan::TextSize::new(6), rowan::TextSize::new(10)),
+        )
     }
 
-    fn dummy_choice_ptr() -> brink_syntax::ast::AstPtr<brink_syntax::ast::Choice> {
-        let parsed = brink_syntax::parse("* choice\n");
-        let root = parsed.tree().syntax().clone();
-        fn find_choice(
-            node: &brink_syntax::SyntaxNode,
-        ) -> Option<brink_syntax::ast::AstPtr<brink_syntax::ast::Choice>> {
-            use brink_syntax::ast::AstNode;
-            if let Some(choice) = brink_syntax::ast::Choice::cast(node.clone()) {
-                return Some(brink_syntax::ast::AstPtr::new(&choice));
-            }
-            for child in node.children() {
-                if let Some(ptr) = find_choice(&child) {
-                    return Some(ptr);
-                }
-            }
-            None
-        }
-        find_choice(&root).expect("should find Choice node in '* choice'")
+    fn dummy_choice_ptr() -> crate::Provenance {
+        crate::Provenance::synthetic(
+            crate::provenance::NodeClass::Choice,
+            rowan::TextRange::new(rowan::TextSize::new(0), rowan::TextSize::new(8)),
+        )
     }
 
     fn text(s: &str) -> ContentPart {
@@ -398,9 +378,8 @@ mod tests {
             kind,
             branches: branches
                 .into_iter()
-                .map(|parts| Block {
-                    label: None,
-                    stmts: if parts.is_empty() {
+                .map(|parts| {
+                    let stmts = if parts.is_empty() {
                         Vec::new()
                     } else {
                         vec![Stmt::Content(Content {
@@ -408,8 +387,14 @@ mod tests {
                             parts,
                             tags: Vec::new(),
                         })]
-                    },
-                    container_id: None,
+                    };
+                    let tail = crate::tail_from_stmts(&stmts);
+                    Block {
+                        label: None,
+                        stmts,
+                        container_id: None,
+                        tail,
+                    }
                 })
                 .collect(),
             container_id: None,
@@ -423,22 +408,27 @@ mod tests {
             kind: CondKind::InitialCondition,
             branches: branches
                 .into_iter()
-                .map(|(condition, parts)| CondBranch {
-                    condition,
-                    body: Block {
-                        label: None,
-                        stmts: if parts.is_empty() {
-                            Vec::new()
-                        } else {
-                            vec![Stmt::Content(Content {
-                                ptr: Some(ptr),
-                                parts,
-                                tags: Vec::new(),
-                            })]
+                .map(|(condition, parts)| {
+                    let stmts = if parts.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![Stmt::Content(Content {
+                            ptr: Some(ptr),
+                            parts,
+                            tags: Vec::new(),
+                        })]
+                    };
+                    let tail = crate::tail_from_stmts(&stmts);
+                    CondBranch {
+                        condition,
+                        body: Block {
+                            label: None,
+                            stmts,
+                            container_id: None,
+                            tail,
                         },
                         container_id: None,
-                    },
-                    container_id: None,
+                    }
                 })
                 .collect(),
         })
@@ -452,10 +442,12 @@ mod tests {
     }
 
     fn mk_block(stmts: Vec<Stmt>) -> Block {
+        let tail = crate::tail_from_stmts(&stmts);
         Block {
             label: None,
             stmts,
             container_id: None,
+            tail,
         }
     }
 
@@ -492,6 +484,62 @@ mod tests {
     }
 
     // ─── Tests ──────────────────────────────────────────────────────
+
+    /// Regression (S1 review F1): an inline-conditional branch whose body is
+    /// a bare divert carries `tail == Diverge` at construction. The lift
+    /// prepends surrounding text and appends a trailing `EndOfLine`, so the
+    /// lifted branch no longer ends in a terminator — its `tail` must flip to
+    /// `Unit`. `normalize.rs` runs on cloned HIR right before LIR, so a stale
+    /// `tail` here is the closest one to the eventual consumer.
+    #[test]
+    fn lifted_conditional_branch_with_divert_recomputes_tail() {
+        let divert_body = mk_block(vec![Stmt::Divert(Divert {
+            ptr: None,
+            target: DivertTarget {
+                path: DivertPath::End,
+                args: Vec::new(),
+            },
+        })]);
+        assert!(
+            matches!(divert_body.tail, Tail::Diverge(_)),
+            "precondition: a bare-divert body has a Diverge tail"
+        );
+        let inline_cond = ContentPart::InlineConditional(Conditional {
+            ptr: dummy_ptr(),
+            kind: CondKind::InitialCondition,
+            branches: vec![CondBranch {
+                condition: Some(Expr::Bool(true)),
+                body: divert_body,
+                container_id: None,
+            }],
+        });
+        // Surrounding text forces the prefix/else-synthesis path; the trailing
+        // EndOfLine drives the trailing-eol append inside the lift.
+        let content = mk_content(vec![text("A "), inline_cond]);
+        let mut hir = mk_hir(vec![Stmt::Content(content), Stmt::EndOfLine]);
+
+        normalize_file(&mut hir);
+
+        let cond = hir
+            .root_content
+            .stmts
+            .iter()
+            .find_map(|s| match s {
+                Stmt::Conditional(c) => Some(c),
+                _ => None,
+            })
+            .expect("inline conditional lifted to a Conditional stmt");
+        // Every lifted branch body's tail must match its stmts — no stale
+        // Diverge left behind after the EndOfLine append.
+        for branch in &cond.branches {
+            assert_eq!(
+                branch.body.tail,
+                crate::tail_from_stmts(&branch.body.stmts),
+                "lifted branch tail must match its stmts (not stale): {:?}",
+                branch.body
+            );
+        }
+    }
 
     #[test]
     fn simple_sequence_lift() {

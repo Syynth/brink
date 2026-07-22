@@ -12,7 +12,12 @@ pub fn play_loop<B: BufRead>(
             brink_runtime::Line::Text { text, .. } => {
                 write!(stdout, "{text}")?;
             }
-            brink_runtime::Line::Done { text, .. } | brink_runtime::Line::End { text, .. } => {
+            // A park (`Line::Suspended`, FS-3r) is a terminal turn boundary;
+            // runtime-unreachable today behind the E052 fence, grouped with
+            // the other terminals so the exhaustive match keeps compiling.
+            brink_runtime::Line::Done { text, .. }
+            | brink_runtime::Line::End { text, .. }
+            | brink_runtime::Line::Suspended { text, .. } => {
                 write!(stdout, "{text}")?;
                 stdout.flush()?;
                 break;

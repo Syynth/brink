@@ -50,20 +50,25 @@
 //! the existing paths).
 
 mod body;
+mod effects;
 mod graph;
+mod intrinsics;
 mod ty;
+
+pub(crate) use intrinsics::{intrinsic_effects, intrinsic_returns_option};
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use brink_format::DefinitionId;
 use brink_ir::{
-    BaseType, Block, ContainerPtr, DocBlock, FileId, HirFile, HostManifest, Param, ResolutionMap,
-    SymbolIndex, SymbolKind, TypeExpr, TypeRef,
+    BaseType, Block, DocBlock, FileId, HirFile, HostManifest, Param, ResolutionMap, SymbolIndex,
+    SymbolKind, TypeExpr, TypeRef,
 };
 use rowan::TextRange;
 
+pub use effects::{EffectAtoms, EffectRow, solve_scc_effects};
 pub use graph::{CallGraph, SccGraph, scc_graph};
-pub use ty::{Ty, unify, unify_all};
+pub use ty::{CoalesceError, TowerTy, Ty, coalesce, unify, unify_all};
 
 use body::{BodyCtx, infer_def_body};
 use graph::topo_order;
@@ -102,6 +107,13 @@ pub struct BodyTypes {
     pub params: Vec<(String, Ty)>,
     pub locals: BTreeMap<String, Ty>,
     pub return_ty: Ty,
+    /// Issue #1028: whether the body contains at least one value-carrying
+    /// `return <expr>` anywhere — see [`body::BodyResult::has_value_return`]
+    /// (the field this one is copied from) for why `return_ty.is_unknown()`
+    /// alone can't distinguish "never returns a value" (should infer void)
+    /// from "returns a value inference couldn't pin down" (a real
+    /// Unknown-escape).
+    pub has_value_return: bool,
     /// T1c (docs/t1c-spec.md §4): statically-checkable facts about calls
     /// *through a value* (a callee resolving to a param/temp/VAR/CONST
     /// rather than a callable def) observed in this body, in source-walk
@@ -179,10 +191,11 @@ impl From<crate::InferredType> for Ty {
             crate::InferredType::Bool => Ty::Bool,
             crate::InferredType::String => Ty::String,
             crate::InferredType::Divert => Ty::Divert,
-            // The initializer-derived stub records only "this was a list
-            // literal", not which LIST it belongs to — conservatively
-            // Unknown rather than guessing (legal; advisory-only slice).
-            crate::InferredType::List => Ty::Unknown,
+            // Issue #628: the initializer-derived stub now carries the
+            // declaring LIST's name, so this round-trips to the same
+            // nominal `Ty::List` the annotation/body-inference paths use —
+            // no more conservative collapse to `Unknown`.
+            crate::InferredType::List(name) => Ty::List(name),
         }
     }
 }
@@ -232,7 +245,12 @@ fn index_resolutions_by_file(
 /// has no `Fn` form (`Sig::fn_type`'s doc) — the two are mutually exclusive
 /// per declaration, so trying `value_type` first and falling back to
 /// `fn_type` never masks either.
-fn collect_globals(
+///
+/// `pub(crate)` (issue #670) so `structs::check`'s non-literal struct-field
+/// classification can resolve a variable-valued initializer that names a
+/// global `VAR`/`CONST` against this exact same declaration-derived type,
+/// rather than re-deriving it.
+pub(crate) fn collect_globals(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
     manifest: Option<&HostManifest>,
@@ -242,7 +260,7 @@ fn collect_globals(
         if matches!(info.kind, SymbolKind::Variable | SymbolKind::Constant)
             && let Some(sig) = crate::signature::signature(id, index, files, manifest)
         {
-            if let Some(vt) = sig.value_type {
+            if let Some(vt) = sig.value_type.clone() {
                 globals.insert(id, Ty::from(vt));
             } else if let Some(ft) = sig.fn_type.clone() {
                 globals.insert(id, ft);
@@ -257,6 +275,19 @@ fn collect_globals(
 /// `handle<Timer>` argument at compile time" under `types = strict`; issue
 /// #805 widens this to the manifest's full scalar-semantic-type vocabulary
 /// and to inline-doc-only bindings).
+///
+/// **Two consumers share this one resolution (issue #1004).** Both the
+/// call-site seeding — this map is folded into `solve_scc`/`infer_project`'s
+/// `known_sigs` so a call to a registered `EXTERNAL` checks its *arguments*
+/// against the declared param types — and [`crate::strict::check_external_escapes`]
+/// (the escape check over the *declarations themselves*, so a registered
+/// binding whose `ManifestParam.ty` fails to resolve is reported rather than
+/// silently treated as an untyped call) read the identical `(params, return)`
+/// signatures from here. The strict-escape reader lives on the shared
+/// [`crate::strict_diagnostics`] seam, so the analysis path
+/// (`analyze_with_options`) and the compile path (`brink-db`'s
+/// `whole_project_diagnostics_query`) get byte-identical external escapes
+/// from one helper — never a second, drift-prone re-resolution.
 ///
 /// `EXTERNAL name(params)` has no ink-side type-annotation grammar (unlike a
 /// knot/stitch's `(x: T)`/`): T ===`), so a binding's *declared*
@@ -300,7 +331,7 @@ fn collect_globals(
 /// slot in this module gets. `Ty::Unknown` params are inert at the
 /// call-checking site (`BodyCtx::observe` is a documented no-op against
 /// `Ty::Unknown`), so this never fabricates a false mismatch.
-fn collect_external_sigs(
+pub fn collect_external_sigs(
     index: &SymbolIndex,
     manifest: Option<&HostManifest>,
     inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
@@ -356,32 +387,40 @@ fn collect_external_sigs(
 /// `Ty` (return-only, same as an annotation's `void`); an unresolved name —
 /// no manifest at all, or a name neither a base keyword nor a registered
 /// semantic type — types `Ty::Unknown` (unresolved — never a hard failure).
+///
+/// Classification goes through [`crate::type_resolution::classify`] — the
+/// same function `external_check::resolve_type` (hover/pickers) uses — so an
+/// **unregistered** name (`TypeShape::Unregistered`) types `Ty::Unknown`
+/// here exactly as consistently as it renders `base: None` there (#1027;
+/// closes the #1004 divergence where hover showed a confident `id: var_id`
+/// for a name inference correctly called `Unknown`).
 fn type_ref_to_ty(t: &TypeRef, types: &BTreeMap<String, brink_ir::SemanticTypeDef>) -> Ty {
-    let name = t.0.trim();
-    if name.is_empty() {
-        return Ty::Unknown;
-    }
-    match BaseType::from_keyword(name) {
-        Some(BaseType::String) => Ty::String,
-        Some(BaseType::Int) => Ty::Int,
-        Some(BaseType::Float) => Ty::Float,
-        Some(BaseType::Bool) => Ty::Bool,
-        // The `void`/`handle` keyword literals, and any name that isn't a
-        // base keyword at all (a registered semantic-type name — handle or
-        // scalar specialization), all fall through to the `types` table — a
-        // registered def's own `base` decides the resolved `Ty` (issue
-        // #805: this now covers scalar specializations like `switch_id`
-        // too, not just `base: Handle` kinds).
-        Some(BaseType::Void | BaseType::Handle) | None => match types.get(name) {
-            Some(def) => match def.base {
-                BaseType::String => Ty::String,
-                BaseType::Int => Ty::Int,
-                BaseType::Float => Ty::Float,
-                BaseType::Bool => Ty::Bool,
-                BaseType::Void => Ty::Unknown,
-                BaseType::Handle => Ty::Handle(name.to_string()),
-            },
-            None => Ty::Unknown,
+    use crate::type_resolution::{TypeShape, classify};
+
+    match classify(t, types) {
+        // Unspecified/unregistered are conservatively `Unknown` (#1027 —
+        // `TypeShape::Unregistered` is exactly the class
+        // `external_check::resolve_type` renders `base: None` for). The
+        // bare `void`/`handle` keyword literals join them here too: `void`
+        // is return-only (no represented `Ty`), and a bare `handle` (no
+        // kind name) isn't a `Ty::Handle` either — that needs the kind name
+        // itself, which only ever arrives as a *registered* name (i.e.
+        // `TypeShape::Registered` below), never as the literal keyword
+        // `handle`.
+        TypeShape::Unspecified
+        | TypeShape::Unregistered
+        | TypeShape::Base(BaseType::Void | BaseType::Handle) => Ty::Unknown,
+        TypeShape::Base(BaseType::String) => Ty::String,
+        TypeShape::Base(BaseType::Int) => Ty::Int,
+        TypeShape::Base(BaseType::Float) => Ty::Float,
+        TypeShape::Base(BaseType::Bool) => Ty::Bool,
+        TypeShape::Registered(def) => match def.base {
+            BaseType::String => Ty::String,
+            BaseType::Int => Ty::Int,
+            BaseType::Float => Ty::Float,
+            BaseType::Bool => Ty::Bool,
+            BaseType::Void => Ty::Unknown,
+            BaseType::Handle => Ty::Handle(t.0.trim().to_string()),
         },
     }
 }
@@ -391,7 +430,7 @@ fn type_ref_to_ty(t: &TypeRef, types: &BTreeMap<String, brink_ir::SemanticTypeDe
 /// `Stitch` nodes carry only a bare `Name`, not their own id.
 ///
 /// A *floating* stitch (`= stitch`, declared before any `== knot ==`
-/// header) lowers into `hir.knots` as a `Knot` node (`ContainerPtr::Stitch`)
+/// header) lowers into `hir.knots` as a `Knot` node (`NodeClass::Stitch` provenance)
 /// but was declared `SymbolKind::Stitch` with a bare name by
 /// `lower_top_level_stitch` — never `SymbolKind::Knot`, and never qualified
 /// with a knot prefix (there is no enclosing knot). So the symbol-kind used
@@ -406,10 +445,7 @@ fn collect_defs<'a>(files: &[(FileId, &'a HirFile)], index: &SymbolIndex) -> Vec
     let mut defs: Vec<Def<'a>> = Vec::new();
     for &(file_id, hir) in files {
         for knot in &hir.knots {
-            let knot_symbol_kind = match knot.ptr {
-                ContainerPtr::Knot(_) => SymbolKind::Knot,
-                ContainerPtr::Stitch(_) => SymbolKind::Stitch,
-            };
+            let knot_symbol_kind = knot.symbol_kind();
             if let Some(&id) = def_of.get(&(file_id, knot_symbol_kind, knot.name.text.clone())) {
                 defs.push(Def {
                     id,
@@ -574,6 +610,7 @@ fn solve_one_batch(
                     params: result.params,
                     locals: result.locals,
                     return_ty: result.return_ty,
+                    has_value_return: result.has_value_return,
                     value_calls: result.value_calls,
                 },
             )
@@ -812,6 +849,107 @@ pub fn referenced_globals(
     infer_def_body(d, &body_ctx).referenced_globals
 }
 
+/// T2-1 (docs/effects-spec.md §2/§4, issue #860 — `def_effect_atoms(def)`).
+/// One def's raw effect atoms: the read set (VAR/CONST globals read), the
+/// write set (assignment targets resolving to a VAR/CONST), the call-kind set
+/// (`EXTERNAL` names directly called), the inferable direct-call edges the
+/// effect fixpoint follows, and whether the body calls through a function
+/// value (→ pessimal). Harvested by the exact same body walk
+/// [`referenced_globals`]/[`call_edges`] drive — the read set here *is*
+/// FG-2.1's `referenced_globals`, and the direct-call edges are `call_edges`'s
+/// set — so no new walk shape is introduced, only the per-def atom bundle T2
+/// needs assembled from one pass.
+///
+/// **Narrowed inputs** mirror [`call_edges`] exactly: `declaring_file_hir`
+/// need only cover `def`'s own file; `inferable` is caller-supplied
+/// (index-sourced) so a resolved call target in a *different* file is still
+/// classified as an edge, not a stray external. `manifest` is threaded for the
+/// same uniform-seam reason — it can never change the *structural* atom sets
+/// this discards every computed type to keep.
+#[must_use]
+pub fn def_effect_atoms(
+    def: DefinitionId,
+    declaring_file_hir: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+    inferable: &BTreeSet<DefinitionId>,
+    manifest: Option<&HostManifest>,
+) -> EffectAtoms {
+    let by_file = index_resolutions_by_file(resolutions);
+    let defs = collect_defs(declaring_file_hir, index);
+    let Some(d) = defs.iter().find(|d| d.id == def) else {
+        return EffectAtoms::default();
+    };
+    let empty_globals: BTreeMap<DefinitionId, Ty> = BTreeMap::new();
+    let ctx = ProjectCtx::new(index, &empty_globals, &by_file, inferable, manifest);
+    let no_sigs: BTreeMap<DefinitionId, InferredSig> = BTreeMap::new();
+    let body_ctx = ctx.body_ctx(d, &no_sigs);
+    let result = infer_def_body(d, &body_ctx);
+    EffectAtoms {
+        reads: result.referenced_globals,
+        writes: result.effect_writes,
+        calls: result.external_calls,
+        direct_calls: result.calls,
+        opaque: result.effect_opaque,
+        emits: result.effect_emits,
+        tags: result.effect_tags,
+        faults: result.effect_faults,
+        faults_refined: result.effect_faults_refined,
+    }
+}
+
+/// T2-1 (docs/effects-spec.md §4, issue #860 — the whole-project effect row
+/// table). Mirrors [`infer_project`]'s shape for effects: harvest every
+/// inferable def's atoms, build the same call graph off the direct-call edges,
+/// solve every SCC batch in condensation order with [`solve_scc_effects`]
+/// (accumulating each finalized batch's rows as `known_rows` for its
+/// successors). A pure function of already-computed inputs — the direct-call
+/// pure-function callers and the property tests use it; `brink-db`'s per-SCC
+/// `effects_scc_query` reproduces the same fold incrementally.
+#[must_use]
+pub fn effects_project(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+    manifest: Option<&HostManifest>,
+) -> BTreeMap<DefinitionId, EffectRow> {
+    let defs = collect_defs(files, index);
+    let inferable: BTreeSet<DefinitionId> = defs.iter().map(|d| d.id).collect();
+
+    // Harvest each def's atoms once; the direct-call edges double as the call
+    // graph the SCC batching needs.
+    let atoms: BTreeMap<DefinitionId, EffectAtoms> = defs
+        .iter()
+        .map(|d| {
+            (
+                d.id,
+                def_effect_atoms(d.id, files, index, resolutions, &inferable, manifest),
+            )
+        })
+        .collect();
+
+    let mut graph = CallGraph::new();
+    for (&id, a) in &atoms {
+        graph.add_node(id);
+        for &callee in &a.direct_calls {
+            graph.add_edge(id, callee);
+        }
+    }
+    let batches = topo_order(&graph);
+
+    let mut rows: BTreeMap<DefinitionId, EffectRow> = BTreeMap::new();
+    for batch in &batches {
+        // `solve_scc_effects` reads finalized predecessor rows out of
+        // `known_rows`; every earlier batch is already folded in, so passing
+        // the whole accumulated `rows` is exactly the condensation-predecessor
+        // set (plus already-solved siblings, harmless — a batch never edges
+        // back into a later one).
+        let solved = solve_scc_effects(batch, &atoms, &rows);
+        rows.extend(solved);
+    }
+    rows
+}
+
 /// Solve exactly one SCC batch (FG-2, issue #631 — `solve_scc(SccId)`).
 ///
 /// `known_sigs` must already carry the finalized signature of every def
@@ -967,7 +1105,7 @@ mod tests {
     #[test]
     fn floating_stitch_body_is_inferred() {
         // A *floating* stitch — `= name`, declared before any `== knot ==`
-        // header — lowers into `hir.knots` (as `ContainerPtr::Stitch`) but
+        // header — lowers into `hir.knots` (with `NodeClass::Stitch` provenance) but
         // is declared `SymbolKind::Stitch` with a bare name, not
         // `SymbolKind::Knot`. Before #626, `collect_defs` always looked the
         // entry up as `SymbolKind::Knot`, the lookup silently failed, and
@@ -982,8 +1120,8 @@ mod tests {
     #[test]
     fn floating_stitch_coexists_with_real_knot_and_its_nested_stitch() {
         // Regression guard for the fix itself: distinguishing floating
-        // stitches (`ContainerPtr::Stitch`) from real knots
-        // (`ContainerPtr::Knot`) in `collect_defs` must not disturb the
+        // stitches (`NodeClass::Stitch` provenance) from real knots
+        // (`NodeClass::Knot` provenance) in `collect_defs` must not disturb the
         // existing, already-working real-knot / nested-stitch lookup path.
         let (hir, index, res) = build(
             "= intro(hp)\n~ temp x = hp + 1\n-> DONE\n\
@@ -1975,7 +2113,7 @@ mod tests {
             let mut globals: BTreeMap<DefinitionId, Ty> = BTreeMap::new();
             for gid in global_ids {
                 if let Some(sig) = crate::signature::signature(gid, &index, &files, None)
-                    && let Some(vt) = sig.value_type
+                    && let Some(vt) = sig.value_type.clone()
                 {
                     globals.insert(gid, Ty::from(vt));
                 }
@@ -2002,5 +2140,574 @@ mod tests {
             composed, monolithic,
             "per-SCC composed inference must equal a single infer_project call"
         );
+    }
+
+    // ─── T2-1 effect rows (docs/effects-spec.md §2/§4, issue #860) ───────
+
+    fn id_of(index: &SymbolIndex, name: &str) -> DefinitionId {
+        index
+            .by_name
+            .get(name)
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("no def with this name")
+    }
+
+    /// THE conservative-total soundness gate (docs/effects-spec.md §3, issue
+    /// #860): for every def, the inferred row must **cover** (⊒) its own body
+    /// atoms *and* every direct callee's finalized row — the no-under-report
+    /// invariant. Exercised over a mutually-recursive fixture (`ping <-> pong`)
+    /// so the check runs against a real multi-round SCC fixpoint, plus a
+    /// higher-order value-call (`apply`) so the pessimal floor is in the mix.
+    #[test]
+    fn conservative_total_no_under_report_over_mutual_recursion() {
+        let src = "VAR gold = 0\nVAR hp = 10\nEXTERNAL play_sfx(x)\n\
+                   === function ping(n) ===\n~ gold = gold + 1\n\
+                   {n == 0:\n  ~ return 0\n}\n~ play_sfx(n)\n~ return pong(n - 1)\n\
+                   === function pong(n) ===\n~ hp = hp - 1\n~ return ping(n)\n\
+                   === function apply(cb) ===\n~ return cb(1)\n\
+                   === caller ===\n~ temp x = ping(3)\n-> DONE\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let inferable = inferable_defs(&files, &index);
+
+        let rows = effects_project(&files, &index, &res, None);
+
+        for &def in &inferable {
+            let row = rows.get(&def).cloned().unwrap_or_default();
+            let atoms = def_effect_atoms(def, &files, &index, &res, &inferable, None);
+
+            // (1) covers its own body atoms.
+            assert!(
+                row.covers(&atoms.base_row()),
+                "def {def:?} row must cover its own body atoms"
+            );
+
+            // (2) covers every direct callee's finalized row.
+            for callee in &atoms.direct_calls {
+                let callee_row = rows.get(callee).cloned().unwrap_or_default();
+                assert!(
+                    row.covers(&callee_row),
+                    "def {def:?} row must cover callee {callee:?} row"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn effect_row_collects_read_write_and_external_call_atoms() {
+        let src = "VAR gold = 0\nVAR hp = 10\nEXTERNAL play_sfx(x)\n\
+                   === function spend(cost) ===\n~ gold = gold - cost\n\
+                   ~ temp before = hp\n~ play_sfx(cost)\n~ return gold\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+
+        let spend = id_of(&index, "spend");
+        let gold = id_of(&index, "gold");
+        let hp = id_of(&index, "hp");
+        let row = &rows[&spend];
+
+        assert!(row.reads.contains(&gold), "reads gold ({gold:?})");
+        assert!(row.reads.contains(&hp), "reads hp ({hp:?})");
+        assert!(row.writes.contains(&gold), "writes gold ({gold:?})");
+        assert!(!row.writes.contains(&hp), "never writes hp");
+        assert!(row.calls.contains("play_sfx"), "calls the external kind");
+        assert!(!row.opaque, "a fully-visible body is not pessimal");
+    }
+
+    // ─── NS-A6 (issue #1112, docs/stdlib-spec.md §7): every draw is an
+    // ordinary write to the RNG cell in the row ─────────────────────────
+
+    /// Every brink draw-verb spelling harvests a write to
+    /// `DefinitionId::RNG_CELL` — the "draws = writes" half of the
+    /// rng-as-cell ruling.
+    #[test]
+    fn rand_draw_verbs_write_the_rng_cell() {
+        use brink_format::DefinitionId;
+        let cases: &[(&str, &str)] = &[
+            (
+                "float_draw",
+                "=== function float_draw() ===\n~ return float()\n",
+            ),
+            (
+                "chance_draw",
+                "=== function chance_draw() ===\n~ return chance(0.5)\n",
+            ),
+            (
+                "pick_draw",
+                "=== function pick_draw() ===\n~ temp a = #[1, 2, 3]\n~ return pick(a)\n",
+            ),
+            (
+                "shuffled_draw",
+                "=== function shuffled_draw() ===\n~ temp a = #[1, 2, 3]\n~ return shuffled(a)\n",
+            ),
+            (
+                "shuffle_stmt",
+                "VAR deck = 0\n=== function shuffle_stmt() ===\n~ shuffle(deck)\n~ return 0\n",
+            ),
+            (
+                "seed_stmt",
+                "=== function seed_stmt() ===\n~ seed(42)\n~ return 0\n",
+            ),
+        ];
+        for (name, src) in cases {
+            let (hir, index, res) = build(src);
+            let files = [(FileId(0), &hir)];
+            let rows = effects_project(&files, &index, &res, None);
+            let def = id_of(&index, name);
+            assert!(
+                rows[&def].writes.contains(&DefinitionId::RNG_CELL),
+                "`{name}`'s row must contain the RNG-cell write; got {:?}",
+                rows[&def].writes
+            );
+        }
+    }
+
+    /// The frozen ink spellings write the SAME cell — one RNG, two
+    /// surfaces, one row entry (no drift).
+    #[test]
+    fn frozen_ink_random_spellings_write_the_same_rng_cell() {
+        use brink_format::DefinitionId;
+        let cases: &[(&str, &str)] = &[
+            (
+                "roll_ink",
+                "=== function roll_ink() ===\n~ return RANDOM(1, 6)\n",
+            ),
+            (
+                "seed_ink",
+                "=== function seed_ink() ===\n~ SEED_RANDOM(9)\n~ return 0\n",
+            ),
+            (
+                "pick_ink",
+                "LIST moods = happy, sad\n=== function pick_ink() ===\n~ return LIST_RANDOM(moods)\n",
+            ),
+        ];
+        for (name, src) in cases {
+            let (hir, index, res) = build(src);
+            let files = [(FileId(0), &hir)];
+            let rows = effects_project(&files, &index, &res, None);
+            let def = id_of(&index, name);
+            assert!(
+                rows[&def].writes.contains(&DefinitionId::RNG_CELL),
+                "ink `{name}`'s row must contain the RNG-cell write; got {:?}",
+                rows[&def].writes
+            );
+        }
+    }
+
+    /// The unary `float(x)` conversion intrinsic stays pure — only the
+    /// nullary draw spelling touches the cell (the F4 arity split).
+    #[test]
+    fn unary_float_conversion_does_not_write_the_rng_cell() {
+        use brink_format::DefinitionId;
+        let src = "=== function conv(x) ===\n~ return float(x)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let def = id_of(&index, "conv");
+        assert!(
+            !rows[&def].writes.contains(&DefinitionId::RNG_CELL),
+            "unary float(x) is the conversion — no draw, no cell write"
+        );
+        // And the nullary draw is total: no fault path.
+        let src = "=== function draw() ===\n~ return float()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let draw = id_of(&index, "draw");
+        assert!(
+            !rows[&draw].faults,
+            "nullary float() has no argument and no fault path"
+        );
+    }
+
+    /// `shuffle(ref a)` records BOTH writes: the receiver cell (the #880
+    /// mutator-call lesson) and the RNG cell.
+    #[test]
+    fn shuffle_writes_both_the_receiver_and_the_rng_cell() {
+        use brink_format::DefinitionId;
+        let src = "VAR deck = 0\n=== function riffle() ===\n~ shuffle(deck)\n~ return 0\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let def = id_of(&index, "riffle");
+        let deck = id_of(&index, "deck");
+        assert!(rows[&def].writes.contains(&deck), "writes the receiver");
+        assert!(
+            rows[&def].writes.contains(&DefinitionId::RNG_CELL),
+            "writes the RNG cell"
+        );
+    }
+
+    /// The rng write propagates transitively like any other write atom —
+    /// a caller of a draw-bearing def carries the cell in its own row
+    /// (this is what makes the pure-gated machinery exclude draws for
+    /// free).
+    #[test]
+    fn rng_write_propagates_to_callers_through_the_fixpoint() {
+        use brink_format::DefinitionId;
+        let src = "=== function outer() ===\n~ return inner()\n\
+                   === function inner() ===\n~ return chance(0.25)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        for name in ["outer", "inner"] {
+            let def = id_of(&index, name);
+            assert!(
+                rows[&def].writes.contains(&DefinitionId::RNG_CELL),
+                "`{name}` must carry the transitive RNG-cell write"
+            );
+        }
+    }
+
+    #[test]
+    fn mutually_recursive_defs_share_the_unioned_row() {
+        let src = "VAR gold = 0\nVAR hp = 10\n\
+                   === function ping(n) ===\n~ gold = gold + 1\n\
+                   {n == 0:\n  ~ return 0\n}\n~ return pong(n - 1)\n\
+                   === function pong(n) ===\n~ hp = hp - 1\n~ return ping(n)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+
+        let left = id_of(&index, "ping");
+        let right = id_of(&index, "pong");
+        let gold = id_of(&index, "gold");
+        let hp = id_of(&index, "hp");
+
+        // Both SCC members converge on the union of both writes.
+        for def in [left, right] {
+            let row = &rows[&def];
+            assert!(row.writes.contains(&gold), "{def:?} writes gold");
+            assert!(row.writes.contains(&hp), "{def:?} writes hp");
+        }
+    }
+
+    #[test]
+    fn a_call_through_a_function_value_is_pessimal() {
+        // docs/effects-spec.md §4 gradual corollary: an `Unknown`-typed callee
+        // slot (here a `cb` param called as `cb(1)`) has no row to read → the
+        // enclosing def's row is pessimal.
+        let src = "=== function apply(cb) ===\n~ return cb(1)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let apply = id_of(&index, "apply");
+        assert!(
+            rows[&apply].opaque,
+            "a call through a function value must be pessimal"
+        );
+    }
+
+    #[test]
+    fn a_pure_body_has_an_empty_row() {
+        let src = "=== function double(n) ===\n~ return n * 2\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let double = id_of(&index, "double");
+        assert!(
+            rows[&double].is_empty(),
+            "a pure arithmetic body reads/writes/calls nothing"
+        );
+    }
+
+    /// Review-finding regression (issue #860's PR): a direct call passing a
+    /// VAR/CONST global into a `ref` parameter slot writes through that
+    /// parameter (docs/effects-spec.md §5 "through parameters") — the callee
+    /// mutates the *caller's* cell. The exact fixture the reviewer supplied
+    /// (`tests/tier1/variables/variable-pointer-ref-from-knot/story.ink`):
+    /// `inc`'s own body atoms are empty (its assignment target `x` is a
+    /// `Param`, never a `Variable`/`Constant`), so ground truth only shows up
+    /// at `knot`'s own call site — the `conservative_total_no_under_report`
+    /// property test above can never catch this since it only checks
+    /// inter-row consistency, never this kind of ground-truth completeness.
+    #[test]
+    fn a_direct_call_writes_through_a_ref_param_at_the_call_site() {
+        let src = "VAR val = 5\n\
+                   === knot ===\n~ inc(val)\n{val}\n->->\n\
+                   === function inc(ref x) ===\n~ x = x + 1\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+
+        let knot = id_of(&index, "knot");
+        let inc = id_of(&index, "inc");
+        let val = id_of(&index, "val");
+
+        assert!(
+            rows[&knot].writes.contains(&val),
+            "knot's call `inc(val)` writes through inc's `ref x` param — the \
+             write atom must not be dropped"
+        );
+        assert!(
+            !rows[&inc].writes.contains(&val),
+            "inc's own body never names `val` — the write is only visible at \
+             the call site, not inc's own atoms"
+        );
+    }
+
+    // ─── T2 §8 precision rung (docs/effects-spec.md §6 item 3/§8, issue #872):
+    // reading a concrete `EffectRow` off a stored `Ty::Fn` at an indirect/
+    // value call site, instead of the pessimal placeholder, when the origin
+    // is statically known ──────────────────────────────────────────────
+
+    /// The core narrowing case: a write-once local holding a `#fn(target)`
+    /// literal, called with the direct `f(args)` syntax. `user`'s row must
+    /// stop being pessimal and instead cover `bar`'s real row (the write to
+    /// `total`) — the exact improvement over the old unconditional-opaque
+    /// floor `a_call_through_a_function_value_is_pessimal` still pins for
+    /// the genuinely-unknown (param) case.
+    #[test]
+    fn known_fn_value_call_narrows_the_row_instead_of_pessimal() {
+        let src = "VAR total = 0\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function user() ===\n~ temp f = #fn(bar)\n~ return f()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let total = id_of(&index, "total");
+        assert!(
+            !rows[&user].opaque,
+            "a call through a write-once local with a known #fn origin must narrow, not stay pessimal"
+        );
+        assert!(
+            rows[&user].writes.contains(&total),
+            "the narrowed row must cover bar's real write to total"
+        );
+    }
+
+    /// Same shape, through the explicit `call(f, …)` intrinsic form —
+    /// `check_value_call`'s other caller.
+    #[test]
+    fn known_fn_value_call_intrinsic_form_narrows_the_row() {
+        let src = "VAR total = 0\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function user() ===\n~ temp f = #fn(bar)\n~ return call(f)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let total = id_of(&index, "total");
+        assert!(
+            !rows[&user].opaque,
+            "call(f) through a known origin must narrow"
+        );
+        assert!(rows[&user].writes.contains(&total));
+    }
+
+    /// A `bind(…)`-wrapped fn-value ("bound fn-values", the issue's own
+    /// phrasing) stored in a write-once local — `bind` never changes which
+    /// def eventually runs, so the origin still traces through.
+    #[test]
+    fn bound_fn_value_through_a_write_once_local_narrows() {
+        let src = "VAR total = 0\n\
+                   === function bar(n) ===\n~ total = total + n\n~ return total\n\
+                   === function user() ===\n~ temp f = bind(#fn(bar), 5)\n~ return call(f)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let total = id_of(&index, "total");
+        assert!(
+            !rows[&user].opaque,
+            "a bind()-wrapped known origin stored write-once must still narrow"
+        );
+        assert!(rows[&user].writes.contains(&total));
+    }
+
+    /// A fully inline `#fn(target)` literal passed straight into `call(…)`
+    /// with no intermediate local at all — no stored-value/write-count
+    /// question applies, so this narrows unconditionally.
+    #[test]
+    fn inline_fn_literal_at_the_call_site_narrows_without_a_stored_local() {
+        let src = "VAR total = 0\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function user() ===\n~ return call(#fn(bar))\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let total = id_of(&index, "total");
+        assert!(
+            !rows[&user].opaque,
+            "an inline #fn literal callee must narrow"
+        );
+        assert!(rows[&user].writes.contains(&total));
+    }
+
+    /// Conservative-total's sacred guard: a local reassigned to a *second*,
+    /// different known origin must stay pessimal — the write-once check must
+    /// actually gate on the whole body's write count, not just "some origin
+    /// was seen at some point". Regression shape for the exact hazard the
+    /// ground-truth harness (#885/#891 lineage) exists to catch: narrowing
+    /// this would under-report whichever branch didn't run at analysis time.
+    #[test]
+    fn a_local_reassigned_to_a_different_known_origin_stays_pessimal() {
+        let src = "VAR total = 0\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function baz() ===\n~ total = total + 100\n~ return total\n\
+                   === function user(cond) ===\n~ temp f = #fn(bar)\n\
+                   {cond:\n  ~ f = #fn(baz)\n}\n~ return f()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        assert!(
+            rows[&user].opaque,
+            "a reassigned local must not be trusted as write-once — narrowing here would be unsound"
+        );
+    }
+
+    /// Transitive composition: narrowing must feed the *same* SCC effect
+    /// fixpoint a direct call edge does, so a callee-of-the-callee's atoms
+    /// still propagate all the way up through the narrowed edge — not just
+    /// the immediately-dispatched def's own atoms.
+    #[test]
+    fn narrowed_call_composes_transitively_through_the_callees_own_callee() {
+        let src = "VAR total = 0\n\
+                   === function baz() ===\n~ total = total + 1\n~ return total\n\
+                   === function bar() ===\n~ return baz()\n\
+                   === function user() ===\n~ temp f = #fn(bar)\n~ return f()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let total = id_of(&index, "total");
+        assert!(
+            !rows[&user].opaque,
+            "narrowing to bar must not itself force pessimal"
+        );
+        assert!(
+            rows[&user].writes.contains(&total),
+            "bar's own row already transitively covers baz's write to total \
+             (ordinary direct-call SCC propagation) — user's narrowed edge to \
+             bar must inherit that whole row, not just bar's own direct atoms"
+        );
+    }
+
+    /// The pre-existing pessimal-floor regression must hold unchanged: an
+    /// `Unknown`-typed callee (a param with no traceable origin at all) still
+    /// gets no narrowing — `local_call_origin` only recognizes a bare `Temp`
+    /// name, and a param is never classified as `Local` at all now, so the
+    /// floor holds regardless of write count.
+    #[test]
+    fn a_call_through_an_unresolvable_param_stays_pessimal() {
+        let src = "=== function apply(cb) ===\n~ return cb(1)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let apply = id_of(&index, "apply");
+        assert!(
+            rows[&apply].opaque,
+            "a call through a function value with no known origin must stay pessimal"
+        );
+    }
+
+    /// Soundness regression (review finding on #872's initial landing): a
+    /// `Param` carries an implicit caller-provided initial value that
+    /// `local_write_counts` never sees. If a param is reassigned exactly
+    /// once inside the body, its whole-body write count reaches 1 — but any
+    /// call site *reachable before* that reassignment still runs against
+    /// the caller's arbitrary (unknown) fn value, not the known origin the
+    /// single write traces to. `local_call_origin` narrowing a `Param` the
+    /// same way it narrows a write-once `Temp` would incorrectly narrow
+    /// that earlier call site too, under-reporting whatever effects the
+    /// caller's actual callee has that `bar` doesn't. `apply`'s row must
+    /// stay opaque: `cb` is a `Param`, never eligible for `Local` narrowing
+    /// regardless of how many times it's written.
+    #[test]
+    fn a_param_reassigned_once_called_before_the_write_stays_pessimal() {
+        let src = "VAR total = 0\n\
+                   === function bar(n) ===\n~ total = total + n\n~ return total\n\
+                   === function apply(cb, guard) ===\n\
+                   {guard:\n  ~ return cb(1)\n}\n~ cb = #fn(bar)\n~ return cb(1)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let apply = id_of(&index, "apply");
+        assert!(
+            rows[&apply].opaque,
+            "a param reassigned exactly once inside the body must not narrow \
+             calls reachable before that reassignment — the param still holds \
+             the caller's arbitrary fn value there"
+        );
+    }
+
+    // ─── Issue #1027: `type_ref_to_ty` and `external_check::resolve_type`
+    // agree on unregistered semantic-type names ──────────────────────────
+
+    /// The #1004/#1027 case, exercised through both real call sites for the
+    /// exact same input: an `EXTERNAL` param typed via inline `@param` doc
+    /// with a semantic-type name (`var_id`) the registered manifest does
+    /// *not* define (the manifest defines `actor_id`, a sibling type, so
+    /// the vocabulary genuinely reached the analyzer — this isn't the
+    /// "no manifest at all" tolerant case). `collect_external_sigs`
+    /// (consumed by strict inference) and `external_check::analyze_externals`
+    /// (consumed by hover/signature help) must both call `var_id`
+    /// unresolved: `Ty::Unknown` on one side, `ResolvedType { base: None,
+    /// .. }` on the other — never a confidently-resolved type on either
+    /// side. Both now delegate the base/registered/unregistered decision to
+    /// the same `type_resolution::classify` helper, so this is a genuine
+    /// agreement check, not a coincidence of two independently-written
+    /// `match`es.
+    #[test]
+    fn collect_external_sigs_and_resolve_type_agree_on_an_unregistered_semantic_type() {
+        let (_hir, index, _res, inline_docs) =
+            build_with_docs("/// @param id {var_id}\nEXTERNAL get_variable(id)\n-> DONE\n");
+        let manifest = brink_ir::HostManifest {
+            types: vec![brink_ir::SemanticTypeDef {
+                name: "actor_id".to_string(),
+                base: brink_ir::BaseType::String,
+                constraint: None,
+                values: None,
+                widget: None,
+            }],
+            externals: Vec::new(),
+        };
+
+        // Strict-inference side.
+        let sigs = collect_external_sigs(&index, Some(&manifest), &inline_docs);
+        let ext_id = index
+            .by_name
+            .get("get_variable")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("get_variable in index");
+        let sig = sigs.get(&ext_id).expect("seeded signature");
+        assert_eq!(
+            sig.params,
+            vec![Ty::Unknown],
+            "var_id is not registered — strict inference must not fabricate a type"
+        );
+
+        // Hover/signature-help side — same index, same inline_docs, same
+        // registered `types` vocabulary (`actor_id` only).
+        let (types, registered) = crate::manifest_maps(Some(&manifest));
+        let (metas, diags) = crate::external_check::analyze_externals(
+            &index,
+            &inline_docs,
+            &types,
+            &registered,
+            crate::ExternalCheckSeverity::Error,
+            true, // manifest registered → unknown types are checked (E040)
+        );
+        let meta = metas.get(&ext_id).expect("meta for get_variable");
+        assert!(
+            meta.params[0]
+                .ty
+                .as_ref()
+                .is_some_and(|t| !t.is_registered()),
+            "var_id must render as unregistered (base: None), not a confident type: {:?}",
+            meta.params[0].ty
+        );
+        assert_eq!(
+            diags.len(),
+            1,
+            "the same unregistered name also raises E040 on this path: {diags:?}"
+        );
+        assert_eq!(diags[0].code, brink_ir::DiagnosticCode::E040);
     }
 }

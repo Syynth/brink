@@ -64,9 +64,9 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
 
         hir::Stmt::Return(ret) => {
             let value = ret.value.as_ref().map(|e| lower_expr(e, ctx));
-            // `->->` (tunnel return) has ptr: None in the HIR;
-            // `~ return expr` has ptr: Some(...).
-            let is_tunnel = ret.ptr.is_none();
+            // `->->` (tunnel return) vs `~ return expr` — classified by the
+            // explicit `ReturnKind`, never by `ptr` presence.
+            let is_tunnel = ret.kind == hir::ReturnKind::TunnelRedirect;
             let args = ret
                 .onwards_args
                 .iter()
@@ -158,7 +158,38 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
             );
             None
         }
+
+        // `~ await <cond>` (docs/flow-suspension-spec.md §3): the grammar,
+        // HIR, and the effect-free purity gate (E105) land in this FS-2 slice,
+        // but the runtime spill/restore that gives `await` its VM semantics is
+        // FS-3. Fence lowering with a real, non-suppressible compile error
+        // (the E052 pattern — an extension that parses/analyzes before its
+        // lowering lands) rather than silently dropping the suspension point.
+        hir::Stmt::Await(a) => {
+            emit_await_lowering_fence(ctx, a.ptr.text_range());
+            None
+        }
     }
+}
+
+/// Emit the `await` lowering fence (`E052`, docs/flow-suspension-spec.md §3):
+/// the FS-2 compiler slice parses and purity-checks `await`, but its runtime
+/// semantics (spill/restore of the `FlowFrame`) are FS-3, so lowering is fenced.
+/// Non-suppressible Error severity — the same shape as the other LIR fences —
+/// so a program using `await` refuses to lower to bytecode rather than
+/// silently dropping the suspension point.
+pub(super) fn emit_await_lowering_fence(ctx: &mut LowerCtx<'_>, range: TextRange) {
+    ctx.diagnostics.push(Diagnostic {
+        file: ctx.file,
+        range,
+        message: format!(
+            "{}: `await` (FlowFrame suspension) parses and purity-checks, but its runtime \
+             spill/restore semantics are not implemented yet (docs/flow-suspension-spec.md \
+             §3, FS-3)",
+            DiagnosticCode::E052.title(),
+        ),
+        code: DiagnosticCode::E052,
+    });
 }
 
 /// Dispatch a `ChoiceSet`/`LabeledBlock`/`Conditional`/`Sequence` reaching

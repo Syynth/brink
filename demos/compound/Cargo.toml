@@ -1,0 +1,59 @@
+# Standalone crate, deliberately OUTSIDE the brink workspace (see
+# docs/drive-app-plan.md and the root Cargo.toml `exclude = ["demos/*"]`).
+# The empty `[workspace]` table below makes this its own workspace root so
+# cargo's upward manifest walk stops here instead of pulling the crate into
+# the brink workspace. As of Phase 1a the demo takes a brink *path*
+# dependency (`bevy-brink`) — but the dep points INWARD from an excluded
+# crate, so `cargo build --workspace` at the repo root still never builds
+# the demo and it cannot perturb the oracle or CI.
+[workspace]
+
+[package]
+name = "compound"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "The Compound — Phase 0 pure-bevy stealth demo (brink #988)"
+
+[dependencies]
+bevy = "0.19"
+thiserror = "2"
+
+# Phase 1a: the brink runtime as a Bevy plugin. Path deps into the workspace
+# crates — fine from a workspace-EXCLUDED crate (the deps point *in*; the demo
+# is still never built by `cargo build --workspace`). `bevy-brink`'s default
+# `dev` feature registers the `.ink` source `InkLoader` (compile-at-load +
+# hot-reload) and re-exports `brink_runtime` as `bevy_brink::runtime`.
+bevy-brink = { path = "../../crates/bevy-brink" }
+
+# Keep the demo snappy to play even in a debug build: rats number in the
+# thousands and every guard runs a cone check each frame.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# This crate is not covered by the workspace lints, so restate the ones that
+# matter to keep it honest under `cargo clippy -- -D warnings`.
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# Pedantic lints that fight idiomatic Bevy system signatures and game math.
+# Bevy systems take their params (Res/Query/Commands/MessageReader) by value by
+# contract, so `needless_pass_by_value` / `trivially_copy_pass_by_ref` are noise
+# here; the cast lints fire on the routine `usize as f32` in 2D math. The
+# workspace `bevy-brink` crate allows `needless_pass_by_value` the same way.
+needless_pass_by_value = "allow"
+trivially_copy_pass_by_ref = "allow"
+# Bevy query filter tuples routinely trip `type_complexity`.
+type_complexity = "allow"
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+unwrap_used = "deny"
+panic = "deny"
+todo = "deny"

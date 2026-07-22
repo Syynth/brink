@@ -18,12 +18,19 @@ use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::query::Without;
 use bevy_ecs::system::{Commands, Query, Res, ResMut};
-use bevy_log::{error, warn};
+use bevy_log::error;
+// Only the `#[cfg(debug_assertions)]` variant of `warn_post_fulfillment_mutations`
+// below calls `warn!`; in non-debug builds (e.g. the `bench` profile used by
+// `benches/scenario_bench.rs` under `--features bench-counters`) that variant
+// isn't compiled, so an unconditional import would be unused there.
+#[cfg(debug_assertions)]
+use bevy_log::warn;
 use brink_runtime::{FlowInstance, FlowLocal, World};
 
 use crate::asset::{BrinkStory, BrinkStoryAsset, ProgramAsset};
+use crate::capability::{CapabilityManifest, CapabilityRegistry, check_load_capability_gate};
 use crate::flow::BrinkFlow;
-use crate::globals::{BrinkContext, BrinkGlobals, BrinkWorldPolicy};
+use crate::globals::{BrinkContext, BrinkExecMode, BrinkGlobals, BrinkWorldPolicy};
 
 /// Where a freshly-spawned flow should begin executing.
 #[derive(Default, Clone, Debug)]
@@ -81,6 +88,17 @@ pub struct BrinkFlowRequest<M: Send + Sync + 'static = ()> {
 ///
 /// - Skips requests whose `BrinkStoryAsset` (or any of its sub-assets)
 ///   isn't loaded yet — the request just waits.
+/// - Once the program asset is available, runs the load-boundary
+///   admission check (issue #912, RULED option (b)): if this marker's
+///   [`CapabilityRegistry<M>`] is missing any manifest-required
+///   capability the story's externals declare, the load is refused
+///   outright — logged as a [`crate::capability::CapabilityError::LoadRejected`] naming the
+///   marker, the story, and every missing capability, and the request is
+///   removed without ever creating a flow. This is the hard, immediate,
+///   per-marker version of the tier-1 admission rule
+///   [`compute_container_access`](crate::capability::compute_container_access)
+///   already applies at call time — the load itself now fails loudly
+///   instead of joining to a silently-incomplete access table.
 /// - On first fulfillment for marker `M`, creates the single shared
 ///   [`BrinkGlobals<M>`] `World` via [`World::new`], resolving the policy
 ///   installed at [`BrinkPlugin::with_policy`](crate::BrinkPlugin::with_policy)
@@ -107,8 +125,11 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
     requests: Query<(Entity, &BrinkFlowRequest<M>), Without<BrinkFlow<M>>>,
     stories: Res<Assets<BrinkStoryAsset>>,
     programs: Res<Assets<ProgramAsset>>,
+    capability_manifest: Res<CapabilityManifest>,
+    capability_registry: Res<CapabilityRegistry<M>>,
     globals: Option<Res<BrinkGlobals<M>>>,
     policy: Res<BrinkWorldPolicy<M>>,
+    exec_mode: Res<BrinkExecMode<M>>,
     current_locale: Option<Res<crate::locale::BrinkCurrentLocale<M>>>,
     locales: Res<Assets<crate::locale::LocaleAsset>>,
     mut line_tables: ResMut<Assets<crate::asset::LineTablesAsset>>,
@@ -129,6 +150,29 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
             continue;
         };
 
+        // Issue #912's load-boundary admission check: the manifest is
+        // app-global but the registry is per-marker, so this story's
+        // externals must resolve every manifest-required capability
+        // against *this marker's* CapabilityRegistry<M> before the load
+        // may proceed — a hard, immediate error naming the marker, the
+        // story, and every missing capability, not a silent
+        // per-container UnknownCapability err-table discovered later.
+        let story = req
+            .story
+            .path()
+            .map_or_else(|| format!("{:?}", req.story.id()), ToString::to_string);
+        if let Err(err) = check_load_capability_gate(
+            &program_asset.program,
+            &program_asset.effect_rows,
+            &capability_manifest,
+            &capability_registry,
+            story,
+        ) {
+            error!("BrinkFlowRequest: {err}; removing request");
+            commands.entity(entity).remove::<BrinkFlowRequest<M>>();
+            continue;
+        }
+
         if !globals_ready {
             match World::new(&program_asset.program, &policy.policy) {
                 Ok(world) => {
@@ -147,7 +191,7 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
         }
 
         // Resolve start position.
-        let flow = match &req.start {
+        let mut flow = match &req.start {
             FlowStart::Root => {
                 let (flow, _ctx) = FlowInstance::new_at_root(&program_asset.program);
                 flow
@@ -162,6 +206,11 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
                 flow
             }
         };
+        // F35 (ruled 2026-07-19): stamp the host-selected (or
+        // profile-defaulted) ExecMode. Core `FlowInstance` starts in `Dev`;
+        // bevy-brink's `BrinkExecMode` default keys off `debug_assertions`
+        // (see `BrinkPlugin::with_exec_mode`).
+        flow.set_exec_mode(exec_mode.mode);
 
         // Resolve the flow's starting locale: base unless a global locale is
         // active and its overlay is loaded (otherwise base now, caught up by
@@ -222,7 +271,19 @@ pub fn warn_post_fulfillment_mutations<M: Send + Sync + 'static>(
     }
 }
 
+// Never called: `BrinkPlugin::build` only wires the debug variant above
+// (its `app.add_systems` call is itself `#[cfg(debug_assertions)]`-gated),
+// so this stub exists purely to give the generic a body in non-debug
+// builds. Confirmed via `RUSTFLAGS="-C debug-assertions=off" cargo clippy
+// -p bevy-brink --features bench-counters` (#923) — the profile that
+// actually flips `debug_assertions` off is `bench` (built by
+// `benches/scenario_bench.rs`, gated on this same feature), which no
+// default CI job exercised until #923 wired one up.
 #[cfg(not(debug_assertions))]
+#[expect(
+    dead_code,
+    reason = "generic stub kept for API parity with the debug_assertions variant; never called in release/bench profiles"
+)]
 pub fn warn_post_fulfillment_mutations<M: Send + Sync + 'static>() {}
 
 #[cfg(test)]
@@ -271,6 +332,78 @@ mod tests {
         assert!(
             world.contains_resource::<BrinkGlobals<()>>(),
             "globals should be inserted on first fulfillment"
+        );
+    }
+
+    /// F35 (ruled 2026-07-19): bevy-brink's `ExecMode` default keys off the
+    /// build profile — `Dev` under `debug_assertions`. `cargo test` is a
+    /// debug build (so `cfg!(debug_assertions)` holds here), so a flow
+    /// spawned with `BrinkPlugin::default()` (no `with_exec_mode`) starts in
+    /// `Dev`. (The core-runtime default is also `Dev`, but for the opposite
+    /// reason — it is profile-independent; this asserts the bevy default
+    /// resolves to `Dev` here regardless.)
+    #[test]
+    #[cfg(debug_assertions)]
+    fn default_exec_mode_is_dev_in_debug_build() {
+        let mut app = make_test_app();
+        assert_eq!(
+            app.world().resource::<BrinkExecMode<()>>().mode,
+            brink_runtime::ExecMode::Dev,
+            "BrinkPlugin default must resolve to Dev under debug_assertions"
+        );
+
+        let (program, tables, ctx) = compile_test_story("=== start ===\nhi\n* [Continue] -> END\n");
+        let story = add_story_assets(&mut app, program, tables, ctx);
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .entity(entity)
+                .get::<BrinkFlow<()>>()
+                .expect("flow materialized")
+                .inner
+                .exec_mode(),
+            brink_runtime::ExecMode::Dev,
+            "a flow spawned under the default plugin must start in Dev in a debug build"
+        );
+    }
+
+    /// F35: the host override. `with_exec_mode(Prod)` pins every spawned
+    /// flow to `Prod` regardless of build profile.
+    #[test]
+    fn with_exec_mode_override_stamps_spawned_flow() {
+        let mut app = App::new();
+        app.add_plugins(bevy_asset::AssetPlugin::default());
+        app.add_plugins(
+            crate::BrinkPlugin::<()>::default().with_exec_mode(brink_runtime::ExecMode::Prod),
+        );
+        assert_eq!(
+            app.world().resource::<BrinkExecMode<()>>().mode,
+            brink_runtime::ExecMode::Prod,
+            "with_exec_mode(Prod) must install a Prod resource"
+        );
+
+        let (program, tables, ctx) = compile_test_story("=== start ===\nhi\n* [Continue] -> END\n");
+        let story = add_story_assets(&mut app, program, tables, ctx);
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .entity(entity)
+                .get::<BrinkFlow<()>>()
+                .expect("flow materialized")
+                .inner
+                .exec_mode(),
+            brink_runtime::ExecMode::Prod,
+            "with_exec_mode(Prod) must stamp Prod onto the spawned flow"
         );
     }
 
@@ -907,6 +1040,7 @@ mod tests {
             turn_index: 0,
             rng_seed: 0,
             previous_random: 0,
+            suspended: None,
         };
         save.globals.insert("mood".to_string(), Value::Int(42));
         save.globals
@@ -1032,6 +1166,7 @@ mod tests {
             turn_index: 0,
             rng_seed: 0,
             previous_random: 0,
+            suspended: None,
         };
         save.globals.insert("mood".to_string(), Value::Int(5));
         save.globals
@@ -1062,6 +1197,161 @@ mod tests {
             view.global(mood_idx),
             &Value::Int(5),
             "the known global should still apply even though another was unknown"
+        );
+    }
+
+    /// Issue #912 (RULED 2026-07-18, option (b)): the manifest is
+    /// app-global but `CapabilityRegistry<M>` is per-marker, so a
+    /// multi-marker app can have one marker whose registry satisfies a
+    /// story's manifest-required capabilities and another whose registry
+    /// doesn't — for the *same* story asset, loaded under both markers at
+    /// once. Loading under the marker that has the capability registered
+    /// must succeed exactly as the single-marker path always has; loading
+    /// under the marker that doesn't must be refused outright (no
+    /// `BrinkFlow` inserted, request removed) rather than silently
+    /// producing a story with an incomplete capability join.
+    #[test]
+    fn per_marker_capability_gate_admits_one_marker_and_rejects_another() {
+        use bevy_asset::AssetPlugin;
+        use bevy_ecs::component::Component;
+
+        use crate::asset::{LineTablesAsset, fresh_context};
+        use crate::capability::{
+            BrinkCapabilityAppExt as _, CapabilityEffects, CapabilityManifest,
+            CapabilityManifestExternal,
+        };
+
+        #[derive(Component)]
+        struct Transform;
+
+        struct MarkerHasCapability;
+        struct MarkerMissingCapability;
+
+        let mut app = App::new();
+        app.add_plugins(AssetPlugin::default());
+        app.add_plugins(crate::BrinkPlugin::<MarkerHasCapability>::default());
+        app.add_plugins(crate::BrinkPlugin::<MarkerMissingCapability>::default());
+
+        // Only the "has" marker ever registers Transform.
+        app.register_capability::<MarkerHasCapability, Transform>("Transform");
+
+        // The manifest is a single, app-global resource — shared by both
+        // markers, per the ruling.
+        let mut manifest = CapabilityManifest::default();
+        manifest.externals.push(CapabilityManifestExternal {
+            name: "get_position".to_string(),
+            effects: CapabilityEffects {
+                reads: vec!["Transform".to_string()],
+                writes: vec![],
+                detect: std::collections::BTreeMap::new(),
+            },
+        });
+        app.insert_resource(manifest);
+
+        let source = "EXTERNAL get_position(id)\n=== start ===\n\
+                       ~ temp x = get_position(0)\nHello.\n-> END\n";
+        let out = brink_compiler::compile("t.ink", move |p| {
+            if p == "t.ink" {
+                Ok(source.to_string())
+            } else {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "x"))
+            }
+        })
+        .expect("compile");
+        let mut inkb = Vec::new();
+        brink_format::write_inkb(&out.data, &mut inkb);
+        let loaded = brink_format::read_inkb(&inkb).expect("read_inkb");
+        let (program, tables) = brink_runtime::link(&loaded).expect("link");
+        let initial_context = fresh_context(&program);
+
+        let world = app.world_mut();
+        let program_handle = world
+            .resource_mut::<Assets<ProgramAsset>>()
+            .add(ProgramAsset {
+                program,
+                initial_context,
+                effect_rows: loaded.effect_rows,
+            });
+        let tables_handle = world
+            .resource_mut::<Assets<LineTablesAsset>>()
+            .add(LineTablesAsset { tables });
+        let story_handle = world
+            .resource_mut::<Assets<BrinkStoryAsset>>()
+            .add(BrinkStoryAsset {
+                program: program_handle,
+                line_tables: tables_handle,
+            });
+
+        let entity_has = app
+            .world_mut()
+            .spawn(
+                BrinkFlowRequest::<MarkerHasCapability>::builder()
+                    .story(story_handle.clone())
+                    .build(),
+            )
+            .id();
+        let entity_missing = app
+            .world_mut()
+            .spawn(
+                BrinkFlowRequest::<MarkerMissingCapability>::builder()
+                    .story(story_handle)
+                    .build(),
+            )
+            .id();
+
+        app.update();
+
+        let world = app.world();
+        assert!(
+            world
+                .entity(entity_has)
+                .contains::<BrinkFlow<MarkerHasCapability>>(),
+            "marker with Transform registered should load successfully"
+        );
+        assert!(
+            !world
+                .entity(entity_has)
+                .contains::<BrinkFlowRequest<MarkerHasCapability>>(),
+            "fulfilled request should be removed"
+        );
+
+        assert!(
+            !world
+                .entity(entity_missing)
+                .contains::<BrinkFlow<MarkerMissingCapability>>(),
+            "marker missing Transform must not get a flow — the load must be rejected"
+        );
+        assert!(
+            !world
+                .entity(entity_missing)
+                .contains::<BrinkFlowRequest<MarkerMissingCapability>>(),
+            "the rejected request must be removed too, not left pending forever"
+        );
+    }
+
+    /// Single-marker apps (the common case, `M = ()`) never insert a
+    /// `CapabilityManifest` or call `register_capability` — both default
+    /// to empty via `init_resource`. An empty manifest declares no
+    /// capabilities for any external, so `missing_capabilities` is always
+    /// empty and every existing single-marker fulfillment behaves exactly
+    /// as before this issue's gate was added.
+    #[test]
+    fn single_marker_path_with_no_manifest_is_unaffected_by_the_gate() {
+        let mut app = make_test_app();
+        let (program, tables, ctx) =
+            compile_test_story("=== start ===\nhello\n* [Continue] -> END\n");
+        let story = add_story_assets(&mut app, program, tables, ctx);
+
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+
+        app.update();
+
+        assert!(
+            app.world().entity(entity).contains::<BrinkFlow<()>>(),
+            "no manifest means no required capabilities, so fulfillment proceeds as before"
         );
     }
 }

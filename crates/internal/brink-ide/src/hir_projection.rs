@@ -722,15 +722,14 @@ fn block_extent(block: &Block) -> Option<TextRange> {
 }
 
 fn stmt_extent(stmt: &Stmt) -> Option<TextRange> {
-    use brink_syntax::ast::{AstPtr, SyntaxNodePtr};
     match stmt {
-        Stmt::Content(c) => c.ptr.as_ref().map(SyntaxNodePtr::text_range),
-        Stmt::Divert(d) => d.ptr.as_ref().map(SyntaxNodePtr::text_range),
+        Stmt::Content(c) => c.ptr.as_ref().map(brink_ir::Provenance::text_range),
+        Stmt::Divert(d) => d.ptr.as_ref().map(brink_ir::Provenance::text_range),
         Stmt::TunnelCall(t) => Some(t.ptr.text_range()),
         Stmt::ThreadStart(t) => Some(t.ptr.text_range()),
         Stmt::TempDecl(t) => Some(t.ptr.text_range()),
         Stmt::Assignment(a) => Some(a.ptr.text_range()),
-        Stmt::Return(r) => r.ptr.as_ref().map(AstPtr::text_range),
+        Stmt::Return(r) => r.ptr.as_ref().map(brink_ir::Provenance::text_range),
         Stmt::ChoiceSet(cs) => {
             let mut acc: Option<TextRange> = None;
             for choice in &cs.choices {
@@ -750,6 +749,7 @@ fn stmt_extent(stmt: &Stmt) -> Option<TextRange> {
         Stmt::Sequence(s) => Some(s.ptr.text_range()),
         Stmt::ExprStmt(_) | Stmt::EndOfLine => None,
         Stmt::LogicBlock(lb) => Some(lb.ptr.text_range()),
+        Stmt::Await(a) => Some(a.ptr.text_range()),
     }
 }
 

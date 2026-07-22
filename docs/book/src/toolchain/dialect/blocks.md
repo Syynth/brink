@@ -29,7 +29,7 @@ every line.
 - **`temp` declarations**, block-scoped (see below).
 - **`if` / `else if` / `else`**, braced:
 
-  ```ink
+  ```ink,ignore
   ~ {
       temp score = 72
       if score >= 90 {

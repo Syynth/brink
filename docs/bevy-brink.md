@@ -199,6 +199,20 @@ an interactive window.
 - ✅ `BrinkPlugin<M>` and `BrinkAssetsPlugin`. `BrinkPlugin<M>` is
   marker-parameterized; `BrinkAssetsPlugin` registers types and is
   auto-added once per app.
+- ✅ **F35 dev/prod `ExecMode` default** (ruled 2026-07-19). Every flow
+  `fulfill_flow_requests` spawns is stamped with a host-selected
+  `ExecMode`. Unlike core `brink-runtime` — whose `ExecMode::default()` is
+  always `Dev` — bevy-brink's default keys off the build profile:
+  `Dev` under `debug_assertions` (editor / `cargo run`), `Prod` in a
+  release build. This makes a shipped game default to the keep-moving
+  posture (F34/NS-A4: no comparator-write faults, NaN placed by the pinned
+  total order) and an in-editor session to the fault-loud one, matching
+  where each nondeterminism-catching fault is useful. Carried by the
+  `BrinkExecMode<M>` resource (mirrors `BrinkWorldPolicy<M>`); a host pins
+  a mode regardless of profile with `BrinkPlugin::with_exec_mode(mode)`,
+  and a per-flow runtime override stays available via
+  `FlowInstance::set_exec_mode`. The mode is never embedded in `.inkb` and
+  never persisted in saves.
 - ✅ Observer events (above) + `BrinkFlow::step_one` and
   `BrinkFlow::advance_until_terminal` that fire them.
 - ✅ Init pass (`run_init_pass` + `InkLoaderSettings`).

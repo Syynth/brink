@@ -78,18 +78,44 @@ use brink_ir::{
 use rowan::TextRange;
 
 use crate::annotations;
-use crate::infer::{InferenceResult, Ty};
+use crate::infer::{InferenceResult, InferredSig, Ty};
 
-/// `types` project policy (docs/typed-mode-spec.md §1). `Gradual` (the
-/// default) is today's behavior, byte-identical forever — `Unknown` unifies
-/// with anything, annotations are optional seasoning, and none of this
-/// module's checks run. `Strict` requires `dialect = brink` and turns on
-/// [`config_error`]/[`check`].
+/// `types` project policy (docs/typed-mode-spec.md §1). `Gradual` is the
+/// pre-flip behavior — `Unknown` unifies with anything, annotations are
+/// optional seasoning, and none of this module's checks run. `Strict`
+/// requires `dialect = brink` and turns on [`config_error`]/[`check`].
+///
+/// The *default* is dialect-keyed since the 2026-07-19 "Typing posture
+/// ruled" decision (issue #1127) — see [`resolve_type_policy`]. The derived
+/// `Default` (`Gradual`) exists only so pre-resolution containers can derive
+/// theirs; policy defaulting must never read it directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TypePolicy {
     #[default]
     Gradual,
     Strict,
+}
+
+/// THE `types`-default resolution function (issue #1127, decision-log
+/// 2026-07-19 "Typing posture ruled"). An explicit `types = …` — a CLI
+/// `--types` flag, a `brink.toml` `[project] types` key, an editor/LSP API
+/// call — always wins. When the project never says, the default is keyed on
+/// the dialect:
+///
+/// - `Dialect::Brink` → **`Strict`** (the flip: the new surfaces are
+///   designed under the strict doctrine; gradual remains an opt-out knob);
+/// - `Dialect::StrictInk` → **`Gradual`**, forever (the oracle corpus is
+///   anchored to it — byte-identity preserved by construction).
+///
+/// Every mount resolves through this one function (usually via
+/// `AnalysisOptions::type_policy`); no other code may invent a `types`
+/// default.
+#[must_use]
+pub fn resolve_type_policy(dialect: crate::Dialect, explicit: Option<TypePolicy>) -> TypePolicy {
+    explicit.unwrap_or(match dialect {
+        crate::Dialect::Brink => TypePolicy::Strict,
+        crate::Dialect::StrictInk => TypePolicy::Gradual,
+    })
 }
 
 /// The severity a diagnostic code should actually be reported at, given the
@@ -169,11 +195,48 @@ pub fn check(
     out.extend(check_value_calls(files, index, inference));
     // TM-4b (docs/typed-mode-spec.md §6): missing/extra/mistyped struct
     // construction-literal fields — strict-mode-only, per the crate doc.
-    out.extend(crate::structs::check(files, index));
-    // TM-3 completion (docs/typed-mode-spec.md §4, issue #659): `int(x)`/
-    // `float(x)` statically out-of-domain argument literals —
-    // strict-mode-only, per `conversions`'s own module doc.
-    out.extend(crate::conversions::check(files, resolutions));
+    out.extend(crate::structs::check(files, index, inference, resolutions));
+    // T1e-1 (docs/t1e-spec.md §6, issue #831): a `ref lvalue-path`
+    // projection's segments (dotted fields, `[…]` indices) checked against
+    // the root's statically-known declared shape — strict-mode-only, same
+    // rule `structs::check`'s own missing/extra/mistyped trio follows,
+    // reusing the same shape table.
+    out.extend(crate::ref_projection::check_strict(
+        files,
+        index,
+        resolutions,
+    ));
+    // TM-3 completion (docs/typed-mode-spec.md §4, issue #659; extended to
+    // variable/call/index-valued arguments by issue #983): `int(x)`/
+    // `float(x)` statically out-of-domain arguments — strict-mode-only, per
+    // `conversions`'s own module doc.
+    out.extend(crate::conversions::check(
+        files,
+        index,
+        inference,
+        resolutions,
+    ));
+    // F27 (docs/stdlib-spec.md §1.6, ruled 2026-07-19, issue #1120):
+    // condition-position `Option[T]` has no truthiness — strict-mode-only,
+    // the compile-time half of the ruling (E116); the gradual-mode half is
+    // the runtime `OptionTruthiness` fault, which also backstops every
+    // statically-unclassifiable condition under strict.
+    out.extend(crate::option_conditions::check(
+        files,
+        index,
+        inference,
+        resolutions,
+    ));
+    // NS-A5 (docs/stdlib-spec.md §7, F7/F8, issue #1111): the inhabited-
+    // range refinement — `int(r)` demands `NonEmptyRange` evidence under
+    // strict (E117); gradual is inert with the runtime-fault residual.
+    // The template for every future value refinement.
+    out.extend(crate::range_refinement::check(
+        files,
+        index,
+        inference,
+        resolutions,
+    ));
     out
 }
 
@@ -191,10 +254,7 @@ fn check_escapes(
     let mut out = Vec::new();
     for &(file, hir) in files {
         for knot in &hir.knots {
-            let kind = match knot.ptr {
-                brink_ir::ContainerPtr::Knot(_) => SymbolKind::Knot,
-                brink_ir::ContainerPtr::Stitch(_) => SymbolKind::Stitch,
-            };
+            let kind = knot.symbol_kind();
             if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
                 check_def(
                     id,
@@ -230,6 +290,71 @@ fn check_escapes(
                     );
                 }
             }
+        }
+    }
+    out
+}
+
+/// Unknown-escape (`E065`) + Conflicted-escape (`E066`) over every
+/// **registered** `EXTERNAL` declaration's own parameter types (issue #1004).
+///
+/// An `EXTERNAL name(params)` carries no ink-side type-annotation grammar
+/// (its parameters are bare identifiers — `external_declaration` parses no
+/// `(x: T)`), so a binding's declared parameter types can only come from the
+/// host manifest (or an inline `///` `@param` doc). [`check`] above walks
+/// `hir.knots` and therefore never sees these declarations; without this
+/// pass a manifest whose `ManifestParam.ty` fails to resolve (an empty `ty`,
+/// or one naming a semantic type absent from the `types` vocabulary) is
+/// silently treated as an untyped call rather than the strict escape it is.
+///
+/// The signatures come from [`crate::collect_external_sigs`] — the *same*
+/// resolution that seeds call-site argument checking into
+/// `infer_project`/`solve_scc` — so a param typed by the manifest resolves to
+/// its own [`Ty`] (a scalar semantic type as its `base`, a handle kind as
+/// `Ty::Handle`) and stays clean, while one that resolves to [`Ty::Unknown`]
+/// escapes. An `EXTERNAL` with *no* declared signature at all (neither a
+/// manifest entry nor an inline doc) is absent from `external_sigs` and stays
+/// entirely unchecked — the deliberate "unregistered external's call sites
+/// stay unchecked" posture (see `collect_external_sigs`'s own doc), so this
+/// never turns a bare, host-only `EXTERNAL` into a strict error.
+///
+/// Each diagnostic anchors at the external's *own* declaration span
+/// (`SymbolInfo::range`), fixing the #1004 secondary defect where every
+/// external escape collapsed onto one arbitrary line. Externals are visited
+/// in `(file, declaration offset)` order — the same deterministic ordering
+/// [`crate::external_check::analyze_externals`] uses — so diagnostic order is
+/// source order, not `DefinitionId`-hash order.
+#[must_use]
+pub(crate) fn check_external_escapes(
+    index: &SymbolIndex,
+    external_sigs: &BTreeMap<DefinitionId, InferredSig>,
+) -> Vec<brink_ir::Diagnostic> {
+    // Resolve each signed external to its `SymbolInfo`, then order by
+    // (file, declaration offset) for deterministic, source-ordered output.
+    let mut externals: Vec<(&brink_ir::SymbolInfo, &InferredSig)> = external_sigs
+        .iter()
+        .filter_map(|(id, sig)| index.symbols.get(id).map(|info| (info, sig)))
+        .filter(|(info, _)| info.kind == SymbolKind::External)
+        .collect();
+    externals.sort_by_key(|(info, _)| (info.file.0, info.range.start()));
+
+    let mut out = Vec::new();
+    for (info, sig) in externals {
+        for (i, param) in info.params.iter().enumerate() {
+            let ty = sig.params.get(i).unwrap_or(&Ty::Unknown);
+            emit_escape(
+                info.file,
+                &info.name,
+                &format!("parameter `{}`", param.name),
+                info.range,
+                ty,
+                // No inline-annotation exemption exists for an `EXTERNAL`
+                // (bare-identifier params): the resolved manifest/doc type
+                // *is* the declared type, so an `Unknown` here is a genuine
+                // "no resolvable type" escape, not a merely-uninferred slot.
+                false,
+                &mut out,
+            );
         }
     }
     out
@@ -281,8 +406,22 @@ fn check_def(
     // Return type: only function knots carry return-value semantics; a
     // `void`-annotated function never needs a concrete return type either.
     if is_function {
-        let is_void = return_type
+        let has_void_annotation = return_type
             .is_some_and(|rt| matches!(rt, TypeExpr::Named { name, .. } if name == "void"));
+        // Issue #1028: a function whose body never carries a value-returning
+        // `return <expr>` — it either falls off the end or only ever
+        // bare-`return`s — infers as void exactly like an explicit `: void`
+        // annotation, rather than escaping as Unknown. typed-mode-spec §3
+        // only documents `void` as something the *author* writes for a
+        // no-return function; it is silent on what a same-shaped body
+        // without the annotation should infer as. The conservative reading
+        // (spec gap, flagged in the PR) is that inference shouldn't demand
+        // an annotation to say what the body already proves: nothing ever
+        // flows out of it. `body_types.has_value_return` is exactly that
+        // proof — `sig.return_ty.is_unknown()` alone can't distinguish
+        // "never returns a value" from "returns a value inference couldn't
+        // pin down" (a genuine Unknown-escape, left unaffected below).
+        let is_void = has_void_annotation || !body_types.has_value_return;
         let annotated =
             is_void || return_type.is_some_and(|rt| annotations::resolve(rt, names).is_some());
         if !is_void {
@@ -375,7 +514,10 @@ fn classify(ty: &Ty) -> Escape {
     match ty {
         Ty::Conflicted => Escape::Conflicted,
         Ty::Unknown => Escape::Unknown,
-        Ty::Array(elem) => classify(elem),
+        // Array, (NS-A1) `Option[T]`, and (NS-A7) `Weighted[T]` recurse on
+        // their single element — a parameterized builtin whose element is
+        // Unknown/Conflicted escapes like any other nesting.
+        Ty::Array(elem) | Ty::Option(elem) | Ty::Weighted(elem) => classify(elem),
         Ty::Map(k, v) => match (classify(k), classify(v)) {
             (Escape::Conflicted, _) | (_, Escape::Conflicted) => Escape::Conflicted,
             (Escape::Unknown, _) | (_, Escape::Unknown) => Escape::Unknown,
@@ -407,6 +549,11 @@ fn classify(ty: &Ty) -> Escape {
         // function as `Ty::Handle` at all — `unify` already folds it to
         // `Ty::Conflicted` at the point the two kinds meet, so it's caught
         // by the `Ty::Conflicted` arm above, not here.
+        // NS-A5: a resolved `Ty::Range` is concrete either way — the
+        // `non_empty` refinement bit is evidence, not openness; a missing
+        // refinement is E117's business (range_refinement), never an
+        // Unknown-escape.
+        // (NS-A8 tower kinds are concrete leaves — clean, like scalars.)
         Ty::Int
         | Ty::Float
         | Ty::Bool
@@ -414,7 +561,9 @@ fn classify(ty: &Ty) -> Escape {
         | Ty::Divert
         | Ty::List(_)
         | Ty::Struct(_)
-        | Ty::Handle(_) => Escape::Clean,
+        | Ty::Handle(_)
+        | Ty::Range { .. }
+        | Ty::Tower(_) => Escape::Clean,
     }
 }
 
@@ -440,10 +589,7 @@ fn check_value_calls(
     for &(file, hir) in files {
         let mut def_ids: Vec<DefinitionId> = Vec::new();
         for knot in &hir.knots {
-            let kind = match knot.ptr {
-                brink_ir::ContainerPtr::Knot(_) => SymbolKind::Knot,
-                brink_ir::ContainerPtr::Stitch(_) => SymbolKind::Stitch,
-            };
+            let kind = knot.symbol_kind();
             if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
                 def_ids.push(id);
             }
@@ -591,10 +737,7 @@ fn collect_void_defs(files: &[(FileId, &HirFile)], index: &SymbolIndex) -> BTree
             if !is_void {
                 continue;
             }
-            let kind = match knot.ptr {
-                brink_ir::ContainerPtr::Knot(_) => SymbolKind::Knot,
-                brink_ir::ContainerPtr::Stitch(_) => SymbolKind::Stitch,
-            };
+            let kind = knot.symbol_kind();
             if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
                 out.insert(id);
             }
@@ -677,6 +820,14 @@ fn check_void_stmt(
                 check_void_block_stmt(file, bs, void_defs, resolution_by_range, out);
             }
         }
+        // `~ await <cond>` (docs/flow-suspension-spec.md §3): the condition is
+        // a value position, so a void-returning call used there is the same
+        // strict-mode error it is anywhere else a value is expected.
+        Stmt::Await(a) => {
+            if let Some(cond) = &a.condition {
+                check_void_root(file, cond, void_defs, resolution_by_range, out);
+            }
+        }
         Stmt::Divert(_)
         | Stmt::TunnelCall(_)
         | Stmt::ThreadStart(_)
@@ -738,6 +889,11 @@ fn check_void_block_stmt(
         BlockStmt::For(f) => {
             for s in &f.body {
                 check_void_block_stmt(file, s, void_defs, resolution_by_range, out);
+            }
+        }
+        BlockStmt::Await(a) => {
+            if let Some(cond) = &a.condition {
+                check_void_root(file, cond, void_defs, resolution_by_range, out);
             }
         }
         BlockStmt::Return(_)
@@ -894,12 +1050,15 @@ fn collect_temps_stmt(
                 collect_temps_block_stmt(bs, names, out);
             }
         }
+        // An `await` condition is an expression — it declares no temps
+        // (docs/flow-suspension-spec.md §3).
         Stmt::Divert(_)
         | Stmt::TunnelCall(_)
         | Stmt::ThreadStart(_)
         | Stmt::Assignment(_)
         | Stmt::Return(_)
         | Stmt::ExprStmt(_)
+        | Stmt::Await(_)
         | Stmt::EndOfLine => {}
     }
 }
@@ -962,6 +1121,7 @@ fn collect_temps_block_stmt(
         BlockStmt::Assignment(_)
         | BlockStmt::Return(_)
         | BlockStmt::ExprStmt(_)
+        | BlockStmt::Await(_)
         | BlockStmt::Break(_)
         | BlockStmt::Continue(_) => {}
     }
@@ -990,6 +1150,59 @@ fn collect_temps_if(
 mod tests {
     use super::*;
     use brink_ir::{Diagnostic, DiagnosticCode, ResolutionMap, hir::lower};
+
+    // ── resolve_type_policy: one test per (dialect × explicit/implicit)
+    //    cell (issue #1127, ruled 2026-07-19) ──────────────────────────────
+
+    #[test]
+    fn resolve_brink_implicit_defaults_strict() {
+        assert_eq!(
+            resolve_type_policy(crate::Dialect::Brink, None),
+            TypePolicy::Strict
+        );
+    }
+
+    #[test]
+    fn resolve_strict_ink_implicit_defaults_gradual() {
+        assert_eq!(
+            resolve_type_policy(crate::Dialect::StrictInk, None),
+            TypePolicy::Gradual
+        );
+    }
+
+    #[test]
+    fn resolve_brink_explicit_gradual_wins() {
+        assert_eq!(
+            resolve_type_policy(crate::Dialect::Brink, Some(TypePolicy::Gradual)),
+            TypePolicy::Gradual
+        );
+    }
+
+    #[test]
+    fn resolve_brink_explicit_strict_stays_strict() {
+        assert_eq!(
+            resolve_type_policy(crate::Dialect::Brink, Some(TypePolicy::Strict)),
+            TypePolicy::Strict
+        );
+    }
+
+    #[test]
+    fn resolve_strict_ink_explicit_gradual_stays_gradual() {
+        assert_eq!(
+            resolve_type_policy(crate::Dialect::StrictInk, Some(TypePolicy::Gradual)),
+            TypePolicy::Gradual
+        );
+    }
+
+    #[test]
+    fn resolve_strict_ink_explicit_strict_wins() {
+        // The E064 config error is downstream (config_error); resolution
+        // itself honors the explicit request.
+        assert_eq!(
+            resolve_type_policy(crate::Dialect::StrictInk, Some(TypePolicy::Strict)),
+            TypePolicy::Strict
+        );
+    }
 
     fn build(src: &str) -> (HirFile, SymbolIndex, ResolutionMap) {
         let parsed = brink_syntax::parse(src);
@@ -1204,6 +1417,49 @@ mod tests {
         );
     }
 
+    /// Issue #994: a dotted field read on a `Struct`-typed temp (`t.x`) must
+    /// not corrupt `t`'s own accumulated type with the field-read's usage
+    /// context. Before the fix, `infer::body::InferPass::observe` joined
+    /// `useInt`'s `int` param type into temp `t`'s own slot (the TM-4b
+    /// resolution fallback maps the whole dotted path's range to `t`'s
+    /// `DefinitionId` — no static field-type table exists yet, so `t.x` and
+    /// bare `t` were indistinguishable to `observe`), producing
+    /// `unify(Struct(Point), int) == Conflicted` and a spurious `E066` on
+    /// `t` even though `t` itself — a `Point` — is never actually misused.
+    #[test]
+    fn temp_headed_dotted_field_read_does_not_corrupt_the_temp_s_own_type() {
+        let src = "STRUCT Point = #{x: float}\n\
+                   === function useInt(n: int): int ===\n~ return n\n\
+                   === main ===\n~ temp t = Point#{x: 1.0}\n~ temp r = useInt(t.x)\n-> DONE\n";
+        let (hir, index, res) = build(src);
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            diags.iter().all(|d| d.code != DiagnosticCode::E066),
+            "a dotted field read must never Conflicted-escape its head temp: {diags:?}"
+        );
+    }
+
+    /// Control for the #994 fix above: the segment-count guard in `observe`
+    /// only exempts a *dotted* field read — a bare (single-segment) temp
+    /// whose own uses genuinely disagree must still Conflicted-escape.
+    #[test]
+    fn bare_temp_with_genuinely_conflicting_uses_still_escapes_as_conflicted() {
+        let src = "=== function useInt(n: int): int ===\n~ return n\n\
+                   === main ===\n~ temp t = \"hello\"\n~ temp r = useInt(t)\n-> DONE\n";
+        let (hir, index, res) = build(src);
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E066 && d.message.contains("temp `t`")),
+            "a bare temp with genuinely conflicting uses must still Conflicted-escape: {diags:?}"
+        );
+    }
+
     /// Before T1d-2b (issue #774), this exact cross-kind fixture was
     /// silently unreachable: `infer_project`/`solve_scc` had no manifest
     /// seam, so `handle<K>` return annotations never resolved during body
@@ -1399,7 +1655,7 @@ mod tests {
         let opts = crate::AnalysisOptions {
             host_manifest: Some(manifest),
             dialect: crate::Dialect::Brink,
-            types: TypePolicy::Gradual,
+            types: Some(TypePolicy::Gradual),
             ..Default::default()
         };
         let diags = crate::strict_diagnostics(
@@ -1448,6 +1704,133 @@ mod tests {
         );
     }
 
+    // ── `EXTERNAL` *declaration* escape checking (issue #1004) ───────────
+    //
+    // The checks above verify call *arguments* against a binding's declared
+    // param types. #1004 adds the dual: the binding's own declared params are
+    // escape-checked, so a manifest whose `ManifestParam.ty` fails to resolve
+    // is reported rather than silently treated as an untyped call. Exercised
+    // through the shared `strict_diagnostics` seam (where `check_external_escapes`
+    // is wired), the exact path both the analysis and compile pipelines take.
+
+    fn get_thing_manifest(ty: &str) -> brink_ir::HostManifest {
+        brink_ir::HostManifest {
+            types: vec![brink_ir::SemanticTypeDef {
+                name: "thing_id".to_string(),
+                base: brink_ir::BaseType::Int,
+                constraint: None,
+                values: None,
+                widget: None,
+            }],
+            externals: vec![brink_ir::ManifestExternal {
+                name: "get_thing".to_string(),
+                params: vec![brink_ir::ManifestParam {
+                    name: "id".to_string(),
+                    ty: brink_ir::TypeRef(ty.to_string()),
+                }],
+                returns: brink_ir::TypeRef("float".to_string()),
+                kind: brink_ir::ExternalKind::default(),
+                doc: None,
+                widgets: Vec::new(),
+                path: Vec::new(),
+            }],
+        }
+    }
+
+    fn strict_opts(manifest: Option<brink_ir::HostManifest>) -> crate::AnalysisOptions {
+        crate::AnalysisOptions {
+            host_manifest: manifest,
+            dialect: crate::Dialect::Brink,
+            types: Some(TypePolicy::Strict),
+            ..Default::default()
+        }
+    }
+
+    const EXT_SRC: &str = "EXTERNAL get_thing(id)\n=== start ===\n{get_thing(1)}\n-> DONE\n";
+
+    #[test]
+    fn manifest_typed_external_param_is_clean_under_strict() {
+        let (hir, index, res) = build(EXT_SRC);
+        let diags = crate::strict_diagnostics(
+            &[(FileId(0), &hir)],
+            &index,
+            &res,
+            &strict_opts(Some(get_thing_manifest("thing_id"))),
+            None,
+            &BTreeMap::new(),
+        );
+        assert!(
+            diags.is_empty(),
+            "a manifest-typed external param must not escape: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn unresolvable_external_param_escapes_at_its_own_decl_span() {
+        let (hir, index, res) = build(EXT_SRC);
+        let diags = crate::strict_diagnostics(
+            &[(FileId(0), &hir)],
+            &index,
+            &res,
+            &strict_opts(Some(get_thing_manifest(""))),
+            None,
+            &BTreeMap::new(),
+        );
+        let escape = diags
+            .iter()
+            .find(|d| d.code == DiagnosticCode::E065)
+            .expect("expected an E065 escape from the unresolvable external param");
+        assert!(
+            escape.message.contains("get_thing") && escape.message.contains("parameter `id`"),
+            "escape must name the offending external param: {escape:?}"
+        );
+        // `EXTERNAL get_thing(id)` — the `get_thing` name spans bytes 9..18.
+        assert_eq!(
+            (
+                u32::from(escape.range.start()),
+                u32::from(escape.range.end())
+            ),
+            (9, 18),
+            "escape anchors at the external's own declaration span: {escape:?}"
+        );
+    }
+
+    #[test]
+    fn unregistered_external_declaration_stays_unchecked_under_strict() {
+        let (hir, index, res) = build(EXT_SRC);
+        let diags = crate::strict_diagnostics(
+            &[(FileId(0), &hir)],
+            &index,
+            &res,
+            &strict_opts(None),
+            None,
+            &BTreeMap::new(),
+        );
+        assert!(
+            diags.is_empty(),
+            "an unregistered external's params must stay unchecked: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn external_declaration_escapes_never_fire_under_gradual() {
+        let (hir, index, res) = build(EXT_SRC);
+        let mut opts = strict_opts(Some(get_thing_manifest("")));
+        opts.types = Some(TypePolicy::Gradual);
+        let diags = crate::strict_diagnostics(
+            &[(FileId(0), &hir)],
+            &index,
+            &res,
+            &opts,
+            None,
+            &BTreeMap::new(),
+        );
+        assert!(
+            diags.is_empty(),
+            "gradual mode never escape-checks external declarations: {diags:?}"
+        );
+    }
+
     #[test]
     fn unconstrained_empty_array_temp_escapes_as_unknown() {
         // spec §5's own worked example.
@@ -1471,14 +1854,39 @@ mod tests {
     }
 
     #[test]
-    fn unannotated_function_return_escapes_as_unknown() {
+    fn unannotated_function_with_no_return_statement_infers_void() {
+        // Issue #1028: a function whose body never carries a value-returning
+        // `return <expr>` — this one has no `return` at all — infers as void
+        // exactly like an explicit `: void` annotation would, rather than
+        // escaping as Unknown. Before #1028 this asserted an `E065` escape;
+        // that was the exact gap the issue closed (typed-mode-spec §3 already
+        // treats "no-return function" as `void`'s job — the annotation just
+        // shouldn't be *required* to say what the body already proves).
         let (hir, index, res) = build("=== function noop() ===\nHello.\n");
         let inference =
             crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
-        assert_eq!(diags.len(), 1, "{diags:?}");
-        assert_eq!(diags[0].code, DiagnosticCode::E065);
-        assert!(diags[0].message.contains("return"));
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn unannotated_function_with_unresolvable_return_value_still_escapes() {
+        // Issue #1028's flip side: a function *does* have a value-returning
+        // `return`, but the value's own type can't be pinned down (`x` is an
+        // otherwise-unconstrained param, which escapes in its own right too).
+        // The return type must still `E065`-escape — void inference reads
+        // "never returns a value", never "returns a value inference gave up
+        // on".
+        let (hir, index, res) = build("=== function noop(x) ===\n~ return x\n");
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert_eq!(diags.len(), 2, "{diags:?}");
+        assert!(diags.iter().all(|d| d.code == DiagnosticCode::E065));
+        assert!(
+            diags.iter().any(|d| d.message.contains("return type")),
+            "expected a return-type escape among {diags:?}"
+        );
     }
 
     #[test]
@@ -1498,6 +1906,80 @@ mod tests {
         let inference =
             crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    // ── issue #1028: void-return inference for a void-external wrapper ──
+
+    fn notify_manifest() -> brink_ir::HostManifest {
+        brink_ir::HostManifest {
+            types: Vec::new(),
+            externals: vec![brink_ir::ManifestExternal {
+                name: "notify".to_string(),
+                params: Vec::new(),
+                returns: brink_ir::TypeRef("void".to_string()),
+                kind: brink_ir::ExternalKind::default(),
+                doc: None,
+                widgets: Vec::new(),
+                path: Vec::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn wrapper_around_void_external_with_no_explicit_return_infers_void_and_is_strict_clean() {
+        // The issue's own motivating shape: a function whose body only calls
+        // a void external and never returns explicitly.
+        let (hir, index, res) =
+            build("EXTERNAL notify()\n=== function wrap_notify() ===\n~ notify()\n");
+        let diags = crate::strict_diagnostics(
+            &[(FileId(0), &hir)],
+            &index,
+            &res,
+            &strict_opts(Some(notify_manifest())),
+            None,
+            &BTreeMap::new(),
+        );
+        assert!(
+            diags.is_empty(),
+            "a void-external wrapper with no explicit return must infer void, not \
+             Unknown-escape: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn wrapper_around_void_external_with_a_real_return_path_is_unaffected() {
+        // Adding a genuine value-returning path alongside the void-external
+        // call must suppress the void inference exactly as before #1028 —
+        // the wrapper's own return type still resolves concretely (`int`)
+        // and stays clean, not because it's void but because `5` is.
+        let (hir, index, res) = build(
+            "EXTERNAL notify()\n=== function wrap_and_report() ===\n~ notify()\n~ return 5\n",
+        );
+        let inference = crate::infer_project(
+            &[(FileId(0), &hir)],
+            &index,
+            &res,
+            Some(&notify_manifest()),
+            &BTreeMap::new(),
+        );
+        let wrap_id =
+            annotations::def_id_for(&index, FileId(0), SymbolKind::Knot, "wrap_and_report")
+                .expect("wrap_and_report must resolve");
+        assert_eq!(
+            inference.signatures.get(&wrap_id).map(|s| &s.return_ty),
+            Some(&Ty::Int),
+            "a real return path must still infer its own concrete type, unaffected by the \
+             sibling void-external call"
+        );
+        let diags = crate::strict_diagnostics(
+            &[(FileId(0), &hir)],
+            &index,
+            &res,
+            &strict_opts(Some(notify_manifest())),
+            None,
+            &BTreeMap::new(),
+        );
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -1736,6 +2218,9 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
+            // These tests TEST gradual behavior — explicit opt-out knob
+            // (#1127: the brink dialect's implicit default is now strict).
+            types: Some(TypePolicy::Gradual),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -1914,6 +2399,9 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
+            // These tests TEST gradual behavior — explicit opt-out knob
+            // (#1127: the brink dialect's implicit default is now strict).
+            types: Some(TypePolicy::Gradual),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -1939,7 +2427,7 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
-            types: TypePolicy::Strict,
+            types: Some(TypePolicy::Strict),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -2068,6 +2556,9 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
+            // These tests TEST gradual behavior — explicit opt-out knob
+            // (#1127: the brink dialect's implicit default is now strict).
+            types: Some(TypePolicy::Gradual),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -2093,7 +2584,7 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
-            types: TypePolicy::Strict,
+            types: Some(TypePolicy::Strict),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -2103,6 +2594,63 @@ mod tests {
                 .iter()
                 .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
             "{:?}",
+            result.diagnostics
+        );
+    }
+
+    // ── issue #628: list-literal global VAR carries its nominal LIST type
+    //    (docs/typed-mode-spec.md §2/§5) ─────────────────────────────────
+
+    /// A VAR initialized directly to a list literal must infer its nominal
+    /// `list<L>` type end-to-end, not collapse to `Unknown` (the phase-0
+    /// `Sig` stub bug this issue reports). A temp assigned straight from
+    /// such a VAR is the concrete, checkable consequence: before the fix,
+    /// `weather`'s `Sig::value_type` fed `collect_globals` as `Ty::Unknown`
+    /// (`infer::mod`'s `From<InferredType> for Ty` collapse), so `w` would
+    /// spuriously trip the Unknown-escape check (`E065`) under strict even
+    /// though its value is plainly a `list<Weathers>` — the same "resolved
+    /// nominal type is clean" treatment `Ty::Struct`/`Ty::Handle` already
+    /// get (`classify`'s doc above).
+    #[test]
+    fn list_literal_global_var_temp_is_clean_under_strict() {
+        let (hir, index, res) = build(
+            "LIST Weathers = sunny, rainy, snowy\n\
+             VAR weather = (sunny)\n\
+             === main ===\n~ temp w = weather\n-> DONE\n",
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            diags.is_empty(),
+            "list-literal VAR's nominal type must flow through, not escape as Unknown: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn list_literal_global_var_is_clean_through_the_real_pipeline_under_strict() {
+        // analyze_with_options -> finish_analysis -> whole_project_
+        // diagnostics -> strict::check — the real production entry point
+        // (`brink-compiler`/IDE), proving the fix is reachable outside the
+        // unit-level `infer_project`/`check` harness too.
+        let parsed = brink_syntax::parse(
+            "LIST Weathers = sunny, rainy, snowy\n\
+             VAR weather = (sunny)\n\
+             === main ===\n~ temp w = weather\n-> DONE\n",
+        );
+        let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let opts = crate::AnalysisOptions {
+            dialect: crate::Dialect::Brink,
+            types: Some(TypePolicy::Strict),
+            ..crate::AnalysisOptions::default()
+        };
+        let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E065),
+            "list-literal VAR must not escape as Unknown under strict: {:?}",
             result.diagnostics
         );
     }
@@ -2274,6 +2822,9 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
+            // These tests TEST gradual behavior — explicit opt-out knob
+            // (#1127: the brink dialect's implicit default is now strict).
+            types: Some(TypePolicy::Gradual),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -2298,7 +2849,7 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
-            types: TypePolicy::Strict,
+            types: Some(TypePolicy::Strict),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -2321,7 +2872,7 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
-            types: TypePolicy::Strict,
+            types: Some(TypePolicy::Strict),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -2350,7 +2901,7 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
-            types: TypePolicy::Strict,
+            types: Some(TypePolicy::Strict),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -2364,6 +2915,62 @@ mod tests {
         );
     }
 
+    // ── T1e-1 path projections (docs/t1e-spec.md §6, issue #831) ──────
+
+    #[test]
+    fn strict_check_wires_in_ref_projection_segment_errors_through_the_real_pipeline() {
+        // Same "exercises the full production path, not the unit in
+        // isolation" rationale as the struct-construction test just above.
+        let parsed = brink_syntax::parse(
+            "STRUCT NPC = #{hp: int}\n\
+             VAR npc: NPC = NPC#{hp: 10}\n\
+             === function heal(ref hp, k) ===\n~ hp = hp + k\n\n\
+             === main ===\n~ heal(ref npc.mana, 5)\n-> DONE\n",
+        );
+        let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let opts = crate::AnalysisOptions {
+            dialect: crate::Dialect::Brink,
+            types: Some(TypePolicy::Strict),
+            ..crate::AnalysisOptions::default()
+        };
+        let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E098),
+            "unknown field segment must surface through the real strict pipeline: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn ref_projection_segment_errors_never_surface_under_gradual() {
+        let parsed = brink_syntax::parse(
+            "STRUCT NPC = #{hp: int}\n\
+             VAR npc: NPC = NPC#{hp: 10}\n\
+             === function heal(ref hp, k) ===\n~ hp = hp + k\n\n\
+             === main ===\n~ heal(ref npc.mana, 5)\n-> DONE\n",
+        );
+        let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let opts = crate::AnalysisOptions {
+            dialect: crate::Dialect::Brink,
+            // These tests TEST gradual behavior — explicit opt-out knob
+            // (#1127: the brink dialect's implicit default is now strict).
+            types: Some(TypePolicy::Gradual),
+            ..crate::AnalysisOptions::default()
+        };
+        let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E098),
+            "gradual must never surface ref-projection segment errors: {:?}",
+            result.diagnostics
+        );
+    }
+
     #[test]
     fn struct_construction_errors_never_surface_under_gradual() {
         let parsed = brink_syntax::parse(
@@ -2373,6 +2980,9 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
+            // These tests TEST gradual behavior — explicit opt-out knob
+            // (#1127: the brink dialect's implicit default is now strict).
+            types: Some(TypePolicy::Gradual),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);

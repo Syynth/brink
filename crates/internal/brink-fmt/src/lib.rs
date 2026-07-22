@@ -235,6 +235,12 @@ fn walk_stmt_for_depth(
         // of the block's *internals* (nested statements, `if`/`while`/`for`
         // bodies) is computed separately at the CST level by
         // `render_logic_block` (#573), not through this depth map.
+        // `~ await <cond>` (docs/flow-suspension-spec.md §3) is a logic line
+        // like `TempDecl`/`Assignment` — its own line depth is inherited from
+        // context, so tag its range at the current depth.
+        brink_ir::Stmt::Await(a) => {
+            set_depth_for_range(a.ptr.text_range(), depth, line_starts, depth_map);
+        }
         brink_ir::Stmt::ExprStmt(_) | brink_ir::Stmt::EndOfLine | brink_ir::Stmt::LogicBlock(_) => {
         }
     }
@@ -256,6 +262,7 @@ fn stmt_start_line(stmt: &brink_ir::Stmt, line_starts: &[usize]) -> Option<usize
         brink_ir::Stmt::Sequence(s) => s.ptr.text_range(),
         brink_ir::Stmt::ExprStmt(_) | brink_ir::Stmt::EndOfLine => return None,
         brink_ir::Stmt::LogicBlock(lb) => lb.ptr.text_range(),
+        brink_ir::Stmt::Await(a) => a.ptr.text_range(),
     };
     let offset: usize = range.start().into();
     Some(line_for_offset(line_starts, offset))
@@ -388,9 +395,9 @@ struct ClassifiedLine {
     end: usize,
     /// Indentation depth from HIR structure.
     depth: u32,
-    /// The `LOGIC_LINE` CST node for a [`LineKind::LogicBlock`] line, or
-    /// the `STRUCT_DECL` CST node for a [`LineKind::StructDecl`] line —
-    /// `None` for every other kind.
+    /// The `LOGIC_LINE` CST node for a [`LineKind::LogicBlock`] or
+    /// single-line [`LineKind::Logic`] line, or the `STRUCT_DECL` CST node
+    /// for a [`LineKind::StructDecl`] line — `None` for every other kind.
     cst_node: Option<SyntaxNode>,
 }
 
@@ -599,6 +606,14 @@ fn classify_node(
                     }
                 } else if line_idx < lines.len() {
                     lines[line_idx].kind = LineKind::Logic;
+                    // Single-line `~ expr` form (issue #858): carry the
+                    // `LOGIC_LINE` node itself so `render()` can retokenize
+                    // the statement through `join_token_text` instead of
+                    // reformatting the raw source text, matching the
+                    // normalization multi-line `~ { … }` bodies already get
+                    // (canonical single-space operators, zero-space
+                    // `.`/`[`/`]`, comments preserved).
+                    lines[line_idx].cst_node = Some(child.clone());
                 }
             }
             SyntaxKind::CONTENT_LINE => {
@@ -606,17 +621,32 @@ fn classify_node(
                     lines[line_idx].kind = LineKind::Content;
                 }
             }
-            SyntaxKind::TAG_LINE => {
+            // NS-A2: `@[effects(…)]` annotation lines format like tag lines
+            // — kept verbatim at their weave depth, never content-reflowed.
+            SyntaxKind::TAG_LINE | SyntaxKind::ANNOTATION_LINE => {
                 if line_idx < lines.len() {
                     lines[line_idx].kind = LineKind::Tag;
                 }
             }
-            SyntaxKind::VAR_DECL
-            | SyntaxKind::CONST_DECL
-            | SyntaxKind::LIST_DECL
-            | SyntaxKind::INCLUDE_STMT
-            | SyntaxKind::IMPORT_STMT
-            | SyntaxKind::EXTERNAL_DECL => {
+            SyntaxKind::VAR_DECL | SyntaxKind::CONST_DECL | SyntaxKind::LIST_DECL => {
+                if line_idx < lines.len() {
+                    lines[line_idx].kind = LineKind::Declaration;
+                    lines[line_idx].depth = 0;
+                    // Carry the CST node so `render()` can retokenize the
+                    // declaration through `join_token_text` (#642 fix): that
+                    // joiner emits string-literal token text byte-for-byte,
+                    // so a colon canonicalized inside a string value like
+                    // `VAR msg = "time 12:30"` never mutates the literal —
+                    // unlike the character-based `collapse_whitespace` pass
+                    // formerly used here, which was string-unaware and
+                    // corrupted such literals (removed as dead code, #984:
+                    // this arm always sets `cst_node` alongside `kind`, so
+                    // `render()` never needs a raw-text fallback for these
+                    // three node kinds).
+                    lines[line_idx].cst_node = Some(child.clone());
+                }
+            }
+            SyntaxKind::INCLUDE_STMT | SyntaxKind::IMPORT_STMT | SyntaxKind::EXTERNAL_DECL => {
                 if line_idx < lines.len() {
                     lines[line_idx].kind = LineKind::Declaration;
                     lines[line_idx].depth = 0;
@@ -874,7 +904,17 @@ fn render(source: &str, lines: &[ClassifiedLine], config: &FormatConfig) -> Stri
             LineKind::Logic => {
                 let indent = indent_str(config, line.depth);
                 out.push_str(&indent);
-                out.push_str(&format_logic(raw));
+                // Retokenize through the CST when available (issue #858) so
+                // a single-line `~ expr` gets the same canonical spacing as
+                // multi-line `~ { … }` block statements — falling back to
+                // the raw-text formatter only for the defensive case where
+                // no CST node was attached (shouldn't happen for a
+                // well-formed `LOGIC_LINE`, but keeps this path total).
+                if let Some(node) = &line.cst_node {
+                    out.push_str(&format_logic_line(node));
+                } else {
+                    out.push_str(&format_logic(raw));
+                }
                 out.push('\n');
             }
             LineKind::Content | LineKind::Tag | LineKind::Comment | LineKind::Other => {
@@ -885,10 +925,44 @@ fn render(source: &str, lines: &[ClassifiedLine], config: &FormatConfig) -> Stri
             }
             LineKind::Declaration => {
                 // Module `IMPORT` statements (M-4, modules-spec §2/§9) get
-                // canonical inner spacing; every other declaration is passed
-                // through with only trailing whitespace trimmed.
+                // canonical inner spacing; VAR/CONST/LIST declarations (#642)
+                // canonicalize type annotation colons; other declarations are
+                // passed through with only trailing whitespace trimmed.
                 if raw.trim_start().starts_with("IMPORT") {
                     out.push_str(&format_import(raw));
+                } else if raw.trim_start().starts_with("VAR")
+                    || raw.trim_start().starts_with("CONST")
+                    || raw.trim_start().starts_with("LIST")
+                {
+                    // Retokenize through the CST via `join_token_text` (#642
+                    // fix) so string-literal initializers (`VAR msg = "time
+                    // 12:30"`) are emitted byte-for-byte instead of having
+                    // their colon/whitespace mutated by a raw-text pass.
+                    //
+                    // `cst_node` is guaranteed `Some` here: `classify_node`'s
+                    // `VAR_DECL | CONST_DECL | LIST_DECL` arm sets `kind` and
+                    // `cst_node` together, unconditionally (no parse-error
+                    // check gates it, unlike the `STMT_BLOCK`/`STRUCT_DECL`
+                    // arms) — the parser is error-resilient, bracketing the
+                    // whole construct in its node via `start_node`/
+                    // `finish_node` regardless of what's between, so even a
+                    // malformed `VAR`/`CONST`/`LIST` line still produces a
+                    // node. No other code path sets `LineKind::Declaration`
+                    // with raw text starting `VAR`/`CONST`/`LIST` while
+                    // leaving `cst_node` unset. The character-based
+                    // `collapse_whitespace` fallback that used to run here
+                    // when `cst_node` was `None` was therefore dead code —
+                    // and unsafe dead code: a raw-text whitespace/colon pass
+                    // over a span that may contain a string literal is the
+                    // corruption class named in the wave-25 lesson. Removed
+                    // per issue #984.
+                    let Some(node) = &line.cst_node else {
+                        unreachable!(
+                            "classify_node always attaches a CST node to VAR/CONST/LIST \
+                             Declaration lines"
+                        );
+                    };
+                    out.push_str(&format_declaration_from_cst(node));
                 } else {
                     out.push_str(raw.trim_end());
                 }
@@ -1009,7 +1083,19 @@ fn format_knot_header(raw: &str) -> String {
     format!("=== {normalized} ===")
 }
 
-/// Collapse runs of whitespace into single spaces.
+/// Format a VAR/CONST/LIST declaration by retokenizing its CST node through
+/// [`join_token_text`] (#642 fix): that joiner emits token text — including
+/// string-literal tokens — byte-for-byte, and only canonicalizes whitespace
+/// *between* tokens, so a colon or internal whitespace inside a string value
+/// (`VAR msg = "time 12:30"`, `CONST url = "http://x.com"`) is preserved
+/// exactly while the declaration's own type-annotation colon still gets
+/// canonical `name: type` spacing.
+fn format_declaration_from_cst(node: &SyntaxNode) -> String {
+    join_token_text(node.descendants_with_tokens())
+}
+
+/// Collapse runs of whitespace into single spaces, and canonicalize type
+/// annotation colons (#642) to have no space before and one space after.
 fn collapse_whitespace(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev_ws = false;
@@ -1019,6 +1105,15 @@ fn collapse_whitespace(s: &str) -> String {
                 out.push(' ');
             }
             prev_ws = true;
+        } else if c == ':' {
+            // Type annotation canonicalization (#642): no space before colon,
+            // one space after. Remove any trailing space before the colon.
+            while out.ends_with(' ') {
+                out.pop();
+            }
+            out.push(':');
+            out.push(' ');
+            prev_ws = true; // Treat as if we just output a space.
         } else {
             out.push(c);
             prev_ws = false;
@@ -1113,10 +1208,50 @@ fn format_gather(raw: &str) -> String {
     }
 }
 
-/// Format a logic line: `~ {rest}`
+/// Format a logic line: `~ {rest}`. Raw-text fallback for when no CST node
+/// is available — the normal path is [`format_logic_line`], which
+/// retokenizes through the CST instead of passing the source text through
+/// unchanged.
 fn format_logic(raw: &str) -> String {
     let trimmed = raw.trim();
     let rest = trimmed.strip_prefix('~').unwrap_or(trimmed).trim();
+
+    if rest.is_empty() {
+        "~".to_owned()
+    } else {
+        format!("~ {rest}")
+    }
+}
+
+/// Format a single-line `~ expr` logic line (a `LOGIC_LINE` CST node whose
+/// child is a single statement, not a `~ { … }` block — see
+/// [`mark_logic_block_span`] for the block case) by retokenizing its
+/// statement through [`join_token_text`], the same joiner multi-line
+/// `~ { … }` block bodies use via [`render_flat_stmt_text`].
+///
+/// Before issue #858, single-line logic lines only had their outer `~ `
+/// prefix normalized (via [`format_logic`]) — the statement body passed
+/// through as raw source text, so e.g. `~   temp   name:string=who` kept its
+/// internal ragged spacing (`temp   name:string=who`) instead of getting the
+/// canonical single-space-around-tokens rendering a `~ { temp name: string
+/// = who }` block form already received. This closes that gap: both forms
+/// of a logic line now render through the same token joiner.
+fn format_logic_line(node: &SyntaxNode) -> String {
+    // The `LOGIC_LINE` node's first token is always the leading `~`
+    // (`logic_line`'s first act after `start_node` is `p.bump()` for it —
+    // see `brink-syntax`'s `parser::logic::logic_line`). Everything from
+    // just after it — the optional whitespace and then the statement's own
+    // tokens, recursively — gets joined; `join_token_text` already collapses
+    // the leading whitespace to nothing since its "pending space" only
+    // fires once output has started.
+    let Some(tilde) = node.children_with_tokens().next() else {
+        return "~".to_owned();
+    };
+    let after_tilde = tilde.text_range().end();
+    let rest = join_token_text(
+        node.descendants_with_tokens()
+            .filter(|e| e.text_range().start() >= after_tilde),
+    );
 
     if rest.is_empty() {
         "~".to_owned()
@@ -1155,9 +1290,27 @@ fn block_indent(base_indent: &str, level: u32) -> String {
 /// to exactly one space. Mid-statement comments (rare — e.g. inside a
 /// parenthesized expression) are kept verbatim with a single space on each
 /// side. Node boundaries are transparent; only tokens contribute text.
+///
+/// Two exceptions to the "collapse to one space" rule:
+/// - Whitespace directly touching a `.` field-access dot, or a `[`/`]` index
+///   bracket, collapses to *zero* space instead — `party [ leader ] . hp`
+///   renders `party[leader].hp`. This is the path-projection display
+///   convention itself (`docs/t1e-spec.md` §4: `ref npc.inventory[3]`, no
+///   spaces) applied uniformly to every dotted-path/indexed construct this
+///   joiner ever renders, T1e `ref lvalue-path` arguments (`brink-fmt
+///   path-ref argument formatting`, issue #850) included — not a special case
+///   keyed off `ref`, since the CST gives no cheaper way to tell a
+///   path-projection segment from any other field access or index expression
+///   at this token-stream level, and there's no reason the two should format
+///   differently anyway.
+/// - Type annotation colons (#642): `:` always renders with no space before
+///   and one space after, regardless of source spacing. This canonicalizes
+///   `name:type` to `name: type` uniformly across parameters, declarations,
+///   and logic lines.
 fn join_token_text(elems: impl Iterator<Item = SyntaxElement>) -> String {
     let mut out = String::new();
     let mut pending_space = false;
+    let mut last_kind: Option<SyntaxKind> = None;
     for elem in elems {
         let NodeOrToken::Token(tok) = elem else {
             continue;
@@ -1174,13 +1327,27 @@ fn join_token_text(elems: impl Iterator<Item = SyntaxElement>) -> String {
                 }
                 out.push_str(tok.text());
                 pending_space = true;
+                last_kind = Some(tok.kind());
             }
-            _ => {
-                if pending_space {
-                    out.push(' ');
-                    pending_space = false;
-                }
+            SyntaxKind::COLON => {
+                // Type annotation canonicalization: no space before, one after.
+                // Don't emit pending space, then emit colon, then force space.
                 out.push_str(tok.text());
+                pending_space = true;
+                last_kind = Some(SyntaxKind::COLON);
+            }
+            kind => {
+                let zero_space =
+                    matches!(
+                        kind,
+                        SyntaxKind::DOT | SyntaxKind::L_BRACKET | SyntaxKind::R_BRACKET
+                    ) || matches!(last_kind, Some(SyntaxKind::DOT | SyntaxKind::L_BRACKET));
+                if pending_space && !zero_space {
+                    out.push(' ');
+                }
+                pending_space = false;
+                out.push_str(tok.text());
+                last_kind = Some(kind);
             }
         }
     }
@@ -1884,10 +2051,13 @@ mod tests {
     // tests pin that down explicitly rather than relying on it implicitly.
 
     #[test]
-    fn param_and_return_type_annotations_normalize_whitespace() {
+    fn param_and_return_type_annotations_canonicalize() {
+        // #642: type annotations should render as `name: type` (no space before,
+        // one space after), regardless of source spacing. Mixed annotation
+        // spacing: `hp:int` (no space), `amount:  int` (multiple spaces).
         assert_eq!(
             fmt("===function heal(hp:int,amount:  int)  :  int===\n~ return hp\n"),
-            "=== function heal(hp:int,amount: int) : int ===\n  ~ return hp\n"
+            "=== function heal(hp: int,amount: int): int ===\n  ~ return hp\n"
         );
     }
 
@@ -1907,21 +2077,41 @@ mod tests {
     }
 
     #[test]
-    fn temp_ascription_normalizes_whitespace_like_any_other_logic_line() {
+    fn temp_ascription_canonicalizes_annotations() {
+        // Issue #858: before the single-line `~ expr` retokenize fix, this
+        // line's *inner* spacing (`temp   name:string=who`) passed through
+        // untouched — only the outer `~` prefix got trimmed. Now it goes
+        // through the same `join_token_text` joiner multi-line `~ { … }`
+        // block statements use: runs of existing whitespace collapse to one
+        // space (`temp   name` -> `temp name`).
+        // Issue #642: type annotations also get canonicalized to `name: type`
+        // (no space before, one space after).
         assert_eq!(
             fmt("=== knot ===\n~   temp   name:string=who\n"),
-            "=== knot ===\n  ~ temp   name:string=who\n"
+            "=== knot ===\n  ~ temp name: string=who\n"
         );
     }
 
     #[test]
     fn type_annotations_are_idempotent() {
         for input in [
-            "=== function heal(hp: int, amount: int): int ===\n~ return hp\n",
+            // Already formatted correctly
+            "=== function heal(hp: int,amount: int): int ===\n~ return hp\n",
+            // Missing spaces after colons
+            "=== function heal(hp:int,amount:int):int ===\n~ return hp\n",
+            // VAR with canonical spacing
             "VAR gold: int = 100\n",
-            "=== knot ===\n~ temp name: string = who\n",
-            "VAR w: list<Weathers> = 0\nVAR m: map<string, int> = 0\n",
-            "VAR cb: fn(int, int): bool = 0\n",
+            // VAR without spaces after colon
+            "VAR gold:int=100\n",
+            // Temp with canonical spacing
+            "=== knot ===\n~ temp name: string=who\n",
+            // Temp without spaces after colon
+            "=== knot ===\n~temp name:string=who\n",
+            // Complex types
+            "VAR w: list<Weathers> = 0\nVAR m: map<string,int> = 0\n",
+            // Function type
+            "VAR cb: fn(int,int): bool = 0\n",
+            // CONST
             "CONST speed: float = 0.5\n",
         ] {
             let first = fmt(input);
@@ -1931,6 +2121,117 @@ mod tests {
                 "type-annotated formatting should be idempotent for {input:?}"
             );
         }
+    }
+
+    #[test]
+    fn type_annotations_mixed_spacing_fixture() {
+        // Comprehensive fixture with mixed annotation spacing: no spaces,
+        // single spaces, and multiple spaces (PR #640 compatibility test).
+        let input = "\
+=== function greet(name:string,age:  int):string ===
+  VAR greeting:string=\"Hello\"
+  CONST max_age:int=120
+  ~ temp result:string=greeting
+
+=== helper(x: int, y:int ): int ===
+  ~ return x + y
+
+STRUCT Point=#{x:int,y: float}
+";
+        let output = fmt(input);
+        // Re-formatting should be idempotent
+        let output2 = fmt(&output);
+        assert_eq!(
+            output, output2,
+            "mixed spacing fixture should be idempotent"
+        );
+    }
+
+    // ── #642 review fix: string-literal values must be byte-preserved ───
+    // The declaration path's colon canonicalization is now retokenized
+    // through `join_token_text` (like logic lines and struct fields)
+    // instead of the character-based, string-unaware `collapse_whitespace`,
+    // which previously mutated string contents containing a colon or
+    // internal whitespace (regression caught in review of PR #971).
+
+    #[test]
+    fn var_string_initializer_with_colon_no_following_space_is_preserved() {
+        // Character-based collapse_whitespace saw the `:` inside the string
+        // and inserted a space after it: `"time 12:30"` -> `"time 12: 30"`.
+        assert_eq!(
+            fmt("VAR msg = \"time 12:30\"\n"),
+            "VAR msg = \"time 12:30\"\n"
+        );
+    }
+
+    #[test]
+    fn const_string_initializer_url_colon_is_preserved() {
+        // Same corruption broke URLs: `"http://x.com"` -> `"http: //x.com"`.
+        assert_eq!(
+            fmt("CONST url = \"http://x.com\"\n"),
+            "CONST url = \"http://x.com\"\n"
+        );
+    }
+
+    #[test]
+    fn var_string_initializer_internal_multiple_spaces_are_preserved() {
+        // Character-based collapse_whitespace ran its whitespace-run
+        // collapsing over the whole line, including inside the string
+        // literal: `"Monsieur  Fogg"` -> `"Monsieur Fogg"`.
+        assert_eq!(
+            fmt("VAR name = \"Monsieur  Fogg\"\n"),
+            "VAR name = \"Monsieur  Fogg\"\n"
+        );
+    }
+
+    #[test]
+    fn var_string_initializer_colon_no_space_variant_is_preserved() {
+        assert_eq!(
+            fmt("VAR title = \"Chapter:One\"\n"),
+            "VAR title = \"Chapter:One\"\n"
+        );
+    }
+
+    // ── #984: raw-text declaration fallback proved unreachable, removed ─
+    // `render()`'s `LineKind::Declaration` VAR/CONST/LIST arm used to fall
+    // back to a character-based `collapse_whitespace` pass whenever
+    // `line.cst_node` was `None`. That fallback is now an `unreachable!()`:
+    // `classify_node`'s `VAR_DECL | CONST_DECL | LIST_DECL` arm sets `kind`
+    // and `cst_node` together, unconditionally, and the parser always
+    // wraps a `VAR`/`CONST`/`LIST` line in its node (bracketed by
+    // `start_node`/`finish_node`) even when the body has a parse error —
+    // so `cst_node` is never `None` for these lines. These cases exercise
+    // malformed declarations specifically to prove `fmt()` never panics
+    // (i.e. never hits the `unreachable!()`) even on error-recovered input.
+
+    #[test]
+    fn malformed_var_decl_missing_initializer_does_not_panic() {
+        // `VAR x =` with nothing after `=` (still followed by a newline) is
+        // a parse error, but the parser still emits a VAR_DECL node — the
+        // CST-retokenizing path must handle it without panicking.
+        let _ = fmt("VAR x =\n");
+    }
+
+    #[test]
+    fn malformed_const_decl_missing_value_does_not_panic() {
+        let _ = fmt("CONST x =\n");
+    }
+
+    #[test]
+    fn malformed_list_decl_missing_members_does_not_panic() {
+        let _ = fmt("LIST x =\n");
+    }
+
+    #[test]
+    fn malformed_var_decl_with_string_literal_does_not_corrupt_and_does_not_panic() {
+        // Malformed trailing content after a valid string-literal
+        // initializer: the CST path must still preserve the string
+        // byte-for-byte and must not panic.
+        let output = fmt("VAR msg = \"time 12:30\" +\n");
+        assert!(
+            output.contains("\"time 12:30\""),
+            "string literal must survive malformed declaration formatting: {output:?}"
+        );
     }
 
     // ── T1b `~ { … }` blocks: indentation-aware reformatting ────────────
@@ -1989,6 +2290,48 @@ mod tests {
         // Only the T1b multi-line block form goes through the block
         // renderer — ordinary `~` logic lines keep normal behavior.
         assert_eq!(fmt("~   x = 5\n"), "~ x = 5\n");
+    }
+
+    #[test]
+    fn single_line_logic_collapses_messy_operator_spacing() {
+        // Issue #858: a single-line `~ expr` retokenizes through the CST
+        // now, same as a `~ { … }` block statement — ragged whitespace
+        // around operators collapses to one space, matching
+        // `block_collapses_messy_spacing_and_reindents`'s expectation for
+        // the equivalent block-form input (`temp x   =   0`).
+        assert_eq!(fmt("~ temp x   =   0\n"), "~ temp x = 0\n");
+        assert_eq!(fmt("~ x   =   x  +  1\n"), "~ x = x + 1\n");
+    }
+
+    #[test]
+    fn single_line_logic_ref_path_normalizes_like_block_form() {
+        // Issue #858: the `ref lvalue-path` zero-space convention around
+        // `.`/`[`/`]` (T1e, issue #850) already applied to `~ { … }` block
+        // statements (`block_ref_path_mixed_field_and_index_argument_normalizes_spacing`)
+        // now applies to the single-line form too, since both render
+        // through the same `join_token_text` joiner.
+        assert_eq!(
+            fmt("~ heal(ref  party[ leader ] . hp,   5)\n"),
+            "~ heal(ref party[leader].hp, 5)\n"
+        );
+    }
+
+    #[test]
+    fn single_line_logic_retokenize_is_idempotent() {
+        let input = "~   temp   name : string  =  who\n";
+        let once = fmt(input);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn single_line_logic_preserves_string_literal_internal_spacing() {
+        // The joiner emits token text byte-for-byte — a string literal's
+        // own internal spacing must never be touched, single-line or block
+        // (mirrors `block_preserves_string_literal_internal_spacing`).
+        assert_eq!(
+            fmt("~   temp msg   =   \"hello   world\"\n"),
+            "~ temp msg = \"hello   world\"\n"
+        );
     }
 
     #[test]
@@ -2596,6 +2939,57 @@ mod tests {
         // comment must ride the closing `}`'s indented line.
         let input = "== k ==\n~ {\n    x = 5\n} /* c */\n-> DONE\n";
         let expected = "=== k ===\n  ~ {\n      x = 5\n  } /* c */\n  -> DONE\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    // ── T1e path-ref argument formatting (docs/t1e-spec.md §2, issue #850)
+    //
+    // A `ref lvalue-path` argument (`ref npc.hp`, `ref inventory[idx]`,
+    // `ref party[leader].hp`) is ordinary expression syntax as far as the
+    // CST is concerned — `REF_EXPR` wrapping a `PATH`/`INDEX_EXPR` chain —
+    // so it already flows through the same token-joining machinery every
+    // other `~ { … }` block statement does (`join_token_text`'s
+    // whitespace-run-collapses-to-one-space rule). These lock that in as a
+    // deliberate, tested contract rather than an untested coincidence: a
+    // `ref`-marked path argument inside a multi-statement block reformats
+    // exactly like any other call argument, canonical single-space spacing
+    // throughout, one statement per line.
+
+    #[test]
+    fn block_ref_path_field_argument_normalizes_spacing() {
+        let input = "~ {\ntemp x =   0\nheal(ref  npc.hp,   5)\n}\n";
+        let expected = "~ {\n    temp x = 0\n    heal(ref npc.hp, 5)\n}\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn block_ref_path_index_argument_normalizes_spacing() {
+        let input = "~ {\nbump(ref  inventory[ idx ],   5)\n}\n";
+        let expected = "~ {\n    bump(ref inventory[idx], 5)\n}\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn block_ref_path_mixed_field_and_index_argument_normalizes_spacing() {
+        // `ref party[leader].hp` — the t1e-spec §2 grammar example itself
+        // (index segment followed by a field segment).
+        let input = "~ {\nheal(ref  party[ leader ] . hp,   5)\n}\n";
+        let expected = "~ {\n    heal(ref party[leader].hp, 5)\n}\n";
+        let once = fmt(input);
+        assert_eq!(once, expected);
+        assert_eq!(fmt(&once), once, "formatting twice must be a no-op");
+    }
+
+    #[test]
+    fn block_ref_path_through_fn_value_normalizes_spacing() {
+        let input = "~ {\ntemp healer =   #fn( heal ,  ref  npc.hp )\n}\n";
+        let expected = "~ {\n    temp healer = #fn( heal , ref npc.hp )\n}\n";
         let once = fmt(input);
         assert_eq!(once, expected);
         assert_eq!(fmt(&once), once, "formatting twice must be a no-op");

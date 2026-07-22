@@ -1,13 +1,15 @@
 //! Include lowering: `lower_include`.
 
-use brink_syntax::ast::{self, AstPtr};
+use brink_syntax::ast::{self, AstNode};
 
 use crate::IncludeSite;
+use crate::provenance::NodeClass;
 
-use super::super::context::{LowerSink, Lowered};
+use super::super::context::{LowerScope, LowerSink, Lowered};
 
 #[expect(clippy::unnecessary_wraps)]
 pub(super) fn lower_include(
+    scope: &LowerScope,
     inc: &ast::IncludeStmt,
     _sink: &mut impl LowerSink,
 ) -> Lowered<IncludeSite> {
@@ -25,6 +27,6 @@ pub(super) fn lower_include(
         .unwrap_or(&raw);
     Ok(IncludeSite {
         file_path: cleaned.to_owned(),
-        ptr: AstPtr::new(inc),
+        ptr: scope.prov(NodeClass::Include, inc.syntax()),
     })
 }

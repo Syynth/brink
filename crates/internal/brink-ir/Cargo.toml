@@ -11,6 +11,7 @@ description = "Intermediate representations for inkle's ink narrative scripting 
 
 [dependencies]
 brink-syntax = { workspace = true }
+brink-syntax-native = { workspace = true }
 brink-format = { workspace = true }
 rowan.workspace = true
 bitflags.workspace = true
@@ -21,6 +22,7 @@ regex.workspace = true
 
 [dev-dependencies]
 brink-analyzer = { path = "../brink-analyzer" }
+brink-codegen-inkb = { path = "../brink-codegen-inkb" }
 insta.workspace = true
 serde_json.workspace = true
 

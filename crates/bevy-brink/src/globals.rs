@@ -92,7 +92,10 @@ use std::marker::PhantomData;
 
 use bevy_ecs::component::Component;
 use bevy_ecs::resource::Resource;
-use brink_runtime::{ContextView, FlowLocal, LoadReport, Program, SaveState, World, WorldPolicy};
+use brink_runtime::{
+    ContextAccess, ContextView, ExecMode, FlowLocal, LoadReport, Program, SaveState, World,
+    WorldPolicy,
+};
 
 /// The single shared [`World`] for a story identified by marker `M`.
 ///
@@ -144,6 +147,28 @@ impl<M: Send + Sync + 'static> BrinkGlobals<M> {
     /// world-first is the simplest order to reason about).
     pub fn load_state(&mut self, program: &Program, save: &SaveState) -> LoadReport {
         brink_runtime::load_state(program, &mut self.inner, save)
+    }
+
+    /// Read an ink global by name — the ergonomic host-side read seam (G2,
+    /// issue #1059). Collapses the manual `Program::global_index(name)` +
+    /// `ContextAccess::global(idx)` reach (which also requires importing the
+    /// `ContextAccess` trait) into one call.
+    ///
+    /// **Panic-free miss behavior:** returns `None`, never panics, when
+    /// `program` declares no global named `name` — a typo'd or renamed
+    /// global reads as "absent" rather than crashing the host. Callers that
+    /// need to distinguish "no such global" from a real `Value::Null` should
+    /// check `program.global_index(name)` directly.
+    ///
+    /// This always reads the shared `World`-scoped value (`self.inner`),
+    /// matching `save_state`'s scope — it does not route through a flow's
+    /// `Local` override layer. For a flow-scoped read use
+    /// [`flow_context_view`] and read through the resulting [`ContextView`]
+    /// instead.
+    #[must_use]
+    pub fn get(&self, program: &Program, name: &str) -> Option<&brink_format::Value> {
+        let idx = program.global_index(name)?;
+        Some(self.inner.global(idx))
     }
 }
 
@@ -218,6 +243,47 @@ impl<M: Send + Sync + 'static> BrinkWorldPolicy<M> {
     }
 }
 
+/// The host-selected [`ExecMode`] every flow of marker `M` starts in
+/// (F35, ruled 2026-07-19).
+///
+/// Inserted once by [`BrinkPlugin::build`](crate::BrinkPlugin) and applied
+/// to each [`FlowInstance`](brink_runtime::FlowInstance) at spawn by
+/// `fulfill_flow_requests`. Unlike core `brink-runtime` — whose
+/// [`ExecMode::default`] is always [`Dev`](ExecMode::Dev) — bevy-brink's
+/// default keys off the build profile: `Dev` under `debug_assertions`
+/// (editor / `cargo run`), `Prod` in a release build (`cargo build
+/// --release`), so a shipped game defaults to the keep-moving posture and
+/// an in-editor session to the fault-loud one. A host overrides either way
+/// with [`BrinkPlugin::with_exec_mode`](crate::BrinkPlugin::with_exec_mode).
+#[derive(Resource, Clone, Copy)]
+pub struct BrinkExecMode<M: Send + Sync + 'static = ()> {
+    pub mode: ExecMode,
+    _marker: PhantomData<fn() -> M>,
+}
+
+impl<M: Send + Sync + 'static> BrinkExecMode<M> {
+    #[must_use]
+    pub(crate) fn new(mode: ExecMode) -> Self {
+        Self {
+            mode,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<M: Send + Sync + 'static> Default for BrinkExecMode<M> {
+    /// The profile-keyed default (F35): `Dev` under `debug_assertions`,
+    /// `Prod` otherwise. This is the one place bevy-brink diverges from the
+    /// core runtime's always-`Dev` [`ExecMode::default`].
+    fn default() -> Self {
+        Self::new(if cfg!(debug_assertions) {
+            ExecMode::Dev
+        } else {
+            ExecMode::Prod
+        })
+    }
+}
+
 /// A single flow's private override layer over the shared
 /// [`BrinkGlobals<M>`] `World`.
 ///
@@ -255,4 +321,39 @@ pub fn flow_context_view<'a, M: Send + Sync + 'static>(
     ctx: &'a mut BrinkContext<M>,
 ) -> ContextView<'a> {
     ContextView::new(&mut globals.inner, &mut ctx.inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::compile_test_story;
+
+    #[test]
+    fn get_reads_a_declared_global_by_name() {
+        let (program, _tables, world) = compile_test_story("VAR mood = 7\n-> END\n");
+        let globals = BrinkGlobals::<()>::new(world);
+        assert_eq!(
+            globals.get(&program, "mood"),
+            Some(&brink_format::Value::Int(7))
+        );
+    }
+
+    #[test]
+    fn get_sees_writes_made_through_context_access() {
+        let (program, _tables, world) = compile_test_story("VAR mood = 7\n-> END\n");
+        let mut globals = BrinkGlobals::<()>::new(world);
+        let idx = program.global_index("mood").expect("mood is declared");
+        globals.inner.set_global(idx, brink_format::Value::Int(41));
+        assert_eq!(
+            globals.get(&program, "mood"),
+            Some(&brink_format::Value::Int(41))
+        );
+    }
+
+    #[test]
+    fn get_returns_none_for_an_unknown_name_without_panicking() {
+        let (program, _tables, world) = compile_test_story("VAR mood = 7\n-> END\n");
+        let globals = BrinkGlobals::<()>::new(world);
+        assert_eq!(globals.get(&program, "does_not_exist"), None);
+    }
 }

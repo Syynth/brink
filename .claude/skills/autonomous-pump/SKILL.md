@@ -61,6 +61,7 @@ Milestone scope is an **estimate made before building**; building reveals work t
 **Tests passing ≠ working.** After the pump, the human runs the app and *uses* it — lived-UX and reachability problems are invisible to green tests. Make the app **automatedly drivable early** (real screenshots / interaction smoke tests) so the human gate spends itself on *taste*, not on catching broken basics. Be honest when you can't verify (e.g. a headless browser that mis-renders) and defer to the human.
 
 ## Operational hygiene
+- **Cloud sessions**: approval-gated (not bypass-permissions) — several local assumptions fail (agent merges park, no gh CLI, fixed disk allowance, wasm-pack sandbox limits, MCP token expiry). See the project config's "Cloud sessions" section for the full delta list; fold it into agent prompts, not just the plan.
 - Worktree isolation fills the disk fast — prune stale worktrees + `git worktree prune` between **every** cycle.
 - **Ban `git stash` in agent prompts** — all worktrees share ONE stash stack; two concurrent agents stash-popping have swapped each other's WIP (recovered only by forensics). WIP goes on the agent's own branch. (The template's `DISK` preamble now carries this.)
 - Build workspace/shared deps before testing consumers.

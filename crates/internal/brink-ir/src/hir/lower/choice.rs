@@ -3,9 +3,10 @@
 //! Implements [`LowerChoice`] on `ast::Choice` and provides gather lowering.
 
 use brink_syntax::SyntaxKind;
-use brink_syntax::ast::{self, AstNode, AstPtr, SyntaxNodePtr};
+use brink_syntax::ast::{self, AstNode};
 
-use crate::{Block, Choice, Content, ContentPart, Divert, Expr, InfixOp, Stmt, SymbolKind, Tag};
+use crate::provenance::NodeClass;
+use crate::{Block, Choice, Content, ContentPart, Divert, Expr, InfixOp, Stmt, Tag};
 
 use super::backbone::{BodyChild, classify_body_child};
 use super::content::{ContentAccumulator, DirectBackend, lower_content_node_children, lower_tags};
@@ -36,11 +37,6 @@ impl LowerChoice for ast::Choice {
         let is_sticky = bullets.is_sticky();
 
         let label = self.label().and_then(|l| name_from_ident(&l.identifier()?));
-
-        if let Some(ref label_name) = label {
-            let qualified = scope.qualify_label(&label_name.text);
-            sink.declare(SymbolKind::Label, &qualified, label_name.range);
-        }
 
         let is_fallback = self.start_content().is_none()
             && self.bracket_content().is_none()
@@ -119,7 +115,7 @@ impl LowerChoice for ast::Choice {
                 .next()
                 .and_then(|t| lower_divert_target_with_args(&t, scope, sink))?;
             Some(Divert {
-                ptr: Some(SyntaxNodePtr::from_node(d.syntax())),
+                ptr: Some(scope.prov(NodeClass::Divert, d.syntax())),
                 target,
             })
         });
@@ -141,7 +137,7 @@ impl LowerChoice for ast::Choice {
         body.stmts = preamble;
 
         Ok(Choice {
-            ptr: AstPtr::new(self),
+            ptr: scope.prov(NodeClass::Choice, self.syntax()),
             is_sticky,
             is_fallback,
             label,
@@ -203,6 +199,10 @@ fn lower_choice_body(
             BodyChild::TagLine(tl) => {
                 acc.handle(&tl, scope, sink);
             }
+            BodyChild::AnnotationLine(al) => {
+                // NS-A2: never a recognized placement inside a choice body.
+                super::directive::handle_annotation_line(&al, sink);
+            }
             // Choice structural parts + weave items are skipped.
             BodyChild::Choice(_)
             | BodyChild::Gather(_)
@@ -225,11 +225,6 @@ pub fn lower_gather_to_block(
     let label = gather
         .label()
         .and_then(|l| name_from_ident(&l.identifier()?));
-
-    if let Some(ref label_name) = label {
-        let qualified = scope.qualify_label(&label_name.text);
-        sink.declare(SymbolKind::Label, &qualified, label_name.range);
-    }
 
     let content = gather.mixed_content().map(|mc| Content {
         ptr: None,
@@ -264,10 +259,12 @@ pub fn lower_gather_to_block(
         stmts.push(Stmt::EndOfLine);
     }
 
+    let tail = crate::tail_from_stmts(&stmts);
     Block {
         label,
         stmts,
         container_id: None,
+        tail,
     }
 }
 

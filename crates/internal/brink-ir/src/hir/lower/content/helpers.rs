@@ -1,5 +1,6 @@
 use brink_syntax::ast::{self, AstNode};
 
+use crate::provenance::NodeClass;
 use crate::{ContentPart, DiagnosticCode, Tag};
 
 use super::super::conditional::lower_inline_logic_into_parts;
@@ -120,6 +121,6 @@ pub(super) fn lower_tag(tag: &ast::Tag, scope: &LowerScope, sink: &mut impl Lowe
 
     Tag {
         parts,
-        ptr: ast::AstPtr::new(tag),
+        ptr: scope.prov(NodeClass::Tag, tag.syntax()),
     }
 }

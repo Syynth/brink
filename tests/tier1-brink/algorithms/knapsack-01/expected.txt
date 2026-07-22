@@ -1,0 +1,1 @@
+Best value for capacity 5: 7. Memo entries: 12.

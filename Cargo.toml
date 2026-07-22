@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/brink-*", "crates/brink", "crates/bevy-brink", "crates/internal/*"]
-exclude = ["crates/internal/brink-syntax/fuzz", "crates/internal/brink-format/fuzz", "crates/brink-runtime/fuzz", "benchmarks/tools/gen-input", "benchmarks/drivers/brink-loop", "crates/zed-brink"]
+exclude = ["crates/internal/brink-syntax/fuzz", "crates/internal/brink-format/fuzz", "crates/brink-runtime/fuzz", "benchmarks/tools/gen-input", "benchmarks/drivers/brink-loop", "crates/zed-brink", "demos/*"]
 resolver = "2"
 
 [workspace.package]
@@ -64,6 +64,8 @@ salsa = { version = "0.27.2", default-features = false, features = ["macros"] }
 bitflags = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
+# `brink.toml` project settings file (#1005): dialect + type policy.
+toml = "0.8"
 thiserror = "2"
 insta = "1.46.3"
 pest = "2"
@@ -83,6 +85,15 @@ regex = "1"
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
+# NS-A8 numeric tower (`docs/tower-mini-spec.md` T1): glam is the in-memory
+# compute type for the tower value kinds. One workspace-pinned version shared
+# with the bevy dependency graph (bevy 0.19 → glam 0.32) so the bevy marshal
+# is identity on the same types. `default-features = false` deliberately:
+# NEVER the `serde` feature (T5 — the wire is hand-serialized little-endian
+# f32 lanes, not glam's memory layout or serde derives); `libm` (not `std`)
+# so `brink-format`'s no_std build works and math functions come from one
+# deterministic source.
+glam = { version = "0.32.1", default-features = false, features = ["libm"] }
 
 # Internal brink crates (versioned for crates.io publish; release-plz keeps these in sync)
 bevy-brink-derive = { path = "crates/internal/bevy-brink-derive", version = "0.0.11" }
@@ -96,8 +107,10 @@ brink-format = { path = "crates/internal/brink-format", version = "0.0.11" }
 brink-ide = { path = "crates/internal/brink-ide", version = "0.0.11" }
 brink-intl = { path = "crates/internal/brink-intl", version = "0.0.11" }
 brink-ir = { path = "crates/internal/brink-ir", version = "0.0.11" }
+brink-project-config = { path = "crates/internal/brink-project-config", version = "0.0.11" }
 brink-runtime = { path = "crates/brink-runtime", version = "0.0.11" }
 brink-syntax = { path = "crates/internal/brink-syntax", version = "0.0.11" }
+brink-syntax-native = { path = "crates/internal/brink-syntax-native", version = "0.0.11" }
 # Unpublished (dev-only): no version, so `cargo publish` strips it from dependents.
 brink-test-harness = { path = "crates/internal/brink-test-harness" }
 xliff2 = { path = "crates/internal/xliff2", version = "0.0.11" }

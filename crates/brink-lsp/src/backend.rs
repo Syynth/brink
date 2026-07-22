@@ -11,27 +11,29 @@ use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionParams, CodeActionProviderCapability,
     CodeActionResponse, CodeLens, CodeLensOptions, CodeLensParams, CompletionItem,
     CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
-    DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentFormattingParams,
-    DocumentRangeFormattingParams, DocumentSymbolParams, DocumentSymbolResponse, FileChangeType,
-    FileSystemWatcher, FoldingRange, FoldingRangeKind, FoldingRangeParams,
-    FoldingRangeProviderCapability, GlobPattern, GotoDefinitionParams, GotoDefinitionResponse,
-    Hover, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-    InitializedParams, InlayHint as LspInlayHint, InlayHintLabel, InlayHintParams, Location,
-    MarkupContent, MarkupKind, OneOf, ParameterInformation, ParameterLabel, Position,
-    PrepareRenameResponse, Range, ReferenceParams, Registration, RenameOptions, RenameParams,
-    SaveOptions, SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions,
-    SemanticTokensParams, SemanticTokensRangeParams, SemanticTokensRangeResult,
-    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
-    SignatureHelp, SignatureHelpOptions, SignatureHelpParams, SignatureInformation,
-    SymbolInformation, TextDocumentPositionParams, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Url,
-    WorkDoneProgressOptions, WorkspaceEdit, WorkspaceSymbolParams,
+    DidChangeConfigurationParams, DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+    DocumentFormattingParams, DocumentRangeFormattingParams, DocumentSymbolParams,
+    DocumentSymbolResponse, FileChangeType, FileSystemWatcher, FoldingRange, FoldingRangeKind,
+    FoldingRangeParams, FoldingRangeProviderCapability, GlobPattern, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverParams, HoverProviderCapability, InitializeParams,
+    InitializeResult, InitializedParams, InlayHint as LspInlayHint, InlayHintLabel,
+    InlayHintParams, Location, MarkupContent, MarkupKind, OneOf, ParameterInformation,
+    ParameterLabel, Position, PrepareRenameResponse, Range, ReferenceParams, Registration,
+    RenameOptions, RenameParams, SaveOptions, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensRangeParams,
+    SemanticTokensRangeResult, SemanticTokensResult, SemanticTokensServerCapabilities,
+    ServerCapabilities, ServerInfo, SignatureHelp, SignatureHelpOptions, SignatureHelpParams,
+    SignatureInformation, SymbolInformation, TextDocumentPositionParams,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    TextDocumentSyncSaveOptions, TextEdit, Url, WorkDoneProgressOptions, WorkspaceEdit,
+    WorkspaceSymbolParams,
 };
 use tower_lsp::{Client, LanguageServer};
 
 use brink_ide::{
     CompletionContext, cursor_scope, detect_completion_context, is_visible_in_context,
+    ref_arg_root_prefix,
 };
 
 use crate::convert::{self, LineIndex};
@@ -89,19 +91,23 @@ pub struct LanguageOptions {
     /// client-declared dialect too, instead of always defaulting to
     /// `StrictInk`.
     dialect: Arc<Mutex<Dialect>>,
-    /// `"strict"` or `"gradual"`; defaults to `Gradual`, matching
-    /// `AnalysisOptions::default()`. Mirrors `dialect` exactly (#660: PR
-    /// #656 left this reachable only via the compiler CLI's `--types
-    /// strict`, never via the IDE/LSP surface) — feeds `analysis_loop` so
-    /// its diagnostics analyze under the client-declared types policy too.
-    types: Arc<Mutex<TypePolicy>>,
+    /// `"strict"` or `"gradual"`; `None` when neither the client nor a
+    /// `brink.toml` ever said — the effective policy is then the
+    /// dialect-keyed default (issue #1127, ruled 2026-07-19: brink →
+    /// strict, strict-ink → gradual), resolved by
+    /// `AnalysisOptions::type_policy()` at each analysis pass. Mirrors
+    /// `dialect` exactly (#660: PR #656 left this reachable only via the
+    /// compiler CLI's `--types strict`, never via the IDE/LSP surface) —
+    /// feeds `analysis_loop` so its diagnostics analyze under the
+    /// client-declared types policy too.
+    types: Arc<Mutex<Option<TypePolicy>>>,
 }
 
 impl LanguageOptions {
     pub fn new() -> Self {
         Self {
             dialect: Arc::new(Mutex::new(Dialect::default())),
-            types: Arc::new(Mutex::new(TypePolicy::default())),
+            types: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -277,6 +283,17 @@ pub struct Backend {
     publisher: DiagnosticsPublisher,
     workspace_roots: Arc<Mutex<Vec<PathBuf>>>,
     language: LanguageOptions,
+    /// Client-declared `initializationOptions.dialect`/`.types`, captured
+    /// once at `initialize` and reused by every later `brink.toml` reload
+    /// (#1055 gap 2) — the client never resends `initializationOptions`
+    /// mid-session, only the file's own contribution can change.
+    config_overrides: Arc<Mutex<ConfigOverrides>>,
+    /// The outcome of `initialize`'s one-time `brink.toml` load, stashed
+    /// here so `initialized()` can publish its diagnostic (if any) — the LSP
+    /// spec forbids the server sending notifications before the client has
+    /// the `InitializeResult`, which the `initialized` notification confirms
+    /// receipt of (#1055 gap 1).
+    initial_config_outcome: Arc<Mutex<Option<ConfigLoadOutcome>>>,
 }
 
 impl Backend {
@@ -298,6 +315,8 @@ impl Backend {
             publisher,
             workspace_roots: Arc::new(Mutex::new(Vec::new())),
             language,
+            config_overrides: Arc::new(Mutex::new(ConfigOverrides::default())),
+            initial_config_outcome: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -314,6 +333,54 @@ impl Backend {
         uri.to_file_path()
             .ok()
             .map(|p| p.to_string_lossy().into_owned())
+    }
+
+    /// Publish (or clear) the `textDocument/publishDiagnostics` for a
+    /// [`ConfigLoadOutcome`]'s file, if it names one (a missing `brink.toml`
+    /// has nothing to publish). An outcome with no diagnostic still
+    /// publishes an empty set — clearing a previously shown one once an edit
+    /// fixes a malformed `brink.toml` (#1055 gap 1).
+    async fn publish_config_outcome(&self, outcome: &ConfigLoadOutcome) {
+        let Some(path) = &outcome.path else {
+            return;
+        };
+        let Ok(uri) = Url::from_file_path(path) else {
+            return;
+        };
+        let diags: Vec<_> = outcome.diagnostic.clone().into_iter().collect();
+        self.client.publish_diagnostics(uri, diags, None).await;
+    }
+
+    /// Re-run `brink.toml` discovery + parse + apply against the current
+    /// workspace roots and the client-declared overrides captured at
+    /// `initialize`, so edits to the file — or a
+    /// `workspace/didChangeConfiguration` notification — take effect without
+    /// a client restart (#1055 gap 2). Writes the resolved dialect/types
+    /// into the shared [`LanguageOptions`] and publishes (or clears) the
+    /// file's diagnostic exactly like `initialized()`'s one-time load
+    /// (#1055 gap 1, see [`resolve_language_options`]). Does not itself call
+    /// [`Self::trigger_analysis`] — callers trigger re-analysis themselves,
+    /// alongside whatever else their notification handler already does.
+    async fn reload_brink_toml(&self) {
+        let roots = match self.workspace_roots.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        let overrides = match self.config_overrides.lock() {
+            Ok(guard) => *guard,
+            Err(poisoned) => *poisoned.into_inner(),
+        };
+
+        let (resolved, outcome) = resolve_language_options(overrides, &roots);
+
+        if let Ok(mut guard) = self.language.dialect.lock() {
+            *guard = resolved.dialect;
+        }
+        if let Ok(mut guard) = self.language.types.lock() {
+            *guard = resolved.types;
+        }
+
+        self.publish_config_outcome(&outcome).await;
     }
 
     /// Publish per-file diagnostics (parse + lowering only, no analysis).
@@ -593,26 +660,231 @@ impl Backend {
     }
 }
 
-/// Read `initializationOptions.<key>` as a string and, if present, write the
-/// mapped value into `slot` (poisoned-lock-safe — a poisoned mutex silently
-/// keeps its prior value rather than panicking). Shared by `initialize`'s
-/// `dialect` and `types` (#660) handlers, which differ only in the key name
-/// and the string→enum mapping.
-fn apply_initialization_option<T: Copy>(
-    params: &InitializeParams,
-    key: &str,
-    slot: &Mutex<T>,
-    map: impl FnOnce(&str) -> T,
-) {
-    if let Some(requested) = params
+/// Read `initializationOptions.<key>` as a string, if the client set it at
+/// all — regardless of whether the value maps to a recognized variant. This
+/// is "the client passed an explicit value", the strongest tier of the
+/// #1030 precedence rule (see [`resolve_language_options`]). For `dialect`,
+/// an unrecognized string still counts as explicit and falls through the
+/// `match`'s `_` arm to the same default a missing key would. For `types`
+/// (NS-A9, #1127): an unrecognized string is treated as **unset** — the
+/// dialect-keyed default applies — because since the strict default landed,
+/// coercing garbage to a fixed policy would let a typo silently opt a
+/// brink-dialect project out of strict (mirrors the wasm editor's
+/// unrecognized-value behavior).
+fn explicit_initialization_option<'a>(params: &'a InitializeParams, key: &str) -> Option<&'a str> {
+    params
         .initialization_options
         .as_ref()
         .and_then(|opts| opts.get(key))
         .and_then(|v| v.as_str())
-        && let Ok(mut guard) = slot.lock()
-    {
-        *guard = map(requested);
+}
+
+/// Client-declared `initializationOptions.dialect`/`.types`, resolved once
+/// from `InitializeParams` (`Some(_)` means the client set the key at all —
+/// see [`explicit_initialization_option`]) and reused, unchanged, by every
+/// later `brink.toml` reload (#1055 gap 2): the client never resends
+/// `initializationOptions` mid-session, only the file's own contribution to
+/// [`resolve_language_options`] can change.
+#[derive(Debug, Clone, Copy, Default)]
+struct ConfigOverrides {
+    dialect: Option<Dialect>,
+    types: Option<TypePolicy>,
+}
+
+impl ConfigOverrides {
+    fn from_initialize_params(params: &InitializeParams) -> Self {
+        Self {
+            dialect: explicit_initialization_option(params, "dialect").map(|v| match v {
+                "brink" => Dialect::Brink,
+                _ => Dialect::StrictInk,
+            }),
+            types: explicit_initialization_option(params, "types").and_then(|v| match v {
+                "strict" => Some(TypePolicy::Strict),
+                "gradual" => Some(TypePolicy::Gradual),
+                _ => None,
+            }),
+        }
     }
+}
+
+/// The result of one `brink.toml` discovery + load attempt: which file (if
+/// any) was found, and — if reading or parsing it failed — the diagnostic to
+/// surface on it (#1055 gap 1, see [`config_error_diagnostic`]).
+///
+/// `path: None` means no `brink.toml` was found anywhere from the workspace
+/// root up — byte-identical to pre-#1005 "use defaults", nothing to
+/// publish. `path: Some(_)` with `diagnostic: None` means the file loaded
+/// cleanly; callers still "publish" that (as an empty diagnostic set) so a
+/// fix supersedes a diagnostic shown for a previous, malformed revision of
+/// the same file.
+#[derive(Debug, Clone, Default)]
+struct ConfigLoadOutcome {
+    path: Option<PathBuf>,
+    diagnostic: Option<tower_lsp::lsp_types::Diagnostic>,
+}
+
+/// Best-effort byte-span → LSP range for a `ConfigError::Toml` (malformed
+/// TOML syntax carries a span via `toml::de::Error::span`). Every other
+/// `ConfigError` variant (unreadable file, a recognized key holding the
+/// wrong shape/value) has no location narrower than "the whole file", and a
+/// span this project's `u32`-based `TextSize` can't represent falls back the
+/// same way — `None` here means the caller anchors the diagnostic at the
+/// file's start instead.
+fn toml_span_to_lsp_range(
+    error: &brink_project_config::ConfigError,
+    source: Option<&str>,
+) -> Option<Range> {
+    let brink_project_config::ConfigError::Toml(toml_error) = error else {
+        return None;
+    };
+    let span = toml_error.span()?;
+    let source = source?;
+    let start = u32::try_from(span.start).ok()?;
+    let end = u32::try_from(span.end).ok()?;
+    let idx = LineIndex::new(source);
+    Some(convert::to_lsp_range(
+        rowan::TextRange::new(start.into(), end.into()),
+        &idx,
+    ))
+}
+
+/// Convert a `brink_project_config::ConfigError` — surfaced while loading
+/// `brink.toml` — into an LSP diagnostic anchored on the file (#1055 gap 1:
+/// previously only `tracing::warn!`-ed, so an author editing a malformed
+/// `brink.toml` had no client-visible signal that the session had silently
+/// fallen back to defaults). `source` is the file's text, when it was read
+/// successfully — needed to convert `ConfigError::Toml`'s byte span into an
+/// LSP line/column range (see [`toml_span_to_lsp_range`]).
+///
+/// Severity is always `Error`: every `ConfigError` variant (unreadable
+/// file, malformed TOML, a recognized key holding the wrong shape/value) is
+/// a genuine config-load failure — `ConfigError` carries no `DiagnosticCode`
+/// and has no warning-level variant, unlike `brink_ir::Diagnostic` (whose
+/// severity is code-dependent and must go through
+/// [`convert::severity_to_lsp`] with `diag.code.severity()`, see
+/// [`convert::diagnostic_to_lsp`]). This still routes through
+/// `convert::severity_to_lsp` rather than naming the `tower_lsp` variant
+/// directly, so the mapping stays centralized in one place (#1163).
+fn config_error_diagnostic(
+    error: &brink_project_config::ConfigError,
+    source: Option<&str>,
+) -> tower_lsp::lsp_types::Diagnostic {
+    tower_lsp::lsp_types::Diagnostic {
+        range: toml_span_to_lsp_range(error, source).unwrap_or_default(),
+        severity: Some(convert::severity_to_lsp(brink_ir::Severity::Error)),
+        source: Some("brink.toml".to_owned()),
+        message: error.to_string(),
+        ..Default::default()
+    }
+}
+
+/// Resolve the effective dialect/types policy for this session, reconciling
+/// `overrides` (captured once from `initializationOptions`, see
+/// [`ConfigOverrides::from_initialize_params`]) with a discovered
+/// `brink.toml` (#1005) under the **same ruled precedence every other mount
+/// follows** (#1030): the file supplies the default, an explicit client
+/// option always wins over it. Layering, lowest to highest priority:
+///
+/// 1. `AnalysisOptions::default()` (`strict-ink` / `gradual`);
+/// 2. a `brink.toml` discovered from the (first) workspace root — a missing
+///    file changes nothing, byte-identical to pre-#1005/#1030 behavior;
+/// 3. `overrides.dialect`/`.types`, if the client actually set them at
+///    `initialize` — this always overrides the file, never the other way
+///    around.
+///
+/// Discovery is relative to the **workspace root**, not any single open
+/// file: at `initialize` time the LSP has no "entry file" the way the CLI's
+/// `brink compile <entry>` does, only workspace folders. This reuses
+/// `brink-project-config`'s [`brink_project_config::find_config`] walk
+/// directly (rather than [`brink_project_config::discover_from_entry`],
+/// which expects a file path to take the parent of) — the walking logic
+/// itself is not duplicated. With multiple workspace folders, only the
+/// first is consulted, mirroring the single-session, single-project-root
+/// assumption `Backend::dialect()`/`language` already make elsewhere.
+///
+/// Unknown keys in the file are logged as warnings (never errors — forward
+/// compat, matching the CLI/`brink ide` surfaces) and never earn a
+/// diagnostic. A malformed or unreadable `brink.toml` is still only ever a
+/// `tracing::warn!` here — a language server must keep serving the session
+/// rather than refuse to initialize/reload — but also earns a client-visible
+/// diagnostic via the returned [`ConfigLoadOutcome`] (#1055 gap 1): callers
+/// publish it (see [`Backend::publish_config_outcome`]), they don't fail on
+/// it.
+///
+/// Called once from `initialize` (via `initialized`, which defers the
+/// publish) and again by [`Backend::reload_brink_toml`] on
+/// `workspace/didChangeConfiguration` and a file-watched edit to
+/// `brink.toml` itself (#1055 gap 2), so edits apply without a client
+/// restart.
+fn resolve_language_options(
+    overrides: ConfigOverrides,
+    roots: &[PathBuf],
+) -> (AnalysisOptions, ConfigLoadOutcome) {
+    let mut options = AnalysisOptions::default();
+    let mut outcome = ConfigLoadOutcome::default();
+
+    if let Some(root) = roots.first()
+        && let Some(path) = brink_project_config::find_config(root)
+    {
+        outcome.path = Some(path.clone());
+        match std::fs::read_to_string(&path) {
+            Ok(text) => match brink_project_config::parse_str(&text) {
+                Ok((config, warnings)) => {
+                    for warning in &warnings {
+                        tracing::warn!("[{}] {warning}", path.display());
+                    }
+                    brink_project_config::apply_to_options(
+                        &mut options,
+                        &config,
+                        overrides.dialect.is_some(),
+                        overrides.types.is_some(),
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("failed to parse {}: {e}", path.display());
+                    outcome.diagnostic = Some(config_error_diagnostic(&e, Some(&text)));
+                }
+            },
+            Err(e) => {
+                tracing::warn!("failed to read {}: {e}", path.display());
+                let err = brink_project_config::ConfigError::Io {
+                    path: path.clone(),
+                    source: e,
+                };
+                outcome.diagnostic = Some(config_error_diagnostic(&err, None));
+            }
+        }
+    }
+
+    // T1b compiler dialect (docs/t1b-surface-spec.md §1, #589): an explicit
+    // `initializationOptions.dialect` ("brink" or "strict-ink"; any other
+    // value keeps whatever the file/default already resolved to) always
+    // wins over the file, per the precedence above.
+    if let Some(dialect) = overrides.dialect {
+        options.dialect = dialect;
+    }
+
+    // TM-3 typed-mode policy (docs/typed-mode-spec.md §1, #660): same rule,
+    // mirroring `dialect` directly above. `Strict` requires `dialect =
+    // brink` (a config-error diagnostic otherwise, `E064`) — the client's
+    // responsibility, same as the compiler CLI.
+    if let Some(types) = overrides.types {
+        options.types = Some(types);
+    }
+
+    (options, outcome)
+}
+
+/// True if `path`'s file name is exactly
+/// `brink_project_config::CONFIG_FILE_NAME` ("brink.toml") — used to route
+/// `did_change_watched_files` events for the project config file to
+/// [`Backend::reload_brink_toml`] instead of `ProjectDb`, which only ever
+/// tracks `.ink` source (#1055 gap 2).
+fn is_brink_toml_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        == Some(brink_project_config::CONFIG_FILE_NAME)
 }
 
 #[tower_lsp::async_trait]
@@ -636,31 +908,35 @@ impl LanguageServer for Backend {
                 roots.push(path);
             }
         }
+        // #1030: reconcile `initializationOptions.dialect`/`.types` with a
+        // discovered `brink.toml` (#1005), read once here (before `roots`
+        // moves into `workspace_roots` below) and shared unchanged for the
+        // life of the session — mirrors the previous dialect-only/types-only
+        // handling (#589, #660), now layered with the file. See
+        // `resolve_language_options` for the full precedence rule and
+        // discovery details. `overrides` is stashed for every later reload
+        // (#1055 gap 2); a malformed file's diagnostic (`outcome`) is
+        // stashed too, rather than published here — the LSP spec forbids
+        // sending notifications before this handler returns its
+        // `InitializeResult`, so `initialized()` publishes it instead.
+        let overrides = ConfigOverrides::from_initialize_params(&params);
+        let (resolved, outcome) = resolve_language_options(overrides, &roots);
+        if let Ok(mut guard) = self.language.dialect.lock() {
+            *guard = resolved.dialect;
+        }
+        if let Ok(mut guard) = self.language.types.lock() {
+            *guard = resolved.types;
+        }
+        if let Ok(mut guard) = self.config_overrides.lock() {
+            *guard = overrides;
+        }
+        if let Ok(mut guard) = self.initial_config_outcome.lock() {
+            *guard = Some(outcome);
+        }
+
         if let Ok(mut ws) = self.workspace_roots.lock() {
             *ws = roots;
         }
-
-        // T1b compiler dialect (docs/t1b-surface-spec.md §1, #589): an
-        // authoring-time/tooling input, read once from
-        // `initializationOptions.dialect` ("brink" or "strict-ink"; any
-        // other value, or absence, keeps the `StrictInk` default). Gates
-        // stdlib slice 1 completion/signature help only — see the `dialect`
-        // field's doc comment.
-        apply_initialization_option(&params, "dialect", &self.language.dialect, |v| match v {
-            "brink" => Dialect::Brink,
-            _ => Dialect::StrictInk,
-        });
-
-        // TM-3 typed-mode policy (docs/typed-mode-spec.md §1, #660): read
-        // once from `initializationOptions.types` ("strict" or "gradual";
-        // any other value, or absence, keeps the `Gradual` default), mirroring
-        // the `dialect` handling directly above. `Strict` requires
-        // `dialect = brink` (a config-error diagnostic otherwise, `E064`) —
-        // the client's responsibility, same as the compiler CLI.
-        apply_initialization_option(&params, "types", &self.language.types, |v| match v {
-            "strict" => TypePolicy::Strict,
-            _ => TypePolicy::Gradual,
-        });
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
@@ -754,12 +1030,37 @@ impl LanguageServer for Backend {
     async fn initialized(&self, _: InitializedParams) {
         tracing::debug!("initialized");
 
-        // Register file watcher for **/*.ink (fire-and-forget — some test
-        // clients don't respond to server-initiated requests)
+        // Publish `initialize`'s one-time `brink.toml` load diagnostic, if
+        // any (#1055 gap 1) — deferred to here, rather than sent from
+        // `initialize` itself, because the LSP spec forbids the server
+        // sending notifications before the client has the
+        // `InitializeResult`; the `initialized` notification confirms
+        // receipt of it. `.take()` so a hypothetical second `initialized`
+        // call (not expected from a well-behaved client) doesn't re-publish.
+        let stashed_outcome = self
+            .initial_config_outcome
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take());
+        if let Some(outcome) = stashed_outcome {
+            self.publish_config_outcome(&outcome).await;
+        }
+
+        // Register file watchers for **/*.ink and brink.toml (#1055 gap 2:
+        // previously only .ink files were watched, so an on-disk edit to
+        // brink.toml never reached the server) — fire-and-forget, some test
+        // clients don't respond to server-initiated requests.
         let client = self.client.clone();
         tokio::spawn(async move {
-            let watcher = FileSystemWatcher {
+            let ink_watcher = FileSystemWatcher {
                 glob_pattern: GlobPattern::String("**/*.ink".to_owned()),
+                kind: None,
+            };
+            let toml_watcher = FileSystemWatcher {
+                glob_pattern: GlobPattern::String(format!(
+                    "**/{}",
+                    brink_project_config::CONFIG_FILE_NAME
+                )),
                 kind: None,
             };
             let registration = Registration {
@@ -767,7 +1068,7 @@ impl LanguageServer for Backend {
                 method: "workspace/didChangeWatchedFiles".to_owned(),
                 register_options: serde_json::to_value(
                     tower_lsp::lsp_types::DidChangeWatchedFilesRegistrationOptions {
-                        watchers: vec![watcher],
+                        watchers: vec![ink_watcher, toml_watcher],
                     },
                 )
                 .ok(),
@@ -782,6 +1083,15 @@ impl LanguageServer for Backend {
         self.trigger_analysis();
     }
 
+    async fn did_change_configuration(&self, _params: DidChangeConfigurationParams) {
+        tracing::debug!("did_change_configuration");
+        // #1055 gap 2: re-read brink.toml so a workspace-settings change
+        // (which many clients pair with editing it) takes effect without a
+        // restart, same as a direct file-watched edit below.
+        self.reload_brink_toml().await;
+        self.trigger_analysis();
+    }
+
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
         tracing::debug!(count = params.changes.len(), "did_change_watched_files");
 
@@ -790,6 +1100,24 @@ impl LanguageServer for Backend {
             let Some(path) = Self::uri_to_path(&change.uri) else {
                 continue;
             };
+
+            if is_brink_toml_path(&path) {
+                // brink.toml isn't tracked in `ProjectDb` (it's not `.ink`
+                // source) — every change type means the same thing here:
+                // re-resolve (#1055 gap 2). A deleted file's own diagnostic
+                // is cleared directly, matching the `.ink` DELETED case
+                // below; `reload_brink_toml` separately (re-)publishes for
+                // whichever ancestor `brink.toml`, if any, is now
+                // authoritative.
+                if change.typ == FileChangeType::DELETED {
+                    self.client
+                        .publish_diagnostics(change.uri.clone(), vec![], None)
+                        .await;
+                }
+                self.reload_brink_toml().await;
+                changed = true;
+                continue;
+            }
 
             match change.typ {
                 FileChangeType::CREATED | FileChangeType::CHANGED => {
@@ -1163,8 +1491,18 @@ impl LanguageServer for Backend {
             return Ok(Some(CompletionResponse::Array(items)));
         }
 
+        // T1e (docs/t1e-spec.md §2, issue #850): right after `ref `, only a
+        // `VAR` is a legal `ref lvalue-path` root (E080) — narrow the
+        // `FunctionArgs` set the same way `brink-web`'s wasm completion path
+        // does (`ref_arg_root_prefix`'s own doc explains the "where cheap"
+        // scoping: root position only, not `.`/`[` path continuations).
+        let ref_root = ref_arg_root_prefix(&snap.source, byte_offset);
+
         for info in snap.analysis.index.symbols.values() {
             if !is_visible_in_context(&ctx, info, &cursor_scope) {
+                continue;
+            }
+            if ref_root.is_some() && info.kind != brink_ir::SymbolKind::Variable {
                 continue;
             }
             items.push(make_completion_item(info, None));
@@ -1979,10 +2317,7 @@ pub async fn analysis_loop(
                 .dialect
                 .lock()
                 .map_or_else(|_| Dialect::default(), |g| *g),
-            types: language
-                .types
-                .lock()
-                .map_or_else(|_| TypePolicy::default(), |g| *g),
+            types: language.types.lock().map_or_else(|_| None, |g| *g),
             ..AnalysisOptions::default()
         };
 
@@ -2321,7 +2656,30 @@ fn code_action_data_to_json(
 mod tests {
     use tower_lsp::lsp_types::Diagnostic;
 
-    use super::{PublishDecision, PublishRecord, PublishTier, publish_decision};
+    use super::{
+        PublishDecision, PublishRecord, PublishTier, config_error_diagnostic, publish_decision,
+    };
+
+    /// #1163 regression: `config_error_diagnostic` must always report
+    /// `ERROR` — every `ConfigError` variant (malformed TOML, unreadable
+    /// file, a recognized key with the wrong shape) is a genuine load
+    /// failure, and the type carries no `DiagnosticCode`/warning tier to
+    /// route through `convert::severity_to_lsp` differently. This locks in
+    /// that the #1163 fix (routing the literal through
+    /// `convert::severity_to_lsp` instead of naming the `tower_lsp` variant
+    /// directly) didn't change the resulting severity.
+    #[test]
+    fn config_error_diagnostic_is_always_error() {
+        let err = brink_project_config::ConfigError::NotATable {
+            key: "types".to_owned(),
+            found: "string",
+        };
+        let diag = config_error_diagnostic(&err, None);
+        assert_eq!(
+            diag.severity,
+            Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR)
+        );
+    }
 
     /// A distinct diagnostic set identified by its message (content equality is
     /// all `publish_decision` inspects).

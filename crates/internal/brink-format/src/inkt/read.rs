@@ -5,14 +5,17 @@ use pest_derive::Parser;
 
 use crate::counting::CountingFlags;
 use crate::definition::{
-    AddressDef, AddressPath, AliasEntry, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry,
-    ListDef, ListItemDef, ParamMeta, ScopeLineTable, SlotInfo, SourceLocation,
+    AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef, DirectEffects,
+    DispatchEntry, EffectRowEntry, ExternalFnDef, FrameShapeDef, GlobalVarDef, LineEntry, ListDef,
+    ListItemDef, ParamMeta, ScopeLineTable, SlotInfo, SourceLocation, StructShapeDef,
 };
 use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
 use crate::opcode::{ChoiceFlags, Opcode, SequenceKind};
 use crate::story::StoryData;
-use crate::value::{ClosureEnvEntry, ListValue, MapKey, OrderedMap, ShapeId, Value, ValueType};
+use crate::value::{
+    ClosureEnvEntry, ListValue, MapKey, OrderedMap, ProjSegment, ShapeId, Value, ValueType,
+};
 
 #[derive(Parser)]
 #[grammar = "inkt/inkt.pest"]
@@ -70,6 +73,13 @@ fn err(pair: &P<'_>, msg: impl Into<String>) -> InktParseError {
 
 fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
     let mut name_table = Vec::new();
+    // Fuzz-found (#1102): a `.inkt` document declaring the same container
+    // address twice is malformed input and must be rejected at read time.
+    // Accepting it poisons the roundtrip downstream: `write_inkt` collapses
+    // line tables through a `scope_id`-keyed `HashMap`, so the later
+    // duplicate's lines silently replace the earlier one's on the next write
+    // (same admission-check posture as the duplicate map key rejection, #985).
+    let mut seen_container_ids = std::collections::HashSet::new();
     let mut variables = Vec::new();
     let mut list_defs = Vec::new();
     let mut list_items = Vec::new();
@@ -82,6 +92,9 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
     let mut literal_pool = Vec::new();
     let mut private_defs = Vec::new();
     let mut alias_table = Vec::new();
+    let mut effect_rows = Vec::new();
+    let mut frame_shapes = Vec::new();
+    let mut struct_shapes = Vec::new();
     let mut source_checksum = 0u32;
 
     for inner in pair.into_inner() {
@@ -100,10 +113,21 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
             Rule::address_paths => address_paths = parse_address_paths(inner)?,
             Rule::list_literals => list_literals = parse_list_literals(inner)?,
             Rule::literal_pool => literal_pool = parse_literal_pool(inner)?,
+            Rule::struct_shapes => struct_shapes = parse_struct_shapes(inner)?,
             Rule::visibility => private_defs = parse_visibility(inner)?,
             Rule::alias_table => alias_table = parse_alias_table(inner)?,
+            Rule::effect_rows => effect_rows = parse_effect_rows(inner)?,
+            Rule::frame_shapes => frame_shapes = parse_frame_shapes(inner)?,
             Rule::container => {
+                let (line, col) = inner.line_col();
                 let (container, lt) = parse_container(inner)?;
+                if !seen_container_ids.insert(container.id) {
+                    return Err(InktParseError {
+                        message: format!("duplicate container address: {}", container.id),
+                        line,
+                        col,
+                    });
+                }
                 let is_scope_owner = container.scope_id == container.id;
                 containers.push(container);
                 // Only add line tables for scope-owning containers.
@@ -132,12 +156,11 @@ fn parse_story(pair: P<'_>) -> Result<StoryData, InktParseError> {
         name_table,
         list_literals,
         literal_pool,
-        // TM-4 `StructShapes`: not yet round-tripped through the `.inkt`
-        // textual format (always empty in this PR — nothing emits a
-        // non-empty table). See the format-spec doc note.
-        struct_shapes: Vec::new(),
+        struct_shapes,
         private_defs,
         alias_table,
+        effect_rows,
+        frame_shapes,
         source_checksum,
     })
 }
@@ -240,10 +263,25 @@ fn parse_value_type(pair: P<'_>) -> Result<ValueType, InktParseError> {
         "record" => Ok(ValueType::Record),
         "fn_ref" => Ok(ValueType::FnRef),
         "closure" => Ok(ValueType::Closure),
+        "projection" => Ok(ValueType::Projection),
+        "option" => Ok(ValueType::Option),
+        "range" => Ok(ValueType::Range),
+        "vec2" => Ok(ValueType::Vec2),
+        "vec3" => Ok(ValueType::Vec3),
+        "vec4" => Ok(ValueType::Vec4),
+        "quat" => Ok(ValueType::Quat),
+        "mat2" => Ok(ValueType::Mat2),
+        "mat3" => Ok(ValueType::Mat3),
+        "mat4" => Ok(ValueType::Mat4),
+        "weighted" => Ok(ValueType::Weighted),
         _ => Err(err(&pair, format!("unknown value type: {s}"))),
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per value rule — the NS-A1 option_value arm pushed this past 100"
+)]
 fn parse_value(pair: P<'_>, type_hint: Option<ValueType>) -> Result<Value, InktParseError> {
     let inner = pair.into_inner().next().ok_or_else(|| InktParseError {
         message: "empty value".into(),
@@ -324,10 +362,97 @@ fn parse_value(pair: P<'_>, type_hint: Option<ValueType>) -> Result<Value, InktP
         // — reader lands with the writer in this same PR (never repeat the
         // #742 write/read asymmetry).
         Rule::handle_value => parse_handle_value(inner),
+        // T1e projection values (docs/t1e-spec.md §3) — reader lands with the
+        // writer in this same PR (never repeat the #742 write/read asymmetry).
+        Rule::projection_value => parse_projection_value(inner),
         // T1c function values (docs/t1c-spec.md §1/§6) — the read-side legs
         // paired with `write_value`'s `record`/`fn_ref`/`closure` atoms
         // (issue #742: writer/reader must stay in sync, dump-parity rule).
         Rule::record_value => parse_record_value(inner),
+        // NS-A1 Option values (docs/stdlib-spec.md §1.4): `(some <value>)` /
+        // `(option_none)` — read-side leg paired with `write_value`'s Option
+        // atom (the #742 dump/reader parity lesson).
+        Rule::option_value => {
+            let variant = inner.into_inner().next().ok_or_else(|| InktParseError {
+                message: "empty option value".into(),
+                line: 0,
+                col: 0,
+            })?;
+            match variant.as_rule() {
+                Rule::some_value => {
+                    let inner_value =
+                        variant.into_inner().next().ok_or_else(|| InktParseError {
+                            message: "expected value in some".into(),
+                            line: 0,
+                            col: 0,
+                        })?;
+                    Ok(Value::some(parse_value(inner_value, None)?))
+                }
+                Rule::none_value => Ok(Value::none()),
+                other => Err(InktParseError {
+                    message: format!("unexpected option variant: {other:?}"),
+                    line: 0,
+                    col: 0,
+                }),
+            }
+        }
+        // NS-A8 tower values (docs/tower-mini-spec.md T5): `(vec2 <x> <y>)`
+        // … `(mat4 <16 lanes>)` — read-side leg paired with `write_value`'s
+        // tower atoms (the #742 dump/reader parity lesson). Lanes rebuild
+        // through glam's explicit array constructors.
+        Rule::tower_value => parse_tower_value(inner),
+        // NS-A7 weighted tables (docs/stdlib-spec.md §8): `(weighted
+        // (<weight> <value>)+)` — read-side leg paired with `write_value`'s
+        // Weighted atom (the #742 dump/reader parity lesson). The §8
+        // evidence-by-construction invariant is enforced here: an empty
+        // table or a non-positive weight is a parse error.
+        Rule::weighted_value => parse_weighted_value(inner),
+        // NS-A5 range values (docs/stdlib-spec.md §7, F7): `(range <start>
+        // <end> incl|excl)` — read-side leg paired with `write_value`'s
+        // Range atom (the #742 dump/reader parity lesson).
+        Rule::range_value => {
+            let mut parts = inner.into_inner();
+            let mut next_part = |what: &str| {
+                parts.next().ok_or_else(|| InktParseError {
+                    message: format!("expected {what} in range"),
+                    line: 0,
+                    col: 0,
+                })
+            };
+            let start_pair = next_part("start bound")?;
+            let end_pair = next_part("end bound")?;
+            let form_pair = next_part("incl/excl form")?;
+            let start: i32 = start_pair
+                .as_str()
+                .trim()
+                .parse()
+                .map_err(|_| InktParseError {
+                    message: format!("invalid range start: {}", start_pair.as_str()),
+                    line: 0,
+                    col: 0,
+                })?;
+            let end: i32 = end_pair
+                .as_str()
+                .trim()
+                .parse()
+                .map_err(|_| InktParseError {
+                    message: format!("invalid range end: {}", end_pair.as_str()),
+                    line: 0,
+                    col: 0,
+                })?;
+            let inclusive = match form_pair.as_str().trim() {
+                "incl" => true,
+                "excl" => false,
+                other => {
+                    return Err(InktParseError {
+                        message: format!("unexpected range form: {other}"),
+                        line: 0,
+                        col: 0,
+                    });
+                }
+            };
+            Ok(Value::range(start, end, inclusive))
+        }
         Rule::fn_ref_value => {
             let id_pair = inner.into_inner().next().ok_or_else(|| InktParseError {
                 message: "expected def_id in fn_ref".into(),
@@ -366,6 +491,134 @@ fn parse_handle_value(pair: P<'_>) -> Result<Value, InktParseError> {
     Ok(Value::handle(NameId(kind), id))
 }
 
+/// Parse a `tower_value` node (NS-A8, `docs/tower-mini-spec.md` T5): the
+/// inner rule picks the kind, its children are the flat f32 lanes in the
+/// pinned order (vec/quat `x y (z w)`; matrices column-major). The lane
+/// count is enforced by the grammar; the glam value is rebuilt through the
+/// explicit `from_array`/`from_cols_array` constructors.
+fn parse_tower_value(pair: P<'_>) -> Result<Value, InktParseError> {
+    let inner = pair.into_inner().next().ok_or_else(|| InktParseError {
+        message: "empty tower value".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let rule = inner.as_rule();
+    let mut lanes = Vec::new();
+    for lane_pair in inner.into_inner() {
+        let n: f32 = lane_pair
+            .as_str()
+            .parse()
+            .map_err(|_| err(&lane_pair, "invalid tower lane"))?;
+        lanes.push(n);
+    }
+    let lane_array = |want: usize| -> Result<&[f32], InktParseError> {
+        if lanes.len() == want {
+            Ok(&lanes)
+        } else {
+            Err(InktParseError {
+                message: format!("expected {want} tower lanes, got {}", lanes.len()),
+                line: 0,
+                col: 0,
+            })
+        }
+    };
+    match rule {
+        Rule::vec2_value => {
+            let l = lane_array(2)?;
+            Ok(Value::Vec2(glam::Vec2::new(l[0], l[1])))
+        }
+        Rule::vec3_value => {
+            let l = lane_array(3)?;
+            Ok(Value::Vec3(glam::Vec3::new(l[0], l[1], l[2])))
+        }
+        Rule::vec4_value => {
+            let l = lane_array(4)?;
+            Ok(Value::Vec4(glam::Vec4::new(l[0], l[1], l[2], l[3])))
+        }
+        Rule::quat_value => {
+            let l = lane_array(4)?;
+            Ok(Value::Quat(glam::Quat::from_xyzw(l[0], l[1], l[2], l[3])))
+        }
+        Rule::mat2_value => {
+            let mut cols = [0.0f32; 4];
+            cols.copy_from_slice(lane_array(4)?);
+            Ok(Value::Mat2(glam::Mat2::from_cols_array(&cols)))
+        }
+        Rule::mat3_value => {
+            let mut cols = [0.0f32; 9];
+            cols.copy_from_slice(lane_array(9)?);
+            Ok(Value::Mat3(glam::Mat3::from_cols_array(&cols)))
+        }
+        Rule::mat4_value => {
+            let mut cols = [0.0f32; 16];
+            cols.copy_from_slice(lane_array(16)?);
+            Ok(Value::Mat4(glam::Mat4::from_cols_array(&cols)))
+        }
+        other => Err(InktParseError {
+            message: format!("unexpected tower variant: {other:?}"),
+            line: 0,
+            col: 0,
+        }),
+    }
+}
+
+/// Parse a `projection_value` node (`(projection <cell> (segments
+/// <segment>…))`) into a [`Value::projection`] — the read-side leg paired
+/// with `write_value`'s `(projection …)` atom (issue #742 discipline,
+/// `docs/t1e-spec.md` §3).
+fn parse_projection_value(pair: P<'_>) -> Result<Value, InktParseError> {
+    let mut children = pair.into_inner();
+    let cell_pair = children.next().ok_or_else(|| InktParseError {
+        message: "expected cell def_id in projection".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let cell = parse_def_id(cell_pair)?;
+    let segs_pair = children.next().ok_or_else(|| InktParseError {
+        message: "expected segments in projection".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let mut segments = Vec::new();
+    for seg in segs_pair.into_inner() {
+        // `proj_segment` wraps exactly one of `index_segment`/`key_segment`.
+        let inner = seg.into_inner().next().ok_or_else(|| InktParseError {
+            message: "empty projection segment".into(),
+            line: 0,
+            col: 0,
+        })?;
+        match inner.as_rule() {
+            Rule::index_segment => {
+                let n_pair = inner.into_inner().next().ok_or_else(|| InktParseError {
+                    message: "expected integer in index segment".into(),
+                    line: 0,
+                    col: 0,
+                })?;
+                let n: i32 = n_pair
+                    .as_str()
+                    .parse()
+                    .map_err(|_| err(&n_pair, "invalid index segment"))?;
+                segments.push(ProjSegment::Index(n));
+            }
+            Rule::key_segment => {
+                let v_pair = inner.into_inner().next().ok_or_else(|| InktParseError {
+                    message: "expected value in key segment".into(),
+                    line: 0,
+                    col: 0,
+                })?;
+                segments.push(ProjSegment::Key(parse_value(v_pair, None)?));
+            }
+            other => {
+                return Err(err(
+                    &inner,
+                    format!("unexpected projection segment rule: {other:?}"),
+                ));
+            }
+        }
+    }
+    Ok(Value::projection(cell, segments))
+}
+
 /// Parse a `map_value` node (`(map (key value)…)`) into a [`Value::Map`].
 fn parse_map_value(pair: P<'_>) -> Result<Value, InktParseError> {
     let mut map = OrderedMap::new();
@@ -384,8 +637,19 @@ fn parse_map_value(pair: P<'_>) -> Result<Value, InktParseError> {
             line: 0,
             col: 0,
         })?;
+        let (line, col) = key_pair.line_col();
         let key = parse_map_key(key_pair)?;
         let value = parse_value(value_pair, None)?;
+        // A repeated key would violate the content-based `OrderedMap` `Eq`
+        // (#909); reject rather than silently keeping the last occurrence
+        // (#985).
+        if map.contains_key(&key) {
+            return Err(InktParseError {
+                message: "duplicate key in map value".into(),
+                line,
+                col,
+            });
+        }
         map.insert(key, value);
     }
     Ok(Value::map(map))
@@ -578,6 +842,64 @@ fn parse_list_entry(pair: P<'_>) -> Result<ListDef, InktParseError> {
     Ok(ListDef { id, name, items })
 }
 
+// ── Struct shapes (TM-4, docs/format-v4-rfc.md §1) ───────────────────────────
+// Mirrors the `.inkb` `StructShapes` section reader (the #742/#883 lesson —
+// the writer and reader land together).
+
+fn parse_struct_shapes(pair: P<'_>) -> Result<Vec<StructShapeDef>, InktParseError> {
+    let mut shapes = Vec::new();
+    for entry in pair.into_inner() {
+        if entry.as_rule() == Rule::struct_shape_entry {
+            shapes.push(parse_struct_shape_entry(entry)?);
+        }
+    }
+    Ok(shapes)
+}
+
+fn parse_struct_shape_entry(pair: P<'_>) -> Result<StructShapeDef, InktParseError> {
+    let mut inner = pair.into_inner();
+    let id = ShapeId(
+        inner
+            .next()
+            .ok_or_else(|| InktParseError {
+                message: "expected shape id in struct".into(),
+                line: 0,
+                col: 0,
+            })?
+            .as_str()
+            .parse()
+            .map_err(|_| InktParseError {
+                message: "invalid struct shape id".into(),
+                line: 0,
+                col: 0,
+            })?,
+    );
+
+    let name_int = inner.next().ok_or_else(|| InktParseError {
+        message: "expected name integer in struct".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let name = NameId(parse_u16(&name_int)?);
+
+    let mut fields = Vec::new();
+    for remaining in inner {
+        if remaining.as_rule() == Rule::struct_field {
+            let field_int = remaining
+                .into_inner()
+                .next()
+                .ok_or_else(|| InktParseError {
+                    message: "expected name integer in struct field".into(),
+                    line: 0,
+                    col: 0,
+                })?;
+            fields.push(NameId(parse_u16(&field_int)?));
+        }
+    }
+
+    Ok(StructShapeDef { id, name, fields })
+}
+
 // ── List items ──────────────────────────────────────────────────────────────
 
 fn parse_list_items(pair: P<'_>) -> Result<Vec<ListItemDef>, InktParseError> {
@@ -753,6 +1075,177 @@ fn parse_alias_entry(pair: P<'_>) -> Result<AliasEntry, InktParseError> {
     Ok(AliasEntry { old, new })
 }
 
+/// FS-3 (`docs/flow-suspension-spec.md` §4/§11): parse
+/// `(frame_shapes (frame $site $slot …) …)`. Each `frame` entry is the
+/// `await` site's stable `DefinitionId` followed by its name-keyed
+/// crossing-local slots (interned `NameId`s).
+fn parse_frame_shapes(pair: P<'_>) -> Result<Vec<FrameShapeDef>, InktParseError> {
+    let mut shapes = Vec::new();
+    for entry in pair.into_inner() {
+        if entry.as_rule() == Rule::frame_shape_entry {
+            shapes.push(parse_frame_shape_entry(entry)?);
+        }
+    }
+    Ok(shapes)
+}
+
+fn parse_frame_shape_entry(pair: P<'_>) -> Result<FrameShapeDef, InktParseError> {
+    let mut inner = pair.into_inner();
+    let site = parse_def_id(inner.next().ok_or_else(|| InktParseError {
+        message: "expected site def_id in frame shape".into(),
+        line: 0,
+        col: 0,
+    })?)?;
+    let mut slots = Vec::new();
+    for slot in inner {
+        slots.push(NameId(parse_u16(&slot)?));
+    }
+    Ok(FrameShapeDef { site, slots })
+}
+
+/// T2-3 (`docs/effects-spec.md` §11): parse `(effect_rows (row …) …)`.
+fn parse_effect_rows(pair: P<'_>) -> Result<Vec<EffectRowEntry>, InktParseError> {
+    let mut rows = Vec::new();
+    for entry in pair.into_inner() {
+        if entry.as_rule() == Rule::effect_row {
+            rows.push(parse_effect_row(&entry)?);
+        }
+    }
+    Ok(rows)
+}
+
+fn parse_effect_row(pair: &P<'_>) -> Result<EffectRowEntry, InktParseError> {
+    let mut inner = pair.clone().into_inner();
+    let def = parse_def_id(
+        inner
+            .next()
+            .ok_or_else(|| err(pair, "expected row def_id"))?,
+    )?;
+    // #882 freeze bit: defaults to `true` (host entry point) — `internal_flag`
+    // is present only for a `#@private` def (see `EffectRowEntry::is_entry`'s
+    // doc). Parsed rule-by-rule (not positionally) because this optional
+    // token sits before the mandatory reads/writes/calls triple.
+    let mut is_entry = true;
+    let mut reads = None;
+    let mut writes = None;
+    let mut calls = None;
+    let mut opaque = false;
+    let mut emits = false;
+    let mut tags = false;
+    let mut faults = false;
+    let mut dispatches = Vec::new();
+    for rest in inner {
+        match rest.as_rule() {
+            Rule::internal_flag => is_entry = false,
+            Rule::effects_reads => reads = Some(parse_effect_cells(rest)?),
+            Rule::effects_writes => writes = Some(parse_effect_cells(rest)?),
+            Rule::effects_calls => calls = Some(parse_effect_calls(rest)?),
+            Rule::opaque_flag => opaque = true,
+            Rule::emits_flag => emits = true,
+            Rule::tags_flag => tags = true,
+            Rule::faults_flag => faults = true,
+            Rule::dispatch_entry => dispatches.push(parse_dispatch_entry(&rest)?),
+            _ => {}
+        }
+    }
+    let reads = reads.ok_or_else(|| err(pair, "expected reads"))?;
+    let writes = writes.ok_or_else(|| err(pair, "expected writes"))?;
+    let calls = calls.ok_or_else(|| err(pair, "expected calls"))?;
+    Ok(EffectRowEntry {
+        def,
+        is_entry,
+        direct: DirectEffects {
+            reads,
+            writes,
+            calls,
+            opaque,
+            emits,
+            tags,
+            faults,
+        },
+        dispatches,
+    })
+}
+
+fn parse_dispatch_entry(pair: &P<'_>) -> Result<DispatchEntry, InktParseError> {
+    let mut cell = None;
+    let mut narrowable = false;
+    let mut reads = Vec::new();
+    let mut writes = Vec::new();
+    let mut calls = Vec::new();
+    let mut opaque = false;
+    let mut emits = false;
+    let mut tags = false;
+    let mut faults = false;
+    for part in pair.clone().into_inner() {
+        match part.as_rule() {
+            Rule::def_id => cell = Some(parse_def_id(part)?),
+            Rule::narrowable_flag => narrowable = true,
+            Rule::effects_reads => reads = parse_effect_cells(part)?,
+            Rule::effects_writes => writes = parse_effect_cells(part)?,
+            Rule::effects_calls => calls = parse_effect_calls(part)?,
+            Rule::opaque_flag => opaque = true,
+            Rule::emits_flag => emits = true,
+            Rule::tags_flag => tags = true,
+            Rule::faults_flag => faults = true,
+            _ => {}
+        }
+    }
+    let cell = cell.ok_or_else(|| err(pair, "expected dispatch cell def_id"))?;
+    Ok(DispatchEntry {
+        cell,
+        narrowable,
+        fallback: DirectEffects {
+            reads,
+            writes,
+            calls,
+            opaque,
+            emits,
+            tags,
+            faults,
+        },
+    })
+}
+
+/// Parse a `(reads …)` / `(writes …)` cell list — a run of `def_id`s.
+fn parse_effect_cells(pair: P<'_>) -> Result<Vec<DefinitionId>, InktParseError> {
+    let mut cells = Vec::new();
+    for id in pair.into_inner() {
+        if id.as_rule() == Rule::def_id {
+            cells.push(parse_def_id(id)?);
+        }
+    }
+    Ok(cells)
+}
+
+/// Parse a `(calls (call <name> any) …)` atom list.
+fn parse_effect_calls(pair: P<'_>) -> Result<Vec<CallAtom>, InktParseError> {
+    let mut calls = Vec::new();
+    for atom in pair.into_inner() {
+        if atom.as_rule() == Rule::call_atom {
+            calls.push(parse_call_atom(&atom)?);
+        }
+    }
+    Ok(calls)
+}
+
+fn parse_call_atom(pair: &P<'_>) -> Result<CallAtom, InktParseError> {
+    let mut inner = pair.clone().into_inner();
+    let name_pair = inner
+        .next()
+        .ok_or_else(|| err(pair, "expected call atom name"))?;
+    let name = NameId(parse_u16(&name_pair)?);
+    // The capability-parameter slot: `any` is the only v1 value (the grammar's
+    // `cap_param` rule accepts only that literal). The reserved handle-parameter
+    // slot is `None` in v1 — nothing textual carries a bound handle.
+    let capability = CapabilityParam::Any;
+    Ok(CallAtom {
+        name,
+        capability,
+        handle_param: None,
+    })
+}
+
 fn parse_address_paths(pair: P<'_>) -> Result<Vec<AddressPath>, InktParseError> {
     let mut paths = Vec::new();
     for entry in pair.into_inner() {
@@ -868,6 +1361,7 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
                             "visits" => counting_flags |= CountingFlags::VISITS,
                             "turns" => counting_flags |= CountingFlags::TURNS,
                             "start_only" => counting_flags |= CountingFlags::COUNT_START_ONLY,
+                            "invisible" => counting_flags |= CountingFlags::INVISIBLE,
                             _ => {}
                         }
                     }
@@ -918,6 +1412,26 @@ fn parse_container(pair: P<'_>) -> Result<(ContainerDef, ScopeLineTable), InktPa
                     params.push(ParamMeta {
                         name: NameId(parse_u16(&name_int)?),
                         is_ref,
+                    });
+                }
+                // `ContainerDef::params`'s doc invariant: `params.len()`
+                // always equals `param_count` whenever per-param metadata is
+                // present at all (empty `params` is the separate, legitimate
+                // "count only, no metadata" case — e.g. the converter
+                // pipeline). A `.inkt` file asserting otherwise (fuzz-found,
+                // #745) is malformed input, not silently-acceptable data:
+                // `write_inkt`'s `(params N …)` clause is gated on
+                // `param_count != 0`, so an inconsistent `param_count: 0` with
+                // non-empty `params` would round-trip by silently dropping
+                // the params entirely on the next write.
+                if !params.is_empty() && params.len() != usize::from(param_count) {
+                    return Err(InktParseError {
+                        message: format!(
+                            "params metadata count ({}) does not match declared param_count ({param_count})",
+                            params.len()
+                        ),
+                        line: 0,
+                        col: 0,
                     });
                 }
             }
@@ -1498,6 +2012,96 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         "begin_fragment" => Ok(Opcode::BeginFragment),
         "end_fragment" => Ok(Opcode::EndFragment),
 
+        // Records (TM-4, `docs/typed-mode-spec.md` §6) — read-side leg paired
+        // with `write_opcode`'s `record_new`/`record_get_dyn`/`record_set_dyn`/
+        // `record_get`/`record_set` mnemonics (issue #871, the #742 write/read
+        // asymmetry class).
+        "record_new" => Ok(Opcode::RecordNew(parse_operand_u32(
+            &operands, 0, mnemonic,
+        )?)),
+        "record_get_dyn" => Ok(Opcode::RecordGetDyn(parse_operand_u16(
+            &operands, 0, mnemonic,
+        )?)),
+        "record_set_dyn" => Ok(Opcode::RecordSetDyn(parse_operand_u16(
+            &operands, 0, mnemonic,
+        )?)),
+        "record_get" => Ok(Opcode::RecordGet(parse_operand_u16(
+            &operands, 0, mnemonic,
+        )?)),
+        "record_set" => Ok(Opcode::RecordSet(parse_operand_u16(
+            &operands, 0, mnemonic,
+        )?)),
+
+        // Conversion intrinsics (TM-3 completion, issue #659/#871)
+        "convert_int" => Ok(Opcode::ConvertInt),
+        "convert_float" => Ok(Opcode::ConvertFloat),
+        "convert_string" => Ok(Opcode::ConvertString),
+
+        // Function values (T1c, `docs/t1c-spec.md` §3/§6, issue #871) —
+        // read-side leg paired with `write_opcode`'s `push_fn_ref`/
+        // `make_closure`/`call_value`/`bind_value` mnemonics.
+        "push_fn_ref" => Ok(Opcode::PushFnRef(parse_operand_def_id(
+            &operands, 0, mnemonic,
+        )?)),
+        "make_closure" => {
+            let target = parse_operand_def_id(&operands, 0, mnemonic)?;
+            let bound_count = parse_kv_operand_u8(&operands, 1, "bound=", mnemonic)?;
+            Ok(Opcode::MakeClosure {
+                target,
+                bound_count,
+            })
+        }
+        "call_value" => Ok(Opcode::CallValue(parse_kv_operand_u8(
+            &operands, 0, "argc=", mnemonic,
+        )?)),
+        "bind_value" => Ok(Opcode::BindValue(parse_kv_operand_u8(
+            &operands, 0, "argc=", mnemonic,
+        )?)),
+
+        // Path projections (T1e, `docs/t1e-spec.md` §3, issue #871) —
+        // read-side leg paired with `write_opcode`'s `make_projection`/
+        // `proj_read`/`proj_write` mnemonics.
+        "make_projection" => {
+            let root = parse_operand_def_id(&operands, 0, mnemonic)?;
+            let segment_count = parse_kv_operand_u8(&operands, 1, "segments=", mnemonic)?;
+            Ok(Opcode::MakeProjection {
+                root,
+                segment_count,
+            })
+        }
+        "proj_read" => Ok(Opcode::ProjRead),
+        "proj_write" => Ok(Opcode::ProjWrite),
+
+        // Stdlib slice 1 completion (#857)
+        "char_at" => Ok(Opcode::CharAt),
+
+        // NS-A1 Option + stdlib flips
+        "push_none" => Ok(Opcode::PushNone),
+        "make_some" => Ok(Opcode::MakeSome),
+        "str_find" => Ok(Opcode::StrFind),
+        "seq_index_of" => Ok(Opcode::SeqIndexOf),
+        "seq_min" => Ok(Opcode::SeqMin),
+        "seq_max" => Ok(Opcode::SeqMax),
+        "seq_first" => Ok(Opcode::SeqFirst),
+        "seq_last" => Ok(Opcode::SeqLast),
+        "seq_pop" => Ok(Opcode::SeqPop),
+        "map_get_opt" => Ok(Opcode::MapGetOpt),
+        "map_contains_value" => Ok(Opcode::MapContainsValue),
+        "map_clear" => Ok(Opcode::MapClear),
+
+        // NS-A6 rand verbs
+        "rand_float" => Ok(Opcode::RandFloat),
+        "rand_chance" => Ok(Opcode::RandChance),
+        "rand_pick" => Ok(Opcode::RandPick),
+        "rand_shuffle" => Ok(Opcode::RandShuffle),
+        "range_make_excl" => Ok(Opcode::RangeMakeExcl),
+        "range_make_incl" => Ok(Opcode::RangeMakeIncl),
+        "range_non_empty" => Ok(Opcode::RangeNonEmpty),
+
+        // NS-A4 ordering verbs (#1110)
+        "seq_sorted" => Ok(Opcode::SeqSorted),
+        "seq_sorted_by" => Ok(Opcode::SeqSortedBy),
+
         // Debug
         "source_location" => {
             // Written as "source_location LINE:COL" — parsed as source_loc operand
@@ -1523,12 +2127,70 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
             Ok(Opcode::SourceLocation(line, col))
         }
 
-        _ => Err(InktParseError {
-            message: format!("unknown opcode: {mnemonic}"),
-            line: mnemonic_pair.line_col().0,
-            col: mnemonic_pair.line_col().1,
-        }),
+        // NS-A8 numeric tower: the TowerOp mnemonic IS the instruction word
+        // (`make_vec2` … `tower_lerp`) — one wire opcode, thirteen
+        // spellings, `TowerOp::mnemonic`/`from_mnemonic` the single pairing.
+        _ => tower_mnemonic_opcode(mnemonic)
+            .or_else(|| collect_mnemonic_opcode(mnemonic))
+            .ok_or_else(|| InktParseError {
+                message: format!("unknown opcode: {mnemonic}"),
+                line: mnemonic_pair.line_col().0,
+                col: mnemonic_pair.line_col().1,
+            }),
     }
+}
+
+/// The `.inkt` reader leg for the NS-A8 `Tower` opcode family: resolve a
+/// mnemonic to `Opcode::Tower(kind)` via [`crate::TowerOp::from_mnemonic`].
+fn tower_mnemonic_opcode(mnemonic: &str) -> Option<Opcode> {
+    crate::TowerOp::from_mnemonic(mnemonic).map(Opcode::Tower)
+}
+
+/// The `.inkt` reader leg for the NS-A7 `Collect` opcode family: resolve a
+/// mnemonic to `Opcode::Collect(kind)` via [`crate::CollectOp::from_mnemonic`].
+fn collect_mnemonic_opcode(mnemonic: &str) -> Option<Opcode> {
+    crate::CollectOp::from_mnemonic(mnemonic).map(Opcode::Collect)
+}
+
+/// Parse a `weighted_value` node (NS-A7, `docs/stdlib-spec.md` §8): each
+/// child is a `weighted_entry` — an integer weight then a recursively-parsed
+/// value. Enforces the evidence-by-construction invariant (non-empty,
+/// weights ≥ 1) with targeted messages.
+fn parse_weighted_value(pair: P<'_>) -> Result<Value, InktParseError> {
+    let mut entries = Vec::new();
+    for entry_pair in pair.into_inner() {
+        let mut parts = entry_pair.clone().into_inner();
+        let weight_pair = parts.next().ok_or_else(|| InktParseError {
+            message: "weighted entry missing weight".into(),
+            line: 0,
+            col: 0,
+        })?;
+        let weight: i32 = weight_pair
+            .as_str()
+            .trim()
+            .parse()
+            .map_err(|_| err(&weight_pair, "invalid weighted entry weight"))?;
+        if weight < 1 {
+            return Err(err(
+                &weight_pair,
+                "weighted entry weight must be a positive int",
+            ));
+        }
+        let value_pair = parts.next().ok_or_else(|| InktParseError {
+            message: "weighted entry missing value".into(),
+            line: 0,
+            col: 0,
+        })?;
+        entries.push((weight, parse_value(value_pair, None)?));
+    }
+    if entries.is_empty() {
+        return Err(InktParseError {
+            message: "weighted table must have at least one entry".into(),
+            line: 0,
+            col: 0,
+        });
+    }
+    Ok(Value::weighted(entries))
 }
 
 fn parse_choice_flags_operand(
@@ -1626,6 +2288,26 @@ fn parse_operand_u32(operands: &[P<'_>], idx: usize, context: &str) -> Result<u3
     let s = operand_str(operands, idx, context)?;
     s.parse().map_err(|_| InktParseError {
         message: format!("invalid u32 operand for {context}: {s}"),
+        line: 0,
+        col: 0,
+    })
+}
+
+/// Parse a `kv_operand` of the form `"<prefix><value>"` (e.g. `"bound=3"`,
+/// `"segments=2"`) into its numeric value. Mirrors the inline `argc=`
+/// stripping already used by `call_variable`/`call_external`, generalized so
+/// `make_closure`'s `bound=` and `make_projection`'s `segments=` operands
+/// (issue #871) don't each duplicate it.
+fn parse_kv_operand_u8(
+    operands: &[P<'_>],
+    idx: usize,
+    prefix: &str,
+    context: &str,
+) -> Result<u8, InktParseError> {
+    let kv_str = operand_str(operands, idx, context)?;
+    let value_str = kv_str.strip_prefix(prefix).unwrap_or(kv_str);
+    value_str.parse().map_err(|_| InktParseError {
+        message: format!("invalid {prefix}value in {context}: {kv_str}"),
         line: 0,
         col: 0,
     })

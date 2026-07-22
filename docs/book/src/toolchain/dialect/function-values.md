@@ -27,7 +27,7 @@ Healed to {healed}.
 HP cell is now {player_hp}.
 -> END
 
-=== function heal(ref hp, amount) ===
+=== function heal(ref hp: int, amount: int): int ===
 ~ hp = hp + amount
 ~ return hp
 ```
@@ -73,7 +73,7 @@ call position:
 Total: {total}.
 -> END
 
-=== function add(a, b) ===
+=== function add(a: int, b: int): int ===
 ~ return a + b
 ```
 
@@ -82,10 +82,13 @@ Total: 17.
 ```
 
 `adder(7)` would have produced the same `17` — `call(f, args…)` exists for
-the shapes where writing `f(args…)` directly isn't syntactically available
-(a function value stored behind an index expression, a field, or handed
-back from another expression), not as a second calling convention with
-different semantics.
+the shapes where the direct-call form `f(args…)` isn't accepted (a function
+value stored behind an index expression, a field, or handed back from
+another expression), not as a second calling convention with different
+semantics. Direct-call syntax only ever binds a bare variable/temp/param
+name; writing `handlers[state](event)` or `obj.field()` in its place is a
+compile error (`E104`) naming `call(f, args…)` as the fix, not a silent
+no-op — see issue #869.
 
 ## `bind()`: currying an existing function value
 
@@ -101,7 +104,7 @@ and returns a new function value with those filled in:
 Result: {result}.
 -> END
 
-=== function combine(a, b, c) ===
+=== function combine(a: int, b: int, c: int): int ===
 ~ return a + b + c
 ```
 
@@ -129,7 +132,7 @@ VAR world_hp = 10
 Display: {healer}.
 -> END
 
-=== function heal(ref hp, amount) ===
+=== function heal(ref hp: int, amount: int): int ===
 ~ hp = hp + amount
 ~ return hp
 ```
@@ -154,8 +157,10 @@ whether the calling code is typed:
   wrong argument type is a compile error, exactly like calling an ordinary
   function. An escape to `Unknown` at a call site is the same strict-mode
   escape error every other call gets.
-- **Under `types = gradual`** (the default, and the only mode strict mode's
-  static checks fall back to when a type can't be pinned down), calling a
+- **Under `types = gradual`** (the strict-ink dialect's default — since the
+  2026-07-19 ruling the brink dialect defaults to `types = strict` — and the
+  mode strict static checks fall back to when a type can't be pinned down),
+  calling a
   non-function value, calling with the wrong number of arguments, or
   passing a wrong-typed argument is a **turn-terminating runtime fault** —
   never silent garbage, never a partially-applied call that quietly does

@@ -1,0 +1,41 @@
+# INTERIM hand-respelled fixture. See ../README.md.
+# This is the charter's own "Fogg passage" exhibit (docs/native-surface-charter.md
+# §9 -- "The Fogg passage (WritingWithInk) ... served as sitting-1's concrete
+# anchors"). The charter says the respelling "lives in the sitting transcript",
+# but no such transcript file exists anywhere in this tree (grep-searched), and
+# no committed .brink text stood in for it before B0.5's parser test suite added
+# a good-faith respelling inline in
+# crates/internal/brink-syntax-native/src/parser/tests.rs
+# (`charter_exhibit_fogg_passage_respelling`). This file promotes that same
+# respelling to a standalone fixture, paired with its ink origin, per this
+# task's request. It is unchanged from the B0.5 test's text.
+ink_source = "tests/tier2/conditional/condtext-v1/story.ink"
+oracle_case = "tier2::conditional::condtext-v1"
+family = "charter exhibit (Fogg passage)"
+status = "hand-respelled, parse-verified only"
+notes = """
+`{if know_about_wager { ... } else { ... }}` respells ink's knot-name-as-
+boolean-condition idiom (`{ know_about_wager: ... - else: ... }`, i.e.
+"has this knot/flow been visited") as an ordinary `if` conditional whose
+condition is a bare identifier -- same-semantics respell, no new surface.
+The dissolved gather shows up here too: "I stared at Monsieur Fogg." is
+plain content immediately after the closed `{? }` choice point, with no
+gather dash, even though both choices reconverge into it.
+
+ENTRY POINT (`main`-flow convention, ruled 2026-07-21, #1106 G-batch,
+supersedes the PR #1202 fidelity fix's top-level `-> fogg_wager` divert):
+ink runs its ROOT content (the "We are going on a trip," opening + its two
+choices) at startup. The opening flow is renamed `fogg_wager` -> `main`
+(nothing else in the fixture referenced it by name), and the top-level
+`-> fogg_wager` entry-divert line is dropped -- `main`'s existence alone
+now synthesizes the entry, mirroring ink's own "root content is the
+entry" model.
+
+FUNC_populate_options_thread (the charter's SECOND named exhibit, §9) was
+grepped for exhaustively across the tree (source, docs, test fixtures,
+oracle JSON) and does NOT exist anywhere except as a name referenced in
+docs/native-surface-charter.md, docs/b0-sequencing.md, and this crate's
+own test-suite comment recording its absence. No ink original was found to
+respell, and per this task's instructions none was invented. This is
+recorded as its own gap below, not fabricated.
+"""

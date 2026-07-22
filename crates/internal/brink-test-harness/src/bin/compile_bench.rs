@@ -30,6 +30,16 @@
 //!    alongside (3)'s gradual-mode numbers as the before/after comparison
 //!    the issue asks for — same project shape, same edit, only the
 //!    `AnalysisOptions` differ.
+//! 6. **`ProjectDb`-driven incremental recompile** (issue #838, FG-4
+//!    follow-up): (3)/(5) drive `brink_driver::Driver`, which calls
+//!    `brink_ir::lir::lower_to_program` directly — the legacy one-shot path
+//!    that bypasses the salsa `ProjectDb` per-knot chunk memos FG-4d (#837)
+//!    added. This row drives `brink_db::ProjectDb` directly instead (open
+//!    project → pull `story_data()` → single-knot body edit → re-pull),
+//!    exercising `story_data_query` → `lir_lowering_query`'s per-knot
+//!    `lir_knot_chunk_query` memos for real. Fixed at
+//!    [`PROJECTDB_WARM_RUNS`] runs regardless of `--runs` — the "10-run
+//!    protocol" #672 lane E calls for so this row is conclusive on its own.
 //!
 //! Stability over rigor: medians of N runs (default 5), fixed deterministic
 //! inputs, one stable greppable row per metric. Run with:
@@ -49,6 +59,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use brink_analyzer::{AnalysisOptions, Dialect, TypePolicy};
+use brink_db::ProjectDb;
 use brink_driver::Driver;
 use brink_ir::FileId;
 
@@ -60,6 +71,11 @@ const SYN_KNOTS: usize = 20;
 /// The file that receives the one-line warm edit, and the knot inside it.
 const EDIT_FILE: usize = 25;
 const EDIT_KNOT: usize = 10;
+
+/// Run count for [`bench_synthetic_warm_projectdb`] (#838), fixed
+/// independent of `--runs` — the "10-run protocol" #672 lane E calls for
+/// ("... so rows ... get conclusive answers") applied to this new row.
+const PROJECTDB_WARM_RUNS: usize = 10;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runs = parse_runs()?;
@@ -81,6 +97,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     bench_synthetic_stages_cold(&project, runs);
     bench_synthetic_warm(&project, runs)?;
     bench_synthetic_warm_strict(&project, runs)?;
+    bench_synthetic_warm_projectdb(&project)?;
 
     Ok(())
 }
@@ -718,7 +735,7 @@ fn bench_synthetic_warm_strict(
         .ok_or_else(|| "warm setup: main.ink missing after discovery".to_string())?;
     driver.set_analysis_options(AnalysisOptions {
         dialect: Dialect::Brink,
-        types: TypePolicy::Strict,
+        types: Some(TypePolicy::Strict),
         ..AnalysisOptions::default()
     });
     let mut db = driver.into_db();
@@ -776,6 +793,107 @@ fn bench_synthetic_warm_strict(
     row(
         "synthetic_warm_strict.full_recompile",
         "update_file .. codegen (StoryData)",
+        &full,
+    );
+    Ok(())
+}
+
+// ── 6. ProjectDb-driven incremental recompile (issue #838) ────────────
+
+/// Drives `brink_db::ProjectDb` directly — no `brink_driver::Driver` in the
+/// loop — so the warm re-pull actually exercises the salsa incremental
+/// layer FG-4d (#837) added: `story_data()` → `story_data_query` →
+/// `lir_lowering_query`'s per-`DefinitionId` chunk memos
+/// (`lir_knot_chunk_query`) + link, instead of (3)/(5)'s
+/// `brink_ir::lir::lower_to_program` one-shot call.
+///
+/// Protocol: open the project (`set_file` every source, `set_entry`), pull
+/// `story_data()` once untimed (the "open project" cold compile — not part
+/// of the reported numbers), then loop [`PROJECTDB_WARM_RUNS`] times over
+/// {single-knot body edit via `update_file`, re-pull via `story_data()`}.
+/// Each edit changes only [`EDIT_KNOT`] of [`EDIT_FILE`], same shape as (3)'s
+/// one-line edit, so this is a direct comparison point for the phase-0
+/// (#498) `synthetic_warm.full_recompile` baseline and (3)'s
+/// `synthetic_warm.full_recompile` row above — same project, same edit,
+/// only the entry point (`ProjectDb::story_data()` vs `Driver` +
+/// `lower_to_program`) differs.
+///
+/// Reported rows:
+/// - `update_file` — the per-knot-cached re-parse/re-lower of one file
+///   (same cost (3) already pays; reported again here so this bench is
+///   self-contained and doesn't require cross-referencing (3)'s row)
+/// - `story_data_repull` — the number issue #838 exists to produce: a warm
+///   `story_data()` pull after the edit, running through the per-knot chunk
+///   memos. This is the FG-4d win (or its absence) made visible.
+/// - `full` — `update_file` + `story_data_repull`, the apples-to-apples
+///   comparison against #498's and (3)'s `full_recompile` rows.
+fn bench_synthetic_warm_projectdb(project: &BTreeMap<String, String>) -> Result<(), String> {
+    let mut db = ProjectDb::new();
+    for (path, source) in project {
+        db.set_file(path, source.clone());
+    }
+    db.set_entry("main.ink")
+        .ok_or_else(|| "warm(projectdb) setup: set_entry(main.ink) failed".to_string())?;
+
+    // Untimed "open project" pull: gets the db past its first (cold) compile
+    // so the loop below measures re-pulls, not the initial one.
+    let opened = db.story_data().ok_or_else(|| {
+        "warm(projectdb) setup: story_data unavailable after set_entry".to_string()
+    })?;
+    if !opened.errors.is_empty() {
+        return Err(format!(
+            "warm(projectdb) setup: synthetic project failed to compile: {} error(s)",
+            opened.errors.len()
+        ));
+    }
+
+    let edit_path = format!("file_{EDIT_FILE:02}.ink");
+    let mut update = Vec::with_capacity(PROJECTDB_WARM_RUNS);
+    let mut repull = Vec::with_capacity(PROJECTDB_WARM_RUNS);
+    let mut full = Vec::with_capacity(PROJECTDB_WARM_RUNS);
+
+    // Offset from bench_synthetic_warm's/bench_synthetic_warm_strict's
+    // revision counters so no two benches ever compare identical edit
+    // content.
+    let mut revision: u64 = 2000;
+    for _ in 0..PROJECTDB_WARM_RUNS {
+        revision += 1;
+        let edited = generate_file(EDIT_FILE, revision);
+
+        let start = Instant::now();
+        db.update_file(&edit_path, edited);
+        let update_ms = ms(start);
+
+        let start = Instant::now();
+        let product = db.story_data().ok_or_else(|| {
+            "warm(projectdb): story_data unavailable after update_file".to_string()
+        })?;
+        let repull_ms = ms(start);
+        if !product.errors.is_empty() {
+            return Err(format!(
+                "warm(projectdb): edit produced {} unexpected compile error(s)",
+                product.errors.len()
+            ));
+        }
+
+        update.push(update_ms);
+        repull.push(repull_ms);
+        full.push(update_ms + repull_ms);
+    }
+
+    row(
+        "synthetic_warm_projectdb.update_file",
+        "1-line edit, single knot body (#838)",
+        &update,
+    );
+    row(
+        "synthetic_warm_projectdb.story_data_repull",
+        "story_data() re-pull: FG-4d per-knot chunk memos + link",
+        &repull,
+    );
+    row(
+        "synthetic_warm_projectdb.full",
+        "update_file + story_data() re-pull (vs #498 full_recompile)",
         &full,
     );
     Ok(())

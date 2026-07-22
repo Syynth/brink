@@ -320,6 +320,12 @@ pub(crate) struct SlotWidgetJs {
     pub(crate) widget: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) type_name: Option<String>,
+    /// The honest display string for `type_name` (#1027/#1053) — the bare
+    /// name when registered, `name ⚠ unregistered semantic type — E040`
+    /// otherwise. The Form's label must render this, not `type_name`
+    /// (`type_name` stays raw for widget-kind matching).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) type_display: Option<String>,
     /// Static value-list items (#174) for the Form dropdown; omitted when empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) values: Vec<ValueItemJs>,
@@ -558,6 +564,7 @@ pub(crate) fn diagnostic_to_js(
         start: byte_to_utf16(source, d.range.start().into()),
         end: byte_to_utf16(source, d.range.end().into()),
         severity: format!("{:?}", d.code.severity()),
+        code: d.code.as_str().to_owned(),
         file: d.path.clone(),
     }
 }

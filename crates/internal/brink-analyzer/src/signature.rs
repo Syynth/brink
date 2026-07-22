@@ -88,7 +88,7 @@ fn ty_to_inferred_type(ty: &Ty) -> Option<InferredType> {
         Ty::Bool => Some(InferredType::Bool),
         Ty::String => Some(InferredType::String),
         Ty::Divert => Some(InferredType::Divert),
-        Ty::List(_) => Some(InferredType::List),
+        Ty::List(name) => Some(InferredType::List(name.clone())),
         // `Conflicted` (#627): a genuine type conflict has no representable
         // `InferredType` any more than `Unknown` does — this stub is a
         // gradual/advisory consumer, so it reads both the same way.
@@ -103,11 +103,24 @@ fn ty_to_inferred_type(ty: &Ty) -> Option<InferredType> {
         // represents a nominal handle kind; the full `Ty::Handle` is still
         // available via `param_annotations`/`return_annotation`/
         // `resolve_annotation`, not silently dropped.
-        Ty::Array(_)
+        // `Option` (NS-A1): same gap as `Array`/`Map` — no `InferredType`
+        // variant represents a parameterized builtin; not a silent drop.
+        // `Range` (NS-A5): same gap — no `InferredType` variant; not a
+        // silent drop.
+        // `Tower` (NS-A8): same gap again — no `InferredType` variant
+        // represents a tower kind; the full `Ty::Tower` stays available
+        // via the annotation surfaces, not silently dropped.
+        // `Weighted` (NS-A7): same gap again — no `InferredType` variant
+        // represents a parameterized builtin; not a silent drop.
+        Ty::Weighted(_)
+        | Ty::Tower(_)
+        | Ty::Array(_)
         | Ty::Map(_, _)
         | Ty::Struct(_)
         | Ty::Fn(..)
         | Ty::Handle(_)
+        | Ty::Option(_)
+        | Ty::Range { .. }
         | Ty::Unknown
         | Ty::Conflicted => None,
     }
@@ -261,7 +274,7 @@ pub fn signature(
                     is_local = v.is_local;
                     // TM-2: annotation wins over the literal-inferred type.
                     value_type = value_type_with_annotation_override(
-                        infer_literal_type(&v.value),
+                        infer_literal_type(&v.value, index),
                         v.annotation.as_ref(),
                         &names(),
                     );
@@ -283,7 +296,7 @@ pub fn signature(
                     // TM-2: annotation wins over the literal-inferred type
                     // (same firewall rule as VAR — see the `Variable` arm).
                     value_type = value_type_with_annotation_override(
-                        infer_literal_type(&c.value),
+                        infer_literal_type(&c.value, index),
                         c.annotation.as_ref(),
                         &names(),
                     );

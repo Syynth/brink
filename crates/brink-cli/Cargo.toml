@@ -22,6 +22,7 @@ brink-db = { workspace = true }
 brink-ide = { workspace = true }
 brink-ir = { workspace = true }
 brink-analyzer = { workspace = true }
+brink-project-config = { workspace = true }
 brink-fmt = { workspace = true }
 brink-format = { workspace = true, features = ["inkt"] }
 brink-intl = { workspace = true }

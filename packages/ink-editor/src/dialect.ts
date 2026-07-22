@@ -139,6 +139,151 @@ export function checkPortablePattern(pattern: string): string | null {
   return null;
 }
 
+// ── `d`-flag (`hasIndices`) feature detection (#1013) ────────────────
+//
+// `RegExp`'s `d` flag (per-named-group match `indices`) needs V8 9.0 /
+// Chromium 90+. NW.js-hosted embedders (e.g. RPG Maker MZ's bundled NW.js,
+// Chromium 88) throw `SyntaxError: Invalid flags supplied to RegExp
+// constructor 'd'` at CONSTRUCTION time — before a single line is ever
+// classified — black-screening the embedder at boot. Detected ONCE here, at
+// module scope: every dialect compiled in this process reuses the same
+// answer, so classifying thousands of lines never repeats a construction
+// probe. `ResolvedDialect.compile` picks the `d`-flag path when supported
+// (indices come straight from the engine) and the capture-group-walk
+// fallback otherwise (`walkGroupSpans`, below) — same `DialectMatch` output
+// either way, proven equal by `dialect-fallback.test.ts` in brink-studio
+// (this package has no test runner of its own; that suite forces the
+// fallback path unconditionally since CI's own engine supports `d`).
+const SUPPORTS_D_FLAG: boolean = (() => {
+  try {
+    // scan-allow: chromium88 d-flag feature probe (#1013) — this
+    // construction MUST be the only unconditional `d`-flag literal in the
+    // editor/studio bundles; see chromium88-regexp-d-flag.test.ts.
+    new RegExp("(?:)", "d");
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+/** A named-capture-group's position in a pattern's nesting structure — a
+ *  group textually enclosed by another named group (e.g. `parenthetical`'s
+ *  `content_inner` nested inside `content`) is that group's child. Built
+ *  once per compiled pattern (`parseGroupTree`); walked once per match
+ *  (`walkGroupSpans`) on the non-`d`-flag fallback path only. */
+interface GroupNode {
+  readonly name: string;
+  readonly children: GroupNode[];
+}
+
+/** Parse a pattern's named-capture-group nesting structure — what the `d`
+ *  flag's `indices` would otherwise hand us for free. Used only when
+ *  `SUPPORTS_D_FLAG` is `false`: `walkGroupSpans` then reconstructs each
+ *  named group's `[start, end)` span at match time by locating its captured
+ *  text within its nearest enclosing named group's own span (or the whole
+ *  match, for a top-level group) — a plain capture-group walk, no `indices`
+ *  needed, no re-matching.
+ *
+ *  Skips character classes (`[...]`) and escape sequences so a literal `(`
+ *  or `)` inside them (e.g. `[^)]`, `\(`) is never mistaken for a group
+ *  delimiter. Non-capturing (`(?:...)`) and unnamed capturing groups are
+ *  tracked only for nesting depth (no node) — a named descendant attaches to
+ *  its nearest named ANCESTOR, skipping through them. Lookaround and
+ *  backreferences are already rejected by `checkPortablePattern` before a
+ *  dialect ever reaches `compile`, so this only has to handle the portable
+ *  regex subset dialects are restricted to. */
+function parseGroupTree(pattern: string): GroupNode[] {
+  const root: GroupNode[] = [];
+  const stack: Array<{ node: GroupNode | null }> = [];
+  let i = 0;
+  while (i < pattern.length) {
+    const c = pattern[i];
+    if (c === "\\") {
+      i += 2;
+      continue;
+    }
+    if (c === "[") {
+      i++;
+      if (pattern[i] === "^") i++;
+      if (pattern[i] === "]") i++;
+      while (i < pattern.length && pattern[i] !== "]") {
+        i += pattern[i] === "\\" ? 2 : 1;
+      }
+      i++;
+      continue;
+    }
+    if (c === "(") {
+      const isNamed =
+        pattern[i + 1] === "?" &&
+        pattern[i + 2] === "<" &&
+        pattern[i + 3] !== "=" &&
+        pattern[i + 3] !== "!";
+      if (isNamed) {
+        const closeIdx = pattern.indexOf(">", i + 3);
+        const name = pattern.slice(i + 3, closeIdx);
+        const node: GroupNode = { name, children: [] };
+        const parentEntry = [...stack].reverse().find((e) => e.node !== null);
+        (parentEntry?.node?.children ?? root).push(node);
+        stack.push({ node });
+        i = closeIdx + 1;
+      } else {
+        stack.push({ node: null });
+        i++;
+      }
+      continue;
+    }
+    if (c === ")") {
+      stack.pop();
+      i++;
+      continue;
+    }
+    i++;
+  }
+  return root;
+}
+
+/** Reconstruct every participating named group's `[start, end)` span (in
+ *  `m[0]`-relative-then-absolute coordinates) by walking the static group
+ *  tree alongside the match: for each group at a nesting level, find its
+ *  captured text within its parent's span text (searching forward from the
+ *  previous sibling's end, so repeated identical substrings at the same
+ *  level resolve in source order), then recurse into its children using its
+ *  own span as the new parent context. A group that did not participate in
+ *  the match (`groups[name] === undefined`) — and so did its entire subtree
+ *  — is skipped. */
+function walkGroupSpans(
+  m: RegExpExecArray,
+  tree: readonly GroupNode[],
+  groups: Record<string, string | undefined>,
+): Record<string, [number, number] | undefined> {
+  const out: Record<string, [number, number] | undefined> = {};
+  walkGroupSpansInto(tree, m[0], m.index, groups, out);
+  return out;
+}
+
+function walkGroupSpansInto(
+  nodes: readonly GroupNode[],
+  parentText: string,
+  parentOffset: number,
+  groups: Record<string, string | undefined>,
+  out: Record<string, [number, number] | undefined>,
+): void {
+  let searchFrom = 0;
+  for (const node of nodes) {
+    const value = groups[node.name];
+    if (value === undefined) continue;
+    const idx = parentText.indexOf(value, searchFrom);
+    if (idx === -1) continue;
+    const start = parentOffset + idx;
+    const end = start + value.length;
+    out[node.name] = [start, end];
+    searchFrom = idx + value.length;
+    if (node.children.length > 0) {
+      walkGroupSpansInto(node.children, value, start, groups, out);
+    }
+  }
+}
+
 // ── Reserved structural kinds (mirrors `reserved_structural_kinds`) ──
 
 const RESERVED_STRUCTURAL_KINDS: readonly string[] = [
@@ -302,6 +447,10 @@ interface ResolvedElement {
   decl: DialectElement;
   re: RegExp | null;
   shape: PatternShape | null;
+  /** Non-`null` only on the non-`d`-flag fallback path — `classify` passes
+   *  it to `buildMatch` so spans are reconstructed via `walkGroupSpans`
+   *  instead of read off `m.indices`. */
+  groupTree: readonly GroupNode[] | null;
 }
 
 /** A resolved (compiled) dialect — patterns pre-compiled once. Mirrors Rust
@@ -317,18 +466,32 @@ export class ResolvedDialect {
 
   /** Compile a dialect's patterns once. Throws if any element's pattern
    *  fails to compile (should not happen for a dialect that passed
-   *  `validateDialect`). Compiled with the `d` flag so match indices
+   *  `validateDialect`). Compiled with the `d` flag — so match indices
    *  (per-named-group spans) are available on every match without
-   *  recompiling or re-matching. */
+   *  recompiling or re-matching — when the engine supports it
+   *  (`SUPPORTS_D_FLAG`, detected once at module scope); falls back to a
+   *  capture-group walk (`walkGroupSpans`) otherwise (#1013), for embedders
+   *  on Chromium < 90 where the `d` flag throws at construction. */
   static compile(dialect: DialogueDialect): ResolvedDialect {
+    return ResolvedDialect.compileWithDFlagSupport(dialect, SUPPORTS_D_FLAG);
+  }
+
+  /** `compile`, but with `d`-flag support forced rather than detected. Not
+   *  part of the day-to-day surface — exists so tests can exercise the
+   *  non-`d`-flag fallback path unconditionally (CI's own engine supports
+   *  `d`, so the fallback needs direct coverage proving it produces
+   *  identical `DialectMatch` output; see brink-studio's
+   *  `dialect-fallback.test.ts`). */
+  static compileWithDFlagSupport(dialect: DialogueDialect, supportsDFlag: boolean): ResolvedDialect {
     const elements: ResolvedElement[] = [];
     for (const decl of dialect.elements ?? []) {
       if (decl.source) {
         const shape = resolveSourceShape(decl.source);
-        const re = new RegExp(shape.pattern, "d");
-        elements.push({ decl, re, shape });
+        const re = new RegExp(shape.pattern, supportsDFlag ? "d" : "");
+        const groupTree = supportsDFlag ? null : parseGroupTree(shape.pattern);
+        elements.push({ decl, re, shape, groupTree });
       } else {
-        elements.push({ decl, re: null, shape: null });
+        elements.push({ decl, re: null, shape: null, groupTree: null });
       }
     }
     return new ResolvedDialect(elements, dialect.chain ?? [], dialect.transitions ?? [], dialect);
@@ -343,7 +506,7 @@ export class ResolvedDialect {
     for (const el of this.elements) {
       if (!el.re || !el.shape) continue;
       const m = el.re.exec(trimmed);
-      if (m) return buildMatch(el.decl.kind, m, el.shape, leadingWs);
+      if (m) return buildMatch(el.decl.kind, m, el.shape, leadingWs, el.groupTree);
     }
     return null;
   }
@@ -444,9 +607,12 @@ function buildMatch(
   m: RegExpExecArray,
   shape: PatternShape,
   leadingWs: number,
+  groupTree: readonly GroupNode[] | null,
 ): DialectMatch {
   const groups = m.groups ?? {};
-  const groupIndices = (m as IndexedMatch).indices?.groups ?? {};
+  const groupIndices = groupTree
+    ? walkGroupSpans(m, groupTree, groups)
+    : ((m as IndexedMatch).indices?.groups ?? {});
   const hidden = new Set(shape.hidden ?? []);
   const attrs: Array<[string, string]> = [];
   const hiddenSpans: Array<[number, number]> = [];

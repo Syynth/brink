@@ -73,10 +73,8 @@ pub struct Program {
 
 /// Runtime metadata for one declared struct shape.
 pub(crate) struct StructShapeEntry {
-    #[expect(
-        dead_code,
-        reason = "carried for debugging/inspection parity with other entries"
-    )]
+    /// The declared `STRUCT` name — the head of the structural display
+    /// default (`Point { x: 1, y: 2 }`, NS-A3 / stdlib-spec §9.6).
     pub name: NameId,
     /// Declared field names, in shape order — the same order
     /// [`brink_format::Value::Record`]'s flat field vector follows.
@@ -317,6 +315,18 @@ impl Program {
         self.address_by_path.get(path).map(|t| t.id)
     }
 
+    /// Public wrapper on [`find_path_target`](Self::find_path_target): resolve
+    /// a qualified ink path (same grammar as [`find_address`](Self::find_address))
+    /// to the `DefinitionId` of its target. Used by hosts that need the id
+    /// itself — e.g. `bevy-brink`'s wake-condition purity check (issue #995),
+    /// which looks the id up in the story's `EffectRows` table to inspect a
+    /// `FlowSleep` condition's effect row before admitting it into the wake
+    /// contract.
+    #[must_use]
+    pub fn definition_id_for_path(&self, path: &str) -> Option<DefinitionId> {
+        self.find_path_target(path)
+    }
+
     /// Declared parameter count of the container a `path` targets, for
     /// arity-checking a host-directed parameterized entry. `None` if the path
     /// is unknown. (Always `0` for converter-built programs, which don't
@@ -445,7 +455,13 @@ impl Program {
     /// Whether the compiler marked anything flow-private. When `false`
     /// (all existing unannotated ink), policy resolution keeps its
     /// all-`World` fast path.
-    pub(crate) fn has_local_defaults(&self) -> bool {
+    ///
+    /// Public so the bevy host (`bevy-brink`'s batch driver) can guard
+    /// against batching a `#@local`-annotated story: batch mode routes only
+    /// the shared `World`, never a flow's private `FlowLocal`, so a story
+    /// carrying compiled flow-private defaults must stay on the serial API
+    /// (`docs/effects-spec.md` §12; bevy-brink #925).
+    pub fn has_local_defaults(&self) -> bool {
         !self.local_scope_defaults.is_empty() || self.globals.iter().any(|g| g.local)
     }
 
@@ -483,8 +499,12 @@ impl Program {
     }
 
     /// Variable name for a global's defining `DefinitionId` (e.g. a
-    /// `VariablePointer` target).
-    pub(crate) fn global_var_name(&self, id: DefinitionId) -> Option<&str> {
+    /// `VariablePointer` target, or a T1e projection's root cell). `pub`
+    /// (not `pub(crate)`) since `brink-web`'s program-model/speculation
+    /// disassembly needs it to render a projection's root name at the wasm
+    /// boundary, the same way `divert_target_path` already resolves a
+    /// divert's `DefinitionId` for that consumer.
+    pub fn global_var_name(&self, id: DefinitionId) -> Option<&str> {
         let slot = self.resolve_global(id)?;
         self.global_slot_name(slot as usize)
     }

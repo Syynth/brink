@@ -1,0 +1,165 @@
+(story checksum=0x0c23fa44
+
+  (name_table
+    0 ""
+    1 "c-3"
+  )
+
+  (addresses
+    (address $01_406ea523c53def -> $01_406ea523c53def +0)
+    (address $01_779765f903c98e -> $01_779765f903c98e +0)
+    (address $01_dde84850f175fb -> $01_dde84850f175fb +0)
+    (address $01_9940abbd85efab -> $01_9940abbd85efab +0)
+    (address $01_13282cf7cf5f72 -> $01_13282cf7cf5f72 +0)
+    (address $01_8d8eebcbb31dbb -> $01_8d8eebcbb31dbb +0)
+    (address $01_cec72de25cc9d9 -> $01_cec72de25cc9d9 +0)
+    (address $01_ef2ee91775101d -> $01_ef2ee91775101d +0)
+  )
+
+  (address_paths
+    (path 0 -> $01_406ea523c53def)
+    (path 1 -> $01_13282cf7cf5f72)
+  )
+
+  (container $01_406ea523c53def
+    (name 0)
+    (lines
+      0 "not displayed" @60ec88a79fbbe4c9
+      1 "one" @c3591ddc399293fd
+      2 "not displayed" @60ec88a79fbbe4c9
+      3 "two" @c8a12e456af91ff3
+      4 "three" @ef8f2743568f633a
+      5 "four" @88d8ad453fae5562
+      6 "not displayed" @60ec88a79fbbe4c9
+      7 "one" @c3591ddc399293fd
+      8 "not displayed" @60ec88a79fbbe4c9
+      9 "two" @c8a12e456af91ff3
+      10 "three" @ef8f2743568f633a
+      11 "four" @88d8ad453fae5562
+    )
+    (code
+      begin_fragment
+      emit_line 0 0
+      end_fragment
+      push_bool true
+      push_bool false
+      and
+      begin_choice cond+start+once $01_779765f903c98e
+      end_choice
+      begin_fragment
+      emit_line 1 0
+      end_fragment
+      push_bool true
+      push_bool true
+      and
+      push_bool true
+      push_bool true
+      and
+      and
+      begin_choice cond+start+once $01_dde84850f175fb
+      end_choice
+      begin_fragment
+      emit_line 2 0
+      end_fragment
+      push_bool false
+      begin_choice cond+start+once $01_9940abbd85efab
+      end_choice
+      begin_fragment
+      emit_line 3 0
+      end_fragment
+      push_bool true
+      begin_choice cond+start+once $01_13282cf7cf5f72
+      end_choice
+      begin_fragment
+      emit_line 4 0
+      end_fragment
+      push_bool true
+      push_bool true
+      and
+      begin_choice cond+start+once $01_8d8eebcbb31dbb
+      end_choice
+      begin_fragment
+      emit_line 5 0
+      end_fragment
+      push_bool true
+      begin_choice cond+start+once $01_cec72de25cc9d9
+      end_choice
+      yield
+      done
+    )
+  )
+
+  (container $01_779765f903c98e
+    (scope $01_406ea523c53def)
+    (flags visits start_only)
+    (path_hash 192)
+    (code
+      emit_line 6 0
+      emit_newline
+      goto $01_ef2ee91775101d
+    )
+  )
+
+  (container $01_dde84850f175fb
+    (scope $01_406ea523c53def)
+    (flags visits start_only)
+    (path_hash 193)
+    (code
+      emit_line 7 0
+      emit_newline
+      goto $01_ef2ee91775101d
+    )
+  )
+
+  (container $01_9940abbd85efab
+    (scope $01_406ea523c53def)
+    (flags visits start_only)
+    (path_hash 194)
+    (code
+      emit_line 8 0
+      emit_newline
+      goto $01_ef2ee91775101d
+    )
+  )
+
+  (container $01_13282cf7cf5f72
+    (scope $01_406ea523c53def)
+    (flags visits start_only)
+    (path_hash 195)
+    (code
+      emit_line 9 0
+      emit_newline
+      goto $01_ef2ee91775101d
+    )
+  )
+
+  (container $01_8d8eebcbb31dbb
+    (scope $01_406ea523c53def)
+    (flags visits start_only)
+    (path_hash 196)
+    (code
+      emit_line 10 0
+      emit_newline
+      goto $01_ef2ee91775101d
+    )
+  )
+
+  (container $01_cec72de25cc9d9
+    (scope $01_406ea523c53def)
+    (flags visits start_only)
+    (path_hash 197)
+    (code
+      emit_line 11 0
+      emit_newline
+      goto $01_ef2ee91775101d
+    )
+  )
+
+  (container $01_ef2ee91775101d
+    (scope $01_406ea523c53def)
+    (path_hash 196)
+    (code
+      done
+    )
+  )
+)

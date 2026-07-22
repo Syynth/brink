@@ -91,7 +91,7 @@ from `values`** (§host-argument-picker-spec): `values` is a *list of pickable v
 
 // Param / arg-group widget on an external (host editor by id):
 { "name": "place_object",
-  "params": [["x", "int"], ["y", "int"]],
+  "params": [{"name": "x", "ty": "int"}, {"name": "y", "ty": "int"}],
   "widgets": [
     { "group": [0, 1],            // arg indices the widget spans
       "type": "map_point",        // semantic type / widget id
@@ -167,6 +167,45 @@ bounding what a host can do in-text to styling (no insane shenanigans). The host
 host mounts whatever it wants (its own React tree, canvas, etc.) without the studio forcing a shared
 React instance across the seam. The studio's *own* built-ins implement the same interface (the `color`
 swatch is a studio `inline` + a studio `editor`).
+
+### 3.1 Base-type registration + inline mounts (#990)
+
+Brink ships **zero opinionated controls for primitive types**. `bool`/`int`/`float`/`string` args get a
+plain text field unless a host registers something richer — through the *same* registry as semantic
+widgets, keyed by the **base type name** instead of a `host.<vendor>.<name>` id:
+
+```ts
+setHostWidgets([
+  { type: "bool", editor: { surface: "inline", render: renderBoolToggle } },
+  { type: "int", editor: { surface: "inline", render: renderNumberStepper } },
+  // "string" stays plain text — no registration needed.
+]);
+```
+
+This works because slot → widget matching (`matchHostWidget`, used by both the in-editor CM
+decorations and the Form) already falls back from a slot's declared `widget` kind to its bare
+`type_name` — and `type_name` for an untyped-alias param IS the base type (`bool`, `int`, `float`,
+`string`). Registering against that name is not a new matching path; it is the existing fallback,
+made an **intentional, tested, documented** part of the contract rather than an accident of how the
+lookup happens to work. A base-type registration applies to *every* param of that type across every
+`EXTERNAL`, with no per-type manifest declaration required — `add: bool` gets celeris's toggle the
+same way a `region_id: string` param gets its semantic chip, through one registry.
+
+**`editor.surface: "inline"`** is the third surface (alongside `"popover"` / `"modal"`), and the shape
+a primitive control wants: mounted **directly in the Form row**, in the text field's place — a toggle,
+a stepper — not `buildHostField`'s summary-chip + expandable editor (that chrome fits a rich picker you
+open on demand, not a control that IS the field). Only the Form honors `"inline"`; the in-editor
+Edit/Fill affordances have no "row" to mount into and fall back to the popover chrome for the same
+widget. Popover and modal are unchanged and remain how rich pickers (an icon-grid item browser, the
+map-point editor) present.
+
+**Form field precedence — color → hostWidget → values → text.** Before #990, `buildField` checked
+`values` before `hostWidget`, so a semantic type carrying both a host widget *and* `setHostValues`
+labels (a rich picker over a domain a host also lists, e.g. an icon-grid item browser next to
+`item_id`'s plain value dropdown) could never get its widget in the Form — the dropdown always won.
+The host widget now outranks the values dropdown; a type with only `values` (no widget) is unaffected.
+This is an **observable behavior change** for any consumer whose combination silently fell back to the
+dropdown before — flagged in the `@brink-lang/editor` changeset.
 
 ## 4. The IDE query (brink-ide / brink-web)
 
@@ -258,7 +297,10 @@ The studio ships built-ins through the §3 interface:
     Either opens the popover with a focused search box + scrollable (virtualized) list. Arrow keys are
     a deliberate "let me browse" gesture (no mouse needed) and don't violate the focus rule — the
     author asked for the list; typing alone never opens it.
-- Future: `number`/`slider`, `vector3`, `enum-chip`, `bool-toggle` — all studio-rendered, no host.
+- **Superseded (#990):** this originally proposed brink-built-in `bool-toggle`/`number`/`slider`
+  controls for primitives. Reframed — brink ships none of these; a host registers its own control
+  against the **base type** (`bool`/`int`/`float`/`string`) through the ordinary host-widget registry
+  instead (§3.1), so it renders in the host's own design system rather than brink's.
 
 ## 8. Graceful degradation
 

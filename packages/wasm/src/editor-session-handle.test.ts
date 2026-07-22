@@ -35,6 +35,10 @@ const hoisted = vi.hoisted(() => {
     set_type_policy(value: unknown): void {
       calls.push({ method: "set_type_policy", args: [value] });
     }
+    apply_project_config(toml: unknown): string {
+      calls.push({ method: "apply_project_config", args: [toml] });
+      return "[\"unknown key `project.future_key` in brink.toml (ignored)\"]";
+    }
   }
   return { calls, EditorSessionStub };
 });
@@ -119,6 +123,28 @@ describe("EditorSessionHandle wasm-lever passthroughs", () => {
 
     expect(hoisted.calls).toEqual([
       { method: "set_type_policy", args: ["strict"] },
+    ]);
+    expect(handle.generation).toBe(before + 1);
+  });
+
+  it("exposes applyProjectConfig (#1005: the brink.toml editor-mount wiring)", () => {
+    const handle = new EditorSessionHandle();
+    expect(typeof handle.applyProjectConfig).toBe("function");
+  });
+
+  it("forwards applyProjectConfig to apply_project_config, parses the warning JSON, and bumps generation", () => {
+    hoisted.calls.length = 0;
+    const handle = new EditorSessionHandle();
+    const before = handle.generation;
+
+    const toml = '[project]\ndialect = "brink"\nfuture_key = "x"\n';
+    const warnings = handle.applyProjectConfig(toml);
+
+    expect(hoisted.calls).toEqual([
+      { method: "apply_project_config", args: [toml] },
+    ]);
+    expect(warnings).toEqual([
+      "unknown key `project.future_key` in brink.toml (ignored)",
     ]);
     expect(handle.generation).toBe(before + 1);
   });

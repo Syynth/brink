@@ -1,0 +1,118 @@
+(story checksum=0xc2d0c850
+
+  (name_table
+    0 ""
+    1 "knot"
+    2 "threadA"
+    3 "tunnel"
+  )
+
+  (addresses
+    (address $01_406ea523c53def -> $01_406ea523c53def +0)
+    (address $01_0afdda51f27917 -> $01_0afdda51f27917 +0)
+    (address $01_7b69f8f52834cd -> $01_7b69f8f52834cd +0)
+    (address $01_0636ec40926d85 -> $01_0636ec40926d85 +0)
+    (address $01_9d634664ce5877 -> $01_9d634664ce5877 +0)
+    (address $01_492b2e2c032fe2 -> $01_492b2e2c032fe2 +0)
+  )
+
+  (address_paths
+    (path 0 -> $01_406ea523c53def)
+    (path 1 -> $01_0afdda51f27917)
+    (path 2 -> $01_7b69f8f52834cd)
+    (path 3 -> $01_0636ec40926d85)
+  )
+
+  (effect_rows
+    (row $01_0636ec40926d85
+      (reads)
+      (writes)
+      (calls)
+    )
+    (row $01_0afdda51f27917
+      (reads)
+      (writes)
+      (calls)
+    )
+    (row $01_7b69f8f52834cd
+      (reads)
+      (writes)
+      (calls)
+    )
+  )
+
+  (container $01_406ea523c53def
+    (name 0)
+    (code
+      goto $01_0afdda51f27917
+    )
+  )
+
+  (container $01_0afdda51f27917
+    (name 1)
+    (path_hash 444)
+    (lines
+      0 "When should this get printed?" @09e1e36f2239e20e (source "tests/tier1/knots/I098-knot-thread-interaction-2/story.ink" 36..66)
+    )
+    (code
+      thread_call $01_7b69f8f52834cd
+      emit_line 0 0
+      emit_newline
+      done
+    )
+  )
+
+  (container $01_7b69f8f52834cd
+    (name 2)
+    (path_hash 697)
+    (lines
+      0 "Finishing thread." @3a6f9ed92f9f7d1c (source "tests/tier1/knots/I098-knot-thread-interaction-2/story.ink" 111..129)
+    )
+    (code
+      tunnel_call $01_0636ec40926d85
+      emit_line 0 0
+      emit_newline
+      done
+    )
+  )
+
+  (container $01_0636ec40926d85
+    (name 3)
+    (path_hash 662)
+    (lines
+      0 "I’m in a tunnel" @8fb3cf5762d5b8e3
+      1 "I’m an option" @8556ff6ffede507f
+      2 "I’m an option" @8556ff6ffede507f
+    )
+    (code
+      emit_line 0 0
+      emit_newline
+      begin_fragment
+      emit_line 1 0
+      end_fragment
+      begin_choice start+once $01_9d634664ce5877
+      end_choice
+      yield
+    )
+  )
+
+  (container $01_9d634664ce5877
+    (scope $01_0636ec40926d85)
+    (flags visits start_only)
+    (path_hash 994)
+    (code
+      emit_line 2 0
+      emit_newline
+      goto $01_492b2e2c032fe2
+    )
+  )
+
+  (container $01_492b2e2c032fe2
+    (scope $01_0636ec40926d85)
+    (path_hash 998)
+    (code
+      push_null
+      tunnel_return
+    )
+  )
+)

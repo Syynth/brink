@@ -23,10 +23,13 @@
 
 use std::collections::HashMap;
 
-use bevy_asset::{AssetLoader, LoadContext, io::Reader};
+use bevy_app::App;
+use bevy_asset::{AssetLoader, Assets, Handle, LoadContext, io::Reader};
 use bevy_reflect::TypePath;
 
-use crate::asset::{BrinkStoryAsset, emit_story_assets};
+use crate::asset::{
+    BrinkStoryAsset, LineTablesAsset, ProgramAsset, emit_story_assets, fresh_context,
+};
 
 /// Asset loader for `.ink` (source) files.
 ///
@@ -52,6 +55,78 @@ pub enum InkLoaderError {
     Compile(#[from] brink_compiler::CompileError),
     #[error("link error: {0}")]
     Link(#[from] brink_runtime::RuntimeError),
+}
+
+/// Errors from [`compile_story_inline`].
+#[derive(Debug, thiserror::Error)]
+pub enum CompileStoryInlineError {
+    #[error("compile: {0}")]
+    Compile(#[from] brink_compiler::CompileError),
+    #[error("link error: {0}")]
+    Link(#[from] brink_runtime::RuntimeError),
+}
+
+/// Compile an in-memory ink source string straight into story assets,
+/// inserting them into `app`'s asset collections and returning the
+/// resulting `Handle<BrinkStoryAsset>` (G3, issue #1060).
+///
+/// Collapses the four-step dance tests/tools otherwise hand-roll —
+/// `brink_compiler::compile` → `brink_runtime::link` →
+/// `FlowInstance::new_at_root` (only to obtain the initial context) →
+/// hand-inserting `ProgramAsset` + `LineTablesAsset` + `BrinkStoryAsset`
+/// into three `Assets<T>` resources — into one call, wrapping the same
+/// [`emit_story_assets`]-adjacent logic [`InkLoader`] uses at asset-load
+/// time, but synchronously and without the async `AssetServer`.
+///
+/// `name` is the compiler's synthetic entry file name (also its `INCLUDE`
+/// resolution root). Since `source` is a single in-memory string, `INCLUDE`
+/// is not supported here — any `INCLUDE` directive fails to resolve and
+/// surfaces as a [`CompileStoryInlineError::Compile`]; a story spanning
+/// multiple files needs [`InkLoader`]/`AssetServer::load` instead, which
+/// walks the graph asynchronously.
+///
+/// `app` must already have `AssetPlugin` (or equivalent) installed, so
+/// `Assets<ProgramAsset>`, `Assets<LineTablesAsset>`, and
+/// `Assets<BrinkStoryAsset>` exist as resources — the same precondition
+/// `BrinkPlugin` itself has.
+pub fn compile_story_inline(
+    app: &mut App,
+    name: &str,
+    source: &str,
+) -> Result<Handle<BrinkStoryAsset>, CompileStoryInlineError> {
+    let output = brink_compiler::compile(name, |path| {
+        if path == name {
+            Ok(source.to_string())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "{path}: compile_story_inline compiles a single in-memory source with no \
+                     INCLUDE support; use InkLoader/AssetServer for multi-file stories"
+                ),
+            ))
+        }
+    })?;
+    let (program, tables) = brink_runtime::link(&output.data)?;
+    let initial_context = fresh_context(&program);
+
+    let world = app.world_mut();
+    let program_handle = world
+        .resource_mut::<Assets<ProgramAsset>>()
+        .add(ProgramAsset {
+            program,
+            initial_context,
+            effect_rows: output.data.effect_rows,
+        });
+    let line_tables_handle = world
+        .resource_mut::<Assets<LineTablesAsset>>()
+        .add(LineTablesAsset { tables });
+    Ok(world
+        .resource_mut::<Assets<BrinkStoryAsset>>()
+        .add(BrinkStoryAsset {
+            program: program_handle,
+            line_tables: line_tables_handle,
+        }))
 }
 
 /// Resolve an `INCLUDE` path relative to the including file's directory.
@@ -145,7 +220,12 @@ impl AssetLoader for InkLoader {
             })
         })?;
         let (program, tables) = brink_runtime::link(&output.data)?;
-        Ok(emit_story_assets(load_context, program, tables))
+        Ok(emit_story_assets(
+            load_context,
+            program,
+            tables,
+            output.data.effect_rows,
+        ))
     }
 
     fn extensions(&self) -> &[&str] {
@@ -179,5 +259,43 @@ mod tests {
     fn normalizes_parent_traversal() {
         assert_eq!(resolve_include_path("a/b/c.ink", "../d.ink"), "a/d.ink");
         assert_eq!(resolve_include_path("a/b/c.ink", "../../d.ink"), "d.ink");
+    }
+
+    #[test]
+    fn compile_story_inline_inserts_assets_and_returns_handle() {
+        let mut app = crate::test_support::make_test_app();
+
+        let handle = compile_story_inline(&mut app, "inline.ink", "VAR mood = 3\n-> END\n")
+            .expect("inline source compiles and links");
+
+        let world = app.world();
+        let story = world
+            .resource::<Assets<BrinkStoryAsset>>()
+            .get(&handle)
+            .expect("story asset inserted");
+        let program_asset = world
+            .resource::<Assets<ProgramAsset>>()
+            .get(&story.program)
+            .expect("program asset inserted");
+        assert_eq!(program_asset.program.global_index("mood"), Some(0));
+        assert!(
+            world
+                .resource::<Assets<LineTablesAsset>>()
+                .get(&story.line_tables)
+                .is_some(),
+            "line tables asset inserted"
+        );
+    }
+
+    #[test]
+    fn compile_story_inline_surfaces_compile_error() {
+        let mut app = crate::test_support::make_test_app();
+
+        let err = compile_story_inline(&mut app, "broken.ink", "-> nowhere_knot\n")
+            .expect_err("a divert to an undeclared knot should not compile");
+        assert!(
+            matches!(err, CompileStoryInlineError::Compile(_)),
+            "got {err:?}"
+        );
     }
 }

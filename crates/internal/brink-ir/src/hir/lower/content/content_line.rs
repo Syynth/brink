@@ -1,4 +1,6 @@
-use brink_syntax::ast::{self, AstNode, SyntaxNodePtr};
+use brink_syntax::ast::{self, AstNode};
+
+use crate::provenance::NodeClass;
 
 use crate::{Content, ContentPart, Stmt};
 
@@ -137,7 +139,7 @@ impl LowerBody for ast::ContentLine {
 
         Ok(ContentLineOutput::Content {
             content: Content {
-                ptr: Some(SyntaxNodePtr::from_node(self.syntax())),
+                ptr: Some(scope.prov(NodeClass::Content, self.syntax())),
                 parts,
                 tags,
             },

@@ -49,7 +49,7 @@ fn run_to_completion_or_fault(story: &mut Story<DotNetRng>) -> Result<String, Ru
     loop {
         match story.continue_single()? {
             Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } => {
+            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
                 out.push_str(&text);
                 return Ok(out);
             }
@@ -163,13 +163,42 @@ proptest! {
 
 // ── Fault-during-RMW slot state (issue #576's required property) ────────
 
-/// `a[i] = v` with `i` out of bounds faults — and, per
-/// `lower_flat_indexed_assignment`'s pre-check design, leaves `a`
-/// **completely unchanged**: the fault is caught (via a non-mutating
-/// pre-check read) before anything is taken.
+/// `a[i] = v` with `i` out of bounds faults. Renamed from
+/// `..._leaves_root_unchanged` by issue #856: plain `=` no longer runs a
+/// non-mutating pre-check before taking the root (that precheck existed
+/// only to catch this same fault early — see `lower_flat_indexed_assignment`
+/// doc — but it also faulted on a merely-absent map key, which #856 ruled
+/// should insert instead; removing it for maps means removing it for
+/// arrays too, since neither the compiler nor the runtime can tell the two
+/// apart before the container is taken). So the root now ends up
+/// `Value::Null` on this fault, matching the trade-off
+/// `fault_during_insert_leaves_root_null`/`fault_during_remove_leaves_root_null`
+/// below already document for `insert`/`remove`.
 #[test]
-fn fault_during_flat_index_assignment_leaves_root_unchanged() {
+fn fault_during_flat_index_assignment_leaves_root_null() {
     let source = "VAR arr = 0\n~ {\n    arr = #[1, 2, 3]\n    arr[10] = 99\n}\n{arr[0]}\n-> END\n";
+    let mut story = compile(source);
+    let err = run_to_completion_or_fault(&mut story).expect_err("index 10 is out of bounds");
+    assert!(
+        matches!(err, RuntimeError::IndexOutOfBounds { index: 10, len: 3 }),
+        "unexpected error: {err:?}"
+    );
+    let arr = story.variable("arr").expect("arr is declared");
+    assert_eq!(
+        arr,
+        &brink_format::Value::Null,
+        "documented fault-during-RMW slot state (issue #856): the taken root \
+         is Value::Null, never a corrupted/partial container"
+    );
+}
+
+/// Compound flat indexed assignment (`a[i] += v`) is unaffected by #856 —
+/// it still runs the pre-mutation `current` read (needed as the operand),
+/// which still catches an out-of-bounds index before the root is taken, so
+/// the root stays completely unchanged on this fault.
+#[test]
+fn fault_during_flat_index_compound_assignment_leaves_root_unchanged() {
+    let source = "VAR arr = 0\n~ {\n    arr = #[1, 2, 3]\n    arr[10] += 99\n}\n{arr[0]}\n-> END\n";
     let mut story = compile(source);
     let err = run_to_completion_or_fault(&mut story).expect_err("index 10 is out of bounds");
     assert!(
@@ -184,7 +213,7 @@ fn fault_during_flat_index_assignment_leaves_root_unchanged() {
             brink_format::Value::Int(2),
             brink_format::Value::Int(3),
         ]),
-        "a fault during indexed assignment must leave the root completely unchanged"
+        "a fault during compound indexed assignment must leave the root completely unchanged"
     );
 }
 
@@ -282,7 +311,7 @@ fn fault_during_rmw_does_not_touch_unrelated_globals() {
 /// the *pointed-to* global, not the pointer value itself.
 #[test]
 fn ref_param_flat_indexed_assignment_takes_through_the_pointer() {
-    let source = "VAR grid = 0\n~ {\n    grid = #[1, 2, 3]\n    bump(grid)\n}\n{grid[0]}\n-> END\n\n=== function bump(ref arr) ===\n~ {\n    arr[0] = arr[0] + 1\n}\n~ return 0\n";
+    let source = "VAR grid = 0\n~ {\n    grid = #[1, 2, 3]\n    bump(grid)\n}\n{grid[0]}\n-> END\n\n=== function bump(ref arr: array<int>) ===\n~ {\n    arr[0] = arr[0] + 1\n}\n~ return 0\n";
     let mut story = compile(source);
     let out = run_to_completion_or_fault(&mut story).expect("no fault expected");
     assert_eq!(

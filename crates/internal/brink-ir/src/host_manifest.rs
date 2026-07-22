@@ -11,6 +11,21 @@
 //!    lowering into [`DocBlock`]), and
 //! 2. a registered [`HostManifest`] (host-owned, project-wide), deserialized
 //!    from JSON.
+//!
+//! **Shared file, separate type (issue #911, BH follow-up deliverable 1).**
+//! `bevy-brink`'s `CapabilityManifest`/`CapabilityManifestExternal`
+//! (`crates/bevy-brink/src/capability.rs`) deserializes this **same**
+//! on-disk manifest file for a disjoint purpose (the host/ECS capability
+//! grammar, `docs/effects-spec.md` §13.2) — reading only its `effects` key
+//! and ignoring everything [`ManifestExternal`] owns, the same way this type
+//! ignores `effects`. The two types are not converged onto one canonical
+//! shape: `brink-ir` is compiler/IDE-only and must never depend on
+//! `bevy-brink`'s ECS types, and the reverse edge is equally unwanted, so a
+//! shared type would need a new third crate for two fields (`externals[].name`)
+//! in common. Instead, `brink_format::manifest_field_names` pins the shared
+//! key spellings (`externals`, `name`) both types' serde derives must keep
+//! matching, and `crates/bevy-brink/tests/manifest_field_convergence.rs`
+//! cross-validates one manifest literal against both types.
 
 use serde::{Deserialize, Serialize};
 
@@ -261,6 +276,50 @@ pub struct DocBlock {
     pub kind: Option<ExternalKind>,
 }
 
+/// De-drift enforcement for issue #911's manifest convergence decision: the
+/// wire keys [`HostManifest`]/[`ManifestExternal`] actually serialize under
+/// must literally match `brink_format::manifest_field_names`'s constants —
+/// the shared spellings `bevy_brink::capability::CapabilityManifest` also
+/// depends on for the same on-disk file. If either side's `#[serde]` shape
+/// ever renames `externals` or an external's `name`, this test's substring
+/// checks fail here rather than the drift only surfacing as a silently
+/// unparsed field on the other consumer.
+#[cfg(test)]
+mod manifest_field_name_tests {
+    use brink_format::manifest_field_names::{EXTERNALS, NAME};
+
+    use super::{HostManifest, ManifestExternal};
+
+    #[test]
+    fn serialized_wire_keys_match_the_shared_field_name_constants() {
+        let manifest = HostManifest {
+            externals: vec![ManifestExternal {
+                name: "has".to_string(),
+                params: vec![],
+                returns: super::TypeRef::default(),
+                kind: super::ExternalKind::default(),
+                doc: None,
+                widgets: vec![],
+                path: vec![],
+            }],
+            types: vec![],
+        };
+        let json = serde_json::to_string(&manifest).expect("serialize");
+        assert!(
+            json.contains(&format!("\"{EXTERNALS}\":")),
+            "top-level wrapper key drifted from manifest_field_names::EXTERNALS: {json}"
+        );
+        assert!(
+            json.contains(&format!("\"{NAME}\":\"has\"")),
+            "external entry's name key drifted from manifest_field_names::NAME: {json}"
+        );
+
+        // Round-trips through the constant-derived shape unchanged.
+        let parsed: HostManifest = serde_json::from_str(&json).expect("re-parse");
+        assert_eq!(parsed, manifest);
+    }
+}
+
 #[cfg(test)]
 mod value_source_tests {
     use super::{BaseType, SemanticTypeDef, ValueSource};
@@ -316,5 +375,83 @@ mod value_source_tests {
         assert_eq!(def.base, BaseType::Handle);
 
         assert_eq!(BaseType::from_keyword("handle"), Some(BaseType::Handle));
+    }
+}
+
+/// Guards the drift class flagged twice against `docs/host-capability-manifest.md`
+/// (during #911's batch work and again in #921's review, tracked from #897 as
+/// issue #924): the docs' Tier-1 JSON examples and `bevy-brink::capability`'s
+/// doc-header example previously showed `params` as 2-tuples (`["item","string"]`)
+/// or `{"type": "handle<Npc>"}`, but [`ManifestParam`]'s real serde shape is
+/// `{"name": ..., "ty": ...}`. This test parses the doc's actual Tier-1 example
+/// JSON (`docs/host-capability-manifest.md` §"Tier 1") verbatim and round-trips
+/// it through serde, so if a future edit reintroduces the wrong param shape in
+/// either the docs or this fixture, the mismatch fails here instead of staying
+/// latent (no real consumer round-trips this JSON yet).
+#[cfg(test)]
+mod doc_example_tests {
+    use super::{ExternalKind, HostManifest, ManifestExternal, ManifestParam, TypeRef};
+
+    #[test]
+    fn tier_1_doc_example_roundtrips_through_manifest_param() {
+        // Verbatim (minus jsonc comments) from the Tier 1 section of
+        // docs/host-capability-manifest.md.
+        let json = r#"
+        { "externals": [
+            { "name": "has",    "params": [{"name": "item", "ty": "string"}], "returns": "bool", "kind": "query" },
+            { "name": "camera", "params": [{"name": "target", "ty": "string"}], "returns": "void", "kind": "presentation" },
+            { "name": "grant",  "params": [{"name": "item", "ty": "string"}], "returns": "void", "kind": "effect" }
+        ] }
+        "#;
+
+        let manifest: HostManifest = serde_json::from_str(json).expect("parse doc example");
+        assert_eq!(manifest.externals.len(), 3);
+
+        let has = &manifest.externals[0];
+        assert_eq!(has.name, "has");
+        assert_eq!(
+            has.params,
+            vec![ManifestParam {
+                name: "item".to_string(),
+                ty: TypeRef("string".to_string()),
+            }]
+        );
+        assert_eq!(has.kind, ExternalKind::Query);
+
+        // Round-trips unchanged: re-serializing and re-parsing produces the
+        // same manifest, proving `{"name", "ty"}` is really the wire shape
+        // ManifestParam's serde derive emits and accepts (not just something
+        // this literal happens to parse into via defaulting).
+        let serialized = serde_json::to_string(&manifest).expect("serialize");
+        let round_tripped: HostManifest =
+            serde_json::from_str(&serialized).expect("re-parse serialized manifest");
+        assert_eq!(manifest, round_tripped);
+
+        // The re-serialized wire form actually uses the documented keys, not
+        // just field access we can pun on defaults.
+        assert!(serialized.contains(r#""name":"item""#));
+        assert!(serialized.contains(r#""ty":"string""#));
+
+        let camera_params = &manifest.externals[1].params;
+        assert_eq!(camera_params[0].name, "target");
+
+        // A bare `ManifestExternal` literal in the exact shape used for the
+        // `example(int actor)` "path" example a few paragraphs later.
+        let set_move_route: ManifestExternal = serde_json::from_str(
+            r#"{ "name": "set_move_route", "params": [{"name": "actor", "ty": "int"}],
+                 "returns": "void", "kind": "effect", "path": ["Map", "Movement"] }"#,
+        )
+        .expect("parse path example");
+        assert_eq!(
+            set_move_route.params,
+            vec![ManifestParam {
+                name: "actor".to_string(),
+                ty: TypeRef("int".to_string()),
+            }]
+        );
+        assert_eq!(
+            set_move_route.path,
+            vec!["Map".to_string(), "Movement".to_string()]
+        );
     }
 }

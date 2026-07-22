@@ -62,7 +62,7 @@ pub fn hover(
             .and_then(|m| m.value.as_ref())
             .map_or(String::new(), |v| {
                 let mut s = String::new();
-                if let Some(ty) = v.ty {
+                if let Some(ty) = &v.ty {
                     let _ = write!(s, ": {}", ty.name());
                 }
                 if let Some(text) = &v.value_text {
@@ -105,8 +105,25 @@ pub fn hover(
             .and_then(|hir| crate::fn_value_hover::fn_value_slot_signature(analysis, hir, info))
             .map_or(String::new(), |sig| format!("\n\n`{sig}`"));
 
+        // T2-4 (#863, docs/effects-spec.md §10): a knot/stitch's *inferred*
+        // effect row — the boring, stable reads/writes/calls display. Only
+        // knots/stitches have a `DefinitionId → row` (`db.effects` is `None`
+        // for every other symbol), so this suffix is empty everywhere else.
+        // Purely advisory: it *shows* the row; the only contract is the
+        // optional `#@effects` assertion (checked in the analyzer, `E103`).
+        let effect_row_str = matches!(
+            info.kind,
+            brink_ir::SymbolKind::Knot | brink_ir::SymbolKind::Stitch
+        )
+        .then(|| db.effects(info.id))
+        .flatten()
+        .map_or(String::new(), |row| {
+            let view = crate::effects::EffectRowView::from_row(&row, &analysis.index);
+            format!("\n\n**effects** `{}`", view.display_line())
+        });
+
         format!(
-            "**{kind_str}** `{}{inferred_local_str}{value_str}{params_str}{ret_str}`{detail_str}{kind_tag}{doc_block}{file_note}{fn_value_str}",
+            "**{kind_str}** `{}{inferred_local_str}{value_str}{params_str}{ret_str}`{detail_str}{kind_tag}{doc_block}{file_note}{fn_value_str}{effect_row_str}",
             info.name
         )
     } else {
@@ -122,6 +139,27 @@ pub fn hover(
         .or_else(|| word_range_at_offset(source, offset));
 
     Some(HoverInfo { content, range })
+}
+
+/// Honest hover display for a resolved semantic type (#1027 — closes the
+/// #1004 divergence). `resolve_type` (`external_check`) still builds a
+/// [`brink_analyzer::ResolvedType`] for a semantic-type name that isn't
+/// registered in the host manifest — `name` is the bare written name (so
+/// callers keep it for the diagnostic message / partial rendering), but
+/// [`brink_analyzer::ResolvedType::is_registered`] is `false`. Rendering
+/// that bare name with no qualifier is exactly what made #1004 look like a
+/// strict-inference bug: hover showed `id: var_id` with full confidence
+/// while inference correctly resolved the same unregistered name to
+/// `Unknown`. A registered type (base keyword or a manifest-registered
+/// name) still renders as the bare name; an unregistered one gets an
+/// explicit warning marker and an `E040` cross-reference so a reader can't
+/// mistake it for a checked, host-backed type.
+pub(crate) fn honest_type_display(ty: &brink_analyzer::ResolvedType) -> String {
+    if ty.is_registered() {
+        ty.name.clone()
+    } else {
+        format!("{} ⚠ unregistered semantic type — E040", ty.name)
+    }
 }
 
 /// TM-5 (#621): a knot/stitch's parameter-list and return-type hover
@@ -176,7 +214,7 @@ fn signature_strs(
                     .and_then(|m| m.params.get(i))
                     .and_then(|rp| rp.ty.as_ref())
                 {
-                    let _ = write!(s, ": {}", ty.name);
+                    let _ = write!(s, ": {}", honest_type_display(ty));
                 } else if let Some(ty) = declared_sig
                     .as_ref()
                     .and_then(|sig| sig.param_annotations.get(i))
@@ -198,7 +236,7 @@ fn signature_strs(
 
     let ret_str = meta
         .and_then(|m| m.returns.as_ref())
-        .map(|t| format!(" -> {}", t.name))
+        .map(|t| format!(" -> {}", honest_type_display(t)))
         .or_else(|| {
             declared_sig
                 .as_ref()
@@ -488,6 +526,48 @@ VAR healer = 0
         assert!(!content.contains("fn "), "{content}");
     }
 
+    // ── T2-4 (#863): inferred effect row in hover ───────────────────────
+
+    #[test]
+    fn hover_shows_a_knots_inferred_effect_row() {
+        let src = "\
+VAR gold = 10
+EXTERNAL PlaySound(id)
+-> spend
+
+=== spend ===
+~ gold = gold - 1
+~ PlaySound(1)
+Spent.
+-> END
+";
+        let content = hover_at(src, "spend ===");
+        assert!(content.contains("**knot**"), "{content}");
+        assert!(content.contains("**effects**"), "{content}");
+        assert!(content.contains("reads: gold"), "{content}");
+        assert!(content.contains("writes: gold"), "{content}");
+        assert!(content.contains("calls: PlaySound"), "{content}");
+    }
+
+    #[test]
+    fn hover_shows_pure_for_an_effectless_knot() {
+        let src = "=== function double(n) ===\n~ return n + n\n";
+        let content = hover_at(src, "double(n)");
+        assert!(
+            content.contains("**effects** `pure, silent, total`"),
+            "{content}"
+        );
+    }
+
+    #[test]
+    fn hover_shows_no_effect_row_for_a_non_callable_symbol() {
+        // A VAR is not a knot/stitch — `db.effects` is `None`, so no effect
+        // row suffix appears (only knots/stitches ship a row, spec §10).
+        let src = "VAR health = 100\n-> END\n";
+        let content = hover_at(src, "health = 100");
+        assert!(!content.contains("**effects**"), "{content}");
+    }
+
     #[test]
     fn hover_shows_no_type_suffix_when_inference_cannot_resolve_one() {
         // `x` is a parameter never used in the body — inference can't pin
@@ -497,5 +577,100 @@ VAR healer = 0
         let content = hover_at(src, "f(x)");
         assert!(!content.contains("Unknown"), "{content}");
         assert!(!content.contains("x:"), "{content}");
+    }
+
+    // ── Issue #1027: hover must be honest about an unregistered semantic
+    // type, not render it with the same confidence as a registered one ────
+
+    fn actor_id_type() -> brink_ir::SemanticTypeDef {
+        brink_ir::SemanticTypeDef {
+            name: "actor_id".to_string(),
+            base: brink_ir::BaseType::String,
+            constraint: None,
+            values: None,
+            widget: None,
+        }
+    }
+
+    #[test]
+    fn hover_renders_unregistered_semantic_type_with_a_warning_not_a_bare_name() {
+        // The #1004 divergence, reproduced directly: `var_id` is named in an
+        // inline `@param` doc, but the registered manifest only defines a
+        // *sibling* type (`actor_id`) — the vocabulary genuinely reached the
+        // analyzer, `var_id` just isn't in it. Hover must not render
+        // `id: var_id` with the same bare confidence a registered type gets.
+        let src = "/// @param id {var_id}\nEXTERNAL get_variable(id)\n-> DONE\n";
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.ink", src.to_string());
+        session.set_host_manifest(brink_ir::HostManifest {
+            externals: vec![],
+            types: vec![actor_id_type()],
+        });
+        let analysis = session.analysis().expect("analysis");
+        let pos =
+            u32::try_from(src.find("get_variable(id)").expect("decl present")).expect("offset");
+        let content = hover(
+            analysis,
+            session.db(),
+            file_id,
+            src,
+            TextSize::from(pos),
+            &[],
+        )
+        .expect("hover")
+        .content;
+
+        assert!(
+            !content.contains("id: var_id)"),
+            "must not render var_id with bare, unqualified confidence: {content}"
+        );
+        assert!(
+            content.contains("var_id"),
+            "still shows the written name so the author can spot the typo: {content}"
+        );
+        assert!(
+            content.contains('\u{26A0}'),
+            "must carry an explicit warning marker: {content}"
+        );
+        assert!(
+            content.contains("E040"),
+            "must cross-reference the E040 diagnostic code: {content}"
+        );
+    }
+
+    #[test]
+    fn hover_renders_registered_semantic_type_with_no_warning() {
+        // Same shape as the unregistered case above, but `id`'s type
+        // (`actor_id`) IS registered — hover must render it exactly as
+        // before, no warning noise on a genuinely resolved type.
+        let src = "/// @param id {actor_id}\nEXTERNAL get_variable(id)\n-> DONE\n";
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.ink", src.to_string());
+        session.set_host_manifest(brink_ir::HostManifest {
+            externals: vec![],
+            types: vec![actor_id_type()],
+        });
+        let analysis = session.analysis().expect("analysis");
+        let pos =
+            u32::try_from(src.find("get_variable(id)").expect("decl present")).expect("offset");
+        let content = hover(
+            analysis,
+            session.db(),
+            file_id,
+            src,
+            TextSize::from(pos),
+            &[],
+        )
+        .expect("hover")
+        .content;
+
+        assert!(
+            content.contains("id: actor_id)"),
+            "a registered type still renders as the bare name: {content}"
+        );
+        assert!(
+            !content.contains('\u{26A0}'),
+            "no warning marker for a registered type: {content}"
+        );
     }
 }

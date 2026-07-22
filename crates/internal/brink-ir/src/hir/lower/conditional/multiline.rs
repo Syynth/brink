@@ -1,4 +1,7 @@
-use brink_syntax::ast::{self, AstNode, SyntaxNodePtr};
+use brink_syntax::ast::{self, AstNode};
+
+use crate::Provenance;
+use crate::provenance::NodeClass;
 
 use crate::{Block, CondBranch, CondKind, Conditional};
 
@@ -17,7 +20,7 @@ impl LowerConditional for ast::MultilineConditional {
     ) -> Lowered<Conditional> {
         Ok(lower_if_else_branches(
             self.branches(),
-            SyntaxNodePtr::from_node(self.syntax()),
+            scope.prov(NodeClass::Conditional, self.syntax()),
             scope,
             sink,
         ))
@@ -34,7 +37,7 @@ impl LowerConditional for ast::MultilineBranchesCond {
     ) -> Lowered<Conditional> {
         Ok(lower_if_else_branches(
             self.branches(),
-            SyntaxNodePtr::from_node(self.syntax()),
+            scope.prov(NodeClass::Conditional, self.syntax()),
             scope,
             sink,
         ))
@@ -44,7 +47,7 @@ impl LowerConditional for ast::MultilineBranchesCond {
 /// Shared: lower a sequence of `MultilineBranchCond` into an if-else chain.
 fn lower_if_else_branches(
     branches: impl Iterator<Item = ast::MultilineBranchCond>,
-    ptr: SyntaxNodePtr,
+    ptr: Provenance,
     scope: &LowerScope,
     sink: &mut impl LowerSink,
 ) -> Conditional {

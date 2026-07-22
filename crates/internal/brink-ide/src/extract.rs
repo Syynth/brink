@@ -691,7 +691,8 @@ mod tests {
                 brink_runtime::Line::Text { text, .. }
                 | brink_runtime::Line::Done { text, .. }
                 | brink_runtime::Line::End { text, .. }
-                | brink_runtime::Line::Choices { text, .. } => text,
+                | brink_runtime::Line::Choices { text, .. }
+                | brink_runtime::Line::Suspended { text, .. } => text,
             };
             if !text.is_empty() {
                 texts.push(text);

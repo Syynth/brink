@@ -118,6 +118,12 @@ pub enum SyntaxKind {
     BACKSLASH,
 
     // ── Compound tokens ──────────────────────────────────────────
+    /// `@[` — annotation-line opener (brink extension, NS-A2: the
+    /// `@[effects(…)]` assertion final form, `docs/stdlib-spec.md` §9.2).
+    /// Lexed as one compound token so only the *adjacent* pair opens an
+    /// annotation line; a lone `@` in prose stays an `ERROR_TOKEN`
+    /// swallowed into text, exactly as before.
+    AT_L_BRACKET,
     /// `<>`
     GLUE,
     /// `->`
@@ -171,6 +177,11 @@ pub enum SyntaxKind {
     LOGIC_LINE,
     CONTENT_LINE,
     TAG_LINE,
+    /// `@[name(args)]` — a brink annotation line (NS-A2, the
+    /// `@[effects(…)]` assertion surface). Superset-parsed under every
+    /// dialect; `strict-ink` rejects it in `brink-analyzer::dialect_gate`
+    /// (E051), the standard extension posture.
+    ANNOTATION_LINE,
     STRAY_CLOSING_BRACE,
     RETURN_STMT,
     TEMP_DECL,
@@ -261,6 +272,12 @@ pub enum SyntaxKind {
     CONTINUE_STMT,
     /// A bare expression statement inside a block (function/external calls).
     EXPR_STMT,
+    /// `await <cond>` — `FlowFrame` suspension point (docs/flow-suspension-spec.md
+    /// §3). Statement/logic position only (`~ await …` logic line or inside a
+    /// `~ { … }` block). Brink extension; `await` is a contextual (soft)
+    /// keyword recognized only in this statement position, so it stays an
+    /// ordinary identifier everywhere else. Wraps the condition expression.
+    AWAIT_STMT,
     /// `#[expr, …]` — array sigil literal (§3). Expression position only.
     ARRAY_LITERAL,
     /// `#{key: expr, …}` — map sigil literal (§3). Expression position only.
@@ -322,6 +339,43 @@ pub enum SyntaxKind {
     /// a tag, unchanged. Superset grammar — always parses; dialect-gated
     /// (E051 under strict-ink) at analysis, same pattern as T1b/TM-4b.
     FN_LITERAL,
+
+    // ── T1e path projections (docs/t1e-spec.md §2) ──────────────────
+    // `ref lvalue-path` — path-projection creation in ref-argument position
+    // (`heal(ref npc.hp, 5)`, `#fn(heal, ref party[leader].hp)`,
+    // `bind(f, ref inventory[idx])`). Superset grammar — always parses in
+    // expression position (mirrors `FN_LITERAL`'s dialect-gate pattern);
+    // whether the position is legal (ref-argument only, never standalone)
+    // and whether the root is a durable cell is `brink-analyzer`'s job.
+    /// `ref` followed by a single lvalue-shaped operand — a plain path, a
+    /// dotted field chain, `[…]` indexing, or a mix of the two.
+    REF_EXPR,
+
+    // ── Computed-callee call attempt (docs/t1c-spec.md §3/§10, issue #869) ──
+    // `expr(args…)` where `expr` isn't a bare identifier immediately
+    // followed by `(` (that shape is `FUNCTION_CALL`, consumed at `atom()`).
+    // Direct-call syntax is RULED (t1c-spec §3) to a bare variable/temp/param
+    // callee only; "method-call syntax" (dispatch through an indexed/field/
+    // call-result callee via bare-call sugar) is explicitly out of T1c
+    // (§10). Superset grammar — always parses, so the author's `(args…)`
+    // is captured instead of silently reinterpreted as trailing prose text
+    // (the pre-existing behavior, and the exact silent-no-op class #869
+    // reports); `brink-ir`'s HIR lowering always rejects it (E104), pointing
+    // at the ratified `call(f, args…)` form.
+    /// A postfix call applied to a callee that isn't a bare name — always
+    /// rejected at HIR lowering (E104).
+    CALL_EXPR,
+
+    // ── NS-A5 range literals (docs/stdlib-spec.md §7, F7) ───────────
+    // `a..b` (exclusive) / `a..=b` (inclusive) — integer range values,
+    // joining the closed iterable set (`for i in 0..n`) and feeding the
+    // inhabited-range refinement (`int(1..=6)`, `non_empty(a..b)`).
+    // Superset grammar — always parses; dialect-gated (E051 under
+    // strict-ink) at analysis, same pattern as T1b/T1c. The operator is
+    // two adjacent `DOT` tokens (plus an adjacent `EQ` for `..=`) —
+    // detected in the Pratt loop like `||`/`++`, no new lexer token.
+    /// `start .. end` / `start ..= end` — a range literal expression.
+    RANGE_EXPR,
 
     // Not a real kind — used only for `rowan::Language::kind_to_raw` bounds.
     #[doc(hidden)]
@@ -398,6 +452,7 @@ impl SyntaxKind {
                 | Self::HASH
                 | Self::TILDE
                 | Self::BACKSLASH
+                | Self::AT_L_BRACKET
                 | Self::GLUE
                 | Self::DIVERT
                 | Self::THREAD

@@ -1,6 +1,6 @@
 mod cst;
 
-use super::check;
+use super::{check, check_lossless};
 use crate::parse;
 
 #[test]
@@ -140,6 +140,82 @@ fn insta_map_literal() {
 #[test]
 fn insta_index_chained() {
     let p = parse("~ grid[y][x] = v\n");
+    insta::assert_snapshot!(format!("{:#?}", p.syntax()));
+}
+
+// ── NS-A5 range literals (docs/stdlib-spec.md §7, F7) ─────────────────
+
+#[test]
+fn range_exclusive() {
+    check("~ r = 0..10\n");
+}
+
+#[test]
+fn range_inclusive() {
+    check("~ r = 1..=6\n");
+}
+
+#[test]
+fn range_with_spaces_around_operator() {
+    check("~ r = lo .. hi\n");
+}
+
+#[test]
+fn range_bounds_are_expressions() {
+    // `..` binds looser than `+`, so both bounds absorb their arithmetic.
+    check("~ r = lo..hi + 1\n");
+    check("~ r = a - 1..b * 2\n");
+}
+
+#[test]
+fn range_negative_bounds_via_prefix_minus() {
+    check("~ r = -3..3\n");
+}
+
+#[test]
+fn range_in_call_argument() {
+    check("~ x = int(1..=6)\n");
+    check("~ o = non_empty(a..b)\n");
+    check("~ p = pick(0..n)\n");
+}
+
+#[test]
+fn range_equality_parses_range_first() {
+    // `..` binds tighter than `==`: `r == 1..5` compares r against the
+    // range, not `(r == 1)..5`.
+    check("~ ok = r == 1..5\n");
+}
+
+#[test]
+fn range_dotted_path_bound_stops_before_dots() {
+    // `x.y..z`: the PATH grammar only eats `.` when an identifier follows,
+    // so the dotted bound and the range operator coexist.
+    check("~ r = x.y..z\n");
+}
+
+#[test]
+fn float_then_range_disambiguates() {
+    // `1.5..2`: FLOAT then range operator — the lexer requires a digit
+    // after a float dot, so `..` never merges into a number. (Float bounds
+    // are an analyzer-layer type error, not a parse error.)
+    check_lossless("~ r = 1.5..2\n");
+}
+
+#[test]
+fn insta_range_exclusive_shape() {
+    let p = parse("~ r = 0..10\n");
+    insta::assert_snapshot!(format!("{:#?}", p.syntax()));
+}
+
+#[test]
+fn insta_range_inclusive_shape() {
+    let p = parse("~ r = 1..=6\n");
+    insta::assert_snapshot!(format!("{:#?}", p.syntax()));
+}
+
+#[test]
+fn insta_range_in_for_loop() {
+    let p = parse("~ {\n  for i in 0..n {\n    ~ x = i\n  }\n}\n");
     insta::assert_snapshot!(format!("{:#?}", p.syntax()));
 }
 

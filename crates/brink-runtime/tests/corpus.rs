@@ -69,7 +69,9 @@ fn run_story_from_ink(ink_path: &Path, inputs: &[usize]) -> Result<String, Strin
             Line::Text { text, tags } => {
                 format_text_with_tags(&text, &[tags], &mut output);
             }
-            Line::Done { text, tags } | Line::End { text, tags } => {
+            Line::Done { text, tags }
+            | Line::End { text, tags }
+            | Line::Suspended { text, tags } => {
                 format_text_with_tags(&text, &[tags], &mut output);
                 break;
             }

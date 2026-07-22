@@ -18,6 +18,10 @@ all-features = true
 # Cargo won't let a member override when the workspace table leaves
 # `default-features` implicit. Versions match `workspace.dependencies`.
 brink-format = { path = "../internal/brink-format", version = "0.0.11", default-features = false }
+# NS-A8 numeric tower (T1): glam is the in-memory compute type. The
+# workspace table pins `default-features = false` + `libm` — no_std-clean,
+# and glam's `serde` feature stays OFF (T5: the wire is hand-written lanes).
+glam = { workspace = true }
 serde = { version = "1", default-features = false, features = ["alloc", "derive", "rc"] }
 thiserror = { version = "2", default-features = false }
 
@@ -38,11 +42,21 @@ testing = []
 # builds pay exactly zero cost. See `crates/brink-runtime/src/bench_counters.rs`
 # and `docs/runtime-bench.md`.
 bench-counters = []
+# Ground-truth effect-atom recorder (issue #870, T2 effects epic — the
+# effects analogue of the oracle): records per-executing-def cell
+# reads/writes and external-kind calls actually observed at runtime, for
+# `brink-test-harness` to compare against the statically-inferred
+# `effects(def)` row. Test/bench-only — pulls in `std` (a `Mutex`-guarded
+# recorder) and is never part of `default`, so an ordinary build (or
+# `cargo build -p brink-runtime`) never compiles it in: no module, no
+# lock, no call-site branches. See `crates/brink-runtime/src/effect_trace.rs`.
+effect-trace = ["std"]
 
 [dev-dependencies]
 brink-compiler = { path = "../brink-compiler" }
 serde_json.workspace = true
 divan.workspace = true
+proptest.workspace = true
 
 [[bench]]
 name = "runtime"

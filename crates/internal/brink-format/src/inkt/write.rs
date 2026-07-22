@@ -12,14 +12,15 @@ use std::collections::HashMap;
 
 use crate::counting::CountingFlags;
 use crate::definition::{
-    AddressDef, AddressPath, AliasEntry, ContainerDef, ExternalFnDef, GlobalVarDef, LineEntry,
-    ListDef, ListItemDef,
+    AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef, DirectEffects,
+    EffectRowEntry, ExternalFnDef, FrameShapeDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
+    StructShapeDef,
 };
 use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, SelectKey};
 use crate::opcode::{ChoiceFlags, Opcode, SequenceKind};
 use crate::story::StoryData;
-use crate::value::{ListValue, MapKey, Value, ValueType};
+use crate::value::{ListValue, MapKey, ProjSegment, Value, ValueType};
 
 /// Write the textual (.inkt) representation of a compiled story.
 pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
@@ -38,8 +39,11 @@ pub fn write_inkt(story: &StoryData, w: &mut dyn fmt::Write) -> fmt::Result {
     write_address_paths(w, &story.address_paths)?;
     write_list_literals(w, &story.list_literals)?;
     write_literal_pool(w, &story.literal_pool)?;
+    write_struct_shapes(w, &story.struct_shapes)?;
     write_visibility(w, &story.private_defs)?;
     write_alias_table(w, &story.alias_table)?;
+    write_effect_rows(w, &story.effect_rows)?;
+    write_frame_shapes(w, &story.frame_shapes)?;
 
     // Build a lookup from scope_id → line table for writing
     let line_map: HashMap<DefinitionId, &[LineEntry]> = story
@@ -188,6 +192,28 @@ fn write_literal_pool(w: &mut dyn fmt::Write, literal_pool: &[Value]) -> fmt::Re
     writeln!(w, "  )")
 }
 
+/// TM-4 (`docs/format-v4-rfc.md` §1): mirrors the `.inkb` `StructShapes`
+/// section — shape id, name, then its ordered field `NameId`s. The reader
+/// lands with the writer in the same PR (the #742/#883 lesson): this
+/// section used to round-trip through `.inkb` only, with `.inkt` silently
+/// dropping it entirely.
+fn write_struct_shapes(w: &mut dyn fmt::Write, struct_shapes: &[StructShapeDef]) -> fmt::Result {
+    if struct_shapes.is_empty() {
+        return Ok(());
+    }
+    writeln!(w)?;
+    writeln!(w, "  (struct_shapes")?;
+    for shape in struct_shapes {
+        writeln!(w, "    (struct {}", shape.id.0)?;
+        writeln!(w, "      (name {})", shape.name.0)?;
+        for field in &shape.fields {
+            writeln!(w, "      (field {})", field.0)?;
+        }
+        writeln!(w, "    )")?;
+    }
+    writeln!(w, "  )")
+}
+
 fn write_externals(w: &mut dyn fmt::Write, externals: &[ExternalFnDef]) -> fmt::Result {
     if externals.is_empty() {
         return Ok(());
@@ -248,6 +274,105 @@ fn write_alias_table(w: &mut dyn fmt::Write, aliases: &[AliasEntry]) -> fmt::Res
     writeln!(w, "  )")
 }
 
+/// T2-3 (`docs/effects-spec.md` §11): the factored `EffectRows` table. Written
+/// only when non-empty, mirroring the other optional sections. The reader lands
+/// with the writer in the same PR (the #742 lesson) — this section is fully
+/// round-tripped through `.inkt`.
+fn write_effect_rows(w: &mut dyn fmt::Write, rows: &[EffectRowEntry]) -> fmt::Result {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    writeln!(w)?;
+    writeln!(w, "  (effect_rows")?;
+    for row in rows {
+        // #882 freeze bit: `internal` prints only when the row is NOT a host
+        // entry point (`#@private` — see `EffectRowEntry::is_entry`'s doc).
+        let internal = if row.is_entry { "" } else { " internal" };
+        writeln!(w, "    (row {}{internal}", row.def)?;
+        write_direct_effects(w, &row.direct, 6)?;
+        for d in &row.dispatches {
+            let narrowable = if d.narrowable { " narrowable" } else { "" };
+            writeln!(w, "      (dispatch {}{}", d.cell, narrowable)?;
+            write_direct_effects(w, &d.fallback, 8)?;
+            writeln!(w, "      )")?;
+        }
+        writeln!(w, "    )")?;
+    }
+    writeln!(w, "  )")
+}
+
+/// FS-3 (`docs/flow-suspension-spec.md` §4/§11): the `FrameShapes` table.
+/// Written only when non-empty, mirroring the other optional sections. The
+/// reader lands with the writer in the same PR (the #742 lesson) — this
+/// section is fully round-tripped through `.inkt`. Each entry is the `await`
+/// site's stable `DefinitionId` (the synthesized continuation container id)
+/// followed by its name-keyed crossing-local slots (interned `NameId`s).
+fn write_frame_shapes(w: &mut dyn fmt::Write, shapes: &[FrameShapeDef]) -> fmt::Result {
+    if shapes.is_empty() {
+        return Ok(());
+    }
+    writeln!(w)?;
+    writeln!(w, "  (frame_shapes")?;
+    for shape in shapes {
+        write!(w, "    (frame {}", shape.site)?;
+        for slot in &shape.slots {
+            write!(w, " {}", slot.0)?;
+        }
+        writeln!(w, ")")?;
+    }
+    writeln!(w, "  )")
+}
+
+/// Write a [`DirectEffects`] block (`(reads …) (writes …) (calls …) opaque?`)
+/// at the given indent.
+fn write_direct_effects(
+    w: &mut dyn fmt::Write,
+    direct: &DirectEffects,
+    indent: usize,
+) -> fmt::Result {
+    let pad = " ".repeat(indent);
+    write!(w, "{pad}(reads")?;
+    for id in &direct.reads {
+        write!(w, " {id}")?;
+    }
+    writeln!(w, ")")?;
+    write!(w, "{pad}(writes")?;
+    for id in &direct.writes {
+        write!(w, " {id}")?;
+    }
+    writeln!(w, ")")?;
+    write!(w, "{pad}(calls")?;
+    for atom in &direct.calls {
+        write_call_atom(w, atom)?;
+    }
+    writeln!(w, ")")?;
+    if direct.opaque {
+        writeln!(w, "{pad}opaque")?;
+    }
+    // NS-A2 (issue #1108): the emits/tags/faults dimension flags, printed
+    // as bare optional tokens like `opaque`.
+    if direct.emits {
+        writeln!(w, "{pad}emits")?;
+    }
+    if direct.tags {
+        writeln!(w, "{pad}tags")?;
+    }
+    if direct.faults {
+        writeln!(w, "{pad}faults")?;
+    }
+    Ok(())
+}
+
+/// Write a single [`CallAtom`]: `(call <name> any)`. The capability-parameter
+/// slot renders as `any` (the v1 value); the reserved handle-parameter slot is
+/// `None` in v1 and therefore omitted.
+fn write_call_atom(w: &mut dyn fmt::Write, atom: &CallAtom) -> fmt::Result {
+    let cap = match atom.capability {
+        CapabilityParam::Any => "any",
+    };
+    write!(w, " (call {} {cap})", atom.name.0)
+}
+
 fn write_container(w: &mut dyn fmt::Write, c: &ContainerDef, lines: &[LineEntry]) -> fmt::Result {
     writeln!(w)?;
     writeln!(w, "  (container {}", c.id)?;
@@ -273,6 +398,9 @@ fn write_container(w: &mut dyn fmt::Write, c: &ContainerDef, lines: &[LineEntry]
         }
         if c.counting_flags.contains(CountingFlags::COUNT_START_ONLY) {
             write!(w, " start_only")?;
+        }
+        if c.counting_flags.contains(CountingFlags::INVISIBLE) {
+            write!(w, " invisible")?;
         }
         writeln!(w, ")")?;
     }
@@ -590,6 +718,52 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         } => write!(w, "make_closure {target} bound={bound_count}"),
         Opcode::CallValue(argc) => write!(w, "call_value argc={argc}"),
         Opcode::BindValue(argc) => write!(w, "bind_value argc={argc}"),
+
+        // Path projections (T1e)
+        Opcode::MakeProjection {
+            root,
+            segment_count,
+        } => write!(w, "make_projection {root} segments={segment_count}"),
+        Opcode::ProjRead => write!(w, "proj_read"),
+        Opcode::ProjWrite => write!(w, "proj_write"),
+
+        // Stdlib slice 1 completion (#857)
+        Opcode::CharAt => write!(w, "char_at"),
+
+        // NS-A1 Option + stdlib flips
+        Opcode::PushNone => write!(w, "push_none"),
+        Opcode::MakeSome => write!(w, "make_some"),
+        Opcode::StrFind => write!(w, "str_find"),
+        Opcode::SeqIndexOf => write!(w, "seq_index_of"),
+        Opcode::SeqMin => write!(w, "seq_min"),
+        Opcode::SeqMax => write!(w, "seq_max"),
+        Opcode::SeqFirst => write!(w, "seq_first"),
+        Opcode::SeqLast => write!(w, "seq_last"),
+        Opcode::SeqPop => write!(w, "seq_pop"),
+        Opcode::MapGetOpt => write!(w, "map_get_opt"),
+        Opcode::MapContainsValue => write!(w, "map_contains_value"),
+        Opcode::MapClear => write!(w, "map_clear"),
+        // NS-A6 rand verbs (#1112).
+        Opcode::RandFloat => write!(w, "rand_float"),
+        Opcode::RandChance => write!(w, "rand_chance"),
+        Opcode::RandPick => write!(w, "rand_pick"),
+        Opcode::RandShuffle => write!(w, "rand_shuffle"),
+        Opcode::RangeMakeExcl => write!(w, "range_make_excl"),
+        Opcode::RangeMakeIncl => write!(w, "range_make_incl"),
+        Opcode::RangeNonEmpty => write!(w, "range_non_empty"),
+        // NS-A4 ordering verbs (#1110).
+        Opcode::SeqSorted => write!(w, "seq_sorted"),
+        Opcode::SeqSortedBy => write!(w, "seq_sorted_by"),
+
+        // NS-A8 numeric tower: the kind's own mnemonic IS the instruction
+        // word (`make_vec2` … `tower_lerp`) — one wire opcode, thirteen
+        // spellings, `TowerOp::mnemonic`/`from_mnemonic` the single pairing.
+        Opcode::Tower(op) => write!(w, "{}", op.mnemonic()),
+
+        // NS-A7 collections+: same one-opcode-per-kind-mnemonic pattern as
+        // the tower — `CollectOp::mnemonic`/`from_mnemonic` the single
+        // pairing (`weighted_new` … `heap_peek`).
+        Opcode::Collect(op) => write!(w, "{}", op.mnemonic()),
     }
 }
 
@@ -646,21 +820,28 @@ fn value_type_name(vt: ValueType) -> &'static str {
         ValueType::FnRef => "fn_ref",
         ValueType::Closure => "closure",
         ValueType::Handle => "handle",
+        ValueType::Projection => "projection",
+        ValueType::Option => "option",
+        ValueType::Range => "range",
+        ValueType::Vec2 => "vec2",
+        ValueType::Vec3 => "vec3",
+        ValueType::Vec4 => "vec4",
+        ValueType::Quat => "quat",
+        ValueType::Mat2 => "mat2",
+        ValueType::Mat3 => "mat3",
+        ValueType::Mat4 => "mat4",
+        ValueType::Weighted => "weighted",
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one atom arm per Value variant — the NS-A7 Weighted arm pushed this past 100"
+)]
 fn write_value(w: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
     match v {
         Value::Int(n) => write!(w, "{n}"),
-        Value::Float(n) => {
-            // Ensure float always has a decimal point for unambiguous parsing.
-            let s = format!("{n}");
-            if s.contains('.') || s.contains("inf") || s.contains("NaN") {
-                write!(w, "{s}")
-            } else {
-                write!(w, "{s}.0")
-            }
-        }
+        Value::Float(n) => write_float_atom(w, *n),
         Value::Bool(b) => write!(w, "{b}"),
         Value::String(s) => write!(w, "\"{}\"", escape_string(s)),
         Value::List(lv) => {
@@ -729,6 +910,101 @@ fn write_value(w: &mut dyn fmt::Write, v: &Value) -> fmt::Result {
         // — kind as its raw NameId (the human-readable kind name lives in the
         // name table, resolved by tooling that has it, not by this dump).
         Value::Handle { kind, id } => write!(w, "(handle {} {id})", kind.0),
+        // Projection values (T1e, `docs/t1e-spec.md` §3): `(projection <cell>
+        // (segments <seg>…))`, each segment `(index <n>)` or `(key <value>)`
+        // — the reader parity this dump exists for (dump/reader parity, the
+        // #742 lesson).
+        Value::Projection(p) => {
+            write!(w, "(projection {} (segments", p.cell)?;
+            for seg in &p.segments {
+                write!(w, " ")?;
+                write_proj_segment(w, seg)?;
+            }
+            write!(w, "))")
+        }
+        // Option values (NS-A1, `docs/stdlib-spec.md` §1.4): `(some
+        // <value>)` / `(option_none)` — reader lands with the writer in this
+        // same PR (the #742 dump/reader parity lesson). `option_none`, not
+        // bare `none`, because `none` is already a choice-flags token in the
+        // grammar.
+        Value::OptionVal(inner) => match inner {
+            None => write!(w, "(option_none)"),
+            Some(v) => {
+                write!(w, "(some ")?;
+                write_value(w, v)?;
+                write!(w, ")")
+            }
+        },
+        // Range values (NS-A5, `docs/stdlib-spec.md` §7, F7): `(range
+        // <start> <end> incl|excl)` — the written form is preserved via the
+        // incl/excl token; reader lands with the writer in this same PR
+        // (the #742 dump/reader parity lesson).
+        Value::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            let form = if *inclusive { "incl" } else { "excl" };
+            write!(w, "(range {start} {end} {form})")
+        }
+        // Tower values (NS-A8, `docs/tower-mini-spec.md` T5): `(vec2 <x>
+        // <y>)` … `(mat4 <16 column-major lanes>)` — the textual mirror of
+        // the VAL_VEC2..VAL_MAT4 wire tags, reader landing with the writer
+        // in this same PR (the #742 dump/reader parity lesson). Lanes come
+        // from glam's explicit array conversions, never its memory layout.
+        Value::Vec2(v) => write_tower_lanes(w, "vec2", &v.to_array()),
+        Value::Vec3(v) => write_tower_lanes(w, "vec3", &v.to_array()),
+        Value::Vec4(v) => write_tower_lanes(w, "vec4", &v.to_array()),
+        Value::Quat(q) => write_tower_lanes(w, "quat", &q.to_array()),
+        Value::Mat2(m) => write_tower_lanes(w, "mat2", &m.to_cols_array()),
+        Value::Mat3(m) => write_tower_lanes(w, "mat3", &m.to_cols_array()),
+        Value::Mat4(m) => write_tower_lanes(w, "mat4", &m.to_cols_array()),
+        // Weighted tables (NS-A7, `docs/stdlib-spec.md` §8): `(weighted
+        // (<weight> <value>)+)`, entries in construction order.
+        Value::Weighted(wt) => {
+            write!(w, "(weighted")?;
+            for (weight, value) in &wt.entries {
+                write!(w, " ({weight} ")?;
+                write_value(w, value)?;
+                write!(w, ")")?;
+            }
+            write!(w, ")")
+        }
+    }
+}
+
+/// Write one f32 with a guaranteed decimal point (unambiguous float atom) —
+/// the exact convention `write_value`'s `Float` arm has always used, shared
+/// with the NS-A8 tower lanes.
+fn write_float_atom(w: &mut dyn fmt::Write, n: f32) -> fmt::Result {
+    let s = format!("{n}");
+    if s.contains('.') || s.contains("inf") || s.contains("NaN") {
+        write!(w, "{s}")
+    } else {
+        write!(w, "{s}.0")
+    }
+}
+
+/// NS-A8 tower atom body: the tag word then the flat lanes in the pinned
+/// order (`docs/tower-mini-spec.md` T5 — vec/quat `x y (z w)`, matrices
+/// column-major), each lane through [`write_float_atom`].
+fn write_tower_lanes(w: &mut dyn fmt::Write, tag: &str, lanes: &[f32]) -> fmt::Result {
+    write!(w, "({tag}")?;
+    for lane in lanes {
+        write!(w, " ")?;
+        write_float_atom(w, *lane)?;
+    }
+    write!(w, ")")
+}
+
+fn write_proj_segment(w: &mut dyn fmt::Write, seg: &ProjSegment) -> fmt::Result {
+    match seg {
+        ProjSegment::Index(n) => write!(w, "(index {n})"),
+        ProjSegment::Key(v) => {
+            write!(w, "(key ")?;
+            write_value(w, v)?;
+            write!(w, ")")
+        }
     }
 }
 
@@ -792,6 +1068,8 @@ mod tests {
             struct_shapes: vec![],
             private_defs: vec![],
             alias_table: vec![],
+            effect_rows: vec![],
+            frame_shapes: Vec::new(),
             source_checksum: 0,
         };
         let mut buf = String::new();

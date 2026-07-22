@@ -30,7 +30,8 @@ contains(m, "a") = {contains(m, "a")}, contains(m, "z") = {contains(m, "z")}
 ```
 
 ```text
-len(arr) = 3, len(m) = 2, contains(arr, 20) = true, contains(arr, 99) = false,
+len(arr) = 3, len(m) = 2,
+contains(arr, 20) = true, contains(arr, 99) = false,
 contains(m, "a") = true, contains(m, "z") = false
 ```
 
@@ -66,7 +67,7 @@ or `temp`, or an (arbitrarily chained) indexed path rooted in one —
 Passing anything else is a compile error (`E055`,
 "collection mutator's first argument is not an lvalue"):
 
-```ink
+```ink,error(E055)
 ~ push(#[1, 2, 3], 4)
 // E055: `push` mutates its first argument — bind it to a variable first
 ```
@@ -136,6 +137,8 @@ same name as a stdlib builtin, the author's definition wins, with a warning
 built-ins already use):
 
 ```ink
+VAR arr = 0
+
 ~ {
     arr = #[1, 2, 3]
 }
@@ -143,7 +146,7 @@ built-ins already use):
 len is {len(arr)}.
 -> END
 
-=== function len(x)
+=== function len(x: array<int>)
 ~ return 999
 ```
 

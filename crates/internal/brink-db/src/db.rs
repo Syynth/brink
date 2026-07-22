@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use brink_analyzer::{
-    AnalysisOptions, AnalysisResult, BodyTypes, InferenceResult, InferredSig, Sig, SymbolMeta,
+    AnalysisOptions, AnalysisResult, BodyTypes, EffectRow, InferenceResult, InferredSig, Sig,
+    SymbolMeta,
 };
 use brink_format::DefinitionId;
 use brink_ir::suppressions::Suppressions;
@@ -13,9 +14,10 @@ use tracing::debug;
 
 use crate::determinism::LookupMap;
 use crate::queries::{
-    BrinkDatabase, CompileProduct, DefKey, LirProduct, ProjectInput, ResolvedProject, SourceFile,
-    analysis_query, call_site_diagnostics_query, call_site_metas_query, diagnostics_query,
-    has_errors_query, include_graph_query, infer_body_query, inferred_signature_query, lir_query,
+    BrinkDatabase, CompileProduct, DefKey, KnotChunkKey, LirProduct, ProjectInput, ResolvedProject,
+    SourceFile, analysis_query, call_site_diagnostics_query, call_site_metas_query,
+    diagnostics_query, effects_query, has_errors_query, include_graph_query, infer_body_query,
+    inferred_signature_query, lir_knot_chunk_query, lir_prelude_decls_query, lir_query,
     lowered_query, parse_query, per_file_diagnostics_query, resolutions_index_query, resolve_query,
     signature_query, story_data_query, suppressions_query, symbol_index_query,
     type_diagnostics_query, type_inference_query, value_meta_query,
@@ -190,10 +192,11 @@ impl ProjectDb {
     }
 
     /// Return file IDs in topological include order (included files before
-    /// the files that include them), matching ink's `INCLUDE` paste semantics.
+    /// the files that include them), matching ink's `INCLUDE` paste
+    /// semantics. Only `entry` and files it transitively `INCLUDE`s are
+    /// returned — see [`IncludeGraph::topological_order`] (issue #815).
     pub fn file_ids_topo(&self, entry: FileId) -> Vec<FileId> {
-        let all: Vec<_> = self.file_ids().collect();
-        self.include_graph().topological_order(entry, &all)
+        self.include_graph().topological_order(entry)
     }
 
     /// Get the parse tree for a file.
@@ -224,6 +227,15 @@ impl ProjectDb {
     pub fn file_diagnostics(&self, id: FileId) -> Option<&[Diagnostic]> {
         let file = self.files.get(&id)?;
         Some(lowered_query(&self.salsa, *file).diagnostics.as_slice())
+    }
+
+    /// Get the B0.3 HIR admission validator's output for a file
+    /// (docs/hir-admission-contract.md §4.2, issue #1172) — kept separate
+    /// from [`Self::file_diagnostics`] because it is non-suppressible
+    /// (never routed through `apply_suppressions`).
+    pub fn admission_diagnostics(&self, id: FileId) -> Option<&[Diagnostic]> {
+        let file = self.files.get(&id)?;
+        Some(lowered_query(&self.salsa, *file).admission.as_slice())
     }
 
     /// Get parsed suppression directives for a file.
@@ -422,6 +434,24 @@ impl ProjectDb {
         inferred_signature_query(&self.salsa, self.project, DefKey::new(&self.salsa, def))
     }
 
+    /// Per-def effect row (`effects(def)`, T2-1, docs/effects-spec.md §2/§4,
+    /// issue #860) — the advisory `{reads, writes, calls}` summary of the
+    /// atomic effects `def` (and everything it transitively calls) may
+    /// perform, sited beside [`inferred_signature`](Self::inferred_signature).
+    /// Conservative-total (spec §3): the row over-reports, never under-reports;
+    /// a call through a function value or an unknown callee makes it pessimal
+    /// ([`EffectRow::opaque`]). `None` for a def with no inferable body (not a
+    /// knot/stitch, or an unknown id) — same contract as
+    /// [`inferred_signature`](Self::inferred_signature).
+    ///
+    /// **Advisory-only**: nothing in `story_data`/`lir_product`/`diagnostics`
+    /// reads this, so the row is additive metadata that leaves compiled output
+    /// byte-identical. Lazy — calling this is the only thing that triggers the
+    /// underlying atom harvest + per-SCC fixpoint.
+    pub fn effects(&self, def: DefinitionId) -> Option<Arc<EffectRow>> {
+        effects_query(&self.salsa, self.project, DefKey::new(&self.salsa, def))
+    }
+
     /// Per-file type diagnostics (`type_diagnostics(FileId)`). Advisory-only
     /// in this slice — always empty (see `type_diagnostics_query`'s docs).
     pub fn type_diagnostics(&self, id: FileId) -> Option<&[Diagnostic]> {
@@ -446,6 +476,34 @@ impl ProjectDb {
     /// the cutoff seam backdated.
     pub fn has_errors(&self) -> bool {
         has_errors_query(&self.salsa, self.project)
+    }
+
+    /// FG-4d non-re-execution probe (issue #830): the `Arc<ScopeChunk>` the
+    /// per-knot LIR chunk memo stores for the `knot_index`-th knot of `file`.
+    /// `Arc::ptr_eq` on the result across an edit proves the memo validated
+    /// without re-executing — salsa only hands back the same allocation when
+    /// a query's inputs (this file's HIR, the project resolutions, and the
+    /// struct-shape projection) are all unchanged. Exposed for the
+    /// dependency-edge tests, mirroring [`resolutions_index`](Self::resolutions_index).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn knot_chunk(&self, file: FileId, knot_index: u32) -> Arc<brink_ir::lir::ScopeChunk> {
+        let key = KnotChunkKey::new(&self.salsa, file, knot_index);
+        lir_knot_chunk_query(&self.salsa, self.project, key).chunk
+    }
+
+    /// FG-4e non-re-execution probe (issue #839): the
+    /// `Arc<brink_ir::lir::PreludeDecls>` the whole-project prelude-decls
+    /// memo stores. `Arc::ptr_eq` on the result across an edit proves the
+    /// memo validated without re-executing — salsa only hands back the same
+    /// allocation when every entry-reachable file's [decl-only HIR
+    /// projection](crate::queries::PreludeDeclsResult) is unchanged, which
+    /// holds across a knot-body-only edit. Exposed for the dependency-edge
+    /// tests, mirroring [`knot_chunk`](Self::knot_chunk).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn lir_prelude_decls(&self) -> Arc<brink_ir::lir::PreludeDecls> {
+        lir_prelude_decls_query(&self.salsa, self.project).decls
     }
 
     /// Whole-project compile to [`brink_format::StoryData`] (layer 3,
