@@ -125,22 +125,12 @@ fn fogg_passage_exhibit_lowers_and_is_admission_clean() {
     .expect("exhibit-fogg-passage/story.brink must exist");
 
     let (hir, manifest, diags) = lower_native_fixture(&src);
-    // The fixture opens with a top-level `-> fogg_wager` entry divert — a
-    // native story-entry *convention*, not yet a ruled construct (its own
-    // manifest.toml: "confirm as the ruled entry convention in the
-    // G-batch, #1106"). `walk_top_level` (B0.6) has no dispatch for a bare
-    // divert at file-root position — native's `root_content` equivalent is
-    // hard `Block::default()` by contract, so this diagnoses E129 rather
-    // than vanishing. That is the one diagnostic B0.7 legitimately
-    // produces for this fixture; everything else (the three flow bodies,
-    // the choice point, the dissolved gather, the `{if}`/`else`
-    // conditional) must be clean.
-    assert_eq!(
-        diags.len(),
-        1,
-        "expected exactly the known top-level-entry-divert E129: {diags:?}"
-    );
-    assert_eq!(diags[0].code, brink_ir::DiagnosticCode::E129);
+    // The fixture's opening flow is named `main` (the ruled 2026-07-21
+    // story-entry convention, `docs/decision-log.md`, #1106 G-batch) — no
+    // top-level divert is written at all, so this fixture lowers with zero
+    // diagnostics: the three flow bodies, the choice point, the dissolved
+    // gather, and the `{if}`/`else` conditional are all clean.
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let file_len = rowan::TextSize::of(src.as_str());
     let admission_diags = brink_analyzer::validate_admission(FileId(0), &hir, &manifest, file_len);
     assert!(
@@ -149,15 +139,15 @@ fn fogg_passage_exhibit_lowers_and_is_admission_clean() {
     );
 
     // A structural sanity check on the exhibit's own centerpiece: the
-    // dissolved gather. `fogg_wager`'s body is `[Content, ChoiceSet]` (no
+    // dissolved gather. `main`'s body is `[Content, ChoiceSet]` (no
     // sibling after the choice point) with two choices, each diverting out
     // — the flagship shape the charter names for this exhibit.
-    let fogg_wager = hir
+    let main = hir
         .knots
         .iter()
-        .find(|k| k.name.text == "fogg_wager")
-        .expect("fogg_wager knot");
-    let choice_set = fogg_wager
+        .find(|k| k.name.text == "main")
+        .expect("main knot");
+    let choice_set = main
         .body
         .stmts
         .iter()
@@ -165,8 +155,13 @@ fn fogg_passage_exhibit_lowers_and_is_admission_clean() {
             Stmt::ChoiceSet(cs) => Some(cs.as_ref()),
             _ => None,
         })
-        .expect("fogg_wager must contain a ChoiceSet");
+        .expect("main must contain a ChoiceSet");
     assert_eq!(choice_set.choices.len(), 2);
+
+    // The `main`-flow entry convention itself: `root_content` is the
+    // synthesized divert into `main`.
+    assert_eq!(hir.root_content.stmts.len(), 1);
+    assert!(matches!(hir.root_content.stmts[0], Stmt::Divert(_)));
 }
 
 // ─── Cross-frontend structural differential ───────────────────────────

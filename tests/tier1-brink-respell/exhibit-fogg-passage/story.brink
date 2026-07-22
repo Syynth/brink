@@ -1,6 +1,4 @@
--> fogg_wager
-
-flow fogg_wager() {
+flow main() {
   "We are going on a trip," said Monsieur Fogg.
   {?
     * [The wager.] -> know_about_wager

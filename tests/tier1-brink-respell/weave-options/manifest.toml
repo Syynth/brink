@@ -9,4 +9,9 @@ becomes a nested `flow`. The bare `-> END` after the closed `{? }` block is
 the dissolved-gather respelling (charter §5): 'the next line after the
 block' replaces ink's implicit gather that followed the one-line choice.
 No gaps encountered.
+
+ENTRY POINT (`main`-flow convention, ruled 2026-07-21, #1106 G-batch): the
+top-level container `test` is renamed `main` (the ruled native
+story-entry convention) and the top-level `-> test` entry divert is
+dropped.
 """

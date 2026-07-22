@@ -1,10 +1,8 @@
--> the_orient_express
-
-flow the_orient_express() {
+flow main() {
   How shall we travel?
   {?
     * [In first class] -> in_first_class
-    * [I'll go cheap] -> the_orient_express.in_third_class
+    * [I'll go cheap] -> main.in_third_class
   }
 
   flow in_first_class() {

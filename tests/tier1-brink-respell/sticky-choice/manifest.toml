@@ -16,4 +16,10 @@ structured as a DIVERT_STMT -- it still parses with zero errors, but the
 CST shape is not yet what B0.7 lowering will need. Flagged, not a charter
 gap: the charter says diverts are kept verbatim in content position; this
 is B0.5 parser-completeness debt.
+
+ENTRY POINT (`main`-flow convention, ruled 2026-07-21, #1106 G-batch): the
+top-level container `homers_couch` is renamed `main` (the ruled native
+story-entry convention) and the top-level `-> homers_couch` entry divert
+is dropped; the internal self-recursive divert `-> homers_couch` becomes
+`-> main`.
 """

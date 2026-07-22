@@ -11,4 +11,9 @@ declared later in the file -- purely a parse-time non-issue here (paths
 are opaque idents to the B0.5 grammar); whether forward reference across
 declarations resolves at B0.6+ is a resolution-semantics question, not a
 syntax gap. No gaps encountered.
+
+ENTRY POINT (`main`-flow convention, ruled 2026-07-21, #1106 G-batch): the
+ink source's root content is only the `{x}` interpolation line -- `var`/
+`const` stay top-level (hoisted flat regardless of nesting, D6), and `{x}`
+moves into `flow main() { {x} }`, the ruled native story-entry convention.
 """
