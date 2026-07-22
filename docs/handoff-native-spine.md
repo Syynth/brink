@@ -70,7 +70,7 @@ SHAs are the heads as of handoff.
 | # | Branch | SHA | Base | What | PR |
 |---|--------|-----|------|------|----|
 | A | `docs/effect-system-native-unification` | `463394f6` | main | Effect-system unification (docs only) | **#1217** (open draft) |
-| B | `docs/native-implicit-end-ruling` | `531d7040` | main | Implicit-end ruling (docs only) | **#1220** (open draft) |
+| B | `docs/native-implicit-end-ruling` | `531d7040` | main | Implicit-end ruling (docs only) | **#1220 — MERGED 2026-07-22** ✅ |
 | C | `auto/first-light-integration` | `885de01b` | main | **First light 9/9** = `auto/first-light-native` + `auto/native-content-whitespace` merged | needs opening |
 | D | `auto/b0-10a-native-seam` | `da3731c5` | first-light-native | Native `.brink` compile seam (parse_native_query + dispatch) | needs opening |
 | E | `auto/b0-10b-native-discovery` | (building) | b0-10a | Multi-file discovery + filesystem modules | not pushed at handoff |
