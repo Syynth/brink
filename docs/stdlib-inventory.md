@@ -155,7 +155,10 @@ componentwise-IEEE equality, tower **not orderable**; conventions per
 glam wholesale (decision-log 2026-07-19).
 
 **Built: none — the whole domain is wave A8** (#1114, unblocked by the
-mini-spec; no tower dispatch entries on main).
+mini-spec; no tower dispatch entries on main), **except the three F31
+partial-b rows below** (`mat * mat`, `mat * scalar`, `vec / scalar` — issue
+#1145, `value_ops::tower_binary_op`), landed ahead of the rest of A8 per the
+delegated ruling.
 
 | Verb / op | Signature / rule | NS | Pre | Row | Notes |
 |---|---|---|---|---|---|
@@ -166,7 +169,15 @@ mini-spec; no tower dispatch entries on main).
 | `mat * vec` | transform | (op) | — | P | mat2/3/4 (all sizes v1 — mini-spec) |
 | `quat * quat` | compose | (op) | — | P | |
 | `quat * vec` | rotate | (op) | — | P | |
+| `mat * mat` | compose (matching sizes) | (op) | — | ✅ | F31 partial-b, issue #1145 — mat2/3/4 |
+| `mat * scalar` | scale, ints promote — **one direction only** (`mat * scalar`; the commuted `scalar * mat` form glam itself defines is deliberately not added) | (op) | — | ✅ | F31 partial-b, issue #1145 — mat2/3/4 |
+| `vec / scalar` | scale down, ints promote — **one direction only**; IEEE float division, zero divisor yields `inf`/`nan` lanes (T4), not a fault | (op) | — | ✅ | F31 partial-b, issue #1145 — vec2/3/4 |
 | `min`/`max`/`clamp`/`lerp` | componentwise across the tower (width-1 scalar floor is §1) | math | ✓ | P | "defined once across it" (§2b) |
+
+Every other glam-native form — `mat ± mat`, `quat * scalar`, `vec / vec`,
+`scalar / vec`, `scalar * mat`, … — **keeps faulting** per F31's explicit
+"everything else stays faulting until asked for" clause; not implemented
+here.
 
 \* prelude flag for tower verbs inherits the "entire math kit" prelude
 ruling; confirm `dot`/`cross` are intended prelude entries with the
