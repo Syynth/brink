@@ -1,6 +1,16 @@
 //! Diverts, tunnels, and splice. Family for #1196.
+//!
+//! Parity target: `brink-syntax/src/parser/tests/divert/mod.rs`. The native
+//! grammar (`parser/divert.rs`, charter §11) is a deliberately narrower
+//! reshape of ink's divert family — no `->->` tunnel-onwards node, no
+//! `<-`-as-general-thread-start, and (per the probe below) exactly one hop
+//! of tunnel-call arrow, not ink's arbitrary chain. Tests here assert the
+//! ACTUAL native grammar's shape, not ink's, per the issue's own
+//! instruction to "check `divert.rs`'s actual grammar first".
 
 use super::*;
+
+// ── Original family-split smoke tests (kept from the #1229 split) ───
 
 #[test]
 fn divert_and_tunnel_and_return() {
@@ -112,4 +122,803 @@ fn divert_to_end_in_content_position_parses() {
         .expect("DIVERT_STMT");
     let target = find_child::<crate::ast::DivertTarget>(&divert).expect("DIVERT_TARGET");
     assert!(target.is_end());
+}
+
+// ── DIVERT_TARGET's three forms: END / DONE / PATH ──────────────────
+
+#[test]
+fn divert_target_end() {
+    let src = "flow f() {\n  -> END\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let target = p
+        .syntax()
+        .descendants()
+        .find_map(crate::ast::DivertTarget::cast)
+        .expect("DIVERT_TARGET");
+    assert!(target.is_end());
+    assert!(!target.is_done());
+    assert!(target.path().is_none());
+}
+
+#[test]
+fn divert_target_done() {
+    let src = "flow f() {\n  -> DONE\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let target = p
+        .syntax()
+        .descendants()
+        .find_map(crate::ast::DivertTarget::cast)
+        .expect("DIVERT_TARGET");
+    assert!(target.is_done());
+    assert!(!target.is_end());
+    assert!(target.path().is_none());
+}
+
+#[test]
+fn divert_target_path() {
+    let src = "flow f() {\n  -> knot\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let target = p
+        .syntax()
+        .descendants()
+        .find_map(crate::ast::DivertTarget::cast)
+        .expect("DIVERT_TARGET");
+    assert!(!target.is_end());
+    assert!(!target.is_done());
+    let path = target.path().expect("PATH");
+    let segs: Vec<_> = path.segments().map(|t| t.text().to_string()).collect();
+    assert_eq!(segs, vec!["knot".to_string()]);
+}
+
+#[test]
+fn divert_target_path_dotted() {
+    let src = "flow f() {\n  -> knot.stitch\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let target = p
+        .syntax()
+        .descendants()
+        .find_map(crate::ast::DivertTarget::cast)
+        .expect("DIVERT_TARGET");
+    let path = target.path().expect("PATH");
+    assert!(!path.crosses_module_wall());
+    let segs: Vec<_> = path.segments().map(|t| t.text().to_string()).collect();
+    assert_eq!(segs, vec!["knot".to_string(), "stitch".to_string()]);
+}
+
+#[test]
+fn divert_target_path_module_wall() {
+    // `::` crosses a module wall (charter §13.2), distinct from `.`.
+    let src = "flow f() {\n  -> a::b\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let target = p
+        .syntax()
+        .descendants()
+        .find_map(crate::ast::DivertTarget::cast)
+        .expect("DIVERT_TARGET");
+    let path = target.path().expect("PATH");
+    assert!(path.crosses_module_wall());
+    let segs: Vec<_> = path.segments().map(|t| t.text().to_string()).collect();
+    assert_eq!(segs, vec!["a".to_string(), "b".to_string()]);
+}
+
+// ── DIVERT_STMT ───────────────────────────────────────────────────────
+
+#[test]
+fn simple_divert_is_divert_stmt_not_tunnel_call() {
+    let src = "flow f() {\n  -> knot\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::DIVERT_STMT));
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::TUNNEL_CALL));
+}
+
+#[test]
+fn content_then_divert_at_top_level() {
+    // The content-position sibling grammar (`divert_in_content`), not just
+    // the choice-only variant already covered elsewhere in this file.
+    let src = "flow f() {\n  Hello -> knot\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let content_line = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CONTENT_LINE)
+        .expect("CONTENT_LINE");
+    assert!(has_node_kind(&content_line, SyntaxKind::TEXT));
+    assert!(has_node_kind(&content_line, SyntaxKind::DIVERT_STMT));
+    let divert = find_child::<crate::ast::DivertStmt>(&content_line)
+        .or_else(|| {
+            content_line
+                .descendants()
+                .find_map(crate::ast::DivertStmt::cast)
+        })
+        .expect("DIVERT_STMT");
+    let target = divert.target().expect("DIVERT_TARGET");
+    let segs: Vec<_> = target
+        .path()
+        .expect("PATH")
+        .segments()
+        .map(|t| t.text().to_string())
+        .collect();
+    assert_eq!(segs, vec!["knot".to_string()]);
+}
+
+// ── TUNNEL_CALL and its disambiguation from a plain DIVERT_STMT ──────
+
+#[test]
+fn tunnel_call_simple() {
+    let src = "flow f() {\n  -> place ->\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let call = p
+        .syntax()
+        .descendants()
+        .find_map(crate::ast::TunnelCall::cast)
+        .expect("TUNNEL_CALL");
+    let target = call.target().expect("DIVERT_TARGET");
+    let segs: Vec<_> = target
+        .path()
+        .expect("PATH")
+        .segments()
+        .map(|t| t.text().to_string())
+        .collect();
+    assert_eq!(segs, vec!["place".to_string()]);
+}
+
+#[test]
+fn tunnel_call_dotted_target() {
+    let src = "flow f() {\n  -> knot.stitch ->\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let call = p
+        .syntax()
+        .descendants()
+        .find_map(crate::ast::TunnelCall::cast)
+        .expect("TUNNEL_CALL");
+    let target = call.target().expect("DIVERT_TARGET");
+    let segs: Vec<_> = target
+        .path()
+        .expect("PATH")
+        .segments()
+        .map(|t| t.text().to_string())
+        .collect();
+    assert_eq!(segs, vec!["knot".to_string(), "stitch".to_string()]);
+}
+
+#[test]
+fn tunnel_call_to_end_target_parses_but_is_a_semantic_question() {
+    // `-> END ->` is a syntactically valid TUNNEL_CALL — the grammar has no
+    // opinion on whether an END-target tunnel call makes sense; that is the
+    // analyzer's job, not the parser's (mirrors `divert_target`'s
+    // `KW_END`/`KW_DONE`/`PATH` disjunction applying uniformly regardless
+    // of the enclosing node).
+    let src = "flow f() {\n  -> END ->\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let call = p
+        .syntax()
+        .descendants()
+        .find_map(crate::ast::TunnelCall::cast)
+        .expect("TUNNEL_CALL");
+    assert!(call.target().expect("DIVERT_TARGET").is_end());
+}
+
+#[test]
+fn regular_divert_not_tunnel_call() {
+    let src = "flow f() {\n  -> target\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::TUNNEL_CALL));
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::DIVERT_STMT));
+}
+
+#[test]
+fn divert_with_unrelated_trailing_content_is_not_a_tunnel_call() {
+    // A `DIVERT_STMT` followed, on the same line, by unrelated content that
+    // is NOT a second `->` — this must stay a plain divert plus separate
+    // content, never a `TUNNEL_CALL` (which requires the second arrow
+    // immediately, modulo whitespace, per `divert_or_tunnel_core`).
+    let src = "flow f() {\n  -> knot extra text\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::TUNNEL_CALL));
+    let divert = p
+        .syntax()
+        .descendants()
+        .find_map(crate::ast::DivertStmt::cast)
+        .expect("DIVERT_STMT");
+    let segs: Vec<_> = divert
+        .target()
+        .expect("DIVERT_TARGET")
+        .path()
+        .expect("PATH")
+        .segments()
+        .map(|t| t.text().to_string())
+        .collect();
+    assert_eq!(
+        segs,
+        vec!["knot".to_string()],
+        "the divert target must not have swallowed `extra`/`text`"
+    );
+    assert!(
+        p.syntax()
+            .descendants()
+            .any(|n| n.kind() == SyntaxKind::CONTENT_LINE),
+        "`extra text` must land in its own CONTENT_LINE"
+    );
+}
+
+#[test]
+fn second_arrow_not_immediately_after_target_is_still_a_tunnel_call() {
+    // Whitespace between the target and the closing arrow is fine —
+    // `divert_or_tunnel_core` does `p.skip_ws()` before checking for the
+    // second `DIVERT`.
+    let src = "flow f() {\n  -> place   ->\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::TUNNEL_CALL));
+}
+
+#[test]
+fn no_third_arrow_native_grammar_has_no_divert_chaining() {
+    // Ink's parity suite has a `divert_chain` test (`-> tunnel -> next`)
+    // that stays a single ink DIVERT chained arbitrarily. The native
+    // grammar has no such concept: the first `->`/target/`->` triple
+    // always closes as a `TUNNEL_CALL`, and anything after the second
+    // arrow is ordinary trailing content — here a bare-word CONTENT_LINE,
+    // not a further divert.
+    let src = "flow f() {\n  -> a -> b\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::TUNNEL_CALL));
+    // Only ONE tunnel call / divert-stmt total — `b` is content, not a
+    // second target.
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::TUNNEL_CALL), 1);
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::DIVERT_STMT), 0);
+    let call = p
+        .syntax()
+        .descendants()
+        .find_map(crate::ast::TunnelCall::cast)
+        .expect("TUNNEL_CALL");
+    let segs: Vec<_> = call
+        .target()
+        .expect("DIVERT_TARGET")
+        .path()
+        .expect("PATH")
+        .segments()
+        .map(|t| t.text().to_string())
+        .collect();
+    assert_eq!(segs, vec!["a".to_string()]);
+    assert!(
+        p.syntax()
+            .descendants()
+            .any(|n| n.kind() == SyntaxKind::CONTENT_LINE),
+        "`b` must land in a trailing CONTENT_LINE, not a chained divert"
+    );
+}
+
+// ── RETURN_STMT / RETURN_REDIRECT ────────────────────────────────────
+
+#[test]
+fn bare_return_stmt() {
+    let src = "flow f() {\n  -> place ->\n  return\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::RETURN_STMT));
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::RETURN_REDIRECT));
+}
+
+#[test]
+fn return_redirect_simple() {
+    let src = "flow f() {\n  return -> x\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let redirect = p
+        .syntax()
+        .descendants()
+        .find_map(crate::ast::ReturnRedirect::cast)
+        .expect("RETURN_REDIRECT");
+    let segs: Vec<_> = redirect
+        .target()
+        .expect("DIVERT_TARGET")
+        .path()
+        .expect("PATH")
+        .segments()
+        .map(|t| t.text().to_string())
+        .collect();
+    assert_eq!(segs, vec!["x".to_string()]);
+    // A RETURN_REDIRECT is not also counted as a bare RETURN_STMT — they
+    // are distinct node kinds, not one wrapping the other
+    // (`return_stmt`'s `start_node_at` picks exactly one).
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::RETURN_STMT));
+}
+
+#[test]
+fn return_redirect_to_end() {
+    let src = "flow f() {\n  return -> END\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let redirect = p
+        .syntax()
+        .descendants()
+        .find_map(crate::ast::ReturnRedirect::cast)
+        .expect("RETURN_REDIRECT");
+    assert!(redirect.target().expect("DIVERT_TARGET").is_end());
+}
+
+#[test]
+fn return_redirect_dotted_target() {
+    let src = "flow f() {\n  return -> knot.stitch\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let redirect = p
+        .syntax()
+        .descendants()
+        .find_map(crate::ast::ReturnRedirect::cast)
+        .expect("RETURN_REDIRECT");
+    let segs: Vec<_> = redirect
+        .target()
+        .expect("DIVERT_TARGET")
+        .path()
+        .expect("PATH")
+        .segments()
+        .map(|t| t.text().to_string())
+        .collect();
+    assert_eq!(segs, vec!["knot".to_string(), "stitch".to_string()]);
+}
+
+#[test]
+fn return_followed_by_unrelated_content_is_bare_return_stmt() {
+    // `return` not immediately followed by `->` must NOT become a
+    // RETURN_REDIRECT — the trailing content is a separate item, exactly
+    // the divert/tunnel-call disambiguation's sibling case.
+    let src = "flow f() {\n  return home\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::RETURN_STMT));
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::RETURN_REDIRECT));
+    assert!(
+        p.syntax()
+            .descendants()
+            .any(|n| n.kind() == SyntaxKind::CONTENT_LINE),
+        "`home` must land in its own CONTENT_LINE, not get folded into RETURN_STMT"
+    );
+}
+
+// ── SPLICE — valid inside a CHOICE_POINT ─────────────────────────────
+
+#[test]
+fn splice_basic() {
+    let src = "flow f() {\n  {?\n    <- side_thread\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let splice = p
+        .syntax()
+        .descendants()
+        .find_map(crate::ast::Splice::cast)
+        .expect("SPLICE");
+    let segs: Vec<_> = splice
+        .path()
+        .expect("PATH")
+        .segments()
+        .map(|t| t.text().to_string())
+        .collect();
+    assert_eq!(segs, vec!["side_thread".to_string()]);
+    assert!(splice.arg_list().is_none());
+}
+
+#[test]
+fn splice_with_args() {
+    let src = "flow f() {\n  {?\n    <- options(gold, 2)\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let splice = p
+        .syntax()
+        .descendants()
+        .find_map(crate::ast::Splice::cast)
+        .expect("SPLICE");
+    let arg_list = splice.arg_list().expect("ARG_LIST");
+    assert!(arg_list.is_open());
+}
+
+#[test]
+fn splice_with_dotted_path() {
+    let src = "flow f() {\n  {?\n    <- hub.options\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let splice = p
+        .syntax()
+        .descendants()
+        .find_map(crate::ast::Splice::cast)
+        .expect("SPLICE");
+    let segs: Vec<_> = splice
+        .path()
+        .expect("PATH")
+        .segments()
+        .map(|t| t.text().to_string())
+        .collect();
+    assert_eq!(segs, vec!["hub".to_string(), "options".to_string()]);
+}
+
+#[test]
+fn splice_coexists_with_choice_lines() {
+    let src = "flow f() {\n  {?\n    * [Look] You look around.\n    <- extra_choices\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::CHOICE));
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::SPLICE));
+}
+
+#[test]
+fn splice_outside_choice_point_is_not_a_splice_node() {
+    // Charter §11: "no native spelling for general `<-`; only the scoped
+    // splice inside choice points survives." Outside a `CHOICE_POINT`,
+    // `choice.rs::splice` is never called — `<-` lexes to a bare `THREAD`
+    // token that `block::body_line` doesn't recognize, so it falls through
+    // to `content::content_line` and is folded into an ordinary `TEXT`
+    // run, indistinguishable from any other punctuation-in-prose. This is
+    // NOT an error (confirmed by direct inspection — no diagnostic is
+    // raised), which is a real gap against the issue's expectation of "a
+    // negative test confirming it errors outside one": the current
+    // behavior is silent, not a diagnostic. Documenting the actual
+    // behavior here rather than the assumed one.
+    let src = "flow f() {\n  <- side_thread\n}\n";
+    let p = assert_lossless(src);
+    assert!(
+        p.errors().is_empty(),
+        "a splice outside a choice point currently produces NO diagnostic \
+         (charter says `<-` has no meaning there, but the parser neither \
+         errors nor recognizes it structurally — it is silently swallowed \
+         as prose text); errors: {:?}",
+        p.errors()
+    );
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::SPLICE));
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::CONTENT_LINE));
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::TEXT));
+}
+
+// ── Genuine grammar/parser divergence — NOT fixed here (test-only issue) ──
+
+#[test]
+fn divert_target_with_call_args_does_not_capture_the_args_bug_1196() {
+    // TODO(#1196 follow-up, filed as a scope-overflow comment on the
+    // issue): charter §11 lists "-> knot(args)" as KEPT VERBATIM from ink
+    // ("Diverts — KEPT verbatim (`->`, `-> knot(args)`, ...)"), but
+    // `divert::divert_target` only calls `expr::path`, never
+    // `expr::path_or_call` / `expr::arg_list` — there is no code path that
+    // consumes a divert target's argument list at all. The parenthesized
+    // args are silently left over as ordinary trailing content, with ZERO
+    // parse errors, rather than being attached to the DIVERT_TARGET (or
+    // erroring). This asserts the CURRENT (wrong) behavior so a fix is a
+    // deliberate, visible diff — not a silent grammar fork. Do not "fix"
+    // this here; it's out of scope for a test-only issue (see CLAUDE.md's
+    // wave rule).
+    let src = "flow f() {\n  -> greet(\"hello\")\n}\n";
+    let p = assert_lossless(src);
+    assert!(
+        p.errors().is_empty(),
+        "errors: {:?} (if this now fails, the bug this test documents may \
+         have been fixed — update/remove this test, don't just adjust it \
+         to pass)",
+        p.errors()
+    );
+    let divert = p
+        .syntax()
+        .descendants()
+        .find_map(crate::ast::DivertStmt::cast)
+        .expect("DIVERT_STMT");
+    let target = divert.target().expect("DIVERT_TARGET");
+    let segs: Vec<_> = target
+        .path()
+        .expect("PATH")
+        .segments()
+        .map(|t| t.text().to_string())
+        .collect();
+    assert_eq!(
+        segs,
+        vec!["greet".to_string()],
+        "the target path is just `greet` — no ARG_LIST child exists on \
+         DIVERT_TARGET at all"
+    );
+    assert!(
+        target
+            .path()
+            .expect("PATH")
+            .syntax()
+            .parent()
+            .expect("DIVERT_TARGET")
+            .children()
+            .all(|c| c.kind() != SyntaxKind::ARG_LIST),
+        "DIVERT_TARGET must not have grown an ARG_LIST child — if it has, \
+         the bug was fixed and this whole test should be deleted"
+    );
+    // The `("hello")` text is NOT part of the divert at all — it becomes
+    // a wholly separate CONTENT_LINE sibling.
+    let content_line = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CONTENT_LINE)
+        .expect("CONTENT_LINE holding the orphaned args");
+    let orphaned = text_run_concat(&content_line);
+    assert_eq!(orphaned, "(\"hello\")");
+}
+
+// ── Error recovery: malformed input must not panic, stays lossless ──
+
+#[test]
+fn divert_with_no_target_recovers() {
+    let src = "flow f() {\n  -> \n}\n";
+    let p = assert_lossless(src);
+    assert!(
+        !p.errors().is_empty(),
+        "a target-less divert should record a diagnostic"
+    );
+    // Still a well-formed (if error-carrying) DIVERT_STMT with an empty
+    // DIVERT_TARGET — no panic, no dropped bytes.
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::DIVERT_STMT));
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::DIVERT_TARGET));
+}
+
+#[test]
+fn tunnel_call_with_no_target_recovers() {
+    // `->->` with no space and no target between the arrows — the second
+    // `->` is greedily consumed as the (missing) target's first token,
+    // producing an error, then reinterpreted as the closing arrow.
+    let src = "flow f() {\n  ->->\n}\n";
+    let p = assert_lossless(src);
+    assert!(!p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::TUNNEL_CALL));
+}
+
+#[test]
+fn return_redirect_with_no_target_recovers() {
+    let src = "flow f() {\n  return -> \n}\n";
+    let p = assert_lossless(src);
+    assert!(!p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::RETURN_REDIRECT));
+}
+
+#[test]
+fn divert_at_eof_with_no_newline_recovers() {
+    // No trailing NEWLINE at all — `divert_or_tunnel`'s `if p.at(NEWLINE)`
+    // guard must not choke on EOF.
+    let src = "-> knot";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::DIVERT_STMT));
+}
+
+#[test]
+fn tunnel_call_at_eof_with_no_newline_recovers() {
+    let src = "-> place ->";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::TUNNEL_CALL));
+}
+
+#[test]
+fn splice_with_no_target_recovers() {
+    let src = "flow f() {\n  {?\n    <- \n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(!p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::SPLICE));
+}
+
+#[test]
+fn splice_with_unterminated_arg_list_recovers() {
+    let src = "flow f() {\n  {?\n    <- options(gold\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(!p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::SPLICE));
+}
+
+#[test]
+fn bare_arrow_soup_never_panics() {
+    // Adversarial: a run of arrows with no valid target anywhere, deep
+    // enough to exercise repeated zero-progress recovery.
+    let src = "flow f() {\n  -> -> -> -> -> ->\n}\n";
+    let p = assert_lossless(src);
+    // Not asserting on error count — only that it stays lossless and does
+    // not panic/hang (`assert_lossless` itself is the load-bearing check).
+    let _ = p.errors();
+}
+
+#[test]
+fn return_redirect_chained_arrows_never_panics() {
+    let src = "flow f() {\n  return -> -> ->\n}\n";
+    let p = assert_lossless(src);
+    let _ = p.errors();
+}
+
+#[test]
+fn mismatched_tunnel_arrows_across_lines_recovers() {
+    // A tunnel call's second arrow, when missing, must not eat the
+    // following line's unrelated divert.
+    let src = "flow f() {\n  -> place\n  -> next\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::TUNNEL_CALL));
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::DIVERT_STMT), 2);
+}
+
+#[test]
+fn splice_immediately_followed_by_r_brace_recovers() {
+    let src = "flow f() {\n  {?\n    <-\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(!p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::SPLICE));
+}
+
+#[test]
+fn deeply_nested_divert_targets_do_not_overflow() {
+    // Adversarial depth: a long dotted path is flat (not recursive) in
+    // this grammar, but exercise a long chain anyway to confirm the
+    // `path()` loop has no quadratic/stack-depth surprise.
+    let mut src = String::from("flow f() {\n  -> ");
+    for i in 0..500 {
+        if i > 0 {
+            src.push('.');
+        }
+        src.push('a');
+    }
+    src.push('\n');
+    src.push_str("}\n");
+    let p = assert_lossless(&src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+}
+
+// ── Insta snapshots for full-tree shape ──────────────────────────────
+
+#[test]
+fn insta_tunnel_call() {
+    let p = parse("flow f() {\n  -> place ->\n}\n");
+    insta::assert_snapshot!(format!("{:#?}", p.syntax()));
+}
+
+#[test]
+fn insta_return_redirect() {
+    let p = parse("flow f() {\n  return -> x\n}\n");
+    insta::assert_snapshot!(format!("{:#?}", p.syntax()));
+}
+
+#[test]
+fn insta_splice_with_args() {
+    let p = parse("flow f() {\n  {?\n    <- options(gold, 2)\n  }\n}\n");
+    insta::assert_snapshot!(format!("{:#?}", p.syntax()));
+}
+
+// ── Proptest round-trip generators (family-local, per #1196's hint —
+// `tests/proptest_native.rs` is #1199's this wave) ────────────────────
+
+mod proptest_divert {
+    use proptest::prelude::*;
+
+    use crate::parse;
+
+    const NUM_CASES: u32 = 256;
+
+    /// Mirrors `tests/proptest_native.rs`'s own `KEYWORDS` list (this
+    /// family's generator is intentionally independent — see #1196's
+    /// scoping note about not touching that file this wave — but the
+    /// keyword set it must avoid is the same grammar).
+    const KEYWORDS: &[&str] = &[
+        "flow", "fn", "var", "const", "flags", "struct", "extern", "import", "use", "module",
+        "return", "ref", "if", "match", "else", "as", "true", "false", "END", "DONE",
+    ];
+
+    fn arb_ident() -> impl Strategy<Value = String> {
+        "[a-z][a-z0-9_]{0,7}"
+            .prop_filter("must not be a keyword", |s| !KEYWORDS.contains(&s.as_str()))
+    }
+
+    fn arb_dotted_path() -> impl Strategy<Value = String> {
+        prop::collection::vec(arb_ident(), 1..=4).prop_map(|segs| segs.join("."))
+    }
+
+    fn arb_divert_target() -> impl Strategy<Value = String> {
+        prop_oneof![
+            Just("END".to_string()),
+            Just("DONE".to_string()),
+            arb_dotted_path(),
+        ]
+    }
+
+    fn arb_flow_wrapped_divert() -> impl Strategy<Value = String> {
+        arb_divert_target().prop_map(|target| format!("flow f() {{\n  -> {target}\n}}\n"))
+    }
+
+    fn arb_flow_wrapped_tunnel_call() -> impl Strategy<Value = String> {
+        arb_divert_target().prop_map(|target| format!("flow f() {{\n  -> {target} ->\n}}\n"))
+    }
+
+    fn arb_flow_wrapped_return_redirect() -> impl Strategy<Value = String> {
+        arb_divert_target().prop_map(|target| format!("flow f() {{\n  return -> {target}\n}}\n"))
+    }
+
+    fn arb_flow_wrapped_splice() -> impl Strategy<Value = String> {
+        (arb_dotted_path(), prop::collection::vec(arb_ident(), 0..=3)).prop_map(|(path, args)| {
+            let call = if args.is_empty() {
+                path
+            } else {
+                format!("{path}({})", args.join(", "))
+            };
+            format!("flow f() {{\n  {{?\n    <- {call}\n  }}\n}}\n")
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(NUM_CASES))]
+
+        #[test]
+        fn divert_roundtrips(input in arb_flow_wrapped_divert()) {
+            let parsed = parse(&input);
+            prop_assert_eq!(parsed.syntax().text().to_string(), input.clone());
+            prop_assert!(parsed.errors().is_empty(), "input: {:?}\nerrors: {:?}", input, parsed.errors());
+        }
+
+        #[test]
+        fn tunnel_call_roundtrips(input in arb_flow_wrapped_tunnel_call()) {
+            let parsed = parse(&input);
+            prop_assert_eq!(parsed.syntax().text().to_string(), input.clone());
+            prop_assert!(parsed.errors().is_empty(), "input: {:?}\nerrors: {:?}", input, parsed.errors());
+            prop_assert!(
+                parsed.syntax().descendants().any(|n| n.kind() == crate::SyntaxKind::TUNNEL_CALL)
+            );
+        }
+
+        #[test]
+        fn return_redirect_roundtrips(input in arb_flow_wrapped_return_redirect()) {
+            let parsed = parse(&input);
+            prop_assert_eq!(parsed.syntax().text().to_string(), input.clone());
+            prop_assert!(parsed.errors().is_empty(), "input: {:?}\nerrors: {:?}", input, parsed.errors());
+            prop_assert!(
+                parsed.syntax().descendants().any(|n| n.kind() == crate::SyntaxKind::RETURN_REDIRECT)
+            );
+        }
+
+        #[test]
+        fn splice_roundtrips(input in arb_flow_wrapped_splice()) {
+            let parsed = parse(&input);
+            prop_assert_eq!(parsed.syntax().text().to_string(), input.clone());
+            prop_assert!(parsed.errors().is_empty(), "input: {:?}\nerrors: {:?}", input, parsed.errors());
+            prop_assert!(
+                parsed.syntax().descendants().any(|n| n.kind() == crate::SyntaxKind::SPLICE)
+            );
+        }
+
+        // ── Adversarial: never panics, always lossless ─────────────────
+
+        #[test]
+        fn arrow_soup_never_panics(n in 1usize..12) {
+            let arrows = "-> ".repeat(n);
+            let src = format!("flow f() {{\n  {arrows}\n}}\n");
+            let parsed = parse(&src);
+            prop_assert_eq!(parsed.syntax().text().to_string(), src);
+        }
+
+        #[test]
+        fn truncated_divert_never_panics(target in arb_dotted_path(), cut in 0u32..100) {
+            let full = format!("flow f() {{\n  -> {target} ->\n}}\n");
+            let target_len = (full.len() as u64 * u64::from(cut) / 100) as usize;
+            let mut end = target_len.min(full.len());
+            while end > 0 && !full.is_char_boundary(end) {
+                end -= 1;
+            }
+            let truncated = &full[..end];
+            let parsed = parse(truncated);
+            prop_assert_eq!(parsed.syntax().text().to_string(), truncated);
+        }
+
+        #[test]
+        fn splice_outside_choice_point_never_panics(path in arb_dotted_path()) {
+            let src = format!("flow f() {{\n  <- {path}\n}}\n");
+            let parsed = parse(&src);
+            prop_assert_eq!(parsed.syntax().text().to_string(), src);
+        }
+    }
 }
