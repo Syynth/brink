@@ -150,6 +150,32 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         // conditions in each flow's own context and wakes on true. Gated so
         // neither does work until a flow actually sleeps. Ordered
         // dirty-then-eval so a same-frame World change is seen this pass.
+        //
+        // `.before(advance_batch::<M>)` closes a same-frame race discovered
+        // while hardening issue #1081's `WakeArming::Latch` tests: `Collect`
+        // (`advance_batch`) steps any flow whose `FlowSleep::wants_collect()`
+        // is true (`state == Woken`), and only `run_flow_sleep`'s repark
+        // phase clears that back to `Parked` once the woken turn reaches a
+        // `Done` boundary. Without an explicit order, a host that also
+        // registers `advance_batch::<M>` leaves the two system sets
+        // unconstrained relative to each other — Bevy's default multithreaded
+        // executor does not guarantee a stable relative order between
+        // independently-added systems that don't conflict on data access, so
+        // it can (rarely) run `advance_batch` before this chain on one frame
+        // and after it on the next. That window lets a flow that woke and
+        // was collected on frame N (still `Woken`, not yet reparked because
+        // `run_flow_sleep` hadn't run again) get collected a **second** time
+        // on frame N+1 if `advance_batch` happens to run before this chain
+        // that frame — an extra, spurious turn from a single wake, the exact
+        // "over-fire" `wake_fan_out` scenario tests never exercised (they
+        // don't assert an exact repeated count across many cycles the way
+        // the `Latch` cycling test does). Forcing this chain before
+        // `advance_batch` guarantees the repark for a completed wake is
+        // always applied in the same frame the wake was collected, before
+        // `advance_batch` gets another chance to run — closing the window
+        // regardless of scheduler ordering. Inert if the host never adds
+        // `advance_batch::<M>` (an ordering constraint against an absent
+        // system is a no-op).
         app.add_systems(
             Update,
             (
@@ -157,6 +183,7 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
                 crate::sleep::run_flow_sleep::<M>,
             )
                 .chain()
+                .before(crate::batch::advance_batch::<M>)
                 .run_if(
                     bevy_ecs::schedule::common_conditions::any_with_component::<
                         crate::sleep::FlowSleep<M>,

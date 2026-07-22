@@ -221,23 +221,19 @@ condition** — the direction (engine state → ink read) is exactly what
    re-evals a frame while switches are idle. This port was the first real
    consumer to pay the interim's cost and is now the first consumer of the
    fix. See **G4 (#996)** below.
-2. **`WakeArming` has no "toggle" shape, forcing a real design compromise.**
-   `Once` fires exactly one wake and is done forever; `Persistent` re-arms
-   and re-*steps* every single turn boundary while the condition stays true
-   — for a door that means continuously running "the door is open" turns
-   every other frame for as long as the switch stays on, purely to keep
-   re-asserting a fact that hasn't changed. Neither shape expresses "wake on
-   a *transition*, then go quiet until the *opposite* transition" — the
-   natural shape for a boolean-latch reactive entity (a door, a light
-   switch, a pressure plate). We chose `Once`: the door opens and **never
-   re-locks**, even if the Rust baseline's switch is later flipped back off
+2. **`WakeArming` had no "toggle" shape, forcing a real design compromise —
+   now resolved.** `Once` fires exactly one wake and is done forever;
+   `Persistent` re-arms and re-*steps* every single turn boundary while the
+   condition stays true — for a door that would mean continuously running
+   "the door is open" turns every other frame for as long as the switch
+   stays on, purely to keep re-asserting a fact that hasn't changed. Neither
+   shape expresses "wake on a *transition*, then go quiet until the
+   *opposite* transition" — the natural shape for a boolean-latch reactive
+   entity (a door, a light switch, a pressure plate). This port originally
+   shipped with `Once`: the door opened and **never re-locked**, even
+   though the Rust baseline's switch could later flip back off
    (`doors::door_sync_system` is fully bidirectional — it does re-lock).
-   That divergence is deliberate and directly tested (see below), not a
-   bug — but it is a real behavior gap versus the Rust baseline, and
-   modeling the reversible case properly would need per-flow `Local`-scoped
-   ink state (`docs/scoped-flow-state-spec.md`) to give each door instance
-   its own private "am I open" bit, which is out of scope for this minimal
-   port. Filed as **G5 (#1081)**.
+   Filed as **G5 (#1081)** — see its resolution below.
 3. **Many instances of one program, one marker: works, but undocumented.**
    Spawning N flows of the same `assets/doors.ink` program under a single
    `DoorsStory` marker relies on a fact that isn't obvious from the
@@ -252,9 +248,9 @@ condition** — the direction (engine state → ink read) is exactly what
    rediscover by reading `globals.rs`'s source.
 
 None of these **blocked** the port — every locked door correctly stays shut
-until its switch flips, and the divergence from the Rust baseline (no
-re-lock) is explicit and tested, not silent. They are ergonomics findings
-for the charter, same as Phase 1a's G1–G3.
+until its switch flips, and (after G5's resolution, below) the ink port is
+now fully bidirectional, matching the Rust baseline exactly. They are
+ergonomics findings for the charter, same as Phase 1a's G1–G3.
 
 ### LOC
 
@@ -302,11 +298,13 @@ plugin's own `mark_wake_dirty`/`run_flow_sleep` + a host-registered
 - frame-by-frame parity against the Rust baseline for the common
   (monotonic) case — every frame before the first flip, both
   implementations agree the door is closed;
-- the **documented divergence**: a scripted flip sequence that ends with the
-  switch back off proves the ink door stays open while the Rust baseline
-  re-locks — asserted explicitly (`assert_ne!`), not hidden.
+- **full bidirectional parity** (G5's closure, `ink_door_matches_rust_baseline_on_relock`):
+  a scripted multi-cycle flip sequence (on → off → on → off → ...) proves the
+  ink door tracks the switch exactly like the Rust baseline at every step —
+  this test replaces the port's original *divergence* test (the same
+  scenario used to assert `assert_ne!`, before `WakeArming::Latch` existed).
 
-**Status: green** (including the intentional, tested divergence).
+**Status: green** (fully bidirectional, no divergence remaining).
 
 ### API gaps filed
 
@@ -318,11 +316,19 @@ plugin's own `mark_wake_dirty`/`run_flow_sleep` + a host-registered
   component-backed detect-capable condition re-evaluates only on a real
   component change. This port — the first real (non-test) consumer to pay the
   interim's cost — now registers `Switch` and consumes the cheap path.
-- **G5 (#1081)** — `WakeArming` offers only `Once` (permanent) or
-  `Persistent` (re-steps every turn boundary while true); there is no "wake
-  on transition, park until the opposite transition" toggle shape for a
-  boolean-latch reactive entity. Forced a documented behavioral
-  simplification (doors never re-lock) rather than a faithful port.
+- **G5 (#1081) — RESOLVED.** `WakeArming` gained a third shape,
+  `Latch`: it wakes on a transition to the value it's currently watching
+  for, then re-arms watching for the opposite value, indefinitely — the
+  "wake on transition, park until the opposite transition" shape a
+  boolean-latch reactive entity (a door, a switch, a pressure plate) needs.
+  Crucially, the edge detection lives entirely in the host policy
+  (`FlowSleep::latch_waiting_for`), not in ink state — `should_open` stays
+  the same plain level predicate it always was, so the "would additionally
+  need per-flow `Local`-scoped ink state" caveat this entry originally
+  carried never actually applied. `doors.ink` and `ink_doors.rs` now use
+  `Latch` (`assets/doors.ink`'s `door_watch` loop, `FlowSleep::latch`
+  replacing `FlowSleep::once`), and the port is fully bidirectional — see
+  "Semantics parity," above.
 
 ---
 
