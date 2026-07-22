@@ -225,6 +225,7 @@ pub struct FlowSleep<M: Send + Sync + 'static = ()> {
     /// A dynamically-resolved fn-value token (`Value::FnRef`/`Closure`) that
     /// overrides `condition`'s by-name resolution — see
     /// [`with_condition_value`](Self::with_condition_value).
+    #[reflect(ignore)]
     condition_value: Option<Value>,
     /// Arguments passed to the condition function, in declaration order.
     #[reflect(ignore)]
