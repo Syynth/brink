@@ -103,9 +103,11 @@ use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::query::QueryState;
+use bevy_ecs::reflect::ReflectComponent;
 use bevy_ecs::system::{Local, Query, Res};
 use bevy_ecs::world::World as EcsWorld;
 use bevy_log::warn;
+use bevy_reflect::Reflect;
 use brink_format::{DefinitionId, DirectEffects, EffectRowEntry, Value};
 use brink_runtime::{Program, StoryStatus};
 use thiserror::Error;
@@ -119,7 +121,7 @@ use crate::flow::BrinkFlow;
 use crate::globals::BrinkGlobals;
 
 /// When a woken flow re-parks, does its policy re-arm or retire?
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Reflect)]
 pub enum WakeArming {
     /// Re-arm every time the flow re-parks at a turn boundary — a standing
     /// subscription. The default (`docs/effects-spec.md` §13.1 point 4).
@@ -133,7 +135,7 @@ pub enum WakeArming {
 /// The lifecycle state of a [`FlowSleep`] policy — inspector-visible, and the
 /// single field [`FlowSleep::wants_collect`] reads to tell Collect whether the
 /// flow steps this turn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect)]
 pub enum SleepState {
     /// Parked: the flow is asleep under this policy and is **skipped by
     /// Collect**. The default for a freshly attached policy.
@@ -157,7 +159,7 @@ pub enum SleepState {
 /// (`#913`, ruled 2026-07-18). Built from the per-container AND-merged
 /// [`ContainerAccess::detect`](crate::ContainerAccess) map, or supplied
 /// directly by a host that knows its condition's dependencies.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Reflect)]
 pub struct DetectSummary {
     /// The per-capability merged bits the summary was built from (kept for
     /// inspector visibility / debugging). Empty means the condition has no
@@ -213,7 +215,8 @@ impl DetectSummary {
 /// Construct via [`FlowSleep::persistent`] / [`FlowSleep::once`], optionally
 /// chaining [`with_args`](Self::with_args), [`with_detect`](Self::with_detect),
 /// and [`dormant`](Self::dormant).
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct FlowSleep<M: Send + Sync + 'static = ()> {
     /// The ink function name whose (pure) return value is the wake condition.
     /// A diagnostic label only when [`condition_value`](Self::condition_value)
@@ -222,8 +225,10 @@ pub struct FlowSleep<M: Send + Sync + 'static = ()> {
     /// A dynamically-resolved fn-value token (`Value::FnRef`/`Closure`) that
     /// overrides `condition`'s by-name resolution — see
     /// [`with_condition_value`](Self::with_condition_value).
+    #[reflect(ignore)]
     condition_value: Option<Value>,
     /// Arguments passed to the condition function, in declaration order.
+    #[reflect(ignore)]
     args: Vec<Value>,
     /// The `detect`-bit verdict for the condition's dependencies (`#913`).
     detect: DetectSummary,
@@ -242,6 +247,7 @@ pub struct FlowSleep<M: Send + Sync + 'static = ()> {
     /// all-detect-capable policy still gets its initial evaluation even on a
     /// frame the World didn't change.
     evaluated_once: bool,
+    #[reflect(ignore)]
     _marker: PhantomData<fn() -> M>,
 }
 
