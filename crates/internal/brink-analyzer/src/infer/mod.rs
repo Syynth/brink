@@ -52,20 +52,23 @@
 mod body;
 mod effects;
 mod graph;
+mod intrinsics;
 mod ty;
+
+pub(crate) use intrinsics::{intrinsic_effects, intrinsic_returns_option};
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use brink_format::DefinitionId;
 use brink_ir::{
-    BaseType, Block, ContainerPtr, DocBlock, FileId, HirFile, HostManifest, Param, ResolutionMap,
-    SymbolIndex, SymbolKind, TypeExpr, TypeRef,
+    BaseType, Block, DocBlock, FileId, HirFile, HostManifest, Param, ResolutionMap, SymbolIndex,
+    SymbolKind, TypeExpr, TypeRef,
 };
 use rowan::TextRange;
 
 pub use effects::{EffectAtoms, EffectRow, solve_scc_effects};
 pub use graph::{CallGraph, SccGraph, scc_graph};
-pub use ty::{Ty, unify, unify_all};
+pub use ty::{CoalesceError, TowerTy, Ty, coalesce, unify, unify_all};
 
 use body::{BodyCtx, infer_def_body};
 use graph::topo_order;
@@ -427,7 +430,7 @@ fn type_ref_to_ty(t: &TypeRef, types: &BTreeMap<String, brink_ir::SemanticTypeDe
 /// `Stitch` nodes carry only a bare `Name`, not their own id.
 ///
 /// A *floating* stitch (`= stitch`, declared before any `== knot ==`
-/// header) lowers into `hir.knots` as a `Knot` node (`ContainerPtr::Stitch`)
+/// header) lowers into `hir.knots` as a `Knot` node (`NodeClass::Stitch` provenance)
 /// but was declared `SymbolKind::Stitch` with a bare name by
 /// `lower_top_level_stitch` — never `SymbolKind::Knot`, and never qualified
 /// with a knot prefix (there is no enclosing knot). So the symbol-kind used
@@ -442,10 +445,7 @@ fn collect_defs<'a>(files: &[(FileId, &'a HirFile)], index: &SymbolIndex) -> Vec
     let mut defs: Vec<Def<'a>> = Vec::new();
     for &(file_id, hir) in files {
         for knot in &hir.knots {
-            let knot_symbol_kind = match knot.ptr {
-                ContainerPtr::Knot(_) => SymbolKind::Knot,
-                ContainerPtr::Stitch(_) => SymbolKind::Stitch,
-            };
+            let knot_symbol_kind = knot.symbol_kind();
             if let Some(&id) = def_of.get(&(file_id, knot_symbol_kind, knot.name.text.clone())) {
                 defs.push(Def {
                     id,
@@ -891,6 +891,10 @@ pub fn def_effect_atoms(
         calls: result.external_calls,
         direct_calls: result.calls,
         opaque: result.effect_opaque,
+        emits: result.effect_emits,
+        tags: result.effect_tags,
+        faults: result.effect_faults,
+        faults_refined: result.effect_faults_refined,
     }
 }
 
@@ -1101,7 +1105,7 @@ mod tests {
     #[test]
     fn floating_stitch_body_is_inferred() {
         // A *floating* stitch — `= name`, declared before any `== knot ==`
-        // header — lowers into `hir.knots` (as `ContainerPtr::Stitch`) but
+        // header — lowers into `hir.knots` (with `NodeClass::Stitch` provenance) but
         // is declared `SymbolKind::Stitch` with a bare name, not
         // `SymbolKind::Knot`. Before #626, `collect_defs` always looked the
         // entry up as `SymbolKind::Knot`, the lookup silently failed, and
@@ -1116,8 +1120,8 @@ mod tests {
     #[test]
     fn floating_stitch_coexists_with_real_knot_and_its_nested_stitch() {
         // Regression guard for the fix itself: distinguishing floating
-        // stitches (`ContainerPtr::Stitch`) from real knots
-        // (`ContainerPtr::Knot`) in `collect_defs` must not disturb the
+        // stitches (`NodeClass::Stitch` provenance) from real knots
+        // (`NodeClass::Knot` provenance) in `collect_defs` must not disturb the
         // existing, already-working real-knot / nested-stitch lookup path.
         let (hir, index, res) = build(
             "= intro(hp)\n~ temp x = hp + 1\n-> DONE\n\
@@ -2212,6 +2216,151 @@ mod tests {
         assert!(!row.opaque, "a fully-visible body is not pessimal");
     }
 
+    // ─── NS-A6 (issue #1112, docs/stdlib-spec.md §7): every draw is an
+    // ordinary write to the RNG cell in the row ─────────────────────────
+
+    /// Every brink draw-verb spelling harvests a write to
+    /// `DefinitionId::RNG_CELL` — the "draws = writes" half of the
+    /// rng-as-cell ruling.
+    #[test]
+    fn rand_draw_verbs_write_the_rng_cell() {
+        use brink_format::DefinitionId;
+        let cases: &[(&str, &str)] = &[
+            (
+                "float_draw",
+                "=== function float_draw() ===\n~ return float()\n",
+            ),
+            (
+                "chance_draw",
+                "=== function chance_draw() ===\n~ return chance(0.5)\n",
+            ),
+            (
+                "pick_draw",
+                "=== function pick_draw() ===\n~ temp a = #[1, 2, 3]\n~ return pick(a)\n",
+            ),
+            (
+                "shuffled_draw",
+                "=== function shuffled_draw() ===\n~ temp a = #[1, 2, 3]\n~ return shuffled(a)\n",
+            ),
+            (
+                "shuffle_stmt",
+                "VAR deck = 0\n=== function shuffle_stmt() ===\n~ shuffle(deck)\n~ return 0\n",
+            ),
+            (
+                "seed_stmt",
+                "=== function seed_stmt() ===\n~ seed(42)\n~ return 0\n",
+            ),
+        ];
+        for (name, src) in cases {
+            let (hir, index, res) = build(src);
+            let files = [(FileId(0), &hir)];
+            let rows = effects_project(&files, &index, &res, None);
+            let def = id_of(&index, name);
+            assert!(
+                rows[&def].writes.contains(&DefinitionId::RNG_CELL),
+                "`{name}`'s row must contain the RNG-cell write; got {:?}",
+                rows[&def].writes
+            );
+        }
+    }
+
+    /// The frozen ink spellings write the SAME cell — one RNG, two
+    /// surfaces, one row entry (no drift).
+    #[test]
+    fn frozen_ink_random_spellings_write_the_same_rng_cell() {
+        use brink_format::DefinitionId;
+        let cases: &[(&str, &str)] = &[
+            (
+                "roll_ink",
+                "=== function roll_ink() ===\n~ return RANDOM(1, 6)\n",
+            ),
+            (
+                "seed_ink",
+                "=== function seed_ink() ===\n~ SEED_RANDOM(9)\n~ return 0\n",
+            ),
+            (
+                "pick_ink",
+                "LIST moods = happy, sad\n=== function pick_ink() ===\n~ return LIST_RANDOM(moods)\n",
+            ),
+        ];
+        for (name, src) in cases {
+            let (hir, index, res) = build(src);
+            let files = [(FileId(0), &hir)];
+            let rows = effects_project(&files, &index, &res, None);
+            let def = id_of(&index, name);
+            assert!(
+                rows[&def].writes.contains(&DefinitionId::RNG_CELL),
+                "ink `{name}`'s row must contain the RNG-cell write; got {:?}",
+                rows[&def].writes
+            );
+        }
+    }
+
+    /// The unary `float(x)` conversion intrinsic stays pure — only the
+    /// nullary draw spelling touches the cell (the F4 arity split).
+    #[test]
+    fn unary_float_conversion_does_not_write_the_rng_cell() {
+        use brink_format::DefinitionId;
+        let src = "=== function conv(x) ===\n~ return float(x)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let def = id_of(&index, "conv");
+        assert!(
+            !rows[&def].writes.contains(&DefinitionId::RNG_CELL),
+            "unary float(x) is the conversion — no draw, no cell write"
+        );
+        // And the nullary draw is total: no fault path.
+        let src = "=== function draw() ===\n~ return float()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let draw = id_of(&index, "draw");
+        assert!(
+            !rows[&draw].faults,
+            "nullary float() has no argument and no fault path"
+        );
+    }
+
+    /// `shuffle(ref a)` records BOTH writes: the receiver cell (the #880
+    /// mutator-call lesson) and the RNG cell.
+    #[test]
+    fn shuffle_writes_both_the_receiver_and_the_rng_cell() {
+        use brink_format::DefinitionId;
+        let src = "VAR deck = 0\n=== function riffle() ===\n~ shuffle(deck)\n~ return 0\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let def = id_of(&index, "riffle");
+        let deck = id_of(&index, "deck");
+        assert!(rows[&def].writes.contains(&deck), "writes the receiver");
+        assert!(
+            rows[&def].writes.contains(&DefinitionId::RNG_CELL),
+            "writes the RNG cell"
+        );
+    }
+
+    /// The rng write propagates transitively like any other write atom —
+    /// a caller of a draw-bearing def carries the cell in its own row
+    /// (this is what makes the pure-gated machinery exclude draws for
+    /// free).
+    #[test]
+    fn rng_write_propagates_to_callers_through_the_fixpoint() {
+        use brink_format::DefinitionId;
+        let src = "=== function outer() ===\n~ return inner()\n\
+                   === function inner() ===\n~ return chance(0.25)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        for name in ["outer", "inner"] {
+            let def = id_of(&index, name);
+            assert!(
+                rows[&def].writes.contains(&DefinitionId::RNG_CELL),
+                "`{name}` must carry the transitive RNG-cell write"
+            );
+        }
+    }
+
     #[test]
     fn mutually_recursive_defs_share_the_unioned_row() {
         let src = "VAR gold = 0\nVAR hp = 10\n\
@@ -2296,6 +2445,194 @@ mod tests {
             !rows[&inc].writes.contains(&val),
             "inc's own body never names `val` — the write is only visible at \
              the call site, not inc's own atoms"
+        );
+    }
+
+    // ─── T2 §8 precision rung (docs/effects-spec.md §6 item 3/§8, issue #872):
+    // reading a concrete `EffectRow` off a stored `Ty::Fn` at an indirect/
+    // value call site, instead of the pessimal placeholder, when the origin
+    // is statically known ──────────────────────────────────────────────
+
+    /// The core narrowing case: a write-once local holding a `#fn(target)`
+    /// literal, called with the direct `f(args)` syntax. `user`'s row must
+    /// stop being pessimal and instead cover `bar`'s real row (the write to
+    /// `total`) — the exact improvement over the old unconditional-opaque
+    /// floor `a_call_through_a_function_value_is_pessimal` still pins for
+    /// the genuinely-unknown (param) case.
+    #[test]
+    fn known_fn_value_call_narrows_the_row_instead_of_pessimal() {
+        let src = "VAR total = 0\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function user() ===\n~ temp f = #fn(bar)\n~ return f()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let total = id_of(&index, "total");
+        assert!(
+            !rows[&user].opaque,
+            "a call through a write-once local with a known #fn origin must narrow, not stay pessimal"
+        );
+        assert!(
+            rows[&user].writes.contains(&total),
+            "the narrowed row must cover bar's real write to total"
+        );
+    }
+
+    /// Same shape, through the explicit `call(f, …)` intrinsic form —
+    /// `check_value_call`'s other caller.
+    #[test]
+    fn known_fn_value_call_intrinsic_form_narrows_the_row() {
+        let src = "VAR total = 0\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function user() ===\n~ temp f = #fn(bar)\n~ return call(f)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let total = id_of(&index, "total");
+        assert!(
+            !rows[&user].opaque,
+            "call(f) through a known origin must narrow"
+        );
+        assert!(rows[&user].writes.contains(&total));
+    }
+
+    /// A `bind(…)`-wrapped fn-value ("bound fn-values", the issue's own
+    /// phrasing) stored in a write-once local — `bind` never changes which
+    /// def eventually runs, so the origin still traces through.
+    #[test]
+    fn bound_fn_value_through_a_write_once_local_narrows() {
+        let src = "VAR total = 0\n\
+                   === function bar(n) ===\n~ total = total + n\n~ return total\n\
+                   === function user() ===\n~ temp f = bind(#fn(bar), 5)\n~ return call(f)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let total = id_of(&index, "total");
+        assert!(
+            !rows[&user].opaque,
+            "a bind()-wrapped known origin stored write-once must still narrow"
+        );
+        assert!(rows[&user].writes.contains(&total));
+    }
+
+    /// A fully inline `#fn(target)` literal passed straight into `call(…)`
+    /// with no intermediate local at all — no stored-value/write-count
+    /// question applies, so this narrows unconditionally.
+    #[test]
+    fn inline_fn_literal_at_the_call_site_narrows_without_a_stored_local() {
+        let src = "VAR total = 0\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function user() ===\n~ return call(#fn(bar))\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let total = id_of(&index, "total");
+        assert!(
+            !rows[&user].opaque,
+            "an inline #fn literal callee must narrow"
+        );
+        assert!(rows[&user].writes.contains(&total));
+    }
+
+    /// Conservative-total's sacred guard: a local reassigned to a *second*,
+    /// different known origin must stay pessimal — the write-once check must
+    /// actually gate on the whole body's write count, not just "some origin
+    /// was seen at some point". Regression shape for the exact hazard the
+    /// ground-truth harness (#885/#891 lineage) exists to catch: narrowing
+    /// this would under-report whichever branch didn't run at analysis time.
+    #[test]
+    fn a_local_reassigned_to_a_different_known_origin_stays_pessimal() {
+        let src = "VAR total = 0\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function baz() ===\n~ total = total + 100\n~ return total\n\
+                   === function user(cond) ===\n~ temp f = #fn(bar)\n\
+                   {cond:\n  ~ f = #fn(baz)\n}\n~ return f()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        assert!(
+            rows[&user].opaque,
+            "a reassigned local must not be trusted as write-once — narrowing here would be unsound"
+        );
+    }
+
+    /// Transitive composition: narrowing must feed the *same* SCC effect
+    /// fixpoint a direct call edge does, so a callee-of-the-callee's atoms
+    /// still propagate all the way up through the narrowed edge — not just
+    /// the immediately-dispatched def's own atoms.
+    #[test]
+    fn narrowed_call_composes_transitively_through_the_callees_own_callee() {
+        let src = "VAR total = 0\n\
+                   === function baz() ===\n~ total = total + 1\n~ return total\n\
+                   === function bar() ===\n~ return baz()\n\
+                   === function user() ===\n~ temp f = #fn(bar)\n~ return f()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let total = id_of(&index, "total");
+        assert!(
+            !rows[&user].opaque,
+            "narrowing to bar must not itself force pessimal"
+        );
+        assert!(
+            rows[&user].writes.contains(&total),
+            "bar's own row already transitively covers baz's write to total \
+             (ordinary direct-call SCC propagation) — user's narrowed edge to \
+             bar must inherit that whole row, not just bar's own direct atoms"
+        );
+    }
+
+    /// The pre-existing pessimal-floor regression must hold unchanged: an
+    /// `Unknown`-typed callee (a param with no traceable origin at all) still
+    /// gets no narrowing — `local_call_origin` only recognizes a bare `Temp`
+    /// name, and a param is never classified as `Local` at all now, so the
+    /// floor holds regardless of write count.
+    #[test]
+    fn a_call_through_an_unresolvable_param_stays_pessimal() {
+        let src = "=== function apply(cb) ===\n~ return cb(1)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let apply = id_of(&index, "apply");
+        assert!(
+            rows[&apply].opaque,
+            "a call through a function value with no known origin must stay pessimal"
+        );
+    }
+
+    /// Soundness regression (review finding on #872's initial landing): a
+    /// `Param` carries an implicit caller-provided initial value that
+    /// `local_write_counts` never sees. If a param is reassigned exactly
+    /// once inside the body, its whole-body write count reaches 1 — but any
+    /// call site *reachable before* that reassignment still runs against
+    /// the caller's arbitrary (unknown) fn value, not the known origin the
+    /// single write traces to. `local_call_origin` narrowing a `Param` the
+    /// same way it narrows a write-once `Temp` would incorrectly narrow
+    /// that earlier call site too, under-reporting whatever effects the
+    /// caller's actual callee has that `bar` doesn't. `apply`'s row must
+    /// stay opaque: `cb` is a `Param`, never eligible for `Local` narrowing
+    /// regardless of how many times it's written.
+    #[test]
+    fn a_param_reassigned_once_called_before_the_write_stays_pessimal() {
+        let src = "VAR total = 0\n\
+                   === function bar(n) ===\n~ total = total + n\n~ return total\n\
+                   === function apply(cb, guard) ===\n\
+                   {guard:\n  ~ return cb(1)\n}\n~ cb = #fn(bar)\n~ return cb(1)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let apply = id_of(&index, "apply");
+        assert!(
+            rows[&apply].opaque,
+            "a param reassigned exactly once inside the body must not narrow \
+             calls reachable before that reassignment — the param still holds \
+             the caller's arbitrary fn value there"
         );
     }
 

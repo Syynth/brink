@@ -19,10 +19,15 @@ use crate::error::RuntimeError;
 use crate::list_ops;
 use crate::program::Program;
 use crate::proj_ops;
+use crate::rand_ops;
+use crate::range_ops;
 use crate::record_ops;
 use crate::state::ContextAccess;
-use crate::story::{CallFrame, CallFrameType, ContainerPosition, Flow, PendingChoice, Stats};
+use crate::story::{
+    CallFrame, CallFrameType, ContainerPosition, ExecMode, Flow, PendingChoice, Stats,
+};
 use crate::string_ops;
+use crate::tower_ops;
 use crate::value_ops::{self, BinaryOp};
 
 /// Result of a single VM instruction step.
@@ -42,8 +47,33 @@ pub(crate) enum Stepped {
 /// Execute a single instruction (or bookkeeping operation).
 ///
 /// The caller is responsible for looping and for enforcing safety limits.
-#[expect(clippy::too_many_lines)]
+///
+/// Thin wrapper over [`step_impl`]: under the `effect-trace` feature it also
+/// records a tracked turn-terminating fault (NS-A2, issue #1108 — the
+/// `faults` row dimension's ground truth) against the definition scope that
+/// was executing when the fault fired, before propagating the error
+/// unchanged. A zero-cost passthrough in ordinary builds.
 pub(crate) fn step<R: crate::rng::StoryRng>(
+    flow: &mut Flow,
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    context: &mut (impl ContextAccess + ?Sized),
+    stats: &mut Stats,
+    resolver: Option<&dyn PluralResolver>,
+) -> Result<Stepped, RuntimeError> {
+    let result = step_impl::<R>(flow, program, line_tables, context, stats, resolver);
+    #[cfg(feature = "effect-trace")]
+    if let Err(e) = &result
+        && crate::effect_trace::is_tracked_fault(e)
+        && let Some(def) = effect_trace_current_def(flow, program)
+    {
+        crate::effect_trace::record_fault(def);
+    }
+    result
+}
+
+#[expect(clippy::too_many_lines)]
+fn step_impl<R: crate::rng::StoryRng>(
     flow: &mut Flow,
     program: &Program,
     line_tables: &[Vec<LineEntry>],
@@ -136,6 +166,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 .get(scope_idx)
                 .and_then(|lines| lines.get(idx as usize))
                 .map_or(brink_format::LineFlags::EMPTY, |entry| entry.flags);
+            note_effect_emit(flow, program);
             flow.output
                 .push_line_ref(pos.container_idx, idx, slots, flags);
         }
@@ -146,15 +177,18 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         }
         Opcode::EmitValue => {
             let val = flow.pop_value()?;
+            note_effect_emit(flow, program);
             flow.output.push_value_ref(val);
         }
         Opcode::EmitNewline => {
             flow.output.push_newline();
         }
         Opcode::Spring => {
+            note_effect_emit(flow, program);
             flow.output.push_spring();
         }
         Opcode::Glue => {
+            note_effect_emit(flow, program);
             flow.output.push_glue();
         }
         Opcode::EndChoice => {
@@ -231,7 +265,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         }
         Opcode::GotoIf(id) => {
             let val = flow.pop_value()?;
-            if value_ops::is_truthy(&val) {
+            if value_ops::is_truthy(&val)? {
                 goto_target(flow, program, context, id)?;
             }
         }
@@ -250,7 +284,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         }
         Opcode::JumpIfFalse(rel) => {
             let val = flow.pop_value()?;
-            if !value_ops::is_truthy(&val) {
+            if !value_ops::is_truthy(&val)? {
                 apply_jump(flow, rel)?;
             }
         }
@@ -303,6 +337,15 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
             let result = match val {
                 Value::Int(n) => Value::Int(-n),
                 Value::Float(n) => Value::Float(-n),
+                // Tower values negate componentwise (NS-A8, T3: glam's own
+                // `Neg` impls, wholesale — a vector is numeric).
+                Value::Vec2(v) => Value::Vec2(-v),
+                Value::Vec3(v) => Value::Vec3(-v),
+                Value::Vec4(v) => Value::Vec4(-v),
+                Value::Quat(q) => Value::Quat(-q),
+                Value::Mat2(m) => Value::Mat2(-m),
+                Value::Mat3(m) => Value::Mat3(-m),
+                Value::Mat4(m) => Value::Mat4(-m),
                 _ => {
                     return Err(RuntimeError::TypeError("cannot negate non-numeric".into()));
                 }
@@ -322,7 +365,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         Opcode::Not => {
             let val = flow.pop_value()?;
             flow.value_stack
-                .push(Value::Bool(!value_ops::is_truthy(&val)));
+                .push(Value::Bool(!value_ops::is_truthy(&val)?));
         }
         Opcode::And => binary(flow, program, BinaryOp::And)?,
         Opcode::Or => binary(flow, program, BinaryOp::Or)?,
@@ -338,6 +381,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
             flow.value_stack.push(val);
         }
         Opcode::SetGlobal(id) => {
+            guard_comparator_write(flow, "assigned a global variable")?;
             let idx = program
                 .resolve_global(id)
                 .ok_or(RuntimeError::UnresolvedGlobal(id))?;
@@ -384,6 +428,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
             let current = frame.temps.get(idx).cloned().unwrap_or(Value::Null);
             match current {
                 Value::VariablePointer(target_id) => {
+                    guard_comparator_write(flow, "assigned a global through a `ref` parameter")?;
                     let global_idx = program
                         .resolve_global(target_id)
                         .ok_or(RuntimeError::UnresolvedGlobal(target_id))?;
@@ -412,6 +457,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 // constructed only by `Opcode::MakeProjection`, itself
                 // emitted only for a real path-projection ref-argument).
                 Value::Projection(p) => {
+                    guard_comparator_write(flow, "wrote through a path projection")?;
                     proj_ops::write(program, context, p.cell, &p.segments, val)?;
                 }
                 _ => {
@@ -958,6 +1004,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
             flow.value_stack.push(result);
         }
         Opcode::ProjWrite => {
+            guard_comparator_write(flow, "wrote through a path projection")?;
             let value = flow.pop_value()?;
             let proj = flow.pop_value()?;
             let Some(p) = proj.as_projection() else {
@@ -1076,6 +1123,10 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
                 .push(Value::Int(flow.pending_choices.len() as i32));
         }
         Opcode::Random => {
+            // NS-A6: the frozen ink surface over the one RNG cell — same
+            // write the brink draw verbs record.
+            guard_comparator_write(flow, "advanced the RNG state (a draw is a write)")?;
+            note_effect_write(flow, program, DefinitionId::RNG_CELL);
             // Reference pops max first, then min.
             let max_val = flow.pop_value()?;
             let min_val = flow.pop_value()?;
@@ -1112,6 +1163,8 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
             flow.value_stack.push(Value::Int(result));
         }
         Opcode::SeedRandom => {
+            guard_comparator_write(flow, "reseeded the RNG (the RNG cell is world state)")?;
+            note_effect_write(flow, program, DefinitionId::RNG_CELL);
             let seed_val = flow.pop_value()?;
             let seed = match seed_val {
                 Value::Int(n) => n,
@@ -1140,6 +1193,7 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
             if let Some(tag_text) = flow.output.end_capture(program, line_tables, resolver) {
                 let tag = tag_text.trim().to_string();
                 flow.in_tag = false;
+                note_effect_tag(flow, program);
                 if flow.output.has_checkpoint() {
                     // Inside a capture (choice text, function call) — store
                     // for the choice/function to consume.
@@ -1167,7 +1221,11 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         Opcode::ListValue => list_ops::list_value(flow, program)?,
         Opcode::ListRange => list_ops::list_range(flow, program)?,
         Opcode::ListFromInt => list_ops::list_from_int(flow, program)?,
-        Opcode::ListRandom => list_ops::list_random::<R>(flow, context)?,
+        Opcode::ListRandom => {
+            guard_comparator_write(flow, "advanced the RNG state (a draw is a write)")?;
+            note_effect_write(flow, program, DefinitionId::RNG_CELL);
+            list_ops::list_random::<R>(flow, context)?;
+        }
 
         // ── Collections (T1b) ────────────────────────────────────────
         Opcode::ArrayNew(n) => collection_ops::array_new(flow, n)?,
@@ -1191,12 +1249,113 @@ pub(crate) fn step<R: crate::rng::StoryRng>(
         Opcode::RecordSet(offset) => record_ops::record_set(flow, offset)?,
 
         // ── Conversion intrinsics (TM-3 completion, #659) ────────────
-        Opcode::ConvertInt => conversion_ops::convert_to_int(flow)?,
+        // `int(x)` is ONE value-directed verb (NS-A5, `docs/stdlib-spec.md`
+        // §7): over a range operand it is `rand::int` — one uniform draw
+        // from the inhabited range, a write to the RNG cell — and over
+        // everything else it keeps its TM-3 conversion semantics. The
+        // dispatch happens here on the *runtime* operand because gradual
+        // mode cannot classify the call site statically (an unannotated
+        // temp holding a range must still draw); under `types = strict`
+        // the checker has already proven which leg runs (and demanded the
+        // NonEmptyRange evidence for the draw leg, E117).
+        Opcode::ConvertInt => {
+            if matches!(flow.value_stack.last(), Some(Value::Range { .. })) {
+                guard_comparator_write(flow, "advanced the RNG state (a draw is a write)")?;
+                note_effect_write(flow, program, DefinitionId::RNG_CELL);
+                rand_ops::rand_int::<R>(flow, context)?;
+            } else {
+                conversion_ops::convert_to_int(flow)?;
+            }
+        }
         Opcode::ConvertFloat => conversion_ops::convert_to_float(flow)?,
         Opcode::ConvertString => conversion_ops::convert_to_string(flow, program)?,
 
         // ── Stdlib slice 1 completion (#857) ─────────────────────────
         Opcode::CharAt => string_ops::char_at(flow)?,
+
+        // ── NS-A1: Option[T] + the ruled stdlib flips (#1107) ────────
+        Opcode::PushNone => flow.value_stack.push(Value::none()),
+        Opcode::MakeSome => {
+            let inner = flow.pop_value()?;
+            flow.value_stack.push(Value::some(inner));
+        }
+        Opcode::StrFind => string_ops::str_find(flow)?,
+        Opcode::SeqIndexOf => collection_ops::seq_index_of(flow)?,
+        Opcode::SeqMin => collection_ops::seq_min(flow)?,
+        Opcode::SeqMax => collection_ops::seq_max(flow)?,
+        Opcode::SeqFirst => collection_ops::seq_first(flow)?,
+        Opcode::SeqLast => collection_ops::seq_last(flow)?,
+        Opcode::SeqPop => collection_ops::seq_pop(flow)?,
+        Opcode::MapGetOpt => collection_ops::map_get_opt(flow)?,
+        Opcode::MapContainsValue => collection_ops::map_contains_value(flow)?,
+        Opcode::MapClear => collection_ops::map_clear(flow)?,
+
+        // ── NS-A6: the `std::rand` draw verbs (#1112,
+        // `docs/stdlib-spec.md` §7). Every draw is an ordinary write to
+        // the one RNG cell (`DefinitionId::RNG_CELL`) — recorded for the
+        // ground-truth harness exactly like a global-cell write. The
+        // frozen ink ops (`Random`/`SeedRandom`/`ListRandom`) write the
+        // same cell and carry the same instrumentation at their own
+        // arms. ─────────────────────────────────────────────────────────
+        Opcode::RandFloat => {
+            guard_comparator_write(flow, "advanced the RNG state (a draw is a write)")?;
+            note_effect_write(flow, program, DefinitionId::RNG_CELL);
+            rand_ops::rand_float::<R>(flow, context);
+        }
+        Opcode::RandChance => {
+            guard_comparator_write(flow, "advanced the RNG state (a draw is a write)")?;
+            note_effect_write(flow, program, DefinitionId::RNG_CELL);
+            rand_ops::rand_chance::<R>(flow, context)?;
+        }
+        Opcode::RandPick => {
+            guard_comparator_write(flow, "advanced the RNG state (a draw is a write)")?;
+            note_effect_write(flow, program, DefinitionId::RNG_CELL);
+            rand_ops::rand_pick::<R>(flow, context)?;
+        }
+        Opcode::RandShuffle => {
+            guard_comparator_write(flow, "advanced the RNG state (a draw is a write)")?;
+            note_effect_write(flow, program, DefinitionId::RNG_CELL);
+            rand_ops::rand_shuffle::<R>(flow, context)?;
+        }
+
+        // ── NS-A5: range values + the inhabited-range refinement
+        // (#1111, `docs/stdlib-spec.md` §7, F7/F8). Construction and the
+        // `non_empty` validator are pure — no draw, no RNG-cell write;
+        // the draw leg of `int(range)` rides `ConvertInt` above. ────────
+        Opcode::RangeMakeExcl => range_ops::range_make(flow, false)?,
+        Opcode::RangeMakeIncl => range_ops::range_make(flow, true)?,
+        Opcode::RangeNonEmpty => range_ops::range_non_empty(flow)?,
+
+        // ── NS-A4: the ordering verbs (#1110, `docs/stdlib-spec.md`
+        // §4b). `SeqSorted` is pure placement (dev NaN-fault / prod
+        // pinned order — `collection_ops`); `SeqSortedBy` re-enters the
+        // VM to run the user comparator (see `call_comparator`). ────────
+        Opcode::SeqSorted => collection_ops::seq_sorted(flow)?,
+        Opcode::SeqSortedBy => {
+            seq_sorted_by::<R>(flow, program, line_tables, context, stats, resolver)?;
+        }
+
+        // ── NS-A8: the numeric tower (#1114) — constructors + verbs.
+        // Pure: no reads, no writes, no draws; wrong-operand-type is the
+        // only fault path (`tower_ops`' module doc).
+        Opcode::Tower(op) => tower_ops::tower_op(flow, op)?,
+
+        // ── NS-A7: collections+ (#1113, `docs/stdlib-spec.md` §8) —
+        // `Weighted[T]` construction, the `roll` draw (an RNG-cell write
+        // like every draw), and the humble heap (ordering per the §4b
+        // comparison core; `heap_push` carries the dev/prod NaN entry
+        // check). ───────────────────────────────────────────────────────
+        Opcode::Collect(op) => match op {
+            brink_format::CollectOp::WeightedNew => collection_ops::weighted_new(flow)?,
+            brink_format::CollectOp::RandRoll => {
+                guard_comparator_write(flow, "advanced the RNG state (a draw is a write)")?;
+                note_effect_write(flow, program, DefinitionId::RNG_CELL);
+                rand_ops::rand_roll::<R>(flow, context)?;
+            }
+            brink_format::CollectOp::HeapPush => collection_ops::heap_push(flow)?,
+            brink_format::CollectOp::HeapPop => collection_ops::heap_pop(flow)?,
+            brink_format::CollectOp::HeapPeek => collection_ops::heap_peek(flow)?,
+        },
 
         // ── External functions ──────────────────────────────────────
         Opcode::CallExternal(fn_id, arg_count) => {
@@ -1295,6 +1454,42 @@ fn note_effect_write(flow: &Flow, program: &Program, cell: DefinitionId) {
 #[inline(always)]
 fn note_effect_write(_flow: &Flow, _program: &Program, _cell: DefinitionId) {}
 
+/// NS-A2 (issue #1108): record a content emission — but only on the
+/// *visible* output channel. Pushes routed into a string-eval capture
+/// (`BeginStringEval`, tag collection, function-return capture) build
+/// transient values, not player-visible content, and the static `emits`
+/// dimension deliberately does not model them — the observation side
+/// under-approximates there, which is the sound direction for the
+/// observed ⊆ declared assertion. Fragment captures (choice text, line
+/// slots) are visible content in principle, but `in_capture()` skips
+/// them too — the observation side under-approximates there as well
+/// (same sound direction); the static harvest still declares them.
+#[cfg(feature = "effect-trace")]
+fn note_effect_emit(flow: &Flow, program: &Program) {
+    if flow.output.in_capture() {
+        return;
+    }
+    if let Some(def) = effect_trace_current_def(flow, program) {
+        crate::effect_trace::record_emit(def);
+    }
+}
+#[cfg(not(feature = "effect-trace"))]
+#[inline(always)]
+fn note_effect_emit(_flow: &Flow, _program: &Program) {}
+
+/// NS-A2 (issue #1108): record a tag-channel touch — every `EndTag`
+/// destination (line tag, fragment tag, captured choice/function tag) is a
+/// tag the host can observe.
+#[cfg(feature = "effect-trace")]
+fn note_effect_tag(flow: &Flow, program: &Program) {
+    if let Some(def) = effect_trace_current_def(flow, program) {
+        crate::effect_trace::record_tag(def);
+    }
+}
+#[cfg(not(feature = "effect-trace"))]
+#[inline(always)]
+fn note_effect_tag(_flow: &Flow, _program: &Program) {}
+
 #[cfg(feature = "effect-trace")]
 fn note_effect_call(flow: &Flow, program: &Program, fn_id: DefinitionId) {
     if let Some(def) = effect_trace_current_def(flow, program)
@@ -1329,6 +1524,16 @@ fn value_type_name(v: &Value) -> &'static str {
         Value::FnRef(_) | Value::Closure(_) => "fn",
         Value::Handle { .. } => "handle",
         Value::Projection(_) => "projection",
+        Value::OptionVal(_) => "option",
+        Value::Range { .. } => "range",
+        Value::Vec2(_) => "vec2",
+        Value::Vec3(_) => "vec3",
+        Value::Vec4(_) => "vec4",
+        Value::Quat(_) => "quat",
+        Value::Mat2(_) => "mat2",
+        Value::Mat3(_) => "mat3",
+        Value::Mat4(_) => "mat4",
+        Value::Weighted(_) => "weighted",
     }
 }
 
@@ -1545,6 +1750,249 @@ fn enter_fn_value(
     });
     stats.frames_pushed += 1;
     Ok(())
+}
+
+/// F34 (ruled 2026-07-19): the dev-mode world-write guard for comparator
+/// frames. Called at each VM write seam — global assignment (direct, or
+/// write-through via a `ref`-parameter pointer / path projection) and every
+/// RNG-cell advance — *before* the write lands. Inside a comparator
+/// (`flow.comparator_depth > 0`) under [`ExecMode::Dev`] the write is the
+/// turn-terminating [`RuntimeError::ComparatorWroteState`] fault; under
+/// [`ExecMode::Prod`] the check is skipped entirely and the write executes
+/// (defined + deterministic — the stable merge-sort's comparison sequence
+/// is fixed). Outside a comparator this is a single predictable
+/// depth-is-zero branch on data already in `Flow` — no instrumentation
+/// threads through the production write path.
+///
+/// Deliberately NOT guarded:
+/// - visit/turn-count increments — the comparator's own in-story dispatch
+///   counts visits by rule (NS-A4), so a comparator calling knot functions
+///   stays legal in both modes;
+/// - reads (`GetGlobal`) — E119's static bound owns the read posture; and
+///   the read half of an RMW (`TakeGlobal`/`TakeTemp`-via-pointer, which
+///   transiently nulls the cell): codegen pairs every take with a
+///   write-back, so the guard fires at the write-back before the cell is
+///   overwritten, and the fault is turn-terminating anyway;
+/// - shuffle sequences — they derive a fresh RNG from `path_hash` + visit
+///   count + story seed and never advance the RNG cell.
+#[inline]
+fn guard_comparator_write(flow: &Flow, what: &'static str) -> Result<(), RuntimeError> {
+    if flow.comparator_depth > 0 && flow.exec_mode == ExecMode::Dev {
+        return Err(RuntimeError::ComparatorWroteState {
+            verb: "sort_by",
+            what,
+        });
+    }
+    Ok(())
+}
+
+/// Per-comparator-call step budget for `sort_by`/`sorted_by` (NS-A4). The
+/// whole sort runs inside ONE outer VM step, so the driver-level step
+/// limit can't interrupt a divergent comparator — this local cap does
+/// (the "VM tests must not hang" discipline). Nested comparator steps
+/// still bump `stats.steps`, so they also count against the outer
+/// driver's budget once the op returns.
+const COMPARATOR_STEP_LIMIT: u64 = 1_000_000;
+
+/// Maximum in-flight nested comparator evaluations (a comparator that
+/// itself sorts with a comparator recurses through `step` on the Rust
+/// stack — this bounds that recursion).
+const COMPARATOR_DEPTH_LIMIT: u16 = 8;
+
+/// `SeqSortedBy` (NS-A4, `docs/stdlib-spec.md` §4b, F0 ruled 2026-07-19):
+/// `[a, cmp]` → `[a']` — sort by a user comparator function value
+/// `fn(T, T): int` (negative = less, zero = tie, positive = greater).
+/// Stable; the §4b guarantee floor ("some permutation of the input, never
+/// worse") holds by construction. One op serves `sort_by` (statement-only,
+/// RMW write-back) and `sorted_by` (functional), so faults name `sort_by`.
+///
+/// No NaN pre-scan here (F14: `sort_by` does not inherit `F:float` — the
+/// comparator owns the element semantics); the comparator's own faults
+/// propagate as turn-terminating faults, and comparator misbehavior the VM
+/// can observe (choices, `-> DONE`/`-> END`, external calls, divergence)
+/// is [`RuntimeError::ComparatorEscaped`].
+fn seq_sorted_by<R: crate::rng::StoryRng>(
+    flow: &mut Flow,
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    context: &mut (impl ContextAccess + ?Sized),
+    stats: &mut Stats,
+    resolver: Option<&dyn PluralResolver>,
+) -> Result<(), RuntimeError> {
+    let cmp = flow.pop_value()?;
+    let container = flow.pop_value()?;
+    let Value::Array(items) = &container else {
+        return Err(RuntimeError::StdlibWrongType {
+            verb: "sort_by",
+            expected: "an array",
+            found: value_type_name(&container),
+        });
+    };
+    if !matches!(cmp, Value::FnRef(_) | Value::Closure(_)) {
+        return Err(RuntimeError::ComparatorNotAFunction {
+            verb: "sort_by",
+            found: value_type_name(&cmp),
+        });
+    }
+    if flow.comparator_depth >= COMPARATOR_DEPTH_LIMIT {
+        return Err(RuntimeError::ComparatorEscaped {
+            verb: "sort_by",
+            what: "recursed past the nesting depth limit",
+        });
+    }
+    let mut sorted: Vec<Value> = items.as_ref().clone();
+    flow.comparator_depth += 1;
+    let result = collection_ops::fallible_stable_sort(&mut sorted, &mut |a, b| {
+        call_comparator::<R>(
+            flow,
+            program,
+            line_tables,
+            context,
+            stats,
+            resolver,
+            &cmp,
+            a.clone(),
+            b.clone(),
+        )
+    });
+    flow.comparator_depth -= 1;
+    result?;
+    flow.value_stack.push(Value::array(sorted));
+    Ok(())
+}
+
+/// Evaluate a `sort_by`/`sorted_by` comparator function value against one
+/// pair of comparands, re-entrantly, inside the current opcode: push a
+/// boundary frame (`FunctionEvalFromGame`, `return_address: None` — the
+/// `begin_function_eval` shape), drive [`step`] until the frame pops, and
+/// read the return value off the value stack. Output is captured and
+/// discarded (comparators are silent by contract; the checker enforces it
+/// where the comparator's origin is provable — E119 — and this isolation
+/// is the gradual-mode residual, mirroring `begin_function_eval`).
+///
+/// In-story dispatch semantics apply (visit counting, exactly like
+/// `enter_fn_value`); comparator behavior the VM cannot honor mid-op —
+/// choices, `-> DONE`/`-> END`, external calls (there is no handler down
+/// here), divergence past [`COMPARATOR_STEP_LIMIT`] — is a
+/// turn-terminating [`RuntimeError::ComparatorEscaped`] fault. A non-int
+/// return is [`RuntimeError::ComparatorReturnType`].
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the VM environment (the step signature) plus the callee and comparands"
+)]
+fn call_comparator<R: crate::rng::StoryRng>(
+    flow: &mut Flow,
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    context: &mut (impl ContextAccess + ?Sized),
+    stats: &mut Stats,
+    resolver: Option<&dyn PluralResolver>,
+    cmp: &Value,
+    a: Value,
+    b: Value,
+) -> Result<core::cmp::Ordering, RuntimeError> {
+    const VERB: &str = "sort_by";
+    let (container_idx, target, full_args) = prepare_fn_value_call(program, cmp, vec![a, b])?;
+
+    let value_floor = flow.value_stack.len();
+    let choice_floor = flow.pending_choices.len();
+    let thread_floor = flow.threads.len();
+
+    // Isolate output: anything the comparator emits routes to the capture
+    // scratch space and never reaches the transcript.
+    flow.output.begin_capture();
+    let output_start = flow.output.target_len();
+
+    // In-story dispatch counts visits, exactly like `enter_fn_value`.
+    let counting_flags = program.container(container_idx).counting_flags;
+    if counting_flags.contains(CountingFlags::VISITS) {
+        context.increment_visit(target);
+        context.set_turn_count(target, context.turn_index());
+    }
+
+    let depth_floor = flow.current_thread().call_stack.len();
+    flow.current_thread_mut().call_stack.push(CallFrame {
+        return_address: None,
+        temps: Vec::new(),
+        container_stack: vec![ContainerPosition {
+            container_idx,
+            offset: 0,
+        }],
+        frame_type: CallFrameType::FunctionEvalFromGame,
+        external_fn_id: None,
+        function_output_start: Some(output_start),
+    });
+    stats.frames_pushed += 1;
+    for v in full_args {
+        flow.value_stack.push(v);
+    }
+
+    let mut steps = 0u64;
+    let outcome: Result<(), RuntimeError> = loop {
+        steps += 1;
+        stats.steps += 1;
+        if steps > COMPARATOR_STEP_LIMIT {
+            break Err(RuntimeError::ComparatorEscaped {
+                verb: VERB,
+                what: "exceeded the nested evaluation step budget",
+            });
+        }
+        let stepped = match step::<R>(flow, program, line_tables, context, stats, resolver) {
+            Ok(s) => s,
+            Err(e) => break Err(e),
+        };
+        match stepped {
+            Stepped::Done | Stepped::Ended => {
+                break Err(RuntimeError::ComparatorEscaped {
+                    verb: VERB,
+                    what: "reached `-> DONE`/`-> END`",
+                });
+            }
+            Stepped::ExternalCall => {
+                break Err(RuntimeError::ComparatorEscaped {
+                    verb: VERB,
+                    what: "called an external function",
+                });
+            }
+            Stepped::Continue | Stepped::ThreadCompleted => {}
+        }
+        if flow.pending_choices.len() > choice_floor {
+            break Err(RuntimeError::ComparatorEscaped {
+                verb: VERB,
+                what: "presented a choice",
+            });
+        }
+        // Boundary frame popped (and any forked threads unwound) — the
+        // comparator has returned.
+        if flow.threads.len() <= thread_floor
+            && flow.current_thread().call_stack.len() <= depth_floor
+        {
+            break Ok(());
+        }
+    };
+    // End the capture on every path — discard whatever the comparator
+    // emitted (silent by contract; see the fn docs).
+    let _captured = flow.output.end_capture(program, line_tables, resolver);
+    outcome?;
+
+    let mut ret: Option<Value> = None;
+    while flow.value_stack.len() > value_floor {
+        let v = flow.value_stack.pop();
+        if ret.is_none() {
+            ret = v;
+        }
+    }
+    match ret {
+        Some(Value::Int(i)) => Ok(i.cmp(&0)),
+        Some(other) => Err(RuntimeError::ComparatorReturnType {
+            verb: VERB,
+            found: value_type_name(&other),
+        }),
+        None => Err(RuntimeError::ComparatorReturnType {
+            verb: VERB,
+            found: "no return value",
+        }),
+    }
 }
 
 fn resolve_line(
@@ -1920,7 +2368,7 @@ fn handle_begin_choice(
     // 1. Pop condition first (it was evaluated last, so it's on top).
     if flags.has_condition {
         let condition = flow.pop_value()?;
-        if !value_ops::is_truthy(&condition) {
+        if !value_ops::is_truthy(&condition)? {
             if has_display {
                 let _ = flow.value_stack.pop();
             }
@@ -2093,4 +2541,64 @@ fn handle_shuffle_sequence<R: crate::rng::StoryRng>(
     // Should not reach here.
     flow.value_stack.push(Value::Int(0));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::output::OutputBuffer;
+
+    /// A bare `Flow` for exercising [`guard_comparator_write`] — only
+    /// `comparator_depth` and `exec_mode` matter to the guard.
+    fn test_flow() -> Flow {
+        Flow {
+            threads: Vec::new(),
+            value_stack: Vec::new(),
+            output: OutputBuffer::new(),
+            pending_choices: Vec::new(),
+            current_tags: Vec::new(),
+            in_tag: false,
+            skipping_choice: false,
+            did_safe_exit: false,
+            did_unsafe_yield: false,
+            exec_mode: ExecMode::default(),
+            comparator_depth: 0,
+        }
+    }
+
+    // ── F34: the comparator write-guard seam ─────────────────────────────
+
+    #[test]
+    fn guard_is_inert_outside_a_comparator_in_both_modes() {
+        let mut flow = test_flow();
+        assert_eq!(flow.exec_mode, ExecMode::Dev, "dev is the default");
+        assert!(guard_comparator_write(&flow, "assigned a global variable").is_ok());
+        flow.exec_mode = ExecMode::Prod;
+        assert!(guard_comparator_write(&flow, "assigned a global variable").is_ok());
+    }
+
+    #[test]
+    fn guard_faults_inside_a_comparator_under_dev() {
+        let mut flow = test_flow();
+        flow.comparator_depth = 1;
+        let err = guard_comparator_write(&flow, "assigned a global variable").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                RuntimeError::ComparatorWroteState {
+                    verb: "sort_by",
+                    what: "assigned a global variable",
+                }
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn guard_is_skipped_inside_a_comparator_under_prod() {
+        let mut flow = test_flow();
+        flow.comparator_depth = 1;
+        flow.exec_mode = ExecMode::Prod;
+        assert!(guard_comparator_write(&flow, "assigned a global variable").is_ok());
+    }
 }

@@ -15,10 +15,16 @@
 //! other reference uses, and its callee's row is consulted. A call to a
 //! pure knot/stitch contributes an empty row (fine); a call to one that writes
 //! a global or performs an effectful call carries that through; a direct
-//! `EXTERNAL` call is itself a call-atom (not read-only). A bare fn-value
-//! *reference* used as a dynamic condition (`await some_fn_value`, no call
-//! syntax) contributes no call atom and is read-only by construction — spec §3
-//! lists it as a valid form, so it is never flagged.
+//! `EXTERNAL` call is itself a call-atom (not read-only). An **unresolved**
+//! single-segment callee — the stdlib-intrinsic shadow-fallback shape — is
+//! judged against the one shared intrinsic effect table
+//! ([`crate::infer::intrinsic_effects`], issue #1128): a draw-bearing
+//! (`await chance(0.5)`) or fault-bearing (`await pop(a)`) intrinsic
+//! directly in the condition is rejected exactly like a callee whose row
+//! carries those atoms. A bare fn-value *reference* used as a dynamic
+//! condition (`await some_fn_value`, no call syntax) contributes no call
+//! atom and is read-only by construction — spec §3 lists it as a valid
+//! form, so it is never flagged.
 //!
 //! Brink-only, same posture as the other effect passes: under strict-ink the
 //! whole `await` is already rejected (`E051`), so critiquing its condition
@@ -167,6 +173,10 @@ fn collect_call_callees(
             collect_call_callees(&idx.index, by_range, out);
         }
         Expr::FieldAccess(fa) => collect_call_callees(&fa.base, by_range, out),
+        Expr::Range(r) => {
+            collect_call_callees(&r.start, by_range, out);
+            collect_call_callees(&r.end, by_range, out);
+        }
         Expr::ArrayLiteral(a) => {
             for e in &a.elements {
                 collect_call_callees(e, by_range, out);
@@ -230,7 +240,7 @@ impl Ctx<'_> {
         }
         match expr {
             Expr::Call(path, args) => {
-                if self.call_is_effectful(path.range) {
+                if self.call_is_effectful(path, args.len()) {
                     *effectful = true;
                     return;
                 }
@@ -248,6 +258,12 @@ impl Ctx<'_> {
                 self.walk_expr(&idx.index, effectful);
             }
             Expr::FieldAccess(fa) => self.walk_expr(&fa.base, effectful),
+            // Range bounds evaluate on every condition re-check, so a call
+            // nested in one is a real atom of the condition.
+            Expr::Range(r) => {
+                self.walk_expr(&r.start, effectful);
+                self.walk_expr(&r.end, effectful);
+            }
             Expr::ArrayLiteral(a) => {
                 for e in &a.elements {
                     self.walk_expr(e, effectful);
@@ -286,15 +302,33 @@ impl Ctx<'_> {
         }
     }
 
-    /// Whether a call whose callee is at `range` performs a non-read-only
-    /// effect. Resolves the callee through the resolution map: a knot/stitch
-    /// callee is judged by its (transitively closed) effect row; a direct
-    /// `EXTERNAL` callee is a call-atom and therefore not read-only; an
-    /// unresolved callee (already an error elsewhere) or a fn-value call is
-    /// left to the LIR fence and not double-reported here.
-    fn call_is_effectful(&self, range: TextRange) -> bool {
+    /// Whether a call whose callee is `path` (with `arg_count` arguments)
+    /// performs a non-read-only effect. Resolves the callee through the
+    /// resolution map: a knot/stitch callee is judged by its (transitively
+    /// closed) effect row; a direct `EXTERNAL` callee is a call-atom and
+    /// therefore not read-only.
+    ///
+    /// An **unresolved single-segment** callee is the stdlib-intrinsic
+    /// shadow-fallback shape (a real def always wins resolution first, the
+    /// same dispatch rule `infer::body::infer_intrinsic` follows) — judged
+    /// against the ONE shared intrinsic effect table (issue #1128,
+    /// [`crate::infer::intrinsic_effects`]): a draw (`await chance(0.5)` —
+    /// an RNG-cell write, NS-A6's "draws are writes") or a fault-bearing
+    /// verb (`await pop(a)`) makes condition re-evaluation observable,
+    /// exactly the class the resolved-callee row check already rejects.
+    /// Before this consult the direct-intrinsic shape silently escaped E105
+    /// because only resolved callees' rows were judged. Any other
+    /// unresolved callee (a multi-segment path — already an error
+    /// elsewhere) or a fn-value call is left to the LIR fence and not
+    /// double-reported here.
+    fn call_is_effectful(&self, path: &brink_ir::Path, arg_count: usize) -> bool {
+        let range = path.range;
         let key = (range.start().into(), range.end().into());
         let Some(&def) = self.by_range.get(&key) else {
+            if let [seg] = path.segments.as_slice() {
+                let fx = crate::infer::intrinsic_effects(&seg.text, arg_count);
+                return fx.rng_write || fx.faults;
+            }
             return false;
         };
         if let Some(row) = self.rows.get(&def) {

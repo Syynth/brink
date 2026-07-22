@@ -16,6 +16,10 @@ brink-compiler = { workspace = true }
 brink-driver = { workspace = true }
 brink-ir = { workspace = true }
 brink-codegen-inkb = { workspace = true }
+# For `corpus::explore_from_brink_native` (first-light, #1106): the native
+# `.brink` frontend, composed by hand (no `brink-db`/salsa, no INCLUDE
+# graph) — see that function's doc for why this is the honest minimal path.
+brink-syntax-native = { workspace = true }
 # For the editor_session_bench bin (#529): drives ProjectDb directly and
 # reads its salsa memo-table snapshot. `memory-introspection` is brink-db's
 # explicit opt-in to salsa's `salsa_unstable` introspection surface (see that

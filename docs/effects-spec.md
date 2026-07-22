@@ -29,8 +29,18 @@ Three layers, never conflated:
   effects; code emits them.
 - **Rows** are static summaries of possible atoms:
   `{reads: CellSet, writes: CellSet, calls: KindSet}` — **unordered
-  sets** (ordering is the journal's contract, not the row's). Every
-  atom is absorbed into the *enclosing definition's* row.
+  sets** (ordering is the journal's contract, not the row's) — plus,
+  since NS-A2 (#1108, from #1087/#1097), three boolean **dimensions**:
+  `emits` (may produce content — narration/dialogue fragments; glue-only
+  output counts; tag-only lines do NOT), `tags` (may touch the tag
+  channel — the independent metadata sibling, per the 2026-07-18 ruling
+  refinement), and `faults` (may raise a turn-terminating domain fault —
+  E078-lineage conversions, OOB indexing, missing-key reads, division by
+  zero, the NS-A1 stdlib faults, projection invalidation, value-call
+  dispatch faults; per-fault-kind granularity is the reserved
+  refinement). All three are conservative-total and inferred by the same
+  per-SCC fixpoint as the sets. Every atom is absorbed into the
+  *enclosing definition's* row.
 - **Types**: `Ty::Fn` is the **only** row-carrying type constructor —
   a function value is the only data that encapsulates pending
   computation. `fn(int): int ⟨reads: gold⟩` means *calling it* reads
@@ -159,14 +169,43 @@ scheduling sound as content loads.
   no reproducibility problem for a pin artifact to solve. The shipped
   `.inkb` rows are the frozen record; a checked-in generated row file
   is rejected as compiler output cosplaying as input.
-- **The only contract is the optional inline assertion**:
-  `#@effects(reads: gold, calls: audio)` declares an upper bound;
-  inference exceeding it is a compile error. `#@effects(pure)` is
-  sugar for the empty row (the tooling-trust case). Nothing else
-  errors or warns — there is no drift policy because there is nothing
-  to drift against. Drift *visibility* is tooling: a `brink ide`
-  effects-diff subcommand (CI-surfaceable as a PR comment) and IDE
-  hover.
+- **The only contract is the optional inline assertion.**
+  **SUPERSEDED SPELLING (NS-A2, #1108; stdlib-spec §9.2, ruled
+  2026-07-18; clause grammar AMENDED 2026-07-19 to the Rust-meta-item
+  paren shape, issue #1120):** the assertion's final form is the
+  **annotation line** `@[effects(…)]`, with args from `{pure, silent,
+  total}` (any subset, comma-joined) plus **parenthesized**
+  `reads(…)`/`writes(…)`/`calls(…)` clauses — bare top-level idents are
+  always flags, so a flag can never be swallowed into an open clause.
+  `@[effects(reads(gold), calls(audio))]` declares an upper bound on
+  the state row; `@[effects(pure)]` asserts the empty state row (the
+  tooling-trust case); `@[effects(silent)]` asserts no `emits` (tags
+  are NOT bounded by `silent` — the no-tags arg has no ruled spelling
+  v1); `@[effects(total)]` asserts no `faults`. All exceedance-only
+  (`E103` state, `E108` silent, `E109` total) — asserting less than
+  reality is legal. The old tag-channel spelling `#@effects(…)` shipped
+  in released surface (`@brink-lang/web@0.11.1`) and stays a
+  **deprecation alias**: its legacy `reads:`-colon clause grammar is
+  FROZEN as-is, same checks, plus an `E110` warning. Nothing else errors or warns — there is no drift
+  policy because there is nothing to drift against. Drift *visibility*
+  is tooling: a `brink ide` effects-diff subcommand (CI-surfaceable as a
+  PR comment) and IDE hover (both show the emits/tags/faults dimensions
+  alongside the sets since NS-A2).
+- **The RNG cell (NS-A6, #1112; stdlib-spec §7, ruled 2026-07-18).**
+  RNG state is a named runtime state cell owned by `std::rand`
+  (`DefinitionId::RNG_CELL` — the `rng_seed`/`previous_random` pair
+  stories have always saved); every draw is an ordinary **write** to it
+  in the row, on both surfaces (the frozen ink
+  `RANDOM`/`SEED_RANDOM`/`LIST_RANDOM` and the brink draw verbs). No new
+  row dimension. In `reads(…)`/`writes(…)` clauses the cell is spelled
+  **`rng`** (`@[effects(writes(rng))]` covers a draw-bearing def); a
+  user-declared `VAR`/`CONST` named `rng` shadows the spelling, per the
+  general stdlib shadowing rule. Consequences fall out of existing
+  machinery: `@[effects(pure)]` asserts rng-freedom (E103 names `rng`),
+  and the wake-condition purity gate (E105) rejects draw-bearing
+  conditions. Ink **shuffle sequences** (`{~a|b}`) are unchanged: they
+  derive from the seed + visit index without advancing the cell (a cell
+  *read*, which rows do not model — the pre-existing posture).
 - **Default-public entry set.** Every knot/stitch ships its row — no
   `#@entry` marker exists (play-from-here already makes any knot a
   host entry). `#@private` opts out: not an entry point, row stays
@@ -192,7 +231,13 @@ design round is CLOSED; everything remaining is implementation.
 - **Format**: `EffectRows` (VERSION 4 reserved, section-locally
   versioned) ships **factored rows** — direct part + per-dispatch
   entries `{cell, narrowable, static fallback}` — plus the
-  `DefinitionId → row` table. Flat rows are rejected: they
+  `DefinitionId → row` table. NS-A2 (#1108) bumped the section-local
+  version 2 → 3: every `DirectEffects` block carries a trailing
+  extension-flags byte (bit 0 `emits`, bit 1 `tags`, bit 2 `faults`;
+  bits 3–7 reserved and strict-rejected — per-fault-kind granularity is
+  the named future occupant, graduating via the next section-version
+  bump, the same reservation discipline as the capability/handle
+  slots). Flat rows are rejected: they
   structurally foreclose §7. **Capability atoms carry a reserved
   parameter slot** (ruled 2026-07-14, t1d-spec §7): an atom may be
   handle-parameterized (`Transform(@argN)`); v1 populates every atom
@@ -307,9 +352,13 @@ in the host half is settled above.
 
 Sleeping is a bevy-brink API, not an ink construct. The game sets a
 flow's **standing wake policy**; ink authors write ordinary knots. A
-language-level `await {cond}` primitive is recorded as a **future
-direction** (a real design round: new park kind, save/replay
-semantics) — attractive later, not foreclosed, not v1.
+language-level `await {cond}` primitive **is planned, not deferred** —
+subsequently ruled as statement-position syntax in
+`flow-suspension-spec.md` §3 (2026-07-16). (The earlier "future
+direction, not v1" wording here is **superseded spec drift**, corrected
+2026-07-21.) Host-driven reactive sleep (this section) and in-language
+`await` are **complementary**, not competing: the host sets a standing
+policy on ordinary knots; `await` is the author-written park form.
 
 **The wake contract** (ruled precisely):
 
@@ -365,3 +414,103 @@ The ruled semantics (serial host stepping = immediate write
 visibility; batch scheduling = frame-start consistency, §12.4) get a
 book section with the host implementation. Documentation deliverable
 only.
+
+
+## 14. Native-surface amendment — the row is the unified effect signature (AMENDED 2026-07-21)
+
+Ruled in the block/effect/coroutine design sitting (see
+`docs/block-effect-model.md` and the decision-log entry of this date).
+This **extends §2's row model** — it does not replace it. It deliberately
+reopens the "row dimensions" question that the §10 tail marked closed;
+the maintainer ruled the reopening. Everything in §1–§13 stands.
+
+### 14.1 The row is THE canonical effect signature — RULED
+
+Every consumer queries **one** row: the host scheduler (§12), the wake-map
+(§13), the type/coloring checker (`block-effect-model.md`), iterator
+fusion, and consumers **not yet identified**. The row is expected to
+**grow dimensions** as consumers appear — one home, not parallel
+per-consumer effect systems. This is an explicit reversal of the working
+assumption (held briefly during the sitting) that suspension "color" and
+control-flow "tail" were sibling systems alongside the row: **color folds
+into the row as a dimension; tail stays structural** (below).
+
+### 14.2 Two new dimensions
+
+- **`suspend(rung)`** — whether a definition can park, and at which rung
+  (await / choice / turn), per the `flow-suspension-spec.md` ladder. This
+  **folds the suspension "color" into the row**: the coloring rule "a
+  definition may not call one whose outermost suspension rung exceeds its
+  own" is an **inferred check over this dimension**, not an author
+  annotation. (See the §11 reconciliation note, 14.5.)
+- **`terminates`** — *PROVISIONAL* — whether control can leave via
+  `-> END` / `-> DONE`. Sibling to `faults` (abnormal exit); the
+  identified consumer is structured-concurrency lifetime (a supervisor
+  knowing a child flow can finish). Marked provisional pending a confirmed
+  consumer beyond lifetime; include-by-default is cheap and reversible.
+
+Both are **inferred** by the same per-SCC fixpoint as every other
+dimension, and both ride the `Ty::Fn` row and the shipped
+`DefinitionId → row` table. Format: new extension-flag bits in the
+`DirectEffects` block (§11 reserved bits 3–7; these graduate two of them
+via the next section-version bump, same reservation discipline).
+
+### 14.3 What stays OUT of the row — on the merits, not by omission
+
+- **General control-transfer (a plain divert)** is **structural — the
+  block's `tail`** (`block-effect-model.md`), enforced by the
+  no-lateral-divert-from-a-value-flow rule. A divert's *data* effects are
+  already absorbed transitively (the row walks through diverts); a plain
+  divert adds nothing a scheduler needs. Only the terminal `-> END/DONE`
+  case (lifetime) is a candidate dimension (`terminates`), never general
+  divert.
+- **Sequence-impurity** (the implicit cycle/once/shuffle cursor) stays out
+  per the §10 / NS-A6 ruled posture: visit-index is a *read* the rows do
+  not model; it is flow-local (no cross-flow scheduling relevance) and
+  never appears in a fusion callback. No consumer is served by a distinct
+  label.
+
+### 14.4 Reads are the dependency axis, not an effect — RESTATED
+
+Reaffirming what §1 and §13 already rely on: `reads` is the wake-map's
+**dependency set** (a coeffect / input); it does **not** make a
+definition impure. The two ruled purity predicates both stand and are for
+different jobs — strong `@[effects(pure)]` (reads-free, the tooling-trust
+bound, §10) and the weak **E105 wake-gate** (reads-OK, §13). **Iterator
+fusion uses the weak predicate** (a fold may read a stable global; only
+writes / calls / emits / suspend defeat fusion).
+
+### 14.5 Reconciliation notes — FOR MAINTAINER REVIEW
+
+1. **§11 "no function coloring" — RESOLVED 2026-07-21.** The `suspend(rung)`
+   dimension + no-call-up-the-ladder check are coloring-*shaped* but do not
+   reintroduce coloring: the dimension is **inferred like every other row
+   dimension** (never author-written), and the check is a purity-style
+   inferred constraint — no author-facing coloring syntax, no viral
+   annotation. `flow-suspension-spec.md` §4 already ruled the compatible
+   position: *"no colored-function virality can exist — the 'color' is a
+   distinction ink authors have always had"* (the existing fn vs knot/tunnel
+   boundary). The suspend dimension merely makes that existing structural
+   distinction inferred and queryable off the row. §11's intent (interior
+   effects inferred always; no author coloring surface) is preserved.
+2. **`await` posture gap — RESOLVED 2026-07-21 (spec drift, not a
+   conflict).** §13.1 formerly called a language-level `await` a "future
+   direction, not v1," which predated `flow-suspension-spec.md` §3 ruling
+   `await` as statement syntax. Corrected in §13.1: `await` is **planned**;
+   host-driven reactive sleep and in-language `await` are complementary.
+   Folding `suspend(rung)` into the row rests on that (planned) suspension
+   model, with no spec conflict.
+
+### 14.6 Build posture
+
+- **§6.1 shallow row-polymorphism is IN-SCOPE, not deferred.** Without it,
+  every call through a fn-value is opaque/pessimal, which makes the row
+  useless across the native code dialect's higher-order core (lambdas,
+  fn-value iteration) — precise only for first-order code. It builds as
+  part of the effect-system work (tractable: substitution over
+  creation-fixed rows, riding the SCC fixpoint), off the "author a scene"
+  critical path but not deferred.
+- The shipped core (set-based row, per-SCC fixpoint, `EffectRows` wire
+  format, `@[effects(…)]` assertions) is reused unchanged; this amendment
+  ADDS the two dimensions and the "one canonical signature" framing, and
+  wires row inference to the native-lowered HIR.

@@ -54,16 +54,19 @@
 //!   hot-reload reconstruction) both call it at their respective
 //!   story-construction boundary and refuse to proceed when it errs.
 
+use std::any::TypeId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
 
-use bevy_app::App;
+use bevy_app::{App, Update};
 use bevy_asset::{AssetEvent, AssetId, Assets};
 use bevy_ecs::component::{Component, ComponentId};
 use bevy_ecs::message::MessageReader;
-use bevy_ecs::query::Access;
+use bevy_ecs::query::{Access, Changed};
 use bevy_ecs::resource::Resource;
-use bevy_ecs::system::{Res, ResMut};
+use bevy_ecs::schedule::IntoScheduleConfigs as _;
+use bevy_ecs::schedule::common_conditions::any_with_component;
+use bevy_ecs::system::{Query, Res, ResMut};
 use bevy_log::error;
 use brink_format::{CallAtom, DefinitionId, DirectEffects, EffectRowEntry};
 use brink_runtime::Program;
@@ -218,6 +221,18 @@ pub struct MissingCapability {
 #[derive(Resource)]
 pub struct CapabilityRegistry<M: Send + Sync + 'static = ()> {
     names: BTreeMap<&'static str, ComponentId>,
+    /// Parallel name → concrete-component `TypeId` map. Keyed the same way as
+    /// `names`, but valued by `TypeId` rather than `ComponentId` because the
+    /// §12.5 change-tick tracker ([`CapabilityChanges`]) keys its per-frame
+    /// verdict by `TypeId` — the one identity a
+    /// [`detect_capability_changes`] system (generic over the concrete `C`)
+    /// can compute at runtime with no `&World`/`Components` access.
+    type_ids: BTreeMap<&'static str, TypeId>,
+    /// Component `TypeId`s that already have a [`detect_capability_changes`]
+    /// system wired into `Update` — the idempotency guard so registering the
+    /// same component (or two names for one component) never double-adds its
+    /// change-tracker system.
+    detect_wired: BTreeSet<TypeId>,
     _marker: PhantomData<fn() -> M>,
 }
 
@@ -225,6 +240,8 @@ impl<M: Send + Sync + 'static> Default for CapabilityRegistry<M> {
     fn default() -> Self {
         Self {
             names: BTreeMap::new(),
+            type_ids: BTreeMap::new(),
+            detect_wired: BTreeSet::new(),
             _marker: PhantomData,
         }
     }
@@ -236,6 +253,18 @@ impl<M: Send + Sync + 'static> CapabilityRegistry<M> {
     #[must_use]
     pub fn component_id(&self, name: &str) -> Option<ComponentId> {
         self.names.get(name).copied()
+    }
+
+    /// Resolve a registered capability name to its concrete component's
+    /// `TypeId` — the key BH-4's Detect phase (`crate::sleep`) uses to look
+    /// the capability's per-frame change verdict up in [`CapabilityChanges`]
+    /// (§12.5). `None` means no `register_capability` call has claimed this
+    /// name, so the capability is **untracked**: the wake layer must
+    /// conservatively must-poll it (it cannot prove the component is
+    /// unchanged, and a missed wake is the engine-race bug class).
+    #[must_use]
+    pub fn type_id(&self, name: &str) -> Option<TypeId> {
+        self.type_ids.get(name).copied()
     }
 
     /// The capability names registered so far, in deterministic order.
@@ -265,12 +294,105 @@ impl BrinkCapabilityAppExt for App {
         let id = self.world_mut().register_component::<C>();
         self.world_mut()
             .get_resource_or_insert_with(CapabilityRegistry::<M>::default);
-        self.world_mut()
-            .resource_mut::<CapabilityRegistry<M>>()
-            .names
-            .insert(name, id);
+        // Index the name (→ ComponentId for the row join, → TypeId for the
+        // §12.5 change tracker) and learn whether `C` still needs a
+        // change-tracker system wired. `BTreeSet::insert` returns `true` only
+        // the first time `C`'s `TypeId` is seen — the idempotency guard.
+        let needs_detect_system = {
+            let mut registry = self.world_mut().resource_mut::<CapabilityRegistry<M>>();
+            registry.names.insert(name, id);
+            registry.type_ids.insert(name, TypeId::of::<C>());
+            registry.detect_wired.insert(TypeId::of::<C>())
+        };
+        // The per-frame change-verdict sink the tracker writes and
+        // `mark_wake_dirty` reads (§12.5). Idempotent: only the first
+        // capability under marker `M` creates it.
+        self.init_resource::<CapabilityChanges<M>>();
+        if needs_detect_system {
+            // BH detect path (#996, `docs/effects-spec.md` §12.5): wire a
+            // typed change-tracker for `C` so a component-backed,
+            // detect-capable wake condition re-evaluates only when `C`
+            // actually changed — not every frame. Ordered before
+            // `mark_wake_dirty` (its reader) so a same-frame component change
+            // is seen this pass; gated on `any_with_component::<FlowSleep<M>>`
+            // exactly like the wake systems, so it costs nothing until a flow
+            // sleeps.
+            self.add_systems(
+                Update,
+                detect_capability_changes::<M, C>
+                    .before(crate::sleep::mark_wake_dirty::<M>)
+                    .run_if(any_with_component::<crate::sleep::FlowSleep<M>>),
+            );
+        }
         self
     }
+}
+
+// ── §12.5: per-capability component-tick tracking (#996) ────────────────────
+
+/// Per-frame, per-capability change verdict — the §12.5 hook BH-4's Detect
+/// phase (`crate::sleep::mark_wake_dirty`) consumes so a component-backed
+/// **detect-capable** wake condition gets the cheap re-evaluate-on-change
+/// path without the missed-wake class.
+///
+/// Keyed by the concrete component's `TypeId` (see
+/// [`CapabilityRegistry::type_id`] for why `TypeId` rather than `ComponentId`).
+/// A [`detect_capability_changes`] system — one per registered component,
+/// wired by [`BrinkCapabilityAppExt::register_capability`] — overwrites its
+/// component's entry every frame with whether any entity carrying that
+/// component changed since the tracker last ran (bevy's own `Changed<C>`
+/// window). An **absent** entry means no tracker has recorded a verdict for
+/// that component yet this run — the wake layer treats that, like an
+/// unregistered capability, as a conservative must-poll (never a missed wake).
+#[derive(Resource)]
+pub struct CapabilityChanges<M: Send + Sync + 'static = ()> {
+    /// component `TypeId` → did any entity carrying it change since the
+    /// tracker's last run this frame. `BTreeMap` for the determinism rule,
+    /// though this map is only ever point-looked-up, never iterated for
+    /// output.
+    changed: BTreeMap<TypeId, bool>,
+    _marker: PhantomData<fn() -> M>,
+}
+
+impl<M: Send + Sync + 'static> Default for CapabilityChanges<M> {
+    fn default() -> Self {
+        Self {
+            changed: BTreeMap::new(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<M: Send + Sync + 'static> CapabilityChanges<M> {
+    /// This frame's change verdict for a component `TypeId`: `Some(true)` if
+    /// an entity carrying it changed since the tracker last ran, `Some(false)`
+    /// if it is tracked but unchanged, and `None` if no tracker has recorded a
+    /// verdict for it yet (untracked — the wake layer must-polls it).
+    #[must_use]
+    pub fn changed(&self, ty: TypeId) -> Option<bool> {
+        self.changed.get(&ty).copied()
+    }
+}
+
+/// Typed change-tracker for one registered capability component `C` (§12.5,
+/// #996). Wired into `Update` by
+/// [`BrinkCapabilityAppExt::register_capability`], one per distinct component,
+/// ordered before [`mark_wake_dirty`](crate::sleep::mark_wake_dirty).
+///
+/// `Query<(), Changed<C>>` rides bevy's own per-table change ticks: on a quiet
+/// frame it matches nothing (tables whose change tick didn't advance are
+/// skipped wholesale), so `is_empty()` is cheap — far cheaper than the
+/// alternative it replaces (re-evaluating every parked flow's wake condition,
+/// a full `bind_brink_query` round trip, every single frame). The verdict is
+/// written by the component's `TypeId` so `mark_wake_dirty` — which only knows
+/// capability *names*, resolved to `TypeId`s through [`CapabilityRegistry`] —
+/// can read it back without ever needing the concrete `C`.
+pub fn detect_capability_changes<M: Send + Sync + 'static, C: Component>(
+    changed: Query<(), Changed<C>>,
+    mut sink: ResMut<CapabilityChanges<M>>,
+) {
+    let any_changed = !changed.is_empty();
+    sink.changed.insert(TypeId::of::<C>(), any_changed);
 }
 
 // ── The row join ─────────────────────────────────────────────────────────
@@ -813,6 +935,9 @@ mod tests {
                 writes: vec![],
                 calls: vec![atom(name_id)],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         };
@@ -865,6 +990,9 @@ mod tests {
                 writes: vec![],
                 calls: vec![atom(get_position), atom(play_sfx)],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         };
@@ -929,6 +1057,9 @@ mod tests {
                 writes: vec![],
                 calls: vec![atom(watch), atom(poke)],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         };
@@ -951,6 +1082,9 @@ mod tests {
                 writes: vec![],
                 calls: vec![atom(poke), atom(watch)],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         };
@@ -996,6 +1130,9 @@ mod tests {
                 writes: vec![],
                 calls: vec![atom(a), atom(b)],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         };
@@ -1020,6 +1157,9 @@ mod tests {
                 writes: vec![],
                 calls: vec![],
                 opaque: true,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         };
@@ -1070,6 +1210,9 @@ mod tests {
                     writes: vec![],
                     calls: vec![atom(get_position)],
                     opaque: false,
+                    emits: false,
+                    tags: false,
+                    faults: false,
                 },
             }],
         };
@@ -1293,6 +1436,9 @@ mod tests {
                 writes: vec![],
                 calls: vec![atom(get_position), atom(play_sfx)],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         };
@@ -1344,6 +1490,9 @@ mod tests {
                 writes: vec![],
                 calls: vec![atom(get_position)],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         };

@@ -101,10 +101,21 @@ fn brink_options() -> AnalysisOptions {
     }
 }
 
+/// The explicit `types = gradual` opt-out knob (#1127, ruled 2026-07-19:
+/// the brink dialect's implicit default is now strict) — for fixtures that
+/// TEST deliberately-dynamic behavior the strict default would reject.
+fn gradual_options() -> AnalysisOptions {
+    AnalysisOptions {
+        dialect: Dialect::Brink,
+        types: Some(TypePolicy::Gradual),
+        ..AnalysisOptions::default()
+    }
+}
+
 fn strict_options() -> AnalysisOptions {
     AnalysisOptions {
         dialect: Dialect::Brink,
-        types: TypePolicy::Strict,
+        types: Some(TypePolicy::Strict),
         ..AnalysisOptions::default()
     }
 }
@@ -826,7 +837,7 @@ fn e084_duplicate_field_under_strict() {
 
 // ─── T1e-1 path projections (E097–E099, docs/t1e-spec.md §2/§6, issue #831) ──
 
-const HEAL_SRC: &str = "=== function heal(ref hp, k) ===\n~ hp = hp + k\n\n";
+const HEAL_SRC: &str = "=== function heal(ref hp: int, k: int) ===\n~ hp = hp + k\n\n";
 
 #[test]
 fn e080_ref_projection_root_is_a_temp() {
@@ -863,7 +874,7 @@ fn real_path_projection_lowers_for_real_no_longer_e099() {
     let source = format!("VAR npc = 5\n{HEAL_SRC}=== main ===\n~ heal(ref npc.hp, 5)\n-> DONE\n");
     // E099 is error-severity (the old fence made `compile` fail); a
     // successful compile alone proves it no longer fires here.
-    let out = compile(&source, brink_options())
+    let out = compile(&source, gradual_options())
         .unwrap_or_else(|e| panic!("a real path-projection ref-argument must lower: {e:?}"));
     assert!(out.warnings.is_empty(), "{:?}", out.warnings);
 }
@@ -882,7 +893,11 @@ fn e099_bind_ref_argument_always_fences_even_zero_segment() {
         "VAR gold = 5\n{HEAL_SRC}=== main ===\n~ temp f = #fn(heal, gold)\n\
          ~ temp g = bind(f, ref gold)\n-> DONE\n"
     );
-    assert_error_at(&source, brink_options(), DiagnosticCode::E099, "ref gold");
+    // Gradual knob (#1127): the subject is the LIR-layer bind fence, which
+    // is only reachable once analysis passes — `#fn` over a `ref`-param
+    // function stays Unknown under strict inference (E065 gates lowering
+    // first), so this fixture TESTS the dynamic regime's fence.
+    assert_error_at(&source, gradual_options(), DiagnosticCode::E099, "ref gold");
 }
 
 #[test]
@@ -947,7 +962,7 @@ fn e104_call_result_callee_dialect_independent() {
 
 #[test]
 fn bare_name_direct_call_unaffected_by_e104() {
-    let source = "=== function bare(a, b) ===\n~ return a + b\n\n\
+    let source = "=== function bare(a: int, b: int): int ===\n~ return a + b\n\n\
                   === main ===\n~ bare(1, 2)\n-> DONE\n";
     let out = compile(source, brink_options())
         .unwrap_or_else(|e| panic!("a bare-name direct call must compile clean: {e:?}"));
@@ -962,7 +977,69 @@ fn explicit_call_form_unaffected_by_e104() {
     // dispatches correctly through the ratified Explicit form.
     let source = "VAR handlers = #{}\nVAR state = \"x\"\n=== main ===\n\
                   ~ call(handlers[state], 1)\n-> DONE\n";
-    let out = compile(source, brink_options())
+    let out = compile(source, gradual_options())
         .unwrap_or_else(|e| panic!("call(f, args…) must compile clean: {e:?}"));
     assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}
+
+// ─── E113: reserved protocol method names (NS-A3, issue #1109; F6 ruled
+// 2026-07-19, docs/stdlib-spec.md §9.6). Hard error under the brink
+// dialect only — under strict-ink there is no protocol registry and
+// vanilla ink identifiers stay untouched. E114/E115 (protocol impl
+// contract/shape validation) are pipeline-covered in
+// `brink-analyzer::protocols`' own tests: impl registration is a
+// programmatic surface (no source spelling until the code-dialect
+// sitting), so no `.ink` fixture can reach them. ─────────────────────
+
+#[test]
+fn e113_knot_named_display_is_reserved_in_brink() {
+    let source = "== display ==\nHello.\n-> DONE\n";
+    assert_error_at(source, brink_options(), DiagnosticCode::E113, "display");
+}
+
+#[test]
+fn e113_function_named_next_is_reserved_in_brink() {
+    let source = "=== function next(x) ===\n~ return x\n=== main ===\nHi.\n-> DONE\n";
+    assert_error_at(source, brink_options(), DiagnosticCode::E113, "next");
+}
+
+#[test]
+fn e113_var_named_compare_is_reserved_in_brink() {
+    let source = "VAR compare = 1\n== k ==\n{compare}\n-> DONE\n";
+    assert_error_at(source, brink_options(), DiagnosticCode::E113, "compare");
+}
+
+#[test]
+fn e113_temp_named_display_in_logic_block_is_reserved() {
+    let source = "== k ==\n~ {\n    temp display = 1\n}\n-> DONE\n";
+    assert_error_at(source, brink_options(), DiagnosticCode::E113, "display");
+}
+
+#[test]
+fn e113_does_not_fire_under_strict_ink() {
+    // Vanilla ink may freely name a VAR `display` — the reservation is a
+    // brink-dialect protocol concern (the oracle corpus stays out of
+    // reach by construction).
+    let source = "VAR display = 1\n== k ==\n{display}\n-> DONE\n";
+    let out = compile(source, default_options())
+        .unwrap_or_else(|e| panic!("strict-ink must not reserve protocol names: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E113),
+        "{:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn e113_list_member_named_next_stays_legal_in_brink() {
+    // Deliberate carve-out: LIST members are value-position narrative
+    // vocabulary (`next` is plausible domain language), not callables.
+    let source = "LIST steps = intro, next, outro\n== k ==\nHi.\n-> DONE\n";
+    let out = compile(source, brink_options())
+        .unwrap_or_else(|e| panic!("LIST members are not reserved: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E113),
+        "{:?}",
+        out.warnings
+    );
 }

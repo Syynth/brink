@@ -64,9 +64,9 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
 
         hir::Stmt::Return(ret) => {
             let value = ret.value.as_ref().map(|e| lower_expr(e, ctx));
-            // `->->` (tunnel return) has ptr: None in the HIR;
-            // `~ return expr` has ptr: Some(...).
-            let is_tunnel = ret.ptr.is_none();
+            // `->->` (tunnel return) vs `~ return expr` — classified by the
+            // explicit `ReturnKind`, never by `ptr` presence.
+            let is_tunnel = ret.kind == hir::ReturnKind::TunnelRedirect;
             let args = ret
                 .onwards_args
                 .iter()

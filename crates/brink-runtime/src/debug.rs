@@ -162,6 +162,16 @@ impl<'p> NameResolver<'p> {
                     .collect();
                 format!("{{{}}}", parts.join(", "))
             }
+            // Weighted tables (NS-A7): mirror the construction literal,
+            // entries in construction order.
+            Value::Weighted(w) => {
+                let parts: Vec<String> = w
+                    .entries
+                    .iter()
+                    .map(|(weight, v)| format!("{weight}: {}", self.format_value(v)))
+                    .collect();
+                format!("Weighted {{ {} }}", parts.join(", "))
+            }
             Value::Record { shape, fields } => {
                 let parts: Vec<String> = fields.iter().map(|v| self.format_value(v)).collect();
                 format!("Record#{}{{{}}}", shape.0, parts.join(", "))
@@ -195,7 +205,20 @@ impl<'p> NameResolver<'p> {
             // Projection values (T1e, `docs/t1e-spec.md` §4). Same display
             // form as the runtime's authoritative `string(p)`
             // (`value_ops::stringify`).
-            Value::Projection(_) => value_ops::stringify(value, self.program),
+            // Range values (NS-A5, F7) share the authoritative display too:
+            // the written `0..10` / `1..=6` form.
+            // Tower values (NS-A8): same display form as the runtime's
+            // authoritative `string(v)` (`value_ops::stringify`).
+            Value::Projection(_)
+            | Value::OptionVal(_)
+            | Value::Range { .. }
+            | Value::Vec2(_)
+            | Value::Vec3(_)
+            | Value::Vec4(_)
+            | Value::Quat(_)
+            | Value::Mat2(_)
+            | Value::Mat3(_)
+            | Value::Mat4(_) => value_ops::stringify(value, self.program),
         }
     }
 }

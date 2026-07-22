@@ -10,6 +10,11 @@ use wasm_bindgen::prelude::*;
 /// Map an ink [`Value`] to a native JS value for a binding argument. Scalars,
 /// collections, and records cross the boundary; VM-internal variants
 /// (pointers, divert targets, fragment refs, lists) map to `null` for now.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one marshal arm per Value variant (the #667 no-wildcard \
+              discipline) — the NS-A8 tower arms pushed this past 100"
+)]
 pub(crate) fn value_to_js(v: &Value) -> JsValue {
     match v {
         Value::Int(i) => JsValue::from_f64(f64::from(*i)),
@@ -88,6 +93,91 @@ pub(crate) fn value_to_js(v: &Value) -> JsValue {
             );
             obj.into()
         }
+        // An Option (NS-A1, `docs/stdlib-spec.md` §1.4) marshals to the
+        // ergonomic native JS form: value-or-null (`none` -> null,
+        // `some(x)` -> x's own native form). Like the `Map` key-type
+        // mapping above this is deliberately lossy — `some(none)` flattens
+        // to null, and a `some(x)` is indistinguishable from a bare `x` —
+        // the lossless form is `TypedValueJs::Option` on the JSON boundary.
+        Value::OptionVal(inner) => match inner {
+            None => JsValue::NULL,
+            Some(v) => value_to_js(v),
+        },
+        // A range (NS-A5, F7) is a real script value, so it must not fall
+        // through to the VM-internal `null` arm (#667 hazard class). The
+        // ergonomic native form is a plain `{start, end, inclusive}` object
+        // — same shape as the lossless `TypedValueJs::Range` on the JSON
+        // boundary.
+        Value::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            let obj = js_sys::Object::new();
+            let _ = js_sys::Reflect::set(
+                &obj,
+                &JsValue::from_str("start"),
+                &JsValue::from_f64(f64::from(*start)),
+            );
+            let _ = js_sys::Reflect::set(
+                &obj,
+                &JsValue::from_str("end"),
+                &JsValue::from_f64(f64::from(*end)),
+            );
+            let _ = js_sys::Reflect::set(
+                &obj,
+                &JsValue::from_str("inclusive"),
+                &JsValue::from_bool(*inclusive),
+            );
+            obj.into()
+        }
+        // Tower values (NS-A8, `docs/tower-mini-spec.md`): the ergonomic
+        // native JS form — vectors/quats as `{x, y(, z, w)}` objects,
+        // matrices as `{x_axis: {…}, …}` of their column vectors (glam's
+        // field vocabulary, matching the display form and the component
+        // accessors). Lane values cross as numbers (f32 → f64 exactly).
+        // The lossless kind+lanes form is `TypedValueJs::Tower` on the
+        // JSON boundary.
+        // A weighted table (NS-A7, `docs/stdlib-spec.md` §8) is a real
+        // script value, so it must not fall through to the VM-internal
+        // `null` arm (#667 hazard class). The ergonomic native form is a
+        // JS array of `{weight, value}` objects in construction order —
+        // the same shape as the lossless `TypedValueJs::Weighted` on the
+        // JSON boundary.
+        Value::Weighted(w) => {
+            let arr = js_sys::Array::new();
+            for (weight, value) in &w.entries {
+                let obj = js_sys::Object::new();
+                let _ = js_sys::Reflect::set(
+                    &obj,
+                    &JsValue::from_str("weight"),
+                    &JsValue::from_f64(f64::from(*weight)),
+                );
+                let _ =
+                    js_sys::Reflect::set(&obj, &JsValue::from_str("value"), &value_to_js(value));
+                arr.push(&obj);
+            }
+            arr.into()
+        }
+        Value::Vec2(v) => lanes_to_js(&[("x", v.x), ("y", v.y)]),
+        Value::Vec3(v) => lanes_to_js(&[("x", v.x), ("y", v.y), ("z", v.z)]),
+        Value::Vec4(v) => lanes_to_js(&[("x", v.x), ("y", v.y), ("z", v.z), ("w", v.w)]),
+        Value::Quat(q) => lanes_to_js(&[("x", q.x), ("y", q.y), ("z", q.z), ("w", q.w)]),
+        Value::Mat2(m) => cols_to_js(&[
+            ("x_axis", Value::Vec2(m.x_axis)),
+            ("y_axis", Value::Vec2(m.y_axis)),
+        ]),
+        Value::Mat3(m) => cols_to_js(&[
+            ("x_axis", Value::Vec3(m.x_axis)),
+            ("y_axis", Value::Vec3(m.y_axis)),
+            ("z_axis", Value::Vec3(m.z_axis)),
+        ]),
+        Value::Mat4(m) => cols_to_js(&[
+            ("x_axis", Value::Vec4(m.x_axis)),
+            ("y_axis", Value::Vec4(m.y_axis)),
+            ("z_axis", Value::Vec4(m.z_axis)),
+            ("w_axis", Value::Vec4(m.w_axis)),
+        ]),
         // Every remaining variant is VM-internal (a pointer, a divert target,
         // a fragment ref, a raw list, or an unmaterialized fn/projection
         // value) and has no useful native-JS shape at this scalar-only
@@ -107,6 +197,31 @@ pub(crate) fn value_to_js(v: &Value) -> JsValue {
         | Value::Closure(_)
         | Value::Projection(_) => JsValue::NULL,
     }
+}
+
+/// Build a native JS object of named f32 lanes (`{x, y, …}`) for the
+/// vector/quat legs of [`value_to_js`]'s NS-A8 tower marshaling.
+fn lanes_to_js(lanes: &[(&str, f32)]) -> JsValue {
+    let obj = js_sys::Object::new();
+    for (name, lane) in lanes {
+        // `Reflect::set` on a fresh, extensible object cannot fail.
+        let _ = js_sys::Reflect::set(
+            &obj,
+            &JsValue::from_str(name),
+            &JsValue::from_f64(f64::from(*lane)),
+        );
+    }
+    obj.into()
+}
+
+/// Build a native JS object of named column vectors (`{x_axis: {…}, …}`)
+/// for the matrix legs of [`value_to_js`]'s NS-A8 tower marshaling.
+fn cols_to_js(cols: &[(&str, Value)]) -> JsValue {
+    let obj = js_sys::Object::new();
+    for (name, col) in cols {
+        let _ = js_sys::Reflect::set(&obj, &JsValue::from_str(name), &value_to_js(col));
+    }
+    obj.into()
 }
 
 /// The JS-property-string a [`brink_format::MapKey`] coerces to at the

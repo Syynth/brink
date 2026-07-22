@@ -23,6 +23,8 @@ mod doors;
 mod guards;
 mod hud;
 mod ink_alarm;
+mod ink_cameras;
+mod ink_doors;
 mod layout_gen;
 mod loot;
 mod nav;
@@ -36,13 +38,13 @@ mod world;
 
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
-use bevy_brink::BrinkPlugin;
+use bevy_brink::{BrinkBindingsAppExt, BrinkCapabilityAppExt, BrinkPlugin, advance_batch};
 
 use crate::alarm::{Alarm, GlobalAlarm, SpottedEvent, alarm_system};
 use crate::cameras::{camera_ai_system, camera_interact_system, draw_camera_cones};
 use crate::doors::{
-    Door, door_sync_system, draw_door_switch_glyphs, switch_interact_system, switch_prompt_system,
-    switch_visual_system,
+    Door, Switch, door_sync_system, draw_door_switch_glyphs, switch_interact_system,
+    switch_prompt_system, switch_visual_system,
 };
 use crate::guards::{
     ReinforcementSpawner, draw_guard_cones, draw_guard_tells, guard_ai_system,
@@ -51,6 +53,14 @@ use crate::guards::{
 use crate::hud::{setup_hud, update_hud};
 use crate::ink_alarm::{
     AlarmImpl, AlarmStory, alarm_is_ink, alarm_is_rust, ink_alarm_system, spawn_ink_alarm,
+};
+use crate::ink_cameras::{
+    CamerasImpl, CamerasStory, attach_ink_camera_flows, cameras_is_ink, cameras_is_rust,
+    ink_camera_system, sees_player,
+};
+use crate::ink_doors::{
+    DoorsImpl, DoorsStory, attach_ink_door_flows, doors_is_ink, doors_is_rust,
+    ink_door_sync_system, is_switch_on,
 };
 use crate::loot::gold_pickup_system;
 use crate::nav::NavGraph;
@@ -74,9 +84,21 @@ use crate::world::{
 #[derive(Resource, Debug)]
 pub struct ShowCones(pub bool);
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the App builder chain: one plugin/resource/system registration \
+              per line, no branching logic to extract — Phase 1c's cameras \
+              wiring (3 lines: plugin, two bindings) pushed it over the \
+              budget the same way doors/alarm did before it; see the \
+              guards.rs/layout_gen.rs precedent for this demo crate"
+)]
 fn main() {
     let alarm_impl = AlarmImpl::from_args();
     info!("[alarm] implementation: {}", alarm_impl.label());
+    let doors_impl = DoorsImpl::from_args();
+    info!("[doors] implementation: {}", doors_impl.label());
+    let cameras_impl = CamerasImpl::from_args();
+    info!("[cameras] implementation: {}", cameras_impl.label());
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -92,6 +114,32 @@ fn main() {
         // alarm flow is ever spawned); drives `assets/alarm.ink` in ink mode.
         .add_plugins(BrinkPlugin::<AlarmStory>::default())
         .insert_resource(alarm_impl)
+        // Phase 1b: doors/switches, the minimal reactive (BH-4 wake_when)
+        // entity. Harmless in Rust mode (no door flow requests are ever
+        // spawned); drives `assets/doors.ink` in ink mode.
+        .add_plugins(BrinkPlugin::<DoorsStory>::default())
+        .bind_brink_query::<DoorsStory, _, _>("is_switch_on", is_switch_on)
+        // #996 (docs/effects-spec.md §12.5): register the `Switch` component
+        // under the same name a door's `should_open` detect summary declares,
+        // so `mark_wake_dirty` gets a per-frame change-tracker for it. A parked
+        // locked door then re-evaluates `should_open` (a `bind_brink_query`
+        // round trip) only when a `Switch` actually changes — not every frame —
+        // lifting the must-poll interim this port originally documented.
+        .register_capability::<DoorsStory, Switch>("Switch")
+        .insert_resource(doors_impl)
+        // Phase 1c: security cameras — the pure sweep-and-detect loop, one
+        // flow instance per camera (`#@local` sweep state). Harmless in Rust
+        // mode (no camera flow requests are ever spawned); drives
+        // `assets/cameras.ink` in ink mode.
+        .add_plugins(BrinkPlugin::<CamerasStory>::default())
+        .bind_brink_fn::<CamerasStory, _, _>("sin", |args| {
+            args.first()
+                .and_then(bevy_brink::Value::as_float)
+                .unwrap_or(0.0)
+                .sin()
+        })
+        .bind_brink_query::<CamerasStory, _, _>("sees_player", sees_player)
+        .insert_resource(cameras_impl)
         .init_state::<Phase>()
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.06)))
         .init_resource::<Alarm>()
@@ -119,7 +167,24 @@ fn main() {
         // Always-on systems.
         .add_systems(
             Update,
-            (start_round_system, update_hud, toggle_cones, spawn_rats_key),
+            (
+                start_round_system,
+                update_hud,
+                toggle_cones,
+                spawn_rats_key,
+                // Phase 1b (ink doors mode only): attach a fresh flow to
+                // every door a round just spawned, and drive the BH-4 batch
+                // Collect that steps a woken door's turn. Both are cheap
+                // no-ops once no door needs attaching / stepping this frame.
+                attach_ink_door_flows.run_if(doors_is_ink),
+                advance_batch::<DoorsStory>,
+                // Phase 1c (ink cameras mode only): attach a fresh flow to
+                // every camera a round just spawned. `#@local` sweep state
+                // means this story can't use `advance_batch` (BH-3's guard,
+                // #925, skips any Local-policy flow) — `ink_camera_system`
+                // (below, serial `call_ink_function`) drives it instead.
+                attach_ink_camera_flows.run_if(cameras_is_ink),
+            ),
         )
         // Debug cone gizmos, only when enabled.
         .add_systems(
@@ -132,14 +197,18 @@ fn main() {
             (
                 // The timed behavior systems, chained so their order (and thus
                 // the alarm's same-frame consistency) is deterministic. The
-                // alarm slot holds BOTH writers — run-conditions pick exactly
-                // one per the `--alarm-impl` toggle, so guards/cameras (which
-                // emit the alarm messages) always run before whichever writer
-                // folds them, and `rat_system` always runs after.
+                // camera, door, and alarm slots each hold BOTH writers —
+                // run-conditions pick exactly one per the
+                // `--cameras-impl`/`--doors-impl`/`--alarm-impl` toggles, so
+                // guards/cameras (which emit the alarm messages) always run
+                // before whichever writer folds them, and `rat_system` always
+                // runs after.
                 (
                     guard_ai_system,
-                    camera_ai_system,
-                    door_sync_system,
+                    camera_ai_system.run_if(cameras_is_rust),
+                    ink_camera_system.run_if(cameras_is_ink),
+                    door_sync_system.run_if(doors_is_rust),
+                    ink_door_sync_system.run_if(doors_is_ink),
                     alarm_system.run_if(alarm_is_rust),
                     ink_alarm_system.run_if(alarm_is_ink),
                     rat_system,

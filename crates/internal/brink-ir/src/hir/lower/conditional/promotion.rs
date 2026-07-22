@@ -1,4 +1,6 @@
-use brink_syntax::ast::{self, AstNode, SyntaxNodePtr};
+use brink_syntax::ast::{self, AstNode};
+
+use crate::provenance::NodeClass;
 
 use crate::Stmt;
 
@@ -24,12 +26,13 @@ pub fn lower_multiline_block(
     scope: &LowerScope,
     sink: &mut impl LowerSink,
 ) -> Option<Stmt> {
-    let mb_ptr = SyntaxNodePtr::from_node(mb.syntax());
+    let cond_ptr = scope.prov(NodeClass::Conditional, mb.syntax());
+    let seq_ptr = scope.prov(NodeClass::Sequence, mb.syntax());
 
     if let Some(cond) = mb.conditional()
         && let Ok(mut c) = cond.lower_conditional(scope, sink)
     {
-        c.ptr = mb_ptr;
+        c.ptr = cond_ptr;
         return Some(Stmt::Conditional(c));
     }
 
@@ -37,14 +40,14 @@ pub fn lower_multiline_block(
         && seq.multiline_branches().is_some()
     {
         let mut s = lower_block_sequence(&seq, scope, sink);
-        s.ptr = mb_ptr;
+        s.ptr = seq_ptr;
         return Some(Stmt::Sequence(s));
     }
 
     if let Some(branches) = mb.branches_cond()
         && let Ok(mut c) = branches.lower_conditional(scope, sink)
     {
-        c.ptr = mb_ptr;
+        c.ptr = cond_ptr;
         return Some(Stmt::Conditional(c));
     }
 
@@ -60,12 +63,13 @@ pub fn lower_multiline_block_from_inline(
     // Same brace-inclusion correction as `lower_multiline_block` above:
     // `inline` (`{`...`}`) always encloses the inner conditional/sequence
     // node it wraps, so its own range is the true scaffold anchor.
-    let inline_ptr = SyntaxNodePtr::from_node(inline.syntax());
+    let cond_ptr = scope.prov(NodeClass::Conditional, inline.syntax());
+    let seq_ptr = scope.prov(NodeClass::Sequence, inline.syntax());
 
     if let Some(ml_cond) = inline.multiline_conditional()
         && let Ok(mut c) = ml_cond.lower_conditional(scope, sink)
     {
-        c.ptr = inline_ptr;
+        c.ptr = cond_ptr;
         return Some(Stmt::Conditional(c));
     }
 
@@ -73,7 +77,7 @@ pub fn lower_multiline_block_from_inline(
         && (cond.multiline_branches().is_some() || cond.branchless_body().is_some())
         && let Ok(mut c) = cond.lower_conditional(scope, sink)
     {
-        c.ptr = inline_ptr;
+        c.ptr = cond_ptr;
         return Some(Stmt::Conditional(c));
     }
 
@@ -81,7 +85,7 @@ pub fn lower_multiline_block_from_inline(
         && seq.multiline_branches().is_some()
     {
         let mut s = lower_block_sequence(&seq, scope, sink);
-        s.ptr = inline_ptr;
+        s.ptr = seq_ptr;
         return Some(Stmt::Sequence(s));
     }
 

@@ -9,7 +9,8 @@ use super::super::expr::LowerExpr;
 use super::super::helpers::name_from_ident;
 use super::super::types::lower_type_annotation;
 use super::DeclareSymbols;
-use crate::{DiagnosticCode, Expr, SymbolKind, VarDecl};
+use crate::provenance::NodeClass;
+use crate::{DiagnosticCode, Expr, VarDecl};
 
 impl DeclareSymbols for ast::VarDecl {
     type Output = VarDecl;
@@ -23,14 +24,6 @@ impl DeclareSymbols for ast::VarDecl {
             name_from_ident(&ident).ok_or_else(|| sink.diagnose(range, DiagnosticCode::E004))?;
         let (doc, issues) = parse_doc_comment(self.syntax(), DocPolicy::VALUE);
         issues.diagnose(sink);
-        sink.declare_full(
-            SymbolKind::Variable,
-            &name.text,
-            name.range,
-            Vec::new(),
-            None,
-            doc,
-        );
 
         let value = if let Some(e) = self.value() {
             e.lower_expr(scope, sink).unwrap_or(Expr::Null)
@@ -43,16 +36,18 @@ impl DeclareSymbols for ast::VarDecl {
         // above the declaration.
         let dirs = directives_before(self.syntax());
         let is_local = apply_scope_directives(&dirs, DirectiveTarget::Var, sink);
+        let mut visibility = None;
         if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
-            sink.set_visibility(SymbolKind::Variable, &name.text, vis);
+            visibility = Some(vis);
         }
+        let mut was = None;
         if let Some((old_name, was_range)) =
             super::super::directive::was_from_directives(&dirs, sink)
         {
             if old_name == name.text {
                 sink.diagnose(was_range, DiagnosticCode::E095);
             } else {
-                sink.set_was(SymbolKind::Variable, &name.text, old_name, was_range);
+                was = Some((old_name, was_range));
             }
         }
 
@@ -61,11 +56,14 @@ impl DeclareSymbols for ast::VarDecl {
             .and_then(|ta| lower_type_annotation(&ta));
 
         Ok(VarDecl {
-            ptr: ast::AstPtr::new(self),
+            ptr: scope.prov(NodeClass::VarDecl, self.syntax()),
             name,
             value,
             is_local,
             annotation,
+            doc,
+            visibility,
+            was,
         })
     }
 }

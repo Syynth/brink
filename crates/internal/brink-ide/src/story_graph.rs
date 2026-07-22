@@ -35,7 +35,6 @@ use brink_analyzer::AnalysisResult;
 use brink_ir::{
     Block, Choice, DivertPath, DivertTarget, FileId, HirFile, HirVisitor, Stmt, SymbolKind,
 };
-use brink_syntax::ast::SyntaxNodePtr;
 use rowan::TextRange;
 
 /// Node id of the `END` pseudo-node.
@@ -329,7 +328,7 @@ impl HirVisitor for EdgeVisitor<'_, '_> {
                 } else {
                     StoryEdgeKind::Divert
                 };
-                let stmt_range = d.ptr.as_ref().map(SyntaxNodePtr::text_range);
+                let stmt_range = d.ptr.as_ref().map(brink_ir::Provenance::text_range);
                 self.builder
                     .add_edge(self.file, self.owner, &d.target, kind, stmt_range);
             }

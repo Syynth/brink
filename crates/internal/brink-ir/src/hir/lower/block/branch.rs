@@ -30,6 +30,11 @@ pub fn lower_branch_body(
     lower_branch_body_from_syntax(body, scope, sink)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per BranchChild variant — grows with the classifier \
+              (NS-A2 added the annotation-line arm)"
+)]
 fn lower_branch_body_from_syntax(
     body: &brink_syntax::SyntaxNode,
     scope: &LowerScope,
@@ -53,6 +58,10 @@ fn lower_branch_body_from_syntax(
             BranchChild::TagLine(tl) => {
                 pending_ws = None;
                 acc.handle(&tl, scope, sink);
+            }
+            BranchChild::AnnotationLine(al) => {
+                // NS-A2: never a recognized placement in branch context.
+                super::super::directive::handle_annotation_line(&al, sink);
             }
             BranchChild::DivertNode(dn) => {
                 pending_ws = None;

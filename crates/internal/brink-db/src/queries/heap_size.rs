@@ -86,11 +86,19 @@ fn divert_target_heap(dt: &DivertTarget) -> usize {
 
 fn ty_heap(ty: &Ty) -> usize {
     match ty {
-        Ty::Int | Ty::Float | Ty::Bool | Ty::String | Ty::Divert | Ty::Unknown | Ty::Conflicted => {
-            0
-        }
+        Ty::Int
+        | Ty::Float
+        | Ty::Bool
+        | Ty::String
+        | Ty::Divert
+        | Ty::Range { .. }
+        | Ty::Tower(_)
+        | Ty::Unknown
+        | Ty::Conflicted => 0,
         Ty::List(name) | Ty::Struct(name) | Ty::Handle(name) => string_heap(name),
-        Ty::Array(inner) => size_of::<Ty>() + ty_heap(inner),
+        Ty::Array(inner) | Ty::Option(inner) | Ty::Weighted(inner) => {
+            size_of::<Ty>() + ty_heap(inner)
+        }
         Ty::Map(key, value) => size_of::<Ty>() * 2 + ty_heap(key) + ty_heap(value),
         Ty::Fn(params, ret) => {
             vec_heap(params)
@@ -425,6 +433,7 @@ pub(crate) fn lowered_file_heap_size(value: &LoweredFile) -> usize {
     hir_file_heap(&value.hir)
         + manifest_heap(&value.manifest)
         + diagnostics_heap(&value.diagnostics)
+        + diagnostics_heap(&value.admission)
 }
 
 #[cfg(test)]
@@ -517,11 +526,7 @@ mod tests {
             file,
             params: Vec::new(),
             return_annotation: None,
-            body: Block {
-                label: None,
-                stmts: big_stmts,
-                container_id: None,
-            },
+            body: Block::from_stmts(big_stmts),
         };
 
         let small_size = def_body_heap_size(&Some(Arc::new(small)));
@@ -569,10 +574,10 @@ mod tests {
 
     /// Uses the real parse -> lower pipeline (same `lower_file` helper
     /// [`super::lower_file`] `lowered_query` calls) rather than
-    /// hand-built `HirFile`/`Knot` values — several HIR node types (e.g.
-    /// `ContainerPtr`) carry real `AstPtr`s with no meaningful `Default`,
-    /// so a genuine small-vs-large source pair is both easier to build and
-    /// closer to "known payloads" than a synthetic struct literal.
+    /// hand-built `HirFile`/`Knot` values — every HIR node carries a
+    /// `Provenance` with no meaningful `Default`, so a genuine
+    /// small-vs-large source pair is both easier to build and closer to
+    /// "known payloads" than a synthetic struct literal.
     #[test]
     fn lowered_file_heap_size_grows_with_story_length() {
         let small_src = "== knot\nHi.\n-> END\n";

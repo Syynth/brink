@@ -5,10 +5,10 @@ use std::marker::PhantomData;
 use bevy_app::{App, Plugin, Update};
 use bevy_asset::AssetApp;
 use bevy_ecs::schedule::IntoScheduleConfigs as _;
-use brink_runtime::WorldPolicy;
+use brink_runtime::{ExecMode, WorldPolicy};
 
 use crate::asset::{BrinkStoryAsset, InkbLoader, LineTablesAsset, ProgramAsset};
-use crate::globals::BrinkWorldPolicy;
+use crate::globals::{BrinkExecMode, BrinkWorldPolicy};
 use crate::request::fulfill_flow_requests;
 
 /// A Bevy plugin that registers brink story types, messages, and asset
@@ -34,6 +34,7 @@ use crate::request::fulfill_flow_requests;
 /// ```
 pub struct BrinkPlugin<M: Send + Sync + 'static = ()> {
     policy: WorldPolicy,
+    exec_mode: ExecMode,
     _marker: PhantomData<fn() -> M>,
 }
 
@@ -41,6 +42,11 @@ impl<M: Send + Sync + 'static> Default for BrinkPlugin<M> {
     fn default() -> Self {
         Self {
             policy: WorldPolicy::default(),
+            // F35 (ruled 2026-07-19): profile-keyed default via
+            // `BrinkExecMode::default` — `Dev` under debug_assertions, `Prod`
+            // in release. Diverges from core `ExecMode::default` (always
+            // `Dev`); a host overrides with `with_exec_mode`.
+            exec_mode: BrinkExecMode::<M>::default().mode,
             _marker: PhantomData,
         }
     }
@@ -67,6 +73,25 @@ impl<M: Send + Sync + 'static> BrinkPlugin<M> {
         self.policy = policy;
         self
     }
+
+    /// Override the [`ExecMode`] every flow of this marker starts in (F35,
+    /// ruled 2026-07-19).
+    ///
+    /// Default (if this is never called): the build-profile-keyed value —
+    /// [`ExecMode::Dev`] under `debug_assertions`, [`ExecMode::Prod`] in a
+    /// release build (see [`BrinkExecMode`](crate::BrinkExecMode)). Call this
+    /// to pin a mode regardless of profile — e.g. `with_exec_mode(ExecMode::Dev)`
+    /// to keep the fault-loud posture in a release editor build, or
+    /// `with_exec_mode(ExecMode::Prod)` to run keep-moving in a debug build.
+    ///
+    /// The mode is a host/build knob, never embedded in `.inkb` and never
+    /// persisted in saves; a per-flow override is still available at runtime
+    /// via [`FlowInstance::set_exec_mode`](brink_runtime::FlowInstance::set_exec_mode).
+    #[must_use]
+    pub fn with_exec_mode(mut self, mode: ExecMode) -> Self {
+        self.exec_mode = mode;
+        self
+    }
 }
 
 impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
@@ -75,6 +100,10 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
             app.add_plugins(BrinkAssetsPlugin);
         }
         app.insert_resource(BrinkWorldPolicy::<M>::new(self.policy.clone()));
+        // F35 (ruled 2026-07-19): the host-selected (or profile-defaulted)
+        // ExecMode every flow of marker `M` spawns in. Applied to each
+        // FlowInstance at creation by `fulfill_flow_requests`.
+        app.insert_resource(BrinkExecMode::<M>::new(self.exec_mode));
         app.add_systems(Update, fulfill_flow_requests::<M>);
         // T1d-3 handle integration (docs/t1d-spec.md §4): the type-erased
         // kind index (empty until a host calls `register_handle_kind`) and
@@ -98,6 +127,11 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         app.init_resource::<crate::capability::CapabilityManifest>();
         app.init_resource::<crate::capability::CapabilityRegistry<M>>();
         app.init_resource::<crate::capability::CapabilityTable<M>>();
+        // BH detect path (docs/effects-spec.md §12.5; #996): the per-frame,
+        // per-capability change verdict `mark_wake_dirty` reads. Always present
+        // so the wake layer can take it as a plain `Res`; each
+        // `register_capability` call also wires the typed tracker that fills it.
+        app.init_resource::<crate::capability::CapabilityChanges<M>>();
         app.add_systems(Update, crate::capability::rebuild_capability_table::<M>);
         // BH-2 (docs/effects-spec.md §12.4; #914): the batch-turn report
         // resource, always present so a host that opts into

@@ -311,7 +311,7 @@ fn fault_during_rmw_does_not_touch_unrelated_globals() {
 /// the *pointed-to* global, not the pointer value itself.
 #[test]
 fn ref_param_flat_indexed_assignment_takes_through_the_pointer() {
-    let source = "VAR grid = 0\n~ {\n    grid = #[1, 2, 3]\n    bump(grid)\n}\n{grid[0]}\n-> END\n\n=== function bump(ref arr) ===\n~ {\n    arr[0] = arr[0] + 1\n}\n~ return 0\n";
+    let source = "VAR grid = 0\n~ {\n    grid = #[1, 2, 3]\n    bump(grid)\n}\n{grid[0]}\n-> END\n\n=== function bump(ref arr: array<int>) ===\n~ {\n    arr[0] = arr[0] + 1\n}\n~ return 0\n";
     let mut story = compile(source);
     let out = run_to_completion_or_fault(&mut story).expect("no fault expected");
     assert_eq!(

@@ -10,8 +10,8 @@ Explicit call: {e}.
 Partial then call: {summed}.
 -> END
 
-=== function double(x) ===
+=== function double(x: int): int ===
 ~ return x + x
 
-=== function add(a, b) ===
+=== function add(a: int, b: int): int ===
 ~ return a + b

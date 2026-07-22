@@ -396,6 +396,48 @@ enum TypedValueJs {
         root: Option<String>,
         segments: Vec<TypedProjSegmentJs>,
     },
+    /// A typed-absence value ([`Value::OptionVal`], NS-A1,
+    /// `docs/stdlib-spec.md` §1.4) as a lossless tree: `some` is `null` for
+    /// `none`, or the recursively-typed inner value for `some(x)` — nesting
+    /// (`some(none)`) is preserved, unlike the native-JS value-or-null
+    /// mapping in [`value_to_js`](crate::value_marshal::value_to_js).
+    Option {
+        some: Option<Box<TypedValueJs>>,
+    },
+    /// An integer range value ([`Value::Range`], NS-A5,
+    /// `docs/stdlib-spec.md` §7, F7) — the written form crosses losslessly:
+    /// `start`/`end` are the authored bounds, `inclusive` distinguishes
+    /// `..=` from `..` (content equality may identify `1..=6` and `1..7`;
+    /// the boundary preserves the spelling).
+    Range {
+        start: i32,
+        end: i32,
+        inclusive: bool,
+    },
+    /// A numeric-tower value ([`Value::Vec2`] … [`Value::Mat4`], NS-A8,
+    /// `docs/tower-mini-spec.md`) as its lossless lane form: `kind` is the
+    /// tower type name (`"vec2"` … `"mat4"`), `lanes` the flat f32 lanes in
+    /// the pinned wire order (vec/quat `x, y(, z, w)`; matrices
+    /// column-major) — the same hand-serialized lane discipline as the
+    /// `.inkb` wire (T5), never glam's memory layout.
+    Tower {
+        kind: String,
+        lanes: Vec<f32>,
+    },
+    /// A weighted table ([`Value::Weighted`], NS-A7, `docs/stdlib-spec.md`
+    /// §8) as its lossless entry form: `(weight, value)` pairs in
+    /// construction order, values recursively typed.
+    Weighted {
+        entries: Vec<WeightedEntryJs>,
+    },
+}
+
+/// One [`Value::Weighted`] entry, typed (NS-A7): a positive int weight and
+/// its recursively-typed value.
+#[derive(Serialize)]
+struct WeightedEntryJs {
+    weight: i32,
+    value: Box<TypedValueJs>,
 }
 
 /// One [`Value::Projection`] path segment, typed (`docs/format-v4-rfc.md`
@@ -431,6 +473,14 @@ enum TypedMapKeyJs {
     Bool { value: bool },
 }
 
+/// Build the lossless tower form (NS-A8): kind name + flat lanes.
+fn tower_typed_js(kind: &str, lanes: &[f32]) -> TypedValueJs {
+    TypedValueJs::Tower {
+        kind: kind.to_owned(),
+        lanes: lanes.to_vec(),
+    }
+}
+
 fn map_key_to_typed_js(key: &brink_format::MapKey) -> TypedMapKeyJs {
     match key {
         brink_format::MapKey::Int(n) => TypedMapKeyJs::Int { value: *n },
@@ -441,6 +491,10 @@ fn map_key_to_typed_js(key: &brink_format::MapKey) -> TypedMapKeyJs {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one marshal arm per Value variant — the NS-A7 Weighted arm pushed this past 100"
+)]
 fn value_to_typed_js(v: &Value, program: &brink_runtime::Program) -> TypedValueJs {
     match v {
         Value::Int(i) => TypedValueJs::Int { value: *i },
@@ -523,6 +577,41 @@ fn value_to_typed_js(v: &Value, program: &brink_runtime::Program) -> TypedValueJ
                     brink_format::ProjSegment::Key(v) => TypedProjSegmentJs::Key {
                         value: Box::new(value_to_typed_js(v, program)),
                     },
+                })
+                .collect(),
+        },
+        Value::OptionVal(inner) => TypedValueJs::Option {
+            some: inner
+                .as_deref()
+                .map(|v| Box::new(value_to_typed_js(v, program))),
+        },
+        Value::Range {
+            start,
+            end,
+            inclusive,
+        } => TypedValueJs::Range {
+            start: *start,
+            end: *end,
+            inclusive: *inclusive,
+        },
+        // Tower values (NS-A8): lossless kind + lane form, lanes through
+        // glam's explicit array conversions (T5 — never memory layout).
+        Value::Vec2(v) => tower_typed_js("vec2", &v.to_array()),
+        Value::Vec3(v) => tower_typed_js("vec3", &v.to_array()),
+        Value::Vec4(v) => tower_typed_js("vec4", &v.to_array()),
+        Value::Quat(q) => tower_typed_js("quat", &q.to_array()),
+        Value::Mat2(m) => tower_typed_js("mat2", &m.to_cols_array()),
+        Value::Mat3(m) => tower_typed_js("mat3", &m.to_cols_array()),
+        Value::Mat4(m) => tower_typed_js("mat4", &m.to_cols_array()),
+        // Weighted tables (NS-A7): lossless entry form, construction order
+        // preserved (order is semantic for display and the roll walk).
+        Value::Weighted(w) => TypedValueJs::Weighted {
+            entries: w
+                .entries
+                .iter()
+                .map(|(weight, value)| WeightedEntryJs {
+                    weight: *weight,
+                    value: Box::new(value_to_typed_js(value, program)),
                 })
                 .collect(),
         },

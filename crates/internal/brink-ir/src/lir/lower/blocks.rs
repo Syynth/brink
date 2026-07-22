@@ -68,7 +68,7 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
             let value = ret.value.as_ref().map(|e| lower_expr(e, ctx));
             out.push(lir::Stmt::Return {
                 value,
-                is_tunnel: false,
+                is_tunnel: ret.kind == hir::ReturnKind::TunnelRedirect,
                 args: Vec::new(),
             });
         }
@@ -134,7 +134,7 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
 /// a `Program` at all, independent of and non-suppressible relative to any
 /// analysis-phase diagnostic covering the same construct.
 fn lower_loop_control(
-    ptr: &brink_syntax::ast::SyntaxNodePtr,
+    ptr: &crate::Provenance,
     keyword: &str,
     stmt: lir::Stmt,
     ctx: &mut LowerCtx<'_>,
@@ -831,6 +831,29 @@ enum MutatorKind {
     Insert,
     /// `remove(x, k_or_i)` — 2 args.
     Remove,
+    /// `clear(m)` — 1 arg (NS-A1, `docs/stdlib-spec.md` §5): empty the map
+    /// in place, total.
+    Clear,
+    /// `shuffle(a)` — 1 arg (NS-A6, `docs/stdlib-spec.md` §7): Fisher-Yates
+    /// shuffle of the array in place; every element swap draws through the
+    /// one RNG cell. `shuffled(a)` is the functional twin (ordinary
+    /// expression lowering).
+    Shuffle,
+    /// `sort(a)` — 1 arg (NS-A4, `docs/stdlib-spec.md` §4b): sort the
+    /// array in place by the doctrine order (dev NaN-fault / prod pinned
+    /// placement at the runtime knob). `sorted(a)` is the functional twin.
+    Sort,
+    /// `sort_by(a, cmp)` — 2 args (NS-A4, F0 ruled 2026-07-19): sort the
+    /// array in place by a comparator function value `fn(T, T): int`.
+    /// `sorted_by(a, cmp)` is the functional twin.
+    SortBy,
+    /// `heap_push(a, x)` — 2 args (NS-A7, `docs/stdlib-spec.md` §8): sift
+    /// `x` into the min-heap maintained over the array, in place (§4b
+    /// entry check: dev NaN-fault / prod pinned placement at the runtime
+    /// knob). `heap_pop`/`heap_peek` are not mutator-statement shapes —
+    /// `heap_pop` is the `pop` expression/bracket shape, `heap_peek` a
+    /// pure expression.
+    HeapPush,
 }
 
 impl MutatorKind {
@@ -844,13 +867,19 @@ impl MutatorKind {
             "push" => Some(Self::Push),
             "insert" => Some(Self::Insert),
             "remove" => Some(Self::Remove),
+            "clear" => Some(Self::Clear),
+            "shuffle" => Some(Self::Shuffle),
+            "sort" => Some(Self::Sort),
+            "sort_by" => Some(Self::SortBy),
+            "heap_push" => Some(Self::HeapPush),
             _ => None,
         }
     }
 
     fn expected_argc(self) -> usize {
         match self {
-            Self::Push | Self::Remove => 2,
+            Self::Clear | Self::Shuffle | Self::Sort => 1,
+            Self::Push | Self::Remove | Self::SortBy | Self::HeapPush => 2,
             Self::Insert => 3,
         }
     }
@@ -862,6 +891,11 @@ impl MutatorKind {
             Self::Push => "push(container, value)",
             Self::Insert => "insert(container, key_or_index, value)",
             Self::Remove => "remove(container, key_or_index)",
+            Self::Clear => "clear(map)",
+            Self::Shuffle => "shuffle(array)",
+            Self::Sort => "sort(array)",
+            Self::SortBy => "sort_by(array, comparator)",
+            Self::HeapPush => "heap_push(array, value)",
         }
     }
 }
@@ -891,6 +925,48 @@ fn is_lvalue_expr(expr: &hir::Expr) -> bool {
 /// `lower_block_with_children`) — a function call used as a statement for
 /// its side effect is not a T1b-only concept (ordinary knots/externals are
 /// already callable that way outside any block).
+/// `seed(n)` (NS-A6, `docs/stdlib-spec.md` §7): statement-only like the
+/// mutators, but its argument is an ordinary value, not an lvalue
+/// receiver — it writes the RNG cell, not its argument — so it takes its
+/// own path rather than joining `MutatorKind`'s lvalue/RMW machinery. It
+/// lowers to the frozen `SEED_RANDOM` builtin (one RNG cell, two
+/// surfaces, no drift); `ExprStmt` discards the op's `Null`. Same shadow
+/// discipline as the mutators: a resolvable user symbol of the same name
+/// falls through to ordinary call lowering.
+fn try_lower_seed_stmt(
+    path: &hir::Path,
+    args: &[hir::Expr],
+    ctx: &mut LowerCtx<'_>,
+    out: &mut Vec<lir::Stmt>,
+) -> bool {
+    if ctx.temp_slot("seed").is_some() || ctx.resolve_path(path.range).is_some() {
+        return false;
+    }
+    if args.len() != 1 {
+        ctx.diagnostics.push(Diagnostic {
+            file: ctx.file,
+            range: path.range,
+            message: format!(
+                "{}: `seed` expects 1 argument(s), got {} — expected signature: `seed(n)`",
+                DiagnosticCode::E058.title(),
+                args.len(),
+            ),
+            code: DiagnosticCode::E058,
+        });
+        return true;
+    }
+    let arg = lower_expr(&args[0], ctx);
+    out.push(lir::Stmt::ExprStmt(lir::Expr::CallBuiltin {
+        builtin: lir::BuiltinFn::SeedRandom,
+        args: vec![arg],
+    }));
+    true
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one desugar arm per mutator kind — the NS-A7 heap_push arm pushed this past 100"
+)]
 pub(super) fn try_lower_mutator_stmt(
     expr: &hir::Expr,
     ctx: &mut LowerCtx<'_>,
@@ -900,6 +976,14 @@ pub(super) fn try_lower_mutator_stmt(
         return false;
     };
     let name = super::expr::path_to_string(path);
+
+    if name == "seed" && try_lower_seed_stmt(path, args, ctx, out) {
+        return true;
+    }
+    if name == "seed" {
+        return false;
+    }
+
     let Some(kind) = MutatorKind::from_name(&name) else {
         return false;
     };
@@ -1002,6 +1086,17 @@ pub(super) fn try_lower_mutator_stmt(
                 key: Box::new(key),
             }
         }
+        MutatorKind::Clear => lir::Expr::MapClear(Box::new(container())),
+        MutatorKind::Shuffle => lir::Expr::RandShuffle(Box::new(container())),
+        MutatorKind::Sort => lir::Expr::SeqSorted(Box::new(container())),
+        MutatorKind::SortBy => lir::Expr::SeqSortedBy {
+            seq: Box::new(container()),
+            cmp: Box::new(lower_expr(&args[1], ctx)),
+        },
+        MutatorKind::HeapPush => lir::Expr::HeapPush {
+            seq: Box::new(container()),
+            value: Box::new(lower_expr(&args[1], ctx)),
+        },
     };
 
     out.push(lir::Stmt::Assign {
@@ -1101,6 +1196,19 @@ fn lower_bare_mutator(
         MutatorKind::Remove => lir::Expr::CollectionRemove {
             base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
             key: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
+        },
+        MutatorKind::Clear => lir::Expr::MapClear(Box::new(lir::Expr::TakeTemp(c_slot, c_name))),
+        MutatorKind::Shuffle => {
+            lir::Expr::RandShuffle(Box::new(lir::Expr::TakeTemp(c_slot, c_name)))
+        }
+        MutatorKind::Sort => lir::Expr::SeqSorted(Box::new(lir::Expr::TakeTemp(c_slot, c_name))),
+        MutatorKind::SortBy => lir::Expr::SeqSortedBy {
+            seq: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
+            cmp: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
+        },
+        MutatorKind::HeapPush => lir::Expr::HeapPush {
+            seq: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
+            value: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
         },
     };
 

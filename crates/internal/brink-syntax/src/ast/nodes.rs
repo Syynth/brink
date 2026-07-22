@@ -8,8 +8,8 @@ use crate::SyntaxKind::{
     self, AMP, AMP_AMP, BANG, BANG_EQ, BANG_QUESTION, CARET, COLON, DIVERT, DOLLAR, EQ, EQ_EQ,
     FLOAT, GT, GT_EQ, HASH, IDENT, INTEGER, KW_AND, KW_CYCLE, KW_DONE, KW_ELSE, KW_END, KW_FALSE,
     KW_FUNCTION, KW_HAS, KW_HASNT, KW_MOD, KW_NOT, KW_ONCE, KW_OR, KW_REF, KW_SHUFFLE, KW_STOPPING,
-    KW_TODO, KW_TRUE, LT, LT_EQ, MINUS, MINUS_EQ, NEWLINE, PERCENT, PIPE, PLUS, PLUS_EQ, QUESTION,
-    SLASH, STAR, TILDE,
+    KW_TODO, KW_TRUE, L_PAREN, LT, LT_EQ, MINUS, MINUS_EQ, NEWLINE, PERCENT, PIPE, PLUS, PLUS_EQ,
+    QUESTION, R_PAREN, SLASH, STAR, TILDE,
 };
 use crate::ast::AstNode as _;
 use crate::ast::ast_node;
@@ -45,6 +45,7 @@ ast_node!(AuthorWarning, AUTHOR_WARNING);
 ast_node!(LogicLine, LOGIC_LINE);
 ast_node!(ContentLine, CONTENT_LINE);
 ast_node!(TagLine, TAG_LINE);
+ast_node!(AnnotationLine, ANNOTATION_LINE);
 ast_node!(StrayClosingBrace, STRAY_CLOSING_BRACE);
 
 // ── Logic ────────────────────────────────────────────────────────────
@@ -123,6 +124,7 @@ ast_node!(ArrayLiteral, ARRAY_LITERAL);
 ast_node!(MapLiteral, MAP_LITERAL);
 ast_node!(MapEntry, MAP_ENTRY);
 ast_node!(IndexExpr, INDEX_EXPR);
+ast_node!(RangeExpr, RANGE_EXPR);
 
 // ── T1b superset: multi-line `~ { … }` blocks (docs/t1b-surface-spec.md §2) ──
 
@@ -331,6 +333,9 @@ pub enum Expr {
     /// docs/t1c-spec.md §3/§10, issue #869) since Direct-call syntax is
     /// RULED to a bare variable/temp/param callee only.
     ComputedCall(CallExpr),
+    /// `a..b` / `a..=b` — range literal (NS-A5, docs/stdlib-spec.md §7,
+    /// brink extension).
+    Range(RangeExpr),
 }
 
 impl std::fmt::Debug for Expr {
@@ -369,6 +374,7 @@ impl crate::ast::AstNode for Expr {
                 | SyntaxKind::FN_LITERAL
                 | SyntaxKind::REF_EXPR
                 | SyntaxKind::CALL_EXPR
+                | SyntaxKind::RANGE_EXPR
         )
     }
 
@@ -394,6 +400,7 @@ impl crate::ast::AstNode for Expr {
             SyntaxKind::FN_LITERAL => FnLiteral::cast(node).map(Expr::FnLiteral),
             SyntaxKind::REF_EXPR => RefExpr::cast(node).map(Expr::RefExpr),
             SyntaxKind::CALL_EXPR => CallExpr::cast(node).map(Expr::ComputedCall),
+            SyntaxKind::RANGE_EXPR => RangeExpr::cast(node).map(Expr::Range),
             _ => None,
         }
     }
@@ -420,6 +427,7 @@ impl crate::ast::AstNode for Expr {
             Expr::FnLiteral(n) => n.syntax(),
             Expr::RefExpr(n) => n.syntax(),
             Expr::ComputedCall(n) => n.syntax(),
+            Expr::Range(n) => n.syntax(),
         }
     }
 }
@@ -808,6 +816,54 @@ impl TagLine {
     }
 }
 
+// ── AnnotationLine ───────────────────────────────────────────────────
+
+impl AnnotationLine {
+    /// The annotation's name token — the `IDENT` after `@[` (e.g. `effects`
+    /// in `@[effects(pure)]`).
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        self.syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .find(|t| t.kind() == IDENT)
+    }
+
+    /// The raw text between the annotation's balanced `( … )` argument
+    /// parens, if present — `None` for a bare `@[name]`. Mirrors the
+    /// directive channel's raw-string argument contract
+    /// (`brink-ir`'s `ParsedDirective::arg`): the argument mini-grammar is
+    /// parsed downstream, not here.
+    pub fn arg_text(&self) -> Option<String> {
+        let mut depth = 0usize;
+        let mut collecting = false;
+        let mut out = String::new();
+        for el in self.syntax.children_with_tokens() {
+            let rowan::NodeOrToken::Token(tok) = el else {
+                continue;
+            };
+            match tok.kind() {
+                L_PAREN => {
+                    if collecting {
+                        out.push_str(tok.text());
+                    }
+                    depth += 1;
+                    collecting = true;
+                }
+                R_PAREN => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return Some(out);
+                    }
+                    out.push_str(tok.text());
+                }
+                _ if collecting => out.push_str(tok.text()),
+                _ => {}
+            }
+        }
+        collecting.then_some(out)
+    }
+}
+
 // ── ReturnStmt ───────────────────────────────────────────────────────
 
 impl ReturnStmt {
@@ -1107,6 +1163,29 @@ impl IndexExpr {
     /// The index expression (the second `Expr` child) — `i` in `a[i]`.
     pub fn index(&self) -> Option<Expr> {
         self.syntax.children().filter_map(Expr::cast).nth(1)
+    }
+}
+
+// ── RangeExpr (NS-A5, docs/stdlib-spec.md §7) ────────────────────────
+
+impl RangeExpr {
+    /// The start bound (the first `Expr` child) — `a` in `a..b`.
+    pub fn start(&self) -> Option<Expr> {
+        self.syntax.children().find_map(Expr::cast)
+    }
+
+    /// The end bound (the second `Expr` child) — `b` in `a..b`.
+    pub fn end(&self) -> Option<Expr> {
+        self.syntax.children().filter_map(Expr::cast).nth(1)
+    }
+
+    /// `true` for the inclusive `..=` form — detected by the `EQ` token the
+    /// parser bumped between the dots and the end bound.
+    pub fn is_inclusive(&self) -> bool {
+        self.syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .any(|t| t.kind() == SyntaxKind::EQ)
     }
 }
 

@@ -242,14 +242,14 @@ impl HirVisitor for GateVisitor<'_> {
         // T2-2 (docs/effects-spec.md §10, issue #861): `#@effects(…)` is
         // brink-only, same superset-parse-then-reject shape as `#@module`.
         if let Some(assertion) = &knot.effects_assertion {
-            self.flag(assertion.range, "`#@effects` directive");
+            self.flag(assertion.range, "`@[effects(…)]` assertion");
         }
     }
 
     fn enter_stitch(&mut self, stitch: &Stitch) {
         self.flag_params(&stitch.params);
         if let Some(assertion) = &stitch.effects_assertion {
-            self.flag(assertion.range, "`#@effects` directive");
+            self.flag(assertion.range, "`@[effects(…)]` assertion");
         }
     }
 
@@ -286,6 +286,22 @@ impl HirVisitor for GateVisitor<'_> {
                     self.flag(path.range, &format!("`{name}` stdlib function"));
                 }
             }
+            // NS-A1 (`docs/stdlib-spec.md` §1.4): a bare `none` in
+            // expression position is the brink-dialect Option absence
+            // literal — like the stdlib *call* names below it parses
+            // identically to an ordinary reference, so the gate needs the
+            // resolution result: a `none` that resolved to a real symbol
+            // (a LIST item, VAR, temp…) is an ordinary reference, never
+            // flagged; only the unresolved-therefore-the-literal case is
+            // brink extension surface.
+            Expr::Path(p) => {
+                if let [seg] = p.segments.as_slice()
+                    && seg.text == "none"
+                    && !self.resolved.contains(&(self.file, p.range))
+                {
+                    self.flag(p.range, "`none` Option literal");
+                }
+            }
             Expr::Index(i) => self.flag(i.ptr.text_range(), "postfix indexing `[…]`"),
             Expr::StructLiteral(sl) => {
                 self.flag(sl.ptr.text_range(), "struct construction literal");
@@ -305,6 +321,12 @@ impl HirVisitor for GateVisitor<'_> {
             // dialect decides legality" rule.
             Expr::RefArg(ra) => {
                 self.flag(ra.ptr.text_range(), "`ref` path-projection expression");
+            }
+            // NS-A5 (docs/stdlib-spec.md §7, F7): `a..b` / `a..=b` range
+            // literals are brink-dialect-gated the same way — self-evident
+            // extension syntax, no resolution consult needed.
+            Expr::Range(r) => {
+                self.flag(r.ptr.text_range(), "`..`/`..=` range literal");
             }
             _ => {}
         }
@@ -365,16 +387,16 @@ mod tests {
 
     #[test]
     fn strict_ink_flags_effects_directive_on_knot() {
-        let hir = lower_src("== guard ==\n#@effects(pure)\nHalt!\n");
+        let hir = lower_src("== guard ==\n@[effects(pure)]\nHalt!\n");
         let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E051);
-        assert!(diags[0].message.contains("#@effects"));
+        assert!(diags[0].message.contains("effects"));
     }
 
     #[test]
     fn strict_ink_flags_effects_directive_on_stitch() {
-        let hir = lower_src("== guard ==\nHalt!\n= mood\n#@effects(reads: gold)\ngrumpy\n");
+        let hir = lower_src("== guard ==\nHalt!\n= mood\n@[effects(reads(gold))]\ngrumpy\n");
         let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E051);
@@ -475,6 +497,102 @@ mod tests {
         let resolutions = vec![brink_ir::ResolvedRef {
             file: FileId(0),
             range: call_range,
+            target: brink_format::DefinitionId::new(brink_format::DefinitionTag::Address, 1),
+        }];
+        let diags = check(&[(FileId(0), &hir)], &resolutions, Dialect::StrictInk);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    // ── NS-A1 Option surface (docs/stdlib-spec.md §1.4, issue #1107) ───
+
+    #[test]
+    fn strict_ink_flags_unresolved_option_verb_calls() {
+        for src in [
+            "~ x = find(s, \"a\")\n",
+            "~ x = get(m, \"k\")\n",
+            "~ x = min(a)\n",
+            "~ x = some(1)\n",
+        ] {
+            let hir = lower_src(src);
+            let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+            assert!(
+                diags.iter().any(|d| d.code == DiagnosticCode::E051),
+                "expected E051 for {src:?}, got {diags:?}"
+            );
+        }
+    }
+
+    // ── NS-A6 rand verbs (docs/stdlib-spec.md §7, issue #1112) ─────────
+
+    #[test]
+    fn strict_ink_flags_unresolved_rand_verb_calls() {
+        for src in [
+            "~ x = float()
+",
+            "~ x = chance(0.5)
+",
+            "~ x = pick(a)
+",
+            "~ x = shuffled(a)
+",
+            "~ shuffle(a)
+",
+            "~ seed(42)
+",
+        ] {
+            let hir = lower_src(src);
+            let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+            assert!(
+                diags.iter().any(|d| d.code == DiagnosticCode::E051),
+                "expected E051 for {src:?}, got {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn brink_dialect_does_not_flag_the_rand_surface() {
+        let hir = lower_src(
+            "~ x = chance(0.5)
+~ y = pick(a)
+~ shuffle(a)
+~ seed(42)
+~ z = float()
+",
+        );
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::Brink);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn strict_ink_flags_a_bare_unresolved_none() {
+        let hir = lower_src("~ x = none\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E051);
+        assert!(diags[0].message.contains("none"), "{diags:?}");
+    }
+
+    #[test]
+    fn brink_dialect_does_not_flag_the_option_surface() {
+        let hir = lower_src("~ x = find(s, \"a\")\n~ y = none\n~ z = some(1)\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::Brink);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn resolved_none_reference_is_never_flagged() {
+        // A `none` that resolved to a real symbol (e.g. a LIST item) is an
+        // ordinary reference in either dialect.
+        let hir = lower_src("~ x = none\n");
+        let Some(Stmt::Assignment(assign)) = hir.root_content.stmts.first() else {
+            unreachable!("~ x = none lowers to an Assignment")
+        };
+        let Expr::Path(p) = &assign.value else {
+            unreachable!("assignment value is the bare none path")
+        };
+        let resolutions = vec![brink_ir::ResolvedRef {
+            file: FileId(0),
+            range: p.range,
             target: brink_format::DefinitionId::new(brink_format::DefinitionTag::Address, 1),
         }];
         let diags = check(&[(FileId(0), &hir)], &resolutions, Dialect::StrictInk);
@@ -596,6 +714,24 @@ mod tests {
     }
 
     // ── T1e path projections (docs/t1e-spec.md §2, issue #831) ────────
+
+    #[test]
+    fn strict_ink_flags_range_literal() {
+        // NS-A5 (docs/stdlib-spec.md §7, F7): `a..b` / `a..=b` are brink
+        // extension syntax — E051 under strict-ink, at the literal's span.
+        let hir = lower_src("~ x = 1..=6\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E051);
+        assert!(diags[0].message.contains("range"), "{diags:?}");
+    }
+
+    #[test]
+    fn brink_dialect_does_not_flag_range_literal() {
+        let hir = lower_src("~ x = 0..10\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::Brink);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
 
     #[test]
     fn strict_ink_flags_ref_expr() {

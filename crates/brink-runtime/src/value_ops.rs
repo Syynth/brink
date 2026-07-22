@@ -12,8 +12,12 @@ use crate::error::RuntimeError;
 use crate::program::Program;
 
 /// Returns whether a value is truthy in ink semantics.
-pub(crate) fn is_truthy(v: &Value) -> bool {
-    match v {
+///
+/// Fallible since F27 (`docs/stdlib-spec.md` §1.6, ruled 2026-07-19, issue
+/// #1120): a `Value::OptionVal` in truthiness position is the one input with
+/// no truthiness at all — see the arm's own comment.
+pub(crate) fn is_truthy(v: &Value) -> Result<bool, RuntimeError> {
+    Ok(match v {
         Value::Bool(b) => *b,
         Value::Int(n) => *n != 0,
         Value::Float(n) => *n != 0.0,
@@ -29,6 +33,11 @@ pub(crate) fn is_truthy(v: &Value) -> bool {
         // A projection (T1e) is a value with an identity (root cell + path),
         // not a collection — always truthy, same reasoning as every other
         // non-collection variant here.
+        // A tower value (NS-A8) is a value with components, not a collection
+        // with a size — always truthy, following the record/handle/
+        // projection precedent here. (No zero-vector falsiness: that would
+        // be a quiet numeric coercion nothing ruled — flagged as a finding
+        // for the queue, not invented here.)
         Value::DivertTarget(_)
         | Value::VariablePointer(_)
         | Value::TempPointer { .. }
@@ -37,14 +46,43 @@ pub(crate) fn is_truthy(v: &Value) -> bool {
         | Value::FnRef(_)
         | Value::Closure(_)
         | Value::Handle { .. }
-        | Value::Projection(_) => true,
+        | Value::Projection(_)
+        | Value::Vec2(_)
+        | Value::Vec3(_)
+        | Value::Vec4(_)
+        | Value::Quat(_)
+        // A weighted table (NS-A7) is never empty — evidence-by-
+        // construction (§8) refuses empty tables at the only producer —
+        // so unlike the collections below there is no falsy case to
+        // express: always truthy, the record/handle/tower precedent.
+        | Value::Mat2(_)
+        | Value::Mat3(_)
+        | Value::Mat4(_)
+        | Value::Weighted(_) => true,
+        // F27 (ruled 2026-07-19, issue #1120): Option has **no** truthiness
+        // — a condition-position `Option[T]` is a compile error under
+        // `types = strict` (E116) and this turn-terminating fault under
+        // gradual. The falsy-none arm NS-A1 shipped here (`none` falsy,
+        // `some(x)` truthy — the `{r: …}` "did we find one?" guard) was a
+        // quiet coercion of exactly the kind `Option[T] ≠ T` exists to ban;
+        // authors write `== none` / `== some(x)` instead.
+        Value::OptionVal(_) => return Err(RuntimeError::OptionTruthiness),
+        // Range truthiness (NS-A5, F7): emptiness is load-bearing for
+        // ranges (`for i in 0..n` with n = 0 runs zero times), so a range
+        // reads like the collections below — truthy iff it denotes at
+        // least one element.
+        Value::Range { .. } => v.range_len().unwrap_or(0) > 0,
         Value::List(lv) => !lv.items.is_empty(),
         Value::Array(items) => !items.is_empty(),
         Value::Map(map) => !map.is_empty(),
-    }
+    })
 }
 
 /// Stringify a value for output.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one display arm per Value variant — the NS-A7 Weighted arm pushed this past 100"
+)]
 pub(crate) fn stringify(v: &Value, program: &Program) -> String {
     match v {
         Value::Int(n) => n.to_string(),
@@ -75,13 +113,50 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
                 .collect();
             format!("{{{}}}", parts.join(", "))
         }
-        // Same provisional-rendering rationale as the collection arms above:
-        // no compiler surface constructs a `Record` yet, so this format is
-        // not user-facing-authoritative — it exists only so `stringify`
-        // stays total.
-        Value::Record { fields, .. } => {
-            let parts: Vec<String> = fields.iter().map(|v| stringify(v, program)).collect();
-            format!("{{{}}}", parts.join(", "))
+        // Structs (TM-4 `Value::Record`): the **structural display
+        // default** of the protocol registry (NS-A3, issue #1109,
+        // docs/stdlib-spec.md §9.6) — shape name + fields in declared
+        // order, mirroring the construction literal: `Point { x: 1, y: 2 }`.
+        // Field values recurse through this same function, so nested
+        // structs/options render consistently. This IS the display
+        // protocol's default path: both interpolation (`{p}`, via
+        // `EmitValue` → `resolve_part`) and the `string()` conversion
+        // intrinsic (`ConvertString` → `convert_to_string`) dispatch
+        // through `stringify` — F1's one-display-path ruling (2026-07-19);
+        // a registered user `display` impl would override this default
+        // once the impl spelling lands (⏳ code-dialect sitting). Total by
+        // construction: a stale/mismatched `ShapeId` (a record loaded from
+        // a save against a different compile) falls back to the positional
+        // brace form rather than faulting — `string()`'s ruled totality
+        // survives the dispatch (F1's rider).
+        Value::Record { shape, fields } => {
+            let entry = program.struct_shapes.get(shape.0 as usize);
+            match entry {
+                Some(entry) if entry.fields.len() == fields.len() => {
+                    let name = program.name_checked(entry.name).unwrap_or("?");
+                    if fields.is_empty() {
+                        format!("{name} {{}}")
+                    } else {
+                        let parts: Vec<String> = entry
+                            .fields
+                            .iter()
+                            .zip(fields.iter())
+                            .map(|(field_name, v)| {
+                                format!(
+                                    "{}: {}",
+                                    program.name_checked(*field_name).unwrap_or("?"),
+                                    stringify(v, program)
+                                )
+                            })
+                            .collect();
+                        format!("{name} {{ {} }}", parts.join(", "))
+                    }
+                }
+                _ => {
+                    let parts: Vec<String> = fields.iter().map(|v| stringify(v, program)).collect();
+                    format!("{{{}}}", parts.join(", "))
+                }
+            }
         }
         // Function values (T1c-3, spec §5). The **authoritative** author-facing
         // display form — signature-like, with bound args rendered as defaults:
@@ -110,6 +185,75 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
         // `DefinitionId` from a different compile) renders `?`, matching
         // `display_fn_value`'s convention for its own unresolvable names.
         Value::Projection(p) => format!("ref {}", display_projection_path(p, program)),
+        // Option values (NS-A1, `docs/stdlib-spec.md` §1.4): the boring,
+        // stable form — `none` / `some(<inner display form>)`, matching the
+        // source-level construction vocabulary. NOTE: the §1.6
+        // display-boundary forgiveness (a final-None interpolation renders
+        // as *nothing*) is Track B4 and deliberately NOT implemented here —
+        // this is the strict-era rendering, total like every other arm.
+        Value::OptionVal(inner) => match inner {
+            None => "none".to_owned(),
+            Some(v) => format!("some({})", stringify(v, program)),
+        },
+        // Range values (NS-A5, `docs/stdlib-spec.md` §7, F7): the written
+        // form, preserved — `0..10` / `1..=6` — matching the source-level
+        // literal vocabulary exactly (content equality may say two forms
+        // are the same sequence; display stays faithful to the spelling).
+        Value::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            if *inclusive {
+                format!("{start}..={end}")
+            } else {
+                format!("{start}..{end}")
+            }
+        }
+        // Tower values (NS-A8): the **structural display default** of the
+        // protocol registry (NS-A3 precedent, the `Record` arm above) —
+        // kind name + named components in glam's declared order, mirroring
+        // the §K construction grammar's tower row (`vec3 { x: 1, y: 2,
+        // z: 3 }`). Matrices render their glam column fields (`x_axis` …)
+        // as nested vectors through this same function. Lanes format
+        // exactly like bare `Float` (`{n}`). Total by construction; a
+        // registered user `display` impl can never override this — tower
+        // kinds are compiler-known, not user structs (the registry rejects
+        // them, E118).
+        // Weighted tables (NS-A7, `docs/stdlib-spec.md` §8): mirror the
+        // chartered construction literal — `Weighted { 3: sword, 1:
+        // shield }`, entries in construction order (order is semantic for
+        // display; equality alone is order-insensitive). Values recurse.
+        Value::Weighted(w) => {
+            let parts: Vec<String> = w
+                .entries
+                .iter()
+                .map(|(weight, val)| format!("{weight}: {}", stringify(val, program)))
+                .collect();
+            format!("Weighted {{ {} }}", parts.join(", "))
+        }
+        Value::Vec2(v) => format!("vec2 {{ x: {}, y: {} }}", v.x, v.y),
+        Value::Vec3(v) => format!("vec3 {{ x: {}, y: {}, z: {} }}", v.x, v.y, v.z),
+        Value::Vec4(v) => format!("vec4 {{ x: {}, y: {}, z: {}, w: {} }}", v.x, v.y, v.z, v.w),
+        Value::Quat(q) => format!("quat {{ x: {}, y: {}, z: {}, w: {} }}", q.x, q.y, q.z, q.w),
+        Value::Mat2(m) => format!(
+            "mat2 {{ x_axis: {}, y_axis: {} }}",
+            stringify(&Value::Vec2(m.x_axis), program),
+            stringify(&Value::Vec2(m.y_axis), program)
+        ),
+        Value::Mat3(m) => format!(
+            "mat3 {{ x_axis: {}, y_axis: {}, z_axis: {} }}",
+            stringify(&Value::Vec3(m.x_axis), program),
+            stringify(&Value::Vec3(m.y_axis), program),
+            stringify(&Value::Vec3(m.z_axis), program)
+        ),
+        Value::Mat4(m) => format!(
+            "mat4 {{ x_axis: {}, y_axis: {}, z_axis: {}, w_axis: {} }}",
+            stringify(&Value::Vec4(m.x_axis), program),
+            stringify(&Value::Vec4(m.y_axis), program),
+            stringify(&Value::Vec4(m.z_axis), program),
+            stringify(&Value::Vec4(m.w_axis), program)
+        ),
     }
 }
 
@@ -453,16 +597,230 @@ pub(crate) fn binary_op(
         (Value::Record { .. }, Value::Record { .. }) if op == BinaryOp::NotEqual => {
             Ok(Value::Bool(left != right))
         }
+        // Option equality (NS-A1, `docs/stdlib-spec.md` §1.4): structural —
+        // `none == none`, `some(x) == some(y)` iff `x == y` — delegated to
+        // `Value`'s `PartialEq` (which carries the `Arc::ptr_eq` fast path
+        // on the `some` payload). Only `==`/`!=` are defined; any ordering
+        // op falls through to the `TypeError` fault below. An Option
+        // compared against a bare value (`some(1) == 1`) also falls through
+        // to the fault — the ruled `Option[T] ≠ T` strictness; the checker
+        // reports it statically under `types = strict`, and the runtime
+        // fault is the gradual-mode backstop.
+        (Value::OptionVal(_), Value::OptionVal(_)) if op == BinaryOp::Equal => {
+            Ok(Value::Bool(left == right))
+        }
+        (Value::OptionVal(_), Value::OptionVal(_)) if op == BinaryOp::NotEqual => {
+            Ok(Value::Bool(left != right))
+        }
+        // Range equality (NS-A5, F7 "content equality"): delegated to
+        // `Value`'s `PartialEq` — two ranges are equal iff they denote the
+        // same integer sequence (`1..=6 == 1..7`; every empty range equals
+        // every other empty range). Only `==`/`!=` are defined; ordering a
+        // range (or comparing one against a non-range) falls through to the
+        // `TypeError` fault below — ranges are not orderable and never
+        // coerce.
+        (Value::Range { .. }, Value::Range { .. }) if op == BinaryOp::Equal => {
+            Ok(Value::Bool(left == right))
+        }
+        (Value::Range { .. }, Value::Range { .. }) if op == BinaryOp::NotEqual => {
+            Ok(Value::Bool(left != right))
+        }
+        // Weighted equality (NS-A7, `docs/stdlib-spec.md` §8): multiset
+        // content — delegated to `Value`'s `PartialEq` (order-insensitive,
+        // multiplicity-sensitive, the F17 policy; `Arc::ptr_eq` fast path
+        // included). Only `==`/`!=` are defined; ordering a table (or
+        // comparing one against a non-Weighted) falls through to the
+        // `TypeError` fault below — no ordering, no quiet coercion.
+        (Value::Weighted(_), Value::Weighted(_)) if op == BinaryOp::Equal => {
+            Ok(Value::Bool(left == right))
+        }
+        (Value::Weighted(_), Value::Weighted(_)) if op == BinaryOp::NotEqual => {
+            Ok(Value::Bool(left != right))
+        }
         // Equality for null
         (Value::Null, Value::Null) if op == BinaryOp::Equal => Ok(Value::Bool(true)),
         (Value::Null, Value::Null) if op == BinaryOp::NotEqual => Ok(Value::Bool(false)),
         (Value::Null, _) | (_, Value::Null) if op == BinaryOp::Equal => Ok(Value::Bool(false)),
         (Value::Null, _) | (_, Value::Null) if op == BinaryOp::NotEqual => Ok(Value::Bool(true)),
+        // Tower operators (NS-A8, `docs/tower-mini-spec.md` T3 — the ruled
+        // §2b op table, conventions per glam wholesale). Placed after the
+        // Null arms so `vec == null` keeps the universal cross-type-null
+        // `false`, and guarded on either side being a tower value so the
+        // scalar-scale forms (`float * vecN`) are reachable. Everything the
+        // ruled table does not enumerate faults below (a malformed
+        // question), never silently coerces.
+        (l, r) if is_tower(l) || is_tower(r) => tower_binary_op(op, l, r),
         _ => Err(RuntimeError::TypeError(format!(
             "cannot apply {op:?} to {:?} and {:?}",
             left.value_type(),
             right.value_type()
         ))),
+    }
+}
+
+/// Whether a value is one of the NS-A8 numeric-tower kinds.
+pub(crate) fn is_tower(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::Vec2(_)
+            | Value::Vec3(_)
+            | Value::Vec4(_)
+            | Value::Quat(_)
+            | Value::Mat2(_)
+            | Value::Mat3(_)
+            | Value::Mat4(_)
+    )
+}
+
+/// The tower's operator family (NS-A8, `docs/tower-mini-spec.md` T3; the
+/// §2b op table of `docs/stdlib-inventory.md`), semantics all glam's:
+///
+/// - `+`/`-`/`*` **componentwise** on same-kind vectors; `+`/`-` on quats
+///   (glam's `Add`/`Sub`);
+/// - **scalar scale**: `vecN * float` / `float * vecN` (ints promote,
+///   matching ink's int→float coercion);
+/// - `mat * vec` **transforms** (matching sizes);
+/// - `quat * quat` **composes**; `quat * vec3` **rotates**;
+/// - `mat * mat` **composes** (matching sizes) — F31 partial-b, issue #1145;
+/// - `mat * scalar` **scales** (ints promote, one direction only — see the
+///   arm's own comment) — F31 partial-b, issue #1145;
+/// - `vec / scalar` **scales down** (ints promote, one direction only, IEEE
+///   division so a zero divisor yields `inf`/`nan` lanes rather than a
+///   fault) — F31 partial-b, issue #1145;
+/// - `==`/`!=` on same-kind pairs — componentwise IEEE (T4), delegated to
+///   `Value`'s `PartialEq`.
+///
+/// Everything else — ordering ops (T4: the tower is NOT orderable), `vec /
+/// vec`, `mat / *`, `quat * scalar`, modulo, logic, cross-kind pairs,
+/// tower-vs-scalar equality, and the still-un-ruled matrix±matrix form — is a
+/// turn-terminating `TypeError` fault: the ruled table is the whole surface;
+/// nothing is invented beyond it (F31's explicit "every other glam-native
+/// form keeps faulting" clause).
+fn tower_binary_op(op: BinaryOp, left: &Value, right: &Value) -> Result<Value, RuntimeError> {
+    use BinaryOp as B;
+    // Same-kind structural equality first (componentwise IEEE, T4).
+    // Cross-kind equality (vec2 vs vec3, vec vs float, …) deliberately
+    // falls through to the fault below — the same no-silent-`false`
+    // discipline as fn-vs-handle equality.
+    if (op == B::Equal || op == B::NotEqual) && left.value_type() == right.value_type() {
+        let eq = left == right;
+        return Ok(Value::Bool(if op == B::Equal { eq } else { !eq }));
+    }
+    let fault = || {
+        Err(RuntimeError::TypeError(format!(
+            "cannot apply {op:?} to {:?} and {:?}",
+            left.value_type(),
+            right.value_type()
+        )))
+    };
+    // Scalar operand for the scale forms — int promotes to f32 (ink's
+    // int→float coercion), tower/other values are not scalars.
+    let scalar = |v: &Value| -> Option<f32> {
+        match v {
+            Value::Float(f) => Some(*f),
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "int->float promotion matches ink coercion semantics"
+            )]
+            Value::Int(n) => Some(*n as f32),
+            _ => None,
+        }
+    };
+    match (op, left, right) {
+        // Componentwise `+`/`-` (vecN, quat).
+        (B::Add, Value::Vec2(a), Value::Vec2(b)) => Ok(Value::Vec2(*a + *b)),
+        (B::Add, Value::Vec3(a), Value::Vec3(b)) => Ok(Value::Vec3(*a + *b)),
+        (B::Add, Value::Vec4(a), Value::Vec4(b)) => Ok(Value::Vec4(*a + *b)),
+        (B::Add, Value::Quat(a), Value::Quat(b)) => Ok(Value::Quat(*a + *b)),
+        (B::Subtract, Value::Vec2(a), Value::Vec2(b)) => Ok(Value::Vec2(*a - *b)),
+        (B::Subtract, Value::Vec3(a), Value::Vec3(b)) => Ok(Value::Vec3(*a - *b)),
+        (B::Subtract, Value::Vec4(a), Value::Vec4(b)) => Ok(Value::Vec4(*a - *b)),
+        (B::Subtract, Value::Quat(a), Value::Quat(b)) => Ok(Value::Quat(*a - *b)),
+        // Componentwise `*` (vecN).
+        (B::Multiply, Value::Vec2(a), Value::Vec2(b)) => Ok(Value::Vec2(*a * *b)),
+        (B::Multiply, Value::Vec3(a), Value::Vec3(b)) => Ok(Value::Vec3(*a * *b)),
+        (B::Multiply, Value::Vec4(a), Value::Vec4(b)) => Ok(Value::Vec4(*a * *b)),
+        // Quat composition and vec3 rotation.
+        (B::Multiply, Value::Quat(a), Value::Quat(b)) => Ok(Value::Quat(*a * *b)),
+        (B::Multiply, Value::Quat(q), Value::Vec3(v)) => Ok(Value::Vec3(*q * *v)),
+        // Matrix transforms (matching sizes).
+        (B::Multiply, Value::Mat2(m), Value::Vec2(v)) => Ok(Value::Vec2(*m * *v)),
+        (B::Multiply, Value::Mat3(m), Value::Vec3(v)) => Ok(Value::Vec3(*m * *v)),
+        (B::Multiply, Value::Mat4(m), Value::Vec4(v)) => Ok(Value::Vec4(*m * *v)),
+        // Matrix composition (F31 partial-b, issue #1145): `mat * mat` of
+        // matching size, delegated to glam's own `Mul<Mat*> for Mat*` (which
+        // is composition, not componentwise — matrices don't get the
+        // componentwise `*` vecN/quat have above). Placed before the
+        // catch-all scalar-scale arms below so it isn't shadowed by them.
+        (B::Multiply, Value::Mat2(a), Value::Mat2(b)) => Ok(Value::Mat2(*a * *b)),
+        (B::Multiply, Value::Mat3(a), Value::Mat3(b)) => Ok(Value::Mat3(*a * *b)),
+        (B::Multiply, Value::Mat4(a), Value::Mat4(b)) => Ok(Value::Mat4(*a * *b)),
+        // Scalar scale, both orders.
+        (B::Multiply, Value::Vec2(a), s) => match scalar(s) {
+            Some(f) => Ok(Value::Vec2(*a * f)),
+            None => fault(),
+        },
+        (B::Multiply, Value::Vec3(a), s) => match scalar(s) {
+            Some(f) => Ok(Value::Vec3(*a * f)),
+            None => fault(),
+        },
+        (B::Multiply, Value::Vec4(a), s) => match scalar(s) {
+            Some(f) => Ok(Value::Vec4(*a * f)),
+            None => fault(),
+        },
+        (B::Multiply, s, Value::Vec2(a)) => match scalar(s) {
+            Some(f) => Ok(Value::Vec2(f * *a)),
+            None => fault(),
+        },
+        (B::Multiply, s, Value::Vec3(a)) => match scalar(s) {
+            Some(f) => Ok(Value::Vec3(f * *a)),
+            None => fault(),
+        },
+        (B::Multiply, s, Value::Vec4(a)) => match scalar(s) {
+            Some(f) => Ok(Value::Vec4(f * *a)),
+            None => fault(),
+        },
+        // Matrix scale (F31 partial-b, issue #1145): `mat * scalar` only —
+        // F31's row is named one direction (unlike the vecN row above, which
+        // the T3 "wholesale" ruling explicitly documents both orders for);
+        // the commuted `scalar * mat` form is left faulting rather than
+        // guessed at, even though glam itself defines it (`Mul<Mat4> for
+        // f32`) — not asked for by the ruling, so not added here. Int
+        // operands promote via the same `scalar` closure used above (ink's
+        // int→float coercion).
+        (B::Multiply, Value::Mat2(m), s) => match scalar(s) {
+            Some(f) => Ok(Value::Mat2(*m * f)),
+            None => fault(),
+        },
+        (B::Multiply, Value::Mat3(m), s) => match scalar(s) {
+            Some(f) => Ok(Value::Mat3(*m * f)),
+            None => fault(),
+        },
+        (B::Multiply, Value::Mat4(m), s) => match scalar(s) {
+            Some(f) => Ok(Value::Mat4(*m * f)),
+            None => fault(),
+        },
+        // Vector scale-down (F31 partial-b, issue #1145): `vec / scalar`
+        // only — no `scalar / vec` (not asked for; glam itself doesn't treat
+        // that as the same operation shape), no `vec / vec` (stays faulting
+        // per F31's explicit list). IEEE float division, NOT a
+        // `RuntimeError::DivisionByZero` fault: a zero divisor produces
+        // `inf`/`nan` lanes and flows, exactly like the scalar `Divide` arm
+        // in `float_op` above (T4's NaN-totality) — division by the tower's
+        // zero vector/matrix stays unruled and faults via the catch-all.
+        (B::Divide, Value::Vec2(a), s) => match scalar(s) {
+            Some(f) => Ok(Value::Vec2(*a / f)),
+            None => fault(),
+        },
+        (B::Divide, Value::Vec3(a), s) => match scalar(s) {
+            Some(f) => Ok(Value::Vec3(*a / f)),
+            None => fault(),
+        },
+        (B::Divide, Value::Vec4(a), s) => match scalar(s) {
+            Some(f) => Ok(Value::Vec4(*a / f)),
+            None => fault(),
+        },
+        _ => fault(),
     }
 }
 
@@ -833,7 +1191,17 @@ pub(crate) fn cast_to_int(v: &Value) -> Result<Value, RuntimeError> {
         | Value::FnRef(_)
         | Value::Closure(_)
         | Value::Handle { .. }
-        | Value::Projection(_) => {
+        | Value::Projection(_)
+        | Value::OptionVal(_)
+        | Value::Range { .. }
+        | Value::Vec2(_)
+        | Value::Vec3(_)
+        | Value::Vec4(_)
+        | Value::Quat(_)
+        | Value::Mat2(_)
+        | Value::Mat3(_)
+        | Value::Mat4(_)
+        | Value::Weighted(_) => {
             return Err(RuntimeError::InvalidConversionDomain {
                 target: "INT",
                 got: cast_type_name(v),
@@ -864,7 +1232,17 @@ pub(crate) fn cast_to_float(v: &Value) -> Result<Value, RuntimeError> {
         | Value::FnRef(_)
         | Value::Closure(_)
         | Value::Handle { .. }
-        | Value::Projection(_) => {
+        | Value::Projection(_)
+        | Value::OptionVal(_)
+        | Value::Range { .. }
+        | Value::Vec2(_)
+        | Value::Vec3(_)
+        | Value::Vec4(_)
+        | Value::Quat(_)
+        | Value::Mat2(_)
+        | Value::Mat3(_)
+        | Value::Mat4(_)
+        | Value::Weighted(_) => {
             return Err(RuntimeError::InvalidConversionDomain {
                 target: "FLOAT",
                 got: cast_type_name(v),
@@ -897,6 +1275,16 @@ fn cast_type_name(v: &Value) -> &'static str {
         Value::FnRef(_) | Value::Closure(_) => "fn",
         Value::Handle { .. } => "handle",
         Value::Projection(_) => "projection",
+        Value::OptionVal(_) => "option",
+        Value::Range { .. } => "range",
+        Value::Vec2(_) => "vec2",
+        Value::Vec3(_) => "vec3",
+        Value::Vec4(_) => "vec4",
+        Value::Quat(_) => "quat",
+        Value::Mat2(_) => "mat2",
+        Value::Mat3(_) => "mat3",
+        Value::Mat4(_) => "mat4",
+        Value::Weighted(_) => "weighted",
     }
 }
 
@@ -943,17 +1331,90 @@ mod tests {
         }
     }
 
+    /// A program with one declared shape `Point { x, y }` — the structural
+    /// display default's lookup input (NS-A3, stdlib-spec §9.6).
+    fn program_with_point_shape() -> Program {
+        let mut program = dummy_program();
+        program.name_table = vec!["Point".to_string(), "x".to_string(), "y".to_string()];
+        program.struct_shapes = vec![crate::program::StructShapeEntry {
+            name: NameId(0),
+            fields: vec![NameId(1), NameId(2)],
+        }];
+        program
+    }
+
+    #[test]
+    fn record_display_is_structural_by_field_order() {
+        let program = program_with_point_shape();
+        let p = Value::record(brink_format::ShapeId(0), vec![Value::Int(1), Value::Int(2)]);
+        assert_eq!(stringify(&p, &program), "Point { x: 1, y: 2 }");
+    }
+
+    #[test]
+    fn record_display_nests_recursively() {
+        let program = program_with_point_shape();
+        let inner = Value::record(brink_format::ShapeId(0), vec![Value::Int(1), Value::Int(2)]);
+        let opt = Value::some(inner);
+        assert_eq!(stringify(&opt, &program), "some(Point { x: 1, y: 2 })");
+    }
+
+    #[test]
+    fn record_display_with_stale_shape_falls_back_totally() {
+        // F1 rider: `string()`'s totality survives — a record whose
+        // `ShapeId` doesn't resolve in this program (e.g. loaded from a
+        // save against a different compile) renders positionally instead
+        // of faulting.
+        let program = program_with_point_shape();
+        let stale = Value::record(brink_format::ShapeId(7), vec![Value::Int(1)]);
+        assert_eq!(stringify(&stale, &program), "{1}");
+        let mismatched = Value::record(
+            brink_format::ShapeId(0),
+            vec![Value::Int(1), Value::Int(2), Value::Int(3)],
+        );
+        assert_eq!(stringify(&mismatched, &program), "{1, 2, 3}");
+    }
+
+    #[test]
+    fn option_display_forms_are_pinned() {
+        // F28 (ruled 2026-07-19): `none`/`some(…)` render *totally* in
+        // display until B4's boundary forgiveness arrives with the native
+        // surface.
+        let program = dummy_program();
+        assert_eq!(stringify(&Value::none(), &program), "none");
+        assert_eq!(stringify(&Value::some(Value::Int(3)), &program), "some(3)");
+    }
+
     #[test]
     fn truthiness() {
-        assert!(is_truthy(&Value::Bool(true)));
-        assert!(!is_truthy(&Value::Bool(false)));
-        assert!(is_truthy(&Value::Int(1)));
-        assert!(!is_truthy(&Value::Int(0)));
-        assert!(is_truthy(&Value::Float(0.1)));
-        assert!(!is_truthy(&Value::Float(0.0)));
-        assert!(is_truthy(&Value::String("hi".into())));
-        assert!(!is_truthy(&Value::String("".into())));
-        assert!(!is_truthy(&Value::Null));
+        assert!(is_truthy(&Value::Bool(true)).unwrap());
+        assert!(!is_truthy(&Value::Bool(false)).unwrap());
+        assert!(is_truthy(&Value::Int(1)).unwrap());
+        assert!(!is_truthy(&Value::Int(0)).unwrap());
+        assert!(is_truthy(&Value::Float(0.1)).unwrap());
+        assert!(!is_truthy(&Value::Float(0.0)).unwrap());
+        assert!(is_truthy(&Value::String("hi".into())).unwrap());
+        assert!(!is_truthy(&Value::String("".into())).unwrap());
+        assert!(!is_truthy(&Value::Null).unwrap());
+    }
+
+    /// F27 (ruled 2026-07-19, issue #1120): Option has no truthiness —
+    /// both `none` and `some(x)` fault in truthiness position (flipping
+    /// NS-A1's falsy-none / truthy-some behavior). `some(0)` faults too:
+    /// there is no "presence is truthy" carve-out.
+    #[test]
+    fn option_has_no_truthiness() {
+        assert_eq!(
+            is_truthy(&Value::none()),
+            Err(RuntimeError::OptionTruthiness)
+        );
+        assert_eq!(
+            is_truthy(&Value::some(Value::Int(0))),
+            Err(RuntimeError::OptionTruthiness)
+        );
+        assert_eq!(
+            is_truthy(&Value::some(Value::Bool(true))),
+            Err(RuntimeError::OptionTruthiness)
+        );
     }
 
     #[test]
@@ -2077,5 +2538,390 @@ mod tests {
                 got: "record",
             }
         );
+    }
+}
+
+/// NS-A8 tower semantics at the operator/display/equality layer
+/// (`docs/tower-mini-spec.md` T3/T4).
+#[cfg(test)]
+mod tower_tests {
+    use super::*;
+    use crate::program::{LinkedContainer, Program};
+    use brink_format::{DefinitionId, DefinitionTag};
+    use glam::{Mat2, Mat3, Mat4, Quat, Vec2, Vec3, Vec4};
+    use std::collections::HashMap;
+
+    fn dummy_program() -> Program {
+        Program {
+            containers: vec![LinkedContainer {
+                id: DefinitionId::new(DefinitionTag::Address, 0),
+                bytecode: vec![],
+                counting_flags: brink_format::CountingFlags::empty(),
+                path_hash: 0,
+                param_count: 0,
+                params: Vec::new(),
+                scope_table_idx: 0,
+            }],
+            address_map: {
+                let mut m = HashMap::new();
+                m.insert(DefinitionId::new(DefinitionTag::Address, 0), (0u32, 0usize));
+                m
+            },
+            scope_ids: vec![DefinitionId::new(DefinitionTag::Address, 0)],
+            source_checksum: 0,
+            globals: vec![],
+            global_map: HashMap::new(),
+            name_table: vec![],
+            address_by_path: HashMap::new(),
+            root_idx: 0,
+            list_literals: vec![],
+            literal_pool: vec![],
+            list_item_map: HashMap::new(),
+            list_defs: vec![],
+            list_def_map: HashMap::new(),
+            external_fns: HashMap::new(),
+            local_scope_defaults: Vec::new(),
+            struct_shapes: Vec::new(),
+            private_defs: Vec::new(),
+            alias_table: Vec::new(),
+        }
+    }
+
+    fn v2(x: f32, y: f32) -> Value {
+        Value::Vec2(Vec2::new(x, y))
+    }
+
+    fn v3(x: f32, y: f32, z: f32) -> Value {
+        Value::Vec3(Vec3::new(x, y, z))
+    }
+
+    fn v4(x: f32, y: f32, z: f32, w: f32) -> Value {
+        Value::Vec4(Vec4::new(x, y, z, w))
+    }
+
+    // ── T3: the ruled operator table, semantics per glam ─────────────
+
+    #[test]
+    fn vec_add_sub_mul_are_componentwise() {
+        let p = dummy_program();
+        assert_eq!(
+            binary_op(BinaryOp::Add, &v2(1.0, 2.0), &v2(3.0, 4.0), &p).unwrap(),
+            v2(4.0, 6.0)
+        );
+        assert_eq!(
+            binary_op(BinaryOp::Subtract, &v2(3.0, 4.0), &v2(1.0, 2.0), &p).unwrap(),
+            v2(2.0, 2.0)
+        );
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &v2(2.0, 3.0), &v2(4.0, 5.0), &p).unwrap(),
+            v2(8.0, 15.0)
+        );
+    }
+
+    #[test]
+    fn scalar_scale_both_orders_with_int_promotion() {
+        let p = dummy_program();
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &v2(1.0, 2.0), &Value::Float(2.0), &p).unwrap(),
+            v2(2.0, 4.0)
+        );
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Int(3), &v2(1.0, 2.0), &p).unwrap(),
+            v2(3.0, 6.0)
+        );
+    }
+
+    #[test]
+    fn quat_multiply_composes_and_rotates() {
+        let p = dummy_program();
+        let q = Quat::from_rotation_z(core::f32::consts::FRAC_PI_2);
+        let composed = binary_op(BinaryOp::Multiply, &Value::Quat(q), &Value::Quat(q), &p).unwrap();
+        assert_eq!(composed, Value::Quat(q * q));
+        let rotated =
+            binary_op(BinaryOp::Multiply, &Value::Quat(q), &v3(1.0, 0.0, 0.0), &p).unwrap();
+        assert_eq!(rotated, Value::Vec3(q * Vec3::new(1.0, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn mat_vec_transforms() {
+        let p = dummy_program();
+        let m = Mat2::from_cols(Vec2::new(0.0, 1.0), Vec2::new(-1.0, 0.0));
+        let got = binary_op(BinaryOp::Multiply, &Value::Mat2(m), &v2(1.0, 0.0), &p).unwrap();
+        assert_eq!(got, Value::Vec2(m * Vec2::new(1.0, 0.0)));
+    }
+
+    #[test]
+    fn unruled_tower_ops_fault_not_coerce() {
+        let p = dummy_program();
+        // Cross-size arithmetic, ordering, and every glam-native form F31
+        // (issue #1145) did NOT rule in still fault — only `mat * mat`,
+        // `mat * scalar` (one direction), and `vec / scalar` (one direction)
+        // became implemented rows; `mat ± mat`, `quat * scalar`, `vec /
+        // vec`, `scalar / vec`, and `scalar * mat` are deliberately still
+        // unruled.
+        for (op, l, r) in [
+            (BinaryOp::Add, v2(1.0, 2.0), v3(1.0, 2.0, 3.0)),
+            (BinaryOp::Divide, v2(1.0, 2.0), v2(1.0, 2.0)),
+            (BinaryOp::Divide, Value::Float(2.0), v2(1.0, 2.0)),
+            (BinaryOp::Less, v2(1.0, 2.0), v2(3.0, 4.0)),
+            (BinaryOp::Greater, v3(1.0, 2.0, 3.0), v3(1.0, 2.0, 3.0)),
+            (
+                BinaryOp::Add,
+                Value::Mat3(Mat3::IDENTITY),
+                Value::Mat3(Mat3::IDENTITY),
+            ),
+            (
+                BinaryOp::Subtract,
+                Value::Mat3(Mat3::IDENTITY),
+                Value::Mat3(Mat3::IDENTITY),
+            ),
+            (
+                BinaryOp::Multiply,
+                Value::Quat(Quat::IDENTITY),
+                Value::Float(2.0),
+            ),
+            (
+                BinaryOp::Multiply,
+                Value::Float(2.0),
+                Value::Mat3(Mat3::IDENTITY),
+            ),
+            (BinaryOp::Add, v2(1.0, 2.0), Value::Float(1.0)),
+        ] {
+            let err = binary_op(op, &l, &r, &p).unwrap_err();
+            assert!(matches!(err, RuntimeError::TypeError(_)), "{op:?}: {err:?}");
+        }
+    }
+
+    // ── F31 partial-b (issue #1145): the three newly-implemented rows ──
+
+    #[test]
+    fn mat_mat_composes() {
+        let p = dummy_program();
+        let a2 = Mat2::from_cols(Vec2::new(0.0, 1.0), Vec2::new(-1.0, 0.0));
+        let b2 = Mat2::from_cols(Vec2::new(2.0, 0.0), Vec2::new(0.0, 2.0));
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat2(a2), &Value::Mat2(b2), &p).unwrap(),
+            Value::Mat2(a2 * b2)
+        );
+
+        let a3 = Mat3::from_cols(
+            Vec3::new(1.0, 2.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        );
+        let b3 = Mat3::IDENTITY;
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat3(a3), &Value::Mat3(b3), &p).unwrap(),
+            Value::Mat3(a3 * b3)
+        );
+
+        let a4 = Mat4::from_cols(
+            Vec4::new(1.0, 0.0, 0.0, 0.0),
+            Vec4::new(0.0, 2.0, 0.0, 0.0),
+            Vec4::new(0.0, 0.0, 3.0, 0.0),
+            Vec4::new(0.0, 0.0, 0.0, 1.0),
+        );
+        let b4 = Mat4::IDENTITY;
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat4(a4), &Value::Mat4(b4), &p).unwrap(),
+            Value::Mat4(a4 * b4)
+        );
+    }
+
+    #[test]
+    fn mat_scalar_scales_one_direction_with_int_promotion() {
+        let p = dummy_program();
+        let m = Mat2::from_cols(Vec2::new(1.0, 2.0), Vec2::new(3.0, 4.0));
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat2(m), &Value::Float(2.0), &p).unwrap(),
+            Value::Mat2(m * 2.0)
+        );
+        // int operand promotes like ink's int->float coercion.
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat2(m), &Value::Int(3), &p).unwrap(),
+            Value::Mat2(m * 3.0)
+        );
+        // `Mul<f32>` is a separate glam impl per matrix type — exercise
+        // Mat3 and Mat4 too, since they share no code path with Mat2's arm.
+        let m3 = Mat3::from_cols(
+            Vec3::new(1.0, 2.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        );
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat3(m3), &Value::Float(3.0), &p).unwrap(),
+            Value::Mat3(m3 * 3.0)
+        );
+        let m4 = Mat4::from_cols(
+            Vec4::new(1.0, 0.0, 0.0, 0.0),
+            Vec4::new(0.0, 2.0, 0.0, 0.0),
+            Vec4::new(0.0, 0.0, 3.0, 0.0),
+            Vec4::new(0.0, 0.0, 0.0, 1.0),
+        );
+        // int operand promotes like ink's int->float coercion.
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat4(m4), &Value::Int(2), &p).unwrap(),
+            Value::Mat4(m4 * 2.0)
+        );
+        // F31 named only "mat * scalar" — the commuted `scalar * mat` form
+        // (which glam itself defines) is deliberately not added here; still
+        // faults.
+        let err =
+            binary_op(BinaryOp::Multiply, &Value::Float(2.0), &Value::Mat2(m), &p).unwrap_err();
+        assert!(matches!(err, RuntimeError::TypeError(_)));
+    }
+
+    #[test]
+    fn vec_scalar_divides_one_direction_with_int_promotion() {
+        let p = dummy_program();
+        assert_eq!(
+            binary_op(BinaryOp::Divide, &v2(4.0, 8.0), &Value::Float(2.0), &p).unwrap(),
+            v2(2.0, 4.0)
+        );
+        // int operand promotes like ink's int->float coercion.
+        assert_eq!(
+            binary_op(BinaryOp::Divide, &v2(4.0, 8.0), &Value::Int(2), &p).unwrap(),
+            v2(2.0, 4.0)
+        );
+        assert_eq!(
+            binary_op(
+                BinaryOp::Divide,
+                &v3(4.0, 8.0, 12.0),
+                &Value::Float(4.0),
+                &p
+            )
+            .unwrap(),
+            v3(1.0, 2.0, 3.0)
+        );
+        assert_eq!(
+            binary_op(
+                BinaryOp::Divide,
+                &v4(4.0, 8.0, 12.0, 16.0),
+                &Value::Float(4.0),
+                &p
+            )
+            .unwrap(),
+            v4(1.0, 2.0, 3.0, 4.0)
+        );
+    }
+
+    #[test]
+    fn vec_divide_by_zero_is_ieee_not_a_fault() {
+        // T4: division by zero yields inf/nan lanes, exactly like bare float
+        // division (`float_op`'s `Divide` arm) — NOT `RuntimeError::DivisionByZero`.
+        let p = dummy_program();
+        let got = binary_op(BinaryOp::Divide, &v2(1.0, -1.0), &Value::Float(0.0), &p).unwrap();
+        assert!(
+            matches!(
+                &got,
+                Value::Vec2(r)
+                    if r.x.is_infinite() && r.x.is_sign_positive()
+                        && r.y.is_infinite() && r.y.is_sign_negative()
+            ),
+            "{got:?}"
+        );
+        let zero_over_zero =
+            binary_op(BinaryOp::Divide, &v2(0.0, 0.0), &Value::Float(0.0), &p).unwrap();
+        assert!(
+            matches!(&zero_over_zero, Value::Vec2(r) if r.x.is_nan() && r.y.is_nan()),
+            "{zero_over_zero:?}"
+        );
+    }
+
+    // ── T4: componentwise IEEE equality; NOT orderable ───────────────
+
+    #[test]
+    fn equality_is_componentwise_ieee() {
+        let p = dummy_program();
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &v2(1.0, 2.0), &v2(1.0, 2.0), &p).unwrap(),
+            Value::Bool(true)
+        );
+        // -0 == +0 per lane.
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &v2(-0.0, 1.0), &v2(0.0, 1.0), &p).unwrap(),
+            Value::Bool(true)
+        );
+        // A NaN lane makes a value unequal to itself.
+        let nan = v2(f32::NAN, 0.0);
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &nan, &nan, &p).unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            binary_op(BinaryOp::NotEqual, &nan, &nan, &p).unwrap(),
+            Value::Bool(true)
+        );
+        // Cross-kind equality faults (no silent false).
+        assert!(binary_op(BinaryOp::Equal, &v2(1.0, 2.0), &v3(1.0, 2.0, 0.0), &p).is_err());
+        // vec == null keeps the universal cross-type-null false.
+        assert_eq!(
+            binary_op(BinaryOp::Equal, &v2(1.0, 2.0), &Value::Null, &p).unwrap(),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn extremum_verbs_fault_not_orderable_for_tower_elements() {
+        // T4/§4b: a vec in an ordering context is a NotOrderable fault.
+        use crate::output::OutputBuffer;
+        let mut flow = crate::story::Flow {
+            threads: Vec::new(),
+            value_stack: Vec::new(),
+            output: OutputBuffer::new(),
+            pending_choices: Vec::new(),
+            current_tags: Vec::new(),
+            in_tag: false,
+            skipping_choice: false,
+            did_safe_exit: false,
+            did_unsafe_yield: false,
+            exec_mode: crate::story::ExecMode::default(),
+            comparator_depth: 0,
+        };
+        flow.value_stack
+            .push(Value::array(vec![v2(1.0, 2.0), v2(3.0, 4.0)]));
+        let err = crate::collection_ops::seq_min(&mut flow).unwrap_err();
+        assert!(matches!(err, RuntimeError::NotOrderable { .. }), "{err:?}");
+    }
+
+    // ── Display: the structural default form ─────────────────────────
+
+    #[test]
+    fn display_is_structural_construction_form() {
+        let p = dummy_program();
+        assert_eq!(stringify(&v2(1.0, 2.5), &p), "vec2 { x: 1, y: 2.5 }");
+        assert_eq!(
+            stringify(&Value::Quat(Quat::from_xyzw(0.0, 0.0, 0.0, 1.0)), &p),
+            "quat { x: 0, y: 0, z: 0, w: 1 }"
+        );
+        assert_eq!(
+            stringify(
+                &Value::Mat2(Mat2::from_cols(Vec2::new(1.0, 2.0), Vec2::new(3.0, 4.0))),
+                &p
+            ),
+            "mat2 { x_axis: vec2 { x: 1, y: 2 }, y_axis: vec2 { x: 3, y: 4 } }"
+        );
+    }
+
+    // ── Conversion domain: tower is outside INT()/FLOAT() ────────────
+
+    #[test]
+    fn tower_is_outside_the_cast_domain() {
+        assert!(matches!(
+            cast_to_int(&v2(1.0, 2.0)),
+            Err(RuntimeError::InvalidConversionDomain { .. })
+        ));
+        assert!(matches!(
+            cast_to_float(&v3(1.0, 2.0, 3.0)),
+            Err(RuntimeError::InvalidConversionDomain { .. })
+        ));
+    }
+
+    // ── Truthiness: record/handle precedent (always truthy) ──────────
+
+    #[test]
+    fn tower_values_are_truthy_compounds() {
+        assert!(is_truthy(&v2(0.0, 0.0)).unwrap());
+        assert!(is_truthy(&Value::Mat3(Mat3::ZERO)).unwrap());
     }
 }

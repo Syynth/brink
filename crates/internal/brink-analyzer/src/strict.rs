@@ -80,16 +80,42 @@ use rowan::TextRange;
 use crate::annotations;
 use crate::infer::{InferenceResult, InferredSig, Ty};
 
-/// `types` project policy (docs/typed-mode-spec.md §1). `Gradual` (the
-/// default) is today's behavior, byte-identical forever — `Unknown` unifies
-/// with anything, annotations are optional seasoning, and none of this
-/// module's checks run. `Strict` requires `dialect = brink` and turns on
-/// [`config_error`]/[`check`].
+/// `types` project policy (docs/typed-mode-spec.md §1). `Gradual` is the
+/// pre-flip behavior — `Unknown` unifies with anything, annotations are
+/// optional seasoning, and none of this module's checks run. `Strict`
+/// requires `dialect = brink` and turns on [`config_error`]/[`check`].
+///
+/// The *default* is dialect-keyed since the 2026-07-19 "Typing posture
+/// ruled" decision (issue #1127) — see [`resolve_type_policy`]. The derived
+/// `Default` (`Gradual`) exists only so pre-resolution containers can derive
+/// theirs; policy defaulting must never read it directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TypePolicy {
     #[default]
     Gradual,
     Strict,
+}
+
+/// THE `types`-default resolution function (issue #1127, decision-log
+/// 2026-07-19 "Typing posture ruled"). An explicit `types = …` — a CLI
+/// `--types` flag, a `brink.toml` `[project] types` key, an editor/LSP API
+/// call — always wins. When the project never says, the default is keyed on
+/// the dialect:
+///
+/// - `Dialect::Brink` → **`Strict`** (the flip: the new surfaces are
+///   designed under the strict doctrine; gradual remains an opt-out knob);
+/// - `Dialect::StrictInk` → **`Gradual`**, forever (the oracle corpus is
+///   anchored to it — byte-identity preserved by construction).
+///
+/// Every mount resolves through this one function (usually via
+/// `AnalysisOptions::type_policy`); no other code may invent a `types`
+/// default.
+#[must_use]
+pub fn resolve_type_policy(dialect: crate::Dialect, explicit: Option<TypePolicy>) -> TypePolicy {
+    explicit.unwrap_or(match dialect {
+        crate::Dialect::Brink => TypePolicy::Strict,
+        crate::Dialect::StrictInk => TypePolicy::Gradual,
+    })
 }
 
 /// The severity a diagnostic code should actually be reported at, given the
@@ -190,6 +216,27 @@ pub fn check(
         inference,
         resolutions,
     ));
+    // F27 (docs/stdlib-spec.md §1.6, ruled 2026-07-19, issue #1120):
+    // condition-position `Option[T]` has no truthiness — strict-mode-only,
+    // the compile-time half of the ruling (E116); the gradual-mode half is
+    // the runtime `OptionTruthiness` fault, which also backstops every
+    // statically-unclassifiable condition under strict.
+    out.extend(crate::option_conditions::check(
+        files,
+        index,
+        inference,
+        resolutions,
+    ));
+    // NS-A5 (docs/stdlib-spec.md §7, F7/F8, issue #1111): the inhabited-
+    // range refinement — `int(r)` demands `NonEmptyRange` evidence under
+    // strict (E117); gradual is inert with the runtime-fault residual.
+    // The template for every future value refinement.
+    out.extend(crate::range_refinement::check(
+        files,
+        index,
+        inference,
+        resolutions,
+    ));
     out
 }
 
@@ -207,10 +254,7 @@ fn check_escapes(
     let mut out = Vec::new();
     for &(file, hir) in files {
         for knot in &hir.knots {
-            let kind = match knot.ptr {
-                brink_ir::ContainerPtr::Knot(_) => SymbolKind::Knot,
-                brink_ir::ContainerPtr::Stitch(_) => SymbolKind::Stitch,
-            };
+            let kind = knot.symbol_kind();
             if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
                 check_def(
                     id,
@@ -470,7 +514,10 @@ fn classify(ty: &Ty) -> Escape {
     match ty {
         Ty::Conflicted => Escape::Conflicted,
         Ty::Unknown => Escape::Unknown,
-        Ty::Array(elem) => classify(elem),
+        // Array, (NS-A1) `Option[T]`, and (NS-A7) `Weighted[T]` recurse on
+        // their single element — a parameterized builtin whose element is
+        // Unknown/Conflicted escapes like any other nesting.
+        Ty::Array(elem) | Ty::Option(elem) | Ty::Weighted(elem) => classify(elem),
         Ty::Map(k, v) => match (classify(k), classify(v)) {
             (Escape::Conflicted, _) | (_, Escape::Conflicted) => Escape::Conflicted,
             (Escape::Unknown, _) | (_, Escape::Unknown) => Escape::Unknown,
@@ -502,6 +549,11 @@ fn classify(ty: &Ty) -> Escape {
         // function as `Ty::Handle` at all — `unify` already folds it to
         // `Ty::Conflicted` at the point the two kinds meet, so it's caught
         // by the `Ty::Conflicted` arm above, not here.
+        // NS-A5: a resolved `Ty::Range` is concrete either way — the
+        // `non_empty` refinement bit is evidence, not openness; a missing
+        // refinement is E117's business (range_refinement), never an
+        // Unknown-escape.
+        // (NS-A8 tower kinds are concrete leaves — clean, like scalars.)
         Ty::Int
         | Ty::Float
         | Ty::Bool
@@ -509,7 +561,9 @@ fn classify(ty: &Ty) -> Escape {
         | Ty::Divert
         | Ty::List(_)
         | Ty::Struct(_)
-        | Ty::Handle(_) => Escape::Clean,
+        | Ty::Handle(_)
+        | Ty::Range { .. }
+        | Ty::Tower(_) => Escape::Clean,
     }
 }
 
@@ -535,10 +589,7 @@ fn check_value_calls(
     for &(file, hir) in files {
         let mut def_ids: Vec<DefinitionId> = Vec::new();
         for knot in &hir.knots {
-            let kind = match knot.ptr {
-                brink_ir::ContainerPtr::Knot(_) => SymbolKind::Knot,
-                brink_ir::ContainerPtr::Stitch(_) => SymbolKind::Stitch,
-            };
+            let kind = knot.symbol_kind();
             if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
                 def_ids.push(id);
             }
@@ -686,10 +737,7 @@ fn collect_void_defs(files: &[(FileId, &HirFile)], index: &SymbolIndex) -> BTree
             if !is_void {
                 continue;
             }
-            let kind = match knot.ptr {
-                brink_ir::ContainerPtr::Knot(_) => SymbolKind::Knot,
-                brink_ir::ContainerPtr::Stitch(_) => SymbolKind::Stitch,
-            };
+            let kind = knot.symbol_kind();
             if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
                 out.insert(id);
             }
@@ -1102,6 +1150,59 @@ fn collect_temps_if(
 mod tests {
     use super::*;
     use brink_ir::{Diagnostic, DiagnosticCode, ResolutionMap, hir::lower};
+
+    // ── resolve_type_policy: one test per (dialect × explicit/implicit)
+    //    cell (issue #1127, ruled 2026-07-19) ──────────────────────────────
+
+    #[test]
+    fn resolve_brink_implicit_defaults_strict() {
+        assert_eq!(
+            resolve_type_policy(crate::Dialect::Brink, None),
+            TypePolicy::Strict
+        );
+    }
+
+    #[test]
+    fn resolve_strict_ink_implicit_defaults_gradual() {
+        assert_eq!(
+            resolve_type_policy(crate::Dialect::StrictInk, None),
+            TypePolicy::Gradual
+        );
+    }
+
+    #[test]
+    fn resolve_brink_explicit_gradual_wins() {
+        assert_eq!(
+            resolve_type_policy(crate::Dialect::Brink, Some(TypePolicy::Gradual)),
+            TypePolicy::Gradual
+        );
+    }
+
+    #[test]
+    fn resolve_brink_explicit_strict_stays_strict() {
+        assert_eq!(
+            resolve_type_policy(crate::Dialect::Brink, Some(TypePolicy::Strict)),
+            TypePolicy::Strict
+        );
+    }
+
+    #[test]
+    fn resolve_strict_ink_explicit_gradual_stays_gradual() {
+        assert_eq!(
+            resolve_type_policy(crate::Dialect::StrictInk, Some(TypePolicy::Gradual)),
+            TypePolicy::Gradual
+        );
+    }
+
+    #[test]
+    fn resolve_strict_ink_explicit_strict_wins() {
+        // The E064 config error is downstream (config_error); resolution
+        // itself honors the explicit request.
+        assert_eq!(
+            resolve_type_policy(crate::Dialect::StrictInk, Some(TypePolicy::Strict)),
+            TypePolicy::Strict
+        );
+    }
 
     fn build(src: &str) -> (HirFile, SymbolIndex, ResolutionMap) {
         let parsed = brink_syntax::parse(src);
@@ -1554,7 +1655,7 @@ mod tests {
         let opts = crate::AnalysisOptions {
             host_manifest: Some(manifest),
             dialect: crate::Dialect::Brink,
-            types: TypePolicy::Gradual,
+            types: Some(TypePolicy::Gradual),
             ..Default::default()
         };
         let diags = crate::strict_diagnostics(
@@ -1640,7 +1741,7 @@ mod tests {
         crate::AnalysisOptions {
             host_manifest: manifest,
             dialect: crate::Dialect::Brink,
-            types: TypePolicy::Strict,
+            types: Some(TypePolicy::Strict),
             ..Default::default()
         }
     }
@@ -1715,7 +1816,7 @@ mod tests {
     fn external_declaration_escapes_never_fire_under_gradual() {
         let (hir, index, res) = build(EXT_SRC);
         let mut opts = strict_opts(Some(get_thing_manifest("")));
-        opts.types = TypePolicy::Gradual;
+        opts.types = Some(TypePolicy::Gradual);
         let diags = crate::strict_diagnostics(
             &[(FileId(0), &hir)],
             &index,
@@ -2117,6 +2218,9 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
+            // These tests TEST gradual behavior — explicit opt-out knob
+            // (#1127: the brink dialect's implicit default is now strict).
+            types: Some(TypePolicy::Gradual),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -2295,6 +2399,9 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
+            // These tests TEST gradual behavior — explicit opt-out knob
+            // (#1127: the brink dialect's implicit default is now strict).
+            types: Some(TypePolicy::Gradual),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -2320,7 +2427,7 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
-            types: TypePolicy::Strict,
+            types: Some(TypePolicy::Strict),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -2449,6 +2556,9 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
+            // These tests TEST gradual behavior — explicit opt-out knob
+            // (#1127: the brink dialect's implicit default is now strict).
+            types: Some(TypePolicy::Gradual),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -2474,7 +2584,7 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
-            types: TypePolicy::Strict,
+            types: Some(TypePolicy::Strict),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -2531,7 +2641,7 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
-            types: TypePolicy::Strict,
+            types: Some(TypePolicy::Strict),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -2712,6 +2822,9 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
+            // These tests TEST gradual behavior — explicit opt-out knob
+            // (#1127: the brink dialect's implicit default is now strict).
+            types: Some(TypePolicy::Gradual),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -2736,7 +2849,7 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
-            types: TypePolicy::Strict,
+            types: Some(TypePolicy::Strict),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -2759,7 +2872,7 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
-            types: TypePolicy::Strict,
+            types: Some(TypePolicy::Strict),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -2788,7 +2901,7 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
-            types: TypePolicy::Strict,
+            types: Some(TypePolicy::Strict),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -2817,7 +2930,7 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
-            types: TypePolicy::Strict,
+            types: Some(TypePolicy::Strict),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -2842,6 +2955,9 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
+            // These tests TEST gradual behavior — explicit opt-out knob
+            // (#1127: the brink dialect's implicit default is now strict).
+            types: Some(TypePolicy::Gradual),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -2864,6 +2980,9 @@ mod tests {
         let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
         let opts = crate::AnalysisOptions {
             dialect: crate::Dialect::Brink,
+            // These tests TEST gradual behavior — explicit opt-out knob
+            // (#1127: the brink dialect's implicit default is now strict).
+            types: Some(TypePolicy::Gradual),
             ..crate::AnalysisOptions::default()
         };
         let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);

@@ -69,8 +69,9 @@ fn run_case(dir: &Path) -> String {
 
 fn assert_case(name: &str) {
     let dir = corpus_dir().join(name);
-    let expected_msg = format!("read expected.txt for {name}");
-    let expected = std::fs::read_to_string(dir.join("expected.txt")).expect(&expected_msg);
+    let expected =
+        brink_test_harness::corpus::load_golden_transcript(&dir.join("expected.txt"), name)
+            .expect("golden transcript must be present and non-vacuous");
     let actual = run_case(&dir);
     assert_eq!(
         actual, expected,
@@ -175,6 +176,17 @@ fn index_then_field_assignment_target_is_e074_not_a_parse_error() {
 // struct is an independent copy — `p` must read back unchanged after
 // `translate(p, ...)` returns a *new* point (value semantics, not aliasing).
 
+/// NS-A3 (issue #1109, docs/stdlib-spec.md §9.6): the display protocol's
+/// structural default for structs (`Point { x: 1, y: 2 }` — shape name +
+/// fields in declared order), pinned on both consumers of the one display
+/// path (F1): interpolation and `string()` render identically; nested
+/// structs, structs-in-collections, and Option forms recurse through the
+/// same path (F28's total `none`/`some(…)` render included).
+#[test]
+fn struct_display_structural_default_serves_both_display_consumers() {
+    assert_case("struct-display-default");
+}
+
 #[test]
 fn struct_through_function_call_marshals_and_stays_a_value_copy() {
     assert_case("struct-through-function-call");
@@ -249,6 +261,25 @@ fn stdlib_mutator_accepts_an_indexed_path_lvalue() {
 #[test]
 fn stdlib_author_function_shadows_builtin() {
     assert_case("stdlib-shadowing");
+}
+
+// ── NS-A6: the std::rand draw verbs (docs/stdlib-spec.md §7, issue
+// #1112). The expected.txt is a pinned-algorithm golden: seed(7) +
+// DotNetRng fix every value, so any drift in the draw chain (seed
+// derivation, 24-bit float shaping, Fisher-Yates order) fails loudly. ────
+
+#[test]
+fn rand_verbs_draw_deterministically_under_seed() {
+    assert_case("rand-verbs");
+}
+
+// ── NS-A5: range values + the inhabited-range refinement
+// (docs/stdlib-spec.md §7, F7/F8, issue #1111). Same pinned-algorithm
+// golden discipline as rand-verbs: seed(11) + DotNetRng fix every draw. ──
+
+#[test]
+fn range_values_and_refinement_verbs() {
+    assert_case("range-values");
 }
 
 // ── Stdlib slice 1 completion: char_at (docs/t1b-surface-spec.md §5,
@@ -382,6 +413,7 @@ fn every_case_directory_has_a_test() {
         "rmw-shared-map-cow",
         "rmw-mutator-shared-nested-lvalue",
         "struct-construct-read-write",
+        "struct-display-default",
         "struct-through-function-call",
         "annotations-mixed",
         "fn-value-call-forms",
@@ -389,6 +421,12 @@ fn every_case_directory_has_a_test() {
         "fn-value-bind-chain",
         "fn-value-bind-triple-chain",
         "ref-call-with-block-temp",
+        "option-verbs",
+        "rand-verbs",
+        "range-values",
+        "numeric-tower",
+        "sort-verbs",
+        "weighted-heap-verbs",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink")
@@ -467,9 +505,75 @@ fn errors_of(err: &brink_compiler::CompileError) -> &[brink_compiler::ResolvedDi
     }
 }
 
+/// NS-A9: the Brink dialect's unset-`types` default is now STRICT. Tests in
+/// this file whose *subject* is the gradual regime's runtime semantics —
+/// dynamic dispatch/arity/conversion faults the strict checker would reject
+/// at compile time, or the `VAR x = 0` reassignment idiom — opt back into
+/// gradual explicitly through these variants. Everything else was made
+/// strict-clean with annotations instead (the per-fixture triage lives in
+/// the NS-A9 PR table).
+fn gradual_opts() -> AnalysisOptions {
+    AnalysisOptions {
+        dialect: Dialect::Brink,
+        types: Some(brink_compiler::TypePolicy::Gradual),
+        ..AnalysisOptions::default()
+    }
+}
+
+fn compile_and_link_gradual(
+    source: &str,
+) -> (
+    std::sync::Arc<brink_runtime::Program>,
+    Vec<Vec<brink_format::LineEntry>>,
+) {
+    let files: std::collections::HashMap<&str, &str> =
+        std::collections::HashMap::from([("main.ink", source)]);
+    let output = brink_compiler::compile_with_options(
+        "main.ink",
+        |path| {
+            files
+                .get(path)
+                .map(|s| (*s).to_string())
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, path))
+        },
+        gradual_opts(),
+    )
+    .expect("compile (explicit gradual)");
+    let (program, tables) = brink_runtime::link(&output.data).expect("link");
+    (std::sync::Arc::new(program), tables)
+}
+
+/// Gradual-regime counterpart of `run_expecting_fault` — for runtime faults
+/// that only exist under gradual (strict rejects the same shape statically).
+fn run_expecting_fault_gradual(source: &str) -> Option<brink_runtime::RuntimeError> {
+    let (program, tables) = compile_and_link_gradual(source);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    for _ in 0..64 {
+        match story.continue_single() {
+            Ok(Line::Done { .. } | Line::End { .. } | Line::Suspended { .. }) => return None,
+            Ok(_) => {}
+            Err(e) => return Some(e),
+        }
+    }
+    None
+}
+
+/// Gradual-regime counterpart of `run_to_error`.
+fn run_to_error_gradual(source: &str) -> brink_runtime::RuntimeError {
+    let (program, tables) = compile_and_link_gradual(source);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    loop {
+        match story.continue_single() {
+            Ok(Line::Text { .. }) => {}
+            Ok(other) => panic!("expected a runtime fault, story completed with {other:?}"),
+            Err(e) => return e,
+        }
+    }
+}
+
 #[test]
 fn author_defined_len_shadows_builtin_with_e035_warning() {
-    let source = "=== function len(x)\n~ return 999\n\nHello.\n-> END\n";
+    let source = "=== function len(x: int): int\n~ return 999\n\nHello.\n-> END\n";
     let out = compile_brink(source).expect("shadowing is a warning, not a compile error");
     assert!(
         out.warnings
@@ -1047,7 +1151,7 @@ fn map_remove_with_non_key_domain_float_key_faults() {
 
 #[test]
 fn author_defined_int_shadows_builtin_with_e035_warning() {
-    let source = "=== function int(x)\n~ return 999\n\nHello.\n-> END\n";
+    let source = "=== function int(x: int): int\n~ return 999\n\nHello.\n-> END\n";
     let out = compile_brink(source).expect("shadowing is a warning, not a compile error");
     assert!(
         out.warnings
@@ -1154,10 +1258,13 @@ fn int_of_negative_float_truncates_toward_zero_not_floor() {
 fn int_of_a_divert_target_faults_under_gradual() {
     // Root-level content is the entry point (`run_to_error`'s pattern
     // throughout this file) — `target` is declared only so `-> target` has
-    // somewhere to resolve; it's never actually reached.
+    // somewhere to resolve; it's never actually reached. NS-A9: gradual
+    // explicitly — the strict regime rejects this same shape at compile
+    // time as E078 (`strict_mode_rejects_int_of_a_divert_target_literal_
+    // with_e078` below is that companion).
     let source =
         "~ {\n    temp x = int(-> target)\n}\nDone.\n-> END\n=== target ===\nHi.\n-> DONE\n";
-    let err = run_to_error(source);
+    let err = run_to_error_gradual(source);
     assert_eq!(
         err,
         brink_runtime::RuntimeError::InvalidConversionDomain {
@@ -1169,8 +1276,9 @@ fn int_of_a_divert_target_faults_under_gradual() {
 
 #[test]
 fn float_of_a_list_faults_under_gradual() {
+    // NS-A9: gradual explicitly — strict rejects this as E078 at compile.
     let source = "LIST Colors = red, blue\n~ {\n    temp x = float((red))\n}\nDone.\n-> END\n";
-    let err = run_to_error(source);
+    let err = run_to_error_gradual(source);
     assert_eq!(
         err,
         brink_runtime::RuntimeError::InvalidConversionDomain {
@@ -1233,7 +1341,7 @@ fn strict_mode_rejects_int_of_a_divert_target_literal_with_e078() {
     let source = "=== knot ===\nHello.\n-> DONE\n=== main ===\n~ x = int(-> knot)\n-> DONE\n";
     let options = AnalysisOptions {
         dialect: Dialect::Brink,
-        types: brink_compiler::TypePolicy::Strict,
+        types: Some(brink_compiler::TypePolicy::Strict),
         ..AnalysisOptions::default()
     };
     let files: std::collections::HashMap<&str, &str> =
@@ -1407,7 +1515,7 @@ fn fn_over_binding_is_e081() {
 fn well_formed_fn_creation_compiles_clean() {
     // A fully legal creation site under gradual types compiles clean in T1c-2
     // — no E079/E080/E081 creation noise and no E052 fence.
-    let source = "=== function heal(ref hp, amount) ===\n~ hp = hp + amount\n~ return hp\n\n\
+    let source = "=== function heal(ref hp: int, amount: int): int ===\n~ hp = hp + amount\n~ return hp\n\n\
                   VAR player_hp = 10\n=== main ===\n~ temp f = #fn(heal, player_hp)\nDone.\n-> END\n";
     compile_brink(source).expect("a well-formed #fn creation compiles clean in T1c-2");
 }
@@ -1442,7 +1550,7 @@ fn block_scoped_temp_read_after_its_block_closes_is_e082() {
 #[test]
 fn block_scoped_temp_passed_by_ref_after_its_block_closes_is_e082() {
     let source = "VAR gold = 100\n~ {\n    temp name = \"hero\"\n}\n~ heal(name)\nDone.\n-> END\n\n\
-                  === function heal(ref hp) ===\n~ return hp\n";
+                  === function heal(ref hp: string): string ===\n~ return hp\n";
     let err =
         compile_brink(source).expect_err("passing an out-of-scope block temp by ref must fail");
     let diags = errors_of(&err);
@@ -1460,7 +1568,7 @@ fn ref_call_co_occurring_with_block_temp_is_not_e082() {
     // decl in the *same* block, temp never read after the block closes —
     // this compiles clean, proving `ref` calls were never the trigger.
     let source = "VAR gold = 100\n~ {\n    temp x = 1\n    heal(gold)\n}\nDone.\n-> END\n\n\
-                  === function heal(ref hp) ===\n~ return hp\n";
+                  === function heal(ref hp: int): int ===\n~ return hp\n";
     compile_brink(source)
         .expect("ref-argument call co-occurring with a temp decl in one block compiles clean");
 }
@@ -1542,7 +1650,7 @@ fn explicit_call_with_wrong_arity_is_a_turn_terminating_fault() {
     // mismatch faults exactly (spec §3/§4).
     let src = "~ temp d = #fn(double)\n~ temp r = call(d, 1, 2)\nUnreachable {r}.\n-> END\n\n\
                === function double(x) ===\n~ return x + x\n";
-    let err = run_expecting_fault(src).expect("wrong arity must fault");
+    let err = run_expecting_fault_gradual(src).expect("wrong arity must fault");
     assert!(
         matches!(err, brink_runtime::RuntimeError::FunctionValueArity { .. }),
         "expected FunctionValueArity, got {err:?}"
@@ -1554,9 +1662,10 @@ fn bind_over_binding_more_than_remaining_params_is_a_turn_terminating_fault() {
     // `bind(f, …)` that supplies more args than the target has remaining
     // params is a turn-terminating fault (spec §3) — never a silently
     // truncated bound row. `double` takes one param, so binding two faults.
+    // NS-A9: gradual explicitly — strict rejects over-binding statically.
     let src = "~ temp d = #fn(double)\n~ temp g = bind(d, 1, 2)\nUnreachable {g}.\n-> END\n\n\
                === function double(x) ===\n~ return x + x\n";
-    let err = run_expecting_fault(src).expect("over-binding must fault");
+    let err = run_expecting_fault_gradual(src).expect("over-binding must fault");
     assert!(
         matches!(err, brink_runtime::RuntimeError::FunctionValueArity { .. }),
         "expected FunctionValueArity, got {err:?}"
@@ -1579,7 +1688,7 @@ fn direct_call_with_too_many_args_is_a_turn_terminating_fault() {
     // `double` takes 1 param; the direct call supplies 2.
     let src = "~ temp d = #fn(double)\n~ temp r = d(1, 2)\nUnreachable {r}.\n-> END\n\n\
                === function double(x) ===\n~ return x + x\n";
-    let err = run_expecting_fault(src).expect("wrong arity must fault");
+    let err = run_expecting_fault_gradual(src).expect("wrong arity must fault");
     assert!(
         matches!(err, brink_runtime::RuntimeError::FunctionValueArity { .. }),
         "expected FunctionValueArity, got {err:?}"
@@ -1603,7 +1712,7 @@ fn direct_call_with_too_few_args_is_a_turn_terminating_fault() {
     // `add` takes 2 params; the direct call supplies 1.
     let src = "~ temp d = #fn(add)\n~ temp r = d(1)\nUnreachable {r}.\n-> END\n\n\
                === function add(x, y) ===\n~ return x + y\n";
-    let err = run_expecting_fault(src).expect("wrong arity must fault");
+    let err = run_expecting_fault_gradual(src).expect("wrong arity must fault");
     assert!(
         matches!(err, brink_runtime::RuntimeError::FunctionValueArity { .. }),
         "expected FunctionValueArity, got {err:?}"
@@ -1627,7 +1736,7 @@ fn calling_through_a_fn_value_with_a_wrong_typed_argument_is_a_turn_terminating_
     // argument (`string_op` only defines `Add`/`Equal`/`NotEqual`).
     let src = "~ temp d = #fn(square)\n~ temp r = d(\"nope\")\nUnreachable {r}.\n-> END\n\n\
                === function square(x) ===\n~ return x * x\n";
-    let err = run_expecting_fault(src).expect("wrong-typed argument must fault");
+    let err = run_expecting_fault_gradual(src).expect("wrong-typed argument must fault");
     assert!(
         matches!(err, brink_runtime::RuntimeError::TypeError(_)),
         "expected TypeError, got {err:?}"
@@ -1644,7 +1753,7 @@ fn invoking_a_closure_that_ref_binds_a_local_cell_is_a_cross_flow_fault() {
     // exercises the fault directly — no second flow needed.
     let src = "#@local\nVAR mood = 10\n\n\
                ~ temp healer = #fn(heal, mood)\n~ temp r = healer(5)\nUnreachable {r}.\n-> END\n\n\
-               === function heal(ref hp, amount) ===\n~ hp = hp + amount\n~ return hp\n";
+               === function heal(ref hp: int, amount: int): int ===\n~ hp = hp + amount\n~ return hp\n";
     let err = run_expecting_fault(src).expect("ref-binding a #@local cell must fault on invoke");
     assert!(
         matches!(
@@ -1661,7 +1770,7 @@ fn ordering_two_function_values_is_a_turn_terminating_fault() {
     // is not — a runtime fault in gradual mode (a compile error in strict).
     let src = "~ temp d = #fn(double)\n~ temp lt = d < d\nUnreachable {lt}.\n-> END\n\n\
                === function double(x) ===\n~ return x + x\n";
-    let err = run_expecting_fault(src).expect("ordering fn values must fault");
+    let err = run_expecting_fault_gradual(src).expect("ordering fn values must fault");
     assert!(
         matches!(err, brink_runtime::RuntimeError::TypeError(_)),
         "expected TypeError, got {err:?}"
@@ -1673,7 +1782,7 @@ fn direct_call_with_correct_arity_still_works() {
     // Regression guard: the argc-carrying dispatch must not disturb the
     // matching-arity happy path.
     let src = "~ temp d = #fn(double)\n~ temp r = d(21)\n{r}.\n-> END\n\n\
-               === function double(x) ===\n~ return x + x\n";
+               === function double(x: int): int ===\n~ return x + x\n";
     let (program, tables) = compile_and_link(src);
     let mut story = Story::<DotNetRng>::new(program, tables);
     let out = run_to_end(&mut story);
@@ -1739,7 +1848,7 @@ fn char_at_author_shadow_wins_over_the_builtin() {
     // §5's shadowing ruling: an author-defined `char_at` function resolves
     // normally instead of dispatching to the VM-native intrinsic.
     let src = "~ temp r = char_at(1, 2)\n{r}\n-> END\n\n\
-               === function char_at(a, b) ===\n~ return a + b\n";
+               === function char_at(a: int, b: int): int ===\n~ return a + b\n";
     let (program, tables) = compile_and_link(src);
     let mut story = Story::<DotNetRng>::new(program, tables);
     let out = run_to_end(&mut story);
@@ -1797,6 +1906,12 @@ fn run_to_end(story: &mut Story<DotNetRng>) -> String {
 // it from a separate `invoke` knot — so a save taken after `setup` carries a
 // live fn value, and `invoke` can be reached after a load without re-running
 // creation.
+//
+// NS-A9: the whole save/load quartet (scalar, array, map, rehydration)
+// compiles under explicit gradual — the `VAR stored = 0` reassignment idiom
+// gives `stored` a static int type under strict, making `stored(…)` E063.
+// The subject here is VM save/load of fn values, which is regime-independent
+// behavior; gradual is just the fixtures' native idiom.
 const SAVE_LOAD_SRC: &str = "\
 === function double(x) ===
 ~ return x + x
@@ -1816,7 +1931,7 @@ Result {r}.
 
 #[test]
 fn fn_value_save_load_invoke_equals_direct_invoke() {
-    let (program, tables) = compile_and_link(SAVE_LOAD_SRC);
+    let (program, tables) = compile_and_link_gradual(SAVE_LOAD_SRC);
 
     // Direct: setup, then invoke — no save/load in between.
     let mut direct = Story::<DotNetRng>::new(std::sync::Arc::clone(&program), tables.clone());
@@ -1880,13 +1995,13 @@ Result {r}.
 -> END
 ";
 
-    let (p1, t1) = compile_and_link(v1);
+    let (p1, t1) = compile_and_link_gradual(v1);
     let mut s1 = Story::<DotNetRng>::new(p1, t1);
     s1.choose_path_string("setup").expect("goto setup");
     let _ = run_to_end(&mut s1);
     let saved = s1.save_state();
 
-    let (p2, t2) = compile_and_link(v2);
+    let (p2, t2) = compile_and_link_gradual(v2);
     let mut s2 = Story::<DotNetRng>::new(p2, t2);
     let _ = s2.load_state(&saved);
     s2.choose_path_string("invoke").expect("goto invoke");
@@ -1949,7 +2064,7 @@ Result {r}.
 
 #[test]
 fn fn_value_inside_an_array_save_load_invoke_equals_direct_invoke() {
-    let (program, tables) = compile_and_link(SAVE_LOAD_ARRAY_SRC);
+    let (program, tables) = compile_and_link_gradual(SAVE_LOAD_ARRAY_SRC);
 
     let mut direct = Story::<DotNetRng>::new(std::sync::Arc::clone(&program), tables.clone());
     direct.choose_path_string("setup").expect("goto setup");
@@ -2000,7 +2115,7 @@ Result {r}.
 
 #[test]
 fn fn_value_inside_a_map_save_load_invoke_equals_direct_invoke() {
-    let (program, tables) = compile_and_link(SAVE_LOAD_MAP_SRC);
+    let (program, tables) = compile_and_link_gradual(SAVE_LOAD_MAP_SRC);
 
     let mut direct = Story::<DotNetRng>::new(std::sync::Arc::clone(&program), tables.clone());
     direct.choose_path_string("setup").expect("goto setup");
@@ -2027,4 +2142,413 @@ fn fn_value_inside_a_map_save_load_invoke_equals_direct_invoke() {
         "save→load→invoke must equal direct invoke for a fn value inside a map",
     );
     assert_eq!(loaded_out, "Result 42.\n");
+}
+
+// ── NS-A1: Option[T] + the ruled stdlib flips (issue #1107,
+// docs/stdlib-spec.md §1.4 + §§3-5, docs/stdlib-sequencing.md §2 Wave A1) ──
+
+/// End-to-end reachability for the whole A1 verb set: `find`/`index_of`/
+/// `min`/`max`/`first`/`last`/`pop`/`get`/`contains_value`/`clear`, plus
+/// `some(x)` construction, bare-`none` equality, and Option interpolation
+/// (the strict-era `none`/`some(…)` display form — §1.6 forgiveness is
+/// Track B4, deliberately absent).
+#[test]
+fn option_verbs_end_to_end() {
+    assert_case("option-verbs");
+}
+
+/// NS-A8 (`docs/tower-mini-spec.md`, issue #1114): the numeric tower end to
+/// end in the brink dialect — constructors (int lanes promote), the ruled
+/// operator table (componentwise `+`/`-`/`*`, scalar scale both orders,
+/// negation, `quat * vec` rotation, `mat * vec` transform), `dot`/`cross`,
+/// the tower-wide two-arg `min`/`max` plus `clamp`/`lerp`, glam-named
+/// component access (`a.x`, `m.y_axis`), componentwise-IEEE equality, and
+/// the structural display default (`vec3 { x: …, … }`).
+#[test]
+fn numeric_tower_end_to_end() {
+    assert_case("numeric-tower");
+}
+
+/// NS-A4 (`docs/stdlib-spec.md` §4b, issue #1110): the ordering verbs end
+/// to end in the brink dialect — the F0 four-verb family
+/// (`sort`/`sorted`/`sort_by`/`sorted_by`), the doctrine order over
+/// ints/mixed numerics/strings/lexicographic arrays, stability, and the
+/// re-entrant fn-value comparator. NaN-free data, so the default (dev)
+/// mode and prod agree exactly — the modes-agree leg of the §4b gate; the
+/// dev-fault / prod-order split is pinned by `brink-runtime`'s
+/// `collection_ops` unit tests and this crate's `ns_a4_exec_mode`
+/// `ExecMode` test.
+#[test]
+fn sort_verbs_end_to_end() {
+    assert_case("sort-verbs");
+}
+
+/// NS-A7 (`docs/stdlib-spec.md` §8, issue #1113): `Weighted[T]` + the
+/// humble heap end to end — construction + F17 multiset equality +
+/// construction-literal display, seeded `roll` goldens (the rand-verbs
+/// oracle-free discipline), and the heap verbs' push/peek/pop/drain over
+/// an ordinary array (§4b doctrine order; empty pops are `none`). Strict
+/// types (the brink-dialect default).
+#[test]
+fn weighted_heap_verbs_end_to_end() {
+    assert_case("weighted-heap-verbs");
+}
+
+#[test]
+fn author_defined_find_shadows_builtin_with_e035_warning() {
+    // The A1 names ride the same shadowing machinery as `len` (§9.3's
+    // E035-lineage posture).
+    let source = "=== function find(s: string, x: string): int\n~ return 999\n\nHi {find(\"a\", \"b\")}.\n-> END\n";
+    let out = compile_brink(source).expect("shadowing is a warning, not a compile error");
+    assert!(
+        out.warnings
+            .iter()
+            .any(|w| w.code == brink_compiler::DiagnosticCode::E035),
+        "expected E035 shadow warning, got {:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn author_defined_none_variable_shadows_the_literal_with_e035_warning() {
+    let source = "VAR none = 5\nValue {none}.\n-> END\n";
+    let out = compile_brink(source).expect("shadowing is a warning, not a compile error");
+    assert!(
+        out.warnings
+            .iter()
+            .any(|w| w.code == brink_compiler::DiagnosticCode::E035),
+        "expected E035 shadow warning, got {:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn clear_in_expression_position_is_a_compile_error() {
+    // `clear` is a statement-only mutator (§5) — expression position is the
+    // same E056 misuse as `push`/`insert`/`remove`.
+    let source = "~ temp m = #{\"a\": 1}\n~ temp x = clear(m)\nNope {x}.\n-> END\n";
+    let err = compile_brink(source).expect_err("clear as an expression must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E056),
+        "expected E056, got {diags:?}"
+    );
+}
+
+#[test]
+fn clear_arity_mismatch_is_e058_with_the_signature() {
+    let source = "~ {\n    clear()\n}\nDone.\n-> END\n";
+    let err = compile_brink(source).expect_err("clear() with no args must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E058
+                && d.message.contains("clear(map)")),
+        "expected E058 naming clear(map), got {diags:?}"
+    );
+}
+
+#[test]
+fn clear_with_an_rvalue_argument_is_a_compile_error() {
+    let source = "~ {\n    clear(#{\"a\": 1})\n}\nDone.\n-> END\n";
+    let err = compile_brink(source).expect_err("rvalue clear argument must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E055),
+        "expected E055, got {diags:?}"
+    );
+}
+
+#[test]
+fn pop_of_an_rvalue_is_a_compile_error() {
+    // `pop(#[1, 2])` — mutating a temporary loses the mutation (the
+    // mutation-posture ruling's rvalue-receiver error, free-call form).
+    let source = "~ temp x = pop(#[1, 2])\nNope {x}.\n-> END\n";
+    let err = compile_brink(source).expect_err("rvalue pop receiver must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E055),
+        "expected E055, got {diags:?}"
+    );
+}
+
+#[test]
+fn pop_of_a_chained_lvalue_is_fenced_as_a_compile_error_for_a1() {
+    // A1 scope fence: `pop(grid[0])` (a chained lvalue receiver) is not yet
+    // lowerable through the expression-position RMW bracket — E055 with the
+    // "bind it to a variable first" guidance rather than silent misbehavior.
+    let source = "~ temp grid = #[#[1, 2]]\n~ temp x = pop(grid[0])\nNope {x}.\n-> END\n";
+    let err = compile_brink(source).expect_err("chained pop receiver must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E055),
+        "expected E055, got {diags:?}"
+    );
+}
+
+// ── E107: bare `none` needs a type from context (§1.4) ───────────────────
+
+#[test]
+fn bare_none_var_declaration_is_e107() {
+    let source = "VAR x = none\nHi.\n-> END\n";
+    let err = compile_brink(source).expect_err("VAR x = none must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E107),
+        "expected E107, got {diags:?}"
+    );
+}
+
+#[test]
+fn bare_none_const_declaration_is_e107() {
+    let source = "CONST x = none\nHi.\n-> END\n";
+    let err = compile_brink(source).expect_err("CONST x = none must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E107),
+        "expected E107, got {diags:?}"
+    );
+}
+
+#[test]
+fn bare_none_temp_declaration_is_e107() {
+    let source = "~ temp x = none\nHi.\n-> END\n";
+    let err = compile_brink(source).expect_err("~ temp x = none must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E107),
+        "expected E107, got {diags:?}"
+    );
+}
+
+#[test]
+fn bare_none_block_temp_declaration_is_e107() {
+    let source = "~ {\n    temp x = none\n}\nHi.\n-> END\n";
+    let err = compile_brink(source).expect_err("block temp x = none must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E107),
+        "expected E107, got {diags:?}"
+    );
+}
+
+#[test]
+fn none_assignment_to_an_existing_slot_is_a_concrete_site_not_e107() {
+    // §1.4: "concrete sites fine" — an assignment to an already-declared
+    // slot has its type origin at the declaration; re-absencing it later is
+    // exactly the intended use.
+    let source = "~ temp r = some(1)\n~ r = none\n{r == none: absent now.}\n-> END\n";
+    let out = compile_brink(source).expect("assignment-position none must compile");
+    assert!(
+        out.warnings
+            .iter()
+            .all(|w| w.code != brink_compiler::DiagnosticCode::E107),
+        "no E107 expected, got {:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn shadowed_none_declaration_is_not_e107() {
+    // `none` resolving to a real user symbol (a LIST item here) is an
+    // ordinary reference — E107 only fires for the *literal*.
+    let source = "LIST mood = none, happy\nVAR m = none\nMood {m}.\n-> END\n";
+    let out = compile_brink(source).expect("a resolvable `none` reference must compile");
+    assert!(
+        out.warnings
+            .iter()
+            .all(|w| w.code != brink_compiler::DiagnosticCode::E107),
+        "no E107 expected for a shadowed none, got {:?}",
+        out.warnings
+    );
+}
+
+// ── Strict-ink rejection: the A1 surface is brink-dialect-gated ──────────
+
+fn compile_strict_ink(
+    source: &str,
+) -> Result<brink_compiler::CompileOutput, brink_compiler::CompileError> {
+    let files: std::collections::HashMap<&str, &str> =
+        std::collections::HashMap::from([("main.ink", source)]);
+    brink_compiler::compile_with_options(
+        "main.ink",
+        |path| {
+            files
+                .get(path)
+                .map(|s| (*s).to_string())
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, path))
+        },
+        AnalysisOptions::default(), // dialect defaults to StrictInk
+    )
+}
+
+#[test]
+fn strict_ink_rejects_an_unresolved_option_verb_call() {
+    let source = "~ temp x = find(\"a\", \"b\")\nNope {x}.\n-> END\n";
+    let err = compile_strict_ink(source).expect_err("find under strict-ink must be E051");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E051),
+        "expected E051, got {diags:?}"
+    );
+}
+
+#[test]
+fn strict_ink_rejects_a_bare_none_expression() {
+    let source = "~ temp x = 1\n~ x = none\nNope {x}.\n-> END\n";
+    let err = compile_strict_ink(source).expect_err("bare none under strict-ink must be E051");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E051),
+        "expected E051, got {diags:?}"
+    );
+}
+
+// ── Runtime fault posture: malformed questions stay faults (§§3-5) ───────
+
+#[test]
+fn min_on_a_non_array_is_a_turn_terminating_fault() {
+    let src = "~ temp x = min(5)\nUnreachable {x}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("min on an int must fault");
+    assert!(
+        matches!(
+            err,
+            brink_runtime::RuntimeError::StdlibWrongType { verb: "min", .. }
+        ),
+        "expected StdlibWrongType for min, got {err:?}"
+    );
+}
+
+#[test]
+fn min_over_mixed_type_elements_is_a_not_orderable_fault() {
+    let src = "~ temp a = #[1, \"x\"]\n~ temp x = min(a)\nUnreachable {x}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("mixed-type min must fault");
+    assert!(
+        matches!(
+            err,
+            brink_runtime::RuntimeError::NotOrderable { verb: "min", .. }
+        ),
+        "expected NotOrderable for min, got {err:?}"
+    );
+}
+
+/// NS-A3 boundary pin (issue #1109, docs/stdlib-spec.md §4b/§9.6): structs
+/// have NO structural auto-order — ordering them requires an explicit
+/// registered `compare` impl, and no impl spelling exists yet (⏳
+/// code-dialect sitting), so `min`/`max` over an array of structs stays a
+/// `NotOrderable` turn-terminating fault. Wave A4 wires registered
+/// compares into the ordering verbs; this test is the line it moves.
+#[test]
+fn min_over_structs_without_compare_impl_is_not_orderable() {
+    let src = "STRUCT Point = #{\n    x: float,\n    y: float,\n}\n\
+               ~ temp a = #[Point#{x: 1.0, y: 1.0}, Point#{x: 2.0, y: 2.0}]\n\
+               ~ temp x = min(a)\nUnreachable {x}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("min over structs must fault");
+    assert!(
+        matches!(
+            err,
+            brink_runtime::RuntimeError::NotOrderable {
+                verb: "min",
+                found: "record",
+            }
+        ),
+        "expected NotOrderable(record) for min, got {err:?}"
+    );
+}
+
+#[test]
+fn get_on_a_non_map_is_a_turn_terminating_fault() {
+    let src = "~ temp a = #[1]\n~ temp x = get(a, 0)\nUnreachable {x}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("get on an array must fault");
+    assert!(
+        matches!(
+            err,
+            brink_runtime::RuntimeError::StdlibWrongType { verb: "get", .. }
+        ),
+        "expected StdlibWrongType for get, got {err:?}"
+    );
+}
+
+#[test]
+fn option_never_implicitly_unwraps_in_arithmetic() {
+    // `some(1) + 1` — the ruled `Option[T] ≠ T` strictness at the runtime
+    // (gradual-mode) backstop: a type fault, never a silent unwrap.
+    let src = "~ temp x = some(1) + 1\nUnreachable {x}.\n-> END\n";
+    let err = run_expecting_fault(src).expect("some(1) + 1 must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::TypeError(_)),
+        "expected TypeError, got {err:?}"
+    );
+}
+
+#[test]
+fn pop_through_a_global_mutates_the_cell_and_yields_the_element() {
+    let src = "VAR stack = 0\n~ stack = #[7, 8]\n~ temp x = pop(stack)\nPopped {x}, left {len(stack)}.\n-> END\n";
+    let (program, tables) = compile_and_link(src);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    let out = run_to_end(&mut story);
+    assert_eq!(out, "Popped some(8), left 1.\n");
+}
+
+// ── F27 (issue #1120): Option has no truthiness — the gradual-mode fault ──
+//
+// Ruled 2026-07-19 (docs/stdlib-spec.md §1.6), superseding NS-A1's shipped
+// falsy-none: a condition-position `Option[T]` is `RuntimeError::
+// OptionTruthiness` under gradual types (`types = strict` reports the same
+// condition statically as E116 — see `tm3_strict_policy.rs`).
+
+#[test]
+fn option_in_conditional_guard_is_a_truthiness_fault() {
+    // The exact `{r: …}` "did we find one?" guard A1 blessed — now a fault.
+    let src = "~ temp r = find(\"ab\", \"b\")\n{r: found.}\n-> END\n";
+    let err = run_expecting_fault(src).expect("option in condition must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::OptionTruthiness),
+        "expected OptionTruthiness, got {err:?}"
+    );
+}
+
+#[test]
+fn none_in_conditional_guard_is_a_truthiness_fault_too() {
+    // `none` is NOT falsy — absence has no truthiness either; the fault is
+    // symmetric (no "presence is truthy / absence is falsy" halves).
+    let src = "~ temp r = find(\"ab\", \"zz\")\n{r: found.|absent.}\n-> END\n";
+    let err = run_expecting_fault(src).expect("none in condition must fault");
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::OptionTruthiness),
+        "expected OptionTruthiness, got {err:?}"
+    );
+}
+
+#[test]
+fn option_equality_guards_still_run_clean() {
+    // The blessed spellings — `== none` / `== some(x)` — keep working; the
+    // fault is scoped to truthiness coercion only.
+    let src =
+        "~ temp r = find(\"ab\", \"b\")\n{r == some(1): at one.}\n{r == none: absent.}\n-> END\n";
+    let (program, tables) = compile_and_link(src);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    let out = run_to_end(&mut story);
+    assert_eq!(out, "at one.\n");
 }

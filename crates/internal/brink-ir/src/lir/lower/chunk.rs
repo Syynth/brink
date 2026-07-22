@@ -343,7 +343,31 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
     match expr {
         Expr::GetTemp(_, name) | Expr::TakeTemp(_, name) => relocate(name, map),
         Expr::String(s) => remap_string(s, map),
-        Expr::Prefix(_, e) | Expr::Postfix(e, _) => remap_expr(e, map),
+        // Single-subexpression walks (incl. the NS-A1 one-arg Option verbs).
+        Expr::Prefix(_, e)
+        | Expr::Postfix(e, _)
+        | Expr::OptionSome(e)
+        | Expr::SeqMin(e)
+        | Expr::SeqMax(e)
+        | Expr::SeqFirst(e)
+        | Expr::SeqLast(e)
+        | Expr::MapClear(e)
+        | Expr::RandChance(e)
+        | Expr::RandPick(e)
+        | Expr::RandShuffle(e)
+        | Expr::SeqSorted(e)
+        | Expr::RangeNonEmpty(e)
+        | Expr::RandRoll(e)
+        | Expr::HeapPeek(e) => remap_expr(e, map),
+
+        Expr::SeqSortedBy { seq, cmp: second } | Expr::HeapPush { seq, value: second } => {
+            remap_expr(seq, map);
+            remap_expr(second, map);
+        }
+        Expr::RangeMake { start, end, .. } => {
+            remap_expr(start, map);
+            remap_expr(end, map);
+        }
         Expr::Infix(l, _, r) => {
             remap_expr(l, map);
             remap_expr(r, map);
@@ -361,7 +385,8 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
             relocate(name, map);
             remap_call_args(args, map);
         }
-        Expr::CallBuiltin { builtin: _, args } => {
+        // The NS-A8 tower family shares CallBuiltin's plain arg-list walk.
+        Expr::CallBuiltin { builtin: _, args } | Expr::Tower { op: _, args } => {
             for e in args {
                 remap_expr(e, map);
             }
@@ -378,7 +403,9 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
                 remap_expr(e, map);
             }
         }
-        Expr::MapNew(pairs) => {
+        // NS-A7 `weighted(…)` shares MapNew's pair walk (weights/keys
+        // then values).
+        Expr::MapNew(pairs) | Expr::WeightedNew { pairs } => {
             for (k, v) in pairs {
                 remap_expr(k, map);
                 remap_expr(v, map);
@@ -418,6 +445,28 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
             remap_expr(s, map);
             remap_expr(index, map);
         }
+        // NS-A1 Option verbs (issue #1107); the one-arg forms are merged
+        // into the single-subexpression arm above.
+        Expr::StrFind { s, sub } => {
+            remap_expr(s, map);
+            remap_expr(sub, map);
+        }
+        Expr::SeqIndexOf { seq, needle } => {
+            remap_expr(seq, map);
+            remap_expr(needle, map);
+        }
+        Expr::MapGetOpt { map: m, key } => {
+            remap_expr(m, map);
+            remap_expr(key, map);
+        }
+        Expr::MapContainsValue { map: m, value } => {
+            remap_expr(m, map);
+            remap_expr(value, map);
+        }
+        // `pop`'s receiver is an `AssignTarget` — its `Temp` leg carries a
+        // NameId, remapped exactly like a `Stmt::Assign` target.
+        // `heap_pop` shares `pop`'s AssignTarget-receiver shape.
+        Expr::SeqPop { root } | Expr::HeapPop { root } => remap_assign_target(root, map),
         Expr::RecordNew {
             shape_id: _,
             fields,
@@ -459,7 +508,9 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
         | Expr::VisitCount(_)
         | Expr::DivertTarget(_)
         | Expr::ListLiteral { .. }
-        | Expr::ConstLiteral(_) => {}
+        | Expr::ConstLiteral(_)
+        | Expr::OptionNone
+        | Expr::RandFloat => {}
     }
 }
 

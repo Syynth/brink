@@ -114,19 +114,23 @@ A practical corollary: **strict mode buys scheduler precision.** The more your
 types resolve, the tighter your rows, the more the host can overlap. Gradual
 `Unknown`s widen rows the same way they defer type checks.
 
-## The `#@effects` assertion
+## The `@[effects]` assertion
 
 Rows are inferred, deterministic, and shipped in the compiled `.inkb` — so
 there is nothing for a lockfile to pin, and brink has none. The *only* contract
-you can write is an optional inline upper bound: `#@effects(…)` at the top of a
-knot or stitch body, in the same position as `#@local`.
+you can write is an optional inline upper bound: an `@[effects(…)]` annotation
+line at the top of a knot or stitch body.
+
+> The older `#@effects(reads: …)` tag spelling is a frozen, deprecated alias —
+> it still compiles but warns (`E110`). New code writes the annotation form
+> below; clauses are parenthesized (`reads(gold)`, never `reads: gold`).
 
 ```ink
 VAR gold = 10
 -> shop
 
 === shop ===
-#@effects(reads: gold, writes: gold)
+@[effects(reads(gold), writes(gold))]
 ~ gold = gold - 3
 You have {gold} gold.
 -> END
@@ -136,15 +140,15 @@ You have {gold} gold.
 You have 7 gold.
 ```
 
-The clauses name world cells (`reads`, `writes`) and externals (`calls`).
-`#@effects(pure)` is sugar for the empty row — the "this stays pure, hold me to
+The clauses name world cells (`reads(…)`, `writes(…)`) and externals
+(`calls(…)`). `@[effects(pure)]` is sugar for the empty row — the "this stays pure, hold me to
 it" case:
 
 ```ink
 -> greet
 
 === greet ===
-#@effects(pure)
+@[effects(pure)]
 Hello, traveler.
 -> END
 ```
@@ -158,13 +162,13 @@ inferred row is *not covered by* what you declared — the body reads, writes, o
 calls something the assertion didn't list — that's a compile error (`E103`,
 "inferred effects exceed the declared bound"):
 
-```ink,error
+```ink,error(E103)
 VAR gold = 0
 EXTERNAL play_sfx(x)
 -> shop
 
 === shop ===
-#@effects(pure)
+@[effects(pure)]
 ~ gold = gold + 1
 ~ play_sfx(1)
 Spent.
@@ -178,7 +182,7 @@ function you promise to keep pure, a knot whose world footprint you want frozen)
 not a running commentary on your code.
 
 The directive is **runtime-inert** — advisory metadata, checked at compile time
-and then invisible. A program with a satisfied `#@effects` bound produces the
+and then invisible. A program with a satisfied `@[effects]` bound produces the
 exact same output as the same program without it.
 
 ## Seeing your rows
@@ -208,7 +212,7 @@ for the full flag set and JSON shape.
 Interior effects are always inferred, never spelled. There is no monad, no
 effect handler, no function coloring, no `async`/`await`-style annotation
 creeping through your call sites — the entry-point row and the optional
-`#@effects` bound are the whole author-facing surface. Everything else about
+`@[effects]` bound are the whole author-facing surface. Everything else about
 effects — parallel scheduling, prefetch, reactive sleep, the capability
 manifest that maps `calls` to engine components — is the host's job, and lives
 in the [Bevy integration](../../integrations/bevy/index.md).

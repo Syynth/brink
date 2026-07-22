@@ -382,6 +382,45 @@ pub(crate) struct PendingChoice {
     pub thread_fork: Thread,
 }
 
+/// The dev/prod execution mode (NS-A4, `docs/stdlib-spec.md` §4b, ruled
+/// 2026-07-18): the knob that decides WHERE execution stops on an unordered
+/// comparand — never WHAT values are fabricated.
+///
+/// The split is **fenced to placement**: it exists only where the prod
+/// behavior is defined, total, and fabricates no data. Ordering contexts
+/// qualify (`sort`/`sorted`/`min`/`max`; A7 adds `heap_push`): every element
+/// is preserved, the order is deterministic, saves/replay are safe.
+/// Fabrication never qualifies — `int("potato")`, OOB indexing stay
+/// always-fault in both modes. Effect rows are mode-independent (the checker
+/// doesn't know modes exist).
+///
+/// - [`Dev`](Self::Dev) (the default — the Rust dev-profile analogy, like
+///   debug-build overflow checks): a float NaN comparand in an ordering
+///   context is a turn-terminating [`RuntimeError::UnorderedComparand`]
+///   fault, surfacing the upstream bug at its first ordering consumption.
+/// - [`Prod`](Self::Prod): the pinned non-fabricating total order applies —
+///   ordinary IEEE order with `-0 == +0` as a tie, NaN greater than
+///   everything, NaN-vs-NaN ties (deliberately NOT IEEE `totalOrder`, whose
+///   `-0 < +0` would split ordering from `==` on clean data). Execution
+///   keeps moving.
+///
+/// On NaN-free data the modes agree exactly and cohere with `<`/`==`.
+///
+/// The knob's *home* is project config (`brink.toml` profile) with a
+/// host-API override (ruled 2026-07-19; tooling wires the config side).
+/// This runtime mechanism is the host-API leg: set it via
+/// [`Story::set_exec_mode`] / [`FlowInstance::set_exec_mode`]. The mode is
+/// a host/build knob, not story state — it is never embedded in `.inkb`
+/// (mirroring `dialect`/`types`) and never persisted in saves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExecMode {
+    /// Fault on unordered comparands (NaN) in ordering contexts.
+    #[default]
+    Dev,
+    /// Keep moving: place NaN by the pinned non-fabricating total order.
+    Prod,
+}
+
 /// Per-flow execution context. Owns threads, eval stack, output, choices.
 #[derive(Debug, Clone)]
 #[expect(
@@ -403,6 +442,15 @@ pub(crate) struct Flow {
     /// pending choices — the story passed through an empty choice set.
     /// Cleared at the start of each `continue_single` call.
     pub did_unsafe_yield: bool,
+    /// The dev/prod execution mode (NS-A4, [`ExecMode`]). A host/build
+    /// knob, not story state — never persisted; defaults to
+    /// [`ExecMode::Dev`].
+    pub exec_mode: ExecMode,
+    /// Depth of in-flight nested comparator evaluations (`sort_by`/
+    /// `sorted_by` — `vm::call_comparator`). Transient VM bookkeeping (a
+    /// comparator always completes within one opcode); guards Rust stack
+    /// recursion when a comparator itself sorts with a comparator.
+    pub comparator_depth: u16,
 }
 
 impl Flow {
@@ -725,6 +773,8 @@ impl FlowInstance {
                 skipping_choice: false,
                 did_safe_exit: false,
                 did_unsafe_yield: false,
+                exec_mode: ExecMode::default(),
+                comparator_depth: 0,
             },
             status: StoryStatus::Active,
             stats: Stats::default(),
@@ -765,6 +815,22 @@ impl FlowInstance {
     #[must_use]
     pub fn visibility_enforced(&self) -> bool {
         self.enforce_visibility
+    }
+
+    /// Set the dev/prod execution mode on this flow instance (NS-A4,
+    /// [`ExecMode`] — see its docs for the §4b doctrine). Mirrors
+    /// [`Story::set_exec_mode`](crate::Story::set_exec_mode) for consumers
+    /// that drive a `FlowInstance` directly (`bevy-brink`,
+    /// [`crate::Speculation`]). Takes effect immediately — the mode is
+    /// consulted at each ordering-verb execution.
+    pub fn set_exec_mode(&mut self, mode: ExecMode) {
+        self.flow.exec_mode = mode;
+    }
+
+    /// The current dev/prod execution mode (NS-A4, [`ExecMode`]).
+    #[must_use]
+    pub fn exec_mode(&self) -> ExecMode {
+        self.flow.exec_mode
     }
 
     /// Maximum VM steps per `continue_maximally` call before erroring.
@@ -1956,6 +2022,12 @@ pub struct Story<R: StoryRng = FastRng> {
     /// to start flows at private knots. No effect on stories without any
     /// `#@private` definition (the fast path short-circuits on that).
     enforce_visibility: bool,
+    /// The dev/prod execution mode (NS-A4, [`ExecMode`]). A host/build
+    /// knob mirrored onto every owned [`FlowInstance`] — see
+    /// [`set_exec_mode`](Self::set_exec_mode). Not persisted in a
+    /// [`StorySnapshot`] (the mode is a property of the host/build, not of
+    /// story state).
+    exec_mode: ExecMode,
     _rng: PhantomData<R>,
 }
 
@@ -1971,6 +2043,7 @@ impl<R: StoryRng> Clone for Story<R> {
             shared_instances: self.shared_instances.clone(),
             resolver: None,
             enforce_visibility: self.enforce_visibility,
+            exec_mode: self.exec_mode,
             _rng: PhantomData,
         }
     }
@@ -2003,6 +2076,7 @@ impl<R: StoryRng> Story<R> {
             shared_instances: HashMap::new(),
             resolver: None,
             enforce_visibility: true,
+            exec_mode: ExecMode::default(),
             _rng: PhantomData,
         }
     }
@@ -2042,6 +2116,36 @@ impl<R: StoryRng> Story<R> {
     #[must_use]
     pub fn visibility_enforced(&self) -> bool {
         self.enforce_visibility
+    }
+
+    /// Set the dev/prod execution mode (NS-A4, [`ExecMode`] — see its docs
+    /// for the §4b ordering doctrine). **Dev** (the default) faults on a
+    /// float NaN comparand in an ordering context; **Prod** keeps moving
+    /// with the pinned non-fabricating total order. The knob's home is
+    /// project config (`brink.toml` profile) with this host-API override
+    /// (ruled 2026-07-19); the mode is never embedded in `.inkb` and never
+    /// persisted in saves or snapshots.
+    ///
+    /// Propagates to every [`FlowInstance`] this `Story` currently owns
+    /// (`default`, named, shared) — the same sync discipline as
+    /// [`set_visibility_enforcement`](Self::set_visibility_enforcement).
+    /// Flows spawned after this call inherit the `Story`'s current setting
+    /// at spawn time.
+    pub fn set_exec_mode(&mut self, mode: ExecMode) {
+        self.exec_mode = mode;
+        self.default.set_exec_mode(mode);
+        for (flow, _, _) in self.instances.values_mut() {
+            flow.set_exec_mode(mode);
+        }
+        for flow in self.shared_instances.values_mut() {
+            flow.set_exec_mode(mode);
+        }
+    }
+
+    /// The current dev/prod execution mode (default [`ExecMode::Dev`]).
+    #[must_use]
+    pub fn exec_mode(&self) -> ExecMode {
+        self.exec_mode
     }
 
     /// Set the plural resolver for Select resolution in localized lines.
@@ -2381,6 +2485,10 @@ impl<R: StoryRng> Story<R> {
             // reattached story defaults to enforcing; the host re-applies a
             // dev override if it wants one.
             enforce_visibility: true,
+            // Same posture for the dev/prod mode (NS-A4): a host/build
+            // knob, not persisted state — a reattached story defaults to
+            // Dev; the host re-applies its own setting.
+            exec_mode: ExecMode::default(),
             _rng: PhantomData,
         };
         // `snapshot.default`/`snapshot.instances` carry whatever
@@ -2390,6 +2498,9 @@ impl<R: StoryRng> Story<R> {
         // reattached story's own (enforcing) setting so the two can't
         // diverge.
         story.set_visibility_enforcement(true);
+        // Same re-sync for the exec mode (the flows in the snapshot carry
+        // whatever mode they had at detach time).
+        story.set_exec_mode(ExecMode::default());
         story
     }
 
@@ -2654,6 +2765,7 @@ impl<R: StoryRng> Story<R> {
         // set before spawning must apply to newly spawned flows too, not
         // just the flows that existed at override time).
         flow.set_visibility_enforcement(self.enforce_visibility);
+        flow.set_exec_mode(self.exec_mode);
         self.instances
             .insert(name.to_owned(), (flow, ctx, FlowLocal::new()));
         Ok(())
@@ -2776,6 +2888,7 @@ impl<R: StoryRng> Story<R> {
         // Inherit this `Story`'s current enforcement setting — see
         // `spawn_flow`'s identical note.
         flow.set_visibility_enforcement(self.enforce_visibility);
+        flow.set_exec_mode(self.exec_mode);
         self.shared_instances.insert(name.to_owned(), flow);
         Ok(())
     }

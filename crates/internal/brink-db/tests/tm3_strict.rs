@@ -13,7 +13,7 @@ use brink_ir::DiagnosticCode;
 fn strict_opts() -> AnalysisOptions {
     AnalysisOptions {
         dialect: Dialect::Brink,
-        types: TypePolicy::Strict,
+        types: Some(TypePolicy::Strict),
         ..AnalysisOptions::default()
     }
 }
@@ -46,7 +46,7 @@ fn strict_with_strict_ink_dialect_reaches_production_diagnostics_as_config_error
     db.set_entry("main.ink");
     db.set_analysis_options(AnalysisOptions {
         dialect: Dialect::StrictInk,
-        types: TypePolicy::Strict,
+        types: Some(TypePolicy::Strict),
         ..AnalysisOptions::default()
     });
 
@@ -57,10 +57,36 @@ fn strict_with_strict_ink_dialect_reaches_production_diagnostics_as_config_error
     );
 }
 
-/// Gradual (the default) never reaches any TM-3 diagnostic through the same
-/// production seam, regardless of dialect — byte-identical, forever.
+/// Explicit gradual never reaches any TM-3 diagnostic through the same
+/// production seam, regardless of dialect. (NS-A9: gradual is no longer
+/// the Brink-dialect default — it must be opted into; the unset-`types`
+/// default is dialect-keyed, covered by the companion test below.)
 #[test]
-fn gradual_reaches_no_strict_diagnostics_through_production_path() {
+fn explicit_gradual_reaches_no_strict_diagnostics_through_production_path() {
+    let mut db = ProjectDb::new();
+    let file = db.set_file("main.ink", "=== noop(x) ===\nHello.\n-> DONE\n".to_owned());
+    db.set_entry("main.ink");
+    db.set_analysis_options(AnalysisOptions {
+        dialect: Dialect::Brink,
+        types: Some(TypePolicy::Gradual),
+        ..AnalysisOptions::default()
+    });
+
+    let diags = db.diagnostics(file).expect("file diagnostics");
+    assert!(
+        !diags.iter().any(|d| matches!(
+            d.code,
+            DiagnosticCode::E064 | DiagnosticCode::E065 | DiagnosticCode::E066
+        )),
+        "{diags:?}"
+    );
+}
+
+/// NS-A9: the Brink dialect with `types` unset resolves to strict — the
+/// Unknown-escape reaches the production seam with no explicit `types`
+/// setting at all.
+#[test]
+fn brink_dialect_unset_types_defaults_strict_through_production_path() {
     let mut db = ProjectDb::new();
     let file = db.set_file("main.ink", "=== noop(x) ===\nHello.\n-> DONE\n".to_owned());
     db.set_entry("main.ink");
@@ -71,10 +97,7 @@ fn gradual_reaches_no_strict_diagnostics_through_production_path() {
 
     let diags = db.diagnostics(file).expect("file diagnostics");
     assert!(
-        !diags.iter().any(|d| matches!(
-            d.code,
-            DiagnosticCode::E064 | DiagnosticCode::E065 | DiagnosticCode::E066
-        )),
+        diags.iter().any(|d| d.code == DiagnosticCode::E065),
         "{diags:?}"
     );
 }

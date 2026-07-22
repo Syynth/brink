@@ -118,6 +118,12 @@ pub enum SyntaxKind {
     BACKSLASH,
 
     // ── Compound tokens ──────────────────────────────────────────
+    /// `@[` — annotation-line opener (brink extension, NS-A2: the
+    /// `@[effects(…)]` assertion final form, `docs/stdlib-spec.md` §9.2).
+    /// Lexed as one compound token so only the *adjacent* pair opens an
+    /// annotation line; a lone `@` in prose stays an `ERROR_TOKEN`
+    /// swallowed into text, exactly as before.
+    AT_L_BRACKET,
     /// `<>`
     GLUE,
     /// `->`
@@ -171,6 +177,11 @@ pub enum SyntaxKind {
     LOGIC_LINE,
     CONTENT_LINE,
     TAG_LINE,
+    /// `@[name(args)]` — a brink annotation line (NS-A2, the
+    /// `@[effects(…)]` assertion surface). Superset-parsed under every
+    /// dialect; `strict-ink` rejects it in `brink-analyzer::dialect_gate`
+    /// (E051), the standard extension posture.
+    ANNOTATION_LINE,
     STRAY_CLOSING_BRACE,
     RETURN_STMT,
     TEMP_DECL,
@@ -355,6 +366,17 @@ pub enum SyntaxKind {
     /// rejected at HIR lowering (E104).
     CALL_EXPR,
 
+    // ── NS-A5 range literals (docs/stdlib-spec.md §7, F7) ───────────
+    // `a..b` (exclusive) / `a..=b` (inclusive) — integer range values,
+    // joining the closed iterable set (`for i in 0..n`) and feeding the
+    // inhabited-range refinement (`int(1..=6)`, `non_empty(a..b)`).
+    // Superset grammar — always parses; dialect-gated (E051 under
+    // strict-ink) at analysis, same pattern as T1b/T1c. The operator is
+    // two adjacent `DOT` tokens (plus an adjacent `EQ` for `..=`) —
+    // detected in the Pratt loop like `||`/`++`, no new lexer token.
+    /// `start .. end` / `start ..= end` — a range literal expression.
+    RANGE_EXPR,
+
     // Not a real kind — used only for `rowan::Language::kind_to_raw` bounds.
     #[doc(hidden)]
     __LAST,
@@ -430,6 +452,7 @@ impl SyntaxKind {
                 | Self::HASH
                 | Self::TILDE
                 | Self::BACKSLASH
+                | Self::AT_L_BRACKET
                 | Self::GLUE
                 | Self::DIVERT
                 | Self::THREAD

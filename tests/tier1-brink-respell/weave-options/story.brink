@@ -1,0 +1,6 @@
+flow main() {
+  {?
+    * Hello[.], world.
+  }
+  -> END
+}

@@ -2169,6 +2169,7 @@ version = "0.0.11"
 dependencies = [
  "bitflags 2.13.0",
  "brink-compiler",
+ "glam",
  "insta",
  "pest",
  "pest_derive",
@@ -2218,8 +2219,10 @@ version = "0.0.11"
 dependencies = [
  "bitflags 2.13.0",
  "brink-analyzer",
+ "brink-codegen-inkb",
  "brink-format",
  "brink-syntax",
+ "brink-syntax-native",
  "insta",
  "regex",
  "rowan",
@@ -2266,6 +2269,7 @@ dependencies = [
  "brink-compiler",
  "brink-format",
  "divan",
+ "glam",
  "proptest",
  "serde",
  "serde_json",
@@ -2274,6 +2278,15 @@ dependencies = [
 
 [[package]]
 name = "brink-syntax"
+version = "0.0.11"
+dependencies = [
+ "insta",
+ "proptest",
+ "rowan",
+]
+
+[[package]]
+name = "brink-syntax-native"
 version = "0.0.11"
 dependencies = [
  "insta",
@@ -2294,6 +2307,7 @@ dependencies = [
  "brink-ir",
  "brink-runtime",
  "brink-syntax",
+ "brink-syntax-native",
  "insta",
  "proptest",
  "regex",

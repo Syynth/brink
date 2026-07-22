@@ -5,8 +5,10 @@
 //! duplicate detection, type checking). Both `brink-compiler` and `brink-lsp`
 //! consume the analysis result.
 
+mod admission;
 mod annotations;
 mod await_purity;
+mod comparator_contract;
 mod conversions;
 mod determinism;
 mod dialect_gate;
@@ -17,6 +19,10 @@ mod infer;
 mod manifest;
 mod map_keys;
 mod modules;
+mod option_conditions;
+mod option_rules;
+mod protocols;
+mod range_refinement;
 mod ref_projection;
 mod resolve;
 mod signature;
@@ -28,6 +34,7 @@ mod validate;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+pub use admission::validate_admission;
 pub use annotations::{
     check as check_annotations, mismatches as annotation_mismatches, resolve as resolve_annotation,
 };
@@ -36,6 +43,9 @@ pub use await_purity::{
 };
 pub use brink_ir::FileId;
 pub use brink_ir::ResolutionMap;
+pub use comparator_contract::{
+    check as comparator_contract_diagnostics, comparator_callees, hir_has_comparator_site,
+};
 pub use dialect_gate::Dialect;
 pub use effects_assertions::{
     assertion_defs as effects_assertion_defs, check as effects_assertion_diagnostics,
@@ -45,15 +55,20 @@ pub use external_check::{
     SemanticTypeDiagnosticSeverity, SymbolMeta, ValueMeta,
 };
 pub use infer::{
-    BodyTypes, CallGraph, Def, EffectAtoms, EffectRow, InferenceResult, InferredSig, SccGraph, Ty,
-    ValueCallFact, ValueCallKind, call_edges, collect_external_sigs, def_body, def_effect_atoms,
-    effects_project, infer_project, inferable_defs, inferable_defs_from_index, referenced_globals,
-    scc_graph, solve_scc, solve_scc_effects, unify, unify_all,
+    BodyTypes, CallGraph, CoalesceError, Def, EffectAtoms, EffectRow, InferenceResult, InferredSig,
+    SccGraph, Ty, ValueCallFact, ValueCallKind, call_edges, coalesce, collect_external_sigs,
+    def_body, def_effect_atoms, effects_project, infer_project, inferable_defs,
+    inferable_defs_from_index, referenced_globals, scc_graph, solve_scc, solve_scc_effects, unify,
+    unify_all,
 };
 pub use manifest::{ModuleMap, ResolvedModule};
+pub use protocols::{
+    Protocol, ProtocolImplDecl, check_protocol_impls, check_reserved_names,
+    is_reserved_protocol_name, iterate_element_ty,
+};
 pub use resolve::ImportScope;
 pub use signature::{Sig, signature};
-pub use strict::{TypePolicy, effective_severity};
+pub use strict::{TypePolicy, effective_severity, resolve_type_policy};
 pub use structs::{ShapeInfo, declared_shapes};
 
 use brink_format::DefinitionId;
@@ -80,14 +95,30 @@ pub struct AnalysisOptions {
     /// tooling input only, mount-time (CLI flag) in T1b-1; project-file
     /// config is out of scope (docs/t1b-surface-spec.md §1, #368 precedent).
     pub dialect: Dialect,
-    /// TM-3 typed-mode policy (docs/typed-mode-spec.md §1): `Gradual` (the
-    /// default) is today's behavior, byte-identical forever. `Strict`
-    /// requires `dialect = Brink` (a config error otherwise, `E064`) and
-    /// turns on `Unknown`/`Conflicted`-escape errors, the boundary
-    /// annotation-firewall exemption, and auto-wires `E063`
+    /// TM-3 typed-mode policy (docs/typed-mode-spec.md §1). `None` means
+    /// "the project never said" — the effective policy is then keyed on the
+    /// dialect via [`resolve_type_policy`] (issue #1127, ruled 2026-07-19):
+    /// `Brink` → `Strict`, `StrictInk` → `Gradual` (forever — the oracle
+    /// corpus is anchored to it). `Some(_)` is an explicit choice (CLI flag,
+    /// `brink.toml`, editor API) and always wins. Read the effective policy
+    /// via [`AnalysisOptions::type_policy`], never this field directly.
+    ///
+    /// `Strict` requires `dialect = Brink` (a config error otherwise,
+    /// `E064`) and turns on `Unknown`/`Conflicted`-escape errors, the
+    /// boundary annotation-firewall exemption, and auto-wires `E063`
     /// (annotation-vs-inference mismatch) into production. Authoring-time/
     /// tooling input only — never embedded in `.inkb`, mirroring `dialect`.
-    pub types: TypePolicy,
+    pub types: Option<TypePolicy>,
+}
+
+impl AnalysisOptions {
+    /// The effective `types` policy for this options set — the one
+    /// resolution seam (issue #1127): an explicit [`Self::types`] wins;
+    /// otherwise the dialect-keyed default from [`resolve_type_policy`].
+    #[must_use]
+    pub fn type_policy(&self) -> TypePolicy {
+        resolve_type_policy(self.dialect, self.types)
+    }
 }
 
 /// The output of cross-file semantic analysis.
@@ -234,6 +265,14 @@ pub fn per_file_diagnostics(
     let files = [(file, hir)];
     let mut out = validate::validate(&files);
     out.extend(dialect_gate::check(&files, file_resolutions, dialect));
+    // NS-A1 E107 (bare-`none`-needs-context, docs/stdlib-spec.md §1.4) —
+    // dialect-INDEPENDENT, unlike the brink-only block below: the rule is
+    // part of the Option package itself, and under `strict-ink` (where
+    // `VAR`/`CONST` initializers aren't in the gate's block-tree walk) it
+    // is also what keeps `VAR x = none` an error at all. Same per-file
+    // argument as `dialect_gate`: the resolution records consulted always
+    // carry this file's own id.
+    out.extend(option_rules::check(&files, file_resolutions));
     // Annotation *content* checks (E061) run only under the brink
     // dialect: under `strict-ink` the annotation is already rejected whole
     // by `dialect_gate` (E051), and critiquing the inside of rejected
@@ -266,6 +305,14 @@ pub fn per_file_diagnostics(
         // authoring mistake detectable from the literal alone, no shape
         // resolution or whole-project inference needed.
         out.extend(map_keys::check(&files));
+        // NS-A3 protocol-registry name reservation (E113, F6 ruled
+        // 2026-07-19, docs/stdlib-spec.md §9.6): `display`/`compare`/`next`
+        // are reserved method names under the brink dialect — an author
+        // declaration is a hard error, not an E035 warning. Brink-only:
+        // under strict-ink there is no protocol registry and vanilla ink
+        // identifiers stay untouched (the oracle corpus is out of reach by
+        // construction).
+        out.extend(protocols::check_reserved_names(&files));
     }
     out
 }
@@ -455,7 +502,7 @@ pub fn strict_diagnostics(
     inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    if opts.types == TypePolicy::Strict {
+    if opts.type_policy() == TypePolicy::Strict {
         if let Some(diag) = strict::config_error(opts.dialect, files.first().map(|&(f, _)| f)) {
             diagnostics.push(diag);
         } else {
@@ -594,9 +641,16 @@ pub fn whole_project_diagnostics(
     // it needs `effects_project`'s rows to judge a condition's transitive
     // effect, so both passes share one inference when *either* an `#@effects`
     // assertion or an `await` appears anywhere in the project.
-    let needs_effects = hir_inputs
-        .iter()
-        .any(|&(_, hir)| hir_has_effects_assertion(hir) || await_purity::hir_has_await(hir));
+    // The NS-A4 comparator-contract gate (E119, docs/stdlib-spec.md §4b,
+    // issue #1110) rides the same whole-project effect table with the same
+    // brink-only + laziness posture: a project with no `sort_by`/
+    // `sorted_by`-with-inline-`#fn` site never triggers effect inference
+    // for it.
+    let needs_effects = hir_inputs.iter().any(|&(_, hir)| {
+        hir_has_effects_assertion(hir)
+            || await_purity::hir_has_await(hir)
+            || comparator_contract::hir_has_comparator_site(hir)
+    });
     if opts.dialect == Dialect::Brink && needs_effects {
         let rows =
             infer::effects_project(&hir_inputs, index, resolutions, opts.host_manifest.as_ref());
@@ -614,6 +668,16 @@ pub fn whole_project_diagnostics(
             // this file's own resolution records (`resolutions` carries file
             // provenance, filtered inside `await_purity::check`).
             diagnostics.extend(await_purity::check(file_id, hir, index, resolutions, &rows));
+            // The NS-A4 comparator-contract gate (E119) — same resolution
+            // discipline, judging inline `#fn(target)` comparators of
+            // `sort_by`/`sorted_by` against their target's row.
+            diagnostics.extend(comparator_contract::check(
+                file_id,
+                hir,
+                index,
+                resolutions,
+                &rows,
+            ));
         }
     }
 
@@ -885,27 +949,58 @@ EXTERNAL add_state(who)
         (hir, manifest)
     }
 
-    /// Gradual is byte-identical forever: the same source, `types` left at
-    /// its default (`Gradual`), under either dialect, must produce results
-    /// identical to a build that predates TM-3 entirely — no `E064`/`E065`/
-    /// `E066`, and `E063` stays un-auto-invoked (matching the #618/PR#640
-    /// ruling this issue explicitly does not touch).
+    /// The dialect-keyed default (issue #1127, ruled 2026-07-19). Under
+    /// `strict-ink`, an unset `types` resolves gradual FOREVER — the same
+    /// source, `types` never set, must produce results identical to a build
+    /// that predates TM-3 entirely: no `E064`/`E065`/`E066`, and `E063`
+    /// stays un-auto-invoked (the #618/PR#640 ruling, untouched — the
+    /// oracle corpus is anchored to this). Under `brink`, the same unset
+    /// `types` now resolves strict, so the Unknown-escape check fires;
+    /// explicit `Gradual` remains the opt-out knob and restores silence.
     #[test]
-    fn gradual_is_byte_identical_regardless_of_dialect() {
+    fn types_default_is_dialect_keyed() {
         let src = "=== noop(x) ===\nHello.\n-> DONE\n";
         let (hir, manifest) = lower_one(src);
-        for dialect in [Dialect::StrictInk, Dialect::Brink] {
-            let opts = AnalysisOptions {
-                dialect,
-                ..AnalysisOptions::default()
-            };
-            let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
-            assert!(
-                result.diagnostics.is_empty(),
-                "gradual (default types) must stay silent under dialect {dialect:?}: {:?}",
-                result.diagnostics
-            );
-        }
+
+        // strict-ink + unset types: gradual, byte-identical forever.
+        let opts = AnalysisOptions {
+            dialect: Dialect::StrictInk,
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result.diagnostics.is_empty(),
+            "strict-ink (default types = gradual) must stay silent: {:?}",
+            result.diagnostics
+        );
+
+        // brink + unset types: strict — the Unknown-escape check fires.
+        let opts = AnalysisOptions {
+            dialect: Dialect::Brink,
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E065),
+            "brink (default types = strict) must flag the Unknown escape: {:?}",
+            result.diagnostics
+        );
+
+        // brink + explicit gradual: the opt-out knob restores silence.
+        let opts = AnalysisOptions {
+            dialect: Dialect::Brink,
+            types: Some(TypePolicy::Gradual),
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result.diagnostics.is_empty(),
+            "brink + explicit gradual opt-out must stay silent: {:?}",
+            result.diagnostics
+        );
     }
 
     #[test]
@@ -914,7 +1009,7 @@ EXTERNAL add_state(who)
         let (hir, manifest) = lower_one(src);
         let opts = AnalysisOptions {
             dialect: Dialect::StrictInk,
-            types: TypePolicy::Strict,
+            types: Some(TypePolicy::Strict),
             ..AnalysisOptions::default()
         };
         let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -945,7 +1040,7 @@ EXTERNAL add_state(who)
         let (hir, manifest) = lower_one(src);
         let opts = AnalysisOptions {
             dialect: Dialect::Brink,
-            types: TypePolicy::Strict,
+            types: Some(TypePolicy::Strict),
             ..AnalysisOptions::default()
         };
         let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
@@ -977,7 +1072,7 @@ EXTERNAL add_state(who)
         let (hir, manifest) = lower_one(src);
         let opts = AnalysisOptions {
             dialect: Dialect::Brink,
-            types: TypePolicy::Strict,
+            types: Some(TypePolicy::Strict),
             ..AnalysisOptions::default()
         };
         let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);

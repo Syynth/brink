@@ -1,0 +1,9 @@
+forms: 1..=6 and 0..10
+content equal: true, empties: true
+len: 6 10 0
+index: 0 9
+iterated: 2 3 4 5
+rolls: 6 2 3 1
+picks: some(10) none
+validator: some(1..=6) none
+truthy: yes, empty: no

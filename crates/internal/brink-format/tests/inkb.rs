@@ -313,6 +313,9 @@ fn roundtrip_effect_rows() {
                     },
                 ],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![DispatchEntry {
                 cell: cell(9),
@@ -326,6 +329,9 @@ fn roundtrip_effect_rows() {
                         handle_param: None,
                     }],
                     opaque: true,
+                    emits: false,
+                    tags: false,
+                    faults: false,
                 },
             }],
         },
@@ -337,6 +343,9 @@ fn roundtrip_effect_rows() {
                 writes: vec![],
                 calls: vec![],
                 opaque: true,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         },
@@ -378,6 +387,9 @@ fn roundtrip_effect_rows_freeze_bit() {
                     handle_param: None,
                 }],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         },
@@ -389,6 +401,9 @@ fn roundtrip_effect_rows_freeze_bit() {
                 writes: vec![],
                 calls: vec![],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         },
@@ -449,7 +464,7 @@ fn effect_rows_index_with_call_tags(
     use brink_format::{DefinitionId, DefinitionTag, InkbIndex, SectionEntry, SectionKind};
 
     let mut buf = Vec::new();
-    buf.push(2u8); // section-local version (#882: bumped 1 -> 2 for is_entry)
+    buf.push(3u8); // section-local version (NS-A2: bumped 2 -> 3 for dims)
     buf.extend_from_slice(&1u32.to_le_bytes()); // entry count
     buf.extend_from_slice(
         &DefinitionId::new(DefinitionTag::Address, 1)
@@ -464,6 +479,7 @@ fn effect_rows_index_with_call_tags(
     buf.push(cap_tag);
     buf.push(handle_tag);
     buf.push(0u8); // opaque
+    buf.push(0u8); // NS-A2 dims flags (none set)
     buf.extend_from_slice(&0u32.to_le_bytes()); // dispatch count
 
     let file_size = u32::try_from(buf.len()).unwrap();
@@ -496,6 +512,85 @@ fn effect_rows_reader_rejects_reserved_cap_param() {
     let (buf, index) = effect_rows_index_with_call_tags(0x01, 0x00);
     let err = brink_format::read_section_effect_rows(&buf, &index).unwrap_err();
     assert_eq!(err, DecodeError::InvalidEffectCapParam(0x01));
+}
+
+/// NS-A2 (issue #1108): the emits/tags/faults dimension flags round-trip
+/// through the section-version-3 extension byte.
+#[test]
+fn effect_rows_dimension_flags_roundtrip() {
+    use brink_format::{DefinitionId, DefinitionTag, DirectEffects, EffectRowEntry};
+
+    let mut data = i001_data();
+    data.effect_rows = vec![
+        EffectRowEntry {
+            def: DefinitionId::new(DefinitionTag::Address, 1),
+            is_entry: true,
+            direct: DirectEffects {
+                reads: vec![],
+                writes: vec![],
+                calls: vec![],
+                opaque: false,
+                emits: true,
+                tags: false,
+                faults: true,
+            },
+            dispatches: vec![],
+        },
+        EffectRowEntry {
+            def: DefinitionId::new(DefinitionTag::Address, 2),
+            is_entry: true,
+            direct: DirectEffects {
+                reads: vec![],
+                writes: vec![],
+                calls: vec![],
+                opaque: false,
+                emits: false,
+                tags: true,
+                faults: false,
+            },
+            dispatches: vec![],
+        },
+    ];
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+    let decoded = read_inkb(&buf).expect("decode");
+    assert_eq!(decoded.effect_rows, data.effect_rows);
+}
+
+/// NS-A2: reserved bits (3-7) in the dimension-flags byte are rejected by
+/// the strict reader until a section version graduates them — the same
+/// discipline as the capability/handle slots.
+#[test]
+fn effect_rows_reader_rejects_reserved_dimension_bits() {
+    use brink_format::{DefinitionId, DefinitionTag, InkbIndex, SectionEntry, SectionKind};
+
+    let mut buf = Vec::new();
+    buf.push(3u8); // section-local version
+    buf.extend_from_slice(&1u32.to_le_bytes()); // entry count
+    buf.extend_from_slice(
+        &DefinitionId::new(DefinitionTag::Address, 1)
+            .to_raw()
+            .to_le_bytes(),
+    );
+    buf.push(1u8); // is_entry
+    buf.extend_from_slice(&0u32.to_le_bytes()); // reads
+    buf.extend_from_slice(&0u32.to_le_bytes()); // writes
+    buf.extend_from_slice(&0u32.to_le_bytes()); // calls
+    buf.push(0u8); // opaque
+    buf.push(0b0000_1000u8); // reserved bit 3 set
+    buf.extend_from_slice(&0u32.to_le_bytes()); // dispatch count
+    let index = InkbIndex {
+        version: 5,
+        file_size: u32::try_from(buf.len()).unwrap(),
+        checksum: 0,
+        sections: vec![SectionEntry {
+            kind: SectionKind::EffectRows,
+            offset: 0,
+        }],
+    };
+    let err = brink_format::read_section_effect_rows(&buf, &index).unwrap_err();
+    assert_eq!(err, DecodeError::InvalidEffectDimensions(0b0000_1000));
 }
 
 /// An `EffectRows` section carrying an unknown section-local version byte is
@@ -1107,6 +1202,7 @@ fn roundtrip_line_entry_with_audio_ref() {
         private_defs: vec![],
         alias_table: vec![],
         effect_rows: vec![],
+        frame_shapes: Vec::new(),
         source_checksum: 0,
     };
 
@@ -1194,4 +1290,254 @@ fn container_param_count_mismatch_is_a_decode_error() {
             actual: 1,
         }
     );
+}
+
+// ── FS-3 FrameShapes section (tag 0x10) + invisible container flag ───────────
+
+#[test]
+fn roundtrip_frame_shapes_section() {
+    use brink_format::{DefinitionId, DefinitionTag, FrameShapeDef, NameId};
+
+    let mut data = i001_data();
+    // Two await sites, sorted ascending by `site` as the compiler will emit.
+    data.frame_shapes = vec![
+        FrameShapeDef {
+            site: DefinitionId::new(DefinitionTag::Address, 4),
+            slots: vec![NameId(1), NameId(2)],
+        },
+        FrameShapeDef {
+            site: DefinitionId::new(DefinitionTag::Address, 9),
+            slots: vec![],
+        },
+    ];
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    // The optional section appears in the offset table when non-empty.
+    let index = read_inkb_index(&buf).unwrap();
+    assert!(
+        index
+            .sections
+            .iter()
+            .any(|s| s.kind == SectionKind::FrameShapes),
+        "FrameShapes section present when non-empty"
+    );
+
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
+    assert_eq!(data.frame_shapes, recovered.frame_shapes);
+    assert_eq!(data, recovered);
+}
+
+#[test]
+fn frame_shapes_section_omitted_when_empty() {
+    // Behind the E052 fence every compiled story has no await frame shapes, so
+    // the section is omitted entirely and existing stories stay byte-identical.
+    let data = i001_data();
+    assert!(data.frame_shapes.is_empty());
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let index = read_inkb_index(&buf).unwrap();
+    assert!(
+        !index
+            .sections
+            .iter()
+            .any(|s| s.kind == SectionKind::FrameShapes),
+        "no FrameShapes section for a frame-shape-less story"
+    );
+
+    let recovered = read_inkb(&buf).unwrap();
+    assert!(recovered.frame_shapes.is_empty());
+}
+
+#[test]
+fn missing_frame_shapes_section_decodes_empty() {
+    use brink_format::read_section_frame_shapes;
+
+    // A buffer whose index carries no FrameShapes section reads back empty.
+    let data = i001_data();
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+    let index = read_inkb_index(&buf).unwrap();
+    assert!(read_section_frame_shapes(&buf, &index).unwrap().is_empty());
+}
+
+#[test]
+fn frame_shapes_rejects_unknown_section_version() {
+    use brink_format::{
+        DefinitionId, DefinitionTag, FrameShapeDef, InkbIndex, NameId, SectionEntry,
+        read_section_frame_shapes, write_section_frame_shapes,
+    };
+
+    // Encode a valid section, then corrupt its leading section-local version
+    // byte — the reader must reject rather than misparse.
+    let real = vec![FrameShapeDef {
+        site: DefinitionId::new(DefinitionTag::Address, 1),
+        slots: vec![NameId(0)],
+    }];
+    let mut buf = Vec::new();
+    write_section_frame_shapes(&real, &mut buf);
+    buf[0] = 0xFF; // bogus section version
+
+    let index = InkbIndex {
+        version: 5,
+        file_size: u32::try_from(buf.len()).unwrap(),
+        checksum: 0,
+        sections: vec![SectionEntry {
+            kind: SectionKind::FrameShapes,
+            offset: 0,
+        }],
+    };
+    let err = read_section_frame_shapes(&buf, &index).unwrap_err();
+    assert_eq!(
+        err,
+        DecodeError::UnsupportedSectionVersion {
+            section: SectionKind::FrameShapes as u8,
+            version: 0xFF,
+        }
+    );
+}
+
+#[test]
+fn roundtrip_invisible_container_flag() {
+    use brink_format::CountingFlags;
+
+    let mut data = i001_data();
+    assert!(!data.containers.is_empty());
+    // Mark a container invisible (the synthesized-continuation marker, §11.2).
+    data.containers[0].counting_flags |= CountingFlags::INVISIBLE;
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
+    assert!(
+        recovered.containers[0]
+            .counting_flags
+            .contains(CountingFlags::INVISIBLE),
+        "INVISIBLE flag survives the .inkb round-trip"
+    );
+    assert_eq!(data, recovered);
+}
+
+/// NS-A8 (`docs/tower-mini-spec.md` T5): first emission of the
+/// `VAL_VEC2`..`VAL_MAT4` wire tags — write→read identity for tower-valued
+/// globals, bare and nested inside a collection. The wire is explicit
+/// little-endian f32 lanes (vec/quat `x, y(, z, w)`; matrices column-major
+/// column-by-column), never glam's memory layout.
+#[test]
+fn roundtrip_tower_valued_globals() {
+    use brink_format::{DefinitionId, DefinitionTag, GlobalVarDef, NameId, Value, ValueType};
+
+    let mut data = i001_data();
+    let next_id = data.variables.len() as u64;
+
+    let towers = [
+        (ValueType::Vec2, Value::Vec2(glam::Vec2::new(1.5, -2.25))),
+        (
+            ValueType::Vec3,
+            Value::Vec3(glam::Vec3::new(0.0, -0.0, f32::MAX)),
+        ),
+        (
+            ValueType::Vec4,
+            Value::Vec4(glam::Vec4::new(1.0, 2.0, 3.0, 4.0)),
+        ),
+        (
+            ValueType::Quat,
+            Value::Quat(glam::Quat::from_xyzw(0.5, -0.5, 0.5, 0.5)),
+        ),
+        (
+            ValueType::Mat2,
+            Value::Mat2(glam::Mat2::from_cols_array(&[1.0, 2.0, 3.0, 4.0])),
+        ),
+        (
+            ValueType::Mat3,
+            Value::Mat3(glam::Mat3::from_cols_array(&[
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0,
+            ])),
+        ),
+        (
+            ValueType::Mat4,
+            Value::Mat4(glam::Mat4::from_cols_array(&[
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
+                16.0,
+            ])),
+        ),
+    ];
+    for (i, (vt, v)) in towers.iter().enumerate() {
+        data.variables.push(GlobalVarDef {
+            id: DefinitionId::new(DefinitionTag::GlobalVar, next_id + i as u64),
+            name: NameId(0),
+            value_type: *vt,
+            default_value: v.clone(),
+            mutable: true,
+            local: false,
+        });
+    }
+    // Nested inside a collection, like the handle/projection tests above.
+    data.variables.push(GlobalVarDef {
+        id: DefinitionId::new(DefinitionTag::GlobalVar, next_id + 7),
+        name: NameId(0),
+        value_type: ValueType::Array,
+        default_value: Value::array(vec![
+            Value::Vec2(glam::Vec2::ONE),
+            Value::some(Value::Vec3(glam::Vec3::Z)),
+        ]),
+        mutable: true,
+        local: false,
+    });
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
+    assert_eq!(data, recovered);
+}
+
+/// NS-A8 (`docs/tower-mini-spec.md` T4/T5): a NaN lane must cross the wire
+/// bit-for-bit even though the value no longer compares equal to itself —
+/// compared here by lane *bits*, not `PartialEq` (which correctly reads
+/// `false` for a NaN-bearing vector).
+#[test]
+fn tower_nan_lane_crosses_the_wire_bit_exact() {
+    use brink_format::{DefinitionId, DefinitionTag, GlobalVarDef, NameId, Value, ValueType};
+
+    let mut data = i001_data();
+    let next_id = data.variables.len() as u64;
+    let lanes = [f32::NAN, f32::NEG_INFINITY, -0.0];
+    data.variables.push(GlobalVarDef {
+        id: DefinitionId::new(DefinitionTag::GlobalVar, next_id),
+        name: NameId(0),
+        value_type: ValueType::Vec3,
+        default_value: Value::Vec3(glam::Vec3::from_array(lanes)),
+        mutable: true,
+        local: false,
+    });
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+    let recovered = read_inkb(&buf).unwrap();
+
+    let recovered_value = &recovered
+        .variables
+        .last()
+        .expect("tower global present")
+        .default_value;
+    let Value::Vec3(v) = recovered_value else {
+        unreachable!("expected Vec3, got {recovered_value:?}");
+    };
+    let got = v.to_array();
+    for (i, lane) in lanes.iter().enumerate() {
+        assert_eq!(
+            lane.to_bits(),
+            got[i].to_bits(),
+            "lane {i} drifted: {lane} -> {}",
+            got[i]
+        );
+    }
 }

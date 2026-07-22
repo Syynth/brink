@@ -84,6 +84,11 @@ pub fn lower_weave_body(
             BodyChild::TagLine(tl) => {
                 acc.handle(&tl, scope, sink);
             }
+            BodyChild::AnnotationLine(al) => {
+                // NS-A2: consumed by the knot/stitch leading-run owner;
+                // misplaced lines diagnose E112 at the chokepoint.
+                super::super::directive::handle_annotation_line(&al, sink);
+            }
             BodyChild::DivertNode(dn) => {
                 acc.handle(&dn, scope, sink);
             }
@@ -154,6 +159,12 @@ fn determine_base_depth(items: &[WeaveItem]) -> usize {
 
 /// Fold items at a given base depth. Items at deeper depths are collected
 /// and recursively folded into the preceding weave point's body.
+#[expect(
+    clippy::too_many_lines,
+    reason = "grew past 100 lines with S1's per-return-point `tail` derivation \
+              (docs/block-effect-model.md §10 row j); the control flow itself \
+              is unchanged from before that slice"
+)]
 fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
     // Phase 1: Group nested items into sub-weaves (matching ConstructWeaveHierarchyFromIndentation)
     let items = nest_deeper_items(items, base_depth);
@@ -207,15 +218,19 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
                         let nested = fold_weave_at_depth(remaining, base_depth);
                         gather_stmts.extend(nested.stmts);
 
+                        let prev_tail = crate::tail_from_stmts(&gather_stmts);
                         stmts.push(Stmt::LabeledBlock(Box::new(Block {
                             label: Some(prev_label),
                             stmts: gather_stmts,
                             container_id: None,
+                            tail: prev_tail,
                         })));
+                        let tail = crate::tail_from_stmts(&stmts);
                         return Block {
                             label: None,
                             stmts,
                             container_id: None,
+                            tail,
                         };
                     }
                     // Standalone gather — emit content as stmts, save label
@@ -241,10 +256,12 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
                         base_depth,
                     );
                     // All remaining items consumed — we're done
+                    let tail = crate::tail_from_stmts(&stmts);
                     return Block {
                         label: None,
                         stmts,
                         container_id: None,
+                        tail,
                     };
                 }
             }
@@ -259,10 +276,12 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
         && let Some(label) = last_standalone_label.take()
     {
         let gather_stmts = stmts.split_off(start);
+        let gather_tail = crate::tail_from_stmts(&gather_stmts);
         stmts.push(Stmt::LabeledBlock(Box::new(Block {
             label: Some(label),
             stmts: gather_stmts,
             container_id: None,
+            tail: gather_tail,
         })));
     }
 
@@ -274,10 +293,12 @@ fn fold_weave_at_depth(items: Vec<WeaveItem>, base_depth: usize) -> Block {
         gather_stmts_start,
         base_depth,
     );
+    let tail = crate::tail_from_stmts(&stmts);
     Block {
         label: None,
         stmts,
         container_id: None,
+        tail,
     }
 }
 
@@ -344,7 +365,18 @@ fn flush_choices(
     if choice_acc.is_empty() {
         return;
     }
-    let choices = std::mem::take(choice_acc);
+    let mut choices = std::mem::take(choice_acc);
+    // Weave folding may have appended trailing content directly into a
+    // choice's body (`WeaveItem::Stmt` between choices) or into the
+    // continuation (nested-depth folding) after each was first built —
+    // `tail` only reflects the state at construction time, so re-derive it
+    // here from the final `stmts` before these blocks are sealed into the
+    // `ChoiceSet` (docs/block-effect-model.md §10 row j).
+    for choice in &mut choices {
+        choice.body.recompute_tail();
+    }
+    let mut continuation = continuation;
+    continuation.recompute_tail();
     let cs = Stmt::ChoiceSet(Box::new(ChoiceSet {
         choices,
         continuation,
@@ -361,10 +393,12 @@ fn flush_choices(
             .map(|start| stmts.split_off(start))
             .unwrap_or_default();
         labeled_stmts.push(cs);
+        let tail = crate::tail_from_stmts(&labeled_stmts);
         stmts.push(Stmt::LabeledBlock(Box::new(Block {
             label: Some(label),
             stmts: labeled_stmts,
             container_id: None,
+            tail,
         })));
     } else {
         stmts.push(cs);

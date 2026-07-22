@@ -1,0 +1,28 @@
+# INTERIM hand-respelled fixture. See ../README.md.
+ink_source = "tests/tier1/stitch/manual-stitch-v1/story.ink"
+oracle_case = "tier1::stitch::manual-stitch-v1"
+family = "knot/stitch structure"
+status = "hand-respelled, parse-verified only"
+notes = """
+Ink's `=== knot ===` / `= stitch` addressing becomes nested `flow`
+declarations (charter §4: "stitches are nested flows -- garden.gate
+because addressing is nesting"). The dot-qualified divert target
+`the_orient_express.in_third_class` (used from OUTSIDE the container, on
+the first choice line, before `in_third_class` is even declared) parses
+fine as an ordinary dotted PATH -- whether unqualified sibling references
+from INSIDE a nested flow (bare `in_third_class` from within
+`in_first_class`, used on the last line) resolve the same way ink's
+relative stitch addressing did is a B0.6+ resolution question, not
+something the B0.5 grammar can or does check. No syntax gaps encountered.
+
+See README N-1: this fixture's `* [text] -> target` choice lines parse
+with zero errors, but the inline divert after the `]` is folded into
+literal TEXT by the shipped grammar, not recognized as a DIVERT_STMT.
+Implementation debt, not a charter gap.
+
+ENTRY POINT (`main`-flow convention, ruled 2026-07-21, #1106 G-batch): the
+top-level container `the_orient_express` is renamed `main` (the ruled
+native story-entry convention) and the top-level `-> the_orient_express`
+entry divert is dropped; the internal qualified reference
+`the_orient_express.in_third_class` becomes `main.in_third_class`.
+"""

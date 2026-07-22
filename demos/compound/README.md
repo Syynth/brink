@@ -66,6 +66,27 @@ cargo run -- --alarm-impl rust   # the Phase-0 Rust alarm (default)
 cargo run -- --alarm-impl ink    # the ink port; HUD reports its µs/frame
 ```
 
+**Phase 1b is underway too**: doors/switches — the minimal REACTIVE entity —
+are ported to ink (`assets/doors.ink` + `src/ink_doors.rs`) via the host BH-4
+wake surface (`FlowSleep`/wake_when), side-by-side with the Rust baseline.
+Pick the writer at launch, independently of `--alarm-impl`:
+
+```sh
+cargo run -- --doors-impl rust   # the Phase-0 Rust doors (default)
+cargo run -- --doors-impl ink    # the ink port; HUD reports its µs/frame
+```
+
+**Phase 1c is underway too**: security cameras — the pure sweep-and-detect
+loop — are ported to ink (`assets/cameras.ink` + `src/ink_cameras.rs`), one
+flow instance per camera (`#@local` sweep state, since every camera shares
+one `CamerasStory` program). Pick the writer at launch, independently of the
+other two:
+
+```sh
+cargo run -- --cameras-impl rust   # the Phase-0 Rust cameras (default)
+cargo run -- --cameras-impl ink    # the ink port; HUD reports its µs/frame
+```
+
 The friction journal for each port lives in [`MIGRATION.md`](MIGRATION.md).
 As of Phase 1a the crate takes brink *path* dependencies (`bevy-brink`, plus
 `brink-compiler` as a dev-dep) — still workspace-excluded, still never built
@@ -128,8 +149,11 @@ against the Rust behavior it replaces:
    safest first port; establishes the world-policy write seam.
 2. **`doors.rs`** — a minimal reactive entity (await on a value). Proves the
    suspend-on-change path with almost no logic.
-3. **`cameras.rs`** — a pure sweep + detect loop plus one command
-   (`camera disabled`). No per-entity memory to marshal.
+3. **`cameras.rs`** — a pure sweep + detect loop. No per-entity memory to
+   marshal beyond the sweep phase itself (`#@local`); disabling stays
+   Rust-only in both modes, and the port ended up returning a plain boolean
+   rather than firing a `#[derive(BrinkCommand)]` command — see
+   `MIGRATION.md`'s Phase 1c entry for the gap that forced that call.
 4. **`layout_gen.rs`** — the **systems-logic specimen**: a pure, seeded
    `generate(seed) → LayoutData` with no ECS. Ports to an ink function/`STRUCT`
    computation whose output is diffed structurally against the Rust generator

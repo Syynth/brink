@@ -529,6 +529,15 @@ impl OutputBuffer {
     }
 
     /// Returns true if a capture is currently active.
+    /// Whether a string-eval/tag/function-return capture is active — pushes
+    /// currently route to transient scratch, not visible output (NS-A2:
+    /// the `effect-trace` emit recorder's visibility guard; unused in
+    /// ordinary builds, hence the allow).
+    #[cfg_attr(not(feature = "effect-trace"), expect(dead_code))]
+    pub fn in_capture(&self) -> bool {
+        self.capture_depth > 0
+    }
+
     pub fn has_checkpoint(&self) -> bool {
         self.capture_depth > 0
     }

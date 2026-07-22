@@ -27,6 +27,7 @@
 //! rehydration" — the same rule applies at ordinary read/write time, not
 //! just rehydration).
 
+use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;
 
@@ -337,6 +338,16 @@ fn value_kind(v: &Value) -> &'static str {
         Value::FnRef(_) | Value::Closure(_) => "fn",
         Value::Handle { .. } => "handle",
         Value::Projection(_) => "projection",
+        Value::OptionVal(_) => "option",
+        Value::Range { .. } => "range",
+        Value::Vec2(_) => "vec2",
+        Value::Vec3(_) => "vec3",
+        Value::Vec4(_) => "vec4",
+        Value::Quat(_) => "quat",
+        Value::Mat2(_) => "mat2",
+        Value::Mat3(_) => "mat3",
+        Value::Mat4(_) => "mat4",
+        Value::Weighted(_) => "weighted",
     }
 }
 

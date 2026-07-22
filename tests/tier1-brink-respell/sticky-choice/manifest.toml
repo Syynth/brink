@@ -1,0 +1,25 @@
+# INTERIM hand-respelled fixture. See ../README.md.
+ink_source = "tests/tier1/choices/sticky-choice/story.ink"
+oracle_case = "tier1::choices::sticky-choice"
+family = "choices"
+status = "hand-respelled, parse-verified only"
+notes = """
+Demonstrates sticky (`+`) vs once (`*`) choices (charter §5, kept as-is)
+and a self-recursive divert from inside a choice body. Choice bodies
+spanning more than the choice's own line take braces (charter §5); the
+brace must open on the SAME physical line as the choice text for the
+shipped B0.5 grammar to route into CHOICE_BODY (see IMPLEMENTATION NOTE
+in the README: an inline divert like `-> homers_couch` that follows prose
+on the same line, inside a CHOICE_BODY content line, is consumed as
+literal TEXT by the shipped grammar's `content_items_until`, not
+structured as a DIVERT_STMT -- it still parses with zero errors, but the
+CST shape is not yet what B0.7 lowering will need. Flagged, not a charter
+gap: the charter says diverts are kept verbatim in content position; this
+is B0.5 parser-completeness debt.
+
+ENTRY POINT (`main`-flow convention, ruled 2026-07-21, #1106 G-batch): the
+top-level container `homers_couch` is renamed `main` (the ruled native
+story-entry convention) and the top-level `-> homers_couch` entry divert
+is dropped; the internal self-recursive divert `-> homers_couch` becomes
+`-> main`.
+"""

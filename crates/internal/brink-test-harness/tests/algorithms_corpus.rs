@@ -49,7 +49,7 @@ fn run_case_with_types(dir: &Path, types: TypePolicy) -> String {
     let ink_path = dir.join("story.ink");
     let options = AnalysisOptions {
         dialect: Dialect::Brink,
-        types,
+        types: Some(types),
         ..AnalysisOptions::default()
     };
     let compile_msg = format!("compile {}", ink_path.display());
@@ -89,8 +89,10 @@ fn assert_case(name: &str) {
 /// Same as [`assert_case`], but lets a case opt into `types = strict`.
 fn assert_case_with_types(name: &str, types: TypePolicy) {
     let dir = corpus_dir().join(name);
-    let expected_msg = format!("read expected.txt for algorithms/{name}");
-    let expected = std::fs::read_to_string(dir.join("expected.txt")).expect(&expected_msg);
+    let case_label = format!("algorithms/{name}");
+    let expected =
+        brink_test_harness::corpus::load_golden_transcript(&dir.join("expected.txt"), &case_label)
+            .expect("golden transcript must be present and non-vacuous");
     let actual = run_case_with_types(&dir, types);
     assert_eq!(
         actual, expected,
@@ -297,6 +299,12 @@ fn goap_plans_and_executes_the_cheapest_action_sequence_to_the_goal() {
     assert_case_is_deterministic_across_runs("goap");
 }
 
+#[test]
+fn mcts_lite_explores_tree_via_ucb1_selection() {
+    assert_case("mcts-lite");
+    assert_case_is_deterministic_across_runs("mcts-lite");
+}
+
 /// Every `tests/tier1-brink/algorithms/` case directory is exercised by a
 /// `#[test]` above — a directory with no matching test would silently
 /// never run (same invariant `tier1_brink.rs` enforces for its own flat
@@ -335,6 +343,7 @@ fn every_algorithms_case_directory_has_a_test() {
         "quadtree",
         "shadowcasting-fov",
         "goap",
+        "mcts-lite",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink/algorithms")

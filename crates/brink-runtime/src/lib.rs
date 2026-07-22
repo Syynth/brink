@@ -40,12 +40,15 @@ mod debug;
 pub mod effect_trace;
 mod error;
 mod external_policy;
+mod iter;
 mod linker;
 mod list_ops;
 mod locale;
 mod output;
 mod program;
 mod proj_ops;
+mod rand_ops;
+mod range_ops;
 mod record_ops;
 mod replay;
 pub mod rng;
@@ -55,6 +58,7 @@ mod speculation;
 mod state;
 mod story;
 mod string_ops;
+mod tower_ops;
 pub mod transcript;
 mod value_ops;
 mod vm;
@@ -64,6 +68,7 @@ pub use brink_format::{LoadReport, SAVE_FORMAT_VERSION, SaveState, VisitEntry};
 pub use debug::{DebugChoice, DebugFrame, DebugGlobal, DebugRng, DebugSnapshot, DebugVisit};
 pub use error::RuntimeError;
 pub use external_policy::{EvalContext, ExternalsReport, KindTieredHandler, PolicyKind};
+pub use iter::ValueIter;
 pub use linker::link;
 pub use locale::{LocaleMode, apply_locale};
 pub use output::{Fragment, OutputPart};
@@ -82,8 +87,8 @@ pub use session::{
 pub use speculation::{Budget, Speculation, SpeculationStep};
 pub use state::{ContextAccess, ObservedContext, WriteObserver};
 pub use story::{
-    Choice, DriveOutcome, ExternalFnHandler, ExternalResult, FallbackHandler, FlowInstance,
-    FunctionEval, Line, Stats, StepOutcome, Story, StorySnapshot, StoryStatus,
+    Choice, DriveOutcome, ExecMode, ExternalFnHandler, ExternalResult, FallbackHandler,
+    FlowInstance, FunctionEval, Line, Stats, StepOutcome, Story, StorySnapshot, StoryStatus,
 };
 pub use world::{
     CommitError, ContextView, FlowLocal, Mode, PolicyError, ResolvedPolicy, Scope, World,

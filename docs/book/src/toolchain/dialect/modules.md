@@ -63,7 +63,7 @@ There are two spellings.
 **Bare import** brings specific names into local scope, optionally renaming them
 with `AS`:
 
-```ink
+```ink,ignore
 IMPORT { ambush, guard_talk AS gt } FROM quest_3
 
 === square ===
@@ -74,7 +74,7 @@ IMPORT { ambush, guard_talk AS gt } FROM quest_3
 **Qualified import** brings the module in under its own name; its exports are
 then reached through a dotted path:
 
-```ink
+```ink,ignore
 IMPORT quest_3
 
 === square ===
@@ -110,7 +110,7 @@ definition is public — while making a freshly declared module encapsulated by
 default. Override the default per definition with `#@public` / `#@private`,
 written just under the header:
 
-```ink
+```ink,ignore
 #@module(quest)
 
 === ambush ===
@@ -138,7 +138,7 @@ late-loaded chunk refers to a knot by a name-derived id. Renaming a public name
 would ordinarily break every one of those references. `#@was` is the migration
 door:
 
-```ink
+```ink,ignore
 #@module(quest)
 #@was(quest_three)          // this module used to be `quest_three`
 

@@ -58,3 +58,93 @@ Fill pump.js's CONFIG from these when running the pump on this repo.
 ## Disk sweep, widened (2026-07-18: dp-review + stray-clone incidents)
 - Boundary sweeps audit ANY /tmp dir over 500M (pattern-blind — glob-matching missed 4G of orphans for days) AND hunt ~/code for stray clones/target dirs (`find ~/code -maxdepth 4 -type d -name target`) — a measurement agent once left a 26G target in a stray clone at ~/code/rs/.
 - The shared cache regrows ~20-45G per wave era: wipe it at EVERY boundary where no wave is imminent, not just when tight.
+
+## Cloud sessions (Claude Code on the web) — deltas from local (2026-07-19, earned across three ENOSPC incidents, one token expiry, a merged-PR train, and a container snapshot revert that destroyed a finished unpushed wave)
+
+Local runs use bypass-permissions; **cloud runs are approval-gated** and several
+local assumptions silently fail. When the pump runs in a cloud session, override
+the config above as follows:
+
+### Durability: push after every commit — the container is not storage
+- **The container can be reverted to an older snapshot without warning**,
+  taking `/home/user/<repo>/.git`, every worktree, and the object store with
+  it. We lost a complete, READY-FOR-GATE three-commit wave this way — its
+  worktree and objects were simply gone; only its report survived (in the
+  agent transcript, which lives outside the repo filesystem).
+- Therefore: **every agent pushes its branch immediately after its FIRST
+  commit and after every subsequent commit** (`git push -u origin
+  HEAD:refs/heads/<branch>`). "Commit granularly" already applied; the push
+  now rides along. Remote refs on GitHub are the only durable store.
+- The coordinator pushes the moment an agent reports done if the agent
+  couldn't (permission-parked pushes get landed by the coordinator, same as
+  merges). A READY FOR GATE report with an unpushed branch is an
+  **emergency**, not a normal state.
+- Recovery when a revert does hit: remote branches + agent transcripts are
+  the recovery sources. Resume the building agent with a message — it can
+  re-apply its own wave from transcript knowledge far faster than a fresh
+  agent; recreate its worktree from current `origin/main` first.
+
+### Permissions & privileged operations
+- Merge/push-adjacent actions inside subagents can be **parked by the
+  permission layer** even where local would allow them. Design for it: train
+  agents VERIFY and post durable verdicts; **the coordinator lands merges,
+  arms auto-merge, and edits PR bodies itself** via GitHub MCP. A parked agent
+  is recoverable state, not a failure — the durable-comms rule is what makes
+  it recoverable.
+- **No `gh` CLI.** GitHub MCP tools only (`mcp__github__*`, loaded via
+  ToolSearch — put this in every agent prompt that touches GitHub).
+- **The GitHub MCP token can expire mid-session and cannot re-auth headlessly.**
+  git push/fetch keep working (separate credential path) — keep landing code,
+  queue the GitHub-side ops (PR edits, comments, merges) in the scratchpad,
+  notify the user to re-authorize the connector, retry on a timer.
+
+### Disk (fixed per-session allowance, ~35–40G observed; `df` misleads)
+- Shared cache is **`/home/user/<repo>/target`** — NOT a /tmp path.
+  Worktrees live under **`.claude/worktrees/`** — NEVER /tmp.
+- **MANDATORY on every cargo invocation, every agent**:
+  `CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0` and `-j 4`.
+  Full debuginfo caused two same-day ENOSPC crashes; the flags shrink
+  artifacts severalfold. Put this in the prompt, not the doc (prompts are the
+  only part agents obey).
+- **ONE full workspace gate at a time across ALL agents** — two parallel
+  gates exceeded the allowance twice. Serialize explicitly (coordinator holds
+  a GO token); cargo's lock is queuing, not budget control.
+- On ENOSPC: deletes still succeed. Trim order: `target/debug/incremental` →
+  `target/release` + wasm target trees → deleted-worktree leftovers. An agent
+  that hits ENOSPC should STOP and report, never self-clean shared state.
+- **Stale-binary hazard**: the shared target can serve test binaries compiled
+  from a since-DELETED sibling worktree (baked `CARGO_MANIFEST_DIR` → phantom
+  insta snapshot-not-found failures). `cargo clean -p <crate>` cures; suspect
+  it whenever snapshot failures appear only in shared-cache runs.
+
+### Gates
+- `wasm-pack build/test` FAIL in the sandbox at the wasm-opt/binaryen
+  download (no proxy route to GitHub release assets). Cloud wasm gate =
+  `cargo check -p brink-web --target wasm32-unknown-unknown`; the full
+  wasm-pack legs are CI-only — say so in the PR body rather than skipping
+  silently.
+- Oracle/corpus gates run fine; expect the first cold build to take minutes.
+
+### Liveness & events
+- `sleep`/polling are blocked. Use send_later check-ins as the heartbeat;
+  background tasks re-invoke the coordinator on completion — but a task
+  killed by ENOSPC dies SILENTLY (no wake). Check-ins must probe liveness
+  (process table + transcript mtime), not just wait.
+- **A user interrupt kills all background tasks.** After any interrupt:
+  probe, then resume (workflows via resumeFromRunId; agents via
+  SendMessage-resume — worktrees survive).
+- PR webhooks deliver CI failures and comments but NOT success/pushes/merge
+  transitions: arm auto-merge for the happy path + a check-in for the rest.
+  `rerun_failed_jobs` 403s while the run is still in progress — wait for
+  run completion, then re-kick.
+
+### Ephemerality
+- The container is reclaimed after inactivity: **anything unpushed dies**.
+  Push at every stable point; if a wave must pause, push its worktree state
+  to a `wip/` branch first. Scratchpad artifacts worth keeping get committed
+  or posted to GitHub before the session ends.
+- **Always `git fetch origin` immediately before branching from
+  `origin/main`.** Cloud sessions are long-lived while remote main moves
+  under them (auto-merges land between your commands); branching from a
+  stale ref silently resurrects old file states. (Caught in the act while
+  writing this section.)

@@ -256,6 +256,189 @@ impl ContainerEmitter<'_> {
                 self.emit(Opcode::CharAt);
             }
 
+            // ── NS-A1: Option[T] + the ruled stdlib flips (#1107) ────
+            lir::Expr::OptionNone => self.emit(Opcode::PushNone),
+
+            lir::Expr::OptionSome(inner) => {
+                self.emit_expr(inner, false);
+                self.emit(Opcode::MakeSome);
+            }
+
+            lir::Expr::StrFind { s, sub } => {
+                self.emit_expr(s, false);
+                self.emit_expr(sub, false);
+                self.emit(Opcode::StrFind);
+            }
+
+            lir::Expr::SeqIndexOf { seq, needle } => {
+                self.emit_expr(seq, false);
+                self.emit_expr(needle, false);
+                self.emit(Opcode::SeqIndexOf);
+            }
+
+            lir::Expr::SeqMin(inner) => {
+                self.emit_expr(inner, false);
+                self.emit(Opcode::SeqMin);
+            }
+
+            lir::Expr::SeqMax(inner) => {
+                self.emit_expr(inner, false);
+                self.emit(Opcode::SeqMax);
+            }
+
+            lir::Expr::SeqFirst(inner) => {
+                self.emit_expr(inner, false);
+                self.emit(Opcode::SeqFirst);
+            }
+
+            lir::Expr::SeqLast(inner) => {
+                self.emit_expr(inner, false);
+                self.emit(Opcode::SeqLast);
+            }
+
+            // `pop(a)`: the take → `SeqPop` → store-back bracket against
+            // the receiver's root cell. `SeqPop` pushes the Option result
+            // *under* the shrunk array, so the trailing store (which pops
+            // the array) leaves the Option on top as the expression value.
+            // Take/Set auto-deref temp-held pointers, so a `ref`-bound
+            // param receiver writes through to its target cell for free.
+            lir::Expr::SeqPop { root } => {
+                match root {
+                    lir::AssignTarget::Global(id) => self.emit(Opcode::TakeGlobal(*id)),
+                    lir::AssignTarget::Temp(slot, _) => self.emit(Opcode::TakeTemp(*slot)),
+                }
+                self.emit(Opcode::SeqPop);
+                match root {
+                    lir::AssignTarget::Global(id) => self.emit(Opcode::SetGlobal(*id)),
+                    lir::AssignTarget::Temp(slot, _) => self.emit(Opcode::SetTemp(*slot)),
+                }
+            }
+
+            lir::Expr::MapGetOpt { map, key } => {
+                self.emit_expr(map, false);
+                self.emit_expr(key, false);
+                self.emit(Opcode::MapGetOpt);
+            }
+
+            lir::Expr::MapContainsValue { map, value } => {
+                self.emit_expr(map, false);
+                self.emit_expr(value, false);
+                self.emit(Opcode::MapContainsValue);
+            }
+
+            // ── NS-A6: the `std::rand` draw verbs (#1112) ────────────
+            lir::Expr::RandFloat => self.emit(Opcode::RandFloat),
+
+            lir::Expr::RandChance(p) => {
+                self.emit_expr(p, false);
+                self.emit(Opcode::RandChance);
+            }
+
+            lir::Expr::RandPick(coll) => {
+                self.emit_expr(coll, false);
+                self.emit(Opcode::RandPick);
+            }
+
+            lir::Expr::RandShuffle(arr) => {
+                self.emit_expr(arr, false);
+                self.emit(Opcode::RandShuffle);
+            }
+
+            // ── NS-A4: the ordering verbs (#1110, stdlib-spec §4b) ───
+            lir::Expr::SeqSorted(arr) => {
+                self.emit_expr(arr, false);
+                self.emit(Opcode::SeqSorted);
+            }
+
+            lir::Expr::SeqSortedBy { seq, cmp } => {
+                self.emit_expr(seq, false);
+                self.emit_expr(cmp, false);
+                self.emit(Opcode::SeqSortedBy);
+            }
+
+            // ── NS-A5: range values (#1111) ──────────────────────────
+            lir::Expr::RangeMake {
+                start,
+                end,
+                inclusive,
+            } => {
+                self.emit_expr(start, false);
+                self.emit_expr(end, false);
+                self.emit(if *inclusive {
+                    Opcode::RangeMakeIncl
+                } else {
+                    Opcode::RangeMakeExcl
+                });
+            }
+
+            lir::Expr::RangeNonEmpty(r) => {
+                self.emit_expr(r, false);
+                self.emit(Opcode::RangeNonEmpty);
+            }
+
+            lir::Expr::MapClear(inner) => {
+                self.emit_expr(inner, false);
+                self.emit(Opcode::MapClear);
+            }
+
+            // ── NS-A8: the numeric tower (#1114) — args pushed
+            // left-to-right, then the one family opcode with its kind
+            // immediate. ─────────────────────────────────────────────
+            // ── NS-A7 collections+ (issue #1113, `docs/stdlib-spec.md`
+            // §8) ────────────────────────────────────────────────────────
+            // `weighted(…)`: push the flattened pair row (weight then
+            // value, construction order), gather it with `ArrayNew(2n)` (a
+            // transient artifact the `WeightedNew` op immediately
+            // consumes), then build the table.
+            lir::Expr::WeightedNew { pairs } => {
+                for (w, v) in pairs {
+                    self.emit_expr(w, false);
+                    self.emit_expr(v, false);
+                }
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "pair count is bounded by source arity; 2n fits u32"
+                )]
+                self.emit(Opcode::ArrayNew(2 * pairs.len() as u32));
+                self.emit(Opcode::Collect(brink_format::CollectOp::WeightedNew));
+            }
+            lir::Expr::RandRoll(table) => {
+                self.emit_expr(table, false);
+                self.emit(Opcode::Collect(brink_format::CollectOp::RandRoll));
+            }
+            lir::Expr::HeapPush { seq, value } => {
+                self.emit_expr(seq, false);
+                self.emit_expr(value, false);
+                self.emit(Opcode::Collect(brink_format::CollectOp::HeapPush));
+            }
+            // `heap_pop(a)`: the take → `Collect(HeapPop)` → store-back
+            // bracket against the receiver's root cell — `SeqPop`'s shape
+            // exactly (the op pushes the Option *under* the re-heapified
+            // array, so the trailing store leaves the Option on top as the
+            // expression value).
+            lir::Expr::HeapPop { root } => {
+                match root {
+                    lir::AssignTarget::Global(id) => self.emit(Opcode::TakeGlobal(*id)),
+                    lir::AssignTarget::Temp(slot, _) => self.emit(Opcode::TakeTemp(*slot)),
+                }
+                self.emit(Opcode::Collect(brink_format::CollectOp::HeapPop));
+                match root {
+                    lir::AssignTarget::Global(id) => self.emit(Opcode::SetGlobal(*id)),
+                    lir::AssignTarget::Temp(slot, _) => self.emit(Opcode::SetTemp(*slot)),
+                }
+            }
+            lir::Expr::HeapPeek(seq) => {
+                self.emit_expr(seq, false);
+                self.emit(Opcode::Collect(brink_format::CollectOp::HeapPeek));
+            }
+
+            lir::Expr::Tower { op, args } => {
+                for arg in args {
+                    self.emit_expr(arg, false);
+                }
+                self.emit(Opcode::Tower(*op));
+            }
+
             // ── Records (TM-4c) ──────────────────────────────────────
             lir::Expr::RecordNew {
                 shape_id,

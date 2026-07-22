@@ -389,6 +389,11 @@ fn walk_expr(expr: &Expr, v: &mut impl HirVisitor) {
         }
         // T1e `ref lvalue-path`: only the operand descends.
         Expr::RefArg(ra) => walk_expr(&ra.operand, v),
+        // NS-A5 `start..end` / `start..=end`: both bounds descend.
+        Expr::Range(r) => {
+            walk_expr(&r.start, v);
+            walk_expr(&r.end, v);
+        }
     }
 }
 

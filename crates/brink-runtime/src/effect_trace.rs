@@ -48,6 +48,15 @@ pub struct ObservedRow {
     pub reads: BTreeSet<DefinitionId>,
     pub writes: BTreeSet<DefinitionId>,
     pub calls: BTreeSet<String>,
+    /// NS-A2 (issue #1108): the def emitted visible content (a line ref,
+    /// value, glue, or spring on the visible output channel — string-eval
+    /// captures excluded; see `vm::note_effect_emit`).
+    pub emits: bool,
+    /// NS-A2: the def produced a tag (any `EndTag` destination).
+    pub tags: bool,
+    /// NS-A2: a tracked turn-terminating fault fired while the def was
+    /// executing (see [`is_tracked_fault`] for the inventory).
+    pub faults: bool,
 }
 
 static OBSERVED: Mutex<BTreeMap<DefinitionId, ObservedRow>> = Mutex::new(BTreeMap::new());
@@ -84,6 +93,87 @@ pub fn record_call(def: DefinitionId, name: String) {
     with_map(|m| {
         m.entry(def).or_default().calls.insert(name);
     });
+}
+
+/// NS-A2 (issue #1108): record a visible content emission, attributed to
+/// `def`.
+pub fn record_emit(def: DefinitionId) {
+    with_map(|m| {
+        m.entry(def).or_default().emits = true;
+    });
+}
+
+/// NS-A2: record a tag-channel touch, attributed to `def`.
+pub fn record_tag(def: DefinitionId) {
+    with_map(|m| {
+        m.entry(def).or_default().tags = true;
+    });
+}
+
+/// NS-A2: record a tracked turn-terminating fault, attributed to `def` (the
+/// definition scope executing when `vm::step` returned the fault).
+pub fn record_fault(def: DefinitionId) {
+    with_map(|m| {
+        m.entry(def).or_default().faults = true;
+    });
+}
+
+/// NS-A2 (issue #1108, from #1097): is this error one of the **designed
+/// domain faults** the `faults` row dimension tracks? The inventory mirrors
+/// the static harvest in `brink-analyzer::infer::body` exactly — every
+/// variant listed here must be raisable only by a construct that sets the
+/// static `faults` bit (indexing, `/`/`mod`, the faulting stdlib
+/// intrinsics, conversions, `ref` projections, value calls), or the
+/// ground-truth harness would report a false under-report.
+///
+/// F34 note: `ComparatorWroteState` (dev-mode-only, like
+/// `UnorderedComparand`) is raisable only inside a comparator frame — a
+/// frame reachable only through `sort_by`/`sorted_by`'s value-call
+/// dispatch, whose call sites the static harvest conservatively marks as
+/// faulting (`check_value_call`'s dispatch-faults rule). The observation
+/// attributes the fault to the *comparator's* def (the scope executing at
+/// the write opcode), whose own static row need not carry a fault
+/// construct — acceptable because the write construct that triggers it is
+/// exactly what E119 rejects wherever the comparator's origin is provable,
+/// and no ground-truth corpus case runs an opaque writing comparator in
+/// dev mode.
+///
+/// Deliberately NOT tracked (not part of the dimension v1):
+/// - gradual-mode type errors (`TypeError`, `NotARecord`,
+///   `RecordFieldNotFound`, …) — the strict-mode-eliminated species;
+/// - infrastructure/malformed-bytecode errors (stack underflows, invalid
+///   ids, decode errors, step/line limits, `RanOutOfContent`);
+/// - host-surface errors (`ArgCountMismatch`, `UnknownPath`,
+///   `PrivateAccess`, external-resolution errors).
+#[must_use]
+pub fn is_tracked_fault(e: &crate::RuntimeError) -> bool {
+    use crate::RuntimeError as E;
+    matches!(
+        e,
+        E::DivisionByZero
+            | E::IndexOutOfBounds { .. }
+            | E::MapKeyNotFound { .. }
+            | E::NotIndexable(_)
+            | E::InvalidArrayIndex(_)
+            | E::InvalidMapKeyType(_)
+            | E::ConversionParseFailure { .. }
+            | E::InvalidConversionDomain { .. }
+            | E::CharAtIndexNotInt(_)
+            | E::CharAtOutOfBounds { .. }
+            | E::StdlibWrongType { .. }
+            | E::NotOrderable { .. }
+            | E::EmptyRangeDraw { .. }
+            | E::ProjectionInvalidated(_)
+            | E::NotCallable(_)
+            | E::FunctionValueArity { .. }
+            | E::FunctionValueCrossFlowLocal(_)
+            | E::FunctionValueRehydrationMismatch(_)
+            | E::UnorderedComparand { .. }
+            | E::ComparatorNotAFunction { .. }
+            | E::ComparatorReturnType { .. }
+            | E::ComparatorEscaped { .. }
+            | E::ComparatorWroteState { .. }
+    )
 }
 
 /// Clear every recorded atom. Call before each measured run — the recorder

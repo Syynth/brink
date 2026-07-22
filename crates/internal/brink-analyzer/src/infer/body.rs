@@ -30,7 +30,7 @@ use brink_ir::{
 };
 use rowan::TextRange;
 
-use super::ty::{Ty, unify, unify_all};
+use super::ty::{TowerTy, Ty, unify, unify_all};
 use super::{InferredSig, ValueCallFact, ValueCallKind, range_key};
 
 /// Read-only context shared by every body inferred in the same SCC round.
@@ -88,6 +88,11 @@ impl BodyCtx<'_> {
 
 /// The result of walking one definition's body.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the NS-A2 effect-dimension flags plus the pre-existing walk \
+              facts are independent harvested facts, not a state machine"
+)]
 pub(super) struct BodyResult {
     /// Declared params, in declaration order, with their observed type.
     pub params: Vec<(String, Ty)>,
@@ -131,12 +136,30 @@ pub(super) struct BodyResult {
     /// T2-1: the effect-atom *call-kind* set — the `EXTERNAL` binding names
     /// this body directly calls (spec §2's `call external-kind` atoms).
     pub external_calls: BTreeSet<String>,
-    /// T2-1: the body performed a call *through a function value* (or another
-    /// construct whose callee effects inference cannot summarize), so its
-    /// effect row is pessimal (docs/effects-spec.md §3/§4 — the
-    /// conservative-total floor; reading a concrete row off a stored `Ty::Fn`
-    /// is the §8 precision refinement, not this slice).
+    /// T2-1: the body performed a call *through a function value* whose
+    /// origin couldn't be narrowed (or another construct whose callee
+    /// effects inference cannot summarize), so its effect row is pessimal
+    /// (docs/effects-spec.md §3/§4 — the conservative-total floor). Issue
+    /// #872 (§8 precision rung) reads a concrete origin back off a
+    /// write-once local's stored `Ty::Fn` when one is statically known —
+    /// see `InferPass::resolve_pending_value_calls` — so this only stays
+    /// `true` when no such origin could be proven; the heap (VAR/CONST
+    /// cells) case remains coarse/pessimal, still unaddressed.
     pub effect_opaque: bool,
+    /// NS-A2 (issue #1108): the body directly contains a content-producing
+    /// construct — see `EffectAtoms::emits`.
+    pub effect_emits: bool,
+    /// NS-A2: the body directly touches the tag channel — see
+    /// `EffectAtoms::tags`.
+    pub effect_tags: bool,
+    /// NS-A2: the body directly contains a construct that can raise a
+    /// turn-terminating fault — see `EffectAtoms::faults`.
+    pub effect_faults: bool,
+    /// NS-A4 / F29(a): the refined faults bit — the same charge sites with
+    /// local type-evidence discharges applied (see
+    /// `EffectRow::faults_refined`). `effect_faults_refined →
+    /// effect_faults`.
+    pub effect_faults_refined: bool,
     /// T1c: statically-checkable call-through-value facts (see
     /// [`super::ValueCallFact`]) — recorded here because this walk is the
     /// only place argument expressions have types; reported by strict mode
@@ -182,10 +205,31 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         effect_writes: BTreeSet::new(),
         external_calls: BTreeSet::new(),
         effect_opaque: false,
+        effect_emits: false,
+        effect_tags: false,
+        effect_faults: false,
+        effect_faults_refined: false,
         annotated,
         value_calls: Vec::new(),
+        local_write_counts: BTreeMap::new(),
+        local_fn_origin: BTreeMap::new(),
+        pending_value_calls: Vec::new(),
     };
+    // NS-A2 fault dimension (issue #1108, from #1097): a `ref` parameter's
+    // dereference inside this body goes through a pointer/projection whose
+    // resolution can raise `ProjectionInvalidated` (docs/t1e-spec.md §1(2))
+    // — a designed turn-terminating fault charged to the *callee* (the deref
+    // site), so a def declaring any `ref` param conservatively faults.
+    if def.params.iter().any(|p| p.is_ref) {
+        pass.effect_faults = true;
+        // F29: no discharge — the deref fault is value-dependent.
+        pass.effect_faults_refined = true;
+    }
     pass.infer_block(def.body);
+    // T2 §8 precision rung (issue #872): resolve every value-call site now
+    // that the whole body's write counts are final — see
+    // `resolve_pending_value_calls`'s doc for why this must run post-walk.
+    pass.resolve_pending_value_calls();
 
     let param_types = def
         .params
@@ -226,6 +270,10 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         effect_writes: pass.effect_writes,
         external_calls: pass.external_calls,
         effect_opaque: pass.effect_opaque,
+        effect_emits: pass.effect_emits,
+        effect_tags: pass.effect_tags,
+        effect_faults: pass.effect_faults,
+        effect_faults_refined: pass.effect_faults_refined,
         value_calls: pass.value_calls,
     }
 }
@@ -251,6 +299,27 @@ fn ref_arg_root(expr: &Expr) -> &Expr {
     }
 }
 
+/// Fold a range-literal bound to its compile-time int value, LITERALS ONLY
+/// (NS-A5): an integer literal or a unary-negated integer literal. This is
+/// deliberately narrower than the strict checker's own fold (which also
+/// resolves CONST refs — see `crate::range_refinement`): inference is
+/// firewalled from other definitions' HIR, so CONST-bounded literals mint
+/// their evidence at the strict checker instead. `i64` so `-2147483648`
+/// folds without edge cases.
+fn fold_literal_int_bound(expr: &Expr) -> Option<i64> {
+    match expr {
+        Expr::Int(n) => Some(i64::from(*n)),
+        Expr::Prefix(brink_ir::PrefixOp::Negate, inner) => {
+            fold_literal_int_bound(inner).map(|n| -n)
+        }
+        _ => None,
+    }
+}
+
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "accumulator for the same independent facts BodyResult carries"
+)]
 struct InferPass<'a, 'b> {
     ctx: &'a BodyCtx<'b>,
     locals: BTreeMap<String, Ty>,
@@ -263,6 +332,16 @@ struct InferPass<'a, 'b> {
     effect_writes: BTreeSet<DefinitionId>,
     external_calls: BTreeSet<String>,
     effect_opaque: bool,
+    /// NS-A2 output dimensions (issue #1108): direct content emission /
+    /// tag-channel touch harvested from this body's weave statements
+    /// (`infer_content`/`infer_choice`), and the direct fault sources
+    /// (indexing, `/`‐`mod`, faulting intrinsics, value calls, `ref`
+    /// params, `for` iteration) — see `EffectAtoms`'s field docs.
+    effect_emits: bool,
+    effect_tags: bool,
+    effect_faults: bool,
+    /// NS-A4 / F29(a): the refined faults bit (see `BodyResult`'s field).
+    effect_faults_refined: bool,
     /// Resolvable annotation/ascription types by local name — params up
     /// front, temps added as their declarations are walked. Consulted only
     /// as a *fallback* at consumption sites where the body-derived type is
@@ -271,6 +350,55 @@ struct InferPass<'a, 'b> {
     /// two-independent-derivations comparison stays intact.
     annotated: BTreeMap<String, Ty>,
     value_calls: Vec<ValueCallFact>,
+    /// T2 §8 precision rung (docs/effects-spec.md §6 item 3/§8, issue #872): every
+    /// write (`TempDecl` initializer or bare-`Path` `Assignment`) to a
+    /// Temp local, by name, counted regardless of whether the write's
+    /// value traces to a known `#fn` origin. Param writes are deliberately
+    /// not counted here for narrowing purposes (see
+    /// [`InferPass::local_call_origin`]'s doc) — a Param carries an implicit
+    /// caller-provided initial value no write count can ever see. Consulted only after the whole
+    /// body is walked ([`InferPass::resolve_pending_value_calls`]) — a
+    /// single-pass "as accumulated so far" read would miss a reassignment
+    /// that appears later in program order but, inside a loop body, executes
+    /// *before* an earlier-positioned call on the next iteration: reading a
+    /// partial count there would risk narrowing a call whose live value
+    /// could actually vary, an unsound under-report. Whole-body-final counts
+    /// close that hole: a name is trusted only when it was written *exactly
+    /// once*, period, so loop-carried reassignment always poisons it.
+    local_write_counts: BTreeMap<String, u32>,
+    /// The `#fn(target, …)`/`bind(…)`-chain origin recorded at each local's
+    /// write (last-write-wins bookkeeping only) — meaningful only once
+    /// `local_write_counts` confirms that name had exactly one write.
+    local_fn_origin: BTreeMap<String, Option<DefinitionId>>,
+    /// Every value-call site's narrowing candidate, recorded during the walk
+    /// and resolved once by [`InferPass::resolve_pending_value_calls`] after
+    /// the whole body (and therefore `local_write_counts`) is final.
+    pending_value_calls: Vec<ValueCallOrigin>,
+}
+
+/// T2 §8 precision rung (docs/effects-spec.md §6 item 3/§8, issue #872): one
+/// value-call site's callee, classified for effect-row narrowing purposes.
+/// The optimizer-not-gatekeeper doctrine (spec §8) means every arm here is
+/// free to fall back to `Unknown` — narrowing only ever *removes* the
+/// pessimal floor when it holds a positive, whole-body-checked proof of a
+/// single origin; it never manufactures a new failure mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ValueCallOrigin {
+    /// The callee is a bare Temp local reference (never a Param — see
+    /// [`InferPass::local_call_origin`]'s doc for why a Param can't be
+    /// trusted here). Resolved post-walk: narrowable only if `name` was
+    /// written exactly once in the whole body and that write's value traced
+    /// to a single known def.
+    Local(String),
+    /// The callee is *itself* (optionally through one or more `bind(…)`
+    /// wrappers) an `#fn(target, …)` literal evaluated fresh at this call
+    /// site — no stored value, so no write-count question applies; always
+    /// narrowable.
+    Inline(DefinitionId),
+    /// Anything else (a VAR/CONST global — the heap case, still coarse per
+    /// spec §5/§8 — an index, a direct call's return value, a param with no
+    /// further trace, …): the pessimal floor, unchanged from today.
+    Unknown,
 }
 
 impl InferPass<'_, '_> {
@@ -389,6 +517,187 @@ impl InferPass<'_, '_> {
         }
     }
 
+    // ── T2 §8 precision rung (docs/effects-spec.md §6 item 3/§8, issue #872) ──
+
+    /// The single def a `#fn(target, …)` literal (optionally through one or
+    /// more `bind(…)` wrappers — partial application never changes *which*
+    /// def eventually runs) traces to, if `expr` is exactly that shape.
+    /// `bind`'s intrinsic form is matched the same way `infer_intrinsic`
+    /// classifies it: an unresolved single-segment path named `bind` with a
+    /// non-empty argument list (a real `bind`-named def always wins
+    /// resolution first, same shadow-fallback precedent as every other
+    /// intrinsic dispatch in this module).
+    ///
+    /// Deliberately gated on [`Self::is_effect_edge_target`], **not**
+    /// `ctx.known_sigs`: `def_effect_atoms` (this pass's caller, for the
+    /// effects fixpoint specifically) always runs with an *empty*
+    /// `known_sigs` — effects inference is advisory and doesn't thread the
+    /// type-inference SCC fixpoint's signatures through (see
+    /// `def_effect_atoms`'s doc) — so a `known_sigs` check here would never
+    /// once succeed and this whole rung would be dead code. `inferable` and
+    /// the symbol index, unlike `known_sigs`, are always the real
+    /// project-wide sets in this context.
+    fn fn_literal_write_origin(&self, expr: &Expr) -> Option<DefinitionId> {
+        match expr {
+            Expr::FnLiteral(fl) => {
+                let def = self.resolve(fl.target.range)?;
+                self.is_effect_edge_target(def).then_some(def)
+            }
+            Expr::Call(path, args)
+                if path.segments.len() == 1
+                    && path.segments[0].text == "bind"
+                    && self.resolve(path.range).is_none()
+                    && !args.is_empty() =>
+            {
+                self.fn_literal_write_origin(&args[0])
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `def` is a legitimate effect-fixpoint edge target — an
+    /// inferable knot/stitch (joins via the SCC fixpoint) or an `EXTERNAL`
+    /// binding (a call-kind atom) — exactly the two cases
+    /// [`Self::record_call_edge`] does something with. Anything else (an
+    /// unresolvable/stray id) must **not** be treated as a known origin: a
+    /// narrowed call resolves through `record_call_edge`, which would
+    /// silently no-op for a target neither branch recognizes, dropping the
+    /// call atom entirely with no `effect_opaque` fallback — an under-report.
+    /// This gate is what keeps that path unreachable.
+    fn is_effect_edge_target(&self, def: DefinitionId) -> bool {
+        self.ctx.inferable.contains(&def)
+            || self
+                .ctx
+                .index
+                .symbols
+                .get(&def)
+                .is_some_and(|info| info.kind == SymbolKind::External)
+    }
+
+    /// Classify a resolved call-through-value target for narrowing: a bare
+    /// Temp local (checked post-walk against its whole-body write count) is
+    /// [`ValueCallOrigin::Local`]; anything else (a VAR/CONST global — the
+    /// heap case, still coarse per spec §5/§8 — a Param, or an
+    /// unresolvable/non-local kind) is [`ValueCallOrigin::Unknown`].
+    ///
+    /// **Param is deliberately excluded** (soundness, not a missed
+    /// optimization): a Temp cannot be referenced before its defining
+    /// `TempDecl`, so "written exactly once in the whole body" really does
+    /// bound its value at every read. A Param, by contrast, carries an
+    /// implicit caller-provided initial value that
+    /// [`Self::local_write_counts`] never counts — a param reassigned
+    /// exactly once inside the body would reach `write_count == 1` and
+    /// [`Self::resolve_pending_value_calls`] would narrow *every* call site
+    /// through it, including ones reachable before that single
+    /// reassignment, where the param still holds the caller's arbitrary
+    /// (unknown) fn value. That would violate the conservative-total
+    /// invariant this rung promises to preserve.
+    fn local_call_origin(&self, def: DefinitionId) -> ValueCallOrigin {
+        match self.ctx.index.symbols.get(&def) {
+            Some(info) if info.kind == SymbolKind::Temp => {
+                ValueCallOrigin::Local(info.name.clone())
+            }
+            _ => ValueCallOrigin::Unknown,
+        }
+    }
+
+    /// Classify an arbitrary callee *expression* (the `call(f, …)`/
+    /// `bind(f, …)` intrinsic forms' `f`, an arbitrary expression rather
+    /// than a resolvable `Path`) for narrowing: an inline `#fn`/`bind`-chain
+    /// literal is [`ValueCallOrigin::Inline`] (trusted immediately — no
+    /// stored value); a bare local reference (Param or Temp) defers to
+    /// [`Self::local_call_origin`], which only ever narrows the Temp case;
+    /// anything else is [`ValueCallOrigin::Unknown`].
+    fn value_call_origin(&self, expr: &Expr) -> ValueCallOrigin {
+        if let Some(def) = self.fn_literal_write_origin(expr) {
+            return ValueCallOrigin::Inline(def);
+        }
+        if let Expr::Path(p) = expr
+            && p.segments.len() == 1
+            && let Some(def) = self.resolve(p.range)
+        {
+            return self.local_call_origin(def);
+        }
+        ValueCallOrigin::Unknown
+    }
+
+    /// Record one write to a Param/Temp local for later write-count-gated
+    /// narrowing — a no-op for any other resolution (mirrors [`Self::observe`]'s
+    /// own guard: a VAR/CONST/other target isn't tracked by this local-only
+    /// rung at all, the heap case stays pessimal per spec §5/§8).
+    fn bump_local_write(&mut self, name: &str, origin: Option<DefinitionId>) {
+        *self.local_write_counts.entry(name.to_string()).or_insert(0) += 1;
+        self.local_fn_origin.insert(name.to_string(), origin);
+    }
+
+    /// [`Self::bump_local_write`] for an `Assignment`/`BlockStmt::Assignment`
+    /// target expression — only a bare single-segment `Path` resolving to a
+    /// Temp counts (a dotted/indexed target reassigns a *nested* slot, not
+    /// the local's own value, same guard [`Self::observe`] applies).
+    ///
+    /// Param is excluded here too — not for soundness (bumping a count only
+    /// ever makes [`Self::local_call_origin`]'s write-once check *stricter*,
+    /// since Param is never classified as [`ValueCallOrigin::Local`] in the
+    /// first place, so this can't under-report), but to avoid spuriously
+    /// pessimizing a same-named Temp elsewhere in the body: without this
+    /// guard, a Param write would bump `local_write_counts` under that
+    /// param's name, and if a Temp happens to share the name the two
+    /// tallies would collide in the same map entry.
+    fn record_fn_write(&mut self, target: &Expr, origin: Option<DefinitionId>) {
+        let Expr::Path(p) = target else { return };
+        if p.segments.len() != 1 {
+            return;
+        }
+        let Some(def) = self.resolve(p.range) else {
+            return;
+        };
+        let Some(info) = self.ctx.index.symbols.get(&def) else {
+            return;
+        };
+        if info.kind != SymbolKind::Temp {
+            return;
+        }
+        let name = info.name.clone();
+        self.bump_local_write(&name, origin);
+    }
+
+    /// Resolve every value-call site recorded during the walk
+    /// ([`Self::check_value_call`]'s `pending_value_calls.push`) against the
+    /// now-final `local_write_counts`/`local_fn_origin` — **must** run after
+    /// [`InferPass::infer_block`] finishes the whole body (see
+    /// `local_write_counts`'s field doc for the loop-carried-reassignment
+    /// hazard a mid-walk read would risk). `Inline` narrows unconditionally;
+    /// `Local` narrows only if its name was written exactly once and that
+    /// write traced to a known def; `Unknown` (and any `Local` that fails
+    /// the write-once check) keeps the pessimal floor — `effect_opaque =
+    /// true`, exactly what every value call unconditionally set before this
+    /// rung existed. A narrowed call routes through
+    /// [`Self::record_call_edge`], the same edge a direct call/`#fn` creation
+    /// site records, so it correctly lands in `self.calls` (inferable
+    /// knot/stitch — joins via the SCC effect fixpoint) or
+    /// `self.external_calls` (an `EXTERNAL` binding — a call-kind atom) per
+    /// what the origin actually is.
+    fn resolve_pending_value_calls(&mut self) {
+        let pending = std::mem::take(&mut self.pending_value_calls);
+        for origin in pending {
+            let narrowed = match origin {
+                ValueCallOrigin::Inline(def) => Some(def),
+                ValueCallOrigin::Local(name) => {
+                    if self.local_write_counts.get(&name).copied() == Some(1) {
+                        self.local_fn_origin.get(&name).copied().flatten()
+                    } else {
+                        None
+                    }
+                }
+                ValueCallOrigin::Unknown => None,
+            };
+            match narrowed {
+                Some(def) => self.record_call_edge(def),
+                None => self.effect_opaque = true,
+            }
+        }
+    }
+
     /// T2-1: record an effect *write* atom (docs/effects-spec.md §2) — an
     /// assignment target (`~ x = …`) resolving to a VAR/CONST global. `target`
     /// is unwrapped to its root via `ref_arg_root` first (issue #880's
@@ -489,6 +798,12 @@ impl InferPass<'_, '_> {
                 Ty::Map(Box::new(unify_all(keys)), Box::new(unify_all(vals)))
             }
             Expr::Index(idx) => {
+                // NS-A2 fault dimension (issue #1108, from #1097): indexing
+                // is a faulting construct — array OOB, map missing-key read,
+                // not-indexable/invalid-index (docs/value-model-spec.md §11c).
+                // F29: no discharge — OOB/missing-key are value-dependent.
+                self.effect_faults = true;
+                self.effect_faults_refined = true;
                 let base = self.infer_expr(&idx.base);
                 match base {
                     Ty::Array(elem) => {
@@ -543,11 +858,59 @@ impl InferPass<'_, '_> {
                 self.infer_expr(&ra.operand);
                 Ty::Unknown
             }
+            // NS-A5 range literals (docs/stdlib-spec.md §7, F7): both
+            // bounds are ints (`observe` narrows int-typed slots used as
+            // bounds; the runtime op faults on anything else — harvested
+            // in the faults dimension). The `non_empty` refinement bit is
+            // minted RIGHT HERE when the literal's bounds fold statically
+            // and denote at least one element (`1..=6`, `5..=5`, `-2..0`):
+            // the "provably-inhabited literals coerce in free" leg of the
+            // F7 evidence rule. Bounds referencing CONSTs don't fold at
+            // this layer (inference is firewalled from other defs' HIR) —
+            // the strict-mode E117 checker (`range_refinement`) folds
+            // CONST refs itself for literal-in-argument-position, so
+            // `int(1..=SIDES)` still coerces free under strict.
+            Expr::Range(r) => {
+                self.effect_faults = true;
+                self.observe(&r.start, &Ty::Int);
+                self.observe(&r.end, &Ty::Int);
+                let start_ty = self.infer_expr(&r.start);
+                let end_ty = self.infer_expr(&r.end);
+                // F29 discharge: int-typed bounds make construction total
+                // (the only fault path is a non-int bound).
+                if !(start_ty == Ty::Int && end_ty == Ty::Int) {
+                    self.effect_faults_refined = true;
+                }
+                let non_empty = match (
+                    fold_literal_int_bound(&r.start),
+                    fold_literal_int_bound(&r.end),
+                ) {
+                    (Some(start), Some(end)) => {
+                        if r.inclusive {
+                            start <= end
+                        } else {
+                            start < end
+                        }
+                    }
+                    _ => false,
+                };
+                Ty::Range { non_empty }
+            }
         }
     }
 
     fn infer_path(&mut self, p: &HirPath) -> Ty {
         let Some(def) = self.resolve(p.range) else {
+            // NS-A1 (`docs/stdlib-spec.md` §1.4): an unresolved bare `none`
+            // is the Option absence literal — `Option[Unknown]`, its element
+            // narrowed only by context (the join at its use site). A `none`
+            // that resolved to a real user symbol took the branch below
+            // instead, exactly like the stdlib call names in `infer_call`.
+            if let [seg] = p.segments.as_slice()
+                && seg.text == "none"
+            {
+                return Ty::Option(Box::new(Ty::Unknown));
+            }
             return Ty::Unknown;
         };
         self.ty_of_def(def)
@@ -569,6 +932,19 @@ impl InferPass<'_, '_> {
     fn infer_infix(&mut self, lhs: &Expr, op: InfixOp, rhs: &Expr) -> Ty {
         let l = self.infer_expr(lhs);
         let r = self.infer_expr(rhs);
+        // NS-A2 fault dimension (issue #1108): integer `/` and `mod` raise
+        // the turn-terminating `DivisionByZero` fault on a zero divisor —
+        // a value-dependent domain fault on a well-typed program, so the
+        // construct conservatively faults (the type-free structural harvest
+        // cannot rule out the int case; float division is IEEE-total).
+        if matches!(op, InfixOp::Div | InfixOp::Mod) {
+            self.effect_faults = true;
+            // F29 discharge: float division/modulo is IEEE-total — the
+            // `DivisionByZero` fault is the *int* case only.
+            if !(l == Ty::Float && r == Ty::Float) {
+                self.effect_faults_refined = true;
+            }
+        }
         match op {
             InfixOp::Add
             | InfixOp::Sub
@@ -704,7 +1080,14 @@ impl InferPass<'_, '_> {
             .collect::<Vec<_>>()
             .join(".");
 
-        self.check_value_call(path.range, &callee, callee_ty, args, arg_tys)
+        // T2 §8 (issue #872): `f(args)`'s callee is always a resolvable
+        // name (a `HirPath`, never an inline expression), so its narrowing
+        // classification is always `local_call_origin(def)` — narrowable
+        // only for a bare Temp reference; a Param, a VAR/CONST global (the
+        // heap case, still coarse per spec §5/§8), or anything else is
+        // `Unknown`.
+        let narrow_hint = self.local_call_origin(def);
+        self.check_value_call(path.range, &callee, callee_ty, args, arg_tys, narrow_hint)
     }
 
     /// Boundary-annotation fallback for a callee whose body-inferred type
@@ -748,17 +1131,30 @@ impl InferPass<'_, '_> {
         callee_ty: Ty,
         args: &[Expr],
         arg_tys: &[Ty],
+        narrow_hint: ValueCallOrigin,
     ) -> Ty {
         // T2-1 (docs/effects-spec.md §3/§4): this is a call *through a function
         // value* — `f(args)` or `call(f, args…)`, the one place a real
         // callee's effects escape the static call graph. Rows ride `Ty::Fn`
-        // (spec §5, the heap answer) but this advisory slice doesn't yet read a
-        // concrete row back off the value's type (the §8 precision rung), so
-        // the sound floor is pessimal: an `Unknown`-typed callee slot has no
-        // row → the enclosing def touches everything. `bind` creates a value
-        // rather than calling one, so it routes through `check_bind_value`, not
-        // here.
-        self.effect_opaque = true;
+        // (spec §5, the heap answer). T2 §8 (issue #872): when `narrow_hint`
+        // proves a single, statically-known origin def, that def's row gets
+        // pulled into this body's row transitively (same edge a direct call
+        // records) instead of falling to the pessimal floor — resolved once
+        // by `resolve_pending_value_calls` after the whole body is walked, so
+        // `effect_opaque` is *not* forced here; every other case (an
+        // ambiguous/unknown origin) still degrades to pessimal there, exactly
+        // this fn's old unconditional behavior. `bind` creates a value rather
+        // than calling one, so it routes through `check_bind_value`, not here.
+        self.pending_value_calls.push(narrow_hint);
+        // NS-A2 fault dimension (issue #1108): a call through a function
+        // value can raise the T1c dispatch faults at runtime regardless of
+        // narrowing — `NotCallable`, `FunctionValueArity`, the cross-flow
+        // `#@local` `ref`-binding fault, rehydration mismatch (gradual mode
+        // reaches all of these) — so the call site conservatively faults
+        // even when #872's rung resolves the callee row. F29: no discharge
+        // (dispatch faults are value-dependent).
+        self.effect_faults = true;
+        self.effect_faults_refined = true;
         match callee_ty {
             Ty::Fn(params, ret) => {
                 if args.len() != params.len() {
@@ -826,6 +1222,12 @@ impl InferPass<'_, '_> {
         args: &[Expr],
         arg_tys: &[Ty],
     ) -> Ty {
+        // NS-A2 (issue #1108): `bind(f, …)` faults at bind time on a
+        // non-function callee (`NotCallable` from `bind_fn_value`) —
+        // conservatively marked like `check_value_call`'s dispatch faults.
+        // F29: no discharge.
+        self.effect_faults = true;
+        self.effect_faults_refined = true;
         match callee_ty {
             Ty::Fn(params, ret) => {
                 if args.len() > params.len() {
@@ -905,6 +1307,10 @@ impl InferPass<'_, '_> {
     /// forms' `ValueCallFact` diagnostic site, since their callee is an
     /// arbitrary expression (`args[0]`), not a resolvable `Path` the way a
     /// direct call's callee always is.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per stdlib intrinsic — the NS-A1 Option verbs grew the table past 100"
+    )]
     fn infer_intrinsic(
         &mut self,
         name: &str,
@@ -912,12 +1318,53 @@ impl InferPass<'_, '_> {
         args: &[Expr],
         arg_tys: &[Ty],
     ) -> Ty {
+        // NS-A2 fault dimension (issue #1108, from #1097) + NS-A6 RNG-cell
+        // writes (issue #1112, "every draw is an ordinary write"): both
+        // harvested from the ONE shared intrinsic effect table
+        // (`super::intrinsics`, issue #1128) — `await_purity` consults the
+        // same table for an unresolved call directly in an `await`
+        // condition, so there is no second membership list to drift. See
+        // that module's doc for the full per-verb audit (which ops fault,
+        // which draw, and the deliberate exclusions: `string`/`some`/`seed`
+        // total, nullary `float()` draw-only, `call`/`bind` marked at
+        // `check_value_call`/`check_bind_value`). The RNG entry is what
+        // makes the ruled free consequences fall out of existing machinery:
+        // pure-gated wake conditions exclude draw-bearing callees (E105),
+        // and `@[effects(pure)]` asserts rng-freedom (E103 exceedance names
+        // the cell as `rng`).
+        let fx = super::intrinsics::intrinsic_effects(name, args.len());
+        if fx.faults {
+            self.effect_faults = true;
+            // F29 discharge (NS-A4): a wrong-type-only intrinsic over
+            // provably-right-typed arguments is total — see
+            // `intrinsic_fault_discharged`'s per-verb audit.
+            if !super::intrinsics::intrinsic_fault_discharged(name, arg_tys) {
+                self.effect_faults_refined = true;
+            }
+        }
+        if fx.rng_write {
+            self.effect_writes.insert(DefinitionId::RNG_CELL);
+        }
         match name {
-            // `len` (stdlib slice 1) and `int` (TM-3-completion conversion
-            // intrinsic, #659) both return a fixed `Ty::Int` independent of
-            // the argument — merged into one arm per clippy's
-            // `match_same_arms` (identical bodies, distinct call sites).
-            "len" | "int" => Ty::Int,
+            "len" => Ty::Int,
+            // `int(x)` is ONE value-directed verb (NS-A5,
+            // `docs/stdlib-spec.md` §7): over a range it is `rand::int` —
+            // one uniform draw, a write to the RNG cell — and over
+            // everything else the TM-3 conversion intrinsic (#659). Both
+            // legs return `Ty::Int`, so only the *effect row* is
+            // type-directed: the draw leg's RNG write is recorded exactly
+            // when the argument's inferred type is a range. (A gradual
+            // `Unknown`-typed argument that turns out to hold a range at
+            // runtime escapes this static harvest — the standard gradual
+            // posture, F8: refinement machinery is strict-mode's; under
+            // `types = strict` the argument must be `NonEmptyRange`
+            // [E117, `range_refinement`], so the harvest is sound there.)
+            "int" => {
+                if matches!(arg_tys.first(), Some(Ty::Range { .. })) {
+                    self.effect_writes.insert(DefinitionId::RNG_CELL);
+                }
+                Ty::Int
+            }
             "keys" => match arg_tys.first() {
                 Some(Ty::Map(k, _)) => Ty::Array(k.clone()),
                 _ => Ty::Unknown,
@@ -955,7 +1402,10 @@ impl InferPass<'_, '_> {
             // itself, so a chained lvalue (`push(grid[y], v)`) still
             // attributes the write to `grid`, not to some cell named by the
             // index expression.
-            "push" => {
+            // NS-A7's `heap_push(ref a, x)` types exactly like `push`: a
+            // receiver write with the element observing the array's
+            // element type (the min-heap placement is the runtime op's).
+            "push" | "heap_push" => {
                 if let (Some(Ty::Array(elem)), Some(item)) = (arg_tys.first(), args.get(1)) {
                     self.observe(item, elem);
                 }
@@ -1000,7 +1450,10 @@ impl InferPass<'_, '_> {
             // (unlike `push`/`insert`/`remove` above, which do narrow their
             // container's element type). `int`'s arm lives above, merged
             // with `len` (both fixed `Ty::Int`, per clippy).
-            "float" => Ty::Float,
+            // (`dot` — NS-A8 — shares this fixed-`Ty::Float` return: the
+            // multi-kind vec2/3/4 domain is a runtime concern, so no
+            // `observe` narrowing, exactly like the conversions here.)
+            "float" | "dot" => Ty::Float,
             // `string` and `char_at(s, i)` (T1b stdlib slice 1 completion,
             // issue #857) both return a fixed `Ty::String` independent of
             // the argument — merged into one arm per clippy's
@@ -1011,6 +1464,281 @@ impl InferPass<'_, '_> {
             // facility's typing rule is only the return type, declared at
             // introduction per the doctrine.
             "string" | "char_at" => Ty::String,
+            // ── NS-A1 Option verbs (issue #1107, `docs/stdlib-spec.md`
+            // §§3-5 + §1.4). Absence-shaped returns are `Option[…]` — the
+            // element narrows from the container's known type where the
+            // checker has one, staying `Option[Unknown]` otherwise (the
+            // verb's Option-ness is unconditional; only the element is
+            // gradual). Runtime domain checks (non-array container,
+            // unorderable elements) stay at the ops, same split as
+            // `char_at` above. ─────────────────────────────────────────
+            //
+            // `find(s, sub)` → `Option[int]` (§3, martyr #1). Both
+            // arguments are strings by signature — observed so a strict
+            // project gets the narrowing.
+            "find" => {
+                if let Some(s) = args.first() {
+                    self.observe(s, &Ty::String);
+                }
+                if let Some(sub) = args.get(1) {
+                    self.observe(sub, &Ty::String);
+                }
+                Ty::Option(Box::new(Ty::Int))
+            }
+            // `index_of(a, x)` → `Option[int]` (§4, martyr #2); the needle
+            // narrows against the element type like `contains`.
+            "index_of" => {
+                if let (Some(Ty::Array(elem)), Some(needle)) = (arg_tys.first(), args.get(1)) {
+                    self.observe(needle, elem);
+                }
+                Ty::Option(Box::new(Ty::Int))
+            }
+            // `first`/`last` → `Option[T]` over `[T]` (§4).
+            // NS-A7's `heap_peek(a)` types exactly like `first`: a pure
+            // `Option[T]` read (empty → `none`).
+            "first" | "last" | "heap_peek" => match arg_tys.first() {
+                Some(Ty::Array(elem)) => Ty::Option(elem.clone()),
+                _ => Ty::Option(Box::new(Ty::Unknown)),
+            },
+            // `min`/`max`: two call shapes since NS-A8 — the one-arg NS-A1
+            // array extremum (`Option[T]`) and the two-arg tower
+            // componentwise form (same-kind vectors → that kind).
+            "min" | "max" => {
+                if args.len() == 2 {
+                    match (arg_tys.first(), arg_tys.get(1)) {
+                        (Some(Ty::Tower(a)), Some(Ty::Tower(b))) if a == b => Ty::Tower(*a),
+                        _ => Ty::Unknown,
+                    }
+                } else {
+                    match arg_tys.first() {
+                        Some(Ty::Array(elem)) => Ty::Option(elem.clone()),
+                        _ => Ty::Option(Box::new(Ty::Unknown)),
+                    }
+                }
+            }
+            // `pop(ref a)` → `Option[T]` (§4): the one A1 verb that is both
+            // mutator and expression — records the receiver write exactly
+            // like `push`/`insert`/`remove` above (the #880 lesson: the
+            // intrinsics' effect behavior is declared at introduction).
+            // NS-A7's `heap_pop(ref a)` shares the shape (mutator AND
+            // expression, receiver write + `Option[T]` return).
+            "pop" | "heap_pop" => {
+                let ret = match arg_tys.first() {
+                    Some(Ty::Array(elem)) => Ty::Option(elem.clone()),
+                    _ => Ty::Option(Box::new(Ty::Unknown)),
+                };
+                if let Some(container) = args.first() {
+                    self.record_write(container);
+                }
+                ret
+            }
+            // `get(m, k)` → `Option[V]` (§5, martyr #3); the key narrows
+            // against the map's key type.
+            "get" => match arg_tys.first() {
+                Some(Ty::Map(k, v)) => {
+                    if let Some(key_arg) = args.get(1) {
+                        self.observe(key_arg, k);
+                    }
+                    Ty::Option(v.clone())
+                }
+                _ => Ty::Option(Box::new(Ty::Unknown)),
+            },
+            // `contains_value(m, v)` → bool (§5); the needle narrows
+            // against the map's value type.
+            "contains_value" => {
+                if let (Some(Ty::Map(_, v)), Some(needle)) = (arg_tys.first(), args.get(1)) {
+                    self.observe(needle, v);
+                }
+                Ty::Bool
+            }
+            // `clear(ref m)` (§5), `shuffle(ref a)` (§7, NS-A6), and
+            // `sort(ref a)` (§4b, NS-A4 — the F0 imperative twin of
+            // `sorted`): statement-only in-place mutators — a receiver
+            // write, no value (the `push` shape, #880: the intrinsics'
+            // effect behavior is declared at introduction). Arms merged
+            // per clippy match_same_arms (the #694 `len | int` precedent);
+            // `sort`'s mode-dependent NaN behavior is entirely the runtime
+            // op's (rows stay mode-independent — the conservative faults
+            // bit rides the intrinsic table).
+            "clear" | "shuffle" | "sort" => {
+                if let Some(container) = args.first() {
+                    self.record_write(container);
+                }
+                Ty::Unknown
+            }
+            // `some(x)` → `Option[typeof x]` (§1.4) — the constructor is
+            // where a bare element type becomes optional.
+            "some" => Ty::Option(Box::new(arg_tys.first().cloned().unwrap_or(Ty::Unknown))),
+            // ── NS-A8 numeric tower (issue #1114,
+            // `docs/tower-mini-spec.md`). Constructors return their kind;
+            // numeric lanes observe `float` (int lanes coerce through the
+            // one directional numeric join); matrix columns observe their
+            // column vector kind. Verbs type per the ruled §2b table;
+            // runtime domain checks (wrong operand kind) stay at
+            // `tower_ops`, the same split as every intrinsic above.
+            // (`dot` — fixed `Ty::Float`, multi-kind vec domain, so no
+            // `observe` narrowing — is merged into the `float` arm above
+            // per clippy match_same_arms.) ─────────────────────────────
+            "vec2" | "vec3" | "vec4" | "quat" => {
+                for lane in args {
+                    self.observe(lane, &Ty::Float);
+                }
+                match name {
+                    "vec2" => Ty::Tower(TowerTy::Vec2),
+                    "vec3" => Ty::Tower(TowerTy::Vec3),
+                    "vec4" => Ty::Tower(TowerTy::Vec4),
+                    _ => Ty::Tower(TowerTy::Quat),
+                }
+            }
+            "mat2" | "mat3" | "mat4" => {
+                let (col, ret) = match name {
+                    "mat2" => (TowerTy::Vec2, TowerTy::Mat2),
+                    "mat3" => (TowerTy::Vec3, TowerTy::Mat3),
+                    _ => (TowerTy::Vec4, TowerTy::Mat4),
+                };
+                for c in args {
+                    self.observe(c, &Ty::Tower(col));
+                }
+                Ty::Tower(ret)
+            }
+            // `cross(a, b)` → vec3 (vec3-only by signature — observed).
+            "cross" => {
+                for v in args {
+                    self.observe(v, &Ty::Tower(TowerTy::Vec3));
+                }
+                Ty::Tower(TowerTy::Vec3)
+            }
+            // `clamp(x, lo, hi)` — three same-kind vectors, componentwise.
+            "clamp" => match (arg_tys.first(), arg_tys.get(1), arg_tys.get(2)) {
+                (Some(Ty::Tower(x)), Some(Ty::Tower(lo)), Some(Ty::Tower(hi)))
+                    if x == lo && x == hi =>
+                {
+                    Ty::Tower(*x)
+                }
+                _ => Ty::Unknown,
+            },
+            // `lerp(a, b, t)` — same-kind vectors/quats with scalar `t`.
+            "lerp" => {
+                if let Some(t) = args.get(2) {
+                    self.observe(t, &Ty::Float);
+                }
+                match (arg_tys.first(), arg_tys.get(1)) {
+                    (Some(Ty::Tower(a)), Some(Ty::Tower(b))) if a == b => Ty::Tower(*a),
+                    _ => Ty::Unknown,
+                }
+            }
+            // ── NS-A7 collections+ (issue #1113, `docs/stdlib-spec.md`
+            // §8). Effect harvest (the `roll` RNG write, the conservative
+            // faults bits, the F29 discharge rules) rides the intrinsic
+            // table above; these arms carry only the typing rules. The
+            // E120 construction gate lives at the LIR lowering (the
+            // recognition site owns the shape errors); runtime domain
+            // checks stay at the ops. ─────────────────────────────────────
+            //
+            // `weighted(w1, v1, …)` → `Weighted[T]`: weights observe
+            // `int`; the value element is the join of the odd-position
+            // argument types (the array-literal shape).
+            "weighted" => {
+                let mut vals = Vec::with_capacity(args.len() / 2);
+                for (i, arg) in args.iter().enumerate() {
+                    if i % 2 == 0 {
+                        self.observe(arg, &Ty::Int);
+                    } else {
+                        vals.push(arg_tys.get(i).cloned().unwrap_or(Ty::Unknown));
+                    }
+                }
+                Ty::Weighted(Box::new(unify_all(vals)))
+            }
+            // `roll(w)` → `T` — total over any existing table (§8).
+            "roll" => match arg_tys.first() {
+                Some(Ty::Weighted(elem)) => (**elem).clone(),
+                _ => Ty::Unknown,
+            },
+            // `heap_push`/`heap_pop`/`heap_peek` share the `push`/`pop`/
+            // `first` arms below (merged per clippy match_same_arms —
+            // identical typing shapes: element observation + receiver
+            // write / `Option[T]` absence returns).
+
+            // ── NS-A6 rand verbs (issue #1112, `docs/stdlib-spec.md`
+            // §7). Effect harvest (the RNG-cell write) is above, before
+            // the match; these arms carry only the typing rules. Runtime
+            // domain checks (non-numeric `p`, non-array/subset container)
+            // stay at the ops, same split as the NS-A1 verbs. ───────────
+            //
+            // `chance(p)` → bool. `p` is numeric (int coerces to float per
+            // the ink-heritage promotion), so no `observe` narrowing — the
+            // multi-type domain is a runtime concern, exactly like the
+            // conversion intrinsics' arms above.
+            "chance" => Ty::Bool,
+            // NS-A5: `non_empty(r)` → `Option[NonEmptyRange]` — the
+            // inhabited-range validator (S2 ruled 2026-07-19,
+            // parse-don't-validate): the `some` payload carries the
+            // checker-minted refinement evidence; the runtime value is the
+            // SAME range (the refinement is a view, F7). Pure — no draw,
+            // no RNG write; faults only on a wrong-typed argument.
+            "non_empty" => Ty::Option(Box::new(Ty::Range { non_empty: true })),
+            // `pick(coll)` → `Option[T]`: element from a known array,
+            // subset-of-the-same-list from a flags subset.
+            "pick" => match arg_tys.first() {
+                Some(Ty::Array(elem)) => Ty::Option(elem.clone()),
+                Some(Ty::List(origin)) => Ty::Option(Box::new(Ty::List(origin.clone()))),
+                // NS-A5: `pick(range)` → `Option[int]` — empty → `none`
+                // (dynamic-content absence; contrast `int(range)`, whose
+                // emptiness is the E117/fault refinement).
+                Some(Ty::Range { .. }) => Ty::Option(Box::new(Ty::Int)),
+                _ => Ty::Option(Box::new(Ty::Unknown)),
+            },
+            // `shuffled(a)` → a new array of the same element type.
+            // NS-A4: `sorted(a)` shares the exact shape (arms merged per
+            // clippy match_same_arms) — the §4b doctrine order needs no
+            // comparator, and the mode-dependent NaN behavior is entirely
+            // the runtime op's (rows stay mode-independent: the `faults`
+            // bit from the intrinsic table is the conservative union).
+            "shuffled" | "sorted" => match arg_tys.first() {
+                Some(Ty::Array(elem)) => Ty::Array(elem.clone()),
+                _ => Ty::Unknown,
+            },
+            // NS-A4: the comparator pair. The comparator is a function
+            // value the *verb* will call — the one other place (besides
+            // `call(f)`/`f(args)`) a real callee's effects escape the
+            // static call graph, so its row composes through the same
+            // pending-value-call machinery (`⊕cmp`, F14): a provable
+            // single origin pulls that def's row in transitively;
+            // anything else degrades to the pessimal opaque floor.
+            // Dispatch faults (non-function comparator, non-int return,
+            // detected inconsistency) ride the intrinsic table's faults
+            // bit. The pure·silent contract itself is E119
+            // (`comparator_contract`), exceedance-only.
+            "sorted_by" => {
+                if let Some(cmp) = args.get(1) {
+                    let hint = self.value_call_origin(cmp);
+                    self.pending_value_calls.push(hint);
+                }
+                match arg_tys.first() {
+                    Some(Ty::Array(elem)) => Ty::Array(elem.clone()),
+                    _ => Ty::Unknown,
+                }
+            }
+            "sort_by" => {
+                if let Some(cmp) = args.get(1) {
+                    let hint = self.value_call_origin(cmp);
+                    self.pending_value_calls.push(hint);
+                }
+                if let Some(container) = args.first() {
+                    self.record_write(container);
+                }
+                Ty::Unknown
+            }
+            // `seed(n)`: statement-only; `n` is an int by signature —
+            // observed so a strict project gets the narrowing (the
+            // gradual runtime stays lenient: the frozen `SeedRandom` op
+            // coerces non-ints to 0).
+            "seed" => {
+                if let Some(n) = args.first() {
+                    self.observe(n, &Ty::Int);
+                }
+                Ty::Unknown
+            }
             // T1c (docs/t1c-spec.md §3/§4, issue #733): the explicit call
             // forms. `f` (args[0]) is the callee — a value, not a
             // statically-named target — so its type comes from the
@@ -1029,7 +1757,19 @@ impl InferPass<'_, '_> {
                     callee_ty = ann;
                 }
                 let callee = brink_ir::display_expr(&args[0]);
-                self.check_value_call(range, &callee, callee_ty, &args[1..], &arg_tys[1..])
+                // T2 §8 (issue #872): `call(f, …)`'s `f` is an arbitrary
+                // expression, not a resolvable `Path` the way a direct
+                // call's callee always is — `value_call_origin` covers both
+                // the inline-literal and bare-local shapes.
+                let narrow_hint = self.value_call_origin(&args[0]);
+                self.check_value_call(
+                    range,
+                    &callee,
+                    callee_ty,
+                    &args[1..],
+                    &arg_tys[1..],
+                    narrow_hint,
+                )
             }
             // `bind(f, args…)` — spec §3's "consume the head of the param
             // row" rule; the result is a new `fn(remaining…): R` value, not
@@ -1091,12 +1831,22 @@ impl InferPass<'_, '_> {
                 self.register_ascription(t);
                 let ty = t.value.as_ref().map_or(Ty::Unknown, |e| self.infer_expr(e));
                 self.bind_local(&t.name.text, &ty);
+                // T2 §8 (issue #872): track this write towards the local's
+                // whole-body write count/origin — see `bump_local_write`.
+                let origin = t
+                    .value
+                    .as_ref()
+                    .and_then(|e| self.fn_literal_write_origin(e));
+                self.bump_local_write(&t.name.text, origin);
             }
             Stmt::Assignment(a) => {
                 self.infer_expr(&a.target);
                 let ty = self.infer_expr(&a.value);
                 self.observe(&a.target, &ty);
                 self.record_write(&a.target);
+                // T2 §8 (issue #872): see `record_fn_write`.
+                let origin = self.fn_literal_write_origin(&a.value);
+                self.record_fn_write(&a.target, origin);
             }
             Stmt::Return(r) => self.infer_return(r.value.as_ref(), &r.onwards_args),
             Stmt::ChoiceSet(cs) => self.infer_choice_set(cs),
@@ -1136,6 +1886,19 @@ impl InferPass<'_, '_> {
     }
 
     fn infer_content(&mut self, content: &Content) {
+        // NS-A2 emits/tags harvest (issue #1108, from #1087 + its 2026-07-18
+        // ruling refinements): any content *part* — text, glue (glue-only
+        // output counts), spring, an interpolation, an inline
+        // conditional/sequence — is a content fragment the host renders, so
+        // the line emits. Tags ride the separate tag channel: a tag-only
+        // line (empty `parts`, non-empty `tags`) sets `tags` WITHOUT setting
+        // `emits` ("a flow that only annotates isn't speaking").
+        if !content.parts.is_empty() {
+            self.effect_emits = true;
+        }
+        if !content.tags.is_empty() {
+            self.effect_tags = true;
+        }
         for part in &content.parts {
             match part {
                 ContentPart::Interpolation(e) => {
@@ -1160,6 +1923,13 @@ impl InferPass<'_, '_> {
     }
 
     fn infer_choice(&mut self, choice: &Choice) {
+        // NS-A2 (issue #1108): choice text is host-rendered content (the
+        // choice list / the selected-line output) — the start/bracket/inner
+        // `Content`s below set `emits` via `infer_content`'s own harvest.
+        // Choice-level tags touch the tag channel.
+        if !choice.tags.is_empty() {
+            self.effect_tags = true;
+        }
         if let Some(cond) = &choice.condition {
             self.infer_expr(cond); // condition position — no forcing.
         }
@@ -1201,12 +1971,21 @@ impl InferPass<'_, '_> {
                 self.register_ascription(t);
                 let ty = t.value.as_ref().map_or(Ty::Unknown, |e| self.infer_expr(e));
                 self.bind_local(&t.name.text, &ty);
+                // T2 §8 (issue #872): see `Stmt::TempDecl`'s twin above.
+                let origin = t
+                    .value
+                    .as_ref()
+                    .and_then(|e| self.fn_literal_write_origin(e));
+                self.bump_local_write(&t.name.text, origin);
             }
             BlockStmt::Assignment(a) => {
                 self.infer_expr(&a.target);
                 let ty = self.infer_expr(&a.value);
                 self.observe(&a.target, &ty);
                 self.record_write(&a.target);
+                // T2 §8 (issue #872): see `Stmt::Assignment`'s twin above.
+                let origin = self.fn_literal_write_origin(&a.value);
+                self.record_fn_write(&a.target, origin);
             }
             BlockStmt::Return(r) => self.infer_return(r.value.as_ref(), &r.onwards_args),
             BlockStmt::If(i) => self.infer_if(i),
@@ -1217,12 +1996,23 @@ impl InferPass<'_, '_> {
                 }
             }
             BlockStmt::For(f) => {
+                // NS-A2 (issue #1108): `for` compiles to `CollectionKeys`,
+                // which raises `NotIndexable` on a non-collection iterable —
+                // a tracked domain fault, so the construct conservatively
+                // faults (bool v1).
+                self.effect_faults = true;
                 let iter_ty = self.infer_expr(&f.iterable);
-                let elem_ty = match iter_ty {
-                    Ty::Array(elem) => *elem,
-                    Ty::Map(k, _) => *k,
-                    _ => Ty::Unknown,
-                };
+                // F29 discharge: a provably-iterable type (the closed
+                // builtin roster) makes the loop's own iteration total.
+                if crate::protocols::iterate_element_ty(&iter_ty).is_none() {
+                    self.effect_faults_refined = true;
+                }
+                // NS-A3 (issue #1109, docs/stdlib-spec.md §9.6): the closed
+                // builtin iterable set is the iterate protocol's v1 roster —
+                // one table (`protocols::iterate_element_ty`) serves `for`,
+                // its only v1 consumer (arrays iterate values, maps iterate
+                // keys; anything else is not iterable and stays `Unknown`).
+                let elem_ty = crate::protocols::iterate_element_ty(&iter_ty).unwrap_or(Ty::Unknown);
                 self.bind_local(&f.var_name.text, &elem_ty);
                 for s in &f.body {
                     self.infer_block_stmt(s);

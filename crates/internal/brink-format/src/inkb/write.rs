@@ -8,8 +8,8 @@ use crate::codec::{
 };
 use crate::definition::{
     AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef, DirectEffects,
-    EffectRowEntry, ExternalFnDef, GlobalVarDef, LineEntry, ListDef, ListItemDef, ScopeLineTable,
-    StructShapeDef,
+    EffectRowEntry, ExternalFnDef, FrameShapeDef, GlobalVarDef, LineEntry, ListDef, ListItemDef,
+    ScopeLineTable, StructShapeDef,
 };
 use crate::id::DefinitionId;
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -21,8 +21,9 @@ use super::{
     HEADER_PREAMBLE, KEY_CARDINAL, KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN, LINE_TEMPLATE,
     MAGIC, PART_LITERAL, PART_SELECT, PART_SLOT, PROJ_SEG_INDEX, PROJ_SEG_KEY, SECTION_COUNT,
     SECTION_ENTRY_SIZE, SectionKind, VAL_ARRAY, VAL_BOOL, VAL_CLOSURE, VAL_DIVERT_TARGET,
-    VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT, VAL_LIST, VAL_MAP, VAL_NULL,
-    VAL_PROJECTION, VAL_RECORD, VAL_STRING, VAL_VAR_POINTER, VERSION,
+    VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT, VAL_LIST, VAL_MAP, VAL_MAT2,
+    VAL_MAT3, VAL_MAT4, VAL_NULL, VAL_OPTION, VAL_PROJECTION, VAL_QUAT, VAL_RANGE, VAL_RECORD,
+    VAL_STRING, VAL_VAR_POINTER, VAL_VEC2, VAL_VEC3, VAL_VEC4, VAL_WEIGHTED, VERSION,
 };
 
 // ── Tier 1: Full story write ────────────────────────────────────────────────
@@ -39,7 +40,13 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
     // `AliasTable` section, always present — possibly empty — from v5
     // onward; see `SectionKind::AliasTable`).
     let has_visibility = !story.private_defs.is_empty();
-    let section_count = SECTION_COUNT as usize + usize::from(has_visibility);
+    // The `FrameShapes` section (FS-3, tag `0x10`) is likewise **optional**:
+    // emitted only when the story carries `await` frame shapes. Behind the
+    // E052 fence no `await` compiles, so this is always empty today and every
+    // existing story omits it (byte-identical, no `VERSION` bump).
+    let has_frame_shapes = !story.frame_shapes.is_empty();
+    let section_count =
+        SECTION_COUNT as usize + usize::from(has_visibility) + usize::from(has_frame_shapes);
     let header_size = HEADER_PREAMBLE + section_count * SECTION_ENTRY_SIZE;
 
     // Write placeholder header (zeros) — we'll patch it after writing sections.
@@ -125,6 +132,15 @@ pub fn write_inkb(story: &StoryData, buf: &mut Vec<u8>) {
         SectionKind::AliasTable,
         write_section_alias_table(&story.alias_table, buf)
     );
+    // FrameShapes (FS-3, tag 0x10) is optional — emitted last (highest tag) so
+    // the offset table stays in canonical ascending tag order, and omitted
+    // entirely when empty so existing stories stay byte-identical.
+    if has_frame_shapes {
+        section!(
+            SectionKind::FrameShapes,
+            write_section_frame_shapes(&story.frame_shapes, buf)
+        );
+    }
 
     let file_size = (buf.len() - base) as u32;
     let checksum = crc32(&buf[base + header_size..]);
@@ -316,11 +332,40 @@ fn encode_value_type(vt: ValueType, buf: &mut Vec<u8>) {
         ValueType::Handle => VAL_HANDLE,
         // T1e projection value type (v4, reserved tag graduated this PR).
         ValueType::Projection => VAL_PROJECTION,
+        // NS-A1 Option value type.
+        ValueType::Option => VAL_OPTION,
+        // NS-A5 range value type (F7).
+        ValueType::Range => VAL_RANGE,
+        // NS-A8 numeric tower value types.
+        ValueType::Vec2 => VAL_VEC2,
+        ValueType::Vec3 => VAL_VEC3,
+        ValueType::Vec4 => VAL_VEC4,
+        ValueType::Quat => VAL_QUAT,
+        ValueType::Mat2 => VAL_MAT2,
+        ValueType::Mat3 => VAL_MAT3,
+        ValueType::Mat4 => VAL_MAT4,
+        // NS-A7 weighted table value type.
+        ValueType::Weighted => VAL_WEIGHTED,
     };
     write_u8(buf, tag);
 }
 
+/// NS-A8 (`docs/tower-mini-spec.md` T5): write tower lanes as explicit
+/// little-endian f32s, one by one — the hand-serialized wire form. The
+/// caller supplies the lanes in the pinned order (vec/quat `x, y(, z, w)`;
+/// matrices column-major via `to_cols_array`), always from glam's explicit
+/// array conversions — never from glam's memory representation.
+fn write_f32_lanes(buf: &mut Vec<u8>, lanes: &[f32]) {
+    for lane in lanes {
+        buf.extend_from_slice(&lane.to_le_bytes());
+    }
+}
+
 #[expect(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per value variant — the NS-A1 Option arm pushed this past 100"
+)]
 fn encode_value(v: &Value, buf: &mut Vec<u8>) {
     match v {
         Value::Int(n) => {
@@ -434,6 +479,88 @@ fn encode_value(v: &Value, buf: &mut Vec<u8>) {
             write_u8(buf, p.segments.len() as u8);
             for seg in &p.segments {
                 encode_proj_segment(seg, buf);
+            }
+        }
+        // Option values (NS-A1, `docs/stdlib-spec.md` §1.4): flag byte
+        // (0 = none, 1 = some) then the inner value when some. No opcode
+        // literal ever produces one at compile time today (`none`/`some(x)`
+        // lower to `PushNone`/`MakeSome`, and a bare-`none` declaration
+        // default is the E107 compile error), so like `VAL_HANDLE` above
+        // this encoder leg exists for wire completeness — saves/transcripts
+        // are the live consumers.
+        Value::OptionVal(inner) => {
+            write_u8(buf, VAL_OPTION);
+            match inner {
+                None => write_u8(buf, 0),
+                Some(v) => {
+                    write_u8(buf, 1);
+                    encode_value(v, buf);
+                }
+            }
+        }
+        // Range values (NS-A5, F7): start i32, end i32, inclusive flag —
+        // the *written* form is preserved on the wire (1..=6 and 1..7 are
+        // content-equal but round-trip their own spelling). Flat: no
+        // recursion, no depth accounting.
+        Value::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            write_u8(buf, VAL_RANGE);
+            write_i32(buf, *start);
+            write_i32(buf, *end);
+            write_u8(buf, u8::from(*inclusive));
+        }
+        // Tower values (NS-A8, `docs/tower-mini-spec.md` T5): explicit
+        // little-endian f32 lanes in the pinned order — vectors and the
+        // quat `x, y(, z, w)`, matrices column-major column-by-column via
+        // glam's `to_cols_array` (an explicit conversion, never a memory
+        // cast). Fixed sizes, no counts, no recursion. Like `VAL_HANDLE`
+        // above, no opcode literal produces one at compile time today
+        // (construction is the runtime `Tower` opcode) — saves, transcripts
+        // and future const-folding are the wire consumers.
+        Value::Vec2(v) => {
+            write_u8(buf, VAL_VEC2);
+            write_f32_lanes(buf, &v.to_array());
+        }
+        Value::Vec3(v) => {
+            write_u8(buf, VAL_VEC3);
+            write_f32_lanes(buf, &v.to_array());
+        }
+        Value::Vec4(v) => {
+            write_u8(buf, VAL_VEC4);
+            write_f32_lanes(buf, &v.to_array());
+        }
+        Value::Quat(q) => {
+            write_u8(buf, VAL_QUAT);
+            write_f32_lanes(buf, &q.to_array());
+        }
+        Value::Mat2(m) => {
+            write_u8(buf, VAL_MAT2);
+            write_f32_lanes(buf, &m.to_cols_array());
+        }
+        Value::Mat3(m) => {
+            write_u8(buf, VAL_MAT3);
+            write_f32_lanes(buf, &m.to_cols_array());
+        }
+        Value::Mat4(m) => {
+            write_u8(buf, VAL_MAT4);
+            write_f32_lanes(buf, &m.to_cols_array());
+        }
+        // Weighted tables (NS-A7, `docs/stdlib-spec.md` §8): u32 entry
+        // count, then per entry an i32 weight and the recursively-encoded
+        // value, in construction order (order is semantic for display and
+        // the roll walk). Like `VAL_HANDLE` above, no opcode literal
+        // produces one at compile time today (construction is the runtime
+        // `Collect(WeightedNew)` op) — saves and transcripts are the wire
+        // consumers.
+        Value::Weighted(w) => {
+            write_u8(buf, VAL_WEIGHTED);
+            write_u32(buf, w.entries.len() as u32);
+            for (weight, value) in &w.entries {
+                write_i32(buf, *weight);
+                encode_value(value, buf);
             }
         }
     }
@@ -557,6 +684,31 @@ pub fn write_section_alias_table(entries: &[AliasEntry], buf: &mut Vec<u8>) {
     }
 }
 
+/// Section-local encoding version for `FrameShapes` (FS-3,
+/// `docs/flow-suspension-spec.md` §4/§11) — independent of the `.inkb` format
+/// `VERSION`, so the shape encoding can grow (e.g. per-slot type metadata)
+/// without another whole-format bump.
+pub(crate) const FRAME_SHAPES_SECTION_VERSION: u8 = 1;
+
+/// Write the FS-3 `FrameShapes` section (no header framing): a one-byte
+/// section-local version, then one entry per `await` site
+/// (`docs/flow-suspension-spec.md` §4/§11) — the site's stable `DefinitionId`
+/// (the synthesized continuation container id) followed by its name-keyed
+/// crossing-local slots. Entries are written in the order given; callers sort
+/// by `site` for determinism. Callers emit this section only when non-empty.
+#[expect(clippy::cast_possible_truncation)]
+pub fn write_section_frame_shapes(shapes: &[FrameShapeDef], buf: &mut Vec<u8>) {
+    write_u8(buf, FRAME_SHAPES_SECTION_VERSION);
+    write_u32(buf, shapes.len() as u32);
+    for shape in shapes {
+        write_def_id(buf, shape.site);
+        write_u32(buf, shape.slots.len() as u32);
+        for slot in &shape.slots {
+            write_u16(buf, slot.0);
+        }
+    }
+}
+
 /// Section-local encoding version for `EffectRows` (T2-3,
 /// `docs/effects-spec.md` §11) — independent of the `.inkb` format `VERSION`,
 /// so the factored-row encoding can change without another whole-format bump
@@ -564,7 +716,12 @@ pub fn write_section_alias_table(entries: &[AliasEntry], buf: &mut Vec<u8>) {
 ///
 /// Bumped 1 → 2 for #882: each row gains a leading `is_entry` byte (the
 /// freeze bit — see [`EffectRowEntry::is_entry`]).
-pub(crate) const EFFECT_ROWS_SECTION_VERSION: u8 = 2;
+///
+/// Bumped 2 → 3 for NS-A2 (issue #1108): each `DirectEffects` block gains a
+/// trailing extension-flags byte carrying the emits/tags/faults dimensions
+/// (bits 0–2; bits 3–7 reserved, strict-rejected — per-fault-kind
+/// granularity is the named future occupant, graduating via the next bump).
+pub(crate) const EFFECT_ROWS_SECTION_VERSION: u8 = 3;
 
 /// Write the T2-3 `EffectRows` section (no header framing): a one-byte
 /// section-local version, then the `DefinitionId → row` table of factored
@@ -609,6 +766,18 @@ fn encode_direct_effects(direct: &DirectEffects, buf: &mut Vec<u8>) {
         encode_call_atom(atom, buf);
     }
     write_u8(buf, u8::from(direct.opaque));
+    // NS-A2 extension-flags byte (section version 3): emits/tags/faults.
+    let mut dims = 0u8;
+    if direct.emits {
+        dims |= super::EFFECT_DIM_EMITS;
+    }
+    if direct.tags {
+        dims |= super::EFFECT_DIM_TAGS;
+    }
+    if direct.faults {
+        dims |= super::EFFECT_DIM_FAULTS;
+    }
+    write_u8(buf, dims);
 }
 
 /// Encode a single [`CallAtom`]: interned name, the capability-parameter slot

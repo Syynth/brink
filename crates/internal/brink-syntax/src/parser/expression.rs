@@ -1,12 +1,12 @@
 use crate::SyntaxKind::{
     self, AMP_AMP, ARRAY_LITERAL, BANG, BANG_EQ, BANG_QUESTION, BOOLEAN_LIT, CALL_EXPR, CARET,
-    COLON, COMMA, DIVERT, DIVERT_TARGET_EXPR, DOT, EOF, EQ_EQ, FIELD_ACCESS_EXPR, FLOAT, FLOAT_LIT,
-    FN_LITERAL, FUNCTION_CALL, GT, GT_EQ, HASH, IDENT, IDENTIFIER, INDEX_EXPR, INFIX_EXPR, INTEGER,
-    INTEGER_LIT, KW_AND, KW_FALSE, KW_HAS, KW_HASNT, KW_MOD, KW_NOT, KW_OR, KW_REF, KW_TRUE,
-    L_BRACE, L_BRACKET, L_PAREN, LIST_EXPR, LT, LT_EQ, MAP_ENTRY, MAP_LITERAL, MINUS, MINUS_EQ,
-    NEWLINE, PAREN_EXPR, PERCENT, PIPE, PLUS, PLUS_EQ, POSTFIX_EXPR, PREFIX_EXPR, QUESTION, QUOTE,
-    R_BRACE, R_BRACKET, R_PAREN, REF_EXPR, SLASH, STAR, STRING_LIT, STRUCT_FIELD_INIT,
-    STRUCT_LITERAL,
+    COLON, COMMA, DIVERT, DIVERT_TARGET_EXPR, DOT, EOF, EQ, EQ_EQ, FIELD_ACCESS_EXPR, FLOAT,
+    FLOAT_LIT, FN_LITERAL, FUNCTION_CALL, GT, GT_EQ, HASH, IDENT, IDENTIFIER, INDEX_EXPR,
+    INFIX_EXPR, INTEGER, INTEGER_LIT, KW_AND, KW_FALSE, KW_HAS, KW_HASNT, KW_MOD, KW_NOT, KW_OR,
+    KW_REF, KW_SHUFFLE, KW_TRUE, L_BRACE, L_BRACKET, L_PAREN, LIST_EXPR, LT, LT_EQ, MAP_ENTRY,
+    MAP_LITERAL, MINUS, MINUS_EQ, NEWLINE, PAREN_EXPR, PERCENT, PIPE, PLUS, PLUS_EQ, POSTFIX_EXPR,
+    PREFIX_EXPR, QUESTION, QUOTE, R_BRACE, R_BRACKET, R_PAREN, RANGE_EXPR, REF_EXPR, SLASH, STAR,
+    STRING_LIT, STRUCT_FIELD_INIT, STRUCT_LITERAL,
 };
 
 use super::Parser;
@@ -24,10 +24,13 @@ enum Prec {
     Equality = 4,   // ==, !=
     Comparison = 5, // <, >, <=, >=
     HasOps = 6,     // has, hasnt, ?, !?
-    Add = 7,        // +, -
-    Mul = 8,        // *, /, %, mod
-    Intersect = 9,  // ^ (list intersection in ink, not power)
-    Prefix = 10,    // -, !, not (unary)
+    Range = 7,      // .., ..= (NS-A5 — binds tighter than ==, so `r == 1..5`
+    // compares against the range; looser than +, so
+    // `lo..hi+1` ranges to the sum)
+    Add = 8,        // +, -
+    Mul = 9,        // *, /, %, mod
+    Intersect = 10, // ^ (list intersection in ink, not power)
+    Prefix = 11,    // -, !, not (unary)
                     // Postfix (++, --) is handled without a Prec value — bumped directly in the loop.
 }
 
@@ -67,6 +70,12 @@ pub(crate) fn expression(p: &mut Parser<'_, '_>) {
 }
 
 /// Pratt expression parser core.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one commented arm per operator family — the NS-A5 range arm \
+              pushed this just past 100; splitting the loop would obscure \
+              the single Pratt structure"
+)]
 fn expression_bp(p: &mut Parser<'_, '_>, min_bp: Prec) {
     let checkpoint = p.checkpoint();
 
@@ -172,6 +181,32 @@ fn expression_bp(p: &mut Parser<'_, '_>, min_bp: Prec) {
             continue;
         }
 
+        // `..` / `..=` — range literal (NS-A5, docs/stdlib-spec.md §7).
+        // Two adjacent DOT tokens (same raw-adjacency trick as `++`/`||`;
+        // the lexer never merges them — `1..5` lexes INTEGER DOT DOT
+        // INTEGER because a float requires a digit after its dot), plus an
+        // adjacent EQ for the inclusive form. Non-associative in spirit:
+        // the right operand is parsed AT `Prec::Range`, so `a..b..c` nests
+        // only leftward — `(a..b)..c` — and dies in the analyzer (a range
+        // bound must be an int, never a range).
+        if p.current() == DOT && p.nth_raw(1) == DOT {
+            let prec = Prec::Range;
+            if prec <= min_bp {
+                break;
+            }
+            let inclusive = p.nth_raw(2) == EQ;
+            p.start_node_at(checkpoint, RANGE_EXPR);
+            p.bump(); // first .
+            p.bump(); // second .
+            if inclusive {
+                p.bump(); // =
+            }
+            p.skip_ws();
+            expression_bp(p, prec);
+            p.finish_node();
+            continue;
+        }
+
         // `||` — two adjacent PIPE tokens = logical OR
         if p.current() == PIPE && p.nth_raw(1) == PIPE {
             let (prec, right_assoc) = (Prec::Or, false);
@@ -253,6 +288,18 @@ fn atom(p: &mut Parser<'_, '_>) -> bool {
                 // dotted_identifier
                 super::divert::path(p);
             }
+            true
+        }
+
+        // `shuffle(…)` in expression/statement position (NS-A6, issue
+        // #1112): `shuffle` is lexed as `KW_SHUFFLE` for the sequence
+        // header (`{shuffle: …}` — always followed by `:`), so the stdlib
+        // mutator call spelling needs this contextual arm. Gated on `(`,
+        // which a sequence header position can never produce; the AST
+        // layer's `Identifier::name`/`Path::segments` already accept
+        // keyword tokens as contextual identifiers.
+        KW_SHUFFLE if p.nth(1) == L_PAREN => {
+            function_call(p);
             true
         }
 

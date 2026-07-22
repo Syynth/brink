@@ -37,6 +37,7 @@ fn empty_scopes_are_omitted() {
         private_defs: vec![],
         alias_table: vec![],
         effect_rows: vec![],
+        frame_shapes: Vec::new(),
         source_checksum: 0,
     };
     let lines_json = brink_intl::export_lines(&data, 0);
@@ -61,6 +62,7 @@ fn source_checksum_formatting() {
         private_defs: vec![],
         alias_table: vec![],
         effect_rows: vec![],
+        frame_shapes: Vec::new(),
         source_checksum: 0,
     };
     let lines_json = brink_intl::export_lines(&data, 0xDEAD_BEEF);
@@ -96,6 +98,7 @@ fn audio_ref_exported() {
         private_defs: vec![],
         alias_table: vec![],
         effect_rows: vec![],
+        frame_shapes: Vec::new(),
         source_checksum: 0,
     };
     let lines_json = brink_intl::export_lines(&data, 0);

@@ -30,18 +30,18 @@ pub(crate) mod write;
 pub use read::{
     read_inkb, read_inkb_index, read_section_address_paths, read_section_addresses,
     read_section_alias_table, read_section_containers, read_section_effect_rows,
-    read_section_externals, read_section_line_tables, read_section_list_defs,
-    read_section_list_items, read_section_list_literals, read_section_literal_pool,
-    read_section_name_table, read_section_struct_shapes, read_section_variables,
-    read_section_visibility,
+    read_section_externals, read_section_frame_shapes, read_section_line_tables,
+    read_section_list_defs, read_section_list_items, read_section_list_literals,
+    read_section_literal_pool, read_section_name_table, read_section_struct_shapes,
+    read_section_variables, read_section_visibility,
 };
 pub use write::{
     assemble_inkb, write_inkb, write_section_address_paths, write_section_addresses,
     write_section_alias_table, write_section_containers, write_section_effect_rows,
-    write_section_externals, write_section_line_tables, write_section_list_defs,
-    write_section_list_items, write_section_list_literals, write_section_literal_pool,
-    write_section_name_table, write_section_struct_shapes, write_section_variables,
-    write_section_visibility,
+    write_section_externals, write_section_frame_shapes, write_section_line_tables,
+    write_section_list_defs, write_section_list_items, write_section_list_literals,
+    write_section_literal_pool, write_section_name_table, write_section_struct_shapes,
+    write_section_variables, write_section_visibility,
 };
 
 use core::ops::Range;
@@ -118,6 +118,53 @@ pub(crate) const VAL_HANDLE: u8 = 0x0D;
 // `2=range` is RESERVED — never emitted (icebox #829). First emission of
 // this reserved tag.
 pub(crate) const VAL_PROJECTION: u8 = 0x0E;
+// NS-A1 (`docs/stdlib-spec.md` §1.1/§1.4, ruled 2026-07-18): the compiler-
+// owned `Option[T]` enum. Wire form: one flag byte (0 = `none`, 1 =
+// `some`), then the inner value when `some` — the enum's two variants,
+// nothing more. Next free tag after `VAL_RECORD` (0x0F); this PR's own
+// reservation, same "assigned here" precedent as the record/handle/
+// projection tags above. Recursion counts toward `MAX_DECODE_DEPTH`
+// exactly like the collection tags (a crafted chain of nested `some`s is
+// the same stack-overflow shape as nested single-element arrays).
+pub(crate) const VAL_OPTION: u8 = 0x10;
+// NS-A5 (`docs/stdlib-spec.md` §7, F7 ruled 2026-07-19): the integer range
+// value kind. Wire form: start i32, end i32, one flag byte (0 = `..`
+// exclusive, 1 = `..=` inclusive) — flat, no recursion, so it does NOT
+// count toward `MAX_DECODE_DEPTH` (a range holds two ints, never another
+// value). Next free tag after `VAL_OPTION` (0x10); same "assigned here"
+// reservation precedent as its neighbors. Distinct from the RESERVED
+// projection-*segment* kind 0x02 below — that is a different namespace.
+pub(crate) const VAL_RANGE: u8 = 0x11;
+// NS-A8 (`docs/tower-mini-spec.md` T5, issue #1114): the numeric tower.
+// Wire form is hand-serialized **explicit little-endian f32 lanes** — never
+// glam's memory layout (it varies with SIMD features and versions) and never
+// serde-through-glam. Lane order: vectors and the quat `x, y(, z, w)`;
+// matrices column-major, column-by-column. Fixed payload sizes (no counts,
+// no recursion — tower values are leaves, so like `VAL_RANGE` they do NOT
+// count toward `MAX_DECODE_DEPTH`): vec2 = 8 bytes, vec3 = 12,
+// vec4/quat/mat2 = 16, mat3 = 36, mat4 = 64. Next free tags after
+// `VAL_RANGE` (0x11); this PR's own reservation, the same "assigned here"
+// precedent as the record/handle/projection/option/range tags above. No
+// format `VERSION` bump — additive value tags follow the NS-A1 `VAL_OPTION`
+// precedent (an old reader rejects the unknown tag; an old file simply
+// never contains one).
+pub(crate) const VAL_VEC2: u8 = 0x12;
+pub(crate) const VAL_VEC3: u8 = 0x13;
+pub(crate) const VAL_VEC4: u8 = 0x14;
+pub(crate) const VAL_QUAT: u8 = 0x15;
+pub(crate) const VAL_MAT2: u8 = 0x16;
+pub(crate) const VAL_MAT3: u8 = 0x17;
+pub(crate) const VAL_MAT4: u8 = 0x18;
+// NS-A7 (`docs/stdlib-spec.md` §8, issue #1113): the weighted table.
+// Wire form: u32 entry count, then per entry an i32 weight followed by a
+// recursively-encoded value. Values recurse, so decoding counts toward
+// `MAX_DECODE_DEPTH` exactly like the collection tags. The reader enforces
+// the §8 evidence-by-construction invariant (non-empty, weights ≥ 1) — a
+// violating payload is a decode error, so a `Weighted` never enters the
+// runtime invalid, even from a crafted file. Next free tag after
+// `VAL_MAT4` (0x18); this PR's own reservation, additive per the NS-A1
+// `VAL_OPTION` precedent (no `VERSION` bump).
+pub(crate) const VAL_WEIGHTED: u8 = 0x19;
 /// Wire kind for a [`crate::ProjSegment::Index`] segment.
 pub(crate) const PROJ_SEG_INDEX: u8 = 0x00;
 /// Wire kind for a [`crate::ProjSegment::Key`] segment.
@@ -136,6 +183,15 @@ pub(crate) const CAP_PARAM_ANY: u8 = 0x00;
 /// Handle-parameter slot value: no bound handle. The only value v1 emits;
 /// a non-zero slot is the reserved handle-parameterized form (reader rejects).
 pub(crate) const HANDLE_PARAM_NONE: u8 = 0x00;
+
+/// NS-A2 (issue #1108): bit assignments for the `DirectEffects` extension
+/// flags byte (`EffectRows` section version 3). Bits 3–7 are RESERVED —
+/// the strict reader rejects a nonzero reserved bit until a section version
+/// graduates it (the same discipline as the capability/handle slots).
+pub(crate) const EFFECT_DIM_EMITS: u8 = 0b0000_0001;
+pub(crate) const EFFECT_DIM_TAGS: u8 = 0b0000_0010;
+pub(crate) const EFFECT_DIM_FAULTS: u8 = 0b0000_0100;
+pub(crate) const EFFECT_DIM_KNOWN_MASK: u8 = EFFECT_DIM_EMITS | EFFECT_DIM_TAGS | EFFECT_DIM_FAULTS;
 
 // LineContent tags
 pub(crate) const LINE_PLAIN: u8 = 0x00;
@@ -211,6 +267,16 @@ pub enum SectionKind {
     /// `0x0E` was claimed by `Visibility` (M-2b), so this takes the next
     /// free tag.
     AliasTable = 0x0F,
+    /// FS-3 `FrameShapes` (`docs/flow-suspension-spec.md` §4/§11): one
+    /// name-keyed frame shape per `await` site — the static crossing-locals
+    /// description the runtime spills/restores around a park.
+    /// Section-locally versioned (one prefix byte) so the shape encoding can
+    /// grow without a format-wide bump. **Omitted entirely when empty** (the
+    /// common case — and, behind the E052 fence, the *only* case today, since
+    /// no `await` compiles yet), so all existing stories stay byte-identical
+    /// and no `VERSION` bump is needed. `0x0F` was claimed by `AliasTable`, so
+    /// this takes the next free tag.
+    FrameShapes = 0x10,
 }
 
 // All v4-reserved section kinds have now graduated: `LiteralPool` (0x0B),
@@ -235,6 +301,7 @@ impl SectionKind {
             0x0D => Ok(Self::EffectRows),
             0x0E => Ok(Self::Visibility),
             0x0F => Ok(Self::AliasTable),
+            0x10 => Ok(Self::FrameShapes),
             _ => Err(DecodeError::InvalidSectionKind(tag)),
         }
     }
@@ -301,10 +368,11 @@ mod tests {
     /// Every v4-reserved section tag has now graduated to a real
     /// `SectionKind` variant — `LiteralPool` (0x0B, T1b-2 #570),
     /// `StructShapes` (0x0C, TM-4 #620), and `EffectRows` (0x0D, T2-3 #862).
-    /// The next unclaimed tag (0x10) is still rejected.
+    /// `FrameShapes` (0x10, FS-3c) is the newest tag; the next unclaimed tag
+    /// (0x11) is still rejected.
     #[test]
     fn from_u8_rejects_unclaimed_section_tag() {
-        let tag = 0x10u8;
+        let tag = 0x11u8;
         let err = SectionKind::from_u8(tag).unwrap_err();
         assert_eq!(err, DecodeError::InvalidSectionKind(tag));
     }
@@ -317,5 +385,6 @@ mod tests {
         }
         assert!(SectionKind::from_u8(0x0E).is_ok(), "Visibility (M-2b)");
         assert!(SectionKind::from_u8(0x0F).is_ok(), "AliasTable (M-3)");
+        assert!(SectionKind::from_u8(0x10).is_ok(), "FrameShapes (FS-3c)");
     }
 }

@@ -9,6 +9,6 @@ Healed again to {after_second}.
 HP cell is now {player_hp}.
 -> END
 
-=== function heal(ref hp, amount) ===
+=== function heal(ref hp: int, amount: int): int ===
 ~ hp = hp + amount
 ~ return hp

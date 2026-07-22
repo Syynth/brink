@@ -24,8 +24,7 @@ use std::collections::BTreeSet;
 
 use brink_format::DefinitionId;
 use brink_ir::{
-    ContainerPtr, Diagnostic, DiagnosticCode, EffectsAssertion, FileId, HirFile, SymbolIndex,
-    SymbolKind,
+    Diagnostic, DiagnosticCode, EffectsAssertion, FileId, HirFile, SymbolIndex, SymbolKind,
 };
 use rowan::TextRange;
 
@@ -72,10 +71,7 @@ pub fn check(
     let ctx = Ctx { index, scope };
     let mut out = Vec::new();
     for knot in &hir.knots {
-        let kind = match knot.ptr {
-            ContainerPtr::Knot(_) => SymbolKind::Knot,
-            ContainerPtr::Stitch(_) => SymbolKind::Stitch,
-        };
+        let kind = knot.symbol_kind();
         check_one(
             file,
             knot.effects_assertion.as_ref(),
@@ -109,10 +105,7 @@ pub fn check(
 pub fn assertion_defs(hir: &HirFile, index: &SymbolIndex, file: FileId) -> Vec<DefinitionId> {
     let mut out = Vec::new();
     for knot in &hir.knots {
-        let kind = match knot.ptr {
-            ContainerPtr::Knot(_) => SymbolKind::Knot,
-            ContainerPtr::Stitch(_) => SymbolKind::Stitch,
-        };
+        let kind = knot.symbol_kind();
         if knot.effects_assertion.is_some()
             && let Some(id) = find_def_id(index, file, kind, &knot.name.text)
         {
@@ -145,6 +138,54 @@ fn check_one(
     let Some(def_id) = find_def_id(ctx.index, file, kind, name) else {
         return;
     };
+    let Some(inferred) = rows.get(&def_id) else {
+        return;
+    };
+
+    // ── NS-A2 (issue #1108): the output/fault dimension assertions —
+    // `silent` (no emits) and `total` (no faults), each exceedance-only
+    // with its own code. Opaque rows are unbounded on every dimension
+    // (spec §3), so they exceed any concrete assertion.
+    if assertion.silent && (inferred.emits || inferred.opaque) {
+        out.push(Diagnostic {
+            file,
+            range: assertion.range,
+            code: DiagnosticCode::E108,
+            message: if inferred.opaque {
+                "inferred effects are unbounded (a call through a function value, or an                  unresolved callee) — the `silent` assertion cannot cover this definition"
+                    .to_string()
+            } else {
+                "inferred effects exceed the `silent` assertion: the definition can produce                  content (a content line, or a transitive call to an emitter)"
+                    .to_string()
+            },
+        });
+    }
+    if assertion.total && (inferred.faults || inferred.opaque) {
+        out.push(Diagnostic {
+            file,
+            range: assertion.range,
+            code: DiagnosticCode::E109,
+            message: if inferred.opaque {
+                "inferred effects are unbounded (a call through a function value, or an                  unresolved callee) — the `total` assertion cannot cover this definition"
+                    .to_string()
+            } else {
+                "inferred effects exceed the `total` assertion: the definition can raise a                  turn-terminating fault"
+                    .to_string()
+            },
+        });
+    }
+
+    // ── The state-row bound (`pure`, or one or more reads/writes/calls
+    // clauses) — the pre-NS-A2 `E102`/`E103` surface, unchanged. An
+    // assertion carrying only `silent`/`total` leaves the state row
+    // unbounded, so there is nothing further to check.
+    if !assertion.pure
+        && assertion.reads.is_empty()
+        && assertion.writes.is_empty()
+        && assertion.calls.is_empty()
+    {
+        return;
+    }
 
     let mut well_formed = true;
     let mut declared_reads = BTreeSet::new();
@@ -181,14 +222,22 @@ fn check_one(
         return;
     }
 
+    // The state bound never constrains the output/fault dimensions (those
+    // have their own assertion args above), so the declared row mirrors the
+    // inferred row on emits/tags/faults — `covers` then compares exactly
+    // the reads/writes/calls sets plus the opaque top.
     let declared_row = EffectRow {
         reads: declared_reads,
         writes: declared_writes,
         calls: declared_calls,
         opaque: false,
-    };
-    let Some(inferred) = rows.get(&def_id) else {
-        return;
+        emits: inferred.emits,
+        tags: inferred.tags,
+        faults: inferred.faults,
+        // Mirrored like the other output/fault dimensions — the refined
+        // bit (F29) is not part of `covers` semantics and never
+        // assertable.
+        faults_refined: inferred.faults_refined,
     };
     if !declared_row.covers(inferred) {
         out.push(Diagnostic {
@@ -231,12 +280,25 @@ fn find_def_id(
 /// candidate first, then an imported one, exactly like every other
 /// reference in this file resolves.
 fn resolve_cell(ctx: &Ctx<'_>, name: &str) -> Option<DefinitionId> {
-    lookup_by_name(
+    let resolved = lookup_by_name(
         ctx.index,
         ctx.scope,
         name,
         &[SymbolKind::Variable, SymbolKind::Constant],
-    )
+    );
+    if resolved.is_some() {
+        return resolved;
+    }
+    // NS-A6 (issue #1112, `docs/stdlib-spec.md` §7): `rng` names the
+    // compiler-owned `std::rand` RNG state cell — the cell every draw
+    // verb writes — so a draw-bearing def can carry a covering bound
+    // (`@[effects(writes rng)]`). A user-declared `VAR`/`CONST` named
+    // `rng` shadows this (the lookup above wins), consistent with the
+    // stdlib-name shadowing rule everywhere else.
+    if name == "rng" {
+        return Some(DefinitionId::RNG_CELL);
+    }
+    None
 }
 
 /// Whether `name` is a declared `EXTERNAL` visible to this file's import
@@ -254,7 +316,7 @@ fn unknown_name_diagnostic(file: FileId, range: TextRange, name: &str) -> Diagno
         range,
         code: DiagnosticCode::E102,
         message: format!(
-            "`#@effects` names `{name}`, which isn't a declared global VAR/CONST or EXTERNAL anywhere in the project"
+            "the effects assertion names `{name}`, which isn't a declared global VAR/CONST or EXTERNAL anywhere in the project"
         ),
     }
 }
@@ -267,10 +329,15 @@ fn unknown_name_diagnostic(file: FileId, range: TextRange, name: &str) -> Diagno
 fn exceedance_message(declared: &EffectRow, inferred: &EffectRow, index: &SymbolIndex) -> String {
     if inferred.opaque {
         return "inferred effects are unbounded (a call through a function value, or an \
-                 unresolved callee) — no `#@effects` assertion can cover this definition"
+                 unresolved callee) — no effects assertion can cover this definition"
             .to_string();
     }
     let name_of = |id: &DefinitionId| {
+        // The compiler-owned RNG cell has no symbol-index entry — name it
+        // the way the assertion surface spells it (`writes rng`).
+        if *id == DefinitionId::RNG_CELL {
+            return "rng (the std::rand RNG state cell)".to_string();
+        }
         index
             .symbols
             .get(id)
@@ -302,7 +369,7 @@ fn exceedance_message(declared: &EffectRow, inferred: &EffectRow, index: &Symbol
         parts.push(format!("calls {}", extra_calls.join(", ")));
     }
     format!(
-        "inferred effects exceed the `#@effects` assertion's declared bound: {}",
+        "inferred effects exceed the effects assertion's declared bound: {}",
         parts.join("; ")
     )
 }

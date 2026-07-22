@@ -91,19 +91,23 @@ pub struct LanguageOptions {
     /// client-declared dialect too, instead of always defaulting to
     /// `StrictInk`.
     dialect: Arc<Mutex<Dialect>>,
-    /// `"strict"` or `"gradual"`; defaults to `Gradual`, matching
-    /// `AnalysisOptions::default()`. Mirrors `dialect` exactly (#660: PR
-    /// #656 left this reachable only via the compiler CLI's `--types
-    /// strict`, never via the IDE/LSP surface) — feeds `analysis_loop` so
-    /// its diagnostics analyze under the client-declared types policy too.
-    types: Arc<Mutex<TypePolicy>>,
+    /// `"strict"` or `"gradual"`; `None` when neither the client nor a
+    /// `brink.toml` ever said — the effective policy is then the
+    /// dialect-keyed default (issue #1127, ruled 2026-07-19: brink →
+    /// strict, strict-ink → gradual), resolved by
+    /// `AnalysisOptions::type_policy()` at each analysis pass. Mirrors
+    /// `dialect` exactly (#660: PR #656 left this reachable only via the
+    /// compiler CLI's `--types strict`, never via the IDE/LSP surface) —
+    /// feeds `analysis_loop` so its diagnostics analyze under the
+    /// client-declared types policy too.
+    types: Arc<Mutex<Option<TypePolicy>>>,
 }
 
 impl LanguageOptions {
     pub fn new() -> Self {
         Self {
             dialect: Arc::new(Mutex::new(Dialect::default())),
-            types: Arc::new(Mutex::new(TypePolicy::default())),
+            types: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -659,10 +663,14 @@ impl Backend {
 /// Read `initializationOptions.<key>` as a string, if the client set it at
 /// all — regardless of whether the value maps to a recognized variant. This
 /// is "the client passed an explicit value", the strongest tier of the
-/// #1030 precedence rule (see [`resolve_language_options`]): even an
-/// unrecognized string still counts as explicit (and falls through the
-/// dialect/types `match`es' `_` arm to the same default a missing key
-/// would), matching the pre-#1030 `apply_initialization_option` behavior.
+/// #1030 precedence rule (see [`resolve_language_options`]). For `dialect`,
+/// an unrecognized string still counts as explicit and falls through the
+/// `match`'s `_` arm to the same default a missing key would. For `types`
+/// (NS-A9, #1127): an unrecognized string is treated as **unset** — the
+/// dialect-keyed default applies — because since the strict default landed,
+/// coercing garbage to a fixed policy would let a typo silently opt a
+/// brink-dialect project out of strict (mirrors the wasm editor's
+/// unrecognized-value behavior).
 fn explicit_initialization_option<'a>(params: &'a InitializeParams, key: &str) -> Option<&'a str> {
     params
         .initialization_options
@@ -690,9 +698,10 @@ impl ConfigOverrides {
                 "brink" => Dialect::Brink,
                 _ => Dialect::StrictInk,
             }),
-            types: explicit_initialization_option(params, "types").map(|v| match v {
-                "strict" => TypePolicy::Strict,
-                _ => TypePolicy::Gradual,
+            types: explicit_initialization_option(params, "types").and_then(|v| match v {
+                "strict" => Some(TypePolicy::Strict),
+                "gradual" => Some(TypePolicy::Gradual),
+                _ => None,
             }),
         }
     }
@@ -746,13 +755,23 @@ fn toml_span_to_lsp_range(
 /// fallen back to defaults). `source` is the file's text, when it was read
 /// successfully — needed to convert `ConfigError::Toml`'s byte span into an
 /// LSP line/column range (see [`toml_span_to_lsp_range`]).
+///
+/// Severity is always `Error`: every `ConfigError` variant (unreadable
+/// file, malformed TOML, a recognized key holding the wrong shape/value) is
+/// a genuine config-load failure — `ConfigError` carries no `DiagnosticCode`
+/// and has no warning-level variant, unlike `brink_ir::Diagnostic` (whose
+/// severity is code-dependent and must go through
+/// [`convert::severity_to_lsp`] with `diag.code.severity()`, see
+/// [`convert::diagnostic_to_lsp`]). This still routes through
+/// `convert::severity_to_lsp` rather than naming the `tower_lsp` variant
+/// directly, so the mapping stays centralized in one place (#1163).
 fn config_error_diagnostic(
     error: &brink_project_config::ConfigError,
     source: Option<&str>,
 ) -> tower_lsp::lsp_types::Diagnostic {
     tower_lsp::lsp_types::Diagnostic {
         range: toml_span_to_lsp_range(error, source).unwrap_or_default(),
-        severity: Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR),
+        severity: Some(convert::severity_to_lsp(brink_ir::Severity::Error)),
         source: Some("brink.toml".to_owned()),
         message: error.to_string(),
         ..Default::default()
@@ -850,7 +869,7 @@ fn resolve_language_options(
     // brink` (a config-error diagnostic otherwise, `E064`) — the client's
     // responsibility, same as the compiler CLI.
     if let Some(types) = overrides.types {
-        options.types = types;
+        options.types = Some(types);
     }
 
     (options, outcome)
@@ -2298,10 +2317,7 @@ pub async fn analysis_loop(
                 .dialect
                 .lock()
                 .map_or_else(|_| Dialect::default(), |g| *g),
-            types: language
-                .types
-                .lock()
-                .map_or_else(|_| TypePolicy::default(), |g| *g),
+            types: language.types.lock().map_or_else(|_| None, |g| *g),
             ..AnalysisOptions::default()
         };
 
@@ -2640,7 +2656,30 @@ fn code_action_data_to_json(
 mod tests {
     use tower_lsp::lsp_types::Diagnostic;
 
-    use super::{PublishDecision, PublishRecord, PublishTier, publish_decision};
+    use super::{
+        PublishDecision, PublishRecord, PublishTier, config_error_diagnostic, publish_decision,
+    };
+
+    /// #1163 regression: `config_error_diagnostic` must always report
+    /// `ERROR` — every `ConfigError` variant (malformed TOML, unreadable
+    /// file, a recognized key with the wrong shape) is a genuine load
+    /// failure, and the type carries no `DiagnosticCode`/warning tier to
+    /// route through `convert::severity_to_lsp` differently. This locks in
+    /// that the #1163 fix (routing the literal through
+    /// `convert::severity_to_lsp` instead of naming the `tower_lsp` variant
+    /// directly) didn't change the resulting severity.
+    #[test]
+    fn config_error_diagnostic_is_always_error() {
+        let err = brink_project_config::ConfigError::NotATable {
+            key: "types".to_owned(),
+            found: "string",
+        };
+        let diag = config_error_diagnostic(&err, None);
+        assert_eq!(
+            diag.severity,
+            Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR)
+        );
+    }
 
     /// A distinct diagnostic set identified by its message (content equality is
     /// all `publish_decision` inspects).

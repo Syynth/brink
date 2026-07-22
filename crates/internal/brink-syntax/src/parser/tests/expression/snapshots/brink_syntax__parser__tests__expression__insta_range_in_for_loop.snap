@@ -1,0 +1,50 @@
+---
+source: crates/internal/brink-syntax/src/parser/tests/expression/mod.rs
+expression: "format!(\"{:#?}\", p.syntax())"
+---
+SOURCE_FILE@0..40
+  LOGIC_LINE@0..40
+    TILDE@0..1 "~"
+    WHITESPACE@1..2 " "
+    STMT_BLOCK@2..39
+      L_BRACE@2..3 "{"
+      NEWLINE@3..4 "\n"
+      WHITESPACE@4..6 "  "
+      FOR_STMT@6..37
+        IDENT@6..9 "for"
+        WHITESPACE@9..10 " "
+        IDENTIFIER@10..11
+          IDENT@10..11 "i"
+        WHITESPACE@11..12 " "
+        IDENT@12..14 "in"
+        WHITESPACE@14..15 " "
+        RANGE_EXPR@15..20
+          INTEGER_LIT@15..16
+            INTEGER@15..16 "0"
+          DOT@16..17 "."
+          DOT@17..18 "."
+          PATH@18..19
+            IDENT@18..19 "n"
+          WHITESPACE@19..20 " "
+        STMT_BLOCK@20..37
+          L_BRACE@20..21 "{"
+          NEWLINE@21..22 "\n"
+          WHITESPACE@22..26 "    "
+          EXPR_STMT@26..26
+          ERROR@26..27
+            TILDE@26..27 "~"
+          WHITESPACE@27..28 " "
+          ASSIGNMENT@28..33
+            PATH@28..29
+              IDENT@28..29 "x"
+            WHITESPACE@29..30 " "
+            EQ@30..31 "="
+            WHITESPACE@31..32 " "
+            PATH@32..33
+              IDENT@32..33 "i"
+          NEWLINE@33..34 "\n"
+          WHITESPACE@34..36 "  "
+          R_BRACE@36..37 "}"
+      NEWLINE@37..38 "\n"
+      R_BRACE@38..39 "}"
+    NEWLINE@39..40 "\n"

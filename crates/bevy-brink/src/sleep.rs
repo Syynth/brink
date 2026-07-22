@@ -45,29 +45,35 @@
 //!   reads only ink World state, so it is re-evaluated only when the shared
 //!   World actually changed (bevy change detection on [`BrinkGlobals`]) —
 //!   the cheap path.
-//! - **any capability dependency** (`bits` non-empty) — **always polls**,
-//!   re-evaluated every wake pass, *even if every bit is `true`*. The `#913`
-//!   AND-merge verdict promises a capability's reads are change-detection
-//!   *capable*, but [`mark_wake_dirty`] has no hook on a component's own
-//!   change ticks (`docs/effects-spec.md` §12.5 is not wired here) — only on
-//!   [`BrinkGlobals`]. Trusting an all-`true` verdict for a component-backed
-//!   condition (e.g. `is_player_nearby` reading `Transform`) would gate
-//!   re-evaluation on a signal ([`BrinkGlobals`]) that a pure-component
-//!   change never fires, and the flow would miss its wake. Conservative: a
-//!   wasted re-evaluation of a still-false condition just leaves the flow
-//!   parked (§3 soundness direction — over-report, never miss a wake).
+//! - **any must-poll dependency** (`#913` AND-merge folded a bit to `false`,
+//!   so `all_detect_capable` is `false`): re-evaluated every wake pass. That
+//!   capability's reads are not change-detection-backed, so there is no cheap
+//!   signal to gate on.
+//! - **every dependency change-detection-capable** (`bits` non-empty, `#913`
+//!   verdict all-`true`): the §12.5 cheap path (#996). Each dependency
+//!   capability's concrete component is tracked by a
+//!   [`detect_capability_changes`](crate::capability::detect_capability_changes)
+//!   system (wired per component by `register_capability`), which records —
+//!   through bevy's own `Changed<C>` window — whether that component moved
+//!   this frame. [`mark_wake_dirty`] re-evaluates such a condition only when
+//!   the shared World changed **or** one of its watched components' change
+//!   ticks advanced — not every frame. A capability the wake layer cannot
+//!   observe (unregistered, or with no verdict recorded yet) folds to a
+//!   conservative must-poll: it cannot prove the component is unchanged, and a
+//!   missed wake is the engine-race bug class.
 //!
 //! Re-evaluation is **always sound** regardless of the verdict: the detect bits
-//! only tune the *cadence*, and today that cadence is cheap **only** for the
-//! no-capability-dependency case above. That is also why `#913`'s fold must
-//! land first — a last-write-wins `true` on a capability that is really
-//! must-poll would compound the same class of missed wake once §12.5 lands.
+//! only tune the *cadence*. `#913`'s AND-merge must land before this cheap
+//! path — a last-write-wins `true` on a capability that is really must-poll
+//! would gate re-evaluation on a component-tick signal that its non-detectable
+//! read never fires, reintroducing the missed wake §12.5 is careful to avoid.
 //!
 //! ## Systems (auto-registered by [`BrinkPlugin`](crate::BrinkPlugin))
 //!
 //! - [`mark_wake_dirty`] (ordinary system): consults each parked policy's
-//!   [`DetectSummary`] + [`BrinkGlobals`] change detection and flags which
-//!   parked flows need a re-evaluation this frame.
+//!   [`DetectSummary`], [`BrinkGlobals`] change detection, and the
+//!   per-capability component-tick verdict (§12.5, #996) and flags which parked
+//!   flows need a re-evaluation this frame.
 //! - [`run_flow_sleep`] (exclusive system, gated on
 //!   `any_with_component::<FlowSleep<M>>`): re-evaluates the flagged conditions
 //!   in each flow's own context, wakes on true, and re-arms/removes policies at
@@ -75,8 +81,14 @@
 //!   effect the following frame either way. Before admitting a flagged policy
 //!   for evaluation it also runs the attach-time purity gate
 //!   ([`check_named_condition_purity`], issue #995, §13.1 point 2): a
-//!   condition whose effect row shows writes is rejected loudly
-//!   ([`WakeConditionPurityError`]) and never called, not even once.
+//!   condition whose effect row shows writes — including writes performed
+//!   transitively through a host-registered `EXTERNAL` binding the
+//!   [`CapabilityManifest`] declares `writes` for (issue #1040, the #995
+//!   follow-up; `docs/effects-spec.md` §9/§13) — is rejected loudly
+//!   ([`WakeConditionPurityError`]) and never called, not even once. A
+//!   dynamically-resolved fn-value condition
+//!   ([`FlowSleep::with_condition_value`], issue #1078) runs the same gate
+//!   via [`check_value_condition_purity`] instead.
 //!
 //! [`WaitingForChoice`]: brink_runtime::StoryStatus::WaitingForChoice
 //! [`Ended`]: brink_runtime::StoryStatus::Ended
@@ -94,13 +106,15 @@ use bevy_ecs::query::QueryState;
 use bevy_ecs::system::{Local, Query, Res};
 use bevy_ecs::world::World as EcsWorld;
 use bevy_log::warn;
-use brink_format::{DefinitionId, EffectRowEntry, Value};
+use brink_format::{DefinitionId, DirectEffects, EffectRowEntry, Value};
 use brink_runtime::{Program, StoryStatus};
 use thiserror::Error;
 
 use crate::asset::{BrinkProgram, ProgramAsset};
-use crate::bindings::call_ink_function;
-use crate::capability::ContainerAccess;
+use crate::bindings::{call_ink_function, call_ink_function_value};
+use crate::capability::{
+    CapabilityChanges, CapabilityManifest, CapabilityRegistry, ContainerAccess,
+};
 use crate::flow::BrinkFlow;
 use crate::globals::BrinkGlobals;
 
@@ -202,7 +216,13 @@ impl DetectSummary {
 #[derive(Component)]
 pub struct FlowSleep<M: Send + Sync + 'static = ()> {
     /// The ink function name whose (pure) return value is the wake condition.
+    /// A diagnostic label only when [`condition_value`](Self::condition_value)
+    /// is `Some` — see [`with_condition_value`](Self::with_condition_value).
     condition: String,
+    /// A dynamically-resolved fn-value token (`Value::FnRef`/`Closure`) that
+    /// overrides `condition`'s by-name resolution — see
+    /// [`with_condition_value`](Self::with_condition_value).
+    condition_value: Option<Value>,
     /// Arguments passed to the condition function, in declaration order.
     args: Vec<Value>,
     /// The `detect`-bit verdict for the condition's dependencies (`#913`).
@@ -244,6 +264,7 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
     fn new(condition: String, arming: WakeArming) -> Self {
         Self {
             condition,
+            condition_value: None,
             args: Vec::new(),
             detect: DetectSummary::default(),
             arming,
@@ -268,14 +289,37 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
         self
     }
 
+    /// Attach a dynamically-resolved fn-value token (`Value::FnRef`/
+    /// `Closure`) as the wake condition — for a host that obtained the
+    /// condition dynamically (a global's current value, a returned callback
+    /// token, a `bind_brink_query` result) rather than naming it statically
+    /// via [`persistent`](Self::persistent)/[`once`](Self::once).
+    ///
+    /// When set, this takes over **both** halves of condition resolution:
+    /// the attach-time purity gate checks `value`'s target row
+    /// ([`check_value_condition_purity`] instead of
+    /// [`check_named_condition_purity`]), and evaluation invokes the token
+    /// directly (`call_ink_function_value` instead of resolving `condition`
+    /// by path). `condition`'s string (from [`persistent`](Self::persistent)/
+    /// [`once`](Self::once)) remains only a diagnostic label at that point —
+    /// it is never resolved by path while a `condition_value` is set. Builder.
+    #[must_use]
+    pub fn with_condition_value(mut self, value: Value) -> Self {
+        self.condition_value = Some(value);
+        self
+    }
+
     /// Attach the condition's dependency [`DetectSummary`] (`#913`), tuning the
     /// re-evaluation cadence. Without this the summary is empty — treated as
     /// all-detect-capable (re-evaluate only on a World change), the right
     /// default for a condition reading only ink World state. A summary whose
-    /// [`bits`](DetectSummary::bits) names any external (component)
-    /// capability always must-polls instead, regardless of the AND-merge
-    /// verdict — `mark_wake_dirty` has no per-capability component-tick hook
-    /// yet (`docs/effects-spec.md` §12.5), only `BrinkGlobals`. Builder.
+    /// [`bits`](DetectSummary::bits) names external (component) capabilities
+    /// that are **all** change-detection-capable (`#913` AND-merge verdict
+    /// all-`true`) gets the §12.5 cheap path (#996): re-evaluated only when one
+    /// of those components changed — provided each is registered via
+    /// `register_capability` (an unregistered capability the wake layer cannot
+    /// observe must-polls conservatively). A summary with any must-poll bit
+    /// re-evaluates every pass. Builder.
     #[must_use]
     pub fn with_detect(mut self, detect: DetectSummary) -> Self {
         self.detect = detect;
@@ -304,10 +348,18 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
         self.needs_eval = false;
     }
 
-    /// The ink function name of the wake condition.
+    /// The ink function name of the wake condition — a diagnostic label only
+    /// when [`condition_value`](Self::condition_value) is `Some`.
     #[must_use]
     pub fn condition(&self) -> &str {
         &self.condition
+    }
+
+    /// The dynamically-resolved fn-value token, if
+    /// [`with_condition_value`](Self::with_condition_value) set one.
+    #[must_use]
+    pub fn condition_value(&self) -> Option<&Value> {
+        self.condition_value.as_ref()
     }
 
     /// The current [`SleepState`].
@@ -323,12 +375,13 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
     }
 
     /// Whether every dependency capability is change-detection-backed (`#913`
-    /// AND-merge verdict). `false` means the condition polls — but note `true`
-    /// does **not** by itself guarantee the cheap path: `mark_wake_dirty` only
-    /// takes it at face value when [`detect_summary`](Self::detect_summary)'s
-    /// [`bits`](DetectSummary::bits) is also empty (no external-capability
-    /// dependency); a non-empty `bits` map always polls regardless, pending
-    /// §12.5 component-tick wiring.
+    /// AND-merge verdict). `false` means the condition polls every pass. `true`
+    /// enables the cheap path: for an empty [`bits`](DetectSummary::bits) map
+    /// (no external dependency) that is re-evaluate-on-`BrinkGlobals`-change;
+    /// for a non-empty one it is re-evaluate-on-watched-component-change (§12.5,
+    /// #996), provided each named capability is registered via
+    /// `register_capability` so [`mark_wake_dirty`] can observe its ticks — an
+    /// unregistered capability the wake layer cannot observe still must-polls.
     #[must_use]
     pub fn dependencies_all_detect_capable(&self) -> bool {
         self.detect.all_detect_capable
@@ -367,12 +420,33 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
 // an opaque row (the §3 pessimal top: effects inference couldn't summarize a
 // call it makes) makes the condition impure and rejects loudly.
 //
-// **Scope note** (recorded on issue #995): this checks the row's own
-// ink-level writes, not writes performed transitively through a
-// host-registered `EXTERNAL` the condition calls (that axis needs the BH-1
-// capability join — `CapabilityManifest`/`CapabilityRegistry`/
-// `compute_container_access` — which is its own coupling; flagged as a
-// follow-up rather than folded into this fix).
+// **Closed follow-up** (issue #1040, tracked from #995/#897): the check also
+// walks every `EXTERNAL` call a row (or a dispatch's static fallback) makes
+// and consults the [`CapabilityManifest`]'s declared `effects.writes` for it
+// (`docs/effects-spec.md` §9's "the manifest IS the external's row", §13.2's
+// grammar) — a manifest entry declaring one or more `writes` capabilities
+// rejects the condition exactly like an ink-level global write does. Unlike
+// the BH-1 access join (`compute_container_access`), this needs no
+// `CapabilityRegistry`/`ComponentId` resolution: the yes/no purity verdict
+// only needs the capability *names* a manifest entry lists, not what
+// `ComponentId` they resolve to.
+//
+// A manifest entry with no `writes` (reads-only, or no `effects` key at all —
+// §13.2's opt-in default) is accepted: it does not touch a write-capable ECS
+// capability, and purity is exactly "no writes". An `EXTERNAL` name with **no
+// manifest entry at all** is likewise accepted, deliberately matching the
+// BH-1 access join's posture (`resolve_call_atom`, `crate::capability`):
+// "a call whose `NameId` doesn't resolve, or that has no manifest entry at
+// all, contributes no access — silently, since not every `EXTERNAL` touches
+// ECS state (§13.2's `effects` key is opt-in)". Rejecting an unregistered
+// external here would fault the flow permanently — the same missed-wake bug
+// class the #913 detect-merge ruling treats as the worse failure mode
+// (`docs/decision-log.md` 2026-07-18, "a missed wake is the engine-race bug
+// class") — for a binding (e.g. a `bind_brink_fn` helper) that legitimately
+// never touches ECS state and was accepted before this check existed. Only a
+// manifest entry that affirmatively declares `writes` is rejected; the
+// manifest is an honesty contract, not a security boundary (the host is the
+// TCB — `docs/effects-spec.md` §9).
 //
 // A story whose `EffectRows` table is empty entirely (a converter-built
 // program, or a program that never went through the compiler's effects
@@ -387,6 +461,18 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
 // never evaluated even once. Faulted the same way a runtime eval error is
 // (never silently retried into a spin), but with its own distinct, named
 // error so the two classes of failure are never confused in a log.
+//
+// **Closed follow-up** (issue #1078, tracked from #1062): `check_row_purity`
+// (via `check_value_condition_purity`) has always covered a dynamically-
+// resolved fn-value token (`Value::FnRef`/`Closure`), but nothing in
+// `FlowSleep`/`run_flow_sleep` could ever produce one to check — the named
+// path (`FlowSleep::persistent`/`once`) was the only wake-condition shape
+// `run_flow_sleep` resolved. `FlowSleep::with_condition_value` adds the
+// missing shape: a host that obtains its condition dynamically (a global's
+// current value, a returned callback token, a `bind_brink_query` result)
+// attaches the token directly, and `run_flow_sleep`'s gather/evaluate phases
+// branch on it exactly like the named path — `check_value_condition_purity`
+// gates admission, `call_ink_function_value` (`crate::bindings`) evaluates.
 
 /// A wake condition failed the attach-time purity check. See the module
 /// section above for the contract this enforces.
@@ -449,6 +535,26 @@ pub enum WakeConditionPurityError {
         /// The condition name/path/label.
         condition: String,
     },
+    /// The condition (or a dispatch fallback its row folds in) calls a
+    /// host-registered `EXTERNAL` binding whose [`CapabilityManifest`] entry
+    /// declares one or more `writes` capabilities (issue #1040, the #995
+    /// follow-up; `docs/effects-spec.md` §9/§13).
+    #[error(
+        "wake condition `{condition}` is not pure: it calls EXTERNAL `{external}`, whose \
+         capability manifest declares writes {writes:?} — a FlowSleep condition is \
+         re-evaluated whenever a dependency moves (docs/effects-spec.md §13.1 point 2), and a \
+         writing binding would let that re-evaluation observe or cause a mutation \
+         (docs/effects-spec.md §9/§13, issue #1040)"
+    )]
+    ExternalWrites {
+        /// The condition name/path/label.
+        condition: String,
+        /// The `EXTERNAL` binding's name.
+        external: String,
+        /// The written capability names the manifest declares, sorted and
+        /// deduplicated.
+        writes: Vec<String>,
+    },
 }
 
 /// Find the `EffectRows` entry for `def`, if this story's table carries one.
@@ -475,6 +581,7 @@ fn write_names(program: &Program, ids: &[DefinitionId]) -> Vec<String> {
 fn check_row_purity(
     program: &Program,
     row: &EffectRowEntry,
+    manifest: &CapabilityManifest,
     condition_label: &str,
 ) -> Result<(), WakeConditionPurityError> {
     if row.direct.opaque
@@ -487,6 +594,12 @@ fn check_row_purity(
             condition: condition_label.to_owned(),
         });
     }
+
+    check_external_calls_purity(program, &row.direct, manifest, condition_label)?;
+    for dispatch in &row.dispatches {
+        check_external_calls_purity(program, &dispatch.fallback, manifest, condition_label)?;
+    }
+
     let mut writes = write_names(program, &row.direct.writes);
     for dispatch in &row.dispatches {
         writes.extend(write_names(program, &dispatch.fallback.writes));
@@ -503,6 +616,41 @@ fn check_row_purity(
     }
 }
 
+/// Issue #1040 (the #995 follow-up): check every `EXTERNAL` call atom in
+/// `direct` (a row's direct part, or a dispatch's static fallback) against
+/// `manifest`'s declared `effects.writes`. See the module section above for
+/// the full contract: a manifest entry declaring `writes` rejects; a
+/// reads-only entry, a no-`effects`-key entry, or no manifest entry at all
+/// (the same opt-in posture `crate::capability::resolve_call_atom` applies)
+/// all accept.
+fn check_external_calls_purity(
+    program: &Program,
+    direct: &DirectEffects,
+    manifest: &CapabilityManifest,
+    condition_label: &str,
+) -> Result<(), WakeConditionPurityError> {
+    for call in &direct.calls {
+        let external_name = program
+            .name_checked(call.name)
+            .map_or_else(|| format!("<{:?}>", call.name), str::to_owned);
+        // No manifest entry at all accepts, same as a reads-only/no-`effects`
+        // entry — see the doc comment above.
+        if let Some(external) = manifest.external(&external_name)
+            && !external.effects.writes.is_empty()
+        {
+            let mut writes = external.effects.writes.clone();
+            writes.sort();
+            writes.dedup();
+            return Err(WakeConditionPurityError::ExternalWrites {
+                condition: condition_label.to_owned(),
+                external: external_name,
+                writes,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Check purity for a **named** wake condition (`FlowSleep::condition`'s
 /// shape) — resolves `condition` to a `DefinitionId` via
 /// [`Program::definition_id_for_path`], then inspects its `EffectRows` row.
@@ -512,11 +660,17 @@ fn check_row_purity(
 /// compiler's effects emission) is outside the guarantee this checks — see
 /// the module section above.
 ///
+/// `manifest` threads the host's [`CapabilityManifest`] (issue #1040) so a
+/// condition calling a host-registered `EXTERNAL` binding is checked against
+/// that binding's declared `effects.writes`, not just the row's own
+/// ink-level writes.
+///
 /// # Errors
 /// See [`WakeConditionPurityError`].
 pub fn check_named_condition_purity(
     program: &Program,
     effect_rows: &[EffectRowEntry],
+    manifest: &CapabilityManifest,
     condition: &str,
 ) -> Result<(), WakeConditionPurityError> {
     if effect_rows.is_empty() {
@@ -532,7 +686,7 @@ pub fn check_named_condition_purity(
             condition: condition.to_owned(),
         }
     })?;
-    check_row_purity(program, row, condition)
+    check_row_purity(program, row, manifest, condition)
 }
 
 /// Check purity for a **dynamic fn-value** wake condition — a `Value`
@@ -541,7 +695,8 @@ pub fn check_named_condition_purity(
 /// value's target via [`Value::fn_target`], then inspects the same
 /// `EffectRows` row [`check_named_condition_purity`] does.
 ///
-/// Same empty-`effect_rows` bypass as [`check_named_condition_purity`].
+/// Same empty-`effect_rows` bypass as [`check_named_condition_purity`]. Same
+/// `manifest` threading (issue #1040) as [`check_named_condition_purity`].
 ///
 /// # Errors
 /// See [`WakeConditionPurityError`]. [`WakeConditionPurityError::NotAFunctionValue`]
@@ -549,6 +704,7 @@ pub fn check_named_condition_purity(
 pub fn check_value_condition_purity(
     program: &Program,
     effect_rows: &[EffectRowEntry],
+    manifest: &CapabilityManifest,
     value: &Value,
 ) -> Result<(), WakeConditionPurityError> {
     if effect_rows.is_empty() {
@@ -565,7 +721,7 @@ pub fn check_value_condition_purity(
             condition: label.clone(),
         }
     })?;
-    check_row_purity(program, row, &label)
+    check_row_purity(program, row, manifest, &label)
 }
 
 /// Ink truthiness for a wake condition's return value: a `Bool(true)`, a
@@ -581,35 +737,91 @@ fn is_condition_true(value: &Value) -> bool {
     }
 }
 
+/// Decide whether a parked policy needs its condition re-evaluated this pass,
+/// given the two change signals `mark_wake_dirty` can observe: the shared ink
+/// World ([`BrinkGlobals`], `world_changed`) and — new in #996 — the
+/// per-capability component-tick verdict [`CapabilityChanges`] (§12.5).
+///
+/// The cases, in order:
+///
+/// - **Never evaluated yet** (`!evaluated_once`): always re-evaluate. A
+///   dormant policy must get its first evaluation even on a quiet frame.
+/// - **No external-capability dependency** ([`DetectSummary::bits`] empty): the
+///   condition reads only ink World state, so [`BrinkGlobals`] change detection
+///   is the whole signal — re-evaluate only when it changed.
+/// - **Any dependency capability is must-poll** (`#913` AND-merge folded a bit
+///   to `false`, so `all_detect_capable` is `false`): re-evaluate every pass;
+///   that capability's reads are not change-detection-backed.
+/// - **Every dependency capability is change-detection-capable** (`#913`
+///   verdict all-`true`, `bits` non-empty): the §12.5 cheap path. Re-evaluate
+///   only if the shared World changed (the condition may also read ink globals)
+///   **or** one of the watched components' change ticks advanced this pass
+///   ([`CapabilityChanges`]). A capability the wake layer cannot observe —
+///   unregistered (no [`CapabilityRegistry::type_id`]), or tracked but with no
+///   verdict recorded yet ([`CapabilityChanges::changed`] returns `None`) —
+///   folds to a conservative must-poll: it cannot prove the component is
+///   unchanged, and a missed wake is the engine-race bug class (over-report,
+///   never under-report — §3 soundness direction).
+fn wake_needs_reeval<M: Send + Sync + 'static>(
+    sleep: &FlowSleep<M>,
+    registry: &CapabilityRegistry<M>,
+    changes: &CapabilityChanges<M>,
+    world_changed: bool,
+) -> bool {
+    if !sleep.evaluated_once {
+        return true;
+    }
+    let detect = &sleep.detect;
+    if detect.bits.is_empty() {
+        // No external-capability dependency (`bits` empty is vacuously
+        // all-detect-capable — see `DetectSummary::from_bits`): the shared ink
+        // World is the only signal, so re-evaluate exactly when it changed.
+        return world_changed;
+    }
+    if !detect.all_detect_capable {
+        return true;
+    }
+    // All dependency capabilities are change-detection-capable and non-empty:
+    // the §12.5 cheap path.
+    if world_changed {
+        return true;
+    }
+    detect.bits.keys().any(|name| {
+        // Untracked (name unregistered, or no verdict recorded yet) → `true`
+        // (conservative must-poll); tracked → the recorded changed bit.
+        registry
+            .type_id(name)
+            .and_then(|ty| changes.changed(ty))
+            .unwrap_or(true)
+    })
+}
+
 /// Ordinary (non-exclusive) system: flag which parked policies need their
-/// condition re-evaluated this frame, consuming the `#913` `detect` verdict.
+/// condition re-evaluated this frame, consuming the `#913` `detect` verdict and
+/// the two change signals it can observe.
 ///
-/// The only change signal this system can observe is [`BrinkGlobals`] (the
-/// ink shared World) — there is no per-capability component-tick wiring yet
-/// (`docs/effects-spec.md` §12.5 is not implemented here). So:
+/// - [`BrinkGlobals`] change detection covers conditions that read the shared
+///   ink World.
+/// - The per-capability component-tick verdict [`CapabilityChanges`] (§12.5,
+///   #996) covers component-backed **detect-capable** conditions — e.g. an
+///   `is_player_nearby` reading `Transform`, or a door's `should_open` reading
+///   a `Switch` — so they re-evaluate only when the watched component actually
+///   changed, not every frame. A [`detect_capability_changes`](crate::capability::detect_capability_changes)
+///   tracker (wired per registered component by `register_capability`, ordered
+///   before this system) supplies that verdict.
 ///
-/// - A policy whose [`DetectSummary::bits`] is **non-empty** — its condition
-///   depends on at least one external (component) capability, e.g. an
-///   `is_player_nearby` reading `Transform` — is **always** flagged
-///   (must-polled), *regardless* of the `#913` AND-merge verdict. A `true`
-///   bit only promises the capability's *reads* are change-detection-backed
-///   in principle; this system has no hook on those component ticks, so
-///   trusting the bit here would silently miss a component-only change (the
-///   engine-race class this module exists to avoid).
-/// - A policy with an **empty** `bits` map (no external-capability
-///   dependency — it reads only ink World state) is the one case
-///   [`BrinkGlobals`] change detection actually covers: flagged only when
-///   [`BrinkGlobals`] changed, or if it has never been evaluated (so a
-///   dormant policy still gets its first evaluation on a quiet frame).
-///
-/// Only [`Parked`](SleepState::Parked) policies are touched; woken, cancelled,
-/// and faulted policies are left alone.
+/// The per-policy decision is [`wake_needs_reeval`]; see it for the exact
+/// cadence and the conservative-must-poll fallback for capabilities this layer
+/// cannot observe. Only [`Parked`](SleepState::Parked) policies are touched;
+/// woken, cancelled, and faulted policies are left alone.
 #[expect(
     clippy::needless_pass_by_value,
     reason = "bevy systems take Res/Query by value"
 )]
 pub fn mark_wake_dirty<M: Send + Sync + 'static>(
     globals: Option<Res<BrinkGlobals<M>>>,
+    registry: Res<CapabilityRegistry<M>>,
+    changes: Res<CapabilityChanges<M>>,
     mut sleepers: Query<&mut FlowSleep<M>>,
 ) {
     let world_changed = globals.as_ref().is_some_and(DetectChanges::is_changed);
@@ -617,15 +829,7 @@ pub fn mark_wake_dirty<M: Send + Sync + 'static>(
         if sleep.state != SleepState::Parked {
             continue;
         }
-        // A non-empty `bits` map names at least one external capability
-        // dependency; only `BrinkGlobals` change detection is wired below, so
-        // any such policy must must-poll regardless of `all_detect_capable`.
-        let has_capability_deps = !sleep.detect.bits.is_empty();
-        let should_flag = has_capability_deps
-            || !sleep.detect.all_detect_capable
-            || world_changed
-            || !sleep.evaluated_once;
-        if should_flag && !sleep.needs_eval {
+        if wake_needs_reeval(&sleep, &registry, &changes, world_changed) && !sleep.needs_eval {
             sleep.needs_eval = true;
         }
     }
@@ -634,7 +838,13 @@ pub fn mark_wake_dirty<M: Send + Sync + 'static>(
 /// One parked flow scheduled for condition re-evaluation this pass.
 struct WakeCandidate {
     entity: Entity,
+    /// The named condition to resolve by path — ignored (a diagnostic label
+    /// only) when `condition_value` is `Some`.
     condition: String,
+    /// A dynamically-resolved fn-value token (issue #1078): when present,
+    /// evaluation invokes it directly instead of resolving `condition` by
+    /// path.
+    condition_value: Option<Value>,
     args: Vec<Value>,
 }
 
@@ -691,6 +901,11 @@ pub fn run_flow_sleep<M: Send + Sync + 'static>(
     let mut purity_faults: Vec<(Entity, WakeConditionPurityError)> = Vec::new();
     {
         let programs = world.resource::<Assets<ProgramAsset>>();
+        // The manifest is app-global (not per-marker `M` — `CapabilityRegistry`
+        // is, but `CapabilityManifest` is the one host-authored table every
+        // marker's stories share, per `crate::capability`'s module docs), so a
+        // single fetch here covers every candidate this pass gathers.
+        let manifest = world.resource::<CapabilityManifest>();
         for (entity, sleep, flow, program_ref) in gather.iter(world) {
             let status = flow.inner.status();
             // An `-> END` flow is dead; the policy is inert (§13.1 point 5).
@@ -725,15 +940,33 @@ pub fn run_flow_sleep<M: Send + Sync + 'static>(
                         // story unloaded mid-frame) just skips this pass —
                         // `needs_eval` stays set and it's retried once the
                         // asset is back.
+                        //
+                        // A dynamically-resolved fn-value token (issue #1078:
+                        // `FlowSleep::with_condition_value`) is checked via
+                        // `check_value_condition_purity` — the same row
+                        // inspection as the named path, just resolved through
+                        // the value's own target instead of a path lookup.
                         if let Some(asset) = programs.get(&program_ref.handle) {
-                            match check_named_condition_purity(
-                                &asset.program,
-                                &asset.effect_rows,
-                                &sleep.condition,
-                            ) {
+                            let purity = if let Some(value) = &sleep.condition_value {
+                                check_value_condition_purity(
+                                    &asset.program,
+                                    &asset.effect_rows,
+                                    manifest,
+                                    value,
+                                )
+                            } else {
+                                check_named_condition_purity(
+                                    &asset.program,
+                                    &asset.effect_rows,
+                                    manifest,
+                                    &sleep.condition,
+                                )
+                            };
+                            match purity {
                                 Ok(()) => candidates.push(WakeCandidate {
                                     entity,
                                     condition: sleep.condition.clone(),
+                                    condition_value: sleep.condition_value.clone(),
                                     args: sleep.args.clone(),
                                 }),
                                 Err(err) => purity_faults.push((entity, err)),
@@ -787,12 +1020,19 @@ pub fn run_flow_sleep<M: Send + Sync + 'static>(
     // ── Evaluate ── each condition runs in its owning flow's context (shared
     // World ⊕ that flow's locals) and cannot advance the visible story.
     for candidate in candidates {
-        let outcome = call_ink_function::<M>(
-            world,
-            candidate.entity,
-            &candidate.condition,
-            &candidate.args,
-        );
+        // A dynamically-resolved fn-value token (issue #1078) invokes
+        // directly; a named condition resolves by path — mirrors the purity
+        // gate's own branch above.
+        let outcome = if let Some(value) = &candidate.condition_value {
+            call_ink_function_value::<M>(world, candidate.entity, value, &candidate.args)
+        } else {
+            call_ink_function::<M>(
+                world,
+                candidate.entity,
+                &candidate.condition,
+                &candidate.args,
+            )
+        };
         let Some(mut sleep) = world.get_mut::<FlowSleep<M>>(candidate.entity) else {
             continue;
         };

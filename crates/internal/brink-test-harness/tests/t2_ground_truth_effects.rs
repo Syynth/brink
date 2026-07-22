@@ -176,6 +176,34 @@ fn assert_ground_truth(
                  under-report (issue #870)",
             );
         }
+        // ── NS-A2 (issue #1108): the output/fault dimensions. The observed
+        // side may under-approximate (capture-channel output is skipped),
+        // never over-approximate — so observed ⊆ declared is exactly the
+        // sound direction to assert.
+        if row.emits {
+            assert!(
+                static_row.emits,
+                "{label}: def `{def_name}` observed visible OUTPUT the \
+                 static effects() row's `emits` dimension never admits — \
+                 under-report (issue #1108)",
+            );
+        }
+        if row.tags {
+            assert!(
+                static_row.tags,
+                "{label}: def `{def_name}` observed a TAG the static \
+                 effects() row's `tags` dimension never admits — \
+                 under-report (issue #1108)",
+            );
+        }
+        if row.faults {
+            assert!(
+                static_row.faults,
+                "{label}: def `{def_name}` observed a tracked FAULT the \
+                 static effects() row's `faults` dimension never admits — \
+                 under-report (issue #1108)",
+            );
+        }
     }
 }
 
@@ -199,8 +227,14 @@ fn assert_ground_truth(
 fn check_corpus_case(dir: &Path) {
     let ink_path = dir.join("story.ink");
     let entry = ink_path.to_string_lossy().into_owned();
+    // NS-A9 (strict brink default): this harness ground-truths *effect rows*
+    // — a regime-independent subject — over fixtures and inline sources
+    // written in the gradual idiom (unannotated params, `VAR x = 0`
+    // placeholders). Explicit gradual, same as `algorithms_ground_truth`'s
+    // helper contract.
     let options = AnalysisOptions {
         dialect: Dialect::Brink,
+        types: Some(brink_compiler::TypePolicy::Gradual),
         ..AnalysisOptions::default()
     };
     let db = build_db(&entry, |p| std::fs::read_to_string(p), options);
@@ -211,8 +245,14 @@ fn check_corpus_case(dir: &Path) {
 /// Ground-truth one in-memory single-file `source` under the brink
 /// dialect, labeled `label` for failure messages.
 fn check_source(label: &str, source: &str) {
+    // NS-A9 (strict brink default): this harness ground-truths *effect rows*
+    // — a regime-independent subject — over fixtures and inline sources
+    // written in the gradual idiom (unannotated params, `VAR x = 0`
+    // placeholders). Explicit gradual, same as `algorithms_ground_truth`'s
+    // helper contract.
     let options = AnalysisOptions {
         dialect: Dialect::Brink,
+        types: Some(brink_compiler::TypePolicy::Gradual),
         ..AnalysisOptions::default()
     };
     let db = build_db("main.ink", |_| Ok(source.to_owned()), options);
@@ -275,8 +315,14 @@ fn formerly_known_mutator_write_gap_cases_now_ground_truth_cleanly() {
         let dir = corpus_dir().join("algorithms").join(name);
         let ink_path = dir.join("story.ink");
         let entry = ink_path.to_string_lossy().into_owned();
+        // NS-A9 (strict brink default): this harness ground-truths *effect rows*
+        // — a regime-independent subject — over fixtures and inline sources
+        // written in the gradual idiom (unannotated params, `VAR x = 0`
+        // placeholders). Explicit gradual, same as `algorithms_ground_truth`'s
+        // helper contract.
         let options = AnalysisOptions {
             dialect: Dialect::Brink,
+            types: Some(brink_compiler::TypePolicy::Gradual),
             ..AnalysisOptions::default()
         };
         let db = build_db(&entry, |p| std::fs::read_to_string(p), options);
@@ -337,6 +383,115 @@ fn ref_param_write_at_root_scope_has_nothing_to_ground_truth() {
          ~ heal(gold)\n{gold}\n-> END\n\
          === function heal(ref hp) ===\n~ hp = hp + 5\n",
     );
+}
+
+// ── NS-A2 (issue #1108): emits / tags / faults ground truth ─────────────
+
+/// The #1087 motivating shape: a state-pure knot that produces dialogue
+/// only *transitively*, through a function call — `teller`'s own bytecode
+/// runs the function whose body emits, and the emit atom is observed in
+/// `speak`'s scope while `knot`'s static row must cover it transitively.
+/// Both defs' rows must admit `emits` or the assertion fails.
+#[test]
+fn transitive_function_emission_ground_truth() {
+    check_source(
+        "transitive_emits",
+        "-> teller\n\n\
+         === teller ===\n~ temp x = speak()\n-> END\n\n\
+         === function speak() ===\nThe function narrates.\n~ return 1\n",
+    );
+}
+
+/// A tag-only definition: tags observed, no emits — the two output
+/// dimensions are independent (the 2026-07-18 ruling: a flow that only
+/// annotates isn't speaking). The static row must carry `tags`.
+#[test]
+fn tag_only_line_ground_truth() {
+    check_source(
+        "tag_only",
+        "-> marker\n\n\
+         === marker ===\n# checkpoint\nSome text after. # mood: grim\n-> END\n",
+    );
+}
+
+/// Choice text is host-rendered content: the choice list's fragments record
+/// as emits, and choice tags as tags.
+#[test]
+fn choice_text_and_tags_ground_truth() {
+    check_source(
+        "choice_output",
+        "-> hub\n\n\
+         === hub ===\nPick.\n\
+         * [Go north] # brave\n    North it is.\n    -> END\n\
+         * [Go south]\n    South it is.\n    -> END\n",
+    );
+}
+
+/// A def that faults (array OOB read) during exploration: the observed
+/// fault must be admitted by the static `faults` dimension (harvested from
+/// the indexing construct). The story is a straight line into the fault —
+/// the explorer records the error episode; the recorder attributes the
+/// fault to `boom`'s scope before the turn unwinds.
+#[test]
+fn oob_index_fault_ground_truth() {
+    check_source(
+        "oob_fault",
+        "-> boom\n\n\
+         === boom ===\n~ temp a = #[1, 2]\n~ temp x = a[5]\n{x}\n-> END\n",
+    );
+}
+
+/// Division by zero — the `/` construct's fault path, observed and covered.
+#[test]
+fn division_by_zero_fault_ground_truth() {
+    check_source(
+        "div_fault",
+        "VAR d = 0\n-> boom\n\n\
+         === boom ===\n~ temp x = 10 / d\n{x}\n-> END\n",
+    );
+}
+
+/// A silent, total, pure function: its observed row must stay empty on all
+/// three new dimensions (regression guard against over-observation — e.g.
+/// recording string-eval capture output as an emit).
+#[test]
+fn pure_silent_total_function_observes_nothing_new() {
+    // NS-A9 (strict brink default): this harness ground-truths *effect rows*
+    // — a regime-independent subject — over fixtures and inline sources
+    // written in the gradual idiom (unannotated params, `VAR x = 0`
+    // placeholders). Explicit gradual, same as `algorithms_ground_truth`'s
+    // helper contract.
+    let options = AnalysisOptions {
+        dialect: Dialect::Brink,
+        types: Some(brink_compiler::TypePolicy::Gradual),
+        ..AnalysisOptions::default()
+    };
+    let db = build_db(
+        "main.ink",
+        |_| {
+            Ok("-> knot\n\n\
+                === knot ===\n~ temp x = add(1, 2)\n{x}\n-> END\n\n\
+                === function add(a, b) ===\n~ return a + b\n"
+                .to_owned())
+        },
+        options,
+    );
+    let observed = observe("pure_fn", &db);
+    assert_ground_truth("pure_fn", &db, &observed);
+    let index = db.symbol_index();
+    let add_id = index
+        .by_name
+        .get("add")
+        .and_then(|ids| ids.first())
+        .copied()
+        .expect("add def");
+    if let Some(row) = observed.get(&add_id) {
+        assert!(
+            !row.emits && !row.tags && !row.faults,
+            "a pure arithmetic function must observe no output/tag/fault \
+             atoms, got {row:?}"
+        );
+    }
 }
 
 /// `#fn`/`bind`/`call` indirect dispatch (T1c) — the static analyzer marks

@@ -88,6 +88,7 @@ use brink_format::{
     CallAtom, CapabilityParam, DefinitionId, DirectEffects, EffectRowEntry, NameId, StoryData,
 };
 use brink_ir::suppressions::{Suppressions, apply_suppressions, parse_suppressions};
+use brink_ir::symbols::project_manifest;
 use brink_ir::{
     Diagnostic, DiagnosticCode, FileId, HirFile, ResolutionMap, Severity, SymbolIndex, SymbolKind,
     SymbolManifest, lower, lower_single_knot, lower_top_level,
@@ -104,10 +105,11 @@ mod heap_size;
 pub use analysis::ResolvedProject;
 pub(crate) use analysis::{
     analysis_diagnostics_query, analysis_query, await_purity_diagnostics_query,
-    call_site_diagnostics_query, call_site_metas_query, contributor_diagnostics_query,
-    diagnostics_query, effects_assertion_diagnostics_query, external_meta_query,
-    has_errors_in_closure_query, has_errors_query, inline_docs_query, per_file_diagnostics_query,
-    resolutions_index_query, value_meta_query, whole_project_diagnostics_query,
+    call_site_diagnostics_query, call_site_metas_query, comparator_contract_diagnostics_query,
+    contributor_diagnostics_query, diagnostics_query, effects_assertion_diagnostics_query,
+    external_meta_query, has_errors_in_closure_query, has_errors_query, inline_docs_query,
+    per_file_diagnostics_query, resolutions_index_query, value_meta_query,
+    whole_project_diagnostics_query,
 };
 
 // ─── Database ────────────────────────────────────────────────────────
@@ -247,6 +249,10 @@ impl Default for BrinkDatabase {
                 // FS-2 (issue #928): the `await`-condition purity gate (E105),
                 // reading `effects_query` only for defs a condition calls.
                 .ingredient::<await_purity_diagnostics_query>()
+                // NS-A4 (issue #1110): the comparator-contract gate (E119),
+                // reading `effects_query` only for defs named as inline
+                // `#fn` comparators of `sort_by`/`sorted_by`.
+                .ingredient::<comparator_contract_diagnostics_query>()
                 // Layer 3.
                 .ingredient::<lir_query>()
                 .ingredient::<lir_in_closure_query>()
@@ -301,6 +307,15 @@ pub(crate) struct LoweredFile {
     pub hir: HirFile,
     pub manifest: SymbolManifest,
     pub diagnostics: Vec<Diagnostic>,
+    /// B0.3 `validate_admission` output (docs/hir-admission-contract.md
+    /// §4.2, issue #1172) — kept deliberately separate from `diagnostics`:
+    /// the admission gate is non-suppressible (NF-6, always-on), so it must
+    /// never flow through `apply_suppressions` the way lowering/syntax
+    /// diagnostics do (`partition_diagnostics` below). Computed here so it
+    /// runs on every lowering, matching the "the validator runs on every
+    /// keystroke in the editor" perf posture — see `heap_size.rs`'s
+    /// `lowered_file_heap_size` for the matching estimator update.
+    pub admission: Vec<Diagnostic>,
 }
 
 /// Lower one file to HIR. Salsa's dependency tracking on the `parse` input
@@ -1542,9 +1557,14 @@ pub(crate) fn lir_knot_chunk_query(
 /// FG-4d (issue #830) also routes the per-knot chunk memos' `.types` read
 /// through this projection, so an `AnalysisOptions` edit that leaves `.types`
 /// unchanged keeps every knot chunk `Arc` pointer-identical.
+///
+/// Since the #1127 default flip this projects the *resolved* policy
+/// (`AnalysisOptions::type_policy()` — explicit `types` or the dialect-keyed
+/// default), so the cutoff argument is unchanged: same narrow `TypePolicy`
+/// value, resolved one query-hop later.
 #[salsa::tracked]
 pub(crate) fn type_policy_query(db: &dyn salsa::Database, project: ProjectInput) -> TypePolicy {
-    project.analysis_options(db).types
+    project.analysis_options(db).type_policy()
 }
 
 /// FG-4d **link phase**: assemble the per-knot chunk memos and the whole-root
@@ -1710,7 +1730,7 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
             lowering: &lowered_query(db, *f).diagnostics,
         })
         .collect();
-    let types = project.analysis_options(db).types;
+    let types = project.analysis_options(db).type_policy();
     let (mut errors, mut warnings) =
         partition_diagnostics(&inputs, diagnostics, disable_all, types);
 
@@ -1796,7 +1816,7 @@ pub(crate) fn lir_in_closure_query(db: &dyn salsa::Database, project: ProjectInp
             lowering: &lowered_query(db, *f).diagnostics,
         })
         .collect();
-    let types = project.analysis_options(db).types;
+    let types = project.analysis_options(db).type_policy();
     let (mut errors, mut warnings) =
         partition_diagnostics(&inputs, &diagnostics, disable_all, types);
 
@@ -1933,6 +1953,11 @@ fn populate_effect_rows(db: &dyn salsa::Database, project: ProjectInput, story: 
                 writes: row.writes.iter().copied().collect(),
                 calls,
                 opaque: row.opaque,
+                // NS-A2 (issue #1108): the three new row dimensions ship
+                // straight from the analyzer's inferred row.
+                emits: row.emits,
+                tags: row.tags,
+                faults: row.faults,
             },
             dispatches: Vec::new(),
         });
@@ -2095,8 +2120,13 @@ pub fn partition_diagnostics(
 ///
 /// This is the exact composition the pre-salsa `set_file` performed
 /// (per-knot lowering + top-level lowering + assembly + syntax errors), kept
-/// intact rather than collapsed onto `brink_ir::lower` so the output is
-/// byte-identical to the previous pipeline.
+/// intact so the assembled `HirFile` stays byte-identical to the previous
+/// pipeline. The manifest is no longer assembled by merging per-knot/
+/// top-level manifest fragments (B0.4, docs/hir-admission-contract.md
+/// Q3(b), issue #1173): `project_manifest` derives the whole
+/// `SymbolManifest` from the fully assembled `HirFile` in one pass, so
+/// `lower_single_knot`/`lower_top_level` no longer need to produce a
+/// manifest at all.
 fn lower_file(file_id: FileId, parse: &Parse) -> LoweredFile {
     let tree = parse.tree();
 
@@ -2107,8 +2137,7 @@ fn lower_file(file_id: FileId, parse: &Parse) -> LoweredFile {
         .collect();
 
     // Top-level lowering (everything outside knots).
-    let (root_content, top_level_knots, top_manifest, top_diagnostics) =
-        lower_top_level(file_id, &tree);
+    let (root_content, top_level_knots, top_diagnostics) = lower_top_level(file_id, &tree);
 
     // Assemble a complete `HirFile`: use `lower()` for the declarations
     // (variables, constants, lists, externals, includes), then replace knots
@@ -2116,21 +2145,17 @@ fn lower_file(file_id: FileId, parse: &Parse) -> LoweredFile {
     let (mut hir, _full_manifest, _full_diag) = lower(file_id, &tree);
     hir.knots = knot_entries
         .iter()
-        .filter_map(|(knot, _, _)| knot.clone())
+        .filter_map(|(knot, _)| knot.clone())
         .collect();
     hir.knots.extend(top_level_knots);
     hir.root_content = root_content;
 
-    // Merge manifests: top-level + all knots.
-    let mut manifest = top_manifest;
-    for (_, knot_manifest, _) in &knot_entries {
-        merge_manifest_into(&mut manifest, knot_manifest);
-    }
+    let manifest = project_manifest(&hir);
 
     // Merge diagnostics, then surface parser/syntax errors as compile
     // diagnostics (`E037`) so malformed source fails the compile.
     let mut diagnostics = top_diagnostics;
-    for (_, _, knot_diags) in &knot_entries {
+    for (_, knot_diags) in &knot_entries {
         diagnostics.extend(knot_diags.iter().cloned());
     }
     diagnostics.extend(parse.errors().iter().map(|e| Diagnostic {
@@ -2140,25 +2165,18 @@ fn lower_file(file_id: FileId, parse: &Parse) -> LoweredFile {
         code: DiagnosticCode::E037,
     }));
 
+    // B0.3 admission validator (docs/hir-admission-contract.md §4.2, issue
+    // #1172): a loud, non-suppressible pass wired directly at this seam so
+    // it runs on every lowering (NF-6, always-on). Kept in its own field —
+    // never folded into `diagnostics` above, which flows through
+    // `apply_suppressions` in `partition_diagnostics`.
+    let file_len = parse.syntax().text_range().end();
+    let admission = brink_analyzer::validate_admission(file_id, &hir, &manifest, file_len);
+
     LoweredFile {
         hir,
         manifest,
         diagnostics,
+        admission,
     }
-}
-
-/// Merge `src` manifest fields into `dst`.
-fn merge_manifest_into(dst: &mut SymbolManifest, src: &SymbolManifest) {
-    dst.knots.extend(src.knots.iter().cloned());
-    dst.stitches.extend(src.stitches.iter().cloned());
-    dst.variables.extend(src.variables.iter().cloned());
-    dst.constants.extend(src.constants.iter().cloned());
-    dst.lists.extend(src.lists.iter().cloned());
-    dst.externals.extend(src.externals.iter().cloned());
-    dst.labels.extend(src.labels.iter().cloned());
-    dst.list_items.extend(src.list_items.iter().cloned());
-    dst.locals.extend(src.locals.iter().cloned());
-    dst.unresolved.extend(src.unresolved.iter().cloned());
-    dst.docs
-        .extend(src.docs.iter().map(|(k, v)| (k.clone(), v.clone())));
 }

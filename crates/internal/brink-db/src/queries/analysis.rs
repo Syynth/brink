@@ -371,6 +371,46 @@ pub(crate) fn await_purity_diagnostics_query(
     ))
 }
 
+/// One file's NS-A4 comparator-contract diagnostics (E119,
+/// docs/stdlib-spec.md §4b, issue #1110): `sort_by`/`sorted_by` calls whose
+/// inline `#fn(target)` comparator's row provably exceeds pure·silent.
+/// Brink-only + lazy, the exact [`await_purity_diagnostics_query`] shape: a
+/// file with no such site never fetches a single per-def effect row, so a
+/// comparator-free project stays effect-inference-free.
+///
+/// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
+#[salsa::tracked(lru = 4096)]
+pub(crate) fn comparator_contract_diagnostics_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+) -> Arc<Vec<Diagnostic>> {
+    if project.analysis_options(db).dialect != brink_analyzer::Dialect::Brink {
+        return Arc::new(Vec::new());
+    }
+    let file_id = file.file_id(db);
+    let hir = &lowered_query(db, file).hir;
+    if !brink_analyzer::hir_has_comparator_site(hir) {
+        return Arc::new(Vec::new());
+    }
+    let (file_resolutions, _diags) = resolve_query(db, project, file);
+    let index = resolution_index_query(db, project);
+    let callee_defs = brink_analyzer::comparator_callees(file_id, hir, file_resolutions);
+    let mut rows = BTreeMap::new();
+    for id in callee_defs {
+        if let Some(row) = effects_query(db, project, DefKey::new(db, id)) {
+            rows.insert(id, (*row).clone());
+        }
+    }
+    Arc::new(brink_analyzer::comparator_contract_diagnostics(
+        file_id,
+        hir,
+        index,
+        file_resolutions,
+        &rows,
+    ))
+}
+
 /// Whole-project diagnostics + `symbol_meta` (issue #632 / FG-3 design doc
 /// §1), now a thin aggregator (issue #750 / FG-3 completion) over the
 /// decomposed external-check family — [`external_meta_query`] + per-file
@@ -420,7 +460,7 @@ pub(crate) fn whole_project_diagnostics_query(
     // inference from scratch via `infer_project` — the "inference finally
     // has a consumer" seam the per-def/per-SCC decomposition (FG-2, FG-2.1)
     // exists for. Gradual mode (the default) skips this block entirely.
-    if opts.types == TypePolicy::Strict {
+    if opts.type_policy() == TypePolicy::Strict {
         let strict_inference = (opts.dialect == brink_analyzer::Dialect::Brink)
             .then(|| type_inference_query(db, project).as_ref());
         // `strict_inference` is always `Some` here whenever `dialect =
@@ -480,6 +520,17 @@ pub(crate) fn whole_project_diagnostics_query(
     for file in project.files(db) {
         diagnostics.extend(
             await_purity_diagnostics_query(db, project, *file)
+                .iter()
+                .cloned(),
+        );
+    }
+    // NS-A4 comparator-contract gate (E119, docs/stdlib-spec.md §4b, issue
+    // #1110) — per-file, lazy (see `comparator_contract_diagnostics_query`'s
+    // doc): a project with no inline-`#fn` comparator site never triggers
+    // effect inference here.
+    for file in project.files(db) {
+        diagnostics.extend(
+            comparator_contract_diagnostics_query(db, project, *file)
                 .iter()
                 .cloned(),
         );
@@ -607,7 +658,7 @@ pub(crate) fn has_errors_query(db: &dyn salsa::Database, project: ProjectInput) 
             lowering: &lowered_query(db, *f).diagnostics,
         })
         .collect();
-    let types = project.analysis_options(db).types;
+    let types = project.analysis_options(db).type_policy();
     let diagnostics = analysis_diagnostics_query(db, project);
     let (errors, _warnings) =
         super::partition_diagnostics(&inputs, diagnostics, disable_all, types);
@@ -661,7 +712,7 @@ pub(crate) fn has_errors_in_closure_query(db: &dyn salsa::Database, project: Pro
             lowering: &lowered_query(db, *f).diagnostics,
         })
         .collect();
-    let types = project.analysis_options(db).types;
+    let types = project.analysis_options(db).type_policy();
     let diagnostics: Vec<Diagnostic> = analysis_diagnostics_query(db, project)
         .iter()
         .filter(|d| closure.contains(&d.file))

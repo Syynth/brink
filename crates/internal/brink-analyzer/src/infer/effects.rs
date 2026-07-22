@@ -12,8 +12,13 @@
 //! - **Types**: rows conceptually ride `Ty::Fn` (spec §5, the heap answer);
 //!   this slice keeps the row *inference* advisory and treats every call
 //!   through a function value as **opaque** (the conservative floor — see
-//!   [`EffectRow::opaque`]), which is sound; reading a concrete row back off a
-//!   stored `Ty::Fn` value is the §8 precision refinement left for a follow-up.
+//!   [`EffectRow::opaque`]), which is sound. Issue #872 (§8's "read the
+//!   concrete row off a stored `Ty::Fn`" precision rung) narrows this for the
+//!   provably-known case — a call through a write-once local whose value
+//!   traces to a single `#fn(target, …)`/`bind(…)`-chain origin
+//!   (`InferPass::resolve_pending_value_calls` in `infer::body`) — while
+//!   leaving the heap (VAR/CONST cells joined project-wide, §5's "sound,
+//!   coarse, improvable") pessimal still.
 //!
 //! **Soundness direction (spec §3, conservative-total)**: rows may over-report,
 //! never under-report. Over-report costs parallelism or a spurious wakeup;
@@ -46,6 +51,11 @@ use brink_format::DefinitionId;
 /// inference cannot see (a call through a function value, an unresolved
 /// callee). [`covers`](Self::covers) reads it as "⊒ everything".
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "opaque + the NS-A2 emits/tags/faults dimensions are independent \
+              lattice components of one row, not a state machine"
+)]
 pub struct EffectRow {
     /// Cells (VAR/CONST global [`DefinitionId`]s) this row may read. Seeded
     /// from FG-2.1's `referenced_globals` per-def read-set (spec §4).
@@ -60,6 +70,41 @@ pub struct EffectRow {
     /// with no visible row, or an unresolved callee. An opaque row is sound
     /// against any concrete row it might stand in for.
     pub opaque: bool,
+    /// NS-A2 (issue #1108, from #1087): the definition may produce **content**
+    /// — narration/dialogue fragments a host renders (text, interpolations,
+    /// glue-only output counts; ruled 2026-07-18). Tag-only lines do NOT set
+    /// this — tags are the metadata channel, tracked by [`Self::tags`]
+    /// (maintainer ruling refinement on #1087). Bool granularity v1.
+    pub emits: bool,
+    /// NS-A2 (issue #1108, from #1087's second ruling): the definition may
+    /// touch the **tag channel** — line tags, tag-only lines, choice tags.
+    /// Independent of [`Self::emits`]: a flow can be silent-but-annotating,
+    /// narrating-but-untagged, both, or neither. Bool granularity v1.
+    pub tags: bool,
+    /// NS-A2 (issue #1108, from #1097): the definition may raise a
+    /// **turn-terminating fault** — the designed domain-fault inventory
+    /// (E078-lineage conversions, OOB indexing, missing-key reads,
+    /// division by zero, the A1 `StdlibWrongType`/`NotOrderable` stdlib
+    /// faults, projection invalidation, value-call dispatch faults). Bool
+    /// granularity v1; per-fault-kind is the reserved refinement.
+    pub faults: bool,
+    /// NS-A4 / **F29(a)** (ruled by delegation 2026-07-19, stdlib-spec
+    /// §4b): the *refined* faults bit — like [`faults`](Self::faults) but
+    /// with charge sites **discharged by local type evidence** where the
+    /// walk can prove the construct total (a wrong-type-only intrinsic
+    /// over a provably-right-typed argument, float division, `for` over a
+    /// provable collection, an int-bounded range literal). Invariant:
+    /// `faults_refined → faults` (the refinement only ever *removes*
+    /// charges). Consumed by the protocol-impl contract gate (E114): a
+    /// `display`/`compare` impl whose row is provably total does NOT
+    /// inherit the conservative bit; the conservative union applies only
+    /// when the impl's own row is opaque or genuinely fault-bearing.
+    /// Deliberately NOT part of [`covers`](Self::covers)/
+    /// [`is_empty`](Self::is_empty) semantics (those stay anchored to the
+    /// conservative bit — the ground-truth harness and assertion checks
+    /// must keep the no-under-report property), and never serialized into
+    /// the `.inkb` `EffectRows` section.
+    pub faults_refined: bool,
 }
 
 impl EffectRow {
@@ -69,26 +114,40 @@ impl EffectRow {
     pub fn pessimal() -> Self {
         Self {
             opaque: true,
+            // F29: the conservative union applies to an opaque row — the
+            // refined bit never claims totality for a row inference
+            // cannot see.
+            faults_refined: true,
             ..Self::default()
         }
     }
 
     /// Whether this row lists (or subsumes) nothing at all — an empty,
-    /// non-opaque row (a genuinely pure definition).
+    /// non-opaque row (a genuinely pure·silent·untagged·total definition).
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        !self.opaque && self.reads.is_empty() && self.writes.is_empty() && self.calls.is_empty()
+        !self.opaque
+            && self.reads.is_empty()
+            && self.writes.is_empty()
+            && self.calls.is_empty()
+            && !self.emits
+            && !self.tags
+            && !self.faults
     }
 
     /// Fold `other` into `self` — the lattice join (set union per component,
-    /// `opaque` is sticky). Monotone: `self` only ever grows, which is what
-    /// makes the [`solve_scc_effects`] fixpoint converge over the finite
-    /// cells + kinds universe.
+    /// `opaque`/`emits`/`tags`/`faults` are sticky). Monotone: `self` only
+    /// ever grows, which is what makes the [`solve_scc_effects`] fixpoint
+    /// converge over the finite cells + kinds universe.
     pub fn join(&mut self, other: &EffectRow) {
         self.reads.extend(other.reads.iter().copied());
         self.writes.extend(other.writes.iter().copied());
         self.calls.extend(other.calls.iter().cloned());
         self.opaque |= other.opaque;
+        self.emits |= other.emits;
+        self.tags |= other.tags;
+        self.faults |= other.faults;
+        self.faults_refined |= other.faults_refined;
     }
 
     /// Whether `self` conservatively covers (⊒) `other`: every atom `other`
@@ -108,6 +167,9 @@ impl EffectRow {
         other.reads.is_subset(&self.reads)
             && other.writes.is_subset(&self.writes)
             && other.calls.is_subset(&self.calls)
+            && (self.emits || !other.emits)
+            && (self.tags || !other.tags)
+            && (self.faults || !other.faults)
     }
 }
 
@@ -118,6 +180,10 @@ impl EffectRow {
 /// `opaque` records that the body performed a call through a function value
 /// (or another effects-opaque construct), forcing the pessimal floor.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors EffectRow's independent dimension flags"
+)]
 pub struct EffectAtoms {
     pub reads: BTreeSet<DefinitionId>,
     pub writes: BTreeSet<DefinitionId>,
@@ -129,6 +195,19 @@ pub struct EffectAtoms {
     /// This body calls through a function value (or otherwise escapes the
     /// static call graph) — its row is pessimal (spec §3/§4).
     pub opaque: bool,
+    /// NS-A2: this body directly contains a content-producing construct
+    /// (see [`EffectRow::emits`]).
+    pub emits: bool,
+    /// NS-A2: this body directly touches the tag channel (see
+    /// [`EffectRow::tags`]).
+    pub tags: bool,
+    /// NS-A2: this body directly contains a construct that can raise a
+    /// turn-terminating fault (see [`EffectRow::faults`]).
+    pub faults: bool,
+    /// NS-A4 / F29(a): the refined faults bit (see
+    /// [`EffectRow::faults_refined`]) — the same charge sites with local
+    /// type-evidence discharges applied. `faults_refined → faults`.
+    pub faults_refined: bool,
 }
 
 impl EffectAtoms {
@@ -142,6 +221,10 @@ impl EffectAtoms {
             writes: self.writes.clone(),
             calls: self.calls.clone(),
             opaque: self.opaque,
+            emits: self.emits,
+            tags: self.tags,
+            faults: self.faults,
+            faults_refined: self.faults_refined,
         }
     }
 }
@@ -345,6 +428,95 @@ mod tests {
                 "both SCC members see b's write"
             );
         }
+    }
+
+    #[test]
+    fn join_carries_emits_tags_faults_stickily() {
+        let mut a = EffectRow::default();
+        let b = EffectRow {
+            emits: true,
+            ..Default::default()
+        };
+        let c = EffectRow {
+            tags: true,
+            faults: true,
+            ..Default::default()
+        };
+        a.join(&b);
+        a.join(&c);
+        assert!(a.emits && a.tags && a.faults);
+        // Joining an empty row afterwards never clears them (sticky).
+        a.join(&EffectRow::default());
+        assert!(a.emits && a.tags && a.faults);
+    }
+
+    #[test]
+    fn covers_is_per_dimension_for_emits_tags_faults() {
+        let silent = EffectRow::default();
+        let emitting = EffectRow {
+            emits: true,
+            ..Default::default()
+        };
+        let tagging = EffectRow {
+            tags: true,
+            ..Default::default()
+        };
+        let faulting = EffectRow {
+            faults: true,
+            ..Default::default()
+        };
+        assert!(!silent.covers(&emitting));
+        assert!(!silent.covers(&tagging));
+        assert!(!silent.covers(&faulting));
+        assert!(
+            emitting.covers(&silent),
+            "asserting less than reality is legal"
+        );
+        // The dimensions are independent: emits does not cover tags/faults.
+        assert!(!emitting.covers(&tagging));
+        assert!(!emitting.covers(&faulting));
+        assert!(!tagging.covers(&emitting));
+        // Opaque tops all three new dimensions too.
+        let pess = EffectRow::pessimal();
+        assert!(pess.covers(&emitting));
+        assert!(pess.covers(&tagging));
+        assert!(pess.covers(&faulting));
+        assert!(!faulting.covers(&pess));
+    }
+
+    #[test]
+    fn solve_scc_effects_propagates_emitter_tagger_faulter_status_transitively() {
+        // up(1) -> leaf(2); leaf emits + tags + faults, up is glue-only.
+        let up = cell(1);
+        let leaf = cell(2);
+        let batch: BTreeSet<DefinitionId> = [up].into_iter().collect();
+        let atoms: BTreeMap<DefinitionId, EffectAtoms> = [(
+            up,
+            EffectAtoms {
+                direct_calls: [leaf].into_iter().collect(),
+                ..Default::default()
+            },
+        )]
+        .into_iter()
+        .collect();
+        let known_rows: BTreeMap<DefinitionId, EffectRow> = [(
+            leaf,
+            EffectRow {
+                emits: true,
+                tags: true,
+                faults: true,
+                ..Default::default()
+            },
+        )]
+        .into_iter()
+        .collect();
+
+        let rows = solve_scc_effects(&batch, &atoms, &known_rows);
+        let row = &rows[&up];
+        assert!(row.emits, "glue-only caller of an emitter still emits");
+        assert!(row.tags);
+        assert!(row.faults);
+        assert!(!row.opaque);
     }
 
     #[test]

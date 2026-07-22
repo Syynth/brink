@@ -199,7 +199,7 @@ fn has_errors_matches_manual_partition_diagnostics() {
             &files,
             &db.analysis().diagnostics,
             disable_all,
-            db.analysis_options().types,
+            db.analysis_options().type_policy(),
         );
         assert_eq!(
             db.has_errors(),

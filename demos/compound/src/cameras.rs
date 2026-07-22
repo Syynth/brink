@@ -2,9 +2,12 @@
 //!
 //! Cameras are the simplest perception entity: no memory, no FSM, just a cone
 //! that oscillates and raises the alarm when the player crosses it. Disabling
-//! one (E while close) feeds the round bounty. In Phase 1 this becomes a pure
-//! ink logic loop plus a `#[derive(BrinkCommand)]` "camera disabled" command
-//! (plan §3), so the sweep math is kept trivially portable.
+//! one (E while close) feeds the round bounty. This is the Rust baseline
+//! (`camera_ai_system`); as of Phase 1c the sweep-and-detect loop also has an
+//! ink port side-by-side (`assets/cameras.ink` + `src/ink_cameras.rs`,
+//! `--cameras-impl ink`) — see that module's docs for why it stayed a pure
+//! return-value loop instead of the `#[derive(BrinkCommand)]` shape the plan
+//! originally sketched, and disabling stays Rust-only in both modes.
 
 use bevy::prelude::*;
 use std::time::Instant;
@@ -16,8 +19,14 @@ use crate::stats::{Loadout, PlayerStats};
 use crate::timing::BehaviorTimings;
 use crate::world::{Collider, Player, Wall, point_in_cone, raycast_clear};
 
-const CAMERA_RANGE: f32 = 210.0;
-const CAMERA_HALF_ANGLE: f32 = 0.45;
+/// Base vision range before the loadout/stealth adjustment. `pub(crate)` so
+/// the Phase 1c ink port (`ink_cameras.rs`) can compute the identical
+/// `effective_range` formula for its `sweep_and_detect` calls.
+pub(crate) const CAMERA_RANGE: f32 = 210.0;
+/// Cone half-angle, radians. `pub(crate)` so the ink port's `sees_player`
+/// world-access binding can reuse `world::point_in_cone` with the same
+/// geometry the Rust baseline uses.
+pub(crate) const CAMERA_HALF_ANGLE: f32 = 0.45;
 const DISABLE_RADIUS: f32 = 46.0;
 const CAMERA_HALF: Vec2 = Vec2::new(11.0, 11.0);
 

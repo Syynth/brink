@@ -1359,7 +1359,7 @@ pub fn resolve_pending_externals<M: Send + Sync + 'static>(world: &mut World) {
 #[expect(clippy::panic, reason = "tests assert via panic on the error arm")]
 mod tests {
     use super::*;
-    use crate::test_support::{compile_test_story, compile_test_story_brink};
+    use crate::test_support::{compile_test_story, compile_test_story_brink_gradual};
     use bevy_ecs::prelude::*;
     use brink_runtime::{FastRng, FlowInstance};
 
@@ -1606,7 +1606,11 @@ mod tests {
                     ~ temp seen = report(hp)\n\
                     ~ hp = hp + amount\n\
                     ~ return hp\n";
-        let (program, tables, _ctx) = compile_test_story_brink(src);
+        // NS-A9 (strict brink default): the `VAR npc = 0` → struct-reassign
+        // placeholder idiom is gradual-locked (E075 — struct literals are not
+        // legal declaration defaults), and the subject here (projection
+        // resolution at the binding seam) is regime-independent.
+        let (program, tables, _ctx) = compile_test_story_brink_gradual(src);
 
         let seen: std::sync::Arc<std::sync::Mutex<Vec<Value>>> = std::sync::Arc::default();
         let seen_for_binding = std::sync::Arc::clone(&seen);
@@ -1872,8 +1876,8 @@ mod tests {
             "-> END\n\
              === function make_doubler() ===\n~ return #fn(double)\n\
              === function make_adder() ===\n~ return bind(#fn(add), 10)\n\
-             === function double(x) ===\n~ return x + x\n\
-             === function add(a, b) ===\n~ return a + b\n",
+             === function double(x: int): int ===\n~ return x + x\n\
+             === function add(a: int, b: int): int ===\n~ return a + b\n",
         );
         let story = add_story_assets(&mut app, program, tables, ctx);
         let entity = app

@@ -6,11 +6,11 @@
 //! emitted a diagnostic) rather than aborting the whole block, mirroring how
 //! weave-block lowering treats individual statements.
 
-use brink_syntax::ast::{self, AstNode, SyntaxNodePtr};
+use brink_syntax::ast::{self, AstNode};
 
 use crate::hir::types::{AwaitStmt, BlockStmt, ElseBranch, ForStmt, IfStmt, WhileStmt};
-use crate::symbols::LocalSymbol;
-use crate::{AssignOp, Assignment, DiagnosticCode, Return, SymbolKind, TempDecl};
+use crate::provenance::NodeClass;
+use crate::{AssignOp, Assignment, DiagnosticCode, Return, ReturnKind, TempDecl};
 
 use super::super::context::{LowerScope, LowerSink, Lowered};
 use super::super::expr::LowerExpr;
@@ -41,10 +41,10 @@ fn lower_block_stmt(
         ast::BlockStmt::If(if_stmt) => lower_if_stmt(if_stmt, scope, sink).map(BlockStmt::If),
         ast::BlockStmt::While(w) => lower_while_stmt(w, scope, sink),
         ast::BlockStmt::For(f) => lower_for_stmt(f, scope, sink),
-        ast::BlockStmt::Break(b) => Ok(BlockStmt::Break(SyntaxNodePtr::from_node(b.syntax()))),
-        ast::BlockStmt::Continue(c) => {
-            Ok(BlockStmt::Continue(SyntaxNodePtr::from_node(c.syntax())))
-        }
+        ast::BlockStmt::Break(b) => Ok(BlockStmt::Break(scope.prov(NodeClass::Break, b.syntax()))),
+        ast::BlockStmt::Continue(c) => Ok(BlockStmt::Continue(
+            scope.prov(NodeClass::Continue, c.syntax()),
+        )),
         ast::BlockStmt::ExprStmt(stmt) => lower_block_expr_stmt(stmt, scope, sink),
         ast::BlockStmt::Await(a) => Ok(BlockStmt::Await(lower_await_stmt(a, scope, sink))),
     }
@@ -60,7 +60,7 @@ pub(crate) fn lower_await_stmt(
 ) -> AwaitStmt {
     let condition = a.condition().and_then(|e| e.lower_expr(scope, sink).ok());
     AwaitStmt {
-        ptr: SyntaxNodePtr::from_node(a.syntax()),
+        ptr: scope.prov(NodeClass::Await, a.syntax()),
         condition,
     }
 }
@@ -79,15 +79,8 @@ fn lower_block_temp_decl(
     let annotation = temp
         .type_annotation()
         .and_then(|ta| lower_type_annotation(&ta));
-    sink.add_local(LocalSymbol {
-        name: name.text.clone(),
-        range: name.range,
-        scope: scope.to_scope(),
-        kind: SymbolKind::Temp,
-        param_detail: None,
-    });
     Ok(BlockStmt::TempDecl(TempDecl {
-        ptr: ast::AstPtr::new(temp),
+        ptr: scope.prov(NodeClass::TempDecl, temp.syntax()),
         name,
         value,
         annotation,
@@ -116,7 +109,7 @@ fn lower_block_assignment(
             _ => AssignOp::Set,
         });
     Ok(BlockStmt::Assignment(Assignment {
-        ptr: ast::AstPtr::new(assign),
+        ptr: scope.prov(NodeClass::Assignment, assign.syntax()),
         target,
         op,
         value,
@@ -130,7 +123,8 @@ fn lower_block_return(
 ) -> BlockStmt {
     let value = ret.value().and_then(|e| e.lower_expr(scope, sink).ok());
     BlockStmt::Return(Return {
-        ptr: Some(ast::AstPtr::new(ret)),
+        ptr: Some(scope.prov(NodeClass::Return, ret.syntax())),
+        kind: ReturnKind::Explicit,
         value,
         onwards_args: Vec::new(),
     })
@@ -151,7 +145,7 @@ fn lower_while_stmt(
         .map(|b| lower_stmt_block(&b, scope, sink))
         .unwrap_or_default();
     Ok(BlockStmt::While(WhileStmt {
-        ptr: SyntaxNodePtr::from_node(w.syntax()),
+        ptr: scope.prov(NodeClass::While, w.syntax()),
         condition,
         body,
         is_await: w.is_await(),
@@ -173,19 +167,12 @@ fn lower_for_stmt(
         .iterable()
         .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E015))
         .and_then(|e| e.lower_expr(scope, sink))?;
-    sink.add_local(LocalSymbol {
-        name: var_name.text.clone(),
-        range: var_name.range,
-        scope: scope.to_scope(),
-        kind: SymbolKind::Temp,
-        param_detail: None,
-    });
     let body = f
         .body()
         .map(|b| lower_stmt_block(&b, scope, sink))
         .unwrap_or_default();
     Ok(BlockStmt::For(ForStmt {
-        ptr: SyntaxNodePtr::from_node(f.syntax()),
+        ptr: scope.prov(NodeClass::For, f.syntax()),
         var_name,
         iterable,
         body,
@@ -224,7 +211,7 @@ fn lower_if_stmt(
         .map(|clause| lower_else_clause(&clause, scope, sink))
         .transpose()?;
     Ok(IfStmt {
-        ptr: SyntaxNodePtr::from_node(if_stmt.syntax()),
+        ptr: scope.prov(NodeClass::If, if_stmt.syntax()),
         condition,
         body,
         else_branch,

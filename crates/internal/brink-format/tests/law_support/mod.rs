@@ -111,6 +111,16 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
             .prop_map(|(target, env)| Value::closure(target, env)),
         // Handle values (T1d, docs/t1d-spec.md §2).
         (arb_name_id(), any::<u64>()).prop_map(|(kind, id)| Value::handle(kind, id)),
+        // NS-A8 tower values (docs/tower-mini-spec.md T5): lane families
+        // rebuilt through glam's explicit array constructors, so every
+        // save/suspend round-trip law reaches the hand-written lane codecs.
+        any::<[f32; 2]>().prop_map(|l| Value::Vec2(glam::Vec2::from_array(l))),
+        any::<[f32; 3]>().prop_map(|l| Value::Vec3(glam::Vec3::from_array(l))),
+        any::<[f32; 4]>().prop_map(|l| Value::Vec4(glam::Vec4::from_array(l))),
+        any::<[f32; 4]>().prop_map(|l| Value::Quat(glam::Quat::from_array(l))),
+        any::<[f32; 4]>().prop_map(|l| Value::Mat2(glam::Mat2::from_cols_array(&l))),
+        any::<[f32; 9]>().prop_map(|l| Value::Mat3(glam::Mat3::from_cols_array(&l))),
+        any::<[f32; 16]>().prop_map(|l| Value::Mat4(glam::Mat4::from_cols_array(&l))),
     ]
 }
 
@@ -176,9 +186,21 @@ pub fn arb_value_full() -> impl Strategy<Value = Value> {
             // `Value` variant" but `Projection` was absent until now.
             (
                 arb_def_id(),
-                prop::collection::vec(arb_proj_segment(inner), 0..3),
+                prop::collection::vec(arb_proj_segment(inner.clone()), 0..3),
             )
                 .prop_map(|(cell, segments)| Value::projection(cell, segments)),
+            // Weighted tables (NS-A7, docs/stdlib-spec.md §8): 1-3
+            // positive-weight entries (the evidence-by-construction
+            // invariant), values from the full recursive universe.
+            prop::collection::vec((1i32..=i32::MAX, inner.clone()), 1..4).prop_map(Value::weighted),
+            // Option values (NS-A1, docs/stdlib-spec.md §1.4): both
+            // variants, with the `some` payload drawn from the full
+            // recursive universe so nesting (`some(none)`, `some([..])`)
+            // is exercised by every round-trip law.
+            prop::option::of(inner).prop_map(|payload| match payload {
+                None => Value::none(),
+                Some(v) => Value::some(v),
+            }),
         ]
     })
 }
@@ -211,6 +233,16 @@ fn assert_value_variants_exhaustive(value: &Value) {
         | Value::FnRef(_)
         | Value::Closure(_)
         | Value::Handle { .. }
-        | Value::Projection(_) => {}
+        | Value::Projection(_)
+        | Value::OptionVal(_)
+        | Value::Range { .. }
+        | Value::Vec2(_)
+        | Value::Vec3(_)
+        | Value::Vec4(_)
+        | Value::Quat(_)
+        | Value::Mat2(_)
+        | Value::Mat3(_)
+        | Value::Mat4(_)
+        | Value::Weighted(_) => {}
     }
 }

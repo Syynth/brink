@@ -1,5 +1,6 @@
-use brink_syntax::ast::{self, AstPtr, SyntaxNodePtr};
 use rowan::TextRange;
+
+use crate::provenance::Provenance;
 
 // ─── File identity ──────────────────────────────────────────────────
 
@@ -31,7 +32,7 @@ pub struct Path {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tag {
     pub parts: Vec<ContentPart>,
-    pub ptr: AstPtr<ast::Tag>,
+    pub ptr: Provenance,
 }
 
 // ─── Root ───────────────────────────────────────────────────────────
@@ -159,8 +160,19 @@ pub struct VisibilityDirective {
 /// `dialect_gate`), same superset-parse-then-reject shape as `#@module`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectsAssertion {
-    /// `#@effects(pure)` — sugar for the empty row.
+    /// `@[effects(pure)]` — asserts the empty state row (no reads, writes,
+    /// or calls). NS-A2 note: `pure` deliberately does NOT bound the output
+    /// dimensions — purity ≠ silence (issue #1087's motivating case).
     pub pure: bool,
+    /// `@[effects(silent)]` (NS-A2, issue #1108): asserts the definition
+    /// produces no content — the `emits` row dimension stays false. Tags
+    /// are NOT bounded by `silent` (they are the separate metadata channel;
+    /// a no-tags assertion arg has no ruled spelling v1).
+    pub silent: bool,
+    /// `@[effects(total)]` (NS-A2, issue #1108): asserts the definition
+    /// raises no turn-terminating fault — the `faults` row dimension stays
+    /// false.
+    pub total: bool,
     /// Declared `reads:` clause names, in source order.
     pub reads: Vec<String>,
     /// Declared `writes:` clause names, in source order.
@@ -173,32 +185,19 @@ pub struct EffectsAssertion {
 
 // ─── Containers ─────────────────────────────────────────────────────
 
-/// Pointer back to the AST node that defined a knot-level container.
+/// A knot definition (or a top-level stitch promoted to knot status).
 ///
 /// A `Knot` can originate from either a `== knot` definition or a
-/// top-level `= stitch` (which is promoted to knot status during HIR
-/// lowering). This enum preserves the original syntax kind so we can
-/// resolve the pointer back to the correct AST node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ContainerPtr {
-    Knot(AstPtr<ast::KnotDef>),
-    Stitch(AstPtr<ast::StitchDef>),
-}
-
-impl ContainerPtr {
-    /// The text range of the originating AST node.
-    pub fn text_range(&self) -> TextRange {
-        match self {
-            Self::Knot(p) => p.text_range(),
-            Self::Stitch(p) => p.text_range(),
-        }
-    }
-}
-
-/// A knot definition (or a top-level stitch promoted to knot status).
+/// top-level `= stitch` (promoted to knot status during HIR lowering).
+/// The origin is preserved in `ptr`'s node class — [`NodeClass::Knot`]
+/// vs [`NodeClass::Stitch`] — the former `ContainerPtr` discrimination
+/// (F-I#5); see [`Knot::symbol_kind`].
+///
+/// [`NodeClass::Knot`]: crate::provenance::NodeClass::Knot
+/// [`NodeClass::Stitch`]: crate::provenance::NodeClass::Stitch
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Knot {
-    pub ptr: ContainerPtr,
+    pub ptr: Provenance,
     pub name: Name,
     pub is_function: bool,
     pub params: Vec<Param>,
@@ -217,12 +216,42 @@ pub struct Knot {
     /// not the same as an explicit `void`, which lowers as
     /// `TypeExpr::Named { name: "void" }` like every other nominal.
     pub return_type: Option<TypeExpr>,
+    /// Inline `///` doc-comment metadata, if any (B0.4,
+    /// docs/hir-admission-contract.md Q3(b)). Additive — carries what
+    /// `declare_full`'s `doc` parameter used to route straight into the
+    /// manifest, so [`crate::symbols::project_manifest`] can rebuild the
+    /// same `SymbolManifest.docs` entry from the HIR node alone.
+    pub doc: Option<crate::host_manifest::DocBlock>,
+    /// Explicit `#@private`/`#@public` visibility override, if any (M-2,
+    /// docs/modules-spec.md §4). Additive for B0.4 — mirrors
+    /// `DeclaredSymbol.visibility`.
+    pub visibility: Option<crate::VisibilityMark>,
+    /// `#@was(old_name)` rename record, if any (M-3,
+    /// docs/modules-spec.md §5). Additive for B0.4 — mirrors
+    /// `DeclaredSymbol.was`.
+    pub was: Option<(String, TextRange)>,
+}
+
+impl Knot {
+    /// The [`crate::SymbolKind`] this container was indexed under:
+    /// `Stitch` for a top-level stitch promoted to knot status
+    /// (provenance class [`crate::provenance::NodeClass::Stitch`]), `Knot`
+    /// otherwise — the former `ContainerPtr` variant discrimination
+    /// (F-I#5, the #626 floating-stitch trap).
+    #[must_use]
+    pub fn symbol_kind(&self) -> crate::SymbolKind {
+        if self.ptr.class() == crate::provenance::NodeClass::Stitch {
+            crate::SymbolKind::Stitch
+        } else {
+            crate::SymbolKind::Knot
+        }
+    }
 }
 
 /// A stitch definition within a knot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stitch {
-    pub ptr: AstPtr<ast::StitchDef>,
+    pub ptr: Provenance,
     pub name: Name,
     pub params: Vec<Param>,
     pub body: Block,
@@ -232,6 +261,16 @@ pub struct Stitch {
     /// The `#@effects(…)` assertion directive line at the top of the body,
     /// if any (T2-2, docs/effects-spec.md §10, issue #861).
     pub effects_assertion: Option<EffectsAssertion>,
+    /// Inline `///` doc-comment metadata, if any (B0.4). See [`Knot::doc`].
+    pub doc: Option<crate::host_manifest::DocBlock>,
+    /// Explicit `#@private`/`#@public` visibility override, if any (B0.4).
+    /// See [`Knot::visibility`].
+    pub visibility: Option<crate::VisibilityMark>,
+    /// `#@was(old_name)` rename record, if any (B0.4). See [`Knot::was`] —
+    /// note the *stored* old name is already fully qualified
+    /// (`knot.old_stitch_name`) for a nested stitch, matching
+    /// `DeclaredSymbol.was`'s convention (`lower_stitch`'s qualification).
+    pub was: Option<(String, TextRange)>,
 }
 
 /// A parameter on a knot, stitch, or function.
@@ -303,6 +342,101 @@ pub struct Block {
     /// Pre-assigned container ID for blocks that become LIR containers
     /// (gather continuations, labeled blocks). Stamped by [`super::stamp_container_ids`].
     pub container_id: Option<brink_format::DefinitionId>,
+    /// The block's value/control-flow shape, derived from `stmts`' final
+    /// statement (docs/block-effect-model.md §2, §10 row j — S1 of the
+    /// block/effect migration). **Expand-phase groundwork only:** both
+    /// frontends populate this field, but `stmts` remains the sole source of
+    /// truth for every consumer (analyzer, HIR→LIR lowering, codegen) — `tail`
+    /// is redundant-but-correct data, not yet read by anything. A later
+    /// migrate/contract slice cuts consumers over and lets `stmts` stop
+    /// carrying the terminator. Use [`Block::tail`] to read it and
+    /// [`tail_from_stmts`]/[`Block::recompute_tail`] to (re)derive it.
+    pub tail: Tail,
+}
+
+impl Block {
+    /// Body block with no label/container, `tail` derived from `stmts`.
+    #[must_use]
+    pub fn from_stmts(stmts: Vec<Stmt>) -> Self {
+        let tail = tail_from_stmts(&stmts);
+        Self {
+            label: None,
+            stmts,
+            container_id: None,
+            tail,
+        }
+    }
+
+    /// The block's [`Tail`] — see the field doc for the migration status
+    /// (S1, docs/block-effect-model.md §10 row j: populated, unconsumed).
+    #[must_use]
+    pub fn tail(&self) -> &Tail {
+        &self.tail
+    }
+
+    /// Recompute `tail` from the current `stmts`. Frontends call this after
+    /// mutating an already-built block's `stmts` in place (e.g. appending a
+    /// synthesized divert, or splicing weave-fold content into a choice
+    /// body) so `tail` doesn't go stale relative to the new final statement.
+    pub fn recompute_tail(&mut self) {
+        self.tail = tail_from_stmts(&self.stmts);
+    }
+}
+
+/// The value or control-flow shape a [`Block`] resolves to (the "tail"
+/// taxonomy, docs/block-effect-model.md §2): a value-yielding expression, a
+/// terminator that diverts control away, or neither ("falls through").
+///
+/// S1 of the block/effect migration (docs/block-effect-model.md §10 row j):
+/// populated by both frontends from `stmts`' final statement, consumed by
+/// nothing yet — `stmts` stays authoritative until a later slice.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Tail {
+    /// A value-yielding tail (a block-as-expression, e.g. the eventual
+    /// interpolation/value-block case, docs/block-effect-model.md §3). Not
+    /// produced by any construct this slice populates — defined ahead of
+    /// its consumer per the model's tail taxonomy (§2).
+    Value(Expr),
+    /// A terminator: the block's last statement transfers control and
+    /// execution never falls through to whatever follows. Carries the same
+    /// terminator data already recorded on the final `Stmt` — not a
+    /// parallel representation (docs/block-effect-model.md §2).
+    Diverge(Terminator),
+    /// No terminating tail — execution falls through to whatever follows.
+    #[default]
+    Unit,
+}
+
+/// The terminator shapes a [`Tail::Diverge`] carries — the existing
+/// `Divert`/`Return` statement data (DONE/END ride `Divert`'s
+/// `DivertPath::Done`/`End`; explicit-return vs. tunnel-redirect ride
+/// `Return`'s `ReturnKind`), reused verbatim per
+/// docs/block-effect-model.md §2's "already exists" `!`-terminator note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Terminator {
+    /// `-> target`, `-> DONE`, `-> END`.
+    Divert(Divert),
+    /// `~ return expr` or bare `->->` (tunnel return) — see [`ReturnKind`].
+    Return(Return),
+}
+
+/// Compute the [`Tail`] a block with these statements should carry:
+/// `Tail::Diverge` when the last statement is a terminator (`Stmt::Divert`
+/// or `Stmt::Return`), `Tail::Unit` otherwise. `Stmt::TunnelCall` is
+/// deliberately not a terminator here — a tunnel call returns control to the
+/// statement after it once the tunnel pops, so a block ending in one still
+/// falls through (docs/block-effect-model.md §2).
+///
+/// Both frontends call this at construction time; call sites that mutate an
+/// already-built block's `stmts` afterward should call
+/// [`Block::recompute_tail`] instead of re-deriving this inline.
+#[must_use]
+pub fn tail_from_stmts(stmts: &[Stmt]) -> Tail {
+    match stmts.last() {
+        Some(Stmt::Divert(d)) => Tail::Diverge(Terminator::Divert(d.clone())),
+        Some(Stmt::Return(r)) => Tail::Diverge(Terminator::Return(r.clone())),
+        _ => Tail::Unit,
+    }
 }
 
 /// A single statement within a block.
@@ -358,7 +492,7 @@ pub enum Stmt {
 /// A `~ { … }` multi-line logic block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogicBlock {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub stmts: Vec<BlockStmt>,
 }
 
@@ -371,8 +505,8 @@ pub enum BlockStmt {
     If(IfStmt),
     While(WhileStmt),
     For(ForStmt),
-    Break(SyntaxNodePtr),
-    Continue(SyntaxNodePtr),
+    Break(Provenance),
+    Continue(Provenance),
     /// A bare expression statement (function/external calls).
     ExprStmt(Expr),
     /// `await <cond>` — a `FlowFrame` suspension point inside a `~ { … }` block
@@ -383,7 +517,7 @@ pub enum BlockStmt {
 /// `if cond { … } (else …)?`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IfStmt {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub condition: Expr,
     pub body: Vec<BlockStmt>,
     pub else_branch: Option<ElseBranch>,
@@ -402,7 +536,7 @@ pub enum ElseBranch {
 /// (docs/flow-suspension-spec.md §3) when [`Self::is_await`] is set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WhileStmt {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub condition: Expr,
     pub body: Vec<BlockStmt>,
     /// `while await cond { … }`: yield-with-policy — waking IS condition-true
@@ -422,7 +556,7 @@ pub struct WhileStmt {
 /// ever appears at statement/logic position.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AwaitStmt {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     /// The condition expression. `None` only for a malformed bare `await`
     /// (the parser already diagnosed the missing expression).
     pub condition: Option<Expr>,
@@ -431,7 +565,7 @@ pub struct AwaitStmt {
 /// `for name in expr { … }`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForStmt {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub var_name: Name,
     pub iterable: Expr,
     pub body: Vec<BlockStmt>,
@@ -475,7 +609,7 @@ pub struct ChoiceSet {
 /// A single choice in a choice set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {
-    pub ptr: AstPtr<ast::Choice>,
+    pub ptr: Provenance,
     /// `+` (sticky) vs `*` (once-only).
     pub is_sticky: bool,
     /// Invisible default choice (fallback).
@@ -503,7 +637,7 @@ pub struct Choice {
 /// A line of text output with inline elements and associated tags.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Content {
-    pub ptr: Option<SyntaxNodePtr>,
+    pub ptr: Option<Provenance>,
     pub parts: Vec<ContentPart>,
     pub tags: Vec<Tag>,
 }
@@ -571,7 +705,7 @@ pub enum CondKind {
 /// A multiline conditional block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conditional {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub kind: CondKind,
     pub branches: Vec<CondBranch>,
 }
@@ -590,7 +724,7 @@ pub struct CondBranch {
 /// A sequence block (stopping, cycle, once, shuffle).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sequence {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub kind: SequenceType,
     pub branches: Vec<Block>,
     /// Pre-assigned container ID for the sequence wrapper container.
@@ -603,21 +737,21 @@ pub struct Sequence {
 /// `-> target` — simple divert.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Divert {
-    pub ptr: Option<SyntaxNodePtr>,
+    pub ptr: Option<Provenance>,
     pub target: DivertTarget,
 }
 
 /// `->-> target` or chained tunnel calls.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TunnelCall {
-    pub ptr: AstPtr<ast::DivertNode>,
+    pub ptr: Provenance,
     pub targets: Vec<DivertTarget>,
 }
 
 /// `<- target` — fork execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadStart {
-    pub ptr: AstPtr<ast::ThreadStart>,
+    pub ptr: Provenance,
     pub target: DivertTarget,
 }
 
@@ -640,13 +774,33 @@ pub enum DivertPath {
 }
 
 /// `~ return expr` or bare `->->` (tunnel return).
+///
+/// The explicit-vs-tunnel distinction is carried by [`ReturnKind`] — never
+/// by `ptr` presence. `ptr` is uniform carrying-or-not provenance with no
+/// semantic load: a frontend may attach provenance to a tunnel return (or
+/// synthesize an explicit return without one) freely (contract D5 / F-I#6,
+/// retired by B0.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Return {
-    pub ptr: Option<AstPtr<ast::ReturnStmt>>,
+    pub ptr: Option<Provenance>,
+    /// Explicit `~ return` vs tunnel `->->` — the semantic bit formerly
+    /// smuggled through `ptr` presence.
+    pub kind: ReturnKind,
     pub value: Option<Expr>,
     /// Arguments for `->-> target(args)` tunnel onwards — pushed before the
     /// divert target on the value stack so the redirect target can pop them.
     pub onwards_args: Vec<Expr>,
+}
+
+/// Whether a [`Return`] is an explicit `~ return` or a tunnel return.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReturnKind {
+    /// `~ return [expr]` — return from a function knot. `E032` outside one.
+    Explicit,
+    /// `->->` / `->-> target(args)` — pop the tunnel frame, optionally
+    /// redirecting onwards. Never `E032`; lowers to LIR `is_tunnel`. The
+    /// future native `return -> x` respell stamps this explicitly.
+    TunnelRedirect,
 }
 
 // ─── Expressions ────────────────────────────────────────────────────
@@ -688,6 +842,9 @@ pub enum Expr {
     MapLiteral(MapLiteral),
     /// `base[index]` — postfix indexing (brink extension, T1b §4).
     Index(IndexExpr),
+    /// `start..end` / `start..=end` — range literal (brink extension,
+    /// NS-A5, docs/stdlib-spec.md §7, F7).
+    Range(RangeExpr),
     /// `Name#{field: expr, …}` — struct construction literal (brink
     /// extension, TM-4b, docs/typed-mode-spec.md §6).
     StructLiteral(StructLiteral),
@@ -719,7 +876,7 @@ pub enum Expr {
 /// at the exact literal, matching the sibling sigil-literal shapes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnLiteral {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     /// The static target path — a name (possibly dotted), never an
     /// expression. Whether it resolves to a function definition is
     /// `brink-analyzer`'s creation-site check (E079), not this shape's.
@@ -735,7 +892,7 @@ pub struct FnLiteral {
 /// the exact `ref` expression, matching the sibling sigil-literal shapes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefArgExpr {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     /// The lvalue-shaped operand: a `Path` (plain or dotted), an `Index`, a
     /// `FieldAccess`, or a mix of the two nested arbitrarily deep. Any other
     /// expression kind is not an lvalue at all — `brink-analyzer`'s E080
@@ -748,7 +905,7 @@ pub struct RefArgExpr {
 /// diagnostic at the exact literal, matching `ArrayLiteral`/`MapLiteral`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructLiteral {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub shape: Name,
     /// Field initializers, in source order — construction validity
     /// (missing/extra/mistyped fields) is `brink-analyzer`'s job, not this
@@ -760,7 +917,7 @@ pub struct StructLiteral {
 /// `FieldAccessExpr`, same pattern as [`IndexExpr`]'s `grid[y][x]`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldAccessExpr {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub base: Box<Expr>,
     pub field: Name,
 }
@@ -770,23 +927,37 @@ pub struct FieldAccessExpr {
 /// not just the enclosing statement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArrayLiteral {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub elements: Vec<Expr>,
 }
 
 /// `#{key: expr, …}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapLiteral {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub entries: Vec<(Expr, Expr)>,
 }
 
 /// `base[index]`, chainable (`grid[y][x]` lowers as nested `IndexExpr`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexExpr {
-    pub ptr: SyntaxNodePtr,
+    pub ptr: Provenance,
     pub base: Box<Expr>,
     pub index: Box<Expr>,
+}
+
+/// `start..end` / `start..=end` — range literal (brink extension, NS-A5,
+/// docs/stdlib-spec.md §7, F7). `ptr` lets the dialect gate point its
+/// diagnostic at the exact literal, matching the sibling extension shapes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RangeExpr {
+    pub ptr: Provenance,
+    /// The start bound (always an element when the range is non-empty).
+    pub start: Box<Expr>,
+    /// The written end bound.
+    pub end: Box<Expr>,
+    /// `true` for the `..=` form.
+    pub inclusive: bool,
 }
 
 /// Float stored as raw bits so it can derive Eq.
@@ -929,6 +1100,10 @@ pub fn display_expr(expr: &Expr) -> String {
             }
         }
         Expr::RefArg(ra) => format!("ref {}", display_expr(&ra.operand)),
+        Expr::Range(r) => {
+            let op = if r.inclusive { "..=" } else { ".." };
+            format!("{}{op}{}", display_expr(&r.start), display_expr(&r.end))
+        }
     }
 }
 
@@ -984,7 +1159,7 @@ impl InfixOp {
 /// `VAR x = expr`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarDecl {
-    pub ptr: AstPtr<ast::VarDecl>,
+    pub ptr: Provenance,
     pub name: Name,
     pub value: Expr,
     /// Marked flow-private via a `#@local` directive line above the
@@ -993,23 +1168,35 @@ pub struct VarDecl {
     /// The declared type annotation (TM-2, docs/typed-mode-spec.md §3:
     /// `VAR name: type = expr`), brink-dialect-gated syntax.
     pub annotation: Option<TypeExpr>,
+    /// Inline `///` doc-comment metadata, if any (B0.4). See [`Knot::doc`].
+    pub doc: Option<crate::host_manifest::DocBlock>,
+    /// Explicit `#@private`/`#@public` visibility override, if any (B0.4).
+    pub visibility: Option<crate::VisibilityMark>,
+    /// `#@was(old_name)` rename record, if any (B0.4).
+    pub was: Option<(String, TextRange)>,
 }
 
 /// `CONST x = expr`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConstDecl {
-    pub ptr: AstPtr<ast::ConstDecl>,
+    pub ptr: Provenance,
     pub name: Name,
     pub value: Expr,
     /// The declared type annotation (TM-2, docs/typed-mode-spec.md §3:
     /// `CONST name: type = expr`), brink-dialect-gated syntax.
     pub annotation: Option<TypeExpr>,
+    /// Inline `///` doc-comment metadata, if any (B0.4). See [`Knot::doc`].
+    pub doc: Option<crate::host_manifest::DocBlock>,
+    /// Explicit `#@private`/`#@public` visibility override, if any (B0.4).
+    pub visibility: Option<crate::VisibilityMark>,
+    /// `#@was(old_name)` rename record, if any (B0.4).
+    pub was: Option<(String, TextRange)>,
 }
 
 /// `~ temp x = expr`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TempDecl {
-    pub ptr: AstPtr<ast::TempDecl>,
+    pub ptr: Provenance,
     pub name: Name,
     pub value: Option<Expr>,
     /// The ascription's type annotation (TM-2, docs/typed-mode-spec.md §3:
@@ -1022,7 +1209,7 @@ pub struct TempDecl {
 /// `~ x = expr` or `~ x += expr`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assignment {
-    pub ptr: AstPtr<ast::Assignment>,
+    pub ptr: Provenance,
     pub target: Expr,
     pub op: AssignOp,
     pub value: Expr,
@@ -1038,9 +1225,15 @@ pub enum AssignOp {
 /// `LIST name = (item1), item2, (item3 = 5)`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListDecl {
-    pub ptr: AstPtr<ast::ListDecl>,
+    pub ptr: Provenance,
     pub name: Name,
     pub members: Vec<ListMember>,
+    /// Inline `///` doc-comment metadata, if any (B0.4). See [`Knot::doc`].
+    pub doc: Option<crate::host_manifest::DocBlock>,
+    /// Explicit `#@private`/`#@public` visibility override, if any (B0.4).
+    pub visibility: Option<crate::VisibilityMark>,
+    /// `#@was(old_name)` rename record, if any (B0.4).
+    pub was: Option<(String, TextRange)>,
 }
 
 /// A single member in a list declaration.
@@ -1063,12 +1256,19 @@ pub struct ListMember {
 /// `STRUCT Name = #{ field: type, … }`. Top-level only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructDecl {
-    pub ptr: AstPtr<ast::StructDecl>,
+    pub ptr: Provenance,
     pub name: Name,
     /// Declared fields, in source order — the same order
     /// `brink_format`'s `Value::Record` flat field vector will follow once
     /// TM-4c's codegen assigns a `ShapeId`.
     pub fields: Vec<StructFieldDecl>,
+    /// Inline `///` doc-comment metadata, if any (B0.4). See [`Knot::doc`].
+    pub doc: Option<crate::host_manifest::DocBlock>,
+    /// Explicit `#@private`/`#@public` visibility override, if any (B0.4).
+    /// Structs never carry a `#@was` rename (the lowering never parses one
+    /// for `STRUCT` — M-2 only wires visibility for this kind), so there is
+    /// no `was` field here, unlike the other declaration nodes.
+    pub visibility: Option<crate::VisibilityMark>,
 }
 
 /// One `field: type` pair inside a [`StructDecl`]'s body.
@@ -1081,16 +1281,29 @@ pub struct StructFieldDecl {
 /// `EXTERNAL fn_name(param1, param2)`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalDecl {
-    pub ptr: AstPtr<ast::ExternalDecl>,
+    pub ptr: Provenance,
     pub name: Name,
     pub param_count: u8,
+    /// Per-parameter names (B0.4 addition — `param_count` alone cannot
+    /// reconstruct `DeclaredSymbol.params`, which the manifest carries for
+    /// hover/signature help; `is_ref`/`is_divert` are always `false` for an
+    /// `EXTERNAL` parameter, mirroring the pre-B0.4 manifest population in
+    /// `decl::external::declare_and_lower`). Invariant: `params.len() ==
+    /// usize::from(param_count)`.
+    pub params: Vec<crate::ParamInfo>,
+    /// Inline `///` doc-comment metadata, if any (B0.4). See [`Knot::doc`].
+    pub doc: Option<crate::host_manifest::DocBlock>,
+    /// Explicit `#@private`/`#@public` visibility override, if any (B0.4).
+    pub visibility: Option<crate::VisibilityMark>,
+    /// `#@was(old_name)` rename record, if any (B0.4).
+    pub was: Option<(String, TextRange)>,
 }
 
 /// `INCLUDE path/to/file.ink`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IncludeSite {
     pub file_path: String,
-    pub ptr: AstPtr<ast::IncludeStmt>,
+    pub ptr: Provenance,
 }
 
 // ─── Diagnostics ────────────────────────────────────────────────────
@@ -1712,6 +1925,204 @@ pub enum DiagnosticCode {
     /// expression) is not statically visible and is never flagged here —
     /// the runtime fault remains the sole backstop for those.
     E106,
+
+    // ── NS-A1 Option[T] (docs/stdlib-spec.md §1.4, issue #1107) ────────
+    /// A fresh, un-annotated declaration (`VAR x = none`, `CONST x = none`,
+    /// `~ temp x = none`) whose initializer is the bare `none` Option
+    /// literal. §1.4's ruled rule: "a bare `none` needs a type from
+    /// context (concrete sites fine; a fresh un-annotated `var x = none`
+    /// errors — the empty-collection posture)." A declaration site IS the
+    /// slot's type origin, so there is no context to take the element type
+    /// from — the fix is to initialize from a real Option-producing
+    /// expression (`some(x)`, or an Option-returning verb like
+    /// `find`/`get`/`pop`). Error in both dialects and both `types`
+    /// policies: the rule is part of the Option package itself, not a
+    /// strict-mode refinement.
+    E107,
+
+    // ── NS-A2 effect-row extension (issue #1108; docs/stdlib-spec.md
+    // §1.2/§9.2, issues #1087/#1097) ───────────────────────────────────
+    /// `@[effects(silent)]` exceedance: the definition's inferred row can
+    /// produce content (`emits`, incl. transitively through callees, or an
+    /// opaque/unbounded row). Exceedance-only, like `E103` — asserting less
+    /// than reality is legal, asserting more is not.
+    E108,
+    /// `@[effects(total)]` exceedance: the definition's inferred row can
+    /// raise a turn-terminating fault (`faults`, incl. transitively, or an
+    /// opaque/unbounded row). Exceedance-only, like `E103`.
+    E109,
+    /// The deprecated `#@effects(…)` tag-channel spelling — superseded by
+    /// the `@[effects(…)]` annotation final form (stdlib-spec §9.2, ruled
+    /// 2026-07-18). Warning: the alias keeps parsing (it shipped in
+    /// released surface, `@brink-lang/web@0.11.1`).
+    E110,
+    /// An `@[…]` annotation line naming anything other than `effects` —
+    /// the annotation channel's recognized name set is closed (v1: exactly
+    /// one member). Tag-channel directive names do not alias into it.
+    E111,
+    /// An `@[…]` annotation line outside its one recognized placement (the
+    /// leading run at the top of a knot/stitch body). Never a silent drop,
+    /// never content — the `E045` posture, on the annotation channel.
+    E112,
+
+    // ── NS-A3 protocol registry (issue #1109; docs/stdlib-spec.md §9.6)
+    /// A declaration named after a registry protocol method — `display`,
+    /// `compare`, or `next` (F6, ruled 2026-07-19): the names are RESERVED
+    /// under the brink dialect, and an author declaration of any callable
+    /// or value-bindable kind (knot/stitch/function, param, temp, VAR,
+    /// CONST, EXTERNAL, for-loop variable) is a **hard error**, not an
+    /// E035-lineage shadowing warning — a shadowed `display` would make
+    /// interpolation untrustworthy.
+    E113,
+    /// A registered protocol impl's inferred effect row exceeds its
+    /// protocol's effect contract (`display`/`compare`: pure·silent·total;
+    /// `iterate`'s `next`: writes-receiver·silent·total — the receiver is
+    /// a `ref` param, invisible to the global row, so every v1 contract
+    /// bounds the *global* row at empty). Exceedance-only, the
+    /// `E103`/`E108`/`E109` posture; an opaque row exceeds every contract.
+    E114,
+    /// An ill-formed protocol impl registration: the named type isn't a
+    /// declared `STRUCT`, the impl target isn't a declared function, the
+    /// signature shape is wrong (arity, `ref`-ness, or a contradicting
+    /// type annotation), or the (protocol, type) pair is already
+    /// registered.
+    E115,
+
+    // ── F27: Option has no truthiness (docs/stdlib-spec.md §1.6, ruled
+    // 2026-07-19, issue #1120) ─────────────────────────────────────────
+    /// A condition-position expression (an `if`/`while` condition, a
+    /// `{cond: …}` conditional branch, a choice guard, an `await`
+    /// condition) whose statically-known type is `Option[T]`. Option has
+    /// **no** truthiness — truthiness is a quiet coercion of exactly the
+    /// kind `Option[T] ≠ T` exists to ban — so a strict-mode author writes
+    /// `== none` / `== some(x)` (or, post-B1, the `as`-binding).
+    /// Strict-mode-only, best-effort static (the "Unknown never disagrees"
+    /// posture: an unclassifiable condition stays silently unchecked);
+    /// under `types = gradual` the same condition is the
+    /// `RuntimeError::OptionTruthiness` turn-terminating fault — the
+    /// runtime backstop that catches every case either way. Supersedes
+    /// NS-A1's shipped falsy-none truthiness.
+    E116,
+    // ── NS-A5 the inhabited-range refinement (issue #1111;
+    // docs/stdlib-spec.md §7, F7/F8 ruled 2026-07-19) ──────────────────
+    /// A range-refinement violation under `types = strict` (the E078
+    /// precedent — strict-only; gradual mode is inert and leaves the
+    /// runtime fault residual, F8's general rule): `int(r)` demands
+    /// `NonEmptyRange` evidence, and either (a) the range literal in
+    /// argument position is **provably empty** (`0..0`, `5..=2` — bounds
+    /// fold statically, CONST refs included), or (b) the argument's type
+    /// carries no inhabitedness evidence (a possibly-empty range — route
+    /// computed bounds through `non_empty(r)`, parse-don't-validate).
+    E117,
+
+    // ── NS-A8: the numeric tower (docs/tower-mini-spec.md, issue #1114) ──
+    /// A protocol impl registration named a numeric-tower kind
+    /// (`vec2`/`vec3`/`vec4`/`quat`/`mat2`/`mat3`/`mat4`) as its type.
+    /// Tower kinds are compiler-known value kinds, not user structs: their
+    /// `display` is the fixed structural form, their equality is
+    /// componentwise IEEE (T4), and they are NOT orderable — a `compare`
+    /// impl for a tower kind would contradict the ruled §4b doctrine, and
+    /// `display`/`iterate` impls would shadow compiler-owned behavior. The
+    /// rejection is unconditional — it wins even over a user STRUCT
+    /// declared with the same name (tower type names are global like
+    /// `int`).
+    E118,
+
+    // ── NS-A4: the ordering doctrine (docs/stdlib-spec.md §4b, issue
+    // #1110) ─────────────────────────────────────────────────────────────
+    /// A `sort_by`/`sorted_by` comparator provably breaks the pure·silent
+    /// contract (§4b: "the comparator falls under the trio's pure·silent
+    /// rule plus the consistent-total-order LAW"). Exceedance-only, the
+    /// E114 posture: flagged when the comparator is a statically-named
+    /// `#fn(target)` whose inferred row shows a global read/write, an
+    /// external call, a content emission, or a tag touch — an opaque or
+    /// unresolvable comparator is not *proven* in violation and passes
+    /// (the gradual posture; the VM's isolation and
+    /// `ComparatorEscaped` fault are the runtime residual).
+    E119,
+    /// NS-A7 `Weighted[T]` construction refusal (`docs/stdlib-spec.md` §8,
+    /// issue #1113): the compile-classifiable half of the E078-style
+    /// evidence-by-construction split. Fired by the `weighted(…)` lowering
+    /// for a statically-malformed table — an empty pair row, an odd
+    /// (dangling-weight) argument count, or a **literal** weight that is
+    /// not a positive int (zero, negative, float/string/bool). Computed
+    /// weights are not classifiable here; they carry the construction
+    /// *fault* residual instead (`RuntimeError::WeightedBadWeight`), so a
+    /// table that exists is always rollable.
+    E120,
+
+    // ── B0.3 HIR admission validator (docs/hir-admission-contract.md §4.2) ──
+    //
+    // Reserved range for the loud, non-suppressible `validate_admission`
+    // pass wired at the AST→HIR seam (issue #1172, docs/b0-sequencing.md
+    // §B0.3). Each check is a hard error — a malformed `(HirFile,
+    // SymbolManifest)` triple is a frontend bug, not a story-author mistake,
+    // so these never carry the warning-severity carve-out other codes do.
+    /// Contract §4.2 check 1a (manifest ⇄ HIR agreement): an
+    /// `UnresolvedRef.range` in the manifest has no matching
+    /// referencing-expression range anywhere in the file's HIR body — the
+    /// range-equality resolution join (Q2(a)) would silently fail to find
+    /// this reference at all.
+    E121,
+    /// Contract §4.2 check 1b (manifest ⇄ HIR agreement): a manifest-declared
+    /// symbol has no corresponding HIR declaration node of the same name —
+    /// the manifest and the HIR body have drifted apart.
+    E122,
+    /// Contract §4.2 check 1c (manifest ⇄ HIR agreement, F-I#4): a `Knot`'s
+    /// `is_function` flag disagrees with whether its declared symbol carries
+    /// the `"function"` detail sentinel.
+    E123,
+    /// Contract §4.2 check 2a (range well-formedness): a HIR node's source
+    /// range is empty or extends past the end of the source file — ranges
+    /// are resolution join keys and IDE geometry, so a garbage range would
+    /// otherwise corrupt resolution silently instead of erroring loudly.
+    /// Exempts the `Option<Provenance>`-carrying synthesized nodes
+    /// (`Content.ptr`/`Divert.ptr`/`Return.ptr`) when `None` (B0.1 finding
+    /// F-B2) — this fires only on a range that is present but malformed.
+    E124,
+    /// Contract §4.2 check 2b (join-key uniqueness, Q2(a)): two distinct
+    /// `UnresolvedRef` entries in the manifest share an identical source
+    /// range — the range-equality join can no longer distinguish them.
+    E125,
+    /// Contract §4.2 check 3 (name-convention conformance, F-I#3): a
+    /// declared symbol's qualified name does not match the dot-qualification
+    /// shape its `SymbolKind` requires (bare for knots/globals, `knot.stitch`
+    /// for stitches, `List.item` for list items, `knot[.stitch].label` for
+    /// labels).
+    E126,
+    /// Contract §4.2 check 4 (control-flow classification, F-I#7): a
+    /// terminal statement (`Divert`/`Return`) is not the last statement in
+    /// an inline conditional or sequence branch.
+    E127,
+    /// Contract §4.2 check 5 (provenance-kind ⇄ `SymbolKind` consistency,
+    /// F-I#5, the #626 floating-stitch trap): a `Knot`/`Stitch` HIR node's
+    /// provenance class disagrees with the `SymbolKind` bucket its declared
+    /// symbol was indexed under in the manifest.
+    E128,
+
+    // ── B0.6 native frontend (docs/b0-sequencing.md §B0.6) ──
+    //
+    // The native `.brink` declaration lowering (`hir::lower_native`) is
+    // deliberately partial — bodies are B0.7/B0.8, and a handful of
+    // declaration-layer constructs (nested modules, `fn` nested below top
+    // level, the `@[…]` annotation channel, lambda expressions in value
+    // position) have no HIR representation yet. Per the contract's §4.4
+    // additive-open/closed-to-silent-extension posture, every such
+    // construct is a loud diagnostic, never a silent drop.
+    /// A native construct parses cleanly but has no HIR lowering yet in
+    /// this slice (a nested `module { … }` block, a `fn` declared below top
+    /// level, an `@[…]` annotation line, a lambda expression in value
+    /// position, or any other CST shape `hir::lower_native` does not yet
+    /// recognize). The construct is skipped — not silently: this diagnostic
+    /// names exactly what was skipped and why.
+    E129,
+    /// A native `flow` is declared more than two levels deep (a `flow`
+    /// nested inside another nested `flow`'s body) — the contract's Q4(b)
+    /// fence (`docs/hir-admission-contract.md` §5 Q4): exactly two
+    /// container levels for v1, addressing model written to generalize.
+    /// Depth-3+ nesting parses and is rejected here, never silently
+    /// flattened into a 2-level shape.
+    E130,
 }
 
 impl DiagnosticCode {
@@ -1829,6 +2240,30 @@ impl DiagnosticCode {
             Self::E104 => "E104",
             Self::E105 => "E105",
             Self::E106 => "E106",
+            Self::E107 => "E107",
+            Self::E108 => "E108",
+            Self::E109 => "E109",
+            Self::E110 => "E110",
+            Self::E111 => "E111",
+            Self::E112 => "E112",
+            Self::E113 => "E113",
+            Self::E114 => "E114",
+            Self::E115 => "E115",
+            Self::E116 => "E116",
+            Self::E117 => "E117",
+            Self::E118 => "E118",
+            Self::E119 => "E119",
+            Self::E120 => "E120",
+            Self::E121 => "E121",
+            Self::E122 => "E122",
+            Self::E123 => "E123",
+            Self::E124 => "E124",
+            Self::E125 => "E125",
+            Self::E126 => "E126",
+            Self::E127 => "E127",
+            Self::E128 => "E128",
+            Self::E129 => "E129",
+            Self::E130 => "E130",
         }
     }
 
@@ -1967,6 +2402,54 @@ impl DiagnosticCode {
                 "`await` condition must be effect-free (read-only) — it writes a global or performs an effectful call"
             }
             Self::E106 => "map-literal key is outside the int/string/bool key domain",
+            Self::E107 => "bare `none` needs a type from context",
+            Self::E108 => {
+                "inferred effects exceed the `@[effects(silent)]` assertion (the definition can produce content)"
+            }
+            Self::E109 => {
+                "inferred effects exceed the `@[effects(total)]` assertion (the definition can raise a turn-terminating fault)"
+            }
+            Self::E110 => {
+                "`#@effects(…)` is deprecated; use the `@[effects(…)]` annotation spelling"
+            }
+            Self::E111 => "unknown annotation name (the `@[…]` channel recognizes only `effects`)",
+            Self::E112 => {
+                "annotation line outside a recognized placement (top of a knot/stitch body)"
+            }
+            Self::E113 => {
+                "reserved protocol method name (`display`/`compare`/`next` belong to the protocol registry)"
+            }
+            Self::E114 => "protocol impl exceeds its protocol's effect contract",
+            Self::E115 => "ill-formed protocol impl registration",
+            Self::E116 => {
+                "an `Option[T]` has no truthiness — test `== none` / `== some(x)` in the condition"
+            }
+            Self::E117 => "`int(r)` requires an inhabited range (NonEmptyRange)",
+            Self::E118 => {
+                "numeric-tower kinds are compiler-known and cannot implement registry protocols"
+            }
+            Self::E119 => "sort comparator must be a pure, silent function",
+            Self::E120 => "`weighted` requires weight/value pairs with positive int weights",
+            Self::E121 => {
+                "admission: unresolved reference has no matching referencing expression in the HIR body"
+            }
+            Self::E122 => "admission: declared symbol has no corresponding HIR declaration node",
+            Self::E123 => {
+                "admission: knot's `is_function` disagrees with its indexed function sentinel"
+            }
+            Self::E124 => "admission: node range is empty or extends past the end of the file",
+            Self::E125 => "admission: two references share an identical source range",
+            Self::E126 => {
+                "admission: declared symbol's name does not match its kind's qualification shape"
+            }
+            Self::E127 => {
+                "admission: divert or return is not the last statement in an inline conditional/sequence branch"
+            }
+            Self::E128 => {
+                "admission: container's provenance kind disagrees with its indexed symbol kind"
+            }
+            Self::E129 => "native: construct parses but has no HIR lowering yet",
+            Self::E130 => "native: `flow` nested more than two levels deep is not yet supported",
         }
     }
 
@@ -1989,7 +2472,8 @@ impl DiagnosticCode {
             | Self::E063
             | Self::E092
             | Self::E095
-            | Self::E106 => Severity::Warning,
+            | Self::E106
+            | Self::E110 => Severity::Warning,
             _ => Severity::Error,
         }
     }
@@ -2108,6 +2592,30 @@ impl DiagnosticCode {
             "E104" => Some(Self::E104),
             "E105" => Some(Self::E105),
             "E106" => Some(Self::E106),
+            "E107" => Some(Self::E107),
+            "E108" => Some(Self::E108),
+            "E109" => Some(Self::E109),
+            "E110" => Some(Self::E110),
+            "E111" => Some(Self::E111),
+            "E112" => Some(Self::E112),
+            "E113" => Some(Self::E113),
+            "E114" => Some(Self::E114),
+            "E115" => Some(Self::E115),
+            "E116" => Some(Self::E116),
+            "E117" => Some(Self::E117),
+            "E118" => Some(Self::E118),
+            "E119" => Some(Self::E119),
+            "E120" => Some(Self::E120),
+            "E121" => Some(Self::E121),
+            "E122" => Some(Self::E122),
+            "E123" => Some(Self::E123),
+            "E124" => Some(Self::E124),
+            "E125" => Some(Self::E125),
+            "E126" => Some(Self::E126),
+            "E127" => Some(Self::E127),
+            "E128" => Some(Self::E128),
+            "E129" => Some(Self::E129),
+            "E130" => Some(Self::E130),
             _ => None,
         }
     }

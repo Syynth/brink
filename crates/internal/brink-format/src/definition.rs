@@ -222,6 +222,12 @@ pub struct CallAtom {
 /// Sets are stored as vectors already sorted/deduplicated by the producer so
 /// the encoding is deterministic (the analyzer sources them from `BTreeSet`s).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the four bools are independent wire dimensions of one factored \
+              effect row (opaque + the NS-A2 emits/tags/faults flags), not a \
+              state machine in disguise — mirrors the analyzer's EffectRow"
+)]
 pub struct DirectEffects {
     /// Global cells this row may read.
     pub reads: Vec<DefinitionId>,
@@ -232,6 +238,18 @@ pub struct DirectEffects {
     /// The pessimal top element (`docs/effects-spec.md` §3): this row performs
     /// a call whose effects inference cannot summarize.
     pub opaque: bool,
+    /// NS-A2 (issue #1108, from #1087): the definition may produce content —
+    /// narration/dialogue fragments a host renders (glue-only output counts;
+    /// tag-only lines do NOT — those set [`Self::tags`]). Bool v1.
+    pub emits: bool,
+    /// NS-A2 (issue #1108, from #1087's second ruling): the definition may
+    /// touch the tag channel. Independent of [`Self::emits`]. Bool v1.
+    pub tags: bool,
+    /// NS-A2 (issue #1108, from #1097): the definition may raise a
+    /// turn-terminating fault. Bool v1 — per-fault-kind granularity is the
+    /// reserved refinement and graduates via a section-version bump, the
+    /// same reservation discipline the capability/handle slots follow.
+    pub faults: bool,
 }
 
 /// A per-dispatch entry in a factored effect row (`docs/effects-spec.md` §7):
@@ -297,6 +315,41 @@ pub struct EffectRowEntry {
     pub direct: DirectEffects,
     /// Per-dispatch entries (empty in v1).
     pub dispatches: Vec<DispatchEntry>,
+}
+
+/// The name-keyed **frame shape** for one `await` site
+/// (`docs/flow-suspension-spec.md` §4/§11): the static description of which
+/// locals cross the park at that site, so the runtime knows what to
+/// spill on park and restore on wake.
+///
+/// Emitted into the `FrameShapes` [`StoryData`](crate::StoryData) section
+/// (`.inkb` tag `0x10`,
+/// `.inkt` `(frame_shapes …)`). The shape is **name-keyed** — the runtime
+/// spills/restores crossing locals by name, riding the same rehydration
+/// machinery as `#@was`/saves (spec §7), so a frame survives recompiles
+/// without instruction offsets (spec §2/§3).
+///
+/// **Reserved-through-fence**: the FS-3c compiler slice lands this section's
+/// encoding (writer + reader + round-trips) but does not yet *emit* a
+/// non-empty table — the E052 `await` lowering fence keeps `await` from
+/// producing any `StoryData`. First emission rides the continuation-splitting
+/// codegen when the fence drops (FS-3r), the same reserved-then-materialized
+/// discipline `StructShapes` followed. `frame_shapes` is therefore empty for
+/// every story compiled today (and for all converter output).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameShapeDef {
+    /// The `await` site's stable identity — the [`DefinitionId`] of the
+    /// synthesized resume/continuation container (spec §11.1: stable identity
+    /// = module + enclosing def + site index). This is both the wake-policy
+    /// site id and the container the runtime enters from its top on resume.
+    pub site: DefinitionId,
+    /// The name-keyed crossing locals, in stable declared order (spec §4).
+    /// Each entry is the local's interned [`NameId`] (into the story's
+    /// `name_table`); the runtime's frame record is keyed by these names.
+    /// Values are not stored here — the shape is static; the live values live
+    /// in the save-time `SuspendedFlow.frame` (`docs/flow-suspension-spec.md`
+    /// §2, FS-1).
+    pub slots: Vec<NameId>,
 }
 
 /// A single list item definition.

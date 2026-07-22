@@ -381,6 +381,9 @@ fn effect_rows_roundtrips() {
                 handle_param: None,
             }],
             opaque: false,
+            emits: false,
+            tags: false,
+            faults: false,
         },
         dispatches: vec![DispatchEntry {
             cell: cell(9),
@@ -390,6 +393,9 @@ fn effect_rows_roundtrips() {
                 writes: vec![],
                 calls: vec![],
                 opaque: true,
+                emits: false,
+                tags: false,
+                faults: false,
             },
         }],
     }];
@@ -441,6 +447,9 @@ fn effect_rows_internal_flag_roundtrips() {
                     handle_param: None,
                 }],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         },
@@ -452,6 +461,9 @@ fn effect_rows_internal_flag_roundtrips() {
                 writes: vec![],
                 calls: vec![],
                 opaque: false,
+                emits: false,
+                tags: false,
+                faults: false,
             },
             dispatches: vec![],
         },
@@ -729,6 +741,134 @@ fn duplicate_map_key_is_a_parse_error() {
     );
 }
 
+// Fuzz-found #1102 (fuzz lane #672-C): a `.inkt` document declaring the same
+// container address twice is malformed input. `read_inkt` used to admit it,
+// and the poison surfaced downstream: `write_inkt` collapses line tables
+// through a `scope_id`-keyed `HashMap`, so the later duplicate's lines
+// silently replaced the earlier one's on the next write and the
+// `inkt_write_read_roundtrip` fuzz harness aborted on the roundtrip
+// mismatch. Same admission-check posture as the duplicate map key (#985):
+// reject at read time with a graceful parse error, never a panic.
+//
+// The input below is the fuzz-minimized crasher from the issue, verbatim.
+#[test]
+fn regression_1102_duplicate_container_address() {
+    let inkt = r#"(story checksum=0x8bd73265
+
+  (name_table
+    0 ""
+  )
+
+  (addresses
+    (address $01_406ea523c53def -> $01_406ea523c53def +0)
+  )
+
+  (address_paths
+    (path 0 -> $01_406ea523c53def)
+  )
+
+  (container $01_406ea523c53def )
+
+  (container $01_406ea523c53def
+    (name 0)
+    (lines
+      0 "Hello, world!" @626e7681b4e2e7bc (source "tests/tier1/basics/I001-minimal-story/story.ink" 0..14)
+    )
+    (code
+      emit_line 0 0
+      emit_newline
+      done
+    )
+  )
+)
+"#;
+
+    let err =
+        brink_format::read_inkt(inkt).expect_err("duplicate container address must not parse");
+    assert!(
+        err.message.contains("duplicate container address"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        err.message.contains("$01_406ea523c53def"),
+        "error should name the duplicated address: {err}"
+    );
+    // The error points at the second `(container …)` declaration.
+    assert_eq!(err.line, 17, "error should point at the duplicate: {err}");
+}
+
+// The duplicate-container check covers the whole class, not just the
+// fuzz-found scope-owner shape: a child container (`(scope …)` field,
+// `scope_id != id`) re-declaring an existing address is rejected too.
+#[test]
+fn regression_1102_duplicate_child_container_address() {
+    let inkt = r"(story
+
+  (addresses
+    (address $01_406ea523c53def -> $01_406ea523c53def +0)
+  )
+
+  (container $01_406ea523c53def
+    (code
+      done
+    )
+  )
+
+  (container $01_406ea523c53def
+    (scope $01_0000000000beef)
+    (code
+      done
+    )
+  )
+)
+";
+
+    let err =
+        brink_format::read_inkt(inkt).expect_err("duplicate container address must not parse");
+    assert!(
+        err.message.contains("duplicate container address"),
+        "unexpected error: {err}"
+    );
+}
+
+// Sibling audit for #1102: duplicate `(address …)` and `(path …)` entries do
+// NOT have the same abort shape — both sections are written back verbatim
+// from their `Vec`s (no keyed-map collapse like the container line tables),
+// so the roundtrip is lossless and the fuzz harness cannot trip on them.
+// This test documents that audit result; it is not an endorsement of such
+// documents as well-formed.
+#[test]
+fn duplicate_address_and_path_entries_roundtrip_losslessly() {
+    let inkt = r"(story
+
+  (addresses
+    (address $01_406ea523c53def -> $01_406ea523c53def +0)
+    (address $01_406ea523c53def -> $01_406ea523c53def +4)
+  )
+
+  (address_paths
+    (path 0 -> $01_406ea523c53def)
+    (path 0 -> $01_406ea523c53def)
+  )
+
+  (container $01_406ea523c53def
+    (code
+      done
+    )
+  )
+)
+";
+
+    let story = brink_format::read_inkt(inkt).expect("duplicate address entries parse");
+    assert_eq!(story.addresses.len(), 2);
+    assert_eq!(story.address_paths.len(), 2);
+
+    let mut buf = String::new();
+    brink_format::write_inkt(&story, &mut buf).unwrap();
+    let recovered = brink_format::read_inkt(&buf).expect("re-encoded .inkt parses");
+    assert_eq!(story, recovered, "roundtrip must be lossless");
+}
+
 #[test]
 fn distinct_map_keys_parse_cleanly() {
     let inkt = r#"(story
@@ -759,4 +899,55 @@ fn distinct_map_keys_parse_cleanly() {
 
     let data = brink_format::read_inkt(inkt).expect("distinct keys must parse");
     assert_eq!(data.literal_pool.len(), 1);
+}
+
+// ── FS-3 FrameShapes + invisible container flag through .inkt ────────────────
+
+#[test]
+fn frame_shapes_roundtrip_through_inkt() {
+    use brink_format::{DefinitionId, DefinitionTag, FrameShapeDef, NameId};
+
+    let mut data = i001_data();
+    data.frame_shapes = vec![
+        FrameShapeDef {
+            site: DefinitionId::new(DefinitionTag::Address, 4),
+            slots: vec![NameId(1), NameId(2)],
+        },
+        FrameShapeDef {
+            site: DefinitionId::new(DefinitionTag::Address, 9),
+            slots: vec![],
+        },
+    ];
+
+    let mut buf = String::new();
+    brink_format::write_inkt(&data, &mut buf).unwrap();
+    assert!(
+        buf.contains("(frame_shapes"),
+        "dump carries the section:\n{buf}"
+    );
+
+    let recovered = brink_format::read_inkt(&buf).unwrap();
+    assert_eq!(data.frame_shapes, recovered.frame_shapes);
+    assert_eq!(data, recovered);
+}
+
+#[test]
+fn invisible_container_flag_roundtrips_through_inkt() {
+    use brink_format::CountingFlags;
+
+    let mut data = i001_data();
+    assert!(!data.containers.is_empty());
+    data.containers[0].counting_flags |= CountingFlags::INVISIBLE;
+
+    let mut buf = String::new();
+    brink_format::write_inkt(&data, &mut buf).unwrap();
+    assert!(buf.contains("invisible"), "dump names the flag:\n{buf}");
+
+    let recovered = brink_format::read_inkt(&buf).unwrap();
+    assert!(
+        recovered.containers[0]
+            .counting_flags
+            .contains(CountingFlags::INVISIBLE)
+    );
+    assert_eq!(data, recovered);
 }

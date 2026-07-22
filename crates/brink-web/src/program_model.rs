@@ -117,6 +117,12 @@ impl<'a> Resolver<'a> {
         self.external_name.get(&id).copied().unwrap_or("?")
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one display arm per Value variant — the NS-A8 tower arms \
+                  pushed this past 100; splitting would scatter the single \
+                  source of truth for the JS-facing display forms"
+    )]
     fn format_value(&self, v: &Value) -> String {
         match v {
             Value::Int(i) => i.to_string(),
@@ -180,6 +186,61 @@ impl<'a> Resolver<'a> {
             // Projection values (T1e, `docs/t1e-spec.md` §4): same display
             // form as the runtime's authoritative `string(p)` — `ref
             // <root><path>`.
+            // Option values (NS-A1): same display form as the runtime's
+            // authoritative `string(x)` — `none` / `some(<inner>)`.
+            Value::OptionVal(inner) => match inner {
+                None => "none".to_owned(),
+                Some(v) => format!("some({})", self.format_value(v)),
+            },
+            // Range values (NS-A5, F7): same display form as the runtime's
+            // authoritative `string(r)` — the written `0..10` / `1..=6`.
+            Value::Range {
+                start,
+                end,
+                inclusive,
+            } => {
+                if *inclusive {
+                    format!("{start}..={end}")
+                } else {
+                    format!("{start}..{end}")
+                }
+            }
+            // Weighted tables (NS-A7): same construction-literal display
+            // form as the runtime's authoritative `string(v)`
+            // (`value_ops::stringify`) — entries in construction order.
+            Value::Weighted(w) => {
+                let parts: Vec<String> = w
+                    .entries
+                    .iter()
+                    .map(|(weight, val)| format!("{weight}: {}", self.format_value(val)))
+                    .collect();
+                format!("Weighted {{ {} }}", parts.join(", "))
+            }
+            // Tower values (NS-A8): same structural display form as the
+            // runtime's authoritative `string(v)` (`value_ops::stringify`)
+            // — kind name + named components in glam's declared order.
+            Value::Vec2(v) => format!("vec2 {{ x: {}, y: {} }}", v.x, v.y),
+            Value::Vec3(v) => format!("vec3 {{ x: {}, y: {}, z: {} }}", v.x, v.y, v.z),
+            Value::Vec4(v) => format!("vec4 {{ x: {}, y: {}, z: {}, w: {} }}", v.x, v.y, v.z, v.w),
+            Value::Quat(q) => format!("quat {{ x: {}, y: {}, z: {}, w: {} }}", q.x, q.y, q.z, q.w),
+            Value::Mat2(m) => format!(
+                "mat2 {{ x_axis: {}, y_axis: {} }}",
+                self.format_value(&Value::Vec2(m.x_axis)),
+                self.format_value(&Value::Vec2(m.y_axis))
+            ),
+            Value::Mat3(m) => format!(
+                "mat3 {{ x_axis: {}, y_axis: {}, z_axis: {} }}",
+                self.format_value(&Value::Vec3(m.x_axis)),
+                self.format_value(&Value::Vec3(m.y_axis)),
+                self.format_value(&Value::Vec3(m.z_axis))
+            ),
+            Value::Mat4(m) => format!(
+                "mat4 {{ x_axis: {}, y_axis: {}, z_axis: {}, w_axis: {} }}",
+                self.format_value(&Value::Vec4(m.x_axis)),
+                self.format_value(&Value::Vec4(m.y_axis)),
+                self.format_value(&Value::Vec4(m.z_axis)),
+                self.format_value(&Value::Vec4(m.w_axis))
+            ),
             Value::Projection(p) => {
                 let mut out = format!("ref {}", self.gname(p.cell));
                 for seg in &p.segments {
@@ -562,6 +623,40 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
 
         // Stdlib slice 1 completion (#857)
         Opcode::CharAt => "char_at".to_owned(),
+
+        // NS-A1 Option + stdlib flips (#1107)
+        Opcode::PushNone => "push_none".to_owned(),
+        Opcode::MakeSome => "make_some".to_owned(),
+        Opcode::StrFind => "str_find".to_owned(),
+        Opcode::SeqIndexOf => "seq_index_of".to_owned(),
+        Opcode::SeqMin => "seq_min".to_owned(),
+        Opcode::SeqMax => "seq_max".to_owned(),
+        Opcode::SeqFirst => "seq_first".to_owned(),
+        Opcode::SeqLast => "seq_last".to_owned(),
+        Opcode::SeqPop => "seq_pop".to_owned(),
+        Opcode::MapGetOpt => "map_get_opt".to_owned(),
+        Opcode::MapContainsValue => "map_contains_value".to_owned(),
+        Opcode::MapClear => "map_clear".to_owned(),
+        // NS-A6 rand verbs (#1112).
+        Opcode::RandFloat => "rand_float".to_owned(),
+        Opcode::RandChance => "rand_chance".to_owned(),
+        Opcode::RandPick => "rand_pick".to_owned(),
+        Opcode::RandShuffle => "rand_shuffle".to_owned(),
+        // NS-A5 range ops (#1111).
+        Opcode::RangeMakeExcl => "range_make_excl".to_owned(),
+        Opcode::RangeMakeIncl => "range_make_incl".to_owned(),
+        Opcode::RangeNonEmpty => "range_non_empty".to_owned(),
+        // NS-A4 ordering verbs (#1110).
+        Opcode::SeqSorted => "seq_sorted".to_owned(),
+        Opcode::SeqSortedBy => "seq_sorted_by".to_owned(),
+
+        // NS-A8 numeric tower (#1114): one opcode, per-kind mnemonic —
+        // same text as the `.inkt` disassembly.
+        Opcode::Tower(op) => op.mnemonic().to_owned(),
+
+        // NS-A7 collections+ (#1113): one opcode, per-kind mnemonic —
+        // mirrors the `.inkt` disassembly (`CollectOp::mnemonic`).
+        Opcode::Collect(op) => op.mnemonic().to_owned(),
     }
 }
 

@@ -3,7 +3,7 @@
 
 WHITESPACE = _{ " " | "\t" | NEWLINE }
 
-story = { SOI ~ "(" ~ "story" ~ story_checksum? ~ name_table? ~ globals? ~ lists? ~ list_items? ~ externals? ~ addresses? ~ address_paths? ~ list_literals? ~ literal_pool? ~ struct_shapes? ~ visibility? ~ alias_table? ~ effect_rows? ~ container* ~ ")" ~ EOI }
+story = { SOI ~ "(" ~ "story" ~ story_checksum? ~ name_table? ~ globals? ~ lists? ~ list_items? ~ externals? ~ addresses? ~ address_paths? ~ list_literals? ~ literal_pool? ~ struct_shapes? ~ visibility? ~ alias_table? ~ effect_rows? ~ frame_shapes? ~ container* ~ ")" ~ EOI }
 story_checksum = { "checksum=" ~ hex_literal }
 
 // ── Name table ──────────────────────────────────────────────────────────────
@@ -20,7 +20,7 @@ local_flag = { "local" }
 // T1c (issue #742): "record" | "fn_ref" | "closure" mirror
 // `value_type_name` in `inkt/write.rs` — a global var can legally declare
 // any of the three T1c function-value tags as its `value_type`.
-type_name = { "int" | "float" | "bool" | "string" | "list" | "divert_target" | "var_pointer" | "null" | "array" | "map" | "record" | "fn_ref" | "closure" | "handle" | "projection" }
+type_name = { "int" | "float" | "bool" | "string" | "list" | "divert_target" | "var_pointer" | "null" | "array" | "map" | "record" | "fn_ref" | "closure" | "handle" | "projection" | "option" | "range" | "vec2" | "vec3" | "vec4" | "quat" | "mat2" | "mat3" | "mat4" | "weighted" }
 
 // ── Lists ───────────────────────────────────────────────────────────────────
 
@@ -57,14 +57,24 @@ alias_entry = { "(" ~ "alias" ~ def_id ~ "->" ~ def_id ~ ")" }
 // ── Effect rows (T2-3, docs/effects-spec.md §11) ─────────────────────────────
 
 effect_rows = { "(" ~ "effect_rows" ~ effect_row* ~ ")" }
-effect_row = { "(" ~ "row" ~ def_id ~ internal_flag? ~ effects_reads ~ effects_writes ~ effects_calls ~ opaque_flag? ~ dispatch_entry* ~ ")" }
-dispatch_entry = { "(" ~ "dispatch" ~ def_id ~ narrowable_flag? ~ effects_reads ~ effects_writes ~ effects_calls ~ opaque_flag? ~ ")" }
+effect_row = { "(" ~ "row" ~ def_id ~ internal_flag? ~ effects_reads ~ effects_writes ~ effects_calls ~ opaque_flag? ~ emits_flag? ~ tags_flag? ~ faults_flag? ~ dispatch_entry* ~ ")" }
+dispatch_entry = { "(" ~ "dispatch" ~ def_id ~ narrowable_flag? ~ effects_reads ~ effects_writes ~ effects_calls ~ opaque_flag? ~ emits_flag? ~ tags_flag? ~ faults_flag? ~ ")" }
+// ── Frame shapes (FS-3, docs/flow-suspension-spec.md §4/§11) ──────────────────
+// One entry per `await` site: the site's stable def_id (the synthesized
+// continuation container id) followed by its name-keyed crossing-local slots.
+
+frame_shapes = { "(" ~ "frame_shapes" ~ frame_shape_entry* ~ ")" }
+frame_shape_entry = { "(" ~ "frame" ~ def_id ~ integer* ~ ")" }
+
 effects_reads = { "(" ~ "reads" ~ def_id* ~ ")" }
 effects_writes = { "(" ~ "writes" ~ def_id* ~ ")" }
 effects_calls = { "(" ~ "calls" ~ call_atom* ~ ")" }
 call_atom = { "(" ~ "call" ~ integer ~ cap_param ~ ")" }
 cap_param = { "any" }
 opaque_flag = { "opaque" }
+emits_flag = { "emits" }
+tags_flag = { "tags" }
+faults_flag = { "faults" }
 narrowable_flag = { "narrowable" }
 // #882 freeze bit: present only when the row is NOT a host entry point
 // (a `#@private` def — see `EffectRowEntry::is_entry`'s doc). Absent means
@@ -106,7 +116,7 @@ param_meta = { "(" ~ param_mode ~ integer ~ ")" }
 param_mode = { "val" | "ref" }
 hash_field = { "(" ~ "hash" ~ hex_literal ~ ")" }
 flags_field = { "(" ~ "flags" ~ flag_name+ ~ ")" }
-flag_name = { "visits" | "turns" | "start_only" }
+flag_name = { "visits" | "turns" | "start_only" | "invisible" }
 lines_field = { "(" ~ "lines" ~ line_entry* ~ ")" }
 line_entry = { integer ~ line_content ~ source_hash ~ audio_field? ~ slots_field? ~ source_field? }
 audio_field = { "(" ~ "audio" ~ string ~ ")" }
@@ -143,7 +153,7 @@ source_loc = @{ ASCII_DIGIT+ ~ ":" ~ ASCII_DIGIT+ }
 
 // ── Values ──────────────────────────────────────────────────────────────────
 
-value = { array_value | map_value | list_value | var_pointer_value | fragment_ref_value | handle_value | projection_value | record_value | fn_ref_value | closure_value | string | float | integer | def_id | null_value | bool_value }
+value = { array_value | map_value | list_value | var_pointer_value | fragment_ref_value | handle_value | projection_value | record_value | fn_ref_value | closure_value | option_value | range_value | tower_value | weighted_value | string | float | integer | def_id | null_value | bool_value }
 var_pointer_value = { "(" ~ "var_pointer" ~ def_id ~ ")" }
 fragment_ref_value = { "(" ~ "fragment_ref" ~ integer ~ ")" }
 // T1d handle value (docs/t1d-spec.md §2, docs/format-v4-rfc.md §1) — the
@@ -161,6 +171,43 @@ proj_segment = { index_segment | key_segment }
 index_segment = { "(" ~ "index" ~ integer ~ ")" }
 key_segment = { "(" ~ "key" ~ value ~ ")" }
 list_value = { "(" ~ "list" ~ list_value_items ~ list_value_origins ~ ")" }
+// NS-A1 Option value (docs/stdlib-spec.md §1.4) — the textual mirror of the
+// VAL_OPTION wire tag: `(some <value>)` / `(option_none)`. Reader lands with
+// the writer in the same PR (the #742 lesson, same discipline handle_value
+// follows). Spelled `option_none` rather than bare `none` because `none` is
+// already a choice-flags token above.
+option_value = { some_value | none_value }
+some_value = { "(" ~ "some" ~ value ~ ")" }
+none_value = { "(" ~ "option_none" ~ ")" }
+// NS-A5 range value (docs/stdlib-spec.md §7, F7) — the textual mirror of
+// the VAL_RANGE wire tag: `(range <start> <end> incl|excl)`. The written
+// form (`..=` vs `..`) is preserved through the incl/excl token; reader
+// lands with the writer in the same PR (the #742 lesson).
+range_value = { "(" ~ "range" ~ integer ~ integer ~ range_form ~ ")" }
+range_form = { "incl" | "excl" }
+// NS-A8 tower values (docs/tower-mini-spec.md T5) — the textual mirror of
+// the VAL_VEC2..VAL_MAT4 wire tags: flat f32 lanes in the pinned order
+// (vec/quat `x y (z w)`; matrices column-major, column-by-column). Reader
+// lands with the writer in the same PR (the #742 dump/reader parity
+// lesson). NaN/infinity lanes share `float`'s pre-existing textual
+// limitation (the atom is digits-dot-digits) — same posture as a bare
+// float value, not a new one.
+tower_value = { vec2_value | vec3_value | vec4_value | quat_value | mat2_value | mat3_value | mat4_value }
+vec2_value = { "(" ~ "vec2" ~ float ~ float ~ ")" }
+vec3_value = { "(" ~ "vec3" ~ float ~ float ~ float ~ ")" }
+vec4_value = { "(" ~ "vec4" ~ float ~ float ~ float ~ float ~ ")" }
+quat_value = { "(" ~ "quat" ~ float ~ float ~ float ~ float ~ ")" }
+mat2_value = { "(" ~ "mat2" ~ float{4} ~ ")" }
+mat3_value = { "(" ~ "mat3" ~ float{9} ~ ")" }
+mat4_value = { "(" ~ "mat4" ~ float{16} ~ ")" }
+// NS-A7 weighted tables (docs/stdlib-spec.md §8) — the textual mirror of
+// the VAL_WEIGHTED wire tag: `(weighted (<weight> <value>)+)`, entries in
+// construction order (order is semantic for display and the roll walk).
+// Reader lands with the writer in the same PR (the #742 dump/reader parity
+// lesson). The non-empty/positive-weight invariant is enforced by the
+// reader, not the grammar (a targeted error message beats a parse failure).
+weighted_value = { "(" ~ "weighted" ~ weighted_entry* ~ ")" }
+weighted_entry = { "(" ~ integer ~ value ~ ")" }
 list_value_items = { "(" ~ "items" ~ def_id* ~ ")" }
 list_value_origins = { "(" ~ "origins" ~ def_id* ~ ")" }
 null_value = { "null" }

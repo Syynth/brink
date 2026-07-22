@@ -162,6 +162,37 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
             .prop_map(|(items, origins)| Value::List(ListValue { items, origins }.into())),
         (arb_name_id(), any::<u64>()).prop_map(|(kind, id)| Value::handle(kind, id)),
         arb_def_id().prop_map(Value::FnRef),
+        // NS-A5 range values (F7): flat scalar leaf; the incl/excl written
+        // form must survive the textual round-trip bit-for-bit.
+        (any::<i32>(), any::<i32>(), any::<bool>())
+            .prop_map(|(start, end, inclusive)| Value::range(start, end, inclusive)),
+        // NS-A8 tower values (docs/tower-mini-spec.md T5): lanes from the
+        // Display/parse-roundtrippable float domain (the `.inkt` float atom
+        // cannot carry NaN/inf — the same pre-existing textual limitation
+        // as a bare float value).
+        prop::collection::vec(arb_inkt_float(), 2)
+            .prop_map(|l| Value::Vec2(glam::Vec2::new(l[0], l[1]))),
+        prop::collection::vec(arb_inkt_float(), 3)
+            .prop_map(|l| Value::Vec3(glam::Vec3::new(l[0], l[1], l[2]))),
+        prop::collection::vec(arb_inkt_float(), 4)
+            .prop_map(|l| Value::Vec4(glam::Vec4::new(l[0], l[1], l[2], l[3]))),
+        prop::collection::vec(arb_inkt_float(), 4)
+            .prop_map(|l| Value::Quat(glam::Quat::from_xyzw(l[0], l[1], l[2], l[3]))),
+        prop::collection::vec(arb_inkt_float(), 4).prop_map(|l| {
+            let mut a = [0.0f32; 4];
+            a.copy_from_slice(&l);
+            Value::Mat2(glam::Mat2::from_cols_array(&a))
+        }),
+        prop::collection::vec(arb_inkt_float(), 9).prop_map(|l| {
+            let mut a = [0.0f32; 9];
+            a.copy_from_slice(&l);
+            Value::Mat3(glam::Mat3::from_cols_array(&a))
+        }),
+        prop::collection::vec(arb_inkt_float(), 16).prop_map(|l| {
+            let mut a = [0.0f32; 16];
+            a.copy_from_slice(&l);
+            Value::Mat4(glam::Mat4::from_cols_array(&a))
+        }),
     ]
 }
 
@@ -207,7 +238,7 @@ fn arb_value() -> impl Strategy<Value = Value> {
                 .prop_map(|(cell, segments)| Value::projection(cell, segments)),
             (
                 arb_def_id(),
-                prop::collection::vec((arb_name_id(), any::<bool>(), inner), 0..3),
+                prop::collection::vec((arb_name_id(), any::<bool>(), inner.clone()), 0..3),
             )
                 .prop_map(|(target, raw_env)| {
                     let env = raw_env
@@ -220,6 +251,20 @@ fn arb_value() -> impl Strategy<Value = Value> {
                         .collect();
                     Value::closure(target, env)
                 }),
+            // Weighted tables (NS-A7, docs/stdlib-spec.md §8): 1-3
+            // entries with positive weights (the evidence-by-construction
+            // invariant the reader enforces), values from the full
+            // recursive universe — exercises the `(weighted (<w> <v>)+)`
+            // atom through the pest reader round-trip.
+            prop::collection::vec((1i32..=i32::MAX, inner.clone()), 1..4).prop_map(Value::weighted),
+            // Option values (NS-A1, docs/stdlib-spec.md §1.4): both
+            // variants, payload from the full recursive universe —
+            // exercises the `(some <value>)`/`(option_none)` atoms through
+            // the pest reader round-trip.
+            prop::option::of(inner).prop_map(|payload| match payload {
+                None => Value::none(),
+                Some(v) => Value::some(v),
+            }),
         ]
     })
 }
@@ -254,7 +299,17 @@ fn assert_value_variants_exhaustive(value: &Value) {
         | Value::FnRef(_)
         | Value::Closure(_)
         | Value::Handle { .. }
-        | Value::Projection(_) => {}
+        | Value::Projection(_)
+        | Value::OptionVal(_)
+        | Value::Range { .. }
+        | Value::Vec2(_)
+        | Value::Vec3(_)
+        | Value::Vec4(_)
+        | Value::Quat(_)
+        | Value::Mat2(_)
+        | Value::Mat3(_)
+        | Value::Mat4(_)
+        | Value::Weighted(_) => {}
     }
 }
 
@@ -329,6 +384,34 @@ fn arb_opcode() -> impl Strategy<Value = Opcode> {
         }),
         Just(Opcode::ProjRead),
         Just(Opcode::ProjWrite),
+        // NS-A1 Option + stdlib flips (#1107).
+        Just(Opcode::PushNone),
+        Just(Opcode::MakeSome),
+        Just(Opcode::StrFind),
+        Just(Opcode::SeqIndexOf),
+        Just(Opcode::SeqMin),
+        Just(Opcode::SeqMax),
+        Just(Opcode::SeqFirst),
+        Just(Opcode::SeqLast),
+        Just(Opcode::SeqPop),
+        Just(Opcode::MapGetOpt),
+        Just(Opcode::MapContainsValue),
+        Just(Opcode::MapClear),
+        // NS-A6 rand verbs (#1112).
+        Just(Opcode::RandFloat),
+        Just(Opcode::RandChance),
+        Just(Opcode::RandPick),
+        Just(Opcode::RandShuffle),
+        Just(Opcode::RangeMakeExcl),
+        Just(Opcode::RangeMakeIncl),
+        Just(Opcode::RangeNonEmpty),
+        // NS-A7 collections+ (#1113): one opcode, five kinds.
+        prop::sample::select(&brink_format::CollectOp::ALL[..]).prop_map(Opcode::Collect),
+        // NS-A4 ordering verbs (#1110).
+        Just(Opcode::SeqSorted),
+        Just(Opcode::SeqSortedBy),
+        // NS-A8 numeric tower (#1114): one opcode, thirteen kinds.
+        prop::sample::select(brink_format::TowerOp::ALL.as_slice()).prop_map(Opcode::Tower),
     ]
 }
 
@@ -467,6 +550,29 @@ fn assert_opcode_variants_exhaustive(op: &Opcode) {
         | Opcode::ProjRead
         | Opcode::ProjWrite
         | Opcode::CharAt
+        | Opcode::PushNone
+        | Opcode::MakeSome
+        | Opcode::StrFind
+        | Opcode::SeqIndexOf
+        | Opcode::SeqMin
+        | Opcode::SeqMax
+        | Opcode::SeqFirst
+        | Opcode::SeqLast
+        | Opcode::SeqPop
+        | Opcode::MapGetOpt
+        | Opcode::MapContainsValue
+        | Opcode::MapClear
+        | Opcode::RandFloat
+        | Opcode::RandChance
+        | Opcode::RandPick
+        | Opcode::RandShuffle
+        | Opcode::RangeMakeExcl
+        | Opcode::RangeMakeIncl
+        | Opcode::RangeNonEmpty
+        | Opcode::SeqSorted
+        | Opcode::SeqSortedBy
+        | Opcode::Tower(_)
+        | Opcode::Collect(_)
         | Opcode::Done
         | Opcode::Yield
         | Opcode::End
@@ -637,6 +743,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                     private_defs: vec![],
                     alias_table: vec![],
                     effect_rows: vec![],
+                    frame_shapes: vec![],
                     source_checksum,
                 }
             },

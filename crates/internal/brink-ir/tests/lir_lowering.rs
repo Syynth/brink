@@ -2213,6 +2213,89 @@ fn return_from_function() {
     assert!(has_return, "function should have a Return statement");
 }
 
+/// B0.2 (contract D5 / F-I#6): tunnel-vs-explicit classification reads the
+/// explicit `ReturnKind`, never `ptr` presence. A tunnel return that
+/// *carries* provenance — no ink surface syntax produces this shape, but a
+/// uniformly provenance-stamping frontend (native) will — must still emit
+/// no `E032` and still lower to LIR `is_tunnel: true`.
+#[test]
+fn provenance_carrying_tunnel_return_still_lowers_as_tunnel() {
+    let source = "\
+== main ==
+-> tun ->
+-> END
+
+== tun ==
+Hello.
+->->
+";
+    let parsed = brink_syntax::parse(source);
+    let tree = parsed.tree();
+    let file_id = FileId(0);
+    let (mut hir, manifest, _diags) = brink_ir::hir::lower(file_id, &tree);
+
+    // Stamp provenance onto the tunnel return, simulating a frontend that
+    // attaches provenance uniformly. The kind must keep it a tunnel.
+    let tun = hir
+        .knots
+        .iter_mut()
+        .find(|k| k.name.text == "tun")
+        .expect("knot `tun` exists");
+    let mut stamped = 0;
+    for stmt in &mut tun.body.stmts {
+        if let brink_ir::Stmt::Return(ret) = stmt {
+            assert_eq!(ret.kind, brink_ir::ReturnKind::TunnelRedirect);
+            assert!(
+                ret.ptr.is_none(),
+                "ink lowering attaches no provenance to tunnel returns today"
+            );
+            ret.ptr = Some(brink_ir::Provenance::synthetic(
+                brink_ir::NodeClass::Return,
+                rowan::TextRange::default(),
+            ));
+            stamped += 1;
+        }
+    }
+    assert_eq!(stamped, 1, "expected exactly one tunnel Return in `tun`");
+
+    brink_ir::hir::normalize_file(&mut hir);
+
+    let files_for_analysis: Vec<(FileId, &HirFile, &brink_ir::SymbolManifest)> =
+        vec![(file_id, &hir, &manifest)];
+    let result = brink_analyzer::analyze(&files_for_analysis);
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E032),
+        "a provenance-carrying tunnel return must not trip E032: {:?}",
+        result.diagnostics
+    );
+
+    let files_for_lir: Vec<(FileId, &HirFile)> = vec![(file_id, &hir)];
+    let (program, _warnings) = lir::lower_to_program(
+        &files_for_lir,
+        &result.index,
+        &result.resolutions,
+        &std::collections::HashMap::new(),
+    );
+    let program = program.unwrap();
+    let tun = find_by_path(&program, "tun");
+    let has_tunnel_return = tun.body.iter().any(|s| {
+        matches!(
+            s,
+            lir::Stmt::Return {
+                is_tunnel: true,
+                ..
+            }
+        )
+    });
+    assert!(
+        has_tunnel_return,
+        "provenance-carrying tunnel return must still classify as is_tunnel"
+    );
+}
+
 // ─── Tags ───────────────────────────────────────────────────────────
 
 #[test]
@@ -4361,5 +4444,168 @@ fn block_scoped_temp_visible_for_the_rest_of_its_own_block_no_false_positive() {
     assert!(
         find_diag(&diags, brink_ir::DiagnosticCode::E082).is_none(),
         "a nested scope must still see the outer block's live temp: {diags:?}"
+    );
+}
+
+// ─── NS-A6 (issue #1112, docs/stdlib-spec.md §7): the rand-verb surface ──
+
+fn find_code(
+    diags: &[brink_ir::Diagnostic],
+    code: brink_ir::DiagnosticCode,
+) -> Option<&brink_ir::Diagnostic> {
+    diags.iter().find(|d| d.code == code)
+}
+
+/// The F4 arity split: nullary `float()` is the rand draw, unary `float(x)`
+/// stays the conversion — both lower cleanly; any other arity is E031
+/// naming both forms.
+#[test]
+fn float_arity_split_draw_vs_conversion() {
+    let (program, diags) =
+        lower_ink_with_warnings("~ temp u = float()\n~ temp v = float(1)\nDone.\n");
+    assert!(
+        find_code(&diags, brink_ir::DiagnosticCode::E031).is_none(),
+        "both float arities are legal: {diags:?}"
+    );
+    let program = program.expect("should lower");
+    assert!(!program.root.body.is_empty());
+
+    let (_program, diags) = lower_ink_with_warnings("~ temp u = float(1, 2)\nDone.\n");
+    let e031 = find_code(&diags, brink_ir::DiagnosticCode::E031)
+        .expect("two-arg float must be an arity error");
+    assert!(
+        e031.message.contains("random draw") && e031.message.contains("conversion"),
+        "the message names both forms: {}",
+        e031.message
+    );
+}
+
+/// `chance`/`pick`/`shuffled` lower as ordinary expressions.
+#[test]
+fn chance_pick_shuffled_lower_as_expressions() {
+    let (program, diags) = lower_ink_with_warnings(
+        "VAR a = #[1, 2, 3]\n~ temp c = chance(0.5)\n~ temp p = pick(a)\n~ temp s = shuffled(a)\nDone.\n",
+    );
+    assert!(
+        find_code(&diags, brink_ir::DiagnosticCode::E031).is_none()
+            && find_code(&diags, brink_ir::DiagnosticCode::E056).is_none(),
+        "{diags:?}"
+    );
+    let program = program.expect("should lower");
+    assert!(!program.root.body.is_empty());
+}
+
+/// `shuffle(a)` and `seed(n)` are statement-only: legal as statements
+/// (both classic `~` lines and `~ { … }` blocks), E056 in expression
+/// position.
+#[test]
+fn shuffle_and_seed_statement_forms_lower() {
+    let (program, diags) = lower_ink_with_warnings(
+        "VAR a = #[1, 2, 3]\n~ seed(42)\n~ shuffle(a)\n~ {\nseed(7)\nshuffle(a)\n}\nDone.\n",
+    );
+    assert!(
+        find_code(&diags, brink_ir::DiagnosticCode::E056).is_none()
+            && find_code(&diags, brink_ir::DiagnosticCode::E058).is_none(),
+        "{diags:?}"
+    );
+    let program = program.expect("should lower");
+    assert!(!program.root.body.is_empty());
+}
+
+#[test]
+fn shuffle_and_seed_in_expression_position_are_e056() {
+    for src in [
+        "VAR a = #[1]\n~ temp x = shuffle(a)\n",
+        "~ temp x = seed(4)\n",
+    ] {
+        let (_program, diags) = lower_ink_with_warnings(src);
+        assert!(
+            find_code(&diags, brink_ir::DiagnosticCode::E056).is_some(),
+            "expected E056 for {src:?}: {diags:?}"
+        );
+    }
+}
+
+#[test]
+fn shuffle_wrong_arity_emits_e058_naming_the_signature() {
+    let (_program, diags) = lower_ink_with_warnings("VAR a = #[1]\n~ shuffle(a, 1)\n");
+    let e058 = find_e058(&diags).expect("expected E058 for shuffle with 2 arguments");
+    assert!(
+        e058.message.contains("shuffle(array)"),
+        "message should name the expected signature: {}",
+        e058.message
+    );
+}
+
+#[test]
+fn seed_wrong_arity_emits_e058_naming_the_signature() {
+    let (_program, diags) = lower_ink_with_warnings("~ seed()\n");
+    let e058 = find_e058(&diags).expect("expected E058 for seed with 0 arguments");
+    assert!(
+        e058.message.contains("seed(n)"),
+        "message should name the expected signature: {}",
+        e058.message
+    );
+}
+
+/// `shuffle`'s receiver must be an lvalue — an rvalue is the E055 "bind it
+/// to a variable first" error, same as the other mutators.
+#[test]
+fn shuffle_rvalue_receiver_is_e055() {
+    let (_program, diags) = lower_ink_with_warnings("~ shuffle(#[1, 2])\n");
+    assert!(
+        find_code(&diags, brink_ir::DiagnosticCode::E055).is_some(),
+        "expected E055 for an rvalue receiver: {diags:?}"
+    );
+}
+
+// ─── NS-A5 (issue #1111, docs/stdlib-spec.md §7): range values ──────────
+
+/// Range literals (both forms) and the `non_empty` validator lower as
+/// ordinary expressions; `int(range)` rides the existing `ConvertInt`
+/// lowering (one value-directed verb — no new arm, no diagnostic).
+#[test]
+fn range_literals_and_verbs_lower_as_expressions() {
+    let (program, diags) = lower_ink_with_warnings(
+        "~ temp r = 1..=6\n\
+         ~ temp s = 0..10\n\
+         ~ temp o = non_empty(r)\n\
+         ~ temp x = int(r)\n\
+         ~ temp p = pick(s)\n\
+         Done.\n",
+    );
+    assert!(
+        find_code(&diags, brink_ir::DiagnosticCode::E031).is_none()
+            && find_code(&diags, brink_ir::DiagnosticCode::E056).is_none(),
+        "{diags:?}"
+    );
+    let program = program.expect("should lower");
+    assert!(!program.root.body.is_empty());
+}
+
+/// A range literal's bounds are ordinary expressions — nested calls,
+/// arithmetic, negatives all lower.
+#[test]
+fn range_bounds_are_expressions_at_lowering() {
+    let (program, diags) = lower_ink_with_warnings(
+        "VAR a = #[1, 2, 3]\n\
+         ~ temp r = -3..len(a) + 1\n\
+         Done.\n",
+    );
+    assert!(
+        find_code(&diags, brink_ir::DiagnosticCode::E031).is_none(),
+        "{diags:?}"
+    );
+    let program = program.expect("should lower");
+    assert!(!program.root.body.is_empty());
+}
+
+/// `non_empty` demands exactly one argument (E031 otherwise).
+#[test]
+fn non_empty_wrong_arity_is_e031() {
+    let (_program, diags) = lower_ink_with_warnings("~ temp o = non_empty()\nDone.\n");
+    assert!(
+        find_code(&diags, brink_ir::DiagnosticCode::E031).is_some(),
+        "nullary non_empty must be an arity error: {diags:?}"
     );
 }

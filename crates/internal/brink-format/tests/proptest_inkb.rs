@@ -140,6 +140,18 @@ fn arb_value_type() -> impl Strategy<Value = ValueType> {
         // can now produce a `List` payload, same rationale as every other
         // family above.
         Just(ValueType::List),
+        // NS-A8 tower value types (docs/tower-mini-spec.md T5): `arb_value`
+        // below can now produce tower payloads, same rationale.
+        Just(ValueType::Vec2),
+        Just(ValueType::Vec3),
+        Just(ValueType::Vec4),
+        Just(ValueType::Quat),
+        Just(ValueType::Mat2),
+        Just(ValueType::Mat3),
+        Just(ValueType::Mat4),
+        // NS-A7 weighted table value type (docs/stdlib-spec.md §8), same
+        // rationale.
+        Just(ValueType::Weighted),
     ]
 }
 
@@ -183,6 +195,11 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
         // default reaches the wire as a global's `default_value`.
         arb_def_id().prop_map(Value::FnRef),
         arb_closure(),
+        // NS-A5 range values (F7, `VAL_RANGE` on the wire): a flat scalar
+        // leaf — start/end/inclusive round-trip bit-for-bit (the written
+        // form is preserved; only *equality* is content-based).
+        (any::<i32>(), any::<i32>(), any::<bool>())
+            .prop_map(|(start, end, inclusive)| Value::range(start, end, inclusive)),
         // T1d handle values (docs/t1d-spec.md §2): the reserved `VAL_HANDLE`
         // tag's first emission — round-tripped here like every other value
         // tag.
@@ -209,6 +226,17 @@ fn arb_value_leaf() -> impl Strategy<Value = Value> {
             prop::collection::vec(arb_def_id(), 0..4),
         )
             .prop_map(|(items, origins)| Value::List(ListValue { items, origins }.into())),
+        // NS-A8 tower values (docs/tower-mini-spec.md T5): the seven lane
+        // families, lanes drawn from proptest's default finite-f32 domain
+        // and rebuilt through glam's explicit array constructors — the
+        // round-trip pins the hand-serialized little-endian lane wire.
+        any::<[f32; 2]>().prop_map(|l| Value::Vec2(glam::Vec2::from_array(l))),
+        any::<[f32; 3]>().prop_map(|l| Value::Vec3(glam::Vec3::from_array(l))),
+        any::<[f32; 4]>().prop_map(|l| Value::Vec4(glam::Vec4::from_array(l))),
+        any::<[f32; 4]>().prop_map(|l| Value::Quat(glam::Quat::from_array(l))),
+        any::<[f32; 4]>().prop_map(|l| Value::Mat2(glam::Mat2::from_cols_array(&l))),
+        any::<[f32; 9]>().prop_map(|l| Value::Mat3(glam::Mat3::from_cols_array(&l))),
+        any::<[f32; 16]>().prop_map(|l| Value::Mat4(glam::Mat4::from_cols_array(&l))),
     ]
 }
 
@@ -223,8 +251,21 @@ fn arb_value() -> impl Strategy<Value = Value> {
                 }
                 Value::map(map)
             }),
-            (any::<u32>(), prop::collection::vec(inner, 0..4))
+            (any::<u32>(), prop::collection::vec(inner.clone(), 0..4))
                 .prop_map(|(shape, fields)| Value::record(ShapeId(shape), fields)),
+            // Weighted tables (NS-A7, docs/stdlib-spec.md §8): 1-3
+            // positive-weight entries (the evidence-by-construction
+            // invariant the reader enforces), values from the full
+            // recursive universe.
+            prop::collection::vec((1i32..=i32::MAX, inner.clone()), 1..4).prop_map(Value::weighted),
+            // Option values (NS-A1, docs/stdlib-spec.md §1.4): both
+            // variants, payload from the full recursive universe so
+            // `some(none)`/`some(#[..])` nesting rides the writer/reader
+            // fuzz too.
+            prop::option::of(inner).prop_map(|payload| match payload {
+                None => Value::none(),
+                Some(v) => Value::some(v),
+            }),
         ]
     })
 }
@@ -276,7 +317,17 @@ fn assert_value_variants_exhaustive(value: &Value) {
         | Value::FnRef(_)
         | Value::Closure(_)
         | Value::Handle { .. }
-        | Value::Projection(_) => {}
+        | Value::Projection(_)
+        | Value::OptionVal(_)
+        | Value::Range { .. }
+        | Value::Vec2(_)
+        | Value::Vec3(_)
+        | Value::Vec4(_)
+        | Value::Quat(_)
+        | Value::Mat2(_)
+        | Value::Mat3(_)
+        | Value::Mat4(_)
+        | Value::Weighted(_) => {}
     }
 }
 
@@ -400,6 +451,7 @@ fn arb_story_data() -> impl Strategy<Value = StoryData> {
                     private_defs: vec![],
                     alias_table: vec![],
                     effect_rows: vec![],
+                    frame_shapes: Vec::new(),
                     source_checksum: 0,
                 }
             },

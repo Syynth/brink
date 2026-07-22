@@ -229,6 +229,15 @@ impl ProjectDb {
         Some(lowered_query(&self.salsa, *file).diagnostics.as_slice())
     }
 
+    /// Get the B0.3 HIR admission validator's output for a file
+    /// (docs/hir-admission-contract.md §4.2, issue #1172) — kept separate
+    /// from [`Self::file_diagnostics`] because it is non-suppressible
+    /// (never routed through `apply_suppressions`).
+    pub fn admission_diagnostics(&self, id: FileId) -> Option<&[Diagnostic]> {
+        let file = self.files.get(&id)?;
+        Some(lowered_query(&self.salsa, *file).admission.as_slice())
+    }
+
     /// Get parsed suppression directives for a file.
     pub fn suppressions(&self, id: FileId) -> Option<&Suppressions> {
         let file = self.files.get(&id)?;

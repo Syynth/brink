@@ -2,8 +2,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::definition::{
-    AddressDef, AddressPath, AliasEntry, ContainerDef, EffectRowEntry, ExternalFnDef, GlobalVarDef,
-    ListDef, ListItemDef, ScopeLineTable, StructShapeDef,
+    AddressDef, AddressPath, AliasEntry, ContainerDef, EffectRowEntry, ExternalFnDef,
+    FrameShapeDef, GlobalVarDef, ListDef, ListItemDef, ScopeLineTable, StructShapeDef,
 };
 use crate::id::DefinitionId;
 use crate::value::ListValue;
@@ -71,6 +71,22 @@ pub struct StoryData {
     /// Empty for converter output and any story compiled before this slice.
     /// Sorted by `def` (ascending raw id) for determinism.
     pub effect_rows: Vec<EffectRowEntry>,
+    /// The FS-3 `FrameShapes` table (`docs/flow-suspension-spec.md` §4/§11,
+    /// `.inkb` section tag `0x10`): one [`FrameShapeDef`] per `await` site —
+    /// the name-keyed static description of which locals cross the park, so
+    /// the runtime knows what to spill/restore around a suspension. Sorted by
+    /// `site` (ascending raw id) for determinism.
+    ///
+    /// **Reserved-through-fence**: additive metadata the runtime does not
+    /// consume yet, and — because the E052 `await` lowering fence stands
+    /// (FS-3c) — never populated by compilation today. Empty for every story
+    /// compiled today and all converter output, so a story carrying frame
+    /// shapes runs byte-identically to one without. First emission rides the
+    /// continuation-splitting codegen when the fence drops (FS-3r). The
+    /// section is **omitted entirely** from `.inkb` when empty (self-framed in
+    /// the offset table, like `Visibility`), so existing stories stay
+    /// byte-identical.
+    pub frame_shapes: Vec<FrameShapeDef>,
     /// CRC-32 checksum from the `.inkb` header, used for locale validation.
     /// Zero for stories not loaded from `.inkb`.
     pub source_checksum: u32,

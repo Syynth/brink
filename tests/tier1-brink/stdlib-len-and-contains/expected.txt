@@ -1,1 +1,1 @@
-len(arr) = 3, len(m) = 2, contains(arr, 20) = true, contains(arr, 99) = false, contains(m, "a") = true, contains(m, "z") = false
+len(arr) = 3, len(m) = 2, contains(arr, 20) = true, contains(arr, 99) = false, contains(m, "a") = true, contains(m, "z") = false, len("cider") = 5, len("café") = 4

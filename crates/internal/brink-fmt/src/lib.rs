@@ -621,7 +621,9 @@ fn classify_node(
                     lines[line_idx].kind = LineKind::Content;
                 }
             }
-            SyntaxKind::TAG_LINE => {
+            // NS-A2: `@[effects(…)]` annotation lines format like tag lines
+            // — kept verbatim at their weave depth, never content-reflowed.
+            SyntaxKind::TAG_LINE | SyntaxKind::ANNOTATION_LINE => {
                 if line_idx < lines.len() {
                     lines[line_idx].kind = LineKind::Tag;
                 }
