@@ -2741,6 +2741,28 @@ mod tower_tests {
             binary_op(BinaryOp::Multiply, &Value::Mat2(m), &Value::Int(3), &p).unwrap(),
             Value::Mat2(m * 3.0)
         );
+        // `Mul<f32>` is a separate glam impl per matrix type — exercise
+        // Mat3 and Mat4 too, since they share no code path with Mat2's arm.
+        let m3 = Mat3::from_cols(
+            Vec3::new(1.0, 2.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        );
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat3(m3), &Value::Float(3.0), &p).unwrap(),
+            Value::Mat3(m3 * 3.0)
+        );
+        let m4 = Mat4::from_cols(
+            Vec4::new(1.0, 0.0, 0.0, 0.0),
+            Vec4::new(0.0, 2.0, 0.0, 0.0),
+            Vec4::new(0.0, 0.0, 3.0, 0.0),
+            Vec4::new(0.0, 0.0, 0.0, 1.0),
+        );
+        // int operand promotes like ink's int->float coercion.
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat4(m4), &Value::Int(2), &p).unwrap(),
+            Value::Mat4(m4 * 2.0)
+        );
         // F31 named only "mat * scalar" — the commuted `scalar * mat` form
         // (which glam itself defines) is deliberately not added here; still
         // faults.
