@@ -41,6 +41,32 @@ jobs:
   # satisfies every dependency and no headless browser is needed. If this
   # job proves flaky in practice, drop it from branch-protection's required
   # list rather than deleting it (#672 workstream D).
+  # `brink-format` and `brink-runtime` claim `no_std` + `alloc` portability
+  # (`docs/no-std-portability.md`, #434): both have a default-enabled `std`
+  # feature and fall back to `core`/`alloc` without it. No job ever built
+  # that configuration, so it rotted silently — `proj_ops.rs`'s `.to_owned()`
+  # call shipped without the `alloc::borrow::ToOwned` import and broke
+  # `cargo check -p brink-runtime --no-default-features` on main with no CI
+  # signal (#1135). One job per crate (matrix, fail-fast: false) so a break
+  # in one crate's no_std build doesn't hide a break in the other's.
+  no-std:
+    name: no_std (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [brink-format, brink-runtime]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: no-std-${{ matrix.crate }}
+      - run: cargo check -p ${{ matrix.crate }} --no-default-features
+
   wasm-test:
     name: Wasm Tests (brink-web)
     runs-on: ubuntu-latest
