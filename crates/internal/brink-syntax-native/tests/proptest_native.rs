@@ -216,6 +216,13 @@ fn arb_body_line() -> impl Strategy<Value = String> {
         1 => arb_choice_point_with_body_divert(),
         1 => arb_choice_point_with_interpolation(),
         1 => arb_labeled_content_line(),
+        // #1199: trivia (line/block comments) mixed into the general
+        // body/story fuzz, not just its own dedicated properties below —
+        // every construct-shaped generator above should also see a
+        // comment line land immediately before or after it across the
+        // full NUM_CASES sweep.
+        1 => arb_line_comment_line(),
+        1 => arb_block_comment_line(),
     ]
 }
 
@@ -293,6 +300,19 @@ fn truncated(s: &str, cut_ratio: u32) -> String {
         end -= 1;
     }
     s[..end].to_string()
+}
+
+/// A standalone `//` line comment, as its own body line — #1199's
+/// cross-cutting trivia-family coverage: comments interspersed with real
+/// grammar, not just background noise.
+fn arb_line_comment_line() -> impl Strategy<Value = String> {
+    "[a-zA-Z0-9 ,.!?{}()\\[\\]-]{0,40}".prop_map(|body| format!("//{body}\n"))
+}
+
+/// A `/* … */` block comment on its own line, single- or multi-line body.
+fn arb_block_comment_line() -> impl Strategy<Value = String> {
+    prop::collection::vec("[a-zA-Z0-9 ]{0,15}", 1..=3)
+        .prop_map(|parts| format!("/*{}*/\n", parts.join("\n")))
 }
 
 /// Interleave some unicode noise (accented letters, CJK, emoji, combining
@@ -613,6 +633,82 @@ proptest! {
         let src = format!("var x = \"{text}\n");
         let parsed = parse(&src);
         prop_assert_eq!(parsed.syntax().text().to_string(), src);
+    }
+
+    // ── #1199: trivia round-trip and brace-family unclosed-boundary props ──
+
+    #[test]
+    fn line_comment_line_roundtrip(input in arb_line_comment_line()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn line_comment_line_no_errors(input in arb_line_comment_line()) {
+        let parsed = parse(&input);
+        prop_assert!(parsed.errors().is_empty(), "input: {:?}\nerrors: {:?}", input, parsed.errors());
+    }
+
+    #[test]
+    fn block_comment_line_roundtrip(input in arb_block_comment_line()) {
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    #[test]
+    fn block_comment_line_no_errors(input in arb_block_comment_line()) {
+        let parsed = parse(&input);
+        prop_assert!(parsed.errors().is_empty(), "input: {:?}\nerrors: {:?}", input, parsed.errors());
+    }
+
+    #[test]
+    fn comment_lines_interspersed_in_flow_body_roundtrip(
+        name in arb_ident(),
+        before in arb_content_line(),
+        comment in arb_line_comment_line(),
+        after in arb_content_line(),
+    ) {
+        let input = format!("flow {name}() {{\n  {before}  {comment}  {after}}}\n");
+        let parsed = parse(&input);
+        prop_assert_eq!(parsed.syntax().text().to_string(), input);
+    }
+
+    /// Unclosed `(` — an expression's parenthesized group truncated before
+    /// its matching `)`, at both statement-expression and call-argument
+    /// position.
+    #[test]
+    fn unterminated_paren_expr_never_panics(name in arb_ident(), body in arb_expr()) {
+        let src = format!("var {name} = ({body}\n");
+        let parsed = parse(&src);
+        prop_assert_eq!(parsed.syntax().text().to_string(), src);
+    }
+
+    #[test]
+    fn unterminated_call_args_never_panics(callee in arb_ident(), a in arb_expr(), b in arb_expr()) {
+        let src = format!("var x = {callee}({a}, {b}\n");
+        let parsed = parse(&src);
+        prop_assert_eq!(parsed.syntax().text().to_string(), src);
+    }
+
+    /// Unclosed `[` — a choice line's display-split bracket truncated
+    /// before its matching `]`.
+    #[test]
+    fn unterminated_choice_bracket_never_panics(text in arb_text()) {
+        let src = format!("{{?\n* [{text}\n}}\n");
+        let parsed = parse(&src);
+        prop_assert_eq!(parsed.syntax().text().to_string(), src);
+    }
+
+    /// Unclosed `/* … */` running all the way to EOF — the lexer folds it
+    /// into one `BLOCK_COMMENT` token (see `lexer::try_lex_comment`), and
+    /// the parser must still terminate cleanly rather than hang looking
+    /// for a close that never comes.
+    #[test]
+    fn unterminated_block_comment_never_panics(before in arb_body(), text in "[a-zA-Z0-9 \n]{0,60}") {
+        let src = format!("{before}/*{text}");
+        let parsed = parse(&src);
+        prop_assert_eq!(parsed.syntax().text().to_string(), src);
+        prop_assert_eq!(parsed.syntax().kind(), SyntaxKind::SOURCE_FILE);
     }
 
     /// Fully arbitrary byte-garbage input restricted to valid UTF-8
