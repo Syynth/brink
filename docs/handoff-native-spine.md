@@ -69,7 +69,7 @@ SHAs are the heads as of handoff.
 
 | # | Branch | SHA | Base | What | PR |
 |---|--------|-----|------|------|----|
-| A | `docs/effect-system-native-unification` | `463394f6` | main | Effect-system unification (docs only) | **#1217** (open draft) |
+| A | `docs/effect-system-native-unification` | `13d0fbaf` | main | Effect-system unification (docs only) | **#1217** — conflict resolved (merged main in), **auto-merge armed**; lands on green |
 | B | `docs/native-implicit-end-ruling` | `531d7040` | main | Implicit-end ruling (docs only) | **#1220 — MERGED 2026-07-22** ✅ |
 | C | `auto/first-light-integration` | `885de01b` | main | **First light 9/9** = `auto/first-light-native` + `auto/native-content-whitespace` merged | needs opening |
 | D | `auto/b0-10a-native-seam` | `da3731c5` | first-light-native | Native `.brink` compile seam (parse_native_query + dispatch) | needs opening |
@@ -269,8 +269,10 @@ Full scoping is in the decision history; the essentials:
 
 ## 10. Open GitHub items
 
-- **#1217** — effect-system unification (docs). Open draft. Land when CI green.
-- **#1220** — implicit-end ruling (docs). Open draft. Land when CI green.
+- **#1217** — effect-system unification (docs). Conflict with main (decision-log tail
+  vs #1220) was resolved by merging main in (`13d0fbaf`); **auto-merge is armed**, so
+  it lands itself once CI is green. Nothing to do unless CI fails.
+- **#1220** — implicit-end ruling (docs). **MERGED 2026-07-22** ✅ (in `main`).
 - **#1218** — B0.6b doc comments. **Already merged.** (Its `//!`-visibility fix
   is in `main`.)
 - **#1219** — branch-asymmetry lint. Filed as an issue (design stub), not built.
