@@ -9,6 +9,7 @@ use brink_format::DefinitionId;
 use brink_ir::suppressions::Suppressions;
 use brink_ir::{Diagnostic, FileId, HirFile, ResolutionMap, SymbolIndex, SymbolManifest};
 use brink_syntax::Parse;
+use brink_syntax_native::Parse as NativeParse;
 use salsa::Setter as _;
 use tracing::debug;
 
@@ -18,9 +19,9 @@ use crate::queries::{
     SourceFile, analysis_query, call_site_diagnostics_query, call_site_metas_query,
     diagnostics_query, effects_query, has_errors_query, include_graph_query, infer_body_query,
     inferred_signature_query, lir_knot_chunk_query, lir_prelude_decls_query, lir_query,
-    lowered_query, parse_query, per_file_diagnostics_query, resolutions_index_query, resolve_query,
-    signature_query, story_data_query, suppressions_query, symbol_index_query,
-    type_diagnostics_query, type_inference_query, value_meta_query,
+    lowered_query, parse_native_query, parse_query, per_file_diagnostics_query,
+    resolutions_index_query, resolve_query, signature_query, story_data_query, suppressions_query,
+    symbol_index_query, type_diagnostics_query, type_inference_query, value_meta_query,
 };
 
 /// Stateful incremental project database.
@@ -203,6 +204,18 @@ impl ProjectDb {
     pub fn parse(&self, id: FileId) -> Option<&Parse> {
         let file = self.files.get(&id)?;
         Some(parse_query(&self.salsa, *file))
+    }
+
+    /// Get the native (`.brink`) parse tree for a file (B0.10a, the native
+    /// compile seam, issue #1106). The native-frontend sibling of
+    /// [`parse`](Self::parse) — a distinct nominal `Parse` type. This runs the
+    /// native parser regardless of the file's extension; the extension-based
+    /// frontend dispatch that decides which parser *lowering* uses lives in
+    /// `lowered_query`, so `parse()` stays ink-typed and untouched for the
+    /// LSP/IDE ink path.
+    pub fn parse_native(&self, id: FileId) -> Option<&NativeParse> {
+        let file = self.files.get(&id)?;
+        Some(parse_native_query(&self.salsa, *file))
     }
 
     /// Get the HIR for a file.
@@ -695,6 +708,78 @@ mod path_tests {
             resolve_include_path("chapters/main.ink", "../host.ink"),
             "host.ink"
         );
+    }
+}
+
+#[cfg(test)]
+mod native_seam_tests {
+    use super::ProjectDb;
+    use brink_analyzer::{AnalysisOptions, Dialect};
+
+    /// B0.10a gate (issue #1106): a native `.brink` file, registered by the
+    /// plain public db API, must compile all the way through the *real* salsa
+    /// pipeline to `StoryData` — proving the frontend seam in `lowered_query`
+    /// dispatches on the `.brink` extension and that everything downstream of
+    /// lowering is frontend-agnostic. This flow falls off the end (the
+    /// `lower_native` implicit `-> DONE`), so no explicit terminator is needed.
+    #[test]
+    fn native_brink_file_compiles_through_to_story_data() {
+        let mut db = ProjectDb::new();
+        // Native compiles under the brink dialect (the analysis posture the
+        // first-light native harness uses).
+        db.set_analysis_options(AnalysisOptions {
+            dialect: Dialect::Brink,
+            ..AnalysisOptions::default()
+        });
+        let id = db.set_file(
+            "scene.brink",
+            "flow main() {\n  Hello, world.\n}\n".to_owned(),
+        );
+        db.set_entry("scene.brink");
+
+        // No parse/lowering diagnostics, and the non-suppressible admission
+        // gate is clean.
+        assert_eq!(
+            db.file_diagnostics(id),
+            Some(&[][..]),
+            "native lowering must produce no per-file diagnostics"
+        );
+        assert_eq!(
+            db.admission_diagnostics(id),
+            Some(&[][..]),
+            "native HIR must pass the B0.3 admission gate"
+        );
+
+        // End-to-end: parse_native -> lower_native -> analyze -> LIR ->
+        // codegen -> StoryData, all via the public `story_data()` accessor.
+        let product = db
+            .story_data()
+            .expect("entry is set, so story_data is Some");
+        assert!(
+            product.errors.is_empty(),
+            "native compile must be error-free, got: {:?}",
+            product.errors
+        );
+        assert!(
+            product.story.is_some(),
+            "native compile must yield a StoryData"
+        );
+    }
+
+    /// The seam must not leak: an `.ink` file still runs the ink frontend and
+    /// compiles as before (the native parser is never invoked for it).
+    #[test]
+    fn ink_file_still_compiles_via_ink_frontend() {
+        let mut db = ProjectDb::new();
+        db.set_file("main.ink", "Hello, world.\n-> DONE\n".to_owned());
+        db.set_entry("main.ink");
+        let product = db.story_data().expect("entry is set");
+        assert!(
+            product.errors.is_empty(),
+            "ink path unchanged: {:?}",
+            product.errors
+        );
+        assert!(product.story.is_some());
     }
 }
 
