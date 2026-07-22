@@ -728,6 +728,57 @@ fn return_redirect_to_named_path_stamps_tunnel_redirect() {
 }
 
 #[test]
+fn bare_return_inside_a_non_function_flow_is_a_tunnel_redirect() {
+    // `return` inside an ordinary `flow` (reached via tunnel call, ink's
+    // bare `->->`) must NOT be `Explicit` — E032 (return outside function)
+    // would otherwise fire for perfectly valid tunnel-return code
+    // (`tests/tier1-brink-respell/basic-tunnel`).
+    let (hir, _m, diags) = lower_src("flow f() {\n  Hello\n  return\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::Return(r) = hir.knots[0].body.stmts.last().expect("a Return statement") else {
+        panic!("expected Return, got {:?}", hir.knots[0].body.stmts);
+    };
+    assert_eq!(r.kind, ReturnKind::TunnelRedirect);
+    assert!(
+        matches!(
+            hir.knots[0].body.tail(),
+            Tail::Diverge(Terminator::Return(_))
+        ),
+        "tail must be recomputed after the fixup: {:?}",
+        hir.knots[0].body.tail()
+    );
+}
+
+#[test]
+fn bare_return_inside_a_function_stays_explicit() {
+    let (hir, _m, diags) = lower_src("fn f() {\n  return\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::Return(r) = &hir.knots[0].body.stmts[0] else {
+        panic!("expected Return");
+    };
+    assert_eq!(r.kind, ReturnKind::Explicit);
+}
+
+#[test]
+fn bare_return_inside_a_choice_body_of_a_non_function_flow_is_a_tunnel_redirect() {
+    let (hir, _m, diags) =
+        lower_src("flow f() {\n  {?\n    * A. {\n        return\n      }\n  }\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::ChoiceSet(cs) = &hir.knots[0].body.stmts[0] else {
+        panic!("expected ChoiceSet, got {:?}", hir.knots[0].body.stmts[0]);
+    };
+    let Stmt::Return(r) = cs.choices[0]
+        .body
+        .stmts
+        .last()
+        .expect("a Return statement")
+    else {
+        panic!("expected Return in choice body, got {:?}", cs.choices[0].body.stmts);
+    };
+    assert_eq!(r.kind, ReturnKind::TunnelRedirect);
+}
+
+#[test]
 fn return_redirect_to_done_lowers_as_plain_divert() {
     let (hir, _m, diags) = lower_src("flow a() {\n  return -> DONE\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");

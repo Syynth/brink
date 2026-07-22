@@ -127,9 +127,10 @@ pub(super) fn lower_top_level_container(
         DocPolicy::CALLABLE,
         diags,
     );
-    let body_block = node.body().map_or_else(Block::default, |b| {
+    let mut body_block = node.body().map_or_else(Block::default, |b| {
         super::body::lower_block(file_id, &b, diags)
     });
+    super::body::fixup_return_kind(node.is_function(), &mut body_block);
 
     Some(Knot {
         ptr: native_provenance(file_id, NodeClass::Knot, syntax),
@@ -190,9 +191,14 @@ fn lower_stitch(
         DocPolicy::CALLABLE,
         diags,
     );
-    let body_block = node.body().map_or_else(Block::default, |b| {
+    let mut body_block = node.body().map_or_else(Block::default, |b| {
         super::body::lower_block(file_id, &b, diags)
     });
+    // Stitches never carry `is_function` (no HIR container below `Knot`
+    // does — module doc judgment call #4), so a bare `return` inside a
+    // stitch is always the tunnel-return spelling, never an explicit
+    // function return.
+    super::body::fixup_return_kind(false, &mut body_block);
     Some(Stitch {
         ptr: native_provenance(file_id, NodeClass::Stitch, syntax),
         name,
