@@ -755,13 +755,23 @@ fn toml_span_to_lsp_range(
 /// fallen back to defaults). `source` is the file's text, when it was read
 /// successfully — needed to convert `ConfigError::Toml`'s byte span into an
 /// LSP line/column range (see [`toml_span_to_lsp_range`]).
+///
+/// Severity is always `Error`: every `ConfigError` variant (unreadable
+/// file, malformed TOML, a recognized key holding the wrong shape/value) is
+/// a genuine config-load failure — `ConfigError` carries no `DiagnosticCode`
+/// and has no warning-level variant, unlike `brink_ir::Diagnostic` (whose
+/// severity is code-dependent and must go through
+/// [`convert::severity_to_lsp`] with `diag.code.severity()`, see
+/// [`convert::diagnostic_to_lsp`]). This still routes through
+/// `convert::severity_to_lsp` rather than naming the `tower_lsp` variant
+/// directly, so the mapping stays centralized in one place (#1163).
 fn config_error_diagnostic(
     error: &brink_project_config::ConfigError,
     source: Option<&str>,
 ) -> tower_lsp::lsp_types::Diagnostic {
     tower_lsp::lsp_types::Diagnostic {
         range: toml_span_to_lsp_range(error, source).unwrap_or_default(),
-        severity: Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR),
+        severity: Some(convert::severity_to_lsp(brink_ir::Severity::Error)),
         source: Some("brink.toml".to_owned()),
         message: error.to_string(),
         ..Default::default()
@@ -2646,7 +2656,30 @@ fn code_action_data_to_json(
 mod tests {
     use tower_lsp::lsp_types::Diagnostic;
 
-    use super::{PublishDecision, PublishRecord, PublishTier, publish_decision};
+    use super::{
+        PublishDecision, PublishRecord, PublishTier, config_error_diagnostic, publish_decision,
+    };
+
+    /// #1163 regression: `config_error_diagnostic` must always report
+    /// `ERROR` — every `ConfigError` variant (malformed TOML, unreadable
+    /// file, a recognized key with the wrong shape) is a genuine load
+    /// failure, and the type carries no `DiagnosticCode`/warning tier to
+    /// route through `convert::severity_to_lsp` differently. This locks in
+    /// that the #1163 fix (routing the literal through
+    /// `convert::severity_to_lsp` instead of naming the `tower_lsp` variant
+    /// directly) didn't change the resulting severity.
+    #[test]
+    fn config_error_diagnostic_is_always_error() {
+        let err = brink_project_config::ConfigError::NotATable {
+            key: "types".to_owned(),
+            found: "string",
+        };
+        let diag = config_error_diagnostic(&err, None);
+        assert_eq!(
+            diag.severity,
+            Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR)
+        );
+    }
 
     /// A distinct diagnostic set identified by its message (content equality is
     /// all `publish_decision` inspects).

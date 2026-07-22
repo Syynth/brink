@@ -99,4 +99,27 @@ mod tests {
             lsp_types::DiagnosticSeverity::WARNING,
         );
     }
+
+    /// #1163 regression: a `DiagnosticCode` whose default severity is
+    /// `Warning` (E014 is one of the 17 warning-default codes) must surface
+    /// as `DiagnosticSeverity::WARNING`, not `ERROR`, once routed through
+    /// `diagnostic_to_lsp` — the real `diag.code.severity()` path, exercised
+    /// end-to-end with an actual code rather than a bare `Severity` value.
+    #[test]
+    fn diagnostic_to_lsp_respects_warning_default_code() {
+        assert_eq!(
+            brink_ir::DiagnosticCode::E014.severity(),
+            brink_ir::Severity::Warning
+        );
+
+        let diag = brink_ir::Diagnostic {
+            file: brink_ir::FileId(0),
+            range: TextRange::new(TextSize::from(0), TextSize::from(1)),
+            message: "test".to_owned(),
+            code: brink_ir::DiagnosticCode::E014,
+        };
+        let idx = LineIndex::new("x");
+        let lsp = diagnostic_to_lsp(&diag, &idx);
+        assert_eq!(lsp.severity, Some(lsp_types::DiagnosticSeverity::WARNING));
+    }
 }
