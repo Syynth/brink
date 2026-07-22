@@ -8,7 +8,7 @@
 //! (charter §5). The native grammar has no such concept: `choice()` bumps
 //! exactly one `STAR`/`PLUS` bullet token per `CHOICE`, and a second
 //! `*`/`+` immediately following just becomes ordinary `CHOICE_START_CONTENT`
-//! prose (see `mixed_star_and_plus_bullets_do_not_stack_as_nesting_depth`
+//! prose (see `stacked_bullets_do_not_open_a_second_choice`
 //! below) — nesting is instead expressed structurally, a `CHOICE_BODY`
 //! containing another `{? … }` (see
 //! `choice_body_may_nest_another_choice_point`). So those three parity
@@ -216,12 +216,15 @@ fn star_and_plus_bullets_mixed_within_one_choice_point() {
 }
 
 #[test]
-fn mixed_star_and_plus_bullets_do_not_stack_as_nesting_depth() {
+fn stacked_bullets_do_not_open_a_second_choice() {
     // The native-grammar complement to brink-syntax's `double_plus_choice`:
-    // a second bullet-shaped char right after the first is NOT a deeper
-    // nesting level here (there is no gather-based nesting concept,
-    // charter §5 / this file's module doc) — it is ordinary
-    // `CHOICE_START_CONTENT` prose, folded into the one `CHOICE`'s `TEXT`.
+    // a second `+` immediately stacked on the first (`++`, no star
+    // involved — the actual mixing of `*` and `+` within one point is
+    // covered separately by `star_and_plus_bullets_mixed_within_one_choice_point`
+    // above) is NOT a deeper nesting level here (there is no gather-based
+    // nesting concept, charter §5 / this file's module doc) — it is
+    // ordinary `CHOICE_START_CONTENT` prose, folded into the one
+    // `CHOICE`'s `TEXT`.
     let src = "flow f() {\n  {?\n    ++[text] inner\n  }\n}\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
@@ -294,16 +297,24 @@ fn choice_guard_and_label_combine_in_the_documented_order() {
 }
 
 #[test]
-fn label_before_guard_is_not_recognized_as_a_choice_guard() {
-    // The reverse order is NOT supported: `choice()` only checks for a
-    // guard BEFORE consuming a label, never after. A `{if cond}` following
-    // a label is reparsed from scratch by the generic content scanner,
-    // which recognizes it as a bare inline `CONDITIONAL_BLOCK` (the
-    // annotated-brace family, charter §6) instead of a `CHOICE_GUARD` —
-    // and since that shorthand form has no `:`/`{` body opener here, it
-    // errors. This is by design (documented ordering), not a bug: it is
-    // asserted here as a regression guard on the documented order, not a
-    // TODO.
+fn label_before_guard_is_currently_not_recognized_as_a_choice_guard() {
+    // GAP, not a ruling: `choice()` only checks for a guard BEFORE
+    // consuming a label, never after (`choice.rs`'s own doc comment
+    // reflects this implementation order, but the charter itself
+    // (native-surface-charter.md §6, §11) gives `{if cond}` and `(name)`
+    // as separate exhibits and is silent on their combined order).
+    // brink-syntax's reference grammar — the ink-parity source of truth —
+    // takes label FIRST, then condition(s)
+    // (`brink-syntax/src/parser/choice.rs`'s `choice()`: `label?` before
+    // `choice_condition*`), i.e. `* (name) {cond} text` is the canonical
+    // ink spelling. The native parser currently rejects that spelling: a
+    // `{if cond}` following a label is reparsed from scratch by the
+    // generic content scanner, which recognizes it as a bare inline
+    // `CONDITIONAL_BLOCK` (the annotated-brace family, charter §6)
+    // instead of a `CHOICE_GUARD` — and since that shorthand form has no
+    // `:`/`{` body opener here, it errors. Asserting the CURRENT (buggy)
+    // behavior below, characterized as a gap, not a documented ruling —
+    // see #1253 for the tracking issue on this ordering divergence.
     let src = "flow f() {\n  {?\n    * (again) {if visited} Been here.\n  }\n}\n";
     let p = assert_lossless(src);
     assert!(
@@ -410,7 +421,7 @@ fn bracket_split_anatomy_combined_with_a_divert_in_the_bracket_region() {
 
 // ── Known limitation: trailing `#tag` on a choice line ────────────────────
 //
-// TODO(#1195 follow-up, filed on the issue): unlike `content_line`
+// TODO(#1252): unlike `content_line`
 // (`content.rs`), which calls `tag_line_tail` after its `content_items_until`
 // scan to fold trailing `#tag`s into the `CONTENT_LINE`, `choice_text`
 // (`choice.rs`) never does — `content_items_until`'s loop unconditionally
@@ -702,10 +713,9 @@ fn extremely_deep_nested_choice_points_do_not_overflow_the_stack() {
         src.push_str("}\n}\n");
     }
     let wrapped = format!("flow f() {{\n{src}}}\n");
-    let p = crate::parse(&wrapped);
     // Lossless round-trip must hold even under the depth guard's
     // best-effort recovery path.
-    assert_eq!(p.syntax().text().to_string(), wrapped);
+    let p = assert_lossless(&wrapped);
     assert!(
         p.errors()
             .iter()
@@ -720,11 +730,10 @@ fn adversarial_structural_soup_inside_a_choice_point_never_panics() {
     // Every choice-family structural character in one line, malformed:
     // unmatched brackets/braces/parens, a bare `<-`, a bare `?`.
     let src = "flow f() {\n  {?\n    *(){}[]<-?{if}else\n  }\n}\n";
-    let p = assert_lossless(src);
     // No specific assertion on error count/shape — the invariant under
     // test is solely "does not panic, does not hang, stays lossless"
-    // (`assert_lossless` above already checks the round-trip).
-    let _ = p.errors();
+    // (`assert_lossless` already checks the round-trip).
+    assert_lossless(src);
 }
 
 // ── Local proptest generators (per this issue's own instruction: a
