@@ -307,6 +307,144 @@ fn count_node_kind(root: &SyntaxNode, kind: SyntaxKind) -> usize {
         .count()
 }
 
+/// Concatenate the text of every `TEXT` node under `root`, in tree order —
+/// the significant-whitespace fix's key observable: prose lands in `TEXT`
+/// nodes, and inter-token whitespace must live INSIDE those nodes (not as
+/// bare trivia hung off the enclosing content node, where lowering — which
+/// walks node children — would drop it).
+fn text_run_concat(root: &SyntaxNode) -> String {
+    root.descendants()
+        .filter(|node| node.kind() == SyntaxKind::TEXT)
+        .map(|node| node.text().to_string())
+        .collect()
+}
+
+// ── Significant inter-token whitespace in content position ───────────────
+
+#[test]
+fn space_after_choice_bracket_close_survives_inside_the_text_node() {
+    // `* text[] more` — the display-split anatomy. The space right after the
+    // `]` bracket close is the leading char of `CHOICE_INNER_CONTENT` and
+    // must be preserved AS PROSE (folded into the inner `TEXT` node), not
+    // eaten as bare trivia. Regression for the `'A wager!'I returned.`
+    // (native) vs `'A wager!' I returned.` (oracle) divergence.
+    let src = "flow f() {\n  {?\n    * 'A wager!'[] I returned.\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+
+    let inner = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CHOICE_INNER_CONTENT)
+        .expect("CHOICE_INNER_CONTENT");
+    let inner_text = text_run_concat(&inner);
+    assert_eq!(
+        inner_text, " I returned.",
+        "space after `]` must be folded into the inner TEXT node"
+    );
+
+    // The reconstructed choice display (start-content + inner-content, the
+    // bracket content being choice-only) keeps the separating space.
+    let choice = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CHOICE)
+        .expect("CHOICE");
+    let start = choice
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CHOICE_START_CONTENT)
+        .expect("CHOICE_START_CONTENT");
+    let display = format!("{}{}", text_run_concat(&start), inner_text);
+    assert_eq!(display, "'A wager!' I returned.");
+}
+
+#[test]
+fn space_after_glue_marker_survives_inside_the_text_node() {
+    // `<> But surely.` — the space after the `<>` glue marker is the leading
+    // char of the following prose run and must be preserved in the `TEXT`
+    // node, not discarded (the exhibit-fogg glue lines' divergence).
+    let src = "flow f() {\n  <> But surely.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+
+    let line = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CONTENT_LINE)
+        .expect("CONTENT_LINE");
+    assert!(has_node_kind(&line, SyntaxKind::GLUE_NODE));
+    assert_eq!(
+        text_run_concat(&line),
+        " But surely.",
+        "space after `<>` must be folded into the following TEXT node"
+    );
+}
+
+#[test]
+fn charter_wager_shape_preserves_space_after_bracket_close() {
+    // The charter's literal spelling `* 'A wager!'[] I returned. { … }`
+    // (complex-flow-v1) — the bracket-close space with a trailing
+    // nested-content CHOICE_BODY brace also present, exercising the G-2
+    // body-open disambiguation alongside the whitespace fix.
+    let src = concat!(
+        "flow f() {\n",
+        "  {?\n",
+        "    * 'A wager!'[] I returned. {\n",
+        "      -> f\n",
+        "    }\n",
+        "  }\n",
+        "}\n",
+    );
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+
+    let inner = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CHOICE_INNER_CONTENT)
+        .expect("CHOICE_INNER_CONTENT");
+    assert_eq!(text_run_concat(&inner), " I returned. ");
+    // The trailing brace still opened a real CHOICE_BODY (not interpolation).
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::CHOICE_BODY));
+}
+
+#[test]
+fn interior_prose_whitespace_between_words_is_unchanged() {
+    // Guard the baseline the fix must not regress: a plain content line's
+    // interior word spacing was already preserved by `text_run_until`, and
+    // still is.
+    let src = "flow f() {\n  You have three gold coins.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let line = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CONTENT_LINE)
+        .expect("CONTENT_LINE");
+    assert_eq!(text_run_concat(&line), "You have three gold coins.");
+}
+
+#[test]
+fn whitespace_only_inner_content_makes_no_spurious_text_node() {
+    // The complement: whitespace that is NOT followed by prose (a bracket
+    // close then only trailing spaces before the newline) must still be bare
+    // trivia — the fix must not manufacture an empty/whitespace-only `TEXT`
+    // node. `starts_text_run` returns `false` when the next non-trivia token
+    // is a stop token (here `NEWLINE`), so the loop `skip_ws`es and breaks.
+    let src = "flow f() {\n  {?\n    * choose[] \n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let inner = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CHOICE_INNER_CONTENT)
+        .expect("CHOICE_INNER_CONTENT");
+    assert!(
+        !has_node_kind(&inner, SyntaxKind::TEXT),
+        "whitespace-only inner content must not create a TEXT node, tree: {inner:#?}"
+    );
+}
+
 // ── N-1: inline diverts in content position ─────────────────────────
 
 #[test]

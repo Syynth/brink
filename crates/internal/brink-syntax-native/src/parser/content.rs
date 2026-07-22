@@ -71,8 +71,32 @@ pub(crate) fn label(p: &mut Parser<'_, '_>) {
 /// appears in `stop`. Does not consume the stopping token.
 pub(crate) fn content_items_until(p: &mut Parser<'_, '_>, stop: &[SyntaxKind]) {
     loop {
-        p.skip_ws();
         let cur = p.current();
+        // Leading-trivia policy (significant-whitespace fix): only a prose
+        // TEXT run keeps its leading whitespace. When the next item is a
+        // text run, DON'T `skip_ws` here — `text_run_until` (which bumps
+        // RAW tokens) folds the leading whitespace into the `TEXT` node, so
+        // significant inter-token prose whitespace survives as narrative
+        // rather than being discarded as bare trivia hung off the enclosing
+        // content node. That whitespace is exactly the space after a `]`
+        // bracket close (`CHOICE_INNER_CONTENT`) or a `<>` glue marker: the
+        // `'A wager!'` / `<> "But surely…"` shapes whose space this loop
+        // used to eat, diverging from the ink twin (`'A wager!'I returned.`).
+        //
+        // For every OTHER item (the annotated-brace family, bare `{expr}`
+        // interpolation, glue, diverts, doc-comment tokens) and for every
+        // stop/break token, consume leading trivia first, exactly as before:
+        // `is_body_open_brace`'s RAW lookahead and each item node's own
+        // leading `bump`/`expect` must land on the real token, not on
+        // pending whitespace. `current()` already skips trivia read-only, so
+        // the dispatch decision below is identical either way — only WHERE
+        // the whitespace lands in the tree changes. Line-leading indentation
+        // is never captured here: every caller (`block`, `colon_body`,
+        // `entry`, `inline_alternatives`, `choice`, `content_line`) already
+        // skips it before this loop is entered.
+        if !starts_text_run(cur, stop) {
+            p.skip_ws();
+        }
         // `HASH` always stops this loop, whether or not the caller asked
         // for it: `text_run_until` below always treats `HASH` as breaking
         // (tags are recognized structurally by every caller), and if this
@@ -134,6 +158,24 @@ pub(crate) fn content_items_until(p: &mut Parser<'_, '_>, stop: &[SyntaxKind]) {
             _ => text_run_until(p, stop),
         }
     }
+}
+
+/// True when the next non-trivia token (`cur`, already trivia-skipped by
+/// `current()`) begins a prose `TEXT` run — i.e. it would fall to
+/// `content_items_until`'s `_` dispatch arm rather than a structural item
+/// (`{…}` family/interpolation, glue, divert, doc-comment) or a stop/break
+/// token (`EOF`/`HASH`/a caller-supplied stop). When it does, the outer
+/// loop must NOT `skip_ws` first, so `text_run_until` can fold the leading
+/// whitespace into the `TEXT` node and preserve significant inter-token
+/// prose whitespace. Every branch this returns `false` for either breaks
+/// the loop or dispatches to an item whose own `bump`/`expect` (or the
+/// explicit `skip_ws` the loop still performs) consumes the leading trivia,
+/// so structural lookahead and node-boundary placement are unchanged.
+fn starts_text_run(cur: SyntaxKind, stop: &[SyntaxKind]) -> bool {
+    !matches!(
+        cur,
+        EOF | HASH | L_BRACE | GLUE | DIVERT | DOC_COMMENT_OUTER | DOC_COMMENT_INNER
+    ) && !stop.contains(&cur)
 }
 
 /// True when the `L_BRACE` at the parser's current (unconsumed) position
