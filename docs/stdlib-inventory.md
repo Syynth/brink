@@ -169,9 +169,9 @@ delegated ruling.
 | `mat * vec` | transform | (op) | — | P | mat2/3/4 (all sizes v1 — mini-spec) |
 | `quat * quat` | compose | (op) | — | P | |
 | `quat * vec` | rotate | (op) | — | P | |
-| `mat * mat` | compose (matching sizes) | (op) | — | ✅ | F31 partial-b, issue #1145 — mat2/3/4 |
-| `mat * scalar` | scale, ints promote — **one direction only** (`mat * scalar`; the commuted `scalar * mat` form glam itself defines is deliberately not added) | (op) | — | ✅ | F31 partial-b, issue #1145 — mat2/3/4 |
-| `vec / scalar` | scale down, ints promote — **one direction only**; IEEE float division, zero divisor yields `inf`/`nan` lanes (T4), not a fault | (op) | — | ✅ | F31 partial-b, issue #1145 — vec2/3/4 |
+| `mat * mat` | compose (matching sizes) | (op) | — | P | ✅ F31 partial-b, issue #1145 — mat2/3/4 |
+| `mat * scalar` | scale, ints promote — **one direction only** (`mat * scalar`; the commuted `scalar * mat` form glam itself defines is deliberately not added) | (op) | — | P | ✅ F31 partial-b, issue #1145 — mat2/3/4 |
+| `vec / scalar` | scale down, ints promote — **one direction only**; IEEE float division, zero divisor yields `inf`/`nan` lanes (T4), not a fault | (op) | — | P (NaN-total) | ✅ F31 partial-b, issue #1145 — vec2/3/4 |
 | `min`/`max`/`clamp`/`lerp` | componentwise across the tower (width-1 scalar floor is §1) | math | ✓ | P | "defined once across it" (§2b) |
 
 Every other glam-native form — `mat ± mat`, `quat * scalar`, `vec / vec`,
