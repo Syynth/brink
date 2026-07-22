@@ -196,6 +196,15 @@ Walked the full remaining concept inventory; every item disposed:
 
 - **Diverts — KEPT verbatim** (`->`, `-> knot(args)`, `-> END`/`-> DONE`,
   divert-targets-as-values). Ink's best syntax; ratified untouched.
+  **But `-> DONE` is no longer *required*** (RULED 2026-07-22): a flow
+  or any braced body that runs out of content **ends implicitly** —
+  lowering to the DONE terminal, no ceremony. `-> END` stays
+  explicit-only (the permanent "story over" act); `-> DONE`/`-> END`
+  remain available but optional. Ink's "ran out of content. Need a
+  `-> DONE`?" error is retired on the native surface — brace-delimited
+  flow *and* choice bodies make body extent explicit, so "runs out ⇒
+  ends" is unambiguous. Value-returning flows are the exception (must
+  return; checker-enforced). See decision-log 2026-07-22.
 - **Tunnel calls — KEPT as `-> place ->`** (RULED after weighing a
   `<->` challenger: in content position the arrows are the prose
   ground's motion vocabulary). **Tunnel return — RESPELLED as
