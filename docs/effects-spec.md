@@ -482,13 +482,17 @@ writes / calls / emits / suspend defeat fusion).
 
 ### 14.5 Reconciliation notes — FOR MAINTAINER REVIEW
 
-1. **§11 "no function coloring."** The `suspend(rung)` dimension plus the
-   no-call-up-the-ladder check are coloring-*shaped*. We hold this
-   consistent with §11: the dimension is **inferred like every other row
+1. **§11 "no function coloring" — RESOLVED 2026-07-21.** The `suspend(rung)`
+   dimension + no-call-up-the-ladder check are coloring-*shaped* but do not
+   reintroduce coloring: the dimension is **inferred like every other row
    dimension** (never author-written), and the check is a purity-style
-   inferred constraint — there is no author-facing coloring syntax and no
-   viral annotation. §11's intent (interior effects inferred, always; no
-   author coloring surface) is preserved. **Confirm the framing.**
+   inferred constraint — no author-facing coloring syntax, no viral
+   annotation. `flow-suspension-spec.md` §4 already ruled the compatible
+   position: *"no colored-function virality can exist — the 'color' is a
+   distinction ink authors have always had"* (the existing fn vs knot/tunnel
+   boundary). The suspend dimension merely makes that existing structural
+   distinction inferred and queryable off the row. §11's intent (interior
+   effects inferred always; no author coloring surface) is preserved.
 2. **`await` posture gap — RESOLVED 2026-07-21 (spec drift, not a
    conflict).** §13.1 formerly called a language-level `await` a "future
    direction, not v1," which predated `flow-suspension-spec.md` §3 ruling
