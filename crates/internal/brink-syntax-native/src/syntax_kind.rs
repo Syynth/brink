@@ -170,10 +170,12 @@ pub enum SyntaxKind {
     TILDE,
     /// `\`
     BACKSLASH,
-    /// `@`. A lone `@` outside the `@[` pair is not punctuation in this
-    /// grammar (mirrors the ink `AT_L_BRACKET` precedent) and is emitted as
-    /// `ERROR_TOKEN` so prose containing a bare `@` still round-trips
-    /// losslessly instead of being silently absorbed.
+    /// `@`. A lone `@` outside the `@[` pair is not otherwise meaningful
+    /// punctuation in this grammar; it still lexes as its own `AT` token
+    /// (not `ERROR_TOKEN`) and folds into plain `TEXT` at parse time, so
+    /// prose containing a bare `@` round-trips losslessly and errorlessly
+    /// (`docs/directive-annotations-spec.md` §5b: "a lone `@` in prose
+    /// stays plain text").
     AT,
 
     // ── Compound tokens ──────────────────────────────────────────
@@ -209,10 +211,11 @@ pub enum SyntaxKind {
     /// with no native ruling to inherit it from; widening later is
     /// additive, not breaking).
     IDENT,
-    /// Any byte/char the lexer could not classify — including a lone `@`,
-    /// unterminated block comments' unreachable tail (folded into
-    /// `BLOCK_COMMENT` itself, not this), and raw prose bytes at
-    /// declaration scope.
+    /// Any byte/char the lexer could not classify — unterminated block
+    /// comments' unreachable tail (folded into `BLOCK_COMMENT` itself, not
+    /// this), and raw prose bytes at declaration scope. Does NOT include a
+    /// lone `@`, which lexes as its own `AT` token (see `AT`'s doc
+    /// comment) — not this.
     ERROR_TOKEN,
     /// End of file (synthetic).
     EOF,
