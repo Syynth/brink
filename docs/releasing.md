@@ -119,14 +119,97 @@ or the `plan` CI check fails).
 
 ## Adding a new published crate later
 
-1. Give it full package metadata (`description`, and inherit `keywords` /
+> **⚠️ The step everyone forgets: a brand-new crate needs ONE manual publish.**
+> crates.io **Trusted Publishing cannot create a crate** — it can only publish
+> new *versions* of a crate that already exists. Since release-plz publishes over
+> OIDC, it will **abort the entire workspace release** the first time it meets a
+> publishable crate that crates.io has never heard of. Everything else stops
+> shipping too, and because `npm-release` keeps succeeding, nothing looks broken.
+> This has already cost ~20 consecutive failed releases (see #1232).
+
+### Checklist
+
+1. **Decide whether it should be published at all.** If nothing outside the
+   workspace consumes it and it is not in a published crate's dependency
+   closure, set `publish = false` and stop here (precedent:
+   `brink-test-harness`). **But note:** `publish = false` is only legal if *no
+   published crate depends on it* — crates.io flattens dependencies, so a
+   published crate cannot depend on an unpublished one. Marking a crate
+   `publish = false` while a published crate depends on it breaks `release-pr`
+   with `failed to select a version for the requirement <crate> = "^X.Y.Z"`.
+2. Give it full package metadata (`description`, and inherit `keywords` /
    `categories` / `readme` from the workspace).
-2. If anything depends on it, add it to root `[workspace.dependencies]` with a
+3. If anything depends on it, add it to root `[workspace.dependencies]` with a
    `version`, and have consumers use `<crate>.workspace = true`.
-3. Make sure its *entire* dependency closure is also published (no
+4. Make sure its *entire* dependency closure is also published (no
    `publish = false` crate in the closure).
-4. If it ships a binary you want distributed, it's picked up by dist
+5. **Verify it actually packages** before merging:
+   ```sh
+   cargo package -p <crate>
+   ```
+   This builds the packaged tarball in isolation, exactly as `cargo publish`
+   will. It is the only way to catch the workspace-vs-registry skew described
+   under *Troubleshooting* below — the workspace build will happily stay green
+   while the packaged build is broken.
+6. **Publish it once, by hand**, from a maintainer machine with crates.io
+   credentials (this cannot be automated — it is the whole point of the
+   warning above):
+   ```sh
+   cargo login                      # once per machine; token from crates.io/settings/tokens
+   cargo publish -p <crate>
+   ```
+   Publish in dependency order if you are adding several at once.
+7. **Add it to the Trusted Publishing config** on crates.io (crate settings →
+   Trusted Publishing) so subsequent releases can use OIDC.
+8. If it ships a binary you want distributed, it's picked up by dist
    automatically; re-run `dist init` to refresh the workflow.
+
+CI enforces step 6: the **`publishable`** job in `ci.yml` checks every crate with
+`publish` unset/true against the crates.io API and fails the PR that introduces
+an unpublished one. If that job fails, you are in exactly this situation.
+
+## Troubleshooting a stuck release
+
+Two failure signatures have actually happened; both stop *all* crate publishing.
+
+### `Trusted Publishing tokens do not support creating new crates`
+
+```
+403 Forbidden: Trusted Publishing tokens do not support creating new crates.
+Publish the crate manually, first
+```
+
+A new crate was added without the manual first publish. Fix: follow step 6
+above. There is no automated workaround — a human with crates.io credentials
+must run `cargo publish -p <crate>` once.
+
+### `failed to verify package tarball` / `no field X on type Y`
+
+```
+error[E0609]: no field `types` on type `&mut AnalysisOptions`
+error: failed to verify package tarball
+```
+
+**Workspace-vs-registry skew.** Inside the workspace, path dependencies resolve
+to the local source, so everything compiles. `cargo publish` strips path
+dependencies and resolves from crates.io instead — so the packaged crate builds
+against the *last published* version of its workspace siblings. If the workspace
+version was not bumped since a sibling's API changed (which happens whenever
+releases have been failing for a while), the packaged build sees a stale API and
+fails.
+
+Fix, in order of preference:
+
+1. **Let a release go out.** release-plz publishes in dependency order, so once
+   the sibling publishes at the new version, the dependent packages cleanly.
+   This is self-healing *provided the release is not also blocked by something
+   else*.
+2. **Cut the dependency.** If the crate does not really need its workspace
+   sibling (e.g. a config parser depending on the analyzer only to fill in one
+   struct field), inverting that dependency removes the whole class of problem
+   and makes the crate publishable in isolation.
+
+Detect it early with `cargo package -p <crate>` — see step 5.
 
 ## Security & supply chain
 
