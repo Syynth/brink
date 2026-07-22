@@ -75,16 +75,19 @@
 //!    dispatch means the parser *can* produce them at body position even
 //!    though nothing downstream can use them there yet.
 //! 5. **Directive/annotation channel left unwired.** `is_local`,
-//!    `effects_assertion`, `visibility`, `@[was]`, `///` docs are all
-//!    `None`/`false` on every decl node this slice produces — B0.5's
-//!    grammar gives `@[name(args)]` a fully generic shape but no keyword
-//!    syntax exists yet for the specific channels ink's `directive.rs`
-//!    populates (no `KW_PUB`/`KW_PRIVATE`/`KW_LOCAL` tokens, no `@[was(…)]`
-//!    recognition). Wiring these is real, scoped work (mirroring
+//!    `effects_assertion`, `visibility`, `@[was]` are all `None`/`false` on
+//!    every decl node this slice produces — B0.5's grammar gives
+//!    `@[name(args)]` a fully generic shape but no keyword syntax exists
+//!    yet for the specific channels ink's `directive.rs` populates (no
+//!    `KW_PUB`/`KW_PRIVATE`/`KW_LOCAL` tokens, no `@[was(…)]` recognition).
+//!    Wiring these is real, scoped work (mirroring
 //!    `hir/lower/directive.rs`'s sibling-walk-before-a-declaration
 //!    pattern) that B0.6 did not need to do to meet its own exit
 //!    criterion (admission-clean declaration HIR) — flagged for a
-//!    follow-up slice rather than half-built here.
+//!    follow-up slice rather than half-built here. `///`/`//!` docs ARE
+//!    wired (B0.6b, `docs/decision-log.md` 2026-07-20, `doc_comment`) —
+//!    they were judgment call 5 in the B0.6 report but shipped as their
+//!    own ruled slice rather than staying deferred alongside the rest.
 //! 6. **`import name;`'s semantics** (B0.5's own Finding #3 explicitly left
 //!    this to B0.6): lowered as the *qualified* form of ink's `Import`
 //!    (`module` = the joined path, `items` empty, `bare: false` — "brings
@@ -106,6 +109,7 @@ mod choice;
 mod cond;
 mod container;
 mod decl;
+mod doc_comment;
 mod expr;
 pub mod provenance;
 
@@ -297,7 +301,12 @@ fn walk_top_level(
             // `ERROR` nodes are already reported by the parser itself
             // (`Parse::errors()`) — re-diagnosing here would mislabel a
             // syntax error as "valid but not yet lowered".
-            N::VAR_DECL | N::CONST_DECL | N::FLAGS_DECL | N::ERROR => {}
+            // A file/module-level inner `//!` doc comment (B0.6b) — CST-only
+            // for now (`ast::SourceFile::doc`'s doc comment: no native HIR
+            // "whole file" or "module container" type exists yet to receive
+            // it, judgment calls #4/#7). Not an error; just has nowhere to
+            // go yet, same non-diagnosis as the other kinds in this arm.
+            N::VAR_DECL | N::CONST_DECL | N::FLAGS_DECL | N::ERROR | N::DOC_COMMENT => {}
             // Every other body-line construct (content, tags, choices,
             // diverts, conditionals, alternations, annotations, …) reaching
             // declaration position: real data with no home in this slice
@@ -355,6 +364,14 @@ impl FlowOrFn {
 
     fn is_function(&self) -> bool {
         matches!(self, Self::Fn(_))
+    }
+
+    /// The leading `///` doc comment, if one is attached (B0.6b).
+    fn doc(&self) -> Option<ast::DocComment> {
+        match self {
+            Self::Flow(f) => f.doc(),
+            Self::Fn(f) => f.doc(),
+        }
     }
 }
 

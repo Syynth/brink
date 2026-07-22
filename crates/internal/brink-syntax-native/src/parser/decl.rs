@@ -69,9 +69,12 @@ pub(crate) fn at_module_decl(p: &Parser<'_, '_>) -> bool {
 
 // ── flow / fn ─────────────────────────────────────────────────────────
 
-/// `flow name(params) { … }` — nested `flow` = a stitch (charter §4).
-pub(crate) fn flow_decl(p: &mut Parser<'_, '_>) {
-    p.start_node(FLOW_DECL);
+/// `flow name(params) { … }` — nested `flow` = a stitch (charter §4). `doc`
+/// is a leading `///` run already consumed by `block::item`
+/// (`doc_comment::maybe_consume_leading_run`), threaded through so it
+/// attaches as this node's leading `DOC_COMMENT` child (B0.6b).
+pub(crate) fn flow_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
+    super::doc_comment::open_with_doc(p, FLOW_DECL, doc);
     p.bump(); // KW_FLOW
     p.expect(IDENT);
     if p.at(L_PAREN) {
@@ -85,9 +88,9 @@ pub(crate) fn flow_decl(p: &mut Parser<'_, '_>) {
     p.finish_node();
 }
 
-/// `fn name(params) { … }`.
-pub(crate) fn fn_decl(p: &mut Parser<'_, '_>) {
-    p.start_node(FN_DECL);
+/// `fn name(params) { … }`. See [`flow_decl`]'s doc comment for `doc`.
+pub(crate) fn fn_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
+    super::doc_comment::open_with_doc(p, FN_DECL, doc);
     p.bump(); // KW_FN
     p.expect(IDENT);
     if p.at(L_PAREN) {
@@ -139,8 +142,8 @@ fn param(p: &mut Parser<'_, '_>) {
 /// pending" per charter §7 — this skeleton treats `NEWLINE`/`}`/EOF as the
 /// terminator, Rust-`;`-free, and flags the choice rather than inventing a
 /// semicolon the charter never ruled).
-pub(crate) fn var_decl(p: &mut Parser<'_, '_>) {
-    p.start_node(VAR_DECL);
+pub(crate) fn var_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
+    super::doc_comment::open_with_doc(p, VAR_DECL, doc);
     p.bump(); // KW_VAR
     p.expect(IDENT);
     if p.eat(crate::SyntaxKind::EQ) {
@@ -150,8 +153,8 @@ pub(crate) fn var_decl(p: &mut Parser<'_, '_>) {
 }
 
 /// `const name = expr`.
-pub(crate) fn const_decl(p: &mut Parser<'_, '_>) {
-    p.start_node(CONST_DECL);
+pub(crate) fn const_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
+    super::doc_comment::open_with_doc(p, CONST_DECL, doc);
     p.bump(); // KW_CONST
     p.expect(IDENT);
     if p.eat(crate::SyntaxKind::EQ) {
@@ -163,8 +166,8 @@ pub(crate) fn const_decl(p: &mut Parser<'_, '_>) {
 // ── flags ────────────────────────────────────────────────────────────
 
 /// `flags Name = (member), member, …` (charter §11: renamed `LIST`).
-pub(crate) fn flags_decl(p: &mut Parser<'_, '_>) {
-    p.start_node(FLAGS_DECL);
+pub(crate) fn flags_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
+    super::doc_comment::open_with_doc(p, FLAGS_DECL, doc);
     p.bump(); // KW_FLAGS
     p.expect(IDENT);
     p.expect(crate::SyntaxKind::EQ);
@@ -204,8 +207,8 @@ fn flags_member(p: &mut Parser<'_, '_>) {
 // ── struct ───────────────────────────────────────────────────────────
 
 /// `struct Name { field: Type, … }`.
-pub(crate) fn struct_decl(p: &mut Parser<'_, '_>) {
-    p.start_node(STRUCT_DECL);
+pub(crate) fn struct_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
+    super::doc_comment::open_with_doc(p, STRUCT_DECL, doc);
     p.bump(); // KW_STRUCT
     p.expect(IDENT);
     p.expect(L_BRACE);
@@ -240,8 +243,8 @@ fn struct_field(p: &mut Parser<'_, '_>) {
 // ── extern ───────────────────────────────────────────────────────────
 
 /// `extern name(params)` — no body, ever (kept from ink's `EXTERNAL`).
-pub(crate) fn extern_decl(p: &mut Parser<'_, '_>) {
-    p.start_node(EXTERN_DECL);
+pub(crate) fn extern_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
+    super::doc_comment::open_with_doc(p, EXTERN_DECL, doc);
     p.bump(); // KW_EXTERN
     p.expect(IDENT);
     if p.at(L_PAREN) {
@@ -255,8 +258,8 @@ pub(crate) fn extern_decl(p: &mut Parser<'_, '_>) {
 /// `import path` (Finding #3: the charter doesn't separately spell an
 /// `import` grammar distinct from `use` — this is the minimal reasonable
 /// shape for the token-set bullet that lists it as its own keyword).
-pub(crate) fn import_decl(p: &mut Parser<'_, '_>) {
-    p.start_node(IMPORT_DECL);
+pub(crate) fn import_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
+    super::doc_comment::open_with_doc(p, IMPORT_DECL, doc);
     p.bump(); // KW_IMPORT
     super::expr::path(p);
     p.finish_node();
@@ -272,8 +275,8 @@ pub(crate) fn import_decl(p: &mut Parser<'_, '_>) {
 /// gate to reject its absence yet, but recognized (not left to fall
 /// through as unrelated prose, which a semicolon with no other role in the
 /// grammar would otherwise silently do).
-pub(crate) fn use_decl(p: &mut Parser<'_, '_>) {
-    p.start_node(USE_DECL);
+pub(crate) fn use_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
+    super::doc_comment::open_with_doc(p, USE_DECL, doc);
     p.bump(); // KW_USE
     use_tree(p);
     p.eat(crate::SyntaxKind::SEMICOLON);
@@ -333,8 +336,8 @@ fn use_tree_list(p: &mut Parser<'_, '_>) {
 // ── module ───────────────────────────────────────────────────────────
 
 /// `module name { … }` — a nested module block (charter §13.2).
-pub(crate) fn module_decl(p: &mut Parser<'_, '_>) {
-    p.start_node(MODULE_DECL);
+pub(crate) fn module_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
+    super::doc_comment::open_with_doc(p, MODULE_DECL, doc);
     p.bump(); // KW_MODULE
     p.expect(IDENT);
     if p.at(L_BRACE) {

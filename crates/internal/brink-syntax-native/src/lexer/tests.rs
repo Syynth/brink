@@ -232,6 +232,63 @@ fn mixed_content_never_panics_or_drops_bytes() {
     assert_lossless(src);
 }
 
+// ── B0.6b: doc-comment classification ────────────────────────────────
+
+#[test]
+fn plain_double_slash_is_line_comment() {
+    let toks = assert_lossless("// just a comment");
+    assert_eq!(toks, vec![(LINE_COMMENT, "// just a comment")]);
+}
+
+#[test]
+fn triple_slash_is_doc_comment_outer() {
+    let toks = assert_lossless("/// a doc comment");
+    assert_eq!(toks, vec![(DOC_COMMENT_OUTER, "/// a doc comment")]);
+}
+
+#[test]
+fn bang_slash_slash_is_doc_comment_inner() {
+    let toks = assert_lossless("//! module-level doc");
+    assert_eq!(toks, vec![(DOC_COMMENT_INNER, "//! module-level doc")]);
+}
+
+#[test]
+fn quadruple_slash_stays_line_comment() {
+    // Rust precedent: a fourth slash falls back to a plain (non-doc)
+    // comment, not a doc comment with a literal leading `/`.
+    let toks = assert_lossless("//// separator");
+    assert_eq!(toks, vec![(LINE_COMMENT, "//// separator")]);
+}
+
+#[test]
+fn five_or_more_slashes_stay_line_comment() {
+    let toks = assert_lossless("///////");
+    assert_eq!(toks, vec![(LINE_COMMENT, "///////")]);
+}
+
+#[test]
+fn bare_triple_slash_at_eof_is_doc_comment_outer() {
+    // Exactly three slashes, nothing after — still classifies as the doc
+    // form (the "not followed by a fourth" check must not panic reading
+    // past EOF).
+    let toks = assert_lossless("///");
+    assert_eq!(toks, vec![(DOC_COMMENT_OUTER, "///")]);
+}
+
+#[test]
+fn doc_comments_are_not_trivia() {
+    assert!(!DOC_COMMENT_OUTER.is_trivia());
+    assert!(!DOC_COMMENT_INNER.is_trivia());
+    assert!(DOC_COMMENT_OUTER.is_token());
+    assert!(DOC_COMMENT_INNER.is_token());
+}
+
+#[test]
+fn doc_comment_lines_roundtrip_losslessly() {
+    let src = "/// line one\n/// line two\n//! inner doc\nflow x() {}\n";
+    assert_lossless(src);
+}
+
 #[test]
 fn every_byte_is_covered_by_exactly_one_token() {
     let src = "flow x(a, ref b) {\n  @[effects(pure, silent, reads(gold, hp))]\n  var y = 1 + 2 * (3 - 4)\n  -> END\n}\n";

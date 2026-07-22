@@ -4,6 +4,7 @@ mod choice;
 mod content;
 mod decl;
 mod divert;
+mod doc_comment;
 mod expr;
 mod family;
 mod source_file;

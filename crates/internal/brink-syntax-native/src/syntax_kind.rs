@@ -23,11 +23,26 @@ pub enum SyntaxKind {
     WHITESPACE = 0,
     /// `\n` or `\r\n`.
     NEWLINE,
-    /// `// ...` through end-of-line.
+    /// `// ...` through end-of-line. Also `////+` (four or more slashes) —
+    /// Rust precedent: only *exactly* three slashes is a doc comment (see
+    /// [`Self::DOC_COMMENT_OUTER`]).
     LINE_COMMENT,
     /// `/* ... */` (may span lines; unterminated block comments run to EOF —
     /// recorded as a parse error, never a panic).
     BLOCK_COMMENT,
+    /// `/// ...` through end-of-line — exactly three slashes (a fourth
+    /// keeps it a plain [`Self::LINE_COMMENT`]). B0.6b
+    /// (`docs/decision-log.md` 2026-07-20): first-class on the native
+    /// surface — **not** trivia (see [`Self::is_trivia`]), since the parser
+    /// dispatches on this token to decide whether a contiguous run attaches
+    /// as a `DOC_COMMENT` CST node to the declaration it immediately
+    /// precedes (`parser::doc_comment`).
+    DOC_COMMENT_OUTER,
+    /// `//! ...` through end-of-line — the inner form (B0.6b, Rust `//!`
+    /// precedent, ink had no equivalent). A contiguous run at the very
+    /// start of a knot/flow/file body documents the *enclosing* container
+    /// rather than a following declaration. Also not trivia.
+    DOC_COMMENT_INNER,
 
     // ── Keyword tokens — hard-reserved (Finding #1: if/match/else/as are
     // reserved everywhere, Rust-style, not contextual like ink's T1b
@@ -201,6 +216,16 @@ pub enum SyntaxKind {
     ERROR_TOKEN,
     /// End of file (synthetic).
     EOF,
+
+    // ── Node kinds — doc comments (B0.6b) ────────────────────────
+    /// A contiguous run of [`Self::DOC_COMMENT_OUTER`] tokens (the leading
+    /// child of the declaration node it documents) or
+    /// [`Self::DOC_COMMENT_INNER`] tokens (the leading child of the
+    /// enclosing knot/flow/file body it documents) — one node shape for
+    /// both variants; `ast::DocComment::is_inner` tells them apart by
+    /// inspecting which token kind the node's children carry
+    /// (`docs/native-surface-charter.md`'s doc-comment section).
+    DOC_COMMENT,
 
     // ── Node kinds — top level & declarations ───────────────────
     SOURCE_FILE,
@@ -401,6 +426,8 @@ impl SyntaxKind {
                 | Self::NEWLINE
                 | Self::LINE_COMMENT
                 | Self::BLOCK_COMMENT
+                | Self::DOC_COMMENT_OUTER
+                | Self::DOC_COMMENT_INNER
                 | Self::KW_FLOW
                 | Self::KW_FN
                 | Self::KW_VAR

@@ -6,10 +6,14 @@
 //! without pre-building every accessor a later lowering pass might want
 //! (that's additive, not a re-architecture, when it's actually needed).
 
-use crate::SyntaxKind::{self, IDENT, L_PAREN};
+use crate::SyntaxKind::{self, DOC_COMMENT_INNER, DOC_COMMENT_OUTER, IDENT, L_PAREN};
 use crate::ast::ast_node;
 use crate::ast::support;
 use crate::{SyntaxNode, SyntaxToken};
+
+// ── Doc comments (B0.6b) ──────────────────────────────────────────────
+
+ast_node!(DocComment, DOC_COMMENT);
 
 // ── Top level & declarations ────────────────────────────────────────
 
@@ -106,6 +110,44 @@ ast_node!(Error, ERROR);
 
 // ── Hand-written accessors ───────────────────────────────────────────
 
+impl DocComment {
+    /// `true` for the inner (`//!`) form — a run whose tokens are
+    /// `DOC_COMMENT_INNER` rather than `DOC_COMMENT_OUTER`. One node shape
+    /// covers both variants (`syntax_kind.rs`'s `DOC_COMMENT` doc); this is
+    /// how callers tell them apart. A well-formed `DOC_COMMENT` node's
+    /// comment tokens are always uniformly one kind or the other (the
+    /// parser's `doc_comment::consume_doc_run` never mixes them within a
+    /// single run), so checking the first one is sufficient.
+    pub fn is_inner(&self) -> bool {
+        self.syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .any(|t| t.kind() == DOC_COMMENT_INNER)
+    }
+
+    /// Every doc-comment line in source order: the token's text with its
+    /// `///`/`//!` marker stripped and a single leading space (if any)
+    /// trimmed, paired with that token's source range — the same shape the
+    /// OLD ink parser's `collect_doc_lines` produces, so both frontends
+    /// feed the identical format-agnostic `hir::doc_block::parse_lines`
+    /// tag parser.
+    pub fn lines(&self) -> Vec<(String, rowan::TextRange)> {
+        self.syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .filter(|t| matches!(t.kind(), DOC_COMMENT_OUTER | DOC_COMMENT_INNER))
+            .map(|t| {
+                let text = t.text();
+                let body = text
+                    .strip_prefix("///")
+                    .or_else(|| text.strip_prefix("//!"))
+                    .unwrap_or(text);
+                (body.trim_start().to_string(), t.text_range())
+            })
+            .collect()
+    }
+}
+
 impl SourceFile {
     /// Every top-level `flow`/`fn` declaration in the file (charter §4:
     /// "no one-flow-per-file constraint — files hold many declarations").
@@ -123,6 +165,15 @@ impl SourceFile {
     /// walk the whole item list without matching on every variant twice.
     pub fn syntax_children(&self) -> impl Iterator<Item = SyntaxNode> {
         self.syntax.children()
+    }
+
+    /// The file-level inner `//!` doc comment, if the file opens with one
+    /// (B0.6b: "documents the enclosing ... file"). CST-only for now — no
+    /// native HIR type represents whole-file identity yet (`lower_native`'s
+    /// module doc, judgment call #7), so nothing consumes this today; kept
+    /// for the LSP/fmt/source-map consumers the ruling names.
+    pub fn doc(&self) -> Option<DocComment> {
+        support::child(&self.syntax)
     }
 }
 
@@ -147,6 +198,11 @@ impl FlowDecl {
             .into_iter()
             .flat_map(|b| support::children::<FlowDecl>(&b.syntax).collect::<Vec<_>>())
     }
+
+    /// The leading `///` doc comment, if one is attached (B0.6b).
+    pub fn doc(&self) -> Option<DocComment> {
+        support::child(&self.syntax)
+    }
 }
 
 impl FnDecl {
@@ -159,6 +215,11 @@ impl FnDecl {
     }
 
     pub fn body(&self) -> Option<Block> {
+        support::child(&self.syntax)
+    }
+
+    /// The leading `///` doc comment, if one is attached (B0.6b).
+    pub fn doc(&self) -> Option<DocComment> {
         support::child(&self.syntax)
     }
 }
@@ -183,9 +244,22 @@ impl Param {
 impl Block {
     /// Every direct-child node in this block's body, in source order —
     /// the untyped escape hatch, since a `BLOCK`'s items span every
-    /// declaration/body-line kind this crate defines.
+    /// declaration/body-line kind this crate defines. Includes a leading
+    /// inner `DOC_COMMENT`, if present — callers that don't want it in
+    /// their item stream (e.g. `hir::lower_native::body::lower_block`)
+    /// filter it out themselves, same as they already skip other
+    /// non-statement node kinds.
     pub fn items(&self) -> impl Iterator<Item = SyntaxNode> {
         self.syntax.children()
+    }
+
+    /// The inner `//!` doc comment, if this block opens with one (B0.6b):
+    /// documents the enclosing knot/flow/stitch, not a following
+    /// declaration. `None` for a `CHOICE_BODY`/`ELSE_BRANCH` — the parser
+    /// never attaches an inner doc there (`parser::block::braced_item_list`
+    /// only checks for one when building a real `BLOCK`).
+    pub fn doc(&self) -> Option<DocComment> {
+        support::child(&self.syntax)
     }
 }
 
@@ -199,7 +273,14 @@ impl VarDecl {
     /// one child node (whatever expression-grammar kind it is) after the
     /// `IDENT`, so "the first child node" is unambiguous.
     pub fn value(&self) -> Option<SyntaxNode> {
-        self.syntax.children().next()
+        self.syntax
+            .children()
+            .find(|n| n.kind() != SyntaxKind::DOC_COMMENT)
+    }
+
+    /// The leading `///` doc comment, if one is attached (B0.6b).
+    pub fn doc(&self) -> Option<DocComment> {
+        support::child(&self.syntax)
     }
 }
 
@@ -210,7 +291,14 @@ impl ConstDecl {
 
     /// See [`VarDecl::value`].
     pub fn value(&self) -> Option<SyntaxNode> {
-        self.syntax.children().next()
+        self.syntax
+            .children()
+            .find(|n| n.kind() != SyntaxKind::DOC_COMMENT)
+    }
+
+    /// The leading `///` doc comment, if one is attached (B0.6b).
+    pub fn doc(&self) -> Option<DocComment> {
+        support::child(&self.syntax)
     }
 }
 
@@ -220,6 +308,11 @@ impl FlagsDecl {
     }
 
     pub fn member_list(&self) -> Option<FlagsMemberList> {
+        support::child(&self.syntax)
+    }
+
+    /// The leading `///` doc comment, if one is attached (B0.6b).
+    pub fn doc(&self) -> Option<DocComment> {
         support::child(&self.syntax)
     }
 }
@@ -249,6 +342,11 @@ impl StructDecl {
     pub fn fields(&self) -> impl Iterator<Item = StructField> {
         support::children(&self.syntax)
     }
+
+    /// The leading `///` doc comment, if one is attached (B0.6b).
+    pub fn doc(&self) -> Option<DocComment> {
+        support::child(&self.syntax)
+    }
 }
 
 impl StructField {
@@ -271,16 +369,34 @@ impl ExternDecl {
     pub fn param_list(&self) -> Option<ParamList> {
         support::child(&self.syntax)
     }
+
+    /// The leading `///` doc comment, if one is attached (B0.6b).
+    pub fn doc(&self) -> Option<DocComment> {
+        support::child(&self.syntax)
+    }
 }
 
 impl ImportDecl {
     pub fn path(&self) -> Option<Path> {
         support::child(&self.syntax)
     }
+
+    /// The leading `///` doc comment, if one is attached (B0.6b). No native
+    /// HIR field consumes this yet (`Import` carries no `doc`, matching the
+    /// OLD ink frontend's own `Import` shape) — CST-only for now, same
+    /// status as [`SourceFile::doc`].
+    pub fn doc(&self) -> Option<DocComment> {
+        support::child(&self.syntax)
+    }
 }
 
 impl UseDecl {
     pub fn tree(&self) -> Option<UseTree> {
+        support::child(&self.syntax)
+    }
+
+    /// See [`ImportDecl::doc`].
+    pub fn doc(&self) -> Option<DocComment> {
         support::child(&self.syntax)
     }
 }
@@ -337,6 +453,12 @@ impl ModuleDecl {
     }
 
     pub fn body(&self) -> Option<Block> {
+        support::child(&self.syntax)
+    }
+
+    /// See [`ImportDecl::doc`] — no native HIR "module container" node
+    /// exists yet either (`lower_native`'s module doc, judgment call #4).
+    pub fn doc(&self) -> Option<DocComment> {
         support::child(&self.syntax)
     }
 }

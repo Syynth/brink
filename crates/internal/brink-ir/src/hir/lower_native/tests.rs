@@ -60,6 +60,108 @@ fn nested_flow_becomes_a_stitch() {
 }
 
 #[test]
+fn leading_doc_comment_populates_knot_doc() {
+    // B0.6b end-to-end: a `///`-documented top-level flow lowers with
+    // `doc: Some(..)`, the `@param` tag parsed via the shared
+    // `hir::doc_block::parse_lines`.
+    let (hir, _manifest, diags) = lower_src(
+        "/// Greets the player.\n/// @param name {string}\nflow greet(name) {\n  Hi!\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let knot = &hir.knots[0];
+    let doc = knot.doc.as_ref().expect("doc attached");
+    assert_eq!(doc.doc.as_deref(), Some("Greets the player."));
+    assert_eq!(
+        doc.params,
+        vec![("name".to_string(), crate::TypeRef("string".to_string()))]
+    );
+}
+
+#[test]
+fn malformed_param_in_leading_doc_reports_e038() {
+    let (hir, _manifest, diags) = lower_src("/// @param name\nflow greet(name) {\n}\n");
+    assert!(hir.knots[0].doc.is_none(), "no valid tags -> no DocBlock");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E038),
+        "expected E038 for the malformed @param: {diags:?}"
+    );
+}
+
+#[test]
+fn inner_doc_populates_knot_doc_when_no_leading_doc() {
+    let (hir, _manifest, diags) =
+        lower_src("flow greet() {\n//! Describes this flow from within.\nHi!\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let doc = hir.knots[0].doc.as_ref().expect("inner doc attached");
+    assert_eq!(doc.doc.as_deref(), Some("Describes this flow from within."));
+}
+
+#[test]
+fn leading_doc_wins_over_inner_doc_when_both_present() {
+    let src = "/// Outer doc.\nflow greet() {\n//! Inner doc.\nHi!\n}\n";
+    let (hir, _manifest, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let doc = hir.knots[0].doc.as_ref().expect("doc attached");
+    assert_eq!(doc.doc.as_deref(), Some("Outer doc."));
+}
+
+#[test]
+fn leading_doc_comment_populates_stitch_doc() {
+    let src = "flow garden() {\n  /// The gate stitch.\n  flow gate() {\n    Creak.\n  }\n}\n";
+    let (hir, _manifest, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let stitch = &hir.knots[0].stitches[0];
+    let doc = stitch.doc.as_ref().expect("doc attached");
+    assert_eq!(doc.doc.as_deref(), Some("The gate stitch."));
+}
+
+#[test]
+fn leading_doc_comment_populates_var_const_flags_struct_extern_doc() {
+    let src = "\
+/// Player health.
+var hp = 10
+/// Max health.
+const max_hp = 100
+/// Mood states.
+flags Mood = calm, wary
+/// An NPC.
+struct Npc {\n  hp: int\n}
+/// Logs a message.
+extern log_msg(msg)
+";
+    let (hir, _manifest, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(
+        hir.variables[0].doc.as_ref().and_then(|d| d.doc.clone()),
+        Some("Player health.".to_string())
+    );
+    assert_eq!(
+        hir.constants[0].doc.as_ref().and_then(|d| d.doc.clone()),
+        Some("Max health.".to_string())
+    );
+    assert_eq!(
+        hir.lists[0].doc.as_ref().and_then(|d| d.doc.clone()),
+        Some("Mood states.".to_string())
+    );
+    assert_eq!(
+        hir.structs[0].doc.as_ref().and_then(|d| d.doc.clone()),
+        Some("An NPC.".to_string())
+    );
+    assert_eq!(
+        hir.externals[0].doc.as_ref().and_then(|d| d.doc.clone()),
+        Some("Logs a message.".to_string())
+    );
+}
+
+#[test]
+fn undocumented_declarations_have_no_doc_native() {
+    let (hir, _manifest, diags) = lower_src("var hp = 10\nflow greet() {\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(hir.variables[0].doc.is_none());
+    assert!(hir.knots[0].doc.is_none());
+}
+
+#[test]
 fn depth_three_nesting_is_rejected_loudly() {
     let (hir, _manifest, diags) =
         lower_src("flow a() {\n  flow b() {\n    flow c() {\n      Too deep.\n    }\n  }\n}\n");
