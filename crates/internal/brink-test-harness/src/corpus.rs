@@ -183,8 +183,11 @@ pub fn compile_and_explore_from_brink_native(
         return Err(format!("native HIR lowering diagnostics: {lower_diags:?}"));
     }
 
-    let files_for_analysis: Vec<(brink_ir::FileId, &brink_ir::HirFile, &brink_ir::SymbolManifest)> =
-        vec![(file_id, &hir, &manifest)];
+    let files_for_analysis: Vec<(
+        brink_ir::FileId,
+        &brink_ir::HirFile,
+        &brink_ir::SymbolManifest,
+    )> = vec![(file_id, &hir, &manifest)];
     let analysis_opts = brink_analyzer::AnalysisOptions {
         dialect: brink_analyzer::Dialect::Brink,
         ..Default::default()

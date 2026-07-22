@@ -302,7 +302,10 @@ fn top_level_main_flow_synthesizes_a_root_divert() {
             hir.root_content.stmts[0]
         );
     };
-    assert!(d.ptr.is_none(), "synthesized entry divert has no source ptr");
+    assert!(
+        d.ptr.is_none(),
+        "synthesized entry divert has no source ptr"
+    );
     let DivertPath::Path(path) = &d.target.path else {
         panic!("expected a named divert target, got {:?}", d.target.path);
     };
@@ -310,7 +313,10 @@ fn top_level_main_flow_synthesizes_a_root_divert() {
     assert_eq!(path.segments[0].text, "main");
     assert!(d.target.args.is_empty());
     assert!(
-        matches!(hir.root_content.tail(), Tail::Diverge(Terminator::Divert(_))),
+        matches!(
+            hir.root_content.tail(),
+            Tail::Diverge(Terminator::Divert(_))
+        ),
         "the synthesized divert must also drive Block::tail: {:?}",
         hir.root_content.tail()
     );
@@ -767,13 +773,11 @@ fn bare_return_inside_a_choice_body_of_a_non_function_flow_is_a_tunnel_redirect(
     let Stmt::ChoiceSet(cs) = &hir.knots[0].body.stmts[0] else {
         panic!("expected ChoiceSet, got {:?}", hir.knots[0].body.stmts[0]);
     };
-    let Stmt::Return(r) = cs.choices[0]
-        .body
-        .stmts
-        .last()
-        .expect("a Return statement")
-    else {
-        panic!("expected Return in choice body, got {:?}", cs.choices[0].body.stmts);
+    let Stmt::Return(r) = cs.choices[0].body.stmts.last().expect("a Return statement") else {
+        panic!(
+            "expected Return in choice body, got {:?}",
+            cs.choices[0].body.stmts
+        );
     };
     assert_eq!(r.kind, ReturnKind::TunnelRedirect);
 }
