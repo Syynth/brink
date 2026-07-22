@@ -233,7 +233,13 @@ fn lower_one_item(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnostic
         | N::IMPORT_DECL
         | N::MODULE_DECL
         // Already diagnosed by the parser itself.
-        | N::ERROR => Vec::new(),
+        | N::ERROR
+        // A container's own inner `//!` doc comment (B0.6b) — already
+        // consumed by `container.rs::container_doc` reading `body.doc()`
+        // directly off the AST before this item-stream lowering ever runs;
+        // not a body statement, not an error, just skipped here so it
+        // doesn't fall into the loud-E129 default arm below.
+        | N::DOC_COMMENT => Vec::new(),
         // `@[…]` annotations at body position: no directive channel is
         // wired yet (B0.6's judgment call #5, still open) — loud, not
         // dropped.
