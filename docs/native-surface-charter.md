@@ -303,3 +303,76 @@ sequences + the `list` reclaim · map surface · iteration protocol
 posture for fallible functions** (now spicier: enums exist,
 `Result` is ledger-gated) · assertion spellings (`@[effects]`,
 holes' release policy).
+
+## 14. Doc comments (B0.6b, RULED 2026-07-20)
+
+§11 ruled trivia to be **KEPT**: `//`, `/* */`, `TODO:`. Doc comments
+carve two spellings back out of that bucket and promote them to
+**first-class by structural attachment** — a CST node the parser
+builds, not a fact HIR re-derives by walking trivia backward from a
+declaration. See `docs/decision-log.md` → "Doc comments ruled
+first-class on the native surface" for the full ruling; this section
+records the surface + attachment model where the spec lives.
+
+**Two spellings, one content model:**
+- **`///` (outer)** — immediately precedes a declaration
+  (`flow`/`fn`/`var`/`const`/`flags`/`struct`/`extern`/`use`/
+  `import`/`module`) and documents *that* declaration. Ink's own
+  spelling, unchanged.
+- **`//!` (inner)** — sits at the very start of a knot/flow/file
+  body and documents the *enclosing* container instead of a
+  following declaration (Rust precedent; ink had no equivalent —
+  ink's weave has no "start of body" position clean enough to own
+  one). Gives a flow/file a header without needing a fake leading
+  declaration to hang `///` off of.
+- **Exactly three slashes** is the outer marker (`///`); a fourth
+  (`////`) falls back to a plain `//` comment (Rust precedent —
+  a separator rule of `////////` banners stays available). `//` and
+  `//!` are otherwise lexed the same way (run to end-of-line).
+
+**Attachment is CST-node, not trivia-walk** — decided once,
+structurally, by the parser (the layer with the most context), not
+re-derived per-consumer:
+- A contiguous run of `///` lines (a blank line, or a plain `//`
+  line, breaks the run — same contiguity rule the old trivia-walk
+  used) immediately preceding a declaration becomes a `DOC_COMMENT`
+  CST node emitted as **the leading child of that declaration's own
+  node** (`FLOW_DECL { DOC_COMMENT, KW_FLOW, IDENT, … }`, not a
+  floating sibling). The AST's `.doc()` accessor reads it directly —
+  no backward token walk, ever, on the native surface.
+- A contiguous run of `//!` lines at the very start of a `flow`/`fn`
+  body (leading blank lines tolerated; real content first
+  disqualifies it) becomes a `DOC_COMMENT` node as the leading child
+  of the enclosing `BLOCK` — `ast::Block::doc()`. Same shape at the
+  very start of a file (`ast::SourceFile::doc()`), CST-only for now:
+  no native HIR type represents whole-file identity yet (§13.2:
+  identity is filesystem-derived, a project-layer fact), so nothing
+  consumes it below the AST today — reserved for the LSP/fmt/
+  source-map consumers this attachment model exists to serve.
+- One `DOC_COMMENT` node shape covers both spellings; a
+  `.is_inner()` accessor tells them apart by which token kind (
+  `DOC_COMMENT_OUTER` vs `DOC_COMMENT_INNER`) its children carry.
+  Neither token is trivia (`SyntaxKind::is_trivia`) — the parser
+  dispatches on them directly, so a formatter or LSP hover walking
+  the tree finds the doc exactly where the grammar says it lives.
+- **Judgment call, flagged for a later ruling, not resolved here**:
+  an *unattached* `///` run — nothing declaration-shaped follows —
+  falls back to sitting bare in the tree with no diagnostic, same
+  posture as ordinary trivia. Whether that should instead earn an
+  `unused_doc_comment`-style warning is open.
+- When both spellings are present on the same container (a leading
+  `///` before `flow`, AND a `//!` at the top of its own body), the
+  outer form wins and the inner form is simply not consulted — they
+  are not merged. Not a hard ruling, a pragmatic default: the outer
+  form is the one visible without opening the container.
+
+**Content model unchanged, and deliberately NOT pushed into the
+grammar** — the `@param name {type}` / `@returns {type}` / `@kind`
+tag vocabulary stays a plain string-parse over the attached node's
+lines (`DocBlock`, `@`-tag handling, E038 malformed / E043
+inapplicable-to-this-declaration-kind), now factored so both
+frontends' attachment steps (native's CST-node read; ink's trivia
+walk) feed the identical parser. Rejected the heavier alternative
+(a real grammar production for `@param`/`@returns`/`@kind`, coupling
+the grammar to the host-manifest tag vocabulary and `TypeRef`) as
+disproportionate to what the tags need to express.

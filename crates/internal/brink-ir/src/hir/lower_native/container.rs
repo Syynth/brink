@@ -15,10 +15,29 @@
 use brink_syntax_native::ast::{self, AstNode as _};
 
 use crate::hir::FileId;
+use crate::hir::doc_block::DocPolicy;
 use crate::provenance::NodeClass;
-use crate::{Block, Diagnostic, DiagnosticCode, Knot, Name, Param, Stitch};
+use crate::{Block, Diagnostic, DiagnosticCode, DocBlock, Knot, Name, Param, Stitch};
 
+use super::doc_comment::lower_doc_comment;
 use super::provenance::native_provenance;
+
+/// A `flow`/`fn`'s doc comment: the leading `///` form if present, else the
+/// body's inner `//!` form (B0.6b judgment call — the two forms are not
+/// merged; the outer form wins when both are somehow present, since it's
+/// the one visible from outside the container without opening its body).
+fn container_doc(
+    file_id: FileId,
+    outer: Option<ast::DocComment>,
+    body: Option<&ast::Block>,
+    policy: DocPolicy,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<DocBlock> {
+    if let Some(doc) = lower_doc_comment(file_id, outer, policy, diags) {
+        return Some(doc);
+    }
+    lower_doc_comment(file_id, body.and_then(ast::Block::doc), policy, diags)
+}
 
 fn diag(file: FileId, range: rowan::TextRange, code: DiagnosticCode) -> Diagnostic {
     Diagnostic {
@@ -101,6 +120,13 @@ pub(super) fn lower_top_level_container(
     // `flow`/`fn` declarations, skipping those (and every other
     // declaration kind) as body-item statements, so there is no double
     // lowering.
+    let doc = container_doc(
+        file_id,
+        node.doc(),
+        node.body().as_ref(),
+        DocPolicy::CALLABLE,
+        diags,
+    );
     let body_block = node.body().map_or_else(Block::default, |b| {
         super::body::lower_block(file_id, &b, diags)
     });
@@ -115,7 +141,7 @@ pub(super) fn lower_top_level_container(
         is_local: false,
         effects_assertion: None,
         return_type: None,
-        doc: None,
+        doc,
         visibility: None,
         was: None,
     })
@@ -157,6 +183,13 @@ fn lower_stitch(
         }
     }
     let _ = enclosing_knot_name; // threaded for future diagnostic-message use
+    let doc = container_doc(
+        file_id,
+        node.doc(),
+        node.body().as_ref(),
+        DocPolicy::CALLABLE,
+        diags,
+    );
     let body_block = node.body().map_or_else(Block::default, |b| {
         super::body::lower_block(file_id, &b, diags)
     });
@@ -167,7 +200,7 @@ fn lower_stitch(
         body: body_block,
         is_local: false,
         effects_assertion: None,
-        doc: None,
+        doc,
         visibility: None,
         was: None,
     })

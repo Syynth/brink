@@ -2,57 +2,38 @@
 //!
 //! Comments are trivia in the green tree (no grammar involvement), so we walk
 //! the tokens immediately preceding a declaration to collect the contiguous
-//! block of `///` lines, then parse the `@param` / `@returns` / `@kind` tags
-//! into a [`DocBlock`]. Like Rust doc-comments, codegen ignores these —
-//! only the analyzer/IDE consume them.
+//! block of `///` lines, then hand them to the shared, format-agnostic
+//! `hir::doc_block::parse_lines` (B0.6b, `docs/decision-log.md` 2026-07-20:
+//! factored out so both the OLD parser's trivia-walk attachment here and the
+//! native frontend's CST-node attachment,
+//! `hir::lower_native::doc_comment`, share the identical `@param`/
+//! `@returns`/`@kind` tag parser). Like Rust doc-comments, codegen ignores
+//! these — only the analyzer/IDE consume them.
 
 use brink_syntax::{SyntaxKind, SyntaxNode};
 use rowan::TextRange;
 
 use super::context::LowerSink;
-use crate::{DiagnosticCode, DocBlock, ExternalKind, TypeRef};
+use crate::hir::doc_block::{DocIssues, parse_lines};
+use crate::{DiagnosticCode, DocBlock};
 
-/// Which doc-comment tags are meaningful for a declaration kind. Tags that
-/// are well-formed but not allowed by the policy are dropped and reported as
-/// inapplicable (E043).
-#[derive(Debug, Clone, Copy)]
-pub struct DocPolicy {
-    /// `@param` / `@returns` — signature tags for callables.
-    pub allow_params: bool,
-    /// `@kind` — the host-capability category, externals only.
-    pub allow_kind: bool,
-}
-
-impl DocPolicy {
-    /// `EXTERNAL` declarations: all tags.
-    pub const EXTERNAL: Self = Self {
-        allow_params: true,
-        allow_kind: true,
-    };
-    /// Knots and stitches: signature tags, but no `@kind`.
-    pub const CALLABLE: Self = Self {
-        allow_params: true,
-        allow_kind: false,
-    };
-    /// `VAR` / `CONST` / `LIST`: free text only.
-    pub const VALUE: Self = Self {
-        allow_params: false,
-        allow_kind: false,
-    };
-}
-
-/// Problem ranges found while parsing a doc block, for the caller to diagnose.
-#[derive(Debug, Default)]
-pub struct DocIssues {
-    /// Tags that failed to parse (→ E038).
-    pub malformed: Vec<TextRange>,
-    /// Well-formed tags not applicable to this declaration kind (→ E043).
-    pub inapplicable: Vec<TextRange>,
-}
+// Re-exported so every existing `super::super::doc_comment::{DocPolicy,
+// parse_doc_comment}` call site (`lower/structure/{knot,stitch}.rs`,
+// `lower/decl/{constant,var,external,list,struct_decl}.rs`) keeps working
+// unmodified — `DocPolicy` now lives in the shared module.
+pub use crate::hir::doc_block::DocPolicy;
 
 impl DocIssues {
-    /// Emit the standard diagnostics for the collected ranges.
-    pub fn diagnose(self, sink: &mut impl LowerSink) {
+    /// Emit the standard diagnostics for the collected ranges. An inherent
+    /// impl living here rather than alongside `DocIssues`'s definition
+    /// (`hir::doc_block`) because it needs `LowerSink`, which is
+    /// `hir::lower`-frontend-specific machinery the shared module has no
+    /// business depending on — native's own diagnostics don't go through
+    /// `LowerSink` at all (`hir::lower_native::doc_comment::emit_issues`
+    /// pushes directly into a `Vec<Diagnostic>`). Same crate, so the
+    /// cross-module inherent impl is legal (Rust's orphan rule only
+    /// restricts cross-*crate* impls).
+    pub(crate) fn diagnose(self, sink: &mut impl LowerSink) {
         for range in self.malformed {
             sink.diagnose(range, DiagnosticCode::E038);
         }
@@ -115,77 +96,10 @@ fn collect_doc_lines(node: &SyntaxNode) -> Vec<(String, TextRange)> {
     out
 }
 
-/// Parse collected `///` lines into a [`DocBlock`], returning the ranges of
-/// malformed and policy-inapplicable tags.
-fn parse_lines(lines: &[(String, TextRange)], policy: DocPolicy) -> (Option<DocBlock>, DocIssues) {
-    let mut doc = DocBlock::default();
-    let mut free: Vec<String> = Vec::new();
-    let mut issues = DocIssues::default();
-
-    for (line, range) in lines {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix('@') {
-            let mut it = rest.splitn(2, char::is_whitespace);
-            let tag = it.next().unwrap_or("");
-            let arg = it.next().unwrap_or("").trim();
-            match tag {
-                "param" if !policy.allow_params => issues.inapplicable.push(*range),
-                "param" => match parse_param(arg) {
-                    Some(entry) => doc.params.push(entry),
-                    None => issues.malformed.push(*range),
-                },
-                "returns" | "return" if !policy.allow_params => {
-                    issues.inapplicable.push(*range);
-                }
-                "returns" | "return" => match parse_braced_type(arg) {
-                    Some(ty) => doc.returns = Some(ty),
-                    None => issues.malformed.push(*range),
-                },
-                "kind" if !policy.allow_kind => issues.inapplicable.push(*range),
-                "kind" => match ExternalKind::from_tag(arg) {
-                    Some(kind) => doc.kind = Some(kind),
-                    None => issues.malformed.push(*range),
-                },
-                // `@widget` is recognized but reserved for Tier 3, and unknown
-                // tags are ignored leniently — both are no-ops at the MVP.
-                _ => {}
-            }
-        } else if !line.is_empty() {
-            free.push(line.to_string());
-        }
-    }
-
-    if !free.is_empty() {
-        doc.doc = Some(free.join("\n"));
-    }
-    let has_content =
-        doc.doc.is_some() || !doc.params.is_empty() || doc.returns.is_some() || doc.kind.is_some();
-    (has_content.then_some(doc), issues)
-}
-
-/// Parse a `@param` argument: `<name> {<type>}`.
-fn parse_param(arg: &str) -> Option<(String, TypeRef)> {
-    let mut it = arg.splitn(2, char::is_whitespace);
-    let name = it.next().unwrap_or("").trim();
-    if name.is_empty() {
-        return None;
-    }
-    let ty = parse_braced_type(it.next().unwrap_or("").trim())?;
-    Some((name.to_string(), ty))
-}
-
-/// Parse a `{<type>}`-braced type reference. `None` if not well-formed.
-fn parse_braced_type(s: &str) -> Option<TypeRef> {
-    let inner = s.trim().strip_prefix('{')?.strip_suffix('}')?.trim();
-    if inner.is_empty() {
-        return None;
-    }
-    Some(TypeRef(inner.to_string()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ExternalKind, TypeRef};
     use brink_syntax::parse;
 
     /// Parse `src`, find the first node of `kind`, and parse its doc.

@@ -2,23 +2,26 @@
 //! (`docs/b0-sequencing.md` §B0.6).
 //!
 //! Directive/annotation channel population (`is_local`, `effects_assertion`,
-//! `visibility`, `@[was]`, `///` docs) is deliberately **not** wired in this
-//! slice — see the `lower_native` module doc's judgment-call list. Every
-//! decl node below carries the B0.4 additive fields as their empty default
+//! `visibility`, `@[was]`) is deliberately **not** wired in this slice — see
+//! the `lower_native` module doc's judgment-call list. Every decl node
+//! below carries those B0.4 additive fields as their empty default
 //! (`None`/`false`), which is honest (no directive syntax was consumed to
-//! produce them) rather than fabricated.
+//! produce them) rather than fabricated. `///` docs ARE wired (B0.6b,
+//! `docs/decision-log.md` 2026-07-20) — see [`super::doc_comment`].
 
 use brink_syntax_native::SyntaxKind as N;
 use brink_syntax_native::ast::{self, AstNode as _};
 use brink_syntax_native::{SyntaxNode, SyntaxToken};
 
 use crate::hir::FileId;
+use crate::hir::doc_block::DocPolicy;
 use crate::provenance::NodeClass;
 use crate::{
     ConstDecl, Diagnostic, DiagnosticCode, ExternalDecl, ListDecl, ListMember, Name, ParamInfo,
     StructDecl, StructFieldDecl, TypeExpr, VarDecl,
 };
 
+use super::doc_comment::lower_doc_comment;
 use super::expr::{lower_expr, lower_path};
 use super::provenance::native_provenance;
 
@@ -54,13 +57,14 @@ pub(super) fn lower_var_decl(
         return None;
     };
     let value = lower_expr(file_id, &value_node, diags);
+    let doc = lower_doc_comment(file_id, node.doc(), DocPolicy::VALUE, diags);
     Some(VarDecl {
         ptr: native_provenance(file_id, NodeClass::VarDecl, node.syntax()),
         name,
         value,
         is_local: false,
         annotation: None,
-        doc: None,
+        doc,
         visibility: None,
         was: None,
     })
@@ -82,12 +86,13 @@ pub(super) fn lower_const_decl(
         return None;
     };
     let value = lower_expr(file_id, &value_node, diags);
+    let doc = lower_doc_comment(file_id, node.doc(), DocPolicy::VALUE, diags);
     Some(ConstDecl {
         ptr: native_provenance(file_id, NodeClass::ConstDecl, node.syntax()),
         name,
         value,
         annotation: None,
-        doc: None,
+        doc,
         visibility: None,
         was: None,
     })
@@ -124,11 +129,12 @@ pub(super) fn lower_flags_decl(
             })
         })
         .collect();
+    let doc = lower_doc_comment(file_id, node.doc(), DocPolicy::VALUE, diags);
     Some(ListDecl {
         ptr: native_provenance(file_id, NodeClass::ListDecl, node.syntax()),
         name,
         members,
-        doc: None,
+        doc,
         visibility: None,
         was: None,
     })
@@ -174,11 +180,12 @@ pub(super) fn lower_struct_decl(
             }
         })
         .collect();
+    let doc = lower_doc_comment(file_id, node.doc(), DocPolicy::VALUE, diags);
     Some(StructDecl {
         ptr: native_provenance(file_id, NodeClass::StructDecl, node.syntax()),
         name,
         fields,
-        doc: None,
+        doc,
         visibility: None,
     })
 }
@@ -222,12 +229,13 @@ pub(super) fn lower_extern_decl(
         reason = "external params won't exceed 255, mirrors the ink lowering's own cast"
     )]
     let param_count = params.len() as u8;
+    let doc = lower_doc_comment(file_id, node.doc(), DocPolicy::EXTERNAL, diags);
     Some(ExternalDecl {
         ptr: native_provenance(file_id, NodeClass::ExternalDecl, node.syntax()),
         name,
         param_count,
         params,
-        doc: None,
+        doc,
         visibility: None,
         was: None,
     })

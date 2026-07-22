@@ -16,6 +16,14 @@ use super::Parser;
 pub(crate) fn source_file(p: &mut Parser<'_, '_>) {
     p.start_node(SOURCE_FILE);
 
+    // B0.6b: a `//!` run at the very start of the file documents the file
+    // itself (charter's third "container" alongside knot/flow bodies —
+    // see `parser::doc_comment`'s module doc). `skip_ws()` first so leading
+    // whitespace/a BOM doesn't hide the run from `maybe_consume_inner_run`'s
+    // `p.current()` check.
+    p.skip_ws();
+    super::doc_comment::maybe_consume_inner_run(p);
+
     // `loop { skip_ws(); if at_eof() { break } ... }` — not
     // `while !p.at_eof() { skip_ws(); ... }`. The distinction matters:
     // `at_eof()` trivia-skips to decide "any real token left", so a
