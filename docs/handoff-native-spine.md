@@ -73,7 +73,7 @@ SHAs are the heads as of handoff.
 | B | `docs/native-implicit-end-ruling` | `531d7040` | main | Implicit-end ruling (docs only) | **#1220 — MERGED 2026-07-22** ✅ |
 | C | `auto/first-light-integration` | `885de01b` | main | **First light 9/9** = `auto/first-light-native` + `auto/native-content-whitespace` merged | needs opening |
 | D | `auto/b0-10a-native-seam` | `da3731c5` | first-light-native | Native `.brink` compile seam (parse_native_query + dispatch) | needs opening |
-| E | `auto/b0-10b-native-discovery` | (building) | b0-10a | Multi-file discovery + filesystem modules | not pushed at handoff |
+| E | `auto/b0-10b-native-discovery` | `b2c58d9b` | b0-10a | Multi-file discovery + filesystem modules — **⚠️ UNVERIFIED WIP** (agent interrupted mid-build; no gates run, may not compile) | needs verify+finish, then PR |
 
 Also present, the two component branches that `first-light-integration` (C)
 already combines — land C, **or** land these two separately, not both:
@@ -137,8 +137,12 @@ native PR (#1215) precedent. Do not add one unless something starts feeding
 
 In priority order. All must keep oracle at 5577 (§6).
 
-1. **B0.10b — native discovery + filesystem modules** (may already be pushed as
-   `auto/b0-10b-native-discovery`; check). Sorted deterministic filesystem walk
+1. **B0.10b — native discovery + filesystem modules.** ⚠️ **A WIP snapshot is
+   already pushed as `auto/b0-10b-native-discovery` (`b2c58d9b`) — UNVERIFIED**
+   (the building agent was interrupted before committing; no gates run, may not
+   compile). Pick it up: read the diff, run gates, confirm oracle 5577, add the
+   tests below — do NOT rebuild from scratch, and do NOT merge it until verified.
+   The intended design: sorted deterministic filesystem walk
    of the source root (no INCLUDE machinery), filesystem-derived `HirFile.module`
    stamped in the discovery/module-map layer (NOT in `lower_native::lower`).
    **Save-stability guardrail:** it touches `DefinitionId` qualification (the
@@ -269,9 +273,8 @@ Full scoping is in the decision history; the essentials:
 
 ## 10. Open GitHub items
 
-- **#1217** — effect-system unification (docs). Conflict with main (decision-log tail
-  vs #1220) was resolved by merging main in (`13d0fbaf`); **auto-merge is armed**, so
-  it lands itself once CI is green. Nothing to do unless CI fails.
+- **#1217** — effect-system unification (docs). **MERGED 2026-07-22** ✅ (conflict
+  with the #1220 decision-log tail was resolved by merging main in; now in `main`).
 - **#1220** — implicit-end ruling (docs). **MERGED 2026-07-22** ✅ (in `main`).
 - **#1218** — B0.6b doc comments. **Already merged.** (Its `//!`-visibility fix
   is in `main`.)
