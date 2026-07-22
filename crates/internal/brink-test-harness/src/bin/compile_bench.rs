@@ -1306,7 +1306,7 @@ fn bench_diag_warm_strict(project: &BTreeMap<String, String>, runs: usize) -> Re
     })?;
     driver.set_analysis_options(AnalysisOptions {
         dialect: Dialect::Brink,
-        types: TypePolicy::Strict,
+        types: Some(TypePolicy::Strict),
         ..AnalysisOptions::default()
     });
     let mut db = driver.into_db();
