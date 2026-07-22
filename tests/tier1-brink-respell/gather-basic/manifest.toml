@@ -10,4 +10,9 @@ line becomes plain content immediately after the closed `{? }` block --
 no gather sigil, no depth-matching squint. Each choice's multi-line body
 moves into a brace opened on the choice's own line (charter: "choice
 bodies take braces when they have nested content"). No gaps encountered.
+
+ENTRY POINT (`main`-flow convention, ruled 2026-07-21, #1106 G-batch): the
+ink source has no knot at all -- its entire body is root content. Wrapped
+verbatim (2-space re-indent only) in `flow main() { ... }`, the ruled
+native story-entry convention.
 """

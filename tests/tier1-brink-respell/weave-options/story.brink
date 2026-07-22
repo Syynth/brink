@@ -1,6 +1,4 @@
--> test
-
-flow test() {
+flow main() {
   {?
     * Hello[.], world.
   }

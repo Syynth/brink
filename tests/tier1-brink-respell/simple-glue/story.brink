@@ -1,3 +1,5 @@
-Some <>
-content <>
-with glue.
+flow main() {
+  Some <>
+  content <>
+  with glue.
+}

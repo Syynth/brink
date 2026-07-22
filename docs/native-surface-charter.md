@@ -385,3 +385,47 @@ walk) feed the identical parser. Rejected the heavier alternative
 (a real grammar production for `@param`/`@returns`/`@kind`, coupling
 the grammar to the host-manifest tag vocabulary and `TypeRef`) as
 disproportionate to what the tags need to express.
+
+## 15. Story entry: `flow main()` (RULED, 2026-07-21, #1106 G-batch)
+
+**A top-level `flow main()` is a native story's default standalone
+entry point.** No new syntax — the RustScript-idiomatic answer to
+"where does a `.brink` story start", mirroring `fn main()`.
+Mechanically, `lower_native::lower` synthesizes `root_content` as a
+single `Divert` into `main` (the same `Divert`/`Block` HIR ink's
+own root-content-is-the-entry model already uses — see
+`crates/internal/brink-ir/src/hir/lower_native/mod.rs`'s
+`entry_root_content`). A file/project with no top-level `main`
+compiles with an empty `root_content` — not an error, just "no
+standalone entry point"; any other top-level `flow`/`fn` remains a
+**host entry point** only (effects-spec §10 "play from here" —
+engine-driven scene entry by absolute path, unaffected by this
+ruling). A `main` that takes parameters is not matched (a bare
+entry divert can supply none) — it stays an ordinary, host-enterable
+flow.
+
+This resolves the long-flagged native story-entry question (#1106 /
+the G-batch) that the `exhibit-fogg-passage` respell fixture first
+surfaced (PR #1202): a top-level bare `-> flow` entry-divert line is
+now **superseded** by the `main` naming convention, not a parallel
+spelling — the respell corpus (`tests/tier1-brink-respell/`) was
+updated to match (docs/decision-log.md, "B0.10: flow main() native
+story-entry convention").
+
+**Open question surfaced by first light, not yet ruled**: ink grants
+literal ROOT content a free pass to end implicitly (no `-> END`
+needed — running off the end of the story's outermost content is
+`Ended`, not an error) but does **not** grant that same grace to a
+knot/flow's content reached by an ordinary divert (running off the
+end there is ink's own "ran out of content, do you need a '-> DONE'
+or '-> END'?" error). Wrapping former root content in `flow main()`
+per this convention moves it from the first bucket to the second —
+so a `main` that would have relied on ink's root-content grace now
+needs an explicit terminator it didn't need before. Whether `main`
+should inherit root's implicit-end grace (since it now plays root's
+role) or whether native authors are simply expected to always
+terminate `main` explicitly (arguably in keeping with native's more
+explicit posture elsewhere) is not decided by this ruling and needs
+one — see the first-light build report (issue #1106) for the
+concrete fixtures (`const-vars`, `simple-glue`, `basic-tunnel`) this
+affects.

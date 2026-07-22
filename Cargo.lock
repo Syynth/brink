@@ -2306,6 +2306,7 @@ dependencies = [
  "brink-ir",
  "brink-runtime",
  "brink-syntax",
+ "brink-syntax-native",
  "insta",
  "proptest",
  "regex",

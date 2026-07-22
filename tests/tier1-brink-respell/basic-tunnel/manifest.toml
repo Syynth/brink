@@ -8,4 +8,11 @@ Tunnel call kept as `-> f ->` (charter §11); tunnel return respelled from
 ink's `->->` to `return` (the container-exit unification). No gaps
 encountered -- this is the smallest possible faithful respelling of the
 tunnel-call/tunnel-return pair.
+
+ENTRY POINT (`main`-flow convention, ruled 2026-07-21, #1106 G-batch):
+the ink source's root content (the tunnel call + trailing glue) is wrapped
+in `flow main() { ... }` rather than left at file-root position or spelled
+as a top-level `-> f ->` -- the top-level entry-divert convention this
+fixture originally used is superseded. `f` stays a separate flow, called
+by `main`'s tunnel call, exactly mirroring the ink shape.
 """

@@ -19,4 +19,10 @@ See README N-1: this fixture's `* [text] -> target` choice lines parse
 with zero errors, but the inline divert after the `]` is folded into
 literal TEXT by the shipped grammar, not recognized as a DIVERT_STMT.
 Implementation debt, not a charter gap.
+
+ENTRY POINT (`main`-flow convention, ruled 2026-07-21, #1106 G-batch): the
+top-level container `the_orient_express` is renamed `main` (the ruled
+native story-entry convention) and the top-level `-> the_orient_express`
+entry divert is dropped; the internal qualified reference
+`the_orient_express.in_third_class` becomes `main.in_third_class`.
 """

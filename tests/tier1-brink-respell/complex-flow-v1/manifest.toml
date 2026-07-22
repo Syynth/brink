@@ -27,4 +27,9 @@ mechanic, applied recursively. This is strong positive evidence for the
 gather-dissolution design: even ink's trickiest gather idiom (a gather
 splitting one choice list into two) has a mechanical, unambiguous native
 form. No gaps encountered.
+
+ENTRY POINT (`main`-flow convention, ruled 2026-07-21, #1106 G-batch): the
+ink source has no knot at all -- its entire body is root content. Wrapped
+verbatim (2-space re-indent only) in `flow main() { ... }`, the ruled
+native story-entry convention.
 """

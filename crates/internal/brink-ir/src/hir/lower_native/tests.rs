@@ -282,11 +282,73 @@ fn module_block_is_flagged_and_flattened() {
 }
 
 #[test]
-fn root_content_is_always_empty() {
+fn root_content_is_empty_without_a_main_flow() {
     let (hir, _manifest, _diags) = lower_src("flow a() {}\n");
     assert!(hir.root_content.stmts.is_empty());
     assert!(hir.includes.is_empty());
     assert!(hir.module.is_none());
+}
+
+// ─── `flow main()` entry convention (ruled 2026-07-21, docs/decision-log.md) ──
+
+#[test]
+fn top_level_main_flow_synthesizes_a_root_divert() {
+    let (hir, _manifest, diags) = lower_src("flow main() {\n  Hi.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.root_content.stmts.len(), 1);
+    let Stmt::Divert(d) = &hir.root_content.stmts[0] else {
+        panic!(
+            "expected root_content to be a single Divert, got {:?}",
+            hir.root_content.stmts[0]
+        );
+    };
+    assert!(
+        d.ptr.is_none(),
+        "synthesized entry divert has no source ptr"
+    );
+    let DivertPath::Path(path) = &d.target.path else {
+        panic!("expected a named divert target, got {:?}", d.target.path);
+    };
+    assert_eq!(path.segments.len(), 1);
+    assert_eq!(path.segments[0].text, "main");
+    assert!(d.target.args.is_empty());
+    assert!(
+        matches!(
+            hir.root_content.tail(),
+            Tail::Diverge(Terminator::Divert(_))
+        ),
+        "the synthesized divert must also drive Block::tail: {:?}",
+        hir.root_content.tail()
+    );
+}
+
+#[test]
+fn nested_main_flow_does_not_synthesize_an_entry() {
+    // Only a *top-level* `main` counts — a stitch named `main` nested inside
+    // another flow is not the story's entry point.
+    let (hir, _manifest, diags) = lower_src("flow outer() {\n  flow main() {\n    Hi.\n  }\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(hir.root_content.stmts.is_empty());
+}
+
+#[test]
+fn function_named_main_does_not_synthesize_an_entry() {
+    // `fn main()` is a function, not a flow — not eligible for the entry
+    // convention (a function is called for its value, not diverted into).
+    let (hir, _manifest, diags) = lower_src("fn main() {\n  Hi.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(hir.root_content.stmts.is_empty());
+}
+
+#[test]
+fn parameterized_main_flow_does_not_synthesize_an_entry() {
+    // A bare entry divert cannot supply arguments — synthesizing one for a
+    // `main` that requires params would either drop them silently or invent
+    // values from nowhere. Neither is acceptable, so no entry is
+    // synthesized; `main` remains an ordinary, host-enterable flow.
+    let (hir, _manifest, diags) = lower_src("flow main(who) {\n  Hi, {who}.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(hir.root_content.stmts.is_empty());
 }
 
 #[test]
@@ -357,10 +419,20 @@ fn content_glue_interpolation_and_tags_lower() {
     let (hir, _m, diags) = lower_src("flow a() {\n  Hi, {name}! <> #mood: happy\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let body = only_knot_body(&hir);
+    // Glue suppresses the EndOfLine (Content only), then the flow's
+    // implicit-end grace (charter §15) appends a synthesized `-> DONE`.
     assert_eq!(
         body.stmts.len(),
-        1,
+        2,
         "glue suppresses the EndOfLine: {body:?}"
+    );
+    assert!(
+        matches!(
+            &body.stmts[1],
+            Stmt::Divert(d) if d.target.path == DivertPath::Done
+        ),
+        "expected trailing implicit `-> DONE`, got {:?}",
+        body.stmts[1]
     );
     let Stmt::Content(c) = &body.stmts[0] else {
         panic!("expected Content, got {:?}", body.stmts[0]);
@@ -380,9 +452,15 @@ fn content_without_glue_gets_end_of_line() {
     let (hir, _m, diags) = lower_src("flow a() {\n  Plain line.\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let body = only_knot_body(&hir);
-    assert_eq!(body.stmts.len(), 2);
+    // Content + EndOfLine, then the flow's implicit-end `-> DONE`
+    // (charter §15).
+    assert_eq!(body.stmts.len(), 3);
     assert!(matches!(body.stmts[0], Stmt::Content(_)));
     assert!(matches!(body.stmts[1], Stmt::EndOfLine));
+    assert!(matches!(
+        &body.stmts[2],
+        Stmt::Divert(d) if d.target.path == DivertPath::Done
+    ));
 }
 
 #[test]
@@ -672,6 +750,55 @@ fn return_redirect_to_named_path_stamps_tunnel_redirect() {
 }
 
 #[test]
+fn bare_return_inside_a_non_function_flow_is_a_tunnel_redirect() {
+    // `return` inside an ordinary `flow` (reached via tunnel call, ink's
+    // bare `->->`) must NOT be `Explicit` — E032 (return outside function)
+    // would otherwise fire for perfectly valid tunnel-return code
+    // (`tests/tier1-brink-respell/basic-tunnel`).
+    let (hir, _m, diags) = lower_src("flow f() {\n  Hello\n  return\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::Return(r) = hir.knots[0].body.stmts.last().expect("a Return statement") else {
+        panic!("expected Return, got {:?}", hir.knots[0].body.stmts);
+    };
+    assert_eq!(r.kind, ReturnKind::TunnelRedirect);
+    assert!(
+        matches!(
+            hir.knots[0].body.tail(),
+            Tail::Diverge(Terminator::Return(_))
+        ),
+        "tail must be recomputed after the fixup: {:?}",
+        hir.knots[0].body.tail()
+    );
+}
+
+#[test]
+fn bare_return_inside_a_function_stays_explicit() {
+    let (hir, _m, diags) = lower_src("fn f() {\n  return\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::Return(r) = &hir.knots[0].body.stmts[0] else {
+        panic!("expected Return");
+    };
+    assert_eq!(r.kind, ReturnKind::Explicit);
+}
+
+#[test]
+fn bare_return_inside_a_choice_body_of_a_non_function_flow_is_a_tunnel_redirect() {
+    let (hir, _m, diags) =
+        lower_src("flow f() {\n  {?\n    * A. {\n        return\n      }\n  }\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::ChoiceSet(cs) = &hir.knots[0].body.stmts[0] else {
+        panic!("expected ChoiceSet, got {:?}", hir.knots[0].body.stmts[0]);
+    };
+    let Stmt::Return(r) = cs.choices[0].body.stmts.last().expect("a Return statement") else {
+        panic!(
+            "expected Return in choice body, got {:?}",
+            cs.choices[0].body.stmts
+        );
+    };
+    assert_eq!(r.kind, ReturnKind::TunnelRedirect);
+}
+
+#[test]
 fn return_redirect_to_done_lowers_as_plain_divert() {
     let (hir, _m, diags) = lower_src("flow a() {\n  return -> DONE\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
@@ -687,7 +814,14 @@ fn return_redirect_to_done_lowers_as_plain_divert() {
 #[test]
 fn unrecognized_body_construct_is_diagnosed_not_dropped() {
     let (hir, _m, diags) = lower_src("flow a() {\n  @[effects(pure)]\n}\n");
-    assert!(hir.knots[0].body.stmts.is_empty());
+    // The unrecognized construct itself produces no statement — the only
+    // statement is the flow's synthesized implicit `-> DONE` (charter §15).
+    let body = &hir.knots[0].body;
+    assert_eq!(body.stmts.len(), 1, "only the implicit `-> DONE`: {body:?}");
+    assert!(matches!(
+        &body.stmts[0],
+        Stmt::Divert(d) if d.target.path == DivertPath::Done
+    ));
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E129),
         "an unwired body-position construct must be diagnosed, not silently dropped: {diags:?}"
@@ -725,10 +859,21 @@ fn block_ending_in_explicit_return_has_diverge_tail() {
 }
 
 #[test]
-fn plain_content_block_has_unit_tail() {
+fn plain_content_flow_body_gets_implicit_done_tail() {
+    // A `flow` body that falls off the end (no author-written terminator)
+    // inherits ink's root-content implicit-end grace (charter §15): the
+    // container finalization appends a synthesized `-> DONE`, so the
+    // finalized body's tail is `Diverge(Divert)`, not `Unit`. (The
+    // block-construction step still produces `Unit`; the DONE is stamped
+    // once, at the flow level, by `container.rs`.)
     let (hir, _m, diags) = lower_src("flow greet(name) {\n  Hi, {name}!\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
-    assert_eq!(*hir.knots[0].body.tail(), Tail::Unit);
+    let body = &hir.knots[0].body;
+    assert!(
+        matches!(body.tail(), Tail::Diverge(Terminator::Divert(d)) if d.target.path == DivertPath::Done),
+        "expected implicit `-> DONE` Diverge tail, got {:?}",
+        body.tail()
+    );
 }
 
 #[test]

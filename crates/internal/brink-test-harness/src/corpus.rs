@@ -146,6 +146,87 @@ pub fn compile_and_explore_from_ink(
     Ok((output.data, episodes))
 }
 
+/// Compile a `.brink` native source string, link, explore, and also return
+/// the [`brink_format::StoryData`] — the native analogue of
+/// [`compile_and_explore_from_ink`].
+///
+/// **The honest minimal path** (first light, `docs/b0-sequencing.md`
+/// §B0.10, issue #1106): a single self-contained composition of
+/// `brink_syntax_native::parse` → `brink_ir::hir::lower_native::lower` →
+/// `brink_analyzer` (dialect `Brink`, single file) →
+/// `brink_ir::lir::lower_to_program` → `brink_codegen_inkb::emit` →
+/// `brink_runtime::link` + explore. Deliberately bypasses `brink-db`/salsa
+/// (no incremental caching — every call re-runs the whole pipeline) and the
+/// INCLUDE-closure machinery (native has none; `.brink` file-extension
+/// registration and multi-file project discovery are B0.10's later
+/// project-layer wiring, out of scope here). This proves HIR→episode for
+/// one file, not the full `brink compile scene.brink` CLI path.
+///
+/// Returns `Err` naming the exact stage (parse/lowering/analysis/LIR/
+/// codegen/link) on the first diagnostic or error encountered — a fixture
+/// with real diagnostics at any stage is not silently treated as
+/// "compiles to nothing".
+pub fn compile_and_explore_from_brink_native(
+    src: &str,
+    config: &ExploreConfig,
+) -> Result<(brink_format::StoryData, Vec<Episode>), String> {
+    let file_id = brink_ir::FileId(0);
+
+    let parsed = brink_syntax_native::parse(src);
+    if !parsed.errors().is_empty() {
+        return Err(format!("native parse errors: {:?}", parsed.errors()));
+    }
+    let tree = parsed.tree();
+
+    let (hir, manifest, lower_diags) = brink_ir::hir::lower_native::lower(file_id, &tree);
+    if !lower_diags.is_empty() {
+        return Err(format!("native HIR lowering diagnostics: {lower_diags:?}"));
+    }
+
+    let files_for_analysis: Vec<(
+        brink_ir::FileId,
+        &brink_ir::HirFile,
+        &brink_ir::SymbolManifest,
+    )> = vec![(file_id, &hir, &manifest)];
+    let analysis_opts = brink_analyzer::AnalysisOptions {
+        dialect: brink_analyzer::Dialect::Brink,
+        ..Default::default()
+    };
+    let analysis = brink_analyzer::analyze_with_options(&files_for_analysis, &analysis_opts);
+    if !analysis.diagnostics.is_empty() {
+        return Err(format!("analysis diagnostics: {:?}", analysis.diagnostics));
+    }
+
+    let files_for_lir: Vec<(brink_ir::FileId, &brink_ir::HirFile)> = vec![(file_id, &hir)];
+    let (program, lir_diags) = brink_ir::lir::lower_to_program(
+        &files_for_lir,
+        &analysis.index,
+        &analysis.resolutions,
+        &std::collections::HashMap::new(),
+    );
+    if !lir_diags.is_empty() {
+        return Err(format!("LIR lowering diagnostics: {lir_diags:?}"));
+    }
+    let program =
+        program.ok_or_else(|| "LIR lowering produced no program (see diagnostics)".to_string())?;
+
+    let data = brink_codegen_inkb::emit(&program).map_err(|e| format!("codegen: {e}"))?;
+
+    let (linked, line_tables) = brink_runtime::link(&data).map_err(|e| format!("link: {e}"))?;
+    let episodes = crate::explore(std::sync::Arc::new(linked), line_tables, config);
+    Ok((data, episodes))
+}
+
+/// [`compile_and_explore_from_brink_native`], discarding the compiled
+/// [`brink_format::StoryData`] — the native analogue of
+/// [`explore_from_ink`] for callers that only need episodes.
+pub fn explore_from_brink_native(
+    src: &str,
+    config: &ExploreConfig,
+) -> Result<Vec<Episode>, String> {
+    compile_and_explore_from_brink_native(src, config).map(|(_, episodes)| episodes)
+}
+
 #[cfg(test)]
 mod golden_transcript_tests {
     use super::load_golden_transcript;

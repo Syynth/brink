@@ -250,6 +250,111 @@ fn lower_one_item(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnostic
     }
 }
 
+/// The `return`/tunnel-return container-exit unification (charter §11,
+/// `tests/tier1-brink-respell/basic-tunnel/manifest.toml`): a bare `return`
+/// (no redirect target) means two different things in ink — `~ return`
+/// inside a function, bare `->->` (tunnel return) everywhere else — that
+/// native's single `return` keyword cannot distinguish syntactically. The
+/// `N::RETURN_STMT` arm above always stamps `ReturnKind::Explicit` (it has
+/// no access to the enclosing container's `is_function` flag at the point
+/// a single item is dispatched), so this post-lowering fixup corrects
+/// every bare return reachable in a non-function container's body to
+/// `ReturnKind::TunnelRedirect` — `brink-analyzer`'s E032 check keys off
+/// `kind`, never syntax (B0.2), so this is the one seam that needs
+/// correcting for `flow`s reached via tunnel call to lower cleanly.
+///
+/// Called once per top-level `Knot`/`Stitch` by `container.rs` right after
+/// its body is built (`is_function` is known there, not down in the
+/// per-item dispatch), walking every reachable structural nesting point —
+/// choice bodies/continuations, conditional branches, sequence branches,
+/// labeled blocks — and recomputing each touched block's `tail` (S1,
+/// docs/block-effect-model.md §10 row j), since mutating a tail-position
+/// `Return` in place leaves a stale `tail` otherwise.
+///
+/// **Known scope gap, flagged rather than silently mishandled**: a
+/// `return` reached only through a content-embedded inline conditional/
+/// sequence (`ContentPart::InlineConditional`/`InlineSequence`, e.g.
+/// `Hi {if x { return }}`) is not walked here — inline positions are
+/// content, not a realistic return site, and this fixup strictly improves
+/// the already-broken baseline (every bare return, everywhere, previously
+/// stamped `Explicit` unconditionally) without regressing that corner.
+pub(super) fn fixup_return_kind(is_function: bool, block: &mut Block) {
+    for stmt in &mut block.stmts {
+        match stmt {
+            Stmt::Return(r) => {
+                if !is_function && r.kind == ReturnKind::Explicit && r.value.is_none() {
+                    r.kind = ReturnKind::TunnelRedirect;
+                }
+            }
+            Stmt::ChoiceSet(cs) => {
+                for choice in &mut cs.choices {
+                    fixup_return_kind(is_function, &mut choice.body);
+                }
+                fixup_return_kind(is_function, &mut cs.continuation);
+            }
+            Stmt::LabeledBlock(b) => fixup_return_kind(is_function, b),
+            Stmt::Conditional(c) => {
+                for branch in &mut c.branches {
+                    fixup_return_kind(is_function, &mut branch.body);
+                }
+            }
+            Stmt::Sequence(s) => {
+                for branch in &mut s.branches {
+                    fixup_return_kind(is_function, branch);
+                }
+            }
+            Stmt::Content(_)
+            | Stmt::Divert(_)
+            | Stmt::TunnelCall(_)
+            | Stmt::ThreadStart(_)
+            | Stmt::TempDecl(_)
+            | Stmt::Assignment(_)
+            | Stmt::ExprStmt(_)
+            | Stmt::EndOfLine
+            | Stmt::LogicBlock(_)
+            | Stmt::Await(_) => {}
+        }
+    }
+    block.recompute_tail();
+}
+
+/// Grant a native `flow`/`stitch` body ink's ROOT-content implicit-end
+/// grace: a body that falls off the end (`Tail::Unit` — no trailing divert
+/// or return) gets a synthesized `-> DONE` terminator so the VM does not
+/// raise "ran out of content" (RULED 2026-07-22, `docs/decision-log.md` →
+/// native implicit end; charter §15).
+///
+/// **Native-only, and deliberately mirroring the ink pipeline's own
+/// root-content terminator** in [`crate::lir::lower::assemble_program`]
+/// (which appends `lir::DivertTarget::Done` when the assembled root body
+/// lacks a trailing divert). Ink grants literal ROOT content that grace but
+/// not a knot reached by an ordinary divert; native's `flow main()` entry
+/// convention (charter §15) moves former root content into exactly such a
+/// divert-reached knot, which would otherwise lose it. We restore it here at
+/// the flow level rather than the LIR root level so it rides the same HIR
+/// `DivertPath::Done` representation every other native `-> DONE` uses — no
+/// new opcode.
+///
+/// `-> DONE`, never `-> END`: the flow's turn completes; the story is not
+/// permanently ended. Applied to the **top-level** body block only (mirroring
+/// `assemble_program`, which appends to `root_body` alone) — a nested block
+/// that falls through rejoins its gather/continuation and must not be
+/// terminated. Caller excludes functions: a `fn` that runs off the end does
+/// an implicit *return*, not a DONE.
+pub(super) fn apply_implicit_done(block: &mut Block) {
+    if !matches!(block.tail, crate::Tail::Unit) {
+        return;
+    }
+    block.stmts.push(Stmt::Divert(Divert {
+        ptr: None,
+        target: DivertTarget {
+            path: DivertPath::Done,
+            args: Vec::new(),
+        },
+    }));
+    block.recompute_tail();
+}
+
 /// Lower one `CONTENT_LINE`'s own content (its `LABEL` child, if any, is
 /// skipped here — [`lower_items`]/[`lower_continuation`] already consumed
 /// it for the absorption decision before calling this).

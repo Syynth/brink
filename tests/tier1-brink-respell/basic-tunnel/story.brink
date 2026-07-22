@@ -1,5 +1,7 @@
--> f ->
-<> world
+flow main() {
+  -> f ->
+  <> world
+}
 
 flow f() {
   Hello
