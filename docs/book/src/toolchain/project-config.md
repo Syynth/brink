@@ -116,7 +116,7 @@ if let Some(loaded) = brink_project_config::load_from_entry(entry)? {
     }
     // `false, false`: no explicit override in this example — an embedder
     // with its own flags would pass `true` for any field it's setting itself.
-    brink_project_config::apply_to_options(&mut options, &loaded.config, false, false);
+    options.apply_project_config(&loaded.config, false, false);
 }
 let output = compile_path_with_options(entry, options)?;
 # Ok::<(), Box<dyn std::error::Error>>(())
