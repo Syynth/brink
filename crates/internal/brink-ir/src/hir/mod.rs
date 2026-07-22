@@ -5,6 +5,7 @@
 //! stay as trees, choices and conditionals keep their branch structure, diverts
 //! are semantic nodes — with weave nesting resolved and syntactic sugar stripped.
 
+pub(crate) mod doc_block;
 pub mod frame_shape;
 mod ink_provenance;
 pub mod lower;
