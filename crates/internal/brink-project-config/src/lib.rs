@@ -253,6 +253,21 @@ pub fn discover_from_entry(entry_file: &Path) -> Option<PathBuf> {
     find_config(start)
 }
 
+/// The **declared source root** for a native `.brink` project: the directory
+/// containing the [`CONFIG_FILE_NAME`] discovered by walking up from
+/// `entry_file` (B0.10b, `docs/b0-sequencing.md` §B0.10 — "a declared source
+/// root in `brink.toml`"). This is the directory the native discovery walk is
+/// scoped to, and the base every file's filesystem-derived module path is
+/// taken relative to (charter NF-3, "path on disk = path in language").
+///
+/// `None` when no `brink.toml` is found anywhere from `entry_file`'s directory
+/// up to the filesystem root — the caller decides the fallback (typically the
+/// entry file's own directory).
+#[must_use]
+pub fn find_source_root(entry_file: &Path) -> Option<PathBuf> {
+    discover_from_entry(entry_file).and_then(|config| config.parent().map(Path::to_path_buf))
+}
+
 /// Discover (via [`discover_from_entry`]) and parse (via [`parse_str`]) the
 /// `brink.toml` governing `entry_file`'s project, if one exists.
 ///

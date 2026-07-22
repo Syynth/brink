@@ -1798,3 +1798,150 @@ mod module_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod native_module_tests {
+    //! B0.10b (charter §13.2 / NF-3): a **multi-file** native `.brink`
+    //! project compiles through the real salsa pipeline with cross-file name
+    //! resolution, its `DefinitionId`s carry the **filesystem-derived** module
+    //! path (`<root>/market/barter.brink` → `story::market::barter`), and
+    //! the tree — not an `INCLUDE` closure — is the compilation universe.
+    use super::ProjectDb;
+    use brink_analyzer::{AnalysisOptions, Dialect};
+    use brink_ir::DiagnosticCode;
+
+    fn native_db() -> ProjectDb {
+        let mut db = ProjectDb::new();
+        // Native compiles strict-only under the brink dialect (B0.10a/B0.10b).
+        db.set_analysis_options(AnalysisOptions {
+            dialect: Dialect::Brink,
+            ..AnalysisOptions::default()
+        });
+        db
+    }
+
+    /// Gate 1: two `.brink` files where the entry references a `flow` defined
+    /// in another file. Cross-file resolution succeeds (no unresolved-name
+    /// diagnostics), the resolved `DefinitionId` carries the filesystem-derived
+    /// module path, no M-2 cross-module errors fire (imports are naming only),
+    /// and the whole tree compiles to a `StoryData`.
+    #[test]
+    fn multi_file_native_cross_file_resolution_carries_module_identity() {
+        let mut db = native_db();
+        // `market/barter.brink` → module `story::market::barter`; defines
+        // flow `greet` (falls off the end → implicit `-> DONE`).
+        db.set_file(
+            "market/barter.brink",
+            "flow greet() {\n  Hello from the market.\n}\n".to_owned(),
+        );
+        // `consumer.brink` (entry) → module `story::consumer`; `main` diverts
+        // across the module wall to `greet`.
+        let consumer = db.set_file(
+            "consumer.brink",
+            "flow main() {\n  -> greet\n}\n".to_owned(),
+        );
+        db.set_entry("consumer.brink");
+
+        // Cross-file resolution succeeds — no unresolved-name diagnostics.
+        let (map, resolve_diags) = db.resolve(consumer).expect("consumer resolves");
+        assert!(
+            resolve_diags.is_empty(),
+            "native cross-file resolution must be clean, got: {resolve_diags:?}"
+        );
+
+        // The resolved `greet` carries the filesystem-derived module path.
+        let index = db.symbol_index();
+        let greet_id = index
+            .by_name
+            .get("greet")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("greet indexed");
+        assert_eq!(
+            index
+                .symbols
+                .get(&greet_id)
+                .and_then(|i| i.module.as_deref()),
+            Some("story::market::barter"),
+            "greet's DefinitionId must be qualified by its filesystem-derived module"
+        );
+
+        // `main`'s `-> greet` resolved to that exact qualified id.
+        assert!(
+            map.iter().any(|r| r.target == greet_id),
+            "the cross-file divert must resolve to the module-qualified id"
+        );
+
+        // No M-2 cross-module gates fire for native (imports are naming only).
+        let consumer_codes: Vec<_> = db
+            .diagnostics(consumer)
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert!(
+            !consumer_codes.contains(&DiagnosticCode::E025)
+                && !consumer_codes.contains(&DiagnosticCode::E087),
+            "native cross-module reference must not trip the M-2 import/visibility gates, \
+             got {consumer_codes:?}"
+        );
+
+        // The whole tree is the compilation universe: `greet` (in a file the
+        // entry does not INCLUDE — native has no INCLUDE) is lowered and the
+        // project compiles clean to a StoryData.
+        let product = db.story_data().expect("entry is set");
+        assert!(
+            product.errors.is_empty(),
+            "multi-file native compile must be error-free, got: {:?}",
+            product.errors
+        );
+        assert!(
+            product.story.is_some(),
+            "multi-file native compile must yield a StoryData"
+        );
+    }
+
+    /// The module path is a genuine qualifier: the *same* flow name declared
+    /// in two different directories hashes to two **different** `DefinitionId`s
+    /// (the leaf-module path enters the hash), and neither equals the id the
+    /// name would get in a bare (ink, undeclared) file.
+    #[test]
+    fn filesystem_module_path_qualifies_definition_id() {
+        let greet_in = |path: &str| -> u64 {
+            let mut db = native_db();
+            let id = db.set_file(path, "flow greet() {\n  Hi.\n}\n".to_owned());
+            db.set_entry(path);
+            let index = db.symbol_index();
+            let _ = id;
+            index
+                .by_name
+                .get("greet")
+                .and_then(|ids| ids.first())
+                .map(|d| d.to_raw())
+                .expect("greet indexed")
+        };
+
+        let market = greet_in("market/barter.brink");
+        let town = greet_in("town/square.brink");
+        assert_ne!(
+            market, town,
+            "the same flow name in different filesystem modules must get distinct ids"
+        );
+
+        // Bare ink baseline: an undeclared file's `greet` hashes bare — the
+        // native filesystem qualification must change it.
+        let mut bare = ProjectDb::new();
+        bare.set_file("story.ink", "== greet ==\nHi\n-> DONE\n".to_owned());
+        let bare_id = bare
+            .symbol_index()
+            .by_name
+            .get("greet")
+            .and_then(|ids| ids.first())
+            .map(|d| d.to_raw())
+            .expect("greet indexed");
+        assert_ne!(
+            market, bare_id,
+            "a filesystem-qualified id must differ from the bare (undeclared) id"
+        );
+    }
+}

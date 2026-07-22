@@ -7,6 +7,7 @@
 
 mod diagnostics;
 mod discover;
+mod native_discover;
 
 use std::collections::HashMap;
 use std::io;
@@ -16,6 +17,17 @@ pub use brink_db::{CompileProduct, LirProduct, ProjectDb};
 pub use brink_ir::FileId;
 pub use diagnostics::DiagnosticReport;
 pub use discover::DiscoverError;
+pub use native_discover::discover_native;
+
+/// Whether an entry path feeds the native `.brink` frontend (B0.10b) — the
+/// same extension test the db's `lowered_query` dispatches on, lifted here so
+/// [`Driver::discover`] can branch its whole discovery *model* (a native
+/// filesystem walk vs the ink `INCLUDE` BFS) on it.
+fn entry_is_native(entry: &str) -> bool {
+    std::path::Path::new(entry)
+        .extension()
+        .is_some_and(|ext| ext == "brink")
+}
 
 /// Pipeline orchestration wrapper around `ProjectDb`.
 pub struct Driver {
@@ -62,12 +74,31 @@ impl Driver {
 
     // ── Discovery ────────────────────────────────────────────────────
 
-    /// Discover all files reachable via INCLUDEs from the entry point.
+    /// Discover a project's files from an entry point.
+    ///
+    /// Branches on the entry's frontend (B0.10b): a native `.brink` entry runs
+    /// the [filesystem walk](Self::discover_native) over the declared source
+    /// root (the `read_file` closure is unused — native reads the disk
+    /// directly and the tree, not an `INCLUDE` closure, is the compilation
+    /// universe); an ink entry runs the `INCLUDE` BFS through `read_file`.
     pub fn discover<F>(&mut self, entry: &str, read_file: F) -> Result<(), DiscoverError>
     where
         F: FnMut(&str) -> Result<String, io::Error>,
     {
-        discover::discover(&mut self.db, entry, &mut { read_file })
+        if entry_is_native(entry) {
+            self.discover_native(entry).map(|_| ())
+        } else {
+            discover::discover(&mut self.db, entry, &mut { read_file })
+        }
+    }
+
+    /// Discover every `.brink` file in the native project rooted at `entry`'s
+    /// declared source root, loading them into the db in deterministic
+    /// sorted-by-relative-path order (B0.10b). Returns the loaded relative
+    /// keys in `FileId` order. Reads the real filesystem — see
+    /// [`native_discover::discover_native`].
+    pub fn discover_native(&mut self, entry: &str) -> Result<Vec<String>, DiscoverError> {
+        native_discover::discover_native(&mut self.db, entry)
     }
 
     // ── Analysis ─────────────────────────────────────────────────────

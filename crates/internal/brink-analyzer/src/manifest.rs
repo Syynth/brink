@@ -35,7 +35,7 @@ fn effective_visibility(declared: bool, mark: Option<VisibilityMark>) -> (Visibi
 /// module. Only a **declared** module (`#@module(name)` present) qualifies
 /// identity; an undeclared stem-module contributes nothing to the hash, so
 /// the entire pre-modules corpus keeps byte-identical `DefinitionId`s.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResolvedModule {
     /// The module's name (stem for undeclared, `#@module` argument for
     /// declared).
@@ -50,6 +50,18 @@ pub struct ResolvedModule {
     /// always `None` for an undeclared stem-module (scoped to declared
     /// modules only — see `ModuleDecl::was`'s doc).
     pub was: Option<String>,
+    /// `true` for a **native** `.brink` file whose module identity is
+    /// **filesystem-derived** (B0.10b, charter §13.2 NF-3: "path on disk =
+    /// path in language"), e.g. `<root>/market/barter.brink` → module
+    /// `story::market::barter`. Such a module still qualifies `DefinitionId`
+    /// identity exactly like a `declared` ink module (`declared` is also
+    /// `true`), but its access semantics differ: the charter rules "THE TREE
+    /// IS THE COMPILATION UNIVERSE; IMPORTS ARE NAMING ONLY", so a native
+    /// module's symbols default **public** and are *not* subject to the M-2
+    /// cross-module import/visibility gates (`use` grants source-visible
+    /// names and nothing else — it is not access control). `false` for every
+    /// ink file, keeping the strict-ink / ink-modules corpus byte-identical.
+    pub filesystem_derived: bool,
 }
 
 /// Map from file to its resolved module. Absent entries (and undeclared
@@ -95,8 +107,11 @@ pub fn merge_manifests_with_modules(
 
     for &(file_id, manifest) in files {
         // Only a *declared* module qualifies identity; undeclared
-        // stem-modules (and files absent from `modules`) hash bare.
-        let resolved = modules.get(&file_id).filter(|m| m.declared);
+        // stem-modules (and files absent from `modules`) hash bare. A
+        // native filesystem-derived module is always `declared` too, so it
+        // qualifies here just like an ink `#@module`.
+        let entry = modules.get(&file_id);
+        let resolved = entry.filter(|m| m.declared);
         let module = ModuleCtx {
             name: resolved.map(|m| m.name.as_str()),
             // M-3 (docs/modules-spec.md §5): the module's old name, if any
@@ -106,6 +121,10 @@ pub fn merge_manifests_with_modules(
             // lookup here sees it regardless of which file in a multi-file
             // module carried the directive.
             was: resolved.and_then(|m| m.was.as_deref()),
+            // B0.10b: a native filesystem-derived module qualifies identity
+            // but defaults its symbols public (charter "imports are naming
+            // only") — see `insert_symbol`'s visibility computation.
+            filesystem_derived: entry.is_some_and(|m| m.filesystem_derived),
         };
         insert_file_symbols(
             &mut index,
@@ -131,6 +150,10 @@ struct ModuleCtx<'a> {
     /// The module's old name from a `#@was` (M-3, docs/modules-spec.md
     /// §5), if any file sharing this module recorded one.
     was: Option<&'a str>,
+    /// `true` when this module is a native filesystem-derived one (B0.10b):
+    /// it qualifies identity like a declared module, but its symbols default
+    /// **public** and are exempt from the M-2 cross-module gates.
+    filesystem_derived: bool,
 }
 
 /// Insert every symbol declared in one file's manifest, qualifying named
@@ -265,8 +288,20 @@ fn insert_symbol(
     // undeclared stem-module defaults public. A `#@private`/`#@public`
     // override flips that; restating the default is a redundant-override
     // warning (`E092`).
+    //
+    // B0.10b exception: a native filesystem-derived module qualifies identity
+    // like a declared module but defaults its symbols **public** — the
+    // charter rules "THE TREE IS THE COMPILATION UNIVERSE; IMPORTS ARE NAMING
+    // ONLY", so native has no private-by-default access control (and no
+    // `#@private`/`#@public` native syntax exists yet — B0.6 judgment call
+    // #5). Keeping native symbols public also keeps `private_defs` (the
+    // codegen/runtime visibility set) empty for a native artifact.
     let declared = module.name.is_some();
-    let (visibility, redundant) = effective_visibility(declared, sym.visibility);
+    let (visibility, redundant) = if module.filesystem_derived {
+        (Visibility::Public, false)
+    } else {
+        effective_visibility(declared, sym.visibility)
+    };
     if redundant {
         diagnostics.push(Diagnostic {
             file,
@@ -539,6 +574,7 @@ mod tests {
                 name: "quest".to_string(),
                 declared: true,
                 was: None,
+                filesystem_derived: false,
             },
         );
         modules.insert(
@@ -547,6 +583,7 @@ mod tests {
                 name: "town".to_string(),
                 declared: true,
                 was: None,
+                filesystem_derived: false,
             },
         );
 
@@ -597,6 +634,7 @@ mod tests {
                     name: "quest".to_string(),
                     declared: true,
                     was: None,
+                    filesystem_derived: false,
                 },
             );
         }
@@ -625,6 +663,7 @@ mod tests {
                 name: "quest".to_string(),
                 declared: true,
                 was: None,
+                filesystem_derived: false,
             },
         );
         // FileId(1) absent from `modules` -> undeclared, hashes bare.
@@ -653,6 +692,7 @@ mod tests {
                 name: "quest".to_string(),
                 declared: true,
                 was: None,
+                filesystem_derived: false,
             },
         );
         modules.insert(
@@ -661,6 +701,7 @@ mod tests {
                 name: "town".to_string(),
                 declared: true,
                 was: None,
+                filesystem_derived: false,
             },
         );
 
@@ -704,6 +745,7 @@ mod tests {
                 name: "story".to_string(),
                 declared: false,
                 was: None,
+                filesystem_derived: false,
             },
         );
         let (with_undeclared, _) =
@@ -768,6 +810,7 @@ mod tests {
                 name: "quest".to_string(),
                 declared: true,
                 was: None,
+                filesystem_derived: false,
             },
         );
         let (qualified, _) =

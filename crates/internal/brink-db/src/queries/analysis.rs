@@ -441,8 +441,8 @@ pub(crate) fn whole_project_diagnostics_query(
 ) -> WholeProjectDiagnostics {
     let opts = project.analysis_options(db);
     let resolved = resolutions_index_query(db, project);
-    let hir_refs: Vec<(FileId, &HirFile)> = project
-        .files(db)
+    let files = project.files(db);
+    let hir_refs: Vec<(FileId, &HirFile)> = files
         .iter()
         .map(|f| (f.file_id(db), &lowered_query(db, *f).hir))
         .collect();
@@ -450,8 +450,22 @@ pub(crate) fn whole_project_diagnostics_query(
     // M-2 module import + visibility checks (docs/modules-spec.md
     // §2/§4/§7), first in diagnostic order (matching
     // `whole_project_diagnostics`'s monolithic composition).
-    let mut diagnostics =
-        brink_analyzer::module_diagnostics(&hir_refs, &resolved.index, &resolved.resolutions);
+    //
+    // B0.10b: a **native** project's modules are filesystem-derived and
+    // access-permeable — the charter rules "THE TREE IS THE COMPILATION
+    // UNIVERSE; IMPORTS ARE NAMING ONLY", so the M-2 cross-module gates
+    // (E025 import-required, E087 private-crossing, E088–E091 import
+    // well-formedness) do not apply: `use` grants source-visible names and
+    // nothing else, it is not access control. Detected as an all-`.brink`
+    // project (mixed ink+native projects are not a supported layout yet);
+    // an all-ink project is byte-identical to the pre-B0.10b behavior.
+    let project_is_native =
+        !files.is_empty() && files.iter().all(|f| super::is_native_path(f.path(db)));
+    let mut diagnostics = if project_is_native {
+        Vec::new()
+    } else {
+        brink_analyzer::module_diagnostics(&hir_refs, &resolved.index, &resolved.resolutions)
+    };
 
     // TM-3 strict typed-mode pass (docs/typed-mode-spec.md §9-step-3),
     // second in diagnostic order. Under `types = strict` + `dialect =
@@ -696,8 +710,12 @@ pub(crate) fn has_errors_in_closure_query(db: &dyn salsa::Database, project: Pro
         return false;
     };
     let files = project.files(db);
-    let graph = super::include_graph_query(db, project);
-    let closure: LookupSet<FileId> = graph.topological_order(entry).into_iter().collect();
+    // B0.10b: a native project's compilation universe is the whole tree, not
+    // `entry`'s INCLUDE closure — so the artifact-gating error check must
+    // cover every native file, matching what codegen actually lowers (see
+    // `super::compilation_order`). Ink is byte-identical (the include closure).
+    let closure: LookupSet<FileId> =
+        super::compilation_order(db, project, entry).into_iter().collect();
     let disable_all = files
         .iter()
         .find(|f| f.file_id(db) == entry)

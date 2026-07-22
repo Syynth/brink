@@ -377,14 +377,22 @@ enum Language {
 /// codebase's existing extension convention (e.g. `brink-lsp`'s `ext ==
 /// "ink"`).
 fn file_language(path: &str) -> Language {
-    if std::path::Path::new(path)
-        .extension()
-        .is_some_and(|ext| ext == "brink")
-    {
+    if is_native_path(path) {
         Language::Native
     } else {
         Language::Ink
     }
+}
+
+/// Whether a source file feeds the native `.brink` frontend, decided purely
+/// from its extension (B0.10a/B0.10b). Shared by [`file_language`] (parser
+/// dispatch), [`module_map_query`] (filesystem-derived module identity), and
+/// the LIR/diagnostics native-project branches (the tree-is-the-universe file
+/// set). Pure and deterministic — no schema change, no `HashMap` iteration.
+pub(crate) fn is_native_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext == "brink")
 }
 
 /// Parsed suppression/expectation directives for one file.
@@ -441,12 +449,33 @@ pub(crate) fn module_map_query(
     let module_inputs: Vec<crate::modules::FileModuleInput> = files
         .iter()
         .map(|f| {
+            let path = f.path(db);
+            // B0.10b: a native `.brink` file's module identity is
+            // **filesystem-derived** (charter NF-3, "path on disk = path in
+            // language"), a project-layer fact the single-file
+            // `lower_native::lower` cannot know (its `HirFile.module` is
+            // always `None` — judgment call #7). Stamp it here, keyed off the
+            // file's stored path (the native discovery walk stores every file
+            // under a root-relative key). Native modules are always
+            // `declared` (they qualify `DefinitionId` identity) and
+            // `filesystem_derived` (public defaults, exempt from the M-2
+            // import gates). Ink files keep reading their own `#@module`.
+            if crate::queries::is_native_path(path) {
+                return crate::modules::FileModuleInput {
+                    file: f.file_id(db),
+                    stem: crate::modules::file_stem(path).to_string(),
+                    declared: Some(crate::modules::native_module_path(path)),
+                    was: None,
+                    filesystem_derived: true,
+                };
+            }
             let hir_module = lowered_query(db, *f).hir.module.as_ref();
             crate::modules::FileModuleInput {
                 file: f.file_id(db),
-                stem: crate::modules::file_stem(f.path(db)).to_string(),
+                stem: crate::modules::file_stem(path).to_string(),
                 declared: hir_module.map(|m| m.name.clone()),
                 was: hir_module.and_then(|m| m.was.as_ref().map(|(old, _)| old.clone())),
+                filesystem_derived: false,
             }
         })
         .collect();
@@ -1341,6 +1370,41 @@ impl PartialEq for LirLowering {
 /// knot chunks that read it pointer-identical. Reads the same
 /// `resolutions_index_query` index the monolithic path's `build_prelude`
 /// does, so its ids/offsets are byte-identical.
+/// The ordered file set that compiles into `entry`'s artifact — the shared
+/// "which files does codegen lower" rule for `struct_shape_data_query`,
+/// `lir_prelude_decls_query`, `lir_lowering_query`, and
+/// `has_errors_in_closure_query`.
+///
+/// **Ink**: `entry`'s transitive `INCLUDE` closure in paste-before order
+/// ([`IncludeGraph::topological_order`], issue #815) — byte-identical to the
+/// pre-B0.10b behavior, so the oracle corpus is untouched.
+///
+/// **Native `.brink`** (B0.10b, charter §13.2: "THE TREE IS THE COMPILATION
+/// UNIVERSE; IMPORTS ARE NAMING ONLY"): **every** project file, in `FileId`
+/// order. Native has no `INCLUDE` machinery, and every file in the tree
+/// compiles and ships — engine-only-reachable modules (an NPC dialogue no
+/// module imports, spawned by the host by absolute path) are first-class, so
+/// the compilation universe is the whole discovered tree, not a reachability
+/// closure from `entry`. `project.files(db)` is maintained in `FileId` order
+/// (see `ProjectDb::set_file`), which the native discovery walk assigns in
+/// sorted-path order — so this order is deterministic.
+pub(crate) fn compilation_order(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    entry: FileId,
+) -> Vec<FileId> {
+    let entry_is_native = project
+        .files(db)
+        .iter()
+        .find(|f| f.file_id(db) == entry)
+        .is_some_and(|f| is_native_path(f.path(db)));
+    if entry_is_native {
+        project.files(db).iter().map(|f| f.file_id(db)).collect()
+    } else {
+        include_graph_query(db, project).topological_order(entry)
+    }
+}
+
 #[salsa::tracked(returns(ref))]
 pub(crate) fn struct_shape_data_query(
     db: &dyn salsa::Database,
@@ -1350,9 +1414,8 @@ pub(crate) fn struct_shape_data_query(
         return brink_ir::lir::StructShapeData::default();
     };
     let files = project.files(db);
-    let graph = include_graph_query(db, project);
     let by_id: LookupMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
-    let topo = graph.topological_order(entry);
+    let topo = compilation_order(db, project, entry);
     let hir_refs: Vec<(FileId, &HirFile)> = topo
         .iter()
         .filter_map(|id| by_id.get(id).map(|f| (*id, &lowered_query(db, *f).hir)))
@@ -1479,8 +1542,7 @@ pub(crate) fn lir_prelude_decls_query(
     };
     let files = project.files(db);
     let by_id: LookupMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
-    let graph = include_graph_query(db, project);
-    let topo = graph.topological_order(entry);
+    let topo = compilation_order(db, project, entry);
     let decl_refs: Vec<(FileId, &HirFile)> = topo
         .iter()
         .filter_map(|id| {
@@ -1656,9 +1718,8 @@ pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput
     // `analysis_diagnostics_query`/`diagnostics_query` below and in
     // `super::diagnostics_query`, which iterate `project.files(db)`
     // directly rather than through this topo order.
-    let graph = include_graph_query(db, project);
     let by_id: LookupMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
-    let topo = graph.topological_order(entry);
+    let topo = compilation_order(db, project, entry);
     let paths: LookupMap<FileId, String> = topo
         .iter()
         .filter_map(|id| by_id.get(id).map(|f| (*id, f.path(db).clone())))
