@@ -9,8 +9,8 @@
 //! `|`).
 
 use crate::SyntaxKind::{
-    self, CONTENT_LINE, DIVERT, EOF, GLUE, GLUE_NODE, HASH, IDENT, INTERPOLATION, L_BRACE, L_PAREN,
-    LABEL, NEWLINE, R_BRACE, R_PAREN, TAG, TAG_LINE, TEXT,
+    self, CONTENT_LINE, DIVERT, DOC_COMMENT_INNER, DOC_COMMENT_OUTER, EOF, GLUE, GLUE_NODE, HASH,
+    IDENT, INTERPOLATION, L_BRACE, L_PAREN, LABEL, NEWLINE, R_BRACE, R_PAREN, TAG, TAG_LINE, TEXT,
 };
 
 use super::Parser;
@@ -119,6 +119,18 @@ pub(crate) fn content_items_until(p: &mut Parser<'_, '_>, stop: &[SyntaxKind]) {
             // updated to break on `DIVERT` too, so it hands control back
             // here rather than swallowing the arrow as text).
             DIVERT => super::divert::divert_in_content(p),
+            // B0.6b: a doc-comment token (`///` / `//!`) that reaches the
+            // content scanner is, by construction, not in an attachment
+            // position — a leading `///` is consumed by `block::item` before
+            // dispatch, and an inner `//!` by `braced_item_list` right after
+            // its `{`. Anything left over (a `//!` after real content, or
+            // either form appearing after prose on the same line) is bumped
+            // BARE here — no `TEXT` node — so it stays invisible narrative,
+            // matching the trivia-fallback the unattached-`///` path already
+            // gives (`doc_comment.rs`). Content lowering iterates node
+            // children only, so a bare token produces no visible output. The
+            // invariant: a doc-comment token must NEVER become story prose.
+            DOC_COMMENT_OUTER | DOC_COMMENT_INNER => p.bump(),
             _ => text_run_until(p, stop),
         }
     }
@@ -168,19 +180,30 @@ fn glue_node(p: &mut Parser<'_, '_>) {
 }
 
 /// A run of literal text: every raw token up to the next breaking
-/// construct (`{`, `<>`, `->` (N-1), a caller-supplied stop kind, or EOF),
-/// including any interior whitespace/comments — those are literal prose
-/// here, not trivia to discard. `HASH`/`DIVERT` always break a text run
-/// (tags and diverts are recognized structurally by every caller), even if
-/// the caller didn't ask for it — mirrors `content_items_until`'s own
-/// unconditional-break agreement for `HASH`; without this, a `->` reached
-/// mid-run would get bumped as literal text before the outer loop ever saw
-/// it, and its `DIVERT` match arm would be dead code.
+/// construct (`{`, `<>`, `->` (N-1), a doc-comment token (B0.6b), a
+/// caller-supplied stop kind, or EOF), including any interior
+/// whitespace/plain-comments — those are literal prose here, not trivia to
+/// discard. `HASH`/`DIVERT`/doc-comment tokens always break a text run
+/// (tags and diverts are recognized structurally by every caller; a
+/// doc-comment token must never fold into visible prose), even if the
+/// caller didn't ask for it — mirrors `content_items_until`'s own
+/// unconditional-break agreement for `HASH`; without this, a `->` (or a
+/// stray `//!`) reached mid-run would get bumped as literal text before the
+/// outer loop ever saw it, and its dedicated match arm there would be dead
+/// code.
 fn text_run_until(p: &mut Parser<'_, '_>, stop: &[SyntaxKind]) {
     p.start_node(TEXT);
     loop {
         let k = p.nth_raw(0);
-        if k == EOF || k == L_BRACE || k == GLUE || k == HASH || k == DIVERT || stop.contains(&k) {
+        if k == EOF
+            || k == L_BRACE
+            || k == GLUE
+            || k == HASH
+            || k == DIVERT
+            || k == DOC_COMMENT_OUTER
+            || k == DOC_COMMENT_INNER
+            || stop.contains(&k)
+        {
             break;
         }
         p.bump();

@@ -662,9 +662,12 @@ fn inner_doc_tolerates_leading_blank_lines() {
 fn inner_doc_after_real_content_does_not_attach_to_block() {
     // Only a `//!` run that is the body's very first REAL content
     // attaches (B0.6b judgment call) — one preceded by an actual content
-    // line has no "start of body" to attach to; it falls through to
-    // ordinary body-item/prose dispatch instead (folded into `TEXT`, same
-    // as any other unrecognized token mid-line).
+    // line has no "start of body" to attach to. But it must NOT fall
+    // through into visible narrative either: a doc-comment token is bumped
+    // BARE by the content scanner (`content.rs`), never folded into a
+    // `TEXT` node, so it stays invisible — the trivia-fallback the
+    // unattached-`///` path already gives. The invariant this guards: a
+    // doc-comment token must never become story prose.
     let src = "flow greet() {\nHi!\n//! not attached\n}\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
@@ -672,6 +675,13 @@ fn inner_doc_after_real_content_does_not_attach_to_block() {
     let body = flow.body().expect("body block");
     assert!(body.doc().is_none());
     assert!(!has_node_kind(body.syntax(), SyntaxKind::DOC_COMMENT));
+    // The `//!` text must not leak into any visible `TEXT` run.
+    let leaked = body
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::TEXT)
+        .any(|n| n.text().to_string().contains("not attached"));
+    assert!(!leaked, "doc-comment token folded into visible TEXT");
 }
 
 #[test]
