@@ -8,6 +8,14 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Lexer and error-resilient CST for the .brink native surface (B0.5 grammar skeleton)"
+# Unpublished while the native surface is still churning (decision 2026-07-22).
+# This crate is new, moves fast, and nothing outside the workspace consumes it.
+# It also blocked ALL crate releases for two days: crates.io Trusted Publishing
+# tokens cannot *create* a crate, only publish new versions of an existing one,
+# so release-plz aborted the whole workspace release on it (#1232). Revisit when
+# the native frontend stabilizes — flipping this back on requires a maintainer to
+# run `cargo publish -p brink-syntax-native` once by hand first.
+publish = false
 
 [dependencies]
 rowan.workspace = true

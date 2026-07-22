@@ -1437,3 +1437,30 @@ fn single_sleep(app: &mut App) -> SleepState {
     assert_eq!(sleeps.len(), 1, "expected exactly one FlowSleep policy");
     sleeps[0]
 }
+
+/// `FlowSleep` must be inspector-visible **as a component** on the flow entity
+/// (module docs, `sleep.rs:112,142`): `#[derive(Reflect)]` alone only
+/// registers the type's shape — it does not attach the `ReflectComponent`
+/// type data that entity inspectors (e.g. `bevy-inspector-egui`) need to
+/// enumerate/edit a component on an entity. That type data comes only from
+/// the `#[reflect(Component)]` attribute alongside the derive.
+///
+/// Checked directly via [`GetTypeRegistration`] rather than through an `App`'s
+/// auto-derived registry: this crate builds `bevy_reflect`/`bevy_ecs` with
+/// `default-features = false` (no `auto_register_inventory`), so nothing gets
+/// into `AppTypeRegistry` without an explicit `register_type` call regardless
+/// of `#[reflect(Component)]` — that gap is a separate, out-of-scope concern
+/// from this finding. This test isolates exactly what the attribute produces.
+#[test]
+fn flow_sleep_reflects_as_component() {
+    use bevy_reflect::GetTypeRegistration as _;
+
+    let registration = FlowSleep::<()>::get_type_registration();
+    assert!(
+        registration
+            .data::<bevy_ecs::reflect::ReflectComponent>()
+            .is_some(),
+        "FlowSleep<()> is missing ReflectComponent type data — inspectors cannot see it as a \
+         component on the flow entity; add `#[reflect(Component)]` alongside `#[derive(Component, Reflect)]`"
+    );
+}

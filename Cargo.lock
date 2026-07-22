@@ -2136,6 +2136,7 @@ dependencies = [
  "brink-format",
  "brink-ir",
  "brink-syntax",
+ "brink-syntax-native",
  "rowan",
  "salsa",
  "thiserror 2.0.18",
