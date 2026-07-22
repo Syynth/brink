@@ -97,35 +97,41 @@ return flavors.
 
 ## 3. Effects — the behavior signature
 
-**[REFACTOR]** A block's meaning is its inferred effect signature, layered
-on the **existing** effect machinery (`effects-spec.md`'s rows + the
-bevy-brink binding effects: pure / command / world-query, plus the
-fn-color axis). We do **not** spawn a parallel effect system; we add rows
-to the one that exists. The rows this model needs:
+**[REFACTOR — reconciled with `effects-spec.md` §14, 2026-07-21.]** A
+block's meaning is its inferred effect signature, and that signature is the
+**one canonical effect row** ruled in `effects-spec.md` — *not* a new
+parallel lattice. An earlier draft of this section listed
+`Emit / Transfer / Suspend / World / Impure` as if they were a fresh effect
+system; that over-unified and conflicted with the shipped row. The correct
+mapping onto the ruled row:
 
-- **Emit** — appends to the transcript. **[REFACTOR]** Prose emission
-  exists but is not effect-*tracked*; making "does this block emit" an
-  inferred effect (so a content line interlaced in a *code* block is
-  visible to the checker) is the reshape.
-- **Transfer** — control leaves via a divert/return/end (the `!` tail).
-  **[NEW]** as a tracked effect, though the underlying control flow is
-  substrate.
-- **Suspend(rung)** — parks for resumption; see §4. **[REFACTOR]** await
-  suspension is designed (`flow-suspension-spec` §3); choice/turn parks
-  become the same effect at other rungs.
-- **Impure(sequence)** — **RULED (sitting), corrected by scoping:** the ink
-  sequence / alternative family (cycles, shuffles, once-only, `{a|b|c}`)
-  carries an **impurity effect** (stateful selection advances a hidden
-  cursor). But that effect is **additive annotation only** — the structural
-  `SequenceType` (which selection discipline) survives to LIR `ContainerKind`
-  and drives the cycle/shuffle/once bytecode, so it persists as **side-data
-  on `Block`**, *not* erased into the effect. "Sequence is just an effect"
-  was aspirational; the honest statement is "a block with a sequence
-  structural-kind **and** an impurity effect row." Full structural reduction
-  is the north star (§3a, #1213).
-- **World** — the existing pure/command/world-query binding effects.
-  **[SUBSTRATE]**, reused unchanged.
-- **Pure** — the absence of all of the above. **[SUBSTRATE]** concept.
+- **Emit** → the row's existing `emits` dimension. **[REFACTOR]** Prose
+  emission exists but making "does this block emit" an *inferred* row
+  dimension (so content interlaced in a code block is visible to the
+  checker) is the wiring.
+- **Suspend(rung)** → **folds into the row** as the new `suspend(rung)`
+  dimension (`effects-spec.md` §14.2). Suspension "color" is not a separate
+  system — it *is* this dimension; the no-call-up-the-ladder rule (§4, §7)
+  is an inferred check over it.
+- **World** → the row's existing `calls` (external bindings); the
+  read/command granularity stays host-side (`CapabilityEffects`), by the
+  deliberate compiler↔bevy independence. **[SUBSTRATE]**.
+- **Transfer** → **NOT a row effect.** General control-transfer (a plain
+  divert) is *structural* — the block's `tail` (§2), enforced by the
+  no-lateral-divert rule (§7.1). Only the terminal `-> END/DONE` case is a
+  candidate row dimension (`terminates`, provisional — `effects-spec.md`
+  §14.2), for structured-concurrency lifetime.
+- **Impure(sequence)** → **OUT of the row** (`effects-spec.md` §14.3 / §10
+  NS-A6 posture: the visit cursor is an unmodeled read, flow-local, never
+  in a fusion callback). Separately and unchanged: the structural
+  `SequenceType` (which selection discipline) survives to LIR
+  `ContainerKind` and drives codegen, so it persists as **side-data on
+  `Block`** — that is a *structural-kind* fact (§10 row r), independent of
+  effects. Full structural reduction is the north star (§3a, #1213).
+- **Pure** = the empty *effect axis*; `reads` are the **dependency axis**
+  (the wake-map's set, a coeffect), and do not make a block impure
+  (`effects-spec.md` §14.4). Fusion uses the reads-OK (weak, E105)
+  purity predicate.
 
 Interpolation is not a distinct construct: it is a block whose tail is a
 `Value` and whose position is content — the checker stringifies-and-emits
@@ -372,7 +378,7 @@ synchronous per §4 — coloring is unaffected.)
 | i | FrameShapes section + per-site liveness analysis | SUBSTRATE | FS-3c, already landed |
 | j | Evolve the **existing** shared `Block` in place: add `tail` + structural-kind side-data + effect sig (the shared `Block` already exists — §2) | REFACTOR | no crate move; oracle-firewall at LIR `ContainerKind`; reshapes B0.6/B0.7, tests survive |
 | k | Brace disambiguation: parse-time heuristic → type-time effect decision | REFACTOR | dissolves G-2; parser stops guessing |
-| l | Effect system: add Emit/Transfer/Suspend/sequence-Impure rows | REFACTOR | extend, do not fork |
+| l | Wire the canonical effect row to native HIR; add `suspend(rung)` + provisional `terminates` dimensions; build §6.1 row-poly | REFACTOR | extend the ruled `effects-spec.md` row (§14), do not fork; Transfer=tail, seq-impurity out |
 | m | Value-return made explicit & typed; flows may declare return types | REFACTOR | the mechanism (d) is substrate |
 | n | Suspension: generalize await-only → the await/choice/turn ladder | REFACTOR | choice/turn parks under the FlowFrame umbrella |
 | o | Value-returning flows / coroutine-vs-state + return-type toggle | NEW | §5 |

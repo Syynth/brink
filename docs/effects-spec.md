@@ -410,3 +410,99 @@ The ruled semantics (serial host stepping = immediate write
 visibility; batch scheduling = frame-start consistency, §12.4) get a
 book section with the host implementation. Documentation deliverable
 only.
+
+
+## 14. Native-surface amendment — the row is the unified effect signature (AMENDED 2026-07-21)
+
+Ruled in the block/effect/coroutine design sitting (see
+`docs/block-effect-model.md` and the decision-log entry of this date).
+This **extends §2's row model** — it does not replace it. It deliberately
+reopens the "row dimensions" question that the §10 tail marked closed;
+the maintainer ruled the reopening. Everything in §1–§13 stands.
+
+### 14.1 The row is THE canonical effect signature — RULED
+
+Every consumer queries **one** row: the host scheduler (§12), the wake-map
+(§13), the type/coloring checker (`block-effect-model.md`), iterator
+fusion, and consumers **not yet identified**. The row is expected to
+**grow dimensions** as consumers appear — one home, not parallel
+per-consumer effect systems. This is an explicit reversal of the working
+assumption (held briefly during the sitting) that suspension "color" and
+control-flow "tail" were sibling systems alongside the row: **color folds
+into the row as a dimension; tail stays structural** (below).
+
+### 14.2 Two new dimensions
+
+- **`suspend(rung)`** — whether a definition can park, and at which rung
+  (await / choice / turn), per the `flow-suspension-spec.md` ladder. This
+  **folds the suspension "color" into the row**: the coloring rule "a
+  definition may not call one whose outermost suspension rung exceeds its
+  own" is an **inferred check over this dimension**, not an author
+  annotation. (See the §11 reconciliation note, 14.5.)
+- **`terminates`** — *PROVISIONAL* — whether control can leave via
+  `-> END` / `-> DONE`. Sibling to `faults` (abnormal exit); the
+  identified consumer is structured-concurrency lifetime (a supervisor
+  knowing a child flow can finish). Marked provisional pending a confirmed
+  consumer beyond lifetime; include-by-default is cheap and reversible.
+
+Both are **inferred** by the same per-SCC fixpoint as every other
+dimension, and both ride the `Ty::Fn` row and the shipped
+`DefinitionId → row` table. Format: new extension-flag bits in the
+`DirectEffects` block (§11 reserved bits 3–7; these graduate two of them
+via the next section-version bump, same reservation discipline).
+
+### 14.3 What stays OUT of the row — on the merits, not by omission
+
+- **General control-transfer (a plain divert)** is **structural — the
+  block's `tail`** (`block-effect-model.md`), enforced by the
+  no-lateral-divert-from-a-value-flow rule. A divert's *data* effects are
+  already absorbed transitively (the row walks through diverts); a plain
+  divert adds nothing a scheduler needs. Only the terminal `-> END/DONE`
+  case (lifetime) is a candidate dimension (`terminates`), never general
+  divert.
+- **Sequence-impurity** (the implicit cycle/once/shuffle cursor) stays out
+  per the §10 / NS-A6 ruled posture: visit-index is a *read* the rows do
+  not model; it is flow-local (no cross-flow scheduling relevance) and
+  never appears in a fusion callback. No consumer is served by a distinct
+  label.
+
+### 14.4 Reads are the dependency axis, not an effect — RESTATED
+
+Reaffirming what §1 and §13 already rely on: `reads` is the wake-map's
+**dependency set** (a coeffect / input); it does **not** make a
+definition impure. The two ruled purity predicates both stand and are for
+different jobs — strong `@[effects(pure)]` (reads-free, the tooling-trust
+bound, §10) and the weak **E105 wake-gate** (reads-OK, §13). **Iterator
+fusion uses the weak predicate** (a fold may read a stable global; only
+writes / calls / emits / suspend defeat fusion).
+
+### 14.5 Reconciliation notes — FOR MAINTAINER REVIEW
+
+1. **§11 "no function coloring."** The `suspend(rung)` dimension plus the
+   no-call-up-the-ladder check are coloring-*shaped*. We hold this
+   consistent with §11: the dimension is **inferred like every other row
+   dimension** (never author-written), and the check is a purity-style
+   inferred constraint — there is no author-facing coloring syntax and no
+   viral annotation. §11's intent (interior effects inferred, always; no
+   author coloring surface) is preserved. **Confirm the framing.**
+2. **`await` posture gap.** §13.1 records a language-level `await` as a
+   *future direction, not v1* (reactive sleep is host-driven), while
+   `flow-suspension-spec.md` §3 rules `await` as statement-position
+   syntax. Folding `suspend(rung)` into the row leans on the suspension
+   model. This is a **pre-existing posture difference between two ruled
+   specs**, surfaced here, **not resolved** in this amendment — it needs
+   an explicit reconciliation of its own.
+
+### 14.6 Build posture
+
+- **§6.1 shallow row-polymorphism is IN-SCOPE, not deferred.** Without it,
+  every call through a fn-value is opaque/pessimal, which makes the row
+  useless across the native code dialect's higher-order core (lambdas,
+  fn-value iteration) — precise only for first-order code. It builds as
+  part of the effect-system work (tractable: substitution over
+  creation-fixed rows, riding the SCC fixpoint), off the "author a scene"
+  critical path but not deferred.
+- The shipped core (set-based row, per-SCC fixpoint, `EffectRows` wire
+  format, `@[effects(…)]` assertions) is reused unchanged; this amendment
+  ADDS the two dimensions and the "one canonical signature" framing, and
+  wires row inference to the native-lowered HIR.
