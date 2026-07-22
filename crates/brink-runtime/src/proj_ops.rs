@@ -27,6 +27,7 @@
 //! rehydration" — the same rule applies at ordinary read/write time, not
 //! just rehydration).
 
+use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;
 
