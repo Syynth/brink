@@ -257,6 +257,57 @@ jobs:
         with:
           command: check
 
+  # Publishability pre-flight (#1232). crates.io Trusted Publishing tokens can
+  # publish a new VERSION of an existing crate but CANNOT CREATE one — the first
+  # publish of any new crate must be done by hand. When `brink-syntax-native`
+  # landed as a publishable crate that had never been on crates.io, release-plz
+  # aborted the ENTIRE workspace release on it, and every crate release silently
+  # failed for two days (18 consecutive runs) before anyone noticed — `npm-release`
+  # kept succeeding, so nothing looked broken.
+  #
+  # This job makes that failure loud and immediate, on the PR that introduces the
+  # crate rather than on main after the fact. It checks every workspace member
+  # that is publishable (`publish` unset/true) and fails if crates.io has never
+  # heard of it.
+  publishable:
+    name: Publishable crates exist on crates.io
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Check each publishable crate is known to crates.io
+        run: |
+          set -euo pipefail
+          # `cargo metadata` reports `publish: null` for unrestricted (the
+          # workspace default) and `publish: []` for `publish = false`.
+          crates=$(cargo metadata --format-version 1 --no-deps \
+            | jq -r '.packages[] | select(.publish == null) | .name' | sort)
+          echo "Publishable workspace crates:"; echo "$crates" | sed 's/^/  - /'
+          missing=""
+          for crate in $crates; do
+            # crates.io requires a descriptive User-Agent; anonymous curl is refused.
+            code=$(curl -sS -o /dev/null -w '%{http_code}' \
+              -A "brink-ci (https://github.com/Syynth/brink)" \
+              "https://crates.io/api/v1/crates/${crate}")
+            case "$code" in
+              200) echo "ok: ${crate}" ;;
+              404) echo "MISSING: ${crate}"; missing="${missing} ${crate}" ;;
+              # Don't fail the build on a flaky registry or a rate limit — this
+              # guard exists to catch a new crate, not to gate on crates.io uptime.
+              *)   echo "::warning::${crate}: unexpected status ${code} from crates.io; skipping" ;;
+            esac
+            sleep 1
+          done
+          if [ -n "${missing}" ]; then
+            echo "::error::These crates are publishable but have never been published to crates.io:${missing}"
+            echo "::error::crates.io Trusted Publishing CANNOT create a new crate, so release-plz will abort the whole workspace release."
+            echo "::error::Fix by EITHER setting 'publish = false' in the crate's Cargo.toml, OR having a maintainer run 'cargo publish -p <crate>' once by hand."
+            exit 1
+          fi
+
   # Bounded fuzz smoke runs (#672 workstream C) — not continuous fuzzing
   # campaigns. Each target gets a fresh ephemeral corpus dir (uncommitted;
   # new finds land there, never in the committed seed corpus under
