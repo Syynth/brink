@@ -126,7 +126,8 @@ pub(crate) fn index_set(flow: &mut Flow) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-/// `CollectionLen`: `[container]` → `Int(len)`. Array or map.
+/// `CollectionLen`: `[container]` → `Int(len)`. Array, map, range, or
+/// string.
 pub(crate) fn collection_len(flow: &mut Flow) -> Result<(), RuntimeError> {
     let container = flow.pop_value()?;
     #[expect(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
@@ -138,6 +139,13 @@ pub(crate) fn collection_len(flow: &mut Flow) -> Result<(), RuntimeError> {
         // long exceeds the VM step limit regardless; `rand::int` uses the
         // exact i64 length internally, never this op).
         Value::Range { .. } => container.range_len().unwrap_or(0).min(i64::from(i32::MAX)) as i32,
+        // Strings (#1171): char count, i.e. Unicode scalar values via
+        // `str::chars`, never UTF-8 byte length. Matches every other
+        // string-indexing op in this runtime — `char_at` and `find`
+        // (`string_ops.rs`) both count USVs, per the ruled "author sanity"
+        // posture (`docs/stdlib-spec.md`, issue #857) and the verb table's
+        // `len(… | string): int` = char count.
+        Value::String(s) => s.chars().count() as i32,
         other => return Err(RuntimeError::NotIndexable(type_name(other))),
     };
     flow.value_stack.push(Value::Int(len));
@@ -1321,6 +1329,38 @@ mod tests {
         };
         assert_eq!(m.len(), 2);
         assert_eq!(m.get(&MapKey::Str(Arc::from("b"))), Some(&Value::Int(2)));
+    }
+
+    // ── CollectionLen: string arm (issue #1171) ───────────────────────────
+
+    #[test]
+    fn collection_len_string_counts_chars_not_bytes() {
+        // "café" is 4 USVs but 5 UTF-8 bytes — proves the char-count
+        // semantics, not `str::len`.
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![Value::from("café")]);
+        collection_len(&mut flow).unwrap();
+        let result = flow.pop_value().unwrap();
+        assert_eq!(result, Value::Int(4));
+    }
+
+    #[test]
+    fn collection_len_string_ascii() {
+        // {len("cider")} — the issue's minimal repro.
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![Value::from("cider")]);
+        collection_len(&mut flow).unwrap();
+        let result = flow.pop_value().unwrap();
+        assert_eq!(result, Value::Int(5));
+    }
+
+    #[test]
+    fn collection_len_empty_string_is_zero() {
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![Value::from("")]);
+        collection_len(&mut flow).unwrap();
+        let result = flow.pop_value().unwrap();
+        assert_eq!(result, Value::Int(0));
     }
 
     // ── IndexSet: map[newKey] = value inserts (issue #856, ruled 2026-07-15) ──
