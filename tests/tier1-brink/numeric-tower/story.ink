@@ -24,4 +24,8 @@ col {m.y_axis}.
 transformed {m * vec2(1.0, 0.0)}.
 same {a == vec3(1.0, 2.0, 3.0)}, different {a == b}.
 {v == vec2(3.0, 4.0): int lanes promoted.}
+~ temp m2 = mat2(vec2(0.0, 1.0), vec2(-1.0, 0.0))
+composed {m * m2}.
+mat scaled {m * 2.0} and {m * 3}.
+divided {a / 2.0} and {v / 2}.
 -> END

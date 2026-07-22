@@ -681,14 +681,21 @@ pub(crate) fn is_tower(v: &Value) -> bool {
 ///   matching ink's int→float coercion);
 /// - `mat * vec` **transforms** (matching sizes);
 /// - `quat * quat` **composes**; `quat * vec3` **rotates**;
+/// - `mat * mat` **composes** (matching sizes) — F31 partial-b, issue #1145;
+/// - `mat * scalar` **scales** (ints promote, one direction only — see the
+///   arm's own comment) — F31 partial-b, issue #1145;
+/// - `vec / scalar` **scales down** (ints promote, one direction only, IEEE
+///   division so a zero divisor yields `inf`/`nan` lanes rather than a
+///   fault) — F31 partial-b, issue #1145;
 /// - `==`/`!=` on same-kind pairs — componentwise IEEE (T4), delegated to
 ///   `Value`'s `PartialEq`.
 ///
-/// Everything else — ordering ops (T4: the tower is NOT orderable),
-/// division, modulo, logic, cross-kind pairs, tower-vs-scalar equality, and
-/// the un-ruled matrix±matrix / matrix*matrix / matrix-scale forms — is a
-/// turn-terminating `TypeError` fault: the ruled table is the whole
-/// surface; nothing is invented beyond it.
+/// Everything else — ordering ops (T4: the tower is NOT orderable), `vec /
+/// vec`, `mat / *`, `quat * scalar`, modulo, logic, cross-kind pairs,
+/// tower-vs-scalar equality, and the still-un-ruled matrix±matrix form — is a
+/// turn-terminating `TypeError` fault: the ruled table is the whole surface;
+/// nothing is invented beyond it (F31's explicit "every other glam-native
+/// form keeps faulting" clause).
 fn tower_binary_op(op: BinaryOp, left: &Value, right: &Value) -> Result<Value, RuntimeError> {
     use BinaryOp as B;
     // Same-kind structural equality first (componentwise IEEE, T4).
@@ -740,6 +747,14 @@ fn tower_binary_op(op: BinaryOp, left: &Value, right: &Value) -> Result<Value, R
         (B::Multiply, Value::Mat2(m), Value::Vec2(v)) => Ok(Value::Vec2(*m * *v)),
         (B::Multiply, Value::Mat3(m), Value::Vec3(v)) => Ok(Value::Vec3(*m * *v)),
         (B::Multiply, Value::Mat4(m), Value::Vec4(v)) => Ok(Value::Vec4(*m * *v)),
+        // Matrix composition (F31 partial-b, issue #1145): `mat * mat` of
+        // matching size, delegated to glam's own `Mul<Mat*> for Mat*` (which
+        // is composition, not componentwise — matrices don't get the
+        // componentwise `*` vecN/quat have above). Placed before the
+        // catch-all scalar-scale arms below so it isn't shadowed by them.
+        (B::Multiply, Value::Mat2(a), Value::Mat2(b)) => Ok(Value::Mat2(*a * *b)),
+        (B::Multiply, Value::Mat3(a), Value::Mat3(b)) => Ok(Value::Mat3(*a * *b)),
+        (B::Multiply, Value::Mat4(a), Value::Mat4(b)) => Ok(Value::Mat4(*a * *b)),
         // Scalar scale, both orders.
         (B::Multiply, Value::Vec2(a), s) => match scalar(s) {
             Some(f) => Ok(Value::Vec2(*a * f)),
@@ -763,6 +778,46 @@ fn tower_binary_op(op: BinaryOp, left: &Value, right: &Value) -> Result<Value, R
         },
         (B::Multiply, s, Value::Vec4(a)) => match scalar(s) {
             Some(f) => Ok(Value::Vec4(f * *a)),
+            None => fault(),
+        },
+        // Matrix scale (F31 partial-b, issue #1145): `mat * scalar` only —
+        // F31's row is named one direction (unlike the vecN row above, which
+        // the T3 "wholesale" ruling explicitly documents both orders for);
+        // the commuted `scalar * mat` form is left faulting rather than
+        // guessed at, even though glam itself defines it (`Mul<Mat4> for
+        // f32`) — not asked for by the ruling, so not added here. Int
+        // operands promote via the same `scalar` closure used above (ink's
+        // int→float coercion).
+        (B::Multiply, Value::Mat2(m), s) => match scalar(s) {
+            Some(f) => Ok(Value::Mat2(*m * f)),
+            None => fault(),
+        },
+        (B::Multiply, Value::Mat3(m), s) => match scalar(s) {
+            Some(f) => Ok(Value::Mat3(*m * f)),
+            None => fault(),
+        },
+        (B::Multiply, Value::Mat4(m), s) => match scalar(s) {
+            Some(f) => Ok(Value::Mat4(*m * f)),
+            None => fault(),
+        },
+        // Vector scale-down (F31 partial-b, issue #1145): `vec / scalar`
+        // only — no `scalar / vec` (not asked for; glam itself doesn't treat
+        // that as the same operation shape), no `vec / vec` (stays faulting
+        // per F31's explicit list). IEEE float division, NOT a
+        // `RuntimeError::DivisionByZero` fault: a zero divisor produces
+        // `inf`/`nan` lanes and flows, exactly like the scalar `Divide` arm
+        // in `float_op` above (T4's NaN-totality) — division by the tower's
+        // zero vector/matrix stays unruled and faults via the catch-all.
+        (B::Divide, Value::Vec2(a), s) => match scalar(s) {
+            Some(f) => Ok(Value::Vec2(*a / f)),
+            None => fault(),
+        },
+        (B::Divide, Value::Vec3(a), s) => match scalar(s) {
+            Some(f) => Ok(Value::Vec3(*a / f)),
+            None => fault(),
+        },
+        (B::Divide, Value::Vec4(a), s) => match scalar(s) {
+            Some(f) => Ok(Value::Vec4(*a / f)),
             None => fault(),
         },
         _ => fault(),
@@ -2493,7 +2548,7 @@ mod tower_tests {
     use super::*;
     use crate::program::{LinkedContainer, Program};
     use brink_format::{DefinitionId, DefinitionTag};
-    use glam::{Mat2, Mat3, Quat, Vec2, Vec3};
+    use glam::{Mat2, Mat3, Mat4, Quat, Vec2, Vec3, Vec4};
     use std::collections::HashMap;
 
     fn dummy_program() -> Program {
@@ -2538,6 +2593,10 @@ mod tower_tests {
 
     fn v3(x: f32, y: f32, z: f32) -> Value {
         Value::Vec3(Vec3::new(x, y, z))
+    }
+
+    fn v4(x: f32, y: f32, z: f32, w: f32) -> Value {
+        Value::Vec4(Vec4::new(x, y, z, w))
     }
 
     // ── T3: the ruled operator table, semantics per glam ─────────────
@@ -2594,15 +2653,36 @@ mod tower_tests {
     #[test]
     fn unruled_tower_ops_fault_not_coerce() {
         let p = dummy_program();
-        // Cross-size arithmetic, division, ordering, mat*mat: all faults.
+        // Cross-size arithmetic, ordering, and every glam-native form F31
+        // (issue #1145) did NOT rule in still fault — only `mat * mat`,
+        // `mat * scalar` (one direction), and `vec / scalar` (one direction)
+        // became implemented rows; `mat ± mat`, `quat * scalar`, `vec /
+        // vec`, `scalar / vec`, and `scalar * mat` are deliberately still
+        // unruled.
         for (op, l, r) in [
             (BinaryOp::Add, v2(1.0, 2.0), v3(1.0, 2.0, 3.0)),
-            (BinaryOp::Divide, v2(1.0, 2.0), Value::Float(2.0)),
+            (BinaryOp::Divide, v2(1.0, 2.0), v2(1.0, 2.0)),
+            (BinaryOp::Divide, Value::Float(2.0), v2(1.0, 2.0)),
             (BinaryOp::Less, v2(1.0, 2.0), v2(3.0, 4.0)),
             (BinaryOp::Greater, v3(1.0, 2.0, 3.0), v3(1.0, 2.0, 3.0)),
             (
-                BinaryOp::Multiply,
+                BinaryOp::Add,
                 Value::Mat3(Mat3::IDENTITY),
+                Value::Mat3(Mat3::IDENTITY),
+            ),
+            (
+                BinaryOp::Subtract,
+                Value::Mat3(Mat3::IDENTITY),
+                Value::Mat3(Mat3::IDENTITY),
+            ),
+            (
+                BinaryOp::Multiply,
+                Value::Quat(Quat::IDENTITY),
+                Value::Float(2.0),
+            ),
+            (
+                BinaryOp::Multiply,
+                Value::Float(2.0),
                 Value::Mat3(Mat3::IDENTITY),
             ),
             (BinaryOp::Add, v2(1.0, 2.0), Value::Float(1.0)),
@@ -2610,6 +2690,142 @@ mod tower_tests {
             let err = binary_op(op, &l, &r, &p).unwrap_err();
             assert!(matches!(err, RuntimeError::TypeError(_)), "{op:?}: {err:?}");
         }
+    }
+
+    // ── F31 partial-b (issue #1145): the three newly-implemented rows ──
+
+    #[test]
+    fn mat_mat_composes() {
+        let p = dummy_program();
+        let a2 = Mat2::from_cols(Vec2::new(0.0, 1.0), Vec2::new(-1.0, 0.0));
+        let b2 = Mat2::from_cols(Vec2::new(2.0, 0.0), Vec2::new(0.0, 2.0));
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat2(a2), &Value::Mat2(b2), &p).unwrap(),
+            Value::Mat2(a2 * b2)
+        );
+
+        let a3 = Mat3::from_cols(
+            Vec3::new(1.0, 2.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        );
+        let b3 = Mat3::IDENTITY;
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat3(a3), &Value::Mat3(b3), &p).unwrap(),
+            Value::Mat3(a3 * b3)
+        );
+
+        let a4 = Mat4::from_cols(
+            Vec4::new(1.0, 0.0, 0.0, 0.0),
+            Vec4::new(0.0, 2.0, 0.0, 0.0),
+            Vec4::new(0.0, 0.0, 3.0, 0.0),
+            Vec4::new(0.0, 0.0, 0.0, 1.0),
+        );
+        let b4 = Mat4::IDENTITY;
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat4(a4), &Value::Mat4(b4), &p).unwrap(),
+            Value::Mat4(a4 * b4)
+        );
+    }
+
+    #[test]
+    fn mat_scalar_scales_one_direction_with_int_promotion() {
+        let p = dummy_program();
+        let m = Mat2::from_cols(Vec2::new(1.0, 2.0), Vec2::new(3.0, 4.0));
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat2(m), &Value::Float(2.0), &p).unwrap(),
+            Value::Mat2(m * 2.0)
+        );
+        // int operand promotes like ink's int->float coercion.
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat2(m), &Value::Int(3), &p).unwrap(),
+            Value::Mat2(m * 3.0)
+        );
+        // `Mul<f32>` is a separate glam impl per matrix type — exercise
+        // Mat3 and Mat4 too, since they share no code path with Mat2's arm.
+        let m3 = Mat3::from_cols(
+            Vec3::new(1.0, 2.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        );
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat3(m3), &Value::Float(3.0), &p).unwrap(),
+            Value::Mat3(m3 * 3.0)
+        );
+        let m4 = Mat4::from_cols(
+            Vec4::new(1.0, 0.0, 0.0, 0.0),
+            Vec4::new(0.0, 2.0, 0.0, 0.0),
+            Vec4::new(0.0, 0.0, 3.0, 0.0),
+            Vec4::new(0.0, 0.0, 0.0, 1.0),
+        );
+        // int operand promotes like ink's int->float coercion.
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat4(m4), &Value::Int(2), &p).unwrap(),
+            Value::Mat4(m4 * 2.0)
+        );
+        // F31 named only "mat * scalar" — the commuted `scalar * mat` form
+        // (which glam itself defines) is deliberately not added here; still
+        // faults.
+        let err =
+            binary_op(BinaryOp::Multiply, &Value::Float(2.0), &Value::Mat2(m), &p).unwrap_err();
+        assert!(matches!(err, RuntimeError::TypeError(_)));
+    }
+
+    #[test]
+    fn vec_scalar_divides_one_direction_with_int_promotion() {
+        let p = dummy_program();
+        assert_eq!(
+            binary_op(BinaryOp::Divide, &v2(4.0, 8.0), &Value::Float(2.0), &p).unwrap(),
+            v2(2.0, 4.0)
+        );
+        // int operand promotes like ink's int->float coercion.
+        assert_eq!(
+            binary_op(BinaryOp::Divide, &v2(4.0, 8.0), &Value::Int(2), &p).unwrap(),
+            v2(2.0, 4.0)
+        );
+        assert_eq!(
+            binary_op(
+                BinaryOp::Divide,
+                &v3(4.0, 8.0, 12.0),
+                &Value::Float(4.0),
+                &p
+            )
+            .unwrap(),
+            v3(1.0, 2.0, 3.0)
+        );
+        assert_eq!(
+            binary_op(
+                BinaryOp::Divide,
+                &v4(4.0, 8.0, 12.0, 16.0),
+                &Value::Float(4.0),
+                &p
+            )
+            .unwrap(),
+            v4(1.0, 2.0, 3.0, 4.0)
+        );
+    }
+
+    #[test]
+    fn vec_divide_by_zero_is_ieee_not_a_fault() {
+        // T4: division by zero yields inf/nan lanes, exactly like bare float
+        // division (`float_op`'s `Divide` arm) — NOT `RuntimeError::DivisionByZero`.
+        let p = dummy_program();
+        let got = binary_op(BinaryOp::Divide, &v2(1.0, -1.0), &Value::Float(0.0), &p).unwrap();
+        assert!(
+            matches!(
+                &got,
+                Value::Vec2(r)
+                    if r.x.is_infinite() && r.x.is_sign_positive()
+                        && r.y.is_infinite() && r.y.is_sign_negative()
+            ),
+            "{got:?}"
+        );
+        let zero_over_zero =
+            binary_op(BinaryOp::Divide, &v2(0.0, 0.0), &Value::Float(0.0), &p).unwrap();
+        assert!(
+            matches!(&zero_over_zero, Value::Vec2(r) if r.x.is_nan() && r.y.is_nan()),
+            "{zero_over_zero:?}"
+        );
     }
 
     // ── T4: componentwise IEEE equality; NOT orderable ───────────────
