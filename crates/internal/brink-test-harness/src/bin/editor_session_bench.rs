@@ -14,7 +14,8 @@
 //!
 //! # Session shape
 //!
-//! A synthetic project of [`BASE_FILES`] permanent files (never removed) plus
+//! A synthetic project of [`DEFAULT_BASE_FILES`] permanent files (never
+//! removed, overridable at runtime with `--base-files N`) plus
 //! [`SCRATCH_SLOTS`] scratch files that get added and removed over the
 //! session — modeling a real editor's "create a new file, delete it later"
 //! churn. Each edit is one of, weighted by a fixed seeded PRNG (no wall-clock
@@ -46,10 +47,46 @@
 //! pulls `story_data()` (a "play"/"preview" action), verifying the project
 //! still compiles clean throughout.
 //!
+//! # Typed-substrate probe (`BENCH_TYPED=1`, #819)
+//!
+//! The stock session above never reads `type_inference()` or any per-def
+//! query (`signature`, `solve_scc`, `infer_body`, `inferred_signature`, …) —
+//! it only pulls `diagnostics`/`story_data`, neither of which touches the
+//! typed substrate ([`brink_db::ProjectDb::type_inference`]'s doc: it's
+//! "advisory-only", reached only via `infer_body`/`type_diagnostics`, which
+//! today is nobody in the compile path). That means every per-def family
+//! reads memo-count 0 in every checkpoint, at every project scale — the
+//! growth table can never show a typed-mode regression because it never
+//! measures the typed substrate at all (see #537's data-gathering comment).
+//!
+//! Setting the `BENCH_TYPED=1` environment variable turns on a post-edit
+//! typed probe: after the stock per-edit `diagnostics(file)` pull, [`pull_typed_probe`]
+//! additionally pulls `type_inference()` once and `signature`/`infer_body`/
+//! `inferred_signature` for every def declared in the file just edited — the
+//! same IDE-shaped pull `brink-ide`'s hover/inlay-hints make (see
+//! `crates/internal/brink-ide/src/hover.rs`,
+//! `crates/internal/brink-ide/src/inlay_hints.rs`), and exactly the local
+//! recipe #537's measurement comment described and reverted. This is
+//! env-gated rather than always-on because the stock (untyped) shape is
+//! itself a real, distinct session profile worth keeping measurable on its
+//! own (an editor session that never opens a file with hover/inlay hints
+//! active).
+//!
+//! # Project-scale knob (`--base-files N`)
+//!
+//! #537 also found the default 16-file project too small to see per-def
+//! growth trends clearly, and had to locally `sed` [`DEFAULT_BASE_FILES`] to
+//! 64/128 and rebuild each time. `--base-files N` makes that a runtime knob
+//! instead. This generator still isn't a realistic project shape (uniform
+//! synthetic files/knots) — #663's fixture remains the fuller answer for
+//! that; this knob only removes the rebuild-per-scale friction for this
+//! bench's own synthetic generator.
+//!
 //! Run with:
 //!
 //! ```sh
-//! cargo run --release -p brink-test-harness --bin editor_session_bench [-- --edits N]
+//! cargo run --release -p brink-test-harness --bin editor_session_bench [-- --edits N --base-files N]
+//! BENCH_TYPED=1 cargo run --release -p brink-test-harness --bin editor_session_bench
 //! ```
 #![expect(
     clippy::print_stdout,
@@ -59,16 +96,21 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use brink_db::{IngredientKind, IngredientMemory, ProjectDb};
+use brink_db::{FileId, IngredientKind, IngredientMemory, ProjectDb};
 
 const DEFAULT_EDITS: usize = 500;
 const CHECKPOINT_EVERY: usize = 50;
 const STORY_DATA_EVERY: usize = 20;
 
-const BASE_FILES: usize = 16;
+const DEFAULT_BASE_FILES: usize = 16;
 const BASE_KNOTS: usize = 10;
 const SCRATCH_SLOTS: usize = 3;
 const SCRATCH_KNOTS: usize = 4;
+
+/// `BENCH_TYPED=1` turns on the post-edit typed-substrate probe (#819, see
+/// module docs). Any other value (including unset) keeps the stock,
+/// untyped-only session shape.
+const BENCH_TYPED_ENV: &str = "BENCH_TYPED";
 
 /// Fixed seed for the edit-kind/target driver. Distinct from the content
 /// generators' own per-(file, revision) seeding below — this one only
@@ -76,19 +118,25 @@ const SCRATCH_KNOTS: usize = 4;
 const EDIT_DRIVER_SEED: u64 = 0xED17_0525_5E55_10ED;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let edits = parse_edits()?;
+    let args = parse_args()?;
+    let edits = args.edits;
+    let base_files = args.base_files;
+    let typed = bench_typed_enabled();
 
     println!(
-        "editor_session_bench | session | base_files={BASE_FILES} scratch_slots={SCRATCH_SLOTS} edits={edits} checkpoint_every={CHECKPOINT_EVERY} story_data_every={STORY_DATA_EVERY}"
+        "editor_session_bench | session | base_files={base_files} scratch_slots={SCRATCH_SLOTS} edits={edits} checkpoint_every={CHECKPOINT_EVERY} story_data_every={STORY_DATA_EVERY} typed={typed}"
     );
 
     let mut db = ProjectDb::new();
-    let mut session = Session::new();
+    let mut session = Session::new(base_files);
 
-    for f in 0..BASE_FILES {
+    for f in 0..base_files {
         db.set_file(&file_path(f), generate_file(f, session.revisions[f]));
     }
-    db.set_file("main.ink", generate_main(session.scratch_present));
+    db.set_file(
+        "main.ink",
+        generate_main(base_files, session.scratch_present),
+    );
     db.set_entry("main.ink")
         .ok_or("failed to set entry point main.ink")?;
 
@@ -100,15 +148,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut tally = EditTally::default();
 
     for edit_index in 1..=edits {
-        let edit = pick_edit(&mut rng);
+        let edit = pick_edit(&mut rng, base_files);
         tally.record(&edit);
-        apply(&mut db, &mut session, edit);
+        apply(&mut db, &mut session, edit, base_files);
 
         if let Some(id) = db.file_id(&touched_path(&edit)) {
             // LSP-style: publish diagnostics for the file just edited. This
             // pulls the whole chain (parse -> lowered -> ... -> analysis)
             // for a single-file-scoped call.
             let _ = db.diagnostics(id);
+
+            // #819: an IDE-shaped post-edit typed pull, env-gated because the
+            // stock session intentionally never reaches the typed substrate
+            // (see module docs).
+            if typed {
+                pull_typed_probe(&db, id);
+            }
         }
 
         if edit_index % STORY_DATA_EVERY == 0 {
@@ -133,27 +188,78 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// The typed-substrate probe (#819, see module docs): mirrors an IDE
+/// hover/inlay-hints pass over the file just edited. Pulls `type_inference()`
+/// once (populating the whole-project inference result) plus
+/// `signature`/`infer_body`/`inferred_signature` for every def declared in
+/// `file` — the three per-def queries `brink-ide`'s hover/inlay-hints read.
+fn pull_typed_probe(db: &ProjectDb, file: FileId) {
+    let _ = db.type_inference();
+    let index = db.symbol_index();
+    for def in index
+        .symbols
+        .values()
+        .filter(|info| info.file == file)
+        .map(|info| info.id)
+    {
+        let _ = db.signature(def);
+        let _ = db.infer_body(def);
+        let _ = db.inferred_signature(def);
+    }
+}
+
+/// Reads the [`BENCH_TYPED_ENV`] environment variable (#819). Any value
+/// other than exactly `"1"` (including unset) keeps the stock, untyped-only
+/// session shape — this is an explicit opt-in, not a default.
+fn bench_typed_enabled() -> bool {
+    std::env::var(BENCH_TYPED_ENV).is_ok_and(|v| v == "1")
+}
+
 // ── CLI ──────────────────────────────────────────────────────────────
 
-fn parse_edits() -> Result<usize, String> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.as_slice() {
-        [] => Ok(DEFAULT_EDITS),
-        [flag, value] if flag == "--edits" => value
-            .parse::<usize>()
-            .map_err(|e| format!("--edits {value}: {e}"))
-            .and_then(|n| {
-                if n == 0 {
-                    Err("--edits must be >= 1".to_string())
-                } else {
-                    Ok(n)
+struct Args {
+    edits: usize,
+    base_files: usize,
+}
+
+fn parse_args() -> Result<Args, String> {
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    let mut edits = DEFAULT_EDITS;
+    let mut base_files = DEFAULT_BASE_FILES;
+
+    let mut i = 0;
+    while i < raw.len() {
+        let flag = raw[i].as_str();
+        let value = raw
+            .get(i + 1)
+            .ok_or_else(|| format!("{flag} requires a value"))?;
+        match flag {
+            "--edits" => {
+                edits = value
+                    .parse::<usize>()
+                    .map_err(|e| format!("--edits {value}: {e}"))?;
+                if edits == 0 {
+                    return Err("--edits must be >= 1".to_string());
                 }
-            }),
-        other => Err(format!(
-            "unsupported arguments: {} (only --edits N is supported)",
-            other.join(" ")
-        )),
+            }
+            "--base-files" => {
+                base_files = value
+                    .parse::<usize>()
+                    .map_err(|e| format!("--base-files {value}: {e}"))?;
+                if base_files == 0 {
+                    return Err("--base-files must be >= 1".to_string());
+                }
+            }
+            other => {
+                return Err(format!(
+                    "unsupported argument: {other} (supported: --edits N, --base-files N)"
+                ));
+            }
+        }
+        i += 2;
     }
+
+    Ok(Args { edits, base_files })
 }
 
 // ── Session state + edit application ────────────────────────────────
@@ -181,9 +287,9 @@ struct Session {
 }
 
 impl Session {
-    fn new() -> Self {
+    fn new(base_files: usize) -> Self {
         Self {
-            revisions: vec![FileRevision::default(); BASE_FILES],
+            revisions: vec![FileRevision::default(); base_files],
             scratch_present: [false; SCRATCH_SLOTS],
             scratch_variant: [0; SCRATCH_SLOTS],
             scratch_ever_added: 0,
@@ -218,9 +324,9 @@ impl EditTally {
     }
 }
 
-fn pick_edit(rng: &mut Lcg) -> EditKind {
+fn pick_edit(rng: &mut Lcg, base_files: usize) -> EditKind {
     let roll = rng.pick(0, 99);
-    let target_file = rng.pick(0, BASE_FILES - 1);
+    let target_file = rng.pick(0, base_files - 1);
     if roll < 55 {
         EditKind::Typing(target_file)
     } else if roll < 70 {
@@ -239,7 +345,7 @@ fn touched_path(edit: &EditKind) -> String {
     }
 }
 
-fn apply(db: &mut ProjectDb, session: &mut Session, edit: EditKind) {
+fn apply(db: &mut ProjectDb, session: &mut Session, edit: EditKind, base_files: usize) {
     match edit {
         EditKind::Typing(f) => {
             session.revisions[f].text += 1;
@@ -266,7 +372,10 @@ fn apply(db: &mut ProjectDb, session: &mut Session, edit: EditKind) {
                 );
                 session.scratch_present[slot] = true;
             }
-            db.update_file("main.ink", generate_main(session.scratch_present));
+            db.update_file(
+                "main.ink",
+                generate_main(base_files, session.scratch_present),
+            );
         }
     }
 }
@@ -360,9 +469,9 @@ fn seed_mix(index: usize, revision: u64) -> u64 {
 
 /// `main.ink`: INCLUDEs every base file plus whichever scratch files are
 /// currently present, then diverts into the base project's entry knot.
-fn generate_main(scratch_present: [bool; SCRATCH_SLOTS]) -> String {
+fn generate_main(base_files: usize, scratch_present: [bool; SCRATCH_SLOTS]) -> String {
     let mut s = String::from("// Editor-session synthetic project — generated, deterministic.\n");
-    for f in 0..BASE_FILES {
+    for f in 0..base_files {
         let _ = writeln!(s, "INCLUDE {}", file_path(f));
     }
     for (slot, present) in scratch_present.iter().enumerate() {

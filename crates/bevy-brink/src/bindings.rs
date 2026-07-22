@@ -725,43 +725,123 @@ pub fn call_ink_function<M: Send + Sync + 'static>(
     let mut state: EvalSystemState<M> = SystemState::new(world);
 
     // Begin the evaluation (resolve the function by name, then start it).
-    let next = {
-        let (mut flows, globals, programs, tables, bindings) = state
-            .get_mut(world)
-            .map_err(|e| BrinkCallError::SystemParamInvalid(e.to_string()))?;
-        let mut globals = globals.ok_or(BrinkCallError::NotAFlow)?;
-        let (prog_c, loc_c, mut flow, mut ctx) = flows
-            .get_mut(entity)
-            .map_err(|_| BrinkCallError::NotAFlow)?;
-        let program = &programs
-            .get(&prog_c.handle)
-            .ok_or(BrinkCallError::ProgramNotLoaded)?
-            .program;
-        let line_tables = &tables
-            .get(&loc_c.handle)
-            .ok_or(BrinkCallError::LineTablesNotLoaded)?
-            .tables;
-        let idx = program
-            .find_address(name)
-            .ok_or_else(|| BrinkCallError::FunctionNotFound(name.to_owned()))?
-            .0;
-        let handler = bindings.eval_handler();
-        let mut view = crate::globals::flow_context_view(&mut globals, &mut ctx);
-        let outcome = flow.inner.begin_function_eval::<FastRng>(
-            program,
-            line_tables,
-            &mut view,
-            &handler,
-            idx,
-            args,
-            None,
-        )?;
-        classify_eval(&flow.inner, program, &bindings, outcome)?
-    };
+    let next = begin_eval_by_name(world, entity, &mut state, name, args)?;
 
     // Drive: run each pending world-access query against the World, resolve
     // it, and resume — until the function returns.
     drive_function_eval_to_done(world, entity, &mut state, next)
+}
+
+/// Begin one by-name function evaluation against an already-built
+/// [`EvalSystemState`], resolving the function and taking its first step.
+///
+/// Factored out of [`call_ink_function`] so the single-call path and the
+/// batch path ([`call_ink_functions`]) share identical begin semantics while
+/// the batch reuses **one** `SystemState` across every call — the setup
+/// (`SystemState::new`) is paid once per batch turn, not once per call.
+fn begin_eval_by_name<M: Send + Sync + 'static>(
+    world: &mut World,
+    entity: Entity,
+    state: &mut EvalSystemState<M>,
+    name: &str,
+    args: &[Value],
+) -> Result<NextStep, BrinkCallError> {
+    let (mut flows, globals, programs, tables, bindings) = state
+        .get_mut(world)
+        .map_err(|e| BrinkCallError::SystemParamInvalid(e.to_string()))?;
+    let mut globals = globals.ok_or(BrinkCallError::NotAFlow)?;
+    let (prog_c, loc_c, mut flow, mut ctx) = flows
+        .get_mut(entity)
+        .map_err(|_| BrinkCallError::NotAFlow)?;
+    let program = &programs
+        .get(&prog_c.handle)
+        .ok_or(BrinkCallError::ProgramNotLoaded)?
+        .program;
+    let line_tables = &tables
+        .get(&loc_c.handle)
+        .ok_or(BrinkCallError::LineTablesNotLoaded)?
+        .tables;
+    let idx = program
+        .find_address(name)
+        .ok_or_else(|| BrinkCallError::FunctionNotFound(name.to_owned()))?
+        .0;
+    let handler = bindings.eval_handler();
+    let mut view = crate::globals::flow_context_view(&mut globals, &mut ctx);
+    let outcome = flow.inner.begin_function_eval::<FastRng>(
+        program,
+        line_tables,
+        &mut view,
+        &handler,
+        idx,
+        args,
+        None,
+    )?;
+    classify_eval(&flow.inner, program, &bindings, outcome)
+}
+
+/// Apply a batch of engine→ink calls to one flow in a **single** VM-eval
+/// setup, returning one [`Result`] per call in the order supplied.
+///
+/// This is the batch counterpart of [`call_ink_function`]: an engine→ink seam
+/// (e.g. an event-folding system that pushes a frame's events into ink) can
+/// hand the whole frame's calls over at once. The expensive per-call setup —
+/// building the [`SystemState`] over the flow components + assets + bindings —
+/// is paid **once** for the batch instead of once per call, so a frame with
+/// N sightings costs one setup plus N evaluations rather than N setups.
+///
+/// Per-call semantics are preserved exactly:
+///
+/// - **Order.** Calls run front-to-back, so `decay` then N × `escalate` then
+///   `trigger_global` fold in the same order as N separate
+///   [`call_ink_function`]s. State mutated by an earlier call is visible to a
+///   later one (they share the flow's globals/context).
+/// - **Isolated outputs.** Each call is a fresh `begin_function_eval` — output
+///   is isolated, the player-visible story is untouched, visit counts aren't
+///   bumped — identical to a standalone [`call_ink_function`].
+/// - **Error per call, no silent drops.** A failing call yields `Err(_)` in
+///   *its* slot and does **not** abort the batch; every later call still runs
+///   and every slot is reported. The returned `Vec` has exactly one entry per
+///   input call.
+///
+/// The result of the *i*-th call is `results[i]`. `M` is the story marker (use
+/// `()` for the default). For callers that don't have `&mut World` (a normal
+/// system), issue deferred `commands.brink_call(...)`s instead.
+///
+/// ```ignore
+/// // The alarm write-seam, one VM entry instead of N+2:
+/// let mut calls: Vec<(&str, Vec<Value>)> = Vec::new();
+/// if round_started { calls.push(("alarm_reset", vec![])); }
+/// calls.push(("decay", vec![Value::Float(dt)]));
+/// for amount in spots { calls.push(("escalate_spotting", vec![Value::Float(amount)])); }
+/// if has_global { calls.push(("trigger_global", vec![])); }
+/// for (call, res) in calls.iter().zip(call_ink_functions::<AlarmStory, _, _>(world, flow, calls.clone())) {
+///     if let Err(err) = res { warn!("[alarm] ink call {} failed: {err}", call.0); }
+/// }
+/// ```
+///
+/// # Errors
+/// Errors are returned per call in the result `Vec`; the function itself does
+/// not short-circuit. See [`BrinkCallError`].
+pub fn call_ink_functions<M, N, A>(
+    world: &mut World,
+    entity: Entity,
+    calls: impl IntoIterator<Item = (N, A)>,
+) -> Vec<Result<Value, BrinkCallError>>
+where
+    M: Send + Sync + 'static,
+    N: AsRef<str>,
+    A: AsRef<[Value]>,
+{
+    // One setup for the whole batch — the amortization the batch exists for.
+    let mut state: EvalSystemState<M> = SystemState::new(world);
+
+    calls
+        .into_iter()
+        .map(|(name, args)| {
+            let next = begin_eval_by_name(world, entity, &mut state, name.as_ref(), args.as_ref())?;
+            drive_function_eval_to_done(world, entity, &mut state, next)
+        })
+        .collect()
 }
 
 /// Synchronously invoke an ink **function value** (`#fn(…)` — a `FnRef` or
@@ -1992,6 +2072,166 @@ mod tests {
         assert!(
             lines.iter().any(|l| l.contains("Enemies near: 2.")),
             "expected the resolved inline-query line; got {lines:?}"
+        );
+    }
+
+    // ── Batch engine → ink: call_ink_functions (BH-5, #1058) ─────────
+
+    /// A stateful accumulator story: `add(n)` mutates a global and returns the
+    /// running total, `get()` reads it. Used by the batch tests to prove
+    /// ordering and cross-call state visibility.
+    fn compile_accumulator_story() -> (
+        brink_runtime::Program,
+        Vec<Vec<brink_format::LineEntry>>,
+        brink_runtime::World,
+    ) {
+        crate::test_support::compile_test_story(
+            "VAR total = 0\n-> END\n\
+             === function add(n) ===\n~ total = total + n\n~ return total\n\
+             === function get() ===\n~ return total\n",
+        )
+    }
+
+    /// Build a fresh app with the accumulator story fulfilled, returning the
+    /// app and its flow entity. Each app owns its own `BrinkGlobals<()>`
+    /// resource, so two of them don't share the `total` global — the isolation
+    /// the parity comparison needs.
+    fn accumulator_app() -> (bevy_app::App, Entity) {
+        use crate::BrinkFlowRequest;
+        use crate::test_support::{add_story_assets, make_test_app};
+
+        let mut app = make_test_app();
+        let (p, t, c) = compile_accumulator_story();
+        let story = add_story_assets(&mut app, p, t, c);
+        app.world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build());
+        app.update();
+        let flow = app
+            .world_mut()
+            .query_filtered::<Entity, With<BrinkFlow<()>>>()
+            .iter(app.world())
+            .next()
+            .expect("flow fulfilled");
+        (app, flow)
+    }
+
+    /// **Parity property:** an N-call batch is byte-identical to N standalone
+    /// [`call_ink_function`]s applied to an identical flow, in the same order.
+    /// This is the correctness bar for the amortized entry point. The two paths
+    /// run in separate apps because story globals (`total`) are a per-marker
+    /// resource shared by every flow of that marker in one World.
+    #[test]
+    fn batch_equals_n_single_calls() {
+        let calls: Vec<(&str, Vec<Value>)> = vec![
+            ("add", vec![Value::Int(1)]),
+            ("add", vec![Value::Int(10)]),
+            ("add", vec![Value::Int(100)]),
+            ("get", vec![]),
+        ];
+
+        // Batch path: one VM-eval setup for all four calls.
+        let (mut batch_app, batch_flow) = accumulator_app();
+        let batch: Vec<Value> =
+            call_ink_functions::<(), _, _>(batch_app.world_mut(), batch_flow, calls.clone())
+                .into_iter()
+                .map(|r| r.unwrap())
+                .collect();
+
+        // Single-call path: four standalone setups on a twin flow in its own
+        // World (its own globals).
+        let (mut single_app, single_flow) = accumulator_app();
+        let single: Vec<Value> = calls
+            .iter()
+            .map(|(name, args)| {
+                call_ink_function::<()>(single_app.world_mut(), single_flow, name, args).unwrap()
+            })
+            .collect();
+
+        assert_eq!(batch, single, "batch must equal N single calls");
+        // And the concrete accumulation: 1, 11, 111, then get() == 111.
+        assert_eq!(
+            batch,
+            vec![
+                Value::Int(1),
+                Value::Int(11),
+                Value::Int(111),
+                Value::Int(111)
+            ],
+            "ordered accumulation across the batch"
+        );
+    }
+
+    /// **Error isolation + no silent drops:** a failing call yields `Err` in
+    /// *its* slot without aborting the batch; every later call still runs, and
+    /// the failed call leaves no partial state behind.
+    #[test]
+    fn batch_isolates_errors_and_preserves_order() {
+        use crate::BrinkFlowRequest;
+        use crate::test_support::{add_story_assets, make_test_app};
+
+        let mut app = make_test_app();
+        let (p, t, c) = compile_accumulator_story();
+        let story = add_story_assets(&mut app, p, t, c);
+        let flow = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+        app.update();
+
+        let calls: Vec<(&str, Vec<Value>)> = vec![
+            ("add", vec![Value::Int(1)]),
+            ("nope", vec![]), // unknown function — must not abort the batch
+            ("add", vec![Value::Int(10)]),
+            ("get", vec![]),
+        ];
+        let results = call_ink_functions::<(), _, _>(app.world_mut(), flow, calls);
+
+        assert_eq!(results.len(), 4, "one slot per call, no drops");
+        assert_eq!(results[0].as_ref().unwrap(), &Value::Int(1));
+        assert!(
+            matches!(results[1], Err(BrinkCallError::FunctionNotFound(_))),
+            "the bad call fails in its own slot; got {:?}",
+            results[1]
+        );
+        // The failed call did not perturb the accumulator: the next add sees 1.
+        assert_eq!(results[2].as_ref().unwrap(), &Value::Int(11));
+        assert_eq!(results[3].as_ref().unwrap(), &Value::Int(11));
+    }
+
+    /// A batch whose calls each go through a **world-access query** binding
+    /// (`run_system_with` between suspensions) reuses the single `SystemState`
+    /// across every call — proving the re-borrow dance is safe batch-wide.
+    #[test]
+    fn batch_drives_world_queries_across_calls() {
+        use crate::BrinkFlowRequest;
+        use crate::test_support::{add_story_assets, make_test_app};
+
+        let mut app = make_test_app();
+        app.bind_brink_query::<(), _, _>("enemy_count", enemy_count);
+        let (program, tables, ctx) = compile_test_story(
+            "EXTERNAL enemy_count()\n-> END\n\
+             === function seen() ===\n~ return enemy_count()\n",
+        );
+        let story = add_story_assets(&mut app, program, tables, ctx);
+        app.world_mut().spawn(Enemy);
+        app.world_mut().spawn(Enemy);
+        let flow = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+        app.update();
+
+        let calls: Vec<(&str, Vec<Value>)> =
+            vec![("seen", vec![]), ("seen", vec![]), ("seen", vec![])];
+        let results: Vec<Value> = call_ink_functions::<(), _, _>(app.world_mut(), flow, calls)
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect();
+
+        assert_eq!(
+            results,
+            vec![Value::Int(2), Value::Int(2), Value::Int(2)],
+            "each batched query resolves against the World"
         );
     }
 }

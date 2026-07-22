@@ -94,6 +94,7 @@ use brink_ir::{
     SymbolManifest, lower, lower_single_knot, lower_top_level,
 };
 use brink_syntax::Parse;
+use brink_syntax_native::Parse as NativeParse;
 
 use crate::db::resolve_include_path;
 use crate::determinism::{LookupMap, LookupSet};
@@ -140,6 +141,9 @@ impl Default for BrinkDatabase {
                 .ingredient::<DefKey<'_>>()
                 // Layer 1.
                 .ingredient::<parse_query>()
+                // B0.10a native compile seam (issue #1106): the frontend-
+                // specific parse ingredient, dispatched by `lowered_query`.
+                .ingredient::<parse_native_query>()
                 .ingredient::<lowered_query>()
                 .ingredient::<suppressions_query>()
                 .ingredient::<include_graph_query>()
@@ -300,6 +304,21 @@ pub(crate) fn parse_query(db: &dyn salsa::Database, file: SourceFile) -> Parse {
     brink_syntax::parse(file.text(db))
 }
 
+/// Parse one native `.brink` file's text into a lossless CST.
+///
+/// The frontend-specific sibling of [`parse_query`] (B0.10a, the native
+/// compile seam, issue #1106). `brink_syntax_native::Parse` is structurally
+/// identical to `brink_syntax::Parse` (`{green, errors}`, `Clone + Eq`) but a
+/// distinct nominal type, so it needs its own tracked ingredient — matching
+/// attrs (`returns(ref)`, `lru = 4096`, the same per-file runaway-guard
+/// ceiling, issue #647). Only ever executed for files [`file_language`]
+/// classifies as [`Language::Native`], so an `.ink` file never runs the native
+/// parser and vice-versa — see [`lowered_query`].
+#[salsa::tracked(returns(ref), lru = 4096)]
+pub(crate) fn parse_native_query(db: &dyn salsa::Database, file: SourceFile) -> NativeParse {
+    brink_syntax_native::parse(file.text(db))
+}
+
 /// Per-file lowering output: assembled HIR, symbol manifest, and lowering +
 /// syntax diagnostics — the exact product the retired `FileState` cached.
 #[derive(Debug, Clone, PartialEq)]
@@ -328,7 +347,44 @@ pub(crate) struct LoweredFile {
 /// payload; this is the per-file sibling.
 #[salsa::tracked(returns(ref), lru = 4096, heap_size = heap_size::lowered_file_heap_size)]
 pub(crate) fn lowered_query(db: &dyn salsa::Database, file: SourceFile) -> LoweredFile {
-    lower_file(file.file_id(db), parse_query(db, file))
+    let file_id = file.file_id(db);
+    // Decide the frontend from the path *before* touching either parser
+    // (B0.10a, the native compile seam, issue #1106): this branch precedes
+    // the parse call, so an `.ink` file never runs the native parser and a
+    // native file never runs the ink one. The ink arm is byte-identical to
+    // the pre-seam body, keeping the oracle invariance a tautology.
+    match file_language(file.path(db)) {
+        Language::Ink => lower_file(file_id, parse_query(db, file)),
+        Language::Native => lower_native_file(file_id, parse_native_query(db, file)),
+    }
+}
+
+/// Which frontend a source file feeds — decided purely from its path (B0.10a,
+/// issue #1106). Deliberately *not* stored on any input, HIR, or
+/// `AnalysisOptions`: the "no dialect tag near HIR" posture keeps this an
+/// internal, ephemeral classification used only as [`file_language`]'s return.
+/// It is a different axis from `brink_analyzer::Dialect` (an ink-extension
+/// gate) — do not conflate the two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Language {
+    Ink,
+    Native,
+}
+
+/// Classify a source file's frontend from its path. A pure, deterministic
+/// extension test (`.brink` → native, everything else → ink) — no schema
+/// change, no `HashMap` iteration. Uses `Path::extension` to match the
+/// codebase's existing extension convention (e.g. `brink-lsp`'s `ext ==
+/// "ink"`).
+fn file_language(path: &str) -> Language {
+    if std::path::Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext == "brink")
+    {
+        Language::Native
+    } else {
+        Language::Ink
+    }
 }
 
 /// Parsed suppression/expectation directives for one file.
@@ -2170,6 +2226,47 @@ fn lower_file(file_id: FileId, parse: &Parse) -> LoweredFile {
     // it runs on every lowering (NF-6, always-on). Kept in its own field —
     // never folded into `diagnostics` above, which flows through
     // `apply_suppressions` in `partition_diagnostics`.
+    let file_len = parse.syntax().text_range().end();
+    let admission = brink_analyzer::validate_admission(file_id, &hir, &manifest, file_len);
+
+    LoweredFile {
+        hir,
+        manifest,
+        diagnostics,
+        admission,
+    }
+}
+
+/// Lower one native `.brink` file to HIR (B0.10a, the native compile seam,
+/// issue #1106) — the frontend-specific sibling of [`lower_file`], producing
+/// the *same* [`LoweredFile`] so everything downstream (analysis, LIR,
+/// codegen) is byte-for-byte frontend-agnostic.
+///
+/// Unlike ink, native lowering is a single whole-file entry point
+/// (`lower_native::lower`) — there is no per-knot / top-level split to
+/// reassemble, and it returns its own [`project_manifest`]-derived manifest
+/// (B0.4) already, so this composes rather than re-deriving. Syntax errors are
+/// surfaced as the same non-suppressible `E037` compile diagnostic
+/// `lower_file` uses, and the B0.3 admission validator runs at the same seam
+/// (NF-6, always-on).
+fn lower_native_file(file_id: FileId, parse: &NativeParse) -> LoweredFile {
+    let tree = parse.tree();
+
+    let (hir, manifest, mut diagnostics) = brink_ir::hir::lower_native::lower(file_id, &tree);
+
+    // Surface parser/syntax errors as compile diagnostics (`E037`) so
+    // malformed source fails the compile — mirrors `lower_file`.
+    diagnostics.extend(parse.errors().iter().map(|e| Diagnostic {
+        file: file_id,
+        range: e.range,
+        message: e.message.clone(),
+        code: DiagnosticCode::E037,
+    }));
+
+    // B0.3 admission validator (docs/hir-admission-contract.md §4.2, issue
+    // #1172): the same loud, non-suppressible pass `lower_file` runs, kept in
+    // its own `LoweredFile` field so it never flows through
+    // `apply_suppressions`.
     let file_len = parse.syntax().text_range().end();
     let admission = brink_analyzer::validate_admission(file_id, &hir, &manifest, file_len);
 
