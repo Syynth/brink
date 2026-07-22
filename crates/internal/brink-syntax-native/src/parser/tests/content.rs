@@ -550,8 +550,9 @@ fn tag_on_a_labeled_content_line() {
 fn comment_only_line_before_content_is_excluded_from_the_content_line() {
     // A `//`-comment on its own line is pure trivia at the body-item loop
     // level — `skip_ws()` consumes it before `content_line` ever starts,
-    // so it never becomes a `CONTENT_LINE` child. This is the correct
-    // baseline the two FIXME cases below diverge from.
+    // so it never becomes a `CONTENT_LINE` child. This is the baseline the
+    // two same-line-trailing-comment cases below diverge from, per
+    // `text_run_until`'s documented literal-prose contract.
     let src = "flow f() {\n  // just a comment\n  Hello\n}\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
@@ -564,18 +565,21 @@ fn comment_only_line_before_content_is_excluded_from_the_content_line() {
 }
 
 #[test]
-fn fixme_line_comment_mid_text_run_is_absorbed_as_literal_content() {
-    // FIXME(#1194 finding, reported on the issue): `text_run_until`
-    // (`content.rs`) reads raw tokens (`nth_raw`) to preserve significant
-    // interior prose whitespace, and its break set is `{`/`<>`/`#`/`->`/
-    // doc-comment tokens/a caller stop — plain `LINE_COMMENT` is NOT in
-    // that set. A `//` comment appearing after prose on the same content
-    // line is therefore bumped straight into the enclosing `TEXT` node as
-    // literal characters, not skipped as trivia the way it is everywhere
-    // else the grammar reads it (`skip_ws`/`eat`/`expect`). Lowering reads
-    // a `TEXT` node's text as visible story prose, so this means the
-    // comment's own text would ship as visible output — likely wrong, but
-    // out of scope for this test-only issue. Asserting current behavior.
+fn line_comment_mid_text_run_is_literal_prose_per_text_run_untils_contract() {
+    // Open design question, not a bug report: `text_run_until`'s own
+    // production doc comment (`content.rs`) states this is intentional —
+    // "including any interior whitespace/plain-comments — those are
+    // literal prose here, not trivia to discard" — and deliberately
+    // contrasts it with doc-comment tokens, which DO break the run. So a
+    // `//` comment appearing after prose on the same content line is
+    // folded into the enclosing `TEXT` node as literal characters, per
+    // that documented contract, not skipped as trivia the way it is
+    // everywhere else the grammar reads it (`skip_ws`/`eat`/`expect`).
+    // Whether same-line trailing comments *should* be an exception to
+    // that contract (lowering reads `TEXT` as visible story prose, so
+    // this text ships as output) is an open question for whoever owns
+    // that design decision — not resolved by this test-only issue.
+    // Asserting current, documented-as-intentional behavior.
     let src = "flow f() {\n  Hello // not actually a comment here\n}\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
@@ -587,14 +591,13 @@ fn fixme_line_comment_mid_text_run_is_absorbed_as_literal_content() {
     assert_eq!(
         text_run_concat(&line),
         "Hello // not actually a comment here",
-        "current (surprising) behavior: the // comment's text is absorbed into TEXT"
+        "current, contract-documented behavior: the // comment's text is part of TEXT"
     );
 }
 
 #[test]
-fn fixme_block_comment_mid_text_run_is_absorbed_as_literal_content() {
-    // FIXME(#1194 finding, reported on the issue): same root cause as the
-    // line-comment case above, for `/* … */`.
+fn block_comment_mid_text_run_is_literal_prose_per_text_run_untils_contract() {
+    // Same documented contract as the line-comment case above, for `/* … */`.
     let src = "flow f() {\n  Hello /* aside */ world\n}\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
@@ -606,16 +609,17 @@ fn fixme_block_comment_mid_text_run_is_absorbed_as_literal_content() {
     assert_eq!(
         text_run_concat(&line),
         "Hello /* aside */ world",
-        "current (surprising) behavior: the block comment's text is absorbed into TEXT"
+        "current, contract-documented behavior: the block comment's text is part of TEXT"
     );
 }
 
 #[test]
 fn unterminated_block_comment_mid_text_run_never_panics_and_roundtrips() {
     // An unterminated `/*` runs to EOF (`BLOCK_COMMENT`'s own doc comment
-    // in `syntax_kind.rs`) — folded into the same TEXT run as its
-    // predecessor's finding above, but the key property here is just
-    // "doesn't panic/hang, stays lossless", regardless of the FIXME.
+    // in `syntax_kind.rs`) — folded into the same TEXT run as the
+    // preceding case above, but the key property here is just "doesn't
+    // panic/hang, stays lossless", independent of the open design
+    // question there.
     let src = "Hello /* never closed\n";
     let p = assert_lossless(src);
     let _ = p.errors();
