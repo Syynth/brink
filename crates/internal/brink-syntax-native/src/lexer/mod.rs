@@ -252,6 +252,18 @@ impl<'src> Lexer<'src> {
         }
         match self.bytes[self.pos + 1] {
             b'/' => {
+                // B0.6b: classify by the third/fourth byte before consuming
+                // to end-of-line — `///` (exactly three slashes) is
+                // DOC_COMMENT_OUTER, `//!` is DOC_COMMENT_INNER, everything
+                // else (`//`, `////+`) stays a plain LINE_COMMENT (Rust
+                // precedent for both rulings).
+                let kind = match self.bytes.get(self.pos + 2) {
+                    Some(b'/') if self.bytes.get(self.pos + 3) != Some(&b'/') => {
+                        SyntaxKind::DOC_COMMENT_OUTER
+                    }
+                    Some(b'!') => SyntaxKind::DOC_COMMENT_INNER,
+                    _ => SyntaxKind::LINE_COMMENT,
+                };
                 self.pos += 2;
                 while self.pos < self.bytes.len()
                     && self.bytes[self.pos] != b'\n'
@@ -259,7 +271,7 @@ impl<'src> Lexer<'src> {
                 {
                     self.pos += 1;
                 }
-                Some(SyntaxKind::LINE_COMMENT)
+                Some(kind)
             }
             b'*' => {
                 self.pos += 2;
