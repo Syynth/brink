@@ -41,6 +41,25 @@ jobs:
   # satisfies every dependency and no headless browser is needed. If this
   # job proves flaky in practice, drop it from branch-protection's required
   # list rather than deleting it (#672 workstream D).
+  wasm-test:
+    name: Wasm Tests (brink-web)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
+        # Pin the version (matching the `frontend` job below): the default
+        # `latest` queries the GitHub API for the newest release and breaks
+        # under API rate limiting (HTML, not JSON).
+        with:
+          version: v0.14.0
+      - run: wasm-pack test --node crates/brink-web
+
   # `brink-format` and `brink-runtime` claim `no_std` + `alloc` portability
   # (`docs/no-std-portability.md`, #434): both have a default-enabled `std`
   # feature and fall back to `core`/`alloc` without it. No job ever built
@@ -66,25 +85,6 @@ jobs:
         with:
           shared-key: no-std-${{ matrix.crate }}
       - run: cargo check -p ${{ matrix.crate }} --no-default-features
-
-  wasm-test:
-    name: Wasm Tests (brink-web)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      - name: Install wasm-pack
-        uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
-        # Pin the version (matching the `frontend` job below): the default
-        # `latest` queries the GitHub API for the newest release and breaks
-        # under API rate limiting (HTML, not JSON).
-        with:
-          version: v0.14.0
-      - run: wasm-pack test --node crates/brink-web
 
   test:
     name: Test
