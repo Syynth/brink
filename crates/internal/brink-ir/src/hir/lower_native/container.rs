@@ -131,6 +131,13 @@ pub(super) fn lower_top_level_container(
         super::body::lower_block(file_id, &b, diags)
     });
     super::body::fixup_return_kind(node.is_function(), &mut body_block);
+    // Non-function flows inherit ink's root-content implicit-end grace
+    // (RULED 2026-07-22; charter §15): a body falling off the end gets a
+    // synthesized `-> DONE`. Functions are excluded — they implicitly
+    // *return* on exhaustion, not DONE.
+    if !node.is_function() {
+        super::body::apply_implicit_done(&mut body_block);
+    }
 
     Some(Knot {
         ptr: native_provenance(file_id, NodeClass::Knot, syntax),
@@ -199,6 +206,9 @@ fn lower_stitch(
     // stitch is always the tunnel-return spelling, never an explicit
     // function return.
     super::body::fixup_return_kind(false, &mut body_block);
+    // Stitches are never functions, so they always inherit the implicit-end
+    // grace (charter §15): fall off the end → synthesized `-> DONE`.
+    super::body::apply_implicit_done(&mut body_block);
     Some(Stitch {
         ptr: native_provenance(file_id, NodeClass::Stitch, syntax),
         name,

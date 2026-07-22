@@ -257,11 +257,21 @@ flow elsewhere() {
         .find(|k| k.name.text == "choices")
         .expect("choices knot");
 
-    // Both: [Content, EndOfLine, ChoiceSet].
+    // Both share the [Content, EndOfLine, ChoiceSet] prefix. Native then
+    // carries a trailing implicit `-> DONE` (charter §15: a flow that falls
+    // off the end ends implicitly) where ink instead expresses termination
+    // as `-> END` *inside* the gather continuation — an expected
+    // cross-frontend divergence introduced by the native implicit-end
+    // ruling, not a shape bug. Strip that one trailing terminator and the
+    // top-level shapes match exactly.
+    let mut native_shape = stmt_shape(&native_knot.body.stmts);
     assert_eq!(
-        stmt_shape(&ink_knot.body.stmts),
-        stmt_shape(&native_knot.body.stmts)
+        native_shape.last(),
+        Some(&"Divert"),
+        "native flow body must gain a trailing implicit `-> DONE`: {native_shape:?}"
     );
+    native_shape.pop();
+    assert_eq!(stmt_shape(&ink_knot.body.stmts), native_shape);
 
     let ink_cs = ink_knot
         .body

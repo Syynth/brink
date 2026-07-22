@@ -318,6 +318,43 @@ pub(super) fn fixup_return_kind(is_function: bool, block: &mut Block) {
     block.recompute_tail();
 }
 
+/// Grant a native `flow`/`stitch` body ink's ROOT-content implicit-end
+/// grace: a body that falls off the end (`Tail::Unit` — no trailing divert
+/// or return) gets a synthesized `-> DONE` terminator so the VM does not
+/// raise "ran out of content" (RULED 2026-07-22, `docs/decision-log.md` →
+/// native implicit end; charter §15).
+///
+/// **Native-only, and deliberately mirroring the ink pipeline's own
+/// root-content terminator** in [`crate::lir::lower::assemble_program`]
+/// (which appends `lir::DivertTarget::Done` when the assembled root body
+/// lacks a trailing divert). Ink grants literal ROOT content that grace but
+/// not a knot reached by an ordinary divert; native's `flow main()` entry
+/// convention (charter §15) moves former root content into exactly such a
+/// divert-reached knot, which would otherwise lose it. We restore it here at
+/// the flow level rather than the LIR root level so it rides the same HIR
+/// `DivertPath::Done` representation every other native `-> DONE` uses — no
+/// new opcode.
+///
+/// `-> DONE`, never `-> END`: the flow's turn completes; the story is not
+/// permanently ended. Applied to the **top-level** body block only (mirroring
+/// `assemble_program`, which appends to `root_body` alone) — a nested block
+/// that falls through rejoins its gather/continuation and must not be
+/// terminated. Caller excludes functions: a `fn` that runs off the end does
+/// an implicit *return*, not a DONE.
+pub(super) fn apply_implicit_done(block: &mut Block) {
+    if !matches!(block.tail, crate::Tail::Unit) {
+        return;
+    }
+    block.stmts.push(Stmt::Divert(Divert {
+        ptr: None,
+        target: DivertTarget {
+            path: DivertPath::Done,
+            args: Vec::new(),
+        },
+    }));
+    block.recompute_tail();
+}
+
 /// Lower one `CONTENT_LINE`'s own content (its `LABEL` child, if any, is
 /// skipped here — [`lower_items`]/[`lower_continuation`] already consumed
 /// it for the absorption decision before calling this).

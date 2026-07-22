@@ -419,10 +419,20 @@ fn content_glue_interpolation_and_tags_lower() {
     let (hir, _m, diags) = lower_src("flow a() {\n  Hi, {name}! <> #mood: happy\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let body = only_knot_body(&hir);
+    // Glue suppresses the EndOfLine (Content only), then the flow's
+    // implicit-end grace (charter §15) appends a synthesized `-> DONE`.
     assert_eq!(
         body.stmts.len(),
-        1,
+        2,
         "glue suppresses the EndOfLine: {body:?}"
+    );
+    assert!(
+        matches!(
+            &body.stmts[1],
+            Stmt::Divert(d) if d.target.path == DivertPath::Done
+        ),
+        "expected trailing implicit `-> DONE`, got {:?}",
+        body.stmts[1]
     );
     let Stmt::Content(c) = &body.stmts[0] else {
         panic!("expected Content, got {:?}", body.stmts[0]);
@@ -442,9 +452,15 @@ fn content_without_glue_gets_end_of_line() {
     let (hir, _m, diags) = lower_src("flow a() {\n  Plain line.\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let body = only_knot_body(&hir);
-    assert_eq!(body.stmts.len(), 2);
+    // Content + EndOfLine, then the flow's implicit-end `-> DONE`
+    // (charter §15).
+    assert_eq!(body.stmts.len(), 3);
     assert!(matches!(body.stmts[0], Stmt::Content(_)));
     assert!(matches!(body.stmts[1], Stmt::EndOfLine));
+    assert!(matches!(
+        &body.stmts[2],
+        Stmt::Divert(d) if d.target.path == DivertPath::Done
+    ));
 }
 
 #[test]
@@ -798,7 +814,14 @@ fn return_redirect_to_done_lowers_as_plain_divert() {
 #[test]
 fn unrecognized_body_construct_is_diagnosed_not_dropped() {
     let (hir, _m, diags) = lower_src("flow a() {\n  @[effects(pure)]\n}\n");
-    assert!(hir.knots[0].body.stmts.is_empty());
+    // The unrecognized construct itself produces no statement — the only
+    // statement is the flow's synthesized implicit `-> DONE` (charter §15).
+    let body = &hir.knots[0].body;
+    assert_eq!(body.stmts.len(), 1, "only the implicit `-> DONE`: {body:?}");
+    assert!(matches!(
+        &body.stmts[0],
+        Stmt::Divert(d) if d.target.path == DivertPath::Done
+    ));
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E129),
         "an unwired body-position construct must be diagnosed, not silently dropped: {diags:?}"
@@ -836,10 +859,21 @@ fn block_ending_in_explicit_return_has_diverge_tail() {
 }
 
 #[test]
-fn plain_content_block_has_unit_tail() {
+fn plain_content_flow_body_gets_implicit_done_tail() {
+    // A `flow` body that falls off the end (no author-written terminator)
+    // inherits ink's root-content implicit-end grace (charter §15): the
+    // container finalization appends a synthesized `-> DONE`, so the
+    // finalized body's tail is `Diverge(Divert)`, not `Unit`. (The
+    // block-construction step still produces `Unit`; the DONE is stamped
+    // once, at the flow level, by `container.rs`.)
     let (hir, _m, diags) = lower_src("flow greet(name) {\n  Hi, {name}!\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
-    assert_eq!(*hir.knots[0].body.tail(), Tail::Unit);
+    let body = &hir.knots[0].body;
+    assert!(
+        matches!(body.tail(), Tail::Diverge(Terminator::Divert(d)) if d.target.path == DivertPath::Done),
+        "expected implicit `-> DONE` Diverge tail, got {:?}",
+        body.tail()
+    );
 }
 
 #[test]
