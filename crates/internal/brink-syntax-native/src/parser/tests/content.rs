@@ -797,9 +797,14 @@ fn multiline_brace_on_choice_line_is_choice_body_not_interpolation() {
 //
 // `tests/proptest_native.rs`'s `arb_text()` deliberately excludes every
 // structural character (including `<`/`>`, so `arb_content_line()` never
-// generates glue) — it's owned by #1199 this wave and out of scope to
-// extend here. These are self-contained generators scoped to this file,
-// covering the gap: glue chains and multi-tag lines.
+// generates glue). These generators stay file-local rather than extending
+// `arb_text()` itself: it's consumed by many sibling properties beyond
+// content (`arb_content_line`, `arb_interpolation_line`, the choice/label/
+// divert generators, and the unicode-noise property all build on it), so
+// injecting `<>` into its output would perturb every one of those
+// properties, not just the content family's. Self-contained generators
+// scoped to this file cover the gap instead: glue chains and multi-tag
+// lines.
 
 use proptest::prelude::*;
 
