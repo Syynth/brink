@@ -93,13 +93,25 @@ fn block_comment_content_preserved_verbatim() {
 }
 
 #[test]
-fn block_comment_with_no_trailing_newline_at_eof() {
+fn line_comment_with_no_trailing_newline_at_eof() {
     // A comment is the entire (rest of the) file — no NEWLINE token exists
     // to flush it, so it must still land in the tree via `eat`'s
     // unconditional leading-trivia flush (see `Parser::eat`'s doc comment).
     let src = "// trailing comment, no newline";
     let p = assert_lossless(src);
     assert_eq!(p.syntax().kind(), SyntaxKind::SOURCE_FILE);
+}
+
+#[test]
+fn terminated_block_comment_with_no_trailing_newline_at_eof() {
+    // Same shape as above, but for a properly-*terminated* `/* ... */`
+    // block comment ending the file with no trailing newline — distinct
+    // from `unterminated_block_comment_runs_to_eof_and_recovers`, where the
+    // comment is never closed at all.
+    let src = "var x = 1\n/* closed */";
+    let p = assert_lossless(src);
+    assert_eq!(p.syntax().kind(), SyntaxKind::SOURCE_FILE);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
 }
 
 #[test]
@@ -110,14 +122,14 @@ fn block_comment_immediately_before_open_brace_no_space() {
     // Same adversarial shape, ported to the native grammar.
     let src = "flow g() {\n  text/*c*/{if x { y }}\n}\n";
     let p = assert_lossless(src);
-    let _ = p.errors();
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
 }
 
 #[test]
 fn block_comment_adjacent_to_code_no_space() {
     let src = "var x = 1/**/+2\n";
     let p = assert_lossless(src);
-    let _ = p.errors();
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
 }
 
 #[test]
@@ -133,21 +145,31 @@ fn bare_cr_newlines_preserved() {
     // silently dropped or merged with adjacent content.
     let src = "flow g() {\r  Hello\r}\r";
     let p = assert_lossless(src);
-    let _ = p.errors();
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let root = p.syntax();
+    let newline_tokens: Vec<_> = root
+        .descendants_with_tokens()
+        .filter_map(rowan::NodeOrToken::into_token)
+        .filter(|t| t.kind() == SyntaxKind::NEWLINE)
+        .collect();
+    assert_eq!(newline_tokens.len(), 3, "tokens: {newline_tokens:?}");
+    for token in &newline_tokens {
+        assert_eq!(token.text(), "\r");
+    }
 }
 
 #[test]
 fn mixed_crlf_lf_cr_in_one_file_preserved() {
     let src = "flow g() {\n  a\r\n  b\r  c\n}\n";
     let p = assert_lossless(src);
-    let _ = p.errors();
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
 }
 
 #[test]
 fn tabs_and_spaces_mixed_whitespace_roundtrip() {
     let src = "flow\tg( )\t{\n \t Hello\t \n}\n";
     let p = assert_lossless(src);
-    let _ = p.errors();
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
 }
 
 #[test]
@@ -316,11 +338,11 @@ fn unclosed_choice_text_bracket_recovers() {
 
 #[test]
 fn every_truncation_point_of_a_well_formed_source_still_roots_at_source_file() {
-    // Truncate a well-formed, multi-construct source at every 10% step
-    // and confirm the parser never panics, never hangs, always still
-    // roots the tree at SOURCE_FILE, and stays lossless — the exact
-    // "recovery-position" property the issue calls for, swept densely
-    // rather than at one or two hand-picked cut points.
+    // Truncate a well-formed, multi-construct source at every 1% step
+    // (101 cut points, 0..=100) and confirm the parser never panics, never
+    // hangs, always still roots the tree at SOURCE_FILE, and stays
+    // lossless — the exact "recovery-position" property the issue calls
+    // for, swept densely rather than at one or two hand-picked cut points.
     let src = concat!(
         "// leading comment\n",
         "flow greet(name) {\n",

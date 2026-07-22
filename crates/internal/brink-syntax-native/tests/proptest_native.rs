@@ -305,6 +305,14 @@ fn truncated(s: &str, cut_ratio: u32) -> String {
 /// A standalone `//` line comment, as its own body line — #1199's
 /// cross-cutting trivia-family coverage: comments interspersed with real
 /// grammar, not just background noise.
+///
+/// The body's char class includes `!`, so when it lands in the first
+/// position the generated line is `//!...` — a `DOC_COMMENT_INNER`, not a
+/// plain `LINE_COMMENT`. That's deliberate: `SyntaxKind::is_trivia` excludes
+/// `DOC_COMMENT_INNER` and `doc_comment::maybe_consume_inner_run` handles it
+/// on its own path, so this generator also exercises that path for free.
+/// Both kinds parse error-free, which is all `line_comment_line_no_errors`
+/// checks.
 fn arb_line_comment_line() -> impl Strategy<Value = String> {
     "[a-zA-Z0-9 ,.!?{}()\\[\\]-]{0,40}".prop_map(|body| format!("//{body}\n"))
 }
