@@ -1,0 +1,29 @@
+---
+source: crates/internal/brink-syntax-native/src/parser/tests/divert.rs
+expression: "format!(\"{:#?}\", p.syntax())"
+---
+SOURCE_FILE@0..27
+  FLOW_DECL@0..26
+    KW_FLOW@0..4 "flow"
+    WHITESPACE@4..5 " "
+    IDENT@5..6 "f"
+    PARAM_LIST@6..8
+      L_PAREN@6..7 "("
+      R_PAREN@7..8 ")"
+    BLOCK@8..26
+      WHITESPACE@8..9 " "
+      L_BRACE@9..10 "{"
+      NEWLINE@10..11 "\n"
+      WHITESPACE@11..13 "  "
+      TUNNEL_CALL@13..24
+        DIVERT@13..15 "->"
+        DIVERT_TARGET@15..22
+          WHITESPACE@15..16 " "
+          PATH@16..22
+            PATH_SEGMENT@16..21
+              IDENT@16..21 "place"
+            WHITESPACE@21..22 " "
+        DIVERT@22..24 "->"
+      NEWLINE@24..25 "\n"
+      R_BRACE@25..26 "}"
+  NEWLINE@26..27 "\n"
