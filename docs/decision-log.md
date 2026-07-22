@@ -1864,3 +1864,35 @@
 - **SCOPE:** moderate (changes CI shape and failure granularity, not what is verified)
 - **WHAT:** Collapse the **9 fuzz-smoke jobs into 1** (loop the targets within a single job) and the **7 sub-minute checks into one lint job** (Format, Clippy, Clippy all-features, no_std ×2, cargo-deny, publishable). E2E stays sharded ×4 and the Test variants stay separate — those are genuinely slow and genuinely distinct failures. Coverage is unchanged; only job packaging changes. Pairs with the `concurrency` group tracked in #1237.
 - **WHY:** Measured on a real successful run: 29 jobs, ~60 job-minutes total. The fuzz-smoke suite alone was **9 jobs — 45% of the account's 20-slot concurrency ceiling — for 17 minutes of work**, and seven sub-minute checks (Format 0.3, no_std ×2 at 0.6, publishable 0.7, cargo-deny 0.8, Clippy 1.0) consumed seven slots plus seven checkout+cache setups for roughly 4 minutes of real work. At 29 jobs per run a **single push nearly saturates the entire account's CI capacity**, making multi-PR wave throughput bounded by job *count* rather than by work done. Accepted costs: coarser failure granularity (a red "Lint & static checks" is less legible than a red "Format"), and slightly longer wall-clock on the merged jobs.
+
+## Native content: alternation markers win over interpolation (`!`/`~`/`&`/`|`-led braces)
+- **WHEN:** 2026-07-22
+- **PROJECT:** brink
+- **SYSTEM:** language design (native surface) + `brink-syntax-native` parser (`family::at_alternation`)
+- **SCOPE:** minor/local (resolves a surface ambiguity found by the #1191 coverage wave)
+- **WHAT:** A `{`-led content brace whose first token is an alternation marker — `!` (once), `~` (shuffle), `&` (cycle), or `|` — is **always** the alternation family, never bare-`{expr}` interpolation. To interpolate an expression that begins with one of those characters, **parenthesize**: `{(!x)}`. Concretely: `{!x}` is a once-alternation (preserving single-branch once like `{!greeting}`, "show once"); `{|x| x}` is a malformed alternation and errors (it is not lambda interpolation). `{-x}` still interpolates because `-` is not a marker.
+- **WHY:** The wave (#1194) flagged that `{!x}` and `{|p| body}` can't reach interpolation even though `{-x}` can, an apparent inconsistency against charter §6 ("bare `{expr}` = interpolation, and nothing else, ever"). The initial fix idea was a lookahead (top-level `|` ⇒ alternation, else interpolation) to make both interpolate. Rejected: (a) it would silently break the single-branch `{!a}` once — flipping "show `a` once" into "render the boolean not-of-`a`", a bad trap; (b) **there is no real use case for interpolating a lambda** — a lambda in content position renders a function value, which is meaningless, so the `|`-carve-out was solving a non-problem (maintainer: "why would we ever want to interpolate a lambda?"). With the lambda case gone, the simplest rule wins: markers are markers, parens escape. `~`/`&` have no prefix-operator meaning so nothing is lost there; only `!` carries a `-`/`!` asymmetry, justified because `!` is genuinely overloaded (once-marker) and `-` is not.
+
+## Native content: a `<-` outside a choice point is a warning, not silent prose
+- **WHEN:** 2026-07-22
+- **PROJECT:** brink
+- **SYSTEM:** language design (native surface) + `brink-syntax-native` parser + diagnostics
+- **SCOPE:** minor/local (a diagnostic on a deliberately-narrowed construct)
+- **WHAT:** `<-` appearing outside a choice point emits a **warning-severity** diagnostic — not a hard error, and not the current silent-swallow-into-prose. The warning should be **higher-confidence when the token(s) after `<-` resolve to a real knot/flow reference** (near-certainly a misremembered ink thread), and softer when it is bare punctuation that may be intentional prose. Threads were narrowed on the native surface (charter §11, line 216: "no native spelling for general `<-`; only the scoped splice inside choice points survives") — the warning fires when an author reaches for the removed general-thread form.
+- **WHY:** In ink, threads (`<- knot`) live in general weave content (harvesting choices into a hub), so a writer coming from ink will type `<- other_knot` out of habit; silently rendering it as literal text (current behavior) is the worst outcome. But a hard error is too strong — `<-` can legitimately appear as characters in dialogue (an arrow), so it must not block. A warning that escalates confidence on a resolvable knot target threads the needle: near-certain mistakes are flagged loudly, genuine prose is not rejected. The runtime thread machinery is unchanged; this is purely a surface diagnostic.
+
+## Native decl: empty `flags` is spelled `flags F = ()`; a bare `flags F =` is an error
+- **WHEN:** 2026-07-22
+- **PROJECT:** brink
+- **SYSTEM:** language design (native surface) + `brink-syntax-native` parser (`decl::flags_member_list`)
+- **SCOPE:** minor/local (fixes the one asymmetric recovery path in `decl.rs`)
+- **WHAT:** `flags F =` with **nothing** after the `=` is a **parse error** (emit a diagnostic, like the sibling zero-progress recovery paths in `decl.rs` already do — param list, struct body, use-tree list). The **explicit empty set** is spelled `flags F = ()` and is **legal**. Mirrors the ruled LIST behavior (a bare `LIST f =` is an error; the empty list has an explicit spelling).
+- **WHY:** The wave (#1192) found `flags_member_list` silently accepts an empty member list on a bare `=` — it `break`s with zero progress and, uniquely among `decl.rs`'s recovery paths, records no diagnostic. That silent accept is a house-rule violation (silent drops are bugs). Maintainer ruled it should behave like LIST: bare-`=` is a mistake and errors, while an intentional empty set gets an unambiguous explicit spelling (`()`), so "empty on purpose" and "forgot the members" are distinguishable at the surface.
+
+## Native content: empty alternation `{~}` / `{&}` is an error (brink-syntax parity)
+- **WHEN:** 2026-07-22
+- **PROJECT:** brink
+- **SYSTEM:** language design (native surface) + `brink-syntax-native` parser
+- **SCOPE:** minor/local (restores parity with the reference grammar)
+- **WHAT:** An alternation with **zero branches** — `{~}`, `{&}`, `{&\n}`, etc. — is a **parse error**, matching brink-syntax's behavior (`sequence_stopping_empty_emits_error` / `sequence_symbol_empty_emits_error`), not the current silent-accept-with-empty-body.
+- **WHY:** The wave (#1194, and the #1247 review) found empty alternations accepted with no diagnostic, a silent divergence from the ink/brink-syntax reference the coverage test was written against. No use case for a zero-branch alternation was identified; maintainer ruled to match parity rather than carry an undocumented native divergence.
