@@ -2070,6 +2070,7 @@ version = "0.0.11"
 dependencies = [
  "brink-format",
  "brink-ir",
+ "brink-project-config",
  "brink-syntax",
  "proptest",
  "rowan",
@@ -2257,7 +2258,6 @@ dependencies = [
 name = "brink-project-config"
 version = "0.0.11"
 dependencies = [
- "brink-analyzer",
  "thiserror 2.0.18",
  "toml",
 ]

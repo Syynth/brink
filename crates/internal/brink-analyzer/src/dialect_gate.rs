@@ -43,15 +43,12 @@ use brink_ir::{
 
 use crate::determinism::LookupSet;
 
-/// Compiler dialect: gates T1b brink-extension syntax. Default `StrictInk` —
-/// divergence from the oracle-anchored ink subset is a visible, one-time,
-/// per-project choice (docs/t1b-surface-spec.md §1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Dialect {
-    #[default]
-    StrictInk,
-    Brink,
-}
+// `Dialect` is defined in `brink-project-config` — it is a project-policy
+// type, more primitive than the analyzer that consumes it, and keeping it
+// there is what lets that crate publish without depending on this one
+// (#1234). Re-exported here so every existing `brink_analyzer::Dialect` /
+// `dialect_gate::Dialect` path keeps working unchanged.
+pub use brink_project_config::Dialect;
 
 /// Walk every file's HIR and emit a dialect-gate diagnostic for each brink
 /// extension construct found: a `~ { … }` block, a `#[…]`/`#{…}` sigil

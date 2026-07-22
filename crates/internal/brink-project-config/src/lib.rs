@@ -18,10 +18,12 @@
 //! - **parses** it, tolerating unknown keys as warnings rather than errors
 //!   (forward compat — an older `brink` binary shouldn't choke on a
 //!   `brink.toml` written for a newer schema) ([`parse_str`]);
-//! - **applies** it to an [`AnalysisOptions`], honoring the precedence rule
+//! - defines the two policy enums the file can set ([`Dialect`],
+//!   [`TypePolicy`]); applying them to an `AnalysisOptions` lives in
+//!   `brink-analyzer` (`AnalysisOptions::apply_project_config`), honoring
+//!   the precedence rule
 //!   every mount must follow: **an explicit API call / CLI flag always wins
 //!   over the file.** The file supplies the *default*; code wins
-//!   ([`apply_to_options`]).
 //!
 //! A missing `brink.toml` is not an error anywhere in this crate — it means
 //! "use `AnalysisOptions::default()` (or whatever the caller already had)",
@@ -43,7 +45,40 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use brink_analyzer::{AnalysisOptions, Dialect, TypePolicy};
+/// Compiler dialect: gates T1b brink-extension syntax. Default `StrictInk` —
+/// divergence from the oracle-anchored ink subset is a visible, one-time,
+/// per-project choice (docs/t1b-surface-spec.md §1).
+///
+/// Defined here rather than in `brink-analyzer` because it is a
+/// **project-policy** type: the analyzer consumes it, this crate parses it,
+/// and owning it here is what keeps this crate free of workspace
+/// dependencies (#1234). `brink-analyzer` re-exports it, so
+/// `brink_analyzer::Dialect` remains the canonical path for consumers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Dialect {
+    #[default]
+    StrictInk,
+    Brink,
+}
+
+/// `types` project policy (docs/typed-mode-spec.md §1). `Gradual` is the
+/// pre-flip behavior — `Unknown` unifies with anything, annotations are
+/// optional seasoning, and the strict checks do not run. `Strict` requires
+/// `dialect = brink`.
+///
+/// The *default* is dialect-keyed since the 2026-07-19 "Typing posture
+/// ruled" decision (issue #1127) — see `brink_analyzer::resolve_type_policy`.
+/// The derived `Default` (`Gradual`) exists only so pre-resolution containers
+/// can derive theirs; policy defaulting must never read it directly.
+///
+/// Defined here for the same reason as [`Dialect`], and re-exported by
+/// `brink-analyzer`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TypePolicy {
+    #[default]
+    Gradual,
+    Strict,
+}
 use thiserror::Error;
 use toml::Value;
 
@@ -275,32 +310,6 @@ pub fn load_from_entry(entry_file: &Path) -> Result<Option<LoadedConfig>, Config
     }))
 }
 
-/// Apply a parsed [`ProjectConfig`] onto an [`AnalysisOptions`], honoring
-/// the #1005 precedence rule: **explicit API calls / CLI flags override the
-/// file.** `dialect_overridden`/`types_overridden` tell this function
-/// whether the caller already has an explicit value for that field (a CLI
-/// flag the user actually passed, an editor session's own
-/// `set_language_dialect`/`set_type_policy` call, …) — when true, that
-/// field is left untouched regardless of what the file says. The file only
-/// ever supplies a *default*.
-///
-/// Fields the file doesn't set are also left untouched (so `options`
-/// should already carry whatever it would have without a config file —
-/// typically `AnalysisOptions::default()`).
-pub fn apply_to_options(
-    options: &mut AnalysisOptions,
-    config: &ProjectConfig,
-    dialect_overridden: bool,
-    types_overridden: bool,
-) {
-    if !dialect_overridden && let Some(dialect) = config.dialect {
-        options.dialect = dialect;
-    }
-    if !types_overridden && let Some(types) = config.types {
-        options.types = Some(types);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,67 +409,6 @@ mod tests {
             err,
             ConfigError::NotATable { .. } | ConfigError::Toml(_)
         ));
-    }
-
-    // ── apply_to_options ─────────────────────────────────────────────
-
-    #[test]
-    fn apply_sets_unset_fields_from_config() {
-        let mut options = AnalysisOptions::default();
-        let config = ProjectConfig {
-            dialect: Some(Dialect::Brink),
-            types: Some(TypePolicy::Strict),
-        };
-        apply_to_options(&mut options, &config, false, false);
-        assert_eq!(options.dialect, Dialect::Brink);
-        assert_eq!(options.types, Some(TypePolicy::Strict));
-    }
-
-    #[test]
-    fn apply_leaves_overridden_fields_alone() {
-        let mut options = AnalysisOptions {
-            dialect: Dialect::StrictInk,
-            types: Some(TypePolicy::Gradual),
-            ..AnalysisOptions::default()
-        };
-        let config = ProjectConfig {
-            dialect: Some(Dialect::Brink),
-            types: Some(TypePolicy::Strict),
-        };
-        // Both overridden: explicit calls win, file is ignored entirely.
-        apply_to_options(&mut options, &config, true, true);
-        assert_eq!(options.dialect, Dialect::StrictInk);
-        assert_eq!(options.types, Some(TypePolicy::Gradual));
-    }
-
-    #[test]
-    fn apply_mixed_override_only_touches_non_overridden_field() {
-        let mut options = AnalysisOptions {
-            dialect: Dialect::StrictInk,
-            types: Some(TypePolicy::Gradual),
-            ..AnalysisOptions::default()
-        };
-        let config = ProjectConfig {
-            dialect: Some(Dialect::Brink),
-            types: Some(TypePolicy::Strict),
-        };
-        // dialect explicitly overridden (stays StrictInk); types is not
-        // (file wins, becomes Strict).
-        apply_to_options(&mut options, &config, true, false);
-        assert_eq!(options.dialect, Dialect::StrictInk);
-        assert_eq!(options.types, Some(TypePolicy::Strict));
-    }
-
-    #[test]
-    fn apply_with_no_config_values_leaves_options_untouched() {
-        let mut options = AnalysisOptions {
-            dialect: Dialect::Brink,
-            types: Some(TypePolicy::Strict),
-            ..AnalysisOptions::default()
-        };
-        apply_to_options(&mut options, &ProjectConfig::default(), false, false);
-        assert_eq!(options.dialect, Dialect::Brink);
-        assert_eq!(options.types, Some(TypePolicy::Strict));
     }
 
     // ── discovery ─────────────────────────────────────────────────────

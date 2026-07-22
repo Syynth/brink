@@ -43,6 +43,7 @@ pub use await_purity::{
 };
 pub use brink_ir::FileId;
 pub use brink_ir::ResolutionMap;
+pub use brink_project_config::ProjectConfig;
 pub use comparator_contract::{
     check as comparator_contract_diagnostics, comparator_callees, hir_has_comparator_site,
 };
@@ -118,6 +119,36 @@ impl AnalysisOptions {
     #[must_use]
     pub fn type_policy(&self) -> TypePolicy {
         resolve_type_policy(self.dialect, self.types)
+    }
+
+    /// Apply a parsed `brink.toml` [`ProjectConfig`] onto these options,
+    /// honoring the #1005 precedence rule: **explicit API calls / CLI flags
+    /// override the file.** `dialect_overridden`/`types_overridden` tell this
+    /// whether the caller already has an explicit value for that field (a CLI
+    /// flag the user actually passed, an editor session's own
+    /// `set_language_dialect`/`set_type_policy` call, …) — when true, that
+    /// field is left untouched regardless of what the file says. The file only
+    /// ever supplies a *default*.
+    ///
+    /// Fields the file doesn't set are also left untouched, so `self` should
+    /// already carry whatever it would have without a config file (typically
+    /// [`AnalysisOptions::default()`]).
+    ///
+    /// Lives here rather than in `brink-project-config` so that crate needs no
+    /// workspace dependencies and can publish standalone (#1234) — it owns the
+    /// policy *types*, this crate owns applying them to its own options.
+    pub fn apply_project_config(
+        &mut self,
+        config: &ProjectConfig,
+        dialect_overridden: bool,
+        types_overridden: bool,
+    ) {
+        if !dialect_overridden && let Some(dialect) = config.dialect {
+            self.dialect = dialect;
+        }
+        if !types_overridden && let Some(types) = config.types {
+            self.types = Some(types);
+        }
     }
 }
 
@@ -791,8 +822,8 @@ mod tests {
     use brink_ir::{BaseType, HostManifest, SemanticTypeDef};
 
     use super::{
-        AnalysisOptions, Dialect, FileId, SemanticTypeDiagnosticSeverity, TypePolicy, analyze,
-        analyze_with_options,
+        AnalysisOptions, Dialect, FileId, ProjectConfig, SemanticTypeDiagnosticSeverity,
+        TypePolicy, analyze, analyze_with_options,
     };
 
     /// ink with an `EXTERNAL` whose param is typed with a host semantic type
@@ -1077,5 +1108,67 @@ EXTERNAL add_state(who)
         };
         let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    // ── AnalysisOptions::apply_project_config (moved from
+    // brink-project-config with the #1234 dependency inversion) ──────
+
+    #[test]
+    fn apply_sets_unset_fields_from_config() {
+        let mut options = AnalysisOptions::default();
+        let config = ProjectConfig {
+            dialect: Some(Dialect::Brink),
+            types: Some(TypePolicy::Strict),
+        };
+        options.apply_project_config(&config, false, false);
+        assert_eq!(options.dialect, Dialect::Brink);
+        assert_eq!(options.types, Some(TypePolicy::Strict));
+    }
+
+    #[test]
+    fn apply_leaves_overridden_fields_alone() {
+        let mut options = AnalysisOptions {
+            dialect: Dialect::StrictInk,
+            types: Some(TypePolicy::Gradual),
+            ..AnalysisOptions::default()
+        };
+        let config = ProjectConfig {
+            dialect: Some(Dialect::Brink),
+            types: Some(TypePolicy::Strict),
+        };
+        // Both overridden: explicit calls win, file is ignored entirely.
+        options.apply_project_config(&config, true, true);
+        assert_eq!(options.dialect, Dialect::StrictInk);
+        assert_eq!(options.types, Some(TypePolicy::Gradual));
+    }
+
+    #[test]
+    fn apply_mixed_override_only_touches_non_overridden_field() {
+        let mut options = AnalysisOptions {
+            dialect: Dialect::StrictInk,
+            types: Some(TypePolicy::Gradual),
+            ..AnalysisOptions::default()
+        };
+        let config = ProjectConfig {
+            dialect: Some(Dialect::Brink),
+            types: Some(TypePolicy::Strict),
+        };
+        // dialect explicitly overridden (stays StrictInk); types is not
+        // (file wins, becomes Strict).
+        options.apply_project_config(&config, true, false);
+        assert_eq!(options.dialect, Dialect::StrictInk);
+        assert_eq!(options.types, Some(TypePolicy::Strict));
+    }
+
+    #[test]
+    fn apply_with_no_config_values_leaves_options_untouched() {
+        let mut options = AnalysisOptions {
+            dialect: Dialect::Brink,
+            types: Some(TypePolicy::Strict),
+            ..AnalysisOptions::default()
+        };
+        options.apply_project_config(&ProjectConfig::default(), false, false);
+        assert_eq!(options.dialect, Dialect::Brink);
+        assert_eq!(options.types, Some(TypePolicy::Strict));
     }
 }

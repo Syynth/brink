@@ -11,6 +11,9 @@ description = "Cross-file semantic analysis for inkle's ink narrative scripting 
 
 [dependencies]
 brink-ir = { workspace = true }
+# Owns the project-policy types (Dialect, TypePolicy) this crate re-exports —
+# the edge points this way so brink-project-config can publish standalone (#1234).
+brink-project-config = { workspace = true }
 brink-format = { workspace = true }
 brink-syntax = { workspace = true }
 rowan.workspace = true

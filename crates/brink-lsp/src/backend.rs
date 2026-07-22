@@ -833,8 +833,7 @@ fn resolve_language_options(
                     for warning in &warnings {
                         tracing::warn!("[{}] {warning}", path.display());
                     }
-                    brink_project_config::apply_to_options(
-                        &mut options,
+                    options.apply_project_config(
                         &config,
                         overrides.dialect.is_some(),
                         overrides.types.is_some(),
