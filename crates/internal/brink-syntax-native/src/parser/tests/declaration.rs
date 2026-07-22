@@ -251,3 +251,950 @@ fn outer_and_inner_doc_tokens_are_not_trivia_in_the_tree() {
     assert_eq!(tok.kind(), SyntaxKind::DOC_COMMENT_OUTER);
     assert!(!tok.kind().is_trivia());
 }
+
+// ── #1192: exhaustive per-shape coverage ──────────────────────────────
+//
+// Parity target: `brink-syntax/src/parser/tests/declaration/mod.rs` (28
+// tests) + `brink-syntax/src/parser/tests/knot/mod.rs` (13 tests) —
+// `FLOW_DECL`'s nested form is the native analog of ink's knot/stitch
+// nesting. The tests above already exercise doc-comment CST attachment
+// (B0.6b); everything below fills the remaining per-node-kind, param,
+// use-tree, and error-recovery gaps the issue calls out.
+
+// ── flow / fn: params, ref, nested stitches ────────────────────────────
+
+#[test]
+fn flow_decl_single_param() {
+    let p = assert_lossless("flow greet(name) {\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    let params: Vec<_> = flow.param_list().expect("param list").params().collect();
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0].name_token().expect("param name").text(), "name");
+    assert!(!params[0].is_ref());
+}
+
+#[test]
+fn flow_decl_multiple_params_mixed_ref() {
+    let p = assert_lossless("flow modify(ref x, y, ref z) {\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    let params: Vec<_> = flow.param_list().expect("param list").params().collect();
+    assert_eq!(params.len(), 3);
+    let shape: Vec<(String, bool)> = params
+        .iter()
+        .map(|p| (p.name_token().expect("name").text().to_string(), p.is_ref()))
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            ("x".to_string(), true),
+            ("y".to_string(), false),
+            ("z".to_string(), true),
+        ]
+    );
+}
+
+#[test]
+fn fn_decl_ref_param() {
+    let p = assert_lossless("fn tweak(ref amount) {\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let f: ast::FnDecl = find_child(&p.syntax()).expect("fn decl");
+    let params: Vec<_> = f.param_list().expect("param list").params().collect();
+    assert_eq!(params.len(), 1);
+    assert!(params[0].is_ref());
+}
+
+#[test]
+fn flow_decl_empty_param_list() {
+    // `flow name() { … }` — param list present but empty (distinct shape
+    // from no param list at all, e.g. `flow name { … }`).
+    let p = assert_lossless("flow greet() {\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    assert_eq!(flow.param_list().expect("param list").params().count(), 0);
+}
+
+#[test]
+fn flow_decl_no_param_list_at_all() {
+    // `flow name { … }` — no `(` at all is a distinct valid shape from
+    // `flow name() { … }` (`flow_decl` only calls `param_list` when
+    // `p.at(L_PAREN)`).
+    let p = assert_lossless("flow greet {\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    assert!(flow.param_list().is_none());
+}
+
+#[test]
+fn multiple_sibling_stitches_under_one_flow() {
+    let src =
+        "flow garden() {\n  flow gate() {\n    Creak.\n  }\n  flow shed() {\n    Dusty.\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    let stitches: Vec<_> = flow.stitches().collect();
+    assert_eq!(stitches.len(), 2);
+    assert_eq!(stitches[0].name_token().expect("name").text(), "gate");
+    assert_eq!(stitches[1].name_token().expect("name").text(), "shed");
+}
+
+#[test]
+fn doubly_nested_stitch_flow() {
+    // A stitch may itself nest a stitch — `FLOW_DECL` nesting has no
+    // charter-imposed depth limit (only the parser's general `MAX_DEPTH`
+    // guard, exercised separately by `trivia.rs`'s adversarial-depth test).
+    let src = "flow outer() {\n  flow middle() {\n    flow inner() {\n      Deep.\n    }\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL), 3);
+}
+
+// ── var / const: value accessor, no-initializer prose fallback ────────
+
+#[test]
+fn var_decl_value_accessor_returns_the_initializer_node() {
+    let p = assert_lossless("var hp = 10\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let v: ast::VarDecl = find_child(&p.syntax()).expect("var decl");
+    assert_eq!(v.name_token().expect("name").text(), "hp");
+    let value = v.value().expect("initializer");
+    assert_eq!(value.kind(), SyntaxKind::INTEGER_LIT);
+}
+
+#[test]
+fn const_decl_value_accessor_returns_the_initializer_node() {
+    let p = assert_lossless("const MAX = 100\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let c: ast::ConstDecl = find_child(&p.syntax()).expect("const decl");
+    assert_eq!(c.name_token().expect("name").text(), "MAX");
+    let value = c.value().expect("initializer");
+    assert_eq!(value.kind(), SyntaxKind::INTEGER_LIT);
+}
+
+#[test]
+fn var_without_initializer_shape_is_prose_not_a_decl() {
+    // `at_binding_decl` requires `IDENT EQ` after the keyword — bare `var
+    // hp` (no `=`) fails that lookahead and falls through to ordinary
+    // prose (Finding #5's disambiguation pattern, exercised here for
+    // `var`/`const` specifically rather than `flow`, which `trivia.rs`
+    // already covers).
+    let src = "var hp on the wall.\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::VAR_DECL));
+}
+
+#[test]
+fn const_without_initializer_shape_is_prose_not_a_decl() {
+    let src = "const answers are hard to find.\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::CONST_DECL));
+}
+
+// ── flags: active-marker accessor, dangling/malformed shapes ──────────
+
+#[test]
+fn flags_member_is_active_distinguishes_parenthesized_members() {
+    let p = assert_lossless("flags Mood = (calm), wary, (hostile)\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::FlagsDecl = find_child(&p.syntax()).expect("flags decl");
+    let members: Vec<_> = decl.member_list().expect("member list").members().collect();
+    assert_eq!(members.len(), 3);
+    let shape: Vec<(String, bool)> = members
+        .iter()
+        .map(|m| {
+            (
+                m.name_token().expect("name").text().to_string(),
+                m.is_active(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            ("calm".to_string(), true),
+            ("wary".to_string(), false),
+            ("hostile".to_string(), true),
+        ]
+    );
+}
+
+#[test]
+fn flags_member_all_bare_no_active_markers() {
+    let p = assert_lossless("flags Colors = red, green, blue\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::FlagsDecl = find_child(&p.syntax()).expect("flags decl");
+    let members: Vec<_> = decl.member_list().expect("member list").members().collect();
+    assert_eq!(members.len(), 3);
+    assert!(members.iter().all(|m| !m.is_active()));
+}
+
+#[test]
+fn flags_member_all_parenthesized() {
+    let p = assert_lossless("flags Colors = (red), (green), (blue)\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::FlagsDecl = find_child(&p.syntax()).expect("flags decl");
+    let members: Vec<_> = decl.member_list().expect("member list").members().collect();
+    assert!(members.iter().all(ast::FlagsMember::is_active));
+}
+
+#[test]
+fn flags_decl_single_member() {
+    let p = assert_lossless("flags Solo = only\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::FlagsDecl = find_child(&p.syntax()).expect("flags decl");
+    assert_eq!(
+        decl.member_list().expect("member list").members().count(),
+        1
+    );
+}
+
+#[test]
+fn flags_decl_dangling_no_members_after_eq_parses_with_empty_member_list() {
+    // Documents actual behavior rather than asserting a fix (TEST-ONLY
+    // issue): `flags_member_list`'s loop makes zero progress when nothing
+    // IDENT/`(`-shaped follows the `=` and simply `break`s — no
+    // `error_recover`, so an empty `FLAGS_MEMBER_LIST` is accepted
+    // silently (no diagnostic). Not asserting this is correct or
+    // incorrect grammar design; only that it doesn't panic and round-trips
+    // losslessly, and that the member list is empty as a result.
+    let src = "flags F =\n";
+    let p = assert_lossless(src);
+    let decl: ast::FlagsDecl = find_child(&p.syntax()).expect("flags decl still parses");
+    assert_eq!(
+        decl.member_list()
+            .expect("member list node still present")
+            .members()
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn flags_without_eq_shape_is_prose_not_a_decl() {
+    // `at_flags_decl` requires `IDENT EQ` after `flags` — without the `=`
+    // it falls through to prose, same disambiguation as `var`/`const`.
+    let src = "flags are usually red or white.\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::FLAGS_DECL));
+}
+
+// ── struct: field shapes, generic-type gap, malformed bodies ──────────
+
+#[test]
+fn struct_decl_single_field() {
+    let p = assert_lossless("struct Wrapper {\n  value: int\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::StructDecl = find_child(&p.syntax()).expect("struct decl");
+    let fields: Vec<_> = decl.fields().collect();
+    assert_eq!(fields.len(), 1);
+    assert_eq!(fields[0].name_token().expect("name").text(), "value");
+    let ty = fields[0].type_path().expect("type path");
+    assert_eq!(
+        ty.segments()
+            .map(|t| t.text().to_string())
+            .collect::<Vec<_>>(),
+        vec!["int"]
+    );
+}
+
+#[test]
+fn struct_decl_multiple_fields() {
+    let p = assert_lossless("struct Item {\n  name: string,\n  weight: int\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::StructDecl = find_child(&p.syntax()).expect("struct decl");
+    let names: Vec<_> = decl
+        .fields()
+        .map(|f| f.name_token().expect("name").text().to_string())
+        .collect();
+    assert_eq!(names, vec!["name", "weight"]);
+}
+
+#[test]
+fn struct_decl_empty_body() {
+    let p = assert_lossless("struct Empty {\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::StructDecl = find_child(&p.syntax()).expect("struct decl");
+    assert_eq!(decl.fields().count(), 0);
+}
+
+#[test]
+fn struct_field_dotted_type_path() {
+    // `path()` accepts `.`/`::`-joined segments — a struct field's type may
+    // be a module-qualified path, not just a bare `IDENT`.
+    let p = assert_lossless("struct Wrapper {\n  loc: geo::Point\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::StructDecl = find_child(&p.syntax()).expect("struct decl");
+    let field = decl.fields().next().expect("field");
+    let segs: Vec<_> = field
+        .type_path()
+        .expect("type path")
+        .segments()
+        .map(|t| t.text().to_string())
+        .collect();
+    assert_eq!(segs, vec!["geo", "Point"]);
+}
+
+#[test]
+fn struct_decl_missing_colon_recovers() {
+    // Missing `:` between field name and type: `struct_field` records an
+    // error but still parses the following token as the type path (no
+    // `error_recover`/zero-progress path here since `expect(IDENT)` for
+    // the name already made forward progress) — documents actual recovery
+    // shape, not asserting it's the "right" shape.
+    let src = "struct S {\n  name int\n}\n";
+    let p = assert_lossless(src);
+    assert!(!p.errors().is_empty(), "expected a missing-colon error");
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::STRUCT_DECL));
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::STRUCT_FIELD));
+}
+
+#[test]
+fn struct_decl_unexpected_token_in_body_recovers() {
+    // A digit where a field name is expected: `struct_field` returns
+    // immediately (zero progress) on a non-`IDENT` token, so the body loop's
+    // `error_recover` wraps it as an `ERROR` node and keeps scanning.
+    let src = "struct S {\n  1\n  ok: int\n}\n";
+    let p = assert_lossless(src);
+    assert!(
+        p.errors().iter().any(|e| e.message.contains("struct body")),
+        "expected 'unexpected token in struct body' error, got: {:?}",
+        p.errors()
+    );
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::ERROR));
+    let decl: ast::StructDecl = find_child(&p.syntax()).expect("struct decl still recovers");
+    assert_eq!(
+        decl.fields().count(),
+        1,
+        "the well-formed field after the garbage still parses"
+    );
+}
+
+#[test]
+fn struct_decl_generic_field_type_is_a_documented_gap_not_a_panic() {
+    // `struct_field`'s own doc comment already scopes this out: "a bare
+    // dotted path in this skeleton grammar (no generics/fn-types)". A
+    // generic field type (`array<int>`, the brink-syntax parity target's
+    // `struct_decl_generic_field_type` shape) is therefore NOT a supported
+    // shape here — this is a documented scope gap, not a bug this
+    // TEST-ONLY issue should paper over. Only asserting the resilience
+    // property: no panic, lossless round-trip, and at least one recorded
+    // error surfacing the gap.
+    let src = "struct Bag {\n  items: array<int>\n}\n";
+    let p = assert_lossless(src);
+    assert!(
+        !p.errors().is_empty(),
+        "expected the unsupported `<...>` shape to surface at least one error"
+    );
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::STRUCT_DECL));
+}
+
+#[test]
+fn struct_without_brace_shape_is_prose_not_a_decl() {
+    let src = "struct is just a word in this sentence.\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::STRUCT_DECL));
+}
+
+// ── extern: params, missing close-paren, keyword-lookahead prose ──────
+
+#[test]
+fn extern_decl_no_params() {
+    let p = assert_lossless("extern log()\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::ExternDecl = find_child(&p.syntax()).expect("extern decl");
+    assert_eq!(decl.name_token().expect("name").text(), "log");
+    assert_eq!(decl.param_list().expect("param list").params().count(), 0);
+}
+
+#[test]
+fn extern_decl_multiple_params() {
+    let p = assert_lossless("extern setBrightness(x, y, ref z)\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::ExternDecl = find_child(&p.syntax()).expect("extern decl");
+    assert_eq!(decl.param_list().expect("param list").params().count(), 3);
+}
+
+#[test]
+fn extern_decl_bare_name_with_no_parens_is_prose_not_a_decl() {
+    // Unlike `flow`/`fn` (whose guard accepts EITHER `(` or `{` as the
+    // third token), `at_extern_decl` requires `L_PAREN` specifically — an
+    // `extern name` with no `(` at all never satisfies the lookahead and
+    // falls through to prose (mirrors the ink precedent: `EXTERNAL` always
+    // requires `()`, even for zero params — `brink-syntax`'s
+    // `external_no_params` test still writes `EXTERNAL myFunc()\n`).
+    // `extern_decl`'s own `if p.at(L_PAREN) { param_list(p) }` guard is
+    // therefore only ever taken (this is not dead code with no params at
+    // all reachable — `extern log()` still hits it with an empty list).
+    let src = "extern log\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::EXTERN_DECL));
+}
+
+#[test]
+fn extern_without_paren_shape_is_prose_not_a_decl() {
+    // `at_extern_decl` requires `IDENT L_PAREN` — without the paren it's
+    // prose, same disambiguation pattern.
+    let src = "extern circumstances prevented it.\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::EXTERN_DECL));
+}
+
+// ── param-list / param error recovery (shared by flow/fn/extern) ──────
+
+#[test]
+fn missing_param_close_paren_recovers() {
+    // No `)` before the body's `{` — `param_list` breaks its inner loop
+    // (no comma follows `b`), `p.expect(R_PAREN)` records an error without
+    // consuming, and `flow_decl` still finds `L_BRACE` next and parses the
+    // body normally.
+    let src = "flow greet(a, b {\n}\n";
+    let p = assert_lossless(src);
+    assert!(
+        p.errors().iter().any(|e| e.message.contains("R_PAREN")),
+        "expected an R_PAREN error, got: {:?}",
+        p.errors()
+    );
+    let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl still recovers");
+    assert!(
+        flow.body().is_some(),
+        "body still parses after the missing `)`"
+    );
+}
+
+#[test]
+fn param_ref_without_following_name_records_error_but_recovers() {
+    // `ref` consumed, then `expect(IDENT)` fails — `param` still makes
+    // forward progress (the `ref` token), so the outer param-list loop
+    // does NOT treat this as zero-progress; it just carries the recorded
+    // error forward and keeps parsing normally.
+    let src = "flow f(ref) {\n}\n";
+    let p = assert_lossless(src);
+    assert!(
+        !p.errors().is_empty(),
+        "expected a missing-param-name error"
+    );
+    let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl still recovers");
+    assert!(flow.body().is_some());
+}
+
+#[test]
+fn unexpected_token_in_param_list_recovers() {
+    // A leading comma with nothing before it: `param` makes zero progress
+    // (its `IDENT` expectation fails immediately), so the outer loop's
+    // `error_recover` wraps the comma itself in an `ERROR` node and the
+    // list still closes on `)`.
+    let src = "flow f(, a) {\n}\n";
+    let p = assert_lossless(src);
+    assert!(
+        p.errors()
+            .iter()
+            .any(|e| e.message.contains("parameter list")),
+        "expected 'unexpected token in parameter list' error, got: {:?}",
+        p.errors()
+    );
+    let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl still recovers");
+    let params: Vec<_> = flow
+        .param_list()
+        .expect("param list")
+        .params()
+        .filter(|p| p.name_token().is_some())
+        .collect();
+    assert_eq!(
+        params.len(),
+        1,
+        "the well-formed param after the garbage comma still parses"
+    );
+}
+
+// ── import: path shapes, doc attachment ────────────────────────────────
+
+#[test]
+fn import_decl_single_segment_path() {
+    let p = assert_lossless("import items\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::ImportDecl = find_child(&p.syntax()).expect("import decl");
+    let segs: Vec<_> = decl
+        .path()
+        .expect("path")
+        .segments()
+        .map(|t| t.text().to_string())
+        .collect();
+    assert_eq!(segs, vec!["items"]);
+}
+
+#[test]
+fn import_decl_dotted_path() {
+    let p = assert_lossless("import story::items.detail\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::ImportDecl = find_child(&p.syntax()).expect("import decl");
+    let path = decl.path().expect("path");
+    assert!(path.crosses_module_wall());
+    let segs: Vec<_> = path.segments().map(|t| t.text().to_string()).collect();
+    assert_eq!(segs, vec!["story", "items", "detail"]);
+}
+
+#[test]
+fn leading_doc_comment_attaches_to_import_decl() {
+    let src = "/// what this pulls in\nimport story::items\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::ImportDecl = find_child(&p.syntax()).expect("import decl");
+    assert!(decl.doc().is_some());
+}
+
+// ── use: bare / aliased / nested-group forms, malformed trees ─────────
+
+#[test]
+fn use_decl_bare_path_no_alias_no_group() {
+    let p = assert_lossless("use story::npcs::guard;\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::UseDecl = find_child(&p.syntax()).expect("use decl");
+    let tree = decl.tree().expect("use tree");
+    let segs: Vec<_> = tree.path_segments().map(|t| t.text().to_string()).collect();
+    assert_eq!(segs, vec!["story", "npcs", "guard"]);
+    assert!(tree.alias_token().is_none());
+    assert!(tree.nested_list().is_none());
+}
+
+#[test]
+fn use_decl_aliased_form() {
+    let p = assert_lossless("use story::npcs::merchant as trader;\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::UseDecl = find_child(&p.syntax()).expect("use decl");
+    let tree = decl.tree().expect("use tree");
+    assert_eq!(tree.alias_token().expect("alias").text(), "trader");
+}
+
+#[test]
+fn use_decl_nested_group_form() {
+    let p = assert_lossless("use story::npcs::{guard, merchant as trader};\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::UseDecl = find_child(&p.syntax()).expect("use decl");
+    let tree = decl.tree().expect("use tree");
+    let group = tree.nested_list().expect("nested group");
+    let members: Vec<_> = group.trees().collect();
+    assert_eq!(members.len(), 2);
+    assert_eq!(
+        members[0]
+            .path_segments()
+            .map(|t| t.text().to_string())
+            .collect::<Vec<_>>(),
+        vec!["guard"]
+    );
+    assert_eq!(members[1].alias_token().expect("alias").text(), "trader");
+}
+
+#[test]
+fn use_decl_nested_group_of_groups() {
+    // A group member may itself be a nested group — `use_tree` recurses
+    // into `use_tree_list` whenever `::` is immediately followed by `{`,
+    // regardless of depth.
+    let p = assert_lossless("use a::{b::{c, d}, e};\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::USE_TREE_LIST), 2);
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::USE_TREE), 5);
+}
+
+#[test]
+fn use_decl_bare_group_with_no_leading_path_is_unreachable_todo_bug() {
+    // FOUND BUG (TEST-ONLY issue #1192 — not fixed here, reported in the
+    // PR/issue per the house rule): `use_tree`'s grammar rule genuinely
+    // supports a bare `{ … }` group with no leading path (`use_tree`'s
+    // `else if p.at(L_BRACE) { use_tree_list(p) }` branch), but that branch
+    // is UNREACHABLE from `item()`'s dispatcher — `at_use_decl` only
+    // checks `matches!(p.nth(1), IDENT | COLON_COLON)` (decl.rs line ~63),
+    // never `L_BRACE`. So `use {a, b};` never satisfies the `USE_DECL`
+    // lookahead at all; `use` is bumped bare as leftover, and the `{a, b}`
+    // that follows is misparsed as bare-brace `{expr}` interpolation
+    // instead (`a, b` isn't a valid expression, hence the two recorded
+    // errors below). TODO(#1192 scope note): either widen `at_use_decl` to
+    // recognize a bare `L_BRACE` as a third valid second-token shape, or
+    // decide the bare-group form isn't meant to be reachable and prune the
+    // dead `use_tree` branch — asserting CURRENT (broken) behavior here,
+    // not the intended one.
+    let src = "use {a, b};\n";
+    let p = assert_lossless(src);
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::USE_DECL));
+    assert!(
+        p.errors()
+            .iter()
+            .any(|e| e.message.contains("expected R_BRACE")),
+        "documents the misparse-as-interpolation fallout, got: {:?}",
+        p.errors()
+    );
+}
+
+#[test]
+fn use_tree_malformed_missing_path_recovers() {
+    // `use ::foo;` — `at_use_decl`'s weaker two-token check (Finding #5's
+    // documented residual risk: `nth(1)` is `COLON_COLON`, which passes the
+    // guard) commits to `USE_DECL`, but `use_tree` itself sees neither
+    // `IDENT` nor `L_BRACE` first and records "expected a path or `{`"
+    // without consuming anything. `USE_DECL` still closes (with just `use`
+    // as its content); the leftover `::foo;` falls through to the next
+    // `item()` call as ordinary prose on its own line — it is NOT silently
+    // absorbed into the `USE_DECL`.
+    let src = "use ::foo;\n";
+    let p = assert_lossless(src);
+    assert!(
+        p.errors().iter().any(|e| e.message.contains("path or `{`")),
+        "expected the use-tree error, got: {:?}",
+        p.errors()
+    );
+    let decl: ast::UseDecl = find_child(&p.syntax()).expect("use decl still recovers");
+    assert!(
+        decl.tree().is_some(),
+        "USE_TREE node still exists, just empty"
+    );
+    assert_eq!(
+        decl.tree().expect("checked above").path_segments().count(),
+        0
+    );
+    // The leftover `::foo;` is not swallowed into USE_DECL's text.
+    assert!(!decl.syntax().text().to_string().contains("foo"));
+}
+
+#[test]
+fn use_tree_list_unexpected_token_recovers() {
+    // Two garbage tokens (`1`, then the stray `,` it leaves behind) inside
+    // a use-tree group, followed by a well-formed member — each garbage
+    // token is wrapped in its own `ERROR` node by `use_tree_list`'s
+    // zero-progress `error_recover`, and the well-formed `b` after them
+    // still parses as a real `USE_TREE`.
+    let src = "use a::{1, b};\n";
+    let p = assert_lossless(src);
+    assert!(
+        p.errors().len() >= 2,
+        "expected at least 2 recovery errors, got: {:?}",
+        p.errors()
+    );
+    let decl: ast::UseDecl = find_child(&p.syntax()).expect("use decl still recovers");
+    let group = decl
+        .tree()
+        .expect("use tree")
+        .nested_list()
+        .expect("nested group");
+    let names: Vec<_> = group
+        .trees()
+        .flat_map(|t| {
+            t.path_segments()
+                .map(|tok| tok.text().to_string())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(names, vec!["b"]);
+}
+
+#[test]
+fn use_decl_optional_semicolon_both_present_and_absent_round_trip() {
+    // Exercises both branches of `use_decl`'s `p.eat(SEMICOLON)` in one
+    // test — complements `use_decl_semicolon_is_consumed_by_the_decl_not_left_as_prose`
+    // and `use_decl_without_semicolon_still_parses` above with an explicit
+    // side-by-side on the same member shape.
+    for src in ["use a::b;\n", "use a::b\n"] {
+        let p = assert_lossless(src);
+        assert!(p.errors().is_empty(), "{src:?} errors: {:?}", p.errors());
+        assert!(has_node_kind(&p.syntax(), SyntaxKind::USE_DECL));
+    }
+}
+
+#[test]
+fn leading_doc_comment_attaches_to_use_decl() {
+    let src = "/// bring these into scope\nuse a::b;\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::UseDecl = find_child(&p.syntax()).expect("use decl");
+    assert!(decl.doc().is_some());
+}
+
+// ── module: nested body, doc attachment, malformed shape ──────────────
+
+#[test]
+fn module_decl_basic() {
+    let p = assert_lossless("module inner {\n  var secret = 1\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::ModuleDecl = find_child(&p.syntax()).expect("module decl");
+    assert_eq!(decl.name_token().expect("name").text(), "inner");
+    let body = decl.body().expect("module body");
+    assert!(has_node_kind(body.syntax(), SyntaxKind::VAR_DECL));
+}
+
+#[test]
+fn module_decl_nested_module() {
+    let p = assert_lossless("module outer {\n  module inner {\n    var x = 1\n  }\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::MODULE_DECL), 2);
+}
+
+#[test]
+fn leading_doc_comment_attaches_to_module_decl() {
+    let src = "/// groups the secret stuff\nmodule inner {\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::ModuleDecl = find_child(&p.syntax()).expect("module decl");
+    assert!(decl.doc().is_some());
+}
+
+#[test]
+fn module_without_brace_shape_is_prose_not_a_decl() {
+    let src = "module citizens gathered in the square.\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::MODULE_DECL));
+}
+
+#[test]
+fn module_decl_missing_brace_body_recovers() {
+    // `module name` with no `{` at all — `module_decl` falls to its
+    // explicit `else` branch and records an error instead of a body, but
+    // is guarded by `at_module_decl` (which requires `L_BRACE` at position
+    // 2), so this can only be reached if a body vanishes mid-stream
+    // (unterminated input); confirmed here on a truncated file.
+    let src = "module inner {\n  var x = 1\n";
+    let p = assert_lossless(src);
+    assert!(
+        !p.errors().is_empty(),
+        "expected recovery errors: {:?}",
+        p.errors()
+    );
+    let decl: ast::ModuleDecl = find_child(&p.syntax()).expect("module decl still recovers");
+    assert!(
+        decl.body().is_some(),
+        "the unterminated body still parses as BLOCK"
+    );
+}
+
+// ── Adversarial: property-based coverage scoped to declarations ───────
+//
+// Mirrors `tests/proptest_native.rs`'s generator style (studied from that
+// file) but scoped to the declaration shapes this issue owns — per the
+// wave instructions, a proptest generator for #1192 lives in this family
+// file, not in the shared `proptest_native.rs` integration test (owned by
+// #1199 this wave).
+
+mod prop {
+    use proptest::prelude::*;
+
+    const NUM_CASES: u32 = 256;
+
+    const KEYWORDS: &[&str] = &[
+        "flow", "fn", "var", "const", "flags", "struct", "extern", "import", "use", "module",
+        "return", "ref", "if", "match", "else", "as", "true", "false", "END", "DONE",
+    ];
+
+    fn arb_ident() -> impl Strategy<Value = String> {
+        "[a-z][a-z0-9_]{0,7}"
+            .prop_filter("must not be a keyword", |s| !KEYWORDS.contains(&s.as_str()))
+    }
+
+    fn arb_type_ident() -> impl Strategy<Value = String> {
+        "[A-Z][A-Za-z0-9_]{0,7}"
+    }
+
+    fn arb_const_decl() -> impl Strategy<Value = String> {
+        (arb_type_ident(), 0..10_000u32).prop_map(|(name, n)| format!("const {name} = {n}\n"))
+    }
+
+    fn arb_flags_member() -> impl Strategy<Value = String> {
+        (arb_ident(), prop::bool::ANY)
+            .prop_map(|(name, active)| if active { format!("({name})") } else { name })
+    }
+
+    fn arb_flags_decl() -> impl Strategy<Value = String> {
+        (
+            arb_type_ident(),
+            prop::collection::vec(arb_flags_member(), 1..=5),
+        )
+            .prop_map(|(name, members)| format!("flags {name} = {}\n", members.join(", ")))
+    }
+
+    fn arb_struct_field() -> impl Strategy<Value = String> {
+        (arb_ident(), arb_ident()).prop_map(|(name, ty)| format!("  {name}: {ty}"))
+    }
+
+    fn arb_struct_decl() -> impl Strategy<Value = String> {
+        (
+            arb_type_ident(),
+            prop::collection::vec(arb_struct_field(), 0..=4),
+        )
+            .prop_map(|(name, fields)| format!("struct {name} {{\n{}\n}}\n", fields.join(",\n")))
+    }
+
+    fn arb_param() -> impl Strategy<Value = String> {
+        (prop::bool::ANY, arb_ident())
+            .prop_map(|(is_ref, name)| if is_ref { format!("ref {name}") } else { name })
+    }
+
+    fn arb_extern_decl() -> impl Strategy<Value = String> {
+        (arb_ident(), prop::collection::vec(arb_param(), 0..=4))
+            .prop_map(|(name, params)| format!("extern {name}({})\n", params.join(", ")))
+    }
+
+    fn arb_import_decl() -> impl Strategy<Value = String> {
+        prop::collection::vec(arb_ident(), 1..=3)
+            .prop_map(|segs| format!("import {}\n", segs.join("::")))
+    }
+
+    fn arb_use_tree() -> impl Strategy<Value = String> {
+        (
+            prop::collection::vec(arb_ident(), 1..=3),
+            prop::option::of(arb_ident()),
+        )
+            .prop_map(|(segs, alias)| {
+                let path = segs.join("::");
+                match alias {
+                    Some(a) => format!("{path} as {a}"),
+                    None => path,
+                }
+            })
+    }
+
+    fn arb_use_decl() -> impl Strategy<Value = String> {
+        // Always keep a real leading `IDENT` path segment before any
+        // nested group — `at_use_decl`'s lookahead only recognizes
+        // `IDENT`/`COLON_COLON` as the second token (never a bare
+        // `L_BRACE`; see `use_decl_bare_group_with_no_leading_path_is_unreachable_todo_bug`
+        // above), so a bare-group `use { … };` with no leading path is not
+        // a reachable `USE_DECL` shape and must not be generated here.
+        (arb_ident(), prop::collection::vec(arb_use_tree(), 1..=3)).prop_map(|(prefix, trees)| {
+            if trees.len() == 1 {
+                format!("use {prefix}::{};\n", trees[0])
+            } else {
+                format!("use {prefix}::{{{}}};\n", trees.join(", "))
+            }
+        })
+    }
+
+    fn arb_module_decl() -> impl Strategy<Value = String> {
+        (arb_ident(), arb_const_decl())
+            .prop_map(|(name, inner)| format!("module {name} {{\n  {inner}}}\n"))
+    }
+
+    /// Truncate the source at a byte-safe boundary — simulates an
+    /// unterminated declaration body/param-list/use-tree.
+    fn truncated(s: &str, cut_ratio: u32) -> String {
+        let target = (s.len() as u64 * u64::from(cut_ratio) / 100) as usize;
+        let mut end = target.min(s.len());
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s[..end].to_string()
+    }
+
+    fn parse_ok_roundtrip(input: &str) -> bool {
+        let parsed = crate::parse(input);
+        parsed.syntax().text() == input
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(NUM_CASES))]
+
+        #[test]
+        fn const_decl_roundtrip(input in arb_const_decl()) {
+            prop_assert!(parse_ok_roundtrip(&input));
+        }
+
+        #[test]
+        fn const_decl_no_errors(input in arb_const_decl()) {
+            let parsed = crate::parse(&input);
+            prop_assert!(parsed.errors().is_empty(), "input: {input:?} errors: {:?}", parsed.errors());
+        }
+
+        #[test]
+        fn flags_decl_roundtrip(input in arb_flags_decl()) {
+            prop_assert!(parse_ok_roundtrip(&input));
+        }
+
+        #[test]
+        fn flags_decl_no_errors(input in arb_flags_decl()) {
+            let parsed = crate::parse(&input);
+            prop_assert!(parsed.errors().is_empty(), "input: {input:?} errors: {:?}", parsed.errors());
+        }
+
+        #[test]
+        fn struct_decl_roundtrip(input in arb_struct_decl()) {
+            prop_assert!(parse_ok_roundtrip(&input));
+        }
+
+        #[test]
+        fn struct_decl_no_errors(input in arb_struct_decl()) {
+            let parsed = crate::parse(&input);
+            prop_assert!(parsed.errors().is_empty(), "input: {input:?} errors: {:?}", parsed.errors());
+        }
+
+        #[test]
+        fn extern_decl_roundtrip(input in arb_extern_decl()) {
+            prop_assert!(parse_ok_roundtrip(&input));
+        }
+
+        #[test]
+        fn extern_decl_no_errors(input in arb_extern_decl()) {
+            let parsed = crate::parse(&input);
+            prop_assert!(parsed.errors().is_empty(), "input: {input:?} errors: {:?}", parsed.errors());
+        }
+
+        #[test]
+        fn import_decl_roundtrip(input in arb_import_decl()) {
+            prop_assert!(parse_ok_roundtrip(&input));
+        }
+
+        #[test]
+        fn use_decl_roundtrip(input in arb_use_decl()) {
+            prop_assert!(parse_ok_roundtrip(&input));
+        }
+
+        #[test]
+        fn use_decl_no_errors(input in arb_use_decl()) {
+            let parsed = crate::parse(&input);
+            prop_assert!(parsed.errors().is_empty(), "input: {input:?} errors: {:?}", parsed.errors());
+        }
+
+        #[test]
+        fn module_decl_roundtrip(input in arb_module_decl()) {
+            prop_assert!(parse_ok_roundtrip(&input));
+        }
+
+        #[test]
+        fn module_decl_no_errors(input in arb_module_decl()) {
+            let parsed = crate::parse(&input);
+            prop_assert!(parsed.errors().is_empty(), "input: {input:?} errors: {:?}", parsed.errors());
+        }
+
+        // ── Adversarial: truncated declarations never panic, stay lossless ─
+
+        #[test]
+        fn truncated_struct_decl_never_panics(input in arb_struct_decl(), cut in 0u32..100) {
+            let mutated = truncated(&input, cut);
+            let parsed = crate::parse(&mutated);
+            prop_assert_eq!(parsed.syntax().text().to_string(), mutated);
+        }
+
+        #[test]
+        fn truncated_module_decl_never_panics(input in arb_module_decl(), cut in 0u32..100) {
+            let mutated = truncated(&input, cut);
+            let parsed = crate::parse(&mutated);
+            prop_assert_eq!(parsed.syntax().text().to_string(), mutated);
+        }
+
+        #[test]
+        fn truncated_use_decl_never_panics(input in arb_use_decl(), cut in 0u32..100) {
+            let mutated = truncated(&input, cut);
+            let parsed = crate::parse(&mutated);
+            prop_assert_eq!(parsed.syntax().text().to_string(), mutated);
+        }
+
+        #[test]
+        fn truncated_extern_decl_never_panics(input in arb_extern_decl(), cut in 0u32..100) {
+            let mutated = truncated(&input, cut);
+            let parsed = crate::parse(&mutated);
+            prop_assert_eq!(parsed.syntax().text().to_string(), mutated);
+        }
+    }
+}
