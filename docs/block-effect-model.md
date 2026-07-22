@@ -34,30 +34,50 @@ the type rules, then the lowering, then the scope map.
 
 ## 1. Thesis
 
-One substrate, two orthogonal descriptions:
+**Meaning comes from analysis, not from the parser's guesses.** The parser
+stays syntax-directed and never disambiguates by heuristic — it emits
+uniform structure; wherever meaning is ambiguous from syntax alone (the
+*same* surface can mean different things), the **type / analysis layer**
+resolves it. `Block` + `tail` + the effect row are the machinery that lets
+it.
 
-> **A block is an expression.** Its *value* is its tail; its *behavior* is
-> its inferred **effect signature**. What a braced construct "is"
-> (interpolation, choice body, conditional arm, fn body, flow body,
-> lambda) is not a syntactic category — it is a block plus the effects its
-> body performs, decided by the type checker, not the parser.
->
-> **A flow is a coroutine.** A function is the degenerate flow that never
-> suspends. Value-return is orthogonal to suspension: any block may yield a
-> value; any flow-colored block may also emit, transfer control, and
-> suspend.
+This is the insight that held up. (An earlier draft led with "a block is
+an expression" and leaned on a structural *unification* of the
+per-construct nodes; the scoping pass showed that unification is low-value —
+the structural distinctions are real and merely *relocate*, see §3a. The
+durable win was never structural; it was moving semantic decisions off the
+parser.)
 
-The prose and code dialects are two **skins** over this one substrate.
-Prose is a block whose statements are content-lines by default with code
-interlaced; code is the reverse. Neither owns emission, control transfer,
-or suspension — those are effects any block can carry.
+> A body is a uniform `Block { stmts, tail }`; a braced construct's
+> *meaning* — interpolation vs. body, value vs. control transfer — **falls
+> out of the tail's type and the block's inferred effect row**, decided by
+> the checker, not committed by the parser. A **flow is a coroutine**; a
+> function is the degenerate flow that never suspends; value-return is
+> orthogonal to suspension.
 
-This dissolves the recurring "constructs embedded in content" grammar
-class (a block is a block everywhere) and, specifically, dissolves G-2:
-`{ gold }` and `{ -> shop }` stop being two syntactic things the parser
-must disambiguate and become one thing — a block-expression — whose
-meaning falls out of its tail's effect (value ⇒ emit-stringified;
-transfer ⇒ control flow).
+The sharp cases:
+- **G-2 dissolves.** The parser stops guessing interpolation-vs-body — it
+  emits a braced block; `{ gold }` vs `{ -> shop }` differ only in their
+  **tail** (value ⇒ stringify-and-emit; diverge ⇒ control flow), read by
+  the checker, not a parse-time lookahead.
+- **The "constructs embedded in content" grammar holes dissolve.** The
+  parser emits uniform content; an embedded construct's meaning is derived,
+  so there is no per-position special-casing to forget.
+- **Effects are inferred, never parsed or annotated** — "what a block does"
+  is a type-layer fact (the one canonical effect row, `effects-spec.md`
+  §14).
+
+**The precise rule**, held honestly: the parser stays structural and
+**never guesses**; where syntax is *genuinely distinct* (`{~a|b}` vs
+`{cond: …}` vs `{? *…}`) it still commits to the construct — no ambiguity
+to defer. Only the **ambiguous overlaps** (same surface, different meaning)
+move to the type/analysis layer. The old ink parser broke this separation
+(semantics smuggled into lookahead); this restores it.
+
+The prose and code dialects are two **skins** over the one `Block`
+substrate — which *already exists* (§2): prose is content-lines-by-default
+with code interlaced, code the reverse. Neither owns emission, control
+transfer, or suspension.
 
 ---
 
@@ -97,35 +117,42 @@ return flavors.
 
 ## 3. Effects — the behavior signature
 
-**[REFACTOR]** A block's meaning is its inferred effect signature, layered
-on the **existing** effect machinery (`effects-spec.md`'s rows + the
-bevy-brink binding effects: pure / command / world-query, plus the
-fn-color axis). We do **not** spawn a parallel effect system; we add rows
-to the one that exists. The rows this model needs:
+**[REFACTOR — reconciled with `effects-spec.md` §14, 2026-07-21.]** A
+block's meaning is its inferred effect signature, and that signature is the
+**one canonical effect row** ruled in `effects-spec.md` — *not* a new
+parallel lattice. An earlier draft of this section listed
+`Emit / Transfer / Suspend / World / Impure` as if they were a fresh effect
+system; that over-unified and conflicted with the shipped row. The correct
+mapping onto the ruled row:
 
-- **Emit** — appends to the transcript. **[REFACTOR]** Prose emission
-  exists but is not effect-*tracked*; making "does this block emit" an
-  inferred effect (so a content line interlaced in a *code* block is
-  visible to the checker) is the reshape.
-- **Transfer** — control leaves via a divert/return/end (the `!` tail).
-  **[NEW]** as a tracked effect, though the underlying control flow is
-  substrate.
-- **Suspend(rung)** — parks for resumption; see §4. **[REFACTOR]** await
-  suspension is designed (`flow-suspension-spec` §3); choice/turn parks
-  become the same effect at other rungs.
-- **Impure(sequence)** — **RULED (sitting), corrected by scoping:** the ink
-  sequence / alternative family (cycles, shuffles, once-only, `{a|b|c}`)
-  carries an **impurity effect** (stateful selection advances a hidden
-  cursor). But that effect is **additive annotation only** — the structural
-  `SequenceType` (which selection discipline) survives to LIR `ContainerKind`
-  and drives the cycle/shuffle/once bytecode, so it persists as **side-data
-  on `Block`**, *not* erased into the effect. "Sequence is just an effect"
-  was aspirational; the honest statement is "a block with a sequence
-  structural-kind **and** an impurity effect row." Full structural reduction
-  is the north star (§3a, #1213).
-- **World** — the existing pure/command/world-query binding effects.
-  **[SUBSTRATE]**, reused unchanged.
-- **Pure** — the absence of all of the above. **[SUBSTRATE]** concept.
+- **Emit** → the row's existing `emits` dimension. **[REFACTOR]** Prose
+  emission exists but making "does this block emit" an *inferred* row
+  dimension (so content interlaced in a code block is visible to the
+  checker) is the wiring.
+- **Suspend(rung)** → **folds into the row** as the new `suspend(rung)`
+  dimension (`effects-spec.md` §14.2). Suspension "color" is not a separate
+  system — it *is* this dimension; the no-call-up-the-ladder rule (§4, §7)
+  is an inferred check over it.
+- **World** → the row's existing `calls` (external bindings); the
+  read/command granularity stays host-side (`CapabilityEffects`), by the
+  deliberate compiler↔bevy independence. **[SUBSTRATE]**.
+- **Transfer** → **NOT a row effect.** General control-transfer (a plain
+  divert) is *structural* — the block's `tail` (§2), enforced by the
+  no-lateral-divert rule (§7.1). Only the terminal `-> END/DONE` case is a
+  candidate row dimension (`terminates`, provisional — `effects-spec.md`
+  §14.2), for structured-concurrency lifetime.
+- **Impure(sequence)** → **OUT of the row** (`effects-spec.md` §14.3 / §10
+  NS-A6 posture: the visit cursor is an unmodeled read, flow-local, never
+  in a fusion callback). Separately and unchanged: the structural
+  `SequenceType` (which selection discipline) survives to LIR
+  `ContainerKind` and drives codegen, so it **stays on the `Sequence`
+  `Stmt` variant where it already lives** (not moved onto `Block`) — a
+  *structural-kind* fact independent of effects. Whether the variants ever
+  collapse is the deprioritized #1213 question (§3a).
+- **Pure** = the empty *effect axis*; `reads` are the **dependency axis**
+  (the wake-map's set, a coeffect), and do not make a block impure
+  (`effects-spec.md` §14.4). Fusion uses the reads-OK (weak, E105)
+  purity predicate.
 
 Interpolation is not a distinct construct: it is a block whose tail is a
 `Value` and whose position is content — the checker stringifies-and-emits
@@ -148,19 +175,24 @@ Stated honestly, because the scoping pass showed the original framing
   vs Conditional vs Choice). These are genuinely *different machines* — a
   visit-counted cursor, a predicate branch, an interactive-and-convergent
   choice — and their distinctions survive to LIR `ContainerKind` and drive
-  codegen. Forcing them into one node would be a *false* unification (making
-  the HIR look tidy by lying about codegen). They persist as side-data on
-  `Block` for now.
+  codegen. They **stay as the existing `Stmt` variants inside `Block`**;
+  they are not moved onto `Block`.
 
-**North star (#1213), sequenced after these wins:** reduce the language to a
-**minimal set of completely orthogonal concepts** and derive the constructs
-from that basis. First candidates: fold `Conditional` + `Sequence` into one
-`Select { branches, discipline }` (`Choice` likely stays distinct — richer:
-interactive + convergent); and, on the machine side, whether LIR
-`ContainerKind` could collapse to a discipline-parameterized "select" (that
-overlaps #1212, oracle-affecting). This pass can only be done well *after*
-the concepts exist — orthogonalizing a basis you are still assembling is
-premature.
+**On #1213 (minimal orthogonal core) — a guiding value, NOT a committed
+slice.** The honest cost/benefit (assessed 2026-07-21): collapsing the
+structural variants (e.g. `Conditional`+`Sequence` → `Select { branches,
+discipline }`; `Choice` resists — richer, interactive+convergent) does
+**not** erase the distinction — the selection discipline survives to
+codegen, so the dispatch *relocates* (from `Stmt`-variant to a `.discipline`
+field), it doesn't vanish. The real payoff is narrow: **deduplicating the
+triplicated "walk the branches" traversal** + the orthogonal-basis
+aesthetic. That's a tidiness/refactoring win, not a capability one, against
+oracle-guarded surgery. So: **minimal-orthogonal-core stays a guiding value**
+(bias new design toward the small basis), but the structural collapse is a
+"do it only if the triplicated-traversal pain is actually felt, or a new
+construct clearly benefits" call — not a planned migration. #1213 is
+reframed accordingly. **There is no `Block`-structural-kind slice (the old
+"S2") in the migration** — see §11.
 
 ---
 
@@ -370,9 +402,9 @@ synchronous per §4 — coloring is unaffected.)
 | g | `!`-tail terminators + `ReturnKind` | SUBSTRATE | B0.2 |
 | h | Divert-target *values* + computed-divert opcodes | SUBSTRATE | the "record" half (§6) |
 | i | FrameShapes section + per-site liveness analysis | SUBSTRATE | FS-3c, already landed |
-| j | Evolve the **existing** shared `Block` in place: add `tail` + structural-kind side-data + effect sig (the shared `Block` already exists — §2) | REFACTOR | no crate move; oracle-firewall at LIR `ContainerKind`; reshapes B0.6/B0.7, tests survive |
+| j | Evolve the existing shared `Block`: add `tail` (S1, **done**). Structural kinds **stay on the `Stmt` variants** (not moved onto `Block` — that's #1213, deprioritized §3a); effects are **per-definition** (`effects-spec` §4), not a `Block` field. | REFACTOR | no crate move; oracle-firewall at LIR `ContainerKind`; the only real `Block` change is `tail` |
 | k | Brace disambiguation: parse-time heuristic → type-time effect decision | REFACTOR | dissolves G-2; parser stops guessing |
-| l | Effect system: add Emit/Transfer/Suspend/sequence-Impure rows | REFACTOR | extend, do not fork |
+| l | Wire the canonical effect row to native HIR; add `suspend(rung)` + provisional `terminates` dimensions; build §6.1 row-poly | REFACTOR | extend the ruled `effects-spec.md` row (§14), do not fork; Transfer=tail, seq-impurity out |
 | m | Value-return made explicit & typed; flows may declare return types | REFACTOR | the mechanism (d) is substrate |
 | n | Suspension: generalize await-only → the await/choice/turn ladder | REFACTOR | choice/turn parks under the FlowFrame umbrella |
 | o | Value-returning flows / coroutine-vs-state + return-type toggle | NEW | §5 |
@@ -402,20 +434,22 @@ when ready (not blocking this model):**
   with a detached form for ambient flows. The scheduling substrate already
   exists (park/wake, batch drivers); the gap is the spawn surface + scoping.
   Composes with value-returning flows (join yields the value).
-- **A real effect system (core calculus, not row-accretion)** → **#1211.**
-  The Emit / Transfer / Suspend / sequence-Impure rows are used pragmatically
-  here; putting them on a designed foundation (pick a core, derive the rows,
-  informed by prior art) is its own sitting — before it "comes home to
-  roost."
+- **The effect system** → **#1211**, now *largely settled* (see
+  `effects-spec.md` §14 + the 2026-07-21 decision-log entry): one canonical
+  effect row (checking-discipline, not handlers; lattice + shallow
+  row-polymorphism; `suspend(rung)`/provisional `terminates` dimensions;
+  `reads` = dependency axis). The remaining work is wiring the ruled row to
+  native HIR + building §6.1 — not a fresh calculus. (#1211's original
+  "row-accretion will roost" framing is superseded: the row was already
+  ruled, not accreted.)
 - **Post-landing runtime restructuring** → **#1212.** Explicitly *after*
   this model builds — the §10 REFACTOR rows are its scope surface.
-- **Minimal orthogonal core (north star)** → **#1213.** Reduce the language
-  to a minimal set of completely orthogonal concepts and derive the
-  constructs from that basis (§3a). First candidates: fold `Conditional` +
-  `Sequence` into one `Select { branches, discipline }`; collapse the LIR
-  `ContainerKind` machine kinds (overlaps #1212). Sequenced *after* the
-  surface/tail/effect/coroutine wins — orthogonalizing a basis still being
-  assembled is premature.
+- **Minimal orthogonal core** → **#1213**, reframed to a **guiding value,
+  not a committed slice** (§3a): collapsing the structural variants
+  relocates the discipline dispatch rather than erasing it, so it's a
+  tidiness win against oracle-guarded surgery — do it only if the
+  triplicated-traversal pain is felt or a new construct clearly benefits.
+  The bias-toward-a-small-basis stays; the specific collapse is not planned.
 
 **Open item still in this doc (v2, not blocking v1):**
 
@@ -423,13 +457,21 @@ when ready (not blocking this model):**
   (a return type is meaningful only for call-entry, not divert-entry). Rule
   §7.1 is the local approximation; the whole-program check is v2.
 
-**Live coordination decision (not a design stub):**
+**Migration chain (as of 2026-07-21):**
 
-- **Sequencing** — B0.7 (prose bodies) is parked at its review gate; B0.8
-  (code bodies) is where this model lands. Proposed: land B0.7 (behavior
-  pinned), then fold this ratified model into B0.8's scope rather than
-  building B0.8 on the old per-construct shape. Awaiting the coordination
-  call.
+- **S1 — add `tail` to `Block`** — DONE (landed, oracle byte-identical).
+- **~~S2 — structural-kind side-data on `Block`~~ — DROPPED.** The
+  structural kinds already live on the `Stmt` variants (readable, correct,
+  surviving to LIR); moving them onto `Block` is the deprioritized #1213,
+  not a migration step. No S2.
+- **S3 — re-point consumers** to read `tail` (and later effects) off
+  `Block`, keeping the `Stmt`-variant structural handling as-is.
+- **S4 — wire the ruled effect row** (`effects-spec.md` §14) to
+  native-lowered HIR + build §6.1 shallow row-polymorphism.
+- **S5 — native code bodies emit `Block`** (B0.8).
+
+All off the "author a scene" critical path; each oracle-guarded
+byte-identical.
 
 ---
 
