@@ -16,7 +16,7 @@ pub mod parser;
 pub mod syntax_kind;
 
 pub use lexer::lex;
-pub use parser::{Parse, ParseError, parse, parse_with_cache};
+pub use parser::{Parse, ParseError, ParseSeverity, parse, parse_with_cache};
 pub use syntax_kind::{NativeLanguage, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 
 impl Parse {

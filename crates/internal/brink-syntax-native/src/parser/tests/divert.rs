@@ -559,27 +559,76 @@ fn splice_outside_choice_point_is_not_a_splice_node() {
     // Charter §11: "no native spelling for general `<-`; only the scoped
     // splice inside choice points survives." Outside a `CHOICE_POINT`,
     // `choice.rs::splice` is never called — `<-` lexes to a bare `THREAD`
-    // token that `block::body_line` doesn't recognize, so it falls through
-    // to `content::content_line` and is folded into an ordinary `TEXT`
-    // run, indistinguishable from any other punctuation-in-prose. This is
-    // NOT an error (confirmed by direct inspection — no diagnostic is
-    // raised), which is a real gap against the issue's expectation of "a
-    // negative test confirming it errors outside one": the current
-    // behavior is silent, not a diagnostic. Documenting the actual
-    // behavior here rather than the assumed one.
+    // token that `block::body_line` now dispatches to
+    // `choice::splice_outside_choice_point` (issue #1263, ruled #1260 on
+    // #1256), which folds it into an ordinary `TEXT` run exactly as
+    // before, but ALSO raises a warning-severity diagnostic — not a hard
+    // error (`<-` can be literal dialogue punctuation) and not silent
+    // either (a real gap the original version of this test documented and
+    // pinned as a TODO). `side_thread` is a bare identifier with nothing
+    // else on the line, so this is the high-confidence "looks like a
+    // misremembered ink thread" shape.
     let src = "flow f() {\n  <- side_thread\n}\n";
     let p = assert_lossless(src);
-    assert!(
-        p.errors().is_empty(),
-        "a splice outside a choice point currently produces NO diagnostic \
-         (charter says `<-` has no meaning there, but the parser neither \
-         errors nor recognizes it structurally — it is silently swallowed \
-         as prose text); errors: {:?}",
+    assert_eq!(
+        p.errors().len(),
+        1,
+        "expected exactly one warning-severity diagnostic for `<-` outside \
+         a choice point; errors: {:?}",
         p.errors()
     );
+    let diag = &p.errors()[0];
+    assert_eq!(
+        diag.severity,
+        ParseSeverity::Warning,
+        "a splice outside a choice point must warn, never hard-error — \
+         `<-` can be literal dialogue (issue #1263); diagnostic: {diag:?}"
+    );
+    assert!(
+        diag.message.contains("knot/flow reference"),
+        "`<- side_thread` is shaped exactly like a real flow reference (a \
+         bare identifier, nothing else on the line) — the diagnostic \
+         should be the higher-confidence variant; message: {}",
+        diag.message
+    );
+    // `<-` (2 bytes) starts at byte 13 of `src` ("flow f() {\n  " is 13
+    // bytes: `flow f() {\n` is 11, plus the two leading spaces of `  <-`).
+    assert_eq!(diag.range, rowan::TextRange::at(13.into(), 2.into()));
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::SPLICE));
     assert!(has_node_kind(&p.syntax(), SyntaxKind::CONTENT_LINE));
     assert!(has_node_kind(&p.syntax(), SyntaxKind::TEXT));
+}
+
+#[test]
+fn splice_outside_choice_point_low_confidence_when_not_reference_shaped() {
+    // Same warning, but the tail after `<-` doesn't look like a bare
+    // knot/flow reference (a quoted string, not an `IDENT`-led path) — the
+    // lower-confidence message variant, still a warning, never an error.
+    let src = "flow f() {\n  <- \"not a reference\"\n}\n";
+    let p = assert_lossless(src);
+    assert_eq!(p.errors().len(), 1, "errors: {:?}", p.errors());
+    let diag = &p.errors()[0];
+    assert_eq!(diag.severity, ParseSeverity::Warning);
+    assert!(
+        !diag.message.contains("knot/flow reference"),
+        "message should be the generic (low-confidence) variant: {}",
+        diag.message
+    );
+}
+
+#[test]
+fn splice_outside_choice_point_high_confidence_with_call_args() {
+    // `<- name(args)` — reference-shaped even with a call arg list.
+    let src = "flow f() {\n  <- options(true)\n}\n";
+    let p = assert_lossless(src);
+    assert_eq!(p.errors().len(), 1, "errors: {:?}", p.errors());
+    let diag = &p.errors()[0];
+    assert_eq!(diag.severity, ParseSeverity::Warning);
+    assert!(
+        diag.message.contains("knot/flow reference"),
+        "message: {}",
+        diag.message
+    );
 }
 
 // ── Genuine grammar/parser divergence — NOT fixed here (test-only issue) ──

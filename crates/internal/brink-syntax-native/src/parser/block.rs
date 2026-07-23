@@ -1,6 +1,6 @@
 use crate::SyntaxKind::{
     self, AT_L_BRACKET, BLOCK, DIVERT, EOF, HASH, KW_CONST, KW_IMPORT, KW_RETURN, KW_USE, KW_VAR,
-    L_BRACE, NEWLINE, R_BRACE,
+    L_BRACE, NEWLINE, R_BRACE, THREAD,
 };
 
 use super::Parser;
@@ -161,6 +161,11 @@ pub(crate) fn body_line(p: &mut Parser<'_, '_>) {
         AT_L_BRACKET => super::annotation::annotation_line(p),
         DIVERT => super::divert::divert_or_tunnel(p),
         KW_RETURN => super::divert::return_stmt(p),
+        // `<-` outside a choice point (issue #1263, ruled #1260): not a
+        // structural splice here (only `choice::choice_point`'s loop
+        // recognizes `THREAD`), but not silent either — warn, then fall
+        // through to ordinary content the same way it always has.
+        THREAD => super::choice::splice_outside_choice_point(p),
         L_BRACE if super::family::at_choice_point(p) => super::choice::choice_point(p),
         L_BRACE if super::family::at_conditional(p) => super::family::conditional_block(p),
         L_BRACE if super::family::at_alternation(p) => super::family::alternation_block(p),

@@ -2245,22 +2245,30 @@ fn lower_file(file_id: FileId, parse: &Parse) -> LoweredFile {
 /// Unlike ink, native lowering is a single whole-file entry point
 /// (`lower_native::lower`) — there is no per-knot / top-level split to
 /// reassemble, and it returns its own [`project_manifest`]-derived manifest
-/// (B0.4) already, so this composes rather than re-deriving. Syntax errors are
-/// surfaced as the same non-suppressible `E037` compile diagnostic
-/// `lower_file` uses, and the B0.3 admission validator runs at the same seam
-/// (NF-6, always-on).
+/// (B0.4) already, so this composes rather than re-deriving. Error-severity
+/// syntax errors are surfaced as the same non-suppressible `E037` compile
+/// diagnostic `lower_file` uses; Warning-severity ones (issue #1263 — e.g.
+/// `<-` outside a choice point) map to `E131` instead, which
+/// `DiagnosticCode::severity` reports as `Severity::Warning` so it never
+/// gates `has_errors_query`/`has_errors_in_closure_query`. The B0.3
+/// admission validator runs at the same seam (NF-6, always-on).
 fn lower_native_file(file_id: FileId, parse: &NativeParse) -> LoweredFile {
     let tree = parse.tree();
 
     let (hir, manifest, mut diagnostics) = brink_ir::hir::lower_native::lower(file_id, &tree);
 
-    // Surface parser/syntax errors as compile diagnostics (`E037`) so
-    // malformed source fails the compile — mirrors `lower_file`.
+    // Surface parser diagnostics as compile diagnostics, split by severity:
+    // `Error` becomes the non-suppressible `E037` (malformed source fails
+    // the compile, mirrors `lower_file`); `Warning` becomes `E131`, which
+    // is advisory only and must never block compilation.
     diagnostics.extend(parse.errors().iter().map(|e| Diagnostic {
         file: file_id,
         range: e.range,
         message: e.message.clone(),
-        code: DiagnosticCode::E037,
+        code: match e.severity {
+            brink_syntax_native::ParseSeverity::Error => DiagnosticCode::E037,
+            brink_syntax_native::ParseSeverity::Warning => DiagnosticCode::E131,
+        },
     }));
 
     // B0.3 admission validator (docs/hir-admission-contract.md §4.2, issue
