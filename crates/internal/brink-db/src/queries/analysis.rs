@@ -666,12 +666,16 @@ pub(crate) fn has_errors_query(db: &dyn salsa::Database, project: ProjectInput) 
 }
 
 /// The same [`partition_diagnostics`] "does at least one Error-severity
-/// diagnostic exist" verdict as [`has_errors_query`], but scoped to
-/// `project.entry(db)`'s transitive `INCLUDE` closure ([`include_graph_query`]'s
-/// `topological_order`, issue #815's established narrowing — the same
-/// reachability machinery `struct_shape_data_query`/`lir_prelude_decls_query`/
-/// `lir_lowering_query` in `queries/mod.rs` already use) instead of every file
-/// loaded into the project db.
+/// diagnostic exist" verdict as [`has_errors_query`], but scoped to the
+/// project's **codegen closure** ([`super::compilation_closure_files`]) rather
+/// than every file loaded into the project db — the same reachability
+/// machinery `struct_shape_data_query`/`lir_prelude_decls_query`/
+/// `lir_lowering_query` in `queries/mod.rs` already use. For an ink project
+/// that closure is `entry`'s transitive `INCLUDE` closure (issue #815's
+/// established narrowing); for a **native** project it is every discovered
+/// `.brink` module (issue #1296), so a broken **unreferenced** sibling module
+/// still fails this gate — the whole native module tree is the compilation
+/// unit (Rust parity).
 ///
 /// [`has_errors_query`] itself is untouched and stays whole-project: it feeds
 /// `db.has_errors()`/`db.lir_product()`, IDE-surface reads FG-4a's
@@ -688,16 +692,15 @@ pub(crate) fn has_errors_query(db: &dyn salsa::Database, project: ProjectInput) 
 /// closes that gap: an unrelated file's error still surfaces through
 /// `diagnostics_query`/`db.diagnostics(file)` (both still whole-project,
 /// unchanged), it just no longer blocks a different entry's build.
-///
-/// [`include_graph_query`]: super::include_graph_query
 #[salsa::tracked]
 pub(crate) fn has_errors_in_closure_query(db: &dyn salsa::Database, project: ProjectInput) -> bool {
     let Some(entry) = project.entry(db) else {
         return false;
     };
     let files = project.files(db);
-    let graph = super::include_graph_query(db, project);
-    let closure: LookupSet<FileId> = graph.topological_order(entry).into_iter().collect();
+    let closure: LookupSet<FileId> = super::compilation_closure_files(db, project)
+        .into_iter()
+        .collect();
     let disable_all = files
         .iter()
         .find(|f| f.file_id(db) == entry)
