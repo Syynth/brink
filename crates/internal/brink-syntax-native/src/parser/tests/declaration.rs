@@ -861,22 +861,22 @@ fn use_decl_nested_group_of_groups() {
 }
 
 #[test]
-fn use_decl_bare_group_with_no_leading_path_is_unreachable_todo_bug() {
-    // FOUND BUG (TEST-ONLY issue #1192 — not fixed here, reported in the
-    // PR/issue per the house rule): `use_tree`'s grammar rule genuinely
-    // supports a bare `{ … }` group with no leading path (`use_tree`'s
-    // `else if p.at(L_BRACE) { use_tree_list(p) }` branch), but that branch
-    // is UNREACHABLE from `item()`'s dispatcher — `at_use_decl` only
-    // checks `matches!(p.nth(1), IDENT | COLON_COLON)` (decl.rs line ~63),
-    // never `L_BRACE`. So `use {a, b};` never satisfies the `USE_DECL`
-    // lookahead at all; `use` is bumped bare as leftover, and the `{a, b}`
-    // that follows is misparsed as bare-brace `{expr}` interpolation
-    // instead (`a, b` isn't a valid expression, hence the two recorded
-    // errors below). TODO(#1192 scope note): either widen `at_use_decl` to
-    // recognize a bare `L_BRACE` as a third valid second-token shape, or
-    // decide the bare-group form isn't meant to be reachable and prune the
-    // dead `use_tree` branch — asserting CURRENT (broken) behavior here,
-    // not the intended one.
+fn use_decl_bare_group_with_no_leading_path_is_a_parse_error() {
+    // Ruled 2026-07-22 (#1275, closing #1256's last rulings-needed item):
+    // a `use` with no leading path — a bare group like `use {a, b};` — is
+    // a parse error, not a valid import; a `use`-tree group is always the
+    // *tail* of a path, never the whole tree. #1277 pruned `use_tree`'s
+    // dead bare-group branch (see the doc comment on its `else` arm) but
+    // deliberately did NOT widen `at_use_decl` to route `L_BRACE` into
+    // `USE_DECL` — that was explicitly rejected, since a bare group has no
+    // module to select from. So this exact top-level shape still never
+    // satisfies the `USE_DECL` lookahead (`at_use_decl` only accepts
+    // `IDENT`/`::` after `use`): `use` is bumped bare as leftover prose,
+    // and the `{a, b}` that follows misparses as bare-brace `{expr}`
+    // interpolation (`a, b` isn't a valid expression, hence the errors
+    // below). This is no longer an open TODO — it's the ruled, intentional
+    // outcome for this shape; see `use_tree_list_nested_bare_group_with_no_leading_path_errors`
+    // below for the shape the prune actually reaches and cleanly errors.
     let src = "use {a, b};\n";
     let p = assert_lossless(src);
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::USE_DECL));
@@ -890,19 +890,43 @@ fn use_decl_bare_group_with_no_leading_path_is_unreachable_todo_bug() {
 }
 
 #[test]
+fn use_tree_list_nested_bare_group_with_no_leading_path_errors() {
+    // The bare-group `use_tree` branch #1277 pruned was dead at the top
+    // level (see the test above) but genuinely LIVE for nested list
+    // entries: `use_tree_list`'s loop calls `use_tree` for each member
+    // without first checking for `IDENT`, so a nested bare group like the
+    // `{b, c}` here used to hit the (now-removed) `p.at(L_BRACE) {
+    // use_tree_list(p) }` branch and parse with ZERO errors — silently
+    // accepting a group with no module to select `b`/`c` from. It now
+    // falls through to the shared `else` arm and reports the clear
+    // diagnostic instead.
+    let src = "use a::{ {b, c} };\n";
+    let p = assert_lossless(src);
+    assert!(
+        p.errors()
+            .iter()
+            .any(|e| e.message.contains("needs a module path")),
+        "expected the use-tree error, got: {:?}",
+        p.errors()
+    );
+}
+
+#[test]
 fn use_tree_malformed_missing_path_recovers() {
     // `use ::foo;` — `at_use_decl`'s weaker two-token check (Finding #5's
     // documented residual risk: `nth(1)` is `COLON_COLON`, which passes the
-    // guard) commits to `USE_DECL`, but `use_tree` itself sees neither
-    // `IDENT` nor `L_BRACE` first and records "expected a path or `{`"
-    // without consuming anything. `USE_DECL` still closes (with just `use`
-    // as its content); the leftover `::foo;` falls through to the next
-    // `item()` call as ordinary prose on its own line — it is NOT silently
-    // absorbed into the `USE_DECL`.
+    // guard) commits to `USE_DECL`, but `use_tree` itself sees no `IDENT`
+    // first and records "a `use` needs a module path" without consuming
+    // anything. `USE_DECL` still closes (with just `use` as its content);
+    // the leftover `::foo;` falls through to the next `item()` call as
+    // ordinary prose on its own line — it is NOT silently absorbed into
+    // the `USE_DECL`.
     let src = "use ::foo;\n";
     let p = assert_lossless(src);
     assert!(
-        p.errors().iter().any(|e| e.message.contains("path or `{`")),
+        p.errors()
+            .iter()
+            .any(|e| e.message.contains("needs a module path")),
         "expected the use-tree error, got: {:?}",
         p.errors()
     );
@@ -1171,7 +1195,7 @@ mod prop {
         // Always keep a real leading `IDENT` path segment before any
         // nested group — `at_use_decl`'s lookahead only recognizes
         // `IDENT`/`COLON_COLON` as the second token (never a bare
-        // `L_BRACE`; see `use_decl_bare_group_with_no_leading_path_is_unreachable_todo_bug`
+        // `L_BRACE`; see `use_decl_bare_group_with_no_leading_path_is_a_parse_error`
         // above), so a bare-group `use { … };` with no leading path is not
         // a reachable `USE_DECL` shape and must not be generated here.
         (arb_ident(), prop::collection::vec(arb_use_tree(), 1..=3)).prop_map(|(prefix, trees)| {
