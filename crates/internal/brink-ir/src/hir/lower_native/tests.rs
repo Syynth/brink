@@ -671,6 +671,24 @@ fn divert_and_tunnel_lower() {
 }
 
 #[test]
+fn divert_target_call_args_are_diagnosed_not_silently_dropped() {
+    // brink-syntax-native's parser now captures `-> knot(args)` call args as
+    // an `ARG_LIST` under `DIVERT_TARGET` (bug #1196). This HIR pass doesn't
+    // wire them through yet, so the present-but-unlowered args must surface
+    // as E129 rather than vanish silently.
+    let (hir, _m, diags) = lower_src("flow b(x) {\n  Bye.\n}\nflow a() {\n  -> b(1)\n}\n");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "expected E129 for dropped divert-target call args, got: {diags:?}"
+    );
+    let a_body = &hir.knots[1].body;
+    let Stmt::Divert(d) = &a_body.stmts[0] else {
+        panic!("expected Divert, got {:?}", a_body.stmts[0]);
+    };
+    assert!(d.target.args.is_empty(), "args aren't wired through yet");
+}
+
+#[test]
 fn inline_divert_mid_content_line_splits_into_two_statements() {
     let (hir, _m, diags) = lower_src("flow b() {\n  Bye.\n}\nflow a() {\n  The wager. -> b\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
