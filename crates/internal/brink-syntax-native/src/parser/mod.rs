@@ -8,6 +8,7 @@ mod doc_comment;
 mod expr;
 mod family;
 mod source_file;
+mod stmt;
 #[cfg(test)]
 mod tests;
 

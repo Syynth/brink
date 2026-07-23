@@ -572,8 +572,8 @@ const NUM_CASES: u32 = 200;
 // this issue's "put a proptest generator in your own family file" scoping
 // rather than touching that shared file this wave).
 const KEYWORDS: &[&str] = &[
-    "flow", "fn", "var", "const", "flags", "struct", "extern", "import", "use", "module", "return",
-    "ref", "if", "match", "else", "as", "true", "false", "END", "DONE",
+    "flow", "fn", "var", "const", "let", "flags", "struct", "extern", "import", "use", "module",
+    "return", "ref", "if", "match", "else", "as", "true", "false", "END", "DONE",
 ];
 
 fn arb_ident() -> impl Strategy<Value = String> {

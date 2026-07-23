@@ -843,8 +843,8 @@ mod proptest_divert {
     /// scoping note about not touching that file this wave — but the
     /// keyword set it must avoid is the same grammar).
     const KEYWORDS: &[&str] = &[
-        "flow", "fn", "var", "const", "flags", "struct", "extern", "import", "use", "module",
-        "return", "ref", "if", "match", "else", "as", "true", "false", "END", "DONE",
+        "flow", "fn", "var", "const", "let", "flags", "struct", "extern", "import", "use",
+        "module", "return", "ref", "if", "match", "else", "as", "true", "false", "END", "DONE",
     ];
 
     fn arb_ident() -> impl Strategy<Value = String> {

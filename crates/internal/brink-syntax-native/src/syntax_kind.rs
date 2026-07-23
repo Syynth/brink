@@ -54,6 +54,14 @@ pub enum SyntaxKind {
     KW_FN,
     KW_VAR,
     KW_CONST,
+    /// `let` — a code-ground statement-position binding (B0.8 Wave A,
+    /// `docs/decision-log.md` 2026-07-23 "Code-ground sitting"). Distinct
+    /// from `var`/`const` (declaration-layer keywords, B0.5): `let`
+    /// introduces a `LET_STMT` inside a `STMT_BLOCK`, terminated by `;`
+    /// like every other code-ground statement — `var`/`const` keep their
+    /// existing terminator-free declaration shape (`parser/decl.rs`'s
+    /// `var_decl`/`const_decl` doc comments).
+    KW_LET,
     /// `flags` — renamed LIST (charter §11).
     KW_FLAGS,
     KW_STRUCT,
@@ -155,10 +163,14 @@ pub enum SyntaxKind {
     DOT,
     /// `:`
     COLON,
-    /// `;` — recognized only as `use`'s optional statement terminator
-    /// (charter §13.2's literal example: `use story::market::{barter,
-    /// haggle};`). Not a general statement separator anywhere else in this
-    /// skeleton (Finding #6: no other declaration requires one).
+    /// `;` — `use`'s optional statement terminator (charter §13.2's
+    /// literal example: `use story::market::{barter, haggle};`, Finding #6:
+    /// no *declaration* requires one), **and** the code-ground statement
+    /// terminator (B0.8 Wave A, `docs/decision-log.md` 2026-07-23
+    /// "Code-ground sitting"): `LET_STMT`/`ASSIGN_STMT`/`EXPR_STMT` inside a
+    /// `STMT_BLOCK` each require a trailing `;` — the one thing that
+    /// distinguishes a statement from the block's unterminated tail
+    /// expression (blocks-as-values).
     SEMICOLON,
     /// `::` — the module-wall separator (charter §13.2). Lexed as one
     /// compound token so a bare `:` (used in inline `{if cond: …}` bodies)
@@ -399,11 +411,11 @@ pub enum SyntaxKind {
 
     // ── Node kinds — a minimal expression grammar ────────────────
     // Shared by interpolation content, annotation args, choice guards,
-    // divert targets, and conditional/match heads. Real code-dialect
-    // statement grammar (let/assign/if-stmt/while/for/UFCS-calls/etc.) is
-    // explicitly B0.8 (`docs/b0-sequencing.md` §B0.8) — this is the
-    // expression *skeleton* B0.5 needs to give the constructs above a real
-    // (not just balanced-token) internal shape.
+    // divert targets, and conditional/match heads. B0.8 Wave A (below) adds
+    // the statement layer (`let`/assignment/expression-statements/blocks-
+    // as-values) over this skeleton; `if`/`while`/`for`/`until`/UFCS
+    // resolution remain B0.8 Wave B (`docs/b0-sequencing.md` §B0.8,
+    // `docs/decision-log.md` 2026-07-23 "Code-ground sitting").
     INTEGER_LIT,
     FLOAT_LIT,
     STRING_LIT,
@@ -419,6 +431,34 @@ pub enum SyntaxKind {
     /// pipes; B0.8 does not lower them").
     LAMBDA_EXPR,
     LAMBDA_PARAMS,
+
+    // ── Node kinds — the code-ground statement layer (B0.8 Wave A, ──────
+    // ── `docs/decision-log.md` 2026-07-23 "Code-ground sitting") ────────
+    // RustScript-shaped statements over the expression skeleton above.
+    // Parser only — no HIR lowering yet (that's Wave B, alongside `if`/
+    // `while`/`for`/`until`). `parser/stmt.rs` is the dispatcher.
+    /// `{ stmt* tail? }` — the code-ground body shape. Blocks-as-values
+    /// ruled: an unterminated trailing expression, if present, is the
+    /// block's *tail* — a bare (unwrapped) expression child, the last thing
+    /// before `R_BRACE`. Reached as an expression atom (`expr::atom`'s
+    /// `L_BRACE` case) — a statement-block is itself an expression
+    /// (`let x = { … };` is valid), distinct from the content-ground
+    /// [`Self::BLOCK`] `flow`/`fn`/`module` bodies still use (that seam is
+    /// Wave B's call, not this wave's).
+    STMT_BLOCK,
+    /// `let name = expr;` (initializer optional). Distinct from
+    /// [`Self::VAR_DECL`]/[`Self::CONST_DECL`] — those are declaration-layer
+    /// keywords (B0.5, terminator-free); `let` is code-ground, inside a
+    /// [`Self::STMT_BLOCK`], and always `;`-terminated.
+    LET_STMT,
+    /// `x = expr;` / `x.field = expr;` — a read-modify-write place path
+    /// (charter's RMW-paths ruling). The place is a dotted [`Self::PATH`]
+    /// (no `::` — an assignable place is always local).
+    ASSIGN_STMT,
+    /// `expr;` — a bare expression statement, `;`-terminated. The one
+    /// thing distinguishing this from a [`Self::STMT_BLOCK`]'s unterminated
+    /// tail expression.
+    EXPR_STMT,
 
     /// A parse-error wrapper node — swallows one unexpected token so error
     /// recovery always makes forward progress.
@@ -445,6 +485,7 @@ impl SyntaxKind {
                 | Self::KW_FN
                 | Self::KW_VAR
                 | Self::KW_CONST
+                | Self::KW_LET
                 | Self::KW_FLAGS
                 | Self::KW_STRUCT
                 | Self::KW_EXTERN
@@ -539,6 +580,7 @@ impl SyntaxKind {
                 | Self::KW_FN
                 | Self::KW_VAR
                 | Self::KW_CONST
+                | Self::KW_LET
                 | Self::KW_FLAGS
                 | Self::KW_STRUCT
                 | Self::KW_EXTERN
@@ -652,6 +694,7 @@ mod tests {
             SyntaxKind::KW_FN,
             SyntaxKind::KW_VAR,
             SyntaxKind::KW_CONST,
+            SyntaxKind::KW_LET,
             SyntaxKind::KW_FLAGS,
             SyntaxKind::KW_STRUCT,
             SyntaxKind::KW_EXTERN,

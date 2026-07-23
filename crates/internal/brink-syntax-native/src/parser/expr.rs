@@ -2,15 +2,18 @@
 //! annotation-adjacent positions, choice guards, divert targets, and
 //! `var`/`const` initializers.
 //!
-//! Real code-dialect statement grammar (let/assign/if-stmt/while/for/
-//! UFCS-calls/…) is explicitly B0.8 (`docs/b0-sequencing.md` §B0.8) — this
-//! is the expression *skeleton* B0.5 needs to give those constructs a real
-//! internal shape instead of a balanced-token blob.
+//! B0.8 Wave A (`docs/decision-log.md` 2026-07-23 "Code-ground sitting")
+//! adds the statement layer (`let`/assignment/expression-statements/
+//! blocks-as-values, `super::stmt`) over this skeleton, including a new
+//! `L_BRACE` atom case below for block-expressions. `if`/`while`/`for`/
+//! `until`-statements and UFCS *resolution* (the call shape already
+//! parses) remain B0.8 Wave B (`docs/b0-sequencing.md` §B0.8) — this stays
+//! the shared expression *skeleton*, not the statement grammar itself.
 
 use crate::SyntaxKind::{
     AMP_AMP, ARG_LIST, BANG, BANG_EQ, BOOLEAN_LIT, CALL_EXPR, COLON_COLON, COMMA, DOT, EQ_EQ,
     FLOAT, FLOAT_LIT, GT, GT_EQ, IDENT, INFIX_EXPR, INTEGER, INTEGER_LIT, KW_FALSE, KW_TRUE,
-    L_PAREN, LAMBDA_EXPR, LAMBDA_PARAMS, LT, LT_EQ, MINUS, PAREN_EXPR, PATH, PATH_EXPR,
+    L_BRACE, L_PAREN, LAMBDA_EXPR, LAMBDA_PARAMS, LT, LT_EQ, MINUS, PAREN_EXPR, PATH, PATH_EXPR,
     PATH_SEGMENT, PERCENT, PIPE, PLUS, PREFIX_EXPR, QUOTE, R_PAREN, SLASH, STAR, STRING_ESCAPE,
     STRING_LIT, STRING_TEXT,
 };
@@ -176,6 +179,16 @@ fn atom(p: &mut Parser<'_, '_>) -> bool {
         }
         IDENT => {
             path_or_call(p);
+            true
+        }
+        // A statement-block used as a value (blocks-as-values ruled,
+        // B0.8 Wave A, `docs/decision-log.md` 2026-07-23 "Code-ground
+        // sitting"): `let x = { let y = 1; y + 1 };` — the block-expr
+        // layer lives in `super::stmt`, not here (this crate's expression
+        // *skeleton* stays the shared Pratt core; the statement layer
+        // rides on top of it, per `parser/stmt.rs`'s module doc).
+        L_BRACE => {
+            super::stmt::stmt_block(p);
             true
         }
         _ => {
