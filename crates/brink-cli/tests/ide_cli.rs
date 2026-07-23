@@ -756,6 +756,155 @@ fn move_file_json_preview_has_the_mutation_shape() {
     fs::remove_dir_all(&dir).ok();
 }
 
+// ── native (`.brink`) discovery via `discover_native` (issue #1295) ─────
+
+/// Create a *nested* native project: a `brink.toml` lives inside `story/`
+/// (not at `dir`, the process cwd used below), so
+/// `native_source_root("story/main.brink")` resolves to `dir/story` — a
+/// root that is *not* the cwd. `discover_native` keys every file
+/// root-relative to that root (e.g. `"main.brink"`, `"other.brink"`), so an
+/// fs-write site that writes a key literally (instead of resolving it back
+/// against the root) lands on a phantom `dir/main.brink` instead of the
+/// real `dir/story/main.brink` — the #1295 regression this module's tests
+/// guard against.
+fn nested_native_project(tag: &str, files: &[(&str, &str)]) -> PathBuf {
+    let mut all = vec![("story/brink.toml", "[project]\n")];
+    all.extend(files.iter().copied());
+    project(tag, &all)
+}
+
+/// Regression: `rename --write` on a nested native entry (`native_source_root
+/// != cwd`) must write the real file under the source root, not a
+/// cwd-relative phantom of the same bare key.
+#[test]
+fn rename_write_on_nested_native_entry_writes_the_real_file() {
+    let dir = nested_native_project(
+        "rn-native-nested",
+        &[(
+            "story/main.brink",
+            "var gold = 0\n\nflow main() {\n  You have {gold} gold. -> END\n}\n",
+        )],
+    );
+    let out = brink()
+        .current_dir(&dir)
+        .args(["ide", "rename", "gold", "--to", "coins", "--write", "-e"])
+        .arg("story/main.brink")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let real = dir.join("story/main.brink");
+    let phantom = dir.join("main.brink");
+    assert!(
+        !phantom.exists(),
+        "must not write a cwd-relative phantom file at {}",
+        phantom.display()
+    );
+    assert!(
+        real.exists(),
+        "the real file must exist at {}",
+        real.display()
+    );
+    let src = fs::read_to_string(&real).unwrap();
+    assert!(src.contains("var coins"), "declaration renamed: {src}");
+    assert!(src.contains("{coins}"), "reference renamed: {src}");
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// Regression: `move-file --write` on a nested native project (`
+/// native_source_root != cwd`) must relocate the real file under the source
+/// root, not a cwd-relative phantom of the bare `old`/`new` keys.
+#[test]
+fn move_file_write_on_nested_native_entry_relocates_the_real_file() {
+    let dir = nested_native_project(
+        "mv-native-nested",
+        &[
+            ("story/main.brink", "flow main() {\n  Hello. -> END\n}\n"),
+            ("story/other.brink", "flow other() {\n  Hi. -> END\n}\n"),
+        ],
+    );
+    let out = brink()
+        .current_dir(&dir)
+        .args([
+            "ide",
+            "move-file",
+            "other.brink",
+            "moved/other.brink",
+            "--write",
+            "-e",
+        ])
+        .arg("story/main.brink")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert!(
+        dir.join("story/moved/other.brink").exists(),
+        "the real file relocated under the source root"
+    );
+    assert!(
+        !dir.join("story/other.brink").exists(),
+        "the old real path is gone"
+    );
+    assert!(
+        !dir.join("moved/other.brink").exists(),
+        "must not write a cwd-relative phantom file"
+    );
+    assert!(
+        !dir.join("other.brink").exists(),
+        "must not leave a cwd-relative phantom of the old key either"
+    );
+
+    // The relocated project still discovers + analyzes clean.
+    let chk = brink()
+        .current_dir(&dir)
+        .args(["ide", "check", "-e", "story/main.brink"])
+        .status()
+        .unwrap();
+    assert!(chk.success(), "clean after move");
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// Regression: every `brink ide` subcommand (not just `effects-diff --rev`,
+/// #1224's fix) must discover a multi-file native project's *whole* file
+/// set via `discover_native`, not just the entry — `symbols --search`
+/// searches `project.analysis`, which only spans what got discovered.
+#[test]
+fn ide_subcommand_on_two_file_native_project_sees_both_files_symbols() {
+    let dir = project(
+        "native-two-file-symbols",
+        &[
+            ("main.brink", "flow main() {\n  Hello. -> END\n}\n"),
+            ("other.brink", "flow other() {\n  Hi. -> END\n}\n"),
+        ],
+    );
+    let out = brink()
+        .current_dir(&dir)
+        .args(["ide", "symbols", "--search", "", "-e", "main.brink"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(s.contains("main"), "entry file's flow is found: {s}");
+    assert!(
+        s.contains("other"),
+        "the sibling file's flow must also be discovered (not just the entry): {s}"
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
 // ── effects-diff (T2-4, #863, docs/effects-spec.md §10) ─────────────────
 
 /// A baseline project: `spend` reads + writes `gold`.

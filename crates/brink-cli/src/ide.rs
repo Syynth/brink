@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use brink_analyzer::AnalysisResult;
-use brink_driver::{Driver, GitRev};
+use brink_driver::{Driver, GitRev, RealFs, SourceTree};
 use brink_ide::LineIndex;
 use brink_ide::code_actions::{CodeActionKind, code_actions};
 use brink_ide::document::{DocumentSymbol, document_symbols, workspace_symbols};
@@ -924,7 +924,8 @@ fn emit_mutation(
         }
         Mode::Write => {
             for (path, src) in &mutation.edited {
-                std::fs::write(path, src).map_err(|e| format!("{path}: {e}"))?;
+                let fs_path = resolve_fs_path(entry, path);
+                std::fs::write(&fs_path, src).map_err(|e| format!("{}: {e}", fs_path.display()))?;
             }
             writeln!(out, "wrote {} file(s)", mutation.edited.len()).map_err(|e| e.to_string())?;
         }
@@ -1257,17 +1258,22 @@ fn emit_move_mutation(
     let mut out = io::stdout().lock();
 
     if let Mode::Write = m {
-        if let Some(parent) = Path::new(new)
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-        {
+        // `old`/`new` are project-relative keys (matching how `entry` is
+        // spelled for native discovery), not necessarily cwd-relative fs
+        // paths — resolve both against the project's source root before
+        // touching disk (#1295).
+        let old_fs = resolve_fs_path(entry, old);
+        let new_fs = resolve_fs_path(entry, new);
+        if let Some(parent) = new_fs.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
-        std::fs::rename(old, new).map_err(|e| format!("{old} -> {new}: {e}"))?;
+        std::fs::rename(&old_fs, &new_fs)
+            .map_err(|e| format!("{} -> {}: {e}", old_fs.display(), new_fs.display()))?;
         // The moved file's new content (outbound INCLUDE rewrites) is in `edited`
         // under `new`; the rename above just relocated the old bytes.
         for (path, src) in &mutation.edited {
-            std::fs::write(path, src).map_err(|e| format!("{path}: {e}"))?;
+            let fs_path = resolve_fs_path(entry, path);
+            std::fs::write(&fs_path, src).map_err(|e| format!("{}: {e}", fs_path.display()))?;
         }
         writeln!(
             out,
@@ -1532,6 +1538,7 @@ fn load_git_baseline(entry: &Path, rev: &str) -> Result<Project, String> {
     let entry_key = if brink_driver::is_native(entry) {
         let root = brink_driver::native_source_root(entry);
         let repo_dir = Path::new(".");
+        ensure_repo_dir_is_toplevel(repo_dir)?;
         let tree = GitRev::new(repo_dir, rev, &root);
         driver
             .discover_native(&tree, &root)
@@ -1554,6 +1561,50 @@ fn load_git_baseline(entry: &Path, rev: &str) -> Result<Project, String> {
         analysis,
         entry_id,
     })
+}
+
+/// Guard the native branch of [`load_git_baseline`] against its `repo_dir =
+/// Path::new(".")` assumption: `root` ([`brink_driver::native_source_root`])
+/// and the entry's [`brink_driver::relative_key`] are both computed relative
+/// to the process's cwd, and [`GitRev`]'s `read` joins `root` directly onto a
+/// key with no `./` prefix — so the resulting `git show <rev>:<path>`
+/// pathspec resolves against the repository's *top-level* directory, not
+/// cwd (unlike the `./`-prefixed pathspec [`git_show`] below uses for the
+/// `.ink` branch). If cwd is not the repo root — `effects-diff --rev`
+/// invoked from a subdirectory of a multi-file native project — `root` and
+/// `GitRev`'s actual git-relative reads silently disagree, and the baseline
+/// would read the wrong path (or find nothing) with no error. Fail fast
+/// instead (issue #1295 fold-in: "add a guard/assertion here").
+fn ensure_repo_dir_is_toplevel(repo_dir: &Path) -> Result<(), String> {
+    let output = Command::new("git")
+        .current_dir(repo_dir)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(|e| format!("git rev-parse --show-toplevel: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git rev-parse --show-toplevel failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let toplevel = String::from_utf8(output.stdout)
+        .map_err(|e| format!("git rev-parse --show-toplevel: non-utf8 output: {e}"))?;
+    let toplevel = toplevel.trim();
+    let cwd = std::env::current_dir().map_err(|e| format!("current dir: {e}"))?;
+    let toplevel_abs =
+        std::path::absolute(Path::new(toplevel)).unwrap_or_else(|_| PathBuf::from(toplevel));
+    let cwd_abs = std::path::absolute(&cwd).unwrap_or(cwd);
+    if toplevel_abs == cwd_abs {
+        Ok(())
+    } else {
+        Err(format!(
+            "effects-diff --rev must be run from the git repository root ({}), not {} — \
+             native baseline discovery keys files relative to cwd and would misalign \
+             otherwise (issue #1295)",
+            toplevel_abs.display(),
+            cwd_abs.display()
+        ))
+    }
 }
 
 /// Read `path` (project-relative, as discovered) at git revision `rev`. The
@@ -1807,6 +1858,62 @@ fn resolve_analysis_options(entry: &Path) -> Result<brink_analyzer::AnalysisOpti
     Ok(options)
 }
 
+/// Resolve a project file key back to a real filesystem path, for the
+/// `--write` mutation sites (issue #1295). Native (`.brink`) discovery keys
+/// files root-relative to [`brink_driver::native_source_root`] (#1288), not
+/// cwd-relative — so a key must be rejoined with that root before it names
+/// a real path. `.ink` discovery still keys files by the same cwd-relative
+/// path a caller would pass straight to `std::fs`, so it resolves as
+/// identity. Without this, `--write` on a nested native entry (a
+/// `brink.toml` above `entry`'s own directory, so `native_source_root(entry)
+/// != cwd`) would write the bare key literally, landing on a phantom path
+/// under cwd instead of the real file.
+fn resolve_fs_path(entry: &Path, key: &str) -> PathBuf {
+    if brink_driver::is_native(entry) {
+        brink_driver::native_source_root(entry).join(key)
+    } else {
+        PathBuf::from(key)
+    }
+}
+
+/// A [`SourceTree`] that overlays in-memory edits (and a moved-away key) on
+/// top of the real filesystem — the seam [`Project::introduced_diagnostics`]
+/// re-discovers a native project through so a pending rename/move's edited
+/// content is visible to the safety-gate re-analysis without touching disk.
+/// `list` unions in any edited key not already on disk (a move's new key)
+/// and drops `removed`; `read` prefers an edited value, then reports
+/// `removed` as not-found (mirroring the `.ink` closure's "file moved"
+/// synthetic error below), then falls back to disk.
+struct EditOverlay<'a> {
+    inner: RealFs,
+    edited: &'a BTreeMap<String, String>,
+    removed: Option<&'a str>,
+}
+
+impl SourceTree for EditOverlay<'_> {
+    fn list(&self, root: &Path) -> io::Result<Vec<String>> {
+        let mut keys: BTreeSet<String> = self.inner.list(root)?.into_iter().collect();
+        if let Some(r) = self.removed {
+            keys.remove(r);
+        }
+        keys.extend(self.edited.keys().cloned());
+        Ok(keys.into_iter().collect())
+    }
+
+    fn read(&self, key: &str) -> io::Result<String> {
+        if Some(key) == self.removed {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{key}: file moved"),
+            ));
+        }
+        if let Some(s) = self.edited.get(key) {
+            return Ok(s.clone());
+        }
+        self.inner.read(key)
+    }
+}
+
 struct Project {
     driver: Driver,
     analysis: AnalysisResult,
@@ -1814,29 +1921,45 @@ struct Project {
 }
 
 impl Project {
-    /// Discover + analyze the project rooted at `entry` (follows `INCLUDE`s),
-    /// exactly like `brink compile`. Also discovers a `brink.toml` (#1005)
-    /// starting from `entry`'s directory and applies its `[project]
-    /// dialect`/`types` to analysis — `brink ide` has no `--dialect`/
-    /// `--types` flags of its own, so the file (or, absent one,
-    /// `AnalysisOptions::default()`, byte-identical to pre-#1005 behavior)
-    /// is the only source. Unknown keys in the file are reported as
-    /// warnings on stderr, never treated as errors.
+    /// Discover + analyze the project rooted at `entry` (follows `INCLUDE`s
+    /// for `.ink`, or [`discover_native`](Driver::discover_native) over a
+    /// [`RealFs`] tree for `.brink` — B0.10b, issue #1295: the same dispatch
+    /// `load_git_baseline` uses, so every `brink ide` subcommand (not just
+    /// `effects-diff --rev`) sees a multi-file native project's whole file
+    /// set, not just the entry), exactly like `brink compile`. Also
+    /// discovers a `brink.toml` (#1005) starting from `entry`'s directory
+    /// and applies its `[project] dialect`/`types` to analysis — `brink
+    /// ide` has no `--dialect`/`--types` flags of its own, so the file (or,
+    /// absent one, `AnalysisOptions::default()`, byte-identical to
+    /// pre-#1005 behavior) is the only source. Unknown keys in the file are
+    /// reported as warnings on stderr, never treated as errors.
     fn load(entry: &Path) -> Result<Self, String> {
-        let entry = entry.to_string_lossy().into_owned();
         let mut driver = Driver::new();
-        driver.set_analysis_options(resolve_analysis_options(Path::new(&entry))?);
-        driver
-            .discover(&entry, |p| {
-                std::fs::read_to_string(p)
-                    .map_err(|e| io::Error::new(e.kind(), format!("{p}: {e}")))
-            })
-            .map_err(|e| format!("{e}"))?;
+        driver.set_analysis_options(resolve_analysis_options(entry)?);
+
+        let entry_key = if brink_driver::is_native(entry) {
+            let root = brink_driver::native_source_root(entry);
+            let tree = RealFs::new(&root);
+            driver
+                .discover_native(&tree, &root)
+                .map_err(|e| format!("{e}"))?;
+            brink_driver::relative_key(&root, entry)
+        } else {
+            let entry_s = entry.to_string_lossy().into_owned();
+            driver
+                .discover(&entry_s, |p| {
+                    std::fs::read_to_string(p)
+                        .map_err(|e| io::Error::new(e.kind(), format!("{p}: {e}")))
+                })
+                .map_err(|e| format!("{e}"))?;
+            entry_s
+        };
+
         let analysis = driver.analyze().clone();
         let entry_id = driver
             .db()
-            .file_id(&entry)
-            .ok_or_else(|| format!("entry file not found after discovery: {entry}"))?;
+            .file_id(&entry_key)
+            .ok_or_else(|| format!("entry file not found after discovery: {entry_key}"))?;
         Ok(Self {
             driver,
             analysis,
@@ -1978,31 +2101,47 @@ impl Project {
         edited: &BTreeMap<String, String>,
         removed: Option<&str>,
     ) -> Result<Vec<DiagEntry>, String> {
-        let entry_s = entry.to_string_lossy().into_owned();
         let mut driver = Driver::new();
         driver.set_analysis_options(resolve_analysis_options(entry)?);
-        driver
-            .discover(&entry_s, |p| {
-                // A moved file no longer exists at its old path: surface any
-                // stale reference as a diagnostic instead of reading the disk copy.
-                if Some(p) == removed {
-                    return Err(io::Error::new(
-                        io::ErrorKind::NotFound,
-                        format!("{p}: file moved"),
-                    ));
-                }
-                if let Some(s) = edited.get(p) {
-                    Ok(s.clone())
-                } else {
-                    std::fs::read_to_string(p)
-                        .map_err(|e| io::Error::new(e.kind(), format!("{p}: {e}")))
-                }
-            })
-            .map_err(|e| format!("{e}"))?;
+
+        let entry_key = if brink_driver::is_native(entry) {
+            let root = brink_driver::native_source_root(entry);
+            let tree = EditOverlay {
+                inner: RealFs::new(&root),
+                edited,
+                removed,
+            };
+            driver
+                .discover_native(&tree, &root)
+                .map_err(|e| format!("{e}"))?;
+            brink_driver::relative_key(&root, entry)
+        } else {
+            let entry_s = entry.to_string_lossy().into_owned();
+            driver
+                .discover(&entry_s, |p| {
+                    // A moved file no longer exists at its old path: surface any
+                    // stale reference as a diagnostic instead of reading the disk copy.
+                    if Some(p) == removed {
+                        return Err(io::Error::new(
+                            io::ErrorKind::NotFound,
+                            format!("{p}: file moved"),
+                        ));
+                    }
+                    if let Some(s) = edited.get(p) {
+                        Ok(s.clone())
+                    } else {
+                        std::fs::read_to_string(p)
+                            .map_err(|e| io::Error::new(e.kind(), format!("{p}: {e}")))
+                    }
+                })
+                .map_err(|e| format!("{e}"))?;
+            entry_s
+        };
+
         let new_analysis = driver.analyze().clone();
         let new_entry = driver
             .db()
-            .file_id(&entry_s)
+            .file_id(&entry_key)
             .ok_or("entry file vanished during re-analysis")?;
         let new_report = driver.collect_diagnostics(&new_analysis, Some(new_entry));
         let base_report = self
@@ -2503,6 +2642,55 @@ mod git_baseline_config_tests {
         assert!(
             !other_source.contains("Working tree only."),
             "must NOT read the uncommitted working-tree copy, got: {other_source:?}"
+        );
+
+        drop(cwd_guard);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regression for the #1295 fold-in: `load_git_baseline`'s native branch
+    /// assumes cwd *is* the git repository root (`repo_dir = Path::new(".")`
+    /// in the source). Running `effects-diff --rev` from a subdirectory of a
+    /// multi-file native project must fail fast with a clear error instead
+    /// of silently misaligning `GitRev`'s pathspecs and reading the wrong
+    /// (or no) content.
+    #[test]
+    fn git_baseline_for_brink_entry_from_a_subdirectory_of_the_repo_errors_instead_of_misaligning()
+    {
+        let _lock = CWD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let original_cwd = std::env::current_dir().unwrap();
+
+        let dir = std::env::temp_dir().join(format!(
+            "brink-ide-unit-git-baseline-subdir-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(
+            dir.join("sub").join("main.brink"),
+            "flow main() {\n  Hi. -> END\n}\n",
+        )
+        .unwrap();
+        git(&dir, &["init", "-q"]);
+        git(&dir, &["config", "user.email", "test@example.com"]);
+        git(&dir, &["config", "user.name", "test"]);
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-q", "-m", "initial"]);
+
+        // cwd is `dir/sub` — inside the repo, but not its top-level
+        // directory — exactly the misalignment risk the fold-in flags.
+        std::env::set_current_dir(dir.join("sub")).unwrap();
+        let cwd_guard = CwdGuard(original_cwd);
+
+        let entry = Path::new("main.brink");
+        let err = load_git_baseline(entry, "HEAD")
+            .err()
+            .expect("baseline load from a repo subdirectory must fail fast, not misalign");
+        assert!(
+            err.contains("git repository root"),
+            "error must name the actual problem, got: {err}"
         );
 
         drop(cwd_guard);
