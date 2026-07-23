@@ -17,7 +17,6 @@ mod include_graph;
 mod memory;
 mod modules;
 mod queries;
-mod source_tree;
 
 pub use brink_analyzer::{
     BodyTypes, EffectAtoms, EffectRow, InferenceResult, InferredSig, Sig, Ty,
@@ -29,4 +28,9 @@ pub use memory::{IngredientKind, IngredientMemory};
 pub use queries::{
     CompileProduct, FileDiagnostics, LirProduct, ResolvedProject, partition_diagnostics,
 };
-pub use source_tree::{InMemory, SourceTree};
+// Extracted to the `brink-source-tree` L0 leaf (decision-log 2026-07-23,
+// issue #1323 ruling on #1325) so `brink-project-config` can depend on the
+// seam without a cycle through this crate. Re-exported here so
+// `brink_db::SourceTree`/`brink_db::InMemory` keep resolving for existing
+// consumers (`brink-driver`'s `discover_native` among them) unchanged.
+pub use brink_source_tree::{InMemory, SourceTree};

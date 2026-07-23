@@ -1,0 +1,20 @@
+[package]
+name = "brink-source-tree"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "SourceTree trait: a host-agnostic seam for enumerating and reading .brink source files"
+
+# L0 leaf (decision log 2026-07-23, issue #1323 ruling on #1325): no
+# workspace dependencies, std/io only. Both `brink-db` (native discovery) and
+# `brink-project-config` (config discovery, #1312) depend on this crate
+# downward, which breaks the `project-config -> brink-db -> brink-analyzer ->
+# project-config` cycle that a `brink-db`-owned `SourceTree` would create.
+[dependencies]
+
+[lints]
+workspace = true

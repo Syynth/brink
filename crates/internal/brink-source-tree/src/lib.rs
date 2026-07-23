@@ -3,6 +3,14 @@
 //! 2026-07-22; issue #1278): a host-agnostic way to enumerate and read
 //! native `.brink` source files.
 //!
+//! Extracted from `brink-db` into this L0 leaf crate (decision-log
+//! 2026-07-23, issue #1323 ruling on #1325) so both `brink-db` (native
+//! discovery) and `brink-project-config` (config discovery, #1312) can
+//! depend on it without a
+//! `project-config -> brink-db -> brink-analyzer -> project-config` cycle.
+//! `brink-db` re-exports [`SourceTree`] so `brink_db::SourceTree` still
+//! resolves for existing consumers.
+//!
 //! `InMemory` is `brink-web`'s discovery seam directly; the host-only
 //! implementations (`RealFs`, `GitRev`) live in `brink-driver` and back
 //! `brink_driver::discover_native` (issue #1288) — a normal native compile

@@ -109,6 +109,7 @@ brink-intl = { path = "crates/internal/brink-intl", version = "0.0.11" }
 brink-ir = { path = "crates/internal/brink-ir", version = "0.0.11" }
 brink-project-config = { path = "crates/internal/brink-project-config", version = "0.0.11" }
 brink-runtime = { path = "crates/brink-runtime", version = "0.0.11" }
+brink-source-tree = { path = "crates/internal/brink-source-tree", version = "0.0.11" }
 brink-syntax = { path = "crates/internal/brink-syntax", version = "0.0.11" }
 brink-syntax-native = { path = "crates/internal/brink-syntax-native", version = "0.0.11" }
 # Unpublished (dev-only): no version, so `cargo publish` strips it from dependents.
