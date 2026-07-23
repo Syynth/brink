@@ -2685,10 +2685,9 @@ mod git_baseline_config_tests {
         let cwd_guard = CwdGuard(original_cwd);
 
         let entry = Path::new("main.brink");
-        let err = match load_git_baseline(entry, "HEAD") {
-            Ok(_) => panic!("baseline load from a repo subdirectory must fail fast, not misalign"),
-            Err(e) => e,
-        };
+        let err = load_git_baseline(entry, "HEAD")
+            .err()
+            .expect("baseline load from a repo subdirectory must fail fast, not misalign");
         assert!(
             err.contains("git repository root"),
             "error must name the actual problem, got: {err}"
