@@ -35,6 +35,12 @@ use crate::request::fulfill_flow_requests;
 pub struct BrinkPlugin<M: Send + Sync + 'static = ()> {
     policy: WorldPolicy,
     exec_mode: ExecMode,
+    // #1029: out-of-band `ProjectConfig` override, threaded to the dev-mode
+    // `InkLoader` (via `BrinkAssetsPlugin`) when this plugin is the one that
+    // adds it. `dev`-only: the config only matters to the source-compiling
+    // asset loader, which doesn't exist without the `dev` feature.
+    #[cfg(feature = "dev")]
+    config: Option<brink_project_config::ProjectConfig>,
     _marker: PhantomData<fn() -> M>,
 }
 
@@ -47,6 +53,8 @@ impl<M: Send + Sync + 'static> Default for BrinkPlugin<M> {
             // in release. Diverges from core `ExecMode::default` (always
             // `Dev`); a host overrides with `with_exec_mode`.
             exec_mode: BrinkExecMode::<M>::default().mode,
+            #[cfg(feature = "dev")]
+            config: None,
             _marker: PhantomData,
         }
     }
@@ -92,12 +100,44 @@ impl<M: Send + Sync + 'static> BrinkPlugin<M> {
         self.exec_mode = mode;
         self
     }
+
+    /// Override the [`ProjectConfig`](brink_project_config::ProjectConfig)
+    /// (`dialect`/`types`) the dev-mode [`InkLoader`](crate::InkLoader) uses
+    /// for stories compiled under this marker (#1029).
+    ///
+    /// The **programmatic escape hatch**: it wins over whatever `brink.toml`
+    /// the loader's bounded asset walk-up discovers beside the entry story —
+    /// for packed/embedded builds where there's no meaningful sibling file,
+    /// or for a host that simply prefers configuring dialect/types in game
+    /// code. Fields left `None` on the given [`ProjectConfig`] still fall
+    /// through to whatever the discovered `brink.toml` (or the built-in
+    /// default) supplies — same "only touch what you set" precedence as the
+    /// CLI's `--dialect`/`--types` flags
+    /// (`AnalysisOptions::apply_project_config`).
+    ///
+    /// Only takes effect if this is the [`BrinkPlugin<M>`] instance that
+    /// ends up adding [`BrinkAssetsPlugin`] (the first one, per marker
+    /// registration order) — later markers' overrides are ignored once
+    /// `BrinkAssetsPlugin` already exists in the app, same as every other
+    /// `BrinkAssetsPlugin`-owned setting. Call
+    /// [`BrinkAssetsPlugin::with_config`] directly instead if you're adding
+    /// it standalone.
+    #[cfg(feature = "dev")]
+    #[must_use]
+    pub fn with_config(mut self, config: brink_project_config::ProjectConfig) -> Self {
+        self.config = Some(config);
+        self
+    }
 }
 
 impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
     fn build(&self, app: &mut App) {
         if !app.is_plugin_added::<BrinkAssetsPlugin>() {
-            app.add_plugins(BrinkAssetsPlugin);
+            #[cfg(feature = "dev")]
+            let assets_plugin = BrinkAssetsPlugin::default().with_config_option(self.config);
+            #[cfg(not(feature = "dev"))]
+            let assets_plugin = BrinkAssetsPlugin::default();
+            app.add_plugins(assets_plugin);
         }
         app.insert_resource(BrinkWorldPolicy::<M>::new(self.policy.clone()));
         // F35 (ruled 2026-07-19): the host-selected (or profile-defaulted)
@@ -246,7 +286,38 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
 /// present, so you rarely need to add it manually — but you can if you
 /// want the asset machinery without any marker-specific plumbing (e.g.
 /// for a headless asset-processing binary).
-pub struct BrinkAssetsPlugin;
+#[derive(Default)]
+pub struct BrinkAssetsPlugin {
+    // #1029: threaded to the dev-mode `InkLoader` (see `BrinkPlugin::with_config`
+    // for the full precedence contract). `dev`-only for the same reason
+    // `BrinkPlugin::config` is.
+    #[cfg(feature = "dev")]
+    config: Option<brink_project_config::ProjectConfig>,
+}
+
+impl BrinkAssetsPlugin {
+    /// Override the `brink.toml`-sourced [`ProjectConfig`](brink_project_config::ProjectConfig)
+    /// the dev-mode [`InkLoader`](crate::InkLoader) uses (#1029) — the
+    /// standalone-plugin equivalent of [`BrinkPlugin::with_config`], for
+    /// hosts that add `BrinkAssetsPlugin` directly (e.g. a headless
+    /// asset-processing binary) without going through `BrinkPlugin<M>`.
+    #[cfg(feature = "dev")]
+    #[must_use]
+    pub fn with_config(mut self, config: brink_project_config::ProjectConfig) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    /// Same as [`Self::with_config`] but takes the already-`Option`al form
+    /// `BrinkPlugin::build` holds, so it can thread its own (possibly unset)
+    /// override through without an `if let` at the call site.
+    #[cfg(feature = "dev")]
+    #[must_use]
+    fn with_config_option(mut self, config: Option<brink_project_config::ProjectConfig>) -> Self {
+        self.config = config;
+        self
+    }
+}
 
 impl Plugin for BrinkAssetsPlugin {
     fn build(&self, app: &mut App) {
@@ -259,6 +330,8 @@ impl Plugin for BrinkAssetsPlugin {
         app.init_asset_loader::<crate::locale::InklLoader>();
         app.init_asset_loader::<crate::brkt::BrktLoader>();
         #[cfg(feature = "dev")]
-        app.init_asset_loader::<crate::source_loader::InkLoader>();
+        app.register_asset_loader(crate::source_loader::InkLoader {
+            override_config: self.config,
+        });
     }
 }
