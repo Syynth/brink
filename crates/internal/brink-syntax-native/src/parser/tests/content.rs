@@ -429,48 +429,85 @@ fn interpolation_flanked_by_glue() {
     assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::INTERPOLATION), 1);
 }
 
-// ── Section C2: known grammar collisions (documented, NOT fixed here —
-// TEST-ONLY issue #1194; do not "fix" the parser, see house rules) ──────
+// ── Section C2: alternation-marker precedence over interpolation (ruled
+// 2026-07-22, #1258/#1261 — "alternation markers win"; formerly pinned as
+// unresolved grammar collisions by the #1194 coverage wave) ─────────────
 
 #[test]
-fn fixme_prefix_not_expression_collides_with_alternation_once_marker() {
-    // FIXME(#1194 finding, reported on the issue): `at_alternation`
-    // (`family.rs`) claims any `{!` unconditionally for the alternation
-    // family's `{! }` "once" marker (charter §6), with no lookahead past
-    // the single char. That makes it IMPOSSIBLE to spell a bare-brace
-    // interpolation whose expression starts with the `!` prefix operator
-    // (`is_prefix_op` in `expr.rs` does allow `!`, symmetrically with
-    // `-`) — `{!x}` can never reach `interpolation()` the way `{-x}` does
-    // two tests up. This contradicts charter §6's "Bare `{expr}` =
-    // interpolation — and nothing else, ever" for exactly this one prefix
-    // operator. Asserting the CURRENT (surprising) behavior, not the
-    // desired one — do not "fix" this in a test-only issue.
+fn alternation_once_marker_wins_over_prefix_not_expression() {
+    // RULED (#1258/#1261): `at_alternation` (`family.rs`) claims any `{!`
+    // unconditionally for the alternation family's `{! }` "once" marker
+    // (charter §6), with no lookahead past the single char — this makes it
+    // impossible to spell a bare-brace interpolation whose expression
+    // starts with the `!` prefix operator (`is_prefix_op` in `expr.rs`
+    // does allow `!`, symmetrically with `-`) directly: `{!x}` can never
+    // reach `interpolation()` the way `{-x}` does two tests up. Ruled
+    // acceptable ("alternation markers win") rather than a bug — the
+    // escape hatch is parens, see `paren_escaped_prefix_not_expression_
+    // reaches_interpolation_despite_alternation_marker_win` below.
     let p = assert_lossless("Not: {!x}\n");
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     assert!(
         has_node_kind(&p.syntax(), SyntaxKind::ALTERNATION_BLOCK),
-        "current (buggy) behavior: {{!x}} is claimed by the alternation family"
+        "ruled behavior: {{!x}} is claimed by the alternation family"
     );
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::INTERPOLATION));
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::PREFIX_EXPR));
 }
 
 #[test]
-fn fixme_lambda_expression_collides_with_alternation_stopping_marker() {
-    // FIXME(#1194 finding, reported on the issue): same root cause as
-    // above, for `{|` vs. the alternation family's `{| }` "stopping
-    // sequence" marker — a bare-brace interpolation whose expression is a
-    // `|params| body` lambda (`LAMBDA_EXPR`, tokenized per charter §7/§8)
-    // can never reach `interpolation()` either. Asserting current
-    // behavior, not fixing it here.
-    let p = assert_lossless("Lambda: {|x| x}\n");
+fn paren_escaped_prefix_not_expression_reaches_interpolation_despite_alternation_marker_win() {
+    // The ruling's escape hatch (#1258/#1261): `L_PAREN` is never an
+    // alternation marker char, so wrapping the expression in parens always
+    // falls through past `at_alternation`/`at_conditional`/`at_choice_point`
+    // straight to `content::interpolation`, regardless of which marker
+    // char the expression itself would otherwise start with.
+    let p = assert_lossless("Not: {(!x)}\n");
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::INTERPOLATION));
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::PAREN_EXPR));
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::PREFIX_EXPR));
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::ALTERNATION_BLOCK));
+}
+
+#[test]
+fn alternation_stopping_marker_wins_over_lambda_expression_and_is_malformed() {
+    // RULED (#1258/#1261): same root cause as the once-marker case above,
+    // for `{|` vs. the alternation family's `{| }` "stopping sequence"
+    // marker — a bare-brace interpolation whose expression is a `|params|
+    // body` lambda (`LAMBDA_EXPR`, tokenized per charter §7/§8) can never
+    // reach `interpolation()` either, and the alternation family still
+    // wins the dispatch. Unlike the once-marker/prefix-not collision
+    // above, `PIPE` is ALSO the alternative separator (and the token
+    // `LAMBDA_EXPR` itself closes its parameter list with), so `{|x| x}`
+    // is additionally flagged as a malformed alternation
+    // (`family::inline_alternatives`) rather than silently accepted as an
+    // unrelated two-branch sequence — see the escape hatch below.
+    let p = assert_lossless("Lambda: {|x| x}\n");
+    assert!(
+        !p.errors().is_empty(),
+        "ruled behavior: `{{|x| x}}` is a malformed alternation, not a silent 2-branch parse"
+    );
     assert!(
         has_node_kind(&p.syntax(), SyntaxKind::ALTERNATION_BLOCK),
-        "current (buggy) behavior: {{|x| x}} is claimed by the alternation family"
+        "ruled behavior: {{|x| x}} is still claimed by the alternation family"
     );
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::INTERPOLATION));
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::LAMBDA_EXPR));
+}
+
+#[test]
+fn paren_escaped_lambda_expression_reaches_interpolation_despite_alternation_marker_win() {
+    // The ruling's escape hatch, lambda case: parens route past the
+    // marker-claims-`{|` dispatch the same way they do for the once-marker
+    // case above, reaching a real `LAMBDA_EXPR` with no malformed-
+    // alternation diagnostic.
+    let p = assert_lossless("Lambda: {(|x| x)}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::INTERPOLATION));
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::PAREN_EXPR));
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::LAMBDA_EXPR));
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::ALTERNATION_BLOCK));
 }
 
 // ── Section D: TAG_LINE vs. a content line's trailing TAG tail ─────────
