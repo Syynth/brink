@@ -1538,6 +1538,7 @@ fn load_git_baseline(entry: &Path, rev: &str) -> Result<Project, String> {
     let entry_key = if brink_driver::is_native(entry) {
         let root = brink_driver::native_source_root(entry);
         let repo_dir = Path::new(".");
+        ensure_repo_dir_is_toplevel(repo_dir)?;
         let tree = GitRev::new(repo_dir, rev, &root);
         driver
             .discover_native(&tree, &root)
@@ -1560,6 +1561,50 @@ fn load_git_baseline(entry: &Path, rev: &str) -> Result<Project, String> {
         analysis,
         entry_id,
     })
+}
+
+/// Guard the native branch of [`load_git_baseline`] against its `repo_dir =
+/// Path::new(".")` assumption: `root` ([`brink_driver::native_source_root`])
+/// and the entry's [`brink_driver::relative_key`] are both computed relative
+/// to the process's cwd, and [`GitRev`]'s `read` joins `root` directly onto a
+/// key with no `./` prefix — so the resulting `git show <rev>:<path>`
+/// pathspec resolves against the repository's *top-level* directory, not
+/// cwd (unlike the `./`-prefixed pathspec [`git_show`] below uses for the
+/// `.ink` branch). If cwd is not the repo root — `effects-diff --rev`
+/// invoked from a subdirectory of a multi-file native project — `root` and
+/// `GitRev`'s actual git-relative reads silently disagree, and the baseline
+/// would read the wrong path (or find nothing) with no error. Fail fast
+/// instead (issue #1295 fold-in: "add a guard/assertion here").
+fn ensure_repo_dir_is_toplevel(repo_dir: &Path) -> Result<(), String> {
+    let output = Command::new("git")
+        .current_dir(repo_dir)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(|e| format!("git rev-parse --show-toplevel: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git rev-parse --show-toplevel failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let toplevel = String::from_utf8(output.stdout)
+        .map_err(|e| format!("git rev-parse --show-toplevel: non-utf8 output: {e}"))?;
+    let toplevel = toplevel.trim();
+    let cwd = std::env::current_dir().map_err(|e| format!("current dir: {e}"))?;
+    let toplevel_abs =
+        std::path::absolute(Path::new(toplevel)).unwrap_or_else(|_| PathBuf::from(toplevel));
+    let cwd_abs = std::path::absolute(&cwd).unwrap_or(cwd);
+    if toplevel_abs == cwd_abs {
+        Ok(())
+    } else {
+        Err(format!(
+            "effects-diff --rev must be run from the git repository root ({}), not {} — \
+             native baseline discovery keys files relative to cwd and would misalign \
+             otherwise (issue #1295)",
+            toplevel_abs.display(),
+            cwd_abs.display()
+        ))
+    }
 }
 
 /// Read `path` (project-relative, as discovered) at git revision `rev`. The
@@ -2597,6 +2642,56 @@ mod git_baseline_config_tests {
         assert!(
             !other_source.contains("Working tree only."),
             "must NOT read the uncommitted working-tree copy, got: {other_source:?}"
+        );
+
+        drop(cwd_guard);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regression for the #1295 fold-in: `load_git_baseline`'s native branch
+    /// assumes cwd *is* the git repository root (`repo_dir = Path::new(".")`
+    /// in the source). Running `effects-diff --rev` from a subdirectory of a
+    /// multi-file native project must fail fast with a clear error instead
+    /// of silently misaligning `GitRev`'s pathspecs and reading the wrong
+    /// (or no) content.
+    #[test]
+    fn git_baseline_for_brink_entry_from_a_subdirectory_of_the_repo_errors_instead_of_misaligning()
+     {
+        let _lock = CWD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let original_cwd = std::env::current_dir().unwrap();
+
+        let dir = std::env::temp_dir().join(format!(
+            "brink-ide-unit-git-baseline-subdir-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(
+            dir.join("sub").join("main.brink"),
+            "flow main() {\n  Hi. -> END\n}\n",
+        )
+        .unwrap();
+        git(&dir, &["init", "-q"]);
+        git(&dir, &["config", "user.email", "test@example.com"]);
+        git(&dir, &["config", "user.name", "test"]);
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-q", "-m", "initial"]);
+
+        // cwd is `dir/sub` — inside the repo, but not its top-level
+        // directory — exactly the misalignment risk the fold-in flags.
+        std::env::set_current_dir(dir.join("sub")).unwrap();
+        let cwd_guard = CwdGuard(original_cwd);
+
+        let entry = Path::new("main.brink");
+        let err = match load_git_baseline(entry, "HEAD") {
+            Ok(_) => panic!("baseline load from a repo subdirectory must fail fast, not misalign"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("git repository root"),
+            "error must name the actual problem, got: {err}"
         );
 
         drop(cwd_guard);
