@@ -4,7 +4,7 @@
 
 use crate::SyntaxKind::{
     CHOICE, CHOICE_BODY, CHOICE_BRACKET_CONTENT, CHOICE_BULLET, CHOICE_GUARD, CHOICE_INNER_CONTENT,
-    CHOICE_POINT, CHOICE_START_CONTENT, ELSE_BRANCH, EOF, KW_ELSE, KW_IF, L_BRACE, L_BRACKET,
+    CHOICE_POINT, CHOICE_START_CONTENT, ELSE_BRANCH, EOF, HASH, KW_ELSE, KW_IF, L_BRACE, L_BRACKET,
     L_PAREN, NEWLINE, PLUS, QUESTION, R_BRACE, R_BRACKET, SPLICE, STAR, THREAD,
 };
 
@@ -65,6 +65,20 @@ fn choice(p: &mut Parser<'_, '_>) {
     }
 
     choice_text(p);
+
+    // #1264 / #1195: `content_items_until` (`content.rs`) always breaks on
+    // `HASH` regardless of the caller's stop set, so a choice line's
+    // trailing `#tag`s stop `choice_text`'s scan cleanly — but unlike
+    // `content_line`, nothing here used to consume them. They were left
+    // for `choice_point`'s outer loop, whose `match` has no `HASH` arm, so
+    // it fell into `error_recover` and wrapped the tag in `ERROR` nodes.
+    // Mirror `content_line`'s tail call so trailing tags fold into `TAG`
+    // nodes here too, as direct children of `CHOICE` (siblings of
+    // `CHOICE_START_CONTENT`/the bracket anatomy), matching how
+    // `content_line` attaches its own trailing tags.
+    if p.at(HASH) {
+        super::content::tag_line_tail(p);
+    }
 
     p.skip_ws();
     if p.at(L_BRACE) {

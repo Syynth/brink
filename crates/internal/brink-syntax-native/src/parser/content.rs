@@ -72,6 +72,28 @@ pub(crate) fn label(p: &mut Parser<'_, '_>) {
 pub(crate) fn content_items_until(p: &mut Parser<'_, '_>, stop: &[SyntaxKind]) {
     loop {
         let cur = p.current();
+        // Inter-interpolation whitespace fix (#1264): same bug class as
+        // the significant-whitespace policy just below, but that policy
+        // only folds leading whitespace into a FOLLOWING TEXT run —
+        // `starts_text_run` returns `false` for every `L_BRACE`
+        // unconditionally, so pending trivia ahead of a bare `{expr}`
+        // interpolation still gets `skip_ws`'d bare, landing outside any
+        // node. `{a} {b}`'s separating space is exactly that: trivia
+        // between the closing `}` of one interpolation and the opening
+        // `{` of the next. When the upcoming `L_BRACE` is going to resolve
+        // to a genuine bare interpolation (not the choice/conditional/
+        // alternation family, and not a caller-flagged body-opener —
+        // `at_bare_interpolation` mirrors the match arms below exactly),
+        // fold the pending trivia into a `TEXT` node via `text_run_until`
+        // first. `text_run_until` breaks at the very next `L_BRACE`, so
+        // this only ever wraps the trivia itself; the interpolation is
+        // then parsed normally on the next loop iteration with no pending
+        // trivia left, so nothing downstream (`is_body_open_brace`
+        // included) sees a different parser state than before this fix.
+        if cur == L_BRACE && p.nth_raw(0).is_trivia() && at_bare_interpolation(p, stop) {
+            text_run_until(p, stop);
+            continue;
+        }
         // Leading-trivia policy (significant-whitespace fix): only a prose
         // TEXT run keeps its leading whitespace. When the next item is a
         // text run, DON'T `skip_ws` here — `text_run_until` (which bumps
@@ -195,9 +217,43 @@ fn is_body_open_brace(p: &Parser<'_, '_>) -> bool {
     }
     // A bare `{` is a body-opener exactly when it's the multiline shape
     // (immediately followed by a NEWLINE, trivia aside) — the same signal
-    // `family::is_multiline` uses for the alternation family, checked one
-    // token earlier here since the brace itself hasn't been consumed yet.
-    super::family::peek_is_newline(p, 1)
+    // `family::is_multiline` uses for the alternation family. Looked up via
+    // `raw_trivia_offset` rather than the literal `+ 1` the brace's own
+    // width would suggest: the inter-interpolation whitespace fix above
+    // calls this function while trivia ahead of the `{` may still be
+    // pending (not yet `skip_ws`'d), so the brace itself might not sit at
+    // raw offset 0. When there's no pending trivia (every other call
+    // site — trivia is always flushed before this is reached) the offset
+    // is 0 and this is exactly the old `peek_is_newline(p, 1)`.
+    super::family::peek_is_newline(p, raw_trivia_offset(p) + 1)
+}
+
+/// Number of raw trivia tokens (`WHITESPACE`/comments) sitting at the
+/// parser's current raw position before the next real token — `0` when
+/// none are pending. Lets [`is_body_open_brace`] give the same answer
+/// whether or not its caller has already `skip_ws`'d.
+fn raw_trivia_offset(p: &Parser<'_, '_>) -> usize {
+    let mut i = 0;
+    while p.nth_raw(i).is_trivia() {
+        i += 1;
+    }
+    i
+}
+
+/// True when the `L_BRACE` at the parser's (possibly trivia-pending)
+/// position is going to resolve to a bare `{expr}` interpolation — neither
+/// the choice/conditional/alternation family nor (when the caller lists
+/// `L_BRACE` as a stop kind) a body-opener. Mirrors exactly the condition
+/// under which `content_items_until`'s dispatch match reaches
+/// [`interpolation`]; used solely to gate the inter-interpolation
+/// whitespace fix, which must never fire for the family/body-open cases —
+/// those still need their leading trivia `skip_ws`'d bare, unchanged.
+fn at_bare_interpolation(p: &Parser<'_, '_>, stop: &[SyntaxKind]) -> bool {
+    let is_family = super::family::at_choice_point(p)
+        || super::family::at_conditional(p)
+        || super::family::at_alternation(p);
+    let is_body_opener = stop.contains(&L_BRACE) && is_body_open_brace(p);
+    !is_family && !is_body_opener
 }
 
 /// `{expr}` — bare-brace interpolation, and nothing else, ever (charter
