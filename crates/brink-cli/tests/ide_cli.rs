@@ -804,8 +804,12 @@ fn rename_write_on_nested_native_entry_writes_the_real_file() {
         "must not write a cwd-relative phantom file at {}",
         phantom.display()
     );
-    let src = fs::read_to_string(&real)
-        .unwrap_or_else(|e| panic!("the real file at {} must exist: {e}", real.display()));
+    assert!(
+        real.exists(),
+        "the real file must exist at {}",
+        real.display()
+    );
+    let src = fs::read_to_string(&real).unwrap();
     assert!(src.contains("var coins"), "declaration renamed: {src}");
     assert!(src.contains("{coins}"), "reference renamed: {src}");
     fs::remove_dir_all(&dir).ok();
