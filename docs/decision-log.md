@@ -1865,6 +1865,13 @@
 - **WHAT:** Collapse the **9 fuzz-smoke jobs into 1** (loop the targets within a single job) and the **7 sub-minute checks into one lint job** (Format, Clippy, Clippy all-features, no_std ×2, cargo-deny, publishable). E2E stays sharded ×4 and the Test variants stay separate — those are genuinely slow and genuinely distinct failures. Coverage is unchanged; only job packaging changes. Pairs with the `concurrency` group tracked in #1237.
 - **WHY:** Measured on a real successful run: 29 jobs, ~60 job-minutes total. The fuzz-smoke suite alone was **9 jobs — 45% of the account's 20-slot concurrency ceiling — for 17 minutes of work**, and seven sub-minute checks (Format 0.3, no_std ×2 at 0.6, publishable 0.7, cargo-deny 0.8, Clippy 1.0) consumed seven slots plus seven checkout+cache setups for roughly 4 minutes of real work. At 29 jobs per run a **single push nearly saturates the entire account's CI capacity**, making multi-PR wave throughput bounded by job *count* rather than by work done. Accepted costs: coarser failure granularity (a red "Lint & static checks" is less legible than a red "Format"), and slightly longer wall-clock on the merged jobs.
 
+## Native grammar supports flat `else if` chains
+- **WHEN:** 2026-07-22
+- **PROJECT:** brink
+- **SYSTEM:** language design (native surface grammar) + `brink-syntax-native` parser
+- **SCOPE:** minor/local (one grammar affordance; ruled in response to a parser-coverage-wave finding)
+- **WHAT:** The native parser recognizes **`else if <cond> { … }`** (and the colon form) as a chained conditional arm — a flat `else if` is a supported spelling, handled in `at_else_arm` (`crates/internal/brink-syntax-native/src/parser/family.rs`), not only the nesting-based spellings that work today (`else { {if …} }` / `else: {if …}`). The chain lowers the same as explicit nesting.
+- **WHY:** The #1191 native-parser test-coverage wave (issue #1197, PR #1247) found that a flat `else if` currently doesn't chain — `at_else_arm` only opens an `ELSE_BRANCH` when `else` is immediately followed by `{`/`:`, so the `if` tail falls through to prose/interpolation debris. Chaining works only via explicit nesting. Maintainer ruled the flat sugar should be supported: it is the conventional, expected spelling (every C-family and Rust-family language has it), and requiring authors to hand-nest `else { {if …} }` is a papercut with no upside. Distinct from the *silent-misparse* colon-`else` bug found in the same PR (same-line `else:` swallowed with no diagnostic), which is a bug to fix, not a feature to add.
 ## Studio E2E is de-required (advisory), not removed
 - **WHEN:** 2026-07-22
 - **PROJECT:** brink
