@@ -299,10 +299,13 @@ jobs:
           # target|crate_dir|seed_dir — the two shared seed dirs mirror the
           # input shapes: `seeds/inkb` for the four targets taking a `.inkb`
           # byte buffer, `seeds/inkt` for the two taking an `.inkt` string,
-          # same as brink-syntax's single `seeds/ink` for its two &str targets.
+          # same as brink-syntax's single `seeds/ink` and brink-syntax-native's
+          # single `seeds/brink`, each for its own pair of &str targets.
           targets="
           parse_no_panic|crates/internal/brink-syntax/fuzz|seeds/ink
           parse_lossless|crates/internal/brink-syntax/fuzz|seeds/ink
+          parse_no_panic|crates/internal/brink-syntax-native/fuzz|seeds/brink
+          parse_lossless|crates/internal/brink-syntax-native/fuzz|seeds/brink
           vm_no_panic|crates/brink-runtime/fuzz|seeds/vm_no_panic
           read_no_panic|crates/internal/brink-format/fuzz|seeds/inkb
           write_read_roundtrip|crates/internal/brink-format/fuzz|seeds/inkb

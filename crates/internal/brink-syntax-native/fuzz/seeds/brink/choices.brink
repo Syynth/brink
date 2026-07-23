@@ -1,0 +1,20 @@
+flow main() {
+  How shall we travel?
+  {?
+    + [Eat another donut] {
+        You eat another donut. -> main
+      }
+    * [Get off the couch] {
+        You struggle up off the couch to go and compose epic poetry.
+        -> END
+      }
+  }
+  {?
+    * "I am somewhat tired[."]," I repeated. {
+        "Really," he responded. "How deleterious."
+      }
+    * "Nothing, Monsieur!"[] I replied. {
+        "Very good, then."
+      }
+  }
+}

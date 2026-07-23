@@ -1,0 +1,14 @@
+flow main() {
+  "We are going on a trip," said Monsieur Fogg.
+  {if know_about_wager {
+    <> "But surely you are not serious?" I demanded.
+  } else {
+    <> "But there must be a reason for this trip," I observed.
+  }}
+  {match mood {
+    calm => { Peaceful. }
+    wary => { Tense. }
+    hostile => { Hostile. }
+  }}
+  -> END
+}

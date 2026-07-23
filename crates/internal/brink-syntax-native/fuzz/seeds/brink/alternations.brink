@@ -1,0 +1,13 @@
+flow garden() {
+  {~ red|blue|green}
+  {&
+    - red
+    - blue
+  }
+  {if x { {~a|b} } else { none }}
+  {&
+    - First line.
+      Second line.
+    - Other.
+  }
+}
