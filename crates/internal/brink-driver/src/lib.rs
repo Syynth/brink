@@ -7,17 +7,19 @@
 
 mod diagnostics;
 mod discover;
+mod discover_native;
 mod source_tree;
 
 use std::collections::HashMap;
 use std::io;
+use std::path::Path;
 
 pub use brink_analyzer::{AnalysisOptions, AnalysisResult, Dialect, TypePolicy};
-pub use brink_db::{CompileProduct, LirProduct, ProjectDb};
+pub use brink_db::{CompileProduct, LirProduct, ProjectDb, SourceTree};
 pub use brink_ir::FileId;
 pub use diagnostics::DiagnosticReport;
 pub use discover::DiscoverError;
-pub use source_tree::{GitRev, RealFs};
+pub use source_tree::{GitRev, RealFs, is_native, native_source_root, relative_key};
 
 /// Pipeline orchestration wrapper around `ProjectDb`.
 pub struct Driver {
@@ -70,6 +72,19 @@ impl Driver {
         F: FnMut(&str) -> Result<String, io::Error>,
     {
         discover::discover(&mut self.db, entry, &mut { read_file })
+    }
+
+    /// Discover a native `.brink` project: enumerate `tree` under `root`
+    /// (sorted, root-relative keys) and load every file — no `INCLUDE` BFS,
+    /// since native has no `INCLUDE`s. `root` must be the same root passed
+    /// to construct `tree` (`RealFs::new`/`GitRev::new`) — see
+    /// [`native_source_root`] to derive it from an entry path.
+    pub fn discover_native(
+        &mut self,
+        tree: &dyn SourceTree,
+        root: &Path,
+    ) -> Result<(), DiscoverError> {
+        discover_native::discover_native(&mut self.db, tree, root)
     }
 
     // ── Analysis ─────────────────────────────────────────────────────

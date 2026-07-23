@@ -1,9 +1,10 @@
 //! Compilation driver: file discovery, parsing, lowering, analysis, codegen.
 
 use std::io;
+use std::path::Path;
 use std::sync::Arc;
 
-use brink_driver::{AnalysisOptions, Driver};
+use brink_driver::{AnalysisOptions, Driver, RealFs};
 use brink_ir::Diagnostic;
 use tracing::info;
 
@@ -33,6 +34,14 @@ fn resolve_diagnostics(driver: &Driver, diags: Vec<Diagnostic>) -> Vec<ResolvedD
 /// Batch compilation is now query-shaped (scripting-substrate spec §5): this
 /// sets the layer-0 inputs (file texts, entry, analysis options); the caller
 /// pulls the query it needs (`lir_product` or `story_data`).
+///
+/// Dispatches on `entry`'s extension (B0.10b, issue #1288): a `.brink` entry
+/// discovers via [`brink_driver::Driver::discover_native`] — a `RealFs`
+/// walk of the project's source root (a `brink.toml` walk-up, or the
+/// entry's own directory if none exists — the single-file-project ruling),
+/// `read_file` unused since native has no per-caller content-provider
+/// need (the whole tree is read directly off disk). A `.ink` entry is
+/// unchanged: `read_file`-driven `INCLUDE` BFS.
 fn prepare_driver<F>(
     entry: &str,
     read_file: F,
@@ -45,15 +54,24 @@ where
 
     let mut driver = Driver::new();
     driver.set_analysis_options(options);
-    driver.discover(entry, read_file)?;
+
+    let entry_key = if brink_driver::is_native(Path::new(entry)) {
+        let root = brink_driver::native_source_root(Path::new(entry));
+        let tree = RealFs::new(&root);
+        driver.discover_native(&tree, &root)?;
+        brink_driver::relative_key(&root, Path::new(entry))
+    } else {
+        driver.discover(entry, read_file)?;
+        entry.to_string()
+    };
 
     let file_count = driver.db().file_ids().count();
     info!(file_count, "all files discovered");
 
-    let entry_id = driver.db_mut().set_entry(entry).ok_or_else(|| {
+    let entry_id = driver.db_mut().set_entry(&entry_key).ok_or_else(|| {
         CompileError::Io(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("entry file not found after discovery: {entry}"),
+            format!("entry file not found after discovery: {entry_key}"),
         ))
     })?;
     Ok((driver, entry_id))

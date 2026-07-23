@@ -168,6 +168,100 @@ fn compile_bare_include_reports_e037_not_io_error() {
     );
 }
 
+// ── Native (.brink) discovery (B0.10b, #1288) ───────────────────────
+
+/// A `.brink` entry with no `brink.toml` anywhere above it (the
+/// single-file-project ruling: root = the entry's own directory) compiles
+/// via `compile_path`, proving `prepare_driver`'s native branch dispatches
+/// and its entry-key resolution (`native_source_root` + `relative_key`)
+/// lines up with the key `discover_native` registered the entry under.
+#[test]
+fn compile_path_native_single_file_no_brink_toml() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-single-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "flow main() {\n  Hello. -> END\n}\n",
+    )
+    .unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let output = result.expect("single-file native project should compile");
+    assert!(
+        !output.data.containers.is_empty(),
+        "expected non-empty containers"
+    );
+}
+
+/// A `.brink` entry nested under a subdirectory, still with no `brink.toml`,
+/// so the root is the entry's *own* directory (not an ancestor) — exercises
+/// `native_source_root`'s fallback with a non-trivial (non-".") entry path,
+/// and a sibling file in the same directory that discovery must find
+/// without breaking the entry's own compile.
+#[test]
+fn compile_path_native_multi_file_no_brink_toml() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-multi-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("story")).unwrap();
+    std::fs::write(
+        dir.join("story/main.brink"),
+        "flow main() {\n  Hello. -> END\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("story/other.brink"),
+        "flow other() {\n  Hi. -> END\n}\n",
+    )
+    .unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("story/main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let output = result.expect("multi-file native project should compile");
+    assert!(
+        !output.data.containers.is_empty(),
+        "expected non-empty containers"
+    );
+}
+
+/// A `.brink` entry under a directory whose ancestor has a `brink.toml`:
+/// the source root walks up to it (not the entry's own directory), and
+/// discovery must still find + read the entry correctly through that root.
+#[test]
+fn compile_path_native_walks_up_to_brink_toml() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-walkup-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("story")).unwrap();
+    std::fs::write(dir.join("brink.toml"), "[project]\ndialect = \"brink\"\n").unwrap();
+    std::fs::write(
+        dir.join("story/main.brink"),
+        "flow main() {\n  Hello. -> END\n}\n",
+    )
+    .unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("story/main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let output =
+        result.expect("native project with an ancestor brink.toml should compile via walk-up");
+    assert!(
+        !output.data.containers.is_empty(),
+        "expected non-empty containers"
+    );
+}
+
 // ── compile_path (disk-based) ───────────────────────────────────────
 
 #[test]

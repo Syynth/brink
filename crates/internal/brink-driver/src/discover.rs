@@ -15,6 +15,15 @@ pub enum DiscoverError {
     /// Circular INCLUDE dependency detected.
     #[error("circular INCLUDE: {0}")]
     CircularInclude(String),
+    /// A native discovery key is not root-relative (contains a `..`
+    /// segment). `native_module_path` treats `..` literally, so letting one
+    /// through would mint a bogus module (`../x.brink` → `story::..::x`) —
+    /// save-key-identity-critical (issue #1288 review note (a)). Every
+    /// current `SourceTree` (`RealFs`, `GitRev`, `InMemory`) already
+    /// produces root-relative, `..`-free keys; this guards against a future
+    /// implementation that doesn't.
+    #[error("source key `{0}` is not root-relative (contains `..`)")]
+    InvalidKey(String),
 }
 
 /// Discover all files reachable via INCLUDEs from the entry point.

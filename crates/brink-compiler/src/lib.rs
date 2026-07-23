@@ -117,6 +117,14 @@ pub enum CompileError {
     /// `brink_codegen_inkb::CodegenError` and #586.
     #[error("internal codegen error: {0}")]
     Codegen(#[from] brink_codegen_inkb::CodegenError),
+    /// Native (`.brink`) discovery produced a source key that is not
+    /// root-relative (contains a `..` segment) — see
+    /// `brink_driver::DiscoverError::InvalidKey` (issue #1288 review note
+    /// (a)). Not reachable through `RealFs`/`GitRev` today; a save-key-
+    /// identity guardrail against a future `SourceTree` impl that doesn't
+    /// uphold the contract.
+    #[error("invalid source key `{0}` (must be root-relative, no `..`)")]
+    InvalidSourceKey(String),
 }
 
 impl From<brink_driver::DiscoverError> for CompileError {
@@ -124,6 +132,7 @@ impl From<brink_driver::DiscoverError> for CompileError {
         match err {
             brink_driver::DiscoverError::Io(e) => Self::Io(e),
             brink_driver::DiscoverError::CircularInclude(msg) => Self::CircularInclude(msg),
+            brink_driver::DiscoverError::InvalidKey(key) => Self::InvalidSourceKey(key),
         }
     }
 }
