@@ -7,11 +7,15 @@
 //! blocks-as-values, `super::stmt`) over this skeleton, including a new
 //! `L_BRACE` atom case below for block-expressions. Wave B
 //! (`docs/b0-sequencing.md` §B0.8, issue #1177) adds `if`/`while`/`for`/
-//! `until` control flow as further statement kinds dispatched from
-//! `super::stmt`/`super::control_flow` — none of them are expression atoms
-//! (no case for them exists here), so this stays the shared expression
-//! *skeleton*, not the statement grammar itself. UFCS *resolution* (the
-//! call shape already parses) remains unaddressed.
+//! `until` control flow, and Wave B *tail* (issue #1322) adds `return`/
+//! `break`/`continue` and compound assignment, as further statement kinds
+//! dispatched from `super::stmt`/`super::control_flow` — none of them are
+//! expression atoms (no case for them exists here), so this stays the
+//! shared expression *skeleton*, not the statement grammar itself. UFCS
+//! *resolution* (the call shape already parses — `path_or_call` below —
+//! and structurally lowers, `brink_ir::hir::lower_native::expr::
+//! lower_call`) remains unaddressed at the semantic-resolution layer; see
+//! that lowering module's doc for the investigation (issue #1322).
 
 use crate::SyntaxKind::{
     AMP_AMP, ARG_LIST, BANG, BANG_EQ, BOOLEAN_LIT, CALL_EXPR, COLON_COLON, COMMA, DOT, EQ_EQ,

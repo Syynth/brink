@@ -10,16 +10,25 @@
 //! mirrors `hir::lower::content::logic_block` structurally (same target
 //! shape, same per-statement dispatch table) — that module is this one's
 //! differential partner
-//! (`crates/internal/brink-ir/tests/b08_native_control_flow.rs`).
+//! (`crates/internal/brink-ir/tests/b08_native_control_flow.rs`,
+//! `crates/internal/brink-ir/tests/b08_native_wave_b_tail.rs`).
 //!
 //! `until <cond>;` is native's condition-park spelling; it lowers to the
 //! SAME `AwaitStmt` node the brink-dialect's `~ await <cond>` produces
 //! (decision-log item 4: "`until` is written; suspend is inferred... the
 //! runtime's `FlowSleep` reactive-wake already implements" it) — a
-//! spelling change, not a new construct. `break`/`continue`/`return` inside
-//! a code-ground block, and blocks-as-values (a `STMT_BLOCK`'s own value
-//! when reached in expression position), are out of this slice — see
-//! `expr::lower_expr`'s `STMT_BLOCK` arm doc.
+//! spelling change, not a new construct.
+//!
+//! B0.8 Wave B *tail* (issue #1322, "B0.8 Wave B TAIL: native code-body
+//! statement forms #1177 didn't cover") fills in the rest of the ruled
+//! surface: `return e` (→ `BlockStmt::Return`), `break`/`continue` (→
+//! `BlockStmt::Break`/`Continue`), and compound/RMW assignment (`x += e`,
+//! `x.field += e` → `Assignment { op: AssignOp::Add, .. }`) — see
+//! `lower_return_stmt`/`lower_block_item`'s `BREAK_STMT`/`CONTINUE_STMT`
+//! arms and `lower_assignment` below. Blocks-as-values (a `STMT_BLOCK`'s
+//! own value when reached in expression position) and UFCS/`#fn` remain
+//! out of this slice — see `expr::lower_expr`'s `STMT_BLOCK` arm doc and
+//! `expr`'s module doc, respectively.
 
 use brink_syntax_native::SyntaxKind as N;
 use brink_syntax_native::SyntaxNode;
@@ -29,7 +38,7 @@ use crate::hir::FileId;
 use crate::provenance::NodeClass;
 use crate::{
     AssignOp, Assignment, AwaitStmt, BlockStmt, Diagnostic, DiagnosticCode, ElseBranch, ForStmt,
-    IfStmt, Name, TempDecl, WhileStmt,
+    IfStmt, Name, Return, ReturnKind, TempDecl, WhileStmt,
 };
 
 use super::expr::lower_expr;
@@ -99,6 +108,13 @@ fn lower_block_item(
             .and_then(|n| lower_for_stmt(file_id, &n, diags).map(BlockStmt::For)),
         N::UNTIL_STMT => ast::UntilStmt::cast(item.clone())
             .map(|n| BlockStmt::Await(lower_until_stmt(file_id, &n, diags))),
+        N::RETURN_STMT => ast::ReturnStmt::cast(item.clone())
+            .map(|n| BlockStmt::Return(lower_return_stmt(file_id, &n, diags))),
+        N::BREAK_STMT => ast::BreakStmt::cast(item.clone())
+            .map(|n| BlockStmt::Break(native_provenance(file_id, NodeClass::Break, n.syntax()))),
+        N::CONTINUE_STMT => ast::ContinueStmt::cast(item.clone()).map(|n| {
+            BlockStmt::Continue(native_provenance(file_id, NodeClass::Continue, n.syntax()))
+        }),
         _ => {
             diags.push(diag(file_id, item.text_range(), DiagnosticCode::E129));
             None
@@ -128,12 +144,15 @@ fn lower_temp_decl(
     }))
 }
 
-/// `place = expr;` — the place is always a dotted `PATH` (no `::`,
-/// `AssignStmt::place`'s doc), lowered to `Expr::Path` as the assignment
-/// target (mirrors ink's `Assignment.target: Expr` shape). Native's
-/// `ASSIGN_STMT` grammar only ever produces a bare `=` (Wave A;
-/// `stmt::at_assignment` has no `+=`/`-=` lookahead), so `op` is always
-/// `AssignOp::Set`.
+/// `place = expr;` / `place += expr;` / `place -= expr;` — the place is
+/// always a dotted `PATH` (no `::`, `AssignStmt::place`'s doc), lowered to
+/// `Expr::Path` as the assignment target (mirrors ink's
+/// `Assignment.target: Expr` shape). `op` mirrors the brink-dialect's own
+/// `logic_block::lower_block_assignment` token-to-`AssignOp` mapping
+/// exactly (B0.8 Wave B tail, issue #1322: "compound/RMW assignment") —
+/// `PLUS_EQ`/`MINUS_EQ` map to `Add`/`Sub`, anything else (a bare `=`, or a
+/// malformed parse `assign_stmt`'s `expect(EQ)` fallback already
+/// diagnosed) falls back to `Set`.
 fn lower_assignment(
     file_id: FileId,
     assign: &ast::AssignStmt,
@@ -150,10 +169,17 @@ fn lower_assignment(
     };
     let target = crate::Expr::Path(super::expr::lower_path(&place));
     let value = lower_expr(file_id, &value_node, diags);
+    let op = assign
+        .op_token()
+        .map_or(AssignOp::Set, |tok| match tok.kind() {
+            N::PLUS_EQ => AssignOp::Add,
+            N::MINUS_EQ => AssignOp::Sub,
+            _ => AssignOp::Set,
+        });
     Some(BlockStmt::Assignment(Assignment {
         ptr: native_provenance(file_id, NodeClass::Assignment, assign.syntax()),
         target,
-        op: AssignOp::Set,
+        op,
         value,
     }))
 }
@@ -284,5 +310,27 @@ fn lower_until_stmt(file_id: FileId, u: &ast::UntilStmt, diags: &mut Vec<Diagnos
     AwaitStmt {
         ptr: native_provenance(file_id, NodeClass::Await, u.syntax()),
         condition,
+    }
+}
+
+/// `return expr?;` → `Return` (B0.8 Wave B tail, issue #1322). Mirrors the
+/// brink-dialect's own `logic_block::lower_block_return` exactly: always
+/// `ReturnKind::Explicit` (native's code-ground `return` has no
+/// tunnel-redirect counterpart — `parser/stmt.rs::return_stmt`'s doc), no
+/// `onwards_args` (that field is tunnel-redirect-only). No HIR-level
+/// diagnostic for a missing value — same posture as [`lower_until_stmt`]:
+/// the value is genuinely optional (`return;` is legal, mirrors ink's own
+/// `Return.value: Option<Expr>`), not a malformed-parse signal.
+fn lower_return_stmt(
+    file_id: FileId,
+    ret: &ast::ReturnStmt,
+    diags: &mut Vec<Diagnostic>,
+) -> Return {
+    let value = ret.value().map(|n| lower_expr(file_id, &n, diags));
+    Return {
+        ptr: Some(native_provenance(file_id, NodeClass::Return, ret.syntax())),
+        kind: ReturnKind::Explicit,
+        value,
+        onwards_args: Vec::new(),
     }
 }
