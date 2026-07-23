@@ -1,0 +1,9 @@
+@[local]
+@[effects(pure)]
+flow f() {
+}
+
+flow heal(hp) {
+  @[effects(reads(gold, hp), pure)]
+  -> END
+}

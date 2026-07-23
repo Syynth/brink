@@ -1,0 +1,28 @@
+flow a() {
+  -> b
+}
+flow b() {
+  -> c ->
+  return
+}
+flow c() {
+  return -> a
+  -> END
+}
+
+flow main() {
+  -> f ->
+  <> world
+}
+
+flow f() {
+  Hello
+  return
+}
+
+flow garden() {
+  flow gate() {
+    Creak.
+  }
+  -> gate
+}
