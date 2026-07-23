@@ -1,0 +1,9 @@
+flow garden(mood, hp, m) {
+  {match mood { calm => { Peaceful. }, wary => { Tense. } }}
+  {match mood { calm => tranquil }}
+  {match mood { hp > 0 => alive }}
+  {match m {
+    calm => Peaceful
+    wary => Tense
+  }}
+}

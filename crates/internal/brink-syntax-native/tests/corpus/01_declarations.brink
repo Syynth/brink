@@ -1,0 +1,18 @@
+use story::npcs::{guard, merchant as trader};
+import story::items
+module inner {
+  var secret = 1
+}
+
+var hp = 10
+const MAX = 100
+flags Mood = (calm), wary, hostile
+struct Item {
+  name: string,
+  weight: int
+}
+extern log(msg)
+
+flow greet(name) {
+  Hello, {name}! <>
+}

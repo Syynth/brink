@@ -1,0 +1,13 @@
+//! File-level doc.
+
+/// Greets the player.
+/// Handles the opening beat.
+flow greet() {
+//! Describes this flow from within.
+Hi!
+}
+
+/// kept
+// not a doc line
+flow other() {
+}
