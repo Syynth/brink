@@ -80,6 +80,14 @@ combination is honestly spellable.
   is nesting. (Depth >2 = watch list.)
 - Braces are the universal body delimiter — "solid" — for
   containers, fn bodies, choice bodies, annotated blocks alike.
+- **Body-dialect selector (RULED 2026-07-23 — see decision-log):**
+  the brace prefix selects the body's dialect. Plain `{ … }` = the
+  per-keyword **default** (`fn` → code, `flow` → prose); **`~{ … }`**
+  = code-ground body (statements directly, no per-line `~` — a
+  code-bodied `flow` is §3's "Compound guard"); **`>{ … }`** =
+  prose-ground body (emits bare text — a prose-bodied `fn`). Sigil
+  mnemonics: `~` = enter code, `>` = emit prose. See §8.2 for the
+  line-granularity escapes that use the same two sigils.
 
 ## 5. Prose-ground structure: the weave, respelled
 
@@ -140,22 +148,53 @@ methods/lambdas question per the friction dossier (#901 comment,
 2026-07-18): sugar over free functions, no method system. Field
 access beats UFCS on resolution. Details = sitting 2.
 
-## 8. Open items (the remaining sittings)
+## 8. Status board (sittings held vs. genuinely open)
 
-1. Code dialect details: expression grammar, UFCS resolution rules,
-   stdlib round (heap/tuples/floor-div/char_at/weighted tables), the
-   #827 vec decision (structs+UFCS may suffice — decide with syntax
-   in hand).
-2. Interleaving escapes, full inventory (prose→code beyond
-   interpolation; code→prose emission; grains).
-3. Divert/tunnel/thread spelling in the new surface (`->`, `->->`,
-   `<-` are load-bearing ink idioms — keep? respell?). `await`'s
-   native spelling (currently contextual-keyword in ink dialect).
-4. Alternation annotation chars finalization; `{?` final call.
-5. File extension, naming, migration/coexistence story (ink ↔ native
-   converters?), tooling plan (parser, fmt, LSP, renderer), and the
-   HIR admission contract document.
-6. The chart dialect (#905's season, as this contract's client).
+*Refreshed 2026-07-23. This was a "remaining sittings" list, but most
+items had already been held or implemented and the list drifted stale —
+which is what made it read as open work. Corrected below. **"Ruled" here
+means "first-pass sufficient," not frozen:** the prose-ground/narrative
+surface is expected to get a deliberate **second design pass** once the
+first native implementation pass lands (maintainer's standing
+expectation), so items like the `{?` final spelling and prose-ground
+depth will be revisited then.*
+
+1. **Code dialect** — ✅ largely RULED + implemented: expression
+   grammar, UFCS resolution, statements / blocks-as-values / `until`
+   (code-ground sitting, decision-log 2026-07-23), and the stdlib
+   (collection/string/map/range/rand/record/proj/tower/value ops
+   shipped; #1106 tracks). **Open: the #827 vec decision** (structs +
+   UFCS may suffice — decide with syntax in hand).
+2. **Interleaving escapes** — ✅ RULED 2026-07-23 (decision-log):
+   `~` = enter code, `>` = emit prose, at two granularities —
+   whole-body selectors (`~{ }` / `>{ }` / plain `{ }` = keyword
+   default, §4) and line escapes ("grains" = these fine-grained lines):
+   `~ stmt` runs code inside a prose body (ink's logic line, kept),
+   `> text` emits a prose line inside a code body. Open tail: any
+   prose→code escapes beyond `~`/interpolation, and the
+   interpolation-vs-`{~` overlap.
+3. **Divert / tunnel / thread / await** — ✅ RULED (scattered across
+   rulings): `->` stays divert ("one arrow, one meaning", 2026-07-14);
+   tunnel-return unified under native `return` / `->->` (the
+   `flow main()` entry ruling); `<-` threads **narrowed** to the
+   choice-point splice only (#1895, §11); `await` → the `until`
+   condition-park (code-ground sitting), with suspension inferred
+   (block/effect model).
+4. **Alternation / choice-point spelling** — alternation markers
+   `{~`/`{&`/`{!`/`{|` RULED (#1258/#1261); the `{?` choice-point
+   **concept** is RULED (§5), its **final spelling** stays tentative —
+   a candidate for the narrative second pass.
+5. **Extension / naming / tooling** — ✅ `.brink` extension RULED
+   (decision-log 2026-07-13); editor (NS-T) + book (NS-D) chartered as
+   first-class workstreams. **Deferred, not undesigned:** ink↔native
+   migration / mixed-tree coexistence — its own round.
+6. **The chart dialect (#905)** — genuinely OPEN; its own season, as
+   this contract's client.
+
+**Net genuinely-open native design:** the **#827 vec decision**, the
+**chart dialect (#905)**, and a planned **narrative-surface second pass**
+(`{?` finalization, prose-ground depth, migration/coexistence) after the
+first implementation pass. Everything else above is ruled or shipped.
 
 ## 9. Exhibits
 
