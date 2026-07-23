@@ -106,6 +106,15 @@ pub enum SyntaxKind {
     /// cond` produces — a spelling change, not a new construct (NF-2
     /// fence). Hard-reserved, see [`Self::KW_WHILE`]'s doc.
     KW_UNTIL,
+    /// `break` — code-ground loop-exit statement (B0.8 Wave B tail, issue
+    /// #1322, `docs/decision-log.md` 2026-07-23 "Code-ground sitting").
+    /// Hard-reserved, see [`Self::KW_WHILE`]'s doc. No content-ground
+    /// counterpart — `break` only has meaning inside a `while`/`for` body.
+    KW_BREAK,
+    /// `continue` — code-ground loop-skip statement (B0.8 Wave B tail,
+    /// issue #1322). Hard-reserved, see [`Self::KW_WHILE`]'s doc. No
+    /// content-ground counterpart, same as [`Self::KW_BREAK`].
+    KW_CONTINUE,
     /// `as` — import/use aliasing (`use a::b as c`).
     KW_AS,
     KW_TRUE,
@@ -421,10 +430,26 @@ pub enum SyntaxKind {
     TUNNEL_CALL,
     /// A divert target: `END` / `DONE` / a `PATH`.
     DIVERT_TARGET,
-    /// `return` — leave this container.
+    /// `return` — leave this container (content-ground, bare, no value —
+    /// `parser/divert.rs::return_stmt`). **Also** reused, unmodified, as
+    /// the code-ground `return e?;` value-return statement (B0.8 Wave B
+    /// tail, issue #1322, `docs/decision-log.md` 2026-07-23 "Code-ground
+    /// sitting" item 1) — `parser/stmt.rs::return_stmt` parses an optional
+    /// value expression and a `;` terminator instead. The two grammars
+    /// never overlap (dispatched from different parent contexts — content-
+    /// ground `BLOCK`/`family.rs` vs. code-ground `STMT_BLOCK`/`stmt.rs`),
+    /// so one node shape serves both, mirroring the brink-dialect's own
+    /// `RETURN_STMT` (`brink-syntax`), which likewise serves both its bare
+    /// container-exit and its valued `~ { … }`-block-return uses.
+    /// `ast::ReturnStmt::value()` is a plain "first child expr, if any"
+    /// accessor — `None` for the content-ground form (never parses one),
+    /// `Some`/`None` for the code-ground form (initializer optional there
+    /// too).
     RETURN_STMT,
     /// `return -> x` — the tunnel-return respelling (charter §11):
-    /// `RETURN_STMT` immediately followed by a divert to `x`.
+    /// `RETURN_STMT` immediately followed by a divert to `x`. Content-
+    /// ground only — code-ground `return` has no redirect counterpart (a
+    /// content-ground/tunnel concept with no code-ground meaning).
     RETURN_REDIRECT,
 
     // ── Node kinds — paths (charter §13.2) ───────────────────────
@@ -438,9 +463,14 @@ pub enum SyntaxKind {
     // divert targets, and conditional/match heads. B0.8 Wave A (below) adds
     // the statement layer (`let`/assignment/expression-statements/blocks-
     // as-values) over this skeleton; B0.8 Wave B (further below) adds
-    // `if`/`while`/`for`/`until` control flow as more statement kinds
-    // (`docs/b0-sequencing.md` §B0.8, `docs/decision-log.md` 2026-07-23
-    // "Code-ground sitting"). UFCS resolution remains unaddressed.
+    // `if`/`while`/`for`/`until` control flow, and Wave B tail (issue
+    // #1322) adds `return`/`break`/`continue`/compound-assign, as more
+    // statement kinds (`docs/b0-sequencing.md` §B0.8, `docs/decision-log.md`
+    // 2026-07-23 "Code-ground sitting"). UFCS *resolution* (field-access-
+    // wins vs. free-fn desugar) remains unaddressed — the call shape
+    // parses and structurally lowers as-is; see
+    // `brink_ir::hir::lower_native::expr`'s module doc for the
+    // investigation (issue #1322).
     INTEGER_LIT,
     FLOAT_LIT,
     STRING_LIT,
@@ -484,6 +514,24 @@ pub enum SyntaxKind {
     /// thing distinguishing this from a [`Self::STMT_BLOCK`]'s unterminated
     /// tail expression.
     EXPR_STMT,
+
+    // ── Node kinds — the code-ground statement tail (B0.8 Wave B tail, ──
+    // ── issue #1322, `docs/decision-log.md` 2026-07-23 "Code-ground ────
+    // ── sitting") ────────────────────────────────────────────────────
+    // `break`/`continue` have no content-ground counterpart (loops are a
+    // code-ground-only concept); `return`'s valued form reuses
+    // `Self::RETURN_STMT` (see that variant's doc) rather than adding a
+    // node here. Lowers to the *existing* `~ { … }` T1b closed statement
+    // set (`BlockStmt::{Return,Break,Continue}` in `brink-ir`) — the NF-2
+    // fence, no new HIR nodes.
+    /// `break;` — loop-exit statement, `;`-terminated like every other
+    /// code-ground statement. Legal only inside a `while`/`for` body — an
+    /// out-of-loop `break` is `brink-analyzer`'s job to reject (E057), not
+    /// this grammar's.
+    BREAK_STMT,
+    /// `continue;` — loop-skip statement, `;`-terminated. See
+    /// [`Self::BREAK_STMT`]'s doc for the same in-loop caveat.
+    CONTINUE_STMT,
 
     // ── Node kinds — the code-ground control-flow layer (B0.8 Wave B, ───
     // ── `docs/decision-log.md` 2026-07-23 "Code-ground sitting") ────────
@@ -555,6 +603,8 @@ impl SyntaxKind {
                 | Self::KW_FOR
                 | Self::KW_IN
                 | Self::KW_UNTIL
+                | Self::KW_BREAK
+                | Self::KW_CONTINUE
                 | Self::KW_AS
                 | Self::KW_TRUE
                 | Self::KW_FALSE
@@ -654,6 +704,8 @@ impl SyntaxKind {
                 | Self::KW_FOR
                 | Self::KW_IN
                 | Self::KW_UNTIL
+                | Self::KW_BREAK
+                | Self::KW_CONTINUE
                 | Self::KW_AS
                 | Self::KW_TRUE
                 | Self::KW_FALSE
@@ -772,6 +824,8 @@ mod tests {
             SyntaxKind::KW_FOR,
             SyntaxKind::KW_IN,
             SyntaxKind::KW_UNTIL,
+            SyntaxKind::KW_BREAK,
+            SyntaxKind::KW_CONTINUE,
             SyntaxKind::KW_AS,
             SyntaxKind::KW_TRUE,
             SyntaxKind::KW_FALSE,

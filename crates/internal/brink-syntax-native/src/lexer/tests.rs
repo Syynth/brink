@@ -36,6 +36,21 @@ fn keywords_classify() {
 }
 
 #[test]
+fn break_continue_classify_as_keywords() {
+    // B0.8 Wave B tail (issue #1322): `break`/`continue` are new hard-
+    // reserved keywords, not part of the pre-existing `keywords_classify`
+    // list above (added separately here rather than touching that
+    // fixture's shared string).
+    let toks = assert_lossless("break continue");
+    let kinds: Vec<_> = toks
+        .iter()
+        .map(|(k, _)| *k)
+        .filter(|k| !k.is_trivia())
+        .collect();
+    assert_eq!(kinds, vec![KW_BREAK, KW_CONTINUE]);
+}
+
+#[test]
 fn plain_ident_is_not_a_keyword() {
     let toks = assert_lossless("flowchart");
     assert_eq!(toks, vec![(IDENT, "flowchart")]);

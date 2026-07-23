@@ -9,11 +9,24 @@
 //! `brink-syntax-native/src/parser/expr.rs`'s module doc ("this is the
 //! expression *skeleton* B0.5 needs to give those constructs a real
 //! internal shape instead of a balanced-token blob"). The code-ground
-//! *statement* grammar itself (`let`/assign/if/while/for/until) lives in
-//! `super::control_flow`, B0.8 Waves A/B — this module's only seam with it
-//! is the `STMT_BLOCK` atom case below (blocks-as-values, still
-//! unrepresentable as a value — see that arm's doc). UFCS resolution stays
-//! out of scope.
+//! *statement* grammar itself (`let`/assign/if/while/for/until/return/
+//! break/continue) lives in `super::control_flow`, B0.8 Waves A/B/B-tail —
+//! this module's only seam with it is the `STMT_BLOCK` atom case below
+//! (blocks-as-values, still unrepresentable as a value — see that arm's
+//! doc).
+//!
+//! **UFCS status (issue #1322):** `lower_call` below already lowers a
+//! multi-segment dotted callee (`x.foo(y)`) to `Expr::Call(Path, args)`
+//! unmodified — the shape *parses and structurally lowers* — but the
+//! ruled field-access-wins/free-fn resolution semantics is **not**
+//! implemented: no `brink-analyzer` pass disambiguates a multi-segment
+//! `Call` path today (the existing "FieldAccess/Call ambiguity" fallback
+//! resolves a bare `Expr::Path` used as a *value*, never a `Call` callee),
+//! and ink's own grammar structurally rejects the equivalent shape (E104,
+//! `hir/lower/expr/references.rs::CallExpr`) — there's no working
+//! differential partner to build against. Deferred, honestly, rather than
+//! guessed at; see `crates/internal/brink-ir/tests/b08_native_wave_b_tail.rs`'s
+//! module doc for the full investigation and its pinned gap test.
 //!
 //! `LAMBDA_EXPR` is tokenized/parsed (B0.5) but explicitly unlowered until
 //! the code sitting rules a real anonymous-body node (`docs/b0-sequencing.md`

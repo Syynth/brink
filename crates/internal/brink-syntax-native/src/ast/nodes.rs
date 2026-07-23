@@ -119,6 +119,11 @@ ast_node!(WhileStmt, WHILE_STMT);
 ast_node!(ForStmt, FOR_STMT);
 ast_node!(UntilStmt, UNTIL_STMT);
 
+// ── The code-ground statement tail (B0.8 Wave B tail, issue #1322) ──
+
+ast_node!(BreakStmt, BREAK_STMT);
+ast_node!(ContinueStmt, CONTINUE_STMT);
+
 // ── Error recovery ───────────────────────────────────────────────────
 
 ast_node!(Error, ERROR);
@@ -768,6 +773,19 @@ impl ReturnRedirect {
     }
 }
 
+impl ReturnStmt {
+    /// The value expression, if any — `RETURN_STMT`'s only child node.
+    /// `None` for the content-ground bare `return`/`return -> x` (never
+    /// parses one, `parser/divert.rs::return_stmt`); `Some`/`None` for the
+    /// code-ground `return e?;` (B0.8 Wave B tail, issue #1322,
+    /// `parser/stmt.rs::return_stmt` — the initializer is optional there
+    /// too). See `syntax_kind.rs`'s `RETURN_STMT` doc for why one node
+    /// shape serves both grammars.
+    pub fn value(&self) -> Option<SyntaxNode> {
+        self.syntax.children().next()
+    }
+}
+
 impl Choice {
     pub fn start_content(&self) -> Option<ChoiceStartContent> {
         support::child(&self.syntax)
@@ -950,7 +968,7 @@ impl StmtBlock {
     }
 
     /// The block's unterminated trailing expression (blocks-as-values), if
-    /// one is present — the last child, when its kind is none of the seven
+    /// one is present — the last child, when its kind is none of the
     /// statement-wrapper kinds this grammar can produce as a genuine
     /// statement (`parser/stmt.rs::stmt_block` never emits any node after
     /// the tail, so the last child is *always* the tail when it isn't one
@@ -958,6 +976,11 @@ impl StmtBlock {
     /// (`IF_STMT`/`WHILE_STMT`/`FOR_STMT`/`UNTIL_STMT`) never produce a
     /// value and are always fully delimited by their own body/`;` — same
     /// non-tail treatment as the three Wave A kinds, not new behavior.
+    /// B0.8 Wave B tail (issue #1322) adds `RETURN_STMT`/`BREAK_STMT`/
+    /// `CONTINUE_STMT` to this same non-tail set — all three are always
+    /// `;`-terminated in code-ground position (`parser/stmt.rs`'s
+    /// `return_stmt`/`break_stmt`/`continue_stmt`), never a bare tail
+    /// value.
     pub fn tail(&self) -> Option<SyntaxNode> {
         let last = self.syntax.children().last()?;
         (!matches!(
@@ -969,6 +992,9 @@ impl StmtBlock {
                 | SyntaxKind::WHILE_STMT
                 | SyntaxKind::FOR_STMT
                 | SyntaxKind::UNTIL_STMT
+                | SyntaxKind::RETURN_STMT
+                | SyntaxKind::BREAK_STMT
+                | SyntaxKind::CONTINUE_STMT
         ))
         .then_some(last)
     }
@@ -996,6 +1022,26 @@ impl AssignStmt {
     /// same convention as [`InfixExpr::rhs`]).
     pub fn value(&self) -> Option<SyntaxNode> {
         self.syntax.children().last()
+    }
+
+    /// The assignment operator token (`=`, `+=`, or `-=` — B0.8 Wave B
+    /// tail, issue #1322, decision-log 2026-07-23 "Code-ground sitting":
+    /// "compound/RMW assignment"). Mirrors the brink-dialect's own
+    /// `Assignment::op_token` (`brink-syntax`) exactly, including which
+    /// operators exist — `AssignOp` (`brink-ir`) only has `Set`/`Add`/`Sub`,
+    /// so `*=`/`/=` (lexed as `STAR_EQ`/`SLASH_EQ` but never produced by
+    /// `parser/stmt.rs::assign_stmt`) have no lowering target and aren't
+    /// looked for here either.
+    pub fn op_token(&self) -> Option<SyntaxToken> {
+        self.syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .find(|tok| {
+                matches!(
+                    tok.kind(),
+                    SyntaxKind::EQ | SyntaxKind::PLUS_EQ | SyntaxKind::MINUS_EQ
+                )
+            })
     }
 }
 
