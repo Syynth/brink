@@ -588,9 +588,19 @@ fn lower_divert_target(
         return None;
     };
     // Native's `DIVERT_TARGET` grammar (`parser/divert.rs::divert_target`)
-    // never parses an arg list — unlike ink's `-> knot(args)`, there is no
-    // call-argument syntax on a native divert target yet (a grammar gap,
-    // not a lowering drop: nothing to consume).
+    // now captures `-> knot(args)` call args as an `ARG_LIST` sibling of
+    // `PATH` (bug #1196's fix, read back via `DivertTarget::call_args()`).
+    // This pass doesn't wire them into `DivertPath`/codegen yet — that's a
+    // follow-up's job, not this one's — so a present arg list is diagnosed
+    // loudly (E129, "parses but has no HIR lowering yet") instead of being
+    // silently dropped.
+    if let Some(args) = t.call_args() {
+        diags.push(diag(
+            file_id,
+            args.syntax().text_range(),
+            DiagnosticCode::E129,
+        ));
+    }
     Some(DivertTarget {
         path,
         args: Vec::new(),

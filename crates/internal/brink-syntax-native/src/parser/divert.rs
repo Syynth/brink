@@ -3,8 +3,8 @@
 //! ink's `->-> x` for the self-explanatory `return -> x`).
 
 use crate::SyntaxKind::{
-    DIVERT, DIVERT_STMT, DIVERT_TARGET, KW_DONE, KW_END, NEWLINE, RETURN_REDIRECT, RETURN_STMT,
-    TUNNEL_CALL,
+    DIVERT, DIVERT_STMT, DIVERT_TARGET, KW_DONE, KW_END, L_PAREN, NEWLINE, RETURN_REDIRECT,
+    RETURN_STMT, TUNNEL_CALL,
 };
 
 use super::Parser;
@@ -55,12 +55,28 @@ fn divert_or_tunnel_core(p: &mut Parser<'_, '_>) {
     }
 }
 
-/// `END` / `DONE` / a `PATH` — the divert target.
+/// `END` / `DONE` / a `PATH` (optionally followed by a call-style
+/// `(args)`) — the divert target. Charter §11 keeps `-> knot(args)`
+/// verbatim from ink, so a `PATH` target routes through the same
+/// call-capable grammar as an ordinary expression path
+/// (`expr::path_or_call`'s `(args)` half, `expr::arg_list`) rather than
+/// stopping at the bare path — otherwise the parenthesized args parse
+/// with zero errors but orphan into an unrelated sibling `CONTENT_LINE`
+/// (bug #1196). The `ARG_LIST`, when present, is captured as a direct
+/// sibling of `PATH` under `DIVERT_TARGET` rather than wrapped in a
+/// `CALL_EXPR` — a divert target is not itself an expression, and the
+/// existing `PATH` shape is a public accessor contract
+/// (`DivertTarget::path`) shared by every call site (`divert_or_tunnel`,
+/// `tunnel_call`, `return_stmt`'s redirect).
 fn divert_target(p: &mut Parser<'_, '_>) {
     p.start_node(DIVERT_TARGET);
     // `END`/`DONE` are sentinels with no path; either can be eaten.
     if !p.eat(KW_END) && !p.eat(KW_DONE) {
         super::expr::path(p);
+        p.skip_ws();
+        if p.at(L_PAREN) {
+            super::expr::arg_list(p);
+        }
     }
     p.finish_node();
 }

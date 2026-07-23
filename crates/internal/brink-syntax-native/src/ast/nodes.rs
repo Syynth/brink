@@ -701,6 +701,14 @@ impl DivertTarget {
     pub fn path(&self) -> Option<Path> {
         support::child(&self.syntax)
     }
+
+    /// The `(args)` in `-> knot(args)`, if any (charter §11: diverts keep
+    /// call-style args verbatim from ink). A direct `ARG_LIST` sibling of
+    /// `path()` under `DIVERT_TARGET`, not wrapped in a `CALL_EXPR` — a
+    /// divert target is not an expression.
+    pub fn call_args(&self) -> Option<ArgList> {
+        support::child(&self.syntax)
+    }
 }
 
 // ── B0.7 additions: body-dialect accessors ──────────────────────────
