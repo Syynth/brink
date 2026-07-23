@@ -4,8 +4,9 @@
 
 use crate::SyntaxKind::{
     CHOICE, CHOICE_BODY, CHOICE_BRACKET_CONTENT, CHOICE_BULLET, CHOICE_GUARD, CHOICE_INNER_CONTENT,
-    CHOICE_POINT, CHOICE_START_CONTENT, ELSE_BRANCH, EOF, HASH, KW_ELSE, KW_IF, L_BRACE, L_BRACKET,
-    L_PAREN, NEWLINE, PLUS, QUESTION, R_BRACE, R_BRACKET, SPLICE, STAR, THREAD,
+    CHOICE_POINT, CHOICE_START_CONTENT, DOT, ELSE_BRANCH, EOF, HASH, IDENT, KW_ELSE, KW_IF,
+    L_BRACE, L_BRACKET, L_PAREN, NEWLINE, PLUS, QUESTION, R_BRACE, R_BRACKET, R_PAREN, SPLICE,
+    STAR, THREAD,
 };
 
 use super::Parser;
@@ -136,6 +137,78 @@ fn splice(p: &mut Parser<'_, '_>) {
         p.bump();
     }
     p.finish_node();
+}
+
+/// `<-` outside a choice point (issue #1263, ruled #1260 on #1256): charter
+/// §11 narrows threads to scoped splices inside choice points, so `<-` has
+/// no structural meaning here — but it can also be literal dialogue
+/// punctuation (a shrug, a dash), so this must never be a hard error the
+/// way an unrecognized token inside a `CHOICE_POINT` is. Only [`splice`]
+/// (called from `choice_point`'s own loop) ever builds a `SPLICE` node.
+///
+/// Called from `block::body_line` when a line starts with `THREAD` outside
+/// any choice point. Emits a warning-severity diagnostic, then falls
+/// through to `content::content_line` exactly as before this fix existed —
+/// the CST shape is untouched, `<-` still folds into an ordinary `TEXT`
+/// run inside `CONTENT_LINE`, lossless round-trip preserved.
+pub(crate) fn splice_outside_choice_point(p: &mut Parser<'_, '_>) {
+    let message = if looks_like_flow_reference(p) {
+        "`<-` outside a choice point has no effect here; it is treated as \
+         ordinary text, not a splice. The tokens after `<-` look like a \
+         knot/flow reference (`<- name` / `<- name(args)`) — if this was \
+         meant as a splice, move it inside a `{? … }` choice point (charter \
+         §11); splices are only recognized there."
+    } else {
+        "`<-` outside a choice point has no effect here; it is treated as \
+         ordinary text, not a splice. Splices (`<- flow(args)`) are only \
+         recognized inside a `{? … }` choice point (charter §11)."
+    };
+    p.warning(message.to_owned());
+    super::content::content_line(p);
+}
+
+/// Read-only lookahead for [`splice_outside_choice_point`]'s confidence
+/// signal: does the line, right after `<-`, look like a real divert-target
+/// reference — an `IDENT`-led dotted path, optionally called, with nothing
+/// else trailing on the line? This crate has no symbol table (it performs
+/// no resolution, `lib.rs`'s doc comment), so "resolves to a real
+/// knot/flow reference" is judged by shape alone, the same shape
+/// `expr::path`/`divert::divert_target` accept. Never mutates `p`.
+fn looks_like_flow_reference(p: &Parser<'_, '_>) -> bool {
+    // p.nth(0) is THREAD (the caller's dispatch token); start just after it.
+    let mut n = 1;
+    if p.nth(n) != IDENT {
+        return false;
+    }
+    n += 1;
+    while p.nth(n) == DOT {
+        n += 1;
+        if p.nth(n) != IDENT {
+            return false;
+        }
+        n += 1;
+    }
+    if p.nth(n) == L_PAREN {
+        let mut depth: u32 = 0;
+        loop {
+            match p.nth(n) {
+                L_PAREN => {
+                    depth += 1;
+                    n += 1;
+                }
+                R_PAREN => {
+                    depth -= 1;
+                    n += 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                NEWLINE | EOF => return false,
+                _ => n += 1,
+            }
+        }
+    }
+    matches!(p.nth(n), NEWLINE | EOF | R_BRACE)
 }
 
 /// `else { … }` — a choice point's fallback branch (charter §11), always

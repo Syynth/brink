@@ -2123,6 +2123,17 @@ pub enum DiagnosticCode {
     /// Depth-3+ nesting parses and is rejected here, never silently
     /// flattened into a 2-level shape.
     E130,
+    /// `<-` (splice) used outside a choice point (issue #1263, ruled
+    /// #1260 on #1256): charter §11 narrows threads to scoped splices
+    /// inside `{? … }` choice points, so this has no structural meaning —
+    /// but `<-` can also be literal dialogue punctuation, so this is
+    /// **warning severity, never blocking** (see `DiagnosticCode::severity`
+    /// below). The construct still parses as ordinary text; nothing is
+    /// dropped or rejected. `brink-syntax-native`'s
+    /// `parser::choice::splice_outside_choice_point` raises the
+    /// `ParseSeverity::Warning` diagnostic this code carries once it
+    /// reaches `brink-db`'s `lower_native_file`.
+    E131,
 }
 
 impl DiagnosticCode {
@@ -2264,6 +2275,7 @@ impl DiagnosticCode {
             Self::E128 => "E128",
             Self::E129 => "E129",
             Self::E130 => "E130",
+            Self::E131 => "E131",
         }
     }
 
@@ -2450,6 +2462,7 @@ impl DiagnosticCode {
             }
             Self::E129 => "native: construct parses but has no HIR lowering yet",
             Self::E130 => "native: `flow` nested more than two levels deep is not yet supported",
+            Self::E131 => "native: `<-` (splice) used outside a choice point has no effect",
         }
     }
 
@@ -2473,7 +2486,8 @@ impl DiagnosticCode {
             | Self::E092
             | Self::E095
             | Self::E106
-            | Self::E110 => Severity::Warning,
+            | Self::E110
+            | Self::E131 => Severity::Warning,
             _ => Severity::Error,
         }
     }
@@ -2616,6 +2630,7 @@ impl DiagnosticCode {
             "E128" => Some(Self::E128),
             "E129" => Some(Self::E129),
             "E130" => Some(Self::E130),
+            "E131" => Some(Self::E131),
             _ => None,
         }
     }

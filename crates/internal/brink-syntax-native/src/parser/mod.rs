@@ -45,12 +45,34 @@ impl Parse {
     }
 }
 
+/// A parse diagnostic's severity — whether it blocks compilation.
+///
+/// This crate has no `brink-ir` dependency (peer-crate rule, `lib.rs`'s
+/// doc comment), so this stays a small local enum rather than reusing
+/// `brink_ir::Severity` — consumers (`brink-db`'s `lower_native_file`) map
+/// it onto the appropriate `DiagnosticCode` (`E037` for `Error`, a
+/// dedicated Warning-severity code for `Warning`) at the seam where the two
+/// diagnostic vocabularies meet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParseSeverity {
+    /// Malformed source — blocks compilation.
+    Error,
+    /// Advisory only — surfaced to the user but never blocks compilation
+    /// (issue #1263: `<-` outside a choice point *can* be literal dialogue,
+    /// so a hard error would be wrong).
+    Warning,
+}
+
 /// A parse error with a message and the source range it points at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseError {
     pub message: String,
     /// Byte range in the source that the error points at.
     pub range: rowan::TextRange,
+    /// Whether this diagnostic blocks compilation. Defaults to `Error` for
+    /// every existing diagnostic (`Parser::error`); only `Parser::warning`
+    /// produces `Warning`.
+    pub severity: ParseSeverity,
 }
 
 /// Parse a `.brink` source string into a lossless CST.
@@ -314,8 +336,9 @@ impl<'t, 'c> Parser<'t, 'c> {
 
     // ── Errors ──────────────────────────────────────────────────
 
-    /// Record a parse error at the current position.
-    fn error(&mut self, message: String) {
+    /// Record a parse diagnostic at the current position with the given
+    /// severity. Shared implementation for [`Self::error`]/[`Self::warning`].
+    fn push_diagnostic(&mut self, message: String, severity: ParseSeverity) {
         let upto = self.pos.min(self.tokens.len());
         let start: usize = self.tokens[..upto].iter().map(|(_, t)| t.len()).sum();
         let len: usize = self.tokens.get(self.pos).map_or(0, |(_, t)| t.len());
@@ -324,7 +347,20 @@ impl<'t, 'c> Parser<'t, 'c> {
         self.errors.push(ParseError {
             message,
             range: rowan::TextRange::at(start, len),
+            severity,
         });
+    }
+
+    /// Record a parse error at the current position. Blocks compilation
+    /// (`ParseSeverity::Error`).
+    fn error(&mut self, message: String) {
+        self.push_diagnostic(message, ParseSeverity::Error);
+    }
+
+    /// Record a warning-severity diagnostic at the current position.
+    /// Advisory only — never blocks compilation (`ParseSeverity::Warning`).
+    fn warning(&mut self, message: String) {
+        self.push_diagnostic(message, ParseSeverity::Warning);
     }
 
     /// Wrap the current token in an `ERROR` node and advance.
