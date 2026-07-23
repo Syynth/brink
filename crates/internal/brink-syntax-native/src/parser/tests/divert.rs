@@ -844,7 +844,8 @@ mod proptest_divert {
     /// keyword set it must avoid is the same grammar).
     const KEYWORDS: &[&str] = &[
         "flow", "fn", "var", "const", "let", "flags", "struct", "extern", "import", "use",
-        "module", "return", "ref", "if", "match", "else", "as", "in", "true", "false", "END", "DONE",
+        "module", "return", "ref", "if", "match", "else", "as", "in", "true", "false", "END",
+        "DONE",
     ];
 
     fn arb_ident() -> impl Strategy<Value = String> {
