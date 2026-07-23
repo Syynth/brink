@@ -751,7 +751,8 @@ mod choice_proptests {
     /// reasons unrelated to what this generator is testing.
     const KEYWORDS: &[&str] = &[
         "flow", "fn", "var", "const", "let", "flags", "struct", "extern", "import", "use",
-        "module", "return", "ref", "if", "match", "else", "as", "true", "false", "END", "DONE",
+        "module", "return", "ref", "if", "match", "else", "as", "in", "true", "false", "END",
+        "DONE",
     ];
 
     fn arb_ident() -> impl Strategy<Value = String> {
