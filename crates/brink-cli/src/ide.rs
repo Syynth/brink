@@ -2656,7 +2656,7 @@ mod git_baseline_config_tests {
     /// (or no) content.
     #[test]
     fn git_baseline_for_brink_entry_from_a_subdirectory_of_the_repo_errors_instead_of_misaligning()
-     {
+    {
         let _lock = CWD_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
