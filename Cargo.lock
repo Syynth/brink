@@ -2151,6 +2151,7 @@ dependencies = [
  "brink-analyzer",
  "brink-db",
  "brink-ir",
+ "brink-project-config",
  "thiserror 2.0.18",
  "tracing",
 ]

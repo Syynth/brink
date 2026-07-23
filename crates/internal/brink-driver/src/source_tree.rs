@@ -1,14 +1,14 @@
 //! Host-side [`SourceTree`](brink_db::SourceTree) implementations: the real
 //! filesystem and a git revision.
 //!
-//! # Status: unconsumed infrastructure
-//!
-//! Neither [`RealFs`] nor [`GitRev`] is called anywhere in this crate yet —
-//! see the [`brink_db::source_tree`](brink_db) module docs for the full
-//! rationale (decision-log "Native source-loading seam: a `SourceTree`
-//! trait with a map-backed impl; the root is caller-supplied", 2026-07-22;
-//! issue #1278). Wiring native discovery to consume these is a separate,
-//! deliberately deferred change.
+//! Consumed by [`crate::discover_native::discover_native`] (issue #1288):
+//! `RealFs` backs a normal native compile (`brink-compiler`'s
+//! `prepare_driver`), `GitRev` backs the git-baseline diff path
+//! (`brink-cli`'s `load_git_baseline`, closing #1224) — see
+//! [`native_source_root`] for how a caller derives the `root` both
+//! constructors need from an entry path (decision-log "Native
+//! source-loading seam: a `SourceTree` trait with a map-backed impl; the
+//! root is caller-supplied", 2026-07-22; issue #1278).
 //!
 //! Both types are host-only (they touch the real filesystem and spawn a
 //! `git` subprocess), which is why they live here rather than in
@@ -89,6 +89,55 @@ fn to_key(rel: &Path) -> String {
         .map(|c| c.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// Whether `path` is a native `.brink` source file — an extension test only,
+/// matching `brink-db`'s internal `file_language` classification. This is
+/// the dispatch every discovery caller (`brink-compiler`'s `prepare_driver`,
+/// `brink-cli`'s `load_git_baseline`) uses to pick [`discover_native`] +
+/// [`RealFs`]/[`GitRev`] (native) over [`crate::Driver::discover`] (ink,
+/// `INCLUDE` BFS).
+///
+/// [`discover_native`]: crate::discover_native::discover_native
+#[must_use]
+pub fn is_native(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext == NATIVE_EXTENSION)
+}
+
+/// Resolve a native project's source root from an entry file's path: the
+/// directory containing the nearest `brink.toml` found by walking up from
+/// the entry (`brink-project-config`'s discovery), or — if none exists —
+/// the entry's own directory (decision-log 2026-07-22 "native module
+/// identity ... source root": the explicit, documented single-file-project
+/// mode, not a silent fallback).
+#[must_use]
+pub fn native_source_root(entry: &Path) -> PathBuf {
+    let entry_dir = entry
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+
+    brink_project_config::find_config(entry_dir)
+        .and_then(|config_path| config_path.parent().map(Path::to_path_buf))
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| entry_dir.to_path_buf())
+}
+
+/// Convert `path` to the root-relative key [`RealFs`]/[`GitRev`] would key it
+/// under — the inverse of "join `root` with a key," used by discovery
+/// callers to look up the `FileId` a just-discovered entry landed on. Both
+/// `root` and `path` are lexically absolutized first (via
+/// [`std::path::absolute`], which resolves `.`/`..` without touching the
+/// filesystem) so the strip is exact regardless of how each was spelled
+/// relative to the process's cwd — e.g. `root = "."`, `path = "story/main.brink"`
+/// and `root = "story"`, `path = "./story/main.brink"` both key as
+/// `"story/main.brink"`.
+#[must_use]
+pub fn relative_key(root: &Path, path: &Path) -> String {
+    let root_abs = std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf());
+    let path_abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let rel = path_abs.strip_prefix(&root_abs).unwrap_or(&path_abs);
+    to_key(rel)
 }
 
 /// Git-revision [`SourceTree`]: reads keys/contents from a git revision via
@@ -355,5 +404,73 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
 
         fs::remove_dir_all(&repo_dir).expect("cleanup temp dir");
+    }
+
+    // ── is_native ────────────────────────────────────────────────────
+
+    #[test]
+    fn is_native_matches_brink_extension_only() {
+        assert!(is_native(Path::new("foo.brink")));
+        assert!(is_native(Path::new("nested/foo.brink")));
+        assert!(!is_native(Path::new("foo.ink")));
+        assert!(!is_native(Path::new("foo")));
+    }
+
+    // ── native_source_root ──────────────────────────────────────────────
+
+    /// A `brink.toml` above the entry's directory (walked up to) makes its
+    /// *parent* directory the source root — not the entry's own directory.
+    #[test]
+    fn native_source_root_walks_up_to_brink_toml() {
+        let dir = temp_dir("root-walkup");
+        fs::create_dir_all(dir.join("sub")).expect("mkdir sub");
+        fs::write(dir.join("brink.toml"), "[project]\n").expect("write brink.toml");
+
+        let entry = dir.join("sub").join("main.brink");
+        let root = native_source_root(&entry);
+
+        assert_eq!(
+            root, dir,
+            "root must be brink.toml's directory, not entry's"
+        );
+
+        fs::remove_dir_all(&dir).expect("cleanup temp dir");
+    }
+
+    /// No `brink.toml` anywhere above the entry: root falls back to the
+    /// entry's own directory — the documented single-file-project mode.
+    #[test]
+    fn native_source_root_falls_back_to_entry_dir_without_brink_toml() {
+        let dir = temp_dir("root-fallback");
+
+        let entry = dir.join("main.brink");
+        let root = native_source_root(&entry);
+
+        assert_eq!(root, dir);
+
+        fs::remove_dir_all(&dir).expect("cleanup temp dir");
+    }
+
+    // ── relative_key ─────────────────────────────────────────────────
+
+    #[test]
+    fn relative_key_strips_root_prefix() {
+        let dir = temp_dir("relative-key");
+        let path = dir.join("story").join("main.brink");
+
+        assert_eq!(relative_key(&dir, &path), "story/main.brink");
+
+        fs::remove_dir_all(&dir).expect("cleanup temp dir");
+    }
+
+    /// `root = "."` and an already-cwd-relative `path` key identically to
+    /// the plain path — the common case for a CLI invocation with no
+    /// `brink.toml` above the entry.
+    #[test]
+    fn relative_key_root_dot_keys_a_relative_path_as_is() {
+        assert_eq!(
+            relative_key(Path::new("."), Path::new("main.brink")),
+            "main.brink"
+        );
     }
 }

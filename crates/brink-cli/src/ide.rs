@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use brink_analyzer::AnalysisResult;
-use brink_driver::Driver;
+use brink_driver::{Driver, GitRev};
 use brink_ide::LineIndex;
 use brink_ide::code_actions::{CodeActionKind, code_actions};
 use brink_ide::document::{DocumentSymbol, document_symbols, workspace_symbols};
@@ -1511,21 +1511,44 @@ fn run_effects_diff(opts: &EffectsDiffOpts) -> Result<ExitCode, String> {
 }
 
 /// Build a baseline [`Project`] from the *same* entry path, but reading every
-/// file's content from git revision `rev` (`git show <rev>:./<path>`) instead
-/// of the working tree — the working-tree-vs-HEAD story. A file absent from
-/// `rev` reads as not-found, so its defs surface as `added` in the diff.
+/// file's content from git revision `rev` instead of the working tree — the
+/// working-tree-vs-HEAD story. A file absent from `rev` reads as not-found,
+/// so its defs surface as `added` in the diff.
+///
+/// Dispatches on `entry`'s extension (B0.10b, issue #1288, closing #1224): a
+/// `.brink` entry discovers via [`brink_driver::Driver::discover_native`]
+/// with a [`GitRev`] tree — native has no `INCLUDE` graph, so the old
+/// `read_file(path) -> String` closure (which can only answer for a path it's
+/// given, never enumerate "what exists under this root") could never have
+/// found any file but the entry itself. `GitRev` enumerates the whole
+/// project at `rev` via `git ls-tree`, so every `.brink` file the revision
+/// contains is discovered and read from git, not the working tree. A `.ink`
+/// entry is unchanged: `git_show`-driven `INCLUDE` BFS.
 fn load_git_baseline(entry: &Path, rev: &str) -> Result<Project, String> {
     let entry_s = entry.to_string_lossy().into_owned();
     let mut driver = Driver::new();
     driver.set_analysis_options(resolve_analysis_options(entry)?);
-    driver
-        .discover(&entry_s, |p| git_show(rev, p))
-        .map_err(|e| format!("baseline {rev}: {e}"))?;
+
+    let entry_key = if brink_driver::is_native(entry) {
+        let root = brink_driver::native_source_root(entry);
+        let repo_dir = Path::new(".");
+        let tree = GitRev::new(repo_dir, rev, &root);
+        driver
+            .discover_native(&tree, &root)
+            .map_err(|e| format!("baseline {rev}: {e}"))?;
+        brink_driver::relative_key(&root, entry)
+    } else {
+        driver
+            .discover(&entry_s, |p| git_show(rev, p))
+            .map_err(|e| format!("baseline {rev}: {e}"))?;
+        entry_s.clone()
+    };
+
     let analysis = driver.analyze().clone();
     let entry_id = driver
         .db()
-        .file_id(&entry_s)
-        .ok_or_else(|| format!("entry file not found in {rev}: {entry_s}"))?;
+        .file_id(&entry_key)
+        .ok_or_else(|| format!("entry file not found in {rev}: {entry_key}"))?;
     Ok(Project {
         driver,
         analysis,
@@ -2413,6 +2436,75 @@ mod git_baseline_config_tests {
         );
 
         // Restore cwd (still holding `_lock`) before removing `dir`.
+        drop(cwd_guard);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regression for #1224 ("git-revision baselines silently read the
+    /// working tree"): a `.brink` git-baseline must discover *every*
+    /// `.brink` file that exists at the revision — not just the entry,
+    /// which is all the old closure-only `discover` could ever reach for
+    /// native (no `INCLUDE` graph to BFS through) — and must read each
+    /// file's *committed* content, never the uncommitted working-tree copy.
+    #[test]
+    fn git_baseline_for_brink_entry_discovers_all_files_from_the_revision_not_the_working_tree() {
+        let _lock = CWD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let original_cwd = std::env::current_dir().unwrap();
+
+        let dir = std::env::temp_dir().join(format!(
+            "brink-ide-unit-git-baseline-native-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("main.brink"), "flow main() {\n  Hi. -> END\n}\n").unwrap();
+        std::fs::write(
+            dir.join("other.brink"),
+            "flow other() {\n  Committed. -> END\n}\n",
+        )
+        .unwrap();
+        git(&dir, &["init", "-q"]);
+        git(&dir, &["config", "user.email", "test@example.com"]);
+        git(&dir, &["config", "user.name", "test"]);
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-q", "-m", "initial"]);
+
+        // Uncommitted working-tree edit: a real diff-of-nothing bug would
+        // read this content for the baseline too.
+        std::fs::write(
+            dir.join("other.brink"),
+            "flow other() {\n  Working tree only. -> END\n}\n",
+        )
+        .unwrap();
+
+        std::env::set_current_dir(&dir).unwrap();
+        let cwd_guard = CwdGuard(original_cwd);
+
+        let entry = Path::new("main.brink");
+        let baseline = load_git_baseline(entry, "HEAD").expect("git baseline loads");
+
+        let db = baseline.driver.db();
+        let mut paths: Vec<_> = db.file_ids().filter_map(|id| db.file_path(id)).collect();
+        paths.sort_unstable();
+        assert_eq!(
+            paths,
+            vec!["main.brink", "other.brink"],
+            "git baseline must discover every .brink file at the revision, not just the entry"
+        );
+
+        let other_id = db.file_id("other.brink").expect("other.brink discovered");
+        let other_source = db.source(other_id).unwrap_or_default();
+        assert!(
+            other_source.contains("Committed."),
+            "must read other.brink's content from the git revision, got: {other_source:?}"
+        );
+        assert!(
+            !other_source.contains("Working tree only."),
+            "must NOT read the uncommitted working-tree copy, got: {other_source:?}"
+        );
+
         drop(cwd_guard);
         std::fs::remove_dir_all(&dir).ok();
     }

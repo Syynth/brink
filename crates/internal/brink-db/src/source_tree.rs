@@ -3,14 +3,10 @@
 //! 2026-07-22; issue #1278): a host-agnostic way to enumerate and read
 //! native `.brink` source files.
 //!
-//! # Status: unconsumed infrastructure
-//!
-//! This module ships the seam **standalone** — nothing in this crate or any
-//! other calls it yet. Wiring it into native source discovery touches
-//! `DefinitionId`-critical territory (module-path derivation, `FileId`
-//! minting) and is a separate, maintainer-reviewed change. Do not infer from
-//! this module's presence that discovery has been rewired; check for actual
-//! call sites first.
+//! `InMemory` is `brink-web`'s discovery seam directly; the host-only
+//! implementations (`RealFs`, `GitRev`) live in `brink-driver` and back
+//! `brink_driver::discover_native` (issue #1288) — a normal native compile
+//! and the `brink ide` git-baseline diff path, respectively.
 //!
 //! # The contract
 //!
