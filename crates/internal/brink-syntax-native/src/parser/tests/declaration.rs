@@ -453,19 +453,45 @@ fn flags_decl_single_member() {
 
 #[test]
 fn flags_decl_dangling_no_members_after_eq_parses_with_empty_member_list() {
-    // Documents actual behavior rather than asserting a fix (TEST-ONLY
-    // issue): `flags_member_list`'s loop makes zero progress when nothing
-    // IDENT/`(`-shaped follows the `=` and simply `break`s — no
-    // `error_recover`, so an empty `FLAGS_MEMBER_LIST` is accepted
-    // silently (no diagnostic). Not asserting this is correct or
-    // incorrect grammar design; only that it doesn't panic and round-trips
-    // losslessly, and that the member list is empty as a result.
+    // Ruled #1260 (LIST parity) for #1262: a bare `flags F =` with nothing
+    // member-shaped following is now a parse error, like every sibling
+    // zero-progress recovery path in this file (`param_list`, the
+    // `struct_decl` body loop). `flags_member_list` still recovers — the
+    // decl and an empty `FLAGS_MEMBER_LIST` are still produced — but a
+    // diagnostic is now emitted instead of the old silent `break`. Use
+    // `flags F = ()` (below) to spell an explicit empty set without an
+    // error.
     let src = "flags F =\n";
     let p = assert_lossless(src);
+    assert!(
+        p.errors()
+            .iter()
+            .any(|e| e.message.contains("flags member")),
+        "expected a 'flags member' error, got: {:?}",
+        p.errors()
+    );
     let decl: ast::FlagsDecl = find_child(&p.syntax()).expect("flags decl still parses");
     assert_eq!(
         decl.member_list()
             .expect("member list node still present")
+            .members()
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn flags_decl_explicit_empty_parens_is_the_empty_set_no_error() {
+    // Ruled #1260: `flags F = ()` is the explicit empty-set spelling (LIST
+    // parity) — it must parse clean, with an empty `FLAGS_MEMBER_LIST` and
+    // no diagnostic, distinct from the bare-`=` error case above.
+    let src = "flags F = ()\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::FlagsDecl = find_child(&p.syntax()).expect("flags decl");
+    assert_eq!(
+        decl.member_list()
+            .expect("member list node present")
             .members()
             .count(),
         0

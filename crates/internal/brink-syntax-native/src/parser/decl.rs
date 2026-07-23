@@ -177,12 +177,35 @@ pub(crate) fn flags_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>)
 
 fn flags_member_list(p: &mut Parser<'_, '_>) {
     p.start_node(FLAGS_MEMBER_LIST);
+    // `flags F = ()` — the explicit empty set (LIST parity, ruled #1260 for
+    // #1262). Checked before the member loop so it's never misread as a
+    // parenthesized-member shape (`(name)`) with a missing `IDENT`.
+    if p.at(L_PAREN) && p.nth(1) == R_PAREN {
+        p.eat(L_PAREN);
+        p.eat(R_PAREN);
+        p.finish_node();
+        return;
+    }
+    // Whether at least one real `FLAGS_MEMBER` has been parsed yet — a
+    // completely empty list (bare `flags F =` with nothing member-shaped
+    // following) is the one case that must error rather than silently
+    // accept zero members (ruled #1260: every sibling recovery path here —
+    // `param_list`, `struct_decl`'s body loop — calls `error_recover` on
+    // zero progress; this was the sole exception).
+    let mut has_member = false;
     loop {
         let before = p.pos();
         flags_member(p);
         if p.pos() == before {
+            if !has_member {
+                p.skip_ws();
+                p.error_recover(
+                    "expected a flags member after `=` (use `()` for an explicit empty set)",
+                );
+            }
             break;
         }
+        has_member = true;
         if !p.eat(COMMA) {
             break;
         }
