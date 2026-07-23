@@ -10,7 +10,8 @@
 
 use crate::SyntaxKind::{
     self, CONTENT_LINE, DIVERT, DOC_COMMENT_INNER, DOC_COMMENT_OUTER, EOF, GLUE, GLUE_NODE, HASH,
-    IDENT, INTERPOLATION, L_BRACE, L_PAREN, LABEL, NEWLINE, R_BRACE, R_PAREN, TAG, TAG_LINE, TEXT,
+    IDENT, INTERPOLATION, KW_ELSE, L_BRACE, L_PAREN, LABEL, NEWLINE, R_BRACE, R_PAREN, TAG,
+    TAG_LINE, TEXT,
 };
 
 use super::Parser;
@@ -29,6 +30,29 @@ pub(crate) fn content_line(p: &mut Parser<'_, '_>) {
         p.skip_ws();
     }
     content_items_until(p, &[NEWLINE, R_BRACE, HASH]);
+    if p.at(HASH) {
+        tag_line_tail(p);
+    }
+    p.finish_node();
+    if p.at(NEWLINE) {
+        p.skip_ws();
+        p.bump();
+    }
+}
+
+/// `content_line`'s twin for `family::colon_body`'s per-line dispatch
+/// (`family::colon_body_line`, #1254 Gap 1): identical in every respect
+/// except the scan also stops at a same-line else-arm boundary
+/// (`family::at_else_arm`), so `{if cond: … else: …}` written as one
+/// physical line hands control back to `colon_body` instead of the
+/// trailing `else: …` getting swallowed into this line's `TEXT`.
+pub(crate) fn content_line_else_boundary(p: &mut Parser<'_, '_>) {
+    p.start_node(CONTENT_LINE);
+    if at_content_label(p) {
+        label(p);
+        p.skip_ws();
+    }
+    content_items_until_else_boundary(p, &[NEWLINE, R_BRACE, HASH]);
     if p.at(HASH) {
         tag_line_tail(p);
     }
@@ -70,6 +94,25 @@ pub(crate) fn label(p: &mut Parser<'_, '_>) {
 /// and stops as soon as the current (trivia-skipped) token is EOF or
 /// appears in `stop`. Does not consume the stopping token.
 pub(crate) fn content_items_until(p: &mut Parser<'_, '_>, stop: &[SyntaxKind]) {
+    content_items_until_impl(p, stop, false);
+}
+
+/// [`content_items_until`]'s twin for `family::colon_body`'s per-line
+/// dispatch (#1254 Gap 1): identical, except the scan also stops at a
+/// same-line else-arm boundary (`family::at_else_arm`) — the two are kept
+/// as separate entry points (rather than adding an `else`-boundary kind to
+/// every caller's `stop` slice) because `at_else_arm` needs two-token
+/// lookahead (`KW_ELSE` immediately followed by `{`/`:`/`if`), not the
+/// plain single-token membership test `stop` gives every other kind, and
+/// this behavior must stay opt-in: an ordinary content line's bare word
+/// "else" (unfollowed by one of those three tokens) is just prose and
+/// must keep its leading whitespace like any other `TEXT`-run word, never
+/// treated as a structural boundary the way a real else-arm opener is.
+pub(crate) fn content_items_until_else_boundary(p: &mut Parser<'_, '_>, stop: &[SyntaxKind]) {
+    content_items_until_impl(p, stop, true);
+}
+
+fn content_items_until_impl(p: &mut Parser<'_, '_>, stop: &[SyntaxKind], stop_at_else_arm: bool) {
     loop {
         let cur = p.current();
         // Inter-interpolation whitespace fix (#1264): same bug class as
@@ -91,8 +134,16 @@ pub(crate) fn content_items_until(p: &mut Parser<'_, '_>, stop: &[SyntaxKind]) {
         // trivia left, so nothing downstream (`is_body_open_brace`
         // included) sees a different parser state than before this fix.
         if cur == L_BRACE && p.nth_raw(0).is_trivia() && at_bare_interpolation(p, stop) {
-            text_run_until(p, stop);
+            text_run_until(p, stop, stop_at_else_arm);
             continue;
+        }
+        if stop_at_else_arm && cur == KW_ELSE && super::family::at_else_arm(p) {
+            // A genuine else-arm opener always trims its own leading
+            // trivia, the same policy every other structural item this
+            // loop recognizes follows (the annotated-brace family, glue,
+            // …) — only a `TEXT` run keeps significant leading whitespace.
+            p.skip_ws();
+            break;
         }
         // Leading-trivia policy (significant-whitespace fix): only a prose
         // TEXT run keeps its leading whitespace. When the next item is a
@@ -177,7 +228,7 @@ pub(crate) fn content_items_until(p: &mut Parser<'_, '_>, stop: &[SyntaxKind]) {
             // children only, so a bare token produces no visible output. The
             // invariant: a doc-comment token must NEVER become story prose.
             DOC_COMMENT_OUTER | DOC_COMMENT_INNER => p.bump(),
-            _ => text_run_until(p, stop),
+            _ => text_run_until(p, stop, stop_at_else_arm),
         }
     }
 }
@@ -279,17 +330,27 @@ fn glue_node(p: &mut Parser<'_, '_>) {
 
 /// A run of literal text: every raw token up to the next breaking
 /// construct (`{`, `<>`, `->` (N-1), a doc-comment token (B0.6b), a
-/// caller-supplied stop kind, or EOF), including any interior
-/// whitespace/plain-comments — those are literal prose here, not trivia to
-/// discard. `HASH`/`DIVERT`/doc-comment tokens always break a text run
+/// caller-supplied stop kind, an else-arm boundary when `stop_at_else_arm`
+/// (#1254 Gap 1), or EOF), including any interior whitespace/plain-comments
+/// — those are literal prose here, not trivia to discard (so trailing
+/// whitespace already absorbed into an in-progress run before one of these
+/// breaking constructs — e.g. the space before a trailing `#tag`/`->`/
+/// `else:` — stays part of this `TEXT` node; only a FRESH item's leading
+/// whitespace is ever trimmed, by the outer loop, before this function is
+/// even called). `HASH`/`DIVERT`/doc-comment tokens always break a text run
 /// (tags and diverts are recognized structurally by every caller; a
 /// doc-comment token must never fold into visible prose), even if the
 /// caller didn't ask for it — mirrors `content_items_until`'s own
 /// unconditional-break agreement for `HASH`; without this, a `->` (or a
 /// stray `//!`) reached mid-run would get bumped as literal text before the
 /// outer loop ever saw it, and its dedicated match arm there would be dead
-/// code.
-fn text_run_until(p: &mut Parser<'_, '_>, stop: &[SyntaxKind]) {
+/// code. The else-arm boundary needs the same treatment for the same
+/// reason: `family::at_else_arm`'s two-token lookahead only fires reliably
+/// when checked from the OUTER loop between items, so a genuine
+/// `else:`/`else{`/`else if` reached mid-run must hand control back here
+/// too, or it would get swallowed as literal text before that check ever
+/// runs (`colon_form_else_on_the_same_line_is_recognized_as_an_else_arm`).
+fn text_run_until(p: &mut Parser<'_, '_>, stop: &[SyntaxKind], stop_at_else_arm: bool) {
     p.start_node(TEXT);
     loop {
         let k = p.nth_raw(0);
@@ -302,6 +363,9 @@ fn text_run_until(p: &mut Parser<'_, '_>, stop: &[SyntaxKind]) {
             || k == DOC_COMMENT_INNER
             || stop.contains(&k)
         {
+            break;
+        }
+        if stop_at_else_arm && k == KW_ELSE && super::family::at_else_arm(p) {
             break;
         }
         p.bump();

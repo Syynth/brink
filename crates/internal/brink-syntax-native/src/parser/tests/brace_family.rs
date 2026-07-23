@@ -12,8 +12,10 @@
 //!
 //! Two genuine parser gaps surfaced while writing this coverage (same-line
 //! colon-form `else:` swallowed silently; no flat `else if` chain sugar)
-//! are pinned as current behavior below and tracked for a real fix in
-//! #1254, not in this now-closed issue.
+//! were tracked in #1254, ruled in #1258, and fixed in #1261 — see
+//! `colon_form_else_on_the_same_line_is_recognized_as_an_else_arm` and
+//! `else_if_flat_chain_is_recognized_as_a_chain` below, which now assert
+//! the fixed behavior instead of pinning the old bugs.
 
 use super::*;
 
@@ -76,35 +78,18 @@ fn conditional_block_colon_form() {
 }
 
 #[test]
-fn colon_form_else_on_the_same_line_is_not_recognized_as_an_else_arm() {
-    // GENUINE PARSER BUG (not fixed here — test-only issue). `colon_body`
-    // (family.rs) only calls `at_else_arm` BETWEEN top-level `body_line`
-    // calls — never mid-line. `body_line` → `content_line` scans an
-    // entire physical line as one `CONTENT_LINE`, stopping only at
-    // `NEWLINE`/`R_BRACE`/`HASH` — `else` has no special recognition
-    // inside that scan. The result: the "inline colon body" form the
-    // `CONDITIONAL_BLOCK` doc comment calls out BY NAME as "the inline
-    // colon body (`{if cond: … else: …}`, charter §6's literal example)"
-    // — a genuinely single physical line — silently fails to produce an
-    // `ELSE_BRANCH` at all when written as its own literal example
-    // spells it: `else` gets swallowed into the if-arm's `TEXT`, and
-    // whatever follows `else:` is lost as sibling prose alongside it,
-    // not a real fallback branch. Confirmed via `conditional_block_colon_form`
-    // above, which has asserted `errors().is_empty()` since before this
-    // family's test-coverage pass — that assertion is still true (no
-    // parse error is raised), which is exactly why this has gone
-    // unnoticed: the failure is silent, not diagnosed.
-    //
-    // Multi-line colon bodies (`else:` starting its own line) DO work —
-    // see `conditional_colon_if_and_else_items_accessors` below — so the
-    // bug is specifically "on the identical physical line as trailing
-    // if-body content", not "colon-form else in general".
-    //
-    // Reported on #1254 (follow-up; scope overflow from #1197). TODO:
-    // update this assertion if `colon_body` is later taught to recognize
-    // `else` as a boundary mid-line (would need `content_items_until` or
-    // `colon_body` itself to special-case `KW_ELSE` the way it already
-    // special-cases `HASH`).
+fn colon_form_else_on_the_same_line_is_recognized_as_an_else_arm() {
+    // FIXED (#1254 Gap 1, #1261): `colon_body` (family.rs) now dispatches
+    // its per-physical-line items through `colon_body_line`, whose prose
+    // fallback (`content::content_line_else_boundary`) recognizes a
+    // same-line `else:` as a boundary and stops the content scan there,
+    // instead of swallowing it into the if-arm's `TEXT` the way plain
+    // `content_line`'s unbounded scan would. The "inline colon body" form
+    // the `CONDITIONAL_BLOCK` doc comment calls out BY NAME as "the
+    // inline colon body (`{if cond: … else: …}`, charter §6's literal
+    // example)" — a genuinely single physical line — now produces a real
+    // `ELSE_BRANCH`, matching the multi-line colon form
+    // (`conditional_colon_if_and_else_items_accessors` below).
     let src = "flow garden() {\n  {if hp > 0: You live. else: You die.}\n}\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
@@ -113,18 +98,44 @@ fn colon_form_else_on_the_same_line_is_not_recognized_as_an_else_arm() {
         .descendants()
         .find_map(ast::ConditionalBlock::cast)
         .expect("CONDITIONAL_BLOCK");
+    let else_arm = cond.else_arm().expect("ELSE_BRANCH is now produced");
+    assert!(else_arm.block().is_none(), "colon form has no BLOCK child");
     assert!(
-        cond.else_arm().is_none(),
-        "TODO(#1254 follow-up): no ELSE_BRANCH is produced today; `else: You die.` \
-         is swallowed into the if-arm's TEXT instead — update this assertion once fixed"
+        else_arm.items().next().is_some(),
+        "colon-form else arm has direct-child body items"
     );
-    // The swallowed "else: You die." literally appears as visible prose
-    // text inside the if-arm — not just "missing", but silently wrong.
+    // The if-arm's own TEXT must NOT contain the leaked else body anymore
+    // (trailing space before the boundary stays part of the TEXT run,
+    // same convention as every other trailing structural break — see
+    // `text_run_until`'s doc comment).
     let if_arm = cond.if_arm().expect("IF_ARM");
-    assert!(
-        text_run_concat(if_arm.syntax()).contains("else"),
-        "the else keyword and its body leaked into the if-arm's TEXT"
+    assert_eq!(text_run_concat(if_arm.syntax()), "You live. ");
+    assert_eq!(text_run_concat(else_arm.syntax()), "You die.");
+}
+
+#[test]
+fn splice_inside_a_colon_body_still_warns() {
+    // Regression guard (#1261): the colon-body per-line dispatcher
+    // (`colon_body_line`) must keep every non-prose line shape `body_line`
+    // recognizes — including a bare `<-` (THREAD) outside a choice point,
+    // which ruling #1263 requires warn (not silently swallow into TEXT).
+    // An earlier revision of `colon_body_line` omitted the THREAD arm, so a
+    // `<-` inside a colon-form conditional body regressed to a silent prose
+    // swallow with no diagnostic — caught in review, pinned here.
+    let src = "flow f() {\n  {if ready:\n    <- side_thread\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert_eq!(
+        p.errors().len(),
+        1,
+        "`<-` in a colon body must still raise the #1263 warning; errors: {:?}",
+        p.errors()
     );
+    assert_eq!(
+        p.errors()[0].severity,
+        ParseSeverity::Warning,
+        "a splice outside a choice point warns, never hard-errors"
+    );
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::SPLICE));
 }
 
 #[test]
@@ -290,34 +301,53 @@ fn else_if_chain_via_colon_nesting() {
 }
 
 #[test]
-fn else_if_flat_chain_is_not_recognized_as_a_chain() {
-    // GENUINE GRAMMAR GAP (not fixed here — test-only issue, see
-    // brace_family.rs module doc + CLAUDE.md "do not patch symptoms"):
-    // `at_else_arm` (family.rs) only starts an `ELSE_BRANCH` when `else`
-    // is IMMEDIATELY followed by its body opener (`{` or `:`) — `else if`
-    // written flat, without an inner `{if …}` wrapper, does NOT chain.
-    // `if_arm` closes, `at_else_arm` sees `KW_IF` (not `L_BRACE`/`COLON`)
-    // and returns false, so `conditional_block` never opens an
-    // `ELSE_BRANCH` at all: it immediately `expect(R_BRACE)`s against the
-    // literal `else` token (error), unwinds, and the rest
-    // (`else if b { B } else { C }`) falls through to the enclosing
-    // block's ordinary body-line dispatch as prose/interpolation debris.
-    // Reported on #1254 (follow-up; scope overflow from #1197) rather than
-    // fixed here — fixing it means either teaching `at_else_arm` to
-    // recognize `else if` as a third arm-opener shape or auto-wrapping,
-    // either of which is a real grammar change, not test coverage.
+fn else_if_flat_chain_is_recognized_as_a_chain() {
+    // RULED 2026-07-22 (#1258, implemented #1261): flat `else if <cond>
+    // { … }` chains exactly like the explicit-nesting spelling —
+    // `at_else_arm` (family.rs) learns `else` immediately followed by
+    // `KW_IF` as a third arm-opener shape (alongside `{`/`:`), and
+    // `else_branch` parses that shape as a brace-less `CONDITIONAL_BLOCK`
+    // sharing `conditional_body` with the ordinary `{if …}` entry point —
+    // same node kinds, same `is_if`/`condition`/`if_arm`/`else_arm`
+    // accessors as `else_if_chain_via_braced_nesting` below, just without
+    // the extra delimiter tokens the flat spelling never had in source.
     let src = "flow garden() {\n  {if a { A } else if b { B } else { C }}\n}\n";
     let p = assert_lossless(src);
-    assert!(
-        !p.errors().is_empty(),
-        "TODO(#1254 follow-up): flat `else if` currently fails to chain; \
-         update this assertion if/when `at_else_arm` gains `else if` support"
-    );
-    // The malformed tail never becomes a second CONDITIONAL_BLOCK arm —
-    // it's stray prose/interpolation content instead.
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    // Two CONDITIONAL_BLOCKs: the outer `if a …` and the chained `if b …`
+    // — identical count to `else_if_chain_via_braced_nesting`'s explicit
+    // nesting.
     assert_eq!(
         count_node_kind(&p.syntax(), SyntaxKind::CONDITIONAL_BLOCK),
-        1
+        2
+    );
+    let outer: ast::ConditionalBlock = p
+        .syntax()
+        .descendants()
+        .find_map(ast::ConditionalBlock::cast)
+        .expect("outer CONDITIONAL_BLOCK");
+    let outer_else = outer.else_arm().expect("outer ELSE_BRANCH");
+    let inner = outer_else
+        .syntax()
+        .descendants()
+        .find_map(ast::ConditionalBlock::cast)
+        .expect("chained CONDITIONAL_BLOCK inside the outer else arm");
+    assert!(inner.is_if());
+    assert!(inner.else_arm().is_some(), "chained if's own else branch");
+}
+
+#[test]
+fn else_if_flat_chain_colon_form_is_recognized_as_a_chain() {
+    // Colon-form companion to `else_if_flat_chain_is_recognized_as_a_chain`
+    // above: `else if <cond>: …` chains the same way — `at_else_arm`'s
+    // `KW_IF` shape doesn't care which body form the chained `if` itself
+    // uses.
+    let src = "flow garden() {\n  {if a:\n  A\n  else if b:\n  B\n  else:\n  C\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(
+        count_node_kind(&p.syntax(), SyntaxKind::CONDITIONAL_BLOCK),
+        2
     );
 }
 
@@ -762,21 +792,16 @@ fn stray_dash_outside_alternation_is_not_an_entry() {
 }
 
 #[test]
-fn empty_inline_alternation_currently_accepted_without_error() {
-    // GAP relative to the parity target: `brink-syntax`'s twin
-    // (`sequence_stopping_empty_emits_error`/`sequence_symbol_empty_emits_error`)
-    // requires at least one branch and errors on `{&}`/`{stopping:}`. This
-    // grammar's `inline_alternatives` loop breaks immediately on `R_BRACE`
-    // with zero iterations and records no error — an `ALTERNATION_BLOCK`
-    // with only a marker child, no alternatives, is currently accepted.
-    // Not fixed here (test-only issue); noted (not filed as a gap) in #1254.
+fn empty_inline_alternation_emits_error() {
+    // FIXED (ruled #1258/#1261, brink-syntax parity —
+    // `sequence_stopping_empty_emits_error`/`sequence_symbol_empty_emits_error`):
+    // `inline_alternatives` now tracks whether it saw any branch at all;
+    // `alternation_block` emits a diagnostic when it didn't. An
+    // `ALTERNATION_BLOCK` with only a marker child, no alternatives, is a
+    // parse error, not a silently-accepted degenerate case.
     let src = "flow f() {\n  {~}\n}\n";
     let p = assert_lossless(src);
-    assert!(
-        p.errors().is_empty(),
-        "TODO(#1254 follow-up): update if empty-alternation validation is added; errors: {:?}",
-        p.errors()
-    );
+    assert!(!p.errors().is_empty(), "empty alternation must now error");
     let alt: ast::AlternationBlock = p
         .syntax()
         .descendants()
@@ -786,16 +811,12 @@ fn empty_inline_alternation_currently_accepted_without_error() {
 }
 
 #[test]
-fn empty_multiline_alternation_currently_accepted_without_error() {
-    // Same gap as the inline case above, multiline form: zero `-` entries,
-    // no diagnostic.
+fn empty_multiline_alternation_emits_error() {
+    // Same fix as the inline case above, multiline form: zero `-` entries
+    // now raises the same diagnostic.
     let src = "flow f() {\n  {&\n  }\n}\n";
     let p = assert_lossless(src);
-    assert!(
-        p.errors().is_empty(),
-        "TODO(#1254 follow-up): update if empty-alternation validation is added; errors: {:?}",
-        p.errors()
-    );
+    assert!(!p.errors().is_empty(), "empty alternation must now error");
     let alt: ast::AlternationBlock = p
         .syntax()
         .descendants()
@@ -990,6 +1011,17 @@ mod proptests {
             .prop_map(|(cond, t, f)| format!("{{if {cond} {{ {t} }} else {{ {f} }} }}\n"))
     }
 
+    /// Flat `else if` chain (ruled #1258, implemented #1261) — a third
+    /// generator alongside the colon/braced pair above, covering the shape
+    /// `at_else_arm`'s new `KW_IF` arm-opener handles.
+    fn arb_conditional_else_if_flat() -> impl Strategy<Value = String> {
+        (arb_ident(), arb_ident(), arb_text(), arb_text(), arb_text()).prop_map(
+            |(cond_a, cond_b, a, b, c)| {
+                format!("{{if {cond_a} {{ {a} }} else if {cond_b} {{ {b} }} else {{ {c} }}}}\n")
+            },
+        )
+    }
+
     fn arb_match_braced() -> impl Strategy<Value = String> {
         (
             arb_ident(),
@@ -1030,6 +1062,7 @@ mod proptests {
         prop_oneof![
             arb_conditional_colon(),
             arb_conditional_braced(),
+            arb_conditional_else_if_flat(),
             arb_match_braced(),
             arb_alternation_inline(),
             arb_alternation_multiline(),
@@ -1048,6 +1081,23 @@ mod proptests {
             let src = format!("flow f() {{\n  {line}}}\n");
             let p = parse(&src);
             prop_assert_eq!(&src, &p.syntax().text().to_string());
+        }
+
+        /// #1261's two conditional-arm fixes hold at scale, not just on the
+        /// hand-picked unit-test examples: every generated same-line
+        /// colon-form else and every generated flat `else if` chain parses
+        /// with zero errors.
+        #[test]
+        fn conditional_colon_and_else_if_flat_parse_clean(
+            colon_line in arb_conditional_colon(),
+            else_if_line in arb_conditional_else_if_flat(),
+        ) {
+            for line in [colon_line, else_if_line] {
+                let src = format!("flow f() {{\n  {line}}}\n");
+                let p = parse(&src);
+                prop_assert!(p.errors().is_empty(), "{src:?} errors: {:?}", p.errors());
+                prop_assert!(has_node_kind(&p.syntax(), SyntaxKind::ELSE_BRANCH), "{src:?}");
+            }
         }
 
         /// Two brace-family constructs back to back (still inside one

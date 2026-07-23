@@ -328,7 +328,12 @@ pub enum SyntaxKind {
     /// to `if`/`match` specifically, so branches use the brace delimiter
     /// charter §4 already declares universal, and dashes are reserved for
     /// alternation blocks below. Flagged for the Track-B queue to confirm
-    /// or correct.)
+    /// or correct.) The colon-body form's `else:` boundary is recognized
+    /// whether it starts its own physical line or trails other content on
+    /// the SAME line (#1254 Gap 1, fixed #1261 — `family::colon_body_line`).
+    /// A flat `else if <cond> { … }`/`else if <cond>: …` chain (ruled
+    /// 2026-07-22, #1258, implemented #1261) lowers to the identical shape
+    /// an explicit nested `{if …}` would.
     CONDITIONAL_BLOCK,
     IF_ARM,
     MATCH_ARM,
@@ -339,7 +344,12 @@ pub enum SyntaxKind {
 
     /// `{~ … }` shuffle / `{& … }` cycle / `{! … }` once / `{| … }`
     /// stopping-sequence — one node shape, `ALTERNATION_MARKER` child
-    /// records which.
+    /// records which. A `{` led by any of these four marker chars is
+    /// ALWAYS claimed by this family ahead of bare `{expr}` interpolation
+    /// (ruled 2026-07-22, "alternation markers win," #1258/#1261 —
+    /// `family::at_alternation`'s doc comment has the full rationale and
+    /// the parens escape hatch); a body with zero branches (`{~}`, `{&\n}`)
+    /// is a parse error (brink-syntax parity), not silently accepted.
     ALTERNATION_BLOCK,
     /// The `~`/`&`/`!`/`|` token that opened an `ALTERNATION_BLOCK`.
     ALTERNATION_MARKER,
