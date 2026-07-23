@@ -80,6 +80,14 @@ combination is honestly spellable.
   is nesting. (Depth >2 = watch list.)
 - Braces are the universal body delimiter — "solid" — for
   containers, fn bodies, choice bodies, annotated blocks alike.
+- **Body-dialect selector (RULED 2026-07-23 — see decision-log):**
+  the brace prefix selects the body's dialect. Plain `{ … }` = the
+  per-keyword **default** (`fn` → code, `flow` → prose); **`~{ … }`**
+  = code-ground body (statements directly, no per-line `~` — a
+  code-bodied `flow` is §3's "Compound guard"); **`>{ … }`** =
+  prose-ground body (emits bare text — a prose-bodied `fn`). Sigil
+  mnemonics: `~` = enter code, `>` = emit prose. See §8.2 for the
+  line-granularity escapes that use the same two sigils.
 
 ## 5. Prose-ground structure: the weave, respelled
 
@@ -146,8 +154,15 @@ access beats UFCS on resolution. Details = sitting 2.
    stdlib round (heap/tuples/floor-div/char_at/weighted tables), the
    #827 vec decision (structs+UFCS may suffice — decide with syntax
    in hand).
-2. Interleaving escapes, full inventory (prose→code beyond
-   interpolation; code→prose emission; grains).
+2. ~~Interleaving escapes, full inventory (prose→code beyond
+   interpolation; code→prose emission; grains).~~ **RULED
+   2026-07-23 (see decision-log):** `~` = enter code, `>` = emit
+   prose, at two granularities — whole-body selectors (`~{ }` /
+   `>{ }` / plain `{ }` = keyword default, §4) and line escapes
+   ("grains" = these fine-grained lines): `~ stmt` runs code inside
+   a prose body (ink's logic line, kept), `> text` emits a prose
+   line inside a code body. Remaining open: any prose→code escapes
+   beyond `~`/interpolation, and the interpolation-vs-`{~` overlap.
 3. Divert/tunnel/thread spelling in the new surface (`->`, `->->`,
    `<-` are load-bearing ink idioms — keep? respell?). `await`'s
    native spelling (currently contextual-keyword in ink dialect).
