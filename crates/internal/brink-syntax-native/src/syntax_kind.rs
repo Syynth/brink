@@ -82,6 +82,30 @@ pub enum SyntaxKind {
     /// `else` — conditional else-arm AND a choice point's fallback branch
     /// (charter §11: "a choice point's fallback is its else-branch").
     KW_ELSE,
+    /// `while` — code-ground loop statement (B0.8 Wave B,
+    /// `docs/decision-log.md` 2026-07-23 "Code-ground sitting"). Hard-
+    /// reserved everywhere, mirroring `if`/`match`/`else` (Finding #1) —
+    /// unlike the brink-dialect's `~ { … }` T1b grammar, where `while` is a
+    /// *contextual* soft keyword (`brink-syntax/src/parser/logic.rs`), the
+    /// native surface reserves its `RustScript`-shaped statement keywords
+    /// globally.
+    KW_WHILE,
+    /// `for` — code-ground loop statement (B0.8 Wave B). Hard-reserved,
+    /// see [`Self::KW_WHILE`]'s doc.
+    KW_FOR,
+    /// `in` — the `for name in expr { … }` loop-head separator (B0.8 Wave
+    /// B). Hard-reserved, see [`Self::KW_WHILE`]'s doc.
+    KW_IN,
+    /// `until` — the code-ground condition-park statement (B0.8 Wave B,
+    /// decision-log 2026-07-23 item 4): `until <pure-bool-expr>;` parks the
+    /// flow until the condition becomes true (reactive), then resumes —
+    /// the runtime's existing `FlowSleep` reactive-wake mechanism. Native
+    /// **retires** `await` entirely (its future-resolution mental model is
+    /// wrong for a condition-park); `until` is the only spelling. Lowers to
+    /// the exact same `AwaitStmt` HIR node the brink-dialect's `~ await
+    /// cond` produces — a spelling change, not a new construct (NF-2
+    /// fence). Hard-reserved, see [`Self::KW_WHILE`]'s doc.
+    KW_UNTIL,
     /// `as` — import/use aliasing (`use a::b as c`).
     KW_AS,
     KW_TRUE,
@@ -413,9 +437,10 @@ pub enum SyntaxKind {
     // Shared by interpolation content, annotation args, choice guards,
     // divert targets, and conditional/match heads. B0.8 Wave A (below) adds
     // the statement layer (`let`/assignment/expression-statements/blocks-
-    // as-values) over this skeleton; `if`/`while`/`for`/`until`/UFCS
-    // resolution remain B0.8 Wave B (`docs/b0-sequencing.md` §B0.8,
-    // `docs/decision-log.md` 2026-07-23 "Code-ground sitting").
+    // as-values) over this skeleton; B0.8 Wave B (further below) adds
+    // `if`/`while`/`for`/`until` control flow as more statement kinds
+    // (`docs/b0-sequencing.md` §B0.8, `docs/decision-log.md` 2026-07-23
+    // "Code-ground sitting"). UFCS resolution remains unaddressed.
     INTEGER_LIT,
     FLOAT_LIT,
     STRING_LIT,
@@ -460,6 +485,35 @@ pub enum SyntaxKind {
     /// tail expression.
     EXPR_STMT,
 
+    // ── Node kinds — the code-ground control-flow layer (B0.8 Wave B, ───
+    // ── `docs/decision-log.md` 2026-07-23 "Code-ground sitting") ────────
+    // Rides Wave A's `STMT_BLOCK` for every body (`parser/control_flow.rs`
+    // reuses `parser/stmt.rs::stmt_block` verbatim — no second block
+    // shape). Lowers to the *existing* `~ { … }` T1b closed statement set
+    // (`IfStmt`/`WhileStmt`/`ForStmt`/`AwaitStmt` in `brink-ir`) — the NF-2
+    // fence, no new HIR nodes.
+    /// `if cond { … } (else if cond { … } | else { … })?`. No case for a
+    /// bare `{` opener here — that's [`Self::CONDITIONAL_BLOCK`]'s
+    /// annotated-brace family, a different (content-ground) construct this
+    /// one does not replace.
+    IF_STMT,
+    /// The `else` arm of an [`Self::IF_STMT`]: either another [`Self::IF_STMT`]
+    /// (an `else if` chain) or a plain [`Self::STMT_BLOCK`].
+    ELSE_CLAUSE,
+    /// `while cond { … }`. Always a plain loop on the native surface — no
+    /// `while await cond { … }` persistent-await form (that's the
+    /// brink-dialect T1b grammar's own concern; native retired `await`
+    /// entirely in favor of [`Self::UNTIL_STMT`], decision-log item 4).
+    WHILE_STMT,
+    /// `for name in expr { … }` — single-binding iteration (charter's
+    /// existing `ForStmt` HIR shape; no destructuring).
+    FOR_STMT,
+    /// `until <pure-bool-expr>;` — the condition-park statement
+    /// (decision-log 2026-07-23 item 4): native's sole flow-suspension
+    /// spelling, replacing `await`. Lowers to the same `AwaitStmt` HIR node
+    /// the brink-dialect's `~ await cond` produces.
+    UNTIL_STMT,
+
     /// A parse-error wrapper node — swallows one unexpected token so error
     /// recovery always makes forward progress.
     ERROR,
@@ -497,6 +551,10 @@ impl SyntaxKind {
                 | Self::KW_IF
                 | Self::KW_MATCH
                 | Self::KW_ELSE
+                | Self::KW_WHILE
+                | Self::KW_FOR
+                | Self::KW_IN
+                | Self::KW_UNTIL
                 | Self::KW_AS
                 | Self::KW_TRUE
                 | Self::KW_FALSE
@@ -592,6 +650,10 @@ impl SyntaxKind {
                 | Self::KW_IF
                 | Self::KW_MATCH
                 | Self::KW_ELSE
+                | Self::KW_WHILE
+                | Self::KW_FOR
+                | Self::KW_IN
+                | Self::KW_UNTIL
                 | Self::KW_AS
                 | Self::KW_TRUE
                 | Self::KW_FALSE
@@ -706,6 +768,10 @@ mod tests {
             SyntaxKind::KW_IF,
             SyntaxKind::KW_MATCH,
             SyntaxKind::KW_ELSE,
+            SyntaxKind::KW_WHILE,
+            SyntaxKind::KW_FOR,
+            SyntaxKind::KW_IN,
+            SyntaxKind::KW_UNTIL,
             SyntaxKind::KW_AS,
             SyntaxKind::KW_TRUE,
             SyntaxKind::KW_FALSE,

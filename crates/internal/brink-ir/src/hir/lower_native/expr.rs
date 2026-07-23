@@ -8,9 +8,12 @@
 //! balanced-token blob) specifically so B0.6 can lower them — see
 //! `brink-syntax-native/src/parser/expr.rs`'s module doc ("this is the
 //! expression *skeleton* B0.5 needs to give those constructs a real
-//! internal shape instead of a balanced-token blob"). Real code-dialect
-//! *statement* grammar (`let`/assign/if-stmt/while/for/UFCS-calls) stays
-//! out of scope — B0.8.
+//! internal shape instead of a balanced-token blob"). The code-ground
+//! *statement* grammar itself (`let`/assign/if/while/for/until) lives in
+//! `super::control_flow`, B0.8 Waves A/B — this module's only seam with it
+//! is the `STMT_BLOCK` atom case below (blocks-as-values, still
+//! unrepresentable as a value — see that arm's doc). UFCS resolution stays
+//! out of scope.
 //!
 //! `LAMBDA_EXPR` is tokenized/parsed (B0.5) but explicitly unlowered until
 //! the code sitting rules a real anonymous-body node (`docs/b0-sequencing.md`
@@ -85,6 +88,27 @@ pub(super) fn lower_expr(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Dia
         N::PREFIX_EXPR => lower_prefix(file_id, node, diags),
         N::INFIX_EXPR => lower_infix(file_id, node, diags),
         N::CALL_EXPR => lower_call(file_id, node, diags),
+        N::STMT_BLOCK => {
+            // Blocks-as-values (decision-log 2026-07-23 item 2) has no HIR
+            // representation yet — no `Expr::Block` variant exists, and
+            // NF-2 forbids minting one in this slice. But the block's own
+            // *statements* (B0.8 Wave B's `let`/assign/expr/if/while/for/
+            // until control flow, issue #1177) DO have a real lowering
+            // target (the existing `~ { … }` T1b closed set) and are
+            // lowered here for their diagnostics and reachability — this
+            // is the one production call site that exercises
+            // `control_flow::lower_stmt_block` from a real `.brink` file
+            // (`var x = { if a { … } };`), not just a differential test
+            // fixture. The block's own *value* still can't be produced, so
+            // this arm still ends in E129 — same "loud, not silent"
+            // posture as LAMBDA_EXPR, and an honest one: the statements
+            // inside genuinely have nowhere to live as an `Expr`.
+            if let Some(sb) = ast::StmtBlock::cast(node.clone()) {
+                let _ = super::control_flow::lower_stmt_block(file_id, &sb, diags);
+            }
+            diags.push(diag(file_id, node.text_range(), DiagnosticCode::E129));
+            Expr::Null
+        }
         _ => {
             // LAMBDA_EXPR and anything else the expr grammar can produce
             // that this slice doesn't recognize (e.g. a malformed ERROR

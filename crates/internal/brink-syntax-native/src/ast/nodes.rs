@@ -111,6 +111,14 @@ ast_node!(LetStmt, LET_STMT);
 ast_node!(AssignStmt, ASSIGN_STMT);
 ast_node!(ExprStmt, EXPR_STMT);
 
+// ── The code-ground control-flow layer (B0.8 Wave B) ─────────────────
+
+ast_node!(IfStmt, IF_STMT);
+ast_node!(ElseClause, ELSE_CLAUSE);
+ast_node!(WhileStmt, WHILE_STMT);
+ast_node!(ForStmt, FOR_STMT);
+ast_node!(UntilStmt, UNTIL_STMT);
+
 // ── Error recovery ───────────────────────────────────────────────────
 
 ast_node!(Error, ERROR);
@@ -942,15 +950,25 @@ impl StmtBlock {
     }
 
     /// The block's unterminated trailing expression (blocks-as-values), if
-    /// one is present — the last child, when its kind is none of the three
-    /// `;`-terminated statement wrappers (`parser/stmt.rs::stmt_block`
-    /// never emits any node after the tail, so the last child is *always*
-    /// the tail when it isn't one of those three kinds).
+    /// one is present — the last child, when its kind is none of the seven
+    /// statement-wrapper kinds this grammar can produce as a genuine
+    /// statement (`parser/stmt.rs::stmt_block` never emits any node after
+    /// the tail, so the last child is *always* the tail when it isn't one
+    /// of those). B0.8 Wave B's four control-flow kinds
+    /// (`IF_STMT`/`WHILE_STMT`/`FOR_STMT`/`UNTIL_STMT`) never produce a
+    /// value and are always fully delimited by their own body/`;` — same
+    /// non-tail treatment as the three Wave A kinds, not new behavior.
     pub fn tail(&self) -> Option<SyntaxNode> {
         let last = self.syntax.children().last()?;
         (!matches!(
             last.kind(),
-            SyntaxKind::LET_STMT | SyntaxKind::ASSIGN_STMT | SyntaxKind::EXPR_STMT
+            SyntaxKind::LET_STMT
+                | SyntaxKind::ASSIGN_STMT
+                | SyntaxKind::EXPR_STMT
+                | SyntaxKind::IF_STMT
+                | SyntaxKind::WHILE_STMT
+                | SyntaxKind::FOR_STMT
+                | SyntaxKind::UNTIL_STMT
         ))
         .then_some(last)
     }
@@ -984,6 +1002,84 @@ impl AssignStmt {
 impl ExprStmt {
     /// The wrapped expression's root node.
     pub fn expr(&self) -> Option<SyntaxNode> {
+        self.syntax.children().next()
+    }
+}
+
+// ── B0.8 Wave B additions: the code-ground control-flow layer ───────
+//
+// `docs/decision-log.md` 2026-07-23 "Code-ground sitting", issue #1177.
+// `parser/control_flow.rs`'s module doc has the full grammar shape.
+
+impl IfStmt {
+    /// The head condition — `IF_STMT`'s only child node that isn't the
+    /// `STMT_BLOCK` body or the trailing `ELSE_CLAUSE` (mirrors
+    /// `ConditionalBlock::condition`'s same-shaped lookup).
+    pub fn condition(&self) -> Option<SyntaxNode> {
+        self.syntax
+            .children()
+            .find(|n| !matches!(n.kind(), SyntaxKind::STMT_BLOCK | SyntaxKind::ELSE_CLAUSE))
+    }
+
+    pub fn body(&self) -> Option<StmtBlock> {
+        support::child(&self.syntax)
+    }
+
+    pub fn else_clause(&self) -> Option<ElseClause> {
+        support::child(&self.syntax)
+    }
+}
+
+impl ElseClause {
+    /// `else if cond { … }` — the arm's entire body is a nested `IF_STMT`,
+    /// with no `STMT_BLOCK` wrapper of its own (`control_flow.rs::
+    /// else_clause`'s flat-chain shape).
+    pub fn if_stmt(&self) -> Option<IfStmt> {
+        support::child(&self.syntax)
+    }
+
+    /// `else { … }` — the plain form.
+    pub fn body(&self) -> Option<StmtBlock> {
+        support::child(&self.syntax)
+    }
+}
+
+impl WhileStmt {
+    /// The loop condition — `WHILE_STMT`'s only child node that isn't the
+    /// `STMT_BLOCK` body.
+    pub fn condition(&self) -> Option<SyntaxNode> {
+        self.syntax
+            .children()
+            .find(|n| n.kind() != SyntaxKind::STMT_BLOCK)
+    }
+
+    pub fn body(&self) -> Option<StmtBlock> {
+        support::child(&self.syntax)
+    }
+}
+
+impl ForStmt {
+    /// The loop-binding identifier (`for NAME in …`).
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, IDENT)
+    }
+
+    /// The iterable expression — `FOR_STMT`'s only child node that isn't
+    /// the `STMT_BLOCK` body.
+    pub fn iterable(&self) -> Option<SyntaxNode> {
+        self.syntax
+            .children()
+            .find(|n| n.kind() != SyntaxKind::STMT_BLOCK)
+    }
+
+    pub fn body(&self) -> Option<StmtBlock> {
+        support::child(&self.syntax)
+    }
+}
+
+impl UntilStmt {
+    /// The park condition — `UNTIL_STMT`'s only child node.
+    pub fn condition(&self) -> Option<SyntaxNode> {
         self.syntax.children().next()
     }
 }

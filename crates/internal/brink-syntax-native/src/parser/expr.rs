@@ -5,10 +5,13 @@
 //! B0.8 Wave A (`docs/decision-log.md` 2026-07-23 "Code-ground sitting")
 //! adds the statement layer (`let`/assignment/expression-statements/
 //! blocks-as-values, `super::stmt`) over this skeleton, including a new
-//! `L_BRACE` atom case below for block-expressions. `if`/`while`/`for`/
-//! `until`-statements and UFCS *resolution* (the call shape already
-//! parses) remain B0.8 Wave B (`docs/b0-sequencing.md` §B0.8) — this stays
-//! the shared expression *skeleton*, not the statement grammar itself.
+//! `L_BRACE` atom case below for block-expressions. Wave B
+//! (`docs/b0-sequencing.md` §B0.8, issue #1177) adds `if`/`while`/`for`/
+//! `until` control flow as further statement kinds dispatched from
+//! `super::stmt`/`super::control_flow` — none of them are expression atoms
+//! (no case for them exists here), so this stays the shared expression
+//! *skeleton*, not the statement grammar itself. UFCS *resolution* (the
+//! call shape already parses) remains unaddressed.
 
 use crate::SyntaxKind::{
     AMP_AMP, ARG_LIST, BANG, BANG_EQ, BOOLEAN_LIT, CALL_EXPR, COLON_COLON, COMMA, DOT, EQ_EQ,

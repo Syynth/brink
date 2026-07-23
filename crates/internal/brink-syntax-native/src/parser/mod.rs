@@ -2,6 +2,7 @@ mod annotation;
 mod block;
 mod choice;
 mod content;
+mod control_flow;
 mod decl;
 mod divert;
 mod doc_comment;
