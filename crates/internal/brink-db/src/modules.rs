@@ -45,6 +45,37 @@ pub(crate) fn file_stem(path: &str) -> &str {
     name.strip_suffix(".ink").unwrap_or(name)
 }
 
+/// A native `.brink` file's module path, derived **purely** from its
+/// root-relative key (decision-log 2026-07-22 "Native module identity: pure
+/// function of the root-relative path"; charter §13.2: path on disk = path
+/// in language). Directory segments become `::`-separated module walls, the
+/// file (`.brink` stripped) is the leaf, and `story::` is the absolute root:
+///
+/// - `barter.brink`            → `story::barter`
+/// - `market/barter.brink`     → `story::market::barter`
+/// - `npcs/quests/intro.brink` → `story::npcs::quests::intro`
+///
+/// This string is folded into `DefinitionId` identity (a **declared**,
+/// always-qualifying module), so it is save-key-critical and must stay a
+/// pure function of the path — nothing else (no `FileId`, no discovery
+/// order, no other file) may enter it. Unlike ink modules, native modules
+/// never flow through `resolve_modules`: they have no `#@module` inheritance
+/// and no INCLUDE graph, so their identity is this function and nothing more.
+pub(crate) fn native_module_path(relative_path: &str) -> String {
+    let without_ext = relative_path
+        .strip_suffix(".brink")
+        .unwrap_or(relative_path);
+    let mut out = String::from("story");
+    for segment in without_ext.split(['/', '\\']) {
+        if segment.is_empty() || segment == "." {
+            continue;
+        }
+        out.push_str("::");
+        out.push_str(segment);
+    }
+    out
+}
+
 /// Resolve every file's module and detect stem collisions (`E085`).
 ///
 /// Returns the [`ModuleMap`] consumed by
@@ -165,6 +196,27 @@ pub(crate) fn resolve_modules(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_module_path_derives_purely_from_relative_path() {
+        // Charter §13.2: path on disk = path in language; `story::` is the
+        // absolute root, `::` crosses walls, the file is the leaf module.
+        assert_eq!(native_module_path("barter.brink"), "story::barter");
+        assert_eq!(
+            native_module_path("market/barter.brink"),
+            "story::market::barter"
+        );
+        assert_eq!(
+            native_module_path("npcs/quests/intro.brink"),
+            "story::npcs::quests::intro"
+        );
+        // Backslash separators and stray `.`/empty segments normalize away.
+        assert_eq!(
+            native_module_path("market\\barter.brink"),
+            "story::market::barter"
+        );
+        assert_eq!(native_module_path("./main.brink"), "story::main");
+    }
 
     fn input(file: u32, stem: &str, declared: Option<&str>) -> FileModuleInput {
         FileModuleInput {
