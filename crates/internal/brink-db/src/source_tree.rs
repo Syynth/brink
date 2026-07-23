@@ -1,4 +1,5 @@
-//! The `SourceTree` seam (decision-log "Native source-loading seam",
+//! The `SourceTree` seam (decision-log "Native source-loading seam: a
+//! `SourceTree` trait with a map-backed impl; the root is caller-supplied",
 //! 2026-07-22; issue #1278): a host-agnostic way to enumerate and read
 //! native `.brink` source files.
 //!

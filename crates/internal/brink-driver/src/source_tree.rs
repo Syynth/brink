@@ -5,8 +5,9 @@
 //!
 //! Neither [`RealFs`] nor [`GitRev`] is called anywhere in this crate yet —
 //! see the [`brink_db::source_tree`](brink_db) module docs for the full
-//! rationale (decision-log "Native source-loading seam", 2026-07-22; issue
-//! #1278). Wiring native discovery to consume these is a separate,
+//! rationale (decision-log "Native source-loading seam: a `SourceTree`
+//! trait with a map-backed impl; the root is caller-supplied", 2026-07-22;
+//! issue #1278). Wiring native discovery to consume these is a separate,
 //! deliberately deferred change.
 //!
 //! Both types are host-only (they touch the real filesystem and spawn a
