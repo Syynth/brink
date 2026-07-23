@@ -631,31 +631,22 @@ fn splice_outside_choice_point_high_confidence_with_call_args() {
     );
 }
 
-// ── Genuine grammar/parser divergence — NOT fixed here (test-only issue) ──
+// ── Divert targets with call-style args (#1265, fixed bug #1196) ──────
 
 #[test]
-fn divert_target_with_call_args_does_not_capture_the_args_bug_1196() {
-    // TODO(#1196 follow-up, filed as a scope-overflow comment on the
-    // issue): charter §11 lists "-> knot(args)" as KEPT VERBATIM from ink
-    // ("Diverts — KEPT verbatim (`->`, `-> knot(args)`, ...)"), but
-    // `divert::divert_target` only calls `expr::path`, never
-    // `expr::path_or_call` / `expr::arg_list` — there is no code path that
-    // consumes a divert target's argument list at all. The parenthesized
-    // args are silently left over as ordinary trailing content, with ZERO
-    // parse errors, rather than being attached to the DIVERT_TARGET (or
-    // erroring). This asserts the CURRENT (wrong) behavior so a fix is a
-    // deliberate, visible diff — not a silent grammar fork. Do not "fix"
-    // this here; it's out of scope for a test-only issue (see CLAUDE.md's
-    // wave rule).
+fn divert_target_with_call_args_captures_the_args_bug_1196() {
+    // Charter §11 lists "-> knot(args)" as KEPT VERBATIM from ink
+    // ("Diverts — KEPT verbatim (`->`, `-> knot(args)`, ...)").
+    // `divert::divert_target` now routes a `PATH` target through the same
+    // call-capable grammar `expr::path_or_call` uses (`expr::arg_list`),
+    // so the parenthesized args are captured as an `ARG_LIST` sibling of
+    // `PATH` under `DIVERT_TARGET`, with zero parse errors and nothing
+    // left orphaned in a sibling `CONTENT_LINE`. Formerly (bug #1196) the
+    // args parsed with zero errors but were dropped entirely, floating
+    // into an unrelated `CONTENT_LINE`.
     let src = "flow f() {\n  -> greet(\"hello\")\n}\n";
     let p = assert_lossless(src);
-    assert!(
-        p.errors().is_empty(),
-        "errors: {:?} (if this now fails, the bug this test documents may \
-         have been fixed — update/remove this test, don't just adjust it \
-         to pass)",
-        p.errors()
-    );
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     let divert = p
         .syntax()
         .descendants()
@@ -668,33 +659,29 @@ fn divert_target_with_call_args_does_not_capture_the_args_bug_1196() {
         .segments()
         .map(|t| t.text().to_string())
         .collect();
+    assert_eq!(segs, vec!["greet".to_string()]);
+
+    let arg_list = target
+        .call_args()
+        .expect("ARG_LIST captured under DIVERT_TARGET");
     assert_eq!(
-        segs,
-        vec!["greet".to_string()],
-        "the target path is just `greet` — no ARG_LIST child exists on \
-         DIVERT_TARGET at all"
+        arg_list.syntax().parent().expect("DIVERT_TARGET").kind(),
+        SyntaxKind::DIVERT_TARGET,
+        "the ARG_LIST must be a direct child of DIVERT_TARGET, not wrapped \
+         in a CALL_EXPR — a divert target is not itself an expression"
     );
+    let args_text = arg_list.syntax().text().to_string();
     assert!(
-        target
-            .path()
-            .expect("PATH")
-            .syntax()
-            .parent()
-            .expect("DIVERT_TARGET")
-            .children()
-            .all(|c| c.kind() != SyntaxKind::ARG_LIST),
-        "DIVERT_TARGET must not have grown an ARG_LIST child — if it has, \
-         the bug was fixed and this whole test should be deleted"
+        args_text.contains("hello"),
+        "expected the string literal argument inside ARG_LIST, got: {args_text:?}"
     );
-    // The `("hello")` text is NOT part of the divert at all — it becomes
-    // a wholly separate CONTENT_LINE sibling.
-    let content_line = p
-        .syntax()
-        .descendants()
-        .find(|n| n.kind() == SyntaxKind::CONTENT_LINE)
-        .expect("CONTENT_LINE holding the orphaned args");
-    let orphaned = text_run_concat(&content_line);
-    assert_eq!(orphaned, "(\"hello\")");
+
+    // No more orphaned CONTENT_LINE holding the args — the whole flow body
+    // is just the one DIVERT_STMT.
+    assert!(
+        !has_node_kind(&p.syntax(), SyntaxKind::CONTENT_LINE),
+        "the args must not leak into a sibling CONTENT_LINE anymore"
+    );
 }
 
 // ── Error recovery: malformed input must not panic, stays lossless ──

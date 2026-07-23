@@ -419,41 +419,38 @@ fn bracket_split_anatomy_combined_with_a_divert_in_the_bracket_region() {
     assert!(has_node_kind(&bracket, SyntaxKind::DIVERT_STMT));
 }
 
-// ── Known limitation: trailing `#tag` on a choice line ────────────────────
+// ── Trailing `#tag` on a choice line ───────────────────────────────────────
 //
-// TODO(#1252): unlike `content_line`
-// (`content.rs`), which calls `tag_line_tail` after its `content_items_until`
-// scan to fold trailing `#tag`s into the `CONTENT_LINE`, `choice_text`
-// (`choice.rs`) never does — `content_items_until`'s loop unconditionally
-// breaks on `HASH` (see `content.rs`'s `content_items_until` doc comment),
-// but `choice()` has no follow-up call to consume it. The `#tag` is left
-// for the enclosing `choice_point` loop, whose `_` arm doesn't recognize
-// `HASH` either, so it falls into `error_recover` and the tag is wrapped in
-// `ERROR` nodes token-by-token. This is a genuine parser gap (choice lines
-// should support trailing tags, mirroring `content_line` and brink-syntax's
-// `choice_with_tags` parity test) — NOT fixed here per this issue's
-// test-only scope. The tree stays lossless and the parser does not panic;
-// only the node shape (ERROR instead of TAG) and the non-empty error list
-// are the wrong part. Asserting the CURRENT (wrong) behavior below so a
-// future fix has a red test to flip green, not a silent regression target.
+// #1264 (fixes #1252/#1195): unlike `content_line` (`content.rs`), which
+// calls `tag_line_tail` after its `content_items_until` scan to fold
+// trailing `#tag`s into the `CONTENT_LINE`, `choice_text` (`choice.rs`)
+// never did — `content_items_until`'s loop unconditionally breaks on `HASH`
+// (see `content.rs`'s `content_items_until` doc comment), but `choice()`
+// had no follow-up call to consume it, so the `#tag` fell to the enclosing
+// `choice_point` loop's `error_recover` arm and got wrapped in `ERROR`
+// nodes token-by-token. `choice()` now mirrors `content_line`'s tail call,
+// matching brink-syntax's `choice_with_tags` parity test.
 #[test]
-fn choice_line_trailing_tag_is_currently_not_recognized_as_a_tag_node() {
+fn choice_line_trailing_tag_is_recognized_as_a_tag_node() {
     let src = "flow f() {\n  {?\n    * Choice #tag1\n  }\n}\n";
     let p = assert_lossless(src);
-    // Wrong: brink-syntax's `choice_with_tags` parity shape parses clean.
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     assert!(
-        !p.errors().is_empty(),
-        "documenting the current (buggy) behavior: this should be empty \
-         once the choice-line tag gap is fixed"
+        has_node_kind(&p.syntax(), SyntaxKind::TAG),
+        "the `#tag1` should be a real TAG node"
     );
     assert!(
-        !has_node_kind(&p.syntax(), SyntaxKind::TAG),
-        "documenting the current (buggy) behavior: a real TAG node should \
-         appear here once fixed"
+        !has_node_kind(&p.syntax(), SyntaxKind::ERROR),
+        "the `#tag1` must no longer be wrapped in ERROR nodes"
     );
+    let choice = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CHOICE)
+        .expect("CHOICE");
     assert!(
-        has_node_kind(&p.syntax(), SyntaxKind::ERROR),
-        "the `#tag1` currently gets wrapped in ERROR nodes instead"
+        has_node_kind(&choice, SyntaxKind::TAG),
+        "the TAG node should attach to the CHOICE the tag trails"
     );
 }
 
