@@ -1942,3 +1942,11 @@
 - **SCOPE:** minor/local (discovery-walk scope)
 - **WHAT:** The native discovery walk enumerates **`.brink` files only**; any other file in the tree (a stray `.ink`, reference material, a converter input, non-source files) is **silently skipped**, not an error. A native project's compilation universe is its `.brink` files.
 - **WHY:** Charter §8.5 defers intra-story `.ink`/`.brink` mixing to a later round, so a native project is single-dialect (all `.brink`) by construction. A non-`.brink` file under the root is simply not part of the native universe — treating it as an error would be a papercut for anyone keeping `.ink` files around for reference or conversion, with no upside (it can't be a native source anyway). Least-surprising, and keeps the walk a pure "collect the `.brink` files" operation.
+
+## Native visibility: top-level flows default to Private (module-scoped); cross-file refs use `use`
+- **WHEN:** 2026-07-23
+- **PROJECT:** brink
+- **SYSTEM:** language design (native surface) + module identity / visibility
+- **SCOPE:** moderate (a native-surface visibility default; shapes multi-file authoring)
+- **WHAT:** A native top-level declaration (flow, fn, var, …) defaults to **Private** — module-scoped. Because each native file is a **declared** module (path-derived identity, PR #1287), a symbol is visible within its own file/module by default; referencing it from another file requires an explicit `use story::…::name`. Single-file stories are unaffected (one module — everything mutually visible). This fell out of `declared: true` on native modules (declared modules default private in `effective_visibility`) and is **ratified as intended**, not a side-effect to undo.
+- **WHY:** Charter §13.2 already rules "IMPORTS ARE NAMING ONLY … `use` grants source-visible names and nothing else" — the native model is private-by-default encapsulation with explicit `use` to bring cross-module names into scope. Private-default is the natural, charter-consistent behavior; a public-by-default would erase module encapsulation as the default and diverge from the ruled import model. **Not a save-key change** — visibility is not hashed into `DefinitionId`. Surfaced by the #1287 adversarial review as an emergent behavior worth ratifying explicitly rather than leaving implicit.
