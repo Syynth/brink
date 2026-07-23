@@ -326,10 +326,20 @@ fn use_tree(p: &mut Parser<'_, '_>) {
         if p.eat(KW_AS) {
             p.expect(IDENT);
         }
-    } else if p.at(L_BRACE) {
-        use_tree_list(p);
     } else {
-        p.error("expected a path or `{` in a use tree".into());
+        // Ruled 2026-07-22 (#1275, decision log): a `use` with no leading
+        // path — `use { a, b };` at the top level, or a nested bare group
+        // inside a list (`use a::{ {b, c} };`) — is a parse error, not a
+        // valid import. A `use`-tree group is always the *tail* of a path
+        // (`use story::m::{a, b}`), never the whole tree: with no module
+        // named there is nothing to select from. This used to have a
+        // `p.at(L_BRACE) { use_tree_list(p) }` branch that *accepted* a
+        // bare group here — dead at the top level (`at_use_decl`'s
+        // lookahead never routes `use {…}` into `USE_DECL` in the first
+        // place) but silently live for nested list entries, so
+        // `use a::{ {b, c} };` parsed with zero errors. Pruned; every
+        // path-less `use_tree` now reports this diagnostic instead.
+        p.error("a `use` needs a module path".into());
     }
     p.finish_node();
 }
