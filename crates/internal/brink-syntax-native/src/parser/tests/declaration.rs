@@ -31,9 +31,11 @@ fn use_and_import_and_module() {
 
 #[test]
 fn use_decl_semicolon_is_consumed_by_the_decl_not_left_as_prose() {
-    // `;` has no role anywhere else in the grammar — confirm it becomes a
-    // token *inside* USE_DECL, not a stray token that just happens to
-    // round-trip as unrelated adjacent prose text.
+    // `;` has no role at declaration position outside USE_DECL (the
+    // code-ground statement layer's own use of `;` — `parser/stmt.rs` — is
+    // a different position entirely, inside a STMT_BLOCK) — confirm it
+    // becomes a token *inside* USE_DECL, not a stray token that just
+    // happens to round-trip as unrelated adjacent prose text.
     let src = "use a::b;\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
@@ -1105,8 +1107,8 @@ mod prop {
     const NUM_CASES: u32 = 256;
 
     const KEYWORDS: &[&str] = &[
-        "flow", "fn", "var", "const", "flags", "struct", "extern", "import", "use", "module",
-        "return", "ref", "if", "match", "else", "as", "true", "false", "END", "DONE",
+        "flow", "fn", "var", "const", "let", "flags", "struct", "extern", "import", "use",
+        "module", "return", "ref", "if", "match", "else", "as", "true", "false", "END", "DONE",
     ];
 
     fn arb_ident() -> impl Strategy<Value = String> {

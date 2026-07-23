@@ -5,6 +5,7 @@ mod content;
 mod declaration;
 mod divert;
 mod expression;
+mod statement;
 mod trivia;
 
 use super::*;

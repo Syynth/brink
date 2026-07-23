@@ -32,14 +32,15 @@ pub fn scan_ident(bytes: &[u8], mut pos: usize) -> usize {
 pub fn classify_keyword(text: &str) -> SyntaxKind {
     use SyntaxKind::{
         IDENT, KW_AS, KW_CONST, KW_DONE, KW_ELSE, KW_END, KW_EXTERN, KW_FALSE, KW_FLAGS, KW_FLOW,
-        KW_FN, KW_IF, KW_IMPORT, KW_MATCH, KW_MODULE, KW_REF, KW_RETURN, KW_STRUCT, KW_TRUE,
-        KW_USE, KW_VAR,
+        KW_FN, KW_IF, KW_IMPORT, KW_LET, KW_MATCH, KW_MODULE, KW_REF, KW_RETURN, KW_STRUCT,
+        KW_TRUE, KW_USE, KW_VAR,
     };
     match text {
         "flow" => KW_FLOW,
         "fn" => KW_FN,
         "var" => KW_VAR,
         "const" => KW_CONST,
+        "let" => KW_LET,
         "flags" => KW_FLAGS,
         "struct" => KW_STRUCT,
         "extern" => KW_EXTERN,

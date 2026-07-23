@@ -104,6 +104,13 @@ ast_node!(ArgList, ARG_LIST);
 ast_node!(LambdaExpr, LAMBDA_EXPR);
 ast_node!(LambdaParams, LAMBDA_PARAMS);
 
+// ── The code-ground statement layer (B0.8 Wave A) ────────────────────
+
+ast_node!(StmtBlock, STMT_BLOCK);
+ast_node!(LetStmt, LET_STMT);
+ast_node!(AssignStmt, ASSIGN_STMT);
+ast_node!(ExprStmt, EXPR_STMT);
+
 // ── Error recovery ───────────────────────────────────────────────────
 
 ast_node!(Error, ERROR);
@@ -918,5 +925,65 @@ impl Entry {
 impl TagLine {
     pub fn tags(&self) -> impl Iterator<Item = Tag> {
         support::children(&self.syntax)
+    }
+}
+
+// ── B0.8 Wave A additions: the code-ground statement layer ──────────
+//
+// `docs/decision-log.md` 2026-07-23 "Code-ground sitting" — parser only,
+// no lowering yet (`parser/stmt.rs`'s module doc).
+
+impl StmtBlock {
+    /// Every direct-child statement (`LET_STMT`/`ASSIGN_STMT`/`EXPR_STMT`)
+    /// AND the tail expression if present, in source order — the untyped
+    /// escape hatch, same shape as [`Block::items`].
+    pub fn items(&self) -> impl Iterator<Item = SyntaxNode> {
+        self.syntax.children()
+    }
+
+    /// The block's unterminated trailing expression (blocks-as-values), if
+    /// one is present — the last child, when its kind is none of the three
+    /// `;`-terminated statement wrappers (`parser/stmt.rs::stmt_block`
+    /// never emits any node after the tail, so the last child is *always*
+    /// the tail when it isn't one of those three kinds).
+    pub fn tail(&self) -> Option<SyntaxNode> {
+        let last = self.syntax.children().last()?;
+        (!matches!(
+            last.kind(),
+            SyntaxKind::LET_STMT | SyntaxKind::ASSIGN_STMT | SyntaxKind::EXPR_STMT
+        ))
+        .then_some(last)
+    }
+}
+
+impl LetStmt {
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, IDENT)
+    }
+
+    /// The initializer expression's root node, if the `=` clause was
+    /// present (optional, see `parser/stmt.rs::let_stmt`'s doc comment).
+    pub fn value(&self) -> Option<SyntaxNode> {
+        self.syntax.children().next()
+    }
+}
+
+impl AssignStmt {
+    /// The assignment's place path (`x` / `x.field`).
+    pub fn place(&self) -> Option<Path> {
+        support::child(&self.syntax)
+    }
+
+    /// The right-hand-side expression's root node (the last child node,
+    /// same convention as [`InfixExpr::rhs`]).
+    pub fn value(&self) -> Option<SyntaxNode> {
+        self.syntax.children().last()
+    }
+}
+
+impl ExprStmt {
+    /// The wrapped expression's root node.
+    pub fn expr(&self) -> Option<SyntaxNode> {
+        self.syntax.children().next()
     }
 }

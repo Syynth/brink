@@ -137,11 +137,13 @@ fn param(p: &mut Parser<'_, '_>) {
 
 // ── var / const ───────────────────────────────────────────────────────
 
-/// `var name = expr`. No statement terminator is required (Finding #6:
-/// sitting-2/code-ground statement termination is explicitly "own sitting
-/// pending" per charter §7 — this skeleton treats `NEWLINE`/`}`/EOF as the
-/// terminator, Rust-`;`-free, and flags the choice rather than inventing a
-/// semicolon the charter never ruled).
+/// `var name = expr`. No statement terminator is required (Finding #6).
+/// The code-ground sitting has since ruled statement termination for the
+/// *new* statement layer (`;`, `docs/decision-log.md` 2026-07-23 —
+/// `parser/stmt.rs`'s `LET_STMT`/`ASSIGN_STMT`/`EXPR_STMT`), but that
+/// ruling applies to code-ground statements, not this declaration-layer
+/// keyword — `var`/`const` keep their existing `NEWLINE`/`}`/EOF-terminated
+/// shape unchanged; only `let` (the new binding keyword) is `;`-terminated.
 pub(crate) fn var_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
     super::doc_comment::open_with_doc(p, VAR_DECL, doc);
     p.bump(); // KW_VAR
