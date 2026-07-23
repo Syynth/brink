@@ -55,8 +55,8 @@ use std::fmt::Write as _;
 
 use crate::{
     Block, Choice, ChoiceSet, CondBranch, CondKind, Conditional, ConstDecl, Content, ContentPart,
-    DivertPath, DivertTarget, Expr, ExternalDecl, HirFile, InfixOp, Knot, ListDecl, Name,
-    Param, Path, PostfixOp, PrefixOp, Return, Stitch, Stmt, StringPart, StructDecl, Tag, TypeExpr,
+    DivertPath, DivertTarget, Expr, ExternalDecl, HirFile, InfixOp, Knot, ListDecl, Name, Param,
+    Path, PostfixOp, PrefixOp, Return, Stitch, Stmt, StringPart, StructDecl, Tag, TypeExpr,
     VarDecl,
 };
 
@@ -69,10 +69,7 @@ pub enum EmitError {
     /// the enclosing knot's name) since HIR nodes carry no stable text
     /// location an emit-time error can point at cheaply.
     #[error("unsupported for native emission: {what} ({context})")]
-    Unsupported {
-        what: &'static str,
-        context: String,
-    },
+    Unsupported { what: &'static str, context: String },
     /// `root_content` is non-empty and needs wrapping in a synthesized
     /// `flow main() { … }` (the native story-entry convention,
     /// `lower_native::entry_root_content`'s doc), but a top-level `flow`/
@@ -137,7 +134,10 @@ pub fn emit_file(hir: &HirFile) -> Result<String, EmitError> {
         return Err(unsupported("import/use statements", "file"));
     }
     if !hir.visibility.is_empty() || !hir.was_directives.is_empty() {
-        return Err(unsupported("file-level visibility/#@was directives", "file"));
+        return Err(unsupported(
+            "file-level visibility/#@was directives",
+            "file",
+        ));
     }
 
     let mut out = String::new();
@@ -243,9 +243,16 @@ pub fn emit_file(hir: &HirFile) -> Result<String, EmitError> {
 // ─── Top-level declarations ─────────────────────────────────────────
 
 fn emit_var_decl(out: &mut String, v: &VarDecl) -> Result<(), EmitError> {
-    if v.is_local || v.annotation.is_some() || v.doc.is_some() || v.visibility.is_some() || v.was.is_some()
+    if v.is_local
+        || v.annotation.is_some()
+        || v.doc.is_some()
+        || v.visibility.is_some()
+        || v.was.is_some()
     {
-        return Err(unsupported("var directive/annotation channel", &v.name.text));
+        return Err(unsupported(
+            "var directive/annotation channel",
+            &v.name.text,
+        ));
     }
     let value = emit_expr(&v.value, &v.name.text)?;
     let _ = writeln!(out, "var {} = {value}", v.name.text);
@@ -254,7 +261,10 @@ fn emit_var_decl(out: &mut String, v: &VarDecl) -> Result<(), EmitError> {
 
 fn emit_const_decl(out: &mut String, c: &ConstDecl) -> Result<(), EmitError> {
     if c.annotation.is_some() || c.doc.is_some() || c.visibility.is_some() || c.was.is_some() {
-        return Err(unsupported("const directive/annotation channel", &c.name.text));
+        return Err(unsupported(
+            "const directive/annotation channel",
+            &c.name.text,
+        ));
     }
     let value = emit_expr(&c.value, &c.name.text)?;
     let _ = writeln!(out, "const {} = {value}", c.name.text);
@@ -273,11 +283,7 @@ fn emit_flags_decl(out: &mut String, l: &ListDecl) -> Result<(), EmitError> {
             if let Some(v) = m.value {
                 let _ = write!(s, " = {v}");
             }
-            if m.is_active {
-                format!("({s})")
-            } else {
-                s
-            }
+            if m.is_active { format!("({s})") } else { s }
         })
         .collect();
     let _ = writeln!(out, "flags {} = {}", l.name.text, members.join(", "));
@@ -429,9 +435,10 @@ fn emit_stmt_stream(
             Stmt::Content(c) => {
                 let same_line_divert = match stmts.get(i + 1) {
                     Some(Stmt::Divert(d)) => Some(emit_divert_target(&d.target, context)?),
-                    Some(Stmt::TunnelCall(t)) if t.targets.len() == 1 => {
-                        Some(format!("{} ->", emit_divert_target(&t.targets[0], context)?))
-                    }
+                    Some(Stmt::TunnelCall(t)) if t.targets.len() == 1 => Some(format!(
+                        "{} ->",
+                        emit_divert_target(&t.targets[0], context)?
+                    )),
                     _ => None,
                 };
                 if let Some(divert_text) = same_line_divert {
@@ -471,7 +478,9 @@ fn emit_stmt_stream(
                 return Ok(());
             }
             Stmt::Conditional(cond) => emit_conditional(out, &indent, depth, cond, context)?,
-            Stmt::LabeledBlock(_) => return Err(unsupported("labeled block (mid-flow gather)", context)),
+            Stmt::LabeledBlock(_) => {
+                return Err(unsupported("labeled block (mid-flow gather)", context));
+            }
             Stmt::Sequence(_) => return Err(unsupported("alternation sequence", context)),
             Stmt::TempDecl(_) => return Err(unsupported("temp declaration", context)),
             Stmt::Assignment(_) => return Err(unsupported("assignment", context)),
@@ -625,7 +634,10 @@ fn emit_choice(out: &mut String, depth: usize, c: &Choice, context: &str) -> Res
     let stmts = c.body.stmts.as_slice();
     match stmts {
         [] => {
-            return Err(unsupported("malformed choice body (no EndOfLine marker)", context));
+            return Err(unsupported(
+                "malformed choice body (no EndOfLine marker)",
+                context,
+            ));
         }
         [Stmt::EndOfLine] => {
             out.push('\n');
@@ -643,24 +655,38 @@ fn emit_choice(out: &mut String, depth: usize, c: &Choice, context: &str) -> Res
             emit_choice_body_stmts(out, depth, rest, context)?;
         }
         _ => {
-            return Err(unsupported("malformed choice body (no leading EndOfLine)", context));
+            return Err(unsupported(
+                "malformed choice body (no leading EndOfLine)",
+                context,
+            ));
         }
     }
     Ok(())
 }
 
-fn emit_choice_body(out: &mut String, depth: usize, body: &Block, context: &str) -> Result<(), EmitError> {
+fn emit_choice_body(
+    out: &mut String,
+    depth: usize,
+    body: &Block,
+    context: &str,
+) -> Result<(), EmitError> {
     if body.label.is_some() {
         return Err(unsupported("labeled choice/else body", context));
     }
     match body.stmts.as_slice() {
-        [] => Err(unsupported("malformed else body (no EndOfLine marker)", context)),
+        [] => Err(unsupported(
+            "malformed else body (no EndOfLine marker)",
+            context,
+        )),
         [Stmt::EndOfLine] => {
             out.push('\n');
             Ok(())
         }
         [Stmt::EndOfLine, rest @ ..] => emit_choice_body_stmts(out, depth, rest, context),
-        _ => Err(unsupported("malformed else body (no leading EndOfLine)", context)),
+        _ => Err(unsupported(
+            "malformed else body (no leading EndOfLine)",
+            context,
+        )),
     }
 }
 
@@ -693,7 +719,10 @@ fn emit_conditional(
             }
             let first = &cond.branches[0];
             let Some(if_cond) = &first.condition else {
-                return Err(unsupported("conditional with no leading condition", context));
+                return Err(unsupported(
+                    "conditional with no leading condition",
+                    context,
+                ));
             };
             let _ = writeln!(out, "{indent}{{if {} {{", emit_expr(if_cond, context)?);
             emit_block_stmts(out, &first.body, depth + 1, context)?;
@@ -722,9 +751,17 @@ fn emit_conditional(
     }
 }
 
-fn emit_match_arm(out: &mut String, depth: usize, branch: &CondBranch, context: &str) -> Result<(), EmitError> {
+fn emit_match_arm(
+    out: &mut String,
+    depth: usize,
+    branch: &CondBranch,
+    context: &str,
+) -> Result<(), EmitError> {
     let Some(pattern) = &branch.condition else {
-        return Err(unsupported("match arm with no pattern (default arm)", context));
+        return Err(unsupported(
+            "match arm with no pattern (default arm)",
+            context,
+        ));
     };
     let indent = "  ".repeat(depth);
     let _ = writeln!(out, "{indent}{} => {{", emit_expr(pattern, context)?);

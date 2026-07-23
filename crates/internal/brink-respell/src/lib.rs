@@ -50,10 +50,10 @@ pub enum RespellError {
 
 /// Mechanically respell one ink source file into `.brink` native source.
 ///
-/// Composes the **existing, trusted ink frontend** — `brink_syntax::parse`
-/// + `brink_ir::hir::lower::lower` — with the shared native-surface
-/// emitter. Bypasses `brink-db`/salsa and the `INCLUDE` graph entirely (a
-/// single-file operation, mirroring
+/// Composes the **existing, trusted ink frontend**
+/// (`brink_syntax::parse` and `brink_ir::hir::lower::lower`) with the
+/// shared native-surface emitter. Bypasses `brink-db`/salsa and the
+/// `INCLUDE` graph entirely (a single-file operation, mirroring
 /// `brink_test_harness::corpus::compile_and_explore_from_brink_native`'s
 /// own "honest minimal path" posture) — every tier-1 fixture this crate
 /// targets is a single `.ink` file with no `INCLUDE`s, and a non-empty

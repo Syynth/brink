@@ -13,7 +13,7 @@
 //! method `docs/b0-findings.md` NF-5 and this program's own exit criterion
 //! describe. `brink_test_harness::corpus::explore_from_brink_native`
 //! already performs the honest minimal native pipeline composition (parse
-//! → lower_native → analyze → LIR → codegen → link → explore); this test
+//! → `lower_native` → analyze → LIR → codegen → link → explore); this test
 //! only supplies both sides of the diff.
 //!
 //! Fixture corpus: `tests/tier1-brink-respell/*/story.brink` — the same
