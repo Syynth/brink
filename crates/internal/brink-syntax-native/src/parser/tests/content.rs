@@ -383,29 +383,29 @@ fn multiple_interpolations_in_one_line() {
 }
 
 #[test]
-fn fixme_whitespace_between_two_interpolations_is_bare_trivia_not_text() {
-    // FIXME(#1194 finding, reported on the issue): the significant-
-    // whitespace fix this file's very first test guards
-    // (`space_after_glue_marker_survives_inside_the_text_node`) only folds
+fn whitespace_between_two_interpolations_survives_inside_a_text_node() {
+    // #1264 (fixes the FIXME this test used to pin, filed on #1194): the
+    // significant-whitespace fix this file's very first test guards
+    // (`space_after_glue_marker_survives_inside_the_text_node`) only folded
     // leading whitespace into a FOLLOWING `TEXT` run — `starts_text_run`
-    // returns `false` for `L_BRACE`, so when an interpolation follows
-    // whitespace (rather than prose), `content_items_until` calls
-    // `skip_ws()` and the space is bumped bare, landing as a plain
-    // `WHITESPACE` token directly under `CONTENT_LINE`, not inside any
-    // `TEXT` node. Since content lowering iterates node children (this
-    // file's `content_items_until` doc comment; also stated for the
-    // doc-comment-token case below it), a bare token produces no visible
-    // output — the word-separator space between two interpolations would
-    // be silently dropped from rendered prose (`"{a} {b}"` → `"AliceBob"`
-    // instead of `"Alice Bob"`). Same bug class as the glue case, just not
-    // covered by that fix. Asserting current behavior, not fixing it here.
+    // returned `false` for `L_BRACE` unconditionally, so when an
+    // interpolation followed whitespace (rather than prose),
+    // `content_items_until` called `skip_ws()` and the space was bumped
+    // bare, landing as a plain `WHITESPACE` token directly under
+    // `CONTENT_LINE`, not inside any `TEXT` node. Since content lowering
+    // iterates node children, a bare token produced no visible output —
+    // the word-separator space between two interpolations was silently
+    // dropped from rendered prose (`"{a} {b}"` → `"AliceBob"` instead of
+    // `"Alice Bob"`). `content_items_until` now folds that pending trivia
+    // into its own `TEXT` node (mirroring the glue-space fix's treatment)
+    // before dispatching the next interpolation.
     let p = assert_lossless("{a} {b}\n");
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::INTERPOLATION), 2);
     assert_eq!(
         text_run_concat(&p.syntax()),
-        "",
-        "current (likely-wrong) behavior: the separating space is bare trivia, not in any TEXT node"
+        " ",
+        "the separating space must live inside a TEXT node so content lowering keeps it"
     );
     let line = p
         .syntax()
@@ -416,8 +416,8 @@ fn fixme_whitespace_between_two_interpolations_is_bare_trivia_not_text() {
         .children_with_tokens()
         .any(|c| c.kind() == SyntaxKind::WHITESPACE);
     assert!(
-        has_bare_whitespace_child,
-        "the space should show up as a bare WHITESPACE token, not inside a node"
+        !has_bare_whitespace_child,
+        "the space must not show up as a bare WHITESPACE token outside any node"
     );
 }
 
