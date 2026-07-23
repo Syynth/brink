@@ -454,36 +454,28 @@ fn prefix_binds_tighter_than_infix() {
     assert_eq!(lhs.kind(), SyntaxKind::PREFIX_EXPR);
 }
 
-// ── F. A known associativity bug (documented, NOT fixed here) ─────────
+// ── F. Symmetric-precedence operators are left-associative (#1251) ────
 //
-// #1193 is test-only: a genuine parser bug must be reported, not patched,
-// to avoid a parallel wave of agents forking the grammar (this crate's
-// own house rules). Found while writing the precedence-ladder tests
-// above; tracked in its own issue, #1251, so it isn't only a comment on
-// a closed test-coverage issue.
-//
-// `expr::expression_bp`'s recursive call for an infix RHS is
-// `expression_bp(p, prec)` — using the JUST-CONSUMED operator's OWN
+// `expr::expression_bp`'s recursive call for an infix RHS used to be
+// `expression_bp(p, prec)` — reusing the JUST-CONSUMED operator's OWN
 // precedence as the child's `min_bp`. Combined with the loop's strict
-// `<` break check (`if (prec as u8) < (min_bp as u8) { break; }`), a
-// second operator at the SAME precedence does not stop that recursive
-// call — it gets pulled into the child instead of being left for the
-// parent's own loop. The net effect: every symmetric-precedence operator
-// chain in this grammar (`-`, `/`, `%`, `<`, `>`, `<=`, `>=`, `==`, `!=`,
-// `&&`, `||`) parses RIGHT-associative, not left-associative. For `+`/`*`
-// this is unobservable (they're mathematically associative), but for `-`
-// and `/` it silently changes the computed VALUE: `10 - 3 - 2` groups as
-// `10 - (3 - 2)` (= 9 if evaluated naively), not `(10 - 3) - 2` (= 5).
-// The standard Pratt fix is recursing with `min_bp = prec + 1` (or an
-// equivalent "only recurse on strictly higher precedence" comparison) —
-// not implemented here as that is a parser fix, out of this issue's scope.
-// TODO(bug, filed on #1251): `expr::expression_bp`'s infix loop is
-// right-associative for every symmetric operator; should be left-assoc.
-// These tests pin the CURRENT (wrong) shape so a future fix is a visible,
-// intentional snapshot change here rather than a silent behavior drift.
+// `<` break check, a second operator at the SAME precedence didn't stop
+// that recursive call — it got pulled into the child instead of being
+// left for the parent's own loop. Net effect: every symmetric-precedence
+// operator chain in this grammar (`-`, `/`, `%`, `<`, `>`, `<=`, `>=`,
+// `==`, `!=`, `&&`, `||`) parsed RIGHT-associative, not left-associative.
+// For `+`/`*` this was unobservable (they're mathematically associative),
+// but for `-` and `/` it silently changed the computed VALUE: `10 - 3 - 2`
+// grouped as `10 - (3 - 2)` (= 9 if evaluated naively), not
+// `(10 - 3) - 2` (= 5).
+//
+// Fixed by recursing with `min_bp = prec.next()` (`prec + 1`, saturating
+// at `Prec::Prefix`) — only strictly-higher-precedence operators get
+// pulled into the RHS; a same-precedence operator now falls through to
+// the parent's own loop, producing left-associative nesting.
 
 #[test]
-fn known_bug_minus_chain_is_right_associative_not_left() {
+fn minus_chain_is_left_associative() {
     let p = assert_lossless("var x = a - b - c\n");
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     let outer: ast::InfixExpr = find_child(&p.syntax())
@@ -491,38 +483,34 @@ fn known_bug_minus_chain_is_right_associative_not_left() {
         .and_then(ast::InfixExpr::cast)
         .expect("outer INFIX_EXPR");
     assert_eq!(outer.op_token().map(|t| t.kind()), Some(SyntaxKind::MINUS));
-    // Correct left-assoc shape would put the nested INFIX_EXPR on the LHS
-    // (`(a - b) - c`). The current (buggy) shape nests it on the RHS.
+    // Left-assoc shape puts the nested INFIX_EXPR on the LHS: `(a - b) - c`.
+    let lhs = outer.lhs().expect("lhs");
     assert_eq!(
-        outer.lhs().map(|n| n.kind()),
-        Some(SyntaxKind::PATH_EXPR),
-        "TODO(bug): expected today's (wrong) right-nesting; lhs should be a \
-         bare PATH_EXPR only under the current buggy behavior"
-    );
-    let rhs = outer.rhs().expect("rhs");
-    assert_eq!(
-        rhs.kind(),
+        lhs.kind(),
         SyntaxKind::INFIX_EXPR,
-        "TODO(bug #1251): `a - b - c` should parse left-associative as \
-         `(a - b) - c` (INFIX_EXPR on the LHS); it currently parses as \
-         `a - (b - c)` (INFIX_EXPR on the RHS) — see the section doc above"
+        "`a - b - c` should parse left-associative as `(a - b) - c` \
+         (INFIX_EXPR on the LHS) — see the section doc above"
+    );
+    assert_eq!(
+        outer.rhs().map(|n| n.kind()),
+        Some(SyntaxKind::PATH_EXPR),
+        "rhs should be the bare `c` under left-associative parsing"
     );
 }
 
 #[test]
-fn known_bug_slash_chain_is_right_associative_not_left() {
+fn slash_chain_is_left_associative() {
     let p = assert_lossless("var x = a / b / c\n");
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     let outer: ast::InfixExpr = find_child(&p.syntax())
         .and_then(|vd: ast::VarDecl| vd.value())
         .and_then(ast::InfixExpr::cast)
         .expect("outer INFIX_EXPR");
-    let rhs = outer.rhs().expect("rhs");
+    let lhs = outer.lhs().expect("lhs");
     assert_eq!(
-        rhs.kind(),
+        lhs.kind(),
         SyntaxKind::INFIX_EXPR,
-        "TODO(bug #1251): same right-associativity bug as `-`, see \
-         `known_bug_minus_chain_is_right_associative_not_left`"
+        "same left-associativity fix as `-`, see `minus_chain_is_left_associative`"
     );
 }
 
@@ -1192,8 +1180,9 @@ fn adversarial_deeply_nested_calls_does_not_panic() {
 
 #[test]
 fn adversarial_long_infix_chain_does_not_panic() {
-    // 500 `+`-chained terms. Left/right associativity aside (see the
-    // section F bug note), this must not blow the stack or hang.
+    // 500 `+`-chained terms. Left-associative parsing (see section F)
+    // builds this iteratively in the loop rather than recursing once per
+    // operator, but this still must not blow the stack or hang.
     let mut src = "var x = 1".to_string();
     for _ in 0..500 {
         src.push_str(" + 1");
