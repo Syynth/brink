@@ -17,6 +17,7 @@ use crate::error::RuntimeError;
 use crate::program::Program;
 use crate::rng::{FastRng, StoryRng};
 use crate::state::{ContextAccess, WriteObserver};
+#[cfg(feature = "testing")]
 use crate::vm;
 use crate::world::{ContextView, FlowLocal, World};
 
