@@ -766,6 +766,59 @@ mod native_seam_tests {
         );
     }
 
+    /// SAVE-KEY INVARIANT (decision-log 2026-07-22 "Native module identity"):
+    /// a native symbol's `DefinitionId` is hashed from its **path-derived**
+    /// module (`native_module_path`) + name, and nothing else. Two properties
+    /// follow, both of which keep player saves stable across recompiles:
+    ///   1. Identity is qualified by the file's *location* — the same-named
+    ///      flow at a different path is a different definition.
+    ///   2. Identity is independent of `FileId` (assigned in discovery order)
+    ///      — adding an unrelated file cannot change it.
+    #[test]
+    fn native_definition_id_is_path_qualified_and_fileid_independent() {
+        use brink_format::DefinitionId;
+
+        fn hero_id(files: &[(&str, &str)]) -> DefinitionId {
+            let mut db = ProjectDb::new();
+            db.set_analysis_options(AnalysisOptions {
+                dialect: Dialect::Brink,
+                ..AnalysisOptions::default()
+            });
+            for (path, src) in files {
+                db.set_file(path, (*src).to_owned());
+            }
+            db.set_entry(files[0].0);
+            let index = db.symbol_index();
+            let ids = index.by_name.get("hero").expect("`hero` is defined");
+            assert_eq!(ids.len(), 1, "exactly one `hero`");
+            ids[0]
+        }
+
+        let hero = "flow hero() {\n  hi\n}\n";
+        let other = "flow other() {\n  x\n}\n";
+
+        // `flow hero()` in `market/barter.brink`, compiled alone → FileId(0).
+        let solo = hero_id(&[("market/barter.brink", hero)]);
+
+        // Same file, but an unrelated sibling is registered FIRST, so
+        // `market/barter.brink` is now FileId(1) — its `FileId` shifted. If
+        // `FileId` leaked into identity, `hero`'s `DefinitionId` would change.
+        let with_sibling = hero_id(&[("aaa/early.brink", other), ("market/barter.brink", hero)]);
+        assert_eq!(
+            solo, with_sibling,
+            "adding a file must not change `market/barter`'s `hero` identity — \
+             `FileId` must never enter `DefinitionId`"
+        );
+
+        // The SAME `flow hero()` at a DIFFERENT path is a different module, so a
+        // distinct identity — the path-derived module qualifies.
+        let elsewhere = hero_id(&[("shop/wares.brink", hero)]);
+        assert_ne!(
+            solo, elsewhere,
+            "`story::market::barter::hero` and `story::shop::wares::hero` must be distinct"
+        );
+    }
+
     /// The seam must not leak: an `.ink` file still runs the ink frontend and
     /// compiles as before (the native parser is never invoked for it).
     #[test]

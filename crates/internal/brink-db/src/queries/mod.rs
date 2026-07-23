@@ -438,8 +438,15 @@ pub(crate) fn module_map_query(
     project: ProjectInput,
 ) -> (brink_analyzer::ModuleMap, Vec<Diagnostic>) {
     let files = project.files(db);
-    let module_inputs: Vec<crate::modules::FileModuleInput> = files
+
+    // Native `.brink` files derive their module PURELY from their
+    // root-relative path (decision-log 2026-07-22), bypassing `resolve_modules`
+    // entirely — they have no `#@module` inheritance and no INCLUDE graph, so
+    // routing them through the ink resolver would only couple their save-key
+    // identity to machinery they never use. Only ink files feed `resolve_modules`.
+    let ink_inputs: Vec<crate::modules::FileModuleInput> = files
         .iter()
+        .filter(|f| file_language(f.path(db)) == Language::Ink)
         .map(|f| {
             let hir_module = lowered_query(db, *f).hir.module.as_ref();
             crate::modules::FileModuleInput {
@@ -450,7 +457,41 @@ pub(crate) fn module_map_query(
             }
         })
         .collect();
-    crate::modules::resolve_modules(&module_inputs, include_graph_query(db, project))
+    let (mut map, diags) =
+        crate::modules::resolve_modules(&ink_inputs, include_graph_query(db, project));
+
+    // A native file's module NAME is `native_module_path(root-relative key)`,
+    // marked `declared` so it always qualifies `DefinitionId` (path on disk =
+    // identity). Only the *name* is path-derived and bypasses the resolver —
+    // that is the save-key-critical isolation (the name is a pure function of
+    // the path; `FileId` is only the map key, never hashed, so adding a file
+    // cannot shift another file's identity).
+    //
+    // The rest of the module system is the SAME feature, just path-spelled:
+    // `was` (rename migration, so a moved file's old saves still resolve) is
+    // read from the file's own directive via its HIR, exactly as the ink path
+    // does — never hard-dropped. It is `None` today only because the native
+    // surface does not parse `@[was]` yet (deliberately deferred in
+    // `lower_native`); once it does, the record flows through here unchanged.
+    for f in files {
+        if file_language(f.path(db)) == Language::Native {
+            let was = lowered_query(db, *f)
+                .hir
+                .module
+                .as_ref()
+                .and_then(|m| m.was.as_ref().map(|(old, _)| old.clone()));
+            map.insert(
+                f.file_id(db),
+                brink_analyzer::ResolvedModule {
+                    name: crate::modules::native_module_path(f.path(db)),
+                    declared: true,
+                    was,
+                },
+            );
+        }
+    }
+
+    (map, diags)
 }
 
 /// The merged project-wide symbol index plus indexing diagnostics
