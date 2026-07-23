@@ -7,6 +7,7 @@
 
 mod diagnostics;
 mod discover;
+mod source_tree;
 
 use std::collections::HashMap;
 use std::io;
@@ -16,6 +17,7 @@ pub use brink_db::{CompileProduct, LirProduct, ProjectDb};
 pub use brink_ir::FileId;
 pub use diagnostics::DiagnosticReport;
 pub use discover::DiscoverError;
+pub use source_tree::{GitRev, RealFs};
 
 /// Pipeline orchestration wrapper around `ProjectDb`.
 pub struct Driver {

@@ -17,6 +17,7 @@ mod include_graph;
 mod memory;
 mod modules;
 mod queries;
+mod source_tree;
 
 pub use brink_analyzer::{
     BodyTypes, EffectAtoms, EffectRow, InferenceResult, InferredSig, Sig, Ty,
@@ -28,3 +29,4 @@ pub use memory::{IngredientKind, IngredientMemory};
 pub use queries::{
     CompileProduct, FileDiagnostics, LirProduct, ResolvedProject, partition_diagnostics,
 };
+pub use source_tree::{InMemory, SourceTree};
