@@ -19,6 +19,7 @@ brink-format = { workspace = true }
 bevy-brink-derive = { workspace = true }
 brink-compiler = { workspace = true, optional = true }
 brink-syntax = { workspace = true, optional = true }
+brink-project-config = { workspace = true, optional = true }
 
 bevy_app = { version = "0.19.0", default-features = false }
 bevy_asset = { version = "0.19.0", default-features = false }
@@ -47,7 +48,7 @@ default = ["dev"]
 # Without this feature only compiled `.inkb` (and eventually `.inkl`,
 # `.brkt`) assets are loadable — suitable for shipping a release binary
 # that doesn't carry the brink compiler.
-dev = ["dep:brink-compiler", "dep:brink-syntax"]
+dev = ["dep:brink-compiler", "dep:brink-syntax", "dep:brink-project-config"]
 # Bench-only #821 Arc-clone/COW-copy debug counters, forwarded to
 # brink-runtime (see `crates/brink-runtime/src/bench_counters.rs`,
 # `docs/runtime-bench.md`). Off by default — compile-time cut, not a
