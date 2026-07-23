@@ -422,6 +422,69 @@ pub(crate) fn include_graph_query(db: &dyn salsa::Database, project: ProjectInpu
     graph
 }
 
+/// The ordered set of files that participate in codegen for `project`, in
+/// compile (paste-before) order — the single native-vs-ink codegen-closure
+/// decision, shared by every codegen-scoping site
+/// ([`struct_shape_data_query`], [`lir_prelude_decls_query`],
+/// [`lir_lowering_query`], [`lir_in_closure_query`], and
+/// [`has_errors_in_closure_query`](crate::queries::analysis::has_errors_in_closure_query)).
+///
+/// **Ink** projects thread reachability through `INCLUDE`: the closure is
+/// `entry`'s transitive `INCLUDE` closure ([`IncludeGraph::topological_order`],
+/// the issue #815 narrowing every codegen path already used). This is exactly
+/// the previous behavior — a project whose entry is an `.ink` file is
+/// unaffected.
+///
+/// **Native** projects have no `INCLUDE` edges, so the ink closure would reach
+/// only `entry` and every sibling `.brink` module would silently miss codegen
+/// (issue #1296). The decision-log ruling *"Native multi-file linking"*
+/// (2026-07-23) makes the **discovered module set the compilation unit**: the
+/// closure is *every* discovered `.brink` module, ordered by `FileId` — which
+/// `brink_driver::discover_native` mints in sorted-key order, so the order is
+/// deterministic and mount-independent. Consequences that follow directly:
+///
+/// - All discovered modules link into the one `StoryData`; the entry file
+///   still only designates the *start flow* (compilation universe ≠ execution
+///   entry).
+/// - A `.brink` file that fails to compile is an error **even if no other
+///   module references it** — its diagnostics are inside the closure the build
+///   gate reads, so it fails the build (Rust parity: the whole module tree is
+///   the unit).
+///
+/// A project is "native" iff its entry file is a `.brink` module; the closure
+/// then ranges over the `.brink` files only (any stray `.ink` file sharing the
+/// session db is not a discovered native module and never enters it).
+/// Reachability-based dead-module elimination is an explicitly-deferred future
+/// subtraction (decision-log) — this closure is the full discovered set.
+pub(crate) fn compilation_closure_files(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> Vec<FileId> {
+    let Some(entry) = project.entry(db) else {
+        return Vec::new();
+    };
+    let files = project.files(db);
+    let entry_is_native = files
+        .iter()
+        .find(|f| f.file_id(db) == entry)
+        .is_some_and(|f| file_language(f.path(db)) == Language::Native);
+
+    if entry_is_native {
+        // Every discovered `.brink` module is the compilation unit. Sort by
+        // `FileId` (minted in sorted-key order by `discover_native`) so the
+        // order is deterministic regardless of session-db insertion order.
+        let mut ids: Vec<FileId> = files
+            .iter()
+            .filter(|f| file_language(f.path(db)) == Language::Native)
+            .map(|f| f.file_id(db))
+            .collect();
+        ids.sort_unstable_by_key(|id| id.0);
+        ids
+    } else {
+        include_graph_query(db, project).topological_order(entry)
+    }
+}
+
 // ─── Layer 2: project-wide names ─────────────────────────────────────
 
 /// Every file's resolved module (M-1, docs/modules-spec.md §1/§5) plus the
@@ -1387,13 +1450,12 @@ pub(crate) fn struct_shape_data_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
 ) -> brink_ir::lir::StructShapeData {
-    let Some(entry) = project.entry(db) else {
+    if project.entry(db).is_none() {
         return brink_ir::lir::StructShapeData::default();
-    };
+    }
     let files = project.files(db);
-    let graph = include_graph_query(db, project);
     let by_id: LookupMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
-    let topo = graph.topological_order(entry);
+    let topo = compilation_closure_files(db, project);
     let hir_refs: Vec<(FileId, &HirFile)> = topo
         .iter()
         .filter_map(|id| by_id.get(id).map(|f| (*id, &lowered_query(db, *f).hir)))
@@ -1513,15 +1575,14 @@ pub(crate) fn lir_prelude_decls_query(
         TypePolicy::Strict => brink_ir::lir::TypeMode::Strict,
         TypePolicy::Gradual => brink_ir::lir::TypeMode::Gradual,
     };
-    let Some(entry) = project.entry(db) else {
+    if project.entry(db).is_none() {
         return PreludeDeclsResult {
             decls: Arc::new(brink_ir::lir::PreludeDecls::empty(type_mode)),
         };
-    };
+    }
     let files = project.files(db);
     let by_id: LookupMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
-    let graph = include_graph_query(db, project);
-    let topo = graph.topological_order(entry);
+    let topo = compilation_closure_files(db, project);
     let decl_refs: Vec<(FileId, &HirFile)> = topo
         .iter()
         .filter_map(|id| {
@@ -1680,9 +1741,9 @@ pub(crate) fn type_policy_query(db: &dyn salsa::Database, project: ProjectInput)
 /// (issue #815) regardless of which gate is used here.
 #[salsa::tracked(no_eq)]
 pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput) -> LirLowering {
-    let Some(entry) = project.entry(db) else {
+    if project.entry(db).is_none() {
         return LirLowering::default();
-    };
+    }
     if has_errors_in_closure_query(db, project) {
         return LirLowering::default();
     }
@@ -1690,16 +1751,18 @@ pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput
     let files = project.files(db);
     let resolved = resolutions_index_query(db, project);
 
-    // LIR inputs in topological include order (paste-before semantics),
-    // mirroring `Driver::lir_inputs`. Narrowed to `entry`'s transitive
-    // `INCLUDE` closure (issue #815) — files outside it never lower here;
-    // their diagnostics still run independently via
+    // LIR inputs in compile (paste-before) order, mirroring
+    // `Driver::lir_inputs`. The order comes from [`compilation_closure_files`]:
+    // for an ink project this is `entry`'s transitive `INCLUDE` closure
+    // (issue #815); for a native project it is every discovered `.brink`
+    // module (issue #1296 — native files have no `INCLUDE` edges, so the whole
+    // discovered tree is the compilation unit). Files outside it never lower
+    // here; their diagnostics still run independently via
     // `analysis_diagnostics_query`/`diagnostics_query` below and in
     // `super::diagnostics_query`, which iterate `project.files(db)`
-    // directly rather than through this topo order.
-    let graph = include_graph_query(db, project);
+    // directly rather than through this order.
     let by_id: LookupMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
-    let topo = graph.topological_order(entry);
+    let topo = compilation_closure_files(db, project);
     let paths: LookupMap<FileId, String> = topo
         .iter()
         .filter_map(|id| by_id.get(id).map(|f| (*id, f.path(db).clone())))
@@ -1890,8 +1953,7 @@ pub(crate) fn lir_in_closure_query(db: &dyn salsa::Database, project: ProjectInp
         return LirProduct::default();
     };
 
-    let graph = include_graph_query(db, project);
-    let closure: LookupSet<FileId> = graph.topological_order(entry).into_iter().collect();
+    let closure: LookupSet<FileId> = compilation_closure_files(db, project).into_iter().collect();
 
     let diagnostics: Vec<Diagnostic> = analysis_diagnostics_query(db, project)
         .iter()

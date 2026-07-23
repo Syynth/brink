@@ -819,6 +819,85 @@ mod native_seam_tests {
         );
     }
 
+    /// NATIVE MULTI-FILE LINKING (issue #1296, decision-log 2026-07-23): a
+    /// multi-file native project links **every discovered `.brink` module**
+    /// into the one `StoryData` — the discovery set is the compilation unit.
+    /// Native files carry no `INCLUDE` edges, so before the codegen-closure
+    /// fix only the *entry* file reached codegen and the sibling module's
+    /// definitions silently vanished from the compiled story. Here the sibling
+    /// `helper.brink` is never referenced from `main.brink`, yet its `helper`
+    /// flow must still appear as a container in the linked `StoryData`.
+    #[test]
+    fn native_sibling_module_links_into_one_story_data() {
+        let mut db = ProjectDb::new();
+        db.set_analysis_options(AnalysisOptions {
+            dialect: Dialect::Brink,
+            ..AnalysisOptions::default()
+        });
+        db.set_file("main.brink", "flow main() {\n  Hello.\n}\n".to_owned());
+        db.set_file("helper.brink", "flow helper() {\n  Aside.\n}\n".to_owned());
+        db.set_entry("main.brink");
+
+        let product = db
+            .story_data()
+            .expect("entry is set, so story_data is Some");
+        assert!(
+            product.errors.is_empty(),
+            "two clean native modules must compile: {:?}",
+            product.errors
+        );
+        let story = product
+            .story
+            .as_ref()
+            .expect("native multi-file compile must yield a StoryData");
+
+        let index = db.symbol_index();
+        let main_id = index.by_name.get("main").expect("`main` is defined")[0];
+        let helper_id = index.by_name.get("helper").expect("`helper` is defined")[0];
+
+        assert!(
+            story.containers.iter().any(|c| c.id == main_id),
+            "entry module's `main` flow must be linked"
+        );
+        assert!(
+            story.containers.iter().any(|c| c.id == helper_id),
+            "unreferenced sibling module's `helper` flow must ALSO be linked — \
+             the whole discovered `.brink` tree is the compilation unit"
+        );
+    }
+
+    /// RUST PARITY (issue #1296, decision-log 2026-07-23): a `.brink` file that
+    /// fails to compile is an error **even if no other module references it**.
+    /// Because the native codegen closure is every discovered module, a broken
+    /// unreferenced sibling's Error-severity diagnostic (`E037` for a malformed
+    /// flow header) is inside the build gate's closure and must fail the whole
+    /// build — the entry file's clean flow does not rescue it.
+    #[test]
+    fn broken_unreferenced_native_sibling_fails_the_build() {
+        let mut db = ProjectDb::new();
+        db.set_analysis_options(AnalysisOptions {
+            dialect: Dialect::Brink,
+            ..AnalysisOptions::default()
+        });
+        db.set_file("main.brink", "flow main() {\n  Hello.\n}\n".to_owned());
+        // Malformed flow header (bad parameter list) → a `ParseSeverity::Error`
+        // that surfaces as the non-suppressible `E037` compile diagnostic.
+        db.set_file("broken.brink", "flow broken( {\n}\n".to_owned());
+        db.set_entry("main.brink");
+
+        let product = db
+            .story_data()
+            .expect("entry is set, so story_data is Some");
+        assert!(
+            !product.errors.is_empty(),
+            "a broken unreferenced native sibling must fail the build"
+        );
+        assert!(
+            product.story.is_none(),
+            "no StoryData may be produced when any discovered native module is broken"
+        );
+    }
+
     /// The seam must not leak: an `.ink` file still runs the ink frontend and
     /// compiles as before (the native parser is never invoked for it).
     #[test]
