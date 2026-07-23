@@ -32,6 +32,34 @@ enum Prec {
     Prefix = 7,     // -, ! (unary)
 }
 
+impl Prec {
+    /// The minimum binding power a right-hand side must have to be pulled
+    /// into *this* operator's recursive parse, i.e. `self as u8 + 1`.
+    ///
+    /// Every infix operator in this grammar is left-associative (Pratt
+    /// convention: recurse on strictly higher precedence than the operator
+    /// just consumed). Reusing `self` unchanged here would instead pull a
+    /// second operator at the *same* precedence into the RHS, producing
+    /// right-associative parses for symmetric-precedence operators (`-`,
+    /// `/`, `%`, `<`, `>`, `<=`, `>=`, `==`, `!=`, `&&`, `||`) — invisible
+    /// for `+`/`*` since they're mathematically associative, but silently
+    /// wrong for `-`/`/` (`10 - 3 - 2` would group as `10 - (3 - 2)` = 9
+    /// instead of `(10 - 3) - 2` = 5). Saturates at `Prefix`, the highest
+    /// level: nothing binds tighter, so no further operator is ever pulled
+    /// in past a prefix expression either.
+    fn next(self) -> Prec {
+        match self {
+            Prec::None => Prec::Or,
+            Prec::Or => Prec::And,
+            Prec::And => Prec::Equality,
+            Prec::Equality => Prec::Comparison,
+            Prec::Comparison => Prec::Add,
+            Prec::Add => Prec::Mul,
+            Prec::Mul | Prec::Prefix => Prec::Prefix,
+        }
+    }
+}
+
 fn infix_binding_power(kind: crate::SyntaxKind) -> Option<Prec> {
     Some(match kind {
         AMP_AMP => Prec::And,
@@ -90,7 +118,7 @@ fn expression_bp(p: &mut Parser<'_, '_>, min_bp: Prec) {
             p.bump();
             p.bump();
             p.skip_ws();
-            expression_bp(p, Prec::Or);
+            expression_bp(p, Prec::Or.next());
             p.finish_node();
             continue;
         }
@@ -105,7 +133,7 @@ fn expression_bp(p: &mut Parser<'_, '_>, min_bp: Prec) {
         p.start_node_at(checkpoint, INFIX_EXPR);
         p.bump(); // operator
         p.skip_ws();
-        expression_bp(p, prec);
+        expression_bp(p, prec.next());
         p.finish_node();
     }
 
