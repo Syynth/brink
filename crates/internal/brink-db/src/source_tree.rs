@@ -28,7 +28,6 @@
 
 use std::collections::BTreeMap;
 use std::io;
-use std::path::Path;
 
 /// A source of `.brink` files: enumerate what exists under a root, and read
 /// any key that enumeration returned.
@@ -38,9 +37,11 @@ use std::path::Path;
 /// underlying storage (filesystem, git tree, in-memory map) happens to
 /// iterate in.
 pub trait SourceTree {
-    /// Enumerate every source key under `root`, sorted deterministically by
-    /// key.
-    fn list(&self, root: &Path) -> io::Result<Vec<String>>;
+    /// Enumerate every source key (root-relative) under this tree's root,
+    /// sorted deterministically by key. The root is fixed at construction —
+    /// there is exactly one root per `SourceTree`, so `list` and `read`
+    /// always agree on it.
+    fn list(&self) -> io::Result<Vec<String>>;
 
     /// Read the source text for `key` (a key previously returned by
     /// [`list`](Self::list)).
@@ -67,9 +68,9 @@ impl InMemory {
 }
 
 impl SourceTree for InMemory {
-    /// `root` is unused: an `InMemory` tree's keys are already root-relative
-    /// by construction, so there is nothing further to scope by directory.
-    fn list(&self, _root: &Path) -> io::Result<Vec<String>> {
+    /// An `InMemory` tree's keys are already the whole root-relative key set
+    /// by construction, so this just returns them (BTreeMap-sorted).
+    fn list(&self) -> io::Result<Vec<String>> {
         Ok(self.files.keys().cloned().collect())
     }
 
@@ -96,7 +97,7 @@ mod tests {
         }
         let tree = InMemory::new(files);
 
-        let keys = tree.list(Path::new(".")).expect("list succeeds");
+        let keys = tree.list().expect("list succeeds");
 
         assert_eq!(keys, vec!["a/a.brink", "b/m.brink", "c/z.brink"]);
     }
@@ -111,7 +112,7 @@ mod tests {
         }
         let tree = InMemory::new(files);
 
-        let keys = tree.list(Path::new(".")).expect("list succeeds");
+        let keys = tree.list().expect("list succeeds");
 
         assert_eq!(
             keys,
@@ -157,9 +158,6 @@ mod tests {
     fn in_memory_list_empty_is_ok_empty() {
         let tree = InMemory::new(BTreeMap::new());
 
-        assert_eq!(
-            tree.list(Path::new(".")).expect("list succeeds"),
-            Vec::<String>::new()
-        );
+        assert_eq!(tree.list().expect("list succeeds"), Vec::<String>::new());
     }
 }

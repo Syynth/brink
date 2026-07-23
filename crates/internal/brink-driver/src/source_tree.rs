@@ -29,8 +29,8 @@ const NATIVE_EXTENSION: &str = "brink";
 /// Real-filesystem [`SourceTree`]: walks a root directory and enumerates
 /// every `.brink` file under it, keyed by root-relative path.
 ///
-/// `read` resolves a key against the root this instance was constructed
-/// with, so callers should pass that same root to [`list`](SourceTree::list)
+/// Both `list` and `read` resolve against the root this instance was
+/// constructed with — there is one root per seam, set once at construction
 /// — `RealFs` does not itself cross-check the two.
 #[derive(Debug, Clone)]
 pub struct RealFs {
@@ -47,9 +47,9 @@ impl RealFs {
 }
 
 impl SourceTree for RealFs {
-    fn list(&self, root: &Path) -> io::Result<Vec<String>> {
+    fn list(&self) -> io::Result<Vec<String>> {
         let mut keys = Vec::new();
-        walk(root, root, &mut keys)?;
+        walk(&self.root, &self.root, &mut keys)?;
         keys.sort();
         Ok(keys)
     }
@@ -136,8 +136,8 @@ impl GitRev {
 }
 
 impl SourceTree for GitRev {
-    fn list(&self, root: &Path) -> io::Result<Vec<String>> {
-        let pathspec = to_key(root);
+    fn list(&self) -> io::Result<Vec<String>> {
+        let pathspec = to_key(&self.root);
         let output = Command::new("git")
             .current_dir(&self.repo_dir)
             .args([
@@ -235,7 +235,7 @@ mod tests {
         fs::write(root.join("a.brink"), "-- a --").expect("write a.brink");
 
         let tree = RealFs::new(&root);
-        let keys = tree.list(&root).expect("list succeeds");
+        let keys = tree.list().expect("list succeeds");
 
         assert_eq!(keys, vec!["a.brink", "nested/a.brink", "z.brink"]);
 
@@ -250,7 +250,7 @@ mod tests {
         fs::write(root.join("main.brink"), "flow main() {}").expect("write main.brink");
 
         let tree = RealFs::new(&root);
-        let keys = tree.list(&root).expect("list succeeds");
+        let keys = tree.list().expect("list succeeds");
         assert_eq!(keys, vec!["main.brink"]);
 
         let source = tree.read(&keys[0]).expect("read succeeds");
@@ -265,7 +265,7 @@ mod tests {
         let root = temp_dir("realfs-empty");
 
         let tree = RealFs::new(&root);
-        let keys = tree.list(&root).expect("list succeeds");
+        let keys = tree.list().expect("list succeeds");
 
         assert_eq!(keys, Vec::<String>::new());
 
@@ -331,7 +331,7 @@ mod tests {
         );
 
         let tree = GitRev::new(&repo_dir, sha.clone(), ".");
-        let keys = tree.list(Path::new(".")).expect("list succeeds");
+        let keys = tree.list().expect("list succeeds");
 
         assert_eq!(keys, vec!["a.brink", "nested/b.brink", "z.brink"]);
         assert_eq!(tree.read("a.brink").expect("read succeeds"), "-- a --");
