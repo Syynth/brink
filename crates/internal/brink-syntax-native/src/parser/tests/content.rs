@@ -471,26 +471,25 @@ fn paren_escaped_prefix_not_expression_reaches_interpolation_despite_alternation
 }
 
 #[test]
-fn alternation_stopping_marker_wins_over_lambda_expression_and_is_malformed() {
-    // RULED (#1258/#1261): same root cause as the once-marker case above,
-    // for `{|` vs. the alternation family's `{| }` "stopping sequence"
-    // marker — a bare-brace interpolation whose expression is a `|params|
-    // body` lambda (`LAMBDA_EXPR`, tokenized per charter §7/§8) can never
-    // reach `interpolation()` either, and the alternation family still
-    // wins the dispatch. Unlike the once-marker/prefix-not collision
-    // above, `PIPE` is ALSO the alternative separator (and the token
-    // `LAMBDA_EXPR` itself closes its parameter list with), so `{|x| x}`
-    // is additionally flagged as a malformed alternation
-    // (`family::inline_alternatives`) rather than silently accepted as an
-    // unrelated two-branch sequence — see the escape hatch below.
+fn alternation_stopping_marker_wins_over_lambda_expression() {
+    // RULED (2026-07-22, superseding the earlier "malformed lambda" clause):
+    // `{|}` is a real stopping-sequence marker (charter §116), so a
+    // pipe-led brace is ALWAYS a stopping-sequence — `{|x| x}` is a valid
+    // two-branch stopping-sequence (branches `x` and `x`), not a "malformed
+    // lambda". The alternation family wins the dispatch (a lambda in content
+    // position can never reach `interpolation()`), and a real lambda is
+    // spelled with parens (`{(|x| x)}`, tested below). There is no
+    // malformed-lambda diagnostic; the space after the separator is ordinary
+    // branch content.
     let p = assert_lossless("Lambda: {|x| x}\n");
     assert!(
-        !p.errors().is_empty(),
-        "ruled behavior: `{{|x| x}}` is a malformed alternation, not a silent 2-branch parse"
+        p.errors().is_empty(),
+        "`{{|x| x}}` is a valid stopping-sequence, not an error: {:?}",
+        p.errors()
     );
     assert!(
         has_node_kind(&p.syntax(), SyntaxKind::ALTERNATION_BLOCK),
-        "ruled behavior: {{|x| x}} is still claimed by the alternation family"
+        "`{{|x| x}}` is claimed by the alternation family as a stopping-sequence"
     );
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::INTERPOLATION));
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::LAMBDA_EXPR));
@@ -511,19 +510,18 @@ fn paren_escaped_lambda_expression_reaches_interpolation_despite_alternation_mar
 }
 
 #[test]
-fn two_branch_pipe_alternation_without_space_parses_clean() {
-    // Pins the boundary of the `{|x| x}` malformed-lambda heuristic: it keys
-    // on a single separator *followed by whitespace* (the lambda shape), so a
-    // genuine two-branch stopping sequence with NO space after the separator
-    // (`{|heads|tails}`) must stay a clean alternation, never mis-flagged as a
-    // malformed lambda. Guards against a future refactor of the discriminator
-    // silently erroring every two-branch pipe alternation. (The spaced form
-    // `{|heads| tails}` — indistinguishable from a lambda at the surface — is
-    // a separately-tracked ambiguity, not settled by this test.)
-    let p = assert_lossless("Pick: {|heads|tails}\n");
-    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
-    assert!(has_node_kind(&p.syntax(), SyntaxKind::ALTERNATION_BLOCK));
-    assert!(!has_node_kind(&p.syntax(), SyntaxKind::LAMBDA_EXPR));
+fn two_branch_pipe_alternation_parses_clean_with_or_without_space() {
+    // RULED 2026-07-22: every `{|…}` is a stopping-sequence, so BOTH the
+    // glued form `{|heads|tails}` and the spaced form `{|heads| tails}` are
+    // valid two-branch alternations — the space is ordinary branch content,
+    // never a lambda signal. (An earlier revision mis-flagged the spaced
+    // form as a malformed lambda; that heuristic was removed.)
+    for src in ["Pick: {|heads|tails}\n", "Pick: {|heads| tails}\n"] {
+        let p = assert_lossless(src);
+        assert!(p.errors().is_empty(), "{src:?} errors: {:?}", p.errors());
+        assert!(has_node_kind(&p.syntax(), SyntaxKind::ALTERNATION_BLOCK));
+        assert!(!has_node_kind(&p.syntax(), SyntaxKind::LAMBDA_EXPR));
+    }
 }
 
 // ── Section D: TAG_LINE vs. a content line's trailing TAG tail ─────────
