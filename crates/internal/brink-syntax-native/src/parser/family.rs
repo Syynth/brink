@@ -6,7 +6,7 @@
 use crate::SyntaxKind::{
     self, ALTERNATION_BLOCK, ALTERNATION_MARKER, AMP, AT_L_BRACKET, BANG, COMMA, CONDITIONAL_BLOCK,
     DIVERT, ELSE_BRANCH, ENTRY, EOF, FAT_ARROW, HASH, IF_ARM, KW_ELSE, KW_IF, KW_MATCH, KW_RETURN,
-    L_BRACE, MATCH_ARM, MATCH_PATTERN, MINUS, NEWLINE, PIPE, QUESTION, R_BRACE, TILDE,
+    L_BRACE, MATCH_ARM, MATCH_PATTERN, MINUS, NEWLINE, PIPE, QUESTION, R_BRACE, THREAD, TILDE,
 };
 
 use super::Parser;
@@ -173,10 +173,11 @@ fn colon_body(p: &mut Parser<'_, '_>) {
 /// so a same-line `else:`/`else{`/`else if` boundary trailing other
 /// content on this line stops the scan and hands control back to
 /// `colon_body` instead of being swallowed into this line's `TEXT` (#1254
-/// Gap 1). Every OTHER line shape (tags, annotations, diverts, return, the
-/// brace family) behaves exactly like `body_line`, since none of them can
-/// ever swallow a trailing `else` the way an unbounded prose scan can.
-/// Keep this in sync with `body_line` if its dispatch table grows.
+/// Gap 1). Every OTHER line shape (tags, annotations, diverts, return, an
+/// out-of-choice `<-` thread, the brace family) behaves exactly like
+/// `body_line`, since none of them can ever swallow a trailing `else` the
+/// way an unbounded prose scan can. Keep this in sync with `body_line` if
+/// its dispatch table grows.
 fn colon_body_line(p: &mut Parser<'_, '_>) {
     match p.current() {
         NEWLINE => {
@@ -186,6 +187,10 @@ fn colon_body_line(p: &mut Parser<'_, '_>) {
         AT_L_BRACKET => super::annotation::annotation_line(p),
         DIVERT => super::divert::divert_or_tunnel(p),
         KW_RETURN => super::divert::return_stmt(p),
+        // A bare `<-` outside a choice point warns (ruling #1263) — it must
+        // reach `splice_outside_choice_point` here too, not fall through to
+        // the prose scan and be silently swallowed as TEXT.
+        THREAD => super::choice::splice_outside_choice_point(p),
         L_BRACE if at_choice_point(p) => super::choice::choice_point(p),
         L_BRACE if at_conditional(p) => conditional_block(p),
         L_BRACE if at_alternation(p) => alternation_block(p),

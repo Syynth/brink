@@ -510,6 +510,22 @@ fn paren_escaped_lambda_expression_reaches_interpolation_despite_alternation_mar
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::ALTERNATION_BLOCK));
 }
 
+#[test]
+fn two_branch_pipe_alternation_without_space_parses_clean() {
+    // Pins the boundary of the `{|x| x}` malformed-lambda heuristic: it keys
+    // on a single separator *followed by whitespace* (the lambda shape), so a
+    // genuine two-branch stopping sequence with NO space after the separator
+    // (`{|heads|tails}`) must stay a clean alternation, never mis-flagged as a
+    // malformed lambda. Guards against a future refactor of the discriminator
+    // silently erroring every two-branch pipe alternation. (The spaced form
+    // `{|heads| tails}` — indistinguishable from a lambda at the surface — is
+    // a separately-tracked ambiguity, not settled by this test.)
+    let p = assert_lossless("Pick: {|heads|tails}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::ALTERNATION_BLOCK));
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::LAMBDA_EXPR));
+}
+
 // ── Section D: TAG_LINE vs. a content line's trailing TAG tail ─────────
 
 #[test]

@@ -114,6 +114,31 @@ fn colon_form_else_on_the_same_line_is_recognized_as_an_else_arm() {
 }
 
 #[test]
+fn splice_inside_a_colon_body_still_warns() {
+    // Regression guard (#1261): the colon-body per-line dispatcher
+    // (`colon_body_line`) must keep every non-prose line shape `body_line`
+    // recognizes — including a bare `<-` (THREAD) outside a choice point,
+    // which ruling #1263 requires warn (not silently swallow into TEXT).
+    // An earlier revision of `colon_body_line` omitted the THREAD arm, so a
+    // `<-` inside a colon-form conditional body regressed to a silent prose
+    // swallow with no diagnostic — caught in review, pinned here.
+    let src = "flow f() {\n  {if ready:\n    <- side_thread\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert_eq!(
+        p.errors().len(),
+        1,
+        "`<-` in a colon body must still raise the #1263 warning; errors: {:?}",
+        p.errors()
+    );
+    assert_eq!(
+        p.errors()[0].severity,
+        ParseSeverity::Warning,
+        "a splice outside a choice point warns, never hard-errors"
+    );
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::SPLICE));
+}
+
+#[test]
 fn conditional_colon_if_only_no_else() {
     let src = "flow garden() {\n  {if hp > 0: You live.}\n}\n";
     let p = assert_lossless(src);
