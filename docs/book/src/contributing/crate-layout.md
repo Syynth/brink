@@ -24,6 +24,7 @@ brink is organized as a Cargo workspace with strict dependency rules. The centra
 | `brink-codegen-inkb` | `crates/internal/brink-codegen-inkb/` | Bytecode codegen: LIR to `StoryData` |
 | `brink-format` | `crates/internal/brink-format/` | Binary interface between compiler and runtime |
 | `brink-db` | `crates/internal/brink-db/` | Incremental project database, file discovery |
+| `brink-source-tree` | `crates/internal/brink-source-tree/` | `SourceTree` trait: host-agnostic seam for enumerating/reading `.brink` source files |
 | `brink-fmt` | `crates/internal/brink-fmt/` | `.ink` source formatter (powers `brink fmt`) |
 | `brink-intl` | `crates/internal/brink-intl/` | Internationalization tooling: line export, XLIFF round-trip, `.inkl` compile, ICU plurals |
 | `xliff2` | `crates/internal/xliff2/` | General-purpose XLIFF 2.0 read/write library |

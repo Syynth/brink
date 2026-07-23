@@ -47,7 +47,7 @@ pub fn discover_native(
 
 /// A key is `..`-polluted if any `/`-separated segment is exactly `..` —
 /// the format every [`SourceTree`] key is contractually forward-slash-joined
-/// in (see `brink_db::source_tree`'s module docs).
+/// in (see `brink_source_tree`'s crate docs).
 fn is_dotdot_polluted(key: &str) -> bool {
     key.split('/').any(|segment| segment == "..")
 }

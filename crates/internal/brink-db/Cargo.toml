@@ -19,6 +19,7 @@ brink-ir = { workspace = true }
 brink-analyzer = { workspace = true }
 brink-codegen-inkb = { workspace = true }
 brink-format = { workspace = true }
+brink-source-tree = { workspace = true }
 rowan.workspace = true
 salsa.workspace = true
 tracing.workspace = true
