@@ -1,6 +1,7 @@
 //! The code-ground statement layer — `let`/assignment/expression
-//! statements, the `{ stmt; stmt; tail }` statement-block, and the
-//! statement dispatcher. B0.8 Wave A, issue #1294
+//! statements, the `{ stmt; stmt; tail }` statement-block, the statement
+//! dispatcher (B0.8 Wave A, issue #1294), and `if`/`while`/`for`/`until`
+//! control flow (B0.8 Wave B, issue #1177 — section H below)
 //! (`docs/decision-log.md` 2026-07-23 "Code-ground sitting").
 //!
 //! Entry point: every case below goes through `var name = { … }`, the
@@ -302,4 +303,151 @@ fn adversarial_many_statements_does_not_panic() {
         block.tail().map(|n| n.kind()),
         Some(SyntaxKind::INTEGER_LIT)
     );
+}
+
+// ── H. Control flow: if/else, while, for-in, until (B0.8 Wave B) ────
+
+#[test]
+fn if_stmt_no_else() {
+    let p = assert_lossless("var x = { if a { 1; } 2 }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let block = stmt_block_of(&p);
+    let if_stmt: ast::IfStmt = find_child(block.syntax()).expect("IF_STMT");
+    assert_eq!(
+        if_stmt.condition().map(|n| n.kind()),
+        Some(SyntaxKind::PATH_EXPR)
+    );
+    assert!(if_stmt.body().is_some());
+    assert!(if_stmt.else_clause().is_none());
+}
+
+#[test]
+fn if_else_stmt() {
+    let p = assert_lossless("var x = { if a { 1; } else { 2; } 3 }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let block = stmt_block_of(&p);
+    let if_stmt: ast::IfStmt = find_child(block.syntax()).expect("IF_STMT");
+    let else_clause = if_stmt.else_clause().expect("ELSE_CLAUSE");
+    assert!(else_clause.body().is_some());
+    assert!(else_clause.if_stmt().is_none());
+}
+
+#[test]
+fn else_if_chain_is_a_nested_if_stmt_with_no_extra_stmt_block() {
+    let p = assert_lossless("var x = { if a { 1; } else if b { 2; } 3 }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let block = stmt_block_of(&p);
+    let if_stmt: ast::IfStmt = find_child(block.syntax()).expect("IF_STMT");
+    let else_clause = if_stmt.else_clause().expect("ELSE_CLAUSE");
+    let nested = else_clause.if_stmt().expect("chained IF_STMT");
+    assert_eq!(
+        nested.condition().map(|n| n.kind()),
+        Some(SyntaxKind::PATH_EXPR)
+    );
+    assert!(else_clause.body().is_none());
+}
+
+#[test]
+fn while_stmt_shape() {
+    let p = assert_lossless("var x = { while a { b = b + 1; } 0 }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let block = stmt_block_of(&p);
+    let while_stmt: ast::WhileStmt = find_child(block.syntax()).expect("WHILE_STMT");
+    assert_eq!(
+        while_stmt.condition().map(|n| n.kind()),
+        Some(SyntaxKind::PATH_EXPR)
+    );
+    let body = while_stmt.body().expect("body");
+    assert!(has_node_kind(body.syntax(), SyntaxKind::ASSIGN_STMT));
+}
+
+#[test]
+fn for_stmt_shape() {
+    let p = assert_lossless("var x = { for item in items { foo(item); } 0 }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let block = stmt_block_of(&p);
+    let for_stmt: ast::ForStmt = find_child(block.syntax()).expect("FOR_STMT");
+    assert_eq!(
+        for_stmt.name_token().map(|t| t.text().to_string()),
+        Some("item".to_string())
+    );
+    assert_eq!(
+        for_stmt.iterable().map(|n| n.kind()),
+        Some(SyntaxKind::PATH_EXPR)
+    );
+    let body = for_stmt.body().expect("body");
+    assert!(has_node_kind(body.syntax(), SyntaxKind::EXPR_STMT));
+}
+
+#[test]
+fn until_stmt_shape() {
+    let p = assert_lossless("var x = { until door_open; 0 }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let block = stmt_block_of(&p);
+    let until_stmt: ast::UntilStmt = find_child(block.syntax()).expect("UNTIL_STMT");
+    assert_eq!(
+        until_stmt.condition().map(|n| n.kind()),
+        Some(SyntaxKind::PATH_EXPR)
+    );
+}
+
+/// `until` is native's sole condition-park spelling — `await` is not a
+/// keyword at all on this surface (decision-log item 4), so it parses as a
+/// perfectly ordinary identifier/call.
+#[test]
+fn await_is_not_a_native_keyword() {
+    let p = assert_lossless("var x = { let await = 1; await }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::UNTIL_STMT));
+}
+
+/// `if`/`while`/`for`/`until` never produce a value — a control-flow
+/// construct as the last item in a block is a statement, not the tail,
+/// even with no trailing `;` of its own (`StmtBlock::tail`'s updated
+/// exclusion list).
+#[test]
+fn if_stmt_as_the_last_item_is_not_mistaken_for_a_tail() {
+    let p = assert_lossless("var x = { if a { 1; } }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let block = stmt_block_of(&p);
+    assert!(block.tail().is_none());
+    let items: Vec<_> = block.items().collect();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].kind(), SyntaxKind::IF_STMT);
+}
+
+#[test]
+fn control_flow_bodies_nest_and_recurse() {
+    let p = assert_lossless(
+        "var x = { for i in xs { while a { if b { c = 1; } else { c = 2; } } } 0 }\n",
+    );
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::FOR_STMT));
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::WHILE_STMT));
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::IF_STMT));
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::ELSE_CLAUSE));
+}
+
+#[test]
+fn error_if_missing_condition_does_not_panic() {
+    let src = "var x = { if { 1; } 0 }\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(!p.errors().is_empty());
+}
+
+#[test]
+fn error_for_missing_in_does_not_panic() {
+    let src = "var x = { for item items { 0; } 0 }\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(!p.errors().is_empty());
+}
+
+#[test]
+fn error_until_missing_semicolon_does_not_panic() {
+    let src = "var x = { until a 0 }\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(!p.errors().is_empty());
 }

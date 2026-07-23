@@ -1,12 +1,18 @@
-//! The code-ground statement layer: `let`/assignment/expression statements
-//! and the `{ stmt; stmt; tail }` statement-block shape.
+//! The code-ground statement layer: `let`/assignment/expression statements,
+//! `if`/`while`/`for`/`until` control flow (`control_flow.rs`), and the
+//! `{ stmt; stmt; tail }` statement-block shape.
 //!
 //! B0.8 Wave A (`docs/decision-log.md` 2026-07-23 "Code-ground sitting",
-//! issue #1294): **parser only, no HIR lowering** — this establishes the
-//! CST shape the sitting ruled (RustScript-shaped statements, blocks-as-
-//! values) so `if`/`while`/`for`/`until` (Wave B) slot into a real
-//! dispatcher instead of a stub. Rides `expr.rs`'s expression skeleton —
-//! this is the statement *layer* over it, not a replacement.
+//! issue #1294) established the CST shape the sitting ruled (`RustScript`-
+//! shaped statements, blocks-as-values) as **parser only, no HIR
+//! lowering**, with `statement()`'s dispatcher deliberately left ready for
+//! `if`/`while`/`for`/`until` to slot in as real branches rather than a
+//! stub. B0.8 Wave B (issue #1177) is that slice: `control_flow.rs`'s four
+//! constructs are dispatched from `statement()` below, and (unlike Wave A)
+//! this wave also lowers to HIR (`brink-ir::hir::lower_native::
+//! control_flow`) — see that module's doc for the NF-2 fence. Rides
+//! `expr.rs`'s expression skeleton — this is the statement *layer* over it,
+//! not a replacement.
 //!
 //! **Reached through the expression grammar**: a statement-block is itself
 //! an expression (blocks-as-values ruled — `let x = { … };` is valid), so
@@ -21,8 +27,8 @@
 //! blast radius on the existing content-ground body tests.
 
 use crate::SyntaxKind::{
-    ASSIGN_STMT, DOT, EQ, EXPR_STMT, IDENT, KW_LET, L_BRACE, LET_STMT, R_BRACE, SEMICOLON,
-    STMT_BLOCK,
+    ASSIGN_STMT, DOT, EQ, EXPR_STMT, IDENT, KW_FOR, KW_IF, KW_LET, KW_UNTIL, KW_WHILE, L_BRACE,
+    LET_STMT, R_BRACE, SEMICOLON, STMT_BLOCK,
 };
 
 use super::Parser;
@@ -78,12 +84,32 @@ pub(crate) fn stmt_block(p: &mut Parser<'_, '_>) {
 
 /// Parse one statement (or the block's tail expression) at the current
 /// position. Returns `true` if the block should keep looping (a `;`-
-/// terminated `LET_STMT`/`ASSIGN_STMT`/`EXPR_STMT` was produced), `false`
-/// if what was parsed is the tail — an unterminated expression, which must
-/// be the last thing in the enclosing `STMT_BLOCK`.
+/// terminated `LET_STMT`/`ASSIGN_STMT`/`EXPR_STMT`/`UNTIL_STMT`, or a
+/// brace-delimited `IF_STMT`/`WHILE_STMT`/`FOR_STMT`, was produced),
+/// `false` if what was parsed is the tail — an unterminated expression,
+/// which must be the last thing in the enclosing `STMT_BLOCK`. Control-flow
+/// constructs never produce a value (no case for them exists on the
+/// blocks-as-values tail position — see `ast::StmtBlock::tail`'s doc), so
+/// they always return `true` here, same as the `;`-terminated statements.
 fn statement(p: &mut Parser<'_, '_>) -> bool {
     if p.at(KW_LET) {
         let_stmt(p);
+        return true;
+    }
+    if p.at(KW_IF) {
+        super::control_flow::if_stmt(p);
+        return true;
+    }
+    if p.at(KW_WHILE) {
+        super::control_flow::while_stmt(p);
+        return true;
+    }
+    if p.at(KW_FOR) {
+        super::control_flow::for_stmt(p);
+        return true;
+    }
+    if p.at(KW_UNTIL) {
+        super::control_flow::until_stmt(p);
         return true;
     }
     if at_assignment(p) {

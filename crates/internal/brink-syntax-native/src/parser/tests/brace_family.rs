@@ -991,10 +991,20 @@ mod proptests {
 
     const NUM_CASES: u32 = 256;
 
+    // Mirrors `tests/proptest_native.rs`'s own `KEYWORDS` list (this
+    // family's generators are local to this file, so the list is
+    // duplicated here rather than shared — see the module doc comment
+    // above). Every hard-reserved keyword must appear here or proptest
+    // can generate it into an identifier position and red the case.
+    const KEYWORDS: &[&str] = &[
+        "flow", "fn", "var", "const", "let", "flags", "struct", "extern", "import", "use",
+        "module", "return", "ref", "if", "match", "else", "while", "for", "in", "until", "as",
+        "true", "false", "END", "DONE",
+    ];
+
     fn arb_ident() -> impl Strategy<Value = String> {
-        "[a-z][a-z0-9_]{0,6}".prop_filter("must not be a keyword", |s| {
-            !matches!(s.as_str(), "if" | "match" | "else" | "flow" | "fn")
-        })
+        "[a-z][a-z0-9_]{0,6}"
+            .prop_filter("must not be a keyword", |s| !KEYWORDS.contains(&s.as_str()))
     }
 
     fn arb_text() -> impl Strategy<Value = String> {

@@ -111,6 +111,7 @@ mod body;
 mod choice;
 mod cond;
 mod container;
+pub mod control_flow;
 mod decl;
 mod doc_comment;
 mod expr;
