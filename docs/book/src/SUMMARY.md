@@ -34,6 +34,7 @@
   - [Function Values](./toolchain/dialect/function-values.md)
   - [Effects](./toolchain/dialect/effects.md)
   - [Path Projections](./toolchain/dialect/path-projections.md)
+  - [The Numeric Tower](./toolchain/dialect/numeric-tower.md)
   - [Modules](./toolchain/dialect/modules.md)
   - [Conformance](./toolchain/dialect/conformance.md)
 - [Concepts](./toolchain/concepts/index.md)
