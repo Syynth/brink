@@ -1,0 +1,1017 @@
+//! The `Project` loader and its support types: discovery (`.ink` `INCLUDE`
+//! BFS or `.brink` native), symbol/cursor resolution, diagnostics, and
+//! in-memory edit application — plus `Loc` and the small output-entry types
+//! (`SymEntry`, `DiagEntry`, `EditEntry`) every handler formats through, and
+//! the git-baseline loader `effects-diff --rev` uses.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt::Write as _;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode};
+
+use brink_analyzer::AnalysisResult;
+use brink_driver::{Driver, GitRev, RealFs, SourceTree};
+use brink_ide::LineIndex;
+use brink_ide::document::DocumentSymbol;
+use brink_ide::effects::EffectRowView;
+use brink_ide::navigation::find_def_at_offset;
+use brink_ide::rename::FileEdit;
+use brink_ide::session::IdeSession;
+use brink_ide::structural_result::StructuralResult;
+use brink_ir::symbols::{SymbolInfo, SymbolKind};
+use brink_ir::{Diagnostic, FileId};
+use rowan::TextRange;
+
+use super::commands::{Address, Format, KindFilter, MutOpts, kind_name};
+use super::handlers::{Mutation, emit_mutation};
+
+/// Discover + apply `brink.toml` (#1005) to a fresh `AnalysisOptions`,
+/// honoring the "explicit flag always wins over the file" precedence rule.
+/// This is the single source every `brink ide` code path that builds its own
+/// `Driver` from scratch must call — `Project::load` (the baseline), the
+/// re-analysis driver in `introduced_diagnostics`, and the git-baseline
+/// driver in `load_git_baseline` — so none of them can silently disagree
+/// about which dialect/type-policy governs the same project. Unknown keys in
+/// the file are reported as warnings on stderr, never treated as errors.
+fn resolve_analysis_options(entry: &Path) -> Result<brink_analyzer::AnalysisOptions, String> {
+    let mut options = brink_analyzer::AnalysisOptions::default();
+    if let Some(loaded) =
+        brink_project_config::load_from_entry(entry).map_err(|e| format!("{e}"))?
+    {
+        for warning in &loaded.warnings {
+            let _ = writeln!(
+                io::stderr(),
+                "warning: [{}] {warning}",
+                loaded.path.display()
+            );
+        }
+        options.apply_project_config(&loaded.config, false, false);
+    }
+    Ok(options)
+}
+
+/// Resolve a project file key back to a real filesystem path, for the
+/// `--write` mutation sites (issue #1295). Native (`.brink`) discovery keys
+/// files root-relative to [`brink_driver::native_source_root`] (#1288), not
+/// cwd-relative — so a key must be rejoined with that root before it names
+/// a real path. `.ink` discovery still keys files by the same cwd-relative
+/// path a caller would pass straight to `std::fs`, so it resolves as
+/// identity. Without this, `--write` on a nested native entry (a
+/// `brink.toml` above `entry`'s own directory, so `native_source_root(entry)
+/// != cwd`) would write the bare key literally, landing on a phantom path
+/// under cwd instead of the real file.
+pub(super) fn resolve_fs_path(entry: &Path, key: &str) -> PathBuf {
+    if brink_driver::is_native(entry) {
+        brink_driver::native_source_root(entry).join(key)
+    } else {
+        PathBuf::from(key)
+    }
+}
+
+/// A [`SourceTree`] that overlays in-memory edits (and a moved-away key) on
+/// top of the real filesystem — the seam [`Project::introduced_diagnostics`]
+/// re-discovers a native project through so a pending rename/move's edited
+/// content is visible to the safety-gate re-analysis without touching disk.
+/// `list` unions in any edited key not already on disk (a move's new key)
+/// and drops `removed`; `read` prefers an edited value, then reports
+/// `removed` as not-found (mirroring the `.ink` closure's "file moved"
+/// synthetic error below), then falls back to disk.
+struct EditOverlay<'a> {
+    inner: RealFs,
+    edited: &'a BTreeMap<String, String>,
+    removed: Option<&'a str>,
+}
+
+impl SourceTree for EditOverlay<'_> {
+    fn list(&self, root: &Path) -> io::Result<Vec<String>> {
+        let mut keys: BTreeSet<String> = self.inner.list(root)?.into_iter().collect();
+        if let Some(r) = self.removed {
+            keys.remove(r);
+        }
+        keys.extend(self.edited.keys().cloned());
+        Ok(keys.into_iter().collect())
+    }
+
+    fn read(&self, key: &str) -> io::Result<String> {
+        if Some(key) == self.removed {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{key}: file moved"),
+            ));
+        }
+        if let Some(s) = self.edited.get(key) {
+            return Ok(s.clone());
+        }
+        self.inner.read(key)
+    }
+}
+
+pub(super) struct Project {
+    pub(super) driver: Driver,
+    pub(super) analysis: AnalysisResult,
+    pub(super) entry_id: FileId,
+}
+
+impl Project {
+    /// Discover + analyze the project rooted at `entry` (follows `INCLUDE`s
+    /// for `.ink`, or [`discover_native`](Driver::discover_native) over a
+    /// [`RealFs`] tree for `.brink` — B0.10b, issue #1295: the same dispatch
+    /// `load_git_baseline` uses, so every `brink ide` subcommand (not just
+    /// `effects-diff --rev`) sees a multi-file native project's whole file
+    /// set, not just the entry), exactly like `brink compile`. Also
+    /// discovers a `brink.toml` (#1005) starting from `entry`'s directory
+    /// and applies its `[project] dialect`/`types` to analysis — `brink
+    /// ide` has no `--dialect`/`--types` flags of its own, so the file (or,
+    /// absent one, `AnalysisOptions::default()`, byte-identical to
+    /// pre-#1005 behavior) is the only source. Unknown keys in the file are
+    /// reported as warnings on stderr, never treated as errors.
+    pub(super) fn load(entry: &Path) -> Result<Self, String> {
+        let mut driver = Driver::new();
+        driver.set_analysis_options(resolve_analysis_options(entry)?);
+
+        let entry_key = if brink_driver::is_native(entry) {
+            let root = brink_driver::native_source_root(entry);
+            let tree = RealFs::new(&root);
+            driver
+                .discover_native(&tree, &root)
+                .map_err(|e| format!("{e}"))?;
+            brink_driver::relative_key(&root, entry)
+        } else {
+            let entry_s = entry.to_string_lossy().into_owned();
+            driver
+                .discover(&entry_s, |p| {
+                    std::fs::read_to_string(p)
+                        .map_err(|e| io::Error::new(e.kind(), format!("{p}: {e}")))
+                })
+                .map_err(|e| format!("{e}"))?;
+            entry_s
+        };
+
+        let analysis = driver.analyze().clone();
+        let entry_id = driver
+            .db()
+            .file_id(&entry_key)
+            .ok_or_else(|| format!("entry file not found after discovery: {entry_key}"))?;
+        Ok(Self {
+            driver,
+            analysis,
+            entry_id,
+        })
+    }
+
+    /// Resolve a query's target to a single symbol — by `--at FILE:LINE:COL`
+    /// (cursor → the symbol there, resolving a reference to its definition) or
+    /// by qualified name.
+    pub(super) fn resolve(
+        &self,
+        addr: &Address,
+        kind: Option<KindFilter>,
+    ) -> Result<&SymbolInfo, String> {
+        if let Some(at) = &addr.at {
+            let (file, line, col) = parse_at(at)?;
+            let db = self.driver.db();
+            let file_id = db
+                .file_id(&file)
+                .ok_or_else(|| format!("file not in project: {file}"))?;
+            let src = db.source(file_id).unwrap_or_default();
+            // `--at` is 1-based; LineIndex (like line_col) is 0-based.
+            let offset = LineIndex::new(src).offset(line.saturating_sub(1), col.saturating_sub(1));
+            find_def_at_offset(&self.analysis, file_id, offset)
+                .ok_or_else(|| format!("no symbol at {at}"))
+        } else if let Some(name) = &addr.symbol {
+            self.resolve_unique(name, kind)
+        } else {
+            Err("provide a symbol name or --at FILE:LINE:COL".to_string())
+        }
+    }
+
+    /// Resolve a qualified name to exactly one symbol, honoring `--kind`.
+    pub(super) fn resolve_unique(
+        &self,
+        name: &str,
+        kind: Option<KindFilter>,
+    ) -> Result<&SymbolInfo, String> {
+        let ids = self.analysis.index.by_name.get(name);
+        let mut hits: Vec<&SymbolInfo> = ids
+            .into_iter()
+            .flatten()
+            .filter_map(|id| self.analysis.index.symbols.get(id))
+            .filter(|s| kind.is_none_or(|k| k.matches(s.kind)))
+            .collect();
+        let db = self.driver.db();
+        hits.sort_by_key(|s| {
+            (
+                db.file_path(s.file).unwrap_or_default().to_string(),
+                s.range.start(),
+            )
+        });
+
+        match hits.as_slice() {
+            [] => Err(format!("no symbol named '{name}' in the project")),
+            [one] => Ok(one),
+            many => {
+                let kinds: Vec<&str> = many.iter().map(|s| kind_name(s.kind)).collect();
+                Err(format!(
+                    "'{name}' is ambiguous (matches: {}); disambiguate with --kind",
+                    kinds.join(", ")
+                ))
+            }
+        }
+    }
+
+    /// Every knot/stitch's inferred effect row, keyed by `"<kind> <name>"`
+    /// (e.g. `"knot spend"`, `"stitch hub.market"`) — the stable identity the
+    /// `effects-diff` compares across two builds. `db.effects` is `None` for
+    /// any non-callable def, so only real container rows appear. Deterministic
+    /// (`BTreeMap`, and `EffectRowView` sorts its members by name).
+    pub(super) fn collect_effect_rows(&self) -> BTreeMap<String, EffectRowView> {
+        let db = self.driver.db();
+        let mut rows = BTreeMap::new();
+        for info in self.analysis.index.symbols.values() {
+            if !matches!(info.kind, SymbolKind::Knot | SymbolKind::Stitch) {
+                continue;
+            }
+            let Some(row) = db.effects(info.id) else {
+                continue;
+            };
+            let key = format!("{} {}", kind_name(info.kind), info.name);
+            rows.insert(key, EffectRowView::from_row(&row, &self.analysis.index));
+        }
+        rows
+    }
+
+    pub(super) fn location_of(&self, file: FileId, range: TextRange) -> Loc {
+        let db = self.driver.db();
+        let path = db.file_path(file).unwrap_or_default().to_string();
+        let src = db.source(file).unwrap_or_default();
+        let idx = LineIndex::new(src);
+        let (line, col) = idx.line_col(range.start());
+        Loc {
+            path,
+            line: line + 1,
+            col: col + 1,
+            byte_start: u32::from(range.start()),
+            byte_end: u32::from(range.end()),
+        }
+    }
+
+    pub(super) fn diag_entry(&self, d: &Diagnostic, severity: &str) -> DiagEntry {
+        DiagEntry {
+            severity: severity.to_string(),
+            code: d.code.as_str().to_string(),
+            message: d.message.clone(),
+            location: self.location_of(d.file, d.range),
+        }
+    }
+
+    /// Apply rename edits in-memory, returning the new source per touched file.
+    pub(super) fn apply_edits(
+        &self,
+        edits: &[FileEdit],
+    ) -> Result<BTreeMap<String, String>, String> {
+        let db = self.driver.db();
+        let mut by_file: HashMap<FileId, Vec<&FileEdit>> = HashMap::new();
+        for e in edits {
+            by_file.entry(e.file).or_default().push(e);
+        }
+        let mut out = BTreeMap::new();
+        for (file, mut es) in by_file {
+            let path = db
+                .file_path(file)
+                .ok_or("edit targets an unknown file")?
+                .to_string();
+            let mut src = db.source(file).unwrap_or_default().to_string();
+            // Splice from the end so earlier offsets stay valid.
+            es.sort_by_key(|e| std::cmp::Reverse(e.range.start()));
+            for e in es {
+                src.replace_range(
+                    usize::from(e.range.start())..usize::from(e.range.end()),
+                    &e.new_text,
+                );
+            }
+            out.insert(path, src);
+        }
+        Ok(out)
+    }
+
+    /// Re-analyze the project with the edited sources and return the diagnostics
+    /// the edit *introduced* — any error or warning present now but not in the
+    /// baseline (matched by code + message). A rename that creates a collision or
+    /// shadow surfaces as a warning, so warnings count.
+    pub(super) fn introduced_diagnostics(
+        &self,
+        entry: &Path,
+        edited: &BTreeMap<String, String>,
+        removed: Option<&str>,
+    ) -> Result<Vec<DiagEntry>, String> {
+        let mut driver = Driver::new();
+        driver.set_analysis_options(resolve_analysis_options(entry)?);
+
+        let entry_key = if brink_driver::is_native(entry) {
+            let root = brink_driver::native_source_root(entry);
+            let tree = EditOverlay {
+                inner: RealFs::new(&root),
+                edited,
+                removed,
+            };
+            driver
+                .discover_native(&tree, &root)
+                .map_err(|e| format!("{e}"))?;
+            brink_driver::relative_key(&root, entry)
+        } else {
+            let entry_s = entry.to_string_lossy().into_owned();
+            driver
+                .discover(&entry_s, |p| {
+                    // A moved file no longer exists at its old path: surface any
+                    // stale reference as a diagnostic instead of reading the disk copy.
+                    if Some(p) == removed {
+                        return Err(io::Error::new(
+                            io::ErrorKind::NotFound,
+                            format!("{p}: file moved"),
+                        ));
+                    }
+                    if let Some(s) = edited.get(p) {
+                        Ok(s.clone())
+                    } else {
+                        std::fs::read_to_string(p)
+                            .map_err(|e| io::Error::new(e.kind(), format!("{p}: {e}")))
+                    }
+                })
+                .map_err(|e| format!("{e}"))?;
+            entry_s
+        };
+
+        let new_analysis = driver.analyze().clone();
+        let new_entry = driver
+            .db()
+            .file_id(&entry_key)
+            .ok_or("entry file vanished during re-analysis")?;
+        let new_report = driver.collect_diagnostics(&new_analysis, Some(new_entry));
+        let base_report = self
+            .driver
+            .collect_diagnostics(&self.analysis, Some(self.entry_id));
+
+        // Baseline diagnostic multiset (errors + warnings) keyed by (code, message).
+        let mut baseline: HashMap<(String, String), i32> = HashMap::new();
+        for d in base_report.errors.iter().chain(base_report.warnings.iter()) {
+            *baseline
+                .entry((d.code.as_str().to_string(), d.message.clone()))
+                .or_default() += 1;
+        }
+
+        let new_diags = new_report
+            .errors
+            .iter()
+            .map(|d| ("error", d))
+            .chain(new_report.warnings.iter().map(|d| ("warning", d)));
+
+        let mut introduced = Vec::new();
+        for (severity, d) in new_diags {
+            let key = (d.code.as_str().to_string(), d.message.clone());
+            let count = baseline.entry(key).or_default();
+            if *count > 0 {
+                *count -= 1;
+            } else {
+                // Location lives in the *new* driver's db.
+                let path = driver
+                    .db()
+                    .file_path(d.file)
+                    .unwrap_or_default()
+                    .to_string();
+                let src = driver.db().source(d.file).unwrap_or_default();
+                let (line, col) = LineIndex::new(src).line_col(d.range.start());
+                introduced.push(DiagEntry {
+                    severity: severity.into(),
+                    code: d.code.as_str().into(),
+                    message: d.message.clone(),
+                    location: Loc {
+                        path,
+                        line: line + 1,
+                        col: col + 1,
+                        byte_start: u32::from(d.range.start()),
+                        byte_end: u32::from(d.range.end()),
+                    },
+                });
+            }
+        }
+        Ok(introduced)
+    }
+
+    /// One preview entry per edit: where, and the old → new text.
+    pub(super) fn edit_entries(&self, edits: &[FileEdit]) -> Vec<EditEntry> {
+        let db = self.driver.db();
+        let mut v: Vec<EditEntry> = edits
+            .iter()
+            .map(|e| {
+                let src = db.source(e.file).unwrap_or_default();
+                let old = src
+                    .get(usize::from(e.range.start())..usize::from(e.range.end()))
+                    .unwrap_or_default()
+                    .to_string();
+                EditEntry {
+                    location: self.location_of(e.file, e.range),
+                    old,
+                    new: e.new_text.clone(),
+                }
+            })
+            .collect();
+        v.sort_by(|a, b| {
+            (&a.location.path, a.location.byte_start)
+                .cmp(&(&b.location.path, b.location.byte_start))
+        });
+        v
+    }
+
+    /// A `git apply`-able patch for the edited files (whole-file hunks).
+    pub(super) fn unified_diff(&self, edited: &BTreeMap<String, String>) -> Result<String, String> {
+        let db = self.driver.db();
+        let mut out = String::new();
+        for (path, new_src) in edited {
+            let file = db.file_id(path).ok_or("diff targets an unknown file")?;
+            let old = db.source(file).unwrap_or_default();
+            file_diff(&mut out, path, old, new_src);
+        }
+        Ok(out)
+    }
+
+    /// Build an `IdeSession` seeded with every project file (db-level only — no
+    /// analysis), for the `brink-ide` ops (`file_rename`) that take a session.
+    pub(super) fn ide_session(&self) -> IdeSession {
+        let db = self.driver.db();
+        let mut session = IdeSession::new();
+        let ids: Vec<FileId> = db.file_ids().collect();
+        for id in ids {
+            if let (Some(path), Some(src)) = (db.file_path(id), db.source(id)) {
+                session.update_source(path, src.to_string());
+            }
+        }
+        session
+    }
+
+    /// The `(id, source)` for `file` (project-relative) or, if `None`, the entry.
+    pub(super) fn file_or_entry(&self, file: Option<&str>) -> Result<(FileId, String), String> {
+        let db = self.driver.db();
+        let id = match file {
+            Some(f) => db
+                .file_id(f)
+                .ok_or_else(|| format!("file not in project: {f}"))?,
+            None => self.entry_id,
+        };
+        let src = db.source(id).unwrap_or_default().to_string();
+        Ok((id, src))
+    }
+
+    /// Resolve a knot name to the file that declares it (and that file's source).
+    pub(super) fn knot_file(&self, knot: &str) -> Result<(FileId, String), String> {
+        let sym = self.resolve_unique(knot, Some(KindFilter::Knot))?;
+        let file = sym.file;
+        let src = self
+            .driver
+            .db()
+            .source(file)
+            .unwrap_or_default()
+            .to_string();
+        Ok((file, src))
+    }
+
+    /// Emit a single-file refactor result (`old_source` → `new_source`) through
+    /// the requested mode. Reports "no change" if the refactor is a no-op.
+    pub(super) fn emit_single(
+        &self,
+        id: FileId,
+        old_source: &str,
+        new_source: String,
+        mode: &MutOpts,
+    ) -> Result<ExitCode, String> {
+        if new_source == old_source {
+            let mut out = io::stdout().lock();
+            match mode.format {
+                Format::Text => writeln!(out, "no change").map_err(|e| e.to_string())?,
+                Format::Json => writeln!(
+                    out,
+                    "{}",
+                    to_json(&serde_json::json!({
+                        "changed": false,
+                        "diff": "",
+                        "files": Vec::<String>::new(),
+                        "introducedDiagnostics": Vec::<DiagEntry>::new(),
+                        "safe": true,
+                    }))?
+                )
+                .map_err(|e| e.to_string())?,
+            }
+            return Ok(ExitCode::SUCCESS);
+        }
+        let path = self
+            .driver
+            .db()
+            .file_path(id)
+            .ok_or("refactor targets an unknown file")?
+            .to_string();
+        let mut edited = BTreeMap::new();
+        edited.insert(path, new_source);
+        let mutation = Mutation {
+            edited,
+            edits: None,
+        };
+        let m = mode.flags.mode();
+        emit_mutation(
+            self,
+            &mode.entry,
+            &mutation,
+            &m,
+            mode.format,
+            mode.flags.unsafe_mode,
+        )
+    }
+
+    /// Emit a cross-file [`StructuralResult`] (primary `new_source` + reference
+    /// edits in other files) through the requested mode. The primary file is
+    /// covered by `new_source`, so any cross-file edit landing on it is overridden.
+    pub(super) fn emit_move_result(
+        &self,
+        primary: FileId,
+        result: StructuralResult,
+        mode: &MutOpts,
+    ) -> Result<ExitCode, String> {
+        let primary_path = self
+            .driver
+            .db()
+            .file_path(primary)
+            .ok_or("move targets an unknown file")?
+            .to_string();
+        let new_source = result
+            .new_source
+            .ok_or("structural move produced no primary source")?;
+        let mut edited = self.apply_edits(&result.cross_file_edits)?;
+        edited.insert(primary_path, new_source);
+        let mutation = Mutation {
+            edited,
+            edits: None,
+        };
+        let m = mode.flags.mode();
+        emit_mutation(
+            self,
+            &mode.entry,
+            &mutation,
+            &m,
+            mode.format,
+            mode.flags.unsafe_mode,
+        )
+    }
+}
+
+/// Build a baseline [`Project`] from the *same* entry path, but reading every
+/// file's content from git revision `rev` instead of the working tree — the
+/// working-tree-vs-HEAD story. A file absent from `rev` reads as not-found,
+/// so its defs surface as `added` in the diff.
+///
+/// Dispatches on `entry`'s extension (B0.10b, issue #1288, closing #1224): a
+/// `.brink` entry discovers via [`brink_driver::Driver::discover_native`]
+/// with a [`GitRev`] tree — native has no `INCLUDE` graph, so the old
+/// `read_file(path) -> String` closure (which can only answer for a path it's
+/// given, never enumerate "what exists under this root") could never have
+/// found any file but the entry itself. `GitRev` enumerates the whole
+/// project at `rev` via `git ls-tree`, so every `.brink` file the revision
+/// contains is discovered and read from git, not the working tree. A `.ink`
+/// entry is unchanged: `git_show`-driven `INCLUDE` BFS.
+pub(super) fn load_git_baseline(entry: &Path, rev: &str) -> Result<Project, String> {
+    let entry_s = entry.to_string_lossy().into_owned();
+    let mut driver = Driver::new();
+    driver.set_analysis_options(resolve_analysis_options(entry)?);
+
+    let entry_key = if brink_driver::is_native(entry) {
+        let root = brink_driver::native_source_root(entry);
+        let repo_dir = Path::new(".");
+        ensure_repo_dir_is_toplevel(repo_dir)?;
+        let tree = GitRev::new(repo_dir, rev, &root);
+        driver
+            .discover_native(&tree, &root)
+            .map_err(|e| format!("baseline {rev}: {e}"))?;
+        brink_driver::relative_key(&root, entry)
+    } else {
+        driver
+            .discover(&entry_s, |p| git_show(rev, p))
+            .map_err(|e| format!("baseline {rev}: {e}"))?;
+        entry_s.clone()
+    };
+
+    let analysis = driver.analyze().clone();
+    let entry_id = driver
+        .db()
+        .file_id(&entry_key)
+        .ok_or_else(|| format!("entry file not found in {rev}: {entry_key}"))?;
+    Ok(Project {
+        driver,
+        analysis,
+        entry_id,
+    })
+}
+
+/// Guard the native branch of [`load_git_baseline`] against its `repo_dir =
+/// Path::new(".")` assumption: `root` ([`brink_driver::native_source_root`])
+/// and the entry's [`brink_driver::relative_key`] are both computed relative
+/// to the process's cwd, and [`GitRev`]'s `read` joins `root` directly onto a
+/// key with no `./` prefix — so the resulting `git show <rev>:<path>`
+/// pathspec resolves against the repository's *top-level* directory, not
+/// cwd (unlike the `./`-prefixed pathspec [`git_show`] below uses for the
+/// `.ink` branch). If cwd is not the repo root — `effects-diff --rev`
+/// invoked from a subdirectory of a multi-file native project — `root` and
+/// `GitRev`'s actual git-relative reads silently disagree, and the baseline
+/// would read the wrong path (or find nothing) with no error. Fail fast
+/// instead (issue #1295 fold-in: "add a guard/assertion here").
+fn ensure_repo_dir_is_toplevel(repo_dir: &Path) -> Result<(), String> {
+    let output = Command::new("git")
+        .current_dir(repo_dir)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(|e| format!("git rev-parse --show-toplevel: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git rev-parse --show-toplevel failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let toplevel = String::from_utf8(output.stdout)
+        .map_err(|e| format!("git rev-parse --show-toplevel: non-utf8 output: {e}"))?;
+    let toplevel = toplevel.trim();
+    let cwd = std::env::current_dir().map_err(|e| format!("current dir: {e}"))?;
+    let toplevel_abs =
+        std::path::absolute(Path::new(toplevel)).unwrap_or_else(|_| PathBuf::from(toplevel));
+    let cwd_abs = std::path::absolute(&cwd).unwrap_or(cwd);
+    if toplevel_abs == cwd_abs {
+        Ok(())
+    } else {
+        Err(format!(
+            "effects-diff --rev must be run from the git repository root ({}), not {} — \
+             native baseline discovery keys files relative to cwd and would misalign \
+             otherwise (issue #1295)",
+            toplevel_abs.display(),
+            cwd_abs.display()
+        ))
+    }
+}
+
+/// Read `path` (project-relative, as discovered) at git revision `rev`. The
+/// `./` prefix makes git resolve the pathspec relative to the current working
+/// directory, matching how the entry/`INCLUDE` paths were given on the command
+/// line. A non-zero git exit (file absent in `rev`, not a repo, …) maps to a
+/// `NotFound` error the discovery walk reports.
+fn git_show(rev: &str, path: &str) -> Result<String, io::Error> {
+    let spec = format!("{rev}:./{path}");
+    let output = Command::new("git").args(["show", &spec]).output()?;
+    if output.status.success() {
+        String::from_utf8(output.stdout)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{path}: {e}")))
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{path} not in {rev}"),
+        ))
+    }
+}
+
+/// Append a whole-file unified-diff hunk for `path` (old → new) to `out`.
+pub(super) fn file_diff(out: &mut String, path: &str, old: &str, new: &str) {
+    let old_lines: Vec<&str> = old.split_inclusive('\n').collect();
+    let new_lines: Vec<&str> = new.split_inclusive('\n').collect();
+    let _ = write!(
+        out,
+        "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,{} +1,{} @@\n",
+        old_lines.len(),
+        new_lines.len()
+    );
+    for l in &old_lines {
+        push_diff_line(out, '-', l);
+    }
+    for l in &new_lines {
+        push_diff_line(out, '+', l);
+    }
+}
+
+pub(super) fn push_diff_line(out: &mut String, sign: char, line: &str) {
+    out.push(sign);
+    out.push_str(line.strip_suffix('\n').unwrap_or(line));
+    out.push('\n');
+    if !line.ends_with('\n') {
+        out.push_str("\\ No newline at end of file\n");
+    }
+}
+
+/// Recursively convert a `brink-ide` outline node into an output entry.
+pub(super) fn doc_to_entry(project: &Project, file: FileId, d: &DocumentSymbol) -> SymEntry {
+    SymEntry {
+        name: d.name.clone(),
+        kind: kind_name(d.kind).into(),
+        detail: d.detail.clone(),
+        location: project.location_of(file, d.range),
+        children: d
+            .children
+            .iter()
+            .map(|c| doc_to_entry(project, file, c))
+            .collect(),
+    }
+}
+
+pub(super) fn print_tree(
+    out: &mut impl Write,
+    entries: &[SymEntry],
+    depth: usize,
+) -> Result<(), String> {
+    for e in entries {
+        let indent = "  ".repeat(depth);
+        let detail = e
+            .detail
+            .as_deref()
+            .map(|d| format!(" [{d}]"))
+            .unwrap_or_default();
+        writeln!(
+            out,
+            "{indent}{} {}{}  {}",
+            e.kind,
+            e.name,
+            detail,
+            e.location.display()
+        )
+        .map_err(|x| x.to_string())?;
+        print_tree(out, &e.children, depth + 1)?;
+    }
+    Ok(())
+}
+
+pub(super) fn to_json<T: serde::Serialize>(v: &T) -> Result<String, String> {
+    serde_json::to_string(v).map_err(|e| e.to_string())
+}
+
+/// Parse `FILE:LINE:COL` (line/col 1-based). The file may itself contain `:`,
+/// so split the two numeric fields off the right.
+pub(super) fn parse_at(s: &str) -> Result<(String, u32, u32), String> {
+    let mut parts = s.rsplitn(3, ':');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(col), Some(line), Some(file)) if !file.is_empty() => {
+            let line = line
+                .parse::<u32>()
+                .map_err(|_| format!("bad line in --at '{s}'"))?;
+            let col = col
+                .parse::<u32>()
+                .map_err(|_| format!("bad column in --at '{s}'"))?;
+            Ok((file.to_string(), line, col))
+        }
+        _ => Err(format!("--at must be FILE:LINE:COL, got '{s}'")),
+    }
+}
+
+// ── Output location ─────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub(super) struct Loc {
+    pub(super) path: String,
+    pub(super) line: u32,
+    pub(super) col: u32,
+    pub(super) byte_start: u32,
+    pub(super) byte_end: u32,
+}
+
+impl Loc {
+    pub(super) fn display(&self) -> String {
+        format!("{}:{}:{}", self.path, self.line, self.col)
+    }
+}
+
+/// An outline / search / unused entry (a symbol with an optional child list).
+#[derive(serde::Serialize)]
+pub(super) struct SymEntry {
+    pub(super) name: String,
+    pub(super) kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) detail: Option<String>,
+    pub(super) location: Loc,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) children: Vec<SymEntry>,
+}
+
+/// A diagnostic entry for `brink ide check`.
+#[derive(serde::Serialize)]
+pub(super) struct DiagEntry {
+    pub(super) severity: String,
+    pub(super) code: String,
+    pub(super) message: String,
+    pub(super) location: Loc,
+}
+
+/// One edit in a rename preview: where, and the old → new text.
+#[derive(serde::Serialize)]
+pub(super) struct EditEntry {
+    pub(super) location: Loc,
+    pub(super) old: String,
+    pub(super) new: String,
+}
+
+#[cfg(test)]
+mod git_baseline_config_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Serializes tests in this module that change the process cwd —
+    /// `git_show` spawns `git show <rev>:./<path>` with no explicit
+    /// `Command::current_dir`, so it inherits whatever the process's cwd is
+    /// at call time. There is only one such test today; the lock is cheap
+    /// insurance against a future one racing it.
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
+
+    struct CwdGuard(std::path::PathBuf);
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.0);
+        }
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Regression for the review finding on `load_git_baseline` (the
+    /// baseline driver behind `brink ide effects-diff --rev`): it used to
+    /// build its `Driver` with a bare `AnalysisOptions::default()`, ignoring
+    /// any discovered `brink.toml`, while `Project::load` (the head side of
+    /// the very same diff) discovers + applies it. This is not observable
+    /// through `effects-diff`'s CLI output today — dialect/types only gate
+    /// diagnostic severity, never effect-row content, since the dialect
+    /// grammar is a superset that always parses (see
+    /// `brink_analyzer::dialect_gate`) — so it must be caught by comparing
+    /// the resolved `AnalysisOptions` directly instead.
+    #[test]
+    fn load_git_baseline_matches_project_load_analysis_options() {
+        let _lock = CWD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let original_cwd = std::env::current_dir().unwrap();
+
+        let dir = std::env::temp_dir().join(format!(
+            "brink-ide-unit-git-baseline-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("brink.toml"), "[project]\ndialect = \"brink\"\n").unwrap();
+        std::fs::write(dir.join("story.ink"), "Hello.\n-> END\n").unwrap();
+        git(&dir, &["init", "-q"]);
+        git(&dir, &["config", "user.email", "test@example.com"]);
+        git(&dir, &["config", "user.name", "test"]);
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-q", "-m", "initial"]);
+
+        // Match the process cwd to `dir` for the duration of the two loads
+        // below, so `git_show`'s `./`-relative pathspec resolves — restored
+        // by `CwdGuard` on drop (including on assertion panic).
+        std::env::set_current_dir(&dir).unwrap();
+        let cwd_guard = CwdGuard(original_cwd);
+
+        let entry = Path::new("story.ink");
+        let head = Project::load(entry).expect("head loads");
+        let baseline = load_git_baseline(entry, "HEAD").expect("git baseline loads");
+
+        assert_eq!(
+            head.driver.db().analysis_options().dialect,
+            baseline.driver.db().analysis_options().dialect,
+            "load_git_baseline must apply the same brink.toml dialect as Project::load"
+        );
+        assert_eq!(
+            head.driver.db().analysis_options().dialect,
+            brink_analyzer::Dialect::Brink,
+            "sanity: brink.toml's dialect = \"brink\" must actually be in effect"
+        );
+
+        // Restore cwd (still holding `_lock`) before removing `dir`.
+        drop(cwd_guard);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regression for #1224 ("git-revision baselines silently read the
+    /// working tree"): a `.brink` git-baseline must discover *every*
+    /// `.brink` file that exists at the revision — not just the entry,
+    /// which is all the old closure-only `discover` could ever reach for
+    /// native (no `INCLUDE` graph to BFS through) — and must read each
+    /// file's *committed* content, never the uncommitted working-tree copy.
+    #[test]
+    fn git_baseline_for_brink_entry_discovers_all_files_from_the_revision_not_the_working_tree() {
+        let _lock = CWD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let original_cwd = std::env::current_dir().unwrap();
+
+        let dir = std::env::temp_dir().join(format!(
+            "brink-ide-unit-git-baseline-native-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("main.brink"), "flow main() {\n  Hi. -> END\n}\n").unwrap();
+        std::fs::write(
+            dir.join("other.brink"),
+            "flow other() {\n  Committed. -> END\n}\n",
+        )
+        .unwrap();
+        git(&dir, &["init", "-q"]);
+        git(&dir, &["config", "user.email", "test@example.com"]);
+        git(&dir, &["config", "user.name", "test"]);
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-q", "-m", "initial"]);
+
+        // Uncommitted working-tree edit: a real diff-of-nothing bug would
+        // read this content for the baseline too.
+        std::fs::write(
+            dir.join("other.brink"),
+            "flow other() {\n  Working tree only. -> END\n}\n",
+        )
+        .unwrap();
+
+        std::env::set_current_dir(&dir).unwrap();
+        let cwd_guard = CwdGuard(original_cwd);
+
+        let entry = Path::new("main.brink");
+        let baseline = load_git_baseline(entry, "HEAD").expect("git baseline loads");
+
+        let db = baseline.driver.db();
+        let mut paths: Vec<_> = db.file_ids().filter_map(|id| db.file_path(id)).collect();
+        paths.sort_unstable();
+        assert_eq!(
+            paths,
+            vec!["main.brink", "other.brink"],
+            "git baseline must discover every .brink file at the revision, not just the entry"
+        );
+
+        let other_id = db.file_id("other.brink").expect("other.brink discovered");
+        let other_source = db.source(other_id).unwrap_or_default();
+        assert!(
+            other_source.contains("Committed."),
+            "must read other.brink's content from the git revision, got: {other_source:?}"
+        );
+        assert!(
+            !other_source.contains("Working tree only."),
+            "must NOT read the uncommitted working-tree copy, got: {other_source:?}"
+        );
+
+        drop(cwd_guard);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regression for the #1295 fold-in: `load_git_baseline`'s native branch
+    /// assumes cwd *is* the git repository root (`repo_dir = Path::new(".")`
+    /// in the source). Running `effects-diff --rev` from a subdirectory of a
+    /// multi-file native project must fail fast with a clear error instead
+    /// of silently misaligning `GitRev`'s pathspecs and reading the wrong
+    /// (or no) content.
+    #[test]
+    fn git_baseline_for_brink_entry_from_a_subdirectory_of_the_repo_errors_instead_of_misaligning()
+    {
+        let _lock = CWD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let original_cwd = std::env::current_dir().unwrap();
+
+        let dir = std::env::temp_dir().join(format!(
+            "brink-ide-unit-git-baseline-subdir-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(
+            dir.join("sub").join("main.brink"),
+            "flow main() {\n  Hi. -> END\n}\n",
+        )
+        .unwrap();
+        git(&dir, &["init", "-q"]);
+        git(&dir, &["config", "user.email", "test@example.com"]);
+        git(&dir, &["config", "user.name", "test"]);
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-q", "-m", "initial"]);
+
+        // cwd is `dir/sub` — inside the repo, but not its top-level
+        // directory — exactly the misalignment risk the fold-in flags.
+        std::env::set_current_dir(dir.join("sub")).unwrap();
+        let cwd_guard = CwdGuard(original_cwd);
+
+        let entry = Path::new("main.brink");
+        let err = load_git_baseline(entry, "HEAD")
+            .err()
+            .expect("baseline load from a repo subdirectory must fail fast, not misalign");
+        assert!(
+            err.contains("git repository root"),
+            "error must name the actual problem, got: {err}"
+        );
+
+        drop(cwd_guard);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
