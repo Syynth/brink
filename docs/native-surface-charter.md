@@ -126,7 +126,7 @@ One brace grammar; the annotation position declares the kind:
     ink's spelling — the new docs owe this construct a first-class,
     example-led explanation, not a footnote.
 
-## 7. Code-ground (sketch — own sitting pending)
+## 7. Code-ground (RULED 2026-07-23 — the sitting; see decision-log)
 
 **North star: RustScript** (AMENDED 2026-07-19, superseding the
 original "Lua-adjacent feel" — ruled in the lambda sitting: the
