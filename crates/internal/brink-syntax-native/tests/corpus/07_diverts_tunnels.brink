@@ -1,0 +1,38 @@
+flow a() {
+  -> b
+}
+
+flow b() {
+  -> c ->
+  return
+}
+
+flow c() {
+  return -> a
+  -> END
+}
+
+flow hub() {
+  {?
+    <- options(gold, 2)
+  }
+}
+
+flow options(gold, count) {
+  -> DONE
+}
+
+flow garden() {
+  flow gate() {
+    Creak.
+  }
+  -> gate
+}
+
+flow stitch_target() {
+  -> garden.gate
+}
+
+flow cross_module() {
+  -> a::b
+}
