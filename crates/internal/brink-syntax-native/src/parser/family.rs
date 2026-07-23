@@ -32,11 +32,11 @@ pub(crate) fn at_conditional(p: &Parser<'_, '_>) -> bool {
 /// escape hatch is one keystroke: wrap the expression in parens
 /// (`{(!x)}`, `{(|x| x)}`), which starts with `L_PAREN` and therefore
 /// never matches here, always falling through to plain `{expr}`
-/// interpolation instead. See `inline_alternatives` for the one further
-/// wrinkle this creates: `PIPE` is also the token `LAMBDA_EXPR` opens and
-/// closes its parameter list with, so a captured `{|params| body}` is
-/// flagged as a malformed alternation rather than silently accepted as an
-/// unrelated two-branch sequence.
+/// interpolation instead. `PIPE` is also the token `LAMBDA_EXPR` opens and
+/// closes its parameter list with, so a `{|params| body}` is claimed by
+/// this family too — and, since `{|}` is a real stopping-sequence marker
+/// (charter §116), it parses as an ordinary stopping-sequence (a lambda in
+/// content position is written `{(|x| x)}`); see `inline_alternatives`.
 pub(crate) fn at_alternation(p: &Parser<'_, '_>) -> bool {
     p.at(L_BRACE) && matches!(p.nth(1), TILDE | AMP | BANG | PIPE)
 }
@@ -249,11 +249,11 @@ pub(crate) fn alternation_block(p: &mut Parser<'_, '_>) {
         return;
     }
     p.expect(L_BRACE);
-    let marker = alternation_marker(p);
+    alternation_marker(p);
     let has_branches = if is_multiline(p) {
         multiline_entries(p)
     } else {
-        inline_alternatives(p, marker)
+        inline_alternatives(p)
     };
     // Item 4 (ruled #1258/#1261, brink-syntax parity —
     // `sequence_stopping_empty_emits_error`/`sequence_symbol_empty_emits_error`):
@@ -268,8 +268,9 @@ pub(crate) fn alternation_block(p: &mut Parser<'_, '_>) {
 }
 
 /// Consumes the marker token and returns its kind (`TILDE`/`AMP`/`BANG`/
-/// `PIPE`) so callers can make marker-specific decisions (`inline_alternatives`'s
-/// lambda-collision check below).
+/// `PIPE`). The returned kind is currently unused by callers (the pipe form
+/// no longer needs marker-specific handling — see `inline_alternatives`),
+/// but is kept for symmetry and future marker-specific decisions.
 fn alternation_marker(p: &mut Parser<'_, '_>) -> SyntaxKind {
     p.start_node(ALTERNATION_MARKER);
     // Caller (`at_alternation`) already verified the current token is one
@@ -362,42 +363,27 @@ fn entry(p: &mut Parser<'_, '_>) {
 /// check — a completely empty inline body, `{~}`, makes zero loop
 /// iterations).
 ///
-/// Also validates the `PIPE`-marker lambda collision (ruled 2026-07-22,
-/// #1258/#1261 — "alternation markers win"): `at_alternation` claims any
-/// `{` led by `!`/`~`/`&`/`|` for this family unconditionally, so a bare
-/// interpolation whose expression happens to start with one of those
-/// tokens (a prefix-`!` expression, or a `|params| body` lambda) can never
-/// reach `interpolation()` — the escape hatch is parens (`{(!x)}`,
-/// `{(|x| x)}`), since `L_PAREN` is never a marker char and always falls
-/// through to plain `{expr}` interpolation. `PIPE` is the one marker that
-/// is ALSO the token `LAMBDA_EXPR` (`expr.rs`) opens and closes its
-/// parameter list with, and a lambda's parameter list closes on its FIRST
-/// unescaped `|` — so `{|x| x}` is byte-for-byte a valid one-param lambda
-/// that the marker claimed first. That collision is only possible when
-/// the whole inline body reduces to exactly one separator (two segments):
-/// a third pipe-separated segment (`{|a|b|c}`) can never be re-read as
-/// `|params| body`, so 3+ segments is unambiguously an ordinary
-/// alternation. Within the exactly-two-segment shape, a space
-/// immediately after the separator (`|x| x` — the idiomatic way this
-/// grammar's own lambda call sites write the closing pipe) is the signal
-/// that distinguishes an attempted lambda from a plain two-word
-/// alternation glued to its pipes (`{|heads|tails}` has no space after
-/// the separator and stays an ordinary alternation, unaffected). Flagged
-/// as a malformed alternation rather than silently accepted.
-fn inline_alternatives(p: &mut Parser<'_, '_>, marker: SyntaxKind) -> bool {
+/// `PIPE` collides with lambda syntax — `{|x| x}` is byte-for-byte a valid
+/// one-param lambda — but the pipe form is **always** a stopping-sequence,
+/// never a "malformed lambda" (ruled 2026-07-22, superseding the earlier
+/// pipe clause of "alternation markers win"): `{| }` is a real
+/// stopping-sequence marker (charter §116), so `{|x| x}`, `{|heads|tails}`,
+/// and `{|heads| tails}` are all valid two-branch stopping-sequences —
+/// whitespace after the separator is ordinary branch content, not a lambda
+/// signal. There is no way to distinguish a lambda from a spaced two-branch
+/// alternation syntactically, so the marker wins uniformly and a lambda in
+/// content position is spelled with parens (`{(|x| x)}`), the same escape
+/// `!` uses (`{(!x)}`). An earlier revision special-cased "one separator
+/// with a trailing space" as malformed; that over-fired on valid spaced
+/// alternations and was removed.
+fn inline_alternatives(p: &mut Parser<'_, '_>) -> bool {
     let mut has_any = false;
-    let mut separator_count: u32 = 0;
-    let mut first_separator_trailing_space = false;
     loop {
         p.skip_ws();
         match p.current() {
             R_BRACE | EOF | NEWLINE => break,
             PIPE => {
                 has_any = true;
-                if separator_count == 0 {
-                    first_separator_trailing_space = p.nth_raw(1) == SyntaxKind::WHITESPACE;
-                }
-                separator_count += 1;
                 p.bump();
             }
             // `content_items_until` always stops at `HASH` too (see its
@@ -412,15 +398,6 @@ fn inline_alternatives(p: &mut Parser<'_, '_>, marker: SyntaxKind) -> bool {
                 super::content::content_items_until(p, &[PIPE, R_BRACE, NEWLINE]);
             }
         }
-    }
-    if marker == PIPE && separator_count == 1 && first_separator_trailing_space {
-        p.error(
-            "malformed alternation: `|<params>| <body>` reads as a lambda expression, not a \
-             two-branch stopping-sequence — wrap it in parens to write a real lambda here \
-             (e.g. `{(|x| x)}`), or add a third `|`-separated alternative if this really is a \
-             two-branch stopping sequence"
-                .into(),
-        );
     }
     has_any
 }
