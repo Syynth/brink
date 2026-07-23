@@ -1,0 +1,16 @@
+flow garden() {
+  {~ red|blue|green}
+  {& always this|then this}
+  {! once only|then this}
+  {| a|b|c}
+  {~a|b #tag}
+  {&
+    - red
+    - blue
+  }
+  {&
+    - First line.
+      Second line.
+    - Other.
+  }
+}

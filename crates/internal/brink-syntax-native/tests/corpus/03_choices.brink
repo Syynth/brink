@@ -1,0 +1,26 @@
+flow garden(visited, gold) {
+  {?
+    * [Look] You look around.
+    + (again) [Look again] Still a garden.
+    * {if visited} (been) Been here before.
+    * Gold: {gold}
+    * [Buy] You have {gold} left.
+    <- shared_options()
+    else { Nothing left to do. }
+  }
+}
+
+flow garden_more() {
+  {?
+    * Start[middle]end
+    * [hidden] shown
+    * Choice -> knot
+    * Go[-> elsewhere]stays
+    * Choice #tag1
+    ++ [Deeper] inner
+  }
+}
+
+flow shared_options() {
+  -> DONE
+}
