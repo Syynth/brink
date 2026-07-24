@@ -938,3 +938,76 @@ fn splice_appended_after_a_choice_body_recomputes_tail() {
         choice.body.tail()
     );
 }
+
+// ─── file-level `@[was("old::path")]` module rename (issue #1286) ────────────
+
+#[test]
+fn file_level_was_lowers_to_module_rename_record() {
+    let (hir, _m, diags) = lower_src("@[was(\"story::old::barter\")]\nflow hero() {\n  hi\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let module = hir
+        .module
+        .as_ref()
+        .expect("a `@[was]` file must carry a ModuleDecl");
+    // Name stays empty — native module identity is path-derived and stamped at
+    // the project layer (`module_map_query`), never authored in-file.
+    assert_eq!(
+        module.name, "",
+        "native module name is not authored in-file"
+    );
+    assert_eq!(
+        module.was.as_ref().map(|(old, _)| old.as_str()),
+        Some("story::old::barter"),
+        "the quoted old module path must reach `module.was`"
+    );
+    // The `@[was]` line must NOT be re-diagnosed as an unlowered construct.
+    assert!(
+        diags.iter().all(|d| d.code != DiagnosticCode::E129),
+        "a recognized `@[was]` must not raise E129: {diags:?}"
+    );
+}
+
+#[test]
+fn no_was_annotation_leaves_module_none() {
+    let (hir, _m, diags) = lower_src("flow hero() {\n  hi\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(
+        hir.module.is_none(),
+        "a file with no `@[was]` carries no ModuleDecl"
+    );
+}
+
+#[test]
+fn malformed_was_without_string_arg_diagnoses_e132() {
+    // `@[was]` with no quoted old path: a malformed migration directive. It is
+    // surfaced (E132), not silently dropped, and produces no rename record.
+    let (hir, _m, diags) = lower_src("@[was]\nflow hero() {\n  hi\n}\n");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E132),
+        "a `@[was]` with no string argument must raise E132: {diags:?}"
+    );
+    assert!(
+        hir.module.is_none(),
+        "a malformed `@[was]` produces no rename record"
+    );
+    // Still recognized as a `was` line — not the generic unlowered-construct
+    // E129.
+    assert!(
+        diags.iter().all(|d| d.code != DiagnosticCode::E129),
+        "a malformed `@[was]` must not also raise E129: {diags:?}"
+    );
+}
+
+#[test]
+fn first_was_wins_when_several_are_present() {
+    let (hir, _m, _diags) =
+        lower_src("@[was(\"story::first\")]\n@[was(\"story::second\")]\nflow hero() {\n  hi\n}\n");
+    assert_eq!(
+        hir.module
+            .as_ref()
+            .and_then(|m| m.was.as_ref())
+            .map(|(old, _)| old.as_str()),
+        Some("story::first"),
+        "first `@[was]` wins"
+    );
+}
