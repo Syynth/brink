@@ -34,6 +34,20 @@ fn has_node_kind(root: &SyntaxNode, kind: SyntaxKind) -> bool {
     root.descendants().any(|node| node.kind() == kind)
 }
 
+/// Unwrap a `flow`/`fn`'s body-dialect selector (charter §4, #1309) down to
+/// its prose-ground `Block`, for the (overwhelmingly common) test fixtures
+/// that expect one. `.expect()` on the flattened `Option`, not a bare
+/// `panic!`, since `clippy::panic` is denied in production code and this
+/// crate's `clippy.toml` only exempts `unwrap`/`expect` in tests, not
+/// `panic!` itself.
+fn expect_prose_body(body: Option<ast::Body>) -> ast::Block {
+    body.and_then(|b| match b {
+        ast::Body::Prose(block) => Some(block),
+        ast::Body::Code(_) => None,
+    })
+    .expect("expected a prose-ground (BLOCK) body")
+}
+
 /// Token-level counterpart to `has_node_kind` — `descendants()` yields only
 /// nodes, so a check for a token kind (e.g. `ERROR_TOKEN`, which
 /// `SyntaxKind::is_token()` lists and is therefore never wrapped in a

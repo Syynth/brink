@@ -16,9 +16,9 @@
 
 use crate::SyntaxKind::{
     COLON, COMMA, CONST_DECL, EQ, EXTERN_DECL, FLAGS_DECL, FLAGS_MEMBER, FLAGS_MEMBER_LIST,
-    FLOW_DECL, FN_DECL, IDENT, IMPORT_DECL, KW_AS, KW_EXTERN, KW_FLAGS, KW_FLOW, KW_FN, KW_MODULE,
-    KW_REF, KW_STRUCT, L_BRACE, L_PAREN, MODULE_DECL, PARAM, PARAM_LIST, R_BRACE, R_PAREN,
-    STRUCT_DECL, STRUCT_FIELD, USE_DECL, USE_TREE, USE_TREE_LIST, VAR_DECL,
+    FLOW_DECL, FN_DECL, GT, IDENT, IMPORT_DECL, KW_AS, KW_EXTERN, KW_FLAGS, KW_FLOW, KW_FN,
+    KW_MODULE, KW_REF, KW_STRUCT, L_BRACE, L_PAREN, MODULE_DECL, PARAM, PARAM_LIST, R_BRACE,
+    R_PAREN, STRUCT_DECL, STRUCT_FIELD, TILDE, USE_DECL, USE_TREE, USE_TREE_LIST, VAR_DECL,
 };
 
 use super::Parser;
@@ -73,6 +73,9 @@ pub(crate) fn at_module_decl(p: &Parser<'_, '_>) -> bool {
 /// is a leading `///` run already consumed by `block::item`
 /// (`doc_comment::maybe_consume_leading_run`), threaded through so it
 /// attaches as this node's leading `DOC_COMMENT` child (B0.6b).
+///
+/// Body-dialect default (charter §4, RULED 2026-07-23): `flow` is
+/// prose-ground — see [`decl_body`].
 pub(crate) fn flow_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
     super::doc_comment::open_with_doc(p, FLOW_DECL, doc);
     p.bump(); // KW_FLOW
@@ -80,15 +83,14 @@ pub(crate) fn flow_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) 
     if p.at(L_PAREN) {
         param_list(p);
     }
-    if p.at(L_BRACE) {
-        super::block::block(p);
-    } else {
-        p.error("expected a braced body after the flow header".into());
-    }
+    decl_body(p, false, "expected a braced body after the flow header");
     p.finish_node();
 }
 
 /// `fn name(params) { … }`. See [`flow_decl`]'s doc comment for `doc`.
+///
+/// Body-dialect default (charter §4, RULED 2026-07-23): `fn` is
+/// code-ground — see [`decl_body`].
 pub(crate) fn fn_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
     super::doc_comment::open_with_doc(p, FN_DECL, doc);
     p.bump(); // KW_FN
@@ -96,12 +98,41 @@ pub(crate) fn fn_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
     if p.at(L_PAREN) {
         param_list(p);
     }
-    if p.at(L_BRACE) {
-        super::block::block(p);
-    } else {
-        p.error("expected a braced body after the fn header".into());
-    }
+    decl_body(p, true, "expected a braced body after the fn header");
     p.finish_node();
+}
+
+/// Parse a `flow`/`fn` declaration's body, honoring the body-dialect
+/// selector on the opening brace (charter §4, RULED 2026-07-23 — see
+/// `docs/decision-log.md` "Native interleaving & body-dialect spelling"):
+/// plain `{ … }` is the per-keyword default (`code_default`: `fn` → code,
+/// `flow` → prose); a `~` immediately before the brace forces a code-ground
+/// `STMT_BLOCK` body (statements directly — a code-bodied `flow` is §3's
+/// "Compound guard"); a `>` immediately before the brace forces a
+/// prose-ground `BLOCK` body (a prose-bodied `fn`). Sigil mnemonics: `~` =
+/// enter code, `>` = emit prose — the same two sigils §8.2's line-escape
+/// grains reuse at finer granularity (not built by this function; see
+/// `docs/decision-log.md`'s follow-up note on issue #1309).
+///
+/// The selector token, when present, is bumped as a bare child of the
+/// enclosing `FLOW_DECL`/`FN_DECL` node — a leading sibling of the
+/// `BLOCK`/`STMT_BLOCK` body node it selects.
+fn decl_body(p: &mut Parser<'_, '_>, code_default: bool, missing_body_msg: &str) {
+    if p.at(TILDE) && p.nth(1) == L_BRACE {
+        p.eat(TILDE); // flushes any pending trivia first, unlike a raw `bump`
+        super::stmt::stmt_block(p);
+    } else if p.at(GT) && p.nth(1) == L_BRACE {
+        p.eat(GT); // flushes any pending trivia first, unlike a raw `bump`
+        super::block::block(p);
+    } else if p.at(L_BRACE) {
+        if code_default {
+            super::stmt::stmt_block(p);
+        } else {
+            super::block::block(p);
+        }
+    } else {
+        p.error(missing_body_msg.into());
+    }
 }
 
 /// `(param, ref param, …)` — shared by `flow`/`fn`/`extern` headers. Types

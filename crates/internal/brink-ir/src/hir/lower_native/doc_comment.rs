@@ -147,7 +147,13 @@ mod tests {
             .find(|n| n.kind() == brink_syntax_native::SyntaxKind::FLOW_DECL)
             .and_then(ast::FlowDecl::cast)
             .expect("flow decl");
-        let body = flow.body().expect("body block");
+        let body = flow
+            .body()
+            .and_then(|b| match b {
+                ast::Body::Prose(block) => Some(block),
+                ast::Body::Code(_) => None,
+            })
+            .expect("flow's default body is prose-ground");
         let mut diags = Vec::new();
         let doc = lower_doc_comment(FileId(0), body.doc(), DocPolicy::CALLABLE, &mut diags);
         let doc = doc.expect("inner doc lowers");

@@ -30,7 +30,10 @@ fn top_level_flow_lowers_to_knot() {
 
 #[test]
 fn fn_decl_sets_is_function() {
-    let (hir, manifest, diags) = lower_src("fn heal(hp) {\n  Heal.\n}\n");
+    // Plain `{ }` on a `fn` is code-ground by default (charter §4, RULED
+    // 2026-07-23, #1309) — `return hp;` exercises that default, not the
+    // `>{ }` prose override (which has its own coverage elsewhere).
+    let (hir, manifest, diags) = lower_src("fn heal(hp) {\n  return hp;\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(hir.knots.len(), 1);
     assert!(hir.knots[0].is_function);
@@ -335,7 +338,7 @@ fn nested_main_flow_does_not_synthesize_an_entry() {
 fn function_named_main_does_not_synthesize_an_entry() {
     // `fn main()` is a function, not a flow — not eligible for the entry
     // convention (a function is called for its value, not diverted into).
-    let (hir, _manifest, diags) = lower_src("fn main() {\n  Hi.\n}\n");
+    let (hir, _manifest, diags) = lower_src("fn main() {\n  return;\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert!(hir.root_content.stmts.is_empty());
 }
@@ -385,7 +388,7 @@ flow garden(mood) {
 }
 
 fn heal(target, amount) {
-  Heal.
+  return;
 }
 ";
 
@@ -747,7 +750,12 @@ fn splice_after_a_choice_attaches_to_that_choices_body() {
 
 #[test]
 fn explicit_return_stamps_explicit_kind() {
-    let (hir, _m, diags) = lower_src("fn f() {\n  return\n}\n");
+    // `>{ }` forces the prose-ground override so this exercises the
+    // content-ground `RETURN_STMT` (no `;`) `fixup_return_kind` corrects —
+    // `fn`'s new code-ground default has its own always-`Explicit` return
+    // with no fixup needed (`parser/stmt.rs::return_stmt`'s doc), covered
+    // by `fn_decl_sets_is_function` and the code-ground differential tests.
+    let (hir, _m, diags) = lower_src("fn f() >{\n  return\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let Stmt::Return(r) = &hir.knots[0].body.stmts[0] else {
         panic!("expected Return");
@@ -791,7 +799,10 @@ fn bare_return_inside_a_non_function_flow_is_a_tunnel_redirect() {
 
 #[test]
 fn bare_return_inside_a_function_stays_explicit() {
-    let (hir, _m, diags) = lower_src("fn f() {\n  return\n}\n");
+    // `>{ }` — see `explicit_return_stamps_explicit_kind`'s comment: this
+    // pins the content-ground fixup's function-vs-flow branch, distinct
+    // from the code-ground default's own always-`Explicit` return.
+    let (hir, _m, diags) = lower_src("fn f() >{\n  return\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let Stmt::Return(r) = &hir.knots[0].body.stmts[0] else {
         panic!("expected Return");
@@ -866,7 +877,13 @@ fn block_ending_in_divert_has_diverge_tail() {
 
 #[test]
 fn block_ending_in_explicit_return_has_diverge_tail() {
-    let (hir, _m, diags) = lower_src("fn f() {\n  return\n}\n");
+    // `>{ }` — see `explicit_return_stamps_explicit_kind`'s comment: a
+    // code-ground `fn` body's own tail is `Unit` regardless of its last
+    // statement (the whole `STMT_BLOCK` lowers as one `Stmt::LogicBlock`,
+    // and `tail_from_stmts` only inspects the *top-level* `Stmt` list — see
+    // `body::lower_stmt_block_as_body`'s doc), so this pins the
+    // content-ground body's tail computation instead.
+    let (hir, _m, diags) = lower_src("fn f() >{\n  return\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let body = &hir.knots[0].body;
     assert!(
@@ -919,5 +936,78 @@ fn splice_appended_after_a_choice_body_recomputes_tail() {
         Tail::Unit,
         "a trailing splice (non-terminator) must flip tail back to Unit, got {:?}",
         choice.body.tail()
+    );
+}
+
+// ─── file-level `@[was("old::path")]` module rename (issue #1286) ────────────
+
+#[test]
+fn file_level_was_lowers_to_module_rename_record() {
+    let (hir, _m, diags) = lower_src("@[was(\"story::old::barter\")]\nflow hero() {\n  hi\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let module = hir
+        .module
+        .as_ref()
+        .expect("a `@[was]` file must carry a ModuleDecl");
+    // Name stays empty — native module identity is path-derived and stamped at
+    // the project layer (`module_map_query`), never authored in-file.
+    assert_eq!(
+        module.name, "",
+        "native module name is not authored in-file"
+    );
+    assert_eq!(
+        module.was.as_ref().map(|(old, _)| old.as_str()),
+        Some("story::old::barter"),
+        "the quoted old module path must reach `module.was`"
+    );
+    // The `@[was]` line must NOT be re-diagnosed as an unlowered construct.
+    assert!(
+        diags.iter().all(|d| d.code != DiagnosticCode::E129),
+        "a recognized `@[was]` must not raise E129: {diags:?}"
+    );
+}
+
+#[test]
+fn no_was_annotation_leaves_module_none() {
+    let (hir, _m, diags) = lower_src("flow hero() {\n  hi\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(
+        hir.module.is_none(),
+        "a file with no `@[was]` carries no ModuleDecl"
+    );
+}
+
+#[test]
+fn malformed_was_without_string_arg_diagnoses_e132() {
+    // `@[was]` with no quoted old path: a malformed migration directive. It is
+    // surfaced (E132), not silently dropped, and produces no rename record.
+    let (hir, _m, diags) = lower_src("@[was]\nflow hero() {\n  hi\n}\n");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E132),
+        "a `@[was]` with no string argument must raise E132: {diags:?}"
+    );
+    assert!(
+        hir.module.is_none(),
+        "a malformed `@[was]` produces no rename record"
+    );
+    // Still recognized as a `was` line — not the generic unlowered-construct
+    // E129.
+    assert!(
+        diags.iter().all(|d| d.code != DiagnosticCode::E129),
+        "a malformed `@[was]` must not also raise E129: {diags:?}"
+    );
+}
+
+#[test]
+fn first_was_wins_when_several_are_present() {
+    let (hir, _m, _diags) =
+        lower_src("@[was(\"story::first\")]\n@[was(\"story::second\")]\nflow hero() {\n  hi\n}\n");
+    assert_eq!(
+        hir.module
+            .as_ref()
+            .and_then(|m| m.was.as_ref())
+            .map(|(old, _)| old.as_str()),
+        Some("story::first"),
+        "first `@[was]` wins"
     );
 }

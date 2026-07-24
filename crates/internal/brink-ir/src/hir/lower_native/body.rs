@@ -39,7 +39,7 @@ use crate::hir::FileId;
 use crate::provenance::NodeClass;
 use crate::{
     Block, Content, ContentPart, Diagnostic, DiagnosticCode, Divert, DivertPath, DivertTarget,
-    Expr, Name, Return, ReturnKind, Stmt, Tag, TunnelCall,
+    Expr, LogicBlock, Name, Return, ReturnKind, Stmt, Tag, TunnelCall,
 };
 
 use super::choice::lower_choice_point;
@@ -72,6 +72,53 @@ pub(super) fn lower_block(
 ) -> Block {
     let items: Vec<SyntaxNode> = block.items().collect();
     let stmts = lower_items(file_id, &items, 0, diags);
+    let tail = crate::tail_from_stmts(&stmts);
+    Block {
+        label: None,
+        stmts,
+        container_id: None,
+        tail,
+    }
+}
+
+/// Lower a `flow`/`fn` body selected as **code**-ground — `fn`'s default,
+/// or a `flow`'s `~{ }` "Compound guard" override (charter §4, #1309) — to
+/// the HIR `Block` a `Knot`/`Stitch` carries.
+///
+/// The `STMT_BLOCK`'s own statements already have a real lowering target
+/// (`control_flow::lower_stmt_block`, B0.8 Waves A/B/B-tail): the T1b
+/// closed `BlockStmt` set. This wraps that `Vec<BlockStmt>` as a single
+/// `Stmt::LogicBlock` — the container's *sole* statement — rather than
+/// inventing a flattened `Stmt`-level mapping: `BlockStmt` carries
+/// `If`/`While`/`For`/`Break`/`Continue`, none of which have a top-level
+/// `Stmt` counterpart to flatten into (only `TempDecl`/`Assignment`/
+/// `Return`/`ExprStmt`/`Await` do), so a uniform wrap is both the simplest
+/// rule and the one that already has a fully-wired LIR lowering
+/// (`lir::lower::blocks::lower_logic_block` splices a `LogicBlock`'s
+/// statements directly into the enclosing container's flat sequence) — the
+/// exact shape a brink-dialect container whose entire body is one
+/// `~ { … }` block already produces, see
+/// `crates/internal/brink-ir/tests/b08_native_control_flow.rs`'s
+/// `ink_block_stmts` differential helper.
+///
+/// An empty `STMT_BLOCK` (`{}`/`~{}`) produces an empty `Block` — no
+/// `LogicBlock` wrapper with zero statements, matching `lower_block`'s own
+/// empty-body shape (`Block::default()`-equivalent) rather than a
+/// degenerate non-empty-looking node.
+pub(super) fn lower_stmt_block_as_body(
+    file_id: FileId,
+    block: &ast::StmtBlock,
+    diags: &mut Vec<Diagnostic>,
+) -> Block {
+    let block_stmts = super::control_flow::lower_stmt_block(file_id, block, diags);
+    let stmts = if block_stmts.is_empty() {
+        Vec::new()
+    } else {
+        vec![Stmt::LogicBlock(LogicBlock {
+            ptr: native_provenance(file_id, NodeClass::LogicBlock, block.syntax()),
+            stmts: block_stmts,
+        })]
+    };
     let tail = crate::tail_from_stmts(&stmts);
     Block {
         label: None,
