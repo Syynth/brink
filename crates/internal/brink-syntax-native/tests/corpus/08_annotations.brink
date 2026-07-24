@@ -3,7 +3,7 @@
 flow f() {
 }
 
-fn heal(hp) {
+fn heal(hp) >{
   @[effects(pure, silent, reads(gold, hp))]
   var x = hp
 }

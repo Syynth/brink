@@ -48,7 +48,7 @@ flow garden(mood) {
 }
 
 fn heal(target, amount) {
-  Heal.
+  return;
 }
 ";
 

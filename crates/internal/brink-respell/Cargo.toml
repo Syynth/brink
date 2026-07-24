@@ -1,0 +1,27 @@
+[package]
+name = "brink-respell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Dev/converter tool: mechanically respells ink corpus fixtures into .brink native source via the brink-ir HIR emitter"
+
+# Dev/converter tool, not a runtime dependency (issue #1178) — never
+# published to crates.io, so it must not trip the publishable-crate release
+# guard.
+publish = false
+
+[dependencies]
+brink-ir = { workspace = true }
+brink-syntax = { workspace = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+brink-test-harness = { workspace = true }
+brink-syntax-native = { workspace = true }
+
+[lints]
+workspace = true

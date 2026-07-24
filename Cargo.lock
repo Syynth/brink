@@ -2267,6 +2267,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "brink-respell"
+version = "0.0.11"
+dependencies = [
+ "brink-ir",
+ "brink-syntax",
+ "brink-syntax-native",
+ "brink-test-harness",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "brink-runtime"
 version = "0.0.11"
 dependencies = [

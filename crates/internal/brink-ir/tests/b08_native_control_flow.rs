@@ -11,22 +11,32 @@
 //! # Reachability, honestly
 //!
 //! The code-ground statement layer (`STMT_BLOCK`/`LET_STMT`/…, B0.8 Wave A)
-//! is reachable through the parser only via an **expression position** —
-//! `var x = { … }` — because wiring it into `flow`/`fn` declaration bodies
-//! (replacing the content-ground `BLOCK` those still use) is its own,
-//! explicitly deferred slice (issue #1309, "the body-dialect seam's own
-//! call"). `var`/`const` initializers ARE wired into the real
-//! `lower_native::lower` pipeline (`decl::lower_var_decl` →
-//! `expr::lower_expr`), and `expr::lower_expr`'s `STMT_BLOCK` arm (this PR)
-//! calls `lower_native::control_flow::lower_stmt_block` for real — so
+//! is reachable through the parser via an **expression position** —
+//! `var x = { … }` — AND, since #1309 (body-dialect selectors, charter §4,
+//! RULED 2026-07-23), as a `flow`/`fn` declaration's own body: plain
+//! `{ }` on a `fn` (its per-keyword default) or `~{ }` on a `flow` (the
+//! "Compound guard" override) both parse+lower through this same
+//! `STMT_BLOCK` grammar (`parser/decl.rs::decl_body`). `var`/`const`
+//! initializers were wired into the real `lower_native::lower` pipeline
+//! first (`decl::lower_var_decl` → `expr::lower_expr`), and
+//! `expr::lower_expr`'s `STMT_BLOCK` arm calls
+//! `lower_native::control_flow::lower_stmt_block` for real — so
 //! `admission_clean_for_a_var_initializer_exercising_every_construct`
-//! below proves the four control-flow constructs are lowered by the actual
+//! below proves the four control-flow constructs are lowered by that
 //! production entry point on a real `.brink` file, not just a differential
 //! fixture. What that arm still can't do is give the `STMT_BLOCK` itself a
 //! *value* (blocks-as-values has no HIR node — no `Expr::Block` exists,
 //! and NF-2 forbids minting one this slice) — so the pipeline test below
 //! asserts exactly one diagnostic (E129, "the block has no value yet"),
 //! not zero, and that is the honest, expected shape.
+//!
+//! `fn_body_default_reaches_stmt_block_lowering_for_real` further down
+//! proves the **declaration-body** call site: a `fn`'s default `{ }` body
+//! lowers through `container::lower_body` → `body::lower_stmt_block_as_body`
+//! → this same `control_flow::lower_stmt_block`, wrapped as the container's
+//! sole `Stmt::LogicBlock` — the exact shape a brink-dialect container
+//! whose entire body is one `~ { … }` block already produces (see
+//! `ink_block_stmts` below).
 //!
 //! The **shape** differential tests further down call
 //! `lower_native::control_flow::lower_stmt_block` directly (a small `pub`
@@ -111,6 +121,114 @@ var x = {
          value), got: {diags:?}"
     );
     assert_eq!(diags[0].code, brink_ir::DiagnosticCode::E129);
+}
+
+// ─── #1309: fn/flow declaration bodies reach STMT_BLOCK lowering ───────
+//
+// Distinct from the var-initializer test above: here `STMT_BLOCK` sits at
+// **declaration-body** position, not expression position, so there is no
+// "blocks-as-values" gap to work around — a well-formed body lowers with
+// ZERO diagnostics, the honest proof that `container::lower_body` really
+// dispatches through `body::lower_stmt_block_as_body` on a real `.brink`
+// file, not just a differential fixture.
+
+#[test]
+fn fn_body_default_reaches_stmt_block_lowering_for_real() {
+    // Plain `{ }` on a `fn` is code-ground by default (charter §4).
+    let src = "\
+fn heal(hp) {
+  let bonus = 1;
+  if hp > 0 {
+    log(hp);
+  }
+  return hp + bonus;
+}
+";
+    let (hir, _manifest, diags) = lower_native_fixture(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.knots.len(), 1);
+    let knot = &hir.knots[0];
+    assert!(knot.is_function);
+    let Stmt::LogicBlock(lb) = &knot.body.stmts[0] else {
+        panic!(
+            "a code-ground body lowers as a single wrapping LogicBlock, got {:?}",
+            knot.body.stmts
+        );
+    };
+    assert_eq!(
+        block_shape(&lb.stmts),
+        vec!["TempDecl", "If", "Return"],
+        "shape: {:?}",
+        lb.stmts
+    );
+}
+
+#[test]
+fn flow_compound_guard_override_reaches_stmt_block_lowering_for_real() {
+    // `~{ }` forces code-ground on a `flow` — charter §3's "Compound
+    // guard", the non-default combination #1309 also wires.
+    let src = "\
+flow guard() ~{
+  let ok = true;
+  while ok {
+    ok = false;
+  }
+}
+";
+    let (hir, _manifest, diags) = lower_native_fixture(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.knots.len(), 1);
+    let knot = &hir.knots[0];
+    assert!(!knot.is_function);
+    let Stmt::LogicBlock(lb) = &knot.body.stmts[0] else {
+        panic!(
+            "a code-ground body lowers as a single wrapping LogicBlock, got {:?}",
+            knot.body.stmts
+        );
+    };
+    assert_eq!(block_shape(&lb.stmts), vec!["TempDecl", "While"]);
+}
+
+#[test]
+fn fn_body_default_shape_matches_ink_fn_body_of_one_logic_block() {
+    // The differential-vs-brink-dialect exit criterion (#1309's own
+    // correction comment): the same logic authored as a native `fn`'s
+    // default code-ground body, and as an ink/brink-dialect container whose
+    // entire body is one `~ { … }` block, lowers to the identical
+    // `Knot.body` shape modulo provenance — one wrapping `Stmt::LogicBlock`
+    // carrying the same `BlockStmt` sequence (`is_function` is orthogonal
+    // to this shape, so the ink side stays a plain knot, same as the
+    // `let_assign_expr_stmt_shape_matches_ink_temp_decl` precedent below).
+    let native_src = "\
+fn heal(hp) {
+  let bonus = 1;
+  hp = hp + bonus;
+  log(hp);
+}
+";
+    let ink_src = "\
+== test ==
+~ {
+    temp bonus = 1
+    hp = hp + bonus
+    log(hp)
+}
+-> END
+";
+    let (hir, _manifest, diags) = lower_native_fixture(native_src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::LogicBlock(native_lb) = &hir.knots[0].body.stmts[0] else {
+        panic!(
+            "expected a wrapping LogicBlock, got {:?}",
+            hir.knots[0].body.stmts
+        );
+    };
+    let ink_stmts = ink_block_stmts(ink_src);
+    assert_eq!(block_shape(&native_lb.stmts), block_shape(&ink_stmts));
+    assert_eq!(
+        block_shape(&native_lb.stmts),
+        vec!["TempDecl", "Assignment", "ExprStmt"]
+    );
 }
 
 // ─── Shape differential: native vs. brink-dialect T1b `~ { … }` ────────

@@ -6,6 +6,7 @@
 //! are semantic nodes — with weave nesting resolved and syntactic sugar stripped.
 
 pub(crate) mod doc_block;
+pub mod emit_native;
 pub mod frame_shape;
 mod ink_provenance;
 pub mod lower;
