@@ -256,7 +256,7 @@ fn lower_string_lit(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnost
         match el {
             rowan::NodeOrToken::Token(t) => match t.kind() {
                 N::STRING_TEXT => literal.push_str(t.text()),
-                N::STRING_ESCAPE => literal.push_str(unescape(t.text())),
+                N::STRING_ESCAPE => literal.push_str(unescape_string_token(t.text())),
                 _ => {}
             },
             rowan::NodeOrToken::Node(n) if n.kind() == N::INTERPOLATION => {
@@ -281,7 +281,11 @@ fn lower_string_lit(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnost
     Expr::String(StringExpr { parts })
 }
 
-fn unescape(raw: &str) -> &'static str {
+/// Decode one `STRING_ESCAPE` token (`\n \t \\ \"`) to its literal text.
+/// Shared with [`super::module`]'s `@[was("…")]` path extraction — the escape
+/// set is fixed by the lexer (`lexer/mod.rs::lex_string_token`), so anything
+/// else is unreachable and maps to the empty string.
+pub(super) fn unescape_string_token(raw: &str) -> &'static str {
     match raw {
         "\\n" => "\n",
         "\\t" => "\t",

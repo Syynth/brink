@@ -77,20 +77,21 @@
 //!    top-level-only (D6), and the native grammar's shared `item()`
 //!    dispatch means the parser *can* produce them at body position even
 //!    though nothing downstream can use them there yet.
-//! 5. **Directive/annotation channel left unwired.** `is_local`,
-//!    `effects_assertion`, `visibility`, `@[was]` are all `None`/`false` on
-//!    every decl node this slice produces — B0.5's grammar gives
-//!    `@[name(args)]` a fully generic shape but no keyword syntax exists
-//!    yet for the specific channels ink's `directive.rs` populates (no
-//!    `KW_PUB`/`KW_PRIVATE`/`KW_LOCAL` tokens, no `@[was(…)]` recognition).
-//!    Wiring these is real, scoped work (mirroring
-//!    `hir/lower/directive.rs`'s sibling-walk-before-a-declaration
-//!    pattern) that B0.6 did not need to do to meet its own exit
+//! 5. **Decl-level directive/annotation channel left unwired.** `is_local`,
+//!    `effects_assertion`, and per-declaration `visibility` are still
+//!    `None`/`false` on every decl node this slice produces — B0.5's grammar
+//!    gives `@[name(args)]` a fully generic shape but no keyword syntax
+//!    exists yet for those channels ink's `directive.rs` populates (no
+//!    `KW_PUB`/`KW_PRIVATE`/`KW_LOCAL` tokens). Wiring these is real, scoped
+//!    work (mirroring `hir/lower/directive.rs`'s sibling-walk-before-a-
+//!    declaration pattern) that B0.6 did not need to do to meet its own exit
 //!    criterion (admission-clean declaration HIR) — flagged for a
 //!    follow-up slice rather than half-built here. `///`/`//!` docs ARE
 //!    wired (B0.6b, `docs/decision-log.md` 2026-07-20, `doc_comment`) —
 //!    they were judgment call 5 in the B0.6 report but shipped as their
-//!    own ruled slice rather than staying deferred alongside the rest.
+//!    own ruled slice rather than staying deferred alongside the rest. The
+//!    file-level `@[was("old::path")]` *module* rename record is now wired
+//!    too (issue #1286, [`module`]) — see judgment call #7.
 //! 6. **`import name;`'s semantics** (B0.5's own Finding #3 explicitly left
 //!    this to B0.6): lowered as the *qualified* form of ink's `Import`
 //!    (`module` = the joined path, `items` empty, `bare: false` — "brings
@@ -98,14 +99,20 @@
 //!    `{ … }` list. `use`'s two shapes with no `Import` equivalent
 //!    (module-level `as` aliasing; recursive nested groups) get E129
 //!    rather than a lossy guess — see [`import`]'s module doc.
-//! 7. **Native file-level module identity is never stamped**
-//!    (`HirFile.module` stays `None` for every native file this slice
-//!    produces). Unlike ink's `#@module(name)` tag (a per-file directive),
-//!    native module identity is charter-ruled to be **filesystem-derived**
-//!    (NF-3: "path on disk = path in language") — a project-layer fact
-//!    B0.10 owns, not something a single-file lowering can determine.  A
-//!    nested `module name { … }` *block* is a different concept (charter
-//!    §13.2's declared sub-modules) — see judgment call #4.
+//! 7. **Native module *identity* is filesystem-derived, not stamped here.**
+//!    `HirFile.module.name` stays empty for every native file: unlike ink's
+//!    `#@module(name)` tag (a per-file directive), native module identity is
+//!    charter-ruled **filesystem-derived** (NF-3: "path on disk = path in
+//!    language") — a project-layer fact `module_map_query` owns, not
+//!    something a single-file lowering can determine. What a native file
+//!    *can* author is the module's **rename record**: a file-level
+//!    `@[was("old::path")]` now populates `HirFile.module.was` (issue #1286,
+//!    [`module`]) so a moved file's old `DefinitionId`s still resolve. Such a
+//!    file therefore carries `Some(ModuleDecl { name: "", was: Some(…) })` —
+//!    the name is deliberately empty (see [`module`]'s doc); a file with no
+//!    `@[was]` still carries `None`. A nested `module name { … }` *block* is
+//!    a different concept (charter §13.2's declared sub-modules) — see
+//!    judgment call #4.
 
 mod body;
 mod choice;
@@ -115,6 +122,7 @@ pub mod control_flow;
 mod decl;
 mod doc_comment;
 mod expr;
+mod module;
 pub mod provenance;
 
 use brink_syntax_native::SyntaxKind as N;
@@ -199,6 +207,13 @@ pub fn lower(
 
     let root_content = entry_root_content(&top.knots);
 
+    // A file-level `@[was("old::path")]` records the module's rename (issue
+    // #1286). The module *name* stays filesystem-derived (stamped at the
+    // project layer by `module_map_query`); this only carries the authored
+    // rename record so a moved file's old saves still resolve — see
+    // [`module`]. `None` when the file declares no `@[was]`.
+    let module = module::lower_file_module(file_id, file.syntax(), &mut diags);
+
     let hir = HirFile {
         root_content,
         knots: top.knots,
@@ -210,11 +225,13 @@ pub fn lower(
         // Textual INCLUDE is dead on the native surface (charter §13.2:
         // "THE TREE IS THE COMPILATION UNIVERSE") — always empty.
         includes: Vec::new(),
-        // Filesystem-derived, project-layer fact (NF-3) — B0.10, not a
-        // single-file lowering. See judgment call #7.
-        module: None,
+        // The current name is a project-layer, path-derived fact
+        // (`module_map_query`); this node exists only for a `@[was]` rename
+        // record (name left empty — see judgment call #7 and [`module`]).
+        module,
         imports: top.imports,
-        // No visibility-keyword / `@[was]` syntax wired yet (judgment call #5).
+        // No visibility-keyword syntax wired yet (judgment call #5); `@[was]`
+        // now flows through `module.was` above.
         visibility: Vec::new(),
         was_directives: Vec::new(),
     };
@@ -362,6 +379,12 @@ fn walk_top_level(
             // it, judgment calls #4/#7). Not an error; just has nowhere to
             // go yet, same non-diagnosis as the other kinds in this arm.
             N::VAR_DECL | N::CONST_DECL | N::FLAGS_DECL | N::ERROR | N::DOC_COMMENT => {}
+            // A file-level `@[was("old::path")]` rename record (issue #1286)
+            // is consumed by `module::lower_file_module`, not here — recognize
+            // it so it is not re-diagnosed `E129` as "unlowered". Every *other*
+            // annotation at declaration position still has no HIR channel and
+            // falls through to the loud `E129` below.
+            N::ANNOTATION_LINE if module::is_was_annotation(&child) => {}
             // Every other body-line construct (content, tags, choices,
             // diverts, conditionals, alternations, annotations, …) reaching
             // declaration position: real data with no home in this slice
