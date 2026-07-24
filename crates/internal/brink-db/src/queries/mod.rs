@@ -532,10 +532,10 @@ pub(crate) fn module_map_query(
     //
     // The rest of the module system is the SAME feature, just path-spelled:
     // `was` (rename migration, so a moved file's old saves still resolve) is
-    // read from the file's own directive via its HIR, exactly as the ink path
-    // does — never hard-dropped. It is `None` today only because the native
-    // surface does not parse `@[was]` yet (deliberately deferred in
-    // `lower_native`); once it does, the record flows through here unchanged.
+    // read from the file's own `@[was("old::path")]` annotation via its HIR,
+    // exactly as the ink path reads `#@was` — never hard-dropped (issue #1286
+    // wired the native parse/lower; `lower_native::module`). `None` when the
+    // file authored no `@[was]`.
     for f in files {
         if file_language(f.path(db)) == Language::Native {
             let was = lowered_query(db, *f)

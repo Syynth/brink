@@ -2134,6 +2134,16 @@ pub enum DiagnosticCode {
     /// `ParseSeverity::Warning` diagnostic this code carries once it
     /// reaches `brink-db`'s `lower_native_file`.
     E131,
+    /// A native file-level `@[was(…)]` rename record (issue #1286) carries no
+    /// quoted old module path — a missing argument, or one that is not a
+    /// string literal. Native module paths are `::`-separated and travel as a
+    /// string (`::` is not annotation-argument grammar), so the migration
+    /// target must be spelled `@[was("story::old::path")]`. **Warning
+    /// severity, never blocking** (see `DiagnosticCode::severity`): the
+    /// malformed directive is skipped — no alias is produced — but the file
+    /// still compiles. `brink-ir::hir::lower_native::module::lower_file_module`
+    /// raises it rather than silently dropping the authored record.
+    E132,
 }
 
 impl DiagnosticCode {
@@ -2276,6 +2286,7 @@ impl DiagnosticCode {
             Self::E129 => "E129",
             Self::E130 => "E130",
             Self::E131 => "E131",
+            Self::E132 => "E132",
         }
     }
 
@@ -2463,6 +2474,9 @@ impl DiagnosticCode {
             Self::E129 => "native: construct parses but has no HIR lowering yet",
             Self::E130 => "native: `flow` nested more than two levels deep is not yet supported",
             Self::E131 => "native: `<-` (splice) used outside a choice point has no effect",
+            Self::E132 => {
+                "native: `@[was]` needs a quoted old module path, e.g. `@[was(\"story::old::path\")]`"
+            }
         }
     }
 
@@ -2487,7 +2501,8 @@ impl DiagnosticCode {
             | Self::E095
             | Self::E106
             | Self::E110
-            | Self::E131 => Severity::Warning,
+            | Self::E131
+            | Self::E132 => Severity::Warning,
             _ => Severity::Error,
         }
     }
@@ -2631,6 +2646,7 @@ impl DiagnosticCode {
             "E129" => Some(Self::E129),
             "E130" => Some(Self::E130),
             "E131" => Some(Self::E131),
+            "E132" => Some(Self::E132),
             _ => None,
         }
     }

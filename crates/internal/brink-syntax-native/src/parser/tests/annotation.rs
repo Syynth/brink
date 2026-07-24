@@ -18,7 +18,12 @@ use super::super::MAX_DEPTH;
 
 #[test]
 fn annotation_line_parses() {
-    let src = "fn heal(hp) {\n  @[effects(pure, silent, reads(gold, hp))]\n  var x = hp\n}\n";
+    // `@[…]` annotations dispatch only through the prose-ground `body_line`
+    // (`parser/block.rs`) — the code-ground `STMT_BLOCK` statement grammar
+    // has no `AT_L_BRACKET` arm (`parser/stmt.rs::statement`) — so this
+    // exercises `fn`'s `>{ }` prose override (charter §4, #1309) rather
+    // than its now code-ground default.
+    let src = "fn heal(hp) >{\n  @[effects(pure, silent, reads(gold, hp))]\n  var x = hp\n}\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
 }
@@ -424,7 +429,7 @@ fn annotation_line_in_block_body_before_divert() {
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
 
     let flow = find_child::<crate::ast::FlowDecl>(&p.syntax()).expect("FlowDecl");
-    let body = flow.body().expect("flow body BLOCK");
+    let body = expect_prose_body(flow.body());
     let items: Vec<_> = body.items().collect();
     let annotation_idx = items
         .iter()
@@ -480,7 +485,7 @@ fn annotation_line_in_single_line_block_eats_closing_brace() {
     );
 
     let flow = find_child::<crate::ast::FlowDecl>(&p.syntax()).expect("FlowDecl");
-    let body = flow.body().expect("flow body BLOCK");
+    let body = expect_prose_body(flow.body());
     let annotation_node = body
         .items()
         .find(|n| n.kind() == SyntaxKind::ANNOTATION_LINE)

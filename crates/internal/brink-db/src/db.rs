@@ -819,6 +819,94 @@ mod native_seam_tests {
         );
     }
 
+    /// NATIVE `@[was]` RENAME MIGRATION (issue #1286, the save-key companion to
+    /// path-derived native module identity). A native module's `DefinitionId`
+    /// is `hash(native_module_path, name)`, so *moving* the file changes every
+    /// id and breaks saves keyed on the old ones. A file-level
+    /// `@[was("old::path")]` is the migration record: it must emit an
+    /// `AliasEntry { old, new }` mapping each pre-rename id to its current one,
+    /// so `brink-runtime`'s miss-path lookup still resolves an old save.
+    #[test]
+    fn native_was_annotation_produces_pre_rename_alias() {
+        use brink_format::DefinitionId;
+
+        fn hero_id(path: &str, src: &str) -> DefinitionId {
+            let mut db = ProjectDb::new();
+            db.set_analysis_options(AnalysisOptions {
+                dialect: Dialect::Brink,
+                ..AnalysisOptions::default()
+            });
+            db.set_file(path, src.to_owned());
+            db.set_entry(path);
+            let index = db.symbol_index();
+            index.by_name.get("hero").expect("`hero` is defined")[0]
+        }
+
+        let plain = "flow hero() {\n  hi\n}\n";
+        // The OLD identity: `hero` when the module lived at `old/barter.brink`
+        // (module `story::old::barter`), before any rename.
+        let old_id = hero_id("old/barter.brink", plain);
+
+        // The renamed module: same `hero`, now at `market/barter.brink`
+        // (module `story::market::barter`), declaring where it came from.
+        let renamed_src = "@[was(\"story::old::barter\")]\nflow hero() {\n  hi\n}\n";
+        let mut db = ProjectDb::new();
+        db.set_analysis_options(AnalysisOptions {
+            dialect: Dialect::Brink,
+            ..AnalysisOptions::default()
+        });
+        db.set_file("market/barter.brink", renamed_src.to_owned());
+        db.set_entry("market/barter.brink");
+
+        let index = db.symbol_index();
+        let new_id = index.by_name.get("hero").expect("`hero` is defined")[0];
+        assert_ne!(
+            old_id, new_id,
+            "moving the module changes `hero`'s identity — that is the problem \
+             `@[was]` migrates"
+        );
+        assert!(
+            index
+                .aliases
+                .iter()
+                .any(|a| a.old == old_id && a.new == new_id),
+            "`@[was(\"story::old::barter\")]` must alias the pre-rename id to the \
+             current one; aliases: {:?}",
+            index.aliases
+        );
+    }
+
+    /// The negative control for [`native_was_annotation_produces_pre_rename_alias`]:
+    /// WITHOUT `@[was]`, the same physical move changes `hero`'s `DefinitionId`
+    /// and produces **no** alias — an old save silently fails to resolve. This
+    /// is exactly why `@[was]` is required before native is used for real saves.
+    #[test]
+    fn native_rename_without_was_leaves_no_alias() {
+        use brink_format::DefinitionId;
+
+        fn setup(path: &str, src: &str) -> (DefinitionId, Vec<brink_format::AliasEntry>) {
+            let mut db = ProjectDb::new();
+            db.set_analysis_options(AnalysisOptions {
+                dialect: Dialect::Brink,
+                ..AnalysisOptions::default()
+            });
+            db.set_file(path, src.to_owned());
+            db.set_entry(path);
+            let index = db.symbol_index();
+            let id = index.by_name.get("hero").expect("`hero` is defined")[0];
+            (id, index.aliases.clone())
+        }
+
+        let plain = "flow hero() {\n  hi\n}\n";
+        let (old_id, _) = setup("old/barter.brink", plain);
+        let (new_id, aliases) = setup("market/barter.brink", plain);
+        assert_ne!(old_id, new_id, "the move still changes identity");
+        assert!(
+            !aliases.iter().any(|a| a.old == old_id),
+            "no `@[was]` means no migration path — the old id is unrecoverable"
+        );
+    }
+
     /// NATIVE MULTI-FILE LINKING (issue #1296, decision-log 2026-07-23): a
     /// multi-file native project links **every discovered `.brink` module**
     /// into the one `StoryData` — the discovery set is the compilation unit.
