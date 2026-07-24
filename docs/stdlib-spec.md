@@ -574,6 +574,27 @@ precedent, oracle byte-identical):
      mono-HM, zero generics); user iterables joining
      `map`/`filter`/`fold` stays #1090-gated. `each`/`for_each`
      remain ordinary derived verbs for pure-callback cases.
+   - `construct` — the **4th entry (RULED 2026-07-23, #1103)**:
+     `TypeName { … }` construction is protocol dispatch (the C#
+     `Add`-method lineage), **not** closed compiler grammar over a
+     fixed set — so a future collection (`Heap[T]`, host types)
+     joins the literal grammar with no grammar change, and it's
+     symmetric with `display`/`compare` being protocols rather than
+     the lone grammar exception. The brace *tokens* (element / pair
+     / field forms) stay fixed surface grammar the parser produces;
+     the protocol governs dispatch/meaning only. **This round only
+     std types register**; user-type opt-in rides the deferred impl
+     spelling. Two members: the **total** literal (`Weighted { … }`
+     faults on an invalid table — the 90% value-position case,
+     ships now) and a **validating** variant (`construct → Option`,
+     for data-driven/runtime tables) — the principled home for
+     evidence-by-construction (Weighted's §7 refinement); the
+     validating member is **ratified but its user-facing spelling is
+     deferred** with the impl spelling. Duplicate keys in a map
+     literal (`Map { k:1, k:2 }`) are a **compile error** (new
+     E076-lineage code), consistent with struct dup-field. A spread
+     / from-existing form (`Map { ..other, k:v }`) is **deferred** —
+     no demonstrated demand, extensible later at zero grammar cost.
    Implementation spelling (attribute vs impl-block) ⏳ —
    code-dialect sitting.
 
