@@ -1,6 +1,7 @@
 //! `flow`/`fn` declaration heads → `Knot`/`Stitch` (`docs/b0-sequencing.md`
-//! §B0.6). Bodies are always the empty stub — see the `lower_native` module
-//! doc's judgment call #2 (bodies deferred to B0.7/B0.8).
+//! §B0.6). Bodies lower through [`lower_body`], dialect-dispatched on the
+//! body-dialect selector (charter §4, #1309): prose rides B0.7's
+//! `body::lower_block`, code rides B0.8's `body::lower_stmt_block_as_body`.
 //!
 //! Nesting fence (Q4(b), `docs/hir-admission-contract.md` §5 Q4): exactly
 //! two container levels. A top-level `flow`/`fn` → `Knot`; a `flow` nested
@@ -26,17 +27,44 @@ use super::provenance::native_provenance;
 /// body's inner `//!` form (B0.6b judgment call — the two forms are not
 /// merged; the outer form wins when both are somehow present, since it's
 /// the one visible from outside the container without opening its body).
+///
+/// The inner `//!` form only exists for a prose-ground body — a code-ground
+/// `STMT_BLOCK` has no inner-doc attachment point (`parser::block::
+/// braced_item_list`'s `maybe_consume_inner_run` call is gated on `kind ==
+/// BLOCK`) — so a `Body::Code` body simply contributes none, same as an
+/// absent body.
 fn container_doc(
     file_id: FileId,
     outer: Option<ast::DocComment>,
-    body: Option<&ast::Block>,
+    body: Option<&ast::Body>,
     policy: DocPolicy,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<DocBlock> {
     if let Some(doc) = lower_doc_comment(file_id, outer, policy, diags) {
         return Some(doc);
     }
-    lower_doc_comment(file_id, body.and_then(ast::Block::doc), policy, diags)
+    let inner = match body {
+        Some(ast::Body::Prose(b)) => b.doc(),
+        Some(ast::Body::Code(_)) | None => None,
+    };
+    lower_doc_comment(file_id, inner, policy, diags)
+}
+
+/// Lower a `flow`/`fn`'s body — whichever body-dialect the selector chose
+/// (charter §4) — to the HIR `Block` a `Knot`/`Stitch` carries. A prose body
+/// rides B0.7's `body::lower_block` unchanged; a code body (`fn`'s default,
+/// or a `flow`'s `~{ }` "Compound guard" override) lowers its statements via
+/// the existing B0.8 `control_flow::lower_stmt_block` and wraps the result
+/// as the container's sole statement — a single `Stmt::LogicBlock`, exactly
+/// the shape a brink-dialect container whose entire body is one `~ { … }`
+/// block already produces (`hir::lower::content::logic_line`). No new HIR
+/// node: NF-2's existing-HIR-only fence, and the differential partner this
+/// reuses is already fully wired to LIR (`lir::lower::blocks`).
+fn lower_body(file_id: FileId, body: &ast::Body, diags: &mut Vec<Diagnostic>) -> Block {
+    match body {
+        ast::Body::Prose(b) => super::body::lower_block(file_id, b, diags),
+        ast::Body::Code(sb) => super::body::lower_stmt_block_as_body(file_id, sb, diags),
+    }
 }
 
 fn diag(file: FileId, range: rowan::TextRange, code: DiagnosticCode) -> Diagnostic {
@@ -93,8 +121,12 @@ pub(super) fn lower_top_level_container(
     };
     let params = lower_params(node.param_list());
 
+    // A nested `flow`/`fn` declaration can only appear inside a
+    // *prose*-ground body — `parser/stmt.rs`'s code-ground statement
+    // dispatch has no declaration arm, so a `~{ }`-bodied flow's `STMT_BLOCK`
+    // structurally cannot contain one. Only `Body::Prose` is scanned.
     let mut stitches = Vec::new();
-    if let Some(body) = node.body() {
+    if let Some(ast::Body::Prose(body)) = node.body() {
         for child in body.items() {
             match child.kind() {
                 brink_syntax_native::SyntaxKind::FLOW_DECL => {
@@ -115,11 +147,12 @@ pub(super) fn lower_top_level_container(
     }
 
     // B0.7 (`docs/b0-sequencing.md` §B0.7): the body is now the real
-    // prose-dialect lowering, not the empty stub — `super::body::lower_block`
-    // walks the same `body.items()` this loop just scanned for nested
-    // `flow`/`fn` declarations, skipping those (and every other
-    // declaration kind) as body-item statements, so there is no double
-    // lowering.
+    // dialect-appropriate lowering, not the empty stub — a prose body rides
+    // `super::body::lower_block`, walking the same `body.items()` the loop
+    // above just scanned for nested `flow`/`fn` declarations (skipping
+    // those, and every other declaration kind, as body-item statements, so
+    // there is no double lowering); a code body (B0.8/#1309) rides
+    // `lower_body`'s `Body::Code` arm instead — see that function's doc.
     let doc = container_doc(
         file_id,
         node.doc(),
@@ -127,9 +160,9 @@ pub(super) fn lower_top_level_container(
         DocPolicy::CALLABLE,
         diags,
     );
-    let mut body_block = node.body().map_or_else(Block::default, |b| {
-        super::body::lower_block(file_id, &b, diags)
-    });
+    let mut body_block = node
+        .body()
+        .map_or_else(Block::default, |b| lower_body(file_id, &b, diags));
     super::body::fixup_return_kind(node.is_function(), &mut body_block);
     // Non-function flows inherit ink's root-content implicit-end grace
     // (RULED 2026-07-22; charter §15): a body falling off the end gets a
@@ -176,8 +209,10 @@ fn lower_stitch(
 
     // Depth-3 fence (Q4(b)): a `flow` nested inside *this* stitch's body is
     // one level too deep. Reject each occurrence loudly; do not lower it,
-    // do not flatten it into this stitch.
-    if let Some(body) = node.body() {
+    // do not flatten it into this stitch. Only a prose-ground body can
+    // structurally contain one — see `lower_top_level_container`'s parallel
+    // comment.
+    if let Some(ast::Body::Prose(body)) = node.body() {
         for child in body.items() {
             match child.kind() {
                 brink_syntax_native::SyntaxKind::FLOW_DECL => {
@@ -198,9 +233,9 @@ fn lower_stitch(
         DocPolicy::CALLABLE,
         diags,
     );
-    let mut body_block = node.body().map_or_else(Block::default, |b| {
-        super::body::lower_block(file_id, &b, diags)
-    });
+    let mut body_block = node
+        .body()
+        .map_or_else(Block::default, |b| lower_body(file_id, &b, diags));
     // Stitches never carry `is_function` (no HIR container below `Knot`
     // does — module doc judgment call #4), so a bare `return` inside a
     // stitch is always the tunnel-return spelling, never an explicit

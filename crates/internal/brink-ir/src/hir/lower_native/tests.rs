@@ -30,7 +30,10 @@ fn top_level_flow_lowers_to_knot() {
 
 #[test]
 fn fn_decl_sets_is_function() {
-    let (hir, manifest, diags) = lower_src("fn heal(hp) {\n  Heal.\n}\n");
+    // Plain `{ }` on a `fn` is code-ground by default (charter §4, RULED
+    // 2026-07-23, #1309) — `return hp;` exercises that default, not the
+    // `>{ }` prose override (which has its own coverage elsewhere).
+    let (hir, manifest, diags) = lower_src("fn heal(hp) {\n  return hp;\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(hir.knots.len(), 1);
     assert!(hir.knots[0].is_function);
@@ -335,7 +338,7 @@ fn nested_main_flow_does_not_synthesize_an_entry() {
 fn function_named_main_does_not_synthesize_an_entry() {
     // `fn main()` is a function, not a flow — not eligible for the entry
     // convention (a function is called for its value, not diverted into).
-    let (hir, _manifest, diags) = lower_src("fn main() {\n  Hi.\n}\n");
+    let (hir, _manifest, diags) = lower_src("fn main() {\n  return;\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert!(hir.root_content.stmts.is_empty());
 }
@@ -385,7 +388,7 @@ flow garden(mood) {
 }
 
 fn heal(target, amount) {
-  Heal.
+  return;
 }
 ";
 
@@ -747,7 +750,12 @@ fn splice_after_a_choice_attaches_to_that_choices_body() {
 
 #[test]
 fn explicit_return_stamps_explicit_kind() {
-    let (hir, _m, diags) = lower_src("fn f() {\n  return\n}\n");
+    // `>{ }` forces the prose-ground override so this exercises the
+    // content-ground `RETURN_STMT` (no `;`) `fixup_return_kind` corrects —
+    // `fn`'s new code-ground default has its own always-`Explicit` return
+    // with no fixup needed (`parser/stmt.rs::return_stmt`'s doc), covered
+    // by `fn_decl_sets_is_function` and the code-ground differential tests.
+    let (hir, _m, diags) = lower_src("fn f() >{\n  return\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let Stmt::Return(r) = &hir.knots[0].body.stmts[0] else {
         panic!("expected Return");
@@ -791,7 +799,10 @@ fn bare_return_inside_a_non_function_flow_is_a_tunnel_redirect() {
 
 #[test]
 fn bare_return_inside_a_function_stays_explicit() {
-    let (hir, _m, diags) = lower_src("fn f() {\n  return\n}\n");
+    // `>{ }` — see `explicit_return_stamps_explicit_kind`'s comment: this
+    // pins the content-ground fixup's function-vs-flow branch, distinct
+    // from the code-ground default's own always-`Explicit` return.
+    let (hir, _m, diags) = lower_src("fn f() >{\n  return\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let Stmt::Return(r) = &hir.knots[0].body.stmts[0] else {
         panic!("expected Return");
@@ -866,7 +877,13 @@ fn block_ending_in_divert_has_diverge_tail() {
 
 #[test]
 fn block_ending_in_explicit_return_has_diverge_tail() {
-    let (hir, _m, diags) = lower_src("fn f() {\n  return\n}\n");
+    // `>{ }` — see `explicit_return_stamps_explicit_kind`'s comment: a
+    // code-ground `fn` body's own tail is `Unit` regardless of its last
+    // statement (the whole `STMT_BLOCK` lowers as one `Stmt::LogicBlock`,
+    // and `tail_from_stmts` only inspects the *top-level* `Stmt` list — see
+    // `body::lower_stmt_block_as_body`'s doc), so this pins the
+    // content-ground body's tail computation instead.
+    let (hir, _m, diags) = lower_src("fn f() >{\n  return\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let body = &hir.knots[0].body;
     assert!(

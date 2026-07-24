@@ -18,7 +18,10 @@ fn flow_with_prose_body() {
 
 #[test]
 fn fn_decl_parses() {
-    let p = assert_lossless("fn heal(hp) {\n  var x = hp + 1\n}\n");
+    // Plain `{ }` on a `fn` is code-ground by default (charter §4, RULED
+    // 2026-07-23, #1309) — `let`, not the declaration-layer `var`, is the
+    // code-ground binding form (`parser/stmt.rs::let_stmt`).
+    let p = assert_lossless("fn heal(hp) {\n  let x = hp + 1;\n}\n");
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
 }
 
@@ -170,7 +173,7 @@ fn inner_doc_comment_attaches_to_flow_body_block() {
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
-    let body = flow.body().expect("body block");
+    let body = expect_prose_body(flow.body());
     let first_child = body
         .syntax()
         .children()
@@ -202,7 +205,7 @@ fn inner_doc_tolerates_leading_blank_lines() {
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
-    let body = flow.body().expect("body block");
+    let body = expect_prose_body(flow.body());
     let doc = body
         .doc()
         .expect("inner doc still attaches past blank lines");
@@ -223,7 +226,7 @@ fn inner_doc_after_real_content_does_not_attach_to_block() {
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
-    let body = flow.body().expect("body block");
+    let body = expect_prose_body(flow.body());
     assert!(body.doc().is_none());
     assert!(!has_node_kind(body.syntax(), SyntaxKind::DOC_COMMENT));
     // The `//!` text must not leak into any visible `TEXT` run.
@@ -305,6 +308,102 @@ fn fn_decl_ref_param() {
     let params: Vec<_> = f.param_list().expect("param list").params().collect();
     assert_eq!(params.len(), 1);
     assert!(params[0].is_ref());
+}
+
+// ── Body-dialect selectors (charter §4, RULED 2026-07-23, #1309) ─────
+//
+// Plain `{ }` = the per-keyword default (`fn` → code-ground `STMT_BLOCK`,
+// `flow` → prose-ground `BLOCK`); `~{ }` forces code-ground; `>{ }` forces
+// prose-ground. Distinct from the marker-INSIDE family (`{~`/`{?`…) —
+// these selectors sit *before* the brace, on the declaration head, never
+// inside it.
+
+#[test]
+fn fn_plain_brace_defaults_to_code_ground() {
+    let p = assert_lossless("fn heal(hp) {\n  return hp;\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let f: ast::FnDecl = find_child(&p.syntax()).expect("fn decl");
+    assert!(
+        matches!(f.body(), Some(ast::Body::Code(_))),
+        "plain `{{ }}` on a fn must default to STMT_BLOCK, got {:?}",
+        f.body()
+    );
+}
+
+#[test]
+fn flow_plain_brace_defaults_to_prose_ground() {
+    let p = assert_lossless("flow greet() {\n  Hi.\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let f: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    assert!(
+        matches!(f.body(), Some(ast::Body::Prose(_))),
+        "plain `{{ }}` on a flow must default to BLOCK, got {:?}",
+        f.body()
+    );
+}
+
+#[test]
+fn fn_prose_override_selects_block() {
+    // `>{ }` forces prose-ground on a `fn` — the non-default spelling.
+    let p = assert_lossless("fn heal(hp) >{\n  Hi.\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let f: ast::FnDecl = find_child(&p.syntax()).expect("fn decl");
+    assert!(
+        matches!(f.body(), Some(ast::Body::Prose(_))),
+        "`>{{ }}` on a fn must select BLOCK, got {:?}",
+        f.body()
+    );
+    // The `>` selector token is a bare child of FN_DECL, a leading sibling
+    // of the BLOCK it selects.
+    assert!(
+        f.syntax()
+            .children_with_tokens()
+            .any(|t| t.kind() == SyntaxKind::GT)
+    );
+}
+
+#[test]
+fn flow_code_override_selects_stmt_block() {
+    // `~{ }` forces code-ground on a `flow` — charter §3's "Compound
+    // guard": a code-bodied flow, honestly spellable.
+    let p = assert_lossless("flow guard() ~{\n  let ok = true;\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let f: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    assert!(
+        matches!(f.body(), Some(ast::Body::Code(_))),
+        "`~{{ }}` on a flow must select STMT_BLOCK, got {:?}",
+        f.body()
+    );
+    assert!(
+        f.syntax()
+            .children_with_tokens()
+            .any(|t| t.kind() == SyntaxKind::TILDE)
+    );
+}
+
+#[test]
+fn body_selector_tolerates_whitespace_before_the_brace() {
+    // Charter §2: whitespace is never load-bearing — the selector and its
+    // brace may be split across a space (even a newline), same as any
+    // other two adjacent tokens in this grammar.
+    let p = assert_lossless("fn heal(hp) >  {\n  Hi.\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let f: ast::FnDecl = find_child(&p.syntax()).expect("fn decl");
+    assert!(matches!(f.body(), Some(ast::Body::Prose(_))));
+}
+
+#[test]
+fn missing_body_after_selector_prefix_still_errors() {
+    // No selector prefix and no brace at all — the existing "expected a
+    // braced body" diagnostic, unaffected by the selector grammar.
+    let p = crate::parse("fn heal(hp)\n");
+    assert!(
+        p.errors()
+            .iter()
+            .any(|e| e.message.contains("expected a braced body")),
+        "errors: {:?}",
+        p.errors()
+    );
 }
 
 #[test]

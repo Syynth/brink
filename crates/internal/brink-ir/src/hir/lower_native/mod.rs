@@ -410,7 +410,7 @@ impl FlowOrFn {
         }
     }
 
-    fn body(&self) -> Option<ast::Block> {
+    fn body(&self) -> Option<ast::Body> {
         match self {
             Self::Flow(f) => f.body(),
             Self::Fn(f) => f.body(),
