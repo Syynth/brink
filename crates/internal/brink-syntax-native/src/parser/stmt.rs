@@ -24,12 +24,15 @@
 //! `expr::atom`'s `L_BRACE` case dispatches here. `var x = { let y = 1; y +
 //! 1 }` is the shortest path from `source_file` down to this module — the
 //! same shape `expr.rs`'s own tests use to reach `expr::expression` through
-//! `var name = <expr>`. This deliberately does **not** touch `flow`/`fn`
-//! declaration bodies (`parser/decl.rs`'s `block::block` call) — whether
-//! `fn` bodies switch from the content-ground `BLOCK` to `STMT_BLOCK` is
-//! the body-dialect seam's own call (`docs/b0-sequencing.md`'s B0.5 note),
-//! left to a later wave so this one stays a pure grammar addition with no
-//! blast radius on the existing content-ground body tests.
+//! `var name = <expr>`.
+//!
+//! **Also reached through `flow`/`fn` declaration bodies** (`parser/
+//! decl.rs`'s `decl_body`, issue #1309, charter §4 RULED 2026-07-23): the
+//! body-dialect seam's per-keyword default routes a `fn`'s plain `{ }` (and
+//! a `flow`'s `~{ }` "Compound guard" override) through `stmt_block` below,
+//! same grammar, same node kind — `flow`'s own plain-`{ }` default (and
+//! `fn`'s `>{ }` override) still route through the content-ground `BLOCK`
+//! (`block::block`).
 
 use crate::SyntaxKind::{
     ASSIGN_STMT, BREAK_STMT, CONTINUE_STMT, DOT, EQ, EXPR_STMT, IDENT, KW_BREAK, KW_CONTINUE,

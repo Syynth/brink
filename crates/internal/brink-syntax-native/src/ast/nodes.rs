@@ -7,6 +7,7 @@
 //! (that's additive, not a re-architecture, when it's actually needed).
 
 use crate::SyntaxKind::{self, DOC_COMMENT_INNER, DOC_COMMENT_OUTER, IDENT, L_PAREN};
+use crate::ast::AstNode as _;
 use crate::ast::ast_node;
 use crate::ast::support;
 use crate::{SyntaxNode, SyntaxToken};
@@ -197,6 +198,41 @@ impl SourceFile {
     }
 }
 
+/// A `flow`/`fn` declaration's body — either the prose-ground [`Block`]
+/// (`BLOCK`) or the code-ground [`StmtBlock`] (`STMT_BLOCK`), whichever the
+/// body-dialect selector on the opening brace chose (charter §4, RULED
+/// 2026-07-23: plain `{ }` = per-keyword default, `~{ }` = code-ground,
+/// `>{ }` = prose-ground — see `parser::decl::decl_body`). One enum rather
+/// than two separate `body()`/`code_body()` accessors, since a given
+/// declaration's body is always exactly one or the other, never both.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Body {
+    /// Prose-ground: content lines, choices, diverts (`fn`'s non-default
+    /// spelling; `flow`'s default).
+    Prose(Block),
+    /// Code-ground: statements directly, no per-line `~` (`flow`'s
+    /// non-default spelling — the "Compound guard"; `fn`'s default).
+    Code(StmtBlock),
+}
+
+impl Body {
+    /// The underlying syntax node, whichever variant this is.
+    pub fn syntax(&self) -> &SyntaxNode {
+        match self {
+            Self::Prose(b) => b.syntax(),
+            Self::Code(b) => b.syntax(),
+        }
+    }
+
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        match node.kind() {
+            SyntaxKind::BLOCK => Block::cast(node).map(Self::Prose),
+            SyntaxKind::STMT_BLOCK => StmtBlock::cast(node).map(Self::Code),
+            _ => None,
+        }
+    }
+}
+
 impl FlowDecl {
     /// The declared name (the `IDENT` immediately after `flow`).
     pub fn name_token(&self) -> Option<SyntaxToken> {
@@ -207,16 +243,25 @@ impl FlowDecl {
         support::child(&self.syntax)
     }
 
-    pub fn body(&self) -> Option<Block> {
-        support::child(&self.syntax)
+    /// The body-dialect selector chose either a prose [`Block`] (the
+    /// `flow` default) or a code [`StmtBlock`] (the `~{ }` override, §3's
+    /// "Compound guard") — see [`Body`].
+    pub fn body(&self) -> Option<Body> {
+        self.syntax.children().find_map(Body::cast)
     }
 
     /// Nested `flow` declarations directly inside this one's body — a
-    /// stitch (charter §4: "stitches are nested `flow`s").
+    /// stitch (charter §4: "stitches are nested `flow`s"). Only a
+    /// prose-ground body can contain one (a code-ground `STMT_BLOCK`'s
+    /// statement grammar has no declaration-dispatch arm — `parser/stmt.rs`
+    /// never produces a `FLOW_DECL` child), so a `~{ }`-bodied flow simply
+    /// yields none here, same as an empty body would.
     pub fn stitches(&self) -> impl Iterator<Item = FlowDecl> {
-        self.body()
-            .into_iter()
-            .flat_map(|b| support::children::<FlowDecl>(&b.syntax).collect::<Vec<_>>())
+        match self.body() {
+            Some(Body::Prose(b)) => support::children::<FlowDecl>(&b.syntax).collect::<Vec<_>>(),
+            _ => Vec::new(),
+        }
+        .into_iter()
     }
 
     /// The leading `///` doc comment, if one is attached (B0.6b).
@@ -234,8 +279,11 @@ impl FnDecl {
         support::child(&self.syntax)
     }
 
-    pub fn body(&self) -> Option<Block> {
-        support::child(&self.syntax)
+    /// The body-dialect selector chose either a code [`StmtBlock`] (the
+    /// `fn` default) or a prose [`Block`] (the `>{ }` override) — see
+    /// [`Body`].
+    pub fn body(&self) -> Option<Body> {
+        self.syntax.children().find_map(Body::cast)
     }
 
     /// The leading `///` doc comment, if one is attached (B0.6b).
