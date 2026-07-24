@@ -13,7 +13,7 @@ module inner {
   var secret = 1
 }
 
-fn heal(hp) {
+fn heal(hp) >{
   var x = hp + 1
 }
 
