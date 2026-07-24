@@ -473,7 +473,16 @@ fn emit_stmt_stream(
             Stmt::ChoiceSet(cs) => {
                 emit_choice_set(out, &indent, depth, cs, context)?;
                 // The continuation's statements are the rest of *this*
-                // stream, flattened in place — see this function's doc.
+                // stream, flattened in place — see this function's doc. A
+                // labeled continuation (a gather `- (name)` immediately
+                // after the `{?}`, per `lower_native::body::lower_continuation`)
+                // has no faithful native spelling here: flattening it would
+                // silently drop the label rather than refusing, breaking the
+                // "never emit invalid/lossy syntax" rule this module
+                // otherwise upholds for `Stmt::LabeledBlock`.
+                if cs.continuation.label.is_some() {
+                    return Err(unsupported("labeled gather continuation", context));
+                }
                 emit_stmt_stream(out, &cs.continuation.stmts, depth, context)?;
                 return Ok(());
             }
@@ -624,6 +633,13 @@ fn emit_choice(out: &mut String, depth: usize, c: &Choice, context: &str) -> Res
         }
     }
     out.push_str(&head);
+
+    // A labeled choice body has no faithful native spelling — same guard as
+    // `emit_choice_body`'s fallback (`else {}`) path, applied here for
+    // consistency on the non-fallback path.
+    if c.body.label.is_some() {
+        return Err(unsupported("labeled choice body", context));
+    }
 
     // The choice body's own stmts always start with a structural
     // `Stmt::EndOfLine` marker (`lower_native::choice`'s own doc: "the
@@ -850,5 +866,44 @@ fn infix_op_str(op: InfixOp) -> &'static str {
         InfixOp::Or => "||",
         InfixOp::Has => "?",
         InfixOp::HasNot => "!?",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parse + lower native `src`, then run it through [`emit_file`].
+    fn lower_and_emit(src: &str) -> Result<String, EmitError> {
+        let parse = brink_syntax_native::parse(src);
+        let tree = parse.tree();
+        let (hir, _manifest, diags) = crate::hir::lower_native::lower(crate::FileId(0), &tree);
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+        emit_file(&hir)
+    }
+
+    /// A `{?}` choice point followed by a labeled gather `(again)` attaches
+    /// the label directly to `ChoiceSet::continuation.label`
+    /// (`lower_native::body::lower_continuation`'s dissolved-gather
+    /// convention — see `labeled_gather_after_choices_attaches_label_to_continuation`
+    /// in `lower_native::tests`). `emit_stmt_stream` flattens that
+    /// continuation's statements back into the surrounding stream; it must
+    /// refuse rather than silently drop the label, matching the sibling
+    /// `Stmt::LabeledBlock` guard this module already applies to a
+    /// mid-flow named gather.
+    #[test]
+    fn labeled_gather_continuation_is_refused_not_silently_dropped() {
+        let src = "flow a() {\n  {?\n    * A.\n  }\n  (again)\n  Loop point.\n}\n";
+        let err = lower_and_emit(src).expect_err("labeled gather continuation must be refused");
+        assert!(
+            matches!(
+                &err,
+                EmitError::Unsupported {
+                    what: "labeled gather continuation",
+                    ..
+                }
+            ),
+            "expected an Unsupported(\"labeled gather continuation\") refusal, got {err:?}"
+        );
     }
 }
