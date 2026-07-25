@@ -2144,6 +2144,45 @@ pub enum DiagnosticCode {
     /// still compiles. `brink-ir::hir::lower_native::module::lower_file_module`
     /// raises it rather than silently dropping the authored record.
     E132,
+
+    // ── B0.9 native accept-list admission gate (docs/hir-admission-contract.md
+    // §4.4/§5 Q6, docs/b0-sequencing.md §B0.9, issue #1179) ──
+    //
+    // The inverse of the ink `dialect_gate` reject-list: `brink_analyzer::
+    // validate_native_accept_list` enumerates the HIR shapes a well-formed
+    // native lowering is allowed to produce and refuses everything else,
+    // loudly, at the same non-suppressible seam B0.3's `validate_admission`
+    // runs at. Native-only — never raised against ink-produced HIR.
+    /// A native file's `root_content` carries something other than the one
+    /// documented shape a native lowering may leave there: empty, or the
+    /// single synthesized `flow main()` entry divert (maintainer-ruled
+    /// 2026-07-21, `docs/decision-log.md` "Native story-entry convention").
+    /// Anything else — real weave content, more than one statement, a
+    /// source-backed divert — is ink-only baggage: ink's pre-first-knot root
+    /// weave has no native equivalent.
+    E133,
+    /// A native file's HIR carries an `IncludeSite` — native has no textual
+    /// `INCLUDE` graph (charter §13.2, "the tree is the compilation
+    /// universe"); `hir::lower_native::lower` always leaves `includes`
+    /// empty, so any entry here is ink-only baggage that reached native HIR
+    /// some other way.
+    E134,
+    /// A `ThreadStart` (`<- target`) appears somewhere other than the two
+    /// legal native splice positions B0.7's choice-point lowering produces:
+    /// immediately preceding the `ChoiceSet` it preambles, or as the
+    /// trailing statement(s) of a `Choice`'s own body
+    /// (`hir::lower_native::choice::lower_choice_point`). An "ambient"
+    /// thread start anywhere else has no structural meaning on the native
+    /// surface (charter §11 narrows threads to scoped splices inside `{?
+    /// … }` choice points).
+    E135,
+    /// A native `ChoiceSet` carries a `depth`/`context` other than the
+    /// B0.7-documented neutral values (`depth = 0`, `context = Inline`,
+    /// `docs/hir-admission-contract.md` §3 D4) every native choice set
+    /// stamps uniformly — native has no weave fold to report a real value
+    /// from, so any other value means a weave-fold concept leaked in from
+    /// somewhere it shouldn't have.
+    E136,
 }
 
 impl DiagnosticCode {
@@ -2287,6 +2326,10 @@ impl DiagnosticCode {
             Self::E130 => "E130",
             Self::E131 => "E131",
             Self::E132 => "E132",
+            Self::E133 => "E133",
+            Self::E134 => "E134",
+            Self::E135 => "E135",
+            Self::E136 => "E136",
         }
     }
 
@@ -2477,6 +2520,14 @@ impl DiagnosticCode {
             Self::E132 => {
                 "native: `@[was]` needs a quoted old module path, e.g. `@[was(\"story::old::path\")]`"
             }
+            Self::E133 => {
+                "native accept-list: root_content must be empty or the synthesized `flow main()` entry divert"
+            }
+            Self::E134 => {
+                "native accept-list: INCLUDE sites are ink-only baggage, never legal in native HIR"
+            }
+            Self::E135 => "native accept-list: thread-start outside choice-point splice position",
+            Self::E136 => "native accept-list: choice set carries a non-neutral weave-fold value",
         }
     }
 
@@ -2647,6 +2698,10 @@ impl DiagnosticCode {
             "E130" => Some(Self::E130),
             "E131" => Some(Self::E131),
             "E132" => Some(Self::E132),
+            "E133" => Some(Self::E133),
+            "E134" => Some(Self::E134),
+            "E135" => Some(Self::E135),
+            "E136" => Some(Self::E136),
             _ => None,
         }
     }
