@@ -314,10 +314,18 @@ CUT TO:                             ← transition (dresses the divert)
 
 ## 9. Open threads ⏳ (the resumption points)
 
-1. **Run-through of §7's proposed output shape** — terminals-carry-no-
-   text, text-derived-not-stored, the Choice element slot, naming.
-2. **Consecutive lines / blocks (§3.7)** — confirm per-line + block-id
-   + sugar-collector direction; which element kinds form blocks.
+1. **Run-through of §7's proposed output shape** — remaining scrutiny
+   points: text-derived-not-stored, the Choice element slot, naming.
+   The terminal half is worked: see the **parked terminal cluster** —
+   #1448 (weave-terminator compiler fix, DIAGNOSED + deferred), #1449
+   (harness terminal-step fold, the redesign's mandatory prerequisite),
+   #1450 (the Done/End distinction dig — oracle-invisible axis; decide
+   from host need, never conformance). Deferred by maintainer ruling
+   until the runtime/compiler window opens.
+2. **Consecutive lines / blocks (§3.7 — largely settled):** per-line
+   emission + baked block id RULED; blank-line delimiter RULED;
+   `continue_block` dropped (host helper at most). Remaining: which
+   element kinds form blocks (lean: id is universal and cheap).
 3. **Choices × elements** — chain rules meeting the weave; what element
    a choice line carries; markup in choice text (Choice.parts admits it).
 4. **Translation, round 2** — element data in XLIFF (is a speaker name
