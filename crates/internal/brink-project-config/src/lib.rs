@@ -41,20 +41,40 @@
 //! [lints]
 //! deny-warnings = true   # promote every Warning-severity diagnostic to
 //!                        # Error (the `-D warnings` equivalent; issue #1160)
-//! E063 = "deny"          # per-code severity override: "allow" | "warn" | "deny"
+//! E014 = "deny"          # per-code severity override: "allow" | "warn" | "deny"
 //! ```
+//!
+//! (`E014` — a plainly `Warning`-by-default code — is used here rather than
+//! `E063`: `E063`'s own *base* severity is `types`-policy-dependent (`Error`
+//! under `types = strict`, see `brink_analyzer::effective_severity`'s doc
+//! comment), so it makes a confusing flagship example — under `types =
+//! strict` a `[lints]` entry for it is never even consulted.)
 //!
 //! Every key is optional; an empty or absent `[project]`/`[lints]` table is
 //! valid and contributes nothing (`ProjectConfig::default()`).
 //!
-//! `[lints]` mirrors Rust's own `[lints]` table (issue #1160): each key
-//! other than the reserved `deny-warnings` is taken as a diagnostic code
-//! (`"E063"`) mapped to a [`LintLevel`]. This crate does not know the closed
-//! set of real `DiagnosticCode`s (keeping it dependency-free, #1234), so it
-//! accepts any key here — resolving a key against the real code set, and
-//! deciding which codes are actually overridable, is
-//! `AnalysisOptions::apply_project_config`'s job in `brink-analyzer`
-//! (which owns `DiagnosticCode`).
+//! `[lints]` is shaped like Rust's own `[lints]` table (issue #1160) but is
+//! **not** a drop-in semantic match: each key other than the reserved
+//! `deny-warnings` is taken as a diagnostic code (`"E014"`) mapped to a
+//! [`LintLevel`], and `Deny`/`Warn` behave as their Rust namesakes suggest —
+//! but `Allow` does not *remove* the diagnostic the way Rust's `allow`
+//! does. `LintLevel::Allow` only buys immunity from `deny-warnings`; the
+//! diagnostic still resolves to `Severity::Warning` and is still reported
+//! (`brink_analyzer::effective_severity`'s doc comment, step 3). An author
+//! who wants a code gone entirely wants `brink_ir::suppressions`
+//! (`//brink-disable`), a different, per-site mechanism — not `[lints]`.
+//!
+//! This crate does not know the closed set of real `DiagnosticCode`s
+//! (keeping it dependency-free, #1234), so it accepts any key here without
+//! validation — resolving a key against the real code set, and deciding
+//! which codes are actually overridable (a `Warning`-base-severity code
+//! only — see `effective_severity`'s hard-error exemption), is
+//! `AnalysisOptions::apply_project_config`'s job in `brink-analyzer` (which
+//! owns `DiagnosticCode`): an unknown or non-overridable key is never
+//! merged into the resolved policy, and is surfaced back to the caller as a
+//! [`ConfigWarning`]-shaped string through that function's return value —
+//! the same "warn, never silently drop" channel this crate's own unknown-key
+//! warnings use.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;

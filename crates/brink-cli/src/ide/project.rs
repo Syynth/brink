@@ -46,7 +46,14 @@ fn resolve_analysis_options(entry: &Path) -> Result<brink_analyzer::AnalysisOpti
                 loaded.path.display()
             );
         }
-        options.apply_project_config(&loaded.config, false, false);
+        let lint_warnings = options.apply_project_config(&loaded.config, false, false);
+        for warning in &lint_warnings {
+            let _ = writeln!(
+                io::stderr(),
+                "warning: [{}] {warning}",
+                loaded.path.display()
+            );
+        }
     }
     Ok(options)
 }

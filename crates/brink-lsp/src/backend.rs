@@ -839,11 +839,14 @@ fn resolve_language_options(
                     for warning in &warnings {
                         tracing::warn!("[{}] {warning}", path.display());
                     }
-                    options.apply_project_config(
+                    let lint_warnings = options.apply_project_config(
                         &config,
                         overrides.dialect.is_some(),
                         overrides.types.is_some(),
                     );
+                    for warning in &lint_warnings {
+                        tracing::warn!("[{}] {warning}", path.display());
+                    }
                 }
                 Err(e) => {
                     tracing::warn!("failed to parse {}: {e}", path.display());

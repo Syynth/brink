@@ -369,11 +369,17 @@ fn resolve_options(
             // bug (house rule).
             tracing::warn!("[{config_key}] {warning}");
         }
-        options.apply_project_config(
+        let lint_warnings = options.apply_project_config(
             &config,
             overrides.dialect.is_some(),
             overrides.types.is_some(),
         );
+        for warning in &lint_warnings {
+            // Same channel as the unknown-key warnings above: an unknown or
+            // non-overridable `[lints]` code is never silently dropped
+            // (house rule).
+            tracing::warn!("[{config_key}] {warning}");
+        }
     }
 
     if let Some(dialect) = overrides.dialect {
