@@ -327,9 +327,11 @@ pub(crate) struct LoweredFile {
     pub manifest: SymbolManifest,
     pub diagnostics: Vec<Diagnostic>,
     /// B0.3 `validate_admission` output (docs/hir-admission-contract.md
-    /// §4.2, issue #1172) — kept deliberately separate from `diagnostics`:
-    /// the admission gate is non-suppressible (NF-6, always-on), so it must
-    /// never flow through `apply_suppressions` the way lowering/syntax
+    /// §4.2, issue #1172), plus — for a native `.brink` file only — B0.9's
+    /// `validate_native_accept_list` output appended after it (issue
+    /// #1179) — kept deliberately separate from `diagnostics`: both
+    /// admission gates are non-suppressible (NF-6, always-on), so neither
+    /// must ever flow through `apply_suppressions` the way lowering/syntax
     /// diagnostics do (`partition_diagnostics` below). Computed here so it
     /// runs on every lowering, matching the "the validator runs on every
     /// keystroke in the editor" perf posture — see `heap_size.rs`'s
@@ -2379,7 +2381,18 @@ fn lower_native_file(file_id: FileId, parse: &NativeParse) -> LoweredFile {
     // its own `LoweredFile` field so it never flows through
     // `apply_suppressions`.
     let file_len = parse.syntax().text_range().end();
-    let admission = brink_analyzer::validate_admission(file_id, &hir, &manifest, file_len);
+    let mut admission = brink_analyzer::validate_admission(file_id, &hir, &manifest, file_len);
+
+    // B0.9 native accept-list gate (docs/hir-admission-contract.md §4.4/§5
+    // Q6, docs/b0-sequencing.md §B0.9, issue #1179): the inverse of the ink
+    // `dialect_gate` reject-list, and native-only — this is the seam that
+    // keys it off the producing frontend at the pipeline level (F-I#10):
+    // `lower_native_file` only ever runs for a `.brink` file, never an
+    // `.ink` one, so calling this here (and nowhere in `lower_file`) is the
+    // whole dispatch, with no tag carried on the tree itself. Appended into
+    // the same non-suppressible `admission` field B0.3 populates above —
+    // both are loud, always-on checks at this exact seam.
+    admission.extend(brink_analyzer::validate_native_accept_list(file_id, &hir));
 
     LoweredFile {
         hir,

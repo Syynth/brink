@@ -229,8 +229,10 @@ keyword syntax (F-E's clean-channel bet cashed: `is_local`,
 `ModuleDecl`/`Imports` (naming only — the tree is the compilation
 universe); **flat hoisted global vecs produced by the native route** (D6:
 the contract says "flat and hoisted", not "walk descendants");
-`root_content = Block::default()` and `includes` empty always (ink-only
-baggage, enforced by B0.9). Names stamped in the exact qualification
+`root_content = Block::default()` and `includes` empty, except the single
+synthesized `flow main()` entry divert (2026-07-21 ruling); `includes`
+stays empty always (ink-only baggage, enforced by B0.9). Names stamped in
+the exact qualification
 conventions B0.3 checks. Manifest via B0.4's projection — the native
 frontend emits **HIR only**, the payoff of Q3(b).
 **Discharges.** First real second-client exercise of Q1(b)+Q3(b); the

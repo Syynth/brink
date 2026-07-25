@@ -511,8 +511,9 @@ never-reuse-codes rule (`hir/types.rs` DiagnosticCode doc).
   native surface is strict-only (2026-07-19) and *produces* those very nodes. The
   clean shape is a native **accept-list** admission gate (the inverse): "these HIR
   shapes are legal native input", which *also* rejects ink-only baggage
-  (`root_content`, ambient `ThreadStart`, relative weave) that a native frontend
-  should never emit. (Q6.)
+  (`root_content` outside the single synthesized `flow main()` entry divert,
+  ambient `ThreadStart`, relative weave) that a native frontend should
+  otherwise never emit. (Q6.)
 - **Cross-dialect calls are mediated, not merged** (2026-07-19): ink symbols enter
   native code as `Unknown`; strict rejects `Unknown` escapes; annotate at the
   seam. The contract does not need to unify the two dialects' type regimes — it
