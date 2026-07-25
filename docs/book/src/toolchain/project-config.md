@@ -68,9 +68,14 @@ A key that isn't a real diagnostic code, or names a non-overridable one, is
 never merged into the resolved policy — it's reported as a warning (the same
 channel unknown top-level/`[project]` keys use), never silently dropped.
 
-Today, `[lints]` and `deny-warnings` are file-only: there is no
-`--deny`/`-D` CLI flag or editor-API call that sets an individual code's
-severity, unlike `dialect`/`types` below.
+`brink compile` has a CLI override tier for `[lints]`/`deny-warnings`, same
+as `dialect`/`types` below: repeatable `--deny`/`--warn`/`--allow <CODE>`
+flags, plus `-D warnings` (mirroring `rustc`'s own flag) for `deny-warnings`.
+See [`brink compile`](./cli/compile.md#options) and
+[Precedence](#precedence-the-file-is-the-default-code-wins) below. No other
+mount has an override source for `[lints]`/`deny-warnings` yet — `brink ide`,
+`brink-lsp`, and the wasm editor session all still resolve it from
+`brink.toml` (or the plain default) alone.
 
 ## Discovery
 
@@ -99,10 +104,11 @@ one-off choice that the file must not silently overrule.
 | Source | Wins over |
 |--------|-----------|
 | `--dialect brink` / `--types strict` (CLI flag actually passed) | `brink.toml`, defaults |
+| `--deny`/`--warn`/`--allow <CODE>` / `-D warnings` (`brink compile` only, CLI flag actually passed) | `brink.toml`, defaults |
 | `setLanguageDialect(...)` / `setTypePolicy(...)` (explicit call) | `brink.toml`, defaults |
 | `brink.toml`'s `[project] dialect`/`types` | defaults only |
+| `brink.toml`'s `[lints]`/`deny-warnings` (for a code without a `brink compile` CLI override) | defaults only |
 | Dialect-keyed default (`brink` → `strict`, `strict-ink` → `gradual`) | — |
-| `brink.toml`'s `[lints]`/`deny-warnings` | defaults only — no CLI/API override source yet (file-only, see [Lint severity](#lint-severity)) |
 
 ## Per mount
 
@@ -110,7 +116,11 @@ one-off choice that the file must not silently overrule.
   `--dialect`/`--types`, when actually given, override the file field-by-field
   (setting only `--dialect` leaves the file's `types`, if any, in effect).
   `[lints]`/`deny-warnings` apply too — a build that previously succeeded
-  with a warning can now fail. See [`brink compile`](./cli/compile.md).
+  with a warning can now fail. `--deny`/`--warn`/`--allow <CODE>` and `-D
+  warnings` override the file the same way, per code (issue #1373): passing
+  `--allow E014` wins over a `brink.toml` `E014 = "deny"` for that code,
+  while any other code in the file's `[lints]` table still applies. See
+  [`brink compile`](./cli/compile.md).
 - **`brink ide`** has no `--dialect`/`--types` flags of its own — the file
   (or the plain defaults, absent one) is the only source, and this includes
   `[lints]`/`deny-warnings`. See [`brink ide`](./cli/ide.md).

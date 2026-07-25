@@ -86,6 +86,29 @@ enum Commands {
         /// this flag to use the file's value, if any.
         #[arg(long, value_enum)]
         types: Option<TypesArg>,
+        /// Deny a diagnostic code, promoting it to a hard compile error
+        /// (issue #1373). Repeatable. Only codes whose *default* severity is
+        /// `Warning` are overridable (#1160) — an unrecognized or
+        /// non-overridable code is ignored with a warning through the usual
+        /// channel, never silently. The special code `warnings` (`-D
+        /// warnings`, mirroring rustc) is `deny-warnings`: promote every
+        /// diagnostic that would otherwise resolve to `Warning` up to
+        /// `Error`, the CLI equivalent of `[lints] deny-warnings = true`.
+        /// Always wins over the same code in a discovered `brink.toml`'s
+        /// `[lints]` table (#1005 `CLI/API > file > default` precedence).
+        #[arg(short = 'D', long = "deny", value_name = "CODE")]
+        deny: Vec<String>,
+        /// Force a diagnostic code to `Warning`, promotable back to `Error`
+        /// by `-D warnings`/`deny-warnings` like any unconfigured warning
+        /// (issue #1373). Repeatable; same overridability rules and
+        /// precedence as `--deny`.
+        #[arg(long = "warn", value_name = "CODE")]
+        warn: Vec<String>,
+        /// Never escalate a diagnostic code past `Warning`, even under `-D
+        /// warnings`/`deny-warnings` (issue #1373). Repeatable; same
+        /// overridability rules and precedence as `--deny`.
+        #[arg(long = "allow", value_name = "CODE")]
+        allow: Vec<String>,
     },
     /// Convert between ink formats (.inkb, .inkt)
     Convert {
@@ -216,22 +239,22 @@ fn run_command(command: Commands) -> ExitCode {
             output,
             dialect,
             types,
+            deny,
+            warn,
+            allow,
         } => {
-            if let Err(e) = run_compile(
+            return run_compile_command(
                 &input,
                 output.as_deref(),
                 dialect.map(Into::into),
                 types.map(Into::into),
-            ) {
-                tracing::error!("{e}");
-                return ExitCode::FAILURE;
-            }
+                &deny,
+                &warn,
+                &allow,
+            );
         }
         Commands::Convert { input, output } => {
-            if let Err(e) = run_convert(&input, output.as_deref()) {
-                tracing::error!("{e}");
-                return ExitCode::FAILURE;
-            }
+            return run_convert_command(&input, output.as_deref());
         }
         Commands::ExportXliff {
             input,
@@ -332,26 +355,95 @@ fn run_command(command: Commands) -> ExitCode {
 /// increasing priority:
 /// 1. `AnalysisOptions::default()` (`strict-ink`; `types` dialect-keyed per
 ///    #1127);
-/// 2. a discovered `brink.toml`'s `[project] dialect`/`types` (#1005), walked
-///    up from `entry`; a missing file changes nothing;
-/// 3. `--dialect`/`--types`, as [`OptionOverrides`](brink_environment::OptionOverrides)
-///    that always win over the file.
+/// 2. a discovered `brink.toml`'s `[project] dialect`/`types`/`[lints]`
+///    (#1005), walked up from `entry`; a missing file changes nothing;
+/// 3. `--dialect`/`--types`/`--deny`/`--warn`/`--allow`/`-D warnings`, as
+///    [`OptionOverrides`](brink_environment::OptionOverrides) that always
+///    win over the file (#1373).
 ///
-/// Unknown keys in the file are logged as warnings by the producer, never
-/// treated as errors (forward compat).
+/// Unknown keys in the file — and unrecognized or non-overridable
+/// `--deny`/`--warn`/`--allow` codes — are logged as warnings by the
+/// producer, never treated as errors (forward compat / #1160).
 ///
 /// [`native_source_root`]: brink_driver::native_source_root
 fn compile_entry(
     entry: &std::path::Path,
     dialect: Option<brink_compiler::Dialect>,
     types: Option<brink_compiler::TypePolicy>,
+    lints: std::collections::BTreeMap<String, brink_driver::LintLevel>,
+    deny_warnings: Option<bool>,
 ) -> Result<brink_compiler::CompileOutput, Box<dyn std::error::Error>> {
     let root = brink_driver::native_source_root(entry);
     let tree = brink_driver::RealFs::project(&root);
     let entry_key = brink_driver::relative_key(&root, entry);
-    let overrides = brink_environment::OptionOverrides { dialect, types };
+    let overrides = brink_environment::OptionOverrides {
+        dialect,
+        types,
+        lints,
+        deny_warnings,
+    };
     let env = brink_environment::Project::load(&tree, &entry_key, &overrides)?;
     Ok(brink_environment::compile(&env)?)
+}
+
+/// Resolve `brink compile`'s repeatable `--deny`/`--warn`/`--allow <CODE>`
+/// flags into the per-code override map [`compile_entry`] threads through to
+/// [`brink_environment::OptionOverrides::lints`] (issue #1373). `--deny
+/// warnings` (short form `-D warnings`, mirroring rustc's own `-D warnings`)
+/// is special-cased as `deny-warnings` rather than a per-code override,
+/// since `"warnings"` is never a real `DiagnosticCode` — every other value
+/// is validated downstream, at the one resolution point
+/// (`AnalysisOptions::apply_lint_overrides`), not here.
+///
+/// A code repeated across more than one of `--deny`/`--warn`/`--allow`
+/// resolves to whichever flag is applied last, in `deny`, `warn`, `allow`
+/// order below — a user passing the same code to more than one flag has
+/// already made a contradictory request; this is deliberately simple rather
+/// than rejecting it outright.
+fn resolve_lint_overrides(
+    deny: &[String],
+    warn: &[String],
+    allow: &[String],
+) -> (
+    std::collections::BTreeMap<String, brink_driver::LintLevel>,
+    Option<bool>,
+) {
+    let mut lints = std::collections::BTreeMap::new();
+    let mut deny_warnings = None;
+    for code in deny {
+        if code == "warnings" {
+            deny_warnings = Some(true);
+        } else {
+            lints.insert(code.clone(), brink_driver::LintLevel::Deny);
+        }
+    }
+    for code in warn {
+        lints.insert(code.clone(), brink_driver::LintLevel::Warn);
+    }
+    for code in allow {
+        lints.insert(code.clone(), brink_driver::LintLevel::Allow);
+    }
+    (lints, deny_warnings)
+}
+
+/// `Commands::Compile`'s dispatch, factored out of [`run_command`] (matching
+/// the `Commands::Ide => return ide::run(&command)` shape already used
+/// there) — [`run_command`]'s `match` arms stay one-liners, keeping the
+/// function within `clippy::too_many_lines`.
+fn run_compile_command(
+    input: &std::path::Path,
+    output: Option<&std::path::Path>,
+    dialect: Option<brink_compiler::Dialect>,
+    types: Option<brink_compiler::TypePolicy>,
+    deny: &[String],
+    warn: &[String],
+    allow: &[String],
+) -> ExitCode {
+    if let Err(e) = run_compile(input, output, dialect, types, deny, warn, allow) {
+        tracing::error!("{e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
 }
 
 fn run_compile(
@@ -359,8 +451,12 @@ fn run_compile(
     output: Option<&std::path::Path>,
     dialect: Option<brink_compiler::Dialect>,
     types: Option<brink_compiler::TypePolicy>,
+    deny: &[String],
+    warn: &[String],
+    allow: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let output_result = compile_entry(input, dialect, types)?;
+    let (lints, deny_warnings) = resolve_lint_overrides(deny, warn, allow);
+    let output_result = compile_entry(input, dialect, types, lints, deny_warnings)?;
     for w in &output_result.warnings {
         tracing::warn!("[{}] {}", w.code.as_str(), w.message);
     }
@@ -407,7 +503,8 @@ fn load_story_data(
         // the same file `brink compile` does, rather than silently falling
         // back to `AnalysisOptions::default()` and rejecting extension
         // syntax on a `dialect = "brink"` project.
-        let output_result = compile_entry(input, None, None)?;
+        let output_result =
+            compile_entry(input, None, None, std::collections::BTreeMap::new(), None)?;
         for w in &output_result.warnings {
             tracing::warn!("[{}] {}", w.code.as_str(), w.message);
         }
@@ -426,6 +523,16 @@ fn load_story_data(
         )
         .into())
     }
+}
+
+/// `Commands::Convert`'s dispatch — same one-line-arm rationale as
+/// [`run_compile_command`].
+fn run_convert_command(input: &std::path::Path, output: Option<&std::path::Path>) -> ExitCode {
+    if let Err(e) = run_convert(input, output) {
+        tracing::error!("{e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
 }
 
 fn run_convert(

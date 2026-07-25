@@ -44,7 +44,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use brink_compiler::{CompileError, CompileOutput, ResolvedDiagnostic};
-use brink_driver::{AnalysisOptions, Dialect, Driver, TypePolicy};
+use brink_driver::{AnalysisOptions, Dialect, Driver, LintLevel, TypePolicy};
 use brink_ir::Diagnostic;
 use brink_project_config::{ConfigError, discover_from_entry_in_tree, parse_str};
 use brink_source_tree::SourceTree;
@@ -229,8 +229,9 @@ impl Environment {
 
 /// Explicit policy a mount supplies that **wins over `brink.toml`** — the
 /// `CLI/API > file > default` precedence rule (#1005). A field left `None`
-/// means "the caller has no explicit value," so the discovered `brink.toml`
-/// (or the default) governs that field.
+/// (or, for `lints`, absent from the map) means "the caller has no explicit
+/// value," so the discovered `brink.toml` (or the default) governs that
+/// field.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OptionOverrides {
     /// An explicit dialect (e.g. the CLI `--dialect` flag), if the caller set
@@ -238,6 +239,18 @@ pub struct OptionOverrides {
     pub dialect: Option<Dialect>,
     /// An explicit type policy (e.g. the CLI `--types` flag), if set.
     pub types: Option<TypePolicy>,
+    /// Explicit per-code lint-level overrides (e.g. the CLI's repeatable
+    /// `--deny`/`--warn`/`--allow <CODE>` flags, issue #1373), keyed by the
+    /// diagnostic code's string form. Always wins over the same code in a
+    /// discovered `brink.toml`'s `[lints]` table — folded in by
+    /// [`AnalysisOptions::apply_lint_overrides`], which validates each code
+    /// the same way the file's table is validated (#1160: only codes whose
+    /// *default* severity is `Warning` are overridable).
+    pub lints: BTreeMap<String, LintLevel>,
+    /// An explicit `deny-warnings` (e.g. the CLI's `-D warnings` flag), if
+    /// set. `None` means "the caller has no explicit value," same as
+    /// `dialect`/`types`.
+    pub deny_warnings: Option<bool>,
 }
 
 // ── The effectful producer ───────────────────────────────────────────
@@ -352,8 +365,12 @@ fn collect_sources(
 
 /// Resolve the effective [`AnalysisOptions`] for `entry`: start from the
 /// default, apply a discovered `brink.toml` (honoring override precedence),
-/// then apply the explicit overrides. The one resolution point every mount
-/// inherits (#1005 precedence: `CLI/API > file > default`).
+/// then apply the explicit overrides — including `overrides.lints`/
+/// `overrides.deny_warnings` (issue #1373), applied last (via
+/// [`AnalysisOptions::apply_lint_overrides`]) so they win over the file
+/// regardless of whether a `brink.toml` was even discovered. The one
+/// resolution point every mount inherits (#1005 precedence:
+/// `CLI/API > file > default`).
 fn resolve_options(
     tree: &dyn SourceTree,
     entry: &str,
@@ -397,6 +414,18 @@ fn resolve_options(
     }
     if let Some(types) = overrides.types {
         options.types = Some(types);
+    }
+
+    // The top of the `CLI/API > file > default` stack (#1373): applied last
+    // so an explicit `--deny`/`--warn`/`--allow`/`-D warnings` always wins
+    // over whatever the file (or nothing, if no `brink.toml` was found) set
+    // for the same code.
+    let lint_override_warnings =
+        options.apply_lint_overrides(&overrides.lints, overrides.deny_warnings);
+    for warning in &lint_override_warnings {
+        // Same "warn, never silently drop" channel as the file-sourced
+        // warnings above (house rule).
+        tracing::warn!("{warning}");
     }
 
     Ok(options)
@@ -606,7 +635,7 @@ mod tests {
             "m.brink",
             &OptionOverrides {
                 dialect: Some(Dialect::Brink),
-                types: None,
+                ..OptionOverrides::default()
             },
         )
         .expect("loads");
@@ -647,7 +676,7 @@ mod tests {
             "main.brink",
             &OptionOverrides {
                 dialect: Some(Dialect::StrictInk),
-                types: None,
+                ..OptionOverrides::default()
             },
         )
         .expect("loads");
@@ -844,6 +873,101 @@ mod tests {
         let env = Project::load(&t, "main.ink", &OptionOverrides::default()).expect("loads");
         let err = compile(&env).expect_err("deny-warnings must promote E014 to a compile error");
         assert!(matches!(err, CompileError::Diagnostics(_)));
+    }
+
+    // ── OptionOverrides.lints / .deny_warnings: CLI/API tier (#1373) ──
+
+    #[test]
+    fn override_lints_resolves_into_options() {
+        let t = tree(&[("main.ink", E014_SOURCE)]);
+        let mut lints = BTreeMap::new();
+        lints.insert("E014".to_owned(), LintLevel::Deny);
+        let env = Project::load(
+            &t,
+            "main.ink",
+            &OptionOverrides {
+                lints,
+                ..OptionOverrides::default()
+            },
+        )
+        .expect("loads");
+        assert_eq!(
+            env.options.lints.overrides.get("E014"),
+            Some(&LintLevel::Deny)
+        );
+    }
+
+    #[test]
+    fn override_deny_e014_blocks_compile_with_no_brink_toml() {
+        // No `brink.toml` at all — a CLI `--deny E014` alone must still
+        // relevel E014 to Error and block compilation, exactly as a file's
+        // `[lints] E014 = "deny"` already does.
+        let t = tree(&[("main.ink", E014_SOURCE)]);
+        let mut lints = BTreeMap::new();
+        lints.insert("E014".to_owned(), LintLevel::Deny);
+        let env = Project::load(
+            &t,
+            "main.ink",
+            &OptionOverrides {
+                lints,
+                ..OptionOverrides::default()
+            },
+        )
+        .expect("loads");
+        let err = compile(&env).expect_err("CLI --deny E014 must block compilation");
+        let CompileError::Diagnostics(diags) = err else {
+            unreachable!("expected CompileError::Diagnostics, got {err:?}");
+        };
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E014),
+            "expected E014 among the surfaced diagnostics: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn override_deny_warnings_blocks_compile_with_no_brink_toml() {
+        let t = tree(&[("main.ink", E014_SOURCE)]);
+        let env = Project::load(
+            &t,
+            "main.ink",
+            &OptionOverrides {
+                deny_warnings: Some(true),
+                ..OptionOverrides::default()
+            },
+        )
+        .expect("loads");
+        let err = compile(&env).expect_err("CLI -D warnings must promote E014 to a compile error");
+        assert!(matches!(err, CompileError::Diagnostics(_)));
+    }
+
+    #[test]
+    fn override_lints_wins_over_a_conflicting_brink_toml_entry() {
+        // `brink.toml` denies E014; the CLI override allows it — the CLI
+        // must win (#1005/#1373's `CLI/API > file > default` precedence),
+        // so the same source now compiles cleanly.
+        let t = tree(&[
+            ("brink.toml", "[lints]\nE014 = \"deny\"\n"),
+            ("main.ink", E014_SOURCE),
+        ]);
+        let mut lints = BTreeMap::new();
+        lints.insert("E014".to_owned(), LintLevel::Allow);
+        let env = Project::load(
+            &t,
+            "main.ink",
+            &OptionOverrides {
+                lints,
+                ..OptionOverrides::default()
+            },
+        )
+        .expect("loads");
+        assert_eq!(
+            env.options.lints.overrides.get("E014"),
+            Some(&LintLevel::Allow),
+            "the CLI override must replace the file's E014 = deny"
+        );
+        compile(&env).expect("CLI --allow E014 must win over brink.toml's E014 = deny");
     }
 
     // ── native universe = whole tree; brink.toml never a source ──────
