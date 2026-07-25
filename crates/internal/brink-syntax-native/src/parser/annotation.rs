@@ -3,8 +3,8 @@
 //! §5b's `@[effects(pure, silent, reads(gold, hp))]`).
 
 use crate::SyntaxKind::{
-    ANNOTATION_ARG, ANNOTATION_ARGS, ANNOTATION_LINE, AT_L_BRACKET, COMMA, FLOAT, FLOAT_LIT, IDENT,
-    INTEGER, INTEGER_LIT, L_PAREN, NEWLINE, QUOTE, R_BRACKET, R_PAREN,
+    ANNOTATION_ARG, ANNOTATION_ARGS, ANNOTATION_LINE, AT_L_BRACKET, COLON_COLON, COMMA, FLOAT,
+    FLOAT_LIT, IDENT, INTEGER, INTEGER_LIT, L_PAREN, NEWLINE, QUOTE, R_BRACKET, R_PAREN,
 };
 
 use super::Parser;
@@ -62,11 +62,26 @@ fn annotation_args(p: &mut Parser<'_, '_>) {
 }
 
 /// One argument: a bare `IDENT`, `IDENT(ANNOTATION_ARGS)` (the nested
-/// paren-clause form), or a literal (`INTEGER`/`FLOAT`/`STRING` — the
-/// future `@[maxlen(80)]`-shaped tenants `directive-annotations-spec.md`
-/// §6 names).
+/// paren-clause form), an unquoted `::`-separated module `PATH`
+/// (`story::old::path` — issue #1349, companion to the closed #1286's
+/// `@[was(...)]` native rename migration; reuses `expr::path`'s
+/// `PATH`/`PATH_SEGMENT` production verbatim rather than inventing a
+/// second one, so `Path::segments`/`Path::crosses_module_wall` work the
+/// same here as everywhere else `PATH` appears), or a literal
+/// (`INTEGER`/`FLOAT`/`STRING` — the future `@[maxlen(80)]`-shaped tenants
+/// `directive-annotations-spec.md` §6 names).
 fn annotation_arg(p: &mut Parser<'_, '_>) {
     match p.current() {
+        // A second non-trivia token of `::` commits to the path
+        // production instead of a bare ident — `nth(1)` skips trivia, so
+        // `story ::old` (unlikely but not forbidden) still resolves to a
+        // path rather than leaving a dangling `::old` for the caller's
+        // comma/`)` loop to choke on.
+        IDENT if p.nth(1) == COLON_COLON => {
+            p.start_node(ANNOTATION_ARG);
+            super::expr::path(p);
+            p.finish_node();
+        }
         IDENT => {
             p.start_node(ANNOTATION_ARG);
             p.expect(IDENT);
