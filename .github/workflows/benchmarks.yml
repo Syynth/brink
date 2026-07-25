@@ -29,15 +29,24 @@ on:
   # (brink-analyzer, brink-db, brink-driver, brink-ir, brink-syntax, ... —
   # not only brink-format), so any of those going stale is the same
   # #1402-shaped gap gen-input/brink-loop were already exposed to via
-  # brink-runtime/brink-compiler.
+  # brink-runtime/brink-compiler. Root `Cargo.toml` is included for the same
+  # reason as demo.yml: it holds `[workspace.package] version` and
+  # `[workspace.dependencies]`, which every excluded lockfile resolves from.
+  # `benchmarks/lib/**` and `benchmarks/stories/**` are included because
+  # BENCHMARKS_INKJS_GATE's smoke step reads convert-input.sh and the
+  # crucible-8 story fixture directly — a PR editing either can break that
+  # gate without touching any of the paths above.
   pull_request:
     paths:
       - 'benchmarks/tools/gen-input/**'
       - 'benchmarks/drivers/brink-loop/**'
       - 'benchmarks/drivers/inkjs/**'
+      - 'benchmarks/lib/**'
+      - 'benchmarks/stories/**'
       - 'crates/brink-runtime/**'
       - 'crates/brink-compiler/**'
       - 'crates/internal/**'
+      - 'Cargo.toml'
       - '.github/workflows/benchmarks.yml'
   push:
     branches: [main]
@@ -45,9 +54,12 @@ on:
       - 'benchmarks/tools/gen-input/**'
       - 'benchmarks/drivers/brink-loop/**'
       - 'benchmarks/drivers/inkjs/**'
+      - 'benchmarks/lib/**'
+      - 'benchmarks/stories/**'
       - 'crates/brink-runtime/**'
       - 'crates/brink-compiler/**'
       - 'crates/internal/**'
+      - 'Cargo.toml'
       - '.github/workflows/benchmarks.yml'
 
 # Least privilege: jobs only read the repo. Grant more per-job if ever needed.
