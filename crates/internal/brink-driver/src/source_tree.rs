@@ -145,6 +145,20 @@ pub fn is_native(path: &Path) -> bool {
 /// the entry's own directory (decision-log 2026-07-22 "native module
 /// identity ... source root": the explicit, documented single-file-project
 /// mode, not a silent fallback).
+///
+/// A *relative* multi-component `entry_dir` like `chapters` has
+/// `Path::parent` return `Some("")` — not `None` — once the walk-up inside
+/// [`brink_project_config::find_config`] reaches it, so `find_config` can
+/// return a *bare* `brink.toml` (found relative to the process cwd, e.g.
+/// `PathBuf::from("brink.toml")`) whose own `.parent()` is that same empty
+/// path. Naively filtering that empty parent out and falling back to
+/// `entry_dir` (as this function used to) silently discards a config that
+/// *was* found — so `brink ide check -e chapters/story.ink`, run from a cwd
+/// containing `brink.toml`, missed the config and mis-rooted at `chapters`
+/// instead of the true root (review finding on #1403/PR #1412). An empty
+/// parent always means "found in the directory the walk started from" —
+/// i.e. the current directory — so it maps to `Path::new(".")` instead of
+/// being discarded.
 #[must_use]
 pub fn native_source_root(entry: &Path) -> PathBuf {
     let entry_dir = entry
@@ -152,10 +166,17 @@ pub fn native_source_root(entry: &Path) -> PathBuf {
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
 
-    brink_project_config::find_config(entry_dir)
-        .and_then(|config_path| config_path.parent().map(Path::to_path_buf))
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| entry_dir.to_path_buf())
+    brink_project_config::find_config(entry_dir).map_or_else(
+        || entry_dir.to_path_buf(),
+        |config_path| {
+            let parent = config_path.parent().unwrap_or_else(|| Path::new(""));
+            if parent.as_os_str().is_empty() {
+                PathBuf::from(".")
+            } else {
+                parent.to_path_buf()
+            }
+        },
+    )
 }
 
 /// Convert `path` to the root-relative key [`RealFs`]/[`GitRev`] would key it
