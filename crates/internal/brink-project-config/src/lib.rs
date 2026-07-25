@@ -429,7 +429,7 @@ pub fn discover_from_entry(entry_file: &Path) -> Option<PathBuf> {
 /// same waste #1357 removed from the CLI drain, relocated here). A `read`
 /// that fails with [`io::ErrorKind::NotFound`] means "no `brink.toml` at
 /// this candidate, keep walking up"; any other read error propagates —
-/// `root`'s own [`SourceTree::read`] already resolves keys against
+/// `tree`'s own [`SourceTree::read`] already resolves keys against
 /// whatever root the tree was constructed with, so this function needs no
 /// enumeration to know where to look.
 ///
