@@ -108,6 +108,11 @@ fn gather_basic() {
 }
 
 #[test]
+fn labeled_mid_flow_gather() {
+    round_trip_case("labeled-mid-flow-gather");
+}
+
+#[test]
 fn manual_stitch_v1() {
     round_trip_case("manual-stitch-v1");
 }

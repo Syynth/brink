@@ -42,6 +42,7 @@ origin and oracle case name:
 | `const-vars/` | variables | `tests/tier1/variables/const/story.ink` |
 | `manual-stitch-v1/` | knot/stitch structure | `tests/tier1/stitch/manual-stitch-v1/story.ink` |
 | `complex-flow-v1/` | weave + gather, deep nesting (bonus — likely the charter's own source example) | `tests/tier1/gather/complex-flow-v1/story.ink` |
+| `labeled-mid-flow-gather/` | labeled gather (G-1, issue #1335) — **native-only, not a 1:1 ink respelling**, see its own `manifest.toml` | `tests/tier1/choices/once-only-choices-can-link-back-to-self/story.ink` (provenance only) |
 
 Each case directory has:
 - `story.brink` — the respelled native source.
@@ -89,9 +90,20 @@ these blocked the fixtures above (each was either avoidable, or — per
 task instructions — the affected case was passed over rather than
 inventing surface).
 
-**G-1 — No ruled spelling for a labeled mid-flow re-entry point (a
-"named gather" as a divert target for content other than a choice or a
-container's own start).** Ink lets any gather line carry a label
+**G-1 — RESOLVED (RULED 2026-07-20, "label any content line"; emitter
+support landed for issue #1335, B0.8b).** Every content line now takes an
+optional leading `(name)` label (`brink-syntax-native`'s
+`content::at_content_label`/`label`), giving both a labeled dissolved-
+gather continuation and a genuinely mid-flow labeled re-entry point a
+native spelling — `Stmt::LabeledBlock`/`ChoiceSet.continuation.label`
+respectively (`lower_native::body`). `emit_native.rs`'s
+`emit_labeled_stmt_stream` respells both back to `.brink`; see the
+`labeled-mid-flow-gather/` fixture above. Kept below for history.
+
+**G-1 (historical) — No ruled spelling for a labeled mid-flow re-entry
+point (a "named gather" as a divert target for content other than a
+choice or a container's own start).** Ink lets any gather line carry a
+label
 (`- (start)`) and be `->`-diverted to from anywhere, including from a
 point *after* it in the same weave (a loop-back). The charter dissolves
 the gather entirely (§5) and only ever gives labels to *choice lines*

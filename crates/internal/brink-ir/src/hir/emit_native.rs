@@ -30,26 +30,32 @@
 //! `-> DONE`, with call args); tunnel calls (`-> target ->`); `return` /
 //! `return -> target`; `{?}` choice points (sticky/once, guards, labels,
 //! the `text[bracket]inner` display split, `else {}` fallback, the
-//! dissolved-gather continuation); `{if cond {} else {}}` conditionals
-//! (`CondKind::InitialCondition` only — native's `if`/`else` grammar has no
-//! `else if` chain, so `CondKind::IfElse` has no native spelling, see
-//! `lower_native::cond`'s own finding); `{match subj {}}` (`CondKind::Switch`).
+//! dissolved-gather continuation — including a **labeled** continuation,
+//! and a mid-flow `Stmt::LabeledBlock` wherever it occurs, both via G-1's
+//! `(name)` content-line-label spelling, see the "Labeled lines" section
+//! above); `{if cond {} else {}}` conditionals (`CondKind::InitialCondition`
+//! only — native's `if`/`else` grammar has no `else if` chain, so
+//! `CondKind::IfElse` has no native spelling, see `lower_native::cond`'s
+//! own finding); `{match subj {}}` (`CondKind::Switch`).
 //!
 //! Explicitly unsupported (each a real gap, not an oversight — see
 //! `docs/b0-sequencing.md` §3 and `tests/tier1-brink-respell/README.md`'s
 //! own gap findings for the native-grammar context): `Stmt::TempDecl`/
 //! `Assignment`/`ExprStmt`/`LogicBlock`/`Await` (code-dialect ground, a
-//! different keyword set this slice didn't need); `Stmt::LabeledBlock`
-//! (G-1: no ruled spelling for a mid-flow labeled re-entry point);
+//! different keyword set this slice didn't need);
 //! `Stmt::Sequence`/`ContentPart::InlineSequence`/`InlineConditional`
 //! (alternations `~`/`&`/`!`/`|` — not exercised by this slice's target
 //! corpus, deferred rather than risked untested); `Stmt::ThreadStart`
-//! (uncertain grammar scope for a splice reached outside a choice-point
-//! preamble — deferred rather than guessed); most `Expr` variants beyond
-//! literals/paths/operators/calls (collections, structs, refs, `#fn`);
-//! any knot/stitch/decl directive channel (`is_local`, `#@effects`,
-//! `#@was`, visibility, doc comments, return-type annotations); `IncludeSite`,
-//! `ModuleDecl`, `Import`, file-level `VisibilityDirective`/`was_directives`.
+//! (a splice `<- flow(args)` has a ruled spelling *inside* a `{?}` choice
+//! point, but only as a sibling of the choice lines around it — the HIR
+//! flattens it into an ordinary preceding/trailing statement with no
+//! marker of that original nesting, so re-nesting it correctly would need
+//! more than this slice's scope; still refused, not guessed); most `Expr`
+//! variants beyond literals/paths/operators/calls (collections, structs,
+//! refs, `#fn`); any knot/stitch/decl directive channel (`is_local`,
+//! `#@effects`, `#@was`, visibility, doc comments, return-type
+//! annotations); `IncludeSite`, `ModuleDecl`, `Import`, file-level
+//! `VisibilityDirective`/`was_directives`.
 
 use std::fmt::Write as _;
 
@@ -59,6 +65,26 @@ use crate::{
     Path, PostfixOp, PrefixOp, Return, Stitch, Stmt, StringPart, StructDecl, Tag, TypeExpr,
     VarDecl,
 };
+
+// ─── Labeled lines (G-1) ─────────────────────────────────────────────
+//
+// `tests/tier1-brink-respell/README.md`'s G-1 finding ("no ruled spelling
+// for a labeled mid-flow re-entry point") was ruled 2026-07-20 ("label
+// any content line", landed in `brink-syntax-native`'s
+// `content::at_content_label`/`label`): every content line now takes an
+// optional leading `(name)` — the native spelling for both a mid-flow
+// labeled re-entry point
+// (`Stmt::LabeledBlock`, `lower_native::body::lower_items`'s
+// label-absorption) and a labeled dissolved-gather continuation
+// (`ChoiceSet.continuation.label`, `lower_native::body::lower_continuation`).
+// Neither construct is a distinct `Stmt` shape on the way back out — the
+// label decorates whichever line the absorbed stream's *first* item
+// happens to render as, exactly mirroring how `lower_content_line_body`
+// built it going in. [`emit_labeled_stmt_stream`] is the shared reverse:
+// it recognizes the same handful of leading shapes
+// `lower_content_line_body`/`lower_content_run` can produce for a single
+// content line (content alone, content sharing its line with a divert or
+// single-hop tunnel call) and refuses — never guesses — anything else.
 
 /// Why [`emit_file`] refused to produce source text. Always fatal to the
 /// whole call — see the module doc's "never emit invalid syntax" rule.
@@ -474,21 +500,47 @@ fn emit_stmt_stream(
                 emit_choice_set(out, &indent, depth, cs, context)?;
                 // The continuation's statements are the rest of *this*
                 // stream, flattened in place — see this function's doc. A
-                // labeled continuation (a gather `- (name)` immediately
-                // after the `{?}`, per `lower_native::body::lower_continuation`)
-                // has no faithful native spelling here: flattening it would
-                // silently drop the label rather than refusing, breaking the
-                // "never emit invalid/lossy syntax" rule this module
-                // otherwise upholds for `Stmt::LabeledBlock`.
-                if cs.continuation.label.is_some() {
-                    return Err(unsupported("labeled gather continuation", context));
+                // labeled continuation (a gather `(name)` immediately after
+                // the `{?}`, per `lower_native::body::lower_continuation`)
+                // spells with G-1's `(name)` content-line-label prefix on
+                // the continuation's own first line — see
+                // `emit_labeled_stmt_stream`.
+                match &cs.continuation.label {
+                    Some(label) => {
+                        emit_labeled_stmt_stream(
+                            out,
+                            label,
+                            &cs.continuation.stmts,
+                            depth,
+                            context,
+                        )?;
+                    }
+                    None => {
+                        emit_stmt_stream(out, &cs.continuation.stmts, depth, context)?;
+                    }
                 }
-                emit_stmt_stream(out, &cs.continuation.stmts, depth, context)?;
                 return Ok(());
             }
             Stmt::Conditional(cond) => emit_conditional(out, &indent, depth, cond, context)?,
-            Stmt::LabeledBlock(_) => {
-                return Err(unsupported("labeled block (mid-flow gather)", context));
+            Stmt::LabeledBlock(b) => {
+                // G-1's other absorption shape: a `(name)` label on an
+                // ordinary mid-flow content line (`lower_items`'s own
+                // label-absorption arm) wraps everything after it in a
+                // `LabeledBlock` that is *always* the last statement of
+                // whatever stream produced it (`lower_items` returns
+                // immediately after pushing it) — never nested, always
+                // flattened back into the surrounding stream. Same
+                // `(name)`-prefix-on-the-first-line spelling as a labeled
+                // continuation, via the same shared helper.
+                let Some(label) = &b.label else {
+                    // Not reachable from native lowering (a `LabeledBlock`
+                    // is only ever constructed with a label) — refuse
+                    // rather than silently emitting an unlabeled block as
+                    // if it were an ordinary flattened stream.
+                    return Err(unsupported("labeled block without a label", context));
+                };
+                emit_labeled_stmt_stream(out, label, &b.stmts, depth, context)?;
+                return Ok(());
             }
             Stmt::Sequence(_) => return Err(unsupported("alternation sequence", context)),
             Stmt::TempDecl(_) => return Err(unsupported("temp declaration", context)),
@@ -501,6 +553,89 @@ fn emit_stmt_stream(
         i += 1;
     }
     Ok(())
+}
+
+/// Emit a statement stream whose *first* line carries an implicit
+/// `(label)` prefix — the G-1 shape shared by [`Stmt::LabeledBlock`] and a
+/// labeled `ChoiceSet` continuation (see this module's "Labeled lines"
+/// section doc). `label` is not itself a statement; it decorates whatever
+/// `lower_content_line_body`/`lower_content_run` produced for the labeled
+/// line, so this recognizes exactly the leading shapes those functions can
+/// produce for a single content line: content alone, or content sharing
+/// its line with a divert/single-hop tunnel call (mirroring
+/// `emit_stmt_stream`'s own `same_line_divert` peek), plus the empty-`stmts`
+/// case (a bare label with no content on its own line and nothing after
+/// it — `flush_content`'s empty-flush short-circuit means the labeled
+/// line contributes no `Stmt` of its own when it has no text). A shape
+/// this function doesn't recognize is refused, not guessed, per the
+/// module's "never emit invalid/lossy syntax" rule.
+fn emit_labeled_stmt_stream(
+    out: &mut String,
+    label: &Name,
+    stmts: &[Stmt],
+    depth: usize,
+    context: &str,
+) -> Result<(), EmitError> {
+    let indent = "  ".repeat(depth);
+    let mut head = format!("{indent}({})", label.text);
+
+    match stmts {
+        [Stmt::Content(c), Stmt::Divert(d), rest @ ..] => {
+            if !c.tags.is_empty() {
+                return Err(unsupported(
+                    "tags on a labeled content line sharing its line with a divert",
+                    context,
+                ));
+            }
+            let text = emit_content_parts(&c.parts, context)?;
+            if !text.is_empty() {
+                let _ = write!(head, " {text}");
+            }
+            let target = emit_divert_target(&d.target, context)?;
+            let _ = writeln!(out, "{head}-> {target}");
+            emit_stmt_stream(out, rest, depth, context)
+        }
+        [Stmt::Content(c), Stmt::TunnelCall(t), rest @ ..] if t.targets.len() == 1 => {
+            if !c.tags.is_empty() {
+                return Err(unsupported(
+                    "tags on a labeled content line sharing its line with a tunnel call",
+                    context,
+                ));
+            }
+            let text = emit_content_parts(&c.parts, context)?;
+            if !text.is_empty() {
+                let _ = write!(head, " {text}");
+            }
+            let target = emit_divert_target(&t.targets[0], context)?;
+            let _ = writeln!(out, "{head}-> {target} ->");
+            emit_stmt_stream(out, rest, depth, context)
+        }
+        [Stmt::Content(c), Stmt::EndOfLine, rest @ ..] => {
+            let text = emit_content_parts(&c.parts, context)?;
+            if !text.is_empty() {
+                let _ = write!(head, " {text}");
+            }
+            for tag in &c.tags {
+                let _ = write!(head, " #{}", emit_tag(tag, context)?);
+            }
+            let _ = writeln!(out, "{head}");
+            emit_stmt_stream(out, rest, depth, context)
+        }
+        // The labeled line's own content was empty (`flush_content`'s
+        // empty-flush short-circuit, `lower_native::body`: a bare `(name)`
+        // with nothing else on its line produces no `Content`/`EndOfLine`
+        // of its own) *and* nothing follows it at all — a label on the
+        // very last line of its enclosing stream. A bare label line with
+        // no body is still a faithful, if unusual, respelling.
+        [] => {
+            let _ = writeln!(out, "{head}");
+            Ok(())
+        }
+        _ => Err(unsupported(
+            "labeled line with an unsupported leading shape",
+            context,
+        )),
+    }
 }
 
 fn emit_return(r: &Return, context: &str) -> Result<String, EmitError> {
@@ -870,6 +1005,10 @@ fn infix_op_str(op: InfixOp) -> &'static str {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::panic,
+    reason = "test-only `let-else { panic!(...) }` assertions for concise failure messages"
+)]
 mod tests {
     use super::*;
 
@@ -882,28 +1021,111 @@ mod tests {
         emit_file(&hir)
     }
 
+    /// Reparse + relower `src` and return the resulting `HirFile` (asserting
+    /// a clean parse and lowering, the same discipline `lower_and_emit`
+    /// uses). Used to check a round-trip lands on an equivalent HIR shape,
+    /// not just "parses without error".
+    fn reparse_and_lower(src: &str) -> crate::HirFile {
+        let parse = brink_syntax_native::parse(src);
+        assert!(
+            parse.errors().is_empty(),
+            "emitted source has parse errors: {:?}\n--- source ---\n{src}",
+            parse.errors()
+        );
+        let tree = parse.tree();
+        let (hir, _manifest, diags) = crate::hir::lower_native::lower(crate::FileId(0), &tree);
+        assert!(
+            diags.is_empty(),
+            "emitted source has lowering diagnostics: {diags:?}\n--- source ---\n{src}"
+        );
+        hir
+    }
+
     /// A `{?}` choice point followed by a labeled gather `(again)` attaches
     /// the label directly to `ChoiceSet::continuation.label`
     /// (`lower_native::body::lower_continuation`'s dissolved-gather
     /// convention — see `labeled_gather_after_choices_attaches_label_to_continuation`
-    /// in `lower_native::tests`). `emit_stmt_stream` flattens that
-    /// continuation's statements back into the surrounding stream; it must
-    /// refuse rather than silently drop the label, matching the sibling
-    /// `Stmt::LabeledBlock` guard this module already applies to a
-    /// mid-flow named gather.
+    /// in `lower_native::tests`). G-1's `(name)` content-line-label spelling
+    /// (RULED 2026-07-20) gives this a faithful native respelling: the
+    /// emitter must round-trip it, not refuse it.
     #[test]
-    fn labeled_gather_continuation_is_refused_not_silently_dropped() {
+    fn labeled_gather_continuation_round_trips() {
         let src = "flow a() {\n  {?\n    * A.\n  }\n  (again)\n  Loop point.\n}\n";
-        let err = lower_and_emit(src).expect_err("labeled gather continuation must be refused");
+        let emitted = lower_and_emit(src).expect("labeled gather continuation must now emit");
         assert!(
-            matches!(
-                &err,
-                EmitError::Unsupported {
-                    what: "labeled gather continuation",
-                    ..
-                }
-            ),
-            "expected an Unsupported(\"labeled gather continuation\") refusal, got {err:?}"
+            emitted.contains("(again)"),
+            "emitted source dropped the continuation label:\n{emitted}"
+        );
+
+        let hir = reparse_and_lower(&emitted);
+        let body = &hir.knots[0].body;
+        let Stmt::ChoiceSet(cs) = &body.stmts[0] else {
+            panic!("expected ChoiceSet as the re-lowered body's first statement: {body:?}");
+        };
+        assert_eq!(
+            cs.continuation.label.as_ref().map(|n| n.text.as_str()),
+            Some("again"),
+            "re-lowered continuation lost its label"
+        );
+    }
+
+    /// A standalone labeled content line mid-flow (`(mid) Middle.`) lowers
+    /// to `Stmt::LabeledBlock` (`lower_native::tests::
+    /// standalone_labeled_content_line_becomes_labeled_block`). Same G-1
+    /// spelling, same round-trip obligation.
+    #[test]
+    fn labeled_mid_flow_block_round_trips() {
+        let src = "flow a() {\n  Intro.\n  (mid) Middle.\n  End.\n}\n";
+        let emitted = lower_and_emit(src).expect("labeled mid-flow block must now emit");
+        assert!(
+            emitted.contains("(mid)"),
+            "emitted source dropped the mid-flow label:\n{emitted}"
+        );
+
+        let hir = reparse_and_lower(&emitted);
+        let body = &hir.knots[0].body;
+        let labeled = body
+            .stmts
+            .iter()
+            .find_map(|s| match s {
+                Stmt::LabeledBlock(b) => Some(b),
+                _ => None,
+            })
+            .expect("expected a LabeledBlock among the re-lowered body's statements");
+        assert_eq!(labeled.label.as_ref().map(|n| n.text.as_str()), Some("mid"));
+    }
+
+    /// A gather label with no content at all on its own line, and nothing
+    /// following it in its enclosing flow, has no `Stmt` to attach to
+    /// (`flush_content`'s empty-flush short-circuit): the emitter must
+    /// print a bare `(again)` line, with no dangling trailing space and no
+    /// spurious refusal.
+    #[test]
+    fn bare_label_line_at_end_of_flow_has_no_trailing_space() {
+        let src = "flow a() {\n  {?\n    * A.\n  }\n  (again)\n}\n";
+        let emitted = lower_and_emit(src).expect("bare trailing label must now emit");
+        assert!(
+            emitted.lines().any(|l| l.trim() == "(again)"),
+            "expected a bare `(again)` line with no trailing text:\n{emitted}"
+        );
+        reparse_and_lower(&emitted);
+    }
+
+    /// When the labeled line's own content is empty but real content
+    /// follows on later lines (`(again)` alone, then `Loop point.` on the
+    /// next line), `flush_content`'s empty-flush short-circuit means the
+    /// label attaches directly onto that *following* content statement —
+    /// there is no separate empty `Content`/`EndOfLine` pair to hold it.
+    /// This collapses the label and the following text onto one output
+    /// line, which is a faithful respelling (the original label line
+    /// contributed no text of its own either way).
+    #[test]
+    fn label_with_empty_own_line_attaches_to_following_content() {
+        let src = "flow a() {\n  {?\n    * A.\n  }\n  (again)\n  Loop point.\n}\n";
+        let emitted = lower_and_emit(src).expect("labeled gather continuation must now emit");
+        assert!(
+            emitted.lines().any(|l| l.trim() == "(again) Loop point."),
+            "expected the label to attach to the following content line:\n{emitted}"
         );
     }
 }
