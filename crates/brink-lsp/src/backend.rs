@@ -968,22 +968,39 @@ fn is_brink_toml_path(path: &str) -> bool {
         == Some(brink_project_config::CONFIG_FILE_NAME)
 }
 
-/// True if any component of `path` is a
-/// [`brink_source_tree::is_ignored_dir`] name (`target/`, `.git/`,
+/// True if any component of `path`, *below whichever `roots` entry contains
+/// it*, is a [`brink_source_tree::is_ignored_dir`] name (`target/`, `.git/`,
 /// `node_modules/`) — i.e. `path` lives inside a directory a recursive walk
 /// would never descend into.
 ///
 /// `did_change_watched_files` receives whole file paths from the client's
 /// file-watcher subscription rather than walking a directory tree itself, so
 /// [`collect_ink_files_into`]'s per-entry `is_ignored_dir` check (which only
-/// ever sees one path component at a time while descending) doesn't apply
+/// ever sees one path component at a time while descending, and so never
+/// tests the workspace root's own name or its ancestors) doesn't apply
 /// directly here — this walks every component of the already-complete path
 /// instead, using the same shared predicate (issue #1415: `did_change_watched_files`
 /// was a fourth unpruned path admitting `target/`/`.git/`/`node_modules/`
 /// files into `ProjectDb`, after #1370's config discovery, #1381's native
 /// compile walk, and #1402's LSP workspace-load walk).
-fn path_under_ignored_dir(path: &str) -> bool {
-    std::path::Path::new(path)
+///
+/// `roots` scopes the check to mirror `collect_ink_files_into` exactly: the
+/// longest matching entry of `roots` is stripped from `path` before
+/// checking components, so a workspace root that itself lives under e.g.
+/// `node_modules/` (vendored ink content opened directly as a folder) still
+/// has its own files admitted — only descendants' ignored-dir components
+/// count, never the root's own ancestry (#1415 review: path-scope
+/// divergence from the prune this helper claims to mirror). A path with no
+/// matching root falls back to checking every component, same as before.
+fn path_under_ignored_dir(path: &str, roots: &[std::path::PathBuf]) -> bool {
+    let full = std::path::Path::new(path);
+    let scoped = roots
+        .iter()
+        .filter(|root| full.starts_with(root))
+        .max_by_key(|root| root.as_os_str().len())
+        .and_then(|root| full.strip_prefix(root).ok())
+        .unwrap_or(full);
+    scoped
         .components()
         .any(|c| brink_source_tree::is_ignored_dir(c.as_os_str()))
 }
@@ -1191,26 +1208,31 @@ impl LanguageServer for Backend {
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
         tracing::debug!(count = params.changes.len(), "did_change_watched_files");
 
+        let roots = match self.workspace_roots.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+
         let mut changed = false;
         for change in &params.changes {
             let Some(path) = Self::uri_to_path(&change.uri) else {
                 continue;
             };
 
-            if path_under_ignored_dir(&path) {
-                // #1415: the client's file-watcher subscription can still
-                // report changes under target/.git/node_modules (e.g. a
-                // broad `**/*.ink` glob) — never admit those into
-                // `ProjectDb`, matching every other recursive walk's prune.
-                continue;
-            }
-
             if is_brink_toml_path(&path) {
                 // brink.toml isn't tracked in `ProjectDb` (it's not `.ink`
-                // source) — every change type means the same thing here:
-                // re-resolve (#1055 gap 2). A deleted file's own diagnostic
-                // is cleared directly, matching the `.ink` DELETED case
-                // below; `reload_brink_toml` separately (re-)publishes for
+                // source), so there's no "already admitted" state to
+                // preserve the way there is for `.ink` files below — an
+                // ignored-dir brink.toml (e.g. a vendored config under
+                // node_modules/) is never authoritative, so skip it
+                // unconditionally.
+                if path_under_ignored_dir(&path, &roots) {
+                    continue;
+                }
+                // Every change type means the same thing here: re-resolve
+                // (#1055 gap 2). A deleted file's own diagnostic is cleared
+                // directly, matching the `.ink` DELETED case below;
+                // `reload_brink_toml` separately (re-)publishes for
                 // whichever ancestor `brink.toml`, if any, is now
                 // authoritative.
                 if change.typ == FileChangeType::DELETED {
@@ -1225,6 +1247,19 @@ impl LanguageServer for Backend {
 
             match change.typ {
                 FileChangeType::CREATED | FileChangeType::CHANGED => {
+                    let already_tracked = { lock_db(&self.db).file_id(&path).is_some() };
+                    if !already_tracked && path_under_ignored_dir(&path, &roots) {
+                        // #1415 + regression fix: only skip *admission* of a
+                        // path `ProjectDb` has never seen. A file can be
+                        // legitimately tracked despite living under an
+                        // ignored dir — `load_file_from_disk`/`chase_includes`
+                        // (and `did_open`) resolve `INCLUDE` targets without
+                        // pruning, so `INCLUDE node_modules/shared/lib.ink`
+                        // is loaded — and such a file must keep syncing on
+                        // every later CHANGED event, not just get skipped
+                        // here because its path happens to match.
+                        continue;
+                    }
                     let Ok(contents) = tokio::fs::read_to_string(&path).await else {
                         tracing::warn!(path, "failed to read watched file");
                         continue;
@@ -1239,6 +1274,15 @@ impl LanguageServer for Backend {
                     changed = true;
                 }
                 FileChangeType::DELETED => {
+                    // Never gated by the ignored-dir guard above: a path
+                    // can be legitimately tracked despite living under an
+                    // ignored dir (see the CREATED/CHANGED arm), and for an
+                    // untracked path `remove_file`/`forget` below are
+                    // harmless no-ops — so deletions always run the full
+                    // sync + diagnostics clear (#1415 review finding: the
+                    // blanket guard was leaving deleted-but-still-tracked
+                    // ignored-dir files permanently stale in `ProjectDb`
+                    // with never-cleared diagnostics).
                     let file_id = self.mutate_db(|db| {
                         let fid = db.file_id(&path);
                         db.remove_file(&path);
@@ -2729,13 +2773,48 @@ mod tests {
     /// directory name, and must leave ordinary paths alone.
     #[test]
     fn path_under_ignored_dir_matches_any_component() {
-        assert!(path_under_ignored_dir("/repo/target/debug/build.ink"));
-        assert!(path_under_ignored_dir("/repo/.git/objects/pack.ink"));
+        assert!(path_under_ignored_dir("/repo/target/debug/build.ink", &[]));
+        assert!(path_under_ignored_dir("/repo/.git/objects/pack.ink", &[]));
         assert!(path_under_ignored_dir(
-            "/repo/node_modules/some-pkg/index.ink"
+            "/repo/node_modules/some-pkg/index.ink",
+            &[]
         ));
-        assert!(!path_under_ignored_dir("/repo/src/main.ink"));
-        assert!(!path_under_ignored_dir("/repo/targets/main.ink"));
+        assert!(!path_under_ignored_dir("/repo/src/main.ink", &[]));
+        assert!(!path_under_ignored_dir("/repo/targets/main.ink", &[]));
+    }
+
+    /// #1415 review finding: path-scope divergence. `collect_ink_files_into`
+    /// only ever tests components *below* whichever workspace root it
+    /// started walking from, so a workspace root that itself lives inside
+    /// `node_modules/` (vendored ink content opened directly as a folder)
+    /// still has its own files admitted at load time. `path_under_ignored_dir`
+    /// must agree once scoped to that root — otherwise every subsequent
+    /// watcher event for such a workspace would be silently dropped forever,
+    /// even though the initial load admitted the same files fine.
+    #[test]
+    fn path_under_ignored_dir_scopes_below_workspace_root() {
+        let root = std::path::PathBuf::from("/repo/node_modules/vendor-ink");
+
+        // The root's own ancestry passes through node_modules/, but a file
+        // directly inside the root must not be flagged just because of that.
+        assert!(!path_under_ignored_dir(
+            "/repo/node_modules/vendor-ink/main.ink",
+            std::slice::from_ref(&root)
+        ));
+
+        // A genuine descendant ignored dir under the root must still be
+        // flagged.
+        assert!(path_under_ignored_dir(
+            "/repo/node_modules/vendor-ink/target/debug/build.ink",
+            std::slice::from_ref(&root)
+        ));
+
+        // With no matching root, the check falls back to every component of
+        // the full path (matches the pre-#1415-fix, whole-path behavior).
+        assert!(path_under_ignored_dir(
+            "/repo/node_modules/vendor-ink/main.ink",
+            &[]
+        ));
     }
 
     /// #1163 regression: `config_error_diagnostic` must always report

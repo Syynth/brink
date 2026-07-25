@@ -1381,17 +1381,32 @@ fn start_dialect_probe_session(
     (child, stdin, stdout, ink_uri, diags)
 }
 
-/// Read messages until a `$/brink/backgroundAnalysisComplete` reporting
-/// `file_count >= 1` arrives, returning the last version-less
-/// `textDocument/publishDiagnostics` set observed for `uri` along the way —
-/// the background-analysis set, per the #695 convention every helper above
-/// already relies on. Each call consumes only the messages up to and
-/// including its own terminal signal, so sequential calls on the same
-/// session observe successive passes without racing each other.
-fn wait_for_next_analysis_pass(
+/// Read messages until a `$/brink/backgroundAnalysisComplete` whose
+/// `file_count` satisfies `is_target_pass` arrives, returning the last
+/// version-less `textDocument/publishDiagnostics` set observed for `uri`
+/// along the way — the background-analysis set, per the #695 convention
+/// every helper above already relies on. Each call consumes only the
+/// messages up to and including its own terminal signal, so sequential
+/// calls on the same session observe successive passes without racing each
+/// other, *provided* the predicate is specific enough to reject an earlier
+/// pass's own signal.
+///
+/// `file_count` is the *total* number of files currently tracked in
+/// `ProjectDb`, not a per-pass delta — a bare `file_count >= 1` (what
+/// [`wait_for_next_analysis_pass`] uses) is satisfied by the very first
+/// analysis pass of a session and stays true forever after. A caller that
+/// needs to pin down a *specific later* batch (e.g. to prove a
+/// `didChangeWatchedFiles` notification was actually processed, not just
+/// that some earlier pass already happened to settle the same bound) must
+/// supply a predicate only that batch's resulting `file_count` can satisfy
+/// (#1415 review finding: `did_change_watched_files_skips_ignored_dirs`
+/// used `>= 1` and could settle on the initial `didOpen` pass's own
+/// completion signal instead of the batch under test).
+fn wait_for_analysis_pass_where(
     stdout: &mut BufReader<ChildStdout>,
     uri: &str,
     max_messages: u64,
+    is_target_pass: impl Fn(u64) -> bool,
 ) -> Vec<Value> {
     let mut last_diags: Vec<Value> = Vec::new();
     let mut settled = false;
@@ -1407,7 +1422,7 @@ fn wait_for_next_analysis_pass(
                 .unwrap_or_default();
         } else if msg["method"] == "$/brink/backgroundAnalysisComplete" {
             let file_count = msg["params"]["file_count"].as_u64().unwrap_or(0);
-            if file_count >= 1 {
+            if is_target_pass(file_count) {
                 settled = true;
                 break;
             }
@@ -1415,9 +1430,22 @@ fn wait_for_next_analysis_pass(
     }
     assert!(
         settled,
-        "background analysis never signaled completion for {uri} within {max_messages} messages"
+        "background analysis never signaled a matching completion for {uri} within {max_messages} messages"
     );
     last_diags
+}
+
+/// [`wait_for_analysis_pass_where`] with the loosest possible predicate
+/// (`file_count >= 1`) — good enough for callers that only need to know
+/// *some* pass completed (e.g. right after opening the very first file of a
+/// session), but see that function's doc comment before reusing this for a
+/// later, more specific batch.
+fn wait_for_next_analysis_pass(
+    stdout: &mut BufReader<ChildStdout>,
+    uri: &str,
+    max_messages: u64,
+) -> Vec<Value> {
+    wait_for_analysis_pass_where(stdout, uri, max_messages, |file_count| file_count >= 1)
 }
 
 /// #1055 gap 2 (file-watch path): editing `brink.toml` on disk and sending
@@ -1518,14 +1546,22 @@ fn brink_toml_did_change_configuration_reload_applies_without_restart() {
 /// workspace-load walk) — a change event for a file under `target/` must
 /// never be admitted into `ProjectDb`.
 ///
-/// The fixture pairs the ignored-dir event with a legitimate change to
-/// `main.ink` in the *same* notification batch, so the batch is guaranteed
-/// to trigger a background-analysis pass this test can synchronize on — a
-/// target/-only batch triggering *no* analysis at all is exactly the
-/// behavior under test, so alone it would give the test nothing to wait
-/// for. If the smuggled file were ever admitted, its uniquely-named knot
-/// would show up in a `workspace/symbol` search after the pass settles.
+/// The batch pairs the ignored-dir CREATED event with a *legitimate*
+/// CREATED event for a new, non-ignored `control.ink` (in addition to the
+/// pre-existing `main.ink`), and synchronizes on `file_count >= 2` rather
+/// than `>= 1`. `file_count` is `ProjectDb`'s *total* tracked-file count, so
+/// `>= 1` is already satisfied by the very first (`didOpen`) pass and stays
+/// true forever after — it can settle before this batch is even processed,
+/// making the assertion below race the batch instead of observing its
+/// result (#1415 review finding: vacuous integration test — a control run
+/// with the production guard deleted still passed). `>= 2` can only be
+/// satisfied once `control.ink` has actually been admitted (`hidden.ink`
+/// must never count towards it), so it pins down this exact batch. The test
+/// then asserts *both* that `control.ink`'s knot is found (proving the pass
+/// under test is the one observed, and legitimate files aren't collaterally
+/// dropped) and that the smuggled knot is not.
 #[test]
+#[expect(clippy::too_many_lines)]
 fn did_change_watched_files_skips_ignored_dirs() {
     let root = unique_tmp_dir("watched-files-ignored-dir");
     std::fs::create_dir_all(&root).unwrap();
@@ -1579,15 +1615,24 @@ fn did_change_watched_files_skips_ignored_dirs() {
         }),
     );
 
-    wait_for_next_analysis_pass(&mut stdout, &main_uri, 2000);
+    // file_count == 1 here (main.ink only) — the bound this test must not
+    // be satisfied by.
+    wait_for_analysis_pass_where(&mut stdout, &main_uri, 2000, |file_count| file_count >= 1);
 
-    // Plant a uniquely-named knot under target/, and touch main.ink at the
-    // same time so this batch is guaranteed to trigger re-analysis.
+    // Plant a uniquely-named knot under target/, touch main.ink, and add a
+    // legitimate new control.ink so the batch has an unambiguous file_count
+    // >= 2 to synchronize on.
     let target_dir = root.join("target/debug");
     std::fs::create_dir_all(&target_dir).unwrap();
     let hidden_path = target_dir.join("hidden.ink");
     std::fs::write(&hidden_path, "== smuggled_only_here ==\nSecret.\n-> DONE\n").unwrap();
     std::fs::write(&main_path, "== start ==\nHello again.\n-> DONE\n").unwrap();
+    let control_path = root.join("control.ink");
+    std::fs::write(
+        &control_path,
+        "== control_knot_visible ==\nControl.\n-> DONE\n",
+    )
+    .unwrap();
 
     send(
         &mut stdin,
@@ -1598,12 +1643,13 @@ fn did_change_watched_files_skips_ignored_dirs() {
                 "changes": [
                     {"uri": main_uri, "type": 2},
                     {"uri": format!("file://{}", hidden_path.display()), "type": 1},
+                    {"uri": format!("file://{}", control_path.display()), "type": 1},
                 ]
             }
         }),
     );
 
-    wait_for_next_analysis_pass(&mut stdout, &main_uri, 2000);
+    wait_for_analysis_pass_where(&mut stdout, &main_uri, 2000, |file_count| file_count >= 2);
 
     send(
         &mut stdin,
@@ -1614,16 +1660,225 @@ fn did_change_watched_files_skips_ignored_dirs() {
             "params": {"query": "smuggled_only_here"}
         }),
     );
-    let (resp, _) = recv_response(&mut stdout, 2);
+    let (smuggled_resp, _) = recv_response(&mut stdout, 2);
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "workspace/symbol",
+            "params": {"query": "control_knot_visible"}
+        }),
+    );
+    let (control_resp, _) = recv_response(&mut stdout, 3);
 
     drop(stdin);
     drop(stdout);
     let _ = child.wait();
     std::fs::remove_dir_all(&root).unwrap();
 
-    let results = resp["result"].as_array().cloned().unwrap_or_default();
+    let smuggled_results = smuggled_resp["result"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     assert!(
-        results.is_empty(),
-        "a change event under target/ must never enter ProjectDb, but workspace/symbol found: {results:?}"
+        smuggled_results.is_empty(),
+        "a change event under target/ must never enter ProjectDb, but workspace/symbol found: {smuggled_results:?}"
+    );
+
+    let control_results = control_resp["result"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !control_results.is_empty(),
+        "control.ink is a legitimate, non-ignored file — it must be admitted and found by workspace/symbol"
+    );
+}
+
+/// #1415 review finding (regression): the ignored-dir guard must gate
+/// *admission* only, never a file already tracked in `ProjectDb`.
+/// `load_file_from_disk`/`chase_includes` (and `did_open`) resolve
+/// `INCLUDE` targets without pruning, so `INCLUDE
+/// node_modules/shared/lib.ink` is loaded despite living under an ignored
+/// dir — and once tracked, that file must keep syncing on every later
+/// CHANGED/DELETED event exactly like any other file, not get silently
+/// skipped because its path matches an ignored-dir component. Before the
+/// fix, a DELETED event for such a file left a permanently stale
+/// `ProjectDb` entry with diagnostics that were never cleared.
+#[test]
+#[expect(clippy::too_many_lines)]
+fn did_change_watched_files_syncs_already_tracked_file_under_node_modules() {
+    let root = unique_tmp_dir("watched-files-tracked-node-modules");
+    std::fs::create_dir_all(&root).unwrap();
+    let main_path = root.join("main.ink");
+    std::fs::write(
+        &main_path,
+        "INCLUDE node_modules/shared/lib.ink\n== start ==\nHello.\n-> DONE\n",
+    )
+    .unwrap();
+    let lib_dir = root.join("node_modules/shared");
+    std::fs::create_dir_all(&lib_dir).unwrap();
+    let lib_path = lib_dir.join("lib.ink");
+    std::fs::write(&lib_path, "== helper_symbol_xyz ==\nHelp.\n-> DONE\n").unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_brink-lsp");
+    let mut child = Command::new(bin)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start brink-lsp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    let main_uri = format!("file://{}", main_path.display());
+    let lib_uri = format!("file://{}", lib_path.display());
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "capabilities": {},
+                "rootUri": format!("file://{}", root.display()),
+            },
+        }),
+    );
+    let (_init_resp, _) = recv_response(&mut stdout, 1);
+
+    send(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    );
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": main_uri,
+                    "languageId": "ink",
+                    "version": 1,
+                    "text": "INCLUDE node_modules/shared/lib.ink\n== start ==\nHello.\n-> DONE\n",
+                }
+            }
+        }),
+    );
+
+    // `chase_includes` loads lib.ink synchronously within did_open, before
+    // the trigger — so the very first pass already covers both files.
+    wait_for_analysis_pass_where(&mut stdout, &main_uri, 2000, |file_count| file_count >= 2);
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "workspace/symbol",
+            "params": {"query": "helper_symbol_xyz"}
+        }),
+    );
+    let (before_resp, _) = recv_response(&mut stdout, 2);
+    let before_results = before_resp["result"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !before_results.is_empty(),
+        "an INCLUDE resolving into node_modules/ must still be loaded (control assertion), got: {before_resp:?}"
+    );
+
+    // Regression: CHANGED on the already-tracked node_modules/ file must
+    // keep syncing. Pair it with a brand-new, non-ignored companion file so
+    // the resulting file_count (3) is unambiguous.
+    std::fs::write(
+        &lib_path,
+        "== helper_symbol_xyz_v2 ==\nHelp again.\n-> DONE\n",
+    )
+    .unwrap();
+    let extra_path = root.join("extra.ink");
+    std::fs::write(&extra_path, "== extra_companion_knot ==\nExtra.\n-> DONE\n").unwrap();
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeWatchedFiles",
+            "params": {
+                "changes": [
+                    {"uri": lib_uri.clone(), "type": 2},
+                    {"uri": format!("file://{}", extra_path.display()), "type": 1},
+                ]
+            }
+        }),
+    );
+
+    wait_for_analysis_pass_where(&mut stdout, &main_uri, 2000, |file_count| file_count >= 3);
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "workspace/symbol",
+            "params": {"query": "helper_symbol_xyz_v2"}
+        }),
+    );
+    let (changed_resp, _) = recv_response(&mut stdout, 3);
+    let changed_results = changed_resp["result"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !changed_results.is_empty(),
+        "a CHANGED event on an already-tracked node_modules/ file must still sync, got: {changed_resp:?}"
+    );
+
+    // Regression (the reviewer's own reproduction): DELETED on the
+    // already-tracked node_modules/ file must not be short-circuited by the
+    // ignored-dir guard either.
+    std::fs::remove_file(&lib_path).unwrap();
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeWatchedFiles",
+            "params": {
+                "changes": [
+                    {"uri": lib_uri, "type": 3},
+                ]
+            }
+        }),
+    );
+
+    wait_for_analysis_pass_where(&mut stdout, &main_uri, 2000, |file_count| file_count == 2);
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "workspace/symbol",
+            "params": {"query": "helper_symbol_xyz_v2"}
+        }),
+    );
+    let (after_resp, _) = recv_response(&mut stdout, 4);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    let after_results = after_resp["result"].as_array().cloned().unwrap_or_default();
+    assert!(
+        after_results.is_empty(),
+        "a DELETED event on an already-tracked node_modules/ file must remove it from ProjectDb, but workspace/symbol found: {after_results:?}"
     );
 }
