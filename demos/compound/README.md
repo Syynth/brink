@@ -48,7 +48,10 @@ dynamics:
 This crate lives **outside** the brink workspace (see the root `Cargo.toml`
 `exclude = ["demos/*"]` and the empty `[workspace]` table in this crate's
 `Cargo.toml`). It is never built by `cargo build --workspace` and cannot
-perturb the oracle or CI. Build and run it on its own:
+perturb the oracle or the main workspace gate. It does get its own
+path-filtered CI signal — `.github/workflows/demo.yml` runs fmt/clippy/test
+on PRs and pushes that touch `demos/**` or `crates/bevy-brink/**` (advisory,
+not a required check). Build and run it on its own:
 
 ```sh
 cd demos/compound
