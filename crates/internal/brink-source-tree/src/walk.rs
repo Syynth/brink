@@ -388,7 +388,8 @@ mod tests {
     /// walk, and neither loops.
     #[test]
     fn walk_of_a_missing_root_yields_one_error_then_ends() {
-        let root = temp_dir("missing").join("nope");
+        let wrapper = temp_dir("missing");
+        let root = wrapper.join("nope");
 
         let mut walk = Walk::new(&root);
         let first = walk.next().expect("one item");
@@ -402,6 +403,8 @@ mod tests {
         );
 
         assert_eq!(Walk::new(&root).flatten().count(), 0);
+
+        fs::remove_dir_all(&wrapper).expect("cleanup temp dir");
     }
 
     /// An unreadable subdirectory doesn't abort the whole walk: it yields
