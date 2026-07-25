@@ -361,7 +361,10 @@ fn resolve_options(
 
     if let Some(config_key) = discover_from_entry_in_tree(tree, Path::new("."), entry)? {
         let text = tree.read(&config_key)?;
-        let (config, warnings) = parse_str(&text)?;
+        let (config, warnings) = parse_str(&text).map_err(|source| LoadError::Config {
+            path: config_key.clone(),
+            source,
+        })?;
         for warning in &warnings {
             // The producer is the effectful side; surfacing unknown-key
             // warnings here (rather than dropping them) preserves the CLI's
@@ -467,9 +470,16 @@ pub enum LoadError {
     Discover(#[from] brink_driver::DiscoverError),
     /// A discovered `brink.toml` could not be parsed (malformed TOML, or a
     /// recognized key with an out-of-range value). Unknown keys are warnings,
-    /// never this error.
-    #[error("project config error: {0}")]
-    Config(#[from] ConfigError),
+    /// never this error. Carries the discovered `path` so the message names
+    /// which file failed — lost when this variant went through a bare
+    /// `#[from] ConfigError` in #1306 (#1369 restores it).
+    #[error("project config error in {path}: {source}")]
+    Config {
+        /// The root-relative key of the `brink.toml` that failed to parse.
+        path: String,
+        #[source]
+        source: ConfigError,
+    },
     /// A native source key is not root-relative (contains a `..` segment) — a
     /// save-key-identity guardrail against a `SourceTree` that violates the
     /// contract.
@@ -638,7 +648,44 @@ mod tests {
         ]);
         let err = Project::load(&t, "main.brink", &OptionOverrides::default())
             .expect_err("invalid dialect value must fail load");
-        assert!(matches!(err, LoadError::Config(_)));
+        assert!(matches!(err, LoadError::Config { .. }));
+    }
+
+    /// #1369: the `Config` error must name the discovered `brink.toml`'s
+    /// path — lost since #1306 when the variant became a bare
+    /// `#[from] ConfigError` with no path carried alongside it.
+    #[test]
+    fn malformed_brink_toml_error_names_its_path() {
+        let t = tree(&[
+            ("brink.toml", "[project]\ndialect = \"sideways\"\n"),
+            ("main.brink", "flow main() {}"),
+        ]);
+        let err = Project::load(&t, "main.brink", &OptionOverrides::default())
+            .expect_err("invalid dialect value must fail load");
+        let LoadError::Config { path, .. } = &err else {
+            unreachable!("expected LoadError::Config, got {err:?}");
+        };
+        assert_eq!(path, "brink.toml");
+        assert!(
+            err.to_string().contains("brink.toml"),
+            "error message must name the malformed file, got: {err}"
+        );
+    }
+
+    /// Nested discovery (walking up from a subdirectory) must report the
+    /// `brink.toml`'s actual discovered key, not a bare filename.
+    #[test]
+    fn malformed_brink_toml_error_names_its_nested_path() {
+        let t = tree(&[
+            ("brink.toml", "[project]\ndialect = \"sideways\"\n"),
+            ("chapters/main.brink", "flow main() {}"),
+        ]);
+        let err = Project::load(&t, "chapters/main.brink", &OptionOverrides::default())
+            .expect_err("invalid dialect value must fail load");
+        assert!(
+            err.to_string().contains("brink.toml"),
+            "error message must name the malformed file, got: {err}"
+        );
     }
 
     // ── [lints] resolution (issue #1160) ──────────────────────────────
