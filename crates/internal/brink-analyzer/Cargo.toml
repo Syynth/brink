@@ -17,6 +17,7 @@ brink-project-config = { workspace = true }
 brink-format = { workspace = true }
 brink-syntax = { workspace = true }
 rowan.workspace = true
+serde = { workspace = true }
 
 [dev-dependencies]
 proptest.workspace = true

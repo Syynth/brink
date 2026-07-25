@@ -102,6 +102,7 @@ brink-codegen-inkb = { path = "crates/internal/brink-codegen-inkb", version = "0
 brink-compiler = { path = "crates/brink-compiler", version = "0.0.11" }
 brink-db = { path = "crates/internal/brink-db", version = "0.0.11" }
 brink-driver = { path = "crates/internal/brink-driver", version = "0.0.11" }
+brink-environment = { path = "crates/internal/brink-environment", version = "0.0.11" }
 brink-fmt = { path = "crates/internal/brink-fmt", version = "0.0.11" }
 brink-format = { path = "crates/internal/brink-format", version = "0.0.11" }
 brink-ide = { path = "crates/internal/brink-ide", version = "0.0.11" }

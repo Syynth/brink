@@ -2076,6 +2076,7 @@ dependencies = [
  "brink-syntax",
  "proptest",
  "rowan",
+ "serde",
 ]
 
 [[package]]
@@ -2086,6 +2087,7 @@ dependencies = [
  "brink-compiler",
  "brink-db",
  "brink-driver",
+ "brink-environment",
  "brink-fmt",
  "brink-format",
  "brink-ide",
@@ -2154,6 +2156,22 @@ dependencies = [
  "brink-db",
  "brink-ir",
  "brink-project-config",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "brink-environment"
+version = "0.0.11"
+dependencies = [
+ "brink-compiler",
+ "brink-driver",
+ "brink-format",
+ "brink-ir",
+ "brink-project-config",
+ "brink-source-tree",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -2263,6 +2281,7 @@ name = "brink-project-config"
 version = "0.0.11"
 dependencies = [
  "brink-source-tree",
+ "serde",
  "thiserror 2.0.18",
  "toml",
 ]

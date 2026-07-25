@@ -313,38 +313,85 @@ fn run_command(command: Commands) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Resolve `AnalysisOptions` for `entry`, layering (in increasing priority):
-/// 1. `AnalysisOptions::default()` (`strict-ink`; `types` unset — the
-///    effective policy is dialect-keyed per #1127: brink → strict,
-///    strict-ink → gradual);
-/// 2. a discovered `brink.toml`'s `[project] dialect`/`types` (#1005) — the
-///    file walks up from `entry`'s directory to the nearest ancestor
-///    containing `brink.toml`; a missing file changes nothing;
-/// 3. `--dialect`/`--types`, if the user actually passed them — an explicit
-///    flag always overrides the file (never the other way around).
+/// Build the #1306 [`Environment`](brink_environment::Environment) for `entry`
+/// and run the pure compile over it — `Project::load` → `compile(&env)`, the
+/// one path every `brink compile`/`convert`/`play`/`replay`/`export-xliff`
+/// invocation flows through now.
 ///
-/// Unknown keys in the file are logged as warnings, never treated as
-/// errors (forward compat: an older `brink` shouldn't refuse to compile a
-/// `brink.toml` written for a newer schema).
-fn resolve_analysis_options(
+/// The CLI mount drains the project root — [`native_source_root`], the
+/// `brink.toml` walk-up — into an in-memory `SourceTree`, so config discovery
+/// and source enumeration both run over the one seam inside the producer
+/// (rather than the CLI resolving `AnalysisOptions` itself). Policy layers, in
+/// increasing priority:
+/// 1. `AnalysisOptions::default()` (`strict-ink`; `types` dialect-keyed per
+///    #1127);
+/// 2. a discovered `brink.toml`'s `[project] dialect`/`types` (#1005), walked
+///    up from `entry`; a missing file changes nothing;
+/// 3. `--dialect`/`--types`, as [`OptionOverrides`](brink_environment::OptionOverrides)
+///    that always win over the file.
+///
+/// Unknown keys in the file are logged as warnings by the producer, never
+/// treated as errors (forward compat).
+///
+/// [`native_source_root`]: brink_driver::native_source_root
+fn compile_entry(
     entry: &std::path::Path,
     dialect: Option<brink_compiler::Dialect>,
     types: Option<brink_compiler::TypePolicy>,
-) -> Result<brink_compiler::AnalysisOptions, Box<dyn std::error::Error>> {
-    let mut options = brink_compiler::AnalysisOptions::default();
-    if let Some(loaded) = brink_project_config::load_from_entry(entry)? {
-        for warning in &loaded.warnings {
-            tracing::warn!("[{}] {warning}", loaded.path.display());
+) -> Result<brink_compiler::CompileOutput, Box<dyn std::error::Error>> {
+    let root = brink_driver::native_source_root(entry);
+    let tree = drain_project_tree(&root)?;
+    let entry_key = brink_driver::relative_key(&root, entry);
+    let overrides = brink_environment::OptionOverrides { dialect, types };
+    let env = brink_environment::Project::load(&tree, &entry_key, &overrides)?;
+    Ok(brink_environment::compile(&env)?)
+}
+
+/// Drain a native project root into an in-memory `SourceTree` — the CLI's
+/// #1306 producer mount. Collects every `.ink`/`.brink` source plus any
+/// `brink.toml`, keyed root-relative with `/` separators (the seam's key
+/// contract), so [`brink_environment::Project::load`] can enumerate the native
+/// universe / follow the ink `INCLUDE` graph *and* discover config over the
+/// same tree. Reifying the whole root up front is the point of an
+/// `Environment` — the input value bundles every source it depends on.
+fn drain_project_tree(root: &std::path::Path) -> std::io::Result<brink_db::InMemory> {
+    let mut files = std::collections::BTreeMap::new();
+    drain_walk(root, root, &mut files)?;
+    Ok(brink_db::InMemory::new(files))
+}
+
+/// Recursively collect root-relative source/config keys under `dir`.
+fn drain_walk(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    files: &mut std::collections::BTreeMap<String, String>,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            drain_walk(root, &path, files)?;
+        } else if file_type.is_file() {
+            let is_source = path
+                .extension()
+                .is_some_and(|ext| ext == "ink" || ext == "brink");
+            let is_config = path
+                .file_name()
+                .is_some_and(|name| name == brink_project_config::CONFIG_FILE_NAME);
+            if (is_source || is_config)
+                && let Ok(rel) = path.strip_prefix(root)
+            {
+                let key = rel
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                files.insert(key, std::fs::read_to_string(&path)?);
+            }
         }
-        options.apply_project_config(&loaded.config, dialect.is_some(), types.is_some());
     }
-    if let Some(dialect) = dialect {
-        options.dialect = dialect;
-    }
-    if let Some(types) = types {
-        options.types = Some(types);
-    }
-    Ok(options)
+    Ok(())
 }
 
 fn run_compile(
@@ -353,8 +400,7 @@ fn run_compile(
     dialect: Option<brink_compiler::Dialect>,
     types: Option<brink_compiler::TypePolicy>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let options = resolve_analysis_options(input, dialect, types)?;
-    let output_result = brink_compiler::compile_path_with_options(input, options)?;
+    let output_result = compile_entry(input, dialect, types)?;
     for w in &output_result.warnings {
         tracing::warn!("[{}] {}", w.code.as_str(), w.message);
     }
@@ -401,8 +447,7 @@ fn load_story_data(
         // the same file `brink compile` does, rather than silently falling
         // back to `AnalysisOptions::default()` and rejecting extension
         // syntax on a `dialect = "brink"` project.
-        let options = resolve_analysis_options(input, None, None)?;
-        let output_result = brink_compiler::compile_path_with_options(input, options)?;
+        let output_result = compile_entry(input, None, None)?;
         for w in &output_result.warnings {
             tracing::warn!("[{}] {}", w.code.as_str(), w.message);
         }

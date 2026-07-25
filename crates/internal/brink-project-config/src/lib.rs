@@ -58,7 +58,7 @@ use brink_source_tree::SourceTree;
 /// and owning it here is what keeps this crate free of workspace
 /// dependencies (#1234). `brink-analyzer` re-exports it, so
 /// `brink_analyzer::Dialect` remains the canonical path for consumers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Dialect {
     #[default]
     StrictInk,
@@ -77,7 +77,7 @@ pub enum Dialect {
 ///
 /// Defined here for the same reason as [`Dialect`], and re-exported by
 /// `brink-analyzer`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum TypePolicy {
     #[default]
     Gradual,
