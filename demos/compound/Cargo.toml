@@ -5,7 +5,10 @@
 # the brink workspace. As of Phase 1a the demo takes a brink *path*
 # dependency (`bevy-brink`) — but the dep points INWARD from an excluded
 # crate, so `cargo build --workspace` at the repo root still never builds
-# the demo and it cannot perturb the oracle or CI.
+# the demo, and it cannot perturb the oracle or the main workspace gate.
+# It IS gated by its own path-filtered CI job (.github/workflows/demo.yml,
+# #1386) which fails on relevant PRs/pushes — advisory only, not in branch
+# protection's required-checks list.
 [workspace]
 
 [package]
