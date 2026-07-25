@@ -269,21 +269,17 @@ fn check_source(label: &str, source: &str) {
 /// per-case `#[test]` fn).
 #[test]
 fn tier1_brink_corpus_never_under_reports_effects() {
+    // Descent via the shared `brink_source_tree::Walk` (issue #1433) rather
+    // than a hand-written `read_dir` recursion, so this enumerator can't be
+    // the next one to forget the ignored-directory prune.
     fn collect_story_ink_dirs(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
         if dir.join("story.ink").is_file() {
             out.push(dir.to_path_buf());
         }
-        let mut subdirs: Vec<PathBuf> = entries
-            .flatten()
-            .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
-            .map(|e| e.path())
-            .collect();
-        subdirs.sort();
-        for sub in subdirs {
-            collect_story_ink_dirs(&sub, out);
+        for entry in brink_source_tree::Walk::new(dir).flatten() {
+            if entry.is_dir() && entry.path().join("story.ink").is_file() {
+                out.push(entry.into_path());
+            }
         }
     }
 

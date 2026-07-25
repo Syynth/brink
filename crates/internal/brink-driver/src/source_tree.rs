@@ -41,10 +41,9 @@ const NATIVE_EXTENSION: &str = "brink";
 /// `node_modules/` — issue #1381 hand-rolled that prune here; issue #1433
 /// moved the enforcement into the walk itself, where it can't be forgotten),
 /// so a stray build-output or dependency tree under `root` is never
-/// enumerated. `read` serves any key lazily off
-/// disk — it never eagerly reads the tree, so one malformed/unreadable file
-/// elsewhere under `root` cannot fail a `read` of an unrelated key (issue
-/// #1357).
+/// enumerated. `read` serves any key lazily off disk — it never eagerly
+/// reads the tree, so one malformed/unreadable file elsewhere under `root`
+/// cannot fail a `read` of an unrelated key (issue #1357).
 ///
 /// `list`'s `.brink`-only scope is fixed — there used to be a second,
 /// `.brink` + `.ink` scope reachable via a `RealFs::project` constructor
